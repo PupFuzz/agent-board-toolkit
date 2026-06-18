@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# next-dl — mint the next DL-NNN for a project's decision log.
+#
+# Scans EVERY local checkout of the project for `## DL-NNN` headers and returns
+# max+1, so a DL that's still in flight on a worktree / held PR (not yet on the
+# main checkout) can't be reused — numbering stays collision-free for parallel
+# work (the reason this is mechanical, not eyeballed).
+#
+# Usage: next-dl kanban | bridge
+set -euo pipefail
+
+case "${1:-}" in
+    kanban|board|kanban-board) globs=("$HOME"/kanbanboard "$HOME"/kanbanboard-*) ;;
+    bridge|agent-bridge)       globs=("$HOME"/agent-webhook-bridge-*) ;;
+    *) echo "usage: next-dl kanban|bridge" >&2; exit 2 ;;
+esac
+
+max=0
+for d in "${globs[@]}"; do
+    f="$d/CLAUDE_DECISIONS.md"
+    [[ -f "$f" ]] || continue
+    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1)"
+    [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
+done
+[[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$1' — check the checkout paths" >&2; exit 1; }
+printf 'DL-%03d\n' "$((max + 1))"

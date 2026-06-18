@@ -1,0 +1,6 @@
+# Never commit real secrets or per-environment config into the toolkit.
+# Templates live in examples/*.example (kept).
+*-token
+*.env
+.kanban-*
+.release-pr.json

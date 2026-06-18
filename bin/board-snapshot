@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# board-snapshot — compact in-flight summary of the dev tracking boards, so the
+# BOARD (not memory) is the source of truth surfaced at SessionStart. Read-only,
+# fail-soft: a slow/down API prints a notice and exits 0, never blocking startup.
+#
+# Boards: 5 = kanban-board ("Kanban Product Backlog"), 8 = agent-webhook-bridge.
+set -uo pipefail
+
+TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+# API base read from ~/.kanban-host.env (board-independent; not baked in). See INSTALL.md.
+HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+[[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]] && source "$HOST_ENV"
+API="${KBCARD_API:-https://YOUR-KANBAN-HOST/api/v3}"
+[[ -r "$TOKEN_FILE" ]] || exit 0
+TOKEN="$(cat "$TOKEN_FILE")"
+
+snap() {  # $1 = board env file   $2 = label
+  local envf="$1" label="$2"
+  [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
+  (
+    # shellcheck disable=SC1090
+    source "$envf"
+    local data
+    data="$(curl -sS --max-time 5 -H "Authorization: Bearer $TOKEN" \
+            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" \
+        || { echo "• ${label}: (board API unreachable)"; return 0; }
+    # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
+    local names
+    names="$(jq -n \
+        --arg ip "${KB_STAGE_IN_PROGRESS:-}" \
+        --arg ir "${KB_STAGE_IN_REVIEW:-}" \
+        --arg hl "${KB_STAGE_HELD:-}" \
+        '{($ip):"In Progress",($ir):"In Review"}
+         + (if $hl!="" then {($hl):"Held"} else {} end)
+         | with_entries(select(.key!=""))')"
+    printf '%s' "$data" | jq -r --arg label "$label" --argjson names "$names" '
+        (.data // []) as $t
+        | ($names | keys | map(tonumber)) as $infl
+        | "• \($label): in-flight \([$t[]|select(.workflow_stage_id as $s|$infl|index($s))]|length)",
+          ([$t[] | select(.workflow_stage_id as $s | $infl | index($s))
+            | "    #\(.id) [\($names[(.workflow_stage_id|tostring)])] \(.name[0:68])"] | .[])
+      ' 2>/dev/null || echo "• ${label}: (parse error)"
+  )
+}
+
+# Untriaged = a card NOT in a terminal column (Shipped/Released) and lacking the
+# `triaged` tag. New cards land untagged → surface here so triage is never
+# silently missed (the agreed "triaged is a separate signal from the DL number"
+# model). The /triage-cards skill is the codified procedure to clear them.
+untriaged() {  # $1 = board env file   $2 = label
+  local envf="$1" label="$2"
+  [[ -r "$envf" ]] || return 0
+  (
+    # shellcheck disable=SC1090
+    source "$envf"
+    local data
+    data="$(curl -sS --max-time 5 -H "Authorization: Bearer $TOKEN" \
+            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" || return 0
+    printf '%s' "$data" | jq -r --arg label "$label" \
+        --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
+        --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" '
+        ([$shipped, $released] | map(select(. != "") | tonumber)) as $term
+        | ((.data // [])
+           | map(select(((.workflow_stage_id as $s | $term | index($s)) | not)
+                        and (((.tags // []) | index("triaged")) | not)))
+           | sort_by(.id) | reverse) as $u
+        | if ($u | length) > 0 then
+            "⚠ \($label): \($u | length) UNTRIAGED — run the /triage-cards skill (newest first):",
+            ($u[0:6][] | "    #\(.id) [stage \(.workflow_stage_id)] \(.name[0:60])"),
+            (if ($u | length) > 6 then "    … +\(($u | length) - 6) more" else empty end)
+          else empty end
+      ' 2>/dev/null
+  )
+}
+
+echo "── Dev board snapshot — boards are the source of truth (memory is a cache) ──"
+snap "$HOME/.kanban-dev-board.env"    "Board 5 (kanban-board)"
+snap "$HOME/.kanban-bridge-board.env" "Board 8 (bridge)"
+echo "── Untriaged cards — triage is my responsibility; none may be silently missed ──"
+untriaged "$HOME/.kanban-dev-board.env"    "Board 5 (kanban-board)"
+untriaged "$HOME/.kanban-bridge-board.env" "Board 8 (bridge)"
+exit 0

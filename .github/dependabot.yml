@@ -1,0 +1,20 @@
+# Dependabot config for agent-board-toolkit.
+#
+# This is a pure-bash toolkit — no composer/pip/npm manifest — so the only
+# ecosystem is github-actions (the SHA-pinned actions in .github/workflows/*.yml).
+# Weekly; targets `dev` so bumps flow through the normal PR-review path. No
+# auto-merge (the review gate is non-negotiable, per feedback-git-workflow).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: dev
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

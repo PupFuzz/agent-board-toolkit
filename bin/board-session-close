@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# board-session-close — session-close reconciliation ritual. RUN ON DEMAND when
+# the user says they're closing / wrapping up the session. Puts board in-flight
+# state next to local branch/PR reality so any drift (a card that no longer
+# matches what git/PRs show) gets fixed BEFORE the session ends. Read-only — it
+# surfaces what to reconcile; the actual kbcard writes are the agent's call.
+set -uo pipefail
+
+echo "═══ SESSION-CLOSE RECONCILIATION ═══"
+echo "Fix any board card below that doesn't match the git/PR reality, then close."
+echo
+"$HOME/.local/bin/board-snapshot" 2>/dev/null || echo "(board-snapshot unavailable)"
+echo
+echo "── Local branch reality (cross-check against the cards above) ──"
+for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard; do
+  wt="/home/kanban/$d"
+  [[ -e "$wt/.git" ]] || continue
+  b="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
+  dirty=""; [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]] && dirty=" (uncommitted changes)"
+  echo "• ${d}: branch=${b:-?}${dirty}"
+done
+echo
+echo "── Open PRs (each should have a card in In Review / Held) ──"
+for d in agent-webhook-bridge-dev kanbanboard; do   # one entry per unique repo
+  wt="/home/kanban/$d"
+  [[ -e "$wt/.git" ]] || continue
+  ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
+      | sed "s#^#  ${d}: #" ) || true
+done
+exit 0

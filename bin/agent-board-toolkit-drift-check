@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# agent-board-toolkit-drift-check — fail if a repo's vendored copies of agent-board-toolkit
+# tools have diverged from the toolkit (content drift), or if the repo's recorded
+# version no longer matches the toolkit (version skew).
+#
+# Usage:  agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>
+# Exit:   0 = in sync ("drift-check: OK");  1 = drift/skew;  2 = bad invocation.
+#
+# Checks every file in <repo-dir>/bin whose name matches a tool in
+# <toolkit-dir>/bin. A repo that vendors nothing is trivially OK. If the repo has
+# a <repo-dir>/.agent-board-toolkit-version, it must equal <toolkit-dir>/VERSION.
+set -euo pipefail
+
+die() { echo "drift-check: $*" >&2; exit 2; }
+
+TOOLKIT="${1:-}"; REPO="${2:-}"
+[ -n "$TOOLKIT" ] && [ -n "$REPO" ] || die "usage: agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>"
+[ -d "$TOOLKIT/bin" ] || die "no bin/ under toolkit dir: $TOOLKIT"
+[ -d "$REPO" ] || die "no such repo dir: $REPO"
+
+drift=0
+
+# Content drift: compare each vendored tool against the toolkit's version.
+if [ -d "$REPO/bin" ]; then
+  for f in "$REPO"/bin/*; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    tool="$TOOLKIT/bin/$name"
+    [ -f "$tool" ] || continue   # not a toolkit tool — skip
+    if ! diff -q "$tool" "$f" >/dev/null 2>&1; then
+      echo "drift-check: DRIFT  bin/$name differs from agent-board-toolkit" >&2
+      drift=1
+    fi
+  done
+fi
+
+# Version skew: recorded vendor version must match the toolkit.
+if [ -f "$REPO/.agent-board-toolkit-version" ]; then
+  want="$(cat "$TOOLKIT/VERSION")"
+  have="$(cat "$REPO/.agent-board-toolkit-version")"
+  if [ "$want" != "$have" ]; then
+    echo "drift-check: SKEW  repo records v$have but toolkit is v$want (re-vendor; see UPGRADE.md §3)" >&2
+    drift=1
+  fi
+fi
+
+if [ "$drift" -ne 0 ]; then
+  echo "drift-check: FAILED — re-vendor from agent-board-toolkit and re-run (UPGRADE.md §3)" >&2
+  exit 1
+fi
+echo "drift-check: OK"

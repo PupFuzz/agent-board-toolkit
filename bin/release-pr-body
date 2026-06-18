@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# release-pr-body — deterministically generate a release-PR body scaffold from git.
+#
+# Generic across repos: reads `.release-pr.json` in the repo root for per-project
+# config. The MECHANICAL parts (the bundled-work list, the artifact checklist, the
+# version line, the range) are derived from git truth and are 100% deterministic —
+# no AI, no hand-curation. The one genuinely non-deterministic part, the
+# human-readable "## Highlights", is left as a marked placeholder for the author
+# (human or AI) to fill. That split is the design: automate the mechanical, leave
+# only judgement to a person.
+#
+# Usage:
+#   release-pr-body [--version X.Y.Z] [--base REF] [--head REF] [--config PATH]
+#   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
+#
+# Exit non-zero only on a config/usage error; an empty range yields an empty
+# (but valid) bundled section, not a failure.
+set -euo pipefail
+
+die() { echo "release-pr-body: $*" >&2; exit 2; }
+command -v jq  >/dev/null || die "jq is required"
+command -v git >/dev/null || die "git is required"
+
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) VERSION="$2"; shift 2;;
+    --base)    BASE="$2"; shift 2;;
+    --head)    HEAD_REF="$2"; shift 2;;
+    --config)  CONFIG="$2"; shift 2;;
+    --manifest) MANIFEST_ONLY=1; shift;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+[ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
+cfg() { jq -re "$1" "$CONFIG" 2>/dev/null; }
+cfg_opt() { jq -r "$1 // empty" "$CONFIG" 2>/dev/null; }
+
+MAIN_BRANCH="$(cfg_opt '.main_branch')"; MAIN_BRANCH="${MAIN_BRANCH:-main}"
+DEV_BRANCH="$(cfg_opt '.dev_branch')";  DEV_BRANCH="${DEV_BRANCH:-dev}"
+VERSION_FILE="$(cfg_opt '.version_file')"
+VERSION_REGEX="$(cfg_opt '.version_regex')"
+REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"   # e.g. "DL-[0-9]+"; optional
+TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release}"
+
+# Resolve the version: explicit flag, else extract from the version file.
+if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -f "$VERSION_FILE" ]; then
+  VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+fi
+[ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
+
+# Range: BASE = last release tag reachable on main (excluding this version's tag,
+# in case it already exists), HEAD = the work about to ship (dev by default).
+HEAD_REF="${HEAD_REF:-$DEV_BRANCH}"
+if [ -z "$BASE" ]; then
+  BASE="$(git describe --tags --abbrev=0 --exclude="v${VERSION}" "$MAIN_BRANCH" 2>/dev/null || true)"
+fi
+RANGE="${BASE:+$BASE..}$HEAD_REF"
+
+# Deterministic bundle: each non-merge commit subject in the range, with its PR
+# number (trailing "(#NNN)") and optional project ref token pulled out of git —
+# never hand-curated.
+emit_manifest() {
+  [ -n "$REF_TOKEN_REGEX" ] || return 0
+  # `|| true`: grep exits 1 on no match — a release with no ref tokens is valid,
+  # not a failure (would otherwise abort under `set -o pipefail`).
+  { git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
+    | grep -oiE "$REF_TOKEN_REGEX" | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++'; } || true
+}
+
+if [ "$MANIFEST_ONLY" = 1 ]; then
+  emit_manifest
+  exit 0
+fi
+
+bundle_lines() {
+  local found=0
+  while IFS=$'\t' read -r subj; do
+    [ -n "$subj" ] || continue
+    found=1
+    local pr ref
+    pr="$(printf '%s' "$subj" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)')"
+    if [ -n "$REF_TOKEN_REGEX" ]; then
+      ref="$(printf '%s' "$subj" | grep -oiE "$REF_TOKEN_REGEX" | head -1 | tr '[:lower:]' '[:upper:]')"
+    else ref=""; fi
+    local clean; clean="$(printf '%s' "$subj" | sed -E 's/ *\(#[0-9]+\)$//')"
+    printf -- '- %s%s%s\n' \
+      "${pr:+**#$pr** }" \
+      "${ref:+(\`$ref\`) }" \
+      "$clean"
+  done < <(git log "$RANGE" --no-merges --format='%s' 2>/dev/null)
+  [ "$found" = 1 ] || echo "_(no non-merge commits in \`$RANGE\`)_"
+}
+
+COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')"
+
+# --- the body --------------------------------------------------------------
+cat <<EOF
+**\`${DEV_BRANCH} → ${MAIN_BRANCH}\` release PR — v${VERSION}.** Bundles ${COUNT} commit(s) since ${BASE:-the start}.
+
+## Highlights
+<!-- AUTHOR: write the 1–3 human-readable highlights of this release here. This is
+     the ONLY non-deterministic section — everything below is generated from git. -->
+
+## Bundled (generated — do not hand-edit)
+$(bundle_lines)
+EOF
+
+# Optional artifact checklist from config (each {{version}} expanded).
+if jq -e '.artifacts | type == "array"' "$CONFIG" >/dev/null 2>&1; then
+  echo ""; echo "## Release artifacts"
+  jq -r '.artifacts[]' "$CONFIG" | while IFS= read -r a; do
+    printf -- '- [ ] %s\n' "${a//\{\{version\}\}/$VERSION}"
+  done
+fi
+
+# Machine-readable manifest of shipped refs — a deterministic footer a downstream
+# consumer (e.g. a bridge classifier) can parse instead of the prose above.
+if [ -n "$REF_TOKEN_REGEX" ]; then
+  MANIFEST="$(emit_manifest | paste -sd, -)"
+  [ -n "$MANIFEST" ] && printf '\n<!-- release-manifest:shipped-refs=%s -->\n' "$MANIFEST"
+fi
