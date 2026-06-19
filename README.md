@@ -2,7 +2,7 @@
 
 Single source of truth for kanban-dev's **bash** board tooling — the CLI + helpers that drive a kanban board from the agent host and from release CI. One versioned copy, consumed by the agent host (via symlink) and by product repos that run a tool in CI (via a drift-checked vendor).
 
-> **Scope.** This is **kanban-dev's** within-runtime code-share (Task-tracking standard §8, move #2): it serves the agent host + the `kanbanboard` and `agent-webhook-bridge` repos. The PM projects (sola/aimla) do **not** consume it — they share board-ops in Python via `coord.kanban_common`. Three-way sharing lives in the **spec** (the standard) and the **v3 API substrate**, not in this code.
+> **Scope.** This is **kanban-dev's** within-runtime code-share (Task-tracking standard §8): it serves the agent host + the `kanbanboard` and `agent-webhook-bridge` repos. The PM projects' (sola/aimla) *primary* board-ops sharing is Python (`coord.kanban_common`) — but because this is portable `bash` + `curl` + `jq`, a PM project **may also vendor these tools directly** (vendor + drift-check), routing any shared-board need through FRs to this repo, **never a silent fork**. (§8 amended 2026-06-19 at AIMLA PM's request: the original wording *excluded* PM projects, on a cross-runtime-ceiling assumption that doesn't hold for the bash layer.) The canonical three-way shared surface is still the **contract** — the by-ref shape, the `DL-NNN` token, `dl_number`, the writeback outcomes — and the **v3 API substrate**, not this code.
 
 ## What's here
 
