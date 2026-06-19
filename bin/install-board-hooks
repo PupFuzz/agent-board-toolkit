@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# install-board-hooks — install agent-board-toolkit git hooks into a target repo.
+#
+#     install-board-hooks <repo-dir>
+#
+# Symlinks hooks/post-checkout into <repo-dir>/.git/hooks so the card auto-moves
+# to In Progress when a feature branch is checked out. Non-destructive: refuses
+# to clobber an existing NON-symlink hook (so a repo's own hooks are never lost).
+set -euo pipefail
+
+repo="${1:?usage: install-board-hooks <repo-dir>}"
+[ -d "$repo/.git" ] || { echo "install-board-hooks: not a git repo: $repo" >&2; exit 1; }
+
+toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+src="$toolkit/hooks/post-checkout"
+[ -f "$src" ] || { echo "install-board-hooks: hook source missing: $src" >&2; exit 1; }
+chmod +x "$src"
+
+dst="$repo/.git/hooks/post-checkout"
+if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
+    echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
+    exit 1
+fi
+ln -sf "$src" "$dst"
+echo "install-board-hooks: $dst -> $src"
