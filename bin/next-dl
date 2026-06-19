@@ -1,26 +1,67 @@
 #!/usr/bin/env bash
 # next-dl — mint the next DL-NNN for a project's decision log.
 #
-# Scans EVERY local checkout of the project for `## DL-NNN` headers and returns
-# max+1, so a DL that's still in flight on a worktree / held PR (not yet on the
-# main checkout) can't be reused — numbering stays collision-free for parallel
-# work (the reason this is mechanical, not eyeballed).
+# Returns max+1 over BOTH:
+#   (1) `## DL-NNN` headers in CLAUDE_DECISIONS.md across every local checkout
+#       (so an in-flight DL on a worktree / held PR can't be reused), AND
+#   (2) the project's kanban board's stamped `dl_number`s, when reachable.
+#
+# (2) closes the collision gap that caused the DL-154 reuse (board card #2643):
+# a DL stamped on a card but whose `## DL-NNN` header hasn't been written yet is
+# invisible to a header-only scan, so a parallel workstream mints it again. The
+# board check is FAIL-SOFT — if the board / token / API is unreachable it warns
+# and falls back to the header scan, never blocking allocation offline.
 #
 # Usage: next-dl kanban | bridge
 set -euo pipefail
 
 case "${1:-}" in
-    kanban|board|kanban-board) globs=("$HOME"/kanbanboard "$HOME"/kanbanboard-*) ;;
-    bridge|agent-bridge)       globs=("$HOME"/agent-webhook-bridge-*) ;;
+    kanban|board|kanban-board)
+        globs=("$HOME"/kanbanboard "$HOME"/kanbanboard-*)
+        board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}" ;;
+    bridge|agent-bridge)
+        globs=("$HOME"/agent-webhook-bridge-*)
+        board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-bridge-board.env}" ;;
     *) echo "usage: next-dl kanban|bridge" >&2; exit 2 ;;
 esac
 
+# Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
+max_dl() { grep -oE 'DL-[0-9]+' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
+
 max=0
+
+# (1) local CLAUDE_DECISIONS.md headers across all checkouts.
 for d in "${globs[@]}"; do
     f="$d/CLAUDE_DECISIONS.md"
     [[ -f "$f" ]] || continue
-    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1)"
+    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | max_dl)"
     [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
 done
+
+# (2) board-stamped dl_numbers (fail-soft; runs in a subshell so sourced env
+#     never leaks into this script).
+board_dl_max() (
+    command -v curl >/dev/null && command -v jq >/dev/null \
+        || { echo "next-dl: curl/jq missing — skipping board check" >&2; exit 1; }
+    [[ -r "$board_env" ]] || { echo "next-dl: $board_env unreadable — skipping board check" >&2; exit 1; }
+    # shellcheck disable=SC1090
+    source "$board_env"
+    host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+    if [[ -z "${KBCARD_API:-}" && -r "$host_env" ]]; then
+        # shellcheck disable=SC1090
+        source "$host_env"
+    fi
+    api="${KBCARD_API:-}"; board="${KB_BOARD_ID:-}"
+    token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+    [[ -n "$api" && -n "$board" && -r "$token_file" ]] \
+        || { echo "next-dl: board config incomplete — skipping board check" >&2; exit 1; }
+    resp="$(curl -fsS -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
+        "$api/tasks/search.json?q=board_id=$board&limit=200" 2>/dev/null)" \
+        || { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
+    printf '%s' "$resp" | jq -r '.data[]?.payload.dl_number // empty' | max_dl
+)
+bmax="$(board_dl_max || true)"
+[[ "$bmax" =~ ^[0-9]+$ && "$bmax" -gt "$max" ]] && max="$bmax"
+
 [[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$1' — check the checkout paths" >&2; exit 1; }
 printf 'DL-%03d\n' "$((max + 1))"
