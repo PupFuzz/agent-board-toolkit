@@ -14,7 +14,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/board-snapshot` | session-start board snapshot |
 | `bin/board-transition-sync` | reconcile card columns against git/PR state |
 | `bin/board-session-close` | session-close board↔git reconcile |
-| `bin/next-dl` | next `DL-NNN` number helper |
+| `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
 | `bin/install-board-hooks` | install the `post-checkout` hook into a repo so cards auto-move on branch checkout |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |

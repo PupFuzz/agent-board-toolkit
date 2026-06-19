@@ -1,46 +1,62 @@
 #!/usr/bin/env bash
 # next-dl — mint the next DL-NNN for a project's decision log.
 #
-# Returns max+1 over BOTH:
+# Two modes:
+#
+#   DEFAULT (atomic claim, DL-157): when the board's kanban exposes the
+#   `dl-sequence/claim` endpoint, next-dl ATOMICALLY claims the next number
+#   server-side (race-free across concurrent allocators). A claim RESERVES the
+#   number — an unused claim simply burns it (gaps are expected and fine). If the
+#   endpoint is absent (older kanban / not deployed) or unreachable, it falls
+#   back SILENTLY to the offline max+1 scan below — so behaviour is unchanged
+#   until the endpoint ships.
+#
+#   --peek: skip the endpoint and return max+1 WITHOUT reserving (the original,
+#   non-consuming behaviour) — use it to just see the next number.
+#
+# The offline max+1 scan takes the max over BOTH:
 #   (1) `## DL-NNN` headers in CLAUDE_DECISIONS.md across every local checkout
 #       (so an in-flight DL on a worktree / held PR can't be reused), AND
 #   (2) the project's kanban board's stamped `dl_number`s, when reachable.
+# (2) closes the collision gap that caused the DL-154 reuse (board card #2643).
+# The board check is FAIL-SOFT — an unreachable board/token/API warns and falls
+# back to the header scan, never blocking allocation offline. NOTE: the offline
+# path is NOT atomic — safe for single-stream allocation; concurrent allocators
+# on a shared board need the claim endpoint (the default) to avoid duplicates.
 #
-# (2) closes the collision gap that caused the DL-154 reuse (board card #2643):
-# a DL stamped on a card but whose `## DL-NNN` header hasn't been written yet is
-# invisible to a header-only scan, so a parallel workstream mints it again. The
-# board check is FAIL-SOFT — if the board / token / API is unreachable it warns
-# and falls back to the header scan, never blocking allocation offline.
-#
-# Usage: next-dl kanban | bridge
+# Usage: next-dl kanban|bridge [--peek]
 set -euo pipefail
 
-case "${1:-}" in
+peek=0
+project=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --peek|--no-claim) peek=1 ;;
+        kanban|board|kanban-board|bridge|agent-bridge)
+            [[ -z "$project" ]] || { echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2; }
+            project="$1" ;;
+        *) echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2 ;;
+    esac
+    shift
+done
+[[ -n "$project" ]] || { echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2; }
+
+case "$project" in
     kanban|board|kanban-board)
         globs=("$HOME"/kanbanboard "$HOME"/kanbanboard-*)
         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}" ;;
     bridge|agent-bridge)
         globs=("$HOME"/agent-webhook-bridge-*)
         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-bridge-board.env}" ;;
-    *) echo "usage: next-dl kanban|bridge" >&2; exit 2 ;;
 esac
 
 # Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
 max_dl() { grep -oE 'DL-[0-9]+' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
 
-max=0
-
-# (1) local CLAUDE_DECISIONS.md headers across all checkouts.
-for d in "${globs[@]}"; do
-    f="$d/CLAUDE_DECISIONS.md"
-    [[ -f "$f" ]] || continue
-    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | max_dl)"
-    [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
-done
-
-# (2) board-stamped dl_numbers (fail-soft; runs in a subshell so sourced env
-#     never leaks into this script).
-board_dl_max() (
+# Resolve api/board/token from config (sourced in a subshell so env never leaks
+# into this script). Echoes "<api>\t<board>\t<token_file>"; non-zero (with a
+# reason on stderr) if curl/jq or any config is missing.
+resolve_board_cfg() (
     command -v curl >/dev/null && command -v jq >/dev/null \
         || { echo "next-dl: curl/jq missing — skipping board check" >&2; exit 1; }
     [[ -r "$board_env" ]] || { echo "next-dl: $board_env unreadable — skipping board check" >&2; exit 1; }
@@ -55,6 +71,50 @@ board_dl_max() (
     token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
     [[ -n "$api" && -n "$board" && -r "$token_file" ]] \
         || { echo "next-dl: board config incomplete — skipping board check" >&2; exit 1; }
+    printf '%s\t%s\t%s' "$api" "$board" "$token_file"
+)
+
+# Atomic server-side claim (DL-157). Echoes the claimed integer on success;
+# non-zero exit + NO output on any failure (missing config, endpoint absent/404,
+# unreachable, or a non-positive/garbage value) → the caller falls back to peek.
+# Fail-closed: a value that isn't a positive integer is rejected, never printed
+# (a 0 would otherwise be stamped as DL-000).
+board_claim() (
+    cfg="$(resolve_board_cfg 2>/dev/null)" || exit 1
+    IFS=$'\t' read -r api board token_file <<<"$cfg"
+    resp="$(curl -fsS -X POST -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
+        "$api/boards/$board/dl-sequence/claim.json" 2>/dev/null)" || exit 1
+    val="$(printf '%s' "$resp" | jq -r '.data.value // empty' 2>/dev/null)"
+    [[ "$val" =~ ^[0-9]+$ && "$val" -ge 1 ]] || exit 1
+    printf '%s' "$val"
+)
+
+# DEFAULT: prefer the atomic claim; on any failure fall back silently to the
+# offline peek below (the endpoint-absent case during rollout is expected, not
+# an error worth warning about — the peek path keeps its own board warnings).
+if [[ $peek -eq 0 ]]; then
+    claimed="$(board_claim || true)"
+    if [[ "$claimed" =~ ^[0-9]+$ ]]; then
+        printf 'DL-%03d\n' "$claimed"
+        exit 0
+    fi
+fi
+
+# Offline / --peek path: max+1 over local headers + board-stamped dl_numbers.
+max=0
+
+# (1) local CLAUDE_DECISIONS.md headers across all checkouts.
+for d in "${globs[@]}"; do
+    f="$d/CLAUDE_DECISIONS.md"
+    [[ -f "$f" ]] || continue
+    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | max_dl)"
+    [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
+done
+
+# (2) board-stamped dl_numbers (fail-soft).
+board_dl_max() (
+    cfg="$(resolve_board_cfg)" || exit 1
+    IFS=$'\t' read -r api board token_file <<<"$cfg"
     resp="$(curl -fsS -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
         "$api/tasks/search.json?q=board_id=$board&limit=200" 2>/dev/null)" \
         || { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
@@ -63,5 +123,5 @@ board_dl_max() (
 bmax="$(board_dl_max || true)"
 [[ "$bmax" =~ ^[0-9]+$ && "$bmax" -gt "$max" ]] && max="$bmax"
 
-[[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$1' — check the checkout paths" >&2; exit 1; }
+[[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$project' — check the checkout paths" >&2; exit 1; }
 printf 'DL-%03d\n' "$((max + 1))"
