@@ -27,6 +27,7 @@ The tools read all environment-specific values from files **outside** this repo:
 
 ## Get started
 
+- **Adopting this for a new project/agent? Start here:** [`ADOPTION.md`](ADOPTION.md) (who it's for + how it fits the cross-project standard)
 - **New install:** [`docs/INSTALL.md`](docs/INSTALL.md)
 - **Upgrade an existing install:** [`docs/UPGRADE.md`](docs/UPGRADE.md)
 
