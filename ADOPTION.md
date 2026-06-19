@@ -10,11 +10,13 @@ The front door for an agent (or engineer) adopting this toolkit to drive a kanba
 
 Each project implements that standard **in its own runtime**: the Python projects via their own framework/plugin; kanban-dev via this **bash** toolkit. So this repo is the *bash* answer to the shared spec — adopt it if your stack is bash-compatible; otherwise implement the same standard your own way and just share the spec + the API.
 
+> **PM projects may vendor this directly (§8, amended 2026-06-19).** The standard originally scoped this toolkit to kanban-dev only. Because it's portable `bash` + `curl` + `jq`, a PM project (sola/aimla) whose host can run a shell **may vendor these tools** instead of reimplementing them — on the same terms as any consumer: **vendor + drift-check** against this repo, and route any shared-board need (e.g. the atomic DL-claim endpoint) through an **FR to this repo, never a silent fork**. Your *primary* board-ops sharing can still be your own runtime; this is an additional option, not a replacement.
+
 ## Is this for you?
 
 **Adopt it if:** you run on a **bash-capable host** and drive your **own kanban board** (your own instance) — and you want one versioned, drift-checked source for the board CLI + release/board helpers instead of loose copies.
 
-**You don't need it if:** your project already shares board operations in another runtime (e.g. a Python framework/plugin). This is **bash** tooling — it doesn't replace that. You can still cherry-pick the runtime-neutral pieces (`promote-released-cards`, `release-pr-body`) or just reuse the *patterns* (single-source + drift-check vendoring, the board-independent host-config split). Nothing here depends on a coordination framework.
+**You may not need all of it if:** your project already shares board operations in another runtime (e.g. a Python framework/plugin) — this **bash** tooling doesn't replace that. But you can **vendor the whole toolkit** (§8 amendment above), cherry-pick the runtime-neutral pieces (`promote-released-cards`, `release-pr-body`), or just reuse the *patterns* (single-source + drift-check vendoring, the board-independent host-config split). Nothing here depends on a coordination framework.
 
 ## Adopt in ~5 minutes (read-only to verify)
 
