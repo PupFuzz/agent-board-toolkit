@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# board-card-start — move the card correlated to a feature branch into "In Progress".
+#
+# Codifies "work has begun" so it's never a forgotten manual step (the recurring
+# board-drift fix). Called by the post-checkout git hook; also runnable by hand:
+#     board-card-start [<branch-name>]      (default: the current branch)
+#
+# Correlation: a DL-NNN token in the branch name (e.g. feature/dl156-foo) → the
+# board card whose payload.dl_number is DL-NNN.
+#
+# SAFE BY DESIGN:
+#   - FAIL-SOFT: any missing config / unreachable board / no match → exit 0. It
+#     must NEVER block a git checkout.
+#   - IDEMPOTENT + no stage regression: only promotes a card that is in Backlog
+#     or Prioritized. A card already In Progress / In Review / Shipped / Released
+#     is left alone (re-checking-out an old branch can't drag it backwards).
+set -uo pipefail
+
+branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+[ -n "$branch" ] && [ "$branch" != "HEAD" ] || exit 0
+
+# DL token from the branch name (case-insensitive; leading zeros stripped).
+dl="$(printf '%s\n' "$branch" | grep -oiE 'dl-?[0-9]+' | head -1 | grep -oE '[0-9]+' | sed 's/^0*//')"
+[ -n "$dl" ] || exit 0
+
+command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
+
+# Board id + API base from the repo's .release-pr.json.
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+cfg="$root/.release-pr.json"
+[ -n "$root" ] && [ -r "$cfg" ] || exit 0
+board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
+api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
+[ -n "$board" ] && [ -n "$api" ] || exit 0
+
+# Token (host env may override the default token-file path).
+host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+# shellcheck disable=SC1090
+[ -r "$host_env" ] && . "$host_env"
+token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+[ -r "$token_file" ] || exit 0
+token="$(cat "$token_file")"
+
+# Stage ids for THIS board, from the matching ~/.kanban-*-board.env.
+stages="$(
+  for envf in "$HOME"/.kanban-*-board.env; do
+    [ -r "$envf" ] || continue
+    # shellcheck disable=SC1090
+    ( . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$board" ] \
+        && printf '%s %s %s\n' "${KB_STAGE_IN_PROGRESS:-}" "${KB_STAGE_BACKLOG:-}" "${KB_STAGE_PRIORITIZED:-}" )
+  done | head -1
+)"
+read -r inprog backlog prioritized <<<"$stages"
+[ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || exit 0
+
+get() { curl -fsS -H "Authorization: Bearer $token" -H "Accept: application/json" "$1" 2>/dev/null; }
+
+cid="$(get "$api/tasks/search.json?q=board_id=$board&limit=200" \
+  | jq -r --arg dl "DL-$dl" '[.data[] | select(.payload.dl_number==$dl)][0].id // empty')"
+[ -n "$cid" ] || exit 0
+
+cur="$(get "$api/tasks/$cid.json" | jq -r '.data.workflow_stage_id // empty')"
+[ -n "$cur" ] || exit 0
+
+# Only promote from Backlog/Prioritized — never regress a further-along card.
+[ "$cur" = "$backlog" ] || [ "$cur" = "$prioritized" ] || exit 0
+
+if curl -fsS -X PATCH -H "Authorization: Bearer $token" -H "Accept: application/json" \
+     -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
+     "$api/tasks/$cid.json" >/dev/null 2>&1; then
+    echo "board-card-start: card #$cid (DL-$dl) → In Progress" >&2
+fi
+exit 0

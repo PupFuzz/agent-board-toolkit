@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# agent-board-toolkit post-checkout hook.
+# On a BRANCH checkout (git checkout -b / git switch -c / switching branches),
+# move the correlated card to "In Progress" so "work begun" is recorded without
+# a manual step. Fail-soft: this hook NEVER blocks or fails a checkout.
+#
+# Install with: bin/install-board-hooks <repo>   (symlinks this file into .git/hooks)
+#
+# Args from git: $1 = prev HEAD, $2 = new HEAD, $3 = 1 if a branch checkout.
+[ "${3:-0}" = "1" ] || exit 0
+if command -v board-card-start >/dev/null 2>&1; then
+    board-card-start >/dev/null 2>&1 || true
+fi
+exit 0

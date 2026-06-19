@@ -15,6 +15,8 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/board-transition-sync` | reconcile card columns against git/PR state |
 | `bin/board-session-close` | session-close board↔git reconcile |
 | `bin/next-dl` | next `DL-NNN` number helper |
+| `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
+| `bin/install-board-hooks` | install the `post-checkout` hook into a repo so cards auto-move on branch checkout |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
 
 ## Configuration model (no IDs are hard-coded; nothing secret is stored in this repo)
