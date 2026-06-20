@@ -43,10 +43,12 @@ snap() {  # $1 = board env file   $2 = label
   )
 }
 
-# Untriaged = a card NOT in a terminal column (Shipped/Released) and lacking the
-# `triaged` tag. New cards land untagged → surface here so triage is never
-# silently missed (the agreed "triaged is a separate signal from the DL number"
-# model). The /triage-cards skill is the codified procedure to clear them.
+# Untriaged = a card NOT in a terminal column (Shipped/Released/Won't-Do) and
+# lacking the `triaged` tag. New cards land untagged → surface here so triage is
+# never silently missed (the agreed "triaged is a separate signal from the DL
+# number" model). A Won't-Do card is processed-to-completion (a terminal
+# disposition), so it is terminal here too — never flagged untriaged.
+# The /triage-cards skill is the codified procedure to clear them.
 untriaged() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || return 0
@@ -58,8 +60,9 @@ untriaged() {  # $1 = board env file   $2 = label
             "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" || return 0
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
-        --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" '
-        ([$shipped, $released] | map(select(. != "") | tonumber)) as $term
+        --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
+        --arg wontdo "${KB_STAGE_WONT_DO:-}" '
+        ([$shipped, $released, $wontdo] | map(select(. != "") | tonumber)) as $term
         | ((.data // [])
            | map(select(((.workflow_stage_id as $s | $term | index($s)) | not)
                         and (((.tags // []) | index("triaged")) | not)))
