@@ -291,25 +291,36 @@ cmd_list() {
     if [[ -n "$type" ]];   then type_filter="$(card_type_id "$type")"; fi
 
     # Paginate the fetch BEFORE filtering. search.json returns the DL-146
-    # {data, meta, links} envelope, page-based — reading only page 1 (the prior
-    # behavior) silently UNDERCOUNTS every column once a board exceeds one page.
-    # Read page 1 to learn meta.last_page, then accumulate the rest. limit=200 is
-    # the server max (fewest round-trips); a failed page exits via set -e rather
-    # than truncating silently.
-    local page1 last_page data p page_n
+    # {data, meta, links} envelope, page-based — reading only page 1 silently
+    # UNDERCOUNTS every column once a board exceeds one page. Read page 1 for
+    # meta.last_page, then accumulate each page's compact .data line into a shell
+    # variable and slurp+concatenate via `jq -s 'add'` over STDIN.
+    #
+    # Two failure modes this shape avoids:
+    #   - argv overflow: the dataset never reaches argv. A single argv entry caps
+    #     at MAX_ARG_STRLEN (128 KiB) — well under a multi-page board's JSON — so
+    #     the v0.4.3 `--argjson acc "$data"` accumulator died with "Argument list
+    #     too long" on a large page (#3091). `$pages` lives in shell memory; the
+    #     final `printf | jq` feeds it via STDIN (printf is a builtin → no exec).
+    #   - silent truncation: every api/jq call runs at plain function-body level
+    #     (NOT inside a pipeline), so set -e actually aborts the whole command on a
+    #     failed page fetch. (A `{ … } | jq` brace group runs the loop in a pipe
+    #     subshell where set -e is suppressed for non-final commands — a failed
+    #     page-2+ fetch would be swallowed and a truncated list returned, exit 0.)
+    # Only the tiny scalar filters go via --argjson. limit=200 is the server max.
+    local page1 last_page p page_n pages
     page1="$(api GET "/tasks/search.json?q=$q&limit=200&page=1")"
     last_page="$(printf '%s' "$page1" | jq -r '.meta.last_page // 1')"
-    data="$(printf '%s' "$page1" | jq '.data // []')"
+    pages="$(printf '%s' "$page1" | jq -c '.data // []')"
     for (( p = 2; p <= last_page; p++ )); do
         page_n="$(api GET "/tasks/search.json?q=$q&limit=200&page=$p")"
-        data="$(jq -n --argjson acc "$data" \
-            --argjson add "$(printf '%s' "$page_n" | jq '.data // []')" '$acc + $add')"
+        pages+=$'\n'"$(printf '%s' "$page_n" | jq -c '.data // []')"
     done
-
-    printf '%s' "$data" | jq \
+    printf '%s\n' "$pages" | jq -s \
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
-        'map(select(($stage == null or .workflow_stage_id == $stage)
+        '(add // [])
+         | map(select(($stage == null or .workflow_stage_id == $stage)
                 and ($type == null or .card_type_id == $type)))
          | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id, dl: .payload.dl_number, pr: .payload.pr_number})'
