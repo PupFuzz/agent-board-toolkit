@@ -5,11 +5,13 @@ A recurring board-drift cause is forgetting to move a card to **In Progress** wh
 ## What it does
 
 `hooks/post-checkout` → calls `bin/board-card-start`, which:
-1. extracts a `DL-NNN` token from the branch name (e.g. `feature/dl156-foo`),
-2. finds the board card whose `dl_number` is `DL-NNN` (board id + API base from the repo's `.release-pr.json`; in-progress stage from your `~/.kanban-<name>-board.env`),
+1. correlates the branch to a card (first match wins):
+   - a **`DL-NNN`** token in the branch name (e.g. `feature/dl156-foo`) → the card whose `dl_number` is `DL-NNN`; or
+   - a **card-id** token → that card (task) id directly. Recognized as an explicit `#2950` / `card-2950` / `card/2950` anywhere, or the leading id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This covers routine FR/bug work branched by card id *before* a DL exists.
+2. resolves the card (board id + API base from the repo's `.release-pr.json`; in-progress stage from your `~/.kanban-<name>-board.env`), and verifies it is **on the repo's configured board** (so a stray number can't move an unrelated task),
 3. moves it to In Progress — **only if it's currently in Backlog or Prioritized** (never drags a further-along card backward).
 
-It is **fail-soft** (any missing config / unreachable board / no DL in the branch → it does nothing and never blocks the checkout) and **idempotent**.
+It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it does nothing and never blocks the checkout) and **idempotent**.
 
 ## Install (per repo that you cut feature branches in)
 
@@ -29,5 +31,5 @@ board-card-start feature/dl156-foo   # a specific branch name
 
 ## Scope / limits
 
-- Correlates on `DL-NNN` only (matches the existing kbcard/writeback convention). A branch with no DL token is a no-op.
+- Correlates on a `DL-NNN` token (matches the kbcard/writeback convention) **or** a card-id token (`#2950` / `card-2950` / a typed branch's leading id like `feat/2950-…`). A branch with neither is a no-op. The card-id path only moves a card that lives on the repo's own board.
 - This is the **local** half of the codification. The durable, multi-agent half is the bridge moving the card on the branch-create / first-push webhook (derive-from-artifact) — tracked separately.

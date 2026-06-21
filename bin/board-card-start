@@ -5,8 +5,16 @@
 # board-drift fix). Called by the post-checkout git hook; also runnable by hand:
 #     board-card-start [<branch-name>]      (default: the current branch)
 #
-# Correlation: a DL-NNN token in the branch name (e.g. feature/dl156-foo) → the
-# board card whose payload.dl_number is DL-NNN.
+# Correlation (first match wins):
+#   1. A DL-NNN token in the branch name (e.g. feature/dl156-foo) → the board
+#      card whose payload.dl_number is DL-NNN.
+#   2. Otherwise a CARD-ID token → that card (task) id directly. Recognized as
+#      an explicit `#2950` / `card-2950` / `card/2950` anywhere, or the leading
+#      id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This is
+#      how routine FR/bug work — branched by card id before a DL is assigned —
+#      still moves. The card-id path only ever moves a card that actually lives
+#      on the repo's configured board (the board-match guard below), so a stray
+#      number can't promote an unrelated task.
 #
 # SAFE BY DESIGN:
 #   - FAIL-SOFT: any missing config / unreachable board / no match → exit 0. It
@@ -14,6 +22,7 @@
 #   - IDEMPOTENT + no stage regression: only promotes a card that is in Backlog
 #     or Prioritized. A card already In Progress / In Review / Shipped / Released
 #     is left alone (re-checking-out an old branch can't drag it backwards).
+#   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
 set -uo pipefail
 
 branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
@@ -21,7 +30,20 @@ branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 
 # DL token from the branch name (case-insensitive; leading zeros stripped).
 dl="$(printf '%s\n' "$branch" | grep -oiE 'dl-?[0-9]+' | head -1 | grep -oE '[0-9]+' | sed 's/^0*//')"
-[ -n "$dl" ] || exit 0
+
+# Card-id token — only when there is NO DL token (DL correlation takes precedence).
+# Explicit `#2950` / `card-2950` / `card/2950` first; else the leading id of a
+# typed branch (a >=3-digit id directly after a known type prefix, token-bounded
+# so `feat/2signup` or a 2-digit version can't match).
+cid_token=""
+if [ -z "$dl" ]; then
+    cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/]|#)0*[0-9]{2,}' | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
+    [ -n "$cid_token" ] || cid_token="$(printf '%s\n' "$branch" \
+        | grep -oiE '^(feat|feature|fix|hotfix|bug|chore|fr|refactor|perf|docs|ci|test|build|style)/#?0*[0-9]{3,}([/_-]|$)' \
+        | grep -oE '[0-9]{3,}' | head -1 | sed 's/^0*//')"
+fi
+
+[ -n "$dl" ] || [ -n "$cid_token" ] || exit 0
 
 command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
 
@@ -55,12 +77,23 @@ read -r inprog backlog prioritized <<<"$stages"
 
 get() { curl -fsS -H "Authorization: Bearer $token" -H "Accept: application/json" "$1" 2>/dev/null; }
 
-cid="$(get "$api/tasks/search.json?q=board_id=$board&limit=200" \
-  | jq -r --arg dl "DL-$dl" '[.data[] | select(.payload.dl_number==$dl)][0].id // empty')"
+# Resolve the card (task) id to move.
+if [ -n "$dl" ]; then
+    cid="$(get "$api/tasks/search.json?q=board_id=$board&limit=200" \
+      | jq -r --arg dl "DL-$dl" '[.data[] | select(.payload.dl_number==$dl)][0].id // empty')"
+    label="DL-$dl"
+else
+    cid="$cid_token"
+    label="#$cid_token"
+fi
 [ -n "$cid" ] || exit 0
 
-cur="$(get "$api/tasks/$cid.json" | jq -r '.data.workflow_stage_id // empty')"
-[ -n "$cur" ] || exit 0
+# Fetch the card; read its current stage AND board. The board-match guard bounds
+# the card-id path — a bare number can only move a card on the repo's own board.
+card="$(get "$api/tasks/$cid.json")"
+cur="$(printf '%s' "$card" | jq -r '.data.workflow_stage_id // empty')"
+cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
+[ -n "$cur" ] && [ "$cbd" = "$board" ] || exit 0
 
 # Only promote from Backlog/Prioritized — never regress a further-along card.
 [ "$cur" = "$backlog" ] || [ "$cur" = "$prioritized" ] || exit 0
@@ -68,6 +101,6 @@ cur="$(get "$api/tasks/$cid.json" | jq -r '.data.workflow_stage_id // empty')"
 if curl -fsS -X PATCH -H "Authorization: Bearer $token" -H "Accept: application/json" \
      -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
      "$api/tasks/$cid.json" >/dev/null 2>&1; then
-    echo "board-card-start: card #$cid (DL-$dl) → In Progress" >&2
+    echo "board-card-start: card #$cid ($label) → In Progress" >&2
 fi
 exit 0
