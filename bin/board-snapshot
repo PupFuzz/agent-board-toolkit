@@ -6,11 +6,14 @@
 # Boards: 5 = kanban-board ("Kanban Product Backlog"), 8 = agent-webhook-bridge.
 set -uo pipefail
 
-TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-# API base read from ~/.kanban-host.env (board-independent; not baked in). See INSTALL.md.
+# API base + token path read from ~/.kanban-host.env (board-independent; not
+# baked in). The host env is sourced BEFORE resolving TOKEN_FILE so a
+# KBCARD_TOKEN_FILE set inside the config file is honored (matching next-dl/
+# kbcard); resolving it first silently ignored a config-file value. See INSTALL.md.
 HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
 [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]] && source "$HOST_ENV"
 API="${KBCARD_API:-https://YOUR-KANBAN-HOST/api/v3}"
+TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
 [[ -r "$TOKEN_FILE" ]] || exit 0
 TOKEN="$(cat "$TOKEN_FILE")"
 
