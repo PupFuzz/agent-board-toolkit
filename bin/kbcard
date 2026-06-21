@@ -5,7 +5,7 @@
 #
 # Usage:
 #   kbcard create-card --type dl|release|request|fr|bug|idea --name "title" \
-#                      --column backlog|prioritized|in_progress|in_review|shipped_to_dev|released_to_main \
+#                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
 #                      [--description "..."] [--tags "tag1,tag2"] [--external-id "dl-093"] \
 #                      [--dl "DL-093"] [--pr 178] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested]
 #   kbcard move --task ID-OR-EXT --column COLUMN
@@ -76,6 +76,7 @@ stage_id() {
         held) id="${KB_STAGE_HELD:-}" ;;
         shipped_to_dev) id="${KB_STAGE_SHIPPED_TO_DEV:-}" ;;
         released_to_main) id="${KB_STAGE_RELEASED_TO_MAIN:-}" ;;
+        wont_do) id="${KB_STAGE_WONT_DO:-}" ;;
         *) echo "kbcard: unknown column '$1'" >&2; return 2 ;;
     esac
     [[ -z "$id" ]] && { echo "kbcard: column '$1' is not defined on this board" >&2; return 2; }
