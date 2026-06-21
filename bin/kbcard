@@ -285,18 +285,32 @@ cmd_list() {
     # by design, not a bug. workflow_stage_id was explicitly declined per sola-pm
     # 2026-05-19 (client-side filtering deemed sufficient); card_type: is on the
     # DL-013 long-tail list as a candidate-if-asked. Filter client-side via jq.
-    # Cheap at our card-volume scale (board carries dozens, not thousands).
     local q="board_id=$KB_BOARD_ID"
-    local raw stage_filter type_filter
-    raw="$(api GET "/tasks/search.json?q=$q")"
+    local stage_filter type_filter
     if [[ -n "$column" ]]; then stage_filter="$(stage_id "$column")"; fi
     if [[ -n "$type" ]];   then type_filter="$(card_type_id "$type")"; fi
-    printf '%s' "$raw" | jq \
+
+    # Paginate the fetch BEFORE filtering. search.json returns the DL-146
+    # {data, meta, links} envelope, page-based — reading only page 1 (the prior
+    # behavior) silently UNDERCOUNTS every column once a board exceeds one page.
+    # Read page 1 to learn meta.last_page, then accumulate the rest. limit=200 is
+    # the server max (fewest round-trips); a failed page exits via set -e rather
+    # than truncating silently.
+    local page1 last_page data p page_n
+    page1="$(api GET "/tasks/search.json?q=$q&limit=200&page=1")"
+    last_page="$(printf '%s' "$page1" | jq -r '.meta.last_page // 1')"
+    data="$(printf '%s' "$page1" | jq '.data // []')"
+    for (( p = 2; p <= last_page; p++ )); do
+        page_n="$(api GET "/tasks/search.json?q=$q&limit=200&page=$p")"
+        data="$(jq -n --argjson acc "$data" \
+            --argjson add "$(printf '%s' "$page_n" | jq '.data // []')" '$acc + $add')"
+    done
+
+    printf '%s' "$data" | jq \
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
-        '.data
-         | map(select(($stage == null or .workflow_stage_id == $stage)
-                  and ($type == null or .card_type_id == $type)))
+        'map(select(($stage == null or .workflow_stage_id == $stage)
+                and ($type == null or .card_type_id == $type)))
          | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id, dl: .payload.dl_number, pr: .payload.pr_number})'
 }
