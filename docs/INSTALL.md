@@ -53,10 +53,11 @@ chmod 600 ~/.kanban-<name>-board.env
 printf '%s' '<YOUR_API_TOKEN>' > ~/.kanban-<name>-token
 chmod 600 ~/.kanban-<name>-token
 
-# c) if your kanban host differs from the built-in default, set it in the env file:
-echo 'export KBCARD_API="https://YOUR-KANBAN-HOST/api/v3"' >> ~/.kanban-<name>-board.env
+# c) point KBCARD_TOKEN_FILE at this board's token file:
 echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>-board.env
 ```
+
+> `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. The tools resolve it before the board env is sourced, so a `KBCARD_API` placed in a board env file is ignored.
 
 > The default board (no `--board` flag) reads `~/.kanban-dev-board.env` + `~/.kanban-dev-token`. Name your primary board `dev` to use the tools flag-free, or always pass `--board <name>`.
 
