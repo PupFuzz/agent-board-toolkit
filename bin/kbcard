@@ -25,8 +25,10 @@ LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"
 # BOARD_ENV is sourced in main() after the optional `--board NAME` global flag
 # is parsed (default: the kanban-board dev board). A second board (e.g. bridge)
 # lives in ~/.kanban-<name>-board.env with its own KB_BOARD_ID / stage / type /
-# cf IDs. `held`/`fr` exist only on the bridge board; `prioritized`/`request`/
-# `idea` only on the kanban board — stage_id/card_type_id guard the per-board gap.
+# cf IDs. Some aliases are board-specific: the `fr` card type exists only on the
+# bridge board; `request`/`idea` only on the kanban board — stage_id/card_type_id
+# guard the per-board gap (an absent alias resolves empty and is rejected, not
+# silently mismapped).
 
 # API base is board-independent and is NOT baked into this shared tool — it is
 # read from ~/.kanban-host.env (override the path via $KANBAN_HOST_ENV). See
