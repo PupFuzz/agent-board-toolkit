@@ -76,10 +76,35 @@ untriaged() {  # $1 = board env file   $2 = label
   )
 }
 
+# Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
+# so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).
+# `~/.kanban-snapshot-boards` (override via KANBAN_SNAPSHOT_BOARDS): one
+# `<name>:<label>` per line (`#` comments / blanks skipped); `<name>` resolves to
+# `~/.kanban-<name>-board.env`, `<label>` is the display string (defaults to the
+# name if no `:`). Absent/empty ⇒ the kanban-dev default below — back-compatible.
+SNAPSHOT_BOARDS="${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
+roster=()   # each entry: "<envfile>\t<label>"
+if [[ -r "$SNAPSHOT_BOARDS" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        name="${line%%:*}"
+        label="${line#*:}"
+        [[ "$label" == "$line" ]] && label="$name"   # no colon ⇒ label = name
+        name="${name//[[:space:]]/}"
+        [[ -z "$name" ]] && continue
+        roster+=("$HOME/.kanban-${name}-board.env"$'\t'"$label")
+    done < "$SNAPSHOT_BOARDS"
+fi
+if [[ ${#roster[@]} -eq 0 ]]; then
+    roster=(
+        "$HOME/.kanban-dev-board.env"$'\t'"Board 5 (kanban-board)"
+        "$HOME/.kanban-bridge-board.env"$'\t'"Board 8 (bridge)"
+    )
+fi
+
 echo "── Dev board snapshot — boards are the source of truth (memory is a cache) ──"
-snap "$HOME/.kanban-dev-board.env"    "Board 5 (kanban-board)"
-snap "$HOME/.kanban-bridge-board.env" "Board 8 (bridge)"
+for entry in "${roster[@]}"; do snap "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
 echo "── Untriaged cards — triage is my responsibility; none may be silently missed ──"
-untriaged "$HOME/.kanban-dev-board.env"    "Board 5 (kanban-board)"
-untriaged "$HOME/.kanban-bridge-board.env" "Board 8 (bridge)"
+for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
 exit 0
