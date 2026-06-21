@@ -24,31 +24,58 @@
 # path is NOT atomic — safe for single-stream allocation; concurrent allocators
 # on a shared board need the claim endpoint (the default) to avoid duplicates.
 #
-# Usage: next-dl kanban|bridge [--peek]
+# Usage: next-dl kanban|bridge|--board <name> [--peek]   (--board: an arbitrary PM-project board)
 set -euo pipefail
 
+USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
 peek=0
 project=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --peek|--no-claim) peek=1 ;;
-        kanban|board|kanban-board|bridge|agent-bridge)
-            [[ -z "$project" ]] || { echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2; }
+        --board)   # FR-2: an arbitrary PM-project board, not just kanban|bridge
+            shift; [[ -n "${1:-}" && -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
             project="$1" ;;
-        *) echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2 ;;
+        kanban|board|kanban-board|bridge|agent-bridge)
+            [[ -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
+            project="$1" ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
     esac
     shift
 done
-[[ -n "$project" ]] || { echo "usage: next-dl kanban|bridge [--peek]" >&2; exit 2; }
+[[ -n "$project" ]] || { echo "$USAGE" >&2; exit 2; }
 
+# Per-project defaults (back-compat). An arbitrary --board <name> resolves its
+# board env by the `~/.kanban-<name>-board.env` convention and has no built-in
+# offline checkout glob — supply it via KB_DL_CHECKOUT_GLOBS (see below).
 case "$project" in
     kanban|board|kanban-board)
-        globs=("$HOME"/kanbanboard "$HOME"/kanbanboard-*)
+        default_patterns=("$HOME/kanbanboard" "$HOME/kanbanboard-*")
         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}" ;;
     bridge|agent-bridge)
-        globs=("$HOME"/agent-webhook-bridge-*)
+        default_patterns=("$HOME/agent-webhook-bridge-*")
         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-bridge-board.env}" ;;
+    *)
+        default_patterns=()
+        board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-${project}-board.env}" ;;
 esac
+
+# Offline checkout globs (FR-2): the offline `max+1` header scan reads
+# `## DL-NNN` from CLAUDE_DECISIONS.md across these checkouts. KB_DL_CHECKOUT_GLOBS
+# (comma-separated patterns; leading `~` expanded) OVERRIDES the per-project
+# default so a PM-project adopter's own repos are scanned. The primary atomic-claim
+# path is board-config-driven and needs none of this.
+patterns=("${default_patterns[@]}")
+if [[ -n "${KB_DL_CHECKOUT_GLOBS:-}" ]]; then
+    IFS=',' read -r -a patterns <<<"$KB_DL_CHECKOUT_GLOBS"
+fi
+globs=()
+for pat in "${patterns[@]}"; do
+    pat="${pat/#\~/$HOME}"
+    # shellcheck disable=SC2206  # deliberate glob/word-split of a config-supplied pattern
+    expanded=($pat)
+    for d in "${expanded[@]}"; do [[ -e "$d" ]] && globs+=("$d"); done
+done
 
 # Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
 max_dl() { grep -oE 'DL-[0-9]+' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }

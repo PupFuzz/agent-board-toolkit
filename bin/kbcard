@@ -137,7 +137,17 @@ cmd_create_card() {
 
     [[ -n "$dl" ]]      && payload_args+=("dl_number=$dl")
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
-    [[ -n "$version" ]] && payload_args+=("version_target=$version")
+    # BR-3.3: only write version_target if the board actually has that custom field
+    # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
+    # 422s (kanban gates payload keys to registered fields). Warn, don't drop
+    # silently, so a misconfigured board surfaces instead of vanishing the value.
+    if [[ -n "$version" ]]; then
+        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
+            payload_args+=("version_target=$version")
+        else
+            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        fi
+    fi
     [[ -n "$origin" ]]  && payload_args+=("origin=$origin")
 
     # Build payload as a JSON object. Coerce numeric strings to JSON numbers so
@@ -204,7 +214,17 @@ cmd_patch() {
 
     local payload_args=()
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
-    [[ -n "$version" ]] && payload_args+=("version_target=$version")
+    # BR-3.3: only write version_target if the board actually has that custom field
+    # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
+    # 422s (kanban gates payload keys to registered fields). Warn, don't drop
+    # silently, so a misconfigured board surfaces instead of vanishing the value.
+    if [[ -n "$version" ]]; then
+        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
+            payload_args+=("version_target=$version")
+        else
+            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        fi
+    fi
     [[ -n "$dl" ]]      && payload_args+=("dl_number=$dl")
 
     local body inner='{}'
