@@ -19,21 +19,15 @@
 
 set -euo pipefail
 
-TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
 BOARD_ENV="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}"
 LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"
 
-if [[ ! -r "$TOKEN_FILE" ]]; then
-    echo "kbcard: token file not readable: $TOKEN_FILE" >&2
-    exit 2
-fi
 # BOARD_ENV is sourced in main() after the optional `--board NAME` global flag
 # is parsed (default: the kanban-board dev board). A second board (e.g. bridge)
 # lives in ~/.kanban-<name>-board.env with its own KB_BOARD_ID / stage / type /
 # cf IDs. `held`/`fr` exist only on the bridge board; `prioritized`/`request`/
 # `idea` only on the kanban board — stage_id/card_type_id guard the per-board gap.
 
-TOKEN="$(cat "$TOKEN_FILE")"
 # API base is board-independent and is NOT baked into this shared tool — it is
 # read from ~/.kanban-host.env (override the path via $KANBAN_HOST_ENV). See
 # agent-board-toolkit docs/INSTALL.md.
@@ -43,6 +37,21 @@ if [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]]; then
     source "$HOST_ENV"
 fi
 API="${KBCARD_API:?KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)}"
+
+# TOKEN_FILE is resolved AFTER the host env and the board env are sourced (in
+# main(), via resolve_token), so a KBCARD_TOKEN_FILE set INSIDE a config file is
+# honored — matching next-dl/board-snapshot. Resolving it at the top (before any
+# source) silently ignored a config-file value. Precedence: a value from the
+# last-sourced config wins, else the process env, else the hardcoded default.
+TOKEN=""
+resolve_token() {
+    local token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+    if [[ ! -r "$token_file" ]]; then
+        echo "kbcard: token file not readable: $token_file" >&2
+        exit 2
+    fi
+    TOKEN="$(cat "$token_file")"
+}
 
 api() {
     local method="$1" path="$2" body="${3:-}"
@@ -336,6 +345,7 @@ main() {
     fi
     # shellcheck disable=SC1090
     source "$BOARD_ENV"
+    resolve_token   # after host + board env are sourced, so a config-file KBCARD_TOKEN_FILE is honored
 
     local cmd="${1:-}"
     [[ -z "$cmd" ]] && { sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# //'; exit 0; }
