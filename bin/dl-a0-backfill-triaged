@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# dl-a0-backfill-triaged — backfill the `triaged` tag onto every adapter-owned
+# `id:*-pr-*` card that lacks it (DL adoption Phase 0, A0).
+#
+# Auto-`triaged` in the adapter is create-only; it does NOT backfill pre-existing
+# cards. Without this sweep the untriaged-discovery check reads the legacy corpus
+# as untriaged.
+#
+# The `id:*-pr-*` tag is the convention that marks an adapter-owned PR card; it is
+# the filter. A tag write REPLACES the whole tags array, so each touched card is
+# read-modify-written to preserve its id:/repo:/type: tags.
+#
+# Dry-run by DEFAULT — never writes without --apply. --remove strips `triaged`
+# (rollback). On --apply each target is PATCHed; exits non-zero if any PATCH fails.
+#
+# Usage: dl-a0-backfill-triaged [--board NAME] [--apply] [--remove]
+#
+# Genericized (the reference hard-coded these):
+#   board id / API base / token file — from config at runtime (next-dl model).
+
+set -euo pipefail
+
+USAGE='usage: dl-a0-backfill-triaged [--board NAME] [--apply] [--remove]'
+
+board_name=""
+APPLY=0
+REMOVE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --board)  shift; board_name="${1:-}"; [[ -n "$board_name" ]] || { echo "$USAGE" >&2; exit 2; } ;;
+        --apply)  APPLY=1 ;;
+        --remove) REMOVE=1 ;;
+        -h|--help) echo "$USAGE"; exit 0 ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# --- config resolution (next-dl/kbcard model) -------------------------------
+if [[ -n "$board_name" ]]; then
+    case "$board_name" in
+        kanban|dev) BOARD_ENV="$HOME/.kanban-dev-board.env" ;;
+        *)          BOARD_ENV="$HOME/.kanban-${board_name}-board.env" ;;
+    esac
+else
+    BOARD_ENV="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}"
+fi
+if [[ ! -r "$BOARD_ENV" ]]; then
+    echo "dl-a0-backfill-triaged: board env file not readable: $BOARD_ENV" >&2
+    exit 2
+fi
+# shellcheck disable=SC1090
+source "$BOARD_ENV"
+
+HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+if [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOST_ENV"
+fi
+API="${KBCARD_API:?KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)}"
+BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $BOARD_ENV}"
+
+TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+if [[ ! -r "$TOKEN_FILE" ]]; then
+    echo "dl-a0-backfill-triaged: token file not readable: $TOKEN_FILE" >&2
+    exit 2
+fi
+TOKEN="$(cat "$TOKEN_FILE")"
+
+# --- api helper (kbcard idiom; fail-closed) ---------------------------------
+# Non-2xx → empty stdout + non-zero return, so a partial read never drives a write.
+api() {
+    local method="$1" path="$2" body="${3:-}"
+    local args=(-sS -X "$method" -H "Authorization: Bearer $TOKEN" -H "Accept: application/json")
+    if [[ -n "$body" ]]; then
+        args+=(-H "Content-Type: application/json" --data "$body")
+    fi
+    local out http
+    out="$(curl "${args[@]}" -w $'\n__HTTP__%{http_code}' "$API$path" 2>&1)" || {
+        echo "dl-a0-backfill-triaged: curl failed on $method $path" >&2
+        return 1
+    }
+    http="${out##*__HTTP__}"
+    local resp="${out%__HTTP__*}"
+    if [[ ! "$http" =~ ^2 ]]; then
+        echo "dl-a0-backfill-triaged: HTTP $http on $method $path" >&2
+        return 1
+    fi
+    printf '%s' "$resp"
+}
+
+# --- fetch the board's tasks ------------------------------------------------
+board_json="$(api GET "/boards/$BOARD.json")" || {
+    echo "dl-a0-backfill-triaged: could not read board $BOARD — aborting" >&2
+    exit 1
+}
+
+# A target is an id:*-pr-* card whose triaged-state needs changing:
+#   default  → cards LACKING triaged, new tags = current + triaged
+#   --remove → cards HAVING triaged,  new tags = current - triaged
+# Emit one JSON object per target ({id, newtags}) for the write loop, plus a
+# header line with the counts. jq does the read-modify-write of the tags array.
+targets_jq='
+  ((.data.tasks) // []) as $tasks
+  | ($tasks | map(select((.tags // []) | any(startswith("id:") and contains("-pr-"))))) as $pr
+  | ($pr | map(
+        (.tags // []) as $tags
+        | (if $remove then ($tags | index("triaged")) != null
+                      else ($tags | index("triaged")) == null end) as $needs
+        | select($needs)
+        | { id, newtags: (if $remove then ($tags - ["triaged"]) else ($tags + ["triaged"]) end),
+            idtags: ($tags | map(select(startswith("id:")))) }
+      )) as $targets
+  | "#COUNTS\t\($targets | length)\t\($pr | length)\t\($tasks | length)",
+    ($targets[] | "#TARGET\t\(@json)")'
+
+mapfile -t lines < <(printf '%s' "$board_json" | jq -r --argjson remove "$([[ $REMOVE == 1 ]] && echo true || echo false)" "$targets_jq")
+
+n_targets=0; n_pr=0; n_total=0
+targets_json=()
+for line in "${lines[@]}"; do
+    case "$line" in
+        "#COUNTS"*)
+            IFS=$'\t' read -r _ n_targets n_pr n_total <<<"$line" ;;
+        "#TARGET"*)
+            targets_json+=("${line#\#TARGET$'\t'}") ;;
+    esac
+done
+
+mode="$([[ $REMOVE == 1 ]] && echo 'REMOVE triaged from' || echo 'ADD triaged to')"
+run="$([[ $APPLY == 1 ]] && echo APPLY || echo DRY)"
+echo "[$run] $mode $n_targets id:*-pr-* card(s) (of $n_pr pr cards, $n_total total)"
+
+# --- dry-run: preview up to 5, then stop ------------------------------------
+if [[ $APPLY == 0 ]]; then
+    shown=0
+    for t in "${targets_json[@]}"; do
+        [[ $shown -ge 5 ]] && break
+        id="$(printf '%s' "$t" | jq -r '.id')"
+        idtags="$(printf '%s' "$t" | jq -c '.idtags')"
+        echo "  would touch card $id: $idtags"
+        shown=$((shown + 1))
+    done
+    if [[ $n_targets -gt 5 ]]; then
+        echo "  … and $((n_targets - 5)) more"
+    fi
+    exit 0
+fi
+
+# --- apply: read-modify-write each target -----------------------------------
+ok=0
+for t in "${targets_json[@]}"; do
+    id="$(printf '%s' "$t" | jq -r '.id')"
+    body="$(printf '%s' "$t" | jq -c '{task: {tags: .newtags}}')"
+    if api PATCH "/tasks/$id.json" "$body" >/dev/null; then
+        ok=$((ok + 1))
+    else
+        echo "  ERR card $id: PATCH failed" >&2
+    fi
+done
+echo "  patched $ok/$n_targets"
+[[ $ok -eq $n_targets ]] || exit 1
+exit 0
