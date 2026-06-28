@@ -86,7 +86,7 @@ while :; do
   CARDS="$(jq -c -n --argjson a "$CARDS" --argjson b "$DATA" '$a + $b')"
   [ "${n:-0}" -lt 200 ] && break
   page=$((page + 1))
-  [ "$page" -gt 50 ] && { echo "promote-released-cards: WARNING — stopped paging at 50 pages (10k cards); some cards may be unread." >&2; break; }
+  [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
 done
 # Dedup by id — defends against an API that ignores `page=` (same page each loop) or
 # returns overlapping pages; otherwise a card would be PATCHed once per duplicate.

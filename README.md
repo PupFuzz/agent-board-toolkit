@@ -27,6 +27,17 @@ The tools read all environment-specific values from files **outside** this repo:
 - **`~/.kanban-<name>-token`** — a file containing **only** the bearer token (`chmod 600`, never committed).
 - **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example).
 
+## Reliability posture (fail-loud / fail-closed)
+
+The value-emitting tools never silently truncate a board read or emit a garbage value — a partial read that looks "complete" drives wrong reconciles (cards the tool never saw look absent → spurious creates / missed moves), and a garbage value stamped downstream corrupts state.
+
+- **Loud-on-cap pagination.** A board listing that would exceed a page cap **fails loud** (exits non-zero, no partial output) rather than returning a truncated set. The cap is configurable:
+  - `BOARD_PAGE_CAP` (default `50`) — `kbcard list`.
+  - `PROMOTE_PAGE_CAP` (default `50`) — `promote-released-cards` (refuses to promote on a truncated board read).
+  - `next-dl`'s fallback board-max scan refuses to mint when a >200-card board can't be scanned safely (the atomic claim endpoint is the race-free primary path and is unaffected).
+- **Fail-closed.** A non-2xx API response → exit non-zero with **empty stdout** (never a partial/garbage value); a non-positive/garbage id is rejected rather than sent. Empty stdout means "do not act."
+- **Fail-soft display/hook tools** (`board-snapshot`, `board-card-start`, hooks) stay non-blocking by design (a hook must not abort a checkout), but surface a **loud notice** on a truncated read rather than presenting it as complete.
+
 ## Get started
 
 - **Adopting this for a new project/agent? Start here:** [`ADOPTION.md`](ADOPTION.md) (who it's for + how it fits the cross-project standard)

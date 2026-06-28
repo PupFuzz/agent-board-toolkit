@@ -113,12 +113,16 @@ card_type_id() {
 #   Non-numeric → looked up by external_id on the board (search endpoint).
 resolve_task() {
     local ref="$1"
-    if [[ "$ref" =~ ^[0-9]+$ ]]; then echo "$ref"; return 0; fi
+    if [[ "$ref" =~ ^[0-9]+$ ]]; then
+        [[ "$ref" -ge 1 ]] || { echo "kbcard: invalid task id '$ref'" >&2; exit 1; }
+        echo "$ref"; return 0
+    fi
     local id
     id="$(api GET "/tasks/search.json?q=board_id=$KB_BOARD_ID%20external_id:$ref" | jq -r '.data[0].id // empty')"
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
+    [[ "$id" =~ ^[0-9]+$ && "$id" -ge 1 ]] || { echo "kbcard: invalid task id '$id'" >&2; exit 1; }
     echo "$id"
 }
 
@@ -311,6 +315,10 @@ cmd_list() {
     local page1 last_page p page_n pages
     page1="$(api GET "/tasks/search.json?q=$q&limit=200&page=1")"
     last_page="$(printf '%s' "$page1" | jq -r '.meta.last_page // 1')"
+    if [[ "$last_page" -gt "${BOARD_PAGE_CAP:-50}" ]]; then
+        echo "kbcard: result set exceeded BOARD_PAGE_CAP=${BOARD_PAGE_CAP:-50} pages (last_page=$last_page) — raise BOARD_PAGE_CAP or narrow the query" >&2
+        exit 1
+    fi
     pages="$(printf '%s' "$page1" | jq -c '.data // []')"
     for (( p = 2; p <= last_page; p++ )); do
         page_n="$(api GET "/tasks/search.json?q=$q&limit=200&page=$p")"
