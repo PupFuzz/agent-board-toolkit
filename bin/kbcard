@@ -341,11 +341,12 @@ cmd_list() {
         page_n="$(api GET "/tasks/search.json?q=$q&limit=200&page=$p")"
         pages+=$'\n'"$(printf '%s' "$page_n" | jq -c '.data // []')"
     done
-    # --type matches the NATIVE card_type_id (when the board has one) OR a
-    # `type:<alias>` tag (the fallback create-card writes on a tag/mixed board), so
-    # filtering is symmetric across native, all-tag, and mixed boards. The native-id
-    # clause is guarded by `$type != null` — else an all-tag board (type_filter empty
-    # ⇒ $type null) would match every card whose card_type_id is null (i.e. all of them).
+    # --type resolves per alias by board capability: when the board has a NATIVE id
+    # for the alias ($type != null) match card_type_id; otherwise ($type == null —
+    # all-tag/mixed/KB_TYPING_MODE) match the `type:<alias>` tag. The two clauses are
+    # MUTUALLY EXCLUSIVE — gating the tag clause on `$type == null` avoids both (a) an
+    # all-tag board matching every null-typed card, and (b) a native board surfacing a
+    # differently-typed card that carries a stray type:<alias> tag.
     printf '%s\n' "$pages" | jq -s \
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
@@ -354,7 +355,7 @@ cmd_list() {
          | map(select(($stage == null or .workflow_stage_id == $stage)
                 and ($typetag == ""
                      or ($type != null and .card_type_id == $type)
-                     or (((.tags // []) | index($typetag)) != null))))
+                     or ($type == null and ((.tags // []) | index($typetag)) != null))))
          | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id, dl: .payload.dl_number, pr: .payload.pr_number})'
 }
