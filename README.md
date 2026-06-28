@@ -18,6 +18,8 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
 | `bin/install-board-hooks` | install the `post-checkout` hook into a repo so cards auto-move on branch checkout |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
+| `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
+| `bin/dl-a0-backfill-triaged` | **DL-board setup:** backfill the `triaged` tag onto pre-existing `id:*-pr-*` cards (dry-run default; `--apply` / `--remove`), so untriaged-discovery doesn't read the legacy corpus as untriaged |
 
 ## Configuration model (no IDs are hard-coded; nothing secret is stored in this repo)
 
@@ -26,6 +28,17 @@ The tools read all environment-specific values from files **outside** this repo:
 - **`~/.kanban-<name>-board.env`** — board/stage/type/custom-field IDs + API base. One per board. Template: [`examples/kanban-board.env.example`](examples/kanban-board.env.example).
 - **`~/.kanban-<name>-token`** — a file containing **only** the bearer token (`chmod 600`, never committed).
 - **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example).
+
+## Reliability posture (fail-loud / fail-closed)
+
+The value-emitting tools never silently truncate a board read or emit a garbage value — a partial read that looks "complete" drives wrong reconciles (cards the tool never saw look absent → spurious creates / missed moves), and a garbage value stamped downstream corrupts state.
+
+- **Loud-on-cap pagination.** A board listing that would exceed a page cap **fails loud** (exits non-zero, no partial output) rather than returning a truncated set. The cap is configurable:
+  - `BOARD_PAGE_CAP` (default `50`) — `kbcard list`.
+  - `PROMOTE_PAGE_CAP` (default `50`) — `promote-released-cards` (refuses to promote on a truncated board read).
+  - `next-dl`'s fallback board-max scan refuses to mint when a >200-card board can't be scanned safely (the atomic claim endpoint is the race-free primary path and is unaffected).
+- **Fail-closed.** A non-2xx API response → exit non-zero with **empty stdout** (never a partial/garbage value); a non-positive/garbage id is rejected rather than sent. Empty stdout means "do not act."
+- **Fail-soft display/hook tools** (`board-snapshot`, `board-card-start`, hooks) stay non-blocking by design (a hook must not abort a checkout), but surface a **loud notice** on a truncated read rather than presenting it as complete.
 
 ## Get started
 
