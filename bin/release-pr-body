@@ -94,6 +94,49 @@ bundle_lines() {
   [ "$found" = 1 ] || echo "_(no non-merge commits in \`$RANGE\`)_"
 }
 
+# Shift-left card coverage: surface, IN THE RELEASE PR, any shipped DL that has no
+# board tracking card — so the gap is caught at release-prep (cheap to fix) instead of
+# only on the post-merge promote run (a red check needing manual board surgery). Reuses
+# `promote-released-cards --dls <manifest> --dry-run` (the --dls path → no squash/
+# parent-count branch, just the cardless report). Best-effort: needs the promote tool +
+# a board token + a `.promote` config; otherwise a static reminder.
+card_coverage_section() {
+  [ -n "$REF_TOKEN_REGEX" ] || return 0
+  echo ""; echo "## Card coverage"
+  local board promote
+  board="$(cfg_opt '.promote.board_id')"
+  promote="$(command -v promote-released-cards 2>/dev/null || true)"
+  if [ -z "$promote" ]; then
+    local d; d="$(dirname "$0")"
+    [ -x "$d/promote-released-cards" ] && promote="$d/promote-released-cards"
+  fi
+  if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:-}" ] || [ -z "$promote" ]; then
+    echo "_Not checked here (needs a board token + a \`.promote\` config + the promote tool). Run \`promote-released-cards --dry-run\` before merge._"
+    return 0
+  fi
+  local manifest
+  manifest="$(emit_manifest | paste -sd, -)"
+  if [ -z "$manifest" ]; then echo "_No shipped DL refs in range._"; return 0; fi
+  # --dls dry-run never moves and never hits the squash/parent-count branch, so a
+  # non-zero exit is a real error (bad token / board read) — distinguish it from a
+  # clean run, else a failed check would falsely read as "all carded".
+  local out rc
+  out="$("$promote" --dls "$manifest" --dry-run 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -ne 0 ]; then
+    echo "_Coverage check could not run (\`promote-released-cards\` exited ${rc}). Run it manually before merge._"
+    return 0
+  fi
+  local miss
+  miss="$(printf '%s\n' "$out" | grep -oE 'matched NO card[^:]*: .*' | sed 's/[^:]*: //' || true)"
+  if [ -n "$miss" ]; then
+    echo "⚠ **Shipped DLs with no tracking card:** $miss"
+    echo ""
+    echo "Create a board card for each before merging — a cardless *feature* DL is a tracking gap; a cardless *docs* DL is acceptable but better carded. Otherwise the post-merge promote step reports them as no-card."
+  else
+    echo "_All shipped DLs have a tracking card._"
+  fi
+}
+
 COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')"
 
 # --- the body --------------------------------------------------------------
@@ -115,6 +158,8 @@ if jq -e '.artifacts | type == "array"' "$CONFIG" >/dev/null 2>&1; then
     printf -- '- [ ] %s\n' "${a//\{\{version\}\}/$VERSION}"
   done
 fi
+
+card_coverage_section
 
 # Machine-readable manifest of shipped refs — a deterministic footer a downstream
 # consumer (e.g. a bridge classifier) can parse instead of the prose above.
