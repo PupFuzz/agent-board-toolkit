@@ -17,6 +17,38 @@ TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
 [[ -r "$TOKEN_FILE" ]] || exit 0
 TOKEN="$(cat "$TOKEN_FILE")"
 
+# Read the WHOLE board, paginated. Echoes a single JSON array of all cards. The
+# previous unpaginated read returned only the server's default page (~50), so on a
+# board past that the in-flight + untriaged lists were silently short (a loud notice
+# flagged it, but the data was still incomplete) — board 5 is already ~98 cards.
+# Pages with limit=200 and ACCUMULATES VIA STDIN (printf | jq -s 'add'), never
+# `--argjson`, so a page over MAX_ARG_STRLEN can't trip "Argument list too long"
+# (the #3091 / promote #3362 class). Loud-on-cap + a total-vs-read backstop
+# (fail-soft notice, not exit≠0 — this feeds a SessionStart display). Uses the
+# $API/$TOKEN/$KB_BOARD_ID in scope at the call site (sourced board env).
+fetch_board_cards() {
+  local cards='[]' page=1 resp data n total=0 read_n
+  while :; do
+    resp="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
+            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}&limit=200&page=${page}" 2>/dev/null)" || return 1
+    [[ "$page" -eq 1 ]] && total="$(printf '%s' "$resp" | jq -r '.meta.total // 0' 2>/dev/null)"
+    data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
+    n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
+    cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add' 2>/dev/null)"
+    [[ "${n:-0}" -lt 200 ]] && break
+    page=$((page + 1))
+    if [[ "$page" -gt "${SNAPSHOT_PAGE_CAP:-25}" ]]; then
+      echo "board-snapshot: ⚠ stopped paging at SNAPSHOT_PAGE_CAP=${SNAPSHOT_PAGE_CAP:-25} pages — list may be INCOMPLETE" >&2
+      break
+    fi
+  done
+  read_n="$(printf '%s' "$cards" | jq 'length' 2>/dev/null)"
+  if [[ "$total" =~ ^[0-9]+$ && "$read_n" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
+    echo "board-snapshot: ⚠ board has $total cards but only $read_n read — list may be INCOMPLETE" >&2
+  fi
+  printf '%s' "$cards"
+}
+
 snap() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
@@ -24,8 +56,7 @@ snap() {  # $1 = board env file   $2 = label
     # shellcheck disable=SC1090
     source "$envf"
     local data
-    data="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
-            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" \
+    data="$(fetch_board_cards)" \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
     # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
     local names
@@ -37,7 +68,7 @@ snap() {  # $1 = board env file   $2 = label
          + (if $hl!="" then {($hl):"Held"} else {} end)
          | with_entries(select(.key!=""))')"
     printf '%s' "$data" | jq -r --arg label "$label" --argjson names "$names" '
-        (.data // []) as $t
+        (. // []) as $t
         | ($names | keys | map(tonumber)) as $infl
         | "• \($label): in-flight \([$t[]|select(.workflow_stage_id as $s|$infl|index($s))]|length)",
           ([$t[] | select(.workflow_stage_id as $s | $infl | index($s))
@@ -59,27 +90,13 @@ untriaged() {  # $1 = board env file   $2 = label
     # shellcheck disable=SC1090
     source "$envf"
     local data
-    data="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
-            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" || return 0
-    # The untriaged read takes no limit/page — if the server truncated, a card
-    # missing here would be silently absent from the untriaged list, making
-    # "no untriaged cards" wrong. Surface a loud notice (fail-soft: notice, not
-    # exit≠0, since this is a SessionStart display).
-    local total read_n
-    # Default to 0 (not empty) so a missing/non-numeric meta.total can't become a
-    # bareword in the arithmetic `-gt` below — under `set -u` that dereferences it
-    # as a variable name and aborts the subshell (matches next-dl/kbcard's `// 0`).
-    total="$(printf '%s' "$data" | jq -r '.meta.total // 0' 2>/dev/null)"
-    read_n="$(printf '%s' "$data" | jq -r '(.data // []) | length' 2>/dev/null)"
-    if [[ "$total" =~ ^[0-9]+$ && "$read_n" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
-        echo "board-snapshot: ⚠ board has $total cards but only $read_n read — untriaged list may be INCOMPLETE" >&2
-    fi
+    data="$(fetch_board_cards)" || return 0   # paginates + warns loud-on-cap/short-read
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
         --arg wontdo "${KB_STAGE_WONT_DO:-}" '
         ([$shipped, $released, $wontdo] | map(select(. != "") | tonumber)) as $term
-        | ((.data // [])
+        | ((. // [])
            | map(select(((.workflow_stage_id as $s | $term | index($s)) | not)
                         and (((.tags // []) | index("triaged")) | not)))
            | sort_by(.id) | reverse) as $u
