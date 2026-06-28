@@ -24,7 +24,7 @@ snap() {  # $1 = board env file   $2 = label
     # shellcheck disable=SC1090
     source "$envf"
     local data
-    data="$(curl -sS --max-time 5 -H "Authorization: Bearer $TOKEN" \
+    data="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
             "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
     # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
@@ -59,8 +59,21 @@ untriaged() {  # $1 = board env file   $2 = label
     # shellcheck disable=SC1090
     source "$envf"
     local data
-    data="$(curl -sS --max-time 5 -H "Authorization: Bearer $TOKEN" \
+    data="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
             "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}" 2>/dev/null)" || return 0
+    # The untriaged read takes no limit/page — if the server truncated, a card
+    # missing here would be silently absent from the untriaged list, making
+    # "no untriaged cards" wrong. Surface a loud notice (fail-soft: notice, not
+    # exit≠0, since this is a SessionStart display).
+    local total read_n
+    # Default to 0 (not empty) so a missing/non-numeric meta.total can't become a
+    # bareword in the arithmetic `-gt` below — under `set -u` that dereferences it
+    # as a variable name and aborts the subshell (matches next-dl/kbcard's `// 0`).
+    total="$(printf '%s' "$data" | jq -r '.meta.total // 0' 2>/dev/null)"
+    read_n="$(printf '%s' "$data" | jq -r '(.data // []) | length' 2>/dev/null)"
+    if [[ "$total" =~ ^[0-9]+$ && "$read_n" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
+        echo "board-snapshot: ⚠ board has $total cards but only $read_n read — untriaged list may be INCOMPLETE" >&2
+    fi
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
