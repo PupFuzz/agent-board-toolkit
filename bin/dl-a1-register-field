@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# dl-a1-register-field — stand up the `dl_number` custom field on a DL board and
+# real-surface-verify the server derives the `system=dl` by-ref index from it.
+#
+# One-shot, idempotent (DL adoption Phase 0, A1). Steps:
+#   1. register the `dl_number` custom field (type number) — flat body,
+#      a 409/422 means already-registered (idempotent success).
+#   2. create a THROWAWAY card carrying payload.dl_number = <sentinel>.
+#   3. verify GET .../tasks/by-ref.json?system=dl&ref=<sentinel> resolves it.
+#   4. CLEANUP — clear dl_number, verify by-ref is now empty, then DELETE the
+#      throwaway. A leaked sentinel card would poison the DL minter's
+#      max(dl_number) seed, so cleanup runs even if the verify failed.
+#
+# Exit 0 only if (found AND by-ref now empty AND throwaway deleted AND no
+# residue on a final by-ref check). A re-run is a clean no-op.
+#
+# Usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]
+#
+# Genericized (the reference hard-coded these):
+#   board id / API base / token file  — from config at runtime (next-dl model).
+#   --stage     throwaway's workflow_stage_id (default: KB_A1_STAGE or KB_STAGE_BACKLOG).
+#   --swimlane  throwaway's swimlane_id        (default: KB_A1_SWIMLANE or 1).
+#   --sentinel  the throwaway's dl_number      (default: KB_A1_SENTINEL or 999000001).
+#               Must be a value extremely unlikely to collide with a real DL.
+
+set -euo pipefail
+
+USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
+
+board_name=""
+stage_arg=""
+swimlane_arg=""
+sentinel_arg=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --board)    shift; board_name="${1:-}"; [[ -n "$board_name" ]] || { echo "$USAGE" >&2; exit 2; } ;;
+        --stage)    shift; stage_arg="${1:-}";  [[ -n "$stage_arg" ]]  || { echo "$USAGE" >&2; exit 2; } ;;
+        --swimlane) shift; swimlane_arg="${1:-}"; [[ -n "$swimlane_arg" ]] || { echo "$USAGE" >&2; exit 2; } ;;
+        --sentinel) shift; sentinel_arg="${1:-}"; [[ -n "$sentinel_arg" ]] || { echo "$USAGE" >&2; exit 2; } ;;
+        -h|--help)  echo "$USAGE"; exit 0 ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# --- config resolution (next-dl/kbcard model) -------------------------------
+# Board env: ~/.kanban-<name>-board.env (default kanban-dev). API base lives in
+# ~/.kanban-host.env (board-independent, NOT baked in here). Token file path may
+# be set inside either config; resolved AFTER both are sourced.
+if [[ -n "$board_name" ]]; then
+    case "$board_name" in
+        kanban|dev) BOARD_ENV="$HOME/.kanban-dev-board.env" ;;
+        *)          BOARD_ENV="$HOME/.kanban-${board_name}-board.env" ;;
+    esac
+else
+    BOARD_ENV="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}"
+fi
+if [[ ! -r "$BOARD_ENV" ]]; then
+    echo "dl-a1-register-field: board env file not readable: $BOARD_ENV" >&2
+    exit 2
+fi
+# shellcheck disable=SC1090
+source "$BOARD_ENV"
+
+HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+if [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOST_ENV"
+fi
+API="${KBCARD_API:?KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)}"
+BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $BOARD_ENV}"
+
+TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+if [[ ! -r "$TOKEN_FILE" ]]; then
+    echo "dl-a1-register-field: token file not readable: $TOKEN_FILE" >&2
+    exit 2
+fi
+TOKEN="$(cat "$TOKEN_FILE")"
+
+STAGE="${stage_arg:-${KB_A1_STAGE:-${KB_STAGE_BACKLOG:-}}}"
+SWIMLANE="${swimlane_arg:-${KB_A1_SWIMLANE:-1}}"
+SENTINEL="${sentinel_arg:-${KB_A1_SENTINEL:-999000001}}"
+if [[ -z "$STAGE" ]]; then
+    echo "dl-a1-register-field: no throwaway stage — pass --stage or set KB_A1_STAGE/KB_STAGE_BACKLOG in $BOARD_ENV" >&2
+    exit 2
+fi
+[[ "$SENTINEL" =~ ^[0-9]+$ ]] || { echo "dl-a1-register-field: --sentinel must be a positive integer" >&2; exit 2; }
+
+# --- api helper (kbcard idiom; fail-closed) ---------------------------------
+# Captures the HTTP status. On a non-2xx, emits an empty body and a non-zero
+# return so callers never act on a partial/garbage value. The caller decides
+# whether a given non-2xx is fatal (e.g. 409/422 on register is idempotent OK).
+HTTP=""
+api() {
+    local method="$1" path="$2" body="${3:-}"
+    local args=(-sS -X "$method" -H "Authorization: Bearer $TOKEN" -H "Accept: application/json")
+    if [[ -n "$body" ]]; then
+        args+=(-H "Content-Type: application/json" --data "$body")
+    fi
+    local out
+    out="$(curl "${args[@]}" -w $'\n__HTTP__%{http_code}' "$API$path" 2>&1)" || {
+        echo "dl-a1-register-field: curl failed on $method $path" >&2
+        HTTP="000"; return 1
+    }
+    HTTP="${out##*__HTTP__}"
+    local resp="${out%__HTTP__*}"
+    if [[ ! "$HTTP" =~ ^2 ]]; then
+        printf ''
+        return 1
+    fi
+    printf '%s' "$resp"
+}
+
+# True if a by-ref response's data[] contains a row with id == $1.
+by_ref_has() {
+    local want="$1" resp
+    resp="$(api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || return 1
+    printf '%s' "$resp" | jq -e --argjson id "$want" \
+        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
+}
+
+# --- 1. register dl_number (flat body) --------------------------------------
+# This is the one call that must branch on the EXACT status (409/422 =
+# already-registered = idempotent OK — the headline re-run guarantee). The
+# api() helper reports status via a global, which cannot cross the $() a body
+# capture needs, so capture status+body together here in the parent shell.
+reg_out="$(curl -sS -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" -H "Content-Type: application/json" \
+    --data '{"key":"dl_number","label":"DL","type":"number"}' \
+    -w $'\n__HTTP__%{http_code}' "$API/boards/$BOARD/custom_fields.json" 2>&1)" \
+    || { echo "dl-a1-register-field: FATAL register: curl failed on POST /boards/$BOARD/custom_fields.json" >&2; exit 1; }
+reg_http="${reg_out##*__HTTP__}"
+reg_body="${reg_out%__HTTP__*}"
+if [[ "$reg_http" =~ ^2 ]]; then
+    fid="$(printf '%s' "$reg_body" | jq -r '.data.id // empty' 2>/dev/null)"
+    echo "  registered dl_number (field id ${fid:-?})"
+elif [[ "$reg_http" == "409" || "$reg_http" == "422" ]]; then
+    echo "  dl_number already registered (HTTP $reg_http) — idempotent OK"
+else
+    echo "dl-a1-register-field: FATAL register: HTTP $reg_http" >&2
+    exit 1
+fi
+
+# --- 2. throwaway card with payload.dl_number = SENTINEL --------------------
+body="$(jq -n \
+    --argjson board "$BOARD" \
+    --argjson stage "$STAGE" \
+    --argjson swimlane "$SWIMLANE" \
+    --argjson sentinel "$SENTINEL" \
+    '{task: {board_id: $board, workflow_stage_id: $stage, swimlane_id: $swimlane,
+             name: "[A1-verify] dl_number throwaway — delete me",
+             payload: {dl_number: $sentinel}}}')"
+create="$(api POST "/tasks.json" "$body")" || {
+    # api()'s $HTTP global doesn't cross this $(), so don't claim a code we can't see.
+    echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
+    exit 1
+}
+TID="$(printf '%s' "$create" | jq -r '.data.id // empty')"
+if [[ ! "$TID" =~ ^[0-9]+$ ]]; then
+    echo "dl-a1-register-field: FATAL create throwaway: no task id in response" >&2
+    exit 1
+fi
+echo "  throwaway card $TID created with dl_number=$SENTINEL"
+
+# --- cleanup trap: a leaked sentinel poisons the minter, so always try to ---
+# delete the throwaway even if a later step fails loudly.
+cleanup_done=0
+delete_throwaway() {
+    [[ "$cleanup_done" == 1 ]] && return 0
+    cleanup_done=1
+    api PATCH "/tasks/$TID.json" '{"task":{"payload":{"dl_number":null}}}' >/dev/null 2>&1 || true
+    api PATCH "/tasks/$TID.json" '{"_action":"delete"}' >/dev/null 2>&1 || true
+}
+trap 'delete_throwaway' EXIT
+
+# --- 3. by-ref must resolve the throwaway -----------------------------------
+if by_ref_has "$TID"; then
+    found=1; echo "  by-ref system=dl ref=$SENTINEL: FOUND (card $TID)"
+else
+    found=0; echo "  by-ref system=dl ref=$SENTINEL: NOT FOUND" >&2
+fi
+
+# --- 4. cleanup — clear dl_number, verify by-ref empty, delete --------------
+if ! api PATCH "/tasks/$TID.json" '{"task":{"payload":{"dl_number":null}}}' >/dev/null; then
+    echo "dl-a1-register-field: FATAL clearing dl_number: HTTP $HTTP" >&2
+    exit 1   # trap still fires the delete
+fi
+if by_ref_has "$TID"; then
+    still=1; echo "  after clear: by-ref ref=$SENTINEL STILL PRESENT" >&2
+else
+    still=0; echo "  after clear: by-ref ref=$SENTINEL empty"
+fi
+
+if ! api PATCH "/tasks/$TID.json" '{"_action":"delete"}' >/dev/null; then
+    echo "dl-a1-register-field: FATAL deleting throwaway: HTTP $HTTP" >&2
+    exit 1
+fi
+cleanup_done=1   # the explicit delete above succeeded; skip the trap's retry
+echo "  throwaway $TID deleted"
+
+# Acceptance: final by-ref must be empty (zero residue).
+if by_ref_has "$TID"; then
+    echo "dl-a1-register-field: residue — by-ref still resolves $TID after delete" >&2
+    exit 1
+fi
+echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue"
+
+if [[ "$found" == 1 && "$still" == 0 ]]; then
+    echo "dl-a1-register-field: OK (field registered + by-ref verified + throwaway removed)"
+    exit 0
+fi
+echo "dl-a1-register-field: verification failed (found=$found still_present=$still)" >&2
+exit 1

@@ -18,6 +18,8 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
 | `bin/install-board-hooks` | install the `post-checkout` hook into a repo so cards auto-move on branch checkout |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
+| `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
+| `bin/dl-a0-backfill-triaged` | **DL-board setup:** backfill the `triaged` tag onto pre-existing `id:*-pr-*` cards (dry-run default; `--apply` / `--remove`), so untriaged-discovery doesn't read the legacy corpus as untriaged |
 
 ## Configuration model (no IDs are hard-coded; nothing secret is stored in this repo)
 
