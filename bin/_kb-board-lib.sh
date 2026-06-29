@@ -79,14 +79,25 @@ kb_load_config() {
     return 0
 }
 
-# kb_load_host_token: lighter resolver for scripts whose board id comes from a
-# different source (board-snapshot iterates many board envs; board-card-start
-# reads .release-pr.json). Sources the host env (for a KBCARD_TOKEN_FILE override
-# + API base) and reads the token. Publishes KB_API (may be empty), KB_TOKEN and
-# KB_TOKEN_FILE. Returns 1 (fail-soft) if the token file is unreadable.
+# kb_load_host_token [unconditional]: lighter resolver for scripts whose board id
+# comes from a different source (board-snapshot iterates many board envs;
+# board-card-start reads .release-pr.json). Sources the host env (for a
+# KBCARD_TOKEN_FILE override + API base) and reads the token. Publishes KB_API
+# (may be empty), KB_TOKEN and KB_TOKEN_FILE. Returns 1 (fail-soft) if the token
+# file is unreadable.
+#
+# Precedence mode (first arg):
+#   gated (default)  host env sourced only when KBCARD_API is still unset — for a
+#                    script (board-snapshot) that may already have an API in env.
+#   unconditional    host env sourced whenever readable, so a KBCARD_TOKEN_FILE
+#                    set inside it always wins — board-card-start's prior contract,
+#                    which never reads KBCARD_API (api/board come from .release-pr.json)
+#                    and must not have its token override skipped by a stray ambient
+#                    KBCARD_API.
 kb_load_host_token() {
+    local mode="${1:-gated}"
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-    if [[ -z "${KBCARD_API:-}" && -r "$host_env" ]]; then
+    if [[ -r "$host_env" ]] && { [[ "$mode" == "unconditional" ]] || [[ -z "${KBCARD_API:-}" ]]; }; then
         # shellcheck disable=SC1090
         source "$host_env"
     fi
@@ -170,9 +181,24 @@ fetch_board_cards() {
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
     local curl_opts=(-fsS)
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && curl_opts+=(--max-time "$KB_CURL_MAX_TIME")
+    # KB_FETCH_LOUD=1 makes a page-fetch failure observable (kbcard's list contract):
+    # curl's own -S HTTP/transport error reaches stderr instead of the default quiet
+    # 2>/dev/null (which backs board-snapshot's fail-soft SessionStart display), and
+    # when KB_LOG_FILE is set a failure line is appended to it. Default = silent
+    # (return-code only), so board-snapshot's behavior is unchanged.
+    local errsink=/dev/null
+    [[ -n "${KB_FETCH_LOUD:-}" ]] && errsink=/dev/stderr
     while :; do
+        local url="$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}"
+        local rc
         resp="$(curl "${curl_opts[@]}" -H "Authorization: Bearer $token" -H "Accept: application/json" \
-                "$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}" 2>/dev/null)" || {
+                "$url" 2>"$errsink")" || {
+            rc=$?
+            if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
+                echo "fetch_board_cards: page $page read failed for board $board (curl rc=$rc)" >&2
+                [[ -n "${KB_LOG_FILE:-}" ]] && \
+                    echo "$(date -u +%FT%TZ) GET $url FAILED-FETCH curl-rc=$rc" >> "$KB_LOG_FILE"
+            fi
             [[ "$page" -eq 1 ]] && return 1
             return 2
         }

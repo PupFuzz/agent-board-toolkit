@@ -34,6 +34,9 @@ source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 KB_PROG="kbcard"
 KB_LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"
 KB_API_ERRBODY=1
+# fetch_board_cards (cmd_list) must report + log a page-fetch failure loudly like
+# every other kbcard subcommand — not exit silently. KB_LOG_FILE above is the sink.
+KB_FETCH_LOUD=1
 
 # Config (board env + host env + token) is resolved in main() once the optional
 # `--board NAME` global flag is parsed, via kb_load_config. Card types are
@@ -288,7 +291,8 @@ cmd_list() {
     # column once a board exceeds one page. Any fetch failure (unreachable /
     # incomplete / over BOARD_PAGE_CAP) → exit 1 rather than print a truncated list.
     local cards
-    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || exit 1
+    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
+        || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
     # --type resolves per alias by board capability: when the board has a NATIVE id
     # for the alias ($type != null) match card_type_id; otherwise ($type == null —
     # all-tag/mixed/KB_TYPING_MODE) match the `type:<alias>` tag. The two clauses are
