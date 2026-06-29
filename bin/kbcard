@@ -126,10 +126,16 @@ native_type_id() {
 # kbcard previously wrote --dl verbatim, so a bare-int `--dl 93` stored `93`, which a
 # `DL-[0-9]+` reader silently dropped. Fails (exit 2) on an input with no number.
 canon_dl() {
-    local n
-    n="$(printf '%s' "$1" | grep -oE '[0-9]+' | head -1)" || true
-    [[ -n "$n" ]] || { echo "kbcard: --dl '$1' has no DL number" >&2; return 2; }
-    printf 'DL-%03d' "$((10#$n))"   # 10# forces base-10 so a zero-padded value isn't read as octal
+    # Accept ONLY a DL-shaped value — optional DL-/dl- prefix, optional leading zeros, then
+    # 1–6 digits — anchored. A pr_url / version / hex string fat-fingered into --dl must FAIL
+    # loudly, not silently become a plausible-but-wrong DL (a free `grep -oE '[0-9]+'` grabbed
+    # the first digit run anywhere — e.g. a PR URL → DL-<pr#>; review #3400). The {1,6} bound
+    # also keeps the base-10 arithmetic below inside int range.
+    [[ "$1" =~ ^([Dd][Ll]-?)?0*([0-9]{1,6})$ ]] \
+        || { echo "kbcard: --dl '$1' is not a DL number (expect e.g. DL-093 or 93)" >&2; return 2; }
+    local n="$((10#${BASH_REMATCH[2]}))"   # 10# forces base-10 so a zero-padded value isn't read as octal
+    [[ "$n" -ge 1 ]] || { echo "kbcard: --dl '$1' resolves to 0 — not a valid DL number" >&2; return 2; }
+    printf 'DL-%03d' "$n"
 }
 
 # Resolve a "task ref" to a numeric task id.
