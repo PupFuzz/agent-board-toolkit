@@ -25,11 +25,22 @@
 #   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
 set -uo pipefail
 
+# Shared toolkit lib (DL canon, whole-board pagination, token read). Fail-soft:
+# a missing lib must never block a git checkout.
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+# shellcheck source=bin/_kb-board-lib.sh
+[ -r "$KB_LIB" ] || exit 0
+source "$KB_LIB"
+KB_PROG="board-card-start"
+
 branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 [ -n "$branch" ] && [ "$branch" != "HEAD" ] || exit 0
 
-# DL token from the branch name (case-insensitive; leading zeros stripped).
-dl="$(printf '%s\n' "$branch" | grep -oiE 'dl-?[0-9]+' | head -1 | grep -oE '[0-9]+' | sed 's/^0*//')"
+# DL token from the branch name (case-insensitive); kb_dl_num strips zeros and
+# rejects a non-DL, so a malformed token degrades to the card-id path below.
+dltok="$(printf '%s\n' "$branch" | grep -oiE 'dl-?[0-9]+' | head -1 || true)"
+dl=""
+[ -n "$dltok" ] && dl="$(kb_dl_num "$dltok" 2>/dev/null || true)"
 
 # Card-id token — only when there is NO DL token (DL correlation takes precedence).
 # Explicit `#2950` / `card-2950` / `card/2950` first; else the leading id of a
@@ -55,13 +66,9 @@ board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
 api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
 [ -n "$board" ] && [ -n "$api" ] || exit 0
 
-# Token (host env may override the default token-file path).
-host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-# shellcheck disable=SC1090
-[ -r "$host_env" ] && . "$host_env"
-token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-[ -r "$token_file" ] || exit 0
-token="$(cat "$token_file")"
+# Token (host env may override the default token-file path); fail-soft.
+kb_load_host_token || exit 0
+token="$KB_TOKEN"
 
 # Stage ids for THIS board, from the matching ~/.kanban-*-board.env.
 stages="$(
@@ -79,8 +86,17 @@ get() { curl -fsS -H "Authorization: Bearer $token" -H "Accept: application/json
 
 # Resolve the card (task) id to move.
 if [ -n "$dl" ]; then
-    cid="$(get "$api/tasks/search.json?q=board_id=$board&limit=200" \
-      | jq -r --arg dl "DL-$dl" '[.data[] | select(.payload.dl_number==$dl)][0].id // empty')"
+    # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
+    # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
+    # "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves.
+    cards="$(fetch_board_cards "$api" "$token" "$board")" || exit 0
+    cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" '
+        [ .[]
+          | (.payload.dl_number // empty) as $raw
+          | ($raw | tostring) as $s
+          | select($s | test("[0-9]"))
+          | select(($s | capture("(?<n>[0-9]+)").n | tonumber) == $want)
+          | .id ] | .[0] // empty' 2>/dev/null)"
     label="DL-$dl"
 else
     cid="$cid_token"

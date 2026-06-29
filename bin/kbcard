@@ -26,65 +26,24 @@
 
 set -euo pipefail
 
-BOARD_ENV="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}"
-LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"
+# Shared toolkit lib (config resolution, API wrapper, pagination, DL canon).
+# shellcheck source=bin/_kb-board-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 
-# BOARD_ENV is sourced in main() after the optional `--board NAME` global flag
-# is parsed (default: the kanban-board dev board). A second board (e.g. bridge)
-# lives in ~/.kanban-<name>-board.env with its own KB_BOARD_ID / stage / type /
-# cf IDs. Card types are per-board: `native_type_id` resolves a `--type` alias to
-# KB_TYPE_<ALIAS> from the board env (any alias), writing the native id when present
-# and falling back to a `type:<alias>` tag when the board lacks that native type —
-# so an alias absent on one board (`fr` on kanban, `request`/`idea` on bridge) is
-# tagged, not rejected. (`stage_id` still rejects an unknown column — stages are
-# required.)
+# kb_api knobs: own message prefix, the failure log, and echo the error body.
+KB_PROG="kbcard"
+KB_LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"
+KB_API_ERRBODY=1
 
-# API base is board-independent and is NOT baked into this shared tool — it is
-# read from ~/.kanban-host.env (override the path via $KANBAN_HOST_ENV). See
-# agent-board-toolkit docs/INSTALL.md.
-HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-if [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]]; then
-    # shellcheck disable=SC1090
-    source "$HOST_ENV"
-fi
-API="${KBCARD_API:?KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)}"
-
-# TOKEN_FILE is resolved AFTER the host env and the board env are sourced (in
-# main(), via resolve_token), so a KBCARD_TOKEN_FILE set INSIDE a config file is
-# honored — matching next-dl/board-snapshot. Resolving it at the top (before any
-# source) silently ignored a config-file value. Precedence: a value from the
-# last-sourced config wins, else the process env, else the hardcoded default.
-TOKEN=""
-resolve_token() {
-    local token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-    if [[ ! -r "$token_file" ]]; then
-        echo "kbcard: token file not readable: $token_file" >&2
-        exit 2
-    fi
-    TOKEN="$(cat "$token_file")"
-}
-
-api() {
-    local method="$1" path="$2" body="${3:-}"
-    local args=(-sS -X "$method" -H "Authorization: Bearer $TOKEN" -H "Accept: application/json")
-    if [[ -n "$body" ]]; then
-        args+=(-H "Content-Type: application/json" --data "$body")
-    fi
-    local out http
-    out="$(curl "${args[@]}" -w "\n__HTTP__%{http_code}" "$API$path" 2>&1)" || {
-        echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$LOG_FILE"
-        echo "kbcard: curl failed" >&2; return 1
-    }
-    http="${out##*__HTTP__}"
-    body="${out%__HTTP__*}"
-    if [[ "$http" -ge 400 ]]; then
-        echo "$(date -u +%FT%TZ) $method $path HTTP-$http $body" >> "$LOG_FILE"
-        echo "kbcard: HTTP $http on $method $path" >&2
-        echo "$body" >&2
-        return 1
-    fi
-    printf '%s' "$body"
-}
+# Config (board env + host env + token) is resolved in main() once the optional
+# `--board NAME` global flag is parsed, via kb_load_config. Card types are
+# per-board: `native_type_id` resolves a `--type` alias to KB_TYPE_<ALIAS> from
+# the board env (any alias), writing the native id when present and falling back
+# to a `type:<alias>` tag when the board lacks that native type — so an alias
+# absent on one board (`fr` on kanban, `request`/`idea` on bridge) is tagged, not
+# rejected. (`stage_id` still rejects an unknown column — stages are required.)
+# API base is board-independent and NOT baked in — kb_load_config reads it from
+# ~/.kanban-host.env (override via $KANBAN_HOST_ENV); see docs/INSTALL.md.
 
 stage_id() {
     local id
@@ -120,25 +79,8 @@ native_type_id() {
     return 0
 }
 
-# Normalize any DL input — `93`, `dl-93`, `DL-0093`, `DL-9001` — to the ONE canonical
-# stored form `DL-NNN`, zero-padded to >=4 (matching next-dl's DL-%04d; 4 because adopter
-# boards may already be near/over DL-999). Fixes the write-site so payload.dl_number is a
-# single format (#3400, canon #5): kbcard previously wrote --dl verbatim, so a bare-int
-# `--dl 93` stored `93`, which a `DL-[0-9]+` reader silently dropped. Width is cosmetic —
-# every reader extracts digits and compares numerically — so the pre-existing 3-padded cards
-# stay valid. Fails (exit 2) on an input with no number.
-canon_dl() {
-    # Accept ONLY a DL-shaped value — optional DL-/dl- prefix, optional leading zeros, then
-    # 1–6 digits — anchored. A pr_url / version / hex string fat-fingered into --dl must FAIL
-    # loudly, not silently become a plausible-but-wrong DL (a free `grep -oE '[0-9]+'` grabbed
-    # the first digit run anywhere — e.g. a PR URL → DL-<pr#>; review #3400). The {1,6} bound
-    # also keeps the base-10 arithmetic below inside int range.
-    [[ "$1" =~ ^([Dd][Ll]-?)?0*([0-9]{1,6})$ ]] \
-        || { echo "kbcard: --dl '$1' is not a DL number (expect e.g. DL-093 or 93)" >&2; return 2; }
-    local n="$((10#${BASH_REMATCH[2]}))"   # 10# forces base-10 so a zero-padded value isn't read as octal
-    [[ "$n" -ge 1 ]] || { echo "kbcard: --dl '$1' resolves to 0 — not a valid DL number" >&2; return 2; }
-    printf 'DL-%04d' "$n"   # zero-pad to >=4 (next-dl matches); adopter boards may already be near/over DL-999
-}
+# DL canonicalization (the strict `--dl` → DL-NNN write-site fix, #3400 / canon #5)
+# lives in kb_dl_canon in the shared lib; call it directly below.
 
 # Resolve a "task ref" to a numeric task id.
 #   Numeric → returned as-is.
@@ -150,7 +92,7 @@ resolve_task() {
         echo "$ref"; return 0
     fi
     local id
-    id="$(api GET "/tasks/search.json?q=board_id=$KB_BOARD_ID%20external_id:$ref" | jq -r '.data[0].id // empty')"
+    id="$(kb_api GET "/tasks/search.json?q=board_id=$KB_BOARD_ID%20external_id:$ref" | jq -r '.data[0].id // empty')"
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
@@ -190,7 +132,7 @@ cmd_create_card() {
     # bad card_type_id:0. The native path (real id) is unchanged.
     [[ -z "$type_id" ]] && tags="${tags:+$tags,}type:${type}"
 
-    if [[ -n "$dl" ]]; then dl="$(canon_dl "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
+    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
     [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
     # BR-3.3: only write version_target if the board actually has that custom field
@@ -232,7 +174,7 @@ cmd_create_card() {
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)
          | {task: .}')"
 
-    api POST "/tasks.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload}'
+    kb_api POST "/tasks.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload}'
 }
 
 cmd_move() {
@@ -249,7 +191,7 @@ cmd_move() {
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
     body="$(jq -n --argjson stage "$stage" '{task: {workflow_stage_id: $stage}}')"
-    api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id}'
+    kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id}'
 }
 
 cmd_patch() {
@@ -288,7 +230,7 @@ cmd_patch() {
             echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
         fi
     fi
-    if [[ -n "$dl" ]]; then dl="$(canon_dl "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
+    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
 
     local body inner='{}'
     if [[ ${#payload_args[@]} -gt 0 ]]; then
@@ -301,7 +243,7 @@ cmd_patch() {
         # `// {}` only catches null/false; an empty payload comes back as `[]`
         # (PHP serializes an empty assoc array as a JSON array), and `[] + {new}`
         # errors in jq. Normalize any non-object payload to {} before merging.
-        cur_payload="$(api GET "/tasks/$task.json" | jq '.data.payload | if type == "object" then . else {} end')"
+        cur_payload="$(kb_api GET "/tasks/$task.json" | jq '.data.payload | if type == "object" then . else {} end')"
         payload_json="$(jq -n --argjson cur "$cur_payload" --argjson new "$new_payload" '$cur + $new')"
         inner="$(jq -n --argjson p "$payload_json" '{payload: $p}')"
     fi
@@ -316,12 +258,12 @@ cmd_patch() {
         # tags are a top-level string list, replaced WHOLESALE by the API — so
         # read-merge-write to add `triaged` without dropping existing tags.
         local cur_tags new_tags
-        cur_tags="$(api GET "/tasks/$task.json" | jq '.data.tags // []')"
+        cur_tags="$(kb_api GET "/tasks/$task.json" | jq '.data.tags // []')"
         new_tags="$(jq -n --argjson cur "$cur_tags" '($cur + ["triaged"]) | unique')"
         inner="$(jq -n --argjson cur "$inner" --argjson tags "$new_tags" '$cur + {tags: $tags}')"
     fi
     body="$(jq -n --argjson t "$inner" '{task: $t}')"
-    api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload, description: (.description // "" | .[0:80])}'
+    kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload, description: (.description // "" | .[0:80])}'
 }
 
 cmd_list() {
@@ -337,52 +279,27 @@ cmd_list() {
     # by design, not a bug. workflow_stage_id was explicitly declined per sola-pm
     # 2026-05-19 (client-side filtering deemed sufficient); card_type: is on the
     # DL-013 long-tail list as a candidate-if-asked. Filter client-side via jq.
-    local q="board_id=$KB_BOARD_ID"
     local stage_filter type_filter
     if [[ -n "$column" ]]; then stage_filter="$(stage_id "$column")"; fi
     if [[ -n "$type" ]];   then type_filter="$(native_type_id "$type")"; fi
 
-    # Paginate the fetch BEFORE filtering. search.json returns the DL-146
-    # {data, meta, links} envelope, page-based — reading only page 1 silently
-    # UNDERCOUNTS every column once a board exceeds one page. Read page 1 for
-    # meta.last_page, then accumulate each page's compact .data line into a shell
-    # variable and slurp+concatenate via `jq -s 'add'` over STDIN.
-    #
-    # Two failure modes this shape avoids:
-    #   - argv overflow: the dataset never reaches argv. A single argv entry caps
-    #     at MAX_ARG_STRLEN (128 KiB) — well under a multi-page board's JSON — so
-    #     the v0.4.3 `--argjson acc "$data"` accumulator died with "Argument list
-    #     too long" on a large page (#3091). `$pages` lives in shell memory; the
-    #     final `printf | jq` feeds it via STDIN (printf is a builtin → no exec).
-    #   - silent truncation: every api/jq call runs at plain function-body level
-    #     (NOT inside a pipeline), so set -e actually aborts the whole command on a
-    #     failed page fetch. (A `{ … } | jq` brace group runs the loop in a pipe
-    #     subshell where set -e is suppressed for non-final commands — a failed
-    #     page-2+ fetch would be swallowed and a truncated list returned, exit 0.)
-    # Only the tiny scalar filters go via --argjson. limit=200 is the server max.
-    local page1 last_page p page_n pages
-    page1="$(api GET "/tasks/search.json?q=$q&limit=200&page=1")"
-    last_page="$(printf '%s' "$page1" | jq -r '.meta.last_page // 1')"
-    if [[ "$last_page" -gt "${BOARD_PAGE_CAP:-50}" ]]; then
-        echo "kbcard: result set exceeded BOARD_PAGE_CAP=${BOARD_PAGE_CAP:-50} pages (last_page=$last_page) — raise BOARD_PAGE_CAP or narrow the query" >&2
-        exit 1
-    fi
-    pages="$(printf '%s' "$page1" | jq -c '.data // []')"
-    for (( p = 2; p <= last_page; p++ )); do
-        page_n="$(api GET "/tasks/search.json?q=$q&limit=200&page=$p")"
-        pages+=$'\n'"$(printf '%s' "$page_n" | jq -c '.data // []')"
-    done
+    # Whole-board fetch (paginated, accumulate-via-STDIN, dedup) is the shared
+    # fetch_board_cards primitive — reading only page 1 silently UNDERCOUNTS every
+    # column once a board exceeds one page. Any fetch failure (unreachable /
+    # incomplete / over BOARD_PAGE_CAP) → exit 1 rather than print a truncated list.
+    local cards
+    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || exit 1
     # --type resolves per alias by board capability: when the board has a NATIVE id
     # for the alias ($type != null) match card_type_id; otherwise ($type == null —
     # all-tag/mixed/KB_TYPING_MODE) match the `type:<alias>` tag. The two clauses are
     # MUTUALLY EXCLUSIVE — gating the tag clause on `$type == null` avoids both (a) an
     # all-tag board matching every null-typed card, and (b) a native board surfacing a
     # differently-typed card that carries a stray type:<alias> tag.
-    printf '%s\n' "$pages" | jq -s \
+    printf '%s' "$cards" | jq \
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
         --arg typetag "${type:+type:$type}" \
-        '(add // [])
+        '(. // [])
          | map(select(($stage == null or .workflow_stage_id == $stage)
                 and ($typetag == ""
                      or ($type != null and .card_type_id == $type)
@@ -406,7 +323,7 @@ cmd_link() {
     f="$(resolve_task "$from")"
     t="$(resolve_task "$to")"
     body="$(jq -n --argjson from "$f" --argjson to "$t" --arg rel "$relation" '{from_task_id: $from, to_task_id: $to, relation_type: $rel}')"
-    api POST "/task_links.json" "$body" | jq '.data'
+    kb_api POST "/task_links.json" "$body" | jq '.data'
 }
 
 cmd_show() {
@@ -418,26 +335,18 @@ cmd_show() {
         esac
     done
     local task; task="$(resolve_task "$task_ref")"
-    api GET "/tasks/$task.json" | jq '.data'
+    kb_api GET "/tasks/$task.json" | jq '.data'
 }
 
 main() {
     # Optional global `--board NAME` before the subcommand selects the board env.
+    local board_name=""
     if [[ "${1:-}" == "--board" ]]; then
-        case "${2:-}" in
-            bridge) BOARD_ENV="$HOME/.kanban-bridge-board.env" ;;
-            kanban|dev|"") BOARD_ENV="$HOME/.kanban-dev-board.env" ;;
-            *) BOARD_ENV="$HOME/.kanban-${2}-board.env" ;;
-        esac
+        board_name="${2:-}"
         shift 2
     fi
-    if [[ ! -r "$BOARD_ENV" ]]; then
-        echo "kbcard: board env file not readable: $BOARD_ENV" >&2
-        exit 2
-    fi
-    # shellcheck disable=SC1090
-    source "$BOARD_ENV"
-    resolve_token   # after host + board env are sourced, so a config-file KBCARD_TOKEN_FILE is honored
+    # Resolves board env + host env + token; sets KB_API / KB_BOARD_ID / KB_TOKEN.
+    kb_load_config "$board_name" || exit 2
 
     local cmd="${1:-}"
     [[ -z "$cmd" ]] && { sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# //'; exit 0; }

@@ -27,6 +27,11 @@
 # Usage: next-dl kanban|bridge|--board <name> [--peek]   (--board: an arbitrary PM-project board)
 set -euo pipefail
 
+# Shared toolkit lib (config resolution + whole-board pagination).
+# shellcheck source=bin/_kb-board-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+KB_PROG="next-dl"
+
 USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
 peek=0
 project=""
@@ -80,25 +85,18 @@ done
 # Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
 max_dl() { grep -oE 'DL-[0-9]+' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
 
-# Resolve api/board/token from config (sourced in a subshell so env never leaks
-# into this script). Echoes "<api>\t<board>\t<token_file>"; non-zero (with a
-# reason on stderr) if curl/jq or any config is missing.
+# Resolve api/board/token from config (in a subshell so env never leaks into this
+# script). Echoes "<api>\t<board>\t<token_file>"; non-zero (with a reason on
+# stderr) if curl/jq or any config is missing. kb_resolve_env (shared lib) does
+# the board-env + host-env source and the api/token validation; next-dl keeps its
+# own project-alias board_env (resolved above) and fail-soft posture.
 resolve_board_cfg() (
     command -v curl >/dev/null && command -v jq >/dev/null \
         || { echo "next-dl: curl/jq missing — skipping board check" >&2; exit 1; }
     [[ -r "$board_env" ]] || { echo "next-dl: $board_env unreadable — skipping board check" >&2; exit 1; }
-    # shellcheck disable=SC1090
-    source "$board_env"
-    host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-    if [[ -z "${KBCARD_API:-}" && -r "$host_env" ]]; then
-        # shellcheck disable=SC1090
-        source "$host_env"
-    fi
-    api="${KBCARD_API:-}"; board="${KB_BOARD_ID:-}"
-    token_file="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-    [[ -n "$api" && -n "$board" && -r "$token_file" ]] \
+    kb_resolve_env "$board_env" >/dev/null 2>&1 && [[ -n "$KB_BOARD_ID" ]] \
         || { echo "next-dl: board config incomplete — skipping board check" >&2; exit 1; }
-    printf '%s\t%s\t%s' "$api" "$board" "$token_file"
+    printf '%s\t%s\t%s' "$KB_API" "$KB_BOARD_ID" "$KB_TOKEN_FILE"
 )
 
 # Atomic server-side claim (DL-157). Echoes the claimed integer on success.
@@ -160,33 +158,24 @@ board_dl_max() (
     cfg="$(resolve_board_cfg)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     tok="$(cat "$token_file")"
-    # PAGINATE the whole board so the fallback seed sees the TRUE max, not a truncated
-    # page 1 (the board-snapshot #3369 / kbcard #3091 defect — this was the last copy
-    # still page-1-only). dl_numbers accumulate via STDIN (no argv). Refuse (exit 2)
-    # ONLY if a page read fails — an incomplete scan could re-mint a used DL. NB: even a
-    # complete paginated scan is NON-ATOMIC; the atomic claim endpoint is the real fix
-    # on a shared board (this path is reached only when that endpoint is absent).
-    page=1; last_page=1; nums=""
-    while :; do
-        resp="$(curl -fsS -H "Authorization: Bearer $tok" -H "Accept: application/json" \
-            "$api/tasks/search.json?q=board_id=$board&limit=200&page=$page" 2>/dev/null)" \
-            || { [[ "$page" -eq 1 ]] && { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
-                 echo "next-dl: board read failed on page $page of a multi-page board — refusing to mint from a truncated scan (could re-mint a used DL)" >&2; exit 2; }
-        if [[ "$page" -eq 1 ]]; then
-            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1')"
-            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1   # a garbage meta.last_page must not abort under set -u
-        fi
-        nums+="$(printf '%s' "$resp" | jq -r '.data[]?.payload.dl_number // empty')"$'\n'
-        [[ "$page" -ge "${last_page:-1}" ]] && break
-        page=$((page + 1))
-        [[ "$page" -gt "${NEXT_DL_PAGE_CAP:-50}" ]] && { echo "next-dl: board exceeds NEXT_DL_PAGE_CAP=${NEXT_DL_PAGE_CAP:-50} pages — refusing to mint from a partial scan" >&2; exit 2; }
-    done
+    # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
+    # truncated page 1 — via the shared fetch_board_cards. Exit-code policy
+    # (unchanged): a page-1-unreachable (rc 1) is fail-soft (skip the board check);
+    # an incomplete read or an over-cap board (rc 2/3) REFUSES (exit 2) — an
+    # undercount could re-mint a used DL. NB: even a complete scan is NON-ATOMIC;
+    # the atomic claim endpoint is the real fix on a shared board (reached here
+    # only when that endpoint is absent).
+    cards="$(fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
+        rc=$?
+        [[ "$rc" -eq 1 ]] && { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
+        echo "next-dl: board read incomplete or over NEXT_DL_PAGE_CAP — refusing to mint from a partial scan (could re-mint a used DL)" >&2
+        exit 2
+    }
     # dl_number is stamped in MIXED forms across boards/adopters: a string "DL-093" OR a
-    # bare number 93 (kbcard writes --dl verbatim — the canon-#5 write-site fix is filed
-    # separately). max_dl only catches the DL- prefix, so a safety MAX would be blind to
-    # the bare-int subset and could undercount → re-mint a used DL. Extract bare digits so
-    # the scan is honest across heterogeneous boards.
-    printf '%s' "$nums" | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1
+    # bare number 93. Extract bare digits so the scan is honest across heterogeneous boards
+    # (this is the max over a STREAM — distinct from kb_dl_num's single-token canon, which
+    # would reject a leaked >6-digit sentinel mid-stream).
+    printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1
 )
 # Exit-code convention: 2 = incomplete read (a page fetch failed mid-pagination) ⇒ fail
 # loud, do not stamp (undercount could re-mint). 1 = board unreachable on page 1 / no
