@@ -172,13 +172,21 @@ board_dl_max() (
             "$api/tasks/search.json?q=board_id=$board&limit=200&page=$page" 2>/dev/null)" \
             || { [[ "$page" -eq 1 ]] && { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
                  echo "next-dl: board read failed on page $page of a multi-page board — refusing to mint from a truncated scan (could re-mint a used DL)" >&2; exit 2; }
-        [[ "$page" -eq 1 ]] && last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1')"
+        if [[ "$page" -eq 1 ]]; then
+            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1')"
+            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1   # a garbage meta.last_page must not abort under set -u
+        fi
         nums+="$(printf '%s' "$resp" | jq -r '.data[]?.payload.dl_number // empty')"$'\n'
         [[ "$page" -ge "${last_page:-1}" ]] && break
         page=$((page + 1))
         [[ "$page" -gt "${NEXT_DL_PAGE_CAP:-50}" ]] && { echo "next-dl: board exceeds NEXT_DL_PAGE_CAP=${NEXT_DL_PAGE_CAP:-50} pages — refusing to mint from a partial scan" >&2; exit 2; }
     done
-    printf '%s' "$nums" | max_dl
+    # dl_number is stamped in MIXED forms across boards/adopters: a string "DL-093" OR a
+    # bare number 93 (kbcard writes --dl verbatim — the canon-#5 write-site fix is filed
+    # separately). max_dl only catches the DL- prefix, so a safety MAX would be blind to
+    # the bare-int subset and could undercount → re-mint a used DL. Extract bare digits so
+    # the scan is honest across heterogeneous boards.
+    printf '%s' "$nums" | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1
 )
 # Exit-code convention: 2 = incomplete read (a page fetch failed mid-pagination) ⇒ fail
 # loud, do not stamp (undercount could re-mint). 1 = board unreachable on page 1 / no
