@@ -120,6 +120,18 @@ native_type_id() {
     return 0
 }
 
+# Normalize any DL input — `93`, `dl-93`, `DL-093`, `DL-9001` — to the ONE canonical
+# stored form `DL-NNN` (zero-padded to >=3, matching next-dl's DL-%03d and every existing
+# card). Fixes the write-site so payload.dl_number is a single format (#3400, canon #5):
+# kbcard previously wrote --dl verbatim, so a bare-int `--dl 93` stored `93`, which a
+# `DL-[0-9]+` reader silently dropped. Fails (exit 2) on an input with no number.
+canon_dl() {
+    local n
+    n="$(printf '%s' "$1" | grep -oE '[0-9]+' | head -1)" || true
+    [[ -n "$n" ]] || { echo "kbcard: --dl '$1' has no DL number" >&2; return 2; }
+    printf 'DL-%03d' "$((10#$n))"   # 10# forces base-10 so a zero-padded value isn't read as octal
+}
+
 # Resolve a "task ref" to a numeric task id.
 #   Numeric → returned as-is.
 #   Non-numeric → looked up by external_id on the board (search endpoint).
@@ -170,7 +182,7 @@ cmd_create_card() {
     # bad card_type_id:0. The native path (real id) is unchanged.
     [[ -z "$type_id" ]] && tags="${tags:+$tags,}type:${type}"
 
-    [[ -n "$dl" ]]      && payload_args+=("dl_number=$dl")
+    if [[ -n "$dl" ]]; then dl="$(canon_dl "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
     [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
     # BR-3.3: only write version_target if the board actually has that custom field
@@ -268,7 +280,7 @@ cmd_patch() {
             echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
         fi
     fi
-    [[ -n "$dl" ]]      && payload_args+=("dl_number=$dl")
+    if [[ -n "$dl" ]]; then dl="$(canon_dl "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
 
     local body inner='{}'
     if [[ ${#payload_args[@]} -gt 0 ]]; then
