@@ -120,11 +120,13 @@ native_type_id() {
     return 0
 }
 
-# Normalize any DL input — `93`, `dl-93`, `DL-093`, `DL-9001` — to the ONE canonical
-# stored form `DL-NNN` (zero-padded to >=3, matching next-dl's DL-%03d and every existing
-# card). Fixes the write-site so payload.dl_number is a single format (#3400, canon #5):
-# kbcard previously wrote --dl verbatim, so a bare-int `--dl 93` stored `93`, which a
-# `DL-[0-9]+` reader silently dropped. Fails (exit 2) on an input with no number.
+# Normalize any DL input — `93`, `dl-93`, `DL-0093`, `DL-9001` — to the ONE canonical
+# stored form `DL-NNN`, zero-padded to >=4 (matching next-dl's DL-%04d; 4 because adopter
+# boards may already be near/over DL-999). Fixes the write-site so payload.dl_number is a
+# single format (#3400, canon #5): kbcard previously wrote --dl verbatim, so a bare-int
+# `--dl 93` stored `93`, which a `DL-[0-9]+` reader silently dropped. Width is cosmetic —
+# every reader extracts digits and compares numerically — so the pre-existing 3-padded cards
+# stay valid. Fails (exit 2) on an input with no number.
 canon_dl() {
     # Accept ONLY a DL-shaped value — optional DL-/dl- prefix, optional leading zeros, then
     # 1–6 digits — anchored. A pr_url / version / hex string fat-fingered into --dl must FAIL
@@ -135,7 +137,7 @@ canon_dl() {
         || { echo "kbcard: --dl '$1' is not a DL number (expect e.g. DL-093 or 93)" >&2; return 2; }
     local n="$((10#${BASH_REMATCH[2]}))"   # 10# forces base-10 so a zero-padded value isn't read as octal
     [[ "$n" -ge 1 ]] || { echo "kbcard: --dl '$1' resolves to 0 — not a valid DL number" >&2; return 2; }
-    printf 'DL-%03d' "$n"
+    printf 'DL-%04d' "$n"   # zero-pad to >=4 (next-dl matches); adopter boards may already be near/over DL-999
 }
 
 # Resolve a "task ref" to a numeric task id.
