@@ -101,30 +101,47 @@ resolve_board_cfg() (
     printf '%s\t%s\t%s' "$api" "$board" "$token_file"
 )
 
-# Atomic server-side claim (DL-157). Echoes the claimed integer on success;
-# non-zero exit + NO output on any failure (missing config, endpoint absent/404,
-# unreachable, or a non-positive/garbage value) → the caller falls back to peek.
-# Fail-closed: a value that isn't a positive integer is rejected, never printed
-# (a 0 would otherwise be stamped as DL-000).
+# Atomic server-side claim (DL-157). Echoes the claimed integer on success.
+# Exit code tells the caller HOW it failed, so a real endpoint error isn't masked
+# as "absent" (the bug that made AIMLA misdiagnose a deployed endpoint as missing):
+#   0 → claimed (positive integer on stdout).
+#   1 → endpoint ABSENT (HTTP 404) or unreachable / no config — benign during rollout;
+#       caller falls back silently to the offline max+1 scan.
+#   3 → endpoint PRESENT but the claim FAILED (any non-2xx other than 404, or a 2xx
+#       with no positive value) — surfaced loudly here; the caller MUST abort rather
+#       than silently mint via the non-atomic offline scan (which could re-mint on a
+#       shared board and hides the real cause: token board-membership, board id, api_base).
+# No -f on curl: we need the status to tell 404-absent from a present-but-errored claim.
 board_claim() (
     cfg="$(resolve_board_cfg 2>/dev/null)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
-    resp="$(curl -fsS -X POST -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
-        "$api/boards/$board/dl-sequence/claim.json" 2>/dev/null)" || exit 1
-    val="$(printf '%s' "$resp" | jq -r '.data.value // empty' 2>/dev/null)"
-    [[ "$val" =~ ^[0-9]+$ && "$val" -ge 1 ]] || exit 1
-    printf '%s' "$val"
+    resp="$(curl -sS -w $'\n%{http_code}' -X POST \
+        -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
+        "$api/boards/$board/dl-sequence/claim.json" 2>/dev/null)" || exit 1   # connection failure → benign fallback
+    http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    case "$http" in
+        2[0-9][0-9])
+            val="$(printf '%s' "$body" | jq -r '.data.value // empty' 2>/dev/null || true)"
+            [[ "$val" =~ ^[0-9]+$ && "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
+            printf '%s' "$val" ;;
+        404) exit 1 ;;   # endpoint not deployed — benign; fall back to the offline scan
+        *)
+            echo "next-dl: the atomic claim endpoint is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the non-atomic offline scan. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(printf '%s' "$body" | tr '\n' ' ' | head -c 300)" >&2
+            exit 3 ;;
+    esac
 )
 
-# DEFAULT: prefer the atomic claim; on any failure fall back silently to the
-# offline peek below (the endpoint-absent case during rollout is expected, not
-# an error worth warning about — the peek path keeps its own board warnings).
+# DEFAULT: prefer the atomic claim. Fall back to the offline peek ONLY when the
+# endpoint is genuinely absent/unreachable (exit 1, the rollout case). A claim that
+# FAILED against a PRESENT endpoint (exit 3) is surfaced by board_claim and aborts
+# here — silently degrading to the non-atomic scan is what masked AIMLA's real error.
 if [[ $peek -eq 0 ]]; then
-    claimed="$(board_claim || true)"
-    if [[ "$claimed" =~ ^[0-9]+$ ]]; then
+    if claimed="$(board_claim)"; then crc=0; else crc=$?; fi
+    if [[ $crc -eq 0 && "$claimed" =~ ^[0-9]+$ ]]; then
         printf 'DL-%03d\n' "$claimed"
         exit 0
     fi
+    [[ $crc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT mint via the racy scan
 fi
 
 # Offline / --peek path: max+1 over local headers + board-stamped dl_numbers.
@@ -142,24 +159,39 @@ done
 board_dl_max() (
     cfg="$(resolve_board_cfg)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
-    resp="$(curl -fsS -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
-        "$api/tasks/search.json?q=board_id=$board&limit=200" 2>/dev/null)" \
-        || { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
-    # A single page=1 scan over a board with >200 cards could miss the true max
-    # dl_number and re-mint a used DL. This is only the FALLBACK seed (the atomic
-    # claim endpoint is absent); refuse to emit a possibly-stale max from a
-    # truncated read rather than risk a duplicate.
-    total="$(printf '%s' "$resp" | jq -r '.meta.total // 0')"
-    last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1')"
-    if [[ "${total:-0}" -gt 200 || "${last_page:-1}" -gt 1 ]]; then
-        echo "next-dl: board has >200 cards; the page-1 dl_number scan is unreliable and could re-mint a used DL — claim endpoint unavailable, refusing to mint" >&2
-        exit 2   # undercount risk: the caller must ABORT (do not stamp), distinct from the benign unreachable case below
-    fi
-    printf '%s' "$resp" | jq -r '.data[]?.payload.dl_number // empty' | max_dl
+    tok="$(cat "$token_file")"
+    # PAGINATE the whole board so the fallback seed sees the TRUE max, not a truncated
+    # page 1 (the board-snapshot #3369 / kbcard #3091 defect — this was the last copy
+    # still page-1-only). dl_numbers accumulate via STDIN (no argv). Refuse (exit 2)
+    # ONLY if a page read fails — an incomplete scan could re-mint a used DL. NB: even a
+    # complete paginated scan is NON-ATOMIC; the atomic claim endpoint is the real fix
+    # on a shared board (this path is reached only when that endpoint is absent).
+    page=1; last_page=1; nums=""
+    while :; do
+        resp="$(curl -fsS -H "Authorization: Bearer $tok" -H "Accept: application/json" \
+            "$api/tasks/search.json?q=board_id=$board&limit=200&page=$page" 2>/dev/null)" \
+            || { [[ "$page" -eq 1 ]] && { echo "next-dl: board unreachable — skipping board check" >&2; exit 1; }
+                 echo "next-dl: board read failed on page $page of a multi-page board — refusing to mint from a truncated scan (could re-mint a used DL)" >&2; exit 2; }
+        if [[ "$page" -eq 1 ]]; then
+            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1')"
+            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1   # a garbage meta.last_page must not abort under set -u
+        fi
+        nums+="$(printf '%s' "$resp" | jq -r '.data[]?.payload.dl_number // empty')"$'\n'
+        [[ "$page" -ge "${last_page:-1}" ]] && break
+        page=$((page + 1))
+        [[ "$page" -gt "${NEXT_DL_PAGE_CAP:-50}" ]] && { echo "next-dl: board exceeds NEXT_DL_PAGE_CAP=${NEXT_DL_PAGE_CAP:-50} pages — refusing to mint from a partial scan" >&2; exit 2; }
+    done
+    # dl_number is stamped in MIXED forms across boards/adopters: a string "DL-093" OR a
+    # bare number 93 (kbcard writes --dl verbatim — the canon-#5 write-site fix is filed
+    # separately). max_dl only catches the DL- prefix, so a safety MAX would be blind to
+    # the bare-int subset and could undercount → re-mint a used DL. Extract bare digits so
+    # the scan is honest across heterogeneous boards.
+    printf '%s' "$nums" | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1
 )
-# Exit-code convention: 2 = undercount risk (reachable board too big to scan safely)
-# ⇒ fail loud, do not stamp. 1 = board unreachable / no board configured ⇒ keep the
-# original fail-soft posture (empty bmax ⇒ mint from the local sources below).
+# Exit-code convention: 2 = incomplete read (a page fetch failed mid-pagination) ⇒ fail
+# loud, do not stamp (undercount could re-mint). 1 = board unreachable on page 1 / no
+# board configured ⇒ keep the original fail-soft posture (empty bmax ⇒ mint from the
+# local sources below).
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
