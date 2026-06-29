@@ -7,47 +7,23 @@
 set -uo pipefail
 
 # API base + token path read from ~/.kanban-host.env (board-independent; not
-# baked in). The host env is sourced BEFORE resolving TOKEN_FILE so a
-# KBCARD_TOKEN_FILE set inside the config file is honored (matching next-dl/
-# kbcard); resolving it first silently ignored a config-file value. See INSTALL.md.
-HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-[[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]] && source "$HOST_ENV"
-API="${KBCARD_API:-https://YOUR-KANBAN-HOST/api/v3}"
-TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-[[ -r "$TOKEN_FILE" ]] || exit 0
-TOKEN="$(cat "$TOKEN_FILE")"
+# baked in). kb_load_host_token sources the host env (for a KBCARD_TOKEN_FILE
+# override + API base) and reads the token; fail-soft — a missing token → exit 0
+# so a missing config never blocks SessionStart. See INSTALL.md.
+# shellcheck source=bin/_kb-board-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+kb_load_host_token || exit 0
+API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
+TOKEN="$KB_TOKEN"
+# Cap each page fetch at 5s so a slow/down API never stalls SessionStart (the
+# shared fetch_board_cards honors KB_CURL_MAX_TIME).
+KB_CURL_MAX_TIME=5
 
-# Read the WHOLE board, paginated. Echoes a single JSON array of all cards. The
-# previous unpaginated read returned only the server's default page (~50), so on a
-# board past that the in-flight + untriaged lists were silently short (a loud notice
-# flagged it, but the data was still incomplete) — board 5 is already ~98 cards.
-# Pages with limit=200 and ACCUMULATES VIA STDIN (printf | jq -s 'add'), never
-# `--argjson`, so a page over MAX_ARG_STRLEN can't trip "Argument list too long"
-# (the #3091 / promote #3362 class). Loud-on-cap + a total-vs-read backstop
-# (fail-soft notice, not exit≠0 — this feeds a SessionStart display). Uses the
-# $API/$TOKEN/$KB_BOARD_ID in scope at the call site (sourced board env).
-fetch_board_cards() {
-  local cards='[]' page=1 resp data n total=0 read_n
-  while :; do
-    resp="$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOKEN" \
-            "$API/tasks/search.json?q=board_id=${KB_BOARD_ID}&limit=200&page=${page}" 2>/dev/null)" || return 1
-    [[ "$page" -eq 1 ]] && total="$(printf '%s' "$resp" | jq -r '.meta.total // 0' 2>/dev/null)"
-    data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
-    n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
-    cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add' 2>/dev/null)"
-    [[ "${n:-0}" -lt 200 ]] && break
-    page=$((page + 1))
-    if [[ "$page" -gt "${SNAPSHOT_PAGE_CAP:-25}" ]]; then
-      echo "board-snapshot: ⚠ stopped paging at SNAPSHOT_PAGE_CAP=${SNAPSHOT_PAGE_CAP:-25} pages — list may be INCOMPLETE" >&2
-      break
-    fi
-  done
-  read_n="$(printf '%s' "$cards" | jq 'length' 2>/dev/null)"
-  if [[ "$total" =~ ^[0-9]+$ && "$read_n" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
-    echo "board-snapshot: ⚠ board has $total cards but only $read_n read — list may be INCOMPLETE" >&2
-  fi
-  printf '%s' "$cards"
-}
+# The whole-board paginated read is the shared fetch_board_cards (lib): reading
+# only the server's default page silently shortened the in-flight + untriaged
+# lists once a board grew past it (board 5 is already ~98 cards). A page-cap hit
+# (rc 3) still yields the partial array, so this fail-soft SessionStart display
+# shows what it has rather than going dark.
 
 snap() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
@@ -55,8 +31,9 @@ snap() {  # $1 = board env file   $2 = label
   (
     # shellcheck disable=SC1090
     source "$envf"
-    local data
-    data="$(fetch_board_cards)" \
+    local data rc
+    data="$(fetch_board_cards "$API" "$TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
+    [[ $rc -eq 0 || $rc -eq 3 ]] \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
     # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
     local names
@@ -89,8 +66,9 @@ untriaged() {  # $1 = board env file   $2 = label
   (
     # shellcheck disable=SC1090
     source "$envf"
-    local data
-    data="$(fetch_board_cards)" || return 0   # paginates + warns loud-on-cap/short-read
+    local data rc
+    data="$(fetch_board_cards "$API" "$TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?   # paginates + warns loud-on-cap/short-read
+    [[ $rc -eq 0 || $rc -eq 3 ]] || return 0
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
