@@ -11,9 +11,12 @@
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
 #                      [--description "..."] [--tags "tag1,tag2"] [--external-id "dl-093"] \
-#                      [--dl "DL-093"] [--pr 178] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested]
+#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested]
 #   kbcard move --task ID-OR-EXT --column COLUMN
-#   kbcard patch --task ID-OR-EXT [--pr N] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
+#     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
+#     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
+#     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
 #   kbcard list  [--column COL] [--type TYPE]
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
@@ -136,7 +139,7 @@ resolve_task() {
 }
 
 cmd_create_card() {
-    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" version="" origin=""
+    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" version="" origin=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="$2"; shift 2 ;;
@@ -147,6 +150,7 @@ cmd_create_card() {
             --external-id) ext_id="$2"; shift 2 ;;
             --dl) dl="$2"; shift 2 ;;
             --pr) pr="$2"; shift 2 ;;
+            --pr-url) pr_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --origin) origin="$2"; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
@@ -168,6 +172,7 @@ cmd_create_card() {
 
     [[ -n "$dl" ]]      && payload_args+=("dl_number=$dl")
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
+    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
     # 422s (kanban gates payload keys to registered fields). Warn, don't drop
@@ -185,7 +190,7 @@ cmd_create_card() {
     # number-typed custom fields (e.g. pr_number) don't 422 with "Must be a number".
     local payload_json="{}"
     if [[ ${#payload_args[@]} -gt 0 ]]; then
-        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'split("=") | {(.[0]): (.[1] | tonumber? // .)}' | jq -s 'add')"
+        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
     fi
 
     # Build inner task object; POST body wraps it in {task: ...} per V3 API contract.
@@ -228,11 +233,12 @@ cmd_move() {
 }
 
 cmd_patch() {
-    local task_ref="" pr="" version="" column="" desc="" dl="" triaged=""
+    local task_ref="" pr="" pr_url="" version="" column="" desc="" dl="" triaged=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
             --pr) pr="$2"; shift 2 ;;
+            --pr-url) pr_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --column) column="$2"; shift 2 ;;
             --description) desc="$2"; shift 2 ;;
@@ -246,6 +252,11 @@ cmd_patch() {
 
     local payload_args=()
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
+    # pr_url sets payload.pr_url, from which the kanban derives a card's by-ref `source`
+    # (owner/repo, lowercased) — required for the repo-qualified PR→card lookup on a
+    # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
+    # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
+    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
     # 422s (kanban gates payload keys to registered fields). Warn, don't drop
@@ -263,7 +274,7 @@ cmd_patch() {
     if [[ ${#payload_args[@]} -gt 0 ]]; then
         local new_payload cur_payload payload_json
         # Coerce numeric strings (pr_number is a number-typed custom field).
-        new_payload="$(printf '%s\n' "${payload_args[@]}" | jq -R 'split("=") | {(.[0]): (.[1] | tonumber? // .)}' | jq -s 'add')"
+        new_payload="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
         # MERGE with the existing payload: the kanban API replaces `payload`
         # WHOLESALE, so a bare {pr_number} would wipe dl_number/origin/etc.
         # Read-merge-write to preserve the other custom fields.
