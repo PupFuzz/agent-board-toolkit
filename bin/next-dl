@@ -138,7 +138,7 @@ board_claim() (
 if [[ $peek -eq 0 ]]; then
     if claimed="$(board_claim)"; then crc=0; else crc=$?; fi
     if [[ $crc -eq 0 && "$claimed" =~ ^[0-9]+$ ]]; then
-        printf 'DL-%03d\n' "$claimed"
+        printf 'DL-%04d\n' "$claimed"
         exit 0
     fi
     [[ $crc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT mint via the racy scan
@@ -199,4 +199,4 @@ if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
 [[ "$bmax" =~ ^[0-9]+$ && "$bmax" -gt "$max" ]] && max="$bmax"
 
 [[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$project' — check the checkout paths" >&2; exit 1; }
-printf 'DL-%03d\n' "$((max + 1))"
+printf 'DL-%04d\n' "$((max + 1))"
