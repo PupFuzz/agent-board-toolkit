@@ -43,12 +43,20 @@ KB_PROG="dl-a0-backfill-triaged"
 kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
 [[ -n "$KB_BOARD_ID" ]] || { echo "$KB_PROG: KB_BOARD_ID not set — check $KB_BOARD_ENV" >&2; exit 2; }
 
-# kb_api is the shared fail-closed wrapper: non-2xx → empty stdout + non-zero
-# return, so a partial read never drives a write.
-
-# --- fetch the board's tasks ------------------------------------------------
-board_json="$(kb_api GET "/boards/$KB_BOARD_ID.json")" || {
-    echo "$KB_PROG: could not read board $KB_BOARD_ID — aborting" >&2
+# --- fetch the board's cards ------------------------------------------------
+# Use the shared PAGINATED fetch, not a single /boards/<id>.json read: a board
+# past one page would otherwise silently truncate, backfilling only a subset —
+# the exact "looks complete but isn't" failure this tool's fail-closed posture
+# exists to prevent. fetch_board_cards returns a flat card array and a non-zero
+# rc on ANY incompleteness (a page-fetch failure OR the page cap); for a WRITE
+# tool that must abort — a partial read must never drive a partial backfill.
+#
+# KB_FETCH_LOUD makes a fetch failure diagnosable (curl rc + which page) instead
+# of swallowing it — this is a manually-run write tool, so an abort should say
+# why (matches kbcard's list contract). The subshell inherits the shell var.
+KB_FETCH_LOUD=1
+cards_json="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
+    echo "$KB_PROG: board $KB_BOARD_ID read was incomplete or unreachable — aborting (no partial backfill)" >&2
     exit 1
 }
 
@@ -58,7 +66,7 @@ board_json="$(kb_api GET "/boards/$KB_BOARD_ID.json")" || {
 # Emit one JSON object per target ({id, newtags}) for the write loop, plus a
 # header line with the counts. jq does the read-modify-write of the tags array.
 targets_jq='
-  ((.data.tasks) // []) as $tasks
+  (. // []) as $tasks
   | ($tasks | map(select((.tags // []) | any(startswith("id:") and contains("-pr-"))))) as $pr
   | ($pr | map(
         (.tags // []) as $tags
@@ -71,7 +79,7 @@ targets_jq='
   | "#COUNTS\t\($targets | length)\t\($pr | length)\t\($tasks | length)",
     ($targets[] | "#TARGET\t\(@json)")'
 
-mapfile -t lines < <(printf '%s' "$board_json" | jq -r --argjson remove "$([[ $REMOVE == 1 ]] && echo true || echo false)" "$targets_jq")
+mapfile -t lines < <(printf '%s' "$cards_json" | jq -r --argjson remove "$([[ $REMOVE == 1 ]] && echo true || echo false)" "$targets_jq")
 
 n_targets=0; n_pr=0; n_total=0
 targets_json=()
