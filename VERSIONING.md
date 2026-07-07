@@ -7,7 +7,7 @@ How the agent-board-toolkit is versioned, released, and tagged. Mirrors the agen
 1. **Single source of truth for the version:** the [`VERSION`](VERSION) file at the repo root, containing one semver string and a trailing newline. Consumers read it with `tr -d '\n' < VERSION` (or the release tooling's `version_file`/`version_regex` in [`.release-pr.json`](.release-pr.json)).
 2. **Version bumps happen on `dev` in a dedicated release PR**, NOT on each feature PR. The bump + CHANGELOG entry is the release act.
 3. **Every release tag `v<version>` corresponds to a [`docs/CHANGELOG.md`](docs/CHANGELOG.md) entry** describing the bundle of merged PRs in the release.
-4. **Tags are created on `main`, not `dev`.** After the user merges the release PR (`dev` → `main`), the merge commit on `main` is tagged `v<VERSION>`; the tag SHA equals the merge commit's SHA.
+4. **Tags are created on `main`, not `dev`, by CI.** After the user merges the release PR (`dev` → `main`), the [`auto-tag-version.yml`](.github/workflows/auto-tag-version.yml) workflow fires on the push to `main`, reads `VERSION`, and tags the merge commit `v<VERSION>` (the tag SHA equals the merge commit's SHA). It is **tag-only** — unlike agent-webhook-bridge's, it does not yet publish a GitHub Release from the CHANGELOG. **Claude does not hand-tag** — the workflow owns it (idempotent; a tag already at a *different* SHA fails loud, meaning the release PR forgot to bump `VERSION`).
 5. **Back-merge `main` → `dev` after every release** (`sync/main-to-dev-post-v<version>`) so the branches don't diverge. The user's confirmation that the release PR merged to `main` IS the authorization for the back-merge sync PR — it is opened autonomously and auto-merged on green with a **merge commit** (never squashed — squashing a back-merge breaks the next release PR's diff).
 
 ## Branching model
@@ -36,9 +36,8 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 6. **ASK the user** before opening the release PR.
 7. Open the release PR `release/v<version>` → **`main`** with full release notes. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly** — a `dev`-headed PR merged with auto-delete-head-branches enabled deletes `dev`.
 8. Wait for ALL CI checks (if the repo has CI) to complete + pass. **Claude does NOT `gh pr merge` a `main`-targeted PR** regardless of CI state.
-9. **After the user merges to `main` and confirms:** that confirmation authorizes both the tag AND the back-merge sync PR — no separate ask.
-10. Tag the merge commit `v<VERSION>` and push the tag.
-11. Open the back-merge sync PR `sync/main-to-dev-post-v<version>` → `dev`; auto-merge on green with a **merge commit**.
+9. **After the user merges to `main` and confirms:** that confirmation authorizes the back-merge sync PR — no separate ask. (The `v<VERSION>` tag is minted automatically by `auto-tag-version.yml` on the main-push; Claude does not hand-tag.)
+10. Open the back-merge sync PR `sync/main-to-dev-post-v<version>` → `dev`; auto-merge on green with a **merge commit**.
 
 The [`.release-pr.json`](.release-pr.json) config drives the toolkit's own `bin/release-pr-body` generator (deterministic bundled-work list + artifact checklist from git truth) and `bin/promote-released-cards` (board 12 card promotion on release).
 

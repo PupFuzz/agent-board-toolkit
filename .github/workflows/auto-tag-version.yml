@@ -7,10 +7,11 @@ name: Auto-tag version on merge to main
 # version; the release PR forgot to bump VERSION). Eliminates the manual
 # `git tag -a v<X> <SHA> && git push --tags` step in the release flow.
 #
-# Adapted from agent-webhook-bridge's auto-tag-version.yml; the toolkit has no
-# docs/CHANGELOG.md, so the bridge's "GitHub Release from the CHANGELOG section"
-# step is omitted — this workflow is tag-only. VERSION is the single source of
-# truth (releases bump it on the release/v<version> branch).
+# Adapted from agent-webhook-bridge's auto-tag-version.yml. This workflow is
+# tag-only: it omits the bridge's "GitHub Release from the CHANGELOG section"
+# step. (As of v0.8.2 a docs/CHANGELOG.md exists, so that step *could* be added
+# for parity with the bridge — deliberately left out for now.) VERSION is the
+# single source of truth (releases bump it on the release/v<version> branch).
 
 on:
   push:
