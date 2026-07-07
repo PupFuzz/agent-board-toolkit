@@ -36,62 +36,27 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# --- config resolution (next-dl/kbcard model) -------------------------------
-if [[ -n "$board_name" ]]; then
-    case "$board_name" in
-        kanban|dev) BOARD_ENV="$HOME/.kanban-dev-board.env" ;;
-        *)          BOARD_ENV="$HOME/.kanban-${board_name}-board.env" ;;
-    esac
-else
-    BOARD_ENV="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}"
-fi
-if [[ ! -r "$BOARD_ENV" ]]; then
-    echo "dl-a0-backfill-triaged: board env file not readable: $BOARD_ENV" >&2
-    exit 2
-fi
-# shellcheck disable=SC1090
-source "$BOARD_ENV"
+# --- config resolution (shared lib) -----------------------------------------
+# shellcheck source=bin/_kb-board-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+KB_PROG="dl-a0-backfill-triaged"
+kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
+[[ -n "$KB_BOARD_ID" ]] || { echo "$KB_PROG: KB_BOARD_ID not set — check $KB_BOARD_ENV" >&2; exit 2; }
 
-HOST_ENV="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-if [[ -z "${KBCARD_API:-}" && -r "$HOST_ENV" ]]; then
-    # shellcheck disable=SC1090
-    source "$HOST_ENV"
-fi
-API="${KBCARD_API:?KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)}"
-BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $BOARD_ENV}"
-
-TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-if [[ ! -r "$TOKEN_FILE" ]]; then
-    echo "dl-a0-backfill-triaged: token file not readable: $TOKEN_FILE" >&2
-    exit 2
-fi
-TOKEN="$(cat "$TOKEN_FILE")"
-
-# --- api helper (kbcard idiom; fail-closed) ---------------------------------
-# Non-2xx → empty stdout + non-zero return, so a partial read never drives a write.
-api() {
-    local method="$1" path="$2" body="${3:-}"
-    local args=(-sS -X "$method" -H "Authorization: Bearer $TOKEN" -H "Accept: application/json")
-    if [[ -n "$body" ]]; then
-        args+=(-H "Content-Type: application/json" --data "$body")
-    fi
-    local out http
-    out="$(curl "${args[@]}" -w $'\n__HTTP__%{http_code}' "$API$path" 2>&1)" || {
-        echo "dl-a0-backfill-triaged: curl failed on $method $path" >&2
-        return 1
-    }
-    http="${out##*__HTTP__}"
-    local resp="${out%__HTTP__*}"
-    if [[ ! "$http" =~ ^2 ]]; then
-        echo "dl-a0-backfill-triaged: HTTP $http on $method $path" >&2
-        return 1
-    fi
-    printf '%s' "$resp"
-}
-
-# --- fetch the board's tasks ------------------------------------------------
-board_json="$(api GET "/boards/$BOARD.json")" || {
-    echo "dl-a0-backfill-triaged: could not read board $BOARD — aborting" >&2
+# --- fetch the board's cards ------------------------------------------------
+# Use the shared PAGINATED fetch, not a single /boards/<id>.json read: a board
+# past one page would otherwise silently truncate, backfilling only a subset —
+# the exact "looks complete but isn't" failure this tool's fail-closed posture
+# exists to prevent. fetch_board_cards returns a flat card array and a non-zero
+# rc on ANY incompleteness (a page-fetch failure OR the page cap); for a WRITE
+# tool that must abort — a partial read must never drive a partial backfill.
+#
+# KB_FETCH_LOUD makes a fetch failure diagnosable (curl rc + which page) instead
+# of swallowing it — this is a manually-run write tool, so an abort should say
+# why (matches kbcard's list contract). The subshell inherits the shell var.
+KB_FETCH_LOUD=1
+cards_json="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
+    echo "$KB_PROG: board $KB_BOARD_ID read was incomplete or unreachable — aborting (no partial backfill)" >&2
     exit 1
 }
 
@@ -101,7 +66,7 @@ board_json="$(api GET "/boards/$BOARD.json")" || {
 # Emit one JSON object per target ({id, newtags}) for the write loop, plus a
 # header line with the counts. jq does the read-modify-write of the tags array.
 targets_jq='
-  ((.data.tasks) // []) as $tasks
+  (. // []) as $tasks
   | ($tasks | map(select((.tags // []) | any(startswith("id:") and contains("-pr-"))))) as $pr
   | ($pr | map(
         (.tags // []) as $tags
@@ -114,7 +79,7 @@ targets_jq='
   | "#COUNTS\t\($targets | length)\t\($pr | length)\t\($tasks | length)",
     ($targets[] | "#TARGET\t\(@json)")'
 
-mapfile -t lines < <(printf '%s' "$board_json" | jq -r --argjson remove "$([[ $REMOVE == 1 ]] && echo true || echo false)" "$targets_jq")
+mapfile -t lines < <(printf '%s' "$cards_json" | jq -r --argjson remove "$([[ $REMOVE == 1 ]] && echo true || echo false)" "$targets_jq")
 
 n_targets=0; n_pr=0; n_total=0
 targets_json=()
@@ -152,7 +117,7 @@ ok=0
 for t in "${targets_json[@]}"; do
     id="$(printf '%s' "$t" | jq -r '.id')"
     body="$(printf '%s' "$t" | jq -c '{task: {tags: .newtags}}')"
-    if api PATCH "/tasks/$id.json" "$body" >/dev/null; then
+    if kb_api PATCH "/tasks/$id.json" "$body" >/dev/null; then
         ok=$((ok + 1))
     else
         echo "  ERR card $id: PATCH failed" >&2
