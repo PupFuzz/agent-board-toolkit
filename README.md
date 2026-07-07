@@ -27,7 +27,7 @@ The tools read all environment-specific values from files **outside** this repo:
 
 - **`~/.kanban-<name>-board.env`** — board/stage/type/custom-field IDs + API base. One per board. Template: [`examples/kanban-board.env.example`](examples/kanban-board.env.example).
 - **`~/.kanban-<name>-token`** — a file containing **only** the bearer token (`chmod 600`, never committed).
-- **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example).
+- **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example). **Security-sensitive:** its `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to — a PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` / `board-card-start` therefore reject any `api_base` that is not `https://` on the expected host (`$KANBAN_EXPECTED_HOST`, else the pinned default) before sending the token. **Pin `KANBAN_EXPECTED_HOST` in the promote-CI env** (out-of-band from the PR-editable config) and treat any `api_base` change in review as a credential-scope change.
 
 ## Reliability posture (fail-loud / fail-closed)
 
@@ -39,6 +39,8 @@ The value-emitting tools never silently truncate a board read or emit a garbage 
   - `next-dl`'s fallback board-max scan refuses to mint when a >200-card board can't be scanned safely (the atomic claim endpoint is the race-free primary path and is unaffected).
 - **Fail-closed.** A non-2xx API response → exit non-zero with **empty stdout** (never a partial/garbage value); a non-positive/garbage id is rejected rather than sent. Empty stdout means "do not act."
 - **Fail-soft display/hook tools** (`board-snapshot`, `board-card-start`, hooks) stay non-blocking by design (a hook must not abort a checkout), but surface a **loud notice** on a truncated read rather than presenting it as complete.
+- **Token never in argv.** Every API call feeds the bearer token to `curl` out-of-band via `-H @<(...)` process substitution, never as a `-H "Authorization: Bearer …"` argv token — so it can't leak via `ps aux` / world-readable `/proc/<pid>/cmdline` on a multi-user host.
+- **Fail-closed host guard.** Before the writeback token is sent, the config-supplied `.release-pr.json` `api_base` is validated to be `https://` on the expected host (`$KANBAN_EXPECTED_HOST`, else the pinned default, or a subdomain of it); a mismatch **refuses to send the token** (`promote-released-cards` exits non-zero; `board-card-start` warns loudly and stays fail-soft).
 
 ## Get started
 
