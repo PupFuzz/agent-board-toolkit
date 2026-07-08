@@ -6,6 +6,12 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Removed
+- `bin/board-transition-sync` — retired (#3649); superseded by the agent-webhook-bridge writeback (bridge DL-174). See UPGRADE §6 for the operator action (remove the PostToolUse hook entry).
+
+### Changed
+- `bin/board-session-close` — new reconcile invariant (#3651): flags any In-Review card whose `pr_number` matches no open PR (the inverse check the 2026-07-08 incident showed was missing); the local-branch loop now includes the toolkit's own repo.
+
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.8.2] - 2026-07-06

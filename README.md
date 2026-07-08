@@ -12,7 +12,6 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/promote-released-cards` | move a release's shipped cards to the "released" stage (run by release CI) |
 | `bin/release-pr-body` | generate the release-PR body/scaffold from repo config |
 | `bin/board-snapshot` | session-start board snapshot |
-| `bin/board-transition-sync` | reconcile card columns against git/PR state |
 | `bin/board-session-close` | session-close board↔git reconcile |
 | `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
