@@ -127,16 +127,21 @@ kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 # (the .release-pr.json .promote.api_base, which a PR can edit). Asserts the base is
 # https:// AND its host is the expected host or a subdomain of it — so a malicious
 # api_base pointed at an attacker host cannot exfiltrate the bearer token (#3570). The
-# expected host is $KANBAN_EXPECTED_HOST (pin it in CI, out-of-band from the PR-editable
-# config, for the authoritative constraint) or the pinned default below. Host is parsed
-# per RFC 3986 (userinfo before the last '@' is stripped, then :port), so neither
-# `https://good.host@evil/` (→ evil) nor `https://good.host.evil/` slips through. Prints
-# a diagnostic and returns 1 on violation; the caller MUST NOT send the token then.
+# expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this toolkit is
+# vendored by operators on their own kanban hosts, so there is no host to safely assume.
+# If it is unset/empty the guard fails CLOSED (returns 1) and the caller MUST NOT send the
+# token. Host is parsed per RFC 3986 (userinfo before the last '@' is stripped, then :port),
+# so neither `https://good.host@evil/` (→ evil) nor `https://good.host.evil/` slips through.
+# Prints a diagnostic and returns 1 on violation.
 # (promote-released-cards carries an inline mirror of this — it is vendored standalone
-# and must not source this lib; keep the two in sync.)
+# and must not source this lib; keep the two in sync, INCLUDING this required-var check.)
 kb_require_https_host() {
     local api="$1"
-    local expect="${KANBAN_EXPECTED_HOST:-bwtekmed.com}"
+    local expect="${KANBAN_EXPECTED_HOST:-}"
+    if [[ -z "$expect" ]]; then
+        echo "$(_kb_prog): KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send" >&2
+        return 1
+    fi
     case "$api" in
         https://*) ;;
         *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api)" >&2; return 1 ;;
@@ -148,7 +153,7 @@ kb_require_https_host() {
     if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
         return 0
     fi
-    echo "$(_kb_prog): refusing to send token — api_base host '$host' is not '$expect' (or a subdomain of it); set KANBAN_EXPECTED_HOST to override" >&2
+    echo "$(_kb_prog): refusing to send token — api_base host '$host' is not '$expect' (or a subdomain of it); KANBAN_EXPECTED_HOST is the expected host" >&2
     return 1
 }
 
