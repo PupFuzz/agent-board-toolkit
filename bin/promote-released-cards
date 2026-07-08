@@ -34,11 +34,13 @@ die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
 
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
-# subdomain of it. Host is parsed per RFC 3986 (userinfo before the last '@' stripped,
-# then :port), so `https://good@evil/` (→ evil) and `https://good.evil/` are both
-# rejected. Mirrors kb_require_https_host in _kb-board-lib.sh — this script is vendored
-# standalone into consumer repos and MUST NOT source that lib, so the guard is duplicated;
-# keep the two in sync. (#3570)
+# subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
+# calling — see the required-var check below). Host is parsed per RFC 3986 (userinfo
+# before the last '@' stripped, then :port), so `https://good@evil/` (→ evil) and
+# `https://good.evil/` are both rejected. Mirrors kb_require_https_host in
+# _kb-board-lib.sh — this script is vendored standalone into consumer repos and MUST NOT
+# source that lib, so the guard is duplicated; keep the two in sync, INCLUDING the
+# required-var check. (#3570)
 host_ok() {
   case "$1" in https://*) ;; *) return 1 ;; esac
   local h="${1#https://}"; h="${h%%/*}"; h="${h##*@}"; h="${h%%:*}"
@@ -92,12 +94,16 @@ TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
 API="${API%/}"
 
 # Fail-closed host guard on the config-supplied api_base BEFORE any token is sent. The
-# expected host is $KANBAN_EXPECTED_HOST (pin it in the promote CI env — out-of-band from
-# the PR-editable .release-pr.json, so an attacker's api_base edit can't also change the
-# constraint) or the pinned default. Adopters on a different host set KANBAN_EXPECTED_HOST.
-EXPECT_HOST="${KANBAN_EXPECTED_HOST:-bwtekmed.com}"
+# expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this script is
+# vendored by operators onto their own kanban hosts, so there is no host to safely assume.
+# Pin it in the promote CI env (a repo/org variable — out-of-band from the PR-editable
+# .release-pr.json, so an attacker's api_base edit can't also change the constraint). If it
+# is unset/empty we refuse BEFORE any token is sent.
+EXPECT_HOST="${KANBAN_EXPECTED_HOST:-}"
+[ -n "$EXPECT_HOST" ] \
+  || die "KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send"
 host_ok "$API" \
-  || die "refusing to send token — api_base '$API' is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to override the expected host."
+  || die "refusing to send token — api_base '$API' is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to your kanban host."
 
 # --- resolve the shipped refs (DL tokens + PR numbers) -----------------------
 numlist() { grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
