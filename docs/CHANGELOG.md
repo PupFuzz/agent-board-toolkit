@@ -8,6 +8,22 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.9.0] - 2026-07-08
+
+### Removed
+- **#55** — `bin/board-transition-sync` retired (#3649). Three defects (whole-command DL grep moving unrelated Released cards on PR-body citations; exact-string match silently inert vs the zero-padded `DL-%04d` canonical form; cross-board first-match on a false uniqueness assumption) — reported upstream, framework-confirmed never-shipped-there. Superseded by the bridge writeback (bridge DL-174 fixed 1:1-board correlation; put the PR's own `DL-NNN` in the title). **Operator action: remove the PostToolUse hook entry** — see UPGRADE §6.
+
+### Added
+- **#55** — `board-session-close`: In-Review-without-open-PR reconcile invariant (#3651) — flags any In-Review card whose `pr_number` matches no open PR; first live run caught three cards stale for 2–4 weeks. The toolkit's own repo joined the branch/PR loops.
+- **#54** — UPGRADE.md §6: complete version-by-version upgrade actions (v0.4.1 → dev), source-verified per tag.
+
+### Security
+- **#52** — writeback bearer token kept out of argv (process-table exposure) + promote `api_base` host validation (#3569/#3570).
+- **#53** — baked infra host removed from the shared toolkit; `KANBAN_EXPECTED_HOST` is REQUIRED (fail-closed) for the guarded promote path. **Operator action:** set the repo/org variable — see UPGRADE §3/§6.
+
+### Changed
+- **#51** — VERSIONING.md names the auto-tag workflow; stale changelog comment fixed.
+
 ## [0.8.2] - 2026-07-06
 
 **Shared board library extraction (`bin/_kb-board-lib.sh`): the config/API/pagination/DL-canon logic duplicated across the toolkit's `bin` scripts is collapsed to one sourced source, plus a silent board-read truncation fix.** PRs #46, #47, #48. **First release under the bridge-parity release infrastructure** (`VERSIONING.md`, `docs/CHANGELOG.md`, `.release-pr.json`, `CLAUDE.md § Recent releases`).

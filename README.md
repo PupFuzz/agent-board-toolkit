@@ -12,7 +12,6 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/promote-released-cards` | move a release's shipped cards to the "released" stage (run by release CI) |
 | `bin/release-pr-body` | generate the release-PR body/scaffold from repo config |
 | `bin/board-snapshot` | session-start board snapshot |
-| `bin/board-transition-sync` | reconcile card columns against git/PR state |
 | `bin/board-session-close` | session-close board↔git reconcile |
 | `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
@@ -27,7 +26,7 @@ The tools read all environment-specific values from files **outside** this repo:
 
 - **`~/.kanban-<name>-board.env`** — board/stage/type/custom-field IDs + API base. One per board. Template: [`examples/kanban-board.env.example`](examples/kanban-board.env.example).
 - **`~/.kanban-<name>-token`** — a file containing **only** the bearer token (`chmod 600`, never committed).
-- **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example).
+- **`<repo>/.release-pr.json`** — per-repo release config (only for repos that cut releases). Template: [`examples/release-pr.json.example`](examples/release-pr.json.example). **Security-sensitive:** its `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to — a PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` / `board-card-start` therefore reject any `api_base` that is not `https://` on the expected host (`$KANBAN_EXPECTED_HOST`) before sending the token. **`KANBAN_EXPECTED_HOST` is REQUIRED — there is no baked default** (this toolkit is vendored onto operators' own kanban hosts, so it assumes none). **Pin `KANBAN_EXPECTED_HOST` in the promote-CI env** as a repo/org variable (out-of-band from the PR-editable config); if it is unset the guard fails closed and refuses to send the token. Treat any `api_base` change in review as a credential-scope change.
 
 ## Reliability posture (fail-loud / fail-closed)
 
@@ -39,6 +38,8 @@ The value-emitting tools never silently truncate a board read or emit a garbage 
   - `next-dl`'s fallback board-max scan refuses to mint when a >200-card board can't be scanned safely (the atomic claim endpoint is the race-free primary path and is unaffected).
 - **Fail-closed.** A non-2xx API response → exit non-zero with **empty stdout** (never a partial/garbage value); a non-positive/garbage id is rejected rather than sent. Empty stdout means "do not act."
 - **Fail-soft display/hook tools** (`board-snapshot`, `board-card-start`, hooks) stay non-blocking by design (a hook must not abort a checkout), but surface a **loud notice** on a truncated read rather than presenting it as complete.
+- **Token never in argv.** Every API call feeds the bearer token to `curl` out-of-band via `-H @<(...)` process substitution, never as a `-H "Authorization: Bearer …"` argv token — so it can't leak via `ps aux` / world-readable `/proc/<pid>/cmdline` on a multi-user host.
+- **Fail-closed host guard.** Before the writeback token is sent, the config-supplied `.release-pr.json` `api_base` is validated to be `https://` on the expected host (`$KANBAN_EXPECTED_HOST`, or a subdomain of it); a mismatch **refuses to send the token** (`promote-released-cards` exits non-zero; `board-card-start` warns loudly and stays fail-soft). `KANBAN_EXPECTED_HOST` is **required with no default** — if it is unset/empty the guard also fails closed, so an operator must set it in their promote-CI env for the token ever to be sent.
 
 ## Get started
 

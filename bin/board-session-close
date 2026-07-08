@@ -21,10 +21,37 @@ for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard; do
 done
 echo
 echo "── Open PRs (each should have a card in In Review / Held) ──"
-for d in agent-webhook-bridge-dev kanbanboard; do   # one entry per unique repo
+for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do   # one entry per unique repo
   wt="/home/kanban/$d"
   [[ -e "$wt/.git" ]] || continue
   ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
       | sed "s#^#  ${d}: #" ) || true
 done
+echo
+echo "── In-Review cards with NO open PR (#3651 — the inverse check; each is drift) ──"
+# An In-Review card whose pr_number matches no open PR is stale (rogue move,
+# missed transition, or a PR that merged/closed without the card following).
+# Read-only: name the card; the reconcile write is the agent's call.
+flagged=0
+check_board() {   # <board-flag-or-empty> <label> <repo-dir>
+  local flag="$1" label="$2" repo="/home/kanban/$3" review_col="${4:-in_review}"
+  local open_prs cards
+  open_prs="$( (cd "$repo" 2>/dev/null && gh pr list --state open --limit 100 --json number --jq '.[].number') 2>/dev/null | sort -n | tr '\n' ' ' )" || open_prs=""
+  # shellcheck disable=SC2086
+  cards="$("$HOME/.local/bin/kbcard" $flag list --column "$review_col" 2>/dev/null)" || return 0
+  while IFS=$'\t' read -r id pr name; do
+    [[ -z "$id" ]] && continue
+    if [[ -z "$pr" || "$pr" == "null" ]]; then
+      echo "  ⚠ ${label} #${id} In Review with NO pr_number recorded — verify + reconcile: ${name}"
+      flagged=$((flagged+1))
+    elif [[ " $open_prs " != *" $pr "* ]]; then
+      echo "  ⚠ ${label} #${id} In Review but PR #${pr} is not open — verify + reconcile: ${name}"
+      flagged=$((flagged+1))
+    fi
+  done < <(printf '%s' "$cards" | jq -r '.[] | [.id, (.pr // "null"), .name] | @tsv' 2>/dev/null)
+}
+check_board ""                 "kanban"  kanbanboard
+check_board "--board bridge"   "bridge"  agent-webhook-bridge-dev
+check_board "--board toolkit"  "toolkit" agent-board-toolkit
+[[ "$flagged" -eq 0 ]] && echo "  (none — every In-Review card tracks an open PR)"
 exit 0
