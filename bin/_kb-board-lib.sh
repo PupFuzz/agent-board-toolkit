@@ -115,6 +115,43 @@ kb_load_host_token() {
 # transport failure is logged/visible.
 KB_HTTP=""
 
+# kb_auth_header <token>: emit the Authorization header line (no trailing newline)
+# for feeding to curl OUT-OF-BAND via `-H @<(kb_auth_header "$tok")` process
+# substitution. The bearer token must never be an argv token: curl's argv is
+# world-readable via `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a
+# `-H "Authorization: Bearer $tok"` would leak it. printf is a bash builtin, so the
+# process substitution exposes no separate process whose argv carries the token.
+kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
+
+# kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base
+# (the .release-pr.json .promote.api_base, which a PR can edit). Asserts the base is
+# https:// AND its host is the expected host or a subdomain of it — so a malicious
+# api_base pointed at an attacker host cannot exfiltrate the bearer token (#3570). The
+# expected host is $KANBAN_EXPECTED_HOST (pin it in CI, out-of-band from the PR-editable
+# config, for the authoritative constraint) or the pinned default below. Host is parsed
+# per RFC 3986 (userinfo before the last '@' is stripped, then :port), so neither
+# `https://good.host@evil/` (→ evil) nor `https://good.host.evil/` slips through. Prints
+# a diagnostic and returns 1 on violation; the caller MUST NOT send the token then.
+# (promote-released-cards carries an inline mirror of this — it is vendored standalone
+# and must not source this lib; keep the two in sync.)
+kb_require_https_host() {
+    local api="$1"
+    local expect="${KANBAN_EXPECTED_HOST:-bwtekmed.com}"
+    case "$api" in
+        https://*) ;;
+        *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api)" >&2; return 1 ;;
+    esac
+    local host="${api#https://}"
+    host="${host%%/*}"   # strip path/query
+    host="${host##*@}"   # strip userinfo — host is after the last '@' (RFC 3986)
+    host="${host%%:*}"   # strip :port
+    if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
+        return 0
+    fi
+    echo "$(_kb_prog): refusing to send token — api_base host '$host' is not '$expect' (or a subdomain of it); set KANBAN_EXPECTED_HOST to override" >&2
+    return 1
+}
+
 # kb_api <method> <path> [body]: fail-closed. Prints the response body on a 2xx
 # and returns 0; on a non-2xx or transport failure prints a diagnostic to stderr
 # and returns 1 (no body on stdout). Knobs (set by the caller):
@@ -125,10 +162,11 @@ KB_HTTP=""
 #                     are still reported.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
-    local args=(-sS -X "$method" -H "Authorization: Bearer $KB_TOKEN" -H "Accept: application/json")
+    local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
-    out="$(curl "${args[@]}" -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || {
+    # Auth is fed via process substitution (-H @<(...)) so the token never enters argv.
+    out="$(curl "${args[@]}" -H @<(kb_auth_header "$KB_TOKEN") -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || {
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
         KB_HTTP="000"; return 1
@@ -151,10 +189,11 @@ kb_api() {
 # a command substitution. A transport failure yields http "000".
 kb_api_status() {
     local method="$1" path="$2" body="${3:-}"
-    local args=(-sS -X "$method" -H "Authorization: Bearer $KB_TOKEN" -H "Accept: application/json")
+    local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
-    out="$(curl "${args[@]}" -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || { printf '000\n%s' "$out"; return 0; }
+    # Auth via process substitution (-H @<(...)) — token stays out of argv.
+    out="$(curl "${args[@]}" -H @<(kb_auth_header "$KB_TOKEN") -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || { printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
 }
@@ -191,7 +230,8 @@ fetch_board_cards() {
     while :; do
         local url="$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}"
         local rc
-        resp="$(curl "${curl_opts[@]}" -H "Authorization: Bearer $token" -H "Accept: application/json" \
+        # Auth via process substitution (-H @<(...)) so the token never enters argv.
+        resp="$(curl "${curl_opts[@]}" -H @<(kb_auth_header "$token") -H "Accept: application/json" \
                 "$url" 2>"$errsink")" || {
             rc=$?
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then

@@ -66,6 +66,13 @@ board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
 api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
 [ -n "$board" ] && [ -n "$api" ] || exit 0
 
+# Guard the CONFIG-supplied api_base before sending the token — a malicious
+# .release-pr.json api_base edit must not exfiltrate the token (#3570, same shape as
+# promote-released-cards, lower exposure here). Fail-SOFT (exit 0 — this runs from a
+# post-checkout hook and must NEVER block a checkout) but LOUD on stderr; the token is
+# simply never sent when the host isn't trusted.
+kb_require_https_host "$api" || exit 0
+
 # Token (host env may override the default token-file path); fail-soft. Source the
 # host env unconditionally (this script never reads KBCARD_API — api/board come from
 # .release-pr.json), so a host-env KBCARD_TOKEN_FILE override always wins even when
@@ -85,7 +92,7 @@ stages="$(
 read -r inprog backlog prioritized <<<"$stages"
 [ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || exit 0
 
-get() { curl -fsS -H "Authorization: Bearer $token" -H "Accept: application/json" "$1" 2>/dev/null; }
+get() { curl -fsS -H @<(kb_auth_header "$token") -H "Accept: application/json" "$1" 2>/dev/null; }
 
 # Resolve the card (task) id to move.
 if [ -n "$dl" ]; then
@@ -117,7 +124,7 @@ cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
 # Only promote from Backlog/Prioritized — never regress a further-along card.
 [ "$cur" = "$backlog" ] || [ "$cur" = "$prioritized" ] || exit 0
 
-if curl -fsS -X PATCH -H "Authorization: Bearer $token" -H "Accept: application/json" \
+if curl -fsS -X PATCH -H @<(kb_auth_header "$token") -H "Accept: application/json" \
      -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
      "$api/tasks/$cid.json" >/dev/null 2>&1; then
     echo "board-card-start: card #$cid ($label) → In Progress" >&2

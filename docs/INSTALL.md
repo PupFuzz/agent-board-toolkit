@@ -72,6 +72,8 @@ cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-p
 jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove the "_comment" line if you like
 ```
 
+> **`.release-pr.json` is security-sensitive.** `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to. A PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` (and `board-card-start`) reject any `api_base` that is not `https://` on the **expected host** before sending the token. Set **`KANBAN_EXPECTED_HOST`** in the promote-CI env (a repo/org variable — out-of-band from this PR-editable file) to your kanban host; the guard accepts that host or a subdomain of it. Leaving it unset falls back to a pinned default host. Review any `api_base` change as a credential-scope change.
+
 ## 5. Verify (expected output shown)
 
 ```bash
@@ -92,7 +94,7 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 # add a CI step (or pre-commit) that fails on drift:
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit <repo>   # -> "drift-check: OK"
 ```
-See [`UPGRADE.md`](UPGRADE.md) for keeping the vendored copy current.
+Set **`KANBAN_EXPECTED_HOST`** in that CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`) to your kanban host — it pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). See [`UPGRADE.md`](UPGRADE.md) for keeping the vendored copy current.
 
 ## Worked example (host install, primary board named `dev`)
 

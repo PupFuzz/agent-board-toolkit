@@ -113,8 +113,9 @@ resolve_board_cfg() (
 board_claim() (
     cfg="$(resolve_board_cfg 2>/dev/null)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
+    # Auth via process substitution (-H @<(...)) so the token never enters argv.
     resp="$(curl -sS -w $'\n%{http_code}' -X POST \
-        -H "Authorization: Bearer $(cat "$token_file")" -H "Accept: application/json" \
+        -H @<(kb_auth_header "$(cat "$token_file")") -H "Accept: application/json" \
         "$api/boards/$board/dl-sequence/claim.json" 2>/dev/null)" || exit 1   # connection failure → benign fallback
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     case "$http" in
