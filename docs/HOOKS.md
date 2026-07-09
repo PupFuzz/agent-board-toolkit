@@ -17,6 +17,22 @@ A **pinned** card is never auto-moved regardless of stage: a non-empty `block_re
 
 It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it does nothing and never blocks the checkout) and **idempotent**.
 
+## Correlation naming — one token drives the whole lifecycle
+
+Two independent movers advance a card, and **they read different surfaces with different grammars** — so a single naming habit is what makes the *whole* lifecycle auto-move with **zero manual `dl_number` stamping**:
+
+| Mover | Trigger | Reads | Grammar it accepts |
+| --- | --- | --- | --- |
+| `board-card-start` (this hook) | branch checkout/creation → **In Progress** | the **branch name** | `DL-NNN`, `card#<id>`, `#<id>`, `card-<id>`, or a typed branch's leading id (`feat/<id>-…`) |
+| bridge writeback | PR opened/merged → **In Review / Shipped / Released** | the PR **title + head branch** | **only** `DL-NNN` or `card#<id>` (`\bcard#(\d+)\b`) — a bare leading id like `feat/2950-…` does **not** correlate |
+
+The asymmetry is deliberate (the bridge stays strict to avoid mis-correlating version numbers / non-card digits). So the convention that satisfies **both**:
+
+- **Branch:** `<type>/<card-id>-<slug>` (e.g. `feat/2950-widget`). The hook moves the card to In Progress off the leading id; no `#` needed in the ref.
+- **PR title:** include **`card#<card-id>`** (e.g. `Add the widget (card#2950)`) — this is the token the bridge matches. Use **`DL-NNN`** in the title instead when the card carries a decision-log id (the bridge prefers a resolving DL, then falls through to `card#` — framework #112).
+
+A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge grammar — write `card#<id>`. With this one habit, a card auto-moves Backlog → In Progress → In Review → Shipped → Released with no `kbcard move` and no manual stamp. (A `board-card-branch` helper that mints the branch and emits the PR-title token is a possible future convenience; the convention above is the load-bearing part.)
+
 ## Install (per repo that you cut feature branches in)
 
 ```bash
