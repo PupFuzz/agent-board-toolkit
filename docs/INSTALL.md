@@ -37,7 +37,10 @@ The tools read the API base from `~/.kanban-host.env` (board-independent — one
 cp ~/agent-board-toolkit/examples/kanban-host.env.example ~/.kanban-host.env
 chmod 600 ~/.kanban-host.env
 # edit KBCARD_API to point at your kanban host, e.g. https://kanban.example.com/api/v3
+# and set KANBAN_EXPECTED_HOST to that host (see below)
 ```
+
+**Also export `KANBAN_EXPECTED_HOST`** here (the host part of `KBCARD_API`, e.g. `kanban.example.com`). It is the anti-exfiltration guard's expected host — the local `board-card-start` post-checkout hook (and any locally-run `promote-released-cards`) **refuses to send the writeback token** unless the resolved `api_base` host matches it, and there is **no baked default**. Without it, `board-card-start` fail-softs (no card move). This is the local counterpart to the CI-side `KANBAN_EXPECTED_HOST` in §4/§5; one setting here activates card automation for every repo on the host. (CI jobs set it in their own env, not from this file.)
 
 ## 3b. Per-board config + token
 
