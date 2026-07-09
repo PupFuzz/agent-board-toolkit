@@ -8,6 +8,25 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.10.0] - 2026-07-09
+
+**Card-automation restoration — `board-card-start` is revived and hardened.** PRs #58–#63. The post-checkout hook's branch→In-Progress automation was dead on every install; this release fixes the root cause and completes the framework #112/#113 contracts for the local mover. **Operator: `~/.kanban-host.env` must now export `KANBAN_EXPECTED_HOST` for `board-card-start` (see INSTALL.md §3) — one host-level setting activates every repo.**
+
+### Fixed
+- **#61** — `board-card-start` falls back to `$KB_API` when the committed `.release-pr.json` `api_base` is a host-scrubbed placeholder (card #3753). The hook read the api base **only** from `.release-pr.json`, which is a scrubbed `*.example.com` placeholder post host-scrub — so it hit a dead host and fail-softed silently, and no card ever auto-moved to In Progress. It now detects the RFC-2606 placeholder and uses the real host it already resolves from `~/.kanban-host.env` (`KBCARD_API`); a genuinely-real committed host is used as-is. Verified live.
+
+### Added / Changed
+- **#60** — `board-card-start`: a `DL-NNN` that resolves to no card **falls through** to a card-id token, and **stamps `payload.dl_number`** when selected via card-id with a DL named in the branch (card #3726, framework #112). Closes the dead-end where a decision-logged-but-unstamped card never moved; the card-id regex now also recognizes the bridge's `card#<id>` grammar.
+- **#59** — `board-card-start` auto-moves a **Held** card to In Progress on a genuine branch **creation** (reflog-detected, ≤15s), with a `no-automove`/`block_reason` opt-out (framework #113 Held-automove contract, toolkit half).
+- **#63** — `docs/HOOKS.md` codifies the **single-token correlation naming convention** (card #3755): branch `<type>/<card-id>-slug` + `card#<id>` (or `DL-NNN`) in the PR title drives both movers with zero manual stamping; flags the bare-`#<id>`-doesn't-match-the-bridge gotcha.
+- **#58** — `kbcard`: URL-encode the `resolve_task` query + fail loud on a non-numeric `--external-id` (was silently mis-resolving).
+
+### Fixed (release tooling)
+- **#62** — `promote-released-cards` retries transient 5xx (`curl --retry`) to ride the deploy maintenance window (card #3700). Byte-identical to the kanban + bridge vendored copies.
+
+### Changed (dependencies)
+- **#23** — `actions/checkout` 6.0.2 → 7.0.0.
+
 ## [0.9.0] - 2026-07-08
 
 ### Removed
