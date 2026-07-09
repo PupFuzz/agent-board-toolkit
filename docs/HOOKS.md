@@ -24,7 +24,11 @@ install-board-hooks /path/to/your-repo     # symlinks the hook into .git/hooks; 
 ```
 Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically).
 
-Requirements: the repo has a `.release-pr.json` with `promote.board_id` + `promote.api_base`; you have `~/.kanban-host.env` (or `KBCARD_API`), a token file, and a `~/.kanban-<name>-board.env` whose `KB_BOARD_ID` matches the repo's board. Same config the rest of the toolkit uses (see [INSTALL.md](INSTALL.md)).
+Requirements: the repo has a `.release-pr.json` with `promote.board_id` (+ `promote.api_base`); you have `~/.kanban-host.env`, a token file, and a `~/.kanban-<name>-board.env` whose `KB_BOARD_ID` matches the repo's board. Same config the rest of the toolkit uses (see [INSTALL.md](INSTALL.md)).
+
+**`~/.kanban-host.env` must export both** (the same setup `kbcard`/`promote-released-cards` use):
+- **`KBCARD_API`** — the real kanban api base, e.g. `https://<host>/api/v3`. `board-card-start` reads `promote.api_base` from the committed `.release-pr.json`, but that value is typically a **host-scrubbed RFC-2606 placeholder** (`*.example.com`) because the real host must not live in a repo. When it detects that placeholder (or an empty value) it **falls back to `KBCARD_API`** — so the hook reaches the real board with no per-repo config. A genuinely real committed host (a multi-host install that didn't scrub) is used as-is.
+- **`KANBAN_EXPECTED_HOST`** — the expected api host (e.g. `<host>`, the host part of `KBCARD_API`). The anti-exfiltration guard refuses to send the writeback token unless the resolved `api_base` host equals this (or is a subdomain of it). Without it set, `board-card-start` fail-softs (loud on stderr, no move). One host-level setting activates every repo on the machine.
 
 ## Manual use
 

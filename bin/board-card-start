@@ -69,27 +69,47 @@ cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/#]|#)0*[0-9]{
 
 command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
 
-# Board id + API base from the repo's .release-pr.json.
+# Board id + API base. `board_id` always comes from the repo's committed
+# .release-pr.json (not a secret). The `api_base` does too — EXCEPT the committed
+# value is usually a host-scrubbed RFC-2606 placeholder (`*.example.com`), because
+# the real kanban host must not live in a repo (bridge #218 / toolkit host-scrub).
+# When the committed api_base is such a placeholder, fall back to $KB_API — the real
+# host this script already resolves from ~/.kanban-host.env (KBCARD_API) via
+# kb_load_host_token below — so the post-checkout hook reaches the real board with
+# NO per-repo config. A genuinely real committed host (a multi-host install that did
+# not scrub) is not a placeholder, so it is used as-is.
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 cfg="$root/.release-pr.json"
 [ -n "$root" ] && [ -r "$cfg" ] || exit 0
 board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
-api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
-[ -n "$board" ] && [ -n "$api" ] || exit 0
+committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
+[ -n "$board" ] || exit 0
 
-# Guard the CONFIG-supplied api_base before sending the token — a malicious
-# .release-pr.json api_base edit must not exfiltrate the token (#3570, same shape as
-# promote-released-cards, lower exposure here). Fail-SOFT (exit 0 — this runs from a
-# post-checkout hook and must NEVER block a checkout) but LOUD on stderr; the token is
-# simply never sent when the host isn't trusted.
-kb_require_https_host "$api" || exit 0
-
-# Token (host env may override the default token-file path); fail-soft. Source the
-# host env unconditionally (this script never reads KBCARD_API — api/board come from
-# .release-pr.json), so a host-env KBCARD_TOKEN_FILE override always wins even when
-# KBCARD_API happens to be present in the process env.
+# Token + host env (sources ~/.kanban-host.env, publishing KB_API=KBCARD_API and the
+# token). Unconditional so a host-env KBCARD_TOKEN_FILE override always wins. Reads
+# the token into memory only (not sent until the guarded curls below). Fail-soft.
 kb_load_host_token unconditional || exit 0
 token="$KB_TOKEN"
+
+# Effective api_base: the committed value, unless it is a documentation-placeholder
+# host (host-scrubbed) — then the host-env-resolved KB_API is the real one. The
+# regex must track the host-scrub's placeholder form: today the scrub emits
+# `*.example.com` (RFC-2606 reserved), so match example.{com,net,org}. If the scrub
+# ever switches to the bare `.example` TLD, widen this accordingly.
+api="$committed_api"
+if [ -z "$api" ] || printf '%s' "$api" | grep -qiE '://([^/]*\.)?example\.(com|net|org)([:/]|$)'; then
+    api="${KB_API:-}"
+fi
+if [ -z "$api" ]; then
+    echo "board-card-start: no usable kanban api_base — committed .release-pr.json is host-scrubbed and \$KBCARD_API is unset (create ~/.kanban-host.env; see docs/INSTALL.md). No move." >&2
+    exit 0
+fi
+
+# Guard the api_base before sending the token — a malicious .release-pr.json edit (or
+# host-env value) must not exfiltrate the token to an untrusted host (#3570). Fail-SOFT
+# (exit 0 — this runs from a post-checkout hook and must NEVER block a checkout) but
+# LOUD on stderr; the token is simply never sent when the host isn't trusted.
+kb_require_https_host "$api" || exit 0
 
 # Stage ids for THIS board, from the matching ~/.kanban-*-board.env.
 stages="$(
