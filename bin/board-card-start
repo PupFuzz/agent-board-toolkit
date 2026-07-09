@@ -19,9 +19,12 @@
 # SAFE BY DESIGN:
 #   - FAIL-SOFT: any missing config / unreachable board / no match → exit 0. It
 #     must NEVER block a git checkout.
-#   - IDEMPOTENT + no stage regression: only promotes a card that is in Backlog
-#     or Prioritized. A card already In Progress / In Review / Shipped / Released
-#     is left alone (re-checking-out an old branch can't drag it backwards).
+#   - IDEMPOTENT + no stage regression: promotes a card in Backlog or Prioritized
+#     on any branch checkout, and a Held card ONLY on a genuine branch CREATION
+#     (contract PR #113 — a re-checkout of an old branch won't un-park it). A card
+#     already In Progress / In Review / Shipped / Released / Won't-Do is left alone.
+#   - PINNED cards are never auto-moved: a non-empty block_reason or a `no-automove`
+#     tag refuses the move (loud), regardless of stage.
 #   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
 set -uo pipefail
 
@@ -86,13 +89,32 @@ stages="$(
     [ -r "$envf" ] || continue
     # shellcheck disable=SC1090
     ( . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$board" ] \
-        && printf '%s %s %s\n' "${KB_STAGE_IN_PROGRESS:-}" "${KB_STAGE_BACKLOG:-}" "${KB_STAGE_PRIORITIZED:-}" )
+        && printf '%s %s %s %s\n' "${KB_STAGE_IN_PROGRESS:-}" "${KB_STAGE_BACKLOG:-}" "${KB_STAGE_PRIORITIZED:-}" "${KB_STAGE_HELD:-}" )
   done | head -1
 )"
-read -r inprog backlog prioritized <<<"$stages"
+read -r inprog backlog prioritized held <<<"$stages"
+# Held is optional (a board may not have the column); backlog/prioritized/in_progress
+# are required for any promotion to make sense.
 [ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || exit 0
 
 get() { curl -fsS -H @<(kb_auth_header "$token") -H "Accept: application/json" "$1" 2>/dev/null; }
+
+# A branch CREATION is the genuine work-start signal for a Held card (contract
+# PR #113); a re-checkout of an existing branch must not un-park it. The branch's
+# reflog records `branch: Created from …` exactly once at creation and it stays the
+# LAST entry (commits/checkouts prepend). On `git switch -c` the post-checkout hook
+# fires with that entry ~0s old; a later re-checkout sees it aged. A fresh clone
+# landing on an existing branch logs `clone: …`, which does not match — so cloning
+# can't un-park. Fail-soft: no reflog / unparsable timestamp → NOT a creation.
+branch_just_created() {
+    local last ts age
+    last="$(git reflog show --date=unix "$branch" 2>/dev/null | tail -1)" || return 1
+    printf '%s' "$last" | grep -q 'branch: Created from' || return 1
+    ts="$(printf '%s' "$last" | grep -oE '@\{[0-9]+\}' | tr -d '@{}')"
+    [ -n "$ts" ] || return 1
+    age=$(( $(date +%s) - ts ))
+    [ "$age" -ge 0 ] && [ "$age" -le "${KB_HELD_CREATE_MAX_AGE:-15}" ]
+}
 
 # Resolve the card (task) id to move.
 if [ -n "$dl" ]; then
@@ -121,8 +143,34 @@ cur="$(printf '%s' "$card" | jq -r '.data.workflow_stage_id // empty')"
 cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
 [ -n "$cur" ] && [ "$cbd" = "$board" ] || exit 0
 
-# Only promote from Backlog/Prioritized — never regress a further-along card.
-[ "$cur" = "$backlog" ] || [ "$cur" = "$prioritized" ] || exit 0
+# Opt-out (framework contract, agent-board-framework PR #113): a card a human has
+# pinned — a non-empty block_reason OR a `no-automove` tag — is NEVER auto-moved,
+# regardless of stage. Loud refusal so the skipped move is visible.
+breason="$(printf '%s' "$card" | jq -r '.data.block_reason // empty')"
+sticky="$(printf '%s' "$card" | jq -r 'any((.data.tags // [])[]; . == "no-automove")')"
+if [ -n "$breason" ] || [ "$sticky" = "true" ]; then
+    echo "board-card-start: card #$cid ($label) pinned (block_reason/no-automove) — auto-move refused" >&2
+    exit 0
+fi
+
+# Promote-from policy (contract PR #113):
+#   - Backlog / Prioritized → promote on any branch checkout (unchanged: a
+#     never-worked card advancing on a checkout is the intended work-start signal).
+#   - Held → promote ONLY on a genuine branch CREATION. Re-checking-out an existing
+#     branch onto a Held card is a deliberate no-op — the original re-fire
+#     protection the manual-only default guaranteed. `branch_just_created` reads the
+#     branch's own reflog (fail-soft: no reflog / unparsable → not-a-creation).
+#   - Anything else (In Progress / In Review / Shipped / Released / Won't-Do) →
+#     never touched.
+case "$cur" in
+    "$backlog" | "$prioritized") ;;
+    "$held")
+        # Reached only when cur == held (a non-empty stage id); promote only on a
+        # genuine creation, else leave the parked card put.
+        branch_just_created || exit 0
+        ;;
+    *) exit 0 ;;
+esac
 
 if curl -fsS -X PATCH -H @<(kb_auth_header "$token") -H "Accept: application/json" \
      -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
