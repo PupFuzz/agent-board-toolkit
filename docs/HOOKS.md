@@ -9,7 +9,9 @@ A recurring board-drift cause is forgetting to move a card to **In Progress** wh
    - a **`DL-NNN`** token in the branch name (e.g. `feature/dl156-foo`) → the card whose `dl_number` is `DL-NNN`; or
    - a **card-id** token → that card (task) id directly. Recognized as an explicit `#2950` / `card-2950` / `card/2950` anywhere, or the leading id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This covers routine FR/bug work branched by card id *before* a DL exists.
 2. resolves the card (board id + API base from the repo's `.release-pr.json`; in-progress stage from your `~/.kanban-<name>-board.env`), and verifies it is **on the repo's configured board** (so a stray number can't move an unrelated task),
-3. moves it to In Progress — **only if it's currently in Backlog or Prioritized** (never drags a further-along card backward).
+3. moves it to In Progress — from **Backlog or Prioritized** on any branch checkout, or from **Held** *only on a genuine branch creation* (`git switch -c`; a re-checkout of an existing branch won't un-park a Held card — the re-fire protection). A card already In Progress / In Review / Shipped / Released / Won't-Do is never touched.
+
+A **pinned** card is never auto-moved regardless of stage: a non-empty `block_reason` **or** a `no-automove` tag makes the move refuse (loudly). Held detection uses the branch's reflog creation entry (`branch: Created from …`, ≤ ~15s old, overridable via `KB_HELD_CREATE_MAX_AGE`); a clone or an unparsable/missing reflog is treated as *not* a creation. This implements the cross-mover contract (agent-board-framework PR #113) shared with the bridge's branch-create `started` mover.
 
 It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it does nothing and never blocks the checkout) and **idempotent**.
 
