@@ -10,7 +10,7 @@
 #     native card_type_id; an unset/`000` alias (or KB_TYPING_MODE=tags) instead
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
-#                      [--description "..."] [--tags "tag1,tag2"] [--external-id "dl-093"] \
+#                      [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
 #                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested]
 #   kbcard move --task ID-OR-EXT --column COLUMN
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
@@ -94,8 +94,11 @@ resolve_task() {
         [[ "$ref" -ge 1 ]] || { echo "kbcard: invalid task id '$ref'" >&2; exit 1; }
         echo "$ref"; return 0
     fi
-    local id
-    id="$(kb_api GET "/tasks/search.json?q=board_id=$KB_BOARD_ID%20external_id:$ref" | jq -r '.data[0].id // empty')"
+    local id q
+    # URL-encode the whole query value so a ref with & # space % can't corrupt
+    # the query string or inject params (e.g. ref='x&board_id=999' retargeting).
+    q="$(jq -rn --arg b "$KB_BOARD_ID" --arg r "$ref" '"board_id=\($b) external_id:\($r)" | @uri')"
+    id="$(kb_api GET "/tasks/search.json?q=$q" | jq -r '.data[0].id // empty')"
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
@@ -158,6 +161,14 @@ cmd_create_card() {
         payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
     fi
 
+    # external_id is the integer per-board sync id (tasks.external_id is an
+    # unsignedBigInteger). Reject a non-numeric value LOUDLY instead of silently
+    # coercing it to null and discarding the caller's input (fail-loud stance).
+    if [[ -n "$ext_id" && ! "$ext_id" =~ ^[0-9]+$ ]]; then
+        echo "kbcard: --external-id must be numeric (the integer per-board sync id); got '$ext_id'. For a DL id use --dl." >&2
+        return 2
+    fi
+
     # Build inner task object; POST body wraps it in {task: ...} per V3 API contract.
     local body
     body="$(jq -n \
@@ -173,7 +184,7 @@ cmd_create_card() {
          + (if $type_id != "" then {card_type_id: ($type_id | tonumber)} else {} end)
          + (if $desc  != "" then {description: $desc} else {} end)
          + (if $tags  != "" then {tags: ($tags | split(","))} else {} end)
-         + (if $ext_id != "" then {external_id: ($ext_id | tonumber? // null)} else {} end)
+         + (if $ext_id != "" then {external_id: ($ext_id | tonumber)} else {} end)
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)
          | {task: .}')"
 
