@@ -5,16 +5,25 @@
 # board-drift fix). Called by the post-checkout git hook; also runnable by hand:
 #     board-card-start [<branch-name>]      (default: the current branch)
 #
-# Correlation (first match wins):
-#   1. A DL-NNN token in the branch name (e.g. feature/dl156-foo) → the board
-#      card whose payload.dl_number is DL-NNN.
-#   2. Otherwise a CARD-ID token → that card (task) id directly. Recognized as
-#      an explicit `#2950` / `card-2950` / `card/2950` anywhere, or the leading
+# Correlation — try-in-order-with-fallback (framework contract #112), on the
+# OUTCOME of a token not its presence:
+#   1. A DL-NNN token (e.g. feature/dl156-foo) that RESOLVES → the board card whose
+#      payload.dl_number is DL-NNN. A co-present card-id token is ignored (loud).
+#   2. A DL-NNN that resolves to NO card → fall through to a CARD-ID token in the
+#      same branch (never dead-end — the unstamped-card class). When we resolve via
+#      the card-id path AND a DL was named, payload.dl_number is STAMPED if empty
+#      (never overwriting a differing stamp) so downstream DL-correlated movers stop
+#      no-op'ing on the card.
+#   3. No DL token → a CARD-ID token → that card (task) id directly. Recognized as
+#      an explicit `card#2950` (the bridge's grammar) / `#2950` / `card-2950` /
+#      `card/2950` anywhere, or the leading
 #      id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This is
 #      how routine FR/bug work — branched by card id before a DL is assigned —
 #      still moves. The card-id path only ever moves a card that actually lives
 #      on the repo's configured board (the board-match guard below), so a stray
 #      number can't promote an unrelated task.
+#   4. A DL present but resolving to nothing with no card-id fallback → loud no-op
+#      (a high-value miss), never silent.
 #
 # SAFE BY DESIGN:
 #   - FAIL-SOFT: any missing config / unreachable board / no match → exit 0. It
@@ -45,17 +54,16 @@ dltok="$(printf '%s\n' "$branch" | grep -oiE 'dl-?[0-9]+' | head -1 || true)"
 dl=""
 [ -n "$dltok" ] && dl="$(kb_dl_num "$dltok" 2>/dev/null || true)"
 
-# Card-id token — only when there is NO DL token (DL correlation takes precedence).
-# Explicit `#2950` / `card-2950` / `card/2950` first; else the leading id of a
-# typed branch (a >=3-digit id directly after a known type prefix, token-bounded
-# so `feat/2signup` or a 2-digit version can't match).
-cid_token=""
-if [ -z "$dl" ]; then
-    cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/]|#)0*[0-9]{2,}' | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
-    [ -n "$cid_token" ] || cid_token="$(printf '%s\n' "$branch" \
-        | grep -oiE '^(feat|feature|fix|hotfix|bug|chore|fr|refactor|perf|docs|ci|test|build|style)/#?0*[0-9]{3,}([/_-]|$)' \
-        | grep -oE '[0-9]{3,}' | head -1 | sed 's/^0*//')"
-fi
+# Card-id token — ALWAYS extracted (framework contract #112): a DL that resolves
+# to no card falls through to the card-id path, so the native id must be available
+# even when a DL token is also present. Extraction is card-id-specific (an explicit
+# `#2950` / `card-2950` / `card/2950`, or a typed branch's leading >=3-digit id
+# directly after a known type prefix, token-bounded so `feat/2signup`, a 2-digit
+# version, or a `dl-189` token can't match), so it never mis-reads a DL as a card id.
+cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/#]|#)0*[0-9]{2,}' | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
+[ -n "$cid_token" ] || cid_token="$(printf '%s\n' "$branch" \
+    | grep -oiE '^(feat|feature|fix|hotfix|bug|chore|fr|refactor|perf|docs|ci|test|build|style)/#?0*[0-9]{3,}([/_-]|$)' \
+    | grep -oE '[0-9]{3,}' | head -1 | sed 's/^0*//')"
 
 [ -n "$dl" ] || [ -n "$cid_token" ] || exit 0
 
@@ -116,7 +124,10 @@ branch_just_created() {
     [ "$age" -ge 0 ] && [ "$age" -le "${KB_HELD_CREATE_MAX_AGE:-15}" ]
 }
 
-# Resolve the card (task) id to move.
+# Resolve the card (task) id to move — try-in-order-with-fallback (framework #112):
+# resolve on the OUTCOME of a token, not its presence. via_cardid records that the
+# card was selected by native id (the stamp step below keys on it).
+via_cardid=0
 if [ -n "$dl" ]; then
     # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
     # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
@@ -129,10 +140,26 @@ if [ -n "$dl" ]; then
           | select($s | test("[0-9]"))
           | select(($s | capture("(?<n>[0-9]+)").n | tonumber) == $want)
           | .id ] | .[0] // empty' 2>/dev/null)"
-    label="DL-$dl"
+    if [ -n "$cid" ]; then
+        # (1)/(3) DL resolved → it wins. A co-present card-id token is ignored (loud).
+        label="DL-$dl"
+        [ -n "$cid_token" ] && [ "$cid_token" != "$cid" ] \
+            && echo "board-card-start: branch names DL-$dl (card #$cid) and #$cid_token — DL wins; #$cid_token ignored" >&2
+    elif [ -n "$cid_token" ]; then
+        # (2) DL tracks no card yet (the unstamped-card class) → fall through to the
+        # card-id path instead of dead-ending. The stamp step below writes dl_number.
+        cid="$cid_token"; label="#$cid_token"; via_cardid=1
+        echo "board-card-start: DL-$dl matches no card — falling through to #$cid_token (framework #112)" >&2
+    else
+        # (4) DL present, unresolved, no card-id fallback → a high-value miss (a
+        # decision-logged-but-unstamped card). Loud, never a silent no-op.
+        echo "board-card-start: branch names DL-$dl but no card carries it and no card-id fallback token is present — no move" >&2
+        exit 0
+    fi
 else
     cid="$cid_token"
     label="#$cid_token"
+    via_cardid=1
 fi
 [ -n "$cid" ] || exit 0
 
@@ -151,6 +178,32 @@ sticky="$(printf '%s' "$card" | jq -r 'any((.data.tags // [])[]; . == "no-automo
 if [ -n "$breason" ] || [ "$sticky" = "true" ]; then
     echo "board-card-start: card #$cid ($label) pinned (block_reason/no-automove) — auto-move refused" >&2
     exit 0
+fi
+
+# Stamp the dl_number write-site (framework contract #112 step 2). When the card
+# was selected by native id AND the branch also names a DL, write payload.dl_number
+# so the downstream DL-correlated movers (bridge writeback, release promote) stop
+# no-op'ing on this card — the failure that stranded the #2179 class. if-empty only:
+# never overwrite a differing stamp (loud warn); the API replaces payload WHOLESALE,
+# so read-merge-write from the already-fetched card. Runs regardless of the stage-gate
+# below (a card past the move stages still needs the stamp), but AFTER the pinned/
+# opt-out guard — a hands-off card gets no automated write at all. Fail-soft — never blocks.
+if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
+    curdl="$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty' 2>/dev/null)"
+    curdl_num="$(printf '%s' "$curdl" | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
+    if [ -z "$curdl" ]; then
+        want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
+        merged="$(printf '%s' "$card" | jq -c --arg dl "$want" \
+            '(.data.payload | if type == "object" then . else {} end) + {dl_number: $dl}' 2>/dev/null)"
+        if [ -n "$want" ] && [ -n "$merged" ] && curl -fsS -X PATCH -H @<(kb_auth_header "$token") \
+             -H "Accept: application/json" -H "Content-Type: application/json" \
+             --data "$(jq -nc --argjson p "$merged" '{task: {payload: $p}}')" \
+             "$api/tasks/$cid.json" >/dev/null 2>&1; then
+            echo "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" >&2
+        fi
+    elif [ "$curdl_num" != "$dl" ]; then
+        echo "board-card-start: card #$cid has dl_number=$curdl but branch names DL-$dl — NOT overwriting (stamp conflict)" >&2
+    fi
 fi
 
 # Promote-from policy (contract PR #113):
