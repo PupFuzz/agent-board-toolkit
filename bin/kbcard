@@ -248,18 +248,16 @@ cmd_patch() {
 
     local body inner='{}'
     if [[ ${#payload_args[@]} -gt 0 ]]; then
-        local new_payload cur_payload payload_json
+        local new_payload
         # Coerce numeric strings (pr_number is a number-typed custom field).
         new_payload="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
-        # MERGE with the existing payload: the kanban API replaces `payload`
-        # WHOLESALE, so a bare {pr_number} would wipe dl_number/origin/etc.
-        # Read-merge-write to preserve the other custom fields.
-        # `// {}` only catches null/false; an empty payload comes back as `[]`
-        # (PHP serializes an empty assoc array as a JSON array), and `[] + {new}`
-        # errors in jq. Normalize any non-object payload to {} before merging.
-        cur_payload="$(kb_api GET "/tasks/$task.json" | jq '.data.payload | if type == "object" then . else {} end')"
-        payload_json="$(jq -n --argjson cur "$cur_payload" --argjson new "$new_payload" '$cur + $new')"
-        inner="$(jq -n --argjson p "$payload_json" '{payload: $p}')"
+        # Send only the keys we're changing: the kanban v3 API MERGES task.payload
+        # per-key (kanban #2180) — a key we omit is left as-is, an explicit null
+        # clears it. So a bare {dl_number} no longer wipes the other custom fields,
+        # and no read-merge-write is needed. Sending only the delta also preserves a
+        # concurrent edit to any OTHER field: a full read-merge-write would clobber
+        # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
+        inner="$(jq -n --argjson p "$new_payload" '{payload: $p}')"
     fi
     if [[ -n "$column" ]]; then
         local stage; stage="$(stage_id "$column")"
