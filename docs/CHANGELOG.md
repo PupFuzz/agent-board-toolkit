@@ -6,8 +6,14 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+_(empty after each tagged release; accumulates as feature PRs land on dev)_
+
+## [0.11.0] - 2026-07-09
+
+**Composite GitHub Action for `promote-released-cards` — GitHub-Actions consumers pin a SHA instead of vendoring a copy.** PR #66 (card #3768).
+
 ### Added
-- **#3768** — `promote/action.yml`: `promote-released-cards` is consumable as a SHA-pinned **composite GitHub Action** (`uses: <owner>/agent-board-toolkit/promote@<sha>  # vX.Y.Z`) — the preferred path for GitHub-Actions consumers (INSTALL.md §6a). Thin wrapper: all logic stays in the script; inputs `writeback-token` / `expected-host` / `api-base` (runtime injection into the checked-out `.release-pr.json`) / `dls` / `dry-run`. Drift becomes impossible rather than detected, presence is guaranteed, and dependabot's `github-actions` ecosystem bumps the pin — replacing the manual re-vendor ritual for these consumers. Vendoring + drift-check (§6b) remains the documented path for non-Actions consumers (PM-project vendors per the §8 amendment). Corrects the #2615 Decision #3 consumption model for kanban-dev's own two consumers; consumer-side cutover tracked per repo (kanban DL-195 / bridge DL-180 corrections).
+- **#66** — `promote/action.yml`: `promote-released-cards` is consumable as a SHA-pinned **composite GitHub Action** (`uses: <owner>/agent-board-toolkit/promote@<sha>  # vX.Y.Z`) — the preferred path for GitHub-Actions consumers (INSTALL.md §6a). Thin wrapper: all logic stays in the script; inputs `writeback-token` / `expected-host` / `api-base` (runtime injection into the checked-out `.release-pr.json`) / `dls` / `dry-run`. Drift becomes impossible rather than detected, presence is guaranteed, and dependabot's `github-actions` ecosystem bumps the pin — replacing the manual re-vendor ritual for these consumers. Vendoring + drift-check (§6b) remains the documented path for non-Actions consumers (PM-project vendors per the §8 amendment). New `promote-action-selftest` CI job guards the wrapper's wiring (embedded shellcheck + fail-closed `uses: ./promote` smoke). Corrects the #2615 Decision #3 consumption model for kanban-dev's own two consumers; consumer-side cutover tracked per repo (kanban DL-195 / bridge DL-180 corrections).
 
 ## [0.10.0] - 2026-07-09
 
