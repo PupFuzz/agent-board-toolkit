@@ -204,20 +204,20 @@ fi
 # was selected by native id AND the branch also names a DL, write payload.dl_number
 # so the downstream DL-correlated movers (bridge writeback, release promote) stop
 # no-op'ing on this card — the failure that stranded the #2179 class. if-empty only:
-# never overwrite a differing stamp (loud warn); the API replaces payload WHOLESALE,
-# so read-merge-write from the already-fetched card. Runs regardless of the stage-gate
-# below (a card past the move stages still needs the stamp), but AFTER the pinned/
-# opt-out guard — a hands-off card gets no automated write at all. Fail-soft — never blocks.
+# never overwrite a differing stamp (loud warn). The kanban API MERGES payload
+# per-key (#2180), so PATCH only {dl_number} — the other custom fields are left as-is
+# (and a concurrent edit to them survives, which read-merge-write would clobber). Runs
+# regardless of the stage-gate below (a card past the move stages still needs the
+# stamp), but AFTER the pinned/opt-out guard — a hands-off card gets no automated
+# write at all. Fail-soft — never blocks.
 if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     curdl="$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty' 2>/dev/null)"
     curdl_num="$(printf '%s' "$curdl" | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
-        merged="$(printf '%s' "$card" | jq -c --arg dl "$want" \
-            '(.data.payload | if type == "object" then . else {} end) + {dl_number: $dl}' 2>/dev/null)"
-        if [ -n "$want" ] && [ -n "$merged" ] && curl -fsS -X PATCH -H @<(kb_auth_header "$token") \
+        if [ -n "$want" ] && curl -fsS -X PATCH -H @<(kb_auth_header "$token") \
              -H "Accept: application/json" -H "Content-Type: application/json" \
-             --data "$(jq -nc --argjson p "$merged" '{task: {payload: $p}}')" \
+             --data "$(jq -nc --arg dl "$want" '{task: {payload: {dl_number: $dl}}}')" \
              "$api/tasks/$cid.json" >/dev/null 2>&1; then
             echo "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" >&2
         fi
