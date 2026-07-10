@@ -8,6 +8,16 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.11.1] - 2026-07-10
+
+**Patch — `kbcard` + `board-card-start` payload writes rely on the kanban per-key merge; drop the stale wholesale-replace read-merge-write (card #3867).** 2 PRs since v0.11.0 (#70 fix + #69 docs).
+
+### Fixed
+- **#70** — `kbcard` (`patch`) and `board-card-start` (the DL-stamp write-site) assumed `PATCH /tasks/{id}.json` replaces `task.payload` **wholesale** and did a read-merge-write of the full payload. That premise is stale: the kanban v3 API **merges `task.payload` per-key** (kanban #2180). Both now PATCH **only the changed keys** — dropping an unnecessary GET (kbcard) and, more importantly, the **lost-update race** #2180 was designed to prevent (a concurrent edit to another custom field between the read and the PATCH was clobbered by the stale full-payload write). `tags` read-merge-write is intentionally **retained** (`tags` is a top-level array with no per-key merge — only `payload` got #2180; same label, opposite correctness). Verified on the prod API: a delta `dl_number` PATCH preserved sibling `pr_number`/`origin`. Card #3867.
+
+### Changed
+- **#69** — synced the solo-agent orientation doc (`CLAUDE_AGENTBOARD.md`) to coord v0.2.253 (finish-to-next self-drive guidance). Docs only.
+
 ## [0.11.0] - 2026-07-09
 
 **Composite GitHub Action for `promote-released-cards` — GitHub-Actions consumers pin a SHA instead of vendoring a copy.** PR #66 (card #3768).
