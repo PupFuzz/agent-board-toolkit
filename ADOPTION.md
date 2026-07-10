@@ -16,7 +16,7 @@ Each project implements that standard **in its own runtime**: the Python project
 
 **Adopt it if:** you run on a **bash-capable host** and drive your **own kanban board** (your own instance) — and you want one versioned, drift-checked source for the board CLI + release/board helpers instead of loose copies.
 
-**You may not need all of it if:** your project already shares board operations in another runtime (e.g. a Python framework/plugin) — this **bash** tooling doesn't replace that. But you can **vendor the whole toolkit** (§8 amendment above), cherry-pick the runtime-neutral pieces (`promote-released-cards`, `release-pr-body`), or just reuse the *patterns* (single-source + drift-check vendoring, the board-independent host-config split). Nothing here depends on a coordination framework.
+**You may not need all of it if:** your project already shares board operations in another runtime (e.g. a Python framework/plugin) — this **bash** tooling doesn't replace that. But you can **vendor the whole toolkit** (§8 amendment above), cherry-pick the runtime-neutral pieces (`promote-released-cards`, `release-pr-body`) — a GitHub-Actions repo can consume the promote step as the SHA-pinned composite action instead of vendoring (INSTALL.md §6a), or just reuse the *patterns* (single-source + drift-check vendoring, the board-independent host-config split). Nothing here depends on a coordination framework.
 
 ## Adopt in ~5 minutes (read-only to verify)
 
@@ -36,7 +36,7 @@ git clone https://github.com/PupFuzz/agent-board-toolkit.git ~/agent-board-toolk
 kbcard list --column backlog        # -> your cards (read-only) = install good
 ```
 
-Full step-by-step, troubleshooting, and the optional "vendor a tool into a repo for CI" path: **[`docs/INSTALL.md`](docs/INSTALL.md)**.
+Full step-by-step, troubleshooting, and the optional "consume a tool from a product repo's CI" paths (composite action §6a / vendor + drift-check §6b): **[`docs/INSTALL.md`](docs/INSTALL.md)**.
 
 ## Upgrades
 

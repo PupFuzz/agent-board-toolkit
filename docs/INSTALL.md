@@ -86,9 +86,32 @@ kbcard show --task <some-id> | jq .id   # -> the task id echoed back
 ```
 If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong.
 
-## 6. (Optional) Vendor a tool into a product repo for CI
+## 6. (Optional) Consume a tool from a product repo's CI
 
-A repo whose CI runs a toolkit tool (e.g. `release-promote-cards.yml` runs `bin/promote-released-cards`) needs the script **in the repo** (CI has no `~/.local/bin`). Vendor it and record the version, then let CI guard drift:
+A repo whose CI runs a toolkit tool (e.g. `release-promote-cards.yml` runs `bin/promote-released-cards`) can't use `~/.local/bin`. Two consumption paths:
+
+### 6a. GitHub Actions consumer — the composite action (preferred)
+
+Consume `promote-released-cards` via the [`promote/`](../promote/action.yml) composite action, SHA-pinned. Drift is impossible (nothing is copied), presence is guaranteed, and dependabot's `github-actions` ecosystem tracks the pin and PRs version bumps — no manual re-vendor ritual.
+
+```yaml
+# in the promote job, after checking out the CONSUMER repo with
+# fetch-depth: 0 + fetch-tags: true (the script derives the shipped-ref
+# range from the consumer's git history; it fail-closes on a shallow clone):
+- uses: <owner>/agent-board-toolkit/promote@<full-40-char-SHA>  # vX.Y.Z
+  with:
+    writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+    expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
+    api-base: ${{ vars.KANBAN_API_BASE }}   # injected into the checked-out .release-pr.json when the committed value is a placeholder
+    dls: ${{ github.event.inputs.dls }}         # optional workflow_dispatch passthrough
+    dry-run: ${{ github.event.inputs.dry_run }} # optional workflow_dispatch passthrough
+```
+
+Pin by **full 40-char SHA with the `# vX.Y.Z` comment** (the comment is what dependabot parses). The consumer repo still needs its own `.release-pr.json` (§4) and unset-guards for the two repo variables if it wants friendlier errors than the script's own fail-closed ones.
+
+### 6b. Non-Actions consumer — vendor + drift-check
+
+For CI that can't `uses:` a GitHub action (or a project that prefers one literal copy — e.g. PM-project vendors per the Task-tracking standard §8 amendment — see [`ADOPTION.md`](../ADOPTION.md)), vendor the script **into the repo** and record the version, then let CI guard drift:
 
 ```bash
 mkdir -p <repo>/bin
@@ -97,7 +120,8 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 # add a CI step (or pre-commit) that fails on drift:
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit <repo>   # -> "drift-check: OK"
 ```
-Set **`KANBAN_EXPECTED_HOST`** in that CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`) to your kanban host — it pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). Any repo that vendors `promote-released-cards` (e.g. bridge / kanban) must add `KANBAN_EXPECTED_HOST` to its promote workflow when it next re-syncs this script, or its promote run will fail closed. See [`UPGRADE.md`](UPGRADE.md) for keeping the vendored copy current.
+
+**Both paths** require **`KANBAN_EXPECTED_HOST`** — §6a supplies it via the `expected-host` **input** (step-level env overrides job env, so setting it only as job env does NOT reach the action's script; pin it as a repo variable and pass it through), §6b sets it in the CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`). It pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). See [`UPGRADE.md`](UPGRADE.md) for keeping a vendored copy (§6b) current; action consumers (§6a) upgrade via the pin.
 
 ## Worked example (host install, primary board named `dev`)
 

@@ -1,6 +1,6 @@
 # agent-board-toolkit
 
-Single source of truth for kanban-dev's **bash** board tooling — the CLI + helpers that drive a kanban board from the agent host and from release CI. One versioned copy, consumed by the agent host (via symlink) and by product repos that run a tool in CI (via a drift-checked vendor).
+Single source of truth for kanban-dev's **bash** board tooling — the CLI + helpers that drive a kanban board from the agent host and from release CI. One versioned copy, consumed by the agent host (via symlink) and by product repos that run a tool in CI — GitHub-Actions repos via the SHA-pinned [`promote/`](promote/action.yml) composite action, others via a drift-checked vendor.
 
 > **Scope.** This is **kanban-dev's** within-runtime code-share (Task-tracking standard §8): it serves the agent host + the `kanbanboard` and `agent-webhook-bridge` repos. The PM projects' (sola/aimla) *primary* board-ops sharing is Python (`coord.kanban_common`) — but because this is portable `bash` + `curl` + `jq`, a PM project **may also vendor these tools directly** (vendor + drift-check), routing any shared-board need through FRs to this repo, **never a silent fork**. (§8 amended 2026-06-19 at AIMLA PM's request: the original wording *excluded* PM projects, on a cross-runtime-ceiling assumption that doesn't hold for the bash layer.) The canonical three-way shared surface is still the **contract** — the by-ref shape, the `DL-NNN` token, `dl_number`, the writeback outcomes — and the **v3 API substrate**, not this code.
 
@@ -10,6 +10,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 |---|---|
 | `bin/kbcard` | board CRUD CLI: `create-card` / `move` / `patch` / `list` / `show` / `link` |
 | `bin/promote-released-cards` | move a release's shipped cards to the "released" stage (run by release CI) |
+| `promote/action.yml` | SHA-pinned composite-action wrapper around `bin/promote-released-cards` for GitHub-Actions consumers (INSTALL.md §6a) |
 | `bin/release-pr-body` | generate the release-PR body/scaffold from repo config |
 | `bin/board-snapshot` | session-start board snapshot |
 | `bin/board-session-close` | session-close board↔git reconcile |
@@ -45,8 +46,9 @@ The value-emitting tools never silently truncate a board read or emit a garbage 
 
 - **Adopting this for a new project/agent? Start here:** [`ADOPTION.md`](ADOPTION.md) (who it's for + how it fits the cross-project standard)
 - **New install:** [`docs/INSTALL.md`](docs/INSTALL.md)
+- **Consume from GitHub Actions CI:** the [`promote/`](promote/action.yml) composite action, SHA-pinned — INSTALL.md §6a (preferred over vendoring for Actions consumers; dependabot bumps the pin)
 - **Upgrade an existing install:** [`docs/UPGRADE.md`](docs/UPGRADE.md)
 
 ## Versioning
 
-`VERSION` holds the toolkit's semver. Upgrades bump it; product repos that vendor a tool record the version they vendored (see UPGRADE.md) so `agent-board-toolkit-drift-check` can flag both *content* drift and *version* skew.
+`VERSION` holds the toolkit's semver. Upgrades bump it; product repos that vendor a tool record the version they vendored (see UPGRADE.md) so `agent-board-toolkit-drift-check` can flag both *content* drift and *version* skew. Composite-action consumers (INSTALL.md §6a) don't vendor — their version is the SHA pin, bumped by dependabot.

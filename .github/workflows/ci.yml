@@ -24,3 +24,45 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: drift-check runs and reports no drift against itself
         run: ./bin/agent-board-toolkit-drift-check . .
+
+  promote-action-selftest:
+    # Guards the composite action's wiring: SHA-pinned consumers get no
+    # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Wiring assertions (parse, script path, flag contract, embedded shellcheck)
+        run: |
+          test -x bin/promote-released-cards
+          # the flags the wrapper passes must exist in the script's CLI parser
+          grep -q -- '--dls)' bin/promote-released-cards
+          grep -q -- '--dry-run)' bin/promote-released-cards
+          # extract the embedded run block and shellcheck it under the runner's flags
+          python3 - <<'PY'
+          import yaml
+          d = yaml.safe_load(open('promote/action.yml'))
+          assert d['runs']['using'] == 'composite'
+          step = d['runs']['steps'][0]
+          assert step['shell'] == 'bash'
+          assert '"$GITHUB_ACTION_PATH/../bin/promote-released-cards"' in step['run']
+          with open('/tmp/action-run.sh', 'w') as f:
+              f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + step['run'])
+          PY
+          shellcheck -S error /tmp/action-run.sh
+      - name: Invoke the action (expects fail-closed at the token guard)
+        # Proves the runner can execute the composite end-to-end into the
+        # script: with an empty token it must die at the KANBAN_WRITEBACK_TOKEN
+        # guard (deterministic, no network). Success here would mean the guard
+        # rotted; any other wiring breakage also lands in 'failure'.
+        id: smoke
+        continue-on-error: true
+        uses: ./promote
+        with:
+          writeback-token: ''
+          expected-host: kanban.invalid
+          dry-run: 'true'
+      - name: Assert fail-closed
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          [ "$SMOKE_OUTCOME" = "failure" ] || { echo "::error::promote action ran with an empty token — the fail-closed guard did not fire"; exit 1; }
