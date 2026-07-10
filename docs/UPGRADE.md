@@ -1,6 +1,6 @@
 # agent-board-toolkit — upgrade an existing install
 
-Use this when a new toolkit version is available. Two surfaces upgrade differently: the **agent host** (symlinks — trivial) and **product repos that vendored a tool** (need a re-vendor + drift-check).
+Use this when a new toolkit version is available. Three surfaces upgrade differently: the **agent host** (symlinks — trivial), **product repos that vendored a tool** (need a re-vendor + drift-check), and **composite-action consumers** (a SHA-pin bump, dependabot-automated — see the §3 callout).
 
 ## 1. See what you have vs what's available
 
@@ -24,7 +24,9 @@ If any **new** tool was added, re-run the symlink loop from INSTALL §2 to pick 
 for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done; hash -r
 ```
 
-## 3. Upgrade a product repo that vendored a tool (INSTALL §6)
+## 3. Upgrade a product repo that vendored a tool (INSTALL §6b)
+
+> **Composite-action consumers (INSTALL §6a) skip this section entirely** — their upgrade is the SHA-pin bump (`uses: …/agent-board-toolkit/promote@<sha>  # vX.Y.Z`), which dependabot PRs automatically. Nothing is vendored, so there is nothing to re-vendor or drift-check.
 
 A vendored copy does **not** update with the host pull — re-vendor it deliberately, in a branch, and let the drift-check confirm:
 
@@ -38,7 +40,7 @@ git commit -m "chore: bump vendored agent-board-toolkit to $(cat ~/agent-board-t
 # open a PR per the repo's normal flow; CI re-runs the drift-check as a guard.
 ```
 
-> **⚠ Re-vendoring `promote-released-cards` from a host-guarded version? You must also add `KANBAN_EXPECTED_HOST`.** The guarded script — the version that validates `.release-pr.json`'s `api_base` against `$KANBAN_EXPECTED_HOST` before sending the writeback token (see [`INSTALL.md`](INSTALL.md) §6 + [`README.md`](../README.md)) — **requires** `KANBAN_EXPECTED_HOST` in the promote-CI env and has **no baked default**. A re-vendor that copies the new script but does **not** add the variable makes the **next promote run fail closed**: the token is never sent and tracking-card promotion is skipped (with a loud CI error). The **`drift-check` will NOT catch this** — it verifies the script matches the toolkit, not that your consuming workflow supplies the env. So in the SAME re-vendor PR, add it to the promote step's env, alongside `KANBAN_WRITEBACK_TOKEN`:
+> **⚠ Re-vendoring `promote-released-cards` from a host-guarded version? You must also add `KANBAN_EXPECTED_HOST`.** The guarded script — the version that validates `.release-pr.json`'s `api_base` against `$KANBAN_EXPECTED_HOST` before sending the writeback token (see [`INSTALL.md`](INSTALL.md) §6b + [`README.md`](../README.md)) — **requires** `KANBAN_EXPECTED_HOST` in the promote-CI env and has **no baked default**. A re-vendor that copies the new script but does **not** add the variable makes the **next promote run fail closed**: the token is never sent and tracking-card promotion is skipped (with a loud CI error). The **`drift-check` will NOT catch this** — it verifies the script matches the toolkit, not that your consuming workflow supplies the env. So in the SAME re-vendor PR, add it to the promote step's env, alongside `KANBAN_WRITEBACK_TOKEN`:
 > ```yaml
 > KANBAN_EXPECTED_HOST: ${{ vars.KANBAN_EXPECTED_HOST }}   # your kanban host, e.g. kanban.example.com
 > ```
@@ -71,8 +73,8 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 **Audience tags** (an entry may carry more than one):
 
 - **[host]** — an agent host with symlink installs (INSTALL §2).
-- **[vendor]** — a product repo that copied a `bin/` tool into its own tree (INSTALL §6 / §3 above).
-- **[release-CI]** — a repo whose CI runs the promote workflow (a subset of **[vendor]**; the tool is usually `promote-released-cards`).
+- **[vendor]** — a product repo that copied a `bin/` tool into its own tree (INSTALL §6b / §3 above).
+- **[release-CI]** — a repo whose CI runs the promote workflow (via a vendored copy or the §6a composite action; the tool is usually `promote-released-cards`).
 
 > Coverage floor is **v0.4.1**. **v0.4.0** was the first tag and has no earlier release to upgrade from, so it has no entry. Releases **v0.4.x–v0.8.1** predate `docs/CHANGELOG.md` (which starts at [0.8.2]); the actions below were reconstructed from the git history (release commits + PR titles/bodies) and verified against the actual script source at each tag. Where the history did not record an operator action for a change, that is stated rather than invented.
 

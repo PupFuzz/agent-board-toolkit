@@ -1,0 +1,62 @@
+name: 'promote-released-cards'
+description: >-
+  Move a release's tracking kanban cards to the released stage. Thin composite
+  wrapper around bin/promote-released-cards — all logic stays in the script
+  (host installs and vendoring consumers run it directly). Consume this action
+  SHA-pinned (uses: <owner>/agent-board-toolkit/promote@<full-SHA>  # vX.Y.Z)
+  so dependabot's github-actions ecosystem tracks and bumps it.
+  PRECONDITIONS in the calling job: the consumer repo must already be checked
+  out with fetch-depth: 0 + fetch-tags (the script derives the shipped-ref
+  range from the CONSUMER's git history; it fail-closes on a tagless/shallow
+  clone), and a .release-pr.json with a .promote block must exist at the
+  workspace root.
+  NOTE: composite-action `required:` is not runner-enforced — the script's own
+  fail-closed guards (missing token / expected-host / api_base host mismatch)
+  are the real gate and die with actionable messages.
+
+inputs:
+  writeback-token:
+    description: 'Kanban API bearer token whose user is a member of the target board (pass a secret).'
+    required: true
+  expected-host:
+    description: >-
+      The kanban host the token may be sent to (e.g. kanban.example.com).
+      Required by the script's fail-closed api_base host guard; pin it as a
+      repo/org VARIABLE, out-of-band from the PR-editable .release-pr.json.
+    required: true
+  api-base:
+    description: >-
+      Real API base (https://<host>/api/v3) injected into the checked-out
+      .release-pr.json's .promote.api_base at run time. Use when the committed
+      value is a host-scrubbed placeholder. Empty = use the committed value.
+    required: false
+    default: ''
+  dls:
+    description: 'DLs to promote (comma-separated). Blank = derive from the git range.'
+    required: false
+    default: ''
+  dry-run:
+    description: "'true' = report only, move nothing."
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Promote tracking cards
+      shell: bash
+      env:
+        KANBAN_WRITEBACK_TOKEN: ${{ inputs.writeback-token }}
+        KANBAN_EXPECTED_HOST: ${{ inputs.expected-host }}
+        API_BASE_IN: ${{ inputs.api-base }}
+        INPUT_DLS: ${{ inputs.dls }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        if [ -n "$API_BASE_IN" ]; then
+          jq --arg a "$API_BASE_IN" '.promote.api_base=$a' .release-pr.json > .rp.tmp
+          mv .rp.tmp .release-pr.json
+        fi
+        args=()
+        [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
+        [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+        "$GITHUB_ACTION_PATH/../bin/promote-released-cards" "${args[@]}"
