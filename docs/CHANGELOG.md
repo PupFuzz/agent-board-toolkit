@@ -8,6 +8,13 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.11.3] - 2026-07-11
+
+**Patch — wire up board-12 release-promote-cards (card #3895).** 1 PR since v0.11.2 (#78). CI/release-tooling only — no `bin/` change.
+
+### Added
+- **#78** — `.github/workflows/release-promote-cards.yml`: the toolkit's own tracking board (board 12) now auto-promotes shipped cards to the released stage on a release main-push, mirroring boards 5 (kanban) and 8 (bridge). Previously board-12 cards stranded in Shipped-to-Dev and were moved by hand (3867 in v0.11.1, 3894 in v0.11.2). The promote step uses the **local** composite action (`uses: ./promote`) — the repo runs its own action from the checked-out tree rather than a self-referential SHA pin — reading board/stage/api from `.release-pr.json`'s `.promote` block and matching cards by `payload.dl_number`/`pr_number` against the shipped git range. Isolated (separate workflow, no `needs:`) so a card hiccup never blocks the release or the `auto-tag-version` tag. Requires repo config: `vars.KANBAN_API_BASE` + `KANBAN_EXPECTED_HOST` and `secrets.KANBAN_WRITEBACK_TOKEN` (a board-12-member token) — each per-repo, like 5/8. **This release is the workflow's first live run** (it self-promotes card #3895 by its `pr_number`).
+
 ## [0.11.2] - 2026-07-10
 
 **Patch — fail-loud + document `_kb-board-lib.sh` as a required co-vendored dependency of the lib-sourcing bins (card #3894, from a peer integrator).** 1 PR since v0.11.1 (#74).
