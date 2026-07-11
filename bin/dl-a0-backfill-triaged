@@ -37,8 +37,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- config resolution (shared lib) -----------------------------------------
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
-source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+source "$KB_LIB"
 KB_PROG="dl-a0-backfill-triaged"
 kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
 [[ -n "$KB_BOARD_ID" ]] || { echo "$KB_PROG: KB_BOARD_ID not set — check $KB_BOARD_ENV" >&2; exit 2; }

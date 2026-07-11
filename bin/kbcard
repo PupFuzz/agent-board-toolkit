@@ -27,8 +27,10 @@
 set -euo pipefail
 
 # Shared toolkit lib (config resolution, API wrapper, pagination, DL canon).
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
-source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+source "$KB_LIB"
 
 # kb_api knobs: own message prefix, the failure log, and echo the error body.
 KB_PROG="kbcard"

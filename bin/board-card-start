@@ -41,7 +41,7 @@ set -uo pipefail
 # a missing lib must never block a git checkout.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 # shellcheck source=bin/_kb-board-lib.sh
-[ -r "$KB_LIB" ] || exit 0
+[ -r "$KB_LIB" ] || { echo "board-card-start: _kb-board-lib.sh not found next to this script — board automation skipped (reinstall per INSTALL.md §3, or co-vendor _kb-board-lib.sh alongside this hook)." >&2; exit 0; }
 source "$KB_LIB"
 KB_PROG="board-card-start"
 
