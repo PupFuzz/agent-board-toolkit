@@ -8,6 +8,13 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.11.4] - 2026-07-11
+
+**Patch — release-notes reframe to be board/setup-agnostic (docs only; no change to any vendored/shared or CI surface).** 1 PR since v0.11.3 (#82).
+
+### Changed
+- **#82** — reframed the v0.11.3 release notes (CHANGELOG entry + recent-releases row) to describe the change and its consumer impact in board/setup-agnostic terms, rather than referencing the maintainer's own board/card specifics. Documentation only — `bin/*`, `promote/action.yml`, `examples/*`, and all CI workflows are byte-identical to v0.11.3, so a consumer that pins the action or vendors the scripts sees nothing new. Card #3895.
+
 ## [0.11.3] - 2026-07-11
 
 **Patch — the toolkit dogfoods its own release-promote automation (internal CI only; no change to the vendored/shared surface).** 1 PR since v0.11.2 (#78).
