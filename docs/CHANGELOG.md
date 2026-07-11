@@ -10,10 +10,10 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.11.3] - 2026-07-11
 
-**Patch — wire up board-12 release-promote-cards (card #3895).** 1 PR since v0.11.2 (#78). CI/release-tooling only — no `bin/` change.
+**Patch — the toolkit dogfoods its own release-promote automation (internal CI only; no change to the vendored/shared surface).** 1 PR since v0.11.2 (#78).
 
 ### Added
-- **#78** — `.github/workflows/release-promote-cards.yml`: the toolkit's own tracking board (board 12) now auto-promotes shipped cards to the released stage on a release main-push, mirroring boards 5 (kanban) and 8 (bridge). Previously board-12 cards stranded in Shipped-to-Dev and were moved by hand (3867 in v0.11.1, 3894 in v0.11.2). The promote step uses the **local** composite action (`uses: ./promote`) — the repo runs its own action from the checked-out tree rather than a self-referential SHA pin — reading board/stage/api from `.release-pr.json`'s `.promote` block and matching cards by `payload.dl_number`/`pr_number` against the shipped git range. Isolated (separate workflow, no `needs:`) so a card hiccup never blocks the release or the `auto-tag-version` tag. Requires repo config: `vars.KANBAN_API_BASE` + `KANBAN_EXPECTED_HOST` and `secrets.KANBAN_WRITEBACK_TOKEN` (a board-12-member token) — each per-repo, like 5/8. **This release is the workflow's first live run** (it self-promotes card #3895 by its `pr_number`).
+- **#78** — a `release-promote-cards.yml` workflow in the toolkit's own CI that, on a release main-push, moves the release's shipped tracking cards to the released stage — using the existing (unchanged) `promote-released-cards` script via the local `./promote` composite action, with board/stage/api read from the repo's own `.release-pr.json`. **No change to any vendored/shared file** (`bin/*`, `promote/action.yml`, `examples/*` are byte-identical to v0.11.2), so a consumer that pins the action or vendors the script sees nothing new. Reusable pattern: any consumer can run `promote-released-cards` (or `uses: <owner>/agent-board-toolkit/promote@<sha>`) on their own release, pointed at their own board via their own `.release-pr.json` — the script derives the shipped ref set (DL tokens + PR numbers) from `git log <prev-tag>..HEAD` and moves cards matched by `payload.dl_number`/`pr_number`.
 
 ## [0.11.2] - 2026-07-10
 
