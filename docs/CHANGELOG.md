@@ -8,6 +8,13 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.11.2] - 2026-07-10
+
+**Patch — fail-loud + document `_kb-board-lib.sh` as a required co-vendored dependency of the lib-sourcing bins (card #3894, from a peer integrator).** 1 PR since v0.11.1 (#74).
+
+### Fixed
+- **#74** — the 6 bins that `source` the shared `bin/_kb-board-lib.sh` had **no existence guard**, so a vendor-by-copy that omitted the lib died with a raw `source: …/_kb-board-lib.sh: No such file` instead of a message naming the fix. Now: the **5 interactive bins** (`kbcard`, `next-dl`, `board-snapshot`, `dl-a0-backfill-triaged`, `dl-a1-register-field`) fail **loud** (`exit 1` + a self-naming message pointing at INSTALL.md §3 / co-vendoring); **`board-card-start`** (a git post-checkout hook — must never block a checkout) keeps its **soft** `exit 0` but the silent skip now prints a diagnostic to stderr; and **`agent-board-toolkit-drift-check`** grows a **MISSING-LIB probe** (anchored `source "$KB_LIB"` match, so standalone tools — `promote-released-cards`, `release-pr-body`, drift-check itself — are correctly excluded) that fails a lib-sourcing bin vendored without the co-located lib. Docs (ADOPTION.md / INSTALL.md / UPGRADE.md) now state the lib is a required co-vendored dependency of those bins. `promote-released-cards` is deliberately standalone and needs no lib.
+
 ## [0.11.1] - 2026-07-10
 
 **Patch — `kbcard` + `board-card-start` payload writes rely on the kanban per-key merge; drop the stale wholesale-replace read-merge-write (card #3867).** 2 PRs since v0.11.0 (#70 fix + #69 docs).
