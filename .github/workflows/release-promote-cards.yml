@@ -1,0 +1,74 @@
+name: Promote released cards on merge to main
+
+# When a release merges to main, move each shipped card's tracking card on board 12
+# (the toolkit's own tracking board) to "released to main" (stage 85). The shipped
+# ref set — DL tokens AND PR numbers — is derived DETERMINISTICALLY from git
+# (`git log <prev-tag>..HEAD`) by bin/promote-released-cards, consumed here as the
+# LOCAL composite action (uses: ./promote) — the toolkit IS agent-board-toolkit, so
+# it runs its own action from the checked-out tree rather than a self-referential SHA
+# pin. Closes the gap (card #3895) where toolkit tracking cards stranded in
+# Shipped-to-Dev because, unlike boards 5 (kanban) and 8 (bridge), board 12 had no
+# release-promote wiring. Board / stage / api come from .release-pr.json (.promote).
+# Isolated so a card hiccup never blocks the release.
+#
+# workflow_dispatch lets an operator exercise the path on demand — dry-run by
+# default, so it moves nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dls:
+        description: 'DLs to promote (comma-separated). Blank = derive from the git range.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — report only, move nothing.'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-promote-cards-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Preflight the required repo variables (out-of-band from the PR-editable
+      # .release-pr.json) so the failure is a clear ::error:: rather than the
+      # action's script fail-closing on an empty value. The promote step itself is
+      # the LOCAL composite action (uses: ./promote) — no external pin to bump.
+      - name: Preflight required repo variables
+        env:
+          KANBAN_API_BASE: ${{ vars.KANBAN_API_BASE }}
+          KANBAN_EXPECTED_HOST: ${{ vars.KANBAN_EXPECTED_HOST }}
+        run: |
+          if [ -z "$KANBAN_API_BASE" ]; then
+            echo "::error::vars.KANBAN_API_BASE is not set — refusing to promote against the .release-pr.json placeholder host. Set it with: gh variable set KANBAN_API_BASE --repo <owner>/<repo> --body 'https://<kanban-host>/api/v3'" >&2
+            exit 1
+          fi
+          if [ -z "$KANBAN_EXPECTED_HOST" ]; then
+            echo "::error::vars.KANBAN_EXPECTED_HOST is not set — promote requires it to validate the api host before sending the writeback token" >&2
+            exit 1
+          fi
+
+      - name: Promote tracking cards
+        uses: ./promote
+        with:
+          writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+          expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
+          api-base: ${{ vars.KANBAN_API_BASE }}
+          dls: ${{ github.event.inputs.dls }}
+          dry-run: ${{ github.event.inputs.dry_run }}
