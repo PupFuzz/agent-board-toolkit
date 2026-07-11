@@ -36,10 +36,10 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 6. **ASK the user** before opening the release PR.
 7. Open the release PR `release/v<version>` → **`main`** with full release notes. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly** — a `dev`-headed PR merged with auto-delete-head-branches enabled deletes `dev`.
 8. Wait for ALL CI checks (if the repo has CI) to complete + pass. **Claude does NOT `gh pr merge` a `main`-targeted PR** regardless of CI state.
-9. **After the user merges to `main` and confirms:** that confirmation authorizes the back-merge sync PR — no separate ask. (The `v<VERSION>` tag is minted automatically by `auto-tag-version.yml` on the main-push; Claude does not hand-tag.)
+9. **After the user merges to `main` and confirms:** that confirmation authorizes the back-merge sync PR — no separate ask. (On the main-push, `auto-tag-version.yml` mints the `v<VERSION>` tag AND `release-promote-cards.yml` moves board-12 tracking cards to Released — both automatic; Claude does not hand-tag or hand-promote.)
 10. Open the back-merge sync PR `sync/main-to-dev-post-v<version>` → `dev`; auto-merge on green with a **merge commit**.
 
-The [`.release-pr.json`](.release-pr.json) config drives the toolkit's own `bin/release-pr-body` generator (deterministic bundled-work list + artifact checklist from git truth) and `bin/promote-released-cards` (board 12 card promotion on release).
+The [`.release-pr.json`](.release-pr.json) config drives the toolkit's own `bin/release-pr-body` generator (deterministic bundled-work list + artifact checklist from git truth) and `bin/promote-released-cards` — invoked by [`release-promote-cards.yml`](.github/workflows/release-promote-cards.yml) on the main-push (via the local `./promote` composite action) to move board-12 tracking cards (matched by their `dl_number`/`pr_number` against the shipped git range) to the released stage.
 
 ## Anti-patterns
 
