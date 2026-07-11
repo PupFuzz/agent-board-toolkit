@@ -33,6 +33,7 @@ A vendored copy does **not** update with the host pull — re-vendor it delibera
 ```bash
 cd <repo> && git checkout -b chore/bump-agent-board-toolkit
 cp ~/agent-board-toolkit/bin/promote-released-cards bin/promote-released-cards   # re-copy each vendored tool
+cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/                              # + the shared lib IF you vendored a lib-sourcing bin (kbcard/next-dl/board-snapshot/board-card-start/dl-a0/dl-a1)
 cat ~/agent-board-toolkit/VERSION > .agent-board-toolkit-version                       # record the new version
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit .            # -> "drift-check: OK"
 git add bin/promote-released-cards .agent-board-toolkit-version

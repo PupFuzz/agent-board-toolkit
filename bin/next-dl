@@ -28,8 +28,10 @@
 set -euo pipefail
 
 # Shared toolkit lib (config resolution + whole-board pagination).
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
-source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+source "$KB_LIB"
 KB_PROG="next-dl"
 
 USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
