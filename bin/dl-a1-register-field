@@ -49,8 +49,10 @@ done
 # either config; kb_load_config resolves it AFTER both are sourced.
 # KB_API_QUIET=1 keeps kb_api silent on a non-2xx (this script's callers print
 # their own FATAL message and branch on the status themselves).
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
-source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+source "$KB_LIB"
 KB_PROG="dl-a1-register-field"
 KB_API_QUIET=1
 kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN / KB_HTTP
