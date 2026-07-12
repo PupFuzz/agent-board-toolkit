@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest   # ships shellcheck preinstalled — no third-party action needed
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: shellcheck bin/
+      - name: shellcheck bin/ and tests/
         # Gate at hard errors only for now; tighten to `-S warning` once a clean
         # run confirms the existing scripts are warning-clean.
-        run: shellcheck -S error bin/*
+        run: shellcheck -S error bin/* tests/*.sh
 
   drift-check-selftest:
     runs-on: ubuntu-latest
@@ -24,6 +24,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: drift-check runs and reports no drift against itself
         run: ./bin/agent-board-toolkit-drift-check . .
+
+  adopt-to-dl-selftest:
+    # Exercises adopt-to-dl's pure decision logic (arg/repo validation, the
+    # already-adopted guard, pr_url build, by-ref-response parse) network-free —
+    # the same deterministic-guard pattern as promote-action-selftest.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: adopt-to-dl pure-logic unit checks
+        run: bash tests/adopt-to-dl-selftest.sh
 
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no

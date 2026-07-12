@@ -31,7 +31,7 @@ if [ -d "$REPO/bin" ]; then
       echo "drift-check: DRIFT  bin/$name differs from agent-board-toolkit" >&2
       drift=1
     fi
-    # Co-vendored-lib presence: the six lib-sourcing bins source _kb-board-lib.sh as
+    # Co-vendored-lib presence: the lib-sourcing bins source _kb-board-lib.sh as
     # a sibling (`source "$KB_LIB"`), so vendoring one WITHOUT the lib beside it yields
     # an inscrutable runtime `source: ... No such file` (promote-released-cards is the
     # exception — it is standalone and never sources the lib).
