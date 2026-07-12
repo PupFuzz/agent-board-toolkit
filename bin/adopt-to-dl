@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# adopt-to-dl — the PM-invoked "pull-into-build" adoption seam (roundtable #14 B).
+#
+# Stamps an EXISTING plain product card with a DL number + a source-qualified
+# placeholder pr_url, in ONE atomic operation, so the card crosses from PM-manual
+# ownership into the bridge writeback's PR-lifecycle authority. It is a PATCH on
+# the card that is already there — NOT a create (see dl-onramp for the create-a-new-
+# card flow; re-using that here would leave the plain card AND a new card = two
+# cards per item).
+#
+# What it does, in order:
+#   1. readiness gate      — <card-id> numeric, --repo an <owner>/<name>, --board resolves.
+#   2. already-adopted guard (roundtable #14 MUST-FIX-3) — refuse to re-mint over a card that
+#      already carries a dl_number (that would orphan the old DL and strand any branch/PR
+#      named for it). Only --dl <same N> re-stamps idempotently, for a crash-retry.
+#   3. mint                — next-dl claims the next DL atomically, and the claimed N is ECHOED
+#      to the caller BEFORE the write, so a crash mid-seam is retried with `--dl N` (no orphan,
+#      no double-mint).
+#   4. atomic write        — REUSE `kbcard patch --dl … --pr-url …`: one request stamping
+#      payload.dl_number AND a placeholder pr_url (`…/pull/0`, source = <repo>), relying on the
+#      kanban per-key payload merge (#2180). Both keys land together or not at all: two writes
+#      with a crash between would leave a dl_number-without-source card the writeback can't
+#      correlate and the reconcile can't see — the exact silent-no-move footgun this avoids.
+#      (swimlane_id alone does NOT yield a source; the pr_url does.)
+#   5. fail-loud verify     — GET by-ref?system=dl&ref=N&source=<repo> must now return the card,
+#      exercising the SAME repo-qualified correlation the bridge writeback + the coord.kanban_common
+#      reconcile use (roundtable #14, DL-SOURCE-CORRELATION.md). A miss aborts LOUD at adoption
+#      time, not silently at the next bridge:check.
+#
+# Usage:
+#   adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>]
+#     --board <name> resolves ~/.kanban-<name>-board.env (the toolkit convention); REQUIRED so a
+#       deliberate adoption can never land on the wrong board by defaulting.
+#     --dl <N>       skip the mint and use N — the crash-retry / explicit path (idempotent).
+set -euo pipefail
+
+# This script's real directory — resolve the shared lib AND the sibling bins (next-dl, kbcard)
+# from here rather than via $PATH, so a minimal-PATH invocation still finds them (they live
+# beside this script in every install, symlinked or vendored — the same guarantee KB_LIB relies on).
+_ATA_BINDIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Shared toolkit lib (config resolution + kanban-API curl wrapper + DL canonicalization).
+KB_LIB="$_ATA_BINDIR/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "adopt-to-dl: shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
+# shellcheck source=bin/_kb-board-lib.sh
+source "$KB_LIB"
+KB_PROG="adopt-to-dl"
+
+# ── pure decision logic (network-free; unit-tested by tests/adopt-to-dl-selftest.sh) ──
+
+# _ata_validate_repo <repo>: 0 iff <repo> is a bare `<owner>/<name>` — exactly one slash,
+# both parts non-empty, no whitespace, no scheme (a full URL or bare name is rejected). Case is
+# accepted as given; the by-ref `source` is compared lowercased (GitHub owner/repo is
+# case-insensitive; the server stores + looks up the source lowercased — see _ata_canon_source).
+_ata_validate_repo() {
+    [[ "${1:-}" =~ ^[^[:space:]/]+/[^[:space:]/]+$ ]] || return 2
+    return 0
+}
+
+# _ata_pr_url <repo>: the pre-PR placeholder pr_url whose repo segment yields the card's
+# by-ref `source`. The reconciler/writeback overwrite the URL when the real PR opens; only the
+# `<owner>/<name>` segment is load-bearing here.
+_ata_pr_url() { printf 'https://github.com/%s/pull/0' "$1"; }
+
+# _ata_canon_source <repo>: the server's `canonicalizeSource` — lowercase (GitHub owner/repo is
+# ASCII + case-insensitive). The card's stored `source` is the lowercased repo, so the verify
+# query must lowercase too rather than rely on the server canonicalizing the query param.
+_ata_canon_source() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
+
+# _ata_adopt_decision <existing-dl-int|""> <requested-dl-int|"">: the MUST-FIX-3 guard, as a
+# pure decision over the card's current dl_number and an optional --dl. Prints one of:
+#   mint            no dl_number, no --dl        → claim a fresh DL
+#   use-requested   no dl_number, --dl N         → crash-retry after a mint that didn't stamp; use N
+#   retry           dl_number == --dl            → idempotent re-stamp/verify (crash after the stamp)
+#   refuse-adopted  dl_number set, no --dl        → already adopted; re-minting would orphan it
+#   refuse-conflict dl_number set, --dl ≠ it      → stamp conflict
+_ata_adopt_decision() {
+    local existing="${1:-}" requested="${2:-}"
+    if [[ -z "$existing" ]]; then
+        [[ -z "$requested" ]] && { printf 'mint'; return 0; }
+        printf 'use-requested'; return 0
+    fi
+    [[ -z "$requested" ]] && { printf 'refuse-adopted'; return 0; }
+    [[ "$existing" == "$requested" ]] && { printf 'retry'; return 0; }
+    printf 'refuse-conflict'; return 0
+}
+
+# _ata_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response's data array contains a
+# card whose id == <card-id> (the adoption verify succeeded).
+_ata_by_ref_hit() {
+    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" 'any((.data // [])[]; .id == $id)' >/dev/null 2>&1
+}
+
+# _ata_dl_int <stored-form>: the bare integer of a dl_number in any stored form ("DL-088",
+# "DL-0192", bare 88), or "" if it holds no digits — the client mirror of the server's
+# canonicalize('dl') (strip EVERY non-digit, then collapse leading zeros; roundtable #14 /
+# DL-SOURCE-CORRELATION.md § 2b). A raw int() would throw on the canonical "DL-NNNN" form.
+_ata_dl_int() {
+    local d; d="$(printf '%s' "${1:-}" | tr -cd '0-9')"
+    [[ -n "$d" ]] || return 0
+    printf '%s' "$((10#$d))"
+}
+
+usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>]" >&2; }
+
+main() {
+    local card_id="" repo="" board_name="" req_dl=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo)  shift; repo="${1:-}" ;;
+            --board) shift; board_name="${1:-}" ;;
+            --dl)    shift; req_dl="${1:-}" ;;
+            -h|--help) usage; exit 0 ;;
+            --) ;;
+            -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;
+            *)  [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage; exit 2; }
+                card_id="$1" ;;
+        esac
+        shift
+    done
+
+    # 1. readiness gate
+    [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage; exit 2; }
+    [[ "$card_id" =~ ^[0-9]+$ ]] || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
+    _ata_validate_repo "$repo" || { echo "adopt-to-dl: --repo must be <owner>/<name> (got '$repo')" >&2; exit 2; }
+    [[ -n "$board_name" ]] || { echo "adopt-to-dl: --board <name> is required (a deliberate adoption must name its board)" >&2; exit 2; }
+
+    local req_int=""
+    if [[ -n "$req_dl" ]]; then
+        req_int="$(kb_dl_num "$req_dl")" || { echo "adopt-to-dl: --dl '$req_dl' is not a DL number" >&2; exit 2; }
+    fi
+
+    kb_load_config "$board_name" || exit 2   # prints its own cause
+
+    # fetch the card: confirm the board, read the existing dl_number
+    local card cur_board existing_int
+    card="$(kb_api GET "/tasks/$card_id.json")" || { echo "adopt-to-dl: card #$card_id not readable on the configured board" >&2; exit 1; }
+    cur_board="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
+    [[ "$cur_board" == "$KB_BOARD_ID" ]] || { echo "adopt-to-dl: card #$card_id is on board $cur_board, not the --board '$board_name' board ($KB_BOARD_ID) — refusing to adopt on the wrong board" >&2; exit 1; }
+    existing_int="$(_ata_dl_int "$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty')")"
+
+    # 2. already-adopted guard
+    local decision; decision="$(_ata_adopt_decision "$existing_int" "$req_int")"
+    case "$decision" in
+        refuse-adopted)
+            echo "adopt-to-dl: card #$card_id is ALREADY adopted as DL-$(printf '%04d' "$existing_int"). Refusing to re-mint — that would orphan DL-$existing_int and strand any branch/PR named for it. To re-stamp idempotently (crash-retry), pass: --dl $existing_int" >&2
+            exit 1 ;;
+        refuse-conflict)
+            echo "adopt-to-dl: card #$card_id already carries DL-$(printf '%04d' "$existing_int") but --dl names $req_int — refusing (stamp conflict). Settle the intended DL first." >&2
+            exit 1 ;;
+    esac
+
+    # 3. mint (echo the claimed N BEFORE the write, for crash-retry) — or use the requested N
+    local dl_int
+    case "$decision" in
+        mint)
+            local minted
+            minted="$("$_ATA_BINDIR/next-dl" --board "$board_name")" \
+                || { echo "adopt-to-dl: mint failed (next-dl) — aborting before any stamp" >&2; exit 1; }
+            dl_int="$(_ata_dl_int "$minted")"
+            [[ -n "$dl_int" ]] || { echo "adopt-to-dl: next-dl returned no DL number ('$minted') — aborting" >&2; exit 1; }
+            echo "adopt-to-dl: claimed DL-$(printf '%04d' "$dl_int") for card #$card_id (repo $repo) — stamping now. If this crashes before it completes, re-run idempotently: adopt-to-dl $card_id --repo $repo --board $board_name --dl $dl_int" >&2 ;;
+        *) dl_int="${req_int:-$existing_int}" ;;   # use-requested / retry
+    esac
+
+    # 4. atomic write — reuse kbcard's single-request dl_number+pr_url PATCH (#2180 per-key merge)
+    local dl_canon pr_url
+    dl_canon="$(kb_dl_canon "$dl_int")" || { echo "adopt-to-dl: could not canonicalize DL $dl_int" >&2; exit 1; }
+    pr_url="$(_ata_pr_url "$repo")"
+    "$_ATA_BINDIR/kbcard" --board "$board_name" patch --task "$card_id" --dl "$dl_canon" --pr-url "$pr_url" >/dev/null \
+        || { echo "adopt-to-dl: the atomic stamp (kbcard patch) FAILED for card #$card_id (DL-$dl_int) — card not adopted" >&2; exit 1; }
+
+    # 5. fail-loud verify — the same repo-qualified by-ref correlation the writeback/reconcile use.
+    # The card's stored source is the LOWERCASED repo (server canonicalizeSource), so lowercase the
+    # query to match without relying on the server also canonicalizing the query param.
+    local source_enc by_ref
+    source_enc="$(_ata_canon_source "$repo")"; source_enc="${source_enc//\//%2F}"
+    by_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=dl&ref=$dl_int&source=$source_enc")" \
+        || { echo "adopt-to-dl: VERIFY read failed after stamping card #$card_id (DL-$dl_int) — investigate before relying on the card" >&2; exit 1; }
+    if _ata_by_ref_hit "$by_ref" "$card_id"; then
+        echo "adopt-to-dl: card #$card_id adopted as DL-$(printf '%04d' "$dl_int"), source=$repo — verified via by-ref."
+        exit 0
+    fi
+    echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
+    exit 1
+}
+
+# run main only when executed directly, so tests/adopt-to-dl-selftest.sh can source the pure fns.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

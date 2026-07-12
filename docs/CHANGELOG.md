@@ -8,6 +8,13 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.12.0] - 2026-07-12
+
+**Minor — new `bin/adopt-to-dl`: the pull-into-build adoption seam for card-first boards.** 1 PR since v0.11.4 (#85).
+
+### Added
+- **#85** — `bin/adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl N]`: stamps an existing *plain* board card with `payload.dl_number` + a source-qualified placeholder `pr_url` in **one atomic write**, then **fail-loud-verifies** the card resolves via the kanban `by-ref?system=dl&ref=N&source=<repo>` correlation — so a card crosses from manual ownership into the bridge writeback's PR-lifecycle authority with its `source` resolving **at adoption time**, not silently at the next `bridge:check`. Thin orchestration over existing primitives (no write-path reimplementation): `next-dl` mints the DL (atomic server-side claim, echoed to the caller **before** the write so a crash mid-seam is retried with `--dl N`), and `kbcard patch --dl … --pr-url …` performs the single-request `dl_number`+`pr_url` PATCH (kanban per-key payload merge). An **already-adopted guard** refuses to re-mint over a card that already carries a `dl_number` (which would orphan the old DL and strand any branch/PR named for it); `--dl N` re-stamps idempotently for a crash-retry. The by-ref verify **lowercases the source** (the kanban server stores and looks up `source` lowercased), so a mixed-case `--repo` verifies correctly. Sibling bins (`next-dl`, `kbcard`) resolve from the script's own directory, not `$PATH`. Ships with a network-free pure-logic selftest (`tests/adopt-to-dl-selftest.sh`) wired into CI as the `adopt-to-dl-selftest` job; `shellcheck -S error` now also covers `tests/`. `adopt-to-dl` is the write-site adoption seam **for CLI-adopted (card-first) boards** — a board whose `dl_number` is server-derived by a bridge writeback does not need it. It `source`s `bin/_kb-board-lib.sh` (a co-vendored dependency for vendor-by-copy consumers). All other `bin/*`, `promote/action.yml`, and `examples/*` are byte-identical to v0.11.4, so a consumer that pins the action or vendors existing scripts sees only the new bin. Card #4020.
+
 ## [0.11.4] - 2026-07-11
 
 **Patch — release-notes reframe to be board/setup-agnostic (docs only; no change to any vendored/shared or CI surface).** 1 PR since v0.11.3 (#82).
