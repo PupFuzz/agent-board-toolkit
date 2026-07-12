@@ -16,6 +16,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/board-session-close` | session-close board↔git reconcile |
 | `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
+| `bin/adopt-to-dl` | **pull-into-build adoption seam:** stamp an existing plain card with `dl_number` + a source-qualified placeholder `pr_url` in one atomic write (via `next-dl` + `kbcard patch`), then fail-loud-verify by `by-ref?system=dl&ref=N&source=<repo>`. Refuses to re-mint over an already-adopted card (`--dl N` re-stamps idempotently for a crash-retry) |
 | `bin/install-board-hooks` | install the `post-checkout` hook into a repo so cards auto-move on branch checkout |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
 | `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
