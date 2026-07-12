@@ -24,6 +24,9 @@
 # path is NOT atomic — safe for single-stream allocation; concurrent allocators
 # on a shared board need the claim endpoint (the default) to avoid duplicates.
 #
+# Minting numbers in the wrong (far-too-high) range? The board's DL counter is
+# stranded — recover it over the API: see docs/DL-COUNTER-RECOVERY.md.
+#
 # Usage: next-dl kanban|bridge|--board <name> [--peek]   (--board: an arbitrary PM-project board)
 set -euo pipefail
 

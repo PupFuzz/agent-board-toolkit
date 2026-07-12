@@ -49,6 +49,7 @@ The value-emitting tools never silently truncate a board read or emit a garbage 
 - **New install:** [`docs/INSTALL.md`](docs/INSTALL.md)
 - **Consume from GitHub Actions CI:** the [`promote/`](promote/action.yml) composite action, SHA-pinned — INSTALL.md §6a (preferred over vendoring for Actions consumers; dependabot bumps the pin)
 - **Upgrade an existing install:** [`docs/UPGRADE.md`](docs/UPGRADE.md)
+- **`next-dl` minting wrong-range numbers?** [`docs/DL-COUNTER-RECOVERY.md`](docs/DL-COUNTER-RECOVERY.md) — recover a stranded per-board DL allocation counter over the API (no server shell)
 
 ## Versioning
 
