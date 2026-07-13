@@ -8,6 +8,16 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.12.1] - 2026-07-13
+
+**Patch — new agent-facing DL-counter recovery runbook (docs; one comment-only `bin/next-dl` change).** 1 PR since v0.12.0 (#88).
+
+### Added
+- **#88** — `docs/DL-COUNTER-RECOVERY.md`: an agent-facing, **API-driven** runbook for recovering a stranded per-board DL counter — the scenario where `next-dl` mints numbers in a far-too-high range because the board's monotonic DL high-water mark was pushed above the real sequence (e.g. by a hard-deleted or trashed high-DL card). Written for an operator/agent who drives a board **over its API token with no server shell**: diagnose (inspect the sequence + list refs), exhaustively sweep every trashed/junk pinner (not just the top one), force-delete each, then reset the counter — mirroring the board's own console recovery path via the board API's DL-sequence inspect/reset endpoints. `README.md` gains an index pointer to the runbook.
+
+### Changed
+- **#88** — `bin/next-dl` gains a **comment-only** pointer to the recovery runbook for the "minting far-too-high numbers" symptom. No behavior change — the executable path is byte-identical. `promote/action.yml`, all other `bin/*`, and `examples/*` are byte-identical to v0.12.0, so a consumer that pins the action or vendors the scripts sees no functional change.
+
 ## [0.12.0] - 2026-07-12
 
 **Minor — new `bin/adopt-to-dl`: the pull-into-build adoption seam for card-first boards.** 1 PR since v0.11.4 (#85).
