@@ -8,6 +8,21 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.13.0] - 2026-07-14
+
+**Minor — `board-card-start` adoption hardening + Windows/Git-Bash curl portability.** 1 PR since v0.12.2 (#94). No config migration; back-compat (absent-config behavior is identical). Consumer-visible: the token auth mechanism, a new board-id resolution fallback, `core.hooksPath` support, and a durable diagnostic log. Cards #4281/#4289/#4290; correlation roundtable #30/#32/#34.
+
+### Fixed
+- **#94** — **Windows/Git-Bash portability: every kanban API call now works on native mingw64 curl.** The bearer token was fed to `curl` via `-H @<(…)` process substitution, which needs a `/dev/fd` named pipe that native mingw64/Git-Bash curl cannot open (rc=26) — so every API call fail-softed. All **8 call-sites** — the shared `_kb-board-lib.sh` (`kb_api`/`kb_api_status`/`fetch_board_cards`), `board-card-start`, `next-dl`, and the standalone `promote-released-cards` — now feed the token via a stdin herestring (`-H @- <<<`), which redirects a regular temp file onto fd 0. This keeps the token out of `argv` (unchanged security property) **and** off persistent disk (bash writes the herestring temp `0600` and unlinks it before exec), and additionally fixes a latent `promote-released-cards --retry` bug (the old process-sub pipe was non-seekable, so a retried request could not re-read the header). Vendored surface: `promote-released-cards` changes an internal auth-feed line, but `promote/action.yml` is unchanged — a SHA-pinned action consumer sees only the internal fix.
+- **#94** — **`install-board-hooks` honors `core.hooksPath`.** It hardcoded `<repo>/.git/hooks/post-checkout`; when a repo sets `core.hooksPath` (gitleaks, the pre-commit framework, Husky, many Windows setups) git dispatches hooks only from there, so the install was a silent no-op (symlink created, install reports success, hook never fires). It now installs into `<core.hooksPath>/post-checkout`, and refuses — with operator guidance — a `core.hooksPath` that resolves inside the tracked work tree, where a machine-specific absolute symlink would show as a work-tree change and break on other clones.
+
+### Added
+- **#94** — **`board-card-start` resolves its board id without a `.release-pr.json`.** A repo that does not cut releases can bind itself to a board with a repo-local, uncommitted `git config kanban.board-id <id>` — so it adopts the hook without adding a committed, token-adjacent `api_base` surface (the board id is not a secret; `api_base` still resolves from `~/.kanban-host.env`). `.release-pr.json` `promote.board_id` still wins when present (back-compat).
+- **#94** — **`board-card-start` durable diagnostic log.** When a branch carries a DL/card token but the move does not happen for an infrastructure reason (no resolvable board id, an unloadable token/host, an untrusted `api_base`, unresolved stage ids, an unreachable board, a named `card#N` that does not exist, or a pinned card), the hook prints the reason and appends it to `~/.cache/agent-board-toolkit/board-card-start.log` (`KB_BCS_LOG` overrides the path) — the installed hook wrapper discards stderr, so the log is the durable record. Still always `exit 0`. Genuine no-ops (no token), already-advanced cards, and the card-id board-scope guard stay silent (no cry-wolf).
+
+### Changed
+- **#94** — the host-scrub placeholder detector recognizes the RFC-2606/6761 reserved forms (`.invalid`, `.test`, `.localhost`, the bare `.example` TLD) in addition to `example.{com,net,org}`, each anchored to a host-label boundary so a real host that merely *contains* the substring (e.g. `kanban.latest-corp.com`) is not misread as a placeholder.
+
 ## [0.12.2] - 2026-07-14
 
 **Patch — `docs/HOOKS.md` clarifies that un-parking a pinned card is intentionally NOT mirrored by the local hook (docs only; no bin/CI/vendored-surface change).** 1 PR since v0.12.1 (#91).
