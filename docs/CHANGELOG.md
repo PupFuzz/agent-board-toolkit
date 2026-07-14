@@ -8,6 +8,13 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.12.2] - 2026-07-14
+
+**Patch — `docs/HOOKS.md` clarifies that un-parking a pinned card is intentionally NOT mirrored by the local hook (docs only; no bin/CI/vendored-surface change).** 1 PR since v0.12.1 (#91).
+
+### Changed
+- **#91** — `docs/HOOKS.md`: document that un-parking a pinned card is **owned by the real-time push-path mover, not the local `board-card-start` post-checkout hook**, by design. A push-path mover can override a deliberate pin and promote a pinned card from an opt-in unpark stage set on branch-cut *because it has a durable compensating override-alert surface*; a post-checkout hook's only surface is stderr — effectively silent when an agent drives git, never persisted — so it lacks the durable alert that would make reversing a deliberate pin safe. The local hook therefore keeps refusing pinned cards. Documentation only: `bin/*`, `promote/action.yml`, `examples/*`, and CI are byte-identical to v0.12.1, so a consumer that pins the action or vendors the scripts sees no functional change.
+
 ## [0.12.1] - 2026-07-13
 
 **Patch — new agent-facing DL-counter recovery runbook (docs; one comment-only `bin/next-dl` change).** 1 PR since v0.12.0 (#88).
