@@ -35,6 +35,16 @@ jobs:
       - name: adopt-to-dl pure-logic unit checks
         run: bash tests/adopt-to-dl-selftest.sh
 
+  board-card-start-selftest:
+    # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
+    # the RFC-2606/6761 placeholder-host detector (anchored so real hosts aren't misread), the
+    # install-target/refuse discriminator for core.hooksPath, and the durable-log helper.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: board-card-start pure-logic unit checks
+        run: bash tests/board-card-start-selftest.sh
+
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
     # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).

@@ -45,6 +45,46 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 KB_PROG="board-card-start"
 
+# --- pure helpers (unit-tested by tests/board-card-start-selftest.sh) --------
+
+# _bcs_is_placeholder_host <api_base>: true (0) when the api_base host is an RFC-2606/6761
+# reserved documentation/placeholder host — the host-scrub emits such a host so the real
+# kanban host never lives in a repo, and the hook then falls back to $KB_API. Each reserved
+# label is anchored to a host-label boundary (leading '.' or the scheme '//', trailing ':' /
+# '/' / end) so a REAL host that merely CONTAINS the substring — kanban.latest-corp.com
+# (…test…), example-corp.net, mytest.io — is NOT misread as a placeholder (which would wrongly
+# override it to $KB_API or reject a valid config, #34). Empty → placeholder (fall back to KB_API).
+_bcs_is_placeholder_host() {
+    local api="${1:-}"
+    [ -z "$api" ] && return 0
+    printf '%s' "$api" | grep -qiE '://([^/]*\.)?example\.(com|net|org)([:/]|$)|://([^/]*\.)?(invalid|test|example)([:/]|$)|://localhost([:/]|$)'
+}
+
+# kb_bcs_log <reason>: the loud + DURABLE diagnostic for an *attempted-but-failed* move (a
+# branch that carries a DL/card token but whose card did not move for an infra reason). The
+# installed wrapper runs `board-card-start >/dev/null 2>&1 || true`, so stderr is invisible on
+# the hook path — the durable record is the log FILE (KB_BCS_LOG override). Best-effort and
+# set -u-safe (every ref defaulted); it swallows its own errors so it can NEVER fail the hook
+# (which must exit 0, never blocking a checkout). A manual `board-card-start` run still sees stderr.
+kb_bcs_log() {
+    local reason="${1:-unspecified}"
+    local br="${branch:-?}"
+    local msg="board-card-start: branch '$br' carries a DL/card token but the move did not happen — $reason"
+    printf '%s\n' "$msg" >&2
+    local logf="${KB_BCS_LOG:-${HOME:-/tmp}/.cache/agent-board-toolkit/board-card-start.log}"
+    local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '?')"
+    { mkdir -p "$(dirname "$logf")" 2>/dev/null && printf '%s %s\n' "$ts" "$msg" >>"$logf" 2>/dev/null; } || true
+}
+
+# bcs_skip <reason>: record the attempted-but-failed reason (kb_bcs_log), then exit 0 — the
+# hook is fail-soft and must never block a checkout. Only ever called PAST the token-presence
+# gate below, so a token IS present: a genuine no-op (no token) stays silent and never reaches here.
+bcs_skip() { kb_bcs_log "$1"; exit 0; }
+
+# When sourced (tests/board-card-start-selftest.sh), expose only the pure helpers above and
+# stop here — sourcing must not run the checkout mover.
+(return 0 2>/dev/null) && return 0
+
 branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 [ -n "$branch" ] && [ "$branch" != "HEAD" ] || exit 0
 
@@ -60,56 +100,66 @@ dl=""
 # `#2950` / `card-2950` / `card/2950`, or a typed branch's leading >=3-digit id
 # directly after a known type prefix, token-bounded so `feat/2signup`, a 2-digit
 # version, or a `dl-189` token can't match), so it never mis-reads a DL as a card id.
+cid_explicit=0
 cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/#]|#)0*[0-9]{2,}' | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
+[ -n "$cid_token" ] && cid_explicit=1   # matched the explicit card#N / #N grammar (a named card)
 [ -n "$cid_token" ] || cid_token="$(printf '%s\n' "$branch" \
     | grep -oiE '^(feat|feature|fix|hotfix|bug|chore|fr|refactor|perf|docs|ci|test|build|style)/#?0*[0-9]{3,}([/_-]|$)' \
     | grep -oE '[0-9]{3,}' | head -1 | sed 's/^0*//')"
 
 [ -n "$dl" ] || [ -n "$cid_token" ] || exit 0
 
-command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
+command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || bcs_skip "curl and jq are both required but not both on PATH"
 
-# Board id + API base. `board_id` always comes from the repo's committed
-# .release-pr.json (not a secret). The `api_base` does too — EXCEPT the committed
-# value is usually a host-scrubbed RFC-2606 placeholder (`*.example.com`), because
-# the real kanban host must not live in a repo (bridge #218 / toolkit host-scrub).
-# When the committed api_base is such a placeholder, fall back to $KB_API — the real
-# host this script already resolves from ~/.kanban-host.env (KBCARD_API) via
-# kb_load_host_token below — so the post-checkout hook reaches the real board with
-# NO per-repo config. A genuinely real committed host (a multi-host install that did
-# not scrub) is not a placeholder, so it is used as-is.
+# Board id + API base.
+#   board_id: the repo's committed .release-pr.json .promote.board_id (release repos), else a
+#   repo-local UNCOMMITTED `git config kanban.board-id` (#4290) — so a non-release repo binds
+#   THIS repo to a board WITHOUT a committed .release-pr.json (whose .promote.api_base is a
+#   token-adjacent host surface the https-host guard exists to bound). The board id is not a
+#   secret; api_base still resolves from ~/.kanban-host.env below, so this adds NO committed
+#   token surface. A single-board machine can use the sole board env; a repo unrelated to any
+#   board simply sets neither and the hook no-ops.
+#   api_base: the committed value — EXCEPT it is usually a host-scrubbed RFC-2606/6761
+#   placeholder (the real kanban host must not live in a repo, bridge #218 / toolkit host-scrub),
+#   or absent entirely (a non-release repo). In either case fall back to $KB_API — the real host
+#   resolved from ~/.kanban-host.env (KBCARD_API) via kb_load_host_token below — so the hook
+#   reaches the real board with NO per-repo config. A genuinely real committed host is used as-is.
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$root" ] || bcs_skip "not inside a git work tree (cannot resolve the repo root)"
 cfg="$root/.release-pr.json"
-[ -n "$root" ] && [ -r "$cfg" ] || exit 0
-board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
-committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
-[ -n "$board" ] || exit 0
+board=""; committed_api=""
+if [ -r "$cfg" ]; then
+    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
+    committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
+fi
+[ -n "$board" ] || board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+[ -n "$board" ] || bcs_skip "no board_id — set .promote.board_id in .release-pr.json, or run 'git config kanban.board-id <id>' in this repo (docs/INSTALL.md)"
 
 # Token + host env (sources ~/.kanban-host.env, publishing KB_API=KBCARD_API and the
 # token). Unconditional so a host-env KBCARD_TOKEN_FILE override always wins. Reads
 # the token into memory only (not sent until the guarded curls below). Fail-soft.
-kb_load_host_token unconditional || exit 0
+kb_load_host_token unconditional || bcs_skip "kanban token/host env not loadable (create ~/.kanban-host.env; see docs/INSTALL.md)"
 token="$KB_TOKEN"
 
-# Effective api_base: the committed value, unless it is a documentation-placeholder
-# host (host-scrubbed) — then the host-env-resolved KB_API is the real one. The
-# regex must track the host-scrub's placeholder form: today the scrub emits
-# `*.example.com` (RFC-2606 reserved), so match example.{com,net,org}. If the scrub
-# ever switches to the bare `.example` TLD, widen this accordingly.
+# Effective api_base: the committed value, unless it is a documentation-placeholder host
+# (host-scrubbed) or absent (committed_api empty — a non-release repo) — then the host-env-
+# resolved KB_API is the real one. _bcs_is_placeholder_host recognizes the RFC-2606/6761
+# reserved forms the scrub may emit (example.{com,net,org}, .invalid, .test, .localhost, the
+# bare .example TLD), anchored so a real host that merely contains such a substring is not
+# misread (#34); empty committed_api is treated as "placeholder" so it falls back to KB_API.
 api="$committed_api"
-if [ -z "$api" ] || printf '%s' "$api" | grep -qiE '://([^/]*\.)?example\.(com|net|org)([:/]|$)'; then
+if _bcs_is_placeholder_host "$api"; then
     api="${KB_API:-}"
 fi
 if [ -z "$api" ]; then
-    echo "board-card-start: no usable kanban api_base — committed .release-pr.json is host-scrubbed and \$KBCARD_API is unset (create ~/.kanban-host.env; see docs/INSTALL.md). No move." >&2
-    exit 0
+    bcs_skip "no usable kanban api_base — committed .release-pr.json is host-scrubbed/absent and \$KBCARD_API is unset (create ~/.kanban-host.env; see docs/INSTALL.md)"
 fi
 
 # Guard the api_base before sending the token — a malicious .release-pr.json edit (or
 # host-env value) must not exfiltrate the token to an untrusted host (#3570). Fail-SOFT
 # (exit 0 — this runs from a post-checkout hook and must NEVER block a checkout) but
 # LOUD on stderr; the token is simply never sent when the host isn't trusted.
-kb_require_https_host "$api" || exit 0
+kb_require_https_host "$api" || bcs_skip "api_base '$api' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
 
 # Stage ids for THIS board, from the matching ~/.kanban-*-board.env.
 stages="$(
@@ -123,9 +173,11 @@ stages="$(
 read -r inprog backlog prioritized held <<<"$stages"
 # Held is optional (a board may not have the column); backlog/prioritized/in_progress
 # are required for any promotion to make sense.
-[ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || exit 0
+[ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || bcs_skip "no ~/.kanban-*-board.env has KB_BOARD_ID=$board with in-progress/backlog/prioritized stage ids"
 
-get() { curl -fsS -H @<(kb_auth_header "$token") -H "Accept: application/json" "$1" 2>/dev/null; }
+# Auth via stdin herestring (-H @- <<<) — token out of argv (#3569) + portable (no /dev/fd
+# process-sub dependency that breaks native mingw64 curl, #34).
+get() { curl -fsS -H @- -H "Accept: application/json" "$1" 2>/dev/null <<<"$(kb_auth_header "$token")"; }
 
 # A branch CREATION is the genuine work-start signal for a Held card (contract
 # PR #113); a re-checkout of an existing branch must not un-park it. The branch's
@@ -152,7 +204,7 @@ if [ -n "$dl" ]; then
     # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
     # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
     # "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves.
-    cards="$(fetch_board_cards "$api" "$token" "$board")" || exit 0
+    cards="$(fetch_board_cards "$api" "$token" "$board")" || bcs_skip "board $board fetch failed (unreachable or auth rejected)"
     cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" '
         [ .[]
           | (.payload.dl_number // empty) as $raw
@@ -173,22 +225,34 @@ if [ -n "$dl" ]; then
     else
         # (4) DL present, unresolved, no card-id fallback → a high-value miss (a
         # decision-logged-but-unstamped card). Loud, never a silent no-op.
-        echo "board-card-start: branch names DL-$dl but no card carries it and no card-id fallback token is present — no move" >&2
-        exit 0
+        bcs_skip "branch names DL-$dl but no card carries that dl_number and there is no card-id fallback token"
     fi
 else
     cid="$cid_token"
     label="#$cid_token"
     via_cardid=1
 fi
-[ -n "$cid" ] || exit 0
+[ -n "$cid" ] || bcs_skip "internal: no card id resolved after a token match"
 
 # Fetch the card; read its current stage AND board. The board-match guard bounds
 # the card-id path — a bare number can only move a card on the repo's own board.
 card="$(get "$api/tasks/$cid.json")"
 cur="$(printf '%s' "$card" | jq -r '.data.workflow_stage_id // empty')"
 cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
-[ -n "$cur" ] && [ "$cbd" = "$board" ] || exit 0
+if [ -z "$cur" ]; then
+    # The resolved id is not a real card. For a DL path this is unreachable (the fetch was
+    # board-scoped and matched); for the card-id path the branch's number is not a card. Loud
+    # ONLY when the branch NAMED a card explicitly (card#N / #N) — a genuine miss; the implicit
+    # typed-branch leading id (often a foreign ticket number, a routine false positive) is silent.
+    [ "${cid_explicit:-0}" = 1 ] && bcs_skip "card #$cid named in the branch does not exist"
+    exit 0
+fi
+if [ "$cbd" != "$board" ]; then
+    # Designed SILENT scope guard (see header): a card-id number that lives on ANOTHER board is
+    # a deliberate no-op — a stray number must not promote an unrelated task. A routine correct
+    # outcome, never a failure, so never loud (that would train agents to ignore hook output).
+    exit 0
+fi
 
 # Opt-out (framework contract, agent-board-framework PR #113): a card a human has
 # pinned — a non-empty block_reason OR a `no-automove` tag — is NEVER auto-moved,
@@ -196,8 +260,7 @@ cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
 breason="$(printf '%s' "$card" | jq -r '.data.block_reason // empty')"
 sticky="$(printf '%s' "$card" | jq -r 'any((.data.tags // [])[]; . == "no-automove")')"
 if [ -n "$breason" ] || [ "$sticky" = "true" ]; then
-    echo "board-card-start: card #$cid ($label) pinned (block_reason/no-automove) — auto-move refused" >&2
-    exit 0
+    bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused"
 fi
 
 # Stamp the dl_number write-site (framework contract #112 step 2). When the card
@@ -215,10 +278,10 @@ if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     curdl_num="$(printf '%s' "$curdl" | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
-        if [ -n "$want" ] && curl -fsS -X PATCH -H @<(kb_auth_header "$token") \
+        if [ -n "$want" ] && curl -fsS -X PATCH -H @- \
              -H "Accept: application/json" -H "Content-Type: application/json" \
              --data "$(jq -nc --arg dl "$want" '{task: {payload: {dl_number: $dl}}}')" \
-             "$api/tasks/$cid.json" >/dev/null 2>&1; then
+             "$api/tasks/$cid.json" >/dev/null 2>&1 <<<"$(kb_auth_header "$token")"; then
             echo "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" >&2
         fi
     elif [ "$curdl_num" != "$dl" ]; then
@@ -245,9 +308,9 @@ case "$cur" in
     *) exit 0 ;;
 esac
 
-if curl -fsS -X PATCH -H @<(kb_auth_header "$token") -H "Accept: application/json" \
+if curl -fsS -X PATCH -H @- -H "Accept: application/json" \
      -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
-     "$api/tasks/$cid.json" >/dev/null 2>&1; then
+     "$api/tasks/$cid.json" >/dev/null 2>&1 <<<"$(kb_auth_header "$token")"; then
     echo "board-card-start: card #$cid ($label) → In Progress" >&2
 fi
 exit 0

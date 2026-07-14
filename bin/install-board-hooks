@@ -3,24 +3,86 @@
 #
 #     install-board-hooks <repo-dir>
 #
-# Symlinks hooks/post-checkout into <repo-dir>/.git/hooks so the card auto-moves
-# to In Progress when a feature branch is checked out. Non-destructive: refuses
-# to clobber an existing NON-symlink hook (so a repo's own hooks are never lost).
+# Installs hooks/post-checkout so the correlated card auto-moves to In Progress on a
+# feature-branch checkout. HONORS core.hooksPath: when a repo sets it (gitleaks, the
+# pre-commit framework, Husky, many Windows setups), git dispatches hooks ONLY from there —
+# installing into .git/hooks would be a SILENT no-op (the symlink is created, install reports
+# success, the hook never fires; #4281). Non-destructive: refuses to clobber an existing
+# NON-symlink hook (a repo's own hook is never lost). Refuses a hooksPath that resolves inside
+# the tracked work tree (a machine-specific absolute symlink there would show as a work-tree
+# change and break on other clones) — it guides the operator instead of polluting the tree.
 set -euo pipefail
 
-repo="${1:?usage: install-board-hooks <repo-dir>}"
-[ -d "$repo/.git" ] || { echo "install-board-hooks: not a git repo: $repo" >&2; exit 1; }
+# _ibh_hooks_dir <repo-root> <core.hooksPath-value>: echo the directory the post-checkout hook
+# must live in for git to dispatch it, and return a status telling the caller how to treat it.
+# Pure (no filesystem writes) so tests/board-card-start-selftest.sh can assert on it.
+#   0  safe install target — the default .git/hooks, a hooksPath under .git/ (untracked), or one
+#      OUTSIDE the work tree (an absolute/global dir): symlink into it.
+#   3  hooksPath resolves INSIDE the tracked work tree (under repo root but NOT under .git/):
+#      the caller must REFUSE. The directory is still echoed (for the diagnostic).
+# Git resolves a RELATIVE core.hooksPath against the work-tree top (verified), not the CWD.
+_ibh_hooks_dir() {
+    local root="$1" hp="${2:-}"
+    if [ -z "$hp" ]; then
+        printf '%s\n' "$root/.git/hooks"; return 0
+    fi
+    local dir
+    case "$hp" in
+        /*) dir="$hp" ;;     # absolute — as-is
+        *)  dir="$root/$hp" ;;   # relative — against the work-tree top
+    esac
+    local nroot="${root%/}" ndir="${dir%/}"
+    # Under .git/ → untracked, safe to symlink (never shows as a work-tree change).
+    case "$ndir/" in
+        "$nroot"/.git/*|"$nroot"/.git/) printf '%s\n' "$dir"; return 0 ;;
+    esac
+    # Under the repo root but NOT under .git/ → a tracked work-tree dir → refuse.
+    case "$ndir/" in
+        "$nroot"/*) printf '%s\n' "$dir"; return 3 ;;
+    esac
+    # Outside the work tree entirely (absolute/global hooks dir) → safe to symlink.
+    printf '%s\n' "$dir"; return 0
+}
 
-toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-src="$toolkit/hooks/post-checkout"
-[ -f "$src" ] || { echo "install-board-hooks: hook source missing: $src" >&2; exit 1; }
-chmod +x "$src"
+_ibh_main() {
+    local repo="${1:?usage: install-board-hooks <repo-dir>}"
+    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
+        || { echo "install-board-hooks: not a git repo: $repo" >&2; exit 1; }
+    local root
+    root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$root" ] || { echo "install-board-hooks: cannot resolve the work-tree root for: $repo" >&2; exit 1; }
 
-dst="$repo/.git/hooks/post-checkout"
-if [ -e "$dst" ] && [ ! -L "$dst" ]; then
-    echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
-    echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
-    exit 1
-fi
-ln -sf "$src" "$dst"
-echo "install-board-hooks: $dst -> $src"
+    local toolkit src
+    toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+    src="$toolkit/hooks/post-checkout"
+    [ -f "$src" ] || { echo "install-board-hooks: hook source missing: $src" >&2; exit 1; }
+    chmod +x "$src"
+
+    local hp dir rc
+    hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+    dir="$(_ibh_hooks_dir "$root" "$hp")"; rc=$?
+    if [ "$rc" = 3 ]; then
+        {
+            echo "install-board-hooks: core.hooksPath='$hp' resolves inside the tracked work tree ($dir)."
+            echo "  Refusing: a machine-specific absolute symlink there would show as a work-tree change and break on other clones."
+            echo "  Instead, add a line to that committed hook that runs the toolkit hook — e.g.:"
+            echo "      exec \"$src\" \"\$@\""
+            echo "  or point core.hooksPath at an out-of-tree directory."
+        } >&2
+        exit 1
+    fi
+
+    local dst="$dir/post-checkout"
+    mkdir -p "$dir"
+    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+        echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
+        echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
+        exit 1
+    fi
+    ln -sf "$src" "$dst"
+    echo "install-board-hooks: $dst -> $src"
+    [ -n "$hp" ] && echo "install-board-hooks: (honored core.hooksPath=$hp)"
+}
+
+# run main only when executed directly, so the selftest can source _ibh_hooks_dir.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then _ibh_main "$@"; fi
