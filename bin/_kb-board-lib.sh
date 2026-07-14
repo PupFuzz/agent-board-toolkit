@@ -116,11 +116,12 @@ kb_load_host_token() {
 KB_HTTP=""
 
 # kb_auth_header <token>: emit the Authorization header line (no trailing newline)
-# for feeding to curl OUT-OF-BAND via `-H @<(kb_auth_header "$tok")` process
-# substitution. The bearer token must never be an argv token: curl's argv is
-# world-readable via `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a
-# `-H "Authorization: Bearer $tok"` would leak it. printf is a bash builtin, so the
-# process substitution exposes no separate process whose argv carries the token.
+# for feeding to curl OUT-OF-BAND via a stdin herestring — `curl -H @- … <<<"$(kb_auth_header
+# "$tok")"`. The bearer token must never be an argv token: curl's argv is world-readable via
+# `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a `-H "Authorization: Bearer $tok"`
+# would leak it. The herestring keeps the token off argv AND (unlike a `-H @<(…)` process
+# substitution) redirects a regular temp file onto fd 0 rather than a /dev/fd named pipe, so it
+# also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
 # kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base
@@ -170,8 +171,10 @@ kb_api() {
     local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
-    # Auth is fed via process substitution (-H @<(...)) so the token never enters argv.
-    out="$(curl "${args[@]}" -H @<(kb_auth_header "$KB_TOKEN") -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || {
+    # Auth fed via stdin herestring (-H @- <<<) so the token never enters argv (#3569) AND
+    # the call is portable: a herestring redirects a regular temp file onto fd 0, avoiding the
+    # /dev/fd process-substitution path that native mingw64/Git-Bash curl can't open (#34).
+    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || {
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
         KB_HTTP="000"; return 1
@@ -197,8 +200,9 @@ kb_api_status() {
     local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
-    # Auth via process substitution (-H @<(...)) — token stays out of argv.
-    out="$(curl "${args[@]}" -H @<(kb_auth_header "$KB_TOKEN") -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1)" || { printf '000\n%s' "$out"; return 0; }
+    # Auth via stdin herestring (-H @- <<<) — token stays out of argv (#3569) + portable
+    # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
+    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
 }
@@ -235,9 +239,10 @@ fetch_board_cards() {
     while :; do
         local url="$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}"
         local rc
-        # Auth via process substitution (-H @<(...)) so the token never enters argv.
-        resp="$(curl "${curl_opts[@]}" -H @<(kb_auth_header "$token") -H "Accept: application/json" \
-                "$url" 2>"$errsink")" || {
+        # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
+        # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
+        resp="$(curl "${curl_opts[@]}" -H @- -H "Accept: application/json" \
+                "$url" 2>"$errsink" <<<"$(kb_auth_header "$token")")" || {
             rc=$?
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 echo "fetch_board_cards: page $page read failed for board $board (curl rc=$rc)" >&2

@@ -128,10 +128,11 @@ jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
 
 # --- read the WHOLE board (paged) --------------------------------------------
-# Auth is fed OUT-OF-BAND via process substitution (-H @<(...)) so the bearer token
-# never appears in curl's argv (world-readable via `ps aux` / /proc/<pid>/cmdline on a
-# multi-user host). printf is a shell builtin, so the substitution spawns no process
-# whose argv carries the token. (#3569)
+# Auth is fed OUT-OF-BAND via a stdin herestring (-H @- <<<) so the bearer token never
+# appears in curl's argv (world-readable via `ps aux` / /proc/<pid>/cmdline on a multi-user
+# host, #3569). A herestring also redirects a regular temp file onto fd 0 rather than a
+# /dev/fd named pipe, so it works on native mingw64/Git-Bash curl where process substitution
+# (-H @<(...)) fails to open its fd (#34); the temp is seekable, so curl's --retry is safe.
 # --retry rides through a transient prod outage: the merge-to-main promote job
 # races the operator's `bin/deploy.sh`, which drops prod into maintenance mode
 # (HTTP 503) for the seconds-long deploy window (#3700). curl's --retry backs off
@@ -140,7 +141,7 @@ DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
 # still fails fast. Bounded by --retry-max-time so a truly-down prod still exits.
 # Card moves are idempotent (set stage N) and a 503 applies nothing, so retrying
 # a PATCH is safe.
-api() { curl -fsS --retry 5 --retry-connrefused --retry-max-time 60 -H @<(printf 'Authorization: Bearer %s' "$TOKEN") -H "Accept: application/json" "$@"; }
+api() { curl -fsS --retry 5 --retry-connrefused --retry-max-time 60 -H @- -H "Accept: application/json" "$@" <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")"; }
 CARDS='[]'; page=1
 while :; do
   RESP="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
