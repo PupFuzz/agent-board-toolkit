@@ -60,7 +60,10 @@ _ibh_main() {
 
     local hp dir rc
     hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
-    dir="$(_ibh_hooks_dir "$root" "$hp")"; rc=$?
+    # Capture rc in an || context: a bare `dir="$(cmd)"; rc=$?` would trip `set -e` on the
+    # command-substitution's non-zero exit (rc=3, the in-tree refuse signal) and quit at the
+    # assignment BEFORE rc is read — killing the guidance block below (impl-review HIGH).
+    rc=0; dir="$(_ibh_hooks_dir "$root" "$hp")" || rc=$?
     if [ "$rc" = 3 ]; then
         {
             echo "install-board-hooks: core.hooksPath='$hp' resolves inside the tracked work tree ($dir)."
@@ -81,7 +84,9 @@ _ibh_main() {
     fi
     ln -sf "$src" "$dst"
     echo "install-board-hooks: $dst -> $src"
-    [ -n "$hp" ] && echo "install-board-hooks: (honored core.hooksPath=$hp)"
+    # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
+    # successful install with no core.hooksPath; use an if so success always exits 0.
+    if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi
 }
 
 # run main only when executed directly, so the selftest can source _ibh_hooks_dir.

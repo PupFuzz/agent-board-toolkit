@@ -116,11 +116,12 @@ kb_load_host_token() {
 KB_HTTP=""
 
 # kb_auth_header <token>: emit the Authorization header line (no trailing newline)
-# for feeding to curl OUT-OF-BAND via `-H @<(kb_auth_header "$tok")` process
-# substitution. The bearer token must never be an argv token: curl's argv is
-# world-readable via `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a
-# `-H "Authorization: Bearer $tok"` would leak it. printf is a bash builtin, so the
-# process substitution exposes no separate process whose argv carries the token.
+# for feeding to curl OUT-OF-BAND via a stdin herestring — `curl -H @- … <<<"$(kb_auth_header
+# "$tok")"`. The bearer token must never be an argv token: curl's argv is world-readable via
+# `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a `-H "Authorization: Bearer $tok"`
+# would leak it. The herestring keeps the token off argv AND (unlike a `-H @<(…)` process
+# substitution) redirects a regular temp file onto fd 0 rather than a /dev/fd named pipe, so it
+# also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
 # kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base

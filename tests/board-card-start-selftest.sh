@@ -65,5 +65,27 @@ KB_BCS_LOG="$_tmpd/bcs.log" kb_bcs_log "unit probe reason" >/dev/null 2>&1 || tr
 if grep -q "unit probe reason" "$_tmpd/bcs.log" 2>/dev/null; then ok "log line written"; else bad "log line not written to KB_BCS_LOG"; fi
 rm -rf "$_tmpd"
 
+echo "== install-board-hooks — end-to-end refuse/install (exercises _ibh_main, not just the pure fn) =="
+if command -v git >/dev/null 2>&1; then
+    _t="$(mktemp -d)"
+    # in-tree core.hooksPath → must REFUSE LOUDLY (exit non-zero + guidance), never a bare exit
+    # with no output (the set -e assignment dead-code bug the unit test can't see).
+    git init -q "$_t/refuse"; git -C "$_t/refuse" config core.hooksPath .githooks
+    _rc=0; _out="$(bash "$IBH" "$_t/refuse" 2>&1)" || _rc=$?
+    [[ "$_rc" -ne 0 ]] && ok "in-tree hooksPath refused (rc=$_rc)" || bad "in-tree hooksPath must refuse (got rc=$_rc)"
+    printf '%s' "$_out" | grep -q "resolves inside the tracked work tree" \
+        && ok "refuse prints operator guidance" || bad "refuse guidance missing (set -e dead-code): $_out"
+    # default repo (no hooksPath) → installs a symlink into .git/hooks
+    git init -q "$_t/ok"
+    if bash "$IBH" "$_t/ok" >/dev/null 2>&1 && [[ -L "$_t/ok/.git/hooks/post-checkout" ]]; then
+        ok "default install symlinks .git/hooks/post-checkout"
+    else
+        bad "default install did not create the .git/hooks/post-checkout symlink"
+    fi
+    rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
 echo
 if [[ "$fails" -eq 0 ]]; then echo "board-card-start-selftest: ALL PASS"; else echo "board-card-start-selftest: $fails FAIL(s)" >&2; exit 1; fi
