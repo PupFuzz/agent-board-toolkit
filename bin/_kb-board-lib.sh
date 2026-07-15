@@ -131,11 +131,19 @@ kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 # expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this toolkit is
 # vendored by operators on their own kanban hosts, so there is no host to safely assume.
 # If it is unset/empty the guard fails CLOSED (returns 1) and the caller MUST NOT send the
-# token. Host is parsed per RFC 3986 (userinfo before the last '@' is stripped, then :port),
-# so neither `https://good.host@evil/` (→ evil) nor `https://good.host.evil/` slips through.
-# Prints a diagnostic and returns 1 on violation.
+# token. Host is parsed per RFC 3986 — the authority ends at the FIRST of '/', '?' or '#',
+# then userinfo before the last '@' is stripped, then :port — so none of
+# `https://good.host@evil/` (→ evil), `https://good.host.evil/`, or the delimiter splits
+# below slip through. Prints a diagnostic and returns 1 on violation.
 # (promote-released-cards carries an inline mirror of this — it is vendored standalone
 # and must not source this lib; keep the two in sync, INCLUDING this required-var check.)
+# The parser MUST agree with curl about where the authority ends. It once terminated the
+# authority at '/' ALONE, so `https://evil.example#@good.host` left the fragment in the
+# string, the userinfo strip took everything after the LAST '@', and the guard read the
+# host as `good.host` and ACCEPTED — while curl discarded the fragment and sent the bearer
+# token to evil.example. A '?' did the same via the query. Any future edit here must keep
+# the hostile-URL matrix in tests/kb-board-lib-selftest.sh green: a guard that parses a URL
+# differently from the client that fetches it is an exfiltration primitive, not a guard.
 kb_require_https_host() {
     local api="$1"
     local expect="${KANBAN_EXPECTED_HOST:-}"
@@ -148,9 +156,9 @@ kb_require_https_host() {
         *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api)" >&2; return 1 ;;
     esac
     local host="${api#https://}"
-    host="${host%%/*}"   # strip path/query
-    host="${host##*@}"   # strip userinfo — host is after the last '@' (RFC 3986)
-    host="${host%%:*}"   # strip :port
+    host="${host%%[/?#]*}"   # authority ends at the FIRST of / ? # (RFC 3986) — not '/' alone
+    host="${host##*@}"       # strip userinfo — host is after the last '@' (RFC 3986)
+    host="${host%%:*}"       # strip :port
     if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
         return 0
     fi

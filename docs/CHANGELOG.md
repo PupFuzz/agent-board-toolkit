@@ -6,7 +6,20 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
-_(empty after each tagged release; accumulates as feature PRs land on dev)_
+### Fixed
+- **SECURITY — the `api_base` host guard accepted a URL that sends the bearer token to an attacker-controlled host.** `kb_require_https_host` (`_kb-board-lib.sh`) and its standalone mirror `host_ok` (`promote-released-cards`) terminated the URL authority at **`/` alone**. RFC 3986 ends it at the first of **`/`, `?`, or `#`** — so with a delimiter placed before an `@`, the userinfo strip (`${h##*@}`) reached past it and lifted a fake host out of the query/fragment:
+
+  ```
+  api_base: https://evil.example#@kanban.your-host.tld
+  guard parses host -> kanban.your-host.tld  -> ACCEPTED
+  curl connects to  -> evil.example          -> bearer token sent to the attacker
+  ```
+
+  Because `api_base` is read from the **committed, PR-editable** `.release-pr.json`, a pull request alone was enough: for `board-card-start` a maintainer merely checking out the branch leaked their kanban token, and for `promote-released-cards` a repo running promote on untrusted config would leak the `KANBAN_WRITEBACK_TOKEN` CI secret. Neither required any access to `$HOME` or `git config`. Both copies now terminate the authority at `[/?#]`. Verified end-to-end against a listener standing in for the attacker: the pre-fix hook delivered the bearer token, the fixed hook sends nothing and names the real host in its refusal. Legitimate values — subdomains, `:port`, real `user:pw@` userinfo, queries — are unaffected.
+
+  It survived because the guard had **no decision coverage**: it was wired and ran on every checkout, but nothing had ever asked it to judge a hostile URL. New `tests/kb-host-guard-selftest.sh` (+ CI job) pins the matrix and additionally asserts the two copies agree — they are sync-paired by comment only, and both carried the identical defect.
+
+  **[vendor] Action required:** `promote-released-cards` changed, so a repo that **vendored** it must re-vendor (UPGRADE §3) to get the fix. **[release-CI]** consumers of the SHA-pinned composite action get it with the pin bump — `promote/action.yml` itself is unchanged.
 
 ## [0.13.0] - 2026-07-14
 
