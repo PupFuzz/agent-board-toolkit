@@ -264,9 +264,20 @@ kb_require_https_host() {
 #   KB_API_QUIET=1    suppress the non-2xx stderr line (dl-a1, which lets its
 #                     callers print their own FATAL message); transport failures
 #                     are still reported.
+#   KB_CURL_MAX_TIME  cap the request at N seconds (curl --max-time). Unset = no
+#                     cap, so every existing caller is byte-for-byte unaffected.
+#                     This is the SAME knob fetch_board_cards honors, and it must
+#                     stay that way: board-snapshot sets it once at the top so a
+#                     slow/down API can never stall SessionStart, and a caller has
+#                     no way to tell which lib function it reached. When only one
+#                     of the two honored it, a bounded paginated read sat beside an
+#                     unbounded single read under one knob that looked global — the
+#                     cap silently did not apply, and the hang it exists to prevent
+#                     came back through the sibling.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")
+    [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
     # Auth fed via stdin herestring (-H @- <<<) so the token never enters argv (#3569) AND

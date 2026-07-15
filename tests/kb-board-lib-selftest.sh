@@ -388,6 +388,42 @@ eq "clean two-page read → 201 cards"           "201" "$(printf '%s' "$out" | j
 [[ -s "$TMP/clean.err" ]] && bad "clean read must be silent on stderr" || ok "clean read silent"
 unset -f curl _stub_page_curl
 
+# --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---
+# board-snapshot sets this knob ONCE at the top of the script so a slow/down API can
+# never stall SessionStart, then reaches the board through BOTH lib fetchers. kb_api
+# ignored it while fetch_board_cards honored it, so a single read was unbounded under
+# a cap that read as global — reintroducing, via the sibling, the exact hang the cap
+# exists to prevent. A caller cannot tell which fetcher it landed on, so the knob must
+# mean the same thing in both. Keep these three assertions together: the parity IS the
+# contract, and the unset case pins that existing callers are unaffected.
+#
+# argv is captured to a FILE, not a variable: kb_api runs curl inside "$(…)", so a
+# stub-assigned array dies with that subshell and would assert nothing.
+_argv_file="$TMP/curl-argv.txt"
+curl() { printf '%s\n' "$@" > "$_argv_file"; _stub_curl_respond '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 200; }
+_maxtime_arg() { grep -A1 -x -F -- '--max-time' "$_argv_file" 2>/dev/null | tail -1; }
+
+KB_API="https://api.example"
+KB_TOKEN=tok
+
+: > "$_argv_file"
+KB_CURL_MAX_TIME=5
+kb_api GET /boards/8/preload.json >/dev/null 2>&1
+eq "kb_api honors KB_CURL_MAX_TIME → curl gets --max-time 5"        "5" "$(_maxtime_arg)"
+
+: > "$_argv_file"
+KB_CURL_MAX_TIME=5
+fetch_board_cards "https://api.example" tok 8 >/dev/null 2>&1
+eq "fetch_board_cards honors the SAME knob (parity)"                "5" "$(_maxtime_arg)"
+
+: > "$_argv_file"
+unset KB_CURL_MAX_TIME
+kb_api GET /boards/8/preload.json >/dev/null 2>&1
+eq "kb_api without the knob → no --max-time (callers unchanged)"    ""  "$(_maxtime_arg)"
+
+unset -f curl _maxtime_arg
+unset KB_API KB_TOKEN _argv_file
+
 # ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kb-board-lib-selftest: $fails check(s) FAILED" >&2
