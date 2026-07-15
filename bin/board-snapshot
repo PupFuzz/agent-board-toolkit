@@ -74,6 +74,12 @@ snap() {  # $1 = board env file   $2 = label
     local names pre
     KB_API="$API"; KB_API_QUIET=1   # kb_api reads these globals; snap() body is a subshell, so this is contained
     pre="$(kb_api GET "/boards/$KB_BOARD_ID/preload.json" 2>/dev/null)" || pre=""
+    # A 2xx body is not necessarily JSON — a proxy, captive portal, or truncated
+    # response can answer 200 with HTML. --argjson ABORTS jq on invalid JSON, which
+    # would empty $names and cascade into the card-listing jq below, collapsing the
+    # whole board to "(parse error)". The cards fetched fine in that case; only their
+    # LABELS are unknown, so a bad preload must cost the names and nothing else.
+    printf '%s' "$pre" | jq -e . >/dev/null 2>&1 || pre=""
     names="$(jq -n \
         --arg ip "${KB_STAGE_IN_PROGRESS:-}" \
         --arg ir "${KB_STAGE_IN_REVIEW:-}" \
