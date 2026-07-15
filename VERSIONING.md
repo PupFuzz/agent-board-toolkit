@@ -32,7 +32,7 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 2. **Feature branch off `dev`:** `release/v<version>`.
 3. **Bump `VERSION`** to the new semver.
 4. **Update [`docs/CHANGELOG.md`](docs/CHANGELOG.md):** add a `## [X.Y.Z] - YYYY-MM-DD` section (one bullet per bundled PR, Keep-a-Changelog headers) directly under `## [Unreleased]`, keeping `[Unreleased]` empty.
-5. **Add a `CLAUDE.md § Recent releases` row** at the top of the table.
+5. **Add a `CLAUDE.md § Recent releases` row** at the top of the table, and **trim the oldest row back to 10**. The table is the ergonomic snapshot and is always truncated to its stated cap; `docs/CHANGELOG.md` (step 4) is the canonical record and is never truncated, so a trimmed row is still fully documented there.
 6. **ASK the user** before opening the release PR.
 7. Open the release PR `release/v<version>` → **`main`** with full release notes. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly** — a `dev`-headed PR merged with auto-delete-head-branches enabled deletes `dev`.
 8. Wait for ALL CI checks (if the repo has CI) to complete + pass. **Claude does NOT `gh pr merge` a `main`-targeted PR** regardless of CI state.
