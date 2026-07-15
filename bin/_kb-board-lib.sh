@@ -307,6 +307,9 @@ kb_api_status() {
 
 # --- whole-board pagination -------------------------------------------------
 # fetch_board_cards <api> <token> <board_id> [page_cap]: read the WHOLE board via
+# (rc contract: 0 complete · 1 page-1 failed · 2 later-page failed · 3 page-cap hit,
+# partial data emitted · 4 SHORT READ detected — server total exceeds delivered rows,
+# partial data emitted; refuse-policy callers must treat 4 like 2/3)
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
@@ -322,7 +325,7 @@ kb_api_status() {
 # A short-read backstop (meta.total vs cards read) also warns on stderr.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}"
-    local pages="" page=1 last_page=1 resp data n total="" read_n out
+    local pages="" page=1 last_page=1 resp data n total="" read_n out sum_n=0
     # Order-preserving dedup-by-id over the slurped per-page arrays.
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
     # -sS WITHOUT -f (card #4337): -f discards the 4xx/5xx body and collapses every
@@ -374,6 +377,7 @@ fetch_board_cards() {
         data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
         pages+="$data"$'\n'
+        sum_n=$((sum_n + ${n:-0}))
         [[ "${n:-0}" -lt 200 ]] && break
         [[ "$page" -ge "$last_page" ]] && break
         page=$((page + 1))
@@ -386,7 +390,24 @@ fetch_board_cards() {
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"
     if [[ "${total:-}" =~ ^[0-9]+$ && "${read_n:-}" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
-        echo "fetch_board_cards: ⚠ board has $total cards but only $read_n read — list may be INCOMPLETE" >&2
+        # Distinguish a REAL undercount from a dedup artifact (card #4338): the
+        # PRE-dedup page sum is the tell. sum_n < total ⇒ pages genuinely delivered
+        # fewer rows than the server claims exist ⇒ emit the partial data and
+        # return the DISTINCT rc 4 so refuse-policy callers (next-dl: an
+        # undercount could re-mint a used DL; kbcard list: never print a
+        # truncated list) can reach it — the warn-then-return-0 shape was a
+        # backstop no caller could consume. sum_n >= total with read_n < total ⇒
+        # the same card arrived on two pages (a page-boundary shift mid-scan) and
+        # dedup collapsed it — the read is complete; warn-only. Residual accepted
+        # risk, documented: a server delivering the SAME page twice would also
+        # read as an artifact — that is a server fault this client-side census
+        # cannot distinguish, and the warn still surfaces the count mismatch.
+        if [[ "$sum_n" -lt "$total" ]]; then
+            echo "fetch_board_cards: ⚠ board has $total cards but pages delivered only $sum_n ($read_n after dedup) — list INCOMPLETE" >&2
+            printf '%s' "$out"
+            return 4
+        fi
+        echo "fetch_board_cards: ⚠ read $read_n distinct of $total — duplicates across pages collapsed (page-boundary shift); read complete" >&2
     fi
     printf '%s' "$out"
 }

@@ -343,6 +343,52 @@ grep -q "FAILED-FETCH curl-rc=7" "$FETCH_LOG" && ok "transport failure keeps the
 unset -f curl
 
 # ---------------------------------------------------------------------------
+echo "== fetch_board_cards: short-read rc 4 vs dedup artifact (card #4338) =="
+# Page-aware stub: emits per-page payloads by inspecting the page= query param.
+_stub_page_curl() { # uses _PAGES assoc: _PAGES[<n>]=<json>
+    cat >/dev/null
+    local a page=1
+    for a in "${_STUB_ARGS[@]}"; do
+        [[ "$a" == *"page="* ]] && page="${a##*page=}"
+    done
+    printf '%s\n__HTTP__200' "${_PAGES[$page]}"
+    return 0
+}
+declare -A _PAGES
+
+# GENUINE short read: server claims total=3, delivers 2 rows on the only page.
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+_PAGES=( [1]='{"data":[{"id":1},{"id":2}],"meta":{"last_page":1,"total":3}}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/short.err")" || rc=$?
+eq "genuine short read → rc 4"                 "4" "$rc"
+eq "genuine short read still emits the partial data" '[{"id":1},{"id":2}]' "$out"
+grep -q "INCOMPLETE" "$TMP/short.err" && ok "genuine short read warns INCOMPLETE" || bad "missing INCOMPLETE warn"
+
+# DEDUP ARTIFACT: two pages, one card straddles the boundary; pre-dedup sum (201)
+# covers total (201) but distinct read_n (200) < total → complete, rc 0, soft warn.
+# total=202 while only 201 DISTINCT ids exist: the straddling duplicate (199)
+# makes the pre-dedup sum (202) cover the total, so the read is complete and
+# the 201<202 gap is the collapsed duplicate, not a missing row.
+page1="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":202}}')"
+page2='{"data":[{"id":199},{"id":200}],"meta":{"last_page":2,"total":202}}'
+_PAGES=( [1]="$page1" [2]="$page2" )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/dedup.err")" || rc=$?
+eq "dedup artifact → rc 0 (read complete)"     "0" "$rc"
+eq "dedup artifact → all distinct cards"       "201" "$(printf '%s' "$out" | jq 'length')"   # 202 delivered, 1 collapsed
+grep -q "duplicates across pages collapsed" "$TMP/dedup.err" && ok "dedup artifact warns honestly (not INCOMPLETE)" || bad "dedup warn wording regressed"
+grep -q "INCOMPLETE" "$TMP/dedup.err" && bad "dedup artifact must not claim INCOMPLETE" || ok "dedup artifact does not claim INCOMPLETE"
+
+# Positive control: clean two-page read, totals agree → rc 0, silent.
+page1c="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
+page2b='{"data":[{"id":200}],"meta":{"last_page":2,"total":201}}'
+_PAGES=( [1]="$page1c" [2]="$page2b" )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/clean.err")" || rc=$?
+eq "clean two-page read → rc 0"                "0" "$rc"
+eq "clean two-page read → 201 cards"           "201" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/clean.err" ]] && bad "clean read must be silent on stderr" || ok "clean read silent"
+unset -f curl _stub_page_curl
+
+# ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kb-board-lib-selftest: $fails check(s) FAILED" >&2
     exit 1
