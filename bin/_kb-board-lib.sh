@@ -11,9 +11,11 @@
 #   docs/INSTALL.md:141 (§6b) — same requirement, with the failure mode.
 #   bin/agent-board-toolkit-drift-check:39 — MISSING-LIB probe flags a lib-sourcing
 #     bin vendored without the lib.
-#   docs/CHANGELOG.md v0.15.0 — "[vendor] re-vendor _kb-board-lib.sh (#103/#106)".
-#     (v0.11.2/#74 established it as a required co-vendored dependency; it carries
-#     no "[vendor]" tag — those are promote-released-cards'.)
+#   docs/CHANGELOG.md:11 (v0.15.0) — "Consumers who vendor: re-vendor
+#     `promote-released-cards` (#110, diagnostic-only) and `_kb-board-lib.sh`
+#     (#103/#106)." (No "[vendor]" tag on it: the only two in that file are
+#     v0.14.0's, both for promote-released-cards. v0.11.2/#74 established the
+#     co-vendoring requirement itself.)
 # (promote-released-cards is the standalone exception: it is vendored and must
 # never source this.) This header claimed the opposite until 2026-07-15 — treat any
 # change here as having consumer blast radius, because it does.
@@ -293,8 +295,10 @@ kb_require_https_host() {
 #                     there: a timed-out POST/PATCH is AMBIGUOUS (the server may
 #                     have committed it) yet kb_api returns 1, so a non-idempotent
 #                     retry can duplicate a card or burn a DL number. Set it around
-#                     a read; do NOT export it process-wide over kbcard/next-dl/
-#                     adopt-to-dl writes.
+#                     a read; do NOT export it process-wide over the write callers —
+#                     kbcard, next-dl, adopt-to-dl, and dl-a1-register-field (the
+#                     sole kb_api_status caller: 2 POSTs + 4 PATCHes, incl. an
+#                     _action:delete).
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
