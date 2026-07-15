@@ -304,11 +304,12 @@ kb_require_https_host() {
 #                     (next-dl and adopt-to-dl are not themselves on that list:
 #                     next-dl's dl-sequence claim is a raw curl outside this lib, so
 #                     the knob never reaches it. adopt-to-dl stamps via a `kbcard`
-#                     SUBPROCESS — so an EXPORTED cap DOES reach that write, through
-#                     kbcard above; that is precisely why exporting is the thing
-#                     warned against, and adopt-to-dl is where it bites hardest:
-#                     next-dl mints the DL uncapped, the kbcard PATCH then times out
-#                     ambiguously, and a retry mints a second DL — burning the first.)
+#                     SUBPROCESS, so an EXPORTED cap DOES reach that write — through
+#                     kbcard above, which is why exporting is the thing warned
+#                     against. It does not burn a DL there: adopt-to-dl surfaces the
+#                     minted DL BEFORE the write for exactly this reason, and the
+#                     documented retry `--dl N` re-stamps idempotently. What you get
+#                     is an ambiguous stamp to resolve by hand — bad, not corrupting.)
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
