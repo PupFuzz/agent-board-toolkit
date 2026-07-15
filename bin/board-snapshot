@@ -50,7 +50,7 @@ snap() {  # $1 = board env file   $2 = label
         || { echo "• ${label}: (token file unreadable: ${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}})"; return 0; }
     local data rc
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
-    [[ $rc -eq 0 || $rc -eq 3 ]] \
+    [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
     # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
     local names
@@ -89,7 +89,7 @@ untriaged() {  # $1 = board env file   $2 = label
     kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" || return 0
     local data rc
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?   # paginates + warns loud-on-cap/short-read
-    [[ $rc -eq 0 || $rc -eq 3 ]] || return 0
+    [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] || return 0
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
