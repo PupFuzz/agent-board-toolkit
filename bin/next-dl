@@ -99,8 +99,15 @@ resolve_board_cfg() (
     command -v curl >/dev/null && command -v jq >/dev/null \
         || { echo "next-dl: curl/jq missing — skipping board check" >&2; exit 1; }
     [[ -r "$board_env" ]] || { echo "next-dl: $board_env unreadable — skipping board check" >&2; exit 1; }
-    kb_resolve_env "$board_env" >/dev/null 2>&1 && [[ -n "$KB_BOARD_ID" ]] \
-        || { echo "next-dl: board config incomplete — skipping board check" >&2; exit 1; }
+    # Only stdout is muted, NOT stderr: kb_resolve_env's rc-4 refusal (a board env that sets
+    # the board-independent KBCARD_API) is its own loud, actionable message, and swallowing it
+    # here left the operator with a bare "config incomplete" while next-dl silently lost BOTH
+    # the atomic claim and the board's dl_number seed — minting from the local scan alone,
+    # which is exactly how a DL gets re-minted on a shared board (the DL-154 collision class).
+    local rc
+    kb_resolve_env "$board_env" >/dev/null; rc=$?
+    [[ $rc -eq 0 ]] && [[ -n "$KB_BOARD_ID" ]] \
+        || { echo "next-dl: board config incomplete (rc=$rc) — skipping board check" >&2; exit 1; }
     printf '%s\t%s\t%s' "$KB_API" "$KB_BOARD_ID" "$KB_TOKEN_FILE"
 )
 

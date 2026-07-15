@@ -6,17 +6,19 @@
 # Boards: 5 = kanban-board ("Kanban Product Backlog"), 8 = agent-webhook-bridge.
 set -uo pipefail
 
-# API base + token path read from ~/.kanban-host.env (board-independent; not
-# baked in). kb_load_host_token sources the host env (for a KBCARD_TOKEN_FILE
-# override + API base) and reads the token; fail-soft — a missing token → exit 0
-# so a missing config never blocks SessionStart. See INSTALL.md.
+# API base read from ~/.kanban-host.env (board-independent; not baked in) via
+# kb_load_host_env, which also publishes KB_HOST_TOKEN_FILE — the host-level token
+# default. The TOKEN IS NOT READ HERE: each board may point KBCARD_TOKEN_FILE at its
+# own token, so it is read per-board inside snap()/untriaged() below. Reading one
+# token up-front and exiting when it was missing meant a host that uses only
+# per-board tokens (no ~/.kanban-dev-token) rendered NOTHING at SessionStart.
+# Fail-soft throughout — a missing config never blocks SessionStart. See INSTALL.md.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 [ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
 source "$KB_LIB"
-kb_load_host_token || exit 0
+kb_load_host_env   # cannot fail (reads no token)
 API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
-TOKEN="$KB_TOKEN"
 # Cap each page fetch at 5s so a slow/down API never stalls SessionStart (the
 # shared fetch_board_cards honors KB_CURL_MAX_TIME).
 KB_CURL_MAX_TIME=5
@@ -31,10 +33,23 @@ snap() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
   (
+    # Clean slate before sourcing: board envs EXPORT their keys, so an operator shell that
+    # sourced one board's env carries that board's ids and token here. Without the unset, an
+    # env that omits any of these silently inherits the other board's value — rendering the
+    # WRONG board under this label (KB_BOARD_ID), or a stage id that means something else.
+    # KBCARD_TOKEN_FILE is unset for the same reason plus one more: the host env's value is
+    # in this shell (kb_load_host_env sourced it), and it must not read back as this board's
+    # own override — the ladder below places it a tier lower.
+    unset KBCARD_TOKEN_FILE KB_BOARD_ID KB_STAGE_IN_PROGRESS KB_STAGE_IN_REVIEW KB_STAGE_HELD
     # shellcheck disable=SC1090
     source "$envf"
+    [[ -n "${KB_BOARD_ID:-}" ]] || { echo "• ${label}: (env $envf sets no KB_BOARD_ID)"; return 0; }
+    # Explicit token ladder: this board's > the host's > the default. Per-board fail-soft —
+    # one board's unreadable token must not blank the others.
+    kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" \
+        || { echo "• ${label}: (token file unreadable: ${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}})"; return 0; }
     local data rc
-    data="$(fetch_board_cards "$API" "$TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
+    data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 ]] \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
     # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
@@ -66,10 +81,14 @@ untriaged() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || return 0
   (
+    unset KBCARD_TOKEN_FILE   # see snap(): report THIS board's override, not the host's
     # shellcheck disable=SC1090
     source "$envf"
+    # Silent on an unreadable token: snap() runs over the same roster first and already
+    # reported it loudly — this would only be a second copy of the same line.
+    kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" || return 0
     local data rc
-    data="$(fetch_board_cards "$API" "$TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?   # paginates + warns loud-on-cap/short-read
+    data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?   # paginates + warns loud-on-cap/short-read
     [[ $rc -eq 0 || $rc -eq 3 ]] || return 0
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \

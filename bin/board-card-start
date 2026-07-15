@@ -112,33 +112,64 @@ cid_token="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card[-/#]|#)0*[0-9]{
 command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || bcs_skip "curl and jq are both required but not both on PATH"
 
 # Board id + API base.
-#   board_id: the repo's committed .release-pr.json .promote.board_id (release repos), else a
-#   repo-local UNCOMMITTED `git config kanban.board-id` (#4290) — so a non-release repo binds
-#   THIS repo to a board WITHOUT a committed .release-pr.json (whose .promote.api_base is a
-#   token-adjacent host surface the https-host guard exists to bound). The board id is not a
-#   secret; api_base still resolves from ~/.kanban-host.env below, so this adds NO committed
-#   token surface. A single-board machine can use the sole board env; a repo unrelated to any
-#   board simply sets neither and the hook no-ops.
+#   board_id: a repo-local UNCOMMITTED `git config kanban.board-id` (#4290) FIRST, else the
+#   repo's committed .release-pr.json .promote.board_id. git config wins because the board id
+#   now SELECTS A CREDENTIAL (the per-board token below), which makes it a trust decision, and
+#   only the host-local value is beyond the reach of a PR. The committed value stays a
+#   fallback (release repos carry it) but is digits-validated before use. In practice the two
+#   are mutually-exclusive populations — a release repo has the committed file, a non-release
+#   repo has the git config — so the order rarely decides anything; it is the per-board-token
+#   gate below, not this order, that actually bounds the credential.
+#   The board id is not a secret; api_base still resolves from ~/.kanban-host.env below, so
+#   neither source adds a committed token surface. A repo unrelated to any board sets neither
+#   and the hook no-ops.
 #   api_base: the committed value — EXCEPT it is usually a host-scrubbed RFC-2606/6761
 #   placeholder (the real kanban host must not live in a repo, bridge #218 / toolkit host-scrub),
 #   or absent entirely (a non-release repo). In either case fall back to $KB_API — the real host
-#   resolved from ~/.kanban-host.env (KBCARD_API) via kb_load_host_token below — so the hook
+#   resolved from ~/.kanban-host.env (KBCARD_API) via kb_load_host_env below — so the hook
 #   reaches the real board with NO per-repo config. A genuinely real committed host is used as-is.
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$root" ] || bcs_skip "not inside a git work tree (cannot resolve the repo root)"
 cfg="$root/.release-pr.json"
-board=""; committed_api=""
-if [ -r "$cfg" ]; then
-    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null)"
-    committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
+board=""; committed_api=""; board_src=""
+[ -r "$cfg" ] && committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
+board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+if [ -n "$board" ]; then
+    board_src="hostlocal"
+elif [ -r "$cfg" ]; then
+    # Anchored ^[0-9]+$ (not a substring scan): this value is committed and PR-editable, and it
+    # keys the board-env lookup below.
+    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null | grep -oE '^[0-9]+$' | head -1 || true)"
+    [ -n "$board" ] && board_src="committed"
 fi
-[ -n "$board" ] || board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-[ -n "$board" ] || bcs_skip "no board_id — set .promote.board_id in .release-pr.json, or run 'git config kanban.board-id <id>' in this repo (docs/INSTALL.md)"
+[ -n "$board" ] || bcs_skip "no board_id — run 'git config kanban.board-id <id>' in this repo, or set .promote.board_id in .release-pr.json (docs/INSTALL.md)"
 
-# Token + host env (sources ~/.kanban-host.env, publishing KB_API=KBCARD_API and the
-# token). Unconditional so a host-env KBCARD_TOKEN_FILE override always wins. Reads
-# the token into memory only (not sent until the guarded curls below). Fail-soft.
-kb_load_host_token unconditional || bcs_skip "kanban token/host env not loadable (create ~/.kanban-host.env; see docs/INSTALL.md)"
+# Host env → KB_API + KB_HOST_TOKEN_FILE (the host-level token default). Cannot fail; the
+# token itself is read below, once the board env is known.
+kb_load_host_env
+
+# The board env for THIS board, resolved ONCE — it supplies both the stage ids and (when
+# allowed) the per-board token. It is only ever sourced inside kb_board_env_* subshells, so
+# it can never move KANBAN_EXPECTED_HOST before the https-host guard that reads it below.
+board_envf="$(kb_board_env_for "$board" || true)"
+
+# Per-board token — ONLY when the board id came from the host-local git config. A committed
+# .release-pr.json is PR-editable, so honoring it here would let a PR re-point the hook at
+# another board's env and send THAT board's token; a committed board id therefore keeps the
+# host/default token, exactly as before this change. Per-board tokens are an explicit
+# host-local opt-in. (Inverting the board_id order alone would NOT have closed this: the two
+# sources are mutually-exclusive populations, so the inversion only ever helps the population
+# that never had the exposure — the gate is the real fix.)
+board_tok=""
+if [ "$board_src" = "hostlocal" ] && [ -n "$board_envf" ]; then
+    IFS= read -r board_tok <<<"$(kb_board_env_get "$board_envf" KBCARD_TOKEN_FILE)"
+fi
+# Reads the token into memory only (not sent until the guarded curls below). MUST stay
+# `|| bcs_skip`: unguarded, an unreadable token leaves KB_TOKEN unset and `set -u` aborts the
+# next line — and the installed hook wrapper discards stderr, so that reads as a silent dead
+# hook with no durable log entry.
+kb_read_token "${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" \
+    || bcs_skip "kanban token file not readable: ${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}} (create ~/.kanban-host.env; see docs/INSTALL.md)"
 token="$KB_TOKEN"
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host
@@ -161,23 +192,33 @@ fi
 # LOUD on stderr; the token is simply never sent when the host isn't trusted.
 kb_require_https_host "$api" || bcs_skip "api_base '$api' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
 
-# Stage ids for THIS board, from the matching ~/.kanban-*-board.env.
-stages="$(
-  for envf in "$HOME"/.kanban-*-board.env; do
-    [ -r "$envf" ] || continue
-    # shellcheck disable=SC1090
-    ( . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$board" ] \
-        && printf '%s %s %s %s\n' "${KB_STAGE_IN_PROGRESS:-}" "${KB_STAGE_BACKLOG:-}" "${KB_STAGE_PRIORITIZED:-}" "${KB_STAGE_HELD:-}" )
-  done | head -1
-)"
-read -r inprog backlog prioritized held <<<"$stages"
+# Stage ids for THIS board, from the SAME board env resolved above (a second matcher here
+# was free to pick a different file than the token's on a duplicate KB_BOARD_ID), via the
+# shared reader — so the ids get the same clean-slate read as the token: a key this env does
+# not set comes back EMPTY rather than inheriting another board's exported value.
+# Scope of that, honestly: stage ids are unique to one board, so a foreign id simply never
+# matches this board's cards — the reachable case is a board env MISSING a required key,
+# where the guard below would pass on an inherited id and the PATCH would then name a stage
+# that isn't on this board. Empty is the correct answer, and it fail-softs at the guard.
+inprog=""; backlog=""; prioritized=""; held=""
+if [ -n "$board_envf" ]; then
+    { IFS= read -r inprog; IFS= read -r backlog; IFS= read -r prioritized; IFS= read -r held; } \
+        <<<"$(kb_board_env_get "$board_envf" KB_STAGE_IN_PROGRESS KB_STAGE_BACKLOG KB_STAGE_PRIORITIZED KB_STAGE_HELD)"
+fi
 # Held is optional (a board may not have the column); backlog/prioritized/in_progress
 # are required for any promotion to make sense.
 [ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || bcs_skip "no ~/.kanban-*-board.env has KB_BOARD_ID=$board with in-progress/backlog/prioritized stage ids"
 
+# get <url>: emit the response body followed by "__HTTP__<status>". Deliberately NOT -f: the
+# status is the point. It lets the caller tell a real 404 (no such card) from a 401/403 (the
+# token is wrong or lacks this board) or a transport failure — with -f every one of those was
+# an empty body, and the caller attributed them all to "card does not exist", sending an agent
+# to hunt a nonexistent card instead of a broken token. The status is returned on STDOUT rather
+# than set as a global because `$(get …)` runs in a subshell, where a global assignment cannot
+# propagate to the parent. Kept local (not kb_api) so it sends THIS board's $token.
 # Auth via stdin herestring (-H @- <<<) — token out of argv (#3569) + portable (no /dev/fd
 # process-sub dependency that breaks native mingw64 curl, #34).
-get() { curl -fsS -H @- -H "Accept: application/json" "$1" 2>/dev/null <<<"$(kb_auth_header "$token")"; }
+get() { curl -sS -H @- -H "Accept: application/json" -w $'\n__HTTP__%{http_code}' "$1" 2>/dev/null <<<"$(kb_auth_header "$token")"; }
 
 # A branch CREATION is the genuine work-start signal for a Held card (contract
 # PR #113); a re-checkout of an existing branch must not un-park it. The branch's
@@ -236,14 +277,27 @@ fi
 
 # Fetch the card; read its current stage AND board. The board-match guard bounds
 # the card-id path — a bare number can only move a card on the repo's own board.
-card="$(get "$api/tasks/$cid.json")"
-cur="$(printf '%s' "$card" | jq -r '.data.workflow_stage_id // empty')"
-cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
+resp="$(get "$api/tasks/$cid.json" || true)"
+http="${resp##*__HTTP__}"
+card="${resp%__HTTP__*}"
+[ "${#http}" = 3 ] && [ -z "${http//[0-9]/}" ] || http="000"   # no marker / no response ⇒ transport failure
+if [ "$http" != "200" ]; then
+    # Attribute the failure to its ACTUAL cause. Only a 404 means the card isn't there.
+    case "$http" in
+        404) ;;   # fall through to the not-a-card handling below
+        000) bcs_skip "card #$cid could not be read — the kanban API at $api is unreachable; the card was NOT confirmed missing" ;;
+        401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from ${KB_TOKEN_FILE:-?} (HTTP $http); the card was NOT confirmed missing" ;;
+        *) bcs_skip "card #$cid could not be read — the kanban API returned HTTP $http; the card was NOT confirmed missing" ;;
+    esac
+fi
+cur="$(printf '%s' "$card" | jq -r '.data.workflow_stage_id // empty' 2>/dev/null)"
+cbd="$(printf '%s' "$card" | jq -r '.data.board_id // empty' 2>/dev/null)"
 if [ -z "$cur" ]; then
-    # The resolved id is not a real card. For a DL path this is unreachable (the fetch was
-    # board-scoped and matched); for the card-id path the branch's number is not a card. Loud
-    # ONLY when the branch NAMED a card explicitly (card#N / #N) — a genuine miss; the implicit
-    # typed-branch leading id (often a foreign ticket number, a routine false positive) is silent.
+    # The resolved id is not a real card (a 404, or a 200 whose body has no stage). For a DL
+    # path this is unreachable (the fetch was board-scoped and matched); for the card-id path
+    # the branch's number is not a card. Loud ONLY when the branch NAMED a card explicitly
+    # (card#N / #N) — a genuine miss; the implicit typed-branch leading id (often a foreign
+    # ticket number, a routine false positive) is silent.
     [ "${cid_explicit:-0}" = 1 ] && bcs_skip "card #$cid named in the branch does not exist"
     exit 0
 fi
