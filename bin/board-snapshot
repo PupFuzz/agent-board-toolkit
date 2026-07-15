@@ -19,8 +19,9 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 kb_load_host_env   # cannot fail (reads no token)
 API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
-# Cap EACH request at 5s against a slow/down API. Honored by both lib fetchers —
-# fetch_board_cards (paginated read) and kb_api (the preload stage-name read).
+# Cap EACH request at 5s against a slow/down API. Honored by both fetchers THIS
+# script uses — fetch_board_cards (paginated read) and kb_api (the preload
+# stage-name read). The lib has three; kb_api_status honors it too.
 #
 # This bounds a REQUEST, not this script, and the gap is much wider than one cap:
 # both fetch_board_cards calls PAGINATE, each page a separate capped curl, up to

@@ -301,10 +301,14 @@ kb_require_https_host() {
 #                       dl-a0-backfill-triaged PATCH
 #                       dl-a1-register-field   POST + PATCH, and the sole
 #                                              kb_api_status caller
-#                     (next-dl and adopt-to-dl are NOT on that list: next-dl's
-#                     dl-sequence claim is a raw curl outside this lib, and
-#                     adopt-to-dl stamps via a `kbcard` SUBPROCESS — which would not
-#                     inherit this var anyway, since nothing exports it.)
+#                     (next-dl and adopt-to-dl are not themselves on that list:
+#                     next-dl's dl-sequence claim is a raw curl outside this lib, so
+#                     the knob never reaches it. adopt-to-dl stamps via a `kbcard`
+#                     SUBPROCESS — so an EXPORTED cap DOES reach that write, through
+#                     kbcard above; that is precisely why exporting is the thing
+#                     warned against, and adopt-to-dl is where it bites hardest:
+#                     next-dl mints the DL uncapped, the kbcard PATCH then times out
+#                     ambiguously, and a retry mints a second DL — burning the first.)
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
