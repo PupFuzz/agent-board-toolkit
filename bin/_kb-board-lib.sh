@@ -1,9 +1,17 @@
 # shellcheck shell=bash
 # _kb-board-lib.sh — shared helpers for the agent-board-toolkit's OWN scripts.
 #
-# Toolkit-only: this file is NOT vendored into consumer repos and NOT byte-synced
-# (unlike promote-released-cards, which is and must never source this). It is
-# sourced, never executed. It collapses the config-resolution, kanban-API curl
+# CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
+# board-snapshot, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
+# dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
+# MUST copy it too — see ADOPTION.md §8 (amended 2026-06-19), docs/INSTALL.md §7,
+# and agent-board-toolkit-drift-check's MISSING-LIB probe. v0.11.2/#74 and v0.15.0
+# both shipped "[vendor] re-vendor _kb-board-lib.sh" for exactly that reason.
+# (promote-released-cards is the standalone exception: it is vendored and must
+# never source this.) This header claimed the opposite until 2026-07-15 — treat any
+# change here as having consumer blast radius, because it does.
+#
+# It is sourced, never executed. It collapses the config-resolution, kanban-API curl
 # wrapper, whole-board pagination, and DL-canonicalization logic that was
 # copy-pasted across kbcard / next-dl / dl-a0-backfill-triaged /
 # dl-a1-register-field / board-snapshot / board-card-start into one definition.
@@ -264,16 +272,25 @@ kb_require_https_host() {
 #   KB_API_QUIET=1    suppress the non-2xx stderr line (dl-a1, which lets its
 #                     callers print their own FATAL message); transport failures
 #                     are still reported.
-#   KB_CURL_MAX_TIME  cap the request at N seconds (curl --max-time). Unset = no
-#                     cap, so every existing caller is byte-for-byte unaffected.
+#   KB_CURL_MAX_TIME  cap EACH request at N seconds (curl --max-time). Unset = no
+#                     cap, so every existing caller is byte-for-byte unaffected
+#                     (nothing in this repo sets it but board-snapshot, and it is
+#                     never exported).
 #                     This is the SAME knob fetch_board_cards honors, and it must
-#                     stay that way: board-snapshot sets it once at the top so a
-#                     slow/down API can never stall SessionStart, and a caller has
-#                     no way to tell which lib function it reached. When only one
-#                     of the two honored it, a bounded paginated read sat beside an
-#                     unbounded single read under one knob that looked global — the
-#                     cap silently did not apply, and the hang it exists to prevent
-#                     came back through the sibling.
+#                     stay that way: a caller has no way to tell which lib function
+#                     it reached. When only one of the two honored it, a bounded
+#                     paginated read sat beside an unbounded single read under one
+#                     knob that looked global — the cap silently did not apply, and
+#                     the hang it exists to prevent came back via the sibling.
+#                     ⚠ It caps WRITES too, and the parity argument does NOT carry
+#                     there: a timed-out POST/PATCH is AMBIGUOUS (the server may
+#                     have committed it) yet kb_api returns 1, so a non-idempotent
+#                     retry can duplicate a card or burn a DL number. Set it around
+#                     a read; do NOT export it process-wide over kbcard/next-dl/
+#                     adopt-to-dl writes.
+#                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
+#                     requests can still take N×cap — board-snapshot's cap does not
+#                     by itself keep it inside the SessionStart hook timeout.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")

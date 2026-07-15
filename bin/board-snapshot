@@ -19,8 +19,16 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 kb_load_host_env   # cannot fail (reads no token)
 API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
-# Cap each page fetch at 5s so a slow/down API never stalls SessionStart (the
-# shared fetch_board_cards honors KB_CURL_MAX_TIME).
+# Cap EACH request at 5s against a slow/down API. Honored by both lib fetchers —
+# fetch_board_cards (paginated read) and kb_api (the preload stage-name read).
+#
+# This bounds a REQUEST, not this script: per board the worst case is snap's fetch
+# + snap's preload + untriaged's fetch = 15s, so the roster multiplies it and the
+# harness's SessionStart timeout — not this cap — is what actually bounds the hook.
+# A kill there truncates the snapshot rather than degrading it, which is the one
+# outcome worse than a slow one. Typical run is ~7.6s of a 10s budget; card-4447
+# (snap and untriaged each fetch the same board independently) is where the real
+# headroom is.
 KB_CURL_MAX_TIME=5
 
 # The whole-board paginated read is the shared fetch_board_cards (lib): reading
@@ -72,23 +80,37 @@ snap() {  # $1 = board env file   $2 = label
     # untriaged block below already prints. An unnamed stage is honest; a guessed
     # one is how this bug read as working.
     local names pre
-    KB_API="$API"; KB_API_QUIET=1   # kb_api reads these globals; snap() body is a subshell, so this is contained
+    KB_API="$API"   # kb_api reads this global; snap()'s body is a subshell, so it is contained
     pre="$(kb_api GET "/boards/$KB_BOARD_ID/preload.json" 2>/dev/null)" || pre=""
-    # A 2xx body is not necessarily JSON — a proxy, captive portal, or truncated
-    # response can answer 200 with HTML. --argjson ABORTS jq on invalid JSON, which
-    # would empty $names and cascade into the card-listing jq below, collapsing the
-    # whole board to "(parse error)". The cards fetched fine in that case; only their
-    # LABELS are unknown, so a bad preload must cost the names and nothing else.
-    printf '%s' "$pre" | jq -e . >/dev/null 2>&1 || pre=""
+    # The preload body is UNTRUSTED and the name map must be TOTAL over it: a bad
+    # preload costs the labels and nothing else. Anything less cascades — an empty
+    # $names reaches --argjson below and takes the whole board to "(parse error)",
+    # losing cards that fetched perfectly.
+    #
+    # Two distinct hazards, one expression:
+    #   - not JSON at all. kb_api returns the body on any 2xx, and a proxy, captive
+    #     portal, or truncated read can answer 200 with HTML. `fromjson?` yields
+    #     nothing on a parse failure, so `// null` catches it.
+    #   - JSON, but not this shape. Syntax-validating the body (jq -e .) is NOT
+    #     enough and was the first fix's mistake: {"data":[]}, [] and {"data":"x"}
+    #     are all valid JSON that then THROW on the .data walk (`?` suppresses
+    #     iteration errors, not indexing an array/string with "workflows"). `try`
+    #     covers the whole walk, so every shape lands on {} instead of an abort.
+    # A stage whose name is null/absent is simply not mapped, and falls through to
+    # the same "stage <id>" default — an unnamed stage is honest; a guessed one is
+    # how the hardcoded labels read as working for so long.
     names="$(jq -n \
         --arg ip "${KB_STAGE_IN_PROGRESS:-}" \
         --arg ir "${KB_STAGE_IN_REVIEW:-}" \
         --arg hl "${KB_STAGE_HELD:-}" \
-        --argjson pre "${pre:-null}" \
-        '($pre
-          | if . == null then {}
-            else ([.data.workflows[]?.stages[]? | {(.id|tostring): .name}] | add // {})
-            end) as $bn
+        --arg praw "$pre" \
+        '($praw | fromjson? // null) as $p
+         | (try ($p
+                 | [ .data.workflows[]?.stages[]?
+                     | select(.name != null)
+                     | {(.id|tostring): (.name | tostring | gsub("\\s+"; " "))} ]
+                 | add // {})
+            catch {}) as $bn
          | [$ip,$ir,$hl]
          | map(select(. != ""))
          | map({(.): ($bn[.] // ("stage " + .))})
