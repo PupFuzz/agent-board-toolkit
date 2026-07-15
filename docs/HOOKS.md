@@ -40,7 +40,7 @@ A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge gram
 ```bash
 install-board-hooks /path/to/your-repo     # installs the post-checkout hook; non-destructive
 ```
-Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically).
+Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically — **but on Windows/MSYS/Git-Bash hosts `ln -s` produces copies**, and a copies install must re-run `install-board-hooks` after every toolkit upgrade; see INSTALL.md §2's copy-topology warning).
 
 The installer **honors `core.hooksPath`**: if the repo sets it (gitleaks, the pre-commit framework, Husky, many Windows setups) git dispatches hooks *only* from there, so the hook is installed into `<core.hooksPath>/post-checkout` — otherwise the install would be a silent no-op. It still refuses to clobber an existing non-symlink hook, and refuses a `core.hooksPath` that resolves **inside the tracked work tree** (a machine-specific absolute symlink there would show as a work-tree change and break on other clones) — guiding you to chain the toolkit hook into your committed hook by hand instead.
 
