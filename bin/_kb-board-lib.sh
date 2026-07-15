@@ -325,7 +325,11 @@ fetch_board_cards() {
     local pages="" page=1 last_page=1 resp data n total="" read_n out
     # Order-preserving dedup-by-id over the slurped per-page arrays.
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
-    local curl_opts=(-fsS)
+    # -sS WITHOUT -f (card #4337): -f discards the 4xx/5xx body and collapses every
+    # HTTP failure to curl rc 22, making a 403 token-scope failure and a 422
+    # validation failure indistinguishable in the failure log. Status is captured
+    # via the same -w marker kb_api uses; the body is logged/surfaced on non-2xx.
+    local curl_opts=(-sS)
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && curl_opts+=(--max-time "$KB_CURL_MAX_TIME")
     # KB_FETCH_LOUD=1 makes a page-fetch failure observable (kbcard's list contract):
     # curl's own -S HTTP/transport error reaches stderr instead of the default quiet
@@ -340,6 +344,7 @@ fetch_board_cards() {
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
         # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
         resp="$(curl "${curl_opts[@]}" -H @- -H "Accept: application/json" \
+                -w $'\n__HTTP__%{http_code}' \
                 "$url" 2>"$errsink" <<<"$(kb_auth_header "$token")")" || {
             rc=$?
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
@@ -350,6 +355,17 @@ fetch_board_cards() {
             [[ "$page" -eq 1 ]] && return 1
             return 2
         }
+        local http="${resp##*__HTTP__}"
+        resp="${resp%__HTTP__*}"
+        if [[ ! "$http" =~ ^2 ]]; then
+            if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
+                echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp" >&2
+            fi
+            [[ -n "${KB_LOG_FILE:-}" ]] && \
+                echo "$(date -u +%FT%TZ) GET $url HTTP-$http $resp" >> "$KB_LOG_FILE"
+            [[ "$page" -eq 1 ]] && return 1
+            return 2
+        fi
         if [[ "$page" -eq 1 ]]; then
             last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1' 2>/dev/null)"
             [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1
