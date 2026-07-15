@@ -11,9 +11,10 @@
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 #
-# Conventions honored (unchanged from the per-script copies):
-#   - API base is host-level (~/.kanban-host.env, override $KANBAN_HOST_ENV) and
-#     is sourced only when KBCARD_API is still unset.
+# Conventions honored:
+#   - API base ($KBCARD_API) is board-INDEPENDENT: host-level only
+#     (~/.kanban-host.env, override $KANBAN_HOST_ENV). A board env that sets it is
+#     refused, not honored — see kb_resolve_env.
 #   - Board env is ~/.kanban-<name>-board.env; kanban|dev (and "no --board") map
 #     to the kanban-dev board.
 #   - Token file is $KBCARD_TOKEN_FILE (resolvable from inside a config file) or
@@ -26,27 +27,59 @@ _KB_BOARD_LIB_LOADED=1
 _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
 
 # --- config resolution ------------------------------------------------------
+#
+# ONE token-file precedence, uniform across every resolver below:
+#     a BOARD env's KBCARD_TOKEN_FILE > the HOST env's > an ambient one > ~/.kanban-dev-token
+# It falls out of SOURCE ORDER (host first, board second) rather than a ladder of
+# explicit tests. KBCARD_API is the mirror image — board-independent, host env only.
 
-# kb_resolve_env <board_env_path>: source the board env, then the host env (only
-# when KBCARD_API is still unset), and publish KB_API / KB_BOARD_ID /
-# KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the token content and does NOT
-# require KB_BOARD_ID — the caller decides those. Quiet (return-code only) so a
-# fail-soft caller can craft its own message. Returns:
-#   0 ok   2 env unreadable   3 KBCARD_API unset   5 token file unreadable
+# kb_resolve_env <board_env_path>: source the host env then the board env, and
+# publish KB_API / KB_BOARD_ID / KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the
+# token content and does NOT require KB_BOARD_ID — the caller decides those. Quiet
+# (return-code only) apart from the rc-4 refusal, so a fail-soft caller can craft its
+# own message. Returns:
+#   0 ok   2 env unreadable   3 KBCARD_API unset   4 board env sets KBCARD_API
+#   5 token file unreadable
 kb_resolve_env() {
     local board_env="$1"
     [[ -r "$board_env" ]] || return 2
+    local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+    # Snapshot the AMBIENT values, then clear them so the two sources below reveal only what
+    # THEY set. Both are restored before every return: sourcing mutates the caller's shell, so
+    # without this a second kb_resolve_env call in one shell would read the FIRST board's
+    # values as its ambient tier and hand board B board A's token. Clearing without snapshotting
+    # would be worse than the leak — it would silently delete the documented ambient tier.
+    local amb_api="${KBCARD_API:-}" amb_tok="${KBCARD_TOKEN_FILE:-}"
+    unset KBCARD_TOKEN_FILE
+    # HOST first, BOARD second. This restores the pre-v0.8.2 order (v0.8.1:kbcard:440,
+    # "so a config-file KBCARD_TOKEN_FILE is honored"): the board env is sourced LAST,
+    # so its KBCARD_TOKEN_FILE wins — which is the whole point of a per-board token.
+    # The v0.8.2 lib extraction collapsed six divergent copies onto the two that had
+    # the order backwards, silently regressing it (#4325).
+    # Sourcing the host env is NOT gated on KBCARD_API: that gate conflated "is the API
+    # already known" with "should the host's other vars load", so a stray ambient
+    # KBCARD_API also dropped the host's KBCARD_TOKEN_FILE. Precedence is preserved
+    # explicitly instead — an ambient API still beats the host's.
+    # shellcheck disable=SC1090
+    [[ -r "$host_env" ]] && source "$host_env"
+    local eff_api="${amb_api:-${KBCARD_API:-}}"
+    unset KBCARD_API   # so the board source below reveals a BOARD-set value
     # shellcheck disable=SC1090
     source "$board_env"
-    local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-    if [[ -z "${KBCARD_API:-}" && -r "$host_env" ]]; then
-        # shellcheck disable=SC1090
-        source "$host_env"
+    local board_api="${KBCARD_API:-}" cfg_tok="${KBCARD_TOKEN_FILE:-}"   # cfg_tok: board's, else host's
+    # Restore both before any return — never leave a caller's env mangled.
+    export KBCARD_API="$eff_api"
+    KBCARD_TOKEN_FILE="$amb_tok"
+    if [[ -n "$board_api" ]]; then
+        # Refuse LOUD rather than ignore: the API base is board-independent, so a board
+        # env setting it means the operator believes something false about their config.
+        echo "$(_kb_prog): KBCARD_API is board-independent and is not read from a board env — remove it from $board_env and set it once in ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
+        return 4
     fi
-    KB_API="${KBCARD_API:-}"
+    KB_API="$eff_api"
     [[ -n "$KB_API" ]] || return 3
     KB_BOARD_ID="${KB_BOARD_ID:-}"
-    KB_TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
+    KB_TOKEN_FILE="${cfg_tok:-${amb_tok:-$HOME/.kanban-dev-token}}"   # board > host > ambient > default
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
     return 0
@@ -72,6 +105,7 @@ kb_load_config() {
         0) ;;
         2) echo "$(_kb_prog): board env file not readable: $board_env" >&2; return 2 ;;
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
+        4) return 2 ;;   # kb_resolve_env already named the file and the fix
         5) echo "$(_kb_prog): token file not readable: $KB_TOKEN_FILE" >&2; return 2 ;;
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
@@ -79,32 +113,88 @@ kb_load_config() {
     return 0
 }
 
-# kb_load_host_token [unconditional]: lighter resolver for scripts whose board id
-# comes from a different source (board-snapshot iterates many board envs;
-# board-card-start reads .release-pr.json). Sources the host env (for a
-# KBCARD_TOKEN_FILE override + API base) and reads the token. Publishes KB_API
-# (may be empty), KB_TOKEN and KB_TOKEN_FILE. Returns 1 (fail-soft) if the token
-# file is unreadable.
+# kb_load_host_env: the lighter resolver for scripts whose board id comes from
+# somewhere other than a --board name (board-snapshot iterates every board env;
+# board-card-start reads the repo's config). Sources ONLY the host env and publishes
+# KB_API (may be empty) + KB_HOST_TOKEN_FILE — the host-level token default that the
+# caller layers a per-board override over. Reads NO token, so it CANNOT fail and has
+# no return-code contract; the caller reads its token with kb_read_token once it knows
+# which board it wants.
 #
-# Precedence mode (first arg):
-#   gated (default)  host env sourced only when KBCARD_API is still unset — for a
-#                    script (board-snapshot) that may already have an API in env.
-#   unconditional    host env sourced whenever readable, so a KBCARD_TOKEN_FILE
-#                    set inside it always wins — board-card-start's prior contract,
-#                    which never reads KBCARD_API (api/board come from .release-pr.json)
-#                    and must not have its token override skipped by a stray ambient
-#                    KBCARD_API.
-kb_load_host_token() {
-    local mode="${1:-gated}"
+# It replaced kb_load_host_token's gated/unconditional mode flag: the two modes only
+# ever differed because the gate conflated "source the host env" with "let the host's
+# KBCARD_API win". Separating those makes one behavior serve both callers — and fixes
+# the gated bug where a stray ambient KBCARD_API skipped the host env entirely, silently
+# dropping the host's KBCARD_TOKEN_FILE (board-snapshot was the only gated caller, and
+# so the only tool affected).
+kb_load_host_env() {
+    local amb_api="${KBCARD_API:-}"
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
-    if [[ -r "$host_env" ]] && { [[ "$mode" == "unconditional" ]] || [[ -z "${KBCARD_API:-}" ]]; }; then
+    # shellcheck disable=SC1090
+    [[ -r "$host_env" ]] && source "$host_env"
+    KB_API="${amb_api:-${KBCARD_API:-}}"   # an ambient API still beats the host's
+    KB_HOST_TOKEN_FILE="${KBCARD_TOKEN_FILE:-}"
+    return 0
+}
+
+# kb_board_env_for <board_id>: the ~/.kanban-*-board.env whose KB_BOARD_ID is
+# <board_id>, on stdout; returns 1 when none matches. Each candidate is sourced in a
+# SUBSHELL: a board env must never leak vars into the caller — KANBAN_EXPECTED_HOST
+# and KBCARD_TOKEN_FILE are read by the caller's own token guards, and a file being
+# inspected must not be able to move the guard that bounds it.
+kb_board_env_for() {
+    local want="$1" match="" n=0 envf
+    for envf in "$HOME"/.kanban-*-board.env; do
+        [[ -r "$envf" ]] || continue
+        # unset KB_BOARD_ID first: a value inherited from the caller would let an env
+        # that sets no KB_BOARD_ID at all false-match every lookup. 2>/dev/null so a
+        # board env missing the key stays quiet here rather than emitting raw noise.
         # shellcheck disable=SC1090
-        source "$host_env"
-    fi
-    KB_API="${KBCARD_API:-}"
-    KB_TOKEN_FILE="${KBCARD_TOKEN_FILE:-$HOME/.kanban-dev-token}"
-    [[ -r "$KB_TOKEN_FILE" ]] || return 1
-    KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+        if ( unset KB_BOARD_ID; . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$want" ] ); then
+            match="$envf"; n=$((n+1))
+        fi
+    done
+    # Which duplicate wins is arbitrary either way; that it is SILENT is the defect.
+    [[ "$n" -gt 1 ]] && echo "$(_kb_prog): ⚠ $n board envs set KB_BOARD_ID=$want — using $match; remove the stale one" >&2
+    [[ -n "$match" ]] || return 1
+    printf '%s' "$match"
+}
+
+# kb_board_env_get <board_env_path> <VAR>...: the value THIS board env gives each named
+# var, one per line, in the order asked; empty for one it does not set. Takes the env PATH
+# rather than a board id so a caller needing several things from one env (board-card-start
+# wants the token AND the stage ids) resolves it ONCE via kb_board_env_for — two matchers
+# are free to disagree about which file wins on a duplicate KB_BOARD_ID.
+#
+# Every requested var is UNSET before the source. This is load-bearing, not hygiene: board
+# envs `export` their keys (see examples/kanban-board.env.example), so in an operator shell
+# that sourced one board's env, that board's values are already in the environment of every
+# tool. Without the unset, a board env that omits an OPTIONAL key (KB_STAGE_HELD, or its
+# own KBCARD_TOKEN_FILE) silently inherits the *other* board's value and reports it as its
+# own — the same false-read kb_board_env_for's `unset KB_BOARD_ID` prevents.
+#
+# NEWLINE-delimited, one value per line — never a space-separated tuple, where an empty
+# optional field silently SHIFTS every later value left. The trailing '.' sentinel exists
+# only so a caller's `$(…)` cannot strip a trailing empty value; it is never read.
+kb_board_env_get() {
+    local envf="$1"; shift
+    (
+        local v
+        for v in "$@"; do unset "$v"; done
+        # shellcheck disable=SC1090
+        . "$envf" 2>/dev/null
+        for v in "$@"; do printf '%s\n' "${!v:-}"; done
+        printf '.\n'
+    )
+}
+
+# kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE).
+# Returns 1 rather than exiting when the file is unreadable — every caller is fail-soft
+# and words its own message.
+kb_read_token() {
+    [[ -r "$1" ]] || return 1
+    KB_TOKEN="$(cat "$1")"
+    KB_TOKEN_FILE="$1"
     return 0
 }
 

@@ -60,7 +60,9 @@ chmod 600 ~/.kanban-<name>-token
 echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>-board.env
 ```
 
-> `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. The tools resolve it before the board env is sourced, so a `KBCARD_API` placed in a board env file is ignored.
+> `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. A board env that sets it is **refused** (as of v0.14.0) rather than silently honored, with a message naming the file. What "refused" means per tool: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, and `adopt-to-dl` **exit 2 and do nothing**; `next-dl` **warns and skips the board check**, then still mints from its offline scan (fail-soft by design — but that scan is non-atomic, so fix the board env rather than rely on it). `board-snapshot` and `board-card-start` never read a board env's `KBCARD_API` at all, so they ignore one.
+
+> **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one > `~/.kanban-dev-token`.** So a per-board token set here wins over a host-level default — that is the point of setting it here. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
 
 > The default board (no `--board` flag) reads `~/.kanban-dev-board.env` + `~/.kanban-dev-token`. Name your primary board `dev` to use the tools flag-free, or always pass `--board <name>`.
 

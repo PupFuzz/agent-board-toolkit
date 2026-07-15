@@ -46,6 +46,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: api_base host-guard decision matrix
         run: bash tests/kb-host-guard-selftest.sh
+  kb-board-lib-selftest:
+    # Exercises the shared config resolution network-free under a scratch HOME: the token
+    # ladder (board > host > ambient > default), the host-only KBCARD_API refusal, and the
+    # board-env matcher. The ladder is a property of source ORDER, which is exactly how it
+    # regressed silently once (#4325) — nothing exercised it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: _kb-board-lib.sh config-resolution unit checks
+        run: bash tests/kb-board-lib-selftest.sh
 
   board-card-start-selftest:
     # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
