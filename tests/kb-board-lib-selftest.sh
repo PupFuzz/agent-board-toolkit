@@ -416,6 +416,14 @@ KB_CURL_MAX_TIME=5
 fetch_board_cards "https://api.example" tok 8 >/dev/null 2>&1
 eq "fetch_board_cards honors the SAME knob (parity)"                "5" "$(_maxtime_arg)"
 
+# kb_api_status is the THIRD fetcher. It was the sibling missed when kb_api was
+# fixed — a parity claim covering two of three is just a wrong claim, and the
+# caller cannot tell which of the three it reached. Assert all three or none.
+: > "$_argv_file"
+KB_CURL_MAX_TIME=5
+kb_api_status GET /boards/8/preload.json >/dev/null 2>&1
+eq "kb_api_status honors the SAME knob (third fetcher)"             "5" "$(_maxtime_arg)"
+
 : > "$_argv_file"
 unset KB_CURL_MAX_TIME
 kb_api GET /boards/8/preload.json >/dev/null 2>&1

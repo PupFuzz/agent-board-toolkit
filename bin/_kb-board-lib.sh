@@ -4,9 +4,16 @@
 # CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
 # board-snapshot, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
 # dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
-# MUST copy it too — see ADOPTION.md §8 (amended 2026-06-19), docs/INSTALL.md §7,
-# and agent-board-toolkit-drift-check's MISSING-LIB probe. v0.11.2/#74 and v0.15.0
-# both shipped "[vendor] re-vendor _kb-board-lib.sh" for exactly that reason.
+# MUST copy it too. Cited by line, not by section number — ADOPTION.md has no
+# numbered sections and its "§8" means the Task-tracking standard's §8:
+#   ADOPTION.md:13 ("Where this fits") — a PM project may vendor these tools; the
+#     lib-sourcing bins require _kb-board-lib.sh copied beside them.
+#   docs/INSTALL.md:141 (§6b) — same requirement, with the failure mode.
+#   bin/agent-board-toolkit-drift-check:39 — MISSING-LIB probe flags a lib-sourcing
+#     bin vendored without the lib.
+#   docs/CHANGELOG.md v0.15.0 — "[vendor] re-vendor _kb-board-lib.sh (#103/#106)".
+#     (v0.11.2/#74 established it as a required co-vendored dependency; it carries
+#     no "[vendor]" tag — those are promote-released-cards'.)
 # (promote-released-cards is the standalone exception: it is vendored and must
 # never source this.) This header claimed the opposite until 2026-07-15 — treat any
 # change here as having consumer blast radius, because it does.
@@ -324,6 +331,11 @@ kb_api() {
 kb_api_status() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")
+    # Honors KB_CURL_MAX_TIME for the same reason kb_api and fetch_board_cards do:
+    # the knob means one thing across every fetcher in this lib, because a caller
+    # cannot tell which one it reached. This is the THIRD — a parity claim that
+    # covers two of three is just a wrong claim.
+    [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
     # Auth via stdin herestring (-H @- <<<) — token stays out of argv (#3569) + portable

@@ -22,13 +22,15 @@ API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
 # Cap EACH request at 5s against a slow/down API. Honored by both lib fetchers —
 # fetch_board_cards (paginated read) and kb_api (the preload stage-name read).
 #
-# This bounds a REQUEST, not this script: per board the worst case is snap's fetch
-# + snap's preload + untriaged's fetch = 15s, so the roster multiplies it and the
-# harness's SessionStart timeout — not this cap — is what actually bounds the hook.
-# A kill there truncates the snapshot rather than degrading it, which is the one
-# outcome worse than a slow one. Typical run is ~7.6s of a 10s budget; card-4447
-# (snap and untriaged each fetch the same board independently) is where the real
-# headroom is.
+# This bounds a REQUEST, not this script, and the gap is much wider than one cap:
+# both fetch_board_cards calls PAGINATE, each page a separate capped curl, up to
+# SNAPSHOT_PAGE_CAP (25). So per board the ceiling is 25*5 + 5 (preload) + 25*5 =
+# 255s, not 15s — and the roster multiplies that. The harness's SessionStart
+# timeout, NOT this cap, is what actually bounds the hook, and a kill there
+# truncates the snapshot rather than degrading it — the one outcome worse than a
+# slow one. Typical run is ~7.6s of a 10s budget (a healthy board is one page);
+# card-4447 (snap and untriaged each fetch the same board independently) is where
+# the real headroom is.
 KB_CURL_MAX_TIME=5
 
 # The whole-board paginated read is the shared fetch_board_cards (lib): reading
@@ -99,16 +101,22 @@ snap() {  # $1 = board env file   $2 = label
     # A stage whose name is null/absent is simply not mapped, and falls through to
     # the same "stage <id>" default — an unnamed stage is honest; a guessed one is
     # how the hardcoded labels read as working for so long.
-    names="$(jq -n \
+    # Body enters jq VIA STDIN, never argv (-R -s slurps it as a raw string): an
+    # untrusted body over MAX_ARG_STRLEN (~128KB) makes execve fail with "Argument
+    # list too long" BEFORE jq parses anything, so $names comes back empty and
+    # cascades into the card-listing jq exactly as a bad shape would. A >128KB 2xx
+    # interstitial is ordinary for the proxy/portal case this guard exists for. The
+    # lib states this rule for the same reason (see fetch_board_cards' header, the
+    # #3091/#3362 class) — the argv form was measured failing at 131111 bytes.
+    names="$(printf '%s' "$pre" | jq -R -s \
         --arg ip "${KB_STAGE_IN_PROGRESS:-}" \
         --arg ir "${KB_STAGE_IN_REVIEW:-}" \
         --arg hl "${KB_STAGE_HELD:-}" \
-        --arg praw "$pre" \
-        '($praw | fromjson? // null) as $p
+        '(fromjson? // null) as $p
          | (try ($p
                  | [ .data.workflows[]?.stages[]?
                      | select(.name != null)
-                     | {(.id|tostring): (.name | tostring | gsub("\\s+"; " "))} ]
+                     | {(.id|tostring): ((.name | tostring | gsub("\\s+"; " "))[0:32])} ]
                  | add // {})
             catch {}) as $bn
          | [$ip,$ir,$hl]
