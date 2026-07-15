@@ -6,7 +6,15 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
-### Fixed
+_(empty after each tagged release; accumulates as feature PRs land on dev)_
+
+## [0.14.0] - 2026-07-15
+
+**Minor — a security fix in the `api_base` host guard, plus the restoration of the board-env token precedence that v0.8.2 silently broke.** 2 PRs since v0.13.0 (#98, #97). Cards #4346/#4325.
+
+**Read before upgrading — two consumer-visible changes.** (1) **[vendor]** a repo that vendored `promote-released-cards` **must re-vendor** to get the security fix; the vendored copy carries its own guard and does not track the toolkit. **[release-CI]** SHA-pinned action consumers get it with the pin bump (`promote/action.yml` is unchanged). (2) **[host]** if you set `KBCARD_TOKEN_FILE` in **both** a board env and `~/.kanban-host.env`, the **board's** token now wins where the host's silently did since v0.8.2 — a live change in *which credential is sent*. Full actions: `docs/UPGRADE.md` § v0.14.0.
+
+### Security
 - **SECURITY — the `api_base` host guard accepted a URL that sends the bearer token to an attacker-controlled host.** `kb_require_https_host` (`_kb-board-lib.sh`) and its standalone mirror `host_ok` (`promote-released-cards`) terminated the URL authority at **`/` alone**. RFC 3986 ends it at the first of **`/`, `?`, or `#`** — so with a delimiter placed before an `@`, the userinfo strip (`${h##*@}`) reached past it and lifted a fake host out of the query/fragment:
 
   ```
@@ -20,6 +28,7 @@ All notable changes to the agent-board-toolkit are documented here. The format f
   It survived because the guard had **no decision coverage**: it was wired and ran on every checkout, but nothing had ever asked it to judge a hostile URL. New `tests/kb-host-guard-selftest.sh` (+ CI job) pins the matrix and additionally asserts the two copies agree — they are sync-paired by comment only, and both carried the identical defect.
 
   **[vendor] Action required:** `promote-released-cards` changed, so a repo that **vendored** it must re-vendor (UPGRADE §3) to get the fix. **[release-CI]** consumers of the SHA-pinned composite action get it with the pin bump — `promote/action.yml` itself is unchanged.
+### Fixed
 - **A board env's `KBCARD_TOKEN_FILE` is honored again — the documented precedence is restored.** `kbcard` honored it from v0.4.2 through v0.8.1 (`v0.8.1:bin/kbcard:440`, *"after host + board env are sourced, so a config-file `KBCARD_TOKEN_FILE` is honored"*). The **v0.8.2 shared-library extraction** consolidated six divergent copies of the config resolution onto the two that had the source order backwards (`next-dl`, `dl-a1-register-field`) and **silently regressed** it: from v0.8.2 through v0.13.0 a board-env `KBCARD_TOKEN_FILE` was ignored and the host/default token was sent to every board. The docs were right; the code drifted. One ladder now serves every tool — **board > host > ambient > `~/.kanban-dev-token`** — as a property of source order (host sourced first, board second) rather than six hand-rolled precedence tests. **Operator-visible where a board env *and* the host env both set `KBCARD_TOKEN_FILE`:** the board's token now wins, changing which credential is sent — see the `docs/UPGRADE.md` v0.14.0 entry.
 - **A board env that sets the board-independent `KBCARD_API` is refused, loudly.** Same inverted order, same silence: v0.4.2–v0.8.1 ignored one (as INSTALL.md documented, because `API` was frozen before the board env was sourced), while v0.8.2–v0.13.0 sourced the board env *first* and so silently **honored** it — quietly re-pointing the tool at another host. `kb_resolve_env` now returns rc 4 and names the offending file; `next-dl` no longer swallows that message (it muted stderr, leaving a bare "config incomplete" while losing both the atomic DL claim and the board's `dl_number` seed — the DL-154 re-mint collision class).
 - **`board-snapshot` no longer goes dark on a host with no `~/.kanban-dev-token`.** It read one token up-front and `exit 0`'d when that file was missing, so a host using only per-board tokens rendered **nothing**. It now reads each board's token as it renders that board, honoring that board's `KBCARD_TOKEN_FILE`; a board whose token is unreadable reports itself instead of blanking the entire snapshot.
