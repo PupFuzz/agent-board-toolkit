@@ -299,6 +299,50 @@ rc=0; kb_read_token "$TMP/absent.token" || rc=$?
 eq "unreadable token → rc 1 (returns, never exits)" "1" "$rc"
 
 # ---------------------------------------------------------------------------
+echo "== fetch_board_cards: HTTP failure carries status + body (card #4337) =="
+# curl is stubbed as a shell function (shadows the binary for the sourced lib) so the
+# checks are network-free. The stub consumes the herestring auth on fd 0 and emits the
+# lib's -w marker exactly as real curl would.
+reset_env
+FETCH_LOG="$TMP/fetch-failures.log"
+
+# The stub EMULATES real curl's -f semantics (body discarded, rc 22 on non-2xx) so
+# reintroducing -f into curl_opts reds the body checks below (mutation-sensitive).
+_stub_curl_respond() { # <body> <status>
+    cat >/dev/null
+    local a
+    for a in "${_STUB_ARGS[@]}"; do
+        if [[ "$a" == -f* && "$2" != 2* ]]; then return 22; fi
+    done
+    printf '%s\n__HTTP__%s' "$1" "$2"
+    return 0
+}
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"forbidden: token lacks board scope"}' 403; }
+rc=0; out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/fetch.err")" || rc=$?
+eq "HTTP 403 on page 1 → rc 1"                    "1" "$rc"
+eq "HTTP 403 → no data on stdout"                 ""  "$out"
+grep -q "HTTP-403" "$FETCH_LOG" && ok "failure log carries the HTTP status" || bad "failure log missing HTTP-403"
+grep -q "forbidden: token lacks board scope" "$FETCH_LOG" && ok "failure log carries the error body (403 vs 422 distinguishable)" || bad "failure log lost the error body"
+grep -q "HTTP 403" "$TMP/fetch.err" && ok "loud mode surfaces the status on stderr" || bad "stderr missing HTTP 403"
+
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":{"stage_id":["invalid"]}}' 422; }
+: > "$FETCH_LOG"
+rc=0; KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" tok 8 >/dev/null 2>&1 || rc=$?
+grep -q "HTTP-422" "$FETCH_LOG" && ok "a 422 logs as HTTP-422, not a generic curl rc" || bad "422 indistinguishable in log"
+
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 200; }
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8)" || rc=$?
+eq "200 single page → rc 0"          "0" "$rc"
+eq "200 single page → data returned" '[{"id":7}]' "$out"
+
+curl() { cat >/dev/null; return 7; }
+: > "$FETCH_LOG"
+rc=0; KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" tok 8 >/dev/null 2>&1 || rc=$?
+eq "transport failure on page 1 → rc 1" "1" "$rc"
+grep -q "FAILED-FETCH curl-rc=7" "$FETCH_LOG" && ok "transport failure keeps the curl-rc log line" || bad "transport log line regressed"
+unset -f curl
+
+# ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kb-board-lib-selftest: $fails check(s) FAILED" >&2
     exit 1
