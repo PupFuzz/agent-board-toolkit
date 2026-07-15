@@ -295,10 +295,16 @@ kb_require_https_host() {
 #                     there: a timed-out POST/PATCH is AMBIGUOUS (the server may
 #                     have committed it) yet kb_api returns 1, so a non-idempotent
 #                     retry can duplicate a card or burn a DL number. Set it around
-#                     a read; do NOT export it process-wide over the write callers —
-#                     kbcard, next-dl, adopt-to-dl, and dl-a1-register-field (the
-#                     sole kb_api_status caller: 2 POSTs + 4 PATCHes, incl. an
-#                     _action:delete).
+#                     a read; do NOT export it process-wide over the bins that WRITE
+#                     through this lib — enumerated, not recalled:
+#                       kbcard                 POST + PATCH
+#                       dl-a0-backfill-triaged PATCH
+#                       dl-a1-register-field   POST + PATCH, and the sole
+#                                              kb_api_status caller
+#                     (next-dl and adopt-to-dl are NOT on that list: next-dl's
+#                     dl-sequence claim is a raw curl outside this lib, and
+#                     adopt-to-dl stamps via a `kbcard` SUBPROCESS — which would not
+#                     inherit this var anyway, since nothing exports it.)
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
