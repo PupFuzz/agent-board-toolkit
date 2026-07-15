@@ -35,15 +35,18 @@ for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; don
 
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
 # subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
-# calling — see the required-var check below). Host is parsed per RFC 3986 (userinfo
-# before the last '@' stripped, then :port), so `https://good@evil/` (→ evil) and
-# `https://good.evil/` are both rejected. Mirrors kb_require_https_host in
-# _kb-board-lib.sh — this script is vendored standalone into consumer repos and MUST NOT
-# source that lib, so the guard is duplicated; keep the two in sync, INCLUDING the
-# required-var check. (#3570)
+# calling — see the required-var check below). Host is parsed per RFC 3986 — the authority
+# ends at the FIRST of '/', '?' or '#', then userinfo before the last '@' is stripped, then
+# :port — so `https://good@evil/` (→ evil), `https://good.evil/`, and
+# `https://evil#@good.host` (which terminating at '/' alone let through, because the
+# userinfo strip then reached into the fragment while curl discarded it) are all rejected.
+# The parser MUST agree with curl about where the authority ends. Mirrors
+# kb_require_https_host in _kb-board-lib.sh — this script is vendored standalone into
+# consumer repos and MUST NOT source that lib, so the guard is duplicated; keep the two in
+# sync, INCLUDING the required-var check. (#3570)
 host_ok() {
   case "$1" in https://*) ;; *) return 1 ;; esac
-  local h="${1#https://}"; h="${h%%/*}"; h="${h##*@}"; h="${h%%:*}"
+  local h="${1#https://}"; h="${h%%[/?#]*}"; h="${h##*@}"; h="${h%%:*}"
   [ -n "$h" ] || return 1
   [ "$h" = "$EXPECT_HOST" ] && return 0
   case "$h" in *".$EXPECT_HOST") return 0 ;; *) return 1 ;; esac
