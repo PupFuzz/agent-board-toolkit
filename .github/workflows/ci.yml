@@ -57,6 +57,17 @@ jobs:
       - name: _kb-board-lib.sh config-resolution unit checks
         run: bash tests/kb-board-lib-selftest.sh
 
+  kbcard-selftest:
+    # Exercises kbcard's pure mapping logic network-free: the KB_STAGE_* reverse
+    # lookup (stage_name) and show's stage/column annotation — the omit-don't-null
+    # rule (card #4387: an emitted `"stage": null` on a staged card read as "no
+    # stage" and triggered a false "auto-move is broken" escalation).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: kbcard pure-logic unit checks
+        run: bash tests/kbcard-selftest.sh
+
   board-card-start-selftest:
     # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
     # the RFC-2606/6761 placeholder-host detector (anchored so real hosts aren't misread), the

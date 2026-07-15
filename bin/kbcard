@@ -66,6 +66,23 @@ stage_id() {
     [[ -z "$id" ]] && { echo "kbcard: column '$1' is not defined on this board" >&2; return 2; }
     echo "$id"
 }
+# Reverse of stage_id: the column NAME for a native stage id, from whatever
+# KB_STAGE_* vars the sourced board env defines (any of them, not just the eight
+# stage_id aliases — a board's own taxonomy resolves too). Prints the lowercased
+# suffix (KB_STAGE_SHIPPED_TO_DEV=51 → "shipped_to_dev" for 51); rc 1 and no
+# output when no var maps the id. Names expand sorted, so a duplicate id
+# resolves to the alphabetically-first var — deterministic, and duplicates are
+# a board-env bug, not a shape to support.
+stage_name() {
+    local var val
+    for var in "${!KB_STAGE_@}"; do
+        val="${!var}"
+        [[ -n "$val" && "$val" == "$1" ]] || continue
+        printf '%s' "${var#KB_STAGE_}" | tr '[:upper:]' '[:lower:]'
+        return 0
+    done
+    return 1
+}
 # Resolve a --type alias to the board's NATIVE card_type_id, config-driven from
 # KB_TYPE_<ALIAS> in the board env — ANY alias, not a hardcoded six (so a board's
 # own taxonomy, e.g. KB_TYPE_TECH_DEBT, types all its cards). Prints the id ONLY
@@ -341,6 +358,24 @@ cmd_link() {
     kb_api POST "/task_links.json" "$body" | jq '.data'
 }
 
+# _kbc_annotate_card <task-json>: the task with `stage` populated from
+# workflow_stage_id (parity with cmd_list's stage field) and `column` set to the
+# board's column name for that stage (stage_name reverse lookup). A field this
+# tool cannot populate is OMITTED, never null — an emitted `"stage": null` on a
+# card that IS in a stage reads as "no stage" and caused a false "auto-move is
+# broken" escalation (card #4387). Deleting also scrubs a serializer-provided
+# null stage/column, so the rule holds regardless of the API's response shape.
+_kbc_annotate_card() {
+    local data="$1" sid col=""
+    sid="$(printf '%s' "$data" | jq -r '.workflow_stage_id // empty')"
+    if [[ -n "$sid" ]]; then
+        col="$(stage_name "$sid" || true)"
+    fi
+    printf '%s' "$data" | jq --arg col "$col" '
+        (if .workflow_stage_id != null then .stage = .workflow_stage_id else del(.stage) end)
+        | (if $col != "" then .column = $col else del(.column) end)'
+}
+
 cmd_show() {
     local task_ref=""
     while [[ $# -gt 0 ]]; do
@@ -349,8 +384,10 @@ cmd_show() {
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    local task; task="$(resolve_task "$task_ref")"
-    kb_api GET "/tasks/$task.json" | jq '.data'
+    local task data
+    task="$(resolve_task "$task_ref")"
+    data="$(kb_api GET "/tasks/$task.json" | jq '.data')"
+    _kbc_annotate_card "$data"
 }
 
 main() {
@@ -377,4 +414,5 @@ main() {
     esac
 }
 
-main "$@"
+# run main only when executed directly, so tests/kbcard-selftest.sh can source the pure fns.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
