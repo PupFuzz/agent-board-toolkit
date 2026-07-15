@@ -140,9 +140,19 @@ for entry in "${roster[@]}"; do snap "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
 echo "── Untriaged cards — triage is my responsibility; none may be silently missed ──"
 for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
 
-# Runtime staleness (cards #4351/#4361): the pin/copies topology fails silently in the
-# worse direction — tools keep working, just older. --quiet prints nothing when current;
-# warnings/failures reach stderr. Never blocks the snapshot (SessionStart is fail-soft).
+# Runtime staleness (cards #4351/#4361/#4393): the pin/copies topology fails silently in
+# the worse direction — tools keep working, just older. --quiet prints nothing when
+# current, so a healthy host stays silent.
+#
+# 2>&1 IS LOAD-BEARING: the guard writes warnings/failures to stderr, and this script's
+# consumer is a SessionStart hook that surfaces STDOUT — a stderr-only warning is
+# discarded and the guard silently never reaches anyone (the same channel trap
+# board-card-start already ate: "the installed hook wrapper discards stderr, so the log
+# is the durable record"). A staleness warning nobody reads is the exposure, not the fix.
+# Folding to stdout puts it in the same stream as the board snapshot itself.
+#
+# Never blocks the snapshot (SessionStart is fail-soft): `|| true` swallows the guard's
+# non-zero exit — the MESSAGE is the signal here, not the status.
 command -v agent-board-toolkit-runtime-check >/dev/null 2>&1 \
-    && agent-board-toolkit-runtime-check --quiet || true
+    && agent-board-toolkit-runtime-check --quiet 2>&1 || true
 exit 0
