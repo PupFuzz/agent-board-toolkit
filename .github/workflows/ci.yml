@@ -67,6 +67,18 @@ jobs:
       - name: board-card-start pure-logic unit checks
         run: bash tests/board-card-start-selftest.sh
 
+  release-pr-body-selftest:
+    # Exercises release-pr-body's baseline resolution against fixture git repos
+    # (file-path remotes, network-free): a stale local main + a released origin/main
+    # must yield origin's tag as the baseline (the local ref drifts a release behind
+    # by design under the branch-off-dev flow and once misreported shipped PRs as
+    # new); an unfetchable origin fails LOUD; --base stays the offline override.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: release baseline resolution checks
+        run: bash tests/release-pr-body-selftest.sh
+
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
     # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
