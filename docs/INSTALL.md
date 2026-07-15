@@ -29,6 +29,21 @@ hash -r
 command -v kbcard    # -> /home/<you>/.local/bin/kbcard  (a symlink into ~/agent-board-toolkit/bin)
 ```
 
+> **⚠ Windows / MSYS / Git-Bash: `ln -s` silently produces COPIES, not symlinks** (native
+> mingw64 has no default symlink capability), and any manual `cp` install has the same
+> effect. A copies install **works, but changes the upgrade contract**: `git pull` no longer
+> refreshes the installed tools — you MUST re-run the loop above after **every** toolkit
+> upgrade, or your on-PATH tools silently keep running the old version (a peer's Windows
+> adopter hit exactly this verifying v0.13.0; it has re-occurred on every bump since).
+> The same applies to a **pinned second checkout/worktree** topology (symlinks pointing at a
+> checkout detached at a release tag): the pin does not advance with the dev clone. In both
+> topologies, when verifying a fix or a security advisory, **inspect what `~/.local/bin`
+> resolves to — never the checkout you edited**: `readlink -f ~/.local/bin/kbcard`. The
+> `agent-board-toolkit-drift-check` tool catches stale vendored copies in repos; the
+> `agent-board-toolkit-runtime-check` tool is that guard for the PATH install itself —
+> run it after any upgrade (`board-snapshot` runs it quietly at SessionStart), and it FAILS
+> LOUD on a stale pin, stale copies, or a mixed-runtime split (cards #4351/#4361).
+
 ## 3. Host config (once per host) — REQUIRED
 
 The tools read the API base from `~/.kanban-host.env` (board-independent — one per host, shared by every board on it). `kbcard` **fails fast** if it's missing, so set it first:

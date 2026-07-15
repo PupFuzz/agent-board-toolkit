@@ -139,4 +139,10 @@ echo "── Dev board snapshot — boards are the source of truth (memory is a 
 for entry in "${roster[@]}"; do snap "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
 echo "── Untriaged cards — triage is my responsibility; none may be silently missed ──"
 for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
+
+# Runtime staleness (cards #4351/#4361): the pin/copies topology fails silently in the
+# worse direction — tools keep working, just older. --quiet prints nothing when current;
+# warnings/failures reach stderr. Never blocks the snapshot (SessionStart is fail-soft).
+command -v agent-board-toolkit-runtime-check >/dev/null 2>&1 \
+    && agent-board-toolkit-runtime-check --quiet || true
 exit 0
