@@ -81,6 +81,17 @@ eq "other fields pass through" '"card"' "$(annot '{"id":1,"workflow_stage_id":48
 
 unset KB_STAGE_BACKLOG KB_STAGE_SHIPPED_TO_DEV
 
+echo "== _kbc_write_echo: payload rides only when the serializer sent the key (card #4390) =="
+r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5}}' | _kbc_write_echo)"
+eq "absent payload key → omitted"  "false" "$(jq 'has("payload")' <<<"$r")"
+r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":{"dl_number":"DL-0001"}}}' | _kbc_write_echo)"
+eq "real payload → included"       '{"dl_number":"DL-0001"}' "$(jq -c '.payload' <<<"$r")"
+r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":null}}' | _kbc_write_echo)"
+eq "server-sent null → passed through (the server SAID null)" "true" "$(jq 'has("payload")' <<<"$r")"
+r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"description":"abcdef"}}' | _kbc_write_echo 'description: (.description // "" | .[0:3])')"
+eq "extra-fields arg composes (patch echo)" '"abc"' "$(jq -c '.description' <<<"$r")"
+
+
 # ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kbcard-selftest: $fails check(s) FAILED" >&2

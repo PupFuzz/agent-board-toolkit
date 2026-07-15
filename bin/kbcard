@@ -207,7 +207,7 @@ cmd_create_card() {
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)
          | {task: .}')"
 
-    kb_api POST "/tasks.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload}'
+    kb_api POST "/tasks.json" "$body" | _kbc_write_echo
 }
 
 cmd_move() {
@@ -294,7 +294,7 @@ cmd_patch() {
         inner="$(jq -n --argjson cur "$inner" --argjson tags "$new_tags" '$cur + {tags: $tags}')"
     fi
     body="$(jq -n --argjson t "$inner" '{task: $t}')"
-    kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id, payload, description: (.description // "" | .[0:80])}'
+    kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo 'description: (.description // "" | .[0:80])'
 }
 
 cmd_list() {
@@ -364,6 +364,14 @@ cmd_link() {
 # tool cannot populate is OMITTED, never null — an emitted `"stage": null` on a
 # card that IS in a stage reads as "no stage" and caused a false "auto-move is
 # broken" escalation (card #4387). Deleting also scrubs a serializer-provided
+# _kbc_write_echo: the create/patch echo projection — payload rides ONLY when the
+# serializer sent the key (fabricating `payload: null` asserts "no payload" where
+# the truth is "key absent", #4390); a server-sent null passes through unaltered.
+# $1 = extra jq object fields (e.g. description truncation), defaults to none.
+_kbc_write_echo() {
+    jq ".data | {id, name, workflow_stage_id${1:+, $1}} + (if has(\"payload\") then {payload} else {} end)"
+}
+
 # null stage/column, so the rule holds regardless of the API's response shape.
 _kbc_annotate_card() {
     local data="$1" sid col=""
