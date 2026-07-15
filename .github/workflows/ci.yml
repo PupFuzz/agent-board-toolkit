@@ -67,6 +67,14 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: kbcard pure-logic unit checks
         run: bash tests/kbcard-selftest.sh
+  runtime-check-selftest:
+    # Decision-matrix checks for the runtime staleness guard (cards #4351/#4361):
+    # pinned-current/STALE, dev-ahead, copies current/STALE/unverifiable, mixed runtimes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: runtime-check decision matrix
+        run: bash tests/runtime-check-selftest.sh
 
   board-card-start-selftest:
     # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
