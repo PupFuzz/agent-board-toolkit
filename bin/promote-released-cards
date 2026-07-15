@@ -115,7 +115,16 @@ if [ -n "$DLS_IN" ]; then
   PR_NUMS=""
 else
   HEAD_REF="${HEAD_REF:-HEAD}"
-  [ -n "$BASE" ] || BASE="$(git describe --tags --abbrev=0 "${HEAD_REF}^" 2>/dev/null || true)"
+  if [ -z "$BASE" ]; then
+    BASE="$(git describe --tags --abbrev=0 "${HEAD_REF}^" 2>/dev/null || true)"
+    # A DERIVED baseline uses LOCAL tags. The authoritative CI invocation fetches
+    # tags (fetch-depth 0 + fetch-tags), so it is remote-truth by construction; a
+    # LOCAL run's tag set can lag a release and silently over-report the shipped
+    # range (card #4389 — the release-pr-body #4348 lie, one tool over). Name it
+    # rather than fetching here: this is a vendored security tool whose behavior
+    # must stay deterministic; the explicit override is --base.
+    [ -n "${GITHUB_ACTIONS:-}" ] || echo "promote-released-cards: NOTE — baseline '$BASE' derived from LOCAL tags; if origin has newer release tags this range over-reports. Run 'git fetch --tags' first or pass --base <tag>." >&2
+  fi
   # An empty base would make RANGE collapse to just HEAD → git log walks ALL history
   # → every DL/PR ever committed is "shipped" → mass wrong-card move. Refuse it (the
   # first-ever release, or a shallow/tagless clone). Use --base or --dls explicitly.

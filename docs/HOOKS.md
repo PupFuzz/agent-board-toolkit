@@ -26,21 +26,21 @@ Two independent movers advance a card, and **they read different surfaces with d
 | Mover | Trigger | Reads | Grammar it accepts |
 | --- | --- | --- | --- |
 | `board-card-start` (this hook) | branch checkout/creation → **In Progress** | the **branch name** | `DL-NNN`, `card#<id>`, `#<id>`, `card-<id>`, or a typed branch's leading id (`feat/<id>-…`) |
-| bridge writeback | PR opened/merged → **In Review / Shipped / Released** | the PR **title + head branch** | **only** `DL-NNN` or `card#<id>` (`\bcard#(\d+)\b`) — a bare leading id like `feat/2950-…` does **not** correlate |
+| bridge writeback | PR opened/merged → **In Review / Shipped / Released** | the PR **title + head branch** | **only** `DL-NNN`, `card-<id>`, or `card#<id>` (`\bcard[-#](\d+)`, bridge ≥ v0.57.0; older bridges accept only `card#<id>` with a trailing `\b`) — a bare leading id like `feat/2950-…` does **not** correlate |
 
-The asymmetry is deliberate (the bridge stays strict to avoid mis-correlating version numbers / non-card digits). So the convention that satisfies **both**:
+The residual asymmetry is deliberate (the bridge never correlates a bare leading id, to avoid mis-correlating version numbers / non-card digits). Since bridge **v0.57.0** the `card-<id>` form correlates on **both** movers, so the fleet-ratified convention (roundtable #48) satisfies both with one token:
 
-- **Branch:** `<type>/<card-id>-<slug>` (e.g. `feat/2950-widget`). The hook moves the card to In Progress off the leading id; no `#` needed in the ref.
-- **PR title:** include **`card#<card-id>`** (e.g. `Add the widget (card#2950)`) — this is the token the bridge matches. Use **`DL-NNN`** in the title instead when the card carries a decision-log id (the bridge prefers a resolving DL, then falls through to `card#` — framework #112).
+- **Branch:** `<type>/card-<id>-<slug>` (e.g. `feat/card-2950-widget`). The hook moves the card to In Progress; the same ref later correlates the PR's head branch on the bridge. (The older `<type>/<card-id>-<slug>` bare-id shape still works for the hook, but only the hook — the bridge ignores it.)
+- **PR title:** carries the token automatically via the head branch; adding **`card-<card-id>`** (or the older `card#<card-id>`) to the title is belt-and-braces. Use **`DL-NNN`** in the title when the card carries a decision-log id (the bridge prefers a resolving DL, then falls through to the card token — framework #112).
 
-A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge grammar — write `card#<id>`. With this one habit, a card auto-moves Backlog → In Progress → In Review → Shipped → Released with no `kbcard move` and no manual stamp. (A `board-card-branch` helper that mints the branch and emits the PR-title token is a possible future convenience; the convention above is the load-bearing part.)
+A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge grammar — write `card-<id>` (or `card#<id>`). With this one habit, a card auto-moves Backlog → In Progress → In Review → Shipped → Released with no `kbcard move` and no manual stamp. (A `board-card-branch` helper that mints the branch and emits the PR-title token is a possible future convenience; the convention above is the load-bearing part.)
 
 ## Install (per repo that you cut feature branches in)
 
 ```bash
 install-board-hooks /path/to/your-repo     # installs the post-checkout hook; non-destructive
 ```
-Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically).
+Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically — **but on Windows/MSYS/Git-Bash hosts `ln -s` produces copies**, and a copies install must re-run `install-board-hooks` after every toolkit upgrade; see INSTALL.md §2's copy-topology warning).
 
 The installer **honors `core.hooksPath`**: if the repo sets it (gitleaks, the pre-commit framework, Husky, many Windows setups) git dispatches hooks *only* from there, so the hook is installed into `<core.hooksPath>/post-checkout` — otherwise the install would be a silent no-op. It still refuses to clobber an existing non-symlink hook, and refuses a `core.hooksPath` that resolves **inside the tracked work tree** (a machine-specific absolute symlink there would show as a work-tree change and break on other clones) — guiding you to chain the toolkit hook into your committed hook by hand instead.
 

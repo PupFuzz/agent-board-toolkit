@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# agent-board-toolkit-runtime-check — judge WHAT EXECUTES, not the checkout (card #4361).
+#
+# The security-advisory verification recipe "patch the checkout, then grep the checkout"
+# certifies the wrong artifact when the on-PATH install diverges from the checkout:
+#   1. symlink-into-checkout   — patch transitively fixes PATH (the assumed case)
+#   2. real-file COPIES        — MSYS/Windows `ln`, or manual `cp`: independent stale files
+#   3. pinned worktree/2nd checkout — PATH resolves to a tag-detached pin that never advances
+# Topologies 2 and 3 were both observed LIVE (roundtable #43 / card #4361); 3 additionally
+# has the silent-staleness inverse (card #4351): after a release the pin stays behind and
+# nothing warns — the tools keep working, just older, so there is no symptom.
+#
+# This check RESOLVES each on-PATH tool through its symlink chain (readlink -f), identifies
+# the runtime root that actually executes, and asserts:
+#   • one coherent runtime (mixed resolution targets = FAIL — partial upgrades are the
+#     worst topology: two tools disagree about the lib they source)
+#   • pinned/checkout runtimes: the runtime's version vs the newest tag reachable in that
+#     repo (git describe vs the newest v* tag) — behind = FAIL naming both
+#   • copies topology (resolved file not under a git work tree): byte-compare (cmp) each
+#     tool against a reference checkout when one is named/derivable — stale copy = FAIL;
+#     no reference findable = WARN (cannot verify currency; the copy loop is on you)
+#
+# Exit codes: 0 current/coherent · 1 stale or incoherent (the loud failure the recipe
+# lacked) · 0 with warnings for cannot-verify (honest UNKNOWN ≠ ok is stated in the output).
+# --quiet prints nothing when everything is current (board-snapshot's SessionStart wiring).
+# --reference <dir> names the checkout copies are compared against (default: auto-derive
+# from the newest-modified ~/agent-board-toolkit* checkout carrying a VERSION file).
+#
+# Standalone by design: it validates _kb-board-lib.sh, so it must not source it.
+set -euo pipefail
+
+QUIET=0
+REFERENCE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --quiet) QUIET=1 ;;
+        --reference) REFERENCE="${2:?--reference needs a dir}"; shift ;;
+        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        *) echo "runtime-check: unknown arg '$1'" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# The canonical tool set: every bin/ entry of the runtime this script itself belongs to,
+# falling back to the known names when run standalone. The LIB is checked as a sourced
+# sibling of whichever kbcard executes.
+TOOLS=(kbcard next-dl board-snapshot board-card-start board-session-close adopt-to-dl
+       release-pr-body promote-released-cards install-board-hooks agent-board-toolkit-drift-check)
+
+fails=0
+warns=0
+say()  { [ "$QUIET" = 1 ] || echo "$1"; }
+warn() { echo "runtime-check: ⚠ $1" >&2; warns=$((warns + 1)); }
+fail() { echo "runtime-check: ✗ $1" >&2; fails=$((fails + 1)); }
+
+declare -A roots=()
+copies=()
+missing=()
+for t in "${TOOLS[@]}"; do
+    p="$(command -v "$t" 2>/dev/null || true)"
+    [ -n "$p" ] || { missing+=("$t"); continue; }
+    real="$(readlink -f "$p")"
+    dir="$(dirname "$real")"
+    # A tool executing from inside a git work tree belongs to that runtime; anything
+    # else (typically a real file in ~/.local/bin) is a copy.
+    if root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+        roots["$root"]=1
+    else
+        copies+=("$t:$real")
+    fi
+done
+
+# A tool the runtime SHIPS but PATH lacks is an incomplete install (the symlink
+# loop predates the tool's release — the v0.12.0 adopt-to-dl class), not "unused".
+if [ "${#missing[@]}" -gt 0 ]; then
+    if [ "${#roots[@]}" -ge 1 ]; then
+        for root in "${!roots[@]}"; do
+            gaps=()
+            for m in "${missing[@]}"; do
+                [ -f "$root/bin/$m" ] && gaps+=("$m")
+            done
+            if [ "${#gaps[@]}" -gt 0 ]; then
+                warn "runtime $root ships ${gaps[*]} but PATH lacks them — re-run the install symlink loop (INSTALL.md §2)"
+            fi
+        done
+    else
+        say "runtime-check: not on PATH (fine if unused): ${missing[*]}"
+    fi
+fi
+
+if [ "${#roots[@]}" -gt 1 ]; then
+    fail "MIXED runtimes — on-PATH tools resolve into ${#roots[@]} different checkouts (${!roots[*]}): a partial upgrade; tools may source a lib from a different version than their own"
+fi
+
+# --- pinned / checkout runtime: is it at the newest tag its repo knows? -----
+for root in "${!roots[@]}"; do
+    ver="$(git -C "$root" describe --tags --always 2>/dev/null || echo '?')"
+    # Fetch tags first — the LOCAL tag set of a pinned worktree that never fetches
+    # cannot see the release it is behind (the same local-ref lie as card #4348).
+    # Offline is tolerated but NAMED: local-only comparison is stale-blind.
+    if ! timeout 10 git -C "$root" fetch --tags --quiet 2>/dev/null; then
+        warn "could not fetch tags for $root — comparing LOCAL tags only (stale-blindness possible when offline)"
+    fi
+    newest="$(git -C "$root" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1)"
+    if [ -z "$newest" ]; then
+        warn "runtime at $root has no v* tags — cannot judge staleness (UNKNOWN, not ok)"
+        continue
+    fi
+    if [ "$ver" = "$newest" ]; then
+        say "runtime-check: ok — PATH executes $root @ $ver (newest local tag)"
+    else
+        # A dev checkout AHEAD of the newest tag (v0.X.0-N-g…) is not a stale pin —
+        # it is the maintainer topology; name it rather than failing.
+        case "$ver" in
+            "$newest"-*) say "runtime-check: ok — PATH executes $root @ $ver (dev, ahead of $newest)" ;;
+            *) fail "STALE runtime — PATH executes $root @ $ver but the newest local tag is $newest; advance the pin (git -C $root fetch --tags && git -C $root checkout $newest) or your tools silently run the old version" ;;
+        esac
+    fi
+done
+
+# --- copies topology: byte-compare against a reference checkout -------------
+if [ "${#copies[@]}" -gt 0 ]; then
+    if [ -z "$REFERENCE" ]; then
+        for cand in "$HOME"/agent-board-toolkit*; do
+            [ -f "$cand/VERSION" ] && [ -d "$cand/bin" ] && REFERENCE="$cand" && break
+        done
+    fi
+    if [ -z "$REFERENCE" ] || [ ! -d "$REFERENCE/bin" ]; then
+        warn "${#copies[@]} on-PATH tool(s) are real-file COPIES and no reference checkout was found — currency CANNOT BE VERIFIED (UNKNOWN, not ok); re-run the install loop after every upgrade (INSTALL.md §2) or pass --reference <checkout>"
+    else
+        stale=()
+        for entry in "${copies[@]}"; do
+            t="${entry%%:*}"; real="${entry#*:}"
+            reff="$REFERENCE/bin/$t"
+            [ -f "$reff" ] || { warn "copy $t has no counterpart in $REFERENCE/bin — cannot compare"; continue; }
+            cmp -s "$real" "$reff" || stale+=("$t")
+        done
+        if [ "${#stale[@]}" -gt 0 ]; then
+            fail "STALE COPIES vs $REFERENCE: ${stale[*]} — the checkout was upgraded but these on-PATH files were not; re-run the install loop (INSTALL.md §2)"
+        else
+            say "runtime-check: ok — ${#copies[@]} copy-installed tool(s) byte-match $REFERENCE"
+        fi
+    fi
+fi
+
+if [ "${#roots[@]}" -eq 0 ] && [ "${#copies[@]}" -eq 0 ]; then
+    warn "no toolkit tools found on PATH — nothing to judge"
+fi
+
+[ "$fails" -gt 0 ] && exit 1
+exit 0

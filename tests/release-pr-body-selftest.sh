@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# release-pr-body-selftest.sh — deterministic, network-free checks for the release
+# baseline resolution of `bin/release-pr-body`, against real fixture git repos
+# (a bare "origin" + a workstation clone; file paths, no network).
+#
+# Pins the defect shape found cutting v0.14.0: the documented release flow never
+# checks out the local main ref (branch off dev → PR → merge on the forge →
+# back-merge), so local main drifts a full release behind every cycle — a baseline
+# described from it names an already-shipped tag and the generated body reports
+# shipped PRs as new. The tool must resolve the baseline against ORIGIN's main
+# (fetching it), fail LOUD when the fetch fails, and honor an explicit --base as
+# the offline override. Matches the toolkit's selftest-CI convention (no
+# bats/shunit2 dep; a runnable script CI invokes).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+BIN="$HERE/../bin/release-pr-body"
+[[ -x "$BIN" ]] || { echo "selftest: $BIN not found/executable" >&2; exit 1; }
+
+fails=0
+ok()  { printf '  ok   %s\n' "$1"; }
+bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
+contains()     { # <label> <haystack> <needle>
+  case "$2" in *"$3"*) ok "$1";; *) bad "$1 — expected to find '$3'";; esac
+}
+not_contains() { # <label> <haystack> <needle>
+  case "$2" in *"$3"*) bad "$1 — must NOT contain '$3'";; *) ok "$1";; esac
+}
+
+# Deterministic git identity/config, independent of the runner's.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+g() { git -c init.defaultBranch=main -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+# --- fixture: origin + seed (drives the "remote" side) -----------------------
+g init --bare -q "$T/origin.git"
+g -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
+
+g clone -q "$T/origin.git" "$T/seed" 2>/dev/null
+S="$T/seed"
+g -C "$S" symbolic-ref HEAD refs/heads/main
+echo one > "$S/f"; g -C "$S" add f; g -C "$S" commit -qm "chore: init"
+g -C "$S" tag v0.1.0
+g -C "$S" push -q origin main --tags
+g -C "$S" checkout -qb dev
+echo two > "$S/f"; g -C "$S" commit -qam "feat: shipped in cycle one (#1) DL-1"
+g -C "$S" push -q origin dev
+
+# Workstation clone — taken BEFORE release cycle 1 lands on origin's main.
+g clone -q "$T/origin.git" "$T/work"
+W="$T/work"
+
+# Release cycle 1 happens ON THE REMOTE (merged via the forge; the workstation
+# never checks out main): merge dev → main, tag v0.2.0, then new dev work.
+g -C "$S" checkout -q main
+g -C "$S" merge -q --no-ff dev -m "Merge pull request #2 (release v0.2.0)"
+g -C "$S" tag v0.2.0
+g -C "$S" push -q origin main v0.2.0
+g -C "$S" checkout -q dev
+echo three > "$S/f"; g -C "$S" commit -qam "feat: new work for cycle two (#3) DL-2"
+g -C "$S" push -q origin dev
+
+# Workstation follows only dev (the documented flow): explicit-refspec pull, so
+# neither local main nor the main-only tag v0.2.0 comes over.
+g -C "$W" checkout -q dev
+g -C "$W" pull -q origin dev
+
+cat > "$W/.release-pr.json" <<'EOF'
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "ref_token_regex": "DL-[0-9]+",
+  "title_prefix": "Release"
+}
+EOF
+
+echo "== precondition: the fixture reproduces the stale-local-main incident shape =="
+stale="$(g -C "$W" describe --tags --abbrev=0 main)"
+if [[ "$stale" == v0.1.0 ]]; then ok "local main still describes v0.1.0 (a local-ref baseline would lie)"
+else bad "fixture broken: local main describes '$stale', expected v0.1.0"; fi
+if g -C "$W" rev-parse -q --verify refs/tags/v0.2.0 >/dev/null; then
+  bad "fixture broken: v0.2.0 already local — the tool's own fetch would not be what finds it"
+else
+  ok "v0.2.0 not yet local (only the tool's fetch can surface it)"
+fi
+
+echo "== baseline comes from origin's main, not the stale local ref =="
+body="$( (cd "$W" && "$BIN" --version 0.3.0) 2>"$T/err" )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "generates a body (rc=0)"; else bad "expected rc=0, got rc=$rc ($(cat "$T/err"))"; fi
+contains     "baseline is origin's tag"          "$body" "since v0.2.0"
+contains     "counts only the unshipped commit"  "$body" "Bundles 1 commit(s)"
+contains     "bundles the cycle-two commit"      "$body" "new work for cycle two"
+not_contains "already-shipped PR is NOT re-listed" "$body" "shipped in cycle one"
+contains     "drift note names local-vs-origin"  "$(cat "$T/err")" "note: local 'main'"
+
+echo "== --manifest sees the same corrected range =="
+man="$( (cd "$W" && "$BIN" --version 0.3.0 --manifest) 2>/dev/null )" || man="(rc=$?)"
+if [[ "$man" == "DL-2" ]]; then ok "manifest is exactly DL-2"; else bad "manifest expected 'DL-2', got '$man'"; fi
+
+echo "== fetch failure is LOUD, never a silent stale-local fallback =="
+g -C "$W" remote set-url origin "$T/nonexistent.git"
+out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 ]]; then ok "non-zero exit on unfetchable origin (rc=$rc)"; else bad "expected non-zero exit, got 0"; fi
+contains     "error names the fetch + the override" "$out" "cannot fetch origin"
+not_contains "no body emitted on a wrong baseline"  "$out" "## Bundled"
+
+echo "== explicit --base is the offline override (skips the fetch) =="
+body2="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>/dev/null )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "works offline with --base (rc=0)"; else bad "expected rc=0 with --base, got rc=$rc"; fi
+contains "uses the given baseline" "$body2" "since v0.1.0"
+contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
+
+echo
+if [[ "$fails" -gt 0 ]]; then echo "SELFTEST FAILED: $fails failing check(s)" >&2; exit 1; fi
+echo "SELFTEST OK"

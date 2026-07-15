@@ -13,8 +13,11 @@
 #   release-pr-body [--version X.Y.Z] [--base REF] [--head REF] [--config PATH]
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #
-# Exit non-zero only on a config/usage error; an empty range yields an empty
-# (but valid) bundled section, not a failure.
+# Exit non-zero on a config/usage error, or when the baseline fetch from origin
+# fails — a baseline read from a stale local ref reports already-shipped PRs as
+# new, which is worse than no body (pass --base <tag> as the explicit offline
+# override). An empty range yields an empty (but valid) bundled section, not a
+# failure.
 set -euo pipefail
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
@@ -51,11 +54,26 @@ if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -
 fi
 [ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
 
-# Range: BASE = last release tag reachable on main (excluding this version's tag,
-# in case it already exists), HEAD = the work about to ship (dev by default).
+# Range: BASE = last release tag reachable on origin's main (excluding this
+# version's tag, in case it already exists), HEAD = the work about to ship (dev by
+# default). The baseline MUST come from the remote: the documented release flow
+# (branch off dev → PR → user merges on GitHub → back-merge) never checks out the
+# local main ref, so it drifts a full release behind every cycle — describing it
+# names an already-shipped tag and the body reports shipped PRs as new. Fetch with
+# tags (release tags point at main-only merge commits, which a dev-side fetch's tag
+# auto-follow never brings over); a fetch failure is FATAL rather than a silent
+# fall-back to the stale local ref. An explicit --base skips the fetch entirely.
 HEAD_REF="${HEAD_REF:-$DEV_BRANCH}"
 if [ -z "$BASE" ]; then
-  BASE="$(git describe --tags --abbrev=0 --exclude="v${VERSION}" "$MAIN_BRANCH" 2>/dev/null || true)"
+  git fetch --quiet --tags origin "$MAIN_BRANCH" \
+    || die "cannot fetch origin/'$MAIN_BRANCH' — the release baseline is resolved against the remote (the local '$MAIN_BRANCH' ref is stale by design under the branch-off-'$DEV_BRANCH' release flow, so it is NOT a usable fallback); fix network/remote access or pass an explicit --base <tag>"
+  MAIN_TIP="$(git rev-parse --verify -q "refs/remotes/origin/$MAIN_BRANCH" || git rev-parse --verify -q FETCH_HEAD)" \
+    || die "fetched origin '$MAIN_BRANCH' but cannot resolve its tip"
+  LOCAL_TIP="$(git rev-parse --verify -q "refs/heads/$MAIN_BRANCH" || true)"
+  if [ -n "$LOCAL_TIP" ] && [ "$LOCAL_TIP" != "$MAIN_TIP" ]; then
+    echo "release-pr-body: note: local '$MAIN_BRANCH' ($(git rev-parse --short "$LOCAL_TIP")) is behind/apart from origin/$MAIN_BRANCH ($(git rev-parse --short "$MAIN_TIP")) — expected under the release flow; the baseline uses the remote tip." >&2
+  fi
+  BASE="$(git describe --tags --abbrev=0 --exclude="v${VERSION}" "$MAIN_TIP" 2>/dev/null || true)"
 fi
 RANGE="${BASE:+$BASE..}$HEAD_REF"
 

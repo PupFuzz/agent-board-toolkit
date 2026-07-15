@@ -6,6 +6,27 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-15
+
+**Minor — a quiet-wrong sweep: three read/diagnostic surfaces that answered plausibly-wrong instead of failing loud, one new guard that judges what EXECUTES, and the UPGRADE walk restored.** 10 PRs since v0.14.0 (#101–#110). **No breaking change; one new tool.** Consumers who vendor: re-vendor `promote-released-cards` (#110, diagnostic-only) and `_kb-board-lib.sh` (#103/#106).
+
+### Added
+- **#108** — **`bin/agent-board-toolkit-runtime-check`: verification that judges what EXECUTES, not the checkout** (cards #4361 + #4351). "Patch the checkout, then grep the checkout" certifies the wrong artifact on two live-observed topologies: real-file **copies** (MSYS/Windows `ln`, manual `cp`) and a **pinned worktree** (PATH detached at a tag that never advances — a maintainer box false-greened under the toolkit's own advisory). The check resolves each on-PATH tool through its symlink chain and **fails loud** on: a pinned runtime behind the newest tag (fetching tags first — a never-fetching pin is stale-blind), stale copies vs a reference checkout (`cmp`), and **mixed runtimes** (a partial upgrade where tools disagree about the lib they source). Honest UNKNOWN ≠ ok: an unverifiable copies topology **warns**, never passes silently. A tool the runtime ships but PATH lacks warns (found a real gap on the first run). `board-snapshot` runs it `--quiet` at SessionStart, closing #4351's silent-pin exposure (the tools keep working, just older — no symptom). 7-topology decision-matrix selftest + CI job.
+
+### Fixed
+- **#107** — **`kbcard show` emitted `stage: null` for a card that IS in a stage** while `list` mapped the real id (reported by an integrator; reproduced same-second). `null` is an assertion, not an absence — it read as "the card never moved" and caused a false "automation is broken" escalation downstream. `show` now maps `stage` from `workflow_stage_id` and resolves `column` by reverse `KB_STAGE_*` lookup, **omitting** any key it cannot populate. Shape-independent (correct whether the serializer omits the keys or emits nulls). New `kbcard-selftest` + CI job.
+- **#109** — the same shape on the **write** echoes (card #4390): `create-card`/`patch` fabricated `payload: null` on boards whose serializer omits the key. One `_kbc_write_echo` primitive replaces two divergent inline filters; a server-**sent** null still passes through.
+- **#103** — **`fetch_board_cards` lost the API error body** in the v0.8.2 lib extraction (`curl -fsS`): a 403 token-scope failure and a 422 validation failure were indistinguishable in the failure log (`curl-rc=22`). Restored `HTTP-<status> <body>` logging + loud-mode stderr; the selftest stub emulates `-f` so a regression reds.
+- **#106** — **the short-read backstop no caller could reach** (card #4338): `fetch_board_cards` detected `total > read_n`, warned INCOMPLETE, then returned **0** — so `next-dl` minted a DL from a read the lib had just declared incomplete (its whole exit-code contract exists to prevent DL re-mints, DL-154). Now a distinct **rc 4** (partial data still emitted), with the pre-dedup page sum distinguishing a real undercount from a **page-boundary dedup artifact**. `next-dl`/`dl-a0` refuse it via their existing branches; `kbcard list`'s documented never-print-truncated contract now actually holds; `board-snapshot` still displays partials.
+- **#105** — **`release-pr-body` computed the release baseline from the LOCAL `main` ref** (card #4348), which the documented release flow never updates — so it drifted a full release per cycle and the "generated — do not hand-edit" body authoritatively listed already-shipped PRs as new. Now fetches `origin/<main>` (`--tags` is load-bearing: release tags point at main-only merge commits a dev-side fetch never auto-follows); an unfetchable origin **fails loud** (exit 2) naming `--base <tag>` as the offline override — never a silent stale fallback. New fixture-repo selftest + CI job.
+- **#110** — `promote-released-cards`' local dry-run derives its baseline from local tags and can over-report the shipped range; a stderr NOTE names it (suppressed under `GITHUB_ACTIONS`, where the CI invocation is remote-truth by construction). Diagnostic-only (card #4389).
+
+### Docs
+- **#104** — **`docs/UPGRADE.md` §6 walk-forward contract restored** (card #4345): the required `KANBAN_EXPECTED_HOST` action sat under a stale "Unreleased (after v0.8.2)" heading (it shipped in **v0.9.0** — pinned by tag inspection, not inferred) and **v0.9.0–v0.13.0 had no entries at all**, so an upgrader on v0.8.2..v0.12.x walked forward and found nothing. Reconstructed per-version with citations; no-action releases get explicit one-liners so a gap is never ambiguous.
+- **#102** — Windows/MSYS **copy-not-symlink** note (reported by an integrator's Windows adopter): `ln -s` produces copies on native mingw64, silently changing the upgrade contract; INSTALL.md §2 now states it, plus the pinned-topology sibling and the verify-what-`~/.local/bin`-resolves-to rule.
+- **#101** — HOOKS.md's bridge correlation-grammar row tracks the agent-webhook-bridge **v0.57.0** correlation grammar — the `card-<id>` dash alias + DL-shaped boundary (`\bcard[-#](\d+)`) — version-scoped, with the `<type>/card-<id>-<slug>` branch convention it enables.
+
+
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.14.0] - 2026-07-15

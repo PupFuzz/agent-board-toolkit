@@ -57,6 +57,25 @@ jobs:
       - name: _kb-board-lib.sh config-resolution unit checks
         run: bash tests/kb-board-lib-selftest.sh
 
+  kbcard-selftest:
+    # Exercises kbcard's pure mapping logic network-free: the KB_STAGE_* reverse
+    # lookup (stage_name) and show's stage/column annotation — the omit-don't-null
+    # rule (card #4387: an emitted `"stage": null` on a staged card read as "no
+    # stage" and triggered a false "auto-move is broken" escalation).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: kbcard pure-logic unit checks
+        run: bash tests/kbcard-selftest.sh
+  runtime-check-selftest:
+    # Decision-matrix checks for the runtime staleness guard (cards #4351/#4361):
+    # pinned-current/STALE, dev-ahead, copies current/STALE/unverifiable, mixed runtimes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: runtime-check decision matrix
+        run: bash tests/runtime-check-selftest.sh
+
   board-card-start-selftest:
     # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
     # the RFC-2606/6761 placeholder-host detector (anchored so real hosts aren't misread), the
@@ -66,6 +85,18 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: board-card-start pure-logic unit checks
         run: bash tests/board-card-start-selftest.sh
+
+  release-pr-body-selftest:
+    # Exercises release-pr-body's baseline resolution against fixture git repos
+    # (file-path remotes, network-free): a stale local main + a released origin/main
+    # must yield origin's tag as the baseline (the local ref drifts a release behind
+    # by design under the branch-off-dev flow and once misreported shipped PRs as
+    # new); an unfetchable origin fails LOUD; --base stays the offline override.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: release baseline resolution checks
+        run: bash tests/release-pr-body-selftest.sh
 
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
