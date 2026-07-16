@@ -40,18 +40,27 @@ KB_CURL_MAX_TIME=5
 # (rc 3) still yields the partial array, so this fail-soft SessionStart display
 # shows what it has rather than going dark.
 
+# Clean slate before sourcing a board env: board envs EXPORT their keys, so an
+# operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /
+# token into board B here. Without this scrub, a B env that OMITS any of them
+# silently inherits A's value — the WRONG board under a label (KB_BOARD_ID), or a
+# stage id that means something else on B (card-4448). Unsetting EVERY KB_STAGE_*
+# by GLOB rather than an enumerated list is what makes it drift-proof: a function
+# that later reads a new KB_STAGE_* is covered for free — the enumerated list
+# drifting out of sync between snap() and untriaged() WAS the defect. KBCARD_TOKEN_FILE
+# is scrubbed for the same reason plus one more: the host env's value is in this shell
+# (kb_load_host_env sourced it), and must not read back as this board's own override —
+# the per-function token ladder places it a tier lower.
+board_env_scrub() {
+    # shellcheck disable=SC2086  # intentional word-split: each name is a separate unset arg
+    unset KBCARD_TOKEN_FILE KB_BOARD_ID ${!KB_STAGE_@}
+}
+
 snap() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
   (
-    # Clean slate before sourcing: board envs EXPORT their keys, so an operator shell that
-    # sourced one board's env carries that board's ids and token here. Without the unset, an
-    # env that omits any of these silently inherits the other board's value — rendering the
-    # WRONG board under this label (KB_BOARD_ID), or a stage id that means something else.
-    # KBCARD_TOKEN_FILE is unset for the same reason plus one more: the host env's value is
-    # in this shell (kb_load_host_env sourced it), and it must not read back as this board's
-    # own override — the ladder below places it a tier lower.
-    unset KBCARD_TOKEN_FILE KB_BOARD_ID KB_STAGE_IN_PROGRESS KB_STAGE_IN_REVIEW KB_STAGE_HELD
+    board_env_scrub
     # shellcheck disable=SC1090
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { echo "• ${label}: (env $envf sets no KB_BOARD_ID)"; return 0; }
@@ -144,9 +153,18 @@ untriaged() {  # $1 = board env file   $2 = label
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || return 0
   (
-    unset KBCARD_TOKEN_FILE   # see snap(): report THIS board's override, not the host's
+    # Same clean slate as snap() (card-4448): untriaged reads KB_BOARD_ID +
+    # KB_STAGE_SHIPPED_TO_DEV/RELEASED_TO_MAIN/WONT_DO, all of which a sibling board's
+    # exported env could otherwise shadow — silently corrupting the terminal-stage set,
+    # so a card is wrongly suppressed or wrongly flagged UNTRIAGED. It unset only
+    # KBCARD_TOKEN_FILE before, which is exactly why those stage ids leaked.
+    board_env_scrub
     # shellcheck disable=SC1090
     source "$envf"
+    # Guard a missing KB_BOARD_ID the way snap() does — without the scrub above this
+    # was doubly wrong (it fetched a SIBLING board's id). Silent: snap() runs over the
+    # same roster first and already reported a bad env loudly.
+    [[ -n "${KB_BOARD_ID:-}" ]] || return 0
     # Silent on an unreadable token: snap() runs over the same roster first and already
     # reported it loudly — this would only be a second copy of the same line.
     kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" || return 0
@@ -170,6 +188,11 @@ untriaged() {  # $1 = board env file   $2 = label
       ' 2>/dev/null
   )
 }
+
+# Run the snapshot only when executed directly, so tests/board-snapshot-selftest.sh
+# can source this file for its pure functions (board_env_scrub / snap / untriaged)
+# without rendering a live snapshot. Mirrors the main-guard every other bin uses.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
 # Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
 # so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).
@@ -219,3 +242,4 @@ for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; 
 command -v agent-board-toolkit-runtime-check >/dev/null 2>&1 \
     && agent-board-toolkit-runtime-check --quiet 2>&1 || true
 exit 0
+fi
