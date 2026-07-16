@@ -93,6 +93,39 @@ eq "extra-fields arg composes (patch echo)" '"abc"' "$(jq -c '.description' <<<"
 
 
 # ---------------------------------------------------------------------------
+echo "== cmd_archive / cmd_delete — arg guards + dry-run + non-TTY --hard refusal =="
+# These paths are network-free: a NUMERIC --task short-circuits resolve_task (no
+# search call), --dry-run returns before any API call, and the non-TTY --hard
+# guard refuses before the soft-delete — so no kb_api call is ever reached here.
+# has <needle> <haystack> → true/false on a LITERAL substring match (no globbing,
+# no regex — robust against the JSON quotes/braces in the dry-run output).
+has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
+
+rc=0; cmd_archive >/dev/null 2>&1 || rc=$?
+eq "archive without --task → rc 2" "2" "$rc"
+rc=0; cmd_delete  >/dev/null 2>&1 || rc=$?
+eq "delete without --task → rc 2"  "2" "$rc"
+rc=0; cmd_delete --task 42 --bogus >/dev/null 2>&1 || rc=$?
+eq "delete unknown arg → rc 2"     "2" "$rc"
+
+out="$(cmd_archive --task 42 --dry-run 2>/dev/null)"
+eq "archive --dry-run prints the archive PATCH" "true" "$(has '"_action":"archive"' "$out")"
+
+out="$(cmd_delete --task 42 --dry-run 2>/dev/null)"
+eq "delete --dry-run prints the soft PATCH"           "true"  "$(has '"_action":"delete"' "$out")"
+eq "delete --dry-run (no --hard) omits force-delete"  "false" "$(has 'force-delete' "$out")"
+
+out="$(cmd_delete --task 42 --hard --dry-run 2>/dev/null)"
+eq "delete --hard --dry-run includes force-delete"    "true"  "$(has 'force-delete.json' "$out")"
+
+# THE safety guard: --hard without --yes in a non-interactive shell refuses UP
+# FRONT (rc 2, before any soft-delete) — never leaves the card half-trashed.
+# </dev/null forces a non-TTY fd 0 so the check is deterministic in any CI shell.
+rc=0; err="$(cmd_delete --task 42 --hard </dev/null 2>&1)" || rc=$?
+eq "non-TTY --hard without --yes → rc 2"      "2"    "$rc"
+eq "non-TTY --hard refusal names --yes"       "true" "$(has '--yes' "$err")"
+
+# ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kbcard-selftest: $fails check(s) FAILED" >&2
     exit 1

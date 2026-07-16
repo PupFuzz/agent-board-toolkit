@@ -20,6 +20,15 @@
 #   kbcard list  [--column COL] [--type TYPE]
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
+#   kbcard archive --task ID-OR-EXT [--dry-run]
+#     Take the card off the board without deleting it (PATCH _action:archive) —
+#     the row stays live + recoverable and keeps its stable id + dl_number.
+#   kbcard delete --task ID-OR-EXT [--hard] [--yes|-y] [--dry-run]
+#     Default: soft-delete (trashed, recoverable within the retention window; RETAINS
+#     dl_number). --hard: permanent force-delete (cascades subtasks/comments/links;
+#     RELEASES dl_number; two-step soft-then-force). --hard prompts to confirm unless
+#     --yes, and refuses without --yes in a non-interactive shell. --dry-run prints
+#     the exact API calls without executing them.
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -398,6 +407,81 @@ cmd_show() {
     _kbc_annotate_card "$data"
 }
 
+# Take a card off the board without deleting it: PATCH _action:archive. The row
+# stays live (recoverable via _action:unarchive) and keeps its stable id + any
+# dl_number — so archiving never releases a DL ref. `--dry-run` prints the call.
+cmd_archive() {
+    local task_ref="" dry=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --task) task_ref="$2"; shift 2 ;;
+            --dry-run) dry=1; shift ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
+    local task; task="$(resolve_task "$task_ref")" || return 2
+    if [[ -n "$dry" ]]; then
+        echo "  archive:  PATCH /tasks/$task.json  {\"_action\":\"archive\"}"
+        return 0
+    fi
+    kb_api PATCH "/tasks/$task.json" '{"_action":"archive"}' >/dev/null \
+        || { echo "kbcard: archive failed for task $task" >&2; return 1; }
+    echo "kbcard: task $task archived (off-board, recoverable; live row — stable id + DL ref kept)"
+}
+
+# Remove a card. Default is a soft delete (PATCH _action:delete) — trashed, but
+# recoverable within the retention window, and it RETAINS the dl_number. `--hard`
+# force-deletes (POST force-delete.json): permanent, cascades subtasks/comments/
+# links, and RELEASES the DL ref. force-delete 422s unless the card is already
+# trashed, so --hard is a two-step soft-then-force; the confirmation gates the
+# whole thing, BEFORE the soft-delete, so a declined --hard leaves the card live.
+cmd_delete() {
+    local task_ref="" hard="" dry="" yes="" ans=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --task) task_ref="$2"; shift 2 ;;
+            --hard) hard=1; shift ;;
+            --dry-run) dry=1; shift ;;
+            --yes|-y) yes=1; shift ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
+    local task; task="$(resolve_task "$task_ref")" || return 2
+
+    if [[ -n "$dry" ]]; then
+        echo "  soft:  PATCH /tasks/$task.json  {\"_action\":\"delete\"}"
+        [[ -n "$hard" ]] && echo "  hard:  POST  /tasks/$task/force-delete.json  (IRREVERSIBLE — releases DL ref)"
+        return 0
+    fi
+
+    # Confirm the destructive path FIRST — before any deletion — so declining (or
+    # a non-interactive shell without --yes) leaves the card fully live, never in a
+    # half-trashed state. A non-TTY with no --yes refuses rather than reading a
+    # confirmation from a stream that carries none (fail-closed on irreversibility).
+    if [[ -n "$hard" && -z "$yes" ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "kbcard: --hard requires --yes in a non-interactive shell (refusing to permanently delete without an explicit confirmation)" >&2
+            return 2
+        fi
+        # `|| ans=""` so an EOF (Ctrl-D) at the prompt takes the graceful abort
+        # path (read returns non-zero on EOF, which set -e would otherwise fatal).
+        read -r -p "HARD-delete task $task PERMANENTLY (cascades subtasks/comments/links; releases DL ref; irreversible)? [y/N] " ans || ans=""
+        [[ "$ans" == [yY] ]] || { echo "kbcard: aborted — task $task left live (not deleted)"; return 0; }
+    fi
+
+    kb_api PATCH "/tasks/$task.json" '{"_action":"delete"}' >/dev/null \
+        || { echo "kbcard: soft-delete failed for task $task" >&2; return 1; }
+    if [[ -z "$hard" ]]; then
+        echo "kbcard: task $task soft-deleted (recoverable within the retention window; DL ref RETAINED — use --hard to release it)"
+        return 0
+    fi
+    kb_api POST "/tasks/$task/force-delete.json" '' >/dev/null \
+        || { echo "kbcard: force-delete failed for task $task (needs task.delete / admin). The card is now SOFT-DELETED (in the trash, recoverable) — retry --hard with an admin token, or restore it." >&2; return 1; }
+    echo "kbcard: task $task HARD-deleted (permanent; DL ref released)"
+}
+
 main() {
     # Optional global `--board NAME` before the subcommand selects the board env.
     local board_name=""
@@ -418,6 +502,8 @@ main() {
         list)        cmd_list "$@" ;;
         link)        cmd_link "$@" ;;
         show)        cmd_show "$@" ;;
+        archive)     cmd_archive "$@" ;;
+        delete)      cmd_delete "$@" ;;
         *) echo "kbcard: unknown command '$cmd'" >&2; exit 2 ;;
     esac
 }
