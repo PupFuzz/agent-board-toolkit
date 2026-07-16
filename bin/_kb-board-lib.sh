@@ -1,9 +1,26 @@
 # shellcheck shell=bash
 # _kb-board-lib.sh — shared helpers for the agent-board-toolkit's OWN scripts.
 #
-# Toolkit-only: this file is NOT vendored into consumer repos and NOT byte-synced
-# (unlike promote-released-cards, which is and must never source this). It is
-# sourced, never executed. It collapses the config-resolution, kanban-API curl
+# CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
+# board-snapshot, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
+# dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
+# MUST copy it too. Cited by line, not by section number — ADOPTION.md has no
+# numbered sections and its "§8" means the Task-tracking standard's §8:
+#   ADOPTION.md:13 ("Where this fits") — a PM project may vendor these tools; the
+#     lib-sourcing bins require _kb-board-lib.sh copied beside them.
+#   docs/INSTALL.md:141 (§6b) — same requirement, with the failure mode.
+#   bin/agent-board-toolkit-drift-check:39 — MISSING-LIB probe flags a lib-sourcing
+#     bin vendored without the lib.
+#   docs/CHANGELOG.md:11 (v0.15.0) — "Consumers who vendor: re-vendor
+#     `promote-released-cards` (#110, diagnostic-only) and `_kb-board-lib.sh`
+#     (#103/#106)." (No "[vendor]" tag on it: the only two in that file are
+#     v0.14.0's, both for promote-released-cards. v0.11.2/#74 established the
+#     co-vendoring requirement itself.)
+# (promote-released-cards is the standalone exception: it is vendored and must
+# never source this.) This header claimed the opposite until 2026-07-15 — treat any
+# change here as having consumer blast radius, because it does.
+#
+# It is sourced, never executed. It collapses the config-resolution, kanban-API curl
 # wrapper, whole-board pagination, and DL-canonicalization logic that was
 # copy-pasted across kbcard / next-dl / dl-a0-backfill-triaged /
 # dl-a1-register-field / board-snapshot / board-card-start into one definition.
@@ -264,9 +281,42 @@ kb_require_https_host() {
 #   KB_API_QUIET=1    suppress the non-2xx stderr line (dl-a1, which lets its
 #                     callers print their own FATAL message); transport failures
 #                     are still reported.
+#   KB_CURL_MAX_TIME  cap EACH request at N seconds (curl --max-time). Unset = no
+#                     cap, so every existing caller is byte-for-byte unaffected
+#                     (nothing in this repo sets it but board-snapshot, and it is
+#                     never exported).
+#                     This is the SAME knob fetch_board_cards honors, and it must
+#                     stay that way: a caller has no way to tell which lib function
+#                     it reached. When only one of the two honored it, a bounded
+#                     paginated read sat beside an unbounded single read under one
+#                     knob that looked global — the cap silently did not apply, and
+#                     the hang it exists to prevent came back via the sibling.
+#                     ⚠ It caps WRITES too, and the parity argument does NOT carry
+#                     there: a timed-out POST/PATCH is AMBIGUOUS (the server may
+#                     have committed it) yet kb_api returns 1, so a non-idempotent
+#                     retry can duplicate a card or burn a DL number. Set it around
+#                     a read; do NOT export it process-wide over the bins that WRITE
+#                     through this lib — enumerated, not recalled:
+#                       kbcard                 POST + PATCH
+#                       dl-a0-backfill-triaged PATCH
+#                       dl-a1-register-field   POST + PATCH, and the sole
+#                                              kb_api_status caller
+#                     (next-dl and adopt-to-dl are not themselves on that list:
+#                     next-dl's dl-sequence claim is a raw curl outside this lib, so
+#                     the knob never reaches it. adopt-to-dl stamps via a `kbcard`
+#                     SUBPROCESS, so an EXPORTED cap DOES reach that write — through
+#                     kbcard above, which is why exporting is the thing warned
+#                     against. It does not burn a DL there: adopt-to-dl surfaces the
+#                     minted DL BEFORE the write for exactly this reason, and the
+#                     documented retry `--dl N` re-stamps idempotently. What you get
+#                     is an ambiguous stamp to resolve by hand — bad, not corrupting.)
+#                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
+#                     requests can still take N×cap — board-snapshot's cap does not
+#                     by itself keep it inside the SessionStart hook timeout.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")
+    [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
     # Auth fed via stdin herestring (-H @- <<<) so the token never enters argv (#3569) AND
@@ -296,6 +346,11 @@ kb_api() {
 kb_api_status() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")
+    # Honors KB_CURL_MAX_TIME for the same reason kb_api and fetch_board_cards do:
+    # the knob means one thing across every fetcher in this lib, because a caller
+    # cannot tell which one it reached. This is the THIRD — a parity claim that
+    # covers two of three is just a wrong claim.
+    [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
     local out
     # Auth via stdin herestring (-H @- <<<) — token stays out of argv (#3569) + portable

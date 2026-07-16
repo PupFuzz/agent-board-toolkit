@@ -19,8 +19,19 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 kb_load_host_env   # cannot fail (reads no token)
 API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
-# Cap each page fetch at 5s so a slow/down API never stalls SessionStart (the
-# shared fetch_board_cards honors KB_CURL_MAX_TIME).
+# Cap EACH request at 5s against a slow/down API. Honored by both fetchers THIS
+# script uses — fetch_board_cards (paginated read) and kb_api (the preload
+# stage-name read). The lib has three; kb_api_status honors it too.
+#
+# This bounds a REQUEST, not this script, and the gap is much wider than one cap:
+# both fetch_board_cards calls PAGINATE, each page a separate capped curl, up to
+# SNAPSHOT_PAGE_CAP (25). So per board the ceiling is 25*5 + 5 (preload) + 25*5 =
+# 255s, not 15s — and the roster multiplies that. The harness's SessionStart
+# timeout, NOT this cap, is what actually bounds the hook, and a kill there
+# truncates the snapshot rather than degrading it — the one outcome worse than a
+# slow one. Typical run is ~7.6s of a 10s budget (a healthy board is one page);
+# card-4447 (snap and untriaged each fetch the same board independently) is where
+# the real headroom is.
 KB_CURL_MAX_TIME=5
 
 # The whole-board paginated read is the shared fetch_board_cards (lib): reading
@@ -52,15 +63,67 @@ snap() {  # $1 = board env file   $2 = label
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
         || { echo "• ${label}: (board API unreachable)"; return 0; }
-    # in-flight = In Progress + In Review + Held (Held only exists on the bridge board)
-    local names
-    names="$(jq -n \
+    # in-flight = the board's In Progress + In Review + Held stages, selected by the
+    # env stage ids (the env is the contract for WHICH stages are in-flight; a board
+    # omitting one simply drops it from the map).
+    #
+    # Display names are BOARD-SOURCED. They were hardcoded literals ("In Progress" /
+    # "In Review" / "Held"), i.e. a private second copy of what the board calls its
+    # columns — so a rename left the snapshot asserting a name the board no longer
+    # used, and it printed [Held] for a column named Blocked/Gated on all three
+    # boards. The two invisible siblings were the same defect: "In Progress" and
+    # "In Review" only ever looked right because they happened to match.
+    #
+    # preload.json is the cheap stages read (~2.5KB, vs ~220KB for boards/{id}.json,
+    # which inlines every task AND its description); there is no GET index for
+    # workflow_stages, and tasks/search returns workflow_stage_id but no name.
+    #
+    # Fail-soft (SessionStart must never block): an unreachable preload, or an env
+    # stage id the board doesn't define, degrades to "stage <id>" — the shape the
+    # untriaged block below already prints. An unnamed stage is honest; a guessed
+    # one is how this bug read as working.
+    local names pre
+    KB_API="$API"   # kb_api reads this global; snap()'s body is a subshell, so it is contained
+    pre="$(kb_api GET "/boards/$KB_BOARD_ID/preload.json" 2>/dev/null)" || pre=""
+    # The preload body is UNTRUSTED and the name map must be TOTAL over it: a bad
+    # preload costs the labels and nothing else. Anything less cascades — an empty
+    # $names reaches --argjson below and takes the whole board to "(parse error)",
+    # losing cards that fetched perfectly.
+    #
+    # Two distinct hazards, one expression:
+    #   - not JSON at all. kb_api returns the body on any 2xx, and a proxy, captive
+    #     portal, or truncated read can answer 200 with HTML. `fromjson?` yields
+    #     nothing on a parse failure, so `// null` catches it.
+    #   - JSON, but not this shape. Syntax-validating the body (jq -e .) is NOT
+    #     enough and was the first fix's mistake: {"data":[]}, [] and {"data":"x"}
+    #     are all valid JSON that then THROW on the .data walk (`?` suppresses
+    #     iteration errors, not indexing an array/string with "workflows"). `try`
+    #     covers the whole walk, so every shape lands on {} instead of an abort.
+    # A stage whose name is null/absent is simply not mapped, and falls through to
+    # the same "stage <id>" default — an unnamed stage is honest; a guessed one is
+    # how the hardcoded labels read as working for so long.
+    # Body enters jq VIA STDIN, never argv (-R -s slurps it as a raw string): an
+    # untrusted body over MAX_ARG_STRLEN (~128KB) makes execve fail with "Argument
+    # list too long" BEFORE jq parses anything, so $names comes back empty and
+    # cascades into the card-listing jq exactly as a bad shape would. A >128KB 2xx
+    # interstitial is ordinary for the proxy/portal case this guard exists for. The
+    # lib states this rule for the same reason (see fetch_board_cards' header, the
+    # #3091/#3362 class) — the argv form was measured failing at 131111 bytes.
+    names="$(printf '%s' "$pre" | jq -R -s \
         --arg ip "${KB_STAGE_IN_PROGRESS:-}" \
         --arg ir "${KB_STAGE_IN_REVIEW:-}" \
         --arg hl "${KB_STAGE_HELD:-}" \
-        '{($ip):"In Progress",($ir):"In Review"}
-         + (if $hl!="" then {($hl):"Held"} else {} end)
-         | with_entries(select(.key!=""))')"
+        '(fromjson? // null) as $p
+         | (try ($p
+                 | [ .data.workflows[]?.stages[]?
+                     | select(.name != null)
+                     | {(.id|tostring): ((.name | tostring | gsub("\\s+"; " "))[0:32])} ]
+                 | add // {})
+            catch {}) as $bn
+         | [$ip,$ir,$hl]
+         | map(select(. != ""))
+         | map({(.): ($bn[.] // ("stage " + .))})
+         | add // {}')"
     printf '%s' "$data" | jq -r --arg label "$label" --argjson names "$names" '
         (. // []) as $t
         | ($names | keys | map(tonumber)) as $infl
