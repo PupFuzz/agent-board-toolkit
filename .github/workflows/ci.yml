@@ -67,6 +67,15 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: kbcard pure-logic unit checks
         run: bash tests/kbcard-selftest.sh
+  board-snapshot-selftest:
+    # Per-board env isolation, network-free (fetch stubbed): a sibling board's
+    # exported KB_STAGE_* / KB_BOARD_ID must not leak into the next board's
+    # untriaged terminal-stage set (card-4448) + the missing-KB_BOARD_ID guard.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: board-snapshot env-isolation checks
+        run: bash tests/board-snapshot-selftest.sh
   runtime-check-selftest:
     # Decision-matrix checks for the runtime staleness guard (cards #4351/#4361):
     # pinned-current/STALE, dev-ahead, copies current/STALE/unverifiable, mixed runtimes.
