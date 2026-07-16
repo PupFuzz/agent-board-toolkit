@@ -6,6 +6,18 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-16
+
+**Patch — the v0.15.0 staleness guard now reaches the reader, plus a board-snapshot stage-name fix.** 2 PRs since v0.15.0 (#114, #115). Cards #4393/#4444. Both are fixes; no new surface, no config migration.
+
+### Fixed
+- **#114** — **the runtime staleness guard warned into the void** (card #4393). `board-snapshot` ran `agent-board-toolkit-runtime-check --quiet` but its warnings go to **stderr**, while `board-snapshot`'s consumer is a SessionStart hook that surfaces only **stdout** — so a correct, installed guard on a stale pin would have warned where nothing reads (the exact channel trap `board-card-start` already ate). The warning is now folded to **stdout**, where the snapshot itself lands, so the `v0.15.0`-shipped guard actually surfaces a stale pin at SessionStart. Pinned by a test that drives a real stale pin and asserts the warning survives a stderr-dropping consumer, with a positive control proving the same warning vanishes without the fold (dropping the `2>&1` reds 2 checks).
+- **#115** — **`board-snapshot` printed a stale hardcoded stage name** (card #4444). The label map hardcoded `In Progress`/`In Review`/`Held` — a private second copy of the board's column names — so a board-side column rename left the snapshot asserting a name the board no longer used (it printed `[Held]` for a column renamed `Blocked`/`Gated`). Names are now sourced from the board via `preload.json` (~2.5KB — `boards/{id}.json` inlines every task at ~220KB, and there is no GET index for `workflow_stages`); selection still keys on the env stage ids (unchanged contract). An unreachable preload or an env id the board does not define degrades to `stage <id>` (the shape the untriaged block already prints) rather than a stale literal — an unnamed stage is honest, a guessed one is how the bug read as working. `kb_api` now honors `KB_CURL_MAX_TIME` (the cap `fetch_board_cards` already honored), so the new preload call cannot reintroduce the SessionStart-stall the cap prevents; unset = no cap, every existing caller unaffected.
+
+### Docs
+- **#114** — **`VERSIONING.md` gains the missing DEPLOY step** (release flow step 11). The flow previously ended at the tag — a tag is not a deploy, so `v0.15.0` shipped while the on-PATH runtime silently stayed at `v0.14.0`. Step 11 now advances the pinned runtime, **re-runs the symlink loop** (a symlink tracks its target's content, not the *set* of tools — a release that ADDS a bin never lands on PATH otherwise), runs the guard, and exercises one real command; it also documents the bootstrap rule (a guard shipped *in* the artifact it guards cannot force its own first run).
+
+
 ## [0.15.0] - 2026-07-15
 
 **Minor — a quiet-wrong sweep: three read/diagnostic surfaces that answered plausibly-wrong instead of failing loud, one new guard that judges what EXECUTES, and the UPGRADE walk restored.** 10 PRs since v0.14.0 (#101–#110). **No breaking change; one new tool.** Consumers who vendor: re-vendor `promote-released-cards` (#110, diagnostic-only) and `_kb-board-lib.sh` (#103/#106).

@@ -99,6 +99,44 @@ run_check "$TMP/bin1"
 eq "install gap → rc 0 (warn-only)" "0" "$RC"
 grep -q "ships adopt-to-dl but PATH lacks" <<<"$ERR" && ok "names the install gap" || bad "missing install-gap warn"
 
+echo "== board-snapshot surfaces the guard on STDOUT, not stderr (card #4393) =="
+# The channel is the whole point: board-snapshot runs inside a SessionStart hook whose
+# consumer reads STDOUT. A stderr-only warning is discarded — the guard would be
+# installed, correct, and silent (board-card-start ate this exact trap). Drive the real
+# snapshot line against a STALE pin and assert the warning is on stdout.
+SNAP="$HERE/../bin/board-snapshot"
+if [[ -r "$SNAP" ]]; then
+    # The exact invocation from board-snapshot's tail, run against the stale repo2 pin.
+    line="$(grep -A1 'command -v agent-board-toolkit-runtime-check' "$SNAP" | tail -1)"
+    grep -q '2>&1' <<<"$line" && ok "snapshot folds the guard's stderr into stdout" \
+        || bad "snapshot invocation lacks 2>&1 — a stale-pin warning would be discarded by the hook"
+    # Empirical: stdout ALONE (stderr dropped, as a stdout-capturing hook sees it) must
+    # still carry the STALE warning. $CHECK by absolute path = board-snapshot's line with
+    # the guard resolved (it deliberately does not scan itself, so this cannot self-mix).
+    # NB the first draft of this test used the bare name on a fixture PATH lacking the
+    # guard: it returned EMPTY and read as a pass-shaped failure — the same
+    # can't-bootstrap trap the guard exists for. Hence the positive control below.
+    out="$(PATH="$TMP/bin2:/usr/bin:/bin" sh -c "$CHECK --quiet 2>&1 || true" 2>/dev/null)"
+    grep -q "STALE runtime" <<<"$out" && ok "stale pin warns ON STDOUT (survives a stderr-dropping consumer)" \
+        || bad "stale-pin warning did not reach stdout: [$out]"
+    # Positive control for the channel itself: WITHOUT the 2>&1 fold, that same warning
+    # must VANISH from stdout — proving the assertion above tests the fold, not luck.
+    out="$(PATH="$TMP/bin2:/usr/bin:/bin" sh -c "$CHECK --quiet || true" 2>/dev/null)"
+    [[ -z "$out" ]] && ok "control: without 2>&1 the warning is INVISIBLE to a stdout consumer" \
+        || bad "control failed — warning reached stdout without the fold: [$out]"
+    # Control: a CURRENT, fully-installed pin stays silent on stdout (no cry-wolf at every
+    # SessionStart). Its OWN fixture — repo1/bin1 were mutated by the ships-but-missing
+    # case above, and reusing them made this control fire that warn instead (a fixture
+    # dependency, not a code fault; caught by this control's own failure).
+    mk_repo "$TMP/repo_ch"
+    git -C "$TMP/repo_ch" checkout -q v0.2.0
+    mkdir -p "$TMP/bin_ch"; ln -s "$TMP/repo_ch/bin/kbcard" "$TMP/bin_ch/kbcard"
+    out="$(PATH="$TMP/bin_ch:/usr/bin:/bin" sh -c "$CHECK --quiet 2>&1 || true" 2>/dev/null)"
+    [[ -z "$out" ]] && ok "current pin prints nothing (quiet when healthy)" || bad "current pin should be silent, got: [$out]"
+else
+    bad "board-snapshot not found next to the selftest"
+fi
+
 if [[ "$fails" -gt 0 ]]; then
     echo "runtime-check-selftest: $fails check(s) FAILED" >&2
     exit 1
