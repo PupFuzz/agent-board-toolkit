@@ -8,7 +8,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 
 | Tool | Role |
 |---|---|
-| `bin/kbcard` | board CRUD CLI: `create-card` / `move` / `patch` / `list` / `show` / `link` |
+| `bin/kbcard` | board CRUD CLI: `create-card` / `move` / `patch` / `list` / `show` / `link` / `archive` / `delete` (`--hard` releases the DL ref) |
 | `bin/promote-released-cards` | move a release's shipped cards to the "released" stage (run by release CI) |
 | `promote/action.yml` | SHA-pinned composite-action wrapper around `bin/promote-released-cards` for GitHub-Actions consumers (INSTALL.md §6a) |
 | `bin/release-pr-body` | generate the release-PR body/scaffold from repo config |
