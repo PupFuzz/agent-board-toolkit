@@ -81,6 +81,23 @@ kb_bcs_log() {
 # gate below, so a token IS present: a genuine no-op (no token) stays silent and never reaches here.
 bcs_skip() { kb_bcs_log "$1"; exit 0; }
 
+# _bcs_patch <cid> <json> <success-msg> <fail-reason>: PATCH the resolved card via the shared
+# kb_api, which captures the HTTP status in KB_HTTP (the status-capture the hand-rolled
+# `curl -fsS` here used to drop, #4337 — a 403 token-scope failure and a 422 were both a bare
+# rc 22). On a 2xx, echo <success-msg> to stderr; on any failure, durably record <fail-reason>
+# plus the status via kb_bcs_log (this hook never sets KB_LOG_FILE, so KB_BCS_LOG is its durable
+# surface). Fail-soft: always returns 0 — a failed board write must never block a checkout.
+# Reads KB_API / KB_TOKEN (pinned once above, before the first call).
+_bcs_patch() {
+    local cid="$1" json="$2" okmsg="$3" failreason="$4"
+    if kb_api PATCH "/tasks/$cid.json" "$json" >/dev/null 2>&1; then
+        [ -n "$okmsg" ] && printf '%s\n' "$okmsg" >&2
+        return 0
+    fi
+    kb_bcs_log "$failreason (HTTP ${KB_HTTP:-?})"
+    return 0
+}
+
 # When sourced (tests/board-card-start-selftest.sh), expose only the pure helpers above and
 # stop here — sourcing must not run the checkout mover.
 (return 0 2>/dev/null) && return 0
@@ -192,6 +209,12 @@ fi
 # LOUD on stderr; the token is simply never sent when the host isn't trusted.
 kb_require_https_host "$api" || bcs_skip "api_base '$api' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
 
+# The card read + the two writes below go through the shared kb_api / kb_api_status, which
+# resolve the host and bearer from KB_API / KB_TOKEN. api is the effective base resolved+guarded
+# above; KB_TOKEN is already this board's token (kb_read_token set it), but pin both explicitly
+# so the shared callers can't reach for a stale ambient value.
+KB_API="$api"; KB_TOKEN="$token"
+
 # Stage ids for THIS board, from the SAME board env resolved above (a second matcher here
 # was free to pick a different file than the token's on a duplicate KB_BOARD_ID), via the
 # shared reader — so the ids get the same clean-slate read as the token: a key this env does
@@ -208,17 +231,6 @@ fi
 # Held is optional (a board may not have the column); backlog/prioritized/in_progress
 # are required for any promotion to make sense.
 [ -n "$inprog" ] && [ -n "$backlog" ] && [ -n "$prioritized" ] || bcs_skip "no ~/.kanban-*-board.env has KB_BOARD_ID=$board with in-progress/backlog/prioritized stage ids"
-
-# get <url>: emit the response body followed by "__HTTP__<status>". Deliberately NOT -f: the
-# status is the point. It lets the caller tell a real 404 (no such card) from a 401/403 (the
-# token is wrong or lacks this board) or a transport failure — with -f every one of those was
-# an empty body, and the caller attributed them all to "card does not exist", sending an agent
-# to hunt a nonexistent card instead of a broken token. The status is returned on STDOUT rather
-# than set as a global because `$(get …)` runs in a subshell, where a global assignment cannot
-# propagate to the parent. Kept local (not kb_api) so it sends THIS board's $token.
-# Auth via stdin herestring (-H @- <<<) — token out of argv (#3569) + portable (no /dev/fd
-# process-sub dependency that breaks native mingw64 curl, #34).
-get() { curl -sS -H @- -H "Accept: application/json" -w $'\n__HTTP__%{http_code}' "$1" 2>/dev/null <<<"$(kb_auth_header "$token")"; }
 
 # A branch CREATION is the genuine work-start signal for a Held card (contract
 # PR #113); a re-checkout of an existing branch must not un-park it. The branch's
@@ -277,10 +289,12 @@ fi
 
 # Fetch the card; read its current stage AND board. The board-match guard bounds
 # the card-id path — a bare number can only move a card on the repo's own board.
-resp="$(get "$api/tasks/$cid.json" || true)"
-http="${resp##*__HTTP__}"
-card="${resp%__HTTP__*}"
-[ "${#http}" = 3 ] && [ -z "${http//[0-9]/}" ] || http="000"   # no marker / no response ⇒ transport failure
+# kb_api_status returns "<http>\n<body>" and always yields a clean status (a curl transport
+# failure → "000"), so the caller can still tell a 404 (no such card) from a 401/403 (bad/scoped
+# token) from an unreachable host — the distinction the local `-fsS` read would have collapsed.
+resp="$(kb_api_status GET "/tasks/$cid.json")"
+http="${resp%%$'\n'*}"
+card="${resp#*$'\n'}"
 if [ "$http" != "200" ]; then
     # Attribute the failure to its ACTUAL cause. Only a 404 means the card isn't there.
     case "$http" in
@@ -332,11 +346,10 @@ if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     curdl_num="$(printf '%s' "$curdl" | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
-        if [ -n "$want" ] && curl -fsS -X PATCH -H @- \
-             -H "Accept: application/json" -H "Content-Type: application/json" \
-             --data "$(jq -nc --arg dl "$want" '{task: {payload: {dl_number: $dl}}}')" \
-             "$api/tasks/$cid.json" >/dev/null 2>&1 <<<"$(kb_auth_header "$token")"; then
-            echo "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" >&2
+        if [ -n "$want" ]; then
+            _bcs_patch "$cid" "$(jq -nc --arg dl "$want" '{task: {payload: {dl_number: $dl}}}')" \
+                "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" \
+                "card #$cid dl_number stamp (=$want) failed"
         fi
     elif [ "$curdl_num" != "$dl" ]; then
         echo "board-card-start: card #$cid has dl_number=$curdl but branch names DL-$dl — NOT overwriting (stamp conflict)" >&2
@@ -362,9 +375,7 @@ case "$cur" in
     *) exit 0 ;;
 esac
 
-if curl -fsS -X PATCH -H @- -H "Accept: application/json" \
-     -H "Content-Type: application/json" --data "{\"task\":{\"workflow_stage_id\":$inprog}}" \
-     "$api/tasks/$cid.json" >/dev/null 2>&1 <<<"$(kb_auth_header "$token")"; then
-    echo "board-card-start: card #$cid ($label) → In Progress" >&2
-fi
+_bcs_patch "$cid" "{\"task\":{\"workflow_stage_id\":$inprog}}" \
+    "board-card-start: card #$cid ($label) → In Progress" \
+    "card #$cid ($label) → In Progress move failed"
 exit 0

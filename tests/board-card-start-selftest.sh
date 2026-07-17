@@ -87,5 +87,26 @@ else
     echo "  skip (git not on PATH)"
 fi
 
+echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the captured status; always fail-soft (#4510) =="
+# Stub the shared writer so the decision logic is exercised network-free. Redefining kb_api here
+# shadows the lib's (sourced via $BCS); this is the last block, so the stub can't leak into others.
+_tmpd="$(mktemp -d)"
+kb_api() { KB_HTTP=200; return 0; }   # success path
+_out="$(KB_BCS_LOG="$_tmpd/ok.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+printf '%s' "$_out" | grep -q 'OKMSG-emitted' && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
+[[ ! -s "$_tmpd/ok.log" ]] && ok "2xx writes NO durable failure line" || bad "2xx wrote an unexpected failure line: $(cat "$_tmpd/ok.log")"
+kb_api() { KB_HTTP=422; return 1; }   # non-2xx: KB_HTTP carries the code kb_api captured
+_out="$(KB_BCS_LOG="$_tmpd/fail.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+if grep -q 'FAILMSG-reason' "$_tmpd/fail.log" 2>/dev/null && grep -q 'HTTP 422' "$_tmpd/fail.log" 2>/dev/null; then
+    ok "non-2xx durably logs the fail-reason + captured status"
+else
+    bad "non-2xx did not log fail-reason+status: $(cat "$_tmpd/fail.log" 2>/dev/null)"
+fi
+printf '%s' "$_out" | grep -q 'OKMSG-emitted' && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
+kb_api() { KB_HTTP=500; return 1; }
+_rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' 'x' 'y' >/dev/null 2>&1 || _rc=$?
+[[ "$_rc" -eq 0 ]] && ok "returns 0 even on a failed write (fail-soft: never blocks a checkout)" || bad "returned rc=$_rc on failure (must be 0)"
+rm -rf "$_tmpd"
+
 echo
 if [[ "$fails" -eq 0 ]]; then echo "board-card-start-selftest: ALL PASS"; else echo "board-card-start-selftest: $fails FAIL(s)" >&2; exit 1; fi
