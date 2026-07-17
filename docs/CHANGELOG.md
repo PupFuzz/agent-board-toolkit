@@ -6,6 +6,19 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-17
+
+**Minor — three roundtable-driven board-tooling deliverables: `kbcard` card-removal verbs + two `board-snapshot` fixes.** 3 PRs since v0.15.1 (#118–#120). Cards #4479/#4448/#4447. One new command surface (`kbcard archive`/`delete`); the two `board-snapshot` changes are a correctness fix + a perf fix with no config migration.
+
+### Added
+- **#118** — **`kbcard archive` + `kbcard delete [--hard]` card-removal verbs** (card #4479, roundtable FR #74 sola-pm). The board API has no HTTP `DELETE` — removal is a non-discoverable top-level PATCH `_action` plus a two-step force-delete — so agents were hand-rolling `curl` to remove a test card. `archive` (`_action:archive`) takes a card off-board as a recoverable live row (keeps its id + `dl_number`); `delete` (`_action:delete`) trashes it recoverably within the retention window (**retains** `dl_number`); `delete --hard` soft-deletes then `POST force-delete.json` for a permanent cascade (**releases** `dl_number`). Thin orchestration over the existing `resolve_task` + `kb_api` primitives (mirrors `cmd_move`/`cmd_patch` — no write-path reimplementation); `--dry-run` + a `--yes` confirmation gate on the destructive paths.
+
+### Fixed
+- **#119** — **`board-snapshot`'s `untriaged()` inherited a sibling board's stage ids** (card #4448). `board-snapshot` reads each board's config by **sourcing** its env file (which `export`s `KB_BOARD_ID` + the `KB_STAGE_*` ids); `snap()` scrubbed a hardcoded subset before the next board but `untriaged()` unset only `KBCARD_TOKEN_FILE`, so in an operator shell that had sourced board A, a board B env **omitting** any terminal-stage id (`KB_STAGE_SHIPPED_TO_DEV`/`RELEASED_TO_MAIN`/`WONT_DO`) or `KB_BOARD_ID` silently inherited A's value — B's terminal set went wrong and cards were mis-suppressed or wrongly flagged UNTRIAGED, a **quiet** failure of the "triage is never silently missed" contract. `untriaged()` now scrubs the same full set `snap()` does and gains the `KB_BOARD_ID` guard.
+
+### Changed
+- **#120** — **`board-snapshot` fetches each board once, not twice** (card #4447). `snap()` and `untriaged()` were independent subshells that each sourced the env and called `fetch_board_cards` for the **same** board, so every SessionStart pulled each board's ~215KB payload twice (~half the API time; each `curl` is a fresh TLS handshake, so the cost is per-request). At the 10s SessionStart hook timeout a kill leaves the agent with **no** snapshot, and the waste scales with board count. Root cause was the two functions being copies of one setup+fetch (canon #5) — merged into one `board_report()` that fetches once and renders the in-flight snapshot to stdout + the untriaged list to fd 3 (7.24s → 4.85s on the reference multi-board host).
+
 ## [0.15.1] - 2026-07-16
 
 **Patch — the v0.15.0 staleness guard now reaches the reader, plus a board-snapshot stage-name fix.** 2 PRs since v0.15.0 (#114, #115). Cards #4393/#4444. Both are fixes; no new surface, no config migration.

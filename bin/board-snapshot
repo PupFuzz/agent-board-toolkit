@@ -9,7 +9,7 @@ set -uo pipefail
 # API base read from ~/.kanban-host.env (board-independent; not baked in) via
 # kb_load_host_env, which also publishes KB_HOST_TOKEN_FILE — the host-level token
 # default. The TOKEN IS NOT READ HERE: each board may point KBCARD_TOKEN_FILE at its
-# own token, so it is read per-board inside snap()/untriaged() below. Reading one
+# own token, so it is read per-board inside board_report() below. Reading one
 # token up-front and exiting when it was missing meant a host that uses only
 # per-board tokens (no ~/.kanban-dev-token) rendered NOTHING at SessionStart.
 # Fail-soft throughout — a missing config never blocks SessionStart. See INSTALL.md.
@@ -24,14 +24,14 @@ API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
 # stage-name read). The lib has three; kb_api_status honors it too.
 #
 # This bounds a REQUEST, not this script, and the gap is much wider than one cap:
-# both fetch_board_cards calls PAGINATE, each page a separate capped curl, up to
-# SNAPSHOT_PAGE_CAP (25). So per board the ceiling is 25*5 + 5 (preload) + 25*5 =
-# 255s, not 15s — and the roster multiplies that. The harness's SessionStart
+# the per-board fetch_board_cards PAGINATES, each page a separate capped curl, up
+# to SNAPSHOT_PAGE_CAP (25). So per board the ceiling is 25*5 (cards) + 5 (preload)
+# = 130s, not 5s — and the roster multiplies that. The harness's SessionStart
 # timeout, NOT this cap, is what actually bounds the hook, and a kill there
 # truncates the snapshot rather than degrading it — the one outcome worse than a
-# slow one. Typical run is ~7.6s of a 10s budget (a healthy board is one page);
-# card-4447 (snap and untriaged each fetch the same board independently) is where
-# the real headroom is.
+# slow one. Typical run is ~4.9s of a 10s budget (a healthy board is one page):
+# card-4447 folded the snapshot + untriaged renders onto ONE fetch per board (was
+# two), returning ~2.4s of the old ~7.2s.
 KB_CURL_MAX_TIME=5
 
 # The whole-board paginated read is the shared fetch_board_cards (lib): reading
@@ -40,18 +40,40 @@ KB_CURL_MAX_TIME=5
 # (rc 3) still yields the partial array, so this fail-soft SessionStart display
 # shows what it has rather than going dark.
 
-snap() {  # $1 = board env file   $2 = label
+# Clean slate before sourcing a board env: board envs EXPORT their keys, so an
+# operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /
+# token into board B here. Without this scrub, a B env that OMITS any of them
+# silently inherits A's value — the WRONG board under a label (KB_BOARD_ID), or a
+# stage id that means something else on B (card-4448). Unsetting EVERY KB_STAGE_*
+# by GLOB rather than an enumerated list is what makes it drift-proof: a function
+# that later reads a new KB_STAGE_* is covered for free — the enumerated list
+# drifting out of sync between the two former per-board passes WAS the defect. KBCARD_TOKEN_FILE
+# is scrubbed for the same reason plus one more: the host env's value is in this shell
+# (kb_load_host_env sourced it), and must not read back as this board's own override —
+# the per-function token ladder places it a tier lower.
+board_env_scrub() {
+    # shellcheck disable=SC2086  # intentional word-split: each name is a separate unset arg
+    unset KBCARD_TOKEN_FILE KB_BOARD_ID ${!KB_STAGE_@}
+}
+
+# board_report — ONE per-board pass: set up + fetch the board's cards ONCE, then
+# render both the in-flight snapshot (→ stdout) and the untriaged list (→ fd 3).
+# snap() and untriaged() were independent subshells that each sourced the env and
+# called fetch_board_cards for the SAME board — two full ~215KB pulls per board per
+# SessionStart (card-4447). Each curl spawn is a fresh TLS handshake, so the cost is
+# per-REQUEST; one fetch halves the API time. The parent streams stdout under the
+# snapshot header and buffers fd 3 for the untriaged header, so the two-section
+# output order is unchanged.
+#
+# Fail-soft asymmetry preserved: every setup/fetch failure reports ONCE on stdout
+# (the snapshot line) and writes nothing to fd 3 — exactly what snap()+untriaged()
+# produced when untriaged stayed silent because snap had already reported. One fetch
+# means one failure to report, so the asymmetry is now structural, not a convention.
+board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, untriaged → fd 3
   local envf="$1" label="$2"
   [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
   (
-    # Clean slate before sourcing: board envs EXPORT their keys, so an operator shell that
-    # sourced one board's env carries that board's ids and token here. Without the unset, an
-    # env that omits any of these silently inherits the other board's value — rendering the
-    # WRONG board under this label (KB_BOARD_ID), or a stage id that means something else.
-    # KBCARD_TOKEN_FILE is unset for the same reason plus one more: the host env's value is
-    # in this shell (kb_load_host_env sourced it), and it must not read back as this board's
-    # own override — the ladder below places it a tier lower.
-    unset KBCARD_TOKEN_FILE KB_BOARD_ID KB_STAGE_IN_PROGRESS KB_STAGE_IN_REVIEW KB_STAGE_HELD
+    board_env_scrub
     # shellcheck disable=SC1090
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { echo "• ${label}: (env $envf sets no KB_BOARD_ID)"; return 0; }
@@ -83,7 +105,7 @@ snap() {  # $1 = board env file   $2 = label
     # untriaged block below already prints. An unnamed stage is honest; a guessed
     # one is how this bug read as working.
     local names pre
-    KB_API="$API"   # kb_api reads this global; snap()'s body is a subshell, so it is contained
+    KB_API="$API"   # kb_api reads this global; board_report()'s body is a subshell, so it is contained
     pre="$(kb_api GET "/boards/$KB_BOARD_ID/preload.json" 2>/dev/null)" || pre=""
     # The preload body is UNTRUSTED and the name map must be TOTAL over it: a bad
     # preload costs the labels and nothing else. Anything less cascades — an empty
@@ -131,28 +153,14 @@ snap() {  # $1 = board env file   $2 = label
           ([$t[] | select(.workflow_stage_id as $s | $infl | index($s))
             | "    #\(.id) [\($names[(.workflow_stage_id|tostring)])] \(.name[0:68])"] | .[])
       ' 2>/dev/null || echo "• ${label}: (parse error)"
-  )
-}
 
-# Untriaged = a card NOT in a terminal column (Shipped/Released/Won't-Do) and
-# lacking the `triaged` tag. New cards land untagged → surface here so triage is
-# never silently missed (the agreed "triaged is a separate signal from the DL
-# number" model). A Won't-Do card is processed-to-completion (a terminal
-# disposition), so it is terminal here too — never flagged untriaged.
-# The /triage-cards skill is the codified procedure to clear them.
-untriaged() {  # $1 = board env file   $2 = label
-  local envf="$1" label="$2"
-  [[ -r "$envf" ]] || return 0
-  (
-    unset KBCARD_TOKEN_FILE   # see snap(): report THIS board's override, not the host's
-    # shellcheck disable=SC1090
-    source "$envf"
-    # Silent on an unreadable token: snap() runs over the same roster first and already
-    # reported it loudly — this would only be a second copy of the same line.
-    kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" || return 0
-    local data rc
-    data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?   # paginates + warns loud-on-cap/short-read
-    [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] || return 0
+    # ── untriaged section (→ fd 3): cards NOT in a terminal column (Shipped/
+    # Released/Won't-Do) and lacking the `triaged` tag. New cards land untagged →
+    # surface so triage is never silently missed ("triaged is a separate signal
+    # from the DL number"). A Won't-Do card is processed-to-completion (terminal),
+    # so it is terminal here too. Reuses the SAME $data as the snapshot above —
+    # that reuse IS the card-4447 dedup. The parent buffers fd 3 and prints it under
+    # the untriaged header, after every board's snapshot. /triage-cards clears them.
     printf '%s' "$data" | jq -r --arg label "$label" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
@@ -167,9 +175,14 @@ untriaged() {  # $1 = board env file   $2 = label
             ($u[0:6][] | "    #\(.id) [stage \(.workflow_stage_id)] \(.name[0:60])"),
             (if ($u | length) > 6 then "    … +\(($u | length) - 6) more" else empty end)
           else empty end
-      ' 2>/dev/null
+      ' 2>/dev/null >&3
   )
 }
+
+# Run the snapshot only when executed directly, so tests/board-snapshot-selftest.sh
+# can source this file for its pure functions (board_env_scrub / board_report)
+# without rendering a live snapshot. Mirrors the main-guard every other bin uses.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
 # Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
 # so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).
@@ -198,10 +211,24 @@ if [[ ${#roster[@]} -eq 0 ]]; then
     )
 fi
 
+# One fetch per board (card-4447): board_report renders the in-flight snapshot to
+# stdout and the untriaged list to fd 3. Buffer fd 3 to a temp file so the two
+# sections keep their order (all snapshots, then all untriaged) off a SINGLE fetch.
+untri_buf="$(mktemp 2>/dev/null || true)"
+[[ -n "$untri_buf" ]] && trap 'rm -f "$untri_buf" 2>/dev/null' EXIT
 echo "── Dev board snapshot — boards are the source of truth (memory is a cache) ──"
-for entry in "${roster[@]}"; do snap "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
+for entry in "${roster[@]}"; do
+    if [[ -n "$untri_buf" ]]; then
+        board_report "${entry%%$'\t'*}" "${entry#*$'\t'}" 3>>"$untri_buf"
+    else
+        # mktemp failed (should never happen on a writable TMPDIR): interleave the
+        # untriaged lines into the snapshot section rather than lose them — still
+        # ONE fetch per board; only the two-section split degrades.
+        board_report "${entry%%$'\t'*}" "${entry#*$'\t'}" 3>&1
+    fi
+done
 echo "── Untriaged cards — triage is my responsibility; none may be silently missed ──"
-for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; done
+[[ -n "$untri_buf" ]] && cat "$untri_buf"
 
 # Runtime staleness (cards #4351/#4361/#4393): the pin/copies topology fails silently in
 # the worse direction — tools keep working, just older. --quiet prints nothing when
@@ -219,3 +246,4 @@ for entry in "${roster[@]}"; do untriaged "${entry%%$'\t'*}" "${entry#*$'\t'}"; 
 command -v agent-board-toolkit-runtime-check >/dev/null 2>&1 \
     && agent-board-toolkit-runtime-check --quiet 2>&1 || true
 exit 0
+fi
