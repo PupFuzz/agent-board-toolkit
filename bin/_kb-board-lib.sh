@@ -380,7 +380,7 @@ kb_api_status() {
 # A short-read backstop (meta.total vs cards read) also warns on stderr.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}"
-    local pages="" page=1 last_page=1 resp data n total="" read_n out sum_n=0
+    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0
     # Order-preserving dedup-by-id over the slurped per-page arrays.
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
     # -sS WITHOUT -f (card #4337): -f discards the 4xx/5xx body and collapses every
@@ -425,8 +425,16 @@ fetch_board_cards() {
             return 2
         fi
         if [[ "$page" -eq 1 ]]; then
-            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1' 2>/dev/null)"
-            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1
+            # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
+            # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
+            # absent/out-of-range value must fall through to the n<200 break, never break the
+            # scan at a full 200-row page 1 (that silently truncates when meta.total is also
+            # absent — the miss #4513 guards in the co-vendored promote-released-cards
+            # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
+            # when the server positively declares it.
+            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
+            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=""
+            [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
             total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         fi
         data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
@@ -434,7 +442,7 @@ fetch_board_cards() {
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
         [[ "${n:-0}" -lt 200 ]] && break
-        [[ "$page" -ge "$last_page" ]] && break
+        [[ -n "$last_page" && "$page" -ge "$last_page" ]] && break
         page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2
