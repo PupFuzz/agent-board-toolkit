@@ -481,12 +481,36 @@ kb_dl_num() {
     printf '%s' "$n"
 }
 
-# kb_dl_canon <token>: the ONE canonical stored form DL-NNN, zero-padded to >=4
-# (matching next-dl's DL-%04d; width is cosmetic — every reader extracts digits
-# and compares numerically — so pre-existing 3-padded cards stay valid). Returns
-# 2 on a non-DL input.
+# kb_dl_canon <token>: the ONE canonical stored form DL-NNNN, zero-padded to >=4 — the single
+# source of the mint/stamp format (next-dl and adopt-to-dl both render through here). Width is
+# cosmetic — every reader extracts digits and compares numerically — so pre-existing 3-padded
+# cards stay valid. Returns 2 on a non-DL input.
 kb_dl_canon() {
     local n
     n="$(kb_dl_num "$1")" || return 2
     printf 'DL-%04d' "$n"
+}
+
+# kb_dl_int_lenient <stored-form>: the bare integer of a dl_number in ANY stored form
+# ("DL-088", "DL-0192", bare 88), or "" (rc 0) for a value holding no digits — the client
+# mirror of the server's canonicalize('dl') (strip EVERY non-digit, then collapse leading
+# zeros; roundtable #14 / DL-SOURCE-CORRELATION.md §2b). Deliberately LENIENT and distinct
+# from the strict kb_dl_num: this COERCES a server-echoed stored value to match the server's
+# correlation key, where kb_dl_num anchors + bounds + REJECTS non-DL user input loudly. Keep
+# both — a raw kb_dl_num on the canonical "DL-NNNN" form is fine, but it throws on a mixed /
+# leaked stored value this must tolerate.
+kb_dl_int_lenient() {
+    local d; d="$(printf '%s' "${1:-}" | tr -cd '0-9')"
+    [[ -n "$d" ]] || return 0
+    printf '%s' "$((10#$d))"   # 10# forces base-10 so a zero-padded value isn't read as octal
+}
+
+# kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
+# id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
+# envelope OR a bare top-level array — so every caller (adoption verify, field registration)
+# shares one predicate instead of forking it. jq -e sets the exit status; any jq/parse error
+# is a non-hit (fail-closed).
+kb_by_ref_hit() {
+    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" \
+        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
 }

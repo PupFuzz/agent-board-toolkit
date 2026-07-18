@@ -67,12 +67,11 @@ if [[ -z "$STAGE" ]]; then
 fi
 [[ "$SENTINEL" =~ ^[0-9]+$ ]] || { echo "dl-a1-register-field: --sentinel must be a positive integer" >&2; exit 2; }
 
-# True if a by-ref response's data[] contains a row with id == $1.
+# True if the by-ref response for $SENTINEL contains a row with id == $1.
 by_ref_has() {
-    local want="$1" resp
+    local resp
     resp="$(kb_api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || return 1
-    printf '%s' "$resp" | jq -e --argjson id "$want" \
-        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
+    kb_by_ref_hit "$resp" "$1"
 }
 
 # --- 1. register dl_number (flat body) --------------------------------------

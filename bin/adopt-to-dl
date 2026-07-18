@@ -85,22 +85,6 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
-# _ata_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response's data array contains a
-# card whose id == <card-id> (the adoption verify succeeded).
-_ata_by_ref_hit() {
-    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" 'any((.data // [])[]; .id == $id)' >/dev/null 2>&1
-}
-
-# _ata_dl_int <stored-form>: the bare integer of a dl_number in any stored form ("DL-088",
-# "DL-0192", bare 88), or "" if it holds no digits — the client mirror of the server's
-# canonicalize('dl') (strip EVERY non-digit, then collapse leading zeros; roundtable #14 /
-# DL-SOURCE-CORRELATION.md § 2b). A raw int() would throw on the canonical "DL-NNNN" form.
-_ata_dl_int() {
-    local d; d="$(printf '%s' "${1:-}" | tr -cd '0-9')"
-    [[ -n "$d" ]] || return 0
-    printf '%s' "$((10#$d))"
-}
-
 usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>]" >&2; }
 
 main() {
@@ -137,16 +121,16 @@ main() {
     card="$(kb_api GET "/tasks/$card_id.json")" || { echo "adopt-to-dl: card #$card_id not readable on the configured board" >&2; exit 1; }
     cur_board="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
     [[ "$cur_board" == "$KB_BOARD_ID" ]] || { echo "adopt-to-dl: card #$card_id is on board $cur_board, not the --board '$board_name' board ($KB_BOARD_ID) — refusing to adopt on the wrong board" >&2; exit 1; }
-    existing_int="$(_ata_dl_int "$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty')")"
+    existing_int="$(kb_dl_int_lenient "$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty')")"
 
     # 2. already-adopted guard
     local decision; decision="$(_ata_adopt_decision "$existing_int" "$req_int")"
     case "$decision" in
         refuse-adopted)
-            echo "adopt-to-dl: card #$card_id is ALREADY adopted as DL-$(printf '%04d' "$existing_int"). Refusing to re-mint — that would orphan DL-$existing_int and strand any branch/PR named for it. To re-stamp idempotently (crash-retry), pass: --dl $existing_int" >&2
+            echo "adopt-to-dl: card #$card_id is ALREADY adopted as $(kb_dl_canon "$existing_int"). Refusing to re-mint — that would orphan DL-$existing_int and strand any branch/PR named for it. To re-stamp idempotently (crash-retry), pass: --dl $existing_int" >&2
             exit 1 ;;
         refuse-conflict)
-            echo "adopt-to-dl: card #$card_id already carries DL-$(printf '%04d' "$existing_int") but --dl names $req_int — refusing (stamp conflict). Settle the intended DL first." >&2
+            echo "adopt-to-dl: card #$card_id already carries $(kb_dl_canon "$existing_int") but --dl names $req_int — refusing (stamp conflict). Settle the intended DL first." >&2
             exit 1 ;;
     esac
 
@@ -157,9 +141,9 @@ main() {
             local minted
             minted="$("$_ATA_BINDIR/next-dl" --board "$board_name")" \
                 || { echo "adopt-to-dl: mint failed (next-dl) — aborting before any stamp" >&2; exit 1; }
-            dl_int="$(_ata_dl_int "$minted")"
+            dl_int="$(kb_dl_int_lenient "$minted")"
             [[ -n "$dl_int" ]] || { echo "adopt-to-dl: next-dl returned no DL number ('$minted') — aborting" >&2; exit 1; }
-            echo "adopt-to-dl: claimed DL-$(printf '%04d' "$dl_int") for card #$card_id (repo $repo) — stamping now. If this crashes before it completes, re-run idempotently: adopt-to-dl $card_id --repo $repo --board $board_name --dl $dl_int" >&2 ;;
+            echo "adopt-to-dl: claimed $(kb_dl_canon "$dl_int") for card #$card_id (repo $repo) — stamping now. If this crashes before it completes, re-run idempotently: adopt-to-dl $card_id --repo $repo --board $board_name --dl $dl_int" >&2 ;;
         *) dl_int="${req_int:-$existing_int}" ;;   # use-requested / retry
     esac
 
@@ -177,8 +161,8 @@ main() {
     source_enc="$(_ata_canon_source "$repo")"; source_enc="${source_enc//\//%2F}"
     by_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=dl&ref=$dl_int&source=$source_enc")" \
         || { echo "adopt-to-dl: VERIFY read failed after stamping card #$card_id (DL-$dl_int) — investigate before relying on the card" >&2; exit 1; }
-    if _ata_by_ref_hit "$by_ref" "$card_id"; then
-        echo "adopt-to-dl: card #$card_id adopted as DL-$(printf '%04d' "$dl_int"), source=$repo — verified via by-ref."
+    if kb_by_ref_hit "$by_ref" "$card_id"; then
+        echo "adopt-to-dl: card #$card_id adopted as $dl_canon, source=$repo — verified via by-ref."
         exit 0
     fi
     echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
