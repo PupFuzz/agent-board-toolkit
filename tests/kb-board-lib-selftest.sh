@@ -161,6 +161,49 @@ rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "unreadable token file → rc 5" "5" "$rc"
 
 # ---------------------------------------------------------------------------
+echo "== kb_load_config — the board-env-missing error names its fix (roundtable #89) =="
+
+# A box with real board envs under non-dev names but NO ~/.kanban-dev-board.env and no
+# KBCARD_BOARD_ENV: a bare (default) load must exit 2 AND tell the operator how to recover —
+# name --board / KBCARD_BOARD_ENV and list the boards that DO exist. The rc-3/rc-4 sibling arms
+# already name their fix; this one didn't, so a fresh non-`dev` box read the tool as "broken".
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+echo 'KB_BOARD_ID=7' > "$TMP/.kanban-sola-board.env"
+echo 'KB_BOARD_ID=9' > "$TMP/.kanban-sandbox-board.env"
+rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
+eq "bare load, no default board → rc 2" "2" "$rc"
+case "$msg" in *"board env file not readable"*) ok "  names the unreadable default env" ;;
+    *) bad "  missing the base 'not readable' line: '$msg'" ;; esac
+case "$msg" in *KBCARD_BOARD_ENV*) ok "  names KBCARD_BOARD_ENV as a fix" ;;
+    *) bad "  error omits KBCARD_BOARD_ENV: '$msg'" ;; esac
+case "$msg" in *"--board"*) ok "  names --board as a fix" ;;
+    *) bad "  error omits --board: '$msg'" ;; esac
+case "$msg" in *sola*sandbox*|*sandbox*sola*) ok "  lists the discovered boards (sola, sandbox)" ;;
+    *) bad "  error does not list discovered boards: '$msg'" ;; esac
+
+# A --board NAME whose env file is absent points at THAT file (not the default) and still names --board.
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+rc=0; msg="$(kb_load_config nope 2>&1 >/dev/null)" || rc=$?
+eq "--board nope, no such env → rc 2" "2" "$rc"
+case "$msg" in *".kanban-nope-board.env"*) ok "  names the named board's own env file" ;;
+    *) bad "  --board error names wrong file: '$msg'" ;; esac
+case "$msg" in *"--board"*) ok "  still points at --board" ;;
+    *) bad "  --board error unhelpful: '$msg'" ;; esac
+
+# No board envs on the box at all: still names the fix, says none were found (no empty list dangling).
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
+eq "no board envs → still rc 2" "2" "$rc"
+case "$msg" in *"no ~/.kanban-*-board.env files found"*) ok "  says no board envs were found" ;;
+    *) bad "  empty-discovery message unclear: '$msg'" ;; esac
+
+# ---------------------------------------------------------------------------
 echo "== kb_load_host_env =="
 reset_env
 { echo 'export KBCARD_API="https://host.test/api/v3"'
