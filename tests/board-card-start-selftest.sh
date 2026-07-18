@@ -50,6 +50,52 @@ expect_rc "testflight.company.com"      1 _bcs_is_placeholder_host "https://kanb
 expect_rc "localhost.mycorp.net"        1 _bcs_is_placeholder_host "https://boards.localhost.mycorp.net"
 expect_rc "a real prod host"            1 _bcs_is_placeholder_host "https://kanban.bwtekmed.com/api/v3"
 
+echo "== _bcs_explicit_card_id — named-card grammar incl. the glued card<N> spelling (card-4621) =="
+expect_out "glued cardN (the fix)"              "4524" _bcs_explicit_card_id "fix/card4524-reorder-primitive"
+expect_out "card-N (separator)"                 "4524" _bcs_explicit_card_id "fix/card-4524-x"
+expect_out "card/N"                             "4524" _bcs_explicit_card_id "chore/card/4524"
+expect_out "card#N (bridge grammar)"            "4524" _bcs_explicit_card_id "fix/card#4524-x"
+expect_out "bare #N"                            "2950" _bcs_explicit_card_id "hotfix/#2950-thing"
+expect_out "leading-zero strip"                 "42"   _bcs_explicit_card_id "chore/card0042"
+expect_out "embedded 'card' (discard) → none"   ""     _bcs_explicit_card_id "feature/discard42-cleanup"
+expect_out "embedded 'card' (wildcard) → none"  ""     _bcs_explicit_card_id "feat/wildcard-99-x"
+expect_out "single-digit glued → none ({2,})"   ""     _bcs_explicit_card_id "fix/card3-redesign"
+expect_out "a DL token is not a card id"        ""     _bcs_explicit_card_id "feature/dl212-event-gated"
+expect_out "underscore sep is NOT explicit"     ""     _bcs_explicit_card_id "fix/card_4524-x"
+
+echo "== _bcs_typed_card_id — typed-branch leading id (unchanged tier) =="
+expect_out "typed leading id"                   "4524" _bcs_typed_card_id "fix/4524-slug"
+expect_out "typed with #"                       "4524" _bcs_typed_card_id "feat/#4524"
+expect_out "2-digit is not a typed id ({3,})"   ""     _bcs_typed_card_id "feat/12-bump"
+expect_out "glued cardN is NOT a typed id"      ""     _bcs_typed_card_id "fix/card4524-x"
+
+echo "== _bcs_branch_lint_warning — narrow, high-precision advisory (card-4621) =="
+# Warns ONLY on a card-ish token the grammar just misses (a non-[-/#] separator).
+lint_has() { # <label> <branch>  — asserts a non-empty warning naming the id
+    local got; got="$(_bcs_branch_lint_warning "$2" 2>/dev/null || true)"
+    [[ -n "$got" ]] && ok "$1" || bad "$1 expected a warning, got none"
+}
+lint_silent() { # <label> <branch> — asserts NO warning
+    expect_out "$1" "" _bcs_branch_lint_warning "$2"
+}
+lint_has    "underscore sep (card_N) warns"        "fix/card_4524-x"
+lint_has    "dot sep (card.N) warns"               "fix/card.4524"
+lint_silent "glued cardN correlates → silent"      "fix/card4524-x"
+lint_silent "card-N correlates → silent"           "fix/card-4524-x"
+lint_silent "typed leading id correlates → silent" "fix/4524-slug"
+lint_silent "a DL branch → silent"                 "feature/dl212-event-gated"
+lint_silent "no card-ish signal → silent"          "docs/adoption-guide"
+lint_silent "embedded 'card' (discard_42) → silent" "feature/discard_42-x"
+lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
+
+echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
+# --lint short-circuits before any board/network work; exercises the real arg path + exit code.
+_lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
+[[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
+printf '%s' "$_lout" | grep -q "board-branch-lint:.*card 4524" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
+_lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
+[[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
+
 echo "== _ibh_hooks_dir — install-target resolution + refuse discriminator (F7) =="
 expect_rc  "unset → default .git/hooks (safe)"  0 _ibh_hooks_dir "/repo" ""
 expect_out "unset → default path"   "/repo/.git/hooks"     _ibh_hooks_dir "/repo" ""
@@ -75,13 +121,16 @@ if command -v git >/dev/null 2>&1; then
     [[ "$_rc" -ne 0 ]] && ok "in-tree hooksPath refused (rc=$_rc)" || bad "in-tree hooksPath must refuse (got rc=$_rc)"
     printf '%s' "$_out" | grep -q "resolves inside the tracked work tree" \
         && ok "refuse prints operator guidance" || bad "refuse guidance missing (set -e dead-code): $_out"
-    # default repo (no hooksPath) → installs a symlink into .git/hooks
+    # default repo (no hooksPath) → installs a symlink for EACH hook into .git/hooks
     git init -q "$_t/ok"
     if bash "$IBH" "$_t/ok" >/dev/null 2>&1 && [[ -L "$_t/ok/.git/hooks/post-checkout" ]]; then
         ok "default install symlinks .git/hooks/post-checkout"
     else
         bad "default install did not create the .git/hooks/post-checkout symlink"
     fi
+    [[ -L "$_t/ok/.git/hooks/pre-push" ]] \
+        && ok "default install symlinks .git/hooks/pre-push (card-4621)" \
+        || bad "default install did not create the .git/hooks/pre-push symlink"
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"

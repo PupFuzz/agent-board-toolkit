@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest   # ships shellcheck preinstalled — no third-party action needed
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: shellcheck bin/ and tests/
+      - name: shellcheck bin/, hooks/ and tests/
         # Gate at hard errors only for now; tighten to `-S warning` once a clean
         # run confirms the existing scripts are warning-clean.
-        run: shellcheck -S error bin/* tests/*.sh
+        run: shellcheck -S error bin/* hooks/* tests/*.sh
 
   drift-check-selftest:
     runs-on: ubuntu-latest
