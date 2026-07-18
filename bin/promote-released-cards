@@ -178,7 +178,8 @@ fetch_whole_board() {
       # paged until a short page, so an ABSENT last_page must fall through to n<200, never
       # break the scan at page 1 on a full 200-row page (that would silently truncate when
       # meta.total is also absent, the very miss #4513 guards). We break on it only when the
-      # server actually declares it — strictly safer than the lib's `// 1` default.
+      # server actually declares it — the lib's fetch_board_cards now applies the identical
+      # guard (card #4623), so this co-vendored copy and the lib agree on last_page semantics.
       last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
       # Usable only as a POSITIVE integer: absent, non-numeric, negative, or <1 all mean
       # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A

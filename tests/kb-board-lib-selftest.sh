@@ -386,6 +386,31 @@ rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/clean.err")" 
 eq "clean two-page read → rc 0"                "0" "$rc"
 eq "clean two-page read → 201 cards"           "201" "$(printf '%s' "$out" | jq 'length')"
 [[ -s "$TMP/clean.err" ]] && bad "clean read must be silent on stderr" || ok "clean read silent"
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: last_page must not truncate a full page 1 (card #4623) =="
+# Parity with the standalone's fetch_whole_board (promote-pagination-selftest): meta.last_page
+# is a SECONDARY signal; the n<200 short-page break is primary. An ABSENT or out-of-range
+# last_page defaults to UNKNOWN and must fall through to the short-page break, never stop the
+# scan at a full 200-row page 1. The old `// 1` default broke here and silently returned only
+# page 1 (the #4513 miss). Reverting the guard reds these two cases.
+
+# Full 200-row page 1 with NO meta at all: must keep paging to the short page, not truncate.
+full1="$(jq -nc '{"data":[range(200)|{id:.}]}')"     # 200 rows, no meta whatsoever
+tail2='{"data":[{"id":200},{"id":201}]}'             # short page → n<200 terminates
+_PAGES=( [1]="$full1" [2]="$tail2" )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/nometa.err")" || rc=$?
+eq "full page + no meta → rc 0"                "0"   "$rc"
+eq "full page + no meta → paged to 202"        "202" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/nometa.err" ]] && bad "no-meta full read must be silent on stderr" || ok "no-meta full read silent"
+
+# last_page=0 on a full page: a non-positive value is not a meaningful declaration ⇒ unknown ⇒
+# must keep paging, not break at page 1 (the same truncation class as an absent last_page).
+lp0="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":0}}')"
+_PAGES=( [1]="$lp0" [2]='{"data":[{"id":200}]}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
+eq "last_page=0 → rc 0"                        "0"   "$rc"
+eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
 unset -f curl _stub_page_curl
 
 # --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---
