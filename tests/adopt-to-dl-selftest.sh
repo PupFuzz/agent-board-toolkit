@@ -56,21 +56,8 @@ expect_out "lowercases owner"          "aimla-org/platform"  _ata_canon_source "
 expect_out "already-lower unchanged"   "owner/name"          _ata_canon_source "owner/name"
 expect_out "mixed name too"            "owner/my-repo"       _ata_canon_source "Owner/My-Repo"
 
-echo "== _ata_dl_int (server canonicalize('dl') — strip non-digits, collapse zeros) =="
-expect_out "bare int"                  "42"    _ata_dl_int "42"
-expect_out "DL-088 3-pad -> 88"        "88"    _ata_dl_int "DL-088"
-expect_out "DL-0192 4-pad -> 192"      "192"   _ata_dl_int "DL-0192"
-expect_out "lowercase dl- prefix"      "42"    _ata_dl_int "dl-042"
-expect_out "empty -> empty"            ""      _ata_dl_int ""
-expect_out "no digits -> empty"        ""      _ata_dl_int "DL-"
-expect_out "all-zeros -> 0"            "0"     _ata_dl_int "DL-0000"
-expect_out "multi-run strips all"      "20042" _ata_dl_int "v2-DL-0042"
-
-echo "== _ata_by_ref_hit =="
-expect_rc "card present -> hit"       0 _ata_by_ref_hit '{"data":[{"id":4020}]}'            4020
-expect_rc "card present among many"   0 _ata_by_ref_hit '{"data":[{"id":4020},{"id":5}]}'   4020
-expect_rc "different card -> miss"     1 _ata_by_ref_hit '{"data":[{"id":99}]}'              4020
-expect_rc "empty data -> miss"        1 _ata_by_ref_hit '{"data":[]}'                        4020
+# NB: the DL-int (lenient) and by-ref-hit predicates moved to the shared lib
+# (kb_dl_int_lenient / kb_by_ref_hit) — their coverage lives in tests/kb-board-lib-selftest.sh.
 
 echo
 if [[ "$fails" -eq 0 ]]; then

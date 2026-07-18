@@ -15,6 +15,8 @@
 # Robustness (these states are silent-but-wrong, so they're made loud):
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
 #   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
+#   - A server SHORT READ (pages deliver fewer rows than the board's own meta.total) => FAIL:
+#     promoting from an incomplete scan would silently leave a shipped card un-promoted.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or explicit --dls) means ref-derivation
@@ -154,26 +156,79 @@ DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
 # Card moves are idempotent (set stage N) and a 503 applies nothing, so retrying
 # a PATCH is safe.
 api() { curl -fsS --retry 5 --retry-connrefused --retry-max-time 60 -H @- -H "Accept: application/json" "$@" <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")"; }
-CARDS='[]'; page=1
-while :; do
-  RESP="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
-    || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API)"
-  DATA="$(printf '%s' "$RESP" | jq -c '.data // []')"
-  n="$(printf '%s' "$DATA" | jq 'length')"
-  if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
-    die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
-  fi
-  # Concatenate via STDIN, not `--argjson` — a board page can exceed MAX_ARG_STRLEN
-  # (~128KB), and passing $DATA/$CARDS as a CLI arg dies "Argument list too long"
-  # (the #3091 argv-overflow class; board 5 at ~98 cards crosses the cap).
-  CARDS="$(printf '%s\n%s\n' "$CARDS" "$DATA" | jq -c -s 'add')"
-  [ "${n:-0}" -lt 200 ] && break
-  page=$((page + 1))
-  [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
-done
-# Dedup by id — defends against an API that ignores `page=` (same page each loop) or
-# returns overlapping pages; otherwise a card would be PATCHed once per duplicate.
-CARDS="$(printf '%s' "$CARDS" | jq -c 'unique_by(.id)')"
+
+# fetch_whole_board — read every card on $BOARD via paged search.json and CENSUS the
+# result against the server's own meta.total, so a short read can't silently promote
+# from an INCOMPLETE scan (the miss this tool exists to make loud). Prints the deduped
+# cards JSON array on stdout. This ports the lib fetch_board_cards backstop (#4338)
+# WITHOUT sourcing it — the tool stays a self-contained vendored standalone (like the
+# host_ok mirror); it is a co-vendored port, kept honest by promote-pagination-selftest.
+# Semantics deliberately mirror the lib EXCEPT the failure policy: the lib returns an rc
+# for its caller to interpret, whereas this tool IS the caller and its policy — matching
+# its own page-cap check just below — is to DIE on an incomplete read rather than promote
+# a partial board.
+fetch_whole_board() {
+  local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page=''
+  while :; do
+    resp="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
+      || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API)"
+    if [ "$page" -eq 1 ]; then
+      # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
+      # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically
+      # paged until a short page, so an ABSENT last_page must fall through to n<200, never
+      # break the scan at page 1 on a full 200-row page (that would silently truncate when
+      # meta.total is also absent, the very miss #4513 guards). We break on it only when the
+      # server actually declares it — the lib's fetch_board_cards now applies the identical
+      # guard (card #4623), so this co-vendored copy and the lib agree on last_page semantics.
+      last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
+      # Usable only as a POSITIVE integer: absent, non-numeric, negative, or <1 all mean
+      # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A
+      # last_page of 0 on a full page would otherwise break the scan at page 1 (the same
+      # truncation class as an absent value).
+      case "$last_page" in ''|*[!0-9]*) last_page='' ;; esac
+      [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
+      total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
+    fi
+    data="$(printf '%s' "$resp" | jq -c '.data // []')"
+    n="$(printf '%s' "$data" | jq 'length')"
+    if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
+      die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
+    fi
+    # Concatenate via STDIN, not `--argjson` — a board page can exceed MAX_ARG_STRLEN
+    # (~128KB), and passing $data/$cards as a CLI arg dies "Argument list too long"
+    # (the #3091 argv-overflow class; board 5 at ~98 cards crosses the cap).
+    cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add')"
+    sum_n=$((sum_n + ${n:-0}))
+    [ "${n:-0}" -lt 200 ] && break
+    [ -n "$last_page" ] && [ "$page" -ge "$last_page" ] && break
+    page=$((page + 1))
+    [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
+  done
+  # Dedup by id — defends against an API that ignores `page=` (same page each loop) or
+  # returns overlapping pages; otherwise a card would be PATCHed once per duplicate.
+  # (Reorders; harmless — this is a mover keyed on id, not a display surface.)
+  cards="$(printf '%s' "$cards" | jq -c 'unique_by(.id)')"
+  read_n="$(printf '%s' "$cards" | jq 'length')"
+  # Short-read census (#4338), pre-dedup sum vs meta.total tells a REAL undercount from
+  # a page-boundary dedup artifact: sum_n < total ⇒ the server delivered fewer rows than
+  # it claims exist ⇒ an incomplete scan that would silently leave a shipped card
+  # un-promoted ⇒ REFUSE (die), same policy as the page-cap guard above. sum_n >= total
+  # with read_n < total ⇒ one card straddled a page boundary and dedup collapsed it ⇒
+  # the read is complete ⇒ warn only, promote proceeds.
+  case "$total" in
+    ''|*[!0-9]*) : ;;
+    *)
+      if [ "$total" -gt "${read_n:-0}" ]; then
+        if [ "$sum_n" -lt "$total" ]; then
+          die "board $BOARD has $total cards but pages delivered only $sum_n ($read_n after dedup) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry; if the board is genuinely larger than the page cap, raise PROMOTE_PAGE_CAP."
+        fi
+        echo "promote-released-cards: NOTE — read $read_n distinct of $total ($sum_n across pages); a card straddled a page boundary and dedup collapsed it — read complete." >&2
+      fi
+      ;;
+  esac
+  printf '%s' "$cards"
+}
+CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number OR pr_number is in the shipped sets
 PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" '

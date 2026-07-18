@@ -11,13 +11,15 @@
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
 #                      [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
-#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested]
+#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
+#     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
+#     so a plain PM-minted card isn't a false-positive untriaged next session.
 #   kbcard move --task ID-OR-EXT --column COLUMN
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
-#   kbcard list  [--column COL] [--type TYPE]
+#   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
 #   kbcard archive --task ID-OR-EXT [--dry-run]
@@ -110,6 +112,37 @@ native_type_id() {
     return 0
 }
 
+# Swimlane id→name map for the `list` projection, as a JSON object built from the
+# board env. Swimlanes are keyed by id (KB_SWIMLANE_<id>=<name>) — the INVERSE of
+# KB_STAGE_<name>=<id> / KB_TYPE_<alias>=<id> — because swimlane names are freeform
+# agent labels (hyphens, spaces) that can't be env-var suffixes, whereas stage/type
+# names are a controlled vocabulary that can. Keys are strings (JSON object keys);
+# empty-valued vars are skipped; `{}` when the board defines no swimlanes (then the
+# projection resolves every name to null — truthful, not a fabrication).
+_kbc_swimlane_map() {
+    local var obj='{}'
+    for var in "${!KB_SWIMLANE_@}"; do
+        [[ -n "${!var}" ]] || continue
+        obj="$(jq -c --arg k "${var#KB_SWIMLANE_}" --arg v "${!var}" '. + {($k): $v}' <<<"$obj")"
+    done
+    printf '%s' "$obj"
+}
+# Resolve a `--swimlane <name|id>` ref to a numeric swimlane id for the client-side
+# filter. A numeric arg passes through unvalidated (the caller named a concrete id —
+# an empty result is then a truthful "no cards in that lane", like an empty --column).
+# A name reverse-resolves through the env map and errors LOUD (rc 2) when unmapped,
+# so a typo never silently lists nothing — parity with stage_id's unknown-column contract.
+swimlane_id() {
+    local arg="$1" var
+    [[ "$arg" =~ ^[0-9]+$ ]] && { printf '%s' "$arg"; return 0; }
+    for var in "${!KB_SWIMLANE_@}"; do
+        [[ -n "${!var}" && "${!var}" == "$arg" ]] || continue
+        printf '%s' "${var#KB_SWIMLANE_}"; return 0
+    done
+    echo "kbcard: swimlane '$arg' is not defined on this board" >&2
+    return 2
+}
+
 # DL canonicalization (the strict `--dl` → DL-NNN write-site fix, #3400 / canon #5)
 # lives in kb_dl_canon in the shared lib; call it directly below.
 
@@ -135,7 +168,7 @@ resolve_task() {
 }
 
 cmd_create_card() {
-    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" version="" origin=""
+    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" version="" origin="" triaged=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="$2"; shift 2 ;;
@@ -149,6 +182,7 @@ cmd_create_card() {
             --pr-url) pr_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --origin) origin="$2"; shift 2 ;;
+            --triaged) triaged=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -165,6 +199,9 @@ cmd_create_card() {
     # (all-tag, mixed, or KB_TYPING_MODE=tags) gets a `type:<alias>` tag instead of a
     # bad card_type_id:0. The native path (real id) is unchanged.
     [[ -z "$type_id" ]] && tags="${tags:+$tags,}type:${type}"
+    # --triaged: born-triaged, symmetric with `patch --triaged`. On a fresh card the
+    # CSV is built here, so a plain append suffices (no read-merge-write like patch).
+    [[ -n "$triaged" ]] && tags="${tags:+$tags,}triaged"
 
     if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
     [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
@@ -306,22 +343,64 @@ cmd_patch() {
     kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo 'description: (.description // "" | .[0:80])'
 }
 
+# _kbc_list_project <stage_filter> <type_filter> <typetag> <swimlane_filter>:
+# the pure jq projection+filter for `list`, reading the whole-board card array on
+# STDIN. Each filter arg is "" for absent. Extracted from cmd_list so it is unit-
+# testable on synthetic cards (board 12 has no swimlanes to exercise live).
+#   --type resolves per alias by board capability: a NATIVE id ($type != null)
+#   matches card_type_id; otherwise ($type == null — all-tag/mixed/KB_TYPING_MODE)
+#   the `type:<alias>` tag. The two clauses are MUTUALLY EXCLUSIVE — gating the tag
+#   clause on $type == null avoids (a) an all-tag board matching every null-typed
+#   card and (b) a native board surfacing a card carrying a stray type:<alias> tag.
+#   swimlane_id / swimlane are surfaced on every row; the name resolves through the
+#   env map (null when the card has no lane or the board doesn't map that id). The
+#   swimlane FILTER keys on the STRINGIFIED id — unlike the numeric stage/type
+#   filters, whose id types are verified by the working --column path — because no
+#   board reachable here populates swimlanes, so the API's swimlane_id JSON type
+#   (number vs string) is unverifiable; stringifying both sides matches either and
+#   shares the exact key derivation the name-map lookup uses (a numeric == would
+#   silently drop a string-typed id — the quiet-wrong class this whole change fights).
+_kbc_list_project() {
+    local stage_filter="$1" type_filter="$2" typetag="$3" swimlane_filter="$4"
+    local swmap; swmap="$(_kbc_swimlane_map)"
+    jq \
+        --argjson stage "${stage_filter:-null}" \
+        --argjson type "${type_filter:-null}" \
+        --arg typetag "$typetag" \
+        --argjson swim "${swimlane_filter:-null}" \
+        --argjson swmap "$swmap" \
+        '(. // [])
+         | map(select(($stage == null or .workflow_stage_id == $stage)
+                and ($typetag == ""
+                     or ($type != null and .card_type_id == $type)
+                     or ($type == null and ((.tags // []) | index($typetag)) != null))
+                and ($swim == null or ((.swimlane_id // null) | tostring) == ($swim | tostring))))
+         | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
+         | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
+                swimlane_id: (.swimlane_id // null),
+                swimlane: ($swmap[((.swimlane_id // null) | tostring)] // null),
+                dl: .payload.dl_number, pr: .payload.pr_number})'
+}
+
 cmd_list() {
-    local column="" type=""
+    local column="" type="" swimlane=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --column) column="$2"; shift 2 ;;
             --type) type="$2"; shift 2 ;;
+            --swimlane) swimlane="$2"; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    # TaskSearch DSL doesn't expose workflow_stage_id / card_type_id directly —
-    # by design, not a bug. workflow_stage_id was explicitly declined per sola-pm
-    # 2026-05-19 (client-side filtering deemed sufficient); card_type: is on the
-    # DL-013 long-tail list as a candidate-if-asked. Filter client-side via jq.
-    local stage_filter type_filter
-    if [[ -n "$column" ]]; then stage_filter="$(stage_id "$column")"; fi
-    if [[ -n "$type" ]];   then type_filter="$(native_type_id "$type")"; fi
+    # TaskSearch DSL doesn't expose workflow_stage_id / card_type_id / swimlane_id
+    # directly — by design, not a bug. workflow_stage_id was explicitly declined per
+    # sola-pm 2026-05-19 (client-side filtering deemed sufficient); card_type: is on
+    # the DL-013 long-tail list. All three filters are client-side jq selects. A bad
+    # --column/--swimlane exits 2 loudly under set -e (the resolver returns 2).
+    local stage_filter type_filter swimlane_filter
+    if [[ -n "$column" ]];   then stage_filter="$(stage_id "$column")"; fi
+    if [[ -n "$type" ]];     then type_filter="$(native_type_id "$type")"; fi
+    if [[ -n "$swimlane" ]]; then swimlane_filter="$(swimlane_id "$swimlane")"; fi
 
     # Whole-board fetch (paginated, accumulate-via-STDIN, dedup) is the shared
     # fetch_board_cards primitive — reading only page 1 silently UNDERCOUNTS every
@@ -330,23 +409,8 @@ cmd_list() {
     local cards
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
         || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
-    # --type resolves per alias by board capability: when the board has a NATIVE id
-    # for the alias ($type != null) match card_type_id; otherwise ($type == null —
-    # all-tag/mixed/KB_TYPING_MODE) match the `type:<alias>` tag. The two clauses are
-    # MUTUALLY EXCLUSIVE — gating the tag clause on `$type == null` avoids both (a) an
-    # all-tag board matching every null-typed card, and (b) a native board surfacing a
-    # differently-typed card that carries a stray type:<alias> tag.
-    printf '%s' "$cards" | jq \
-        --argjson stage "${stage_filter:-null}" \
-        --argjson type "${type_filter:-null}" \
-        --arg typetag "${type:+type:$type}" \
-        '(. // [])
-         | map(select(($stage == null or .workflow_stage_id == $stage)
-                and ($typetag == ""
-                     or ($type != null and .card_type_id == $type)
-                     or ($type == null and ((.tags // []) | index($typetag)) != null))))
-         | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
-         | map({id, name, stage: .workflow_stage_id, type: .card_type_id, dl: .payload.dl_number, pr: .payload.pr_number})'
+    printf '%s' "$cards" | _kbc_list_project \
+        "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}"
 }
 
 cmd_link() {

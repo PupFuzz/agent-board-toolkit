@@ -380,7 +380,7 @@ kb_api_status() {
 # A short-read backstop (meta.total vs cards read) also warns on stderr.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}"
-    local pages="" page=1 last_page=1 resp data n total="" read_n out sum_n=0
+    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0
     # Order-preserving dedup-by-id over the slurped per-page arrays.
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
     # -sS WITHOUT -f (card #4337): -f discards the 4xx/5xx body and collapses every
@@ -425,8 +425,16 @@ fetch_board_cards() {
             return 2
         fi
         if [[ "$page" -eq 1 ]]; then
-            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // 1' 2>/dev/null)"
-            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=1
+            # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
+            # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
+            # absent/out-of-range value must fall through to the n<200 break, never break the
+            # scan at a full 200-row page 1 (that silently truncates when meta.total is also
+            # absent — the miss #4513 guards in the co-vendored promote-released-cards
+            # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
+            # when the server positively declares it.
+            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
+            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=""
+            [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
             total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         fi
         data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
@@ -434,7 +442,7 @@ fetch_board_cards() {
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
         [[ "${n:-0}" -lt 200 ]] && break
-        [[ "$page" -ge "$last_page" ]] && break
+        [[ -n "$last_page" && "$page" -ge "$last_page" ]] && break
         page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2
@@ -481,12 +489,36 @@ kb_dl_num() {
     printf '%s' "$n"
 }
 
-# kb_dl_canon <token>: the ONE canonical stored form DL-NNN, zero-padded to >=4
-# (matching next-dl's DL-%04d; width is cosmetic — every reader extracts digits
-# and compares numerically — so pre-existing 3-padded cards stay valid). Returns
-# 2 on a non-DL input.
+# kb_dl_canon <token>: the ONE canonical stored form DL-NNNN, zero-padded to >=4 — the single
+# source of the mint/stamp format (next-dl and adopt-to-dl both render through here). Width is
+# cosmetic — every reader extracts digits and compares numerically — so pre-existing 3-padded
+# cards stay valid. Returns 2 on a non-DL input.
 kb_dl_canon() {
     local n
     n="$(kb_dl_num "$1")" || return 2
     printf 'DL-%04d' "$n"
+}
+
+# kb_dl_int_lenient <stored-form>: the bare integer of a dl_number in ANY stored form
+# ("DL-088", "DL-0192", bare 88), or "" (rc 0) for a value holding no digits — the client
+# mirror of the server's canonicalize('dl') (strip EVERY non-digit, then collapse leading
+# zeros; roundtable #14 / DL-SOURCE-CORRELATION.md §2b). Deliberately LENIENT and distinct
+# from the strict kb_dl_num: this COERCES a server-echoed stored value to match the server's
+# correlation key, where kb_dl_num anchors + bounds + REJECTS non-DL user input loudly. Keep
+# both — a raw kb_dl_num on the canonical "DL-NNNN" form is fine, but it throws on a mixed /
+# leaked stored value this must tolerate.
+kb_dl_int_lenient() {
+    local d; d="$(printf '%s' "${1:-}" | tr -cd '0-9')"
+    [[ -n "$d" ]] || return 0
+    printf '%s' "$((10#$d))"   # 10# forces base-10 so a zero-padded value isn't read as octal
+}
+
+# kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
+# id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
+# envelope OR a bare top-level array — so every caller (adoption verify, field registration)
+# shares one predicate instead of forking it. jq -e sets the exit status; any jq/parse error
+# is a non-hit (fail-closed).
+kb_by_ref_hit() {
+    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" \
+        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
 }

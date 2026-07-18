@@ -386,6 +386,31 @@ rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/clean.err")" 
 eq "clean two-page read → rc 0"                "0" "$rc"
 eq "clean two-page read → 201 cards"           "201" "$(printf '%s' "$out" | jq 'length')"
 [[ -s "$TMP/clean.err" ]] && bad "clean read must be silent on stderr" || ok "clean read silent"
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: last_page must not truncate a full page 1 (card #4623) =="
+# Parity with the standalone's fetch_whole_board (promote-pagination-selftest): meta.last_page
+# is a SECONDARY signal; the n<200 short-page break is primary. An ABSENT or out-of-range
+# last_page defaults to UNKNOWN and must fall through to the short-page break, never stop the
+# scan at a full 200-row page 1. The old `// 1` default broke here and silently returned only
+# page 1 (the #4513 miss). Reverting the guard reds these two cases.
+
+# Full 200-row page 1 with NO meta at all: must keep paging to the short page, not truncate.
+full1="$(jq -nc '{"data":[range(200)|{id:.}]}')"     # 200 rows, no meta whatsoever
+tail2='{"data":[{"id":200},{"id":201}]}'             # short page → n<200 terminates
+_PAGES=( [1]="$full1" [2]="$tail2" )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/nometa.err")" || rc=$?
+eq "full page + no meta → rc 0"                "0"   "$rc"
+eq "full page + no meta → paged to 202"        "202" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/nometa.err" ]] && bad "no-meta full read must be silent on stderr" || ok "no-meta full read silent"
+
+# last_page=0 on a full page: a non-positive value is not a meaningful declaration ⇒ unknown ⇒
+# must keep paging, not break at page 1 (the same truncation class as an absent last_page).
+lp0="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":0}}')"
+_PAGES=( [1]="$lp0" [2]='{"data":[{"id":200}]}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
+eq "last_page=0 → rc 0"                        "0"   "$rc"
+eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
 unset -f curl _stub_page_curl
 
 # --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---
@@ -431,6 +456,57 @@ eq "kb_api without the knob → no --max-time (callers unchanged)"    ""  "$(_ma
 
 unset -f curl _maxtime_arg
 unset KB_API KB_TOKEN _argv_file
+
+# ---------------------------------------------------------------------------
+# expect_out drives a function and compares stdout; expect_rc compares exit status.
+expect_out() { # <label> <expected> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local got; got="$("$@" 2>/dev/null || true)"
+    eq "$label" "$exp" "$got"
+}
+expect_rc() { # <label> <expected-rc> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
+    eq "$label (rc)" "$exp" "$rc"
+}
+
+echo "== kb_dl_num — strict (rejects non-DL loudly) =="
+expect_out "bare int"                   "42"  kb_dl_num "42"
+expect_out "DL-093 -> 93"               "93"  kb_dl_num "DL-093"
+expect_out "lowercase dl- prefix"       "42"  kb_dl_num "dl-042"
+expect_rc  "no digits rejected"         2     kb_dl_num "DL-"
+expect_rc  "all-zeros rejected"         2     kb_dl_num "DL-0000"
+expect_rc  "mixed junk rejected"        2     kb_dl_num "v2-DL-0042"
+expect_rc  "over-6-digits rejected"     2     kb_dl_num "1234567"
+
+echo "== kb_dl_canon — the ONE canonical stored form DL-NNNN =="
+expect_out "pads to 4"                  "DL-0093"   kb_dl_canon "93"
+expect_out "already-canonical token"    "DL-0093"   kb_dl_canon "DL-093"
+expect_out "5-digit not truncated"      "DL-12345"  kb_dl_canon "12345"
+expect_rc  "non-DL rejected"            2           kb_dl_canon "not-a-dl"
+
+echo "== kb_dl_int_lenient — server canonicalize('dl') (strip non-digits, collapse zeros) =="
+expect_out "bare int"                   "42"    kb_dl_int_lenient "42"
+expect_out "DL-088 3-pad -> 88"         "88"    kb_dl_int_lenient "DL-088"
+expect_out "DL-0192 4-pad -> 192"       "192"   kb_dl_int_lenient "DL-0192"
+expect_out "lowercase dl- prefix"       "42"    kb_dl_int_lenient "dl-042"
+expect_out "empty -> empty"             ""      kb_dl_int_lenient ""
+expect_out "no digits -> empty"         ""      kb_dl_int_lenient "DL-"
+expect_out "all-zeros -> 0"             "0"     kb_dl_int_lenient "DL-0000"
+expect_out "multi-run strips all"       "20042" kb_dl_int_lenient "v2-DL-0042"
+
+echo "== kb_by_ref_hit — object-or-array tolerant by-ref predicate =="
+expect_rc "envelope: card present -> hit"        0 kb_by_ref_hit '{"data":[{"id":4020}]}'          4020
+expect_rc "envelope: present among many"         0 kb_by_ref_hit '{"data":[{"id":4020},{"id":5}]}' 4020
+expect_rc "envelope: different card -> miss"     1 kb_by_ref_hit '{"data":[{"id":99}]}'            4020
+expect_rc "envelope: empty data -> miss"         1 kb_by_ref_hit '{"data":[]}'                     4020
+expect_rc "bare array: present -> hit"           0 kb_by_ref_hit '[{"id":4020}]'                   4020
+expect_rc "bare array: different -> miss"        1 kb_by_ref_hit '[{"id":99}]'                     4020
+expect_rc "bare empty array -> miss"             1 kb_by_ref_hit '[]'                              4020
+expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'                              4020
+# Malformed JSON: jq's own parse-error exit code passes through (not necessarily 1); the
+# contract every caller relies on is "falsy = no hit", so assert the truthiness, not the code.
+if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
 
 # ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
