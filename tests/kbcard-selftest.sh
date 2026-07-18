@@ -126,6 +126,41 @@ eq "non-TTY --hard without --yes → rc 2"      "2"    "$rc"
 eq "non-TTY --hard refusal names --yes"       "true" "$(has '--yes' "$err")"
 
 # ---------------------------------------------------------------------------
+echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
+# Network-free: stub the POST to echo the request body ($3) and the write-echo to
+# pass it through, so we assert on the tags the create body WOULD send. Defined
+# AFTER the real-_kbc_write_echo block above so those checks use the real fn.
+kb_api() { printf '%s' "$3"; }
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
+
+# has_tag <body-json> <tag> → membership of the created card's .task.tags array.
+has_tag() { jq -e --arg t "$2" '((.task.tags // []) | index($t)) != null' <<<"$1" >/dev/null && echo true || echo false; }
+
+# Native-type board: --triaged adds `triaged`; the native id is used, no type: tag.
+export KB_TYPE_TASK=21; unset KB_TYPING_MODE 2>/dev/null || true
+b="$(cmd_create_card --type task --name x --triaged 2>/dev/null)"
+eq "native + --triaged → triaged tag present" "true"  "$(has_tag "$b" triaged)"
+eq "native + --triaged → native card_type_id" "21"    "$(jq -c '.task.card_type_id' <<<"$b")"
+eq "native + --triaged → no type: tag"        "false" "$(has_tag "$b" 'type:task')"
+
+# Negative control: WITHOUT --triaged, no triaged tag (proves the flag is load-bearing).
+b="$(cmd_create_card --type task --name x 2>/dev/null)"
+eq "native, no flag → triaged tag ABSENT"     "false" "$(has_tag "$b" triaged)"
+
+# Tag-typing board: --triaged rides alongside the type:<alias> fallback tag.
+unset KB_TYPE_TASK; export KB_TYPING_MODE=tags
+b="$(cmd_create_card --type task --name x --triaged 2>/dev/null)"
+eq "tag-mode + --triaged → triaged tag present"   "true" "$(has_tag "$b" triaged)"
+eq "tag-mode + --triaged → type:task tag present" "true" "$(has_tag "$b" 'type:task')"
+
+# The roundtable use-case: caller passes its PM policy tag, the toolkit adds triaged.
+b="$(cmd_create_card --type task --name x --tags backlog:pm --triaged 2>/dev/null)"
+eq "--tags + --triaged → caller tag kept"    "true" "$(has_tag "$b" 'backlog:pm')"
+eq "--tags + --triaged → triaged appended"   "true" "$(has_tag "$b" triaged)"
+unset KB_TYPING_MODE KB_TYPE_TASK KB_BOARD_ID KB_STAGE_BACKLOG
+
+# ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kbcard-selftest: $fails check(s) FAILED" >&2
     exit 1
