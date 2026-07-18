@@ -3,8 +3,10 @@
 #
 #     install-board-hooks <repo-dir>
 #
-# Installs hooks/post-checkout so the correlated card auto-moves to In Progress on a
-# feature-branch checkout. HONORS core.hooksPath: when a repo sets it (gitleaks, the
+# Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
+# feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
+# name references a card in a spelling the auto-move grammar won't recognize; card-4621).
+# HONORS core.hooksPath: when a repo sets it (gitleaks, the
 # pre-commit framework, Husky, many Windows setups), git dispatches hooks ONLY from there —
 # installing into .git/hooks would be a SILENT no-op (the symlink is created, install reports
 # success, the hook never fires; #4281). Non-destructive: refuses to clobber an existing
@@ -52,11 +54,16 @@ _ibh_main() {
     root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
     [ -n "$root" ] || { echo "install-board-hooks: cannot resolve the work-tree root for: $repo" >&2; exit 1; }
 
-    local toolkit src
+    local toolkit
     toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-    src="$toolkit/hooks/post-checkout"
-    [ -f "$src" ] || { echo "install-board-hooks: hook source missing: $src" >&2; exit 1; }
-    chmod +x "$src"
+    # The full hook set the toolkit installs. post-checkout: auto-move the card to In
+    # Progress on branch checkout. pre-push: the fail-soft branch-name advisory (card-4621).
+    local hooks=(post-checkout pre-push)
+    local hook
+    for hook in "${hooks[@]}"; do
+        [ -f "$toolkit/hooks/$hook" ] || { echo "install-board-hooks: hook source missing: $toolkit/hooks/$hook" >&2; exit 1; }
+        chmod +x "$toolkit/hooks/$hook"
+    done
 
     local hp dir rc
     hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
@@ -68,22 +75,24 @@ _ibh_main() {
         {
             echo "install-board-hooks: core.hooksPath='$hp' resolves inside the tracked work tree ($dir)."
             echo "  Refusing: a machine-specific absolute symlink there would show as a work-tree change and break on other clones."
-            echo "  Instead, add a line to that committed hook that runs the toolkit hook — e.g.:"
-            echo "      exec \"$src\" \"\$@\""
+            echo "  Instead, add a line to each committed hook that runs the toolkit hook — e.g.:"
+            echo "      exec \"$toolkit/hooks/post-checkout\" \"\$@\"   # and likewise for pre-push"
             echo "  or point core.hooksPath at an out-of-tree directory."
         } >&2
         exit 1
     fi
 
-    local dst="$dir/post-checkout"
     mkdir -p "$dir"
-    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
-        echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
-        echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
-        exit 1
-    fi
-    ln -sf "$src" "$dst"
-    echo "install-board-hooks: $dst -> $src"
+    for hook in "${hooks[@]}"; do
+        local src="$toolkit/hooks/$hook" dst="$dir/$hook"
+        if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+            echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
+            echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
+            exit 1
+        fi
+        ln -sf "$src" "$dst"
+        echo "install-board-hooks: $dst -> $src"
+    done
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi

@@ -8,7 +8,7 @@ A recurring board-drift cause is forgetting to move a card to **In Progress** wh
 1. correlates the branch to a card — **try-in-order-with-fallback** (framework contract #112), on the *outcome* of a token not its presence:
    - a **`DL-NNN`** token (e.g. `feature/dl156-foo`) that **resolves** → the card whose `dl_number` is `DL-NNN` (a co-present card-id token is ignored, loudly); or
    - a `DL-NNN` that resolves to **no card** → **falls through** to a **card-id** token in the same branch (never dead-ends — the unstamped-card class). When the card is selected via the card-id path *and* the branch also named a DL, `payload.dl_number` is **stamped if empty** (never overwriting a differing stamp) so the downstream DL-correlated movers (bridge writeback, release promote) stop no-op'ing on the card; or
-   - no `DL-NNN` → a **card-id** token → that card (task) id directly. Recognized as an explicit `card#2950` (the bridge's grammar) / `#2950` / `card-2950` / `card/2950` anywhere, or the leading id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This covers routine FR/bug work branched by card id *before* a DL exists; or
+   - no `DL-NNN` → a **card-id** token → that card (task) id directly. Recognized as an explicit `card2950` / `card-2950` / `card/2950` / `card#2950` (the separator after `card` is **optional** since card-4621, so the natural glued `card2950` spelling correlates too) or a bare `#2950` anywhere, or the leading id of a typed branch (`feat/2950-…`, `fix/2950`, `chore/2950/…`). This covers routine FR/bug work branched by card id *before* a DL exists; or
    - a `DL-NNN` present but resolving to nothing with **no card-id fallback** → a loud no-op (a high-value miss), never silent.
 2. resolves the card (board id from a repo-local `git config kanban.board-id`, else the repo's committed `.release-pr.json` `promote.board_id` — the `git config` value wins if both are set; API base from `.release-pr.json` or `~/.kanban-host.env`; in-progress stage from your `~/.kanban-<name>-board.env`), and verifies it is **on the repo's configured board** (so a stray number can't move an unrelated task; this is also the board-scope guard for the card-id fallback),
 3. moves it to In Progress — from **Backlog or Prioritized** on any branch checkout, or from **Held** *only on a genuine branch creation* (`git switch -c`; a re-checkout of an existing branch won't un-park a Held card — the re-fire protection). A card already In Progress / In Review / Shipped / Released / Won't-Do is never touched.
@@ -19,13 +19,27 @@ A **pinned** card is never auto-moved regardless of stage: a non-empty `block_re
 
 It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it does nothing and never blocks the checkout) and **idempotent**.
 
+## Branch-name advisory (`pre-push`, card-4621)
+
+`hooks/pre-push` → `board-card-start --lint <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**): it warns, on stderr, only when a branch name **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize — so the card would silently never move to In Progress. It reuses the *exact* card-id matcher `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree.
+
+It is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling:
+
+```
+board-branch-lint: branch 'fix/card_4524-x' looks like it references card 4524, but the board
+auto-move grammar won't recognize this spelling — the card will NOT move to In Progress on
+checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug').
+```
+
+The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md).
+
 ## Correlation naming — one token drives the whole lifecycle
 
 Two independent movers advance a card, and **they read different surfaces with different grammars** — so a single naming habit is what makes the *whole* lifecycle auto-move with **zero manual `dl_number` stamping**:
 
 | Mover | Trigger | Reads | Grammar it accepts |
 | --- | --- | --- | --- |
-| `board-card-start` (this hook) | branch checkout/creation → **In Progress** | the **branch name** | `DL-NNN`, `card#<id>`, `#<id>`, `card-<id>`, or a typed branch's leading id (`feat/<id>-…`) |
+| `board-card-start` (this hook) | branch checkout/creation → **In Progress** | the **branch name** | `DL-NNN`, `card<id>`/`card-<id>`/`card/<id>`/`card#<id>` (separator optional since card-4621), `#<id>`, or a typed branch's leading id (`feat/<id>-…`) |
 | bridge writeback | PR opened/merged → **In Review / Shipped / Released** | the PR **title + head branch** | **only** `DL-NNN`, `card-<id>`, or `card#<id>` (`\bcard[-#](\d+)`, bridge ≥ v0.57.0; older bridges accept only `card#<id>` with a trailing `\b`) — a bare leading id like `feat/2950-…` does **not** correlate |
 
 The residual asymmetry is deliberate (the bridge never correlates a bare leading id, to avoid mis-correlating version numbers / non-card digits). Since bridge **v0.57.0** the `card-<id>` form correlates on **both** movers, so the fleet-ratified convention (roundtable #48) satisfies both with one token:
@@ -38,7 +52,7 @@ A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge gram
 ## Install (per repo that you cut feature branches in)
 
 ```bash
-install-board-hooks /path/to/your-repo     # installs the post-checkout hook; non-destructive
+install-board-hooks /path/to/your-repo     # installs the post-checkout + pre-push hooks; non-destructive
 ```
 Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically — **but on Windows/MSYS/Git-Bash hosts `ln -s` produces copies**, and a copies install must re-run `install-board-hooks` after every toolkit upgrade; see INSTALL.md §2's copy-topology warning).
 
@@ -55,8 +69,9 @@ Requirements: the repo resolves a **board id** — a repo-local `git config kanb
 ## Manual use
 
 ```bash
-board-card-start                     # current branch
+board-card-start                     # current branch — move the correlated card to In Progress
 board-card-start feature/dl156-foo   # a specific branch name
+board-card-start --lint <branch>     # advisory only: print the branch-name warning (if any), no move
 ```
 
 ## Scope / limits
