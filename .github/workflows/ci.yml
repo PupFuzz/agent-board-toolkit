@@ -107,6 +107,17 @@ jobs:
       - name: release baseline resolution checks
         run: bash tests/release-pr-body-selftest.sh
 
+  promote-pagination-selftest:
+    # Exercises promote-released-cards' whole-board pagination + short-read census
+    # network-free (a page-serving api() stub): a server delivering fewer rows than the
+    # board's own meta.total must REFUSE (an incomplete scan silently un-promotes a
+    # shipped card), while a page-boundary dedup collapse must be told apart and allowed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: promote-released-cards pagination census unit checks
+        run: bash tests/promote-pagination-selftest.sh
+
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
     # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
