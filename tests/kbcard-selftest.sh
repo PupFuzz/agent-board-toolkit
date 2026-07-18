@@ -161,6 +161,72 @@ eq "--tags + --triaged → triaged appended"   "true" "$(has_tag "$b" triaged)"
 unset KB_TYPING_MODE KB_TYPE_TASK KB_BOARD_ID KB_STAGE_BACKLOG
 
 # ---------------------------------------------------------------------------
+echo "== swimlane resolution + list projection (card-4637) =="
+# Swimlanes are keyed by id in the env (KB_SWIMLANE_<id>=<name>) — the INVERSE of
+# KB_STAGE_<name>=<id> — because swimlane names are freeform (hyphens/spaces) and
+# can't be env-var suffixes. Scrub any the operator's shell exported first.
+# shellcheck disable=SC2086
+unset ${!KB_SWIMLANE_@} 2>/dev/null || true
+export KB_SWIMLANE_1=device
+export KB_SWIMLANE_2=backend
+
+# _kbc_swimlane_map — {id:name} object from the env; keys are strings, empty-valued vars skipped.
+eq "swimlane map resolves both lanes"   '{"1":"device","2":"backend"}' "$(_kbc_swimlane_map)"
+export KB_SWIMLANE_3=""
+eq "empty-valued swimlane var skipped"  '{"1":"device","2":"backend"}' "$(_kbc_swimlane_map)"
+unset KB_SWIMLANE_3
+
+# swimlane_id — name→id, numeric passthrough, unmapped name errors LOUD (rc 2) —
+# so a typo'd --swimlane never silently lists nothing (parity with stage_id).
+eq "name resolves to its id"     "2"    "$(swimlane_id backend)"
+eq "numeric id passes through"   "9"    "$(swimlane_id 9)"
+rc=0; err="$(swimlane_id nope 2>&1)" || rc=$?
+eq "unmapped name → rc 2"        "2"    "$rc"
+eq "unmapped name names itself"  "true" "$(has 'nope' "$err")"
+
+# _kbc_list_project — synthetic cards (board 12 has NO swimlanes, so it must be
+# unit-tested). Projection surfaces swimlane_id + the resolved name (null when the
+# card has no lane or the env doesn't map it); the filter is a client-side select.
+CARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"swimlane_id":1,"payload":{}},
+        {"id":2,"name":"b","workflow_stage_id":48,"card_type_id":7,"swimlane_id":2,"payload":{}},
+        {"id":3,"name":"c","workflow_stage_id":49,"card_type_id":7,"payload":{}}]'
+proj() { printf '%s' "$CARDS" | _kbc_list_project "$1" "$2" "$3" "$4"; }
+
+eq "projection surfaces swimlane_id"     "1"        "$(proj '' '' '' '' | jq -c '.[0].swimlane_id')"
+eq "projection resolves swimlane name"   '"device"' "$(proj '' '' '' '' | jq -c '.[0].swimlane')"
+eq "no-lane card → swimlane_id null"     "null"     "$(proj '' '' '' '' | jq -c '.[2].swimlane_id')"
+eq "no-lane card → swimlane name null"   "null"     "$(proj '' '' '' '' | jq -c '.[2].swimlane')"
+
+eq "--swimlane 2 → only card 2"          "[2]"      "$(proj '' '' '' 2  | jq -c 'map(.id)')"
+eq "--swimlane 1 + stage 48 → card 1"    "[1]"      "$(proj 48 '' '' 1  | jq -c 'map(.id)')"
+eq "no swimlane filter → all 3 rows"     "3"        "$(proj '' '' '' '' | jq 'length')"
+
+# Robustness: the API's swimlane_id JSON type can't be verified on a board without
+# lanes, so the filter keys on the STRINGIFIED id — a STRING-typed swimlane_id must
+# still match (a numeric == would silently drop it). Positive control for the type
+# assumption we can't otherwise check.
+eq "string-typed swimlane_id still filters" "[7]" \
+   "$(printf '%s' '[{"id":7,"swimlane_id":"2","payload":{}}]' | _kbc_list_project '' '' '' 2 | jq -c 'map(.id)')"
+
+# Integration (faithful): cmd_list must FAIL LOUD on a typo'd --swimlane, never
+# silently list every card with the filter dropped. The guarantee rides on set -e +
+# swimlane_id's rc 2 (parity with --column/stage_id) — but any IN-PROCESS capture
+# ($()/||) suspends errexit for the code under test and masks it, so cmd_list must
+# run at the TOP LEVEL of a fresh subprocess (as the real binary does); the capture
+# then crosses a process boundary the outer ||/$() cannot reach into. Fetch is mocked
+# so the subprocess is network-free.
+_lane_child='set -euo pipefail; source "'"$BIN"'";
+  fetch_board_cards() { printf "%s" "[{\"id\":1,\"swimlane_id\":1,\"payload\":{}},{\"id\":2,\"payload\":{}}]"; }
+  export KB_API=x KB_TOKEN=y KB_BOARD_ID=12 KB_SWIMLANE_1=device;
+  cmd_list --swimlane "$1"'
+out="$(bash -c "$_lane_child" _ device 2>/dev/null)" || true
+eq "valid --swimlane lists that lane"           "[1]" "$(jq -c 'map(.id)' <<<"$out")"
+rc=0; out="$(bash -c "$_lane_child" _ bogus 2>/dev/null)" || rc=$?
+eq "typo'd --swimlane → rc 2 (loud, no drop)"   "2"   "$rc"
+eq "typo'd --swimlane prints NO cards"          ""    "$out"
+unset KB_SWIMLANE_1 KB_SWIMLANE_2
+
+# ---------------------------------------------------------------------------
 if [[ "$fails" -gt 0 ]]; then
     echo "kbcard-selftest: $fails check(s) FAILED" >&2
     exit 1
