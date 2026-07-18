@@ -14,7 +14,7 @@ Each project implements that standard **in its own runtime**: the Python project
 
 ## Is this for you?
 
-**Adopt it if:** you run on a **bash-capable host** and drive your **own kanban board** (your own instance) — and you want one versioned, drift-checked source for the board CLI + release/board helpers instead of loose copies.
+**Adopt it if:** you run on a **bash-capable host** and drive a **kanban board you have API access to** — whether you operate the instance yourself or you're a tenant on someone else's shared instance — and you want one versioned, drift-checked source for the board CLI + release/board helpers instead of loose copies.
 
 **You may not need all of it if:** your project already shares board operations in another runtime (e.g. a Python framework/plugin) — this **bash** tooling doesn't replace that. But you can **vendor the whole toolkit** (§8 amendment above), cherry-pick the runtime-neutral pieces (`promote-released-cards`, `release-pr-body`) — a GitHub-Actions repo can consume the promote step as the SHA-pinned composite action instead of vendoring (INSTALL.md §6a), or just reuse the *patterns* (single-source + drift-check vendoring, the board-independent host-config split). Nothing here depends on a coordination framework.
 
