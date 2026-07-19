@@ -126,6 +126,8 @@ echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
 # Network-free: stub the POST to echo the request body ($3) and the write-echo to
 # pass it through, so we assert on the tags the create body WOULD send. Defined
 # AFTER the real-_kbc_write_echo block above so those checks use the real fn.
+# Capture the real projection first — the echo-parity pair near the end restores it.
+eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { cat; }
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
@@ -344,14 +346,14 @@ eq "patch --swimlane typo → rc 2 (loud, no write)" "2" "$rc"
 
 # The write echo SURFACES swimlane_id ONLY when --swimlane was set (parity with it
 # always showing workflow_stage_id) — so a --swimlane patch confirms the resulting lane
-# and other patches keep their echo shape. Real _kbc_write_echo + a kb_api returning the
-# server's {data:…} envelope (the sp stubs above are replaced for this pair).
+# and other patches keep their echo shape. The REAL _kbc_write_echo (captured above,
+# restored here — not a copy) + a kb_api returning the server's {data:…} envelope.
 kb_api() { printf '%s' '{"data":{"id":99,"name":"x","workflow_stage_id":5,"swimlane_id":2}}'; }
-_kbc_write_echo() { jq ".data | {id, name, workflow_stage_id${1:+, $1}} + (if has(\"payload\") then {payload} else {} end)"; }
+eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
 eq "patch --swimlane echo surfaces swimlane_id"      "true"  "$(cmd_patch --task 99 --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
 eq "patch WITHOUT --swimlane echo omits swimlane_id" "false" "$(cmd_patch --task 99 --dl DL-1 2>/dev/null | jq 'has("swimlane_id")')"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
-unset -f sp
+unset -f sp _kbc_write_echo_orig
 
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
 
