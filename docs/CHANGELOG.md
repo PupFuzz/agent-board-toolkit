@@ -6,6 +6,16 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-19
+
+**Minor — the swimlane write-side lands: `kbcard patch --swimlane` plus a defined-swimlane enumeration on every unresolved name.** 1 PR since v0.18.0 (#140, bundling cards #4714 + #4713, roundtable PupFuzz/agent-roundtable#101 + #100), plus a docs-only solo-orientation sync. Both features activate only on a board env that declares `KB_SWIMLANE_<id>=<name>` entries; `promote/action.yml` vendor surface unchanged.
+
+### Added
+- **#140** — **`kbcard patch --swimlane <name|id>` — write-side swimlane setter** (card#4714, roundtable PupFuzz/agent-roundtable#101). Closes the read/write asymmetry left by `list --swimlane` (the read filter): a card could be listed by swimlane but only assigned to one via a raw `swimlane_id` card `PATCH`. The new flag writes the card's top-level `swimlane_id` column (rides the inner task object like `--column`'s `workflow_stage_id`, not the payload merge), resolving a name through the **same** `swimlane_id()` helper `list` already uses — no second resolver. `--swimlane none` (or `--swimlane 0`) is the explicit un-assign form, writing `swimlane_id` null; every other ref resolves name→id (numeric ids pass through) and fails loud (rc 2) on a typo. The write echo surfaces the resulting `swimlane_id` only when `--swimlane` was set (parity with it always showing `workflow_stage_id`), so other patches keep their echo shape. Additive and `patch`-only: `move` stays column-only.
+
+### Fixed
+- **#140** — **An unresolved `--swimlane <name>` now enumerates the board's defined swimlanes** (card#4713, roundtable PupFuzz/agent-roundtable#100). `swimlane_id()` printed `swimlane 'X' is not defined on this board` and stopped — with nothing listed, a reader reasonably infers the board has *no* such swimlane (e.g. missing a required lane prefix), and could report that false board fact. The error now appends the id→name map `_kbc_swimlane_map()` already builds (`defined swimlanes: 1=…, 2=…`), mirroring the board-not-found error's "boards found on this box: …" style; a board with no swimlanes declared gets a distinct honest line rather than an empty list. Error text only — the rc-2 loud-fail contract is unchanged, so `list --swimlane` still exits 2 on a typo.
+
 ## [0.18.0] - 2026-07-19
 
 **Minor — one new `kbcard` correlation surface plus a fail-loud config error, riding on three same-behavior consolidations.** 5 PRs since v0.17.0 (#133–#137). The feature is issue↔card correlation stamping (`--issue`/`--issue-url`); the fix makes an unconfigured-board error name its own remedy; the remaining three are duplication-removal refactors with byte-identical runtime behavior. No config migration; `promote/action.yml` vendor surface unchanged.
