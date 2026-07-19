@@ -28,10 +28,14 @@
 #      time, not silently at the next bridge:check.
 #
 # Usage:
-#   adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>]
+#   adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]
 #     --board <name> resolves ~/.kanban-<name>-board.env (the toolkit convention); REQUIRED so a
 #       deliberate adoption can never land on the wrong board by defaulting.
 #     --dl <N>       skip the mint and use N — the crash-retry / explicit path (idempotent).
+#     --issue <N>    ALSO correlate the card with GitHub issue #N: co-stamp payload.issue_number +
+#       a source-qualified issue_url in the SAME atomic write, and fail-loud-verify the issue by-ref
+#       (system=github_issue) parallel to the DL one. Optional + independent of the dl/pr lifecycle
+#       keys (a card can carry both) — omit it and adoption is byte-identical to the DL-only path.
 set -euo pipefail
 
 # This script's real directory — resolve the shared lib AND the sibling bins (next-dl, kbcard)
@@ -62,6 +66,12 @@ _ata_validate_repo() {
 # `<owner>/<name>` segment is load-bearing here.
 _ata_pr_url() { printf 'https://github.com/%s/pull/0' "$1"; }
 
+# _ata_issue_url <repo> <issue-n>: the issue_url whose repo segment yields the card's by-ref
+# `source` for the issue→card correlation (system=github_issue). Mirror of _ata_pr_url; unlike
+# the pre-PR placeholder the issue number is known at adoption, so the real #N rides the URL —
+# but as with pr_url only the `<owner>/<name>` segment is load-bearing for `source`.
+_ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
+
 # _ata_canon_source <repo>: the server's `canonicalizeSource` — lowercase (GitHub owner/repo is
 # ASCII + case-insensitive). The card's stored `source` is the lowercased repo, so the verify
 # query must lowercase too rather than rely on the server canonicalizing the query param.
@@ -85,15 +95,16 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
-usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>]" >&2; }
+usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]" >&2; }
 
 main() {
-    local card_id="" repo="" board_name="" req_dl=""
+    local card_id="" repo="" board_name="" req_dl="" req_issue=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --repo)  shift; repo="${1:-}" ;;
             --board) shift; board_name="${1:-}" ;;
             --dl)    shift; req_dl="${1:-}" ;;
+            --issue) shift; req_issue="${1:-}" ;;
             -h|--help) usage; exit 0 ;;
             --) ;;
             -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;
@@ -112,6 +123,13 @@ main() {
     local req_int=""
     if [[ -n "$req_dl" ]]; then
         req_int="$(kb_dl_num "$req_dl")" || { echo "adopt-to-dl: --dl '$req_dl' is not a DL number" >&2; exit 2; }
+    fi
+    # --issue is a bare positive integer (the GitHub issue number). Reject anything else LOUD
+    # rather than stamp a non-numeric issue_number (kbcard would coerce a non-number to a string
+    # and the number-typed field would 422 — fail here with a clearer cause).
+    if [[ -n "$req_issue" && ! "$req_issue" =~ ^[0-9]+$ ]]; then
+        echo "adopt-to-dl: --issue must be a positive integer (the GitHub issue number); got '$req_issue'" >&2
+        exit 2
     fi
 
     kb_load_config "$board_name" || exit 2   # prints its own cause
@@ -147,12 +165,19 @@ main() {
         *) dl_int="${req_int:-$existing_int}" ;;   # use-requested / retry
     esac
 
-    # 4. atomic write — reuse kbcard's single-request dl_number+pr_url PATCH (#2180 per-key merge)
-    local dl_canon pr_url
+    # 4. atomic write — reuse kbcard's single-request dl_number+pr_url PATCH (#2180 per-key merge).
+    # When --issue is given, the SAME request co-stamps issue_number + issue_url (independent
+    # lifecycle keys) so the DL and issue correlation land together or not at all.
+    local dl_canon pr_url issue_url=""
     dl_canon="$(kb_dl_canon "$dl_int")" || { echo "adopt-to-dl: could not canonicalize DL $dl_int" >&2; exit 1; }
     pr_url="$(_ata_pr_url "$repo")"
-    "$_ATA_BINDIR/kbcard" --board "$board_name" patch --task "$card_id" --dl "$dl_canon" --pr-url "$pr_url" >/dev/null \
-        || { echo "adopt-to-dl: the atomic stamp (kbcard patch) FAILED for card #$card_id (DL-$dl_int) — card not adopted" >&2; exit 1; }
+    local stamp_args=(patch --task "$card_id" --dl "$dl_canon" --pr-url "$pr_url")
+    if [[ -n "$req_issue" ]]; then
+        issue_url="$(_ata_issue_url "$repo" "$req_issue")"
+        stamp_args+=(--issue "$req_issue" --issue-url "$issue_url")
+    fi
+    "$_ATA_BINDIR/kbcard" --board "$board_name" "${stamp_args[@]}" >/dev/null \
+        || { echo "adopt-to-dl: the atomic stamp (kbcard patch) FAILED for card #$card_id (DL-$dl_int${req_issue:+, issue #$req_issue}) — card not adopted" >&2; exit 1; }
 
     # 5. fail-loud verify — the same repo-qualified by-ref correlation the writeback/reconcile use.
     # The card's stored source is the LOWERCASED repo (server canonicalizeSource), so lowercase the
@@ -161,12 +186,26 @@ main() {
     source_enc="$(_ata_canon_source "$repo")"; source_enc="${source_enc//\//%2F}"
     by_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=dl&ref=$dl_int&source=$source_enc")" \
         || { echo "adopt-to-dl: VERIFY read failed after stamping card #$card_id (DL-$dl_int) — investigate before relying on the card" >&2; exit 1; }
-    if kb_by_ref_hit "$by_ref" "$card_id"; then
-        echo "adopt-to-dl: card #$card_id adopted as $dl_canon, source=$repo — verified via by-ref."
-        exit 0
+    if ! kb_by_ref_hit "$by_ref" "$card_id"; then
+        echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
+        exit 1
     fi
-    echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
-    exit 1
+
+    # When --issue was co-stamped, verify the issue correlation the SAME way — exercising the
+    # github_issue by-ref the bridge/kanban use — so a source that resolves for DL but not for the
+    # issue is caught at adoption, not silently at the next bridge:check.
+    if [[ -n "$req_issue" ]]; then
+        local issue_ref
+        issue_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=github_issue&ref=$req_issue&source=$source_enc")" \
+            || { echo "adopt-to-dl: ISSUE VERIFY read failed after stamping card #$card_id (issue #$req_issue) — investigate before relying on the card" >&2; exit 1; }
+        if ! kb_by_ref_hit "$issue_ref" "$card_id"; then
+            echo "adopt-to-dl: ISSUE VERIFY FAILED — by-ref(system=github_issue, ref=$req_issue, source=$repo) did NOT return card #$card_id after stamping. The issue_number/issue_url may not have persisted, or the source did not resolve. Fix before the next bridge:check." >&2
+            exit 1
+        fi
+    fi
+
+    echo "adopt-to-dl: card #$card_id adopted as $dl_canon, source=$repo${req_issue:+, issue #$req_issue} — verified via by-ref."
+    exit 0
 }
 
 # run main only when executed directly, so tests/adopt-to-dl-selftest.sh can source the pure fns.

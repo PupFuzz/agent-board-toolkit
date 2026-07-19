@@ -11,14 +11,18 @@
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
 #                      [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
-#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
+#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
 #   kbcard move --task ID-OR-EXT --column COLUMN
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
+#     --issue / --issue-url are the issue-lifecycle mirror of --pr / --pr-url: they write
+#     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
+#     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
+#     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
@@ -167,21 +171,27 @@ resolve_task() {
     echo "$id"
 }
 
-# _kbc_build_payload <dl> <pr> <pr_url> <version> [origin]: assemble the task.payload
-# object shared by create-card and patch from the optional card-metadata flags.
-# Prints a JSON object (`{}` when nothing is set) on stdout; returns 2 on a malformed
+# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin]: assemble
+# the task.payload object shared by create-card and patch from the optional card-metadata
+# flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2 on a malformed
 # --dl (propagated from kb_dl_canon, before any output). Numeric-looking values are
-# coerced to JSON numbers so number-typed custom fields (e.g. pr_number) don't 422
-# with "Must be a number". origin is create-card-only (patch passes 4 args) and rides
-# the SAME coercion path as the rest — it must flow through this single merge rather
-# than be appended by the caller, which would re-duplicate the merge jq this helper
-# exists to unify.
+# coerced to JSON numbers so number-typed custom fields (e.g. pr_number, issue_number)
+# don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
+# exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
+# alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
+# carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
+# callers, so patch passes exactly that prefix; origin is create-card-only and trails so patch
+# needn't pass an empty placeholder for it. Everything rides the SAME coercion path — a value
+# must flow through this single merge rather than be appended by the caller, which would
+# re-duplicate the merge jq this helper exists to unify.
 _kbc_build_payload() {
-    local dl="$1" pr="$2" pr_url="$3" version="$4" origin="${5:-}"
+    local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
     local payload_args=()
     if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
-    [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
-    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
+    [[ -n "$pr" ]]        && payload_args+=("pr_number=$pr")
+    [[ -n "$pr_url" ]]    && payload_args+=("pr_url=$pr_url")       # sets the by-ref `source` (owner/repo); pr_number does not
+    [[ -n "$issue" ]]     && payload_args+=("issue_number=$issue")
+    [[ -n "$issue_url" ]] && payload_args+=("issue_url=$issue_url") # sets the by-ref `source` (owner/repo); issue_number does not
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
     # 422s (kanban gates payload keys to registered fields). Warn, don't drop
@@ -205,7 +215,7 @@ _kbc_build_payload() {
 }
 
 cmd_create_card() {
-    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" version="" origin="" triaged=""
+    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="$2"; shift 2 ;;
@@ -217,6 +227,8 @@ cmd_create_card() {
             --dl) dl="$2"; shift 2 ;;
             --pr) pr="$2"; shift 2 ;;
             --pr-url) pr_url="$2"; shift 2 ;;
+            --issue) issue="$2"; shift 2 ;;
+            --issue-url) issue_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --origin) origin="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
@@ -242,7 +254,7 @@ cmd_create_card() {
 
     # Assemble task.payload from the card-metadata flags (shared with cmd_patch).
     local payload_json
-    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$origin")" || return 2
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin")" || return 2
 
     # external_id is the integer per-board sync id (tasks.external_id is an
     # unsignedBigInteger). Reject a non-numeric value LOUDLY instead of silently
@@ -292,12 +304,14 @@ cmd_move() {
 }
 
 cmd_patch() {
-    local task_ref="" pr="" pr_url="" version="" column="" desc="" dl="" triaged=""
+    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
             --pr) pr="$2"; shift 2 ;;
             --pr-url) pr_url="$2"; shift 2 ;;
+            --issue) issue="$2"; shift 2 ;;
+            --issue-url) issue_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --column) column="$2"; shift 2 ;;
             --description) desc="$2"; shift 2 ;;
@@ -315,7 +329,7 @@ cmd_patch() {
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
     local payload_json
-    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version")" || return 2
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url")" || return 2
 
     local body inner='{}'
     # Send only the keys we're changing: the kanban v3 API MERGES task.payload
