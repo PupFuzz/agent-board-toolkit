@@ -167,6 +167,43 @@ resolve_task() {
     echo "$id"
 }
 
+# _kbc_build_payload <dl> <pr> <pr_url> <version> [origin]: assemble the task.payload
+# object shared by create-card and patch from the optional card-metadata flags.
+# Prints a JSON object (`{}` when nothing is set) on stdout; returns 2 on a malformed
+# --dl (propagated from kb_dl_canon, before any output). Numeric-looking values are
+# coerced to JSON numbers so number-typed custom fields (e.g. pr_number) don't 422
+# with "Must be a number". origin is create-card-only (patch passes 4 args) and rides
+# the SAME coercion path as the rest — it must flow through this single merge rather
+# than be appended by the caller, which would re-duplicate the merge jq this helper
+# exists to unify.
+_kbc_build_payload() {
+    local dl="$1" pr="$2" pr_url="$3" version="$4" origin="${5:-}"
+    local payload_args=()
+    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
+    [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
+    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
+    # BR-3.3: only write version_target if the board actually has that custom field
+    # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
+    # 422s (kanban gates payload keys to registered fields). Warn, don't drop
+    # silently, so a misconfigured board surfaces instead of vanishing the value.
+    if [[ -n "$version" ]]; then
+        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
+            payload_args+=("version_target=$version")
+        else
+            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        fi
+    fi
+    [[ -n "$origin" ]]  && payload_args+=("origin=$origin")
+
+    # Build payload as a JSON object. Coerce numeric strings to JSON numbers so
+    # number-typed custom fields (e.g. pr_number) don't 422 with "Must be a number".
+    local payload_json="{}"
+    if [[ ${#payload_args[@]} -gt 0 ]]; then
+        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
+    fi
+    printf '%s' "$payload_json"
+}
+
 cmd_create_card() {
     local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" version="" origin="" triaged=""
     while [[ $# -gt 0 ]]; do
@@ -192,7 +229,7 @@ cmd_create_card() {
     # tag, so it must be tag-safe — reject commas/spaces that would corrupt the CSV.
     [[ "$type" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "kbcard: --type '$type' must be alphanumeric / '-' / '_'" >&2; return 2; }
 
-    local stage type_id payload_args=()
+    local stage type_id
     stage="$(stage_id "$column")"
     type_id="$(native_type_id "$type")"
     # Tag fallback (generalizes BR-3.3): a board with no native type for this alias
@@ -203,28 +240,9 @@ cmd_create_card() {
     # CSV is built here, so a plain append suffices (no read-merge-write like patch).
     [[ -n "$triaged" ]] && tags="${tags:+$tags,}triaged"
 
-    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
-    [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
-    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")   # sets the by-ref `source` (owner/repo); pr_number does not
-    # BR-3.3: only write version_target if the board actually has that custom field
-    # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
-    # 422s (kanban gates payload keys to registered fields). Warn, don't drop
-    # silently, so a misconfigured board surfaces instead of vanishing the value.
-    if [[ -n "$version" ]]; then
-        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
-            payload_args+=("version_target=$version")
-        else
-            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
-        fi
-    fi
-    [[ -n "$origin" ]]  && payload_args+=("origin=$origin")
-
-    # Build payload as a JSON object. Coerce numeric strings to JSON numbers so
-    # number-typed custom fields (e.g. pr_number) don't 422 with "Must be a number".
-    local payload_json="{}"
-    if [[ ${#payload_args[@]} -gt 0 ]]; then
-        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
-    fi
+    # Assemble task.payload from the card-metadata flags (shared with cmd_patch).
+    local payload_json
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$origin")" || return 2
 
     # external_id is the integer per-board sync id (tasks.external_id is an
     # unsignedBigInteger). Reject a non-numeric value LOUDLY instead of silently
@@ -291,38 +309,23 @@ cmd_patch() {
     [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
     local task; task="$(resolve_task "$task_ref")"
 
-    local payload_args=()
-    [[ -n "$pr" ]]      && payload_args+=("pr_number=$pr")
+    # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
     # pr_url sets payload.pr_url, from which the kanban derives a card's by-ref `source`
     # (owner/repo, lowercased) — required for the repo-qualified PR→card lookup on a
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
-    [[ -n "$pr_url" ]]  && payload_args+=("pr_url=$pr_url")
-    # BR-3.3: only write version_target if the board actually has that custom field
-    # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
-    # 422s (kanban gates payload keys to registered fields). Warn, don't drop
-    # silently, so a misconfigured board surfaces instead of vanishing the value.
-    if [[ -n "$version" ]]; then
-        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
-            payload_args+=("version_target=$version")
-        else
-            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
-        fi
-    fi
-    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
+    local payload_json
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version")" || return 2
 
     local body inner='{}'
-    if [[ ${#payload_args[@]} -gt 0 ]]; then
-        local new_payload
-        # Coerce numeric strings (pr_number is a number-typed custom field).
-        new_payload="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
-        # Send only the keys we're changing: the kanban v3 API MERGES task.payload
-        # per-key (kanban #2180) — a key we omit is left as-is, an explicit null
-        # clears it. So a bare {dl_number} no longer wipes the other custom fields,
-        # and no read-merge-write is needed. Sending only the delta also preserves a
-        # concurrent edit to any OTHER field: a full read-merge-write would clobber
-        # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
-        inner="$(jq -n --argjson p "$new_payload" '{payload: $p}')"
+    # Send only the keys we're changing: the kanban v3 API MERGES task.payload
+    # per-key (kanban #2180) — a key we omit is left as-is, an explicit null
+    # clears it. So a bare {dl_number} no longer wipes the other custom fields,
+    # and no read-merge-write is needed. Sending only the delta also preserves a
+    # concurrent edit to any OTHER field: a full read-merge-write would clobber
+    # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
+    if [[ "$payload_json" != "{}" ]]; then
+        inner="$(jq -n --argjson p "$payload_json" '{payload: $p}')"
     fi
     if [[ -n "$column" ]]; then
         local stage; stage="$(stage_id "$column")"
