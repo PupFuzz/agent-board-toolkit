@@ -15,7 +15,10 @@
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
 #   kbcard move --task ID-OR-EXT --column COLUMN
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--description "..."] [--dl DL-NNN] [--triaged]
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged]
+#     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
+#     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
+#     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
@@ -143,7 +146,18 @@ swimlane_id() {
         [[ -n "${!var}" && "${!var}" == "$arg" ]] || continue
         printf '%s' "${var#KB_SWIMLANE_}"; return 0
     done
+    # Enumerate the board's defined swimlanes (id→name) so a "not defined" error
+    # can't be misread as "the board has no such swimlane" — mirrors the board-not-
+    # found error's "boards found on this box: …". The empty case (a board with no
+    # KB_SWIMLANE_* declared) gets a distinct, honest line rather than an empty list.
     echo "kbcard: swimlane '$arg' is not defined on this board" >&2
+    local lanes
+    lanes="$(_kbc_swimlane_map | jq -r 'to_entries | sort_by(.key | tonumber) | map("\(.key)=\(.value)") | join(", ")')"
+    if [[ -n "$lanes" ]]; then
+        echo "kbcard:   defined swimlanes: $lanes" >&2
+    else
+        echo "kbcard:   this board defines no swimlanes (declare KB_SWIMLANE_<id>=<name> in its board env)" >&2
+    fi
     return 2
 }
 
@@ -304,7 +318,7 @@ cmd_move() {
 }
 
 cmd_patch() {
-    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged=""
+    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
@@ -314,6 +328,7 @@ cmd_patch() {
             --issue-url) issue_url="$2"; shift 2 ;;
             --version) version="$2"; shift 2 ;;
             --column) column="$2"; shift 2 ;;
+            --swimlane) swimlane="$2"; shift 2 ;;
             --description) desc="$2"; shift 2 ;;
             --dl) dl="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
@@ -345,6 +360,21 @@ cmd_patch() {
         local stage; stage="$(stage_id "$column")"
         inner="$(jq -n --argjson cur "$inner" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
+    if [[ -n "$swimlane" ]]; then
+        # swimlane_id is a top-level column (not a payload key), so it rides the inner
+        # task object like workflow_stage_id — not the payload merge. `none`/`0` are the
+        # explicit un-assign forms (→ null); every other ref resolves through the SAME
+        # swimlane_id() helper `list` uses (name→id, numeric passthrough, loud rc 2 on a
+        # typo). 0 is special-cased BEFORE the resolver because it passes a numeric ref
+        # through unvalidated — writing swimlane_id:0 instead of the intended null.
+        local swim_id
+        if [[ "$swimlane" == "none" || "$swimlane" == "0" ]]; then
+            swim_id="null"
+        else
+            swim_id="$(swimlane_id "$swimlane")" || return 2
+        fi
+        inner="$(jq -n --argjson cur "$inner" --argjson s "$swim_id" '$cur + {swimlane_id: $s}')"
+    fi
     if [[ -n "$desc" ]]; then
         inner="$(jq -n --argjson cur "$inner" --arg d "$desc" '$cur + {description: $d}')"
     fi
@@ -357,7 +387,12 @@ cmd_patch() {
         inner="$(jq -n --argjson cur "$inner" --argjson tags "$new_tags" '$cur + {tags: $tags}')"
     fi
     body="$(jq -n --argjson t "$inner" '{task: $t}')"
-    kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo 'description: (.description // "" | .[0:80])'
+    # Surface swimlane_id in the write echo only when it was set, so a --swimlane patch
+    # confirms the resulting lane (null after an unassign) — parity with the echo always
+    # showing workflow_stage_id; other patches keep their existing echo shape.
+    local echo_extra='description: (.description // "" | .[0:80])'
+    [[ -n "$swimlane" ]] && echo_extra="$echo_extra, swimlane_id: (.swimlane_id // null)"
+    kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo "$echo_extra"
 }
 
 # _kbc_list_project <stage_filter> <type_filter> <typetag> <swimlane_filter>:
