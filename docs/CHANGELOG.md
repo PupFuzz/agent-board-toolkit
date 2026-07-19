@@ -6,6 +6,14 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+- **Assorted intra-file + CI dedup — same-behavior consolidations, no functional change** (dedup-audit finding D6). Each is a single-source of a rule that was written twice. `next-dl`: the "highest integer in a stream" pipeline (leading-zero strip + numeric sort) is extracted to one `max_int` helper the DL-header scan and the board `dl_number` scan both call. `dl-a1-register-field`: the two throwaway-teardown request bodies (`clear dl_number`, then `delete`) are single-sourced so the EXIT trap and the explicit success path issue the identical pair. `promote-released-cards`: the per-card leading-zero normalization is hoisted to one jq `def` shared by the `dl_number` and `pr_number` fields (the shell-side `numlist` mirror is documented as the deliberate cross-runtime twin, like the `host_ok` mirror). `board-snapshot`: the per-board token-file ladder expression is resolved once so the read and its failure message can't drift. **Executable behavior is byte-for-byte preserved**; consumers who vendor `promote-released-cards` see only an internal refactor, and `promote/action.yml` / `_kb-board-lib.sh` are unchanged.
+- **CI: the version-shape regex is single-sourced** — `auto-tag-version.yml` now reads the semver pattern from `.release-pr.json`'s `version_regex` (anchoring it for its strict merge-time full-string check) instead of hardcoding a second, divergently-anchored copy, so the two declarations of "what a version looks like" can no longer drift.
+- **CI: the identical per-selftest jobs collapse to a `strategy.matrix`** — the network-free `tests/*-selftest.sh` jobs were byte-identical but for the filename; they now run as one matrix job (one job per selftest, `fail-fast: false` so a failure never cancels the siblings). Each selftest keeps its own file-header rationale. The required-status-check jobs (`shellcheck`, `drift-check-selftest`) and the composite-action smoke test stay separate.
+
+### Tests
+- **`tests/next-dl-selftest.sh`** — new network-free coverage for `next-dl`'s newly-extracted `max_int`/`max_dl` primitives (leading-zero strip; the DL-only filter that keeps a bare prose number from leaking into a DL max). `next-dl` previously had no selftest.
+
 ## [0.17.0] - 2026-07-18
 
 **Minor — an 8-PR quality release: two roundtable-driven `kbcard`/hook features, a pagination-completeness fix ported into both board movers, a DL-primitive consolidation, and an error-body-preserving `board-card-start` refactor.** 8 PRs since v0.16.0 (#123–#130). Cards #4510/#4513/#4514/#4413/#4617/#4621/#4623/#4637. Two new feature surfaces (`create-card --triaged`, `kbcard list --swimlane`); no config migration; `promote/action.yml` vendor surface unchanged.

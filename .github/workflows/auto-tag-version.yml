@@ -34,8 +34,18 @@ jobs:
         id: ver
         run: |
           VERSION=$(tr -d '[:space:]' < VERSION)
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: VERSION '$VERSION' is not semver x.y.z"
+          # Single-source the version SHAPE: .release-pr.json's version_regex is the one
+          # declaration of "what a version looks like" (also read by the release tooling).
+          # It is intentionally UNANCHORED there (used to extract a version); this strict
+          # merge-time check anchors it (^...$) for a full-string match. Anchoring is this
+          # step's usage, the shape is the shared fact — so the two no longer diverge.
+          REGEX=$(jq -r '.version_regex // empty' .release-pr.json)
+          if [ -z "$REGEX" ]; then
+            echo "ERROR: .release-pr.json has no .version_regex to validate VERSION against"
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^${REGEX}$ ]]; then
+            echo "ERROR: VERSION '$VERSION' does not match .release-pr.json version_regex '$REGEX'"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
