@@ -111,6 +111,13 @@ host_ok "$API" \
   || die "refusing to send token — api_base '$API' is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to your kanban host."
 
 # --- resolve the shipped refs (DL tokens + PR numbers) -----------------------
+# numlist normalizes the SHIPPED side (a git-log / --dls text stream) to bare integers with
+# leading zeros stripped (keeping >=1 digit) + deduped. The CARD side is normalized by the
+# `norm` jq def in the correlation below (`sub("^0+(?=.)";"")`) — the SAME leading-zero rule,
+# re-expressed in jq because the two sides live in different runtimes (shell stream vs board
+# JSON) on opposite sides of one comparison, and this script is a vendored standalone that
+# must not source the lib. Keep the two in sync (like the host_ok mirror): "093" and 93 must
+# compare equal, so a change to either strip must be mirrored in the other.
 numlist() { grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
 if [ -n "$DLS_IN" ]; then
   DL_NUMS="$(printf '%s' "$DLS_IN" | grep -oiE "$REF_RE" | numlist || true)"
@@ -232,10 +239,14 @@ CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number OR pr_number is in the shipped sets
 PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" '
+  # normalize a card ref (dl_number or pr_number) to the bare-integer, zero-stripped form
+  # numlist produces for the shipped side, so "093"/93 correlate. Single-sourced so the two
+  # ref fields cannot strip differently.
+  def norm: (. // "")|tostring|gsub("[^0-9]";"")|sub("^0+(?=.)";"");
   [ .[]
     | . as $c
-    | (($c.payload.dl_number // "")|tostring|gsub("[^0-9]";"")|sub("^0+(?=.)";"")) as $cdl
-    | (($c.payload.pr_number // "")|tostring|gsub("[^0-9]";"")|sub("^0+(?=.)";"")) as $cpr
+    | ($c.payload.dl_number | norm) as $cdl
+    | ($c.payload.pr_number | norm) as $cpr
     | (($cdl != "") and ($dls|index($cdl) != null)) as $byDl
     | (($cpr != "") and ($prs|index($cpr) != null)) as $byPr
     | select($byDl or $byPr)

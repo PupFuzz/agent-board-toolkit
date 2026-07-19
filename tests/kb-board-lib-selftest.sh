@@ -380,15 +380,15 @@ unset -f curl
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: short-read rc 4 vs dedup artifact (card #4338) =="
-# Page-aware stub: emits per-page payloads by inspecting the page= query param.
+# Page-aware stub: selects the per-page payload by inspecting the page= query param, then
+# emits it through the shared _stub_curl_respond core (the single owner of the stdin-drain
+# + __HTTP__<status> convention) at a fixed 200.
 _stub_page_curl() { # uses _PAGES assoc: _PAGES[<n>]=<json>
-    cat >/dev/null
     local a page=1
     for a in "${_STUB_ARGS[@]}"; do
         [[ "$a" == *"page="* ]] && page="${a##*page=}"
     done
-    printf '%s\n__HTTP__200' "${_PAGES[$page]}"
-    return 0
+    _stub_curl_respond "${_PAGES[$page]}" 200
 }
 declare -A _PAGES
 

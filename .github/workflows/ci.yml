@@ -25,98 +25,36 @@ jobs:
       - name: drift-check runs and reports no drift against itself
         run: ./bin/agent-board-toolkit-drift-check . .
 
-  adopt-to-dl-selftest:
-    # Exercises adopt-to-dl's pure decision logic (arg/repo validation, the
-    # already-adopted guard, pr_url build, by-ref-response parse) network-free —
-    # the same deterministic-guard pattern as promote-action-selftest.
+  selftest:
+    # The network-free `tests/*-selftest.sh` scripts, one matrix job each — they were 10
+    # byte-for-byte-identical checkout+`bash tests/X.sh` jobs whose only difference was the
+    # filename (dedup-audit D6-CI). Each selftest documents WHAT it guards (and the regression
+    # that motivated it) in its own file header, so that context is not lost by collapsing the
+    # per-job CI comments. fail-fast:false keeps every selftest running independently, exactly
+    # as the separate jobs did — one failure must never cancel the siblings. The `drift-check`,
+    # `shellcheck`, and `promote-action` jobs stay separate: they do NOT run `bash tests/X.sh`.
+    #
+    # KEEP THIS LIST IN SYNC with `tests/*-selftest.sh` — a new selftest needs a matrix entry
+    # here, the same as it needed its own job before.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - adopt-to-dl-selftest
+          - board-card-start-selftest
+          - board-snapshot-selftest
+          - kb-board-lib-selftest
+          - kb-host-guard-selftest
+          - kbcard-selftest
+          - next-dl-selftest
+          - promote-pagination-selftest
+          - release-pr-body-selftest
+          - runtime-check-selftest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: adopt-to-dl pure-logic unit checks
-        run: bash tests/adopt-to-dl-selftest.sh
-
-  kb-host-guard-selftest:
-    # Exercises the anti-exfiltration api_base host guard's DECISIONS, in both of its copies
-    # (the lib's kb_require_https_host and promote-released-cards' standalone host_ok mirror),
-    # against a hostile-URL matrix. The guard ran on every checkout and every promote with
-    # zero coverage of whether it decided correctly — which is how #4346 survived. Also
-    # asserts the two copies AGREE: they are sync-paired by comment only.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: api_base host-guard decision matrix
-        run: bash tests/kb-host-guard-selftest.sh
-  kb-board-lib-selftest:
-    # Exercises the shared config resolution network-free under a scratch HOME: the token
-    # ladder (board > host > ambient > default), the host-only KBCARD_API refusal, and the
-    # board-env matcher. The ladder is a property of source ORDER, which is exactly how it
-    # regressed silently once (#4325) — nothing exercised it.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: _kb-board-lib.sh config-resolution unit checks
-        run: bash tests/kb-board-lib-selftest.sh
-
-  kbcard-selftest:
-    # Exercises kbcard's pure mapping logic network-free: the KB_STAGE_* reverse
-    # lookup (stage_name) and show's stage/column annotation — the omit-don't-null
-    # rule (card #4387: an emitted `"stage": null` on a staged card read as "no
-    # stage" and triggered a false "auto-move is broken" escalation).
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: kbcard pure-logic unit checks
-        run: bash tests/kbcard-selftest.sh
-  board-snapshot-selftest:
-    # Per-board env isolation, network-free (fetch stubbed): a sibling board's
-    # exported KB_STAGE_* / KB_BOARD_ID must not leak into the next board's
-    # untriaged terminal-stage set (card-4448) + the missing-KB_BOARD_ID guard.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: board-snapshot env-isolation checks
-        run: bash tests/board-snapshot-selftest.sh
-  runtime-check-selftest:
-    # Decision-matrix checks for the runtime staleness guard (cards #4351/#4361):
-    # pinned-current/STALE, dev-ahead, copies current/STALE/unverifiable, mixed runtimes.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: runtime-check decision matrix
-        run: bash tests/runtime-check-selftest.sh
-
-  board-card-start-selftest:
-    # Exercises the pure decision logic of board-card-start + install-board-hooks network-free:
-    # the RFC-2606/6761 placeholder-host detector (anchored so real hosts aren't misread), the
-    # install-target/refuse discriminator for core.hooksPath, and the durable-log helper.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: board-card-start pure-logic unit checks
-        run: bash tests/board-card-start-selftest.sh
-
-  release-pr-body-selftest:
-    # Exercises release-pr-body's baseline resolution against fixture git repos
-    # (file-path remotes, network-free): a stale local main + a released origin/main
-    # must yield origin's tag as the baseline (the local ref drifts a release behind
-    # by design under the branch-off-dev flow and once misreported shipped PRs as
-    # new); an unfetchable origin fails LOUD; --base stays the offline override.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: release baseline resolution checks
-        run: bash tests/release-pr-body-selftest.sh
-
-  promote-pagination-selftest:
-    # Exercises promote-released-cards' whole-board pagination + short-read census
-    # network-free (a page-serving api() stub): a server delivering fewer rows than the
-    # board's own meta.total must REFUSE (an incomplete scan silently un-promotes a
-    # shipped card), while a page-boundary dedup collapse must be told apart and allowed.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: promote-released-cards pagination census unit checks
-        run: bash tests/promote-pagination-selftest.sh
+      - name: bash tests/${{ matrix.test }}.sh
+        run: bash "tests/${{ matrix.test }}.sh"
 
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no

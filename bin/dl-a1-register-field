@@ -114,14 +114,19 @@ if [[ ! "$TID" =~ ^[0-9]+$ ]]; then
 fi
 echo "  throwaway card $TID created with dl_number=$SENTINEL"
 
+# The two throwaway-teardown request bodies, single-sourced: the EXIT trap and the
+# explicit success path below issue the identical clear-dl-then-delete pair.
+CLEAR_DL_BODY='{"task":{"payload":{"dl_number":null}}}'
+DELETE_BODY='{"_action":"delete"}'
+
 # --- cleanup trap: a leaked sentinel poisons the minter, so always try to ---
 # delete the throwaway even if a later step fails loudly.
 cleanup_done=0
 delete_throwaway() {
     [[ "$cleanup_done" == 1 ]] && return 0
     cleanup_done=1
-    kb_api PATCH "/tasks/$TID.json" '{"task":{"payload":{"dl_number":null}}}' >/dev/null 2>&1 || true
-    kb_api PATCH "/tasks/$TID.json" '{"_action":"delete"}' >/dev/null 2>&1 || true
+    kb_api PATCH "/tasks/$TID.json" "$CLEAR_DL_BODY" >/dev/null 2>&1 || true
+    kb_api PATCH "/tasks/$TID.json" "$DELETE_BODY" >/dev/null 2>&1 || true
 }
 trap 'delete_throwaway' EXIT
 
@@ -133,7 +138,7 @@ else
 fi
 
 # --- 4. cleanup — clear dl_number, verify by-ref empty, delete --------------
-if ! kb_api PATCH "/tasks/$TID.json" '{"task":{"payload":{"dl_number":null}}}' >/dev/null; then
+if ! kb_api PATCH "/tasks/$TID.json" "$CLEAR_DL_BODY" >/dev/null; then
     echo "dl-a1-register-field: FATAL clearing dl_number: HTTP $KB_HTTP" >&2
     exit 1   # trap still fires the delete
 fi
@@ -143,7 +148,7 @@ else
     still=0; echo "  after clear: by-ref ref=$SENTINEL empty"
 fi
 
-if ! kb_api PATCH "/tasks/$TID.json" '{"_action":"delete"}' >/dev/null; then
+if ! kb_api PATCH "/tasks/$TID.json" "$DELETE_BODY" >/dev/null; then
     echo "dl-a1-register-field: FATAL deleting throwaway: HTTP $KB_HTTP" >&2
     exit 1
 fi

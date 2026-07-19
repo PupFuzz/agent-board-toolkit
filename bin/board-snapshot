@@ -78,9 +78,11 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { echo "• ${label}: (env $envf sets no KB_BOARD_ID)"; return 0; }
     # Explicit token ladder: this board's > the host's > the default. Per-board fail-soft —
-    # one board's unreadable token must not blank the others.
-    kb_read_token "${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" \
-        || { echo "• ${label}: (token file unreadable: ${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}})"; return 0; }
+    # one board's unreadable token must not blank the others. Resolved once so the read and
+    # its failure message can't drift to different files.
+    local tokfile="${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}"
+    kb_read_token "$tokfile" \
+        || { echo "• ${label}: (token file unreadable: $tokfile)"; return 0; }
     local data rc
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \

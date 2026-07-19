@@ -87,8 +87,11 @@ for pat in "${patterns[@]}"; do
     for d in "${expanded[@]}"; do [[ -e "$d" ]] && globs+=("$d"); done
 done
 
+# Highest integer in a stream of text on stdin (leading zeros stripped; empty ⇒ empty).
+# The shared tail of BOTH max scans below — the DL-header scan and the dl_number scan.
+max_int() { grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
 # Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
-max_dl() { grep -oE 'DL-[0-9]+' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
+max_dl() { grep -oE 'DL-[0-9]+' | max_int; }
 
 # Resolve api/board/token from config (in a subshell so env never leaks into this
 # script). Echoes "<api>\t<board>\t<token_file>"; non-zero (with a reason on
@@ -190,7 +193,7 @@ board_dl_max() (
     # bare number 93. Extract bare digits so the scan is honest across heterogeneous boards
     # (this is the max over a STREAM — distinct from kb_dl_num's single-token canon, which
     # would reject a leaked >6-digit sentinel mid-stream).
-    printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1
+    printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | max_int
 )
 # Exit-code convention: 2 = incomplete read (a page fetch failed mid-pagination) ⇒ fail
 # loud, do not stamp (undercount could re-mint). 1 = board unreachable on page 1 / no
