@@ -28,6 +28,10 @@ echo "== _ata_pr_url =="
 expect_out "placeholder url"          "https://github.com/owner/name/pull/0"        _ata_pr_url "owner/name"
 expect_out "mixed-case preserved"     "https://github.com/AIMLA-org/platform/pull/0" _ata_pr_url "AIMLA-org/platform"
 
+echo "== _ata_issue_url (issue-correlation source URL — mirror of _ata_pr_url) =="
+expect_out "issue url carries the real #N"  "https://github.com/owner/name/issues/42"        _ata_issue_url "owner/name" 42
+expect_out "mixed-case owner preserved"     "https://github.com/AIMLA-org/platform/issues/7" _ata_issue_url "AIMLA-org/platform" 7
+
 echo "== _ata_adopt_decision (MUST-FIX-3 already-adopted guard) =="
 # args: <existing-dl-int-or-empty> <requested-dl-int-or-empty>
 expect_out "no existing, no --dl -> mint"                "mint"            _ata_adopt_decision "" ""
