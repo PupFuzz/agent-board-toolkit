@@ -17,10 +17,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 LIB="$HERE/../bin/_kb-board-lib.sh"
 PRC="$HERE/../bin/promote-released-cards"
-[[ -r "$LIB" ]] || { echo "selftest: $LIB not found" >&2; exit 1; }
-[[ -r "$PRC" ]] || { echo "selftest: $PRC not found" >&2; exit 1; }
+_need -r "$LIB"
+_need -r "$PRC"
 
 # shellcheck source=/dev/null
 source "$LIB"
@@ -33,10 +35,6 @@ KB_PROG="kb-host-guard-selftest"
 prc_src="$(sed -n '/^host_ok() {/,/^}/p' "$PRC")"
 [[ -n "$prc_src" ]] || { echo "selftest: could not extract host_ok from $PRC — did it get renamed?" >&2; exit 1; }
 eval "${prc_src/host_ok() \{/host_ok_prc() \{}"
-
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
 
 export KANBAN_EXPECTED_HOST="kanban.victim.corp"
 EXPECT_HOST="kanban.victim.corp"   # the name the promote copy reads
@@ -103,8 +101,4 @@ case "$msg" in
     *) bad "refusal was silent or unhelpful: '$msg'" ;;
 esac
 
-if [[ "$fails" -gt 0 ]]; then
-    echo "kb-host-guard-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "kb-host-guard-selftest: all checks passed"
+_summary "kb-host-guard-selftest"

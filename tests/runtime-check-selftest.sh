@@ -7,17 +7,13 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 CHECK="$HERE/../bin/agent-board-toolkit-runtime-check"
-[[ -x "$CHECK" ]] || { echo "selftest: $CHECK not executable" >&2; exit 1; }
+_need -x "$CHECK"
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP/home"; mkdir -p "$HOME"
+_mktmp_scratch
+export HOME="$TMP/home"; mkdir -p "$HOME"   # scratch HOME under TMP (not =TMP: fixtures live in TMP)
 
 # A minimal toolkit-shaped repo with two release tags.
 mk_repo() { # <dir>
@@ -137,8 +133,4 @@ else
     bad "board-snapshot not found next to the selftest"
 fi
 
-if [[ "$fails" -gt 0 ]]; then
-    echo "runtime-check-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "runtime-check-selftest: all checks passed"
+_summary "runtime-check-selftest"
