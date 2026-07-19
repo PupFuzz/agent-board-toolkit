@@ -126,6 +126,8 @@ echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
 # Network-free: stub the POST to echo the request body ($3) and the write-echo to
 # pass it through, so we assert on the tags the create body WOULD send. Defined
 # AFTER the real-_kbc_write_echo block above so those checks use the real fn.
+# Capture the real projection first — the echo-parity pair near the end restores it.
+eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { cat; }
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
@@ -179,6 +181,23 @@ eq "numeric id passes through"   "9"    "$(swimlane_id 9)"
 rc=0; err="$(swimlane_id nope 2>&1)" || rc=$?
 eq "unmapped name → rc 2"        "2"    "$rc"
 eq "unmapped name names itself"  "true" "$(has 'nope' "$err")"
+
+# card-4713: the unresolved-name error must ENUMERATE the board's defined swimlanes
+# (id→name, sorted) so it can't be misread as "the board has no such swimlane" — the
+# false board-fact this fix prevents. RED-when-reverted: drop the enumeration and this
+# fails. Mirrors the board-not-found error's "boards found on this box: …" style.
+eq "unresolved name enumerates the defined swimlanes" "true" \
+   "$(has 'defined swimlanes: 1=device, 2=backend' "$err")"
+
+# The empty case (a board with NO swimlanes declared) gets a DISTINCT honest line, not
+# an empty "defined swimlanes:" list that would read the same as the enumerated case.
+# shellcheck disable=SC2086
+unset ${!KB_SWIMLANE_@}
+err="$(swimlane_id whatever 2>&1)" || true
+eq "no-swimlane board → distinct honest empty-case line" "true"  "$(has 'defines no swimlanes' "$err")"
+eq "no-swimlane board → NOT an empty enumerated list"    "false" "$(has 'defined swimlanes:' "$err")"
+export KB_SWIMLANE_1=device
+export KB_SWIMLANE_2=backend
 
 # _kbc_list_project — synthetic cards (board 12 has NO swimlanes, so it must be
 # unit-tested). Projection surfaces swimlane_id + the resolved name (null when the
@@ -299,6 +318,43 @@ eq "patch --issue sends the identical issue payload" "$ci" "$pi"
 co="$(cmd_create_card --type task --name x --issue 300 --pr 305 2>/dev/null | jq -Sc '.task.payload')"
 eq "create-card --issue + --pr co-stamp both keys, independent" \
    '{"issue_number":300,"pr_number":305}' "$co"
+
+# card-4714: patch --swimlane writes the card's TOP-LEVEL swimlane_id (not a payload
+# key), resolving a name through the SAME swimlane_id() helper `list` uses. A numeric
+# --task short-circuits resolve_task (no search call) and kb_api is stubbed to echo the
+# request body, so this is network-free. Assert on .task.swimlane_id.
+export KB_SWIMLANE_1=device KB_SWIMLANE_2=backend
+sp() { cmd_patch --task 99 "$@" 2>/dev/null | jq -c '.task'; }
+eq "patch --swimlane by name → resolved id"        "2"    "$(sp --swimlane backend | jq -c '.swimlane_id')"
+eq "patch --swimlane by numeric id → passthrough"  "5"    "$(sp --swimlane 5 | jq -c '.swimlane_id')"
+# none/0 unassign: the key must be PRESENT and null (an EXPLICIT null clears the column
+# per the API's per-key merge) — assert `[has, value]` so an absent key (setter reverted)
+# reds instead of reading the same as a genuine null.
+eq "patch --swimlane none → key present + null (unassign)" '[true,null]' \
+   "$(sp --swimlane none | jq -c '[has("swimlane_id"), .swimlane_id]')"
+eq "patch --swimlane 0 → key present + null (unassign)"    '[true,null]' \
+   "$(sp --swimlane 0 | jq -c '[has("swimlane_id"), .swimlane_id]')"
+# swimlane_id is a top-level column, NOT a payload key — must not leak into task.payload.
+eq "patch --swimlane sets a top-level column, not payload" "false" \
+   "$(sp --swimlane backend | jq '(.payload // {}) | has("swimlane_id")')"
+# Negative control: no --swimlane leaves the key ABSENT (proves the flag is load-bearing).
+eq "patch without --swimlane → swimlane_id key ABSENT" "false" "$(sp --dl DL-1 | jq 'has("swimlane_id")')"
+# A typo'd name fails LOUD (rc 2, explicit `|| return 2`) — never a silent wrong write.
+# Call cmd_patch directly (not the `sp` pipe wrapper, which would mask it with jq's rc).
+rc=0; cmd_patch --task 99 --swimlane bogus >/dev/null 2>&1 || rc=$?
+eq "patch --swimlane typo → rc 2 (loud, no write)" "2" "$rc"
+
+# The write echo SURFACES swimlane_id ONLY when --swimlane was set (parity with it
+# always showing workflow_stage_id) — so a --swimlane patch confirms the resulting lane
+# and other patches keep their echo shape. The REAL _kbc_write_echo (captured above,
+# restored here — not a copy) + a kb_api returning the server's {data:…} envelope.
+kb_api() { printf '%s' '{"data":{"id":99,"name":"x","workflow_stage_id":5,"swimlane_id":2}}'; }
+eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
+eq "patch --swimlane echo surfaces swimlane_id"      "true"  "$(cmd_patch --task 99 --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
+eq "patch WITHOUT --swimlane echo omits swimlane_id" "false" "$(cmd_patch --task 99 --dl DL-1 2>/dev/null | jq 'has("swimlane_id")')"
+unset KB_SWIMLANE_1 KB_SWIMLANE_2
+unset -f sp _kbc_write_echo_orig
+
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
 
 # ---------------------------------------------------------------------------
