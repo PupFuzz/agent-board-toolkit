@@ -6,27 +6,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/adopt-to-dl"
-[[ -r "$BIN" ]] || { echo "selftest: $BIN not found" >&2; exit 1; }
+_need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"
-
-fails=0
-ok()   { printf '  ok   %s\n' "$1"; }
-bad()  { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-
-# assert a function returns the expected exit status
-expect_rc() { # <label> <expected-rc> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
-    [[ "$rc" -eq "$exp" ]] && ok "$label (rc=$rc)" || bad "$label expected rc=$exp got rc=$rc"
-}
-# assert a function prints the expected stdout
-expect_out() { # <label> <expected> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local got; got="$("$@" 2>/dev/null || true)"
-    [[ "$got" == "$exp" ]] && ok "$label" || bad "$label expected '$exp' got '$got'"
-}
 
 echo "== _ata_validate_repo =="
 expect_rc "owner/name valid"          0 _ata_validate_repo "owner/name"
@@ -42,6 +27,10 @@ expect_rc "empty name rejected"       2 _ata_validate_repo "owner/"
 echo "== _ata_pr_url =="
 expect_out "placeholder url"          "https://github.com/owner/name/pull/0"        _ata_pr_url "owner/name"
 expect_out "mixed-case preserved"     "https://github.com/AIMLA-org/platform/pull/0" _ata_pr_url "AIMLA-org/platform"
+
+echo "== _ata_issue_url (issue-correlation source URL — mirror of _ata_pr_url) =="
+expect_out "issue url carries the real #N"  "https://github.com/owner/name/issues/42"        _ata_issue_url "owner/name" 42
+expect_out "mixed-case owner preserved"     "https://github.com/AIMLA-org/platform/issues/7" _ata_issue_url "AIMLA-org/platform" 7
 
 echo "== _ata_adopt_decision (MUST-FIX-3 already-adopted guard) =="
 # args: <existing-dl-int-or-empty> <requested-dl-int-or-empty>
@@ -59,10 +48,4 @@ expect_out "mixed name too"            "owner/my-repo"       _ata_canon_source "
 # NB: the DL-int (lenient) and by-ref-hit predicates moved to the shared lib
 # (kb_dl_int_lenient / kb_by_ref_hit) — their coverage lives in tests/kb-board-lib-selftest.sh.
 
-echo
-if [[ "$fails" -eq 0 ]]; then
-    echo "adopt-to-dl-selftest: PASS"
-else
-    echo "adopt-to-dl-selftest: $fails FAILURE(S)" >&2
-    exit 1
-fi
+_summary "adopt-to-dl-selftest"

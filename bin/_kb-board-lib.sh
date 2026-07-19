@@ -102,6 +102,20 @@ kb_resolve_env() {
     return 0
 }
 
+# _kb_discovered_boards: the board NAMEs derived from every ~/.kanban-<name>-board.env present
+# on this box (comma-separated, on stdout; empty when none exist). Used only to make the
+# board-env-missing error self-describing — showing the operator the boards that DO exist turns
+# a bare invocation on a non-`dev` box from "tool broken" into an obvious next step.
+_kb_discovered_boards() {
+    local envf name out=""
+    for envf in "$HOME"/.kanban-*-board.env; do
+        [[ -e "$envf" ]] || continue          # literal glob when none match → skip
+        name="${envf##*/.kanban-}"; name="${name%-board.env}"
+        out+="${out:+, }${name}"
+    done
+    printf '%s' "$out"
+}
+
 # kb_load_config [board_name]: public config entry for the name-driven scripts
 # (kbcard, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
 # api/board/token, and reads the token into KB_TOKEN. An empty NAME means "no
@@ -120,7 +134,20 @@ kb_load_config() {
     kb_resolve_env "$board_env"; rc=$?
     case "$rc" in
         0) ;;
-        2) echo "$(_kb_prog): board env file not readable: $board_env" >&2; return 2 ;;
+        2)  # unreadable board env — name the fix like the sibling arms do (roundtable #89)
+            echo "$(_kb_prog): board env file not readable: $board_env" >&2
+            if [[ -z "$name" ]]; then
+                echo "$(_kb_prog):   → no --board given and no default board configured; pass --board <name>, or set KBCARD_BOARD_ENV to your primary board's env file (see agent-board-toolkit docs/INSTALL.md)" >&2
+            else
+                echo "$(_kb_prog):   → board '$name' has no env file; create $board_env, or pass a --board <name> that exists (see agent-board-toolkit docs/INSTALL.md)" >&2
+            fi
+            local found; found="$(_kb_discovered_boards)"
+            if [[ -n "$found" ]]; then
+                echo "$(_kb_prog):   boards found on this box: $found" >&2
+            else
+                echo "$(_kb_prog):   no ~/.kanban-*-board.env files found on this box" >&2
+            fi
+            return 2 ;;
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
         4) return 2 ;;   # kb_resolve_env already named the file and the fix
         5) echo "$(_kb_prog): token file not readable: $KB_TOKEN_FILE" >&2; return 2 ;;

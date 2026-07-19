@@ -79,7 +79,12 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 > **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one > `~/.kanban-dev-token`.** So a per-board token set here wins over a host-level default — that is the point of setting it here. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
 
-> The default board (no `--board` flag) reads `~/.kanban-dev-board.env` + `~/.kanban-dev-token`. Name your primary board `dev` to use the tools flag-free, or always pass `--board <name>`.
+> **The default board (no `--board` flag)** reads `~/.kanban-dev-board.env` + `~/.kanban-dev-token`. On a box whose primary board is **not** named `dev`, you have three ways to work flag-free — pick one:
+> - name that board `dev` (env at `~/.kanban-dev-board.env`), **or**
+> - **set `KBCARD_BOARD_ENV`** to your primary board's env file — e.g. `echo 'export KBCARD_BOARD_ENV="$HOME/.kanban-<name>-board.env"' >> ~/.profile` (recommended on a single-board box), **or**
+> - always pass `--board <name>`.
+>
+> Without one of these, a bare `kbcard` on a non-`dev` box exits `2` with `board env file not readable: …/.kanban-dev-board.env` — the error names these fixes and lists the `~/.kanban-*-board.env` files it did find, so a fresh box on a non-`dev` board isn't left reverse-engineering the default.
 
 ## 4. Per-repo release config (only for repos that cut releases)
 
@@ -101,7 +106,7 @@ kbcard list --column backlog            # -> JSON array of cards (or [] if empty
                                         #    result proves token + board IDs + API base are all correct.
 kbcard show --task <some-id> | jq .id   # -> the task id echoed back
 ```
-If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong.
+If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong. `board env file not readable: …/.kanban-dev-board.env` → this box has no default (`dev`) board — set `KBCARD_BOARD_ENV` or pass `--board <name>` (see §3b); the error lists the boards that do exist.
 
 ## 6. (Optional) Consume a tool from a product repo's CI
 

@@ -6,31 +6,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BCS="$HERE/../bin/board-card-start"
 IBH="$HERE/../bin/install-board-hooks"
-[[ -r "$BCS" ]] || { echo "selftest: $BCS not found" >&2; exit 1; }
-[[ -r "$IBH" ]] || { echo "selftest: $IBH not found" >&2; exit 1; }
+_need -r "$BCS"
+_need -r "$IBH"
 # shellcheck source=/dev/null
 source "$BCS"   # returns early (sourced-guard) after defining the pure helpers
 # shellcheck source=/dev/null
 source "$IBH"   # main-guarded — defines _ibh_hooks_dir without running install
-
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-
-# assert a function returns the expected exit status
-expect_rc() { # <label> <expected-rc> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
-    [[ "$rc" -eq "$exp" ]] && ok "$label (rc=$rc)" || bad "$label expected rc=$exp got rc=$rc"
-}
-# assert a function prints the expected stdout
-expect_out() { # <label> <expected> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local got; got="$("$@" 2>/dev/null || true)"
-    [[ "$got" == "$exp" ]] && ok "$label" || bad "$label expected '$exp' got '$got'"
-}
 
 echo "== _bcs_is_placeholder_host — reserved placeholders match (rc 0) =="
 expect_rc "example.com"                0 _bcs_is_placeholder_host "https://example.com/api/v3"
@@ -157,5 +142,4 @@ _rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' 'x' 'y' >/dev/null 2>&1 || 
 [[ "$_rc" -eq 0 ]] && ok "returns 0 even on a failed write (fail-soft: never blocks a checkout)" || bad "returned rc=$_rc on failure (must be 0)"
 rm -rf "$_tmpd"
 
-echo
-if [[ "$fails" -eq 0 ]]; then echo "board-card-start-selftest: ALL PASS"; else echo "board-card-start-selftest: $fails FAIL(s)" >&2; exit 1; fi
+_summary "board-card-start-selftest"

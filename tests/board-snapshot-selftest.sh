@@ -14,15 +14,13 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/board-snapshot"
-[[ -r "$BIN" ]] || { echo "selftest: $BIN not found" >&2; exit 1; }
+_need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines board_env_scrub/board_report, renders nothing
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
 has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # Stubs — network-free. fetch_board_cards logs each call to a file so the count
@@ -94,8 +92,4 @@ eq "board_report calls fetch_board_cards exactly once" "1" "$(wc -l < "$FETCH_LO
 rm -f "$tokf" "$envB" "$envC" "$envNoId" "$errf" "$envF" "$FETCH_LOG"
 
 # ---------------------------------------------------------------------------
-if [[ "$fails" -gt 0 ]]; then
-    echo "board-snapshot-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "board-snapshot-selftest: all checks passed"
+_summary "board-snapshot-selftest"

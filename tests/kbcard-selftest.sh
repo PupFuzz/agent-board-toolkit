@@ -9,17 +9,13 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/kbcard"
-[[ -r "$BIN" ]] || { echo "selftest: $BIN not found" >&2; exit 1; }
+_need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines stage_name / _kbc_annotate_card without running
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { # <label> <expected> <got>
-    [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"
-}
 # annot <task-json> <jq-expr>: run the annotator and project one value out.
 annot() { _kbc_annotate_card "$1" | jq -c "$2"; }
 
@@ -227,8 +223,83 @@ eq "typo'd --swimlane prints NO cards"          ""    "$out"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 
 # ---------------------------------------------------------------------------
-if [[ "$fails" -gt 0 ]]; then
-    echo "kbcard-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "kbcard-selftest: all checks passed"
+echo "== _kbc_build_payload — shared create/patch payload assembly (card-4511, dedup D2) =="
+# Single home for the payload-merge jq + version_target guard + DL-canon + pr
+# appends that create-card and patch both need. RED-when-reverted: these pin the
+# exact merged object, so a helper that diverged from either original (dropped a
+# field, lost the numeric coercion, skipped the DL canon) FAILS here.
+unset KB_CF_VERSION_TARGET 2>/dev/null || true
+export KB_CF_VERSION_TARGET=99   # board HAS the version_target custom field
+
+# Full flag set: DL canonicalized (DL-93→DL-0093), pr_number coerced to a JSON
+# NUMBER, pr_url a string, version_target written (board has the CF).
+eq "full flag set → exact merged payload" \
+   '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","version_target":"v0.9.2"}' \
+   "$(_kbc_build_payload DL-93 178 https://github.com/o/r/pull/0 v0.9.2 | jq -Sc .)"
+
+# origin (trailing 7th arg, create-only) rides the same coercion path and is appended.
+eq "origin arg included, coerced like the rest" \
+   '{"dl_number":"DL-0001","origin":"preemptive"}' \
+   "$(_kbc_build_payload 1 '' '' '' '' '' preemptive | jq -Sc .)"
+
+# issue_number / issue_url mirror pr_number / pr_url — issue_number NUMERIC-coerced (a JSON
+# number, not "300"), issue_url a string, both INDEPENDENT of the pr_* pair. RED-when-reverted:
+# drop the coercion (the `tonumber? // .` in the merge jq) and issue_number becomes a string.
+eq "issue_number coerced to a JSON number + issue_url string" \
+   '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' \
+   "$(_kbc_build_payload '' '' '' '' 300 https://github.com/o/r/issues/300 | jq -Sc .)"
+# Co-stamping: --issue + --pr in one call yield BOTH pairs, independently (like dl/pr coexist).
+eq "issue + pr co-stamp — both number-typed keys present, independent" \
+   '{"issue_number":300,"pr_number":305}' \
+   "$(_kbc_build_payload '' 305 '' '' 300 '' | jq -Sc .)"
+# An omitted --issue leaves issue_number ABSENT (not null) — the untriaged/serializer omit rule.
+eq "no --issue → issue_number key ABSENT (not null)" "false" \
+   "$(_kbc_build_payload '' '' '' '' '' '' | jq 'has("issue_number")')"
+
+# No flags → empty object (create's length-gate / patch's !={} both key on this).
+eq "no flags → {}" "{}" "$(_kbc_build_payload '' '' '' '')"
+
+# Version guard: a board WITHOUT the CF drops version_target + warns (never 422s).
+unset KB_CF_VERSION_TARGET
+rc=0; out="$(_kbc_build_payload '' '' '' v1.2.3 2>/dev/null)" || rc=$?
+eq "version w/o CF → rc 0"            "0"    "$rc"
+eq "version w/o CF → empty payload"   "{}"   "$out"
+err="$(_kbc_build_payload '' '' '' v1.2.3 2>&1 >/dev/null)"
+eq "version w/o CF → warns on stderr" "true" "$(has 'version_target field' "$err")"
+# The '000' sentinel is treated as absent too.
+export KB_CF_VERSION_TARGET=000
+eq "version_target=000 sentinel → dropped" "{}" "$(_kbc_build_payload '' '' '' v1.2.3 2>/dev/null)"
+unset KB_CF_VERSION_TARGET
+
+# Malformed --dl fails LOUD (rc 2) before any output — never a plausible-wrong DL.
+rc=0; out="$(_kbc_build_payload not-a-dl '' '' '' 2>/dev/null)" || rc=$?
+eq "malformed --dl → rc 2"       "2" "$rc"
+eq "malformed --dl → no payload" ""  "$out"
+
+# Integration: create-card and patch, given the SAME dl/pr/pr_url/version, must send
+# byte-identical task.payload — the whole point of sharing one assembler. Stub the
+# API to echo the request body; assert the .task.payload objects match.
+kb_api() { printf '%s' "$3"; }
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21 KB_CF_VERSION_TARGET=99
+unset KB_TYPING_MODE 2>/dev/null || true
+cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.task.payload')"
+ppay="$(cmd_patch --task 99 --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.task.payload')"
+eq "create + patch send identical payload" "$cpay" "$ppay"
+eq "and it is the expected object" \
+   '{"dl_number":"DL-0007","pr_number":42,"pr_url":"https://github.com/o/r/pull/0","version_target":"v1.0.0"}' "$cpay"
+
+# --issue / --issue-url wired through create-card AND patch: issue_number number-typed, and a
+# card co-stamped with --issue + --pr carries BOTH lifecycle pairs, independently.
+ci="$(cmd_create_card --type task --name x --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.task.payload')"
+eq "create-card --issue → number-typed issue_number + issue_url" \
+   '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' "$ci"
+pi="$(cmd_patch --task 99 --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.task.payload')"
+eq "patch --issue sends the identical issue payload" "$ci" "$pi"
+co="$(cmd_create_card --type task --name x --issue 300 --pr 305 2>/dev/null | jq -Sc '.task.payload')"
+eq "create-card --issue + --pr co-stamp both keys, independent" \
+   '{"issue_number":300,"pr_number":305}' "$co"
+unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
+
+# ---------------------------------------------------------------------------
+_summary "kbcard-selftest"

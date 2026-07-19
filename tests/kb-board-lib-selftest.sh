@@ -11,23 +11,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 LIB="$HERE/../bin/_kb-board-lib.sh"
-[[ -r "$LIB" ]] || { echo "selftest: $LIB not found" >&2; exit 1; }
+_need -r "$LIB"
 # shellcheck source=/dev/null
 source "$LIB"
 KB_PROG="kb-board-lib-selftest"
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { # <label> <expected> <got>
-    [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"
-}
-
 # Scratch HOME so no real ~/.kanban-* file can influence (or be influenced by) a result.
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP"
+_mktmp_scratch --home
 export KANBAN_HOST_ENV="$TMP/.kanban-host.env"
 
 printf 'board-token\n'   > "$TMP/board.token"
@@ -159,6 +152,49 @@ echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
 { echo 'KB_BOARD_ID=42'; echo "export KBCARD_TOKEN_FILE=\"$TMP/absent.token\""; } > "$TMP/.kanban-x-board.env"
 rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "unreadable token file → rc 5" "5" "$rc"
+
+# ---------------------------------------------------------------------------
+echo "== kb_load_config — the board-env-missing error names its fix (roundtable #89) =="
+
+# A box with real board envs under non-dev names but NO ~/.kanban-dev-board.env and no
+# KBCARD_BOARD_ENV: a bare (default) load must exit 2 AND tell the operator how to recover —
+# name --board / KBCARD_BOARD_ENV and list the boards that DO exist. The rc-3/rc-4 sibling arms
+# already name their fix; this one didn't, so a fresh non-`dev` box read the tool as "broken".
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+echo 'KB_BOARD_ID=7' > "$TMP/.kanban-sola-board.env"
+echo 'KB_BOARD_ID=9' > "$TMP/.kanban-sandbox-board.env"
+rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
+eq "bare load, no default board → rc 2" "2" "$rc"
+case "$msg" in *"board env file not readable"*) ok "  names the unreadable default env" ;;
+    *) bad "  missing the base 'not readable' line: '$msg'" ;; esac
+case "$msg" in *KBCARD_BOARD_ENV*) ok "  names KBCARD_BOARD_ENV as a fix" ;;
+    *) bad "  error omits KBCARD_BOARD_ENV: '$msg'" ;; esac
+case "$msg" in *"--board"*) ok "  names --board as a fix" ;;
+    *) bad "  error omits --board: '$msg'" ;; esac
+case "$msg" in *sola*sandbox*|*sandbox*sola*) ok "  lists the discovered boards (sola, sandbox)" ;;
+    *) bad "  error does not list discovered boards: '$msg'" ;; esac
+
+# A --board NAME whose env file is absent points at THAT file (not the default) and still names --board.
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+rc=0; msg="$(kb_load_config nope 2>&1 >/dev/null)" || rc=$?
+eq "--board nope, no such env → rc 2" "2" "$rc"
+case "$msg" in *".kanban-nope-board.env"*) ok "  names the named board's own env file" ;;
+    *) bad "  --board error names wrong file: '$msg'" ;; esac
+case "$msg" in *"--board"*) ok "  still points at --board" ;;
+    *) bad "  --board error unhelpful: '$msg'" ;; esac
+
+# No board envs on the box at all: still names the fix, says none were found (no empty list dangling).
+reset_env
+rm -f "$TMP"/.kanban-*-board.env "$TMP/.kanban-dev-board.env"
+unset KBCARD_BOARD_ENV
+rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
+eq "no board envs → still rc 2" "2" "$rc"
+case "$msg" in *"no ~/.kanban-*-board.env files found"*) ok "  says no board envs were found" ;;
+    *) bad "  empty-discovery message unclear: '$msg'" ;; esac
 
 # ---------------------------------------------------------------------------
 echo "== kb_load_host_env =="
@@ -344,15 +380,15 @@ unset -f curl
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: short-read rc 4 vs dedup artifact (card #4338) =="
-# Page-aware stub: emits per-page payloads by inspecting the page= query param.
+# Page-aware stub: selects the per-page payload by inspecting the page= query param, then
+# emits it through the shared _stub_curl_respond core (the single owner of the stdin-drain
+# + __HTTP__<status> convention) at a fixed 200.
 _stub_page_curl() { # uses _PAGES assoc: _PAGES[<n>]=<json>
-    cat >/dev/null
     local a page=1
     for a in "${_STUB_ARGS[@]}"; do
         [[ "$a" == *"page="* ]] && page="${a##*page=}"
     done
-    printf '%s\n__HTTP__200' "${_PAGES[$page]}"
-    return 0
+    _stub_curl_respond "${_PAGES[$page]}" 200
 }
 declare -A _PAGES
 
@@ -459,6 +495,8 @@ unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
 # expect_out drives a function and compares stdout; expect_rc compares exit status.
+# These deliberately shadow the prelude's like-named helpers: this variant routes
+# through eq() (different pass/fail wording), so it defines its own after sourcing.
 expect_out() { # <label> <expected> <fn> <args...>
     local label="$1" exp="$2"; shift 2
     local got; got="$("$@" 2>/dev/null || true)"
@@ -509,8 +547,4 @@ expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'           
 if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
 
 # ---------------------------------------------------------------------------
-if [[ "$fails" -gt 0 ]]; then
-    echo "kb-board-lib-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "kb-board-lib-selftest: all checks passed"
+_summary "kb-board-lib-selftest"

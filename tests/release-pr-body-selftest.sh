@@ -14,12 +14,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/release-pr-body"
-[[ -x "$BIN" ]] || { echo "selftest: $BIN not found/executable" >&2; exit 1; }
+_need -x "$BIN"
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
 contains()     { # <label> <haystack> <needle>
   case "$2" in *"$3"*) ok "$1";; *) bad "$1 — expected to find '$3'";; esac
 }
@@ -33,8 +32,7 @@ export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 g() { git -c init.defaultBranch=main -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
 
-T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+_mktmp_scratch; T="$TMP"   # T keeps the fixture's short name; the prelude owns cleanup
 
 # --- fixture: origin + seed (drives the "remote" side) -----------------------
 g init --bare -q "$T/origin.git"
@@ -114,6 +112,4 @@ if [[ "$rc" -eq 0 ]]; then ok "works offline with --base (rc=0)"; else bad "expe
 contains "uses the given baseline" "$body2" "since v0.1.0"
 contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
 
-echo
-if [[ "$fails" -gt 0 ]]; then echo "SELFTEST FAILED: $fails failing check(s)" >&2; exit 1; fi
-echo "SELFTEST OK"
+_summary "release-pr-body-selftest"
