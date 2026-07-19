@@ -20,23 +20,17 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 PRC="$HERE/../bin/promote-released-cards"
-[[ -r "$PRC" ]] || { echo "selftest: $PRC not found" >&2; exit 1; }
+_need -r "$PRC"
 
 # Lift fetch_whole_board out of the standalone (it is never meant to be sourced whole).
 prc_src="$(sed -n '/^fetch_whole_board() {/,/^}/p' "$PRC")"
 [[ -n "$prc_src" ]] || { echo "selftest: could not extract fetch_whole_board from $PRC — did it get renamed?" >&2; exit 1; }
 eval "$prc_src"
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { # <label> <expected> <got>
-    [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"
-}
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+_mktmp_scratch
 
 # fetch_whole_board reads these globals; die() ends the run with rc 2 (the standalone's
 # refuse policy), and api() is its network seam — both stubbed here.
@@ -126,8 +120,4 @@ rc=0; out="$(fetch_whole_board 2>"$TMP/empty.err")" || rc=$?
 eq   "0 visible cards → dies rc 2"        "2"   "$rc"
 grep -q "0 visible cards" "$TMP/empty.err" && ok "empty board names the membership cause" || bad "missing 0-visible-cards refusal"
 
-if [[ "$fails" -gt 0 ]]; then
-    echo "promote-pagination-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "promote-pagination-selftest: all checks passed"
+_summary "promote-pagination-selftest"

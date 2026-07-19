@@ -11,23 +11,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 LIB="$HERE/../bin/_kb-board-lib.sh"
-[[ -r "$LIB" ]] || { echo "selftest: $LIB not found" >&2; exit 1; }
+_need -r "$LIB"
 # shellcheck source=/dev/null
 source "$LIB"
 KB_PROG="kb-board-lib-selftest"
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { # <label> <expected> <got>
-    [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"
-}
-
 # Scratch HOME so no real ~/.kanban-* file can influence (or be influenced by) a result.
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP"
+_mktmp_scratch --home
 export KANBAN_HOST_ENV="$TMP/.kanban-host.env"
 
 printf 'board-token\n'   > "$TMP/board.token"
@@ -502,6 +495,8 @@ unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
 # expect_out drives a function and compares stdout; expect_rc compares exit status.
+# These deliberately shadow the prelude's like-named helpers: this variant routes
+# through eq() (different pass/fail wording), so it defines its own after sourcing.
 expect_out() { # <label> <expected> <fn> <args...>
     local label="$1" exp="$2"; shift 2
     local got; got="$("$@" 2>/dev/null || true)"
@@ -552,8 +547,4 @@ expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'           
 if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
 
 # ---------------------------------------------------------------------------
-if [[ "$fails" -gt 0 ]]; then
-    echo "kb-board-lib-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "kb-board-lib-selftest: all checks passed"
+_summary "kb-board-lib-selftest"

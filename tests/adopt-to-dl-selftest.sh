@@ -6,27 +6,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/adopt-to-dl"
-[[ -r "$BIN" ]] || { echo "selftest: $BIN not found" >&2; exit 1; }
+_need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"
-
-fails=0
-ok()   { printf '  ok   %s\n' "$1"; }
-bad()  { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-
-# assert a function returns the expected exit status
-expect_rc() { # <label> <expected-rc> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
-    [[ "$rc" -eq "$exp" ]] && ok "$label (rc=$rc)" || bad "$label expected rc=$exp got rc=$rc"
-}
-# assert a function prints the expected stdout
-expect_out() { # <label> <expected> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local got; got="$("$@" 2>/dev/null || true)"
-    [[ "$got" == "$exp" ]] && ok "$label" || bad "$label expected '$exp' got '$got'"
-}
 
 echo "== _ata_validate_repo =="
 expect_rc "owner/name valid"          0 _ata_validate_repo "owner/name"
@@ -59,10 +44,4 @@ expect_out "mixed name too"            "owner/my-repo"       _ata_canon_source "
 # NB: the DL-int (lenient) and by-ref-hit predicates moved to the shared lib
 # (kb_dl_int_lenient / kb_by_ref_hit) — their coverage lives in tests/kb-board-lib-selftest.sh.
 
-echo
-if [[ "$fails" -eq 0 ]]; then
-    echo "adopt-to-dl-selftest: PASS"
-else
-    echo "adopt-to-dl-selftest: $fails FAILURE(S)" >&2
-    exit 1
-fi
+_summary "adopt-to-dl-selftest"

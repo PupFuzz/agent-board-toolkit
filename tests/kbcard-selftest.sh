@@ -9,17 +9,13 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/kbcard"
-[[ -r "$BIN" ]] || { echo "selftest: $BIN not found" >&2; exit 1; }
+_need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines stage_name / _kbc_annotate_card without running
 
-fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
-eq()  { # <label> <expected> <got>
-    [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"
-}
 # annot <task-json> <jq-expr>: run the annotator and project one value out.
 annot() { _kbc_annotate_card "$1" | jq -c "$2"; }
 
@@ -281,8 +277,4 @@ eq "and it is the expected object" \
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
 
 # ---------------------------------------------------------------------------
-if [[ "$fails" -gt 0 ]]; then
-    echo "kbcard-selftest: $fails check(s) FAILED" >&2
-    exit 1
-fi
-echo "kbcard-selftest: all checks passed"
+_summary "kbcard-selftest"
