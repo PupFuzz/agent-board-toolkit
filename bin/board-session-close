@@ -7,11 +7,11 @@
 #
 # The inverse-drift leg (In-Review cards tracking no open PR) is DELEGATED to the
 # shipped, framework-maintained `kanban-reconcile.py --detect` — the sanctioned
-# conforming implementation of the inverse-drift CONTRACT (the framework's
-# BOARD-SYNC.md § "The detect backstop contract (inverse-drift)"; see also
-# docs/BOARD-SYNC.md here). It reads the same boards from the coord config
-# (kanban.boards[]) and is READ-ONLY by construction, plus adds a forward
-# un-carded-open-PR leg the retired bash check never had.
+# conforming implementation of the inverse-drift CONTRACT (the framework coord
+# plugin's BOARD-SYNC.md § "The detect backstop contract (inverse-drift)"). It
+# reads the same boards from the coord config (kanban.boards[]) and is READ-ONLY
+# by construction, plus adds a forward un-carded-open-PR leg the retired bash
+# check never had.
 set -uo pipefail
 
 # resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
