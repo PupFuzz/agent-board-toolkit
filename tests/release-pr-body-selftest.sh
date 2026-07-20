@@ -157,4 +157,25 @@ contains     "own tag excluded via tag_format"    "$body5" "since v0.2.0"
 not_contains "own tag is not its own baseline"    "$body5" "since release-0.3.0"
 contains     "range still bundles the dev commit" "$body5" "new work for cycle two"
 
+echo "== body header renders the real tag via tag_format (card#4762) =="
+# The display header must name the tag that actually exists (per tag_format), not a
+# hardcoded v-prefix. $body was generated with the default scheme (no tag_format);
+# $body5 with tag_format=release-{{version}}. not_contains is scoped to the header
+# LINE so a legitimate v-prefixed baseline elsewhere in the body can't false-match.
+dflt_hdr="$(printf '%s\n' "$body" | head -1)"
+contains "default scheme header names the v-prefixed tag" "$dflt_hdr" "release PR — v0.3.0."
+
+tf_hdr="$(printf '%s\n' "$body5" | head -1)"
+contains     "tag_format header names release-<version>" "$tf_hdr" "release PR — release-0.3.0."
+not_contains "tag_format header has no phantom v-tag"     "$tf_hdr" "v0.3.0"
+
+# Explicit --base skips the baseline block where THIS_TAG was formerly assigned; the
+# hoist makes it live on this path too. Pre-hoist this renders the wrong hardcoded
+# v-tag — or, once the header references THIS_TAG, crashes under `set -u` (unbound).
+body6="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>/dev/null )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "renders a body under --base + tag_format (rc=0)"; else bad "expected rc=0 with --base+tag_format, got rc=$rc"; fi
+base_hdr="$(printf '%s\n' "$body6" | head -1)"
+contains "--base header still honors tag_format" "$base_hdr" "release PR — release-0.3.0."
+contains "--base uses the given baseline"        "$body6"    "since v0.1.0"
+
 _summary "release-pr-body-selftest"
