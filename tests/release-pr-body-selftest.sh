@@ -112,4 +112,49 @@ if [[ "$rc" -eq 0 ]]; then ok "works offline with --base (rc=0)"; else bad "expe
 contains "uses the given baseline" "$body2" "since v0.1.0"
 contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
 
+# Restore the real origin (the fetch-failure case above pointed it at a void).
+g -C "$W" remote set-url origin "$T/origin.git"
+
+echo "== version-file extraction keeps all 4 segments of a .NET-style version =="
+# A 3-segment-only extraction pattern silently truncates 1.22.1.0 → 1.22.1; the
+# body's version line makes that visible ('v1.22.1.0' never appears).
+echo "AssemblyVersion: 1.22.1.0" > "$W/VERSION.txt"
+cat > "$W/.release-pr.json" <<'EOF'
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "ref_token_regex": "DL-[0-9]+",
+  "title_prefix": "Release",
+  "version_file": "VERSION.txt",
+  "version_regex": "[0-9]+(\\.[0-9]+){1,3}"
+}
+EOF
+body4="$( (cd "$W" && "$BIN") 2>/dev/null )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "resolves the version from the file (rc=0)"; else bad "expected rc=0, got rc=$rc"; fi
+contains "4-segment version survives extraction" "$body4" "v1.22.1.0"
+
+echo "== tag_format drives the own-tag exclude (re-run after tagging, non-v scheme) =="
+# Release cycle 2 lands on the remote under a release-{{version}} tag scheme; a
+# re-run for 0.3.0 must exclude release-0.3.0 (its own tag) when resolving BASE.
+# A hardcoded v-prefix excludes the nonexistent v0.3.0 instead, so BASE resolves
+# to release-0.3.0 itself and the body reports 'since release-0.3.0' with 0 commits.
+g -C "$S" checkout -q main
+g -C "$S" merge -q --no-ff dev -m "Merge pull request #4 (release 0.3.0)"
+g -C "$S" tag release-0.3.0
+g -C "$S" push -q origin main release-0.3.0
+cat > "$W/.release-pr.json" <<'EOF'
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "ref_token_regex": "DL-[0-9]+",
+  "title_prefix": "Release",
+  "tag_format": "release-{{version}}"
+}
+EOF
+body5="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "generates a body under tag_format (rc=0)"; else bad "expected rc=0, got rc=$rc"; fi
+contains     "own tag excluded via tag_format"    "$body5" "since v0.2.0"
+not_contains "own tag is not its own baseline"    "$body5" "since release-0.3.0"
+contains     "range still bundles the dev commit" "$body5" "new work for cycle two"
+
 _summary "release-pr-body-selftest"
