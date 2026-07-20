@@ -15,8 +15,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - name: shellcheck bin/, hooks/ and tests/
         # Gate at hard errors only for now; tighten to `-S warning` once a clean
-        # run confirms the existing scripts are warning-clean.
-        run: shellcheck -S error bin/* hooks/* tests/*.sh
+        # run confirms the existing scripts are warning-clean. Non-shell helpers
+        # (e.g. bin/*.py shims) are filtered out — shellcheck cannot parse them
+        # (SC1071); they are syntax-checked in the python-shims step below.
+        run: shellcheck -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
+      - name: python shims compile clean
+        run: python3 -m py_compile bin/*.py
 
   drift-check-selftest:
     runs-on: ubuntu-latest
@@ -47,6 +51,7 @@ jobs:
           - board-snapshot-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
+          - kbc-may-archive-selftest
           - kbcard-selftest
           - next-dl-selftest
           - promote-pagination-selftest

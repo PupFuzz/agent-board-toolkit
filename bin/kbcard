@@ -29,9 +29,14 @@
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
-#   kbcard archive --task ID-OR-EXT [--dry-run]
+#   kbcard archive --task ID-OR-EXT [--force] [--dry-run]
 #     Take the card off the board without deleting it (PATCH _action:archive) —
 #     the row stays live + recoverable and keeps its stable id + dl_number.
+#     Refuses (rc 1, no PATCH) if the card's backing coordination source (its
+#     pr_number/issue_number by-ref, or id:<sid> tag) is still LIVE and has no
+#     surviving twin card — archiving its only card would hide a live source from
+#     the reconcile/detect backstop (roundtable #39). --force overrides the gate
+#     and records an audited override line (stderr + the kbcard failure log).
 #   kbcard delete --task ID-OR-EXT [--hard] [--yes|-y] [--dry-run]
 #     Default: soft-delete (trashed, recoverable within the retention window; RETAINS
 #     dl_number). --hard: permanent force-delete (cascades subtasks/comments/links;
@@ -523,15 +528,65 @@ cmd_show() {
     _kbc_annotate_card "$data"
 }
 
+# _kbc_board_repo: the board's canonical GitHub repo (owner/name), read from the
+# coord config's kanban.boards[] entry whose board_id matches this board — the same
+# board→repo map the reconcile hook uses. Best-effort: prints "" when the config is
+# absent or the board isn't declared (the shim then falls back to the card's own
+# pr_url/issue_url source, and finally to fail-closed). No network.
+_kbc_board_repo() {
+    local cfg="${COORD_CONFIG:-$HOME/.config/coord/coordination.config.json}"
+    [[ -r "$cfg" ]] || return 0
+    jq -r --arg id "$KB_BOARD_ID" '
+        ((.kanban.boards // [])[] | select((.board_id|tostring) == $id) | .repo) // empty
+    ' "$cfg" 2>/dev/null | head -n1
+}
+
+# _kbc_archive_decision <task-id>: run the may_archive safety gate for a card and
+# print "<token>\t<reason>" (token = ok|blocked|noprimitive) on stdout. Delegates
+# the policy to the shipped framework primitive via the _kbc-may-archive.py shim;
+# builds no archive policy here. A missing shim, an unfetchable card, or any shim
+# fault resolves to a fail-closed token so cmd_archive refuses rather than archiving
+# unchecked. surviving_cards is the whole live board (twin detection is the
+# primitive's job); a partial/failed board read yields fewer twins → more blocking
+# (fail-closed), never a false allow.
+_kbc_archive_decision() {
+    local task="$1" shim card board repo
+    shim="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kbc-may-archive.py"
+    [[ -r "$shim" ]] || { printf 'noprimitive\tarchive-gate shim _kbc-may-archive.py not found next to kbcard'; return 0; }
+    card="$(kb_api GET "/tasks/$task.json" | jq -c '.data')" \
+        || { printf 'noprimitive\tcould not fetch card %s to verify archive safety' "$task"; return 0; }
+    # Capture the board array regardless of the paginator's completeness rc — a
+    # partial set only removes twins (more conservative), never invents one. The
+    # `|| true` keeps a non-zero paginator rc (partial/short read) from aborting
+    # this function under `set -e`.
+    board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
+    [[ -n "$board" ]] || board="[]"
+    repo="$(_kbc_board_repo)" || true
+    # The board array can be ~200KB — it must reach jq via STDIN, never argv
+    # (--argjson would trip "Argument list too long" over MAX_ARG_STRLEN, the
+    # #3091/#3362 class; a silently-empty jq would then feed the shim {} and
+    # mis-read the card as source-less → a FALSE ok). Only the single target card
+    # (small) rides --argjson.
+    printf '%s' "$board" | jq -c --argjson card "$card" \
+           --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
+        '{card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
+        | python3 "$shim"
+}
+
 # Take a card off the board without deleting it: PATCH _action:archive. The row
 # stays live (recoverable via _action:unarchive) and keeps its stable id + any
-# dl_number — so archiving never releases a DL ref. `--dry-run` prints the call.
+# dl_number — so archiving never releases a DL ref. Before the PATCH the
+# may_archive gate refuses to archive a card whose backing coordination source is
+# still live-and-untwinned (archiving its only card would hide a live source from
+# the reconcile/detect backstop); --force overrides with an audited log line.
+# `--dry-run` prints the call without evaluating the gate (offline, no mutation).
 cmd_archive() {
-    local task_ref="" dry=""
+    local task_ref="" dry="" force=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
+            --force) force=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -539,8 +594,40 @@ cmd_archive() {
     local task; task="$(resolve_task "$task_ref")" || return 2
     if [[ -n "$dry" ]]; then
         echo "  archive:  PATCH /tasks/$task.json  {\"_action\":\"archive\"}"
+        [[ -n "$force" ]] || echo "  note: the live-source archive gate is evaluated at execution (not in --dry-run)" >&2
         return 0
     fi
+
+    # Archive-safety gate (roundtable #39). Skipped entirely under --force, which
+    # then emits an audited override line rather than a silent bypass.
+    if [[ -z "$force" ]]; then
+        local decision token reason
+        decision="$(_kbc_archive_decision "$task")"
+        token="${decision%%$'\t'*}"; reason="${decision#*$'\t'}"
+        case "$token" in
+            ok) : ;;   # gate cleared — proceed to the PATCH below
+            blocked)
+                echo "kbcard: ⚠ archive withheld: card #$task — $reason" >&2
+                echo "kbcard: pass --force to override (records an audited override); the card was NOT archived." >&2
+                return 1 ;;
+            *)  # noprimitive / any unrecognized token → fail LOUD, never silent-archive
+                echo "kbcard: ⚠ archive withheld: card #$task — $reason" >&2
+                echo "kbcard: cannot verify archive safety; pass --force to override (records an audited override). The card was NOT archived." >&2
+                return 1 ;;
+        esac
+    else
+        # Audit the override: what the gate WOULD have said, durably logged + on
+        # stderr — a forced archive is never a silent bypass of the gate.
+        local decision token reason
+        decision="$(_kbc_archive_decision "$task")"
+        token="${decision%%$'\t'*}"; reason="${decision#*$'\t'}"
+        if [[ "$token" != "ok" ]]; then
+            local line="⚠ archive FORCED past live-source gate: card #$task — $reason"
+            echo "kbcard: $line" >&2
+            [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) ARCHIVE-FORCE task=$task $line" >> "$KB_LOG_FILE"
+        fi
+    fi
+
     kb_api PATCH "/tasks/$task.json" '{"_action":"archive"}' >/dev/null \
         || { echo "kbcard: archive failed for task $task" >&2; return 1; }
     echo "kbcard: task $task archived (off-board, recoverable; live row — stable id + DL ref kept)"
