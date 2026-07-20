@@ -116,5 +116,32 @@ rc="$(run_main "$badhook")"
 eq "the hook's rc 2 propagates as the ritual's exit code" "2" "$rc"
 eq "stderr flags the check as INCOMPLETE" "true" "$(has 'INCOMPLETE' "$(cat "$ERRF")")"
 
+echo "== main — inverse check OFF is re-emitted as a LOUD ⚠ warning, not a silent pass =="
+# The hook runs the forward leg + reports 'inverse check OFF' at rc 0 for a board
+# lacking inverse_check_columns. main must scan the output and surface a ⚠ on stderr
+# naming the board key, so the dropped inverse-drift check is not read as clean.
+offhook="$TMP/off-hook.py"
+printf '%s\n' '#!/usr/bin/env python3' \
+              'print("\n[DETECT] board 5 (kanban): 0 item(s) to verify + reconcile by hand")' \
+              'print("  notice: inverse check OFF — no inverse_check_columns declared for this board (declare the \x27In Review\x27-class column names in kanban.boards[] to arm it)")' \
+              'print("  (no drift detected)")' > "$offhook"
+rc="$(run_main "$offhook")"
+eq "inverse-OFF board still exits 0 (OFF is not a hard error)" "0" "$rc"
+eq "the OFF notice is surfaced in stdout (forward-leg output preserved)" \
+   "true" "$(has 'inverse check OFF' "$(cat "$OUTF")")"
+eq "OFF re-emitted as a ⚠ warning on STDERR" \
+   "true" "$(has '⚠ inverse-drift check is OFF' "$(cat "$ERRF")")"
+eq "the ⚠ warning names the board key" \
+   "true" "$(has 'board kanban' "$(cat "$ERRF")")"
+
+echo "== main — a SKIPPED board (absent/mis-declared in kanban.boards[]) is surfaced as ⚠ =="
+skiphook="$TMP/skip-hook.py"
+printf '%s\n' '#!/usr/bin/env python3' \
+              'print("[DETECT] board (bridge): board_id not configured — skipped")' > "$skiphook"
+rc="$(run_main "$skiphook")"
+eq "a skipped board still exits 0" "0" "$rc"
+eq "the skip is re-emitted as a ⚠ warning on STDERR naming the board key" \
+   "true" "$(has '⚠ board bridge was SKIPPED' "$(cat "$ERRF")")"
+
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"

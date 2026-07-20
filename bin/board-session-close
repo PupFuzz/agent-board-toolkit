@@ -43,7 +43,7 @@ resolve_reconcile_hook() {
 }
 
 main() {
-  local d wt b dirty hook rc
+  local d wt b dirty hook rc out line cur_key
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
   echo "Fix any board card below that doesn't match the git/PR reality, then close."
   echo
@@ -79,8 +79,29 @@ main() {
     } >&2
     return 1
   fi
-  python3 "$hook" --detect 2>&1 | sed 's/^/  /'
-  rc=${PIPESTATUS[0]}
+  out="$(python3 "$hook" --detect 2>&1)"; rc=$?
+  printf '%s\n' "$out" | sed 's/^/  /'
+  # The hook's inverse leg is config-gated: a board without inverse_check_columns
+  # runs the FORWARD leg only and reports 'inverse check OFF' at rc 0 — a PASS that
+  # silently drops the In-Review-without-open-PR check the retired bash always ran.
+  # A board absent/mis-declared in kanban.boards[] is 'skipped' at rc 0 the same way.
+  # Re-surface both as a LOUD ⚠ on stderr, OUTSIDE the per-board '(no drift detected)'
+  # framing, so the degraded coverage is never read as a clean pass (canon #9).
+  cur_key=""
+  while IFS= read -r line; do
+    case "$line" in
+      *"[DETECT] board"*"skipped"*)
+        cur_key="${line%%):*}"; cur_key="${cur_key##*(}"
+        echo "  ⚠ board ${cur_key:-?} was SKIPPED by kanban-reconcile.py --detect (${line#*"): "}) — it got NO inverse-drift check this run; declare its board_id + a single-repo kanban.boards[].repo to cover it" >&2
+        ;;
+      *"[DETECT] board"*"):"*)
+        cur_key="${line%%):*}"; cur_key="${cur_key##*(}"
+        ;;
+      *"inverse check OFF"*)
+        echo "  ⚠ inverse-drift check is OFF for board ${cur_key:-?} — arm inverse_check_columns in kanban.boards[] (coordination.config.json) or this ritual silently skips the In-Review-without-open-PR check" >&2
+        ;;
+    esac
+  done <<< "$out"
   if [[ "$rc" -ne 0 ]]; then
     echo "  ⚠ kanban-reconcile.py --detect exited $rc — the inverse-drift check may be INCOMPLETE" >&2
     echo "    (config/API error above); investigate before treating the board as reconciled." >&2
