@@ -92,7 +92,11 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         return _emit("noprimitive", f"kanban_common loaded but unusable: {e}")
 
-    card = req.get("card") or {}
+    if req.get("card") is None:  # explicit null / absent — NOT an empty-object card
+        return _emit("noprimitive",
+                     "archive-gate got no card object (fetch returned null/absent "
+                     ".data) — cannot verify archive safety")
+    card = req.get("card")
     surviving = req.get("surviving_cards") or []
     cfg_repo = (req.get("repo") or "").strip() or None
     # The card's own source (from pr_url / issue_url / payload.repo) via the

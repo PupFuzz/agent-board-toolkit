@@ -555,6 +555,12 @@ _kbc_archive_decision() {
     [[ -r "$shim" ]] || { printf 'noprimitive\tarchive-gate shim _kbc-may-archive.py not found next to kbcard'; return 0; }
     card="$(kb_api GET "/tasks/$task.json" | jq -c '.data')" \
         || { printf 'noprimitive\tcould not fetch card %s to verify archive safety' "$task"; return 0; }
+    # A 2xx with .data null/absent (trashed / permission-limited / edge card) yields
+    # the literal "null" (or "") at rc 0 — non-empty, so the `||` above never fires.
+    # For the CARD input the degenerate default is UNSAFE (no card ⇒ no sources ⇒ a
+    # false `ok` that archives a live-and-untwinned card), the mirror of the board
+    # input's safe `[]` default above — so fail closed here, never reach the shim.
+    [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
     # Capture the board array regardless of the paginator's completeness rc — a
     # partial set only removes twins (more conservative), never invents one. The
     # `|| true` keeps a non-zero paginator rc (partial/short read) from aborting
@@ -617,10 +623,19 @@ cmd_archive() {
         esac
     else
         # Audit the override: what the gate WOULD have said, durably logged + on
-        # stderr — a forced archive is never a silent bypass of the gate.
+        # stderr — a forced archive is never a silent bypass of the gate. Tolerate a
+        # gate-infra failure (e.g. python3 absent → rc 127): --force is the escape
+        # hatch, so it must not itself be blocked by the very gate infra it exists to
+        # bypass. An empty decision still proceeds to the archive AND still writes the
+        # audited override line (never a SILENT forced archive). The non-force branch
+        # deliberately keeps no `|| …` here so a gate-infra failure there fails closed.
         local decision token reason
-        decision="$(_kbc_archive_decision "$task")"
-        token="${decision%%$'\t'*}"; reason="${decision#*$'\t'}"
+        decision="$(_kbc_archive_decision "$task")" || decision=""
+        if [[ -z "$decision" ]]; then
+            token=""; reason="archive-gate infra could not run — forced without a verified decision"
+        else
+            token="${decision%%$'\t'*}"; reason="${decision#*$'\t'}"
+        fi
         if [[ "$token" != "ok" ]]; then
             local line="⚠ archive FORCED past live-source gate: card #$task — $reason"
             echo "kbcard: $line" >&2

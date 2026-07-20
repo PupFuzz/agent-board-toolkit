@@ -85,6 +85,15 @@ eq "live PR WITH surviving twin → ok"  "ok" "$(tok "$out")"
 FAKE_GH_STATE=ERR
 eq "source-less card → ok (no gh call)" "ok" "$(tok "$(gate '{"card":{"id":1,"payload":{}},"surviving_cards":[]}')")"
 
+# A null / absent card (fetch returned .data:null — trashed / permission-limited /
+# edge card) → noprimitive (fail-closed), NOT the source-less `{}` that would false-`ok`
+# and let the archive PATCH run against a live-and-untwinned card. RED-when-reverted:
+# without the `req.get("card") is None` guard, `req.get("card") or {}` collapses
+# null→{} → source-less → `ok`. gh is irrelevant (never reached).
+FAKE_GH_STATE=OPEN
+eq "null card → noprimitive (fail-closed)"   "noprimitive" "$(tok "$(gate '{"card":null,"surviving_cards":[]}')")"
+eq "absent card key → noprimitive (fail-closed)" "noprimitive" "$(tok "$(gate '{"surviving_cards":[]}')")"
+
 # stable-id (id:<sid>) source with no twin → unresolvable (kbcard can't map it) → blocked.
 FAKE_GH_STATE=OPEN
 out="$(gate '{"card":{"id":1,"tags":["id:TASK-9"],"payload":{}},"surviving_cards":[]}')"

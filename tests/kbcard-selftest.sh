@@ -115,6 +115,25 @@ out="$(cmd_delete --task 42 --hard --dry-run 2>/dev/null)"
 eq "delete --hard --dry-run includes force-delete"    "true"  "$(has 'force-delete.json' "$out")"
 
 # ---------------------------------------------------------------------------
+echo "== _kbc_archive_decision — null/absent .data fails closed before the board fetch =="
+# A 2xx whose .data is JSON null (trashed / permission-limited / edge card) yields
+# the literal "null" at rc 0 — the fetch `||` guard never fires. The bash guard must
+# short-circuit to a noprimitive token BEFORE fetch_board_cards / the shim run, so a
+# null card can never reach the shim as a source-less `{}` that would false-`ok`.
+# RED-when-reverted: without the guard the literal "null" card falls through to the
+# board fetch (sentinel set) → the unsafe path this guard closes.
+_saved_fbc="$(declare -f fetch_board_cards || true)"
+_FBC_SENTINEL="$(mktemp)"; : > "$_FBC_SENTINEL"
+kb_api() { printf '{"data":null}'; }
+fetch_board_cards() { echo REACHED > "$_FBC_SENTINEL"; printf '[]'; }
+_dec="$(_kbc_archive_decision 42)"
+eq "null .data → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
+eq "null .data → board fetch NOT reached"   ""            "$(cat "$_FBC_SENTINEL")"
+unset -f kb_api fetch_board_cards
+[[ -n "$_saved_fbc" ]] && eval "$_saved_fbc"
+rm -f "$_FBC_SENTINEL"; unset _saved_fbc _FBC_SENTINEL _dec
+
+# ---------------------------------------------------------------------------
 echo "== cmd_archive — may_archive gate wiring (roundtable #39) =="
 # The gate DECISION (fetch card + board, run the shim over the framework primitive)
 # is a separate seam _kbc_archive_decision; here we stub THAT to canned tokens and
@@ -164,6 +183,21 @@ eq "noprimitive → says cannot verify"      "true"  "$(has 'cannot verify archi
 _reset; run --task 42 --force
 eq "noprimitive + --force → archive PATCH sent"  "true" "$(has '"_action":"archive"' "$patched")"
 eq "noprimitive + --force → audited override"    "true" "$(has 'ARCHIVE-FORCE task=42' "$logtxt")"
+
+# gate-infra failure (e.g. python3 absent → the decision fetch exits non-zero). Under
+# --force the escape hatch must NOT be blocked by the very gate infra it bypasses: the
+# archive PATCH still goes AND the audited override line is STILL written (never a
+# silent forced archive). RED-when-reverted: without `|| decision=""` the set -e
+# assignment aborts cmd_archive so --force fails to archive at all.
+_kbc_archive_decision() { return 127; }
+_reset; run --task 42 --force
+eq "force + gate-infra failure → archive PATCH sent" "true" "$(has '"_action":"archive"' "$patched")"
+eq "force + gate-infra failure → audited override"   "true" "$(has 'ARCHIVE-FORCE task=42' "$logtxt")"
+eq "force + gate-infra failure → FORCED line names it" "true" "$(has 'infra could not run' "$err")"
+# Non-force stays FAIL-CLOSED: a gate-infra failure aborts before any PATCH (the
+# non-force assignment intentionally has no `|| …`, so set -e refuses).
+_reset; run --task 42
+eq "non-force + gate-infra failure → no archive PATCH" "" "$patched"
 
 # --dry-run stays offline: prints the PATCH, never calls the gate (a stub that would
 # fatal proves the gate is not reached under --dry-run).
