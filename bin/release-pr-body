@@ -48,9 +48,11 @@ VERSION_REGEX="$(cfg_opt '.version_regex')"
 REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"   # e.g. "DL-[0-9]+"; optional
 TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release}"
 # How a version maps to its git tag name, with {{version}} as the placeholder
-# (symmetric with the `artifacts` template expansion below). Default `v{{version}}`
-# preserves the historical `v`-prefixed exclude; a non-prefixed scheme sets e.g.
-# "{{version}}" (the date string IS the tag) or "release-{{version}}".
+# (symmetric with the `artifacts` template expansion below). Drives both the
+# baseline own-tag exclude AND the body's display header, so a non-v scheme names
+# the tag that actually exists in each place. Default `v{{version}}` preserves the
+# historical `v`-prefixed tag; a non-prefixed scheme sets e.g. "{{version}}" (the
+# date string IS the tag) or "release-{{version}}".
 # NB: default assigned on its own line for readability. (An earlier comment here
 # claimed `${VAR:-v{{version}}}` mis-parses on the `}}` — tested false in bash/sh;
 # the inline form works. The two-line form is kept as the clearer one.)
@@ -65,6 +67,12 @@ if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -
 fi
 [ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
 
+# The actual tag name for this version, per tag_format. Drives BOTH the baseline
+# own-tag exclude (below) AND the body's display header — computed unconditionally
+# here so an explicit --base (which skips the baseline block) still renders the
+# real tag. Under the default `v{{version}}` this is `v<version>` (back-compat).
+THIS_TAG="${TAG_FORMAT//\{\{version\}\}/$VERSION}"
+
 # Range: BASE = last release tag reachable on ORIGIN's main (excluding THIS
 # version's tag, in case it already exists — else a re-run after tagging returns
 # the current release as its own 'previous tag'), HEAD = the work about to ship
@@ -78,7 +86,6 @@ fi
 # from tag_format, not a hardcoded `v` prefix (preserves .NET / date tag schemes).
 HEAD_REF="${HEAD_REF:-$DEV_BRANCH}"
 if [ -z "$BASE" ]; then
-  THIS_TAG="${TAG_FORMAT//\{\{version\}\}/$VERSION}"
   git fetch --quiet --tags origin "$MAIN_BRANCH" \
     || die "cannot fetch origin/'$MAIN_BRANCH' — the release baseline is resolved against the remote (the local '$MAIN_BRANCH' ref is stale by design under the branch-off-'$DEV_BRANCH' release flow, so it is NOT a usable fallback); fix network/remote access or pass an explicit --base <tag>"
   MAIN_TIP="$(git rev-parse --verify -q "refs/remotes/origin/$MAIN_BRANCH" || git rev-parse --verify -q FETCH_HEAD)" \
@@ -173,7 +180,7 @@ COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')
 
 # --- the body --------------------------------------------------------------
 cat <<EOF
-**\`${DEV_BRANCH} → ${MAIN_BRANCH}\` release PR — v${VERSION}.** Bundles ${COUNT} commit(s) since ${BASE:-the start}.
+**\`${DEV_BRANCH} → ${MAIN_BRANCH}\` release PR — ${THIS_TAG}.** Bundles ${COUNT} commit(s) since ${BASE:-the start}.
 
 ## Highlights
 <!-- AUTHOR: write the 1–3 human-readable highlights of this release here. This is
