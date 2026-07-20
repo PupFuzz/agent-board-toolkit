@@ -4,54 +4,91 @@
 # state next to local branch/PR reality so any drift (a card that no longer
 # matches what git/PRs show) gets fixed BEFORE the session ends. Read-only — it
 # surfaces what to reconcile; the actual kbcard writes are the agent's call.
+#
+# The inverse-drift leg (In-Review cards tracking no open PR) is DELEGATED to the
+# shipped, framework-maintained `kanban-reconcile.py --detect` — the sanctioned
+# conforming implementation of the inverse-drift CONTRACT (the framework's
+# BOARD-SYNC.md § "The detect backstop contract (inverse-drift)"; see also
+# docs/BOARD-SYNC.md here). It reads the same boards from the coord config
+# (kanban.boards[]) and is READ-ONLY by construction, plus adds a forward
+# un-carded-open-PR leg the retired bash check never had.
 set -uo pipefail
 
-echo "═══ SESSION-CLOSE RECONCILIATION ═══"
-echo "Fix any board card below that doesn't match the git/PR reality, then close."
-echo
-"$HOME/.local/bin/board-snapshot" 2>/dev/null || echo "(board-snapshot unavailable)"
-echo
-echo "── Local branch reality (cross-check against the cards above) ──"
-for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard; do
-  wt="/home/kanban/$d"
-  [[ -e "$wt/.git" ]] || continue
-  b="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
-  dirty=""; [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]] && dirty=" (uncommitted changes)"
-  echo "• ${d}: branch=${b:-?}${dirty}"
-done
-echo
-echo "── Open PRs (each should have a card in In Review / Held) ──"
-for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do   # one entry per unique repo
-  wt="/home/kanban/$d"
-  [[ -e "$wt/.git" ]] || continue
-  ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
-      | sed "s#^#  ${d}: #" ) || true
-done
-echo
-echo "── In-Review cards with NO open PR (#3651 — the inverse check; each is drift) ──"
-# An In-Review card whose pr_number matches no open PR is stale (rogue move,
-# missed transition, or a PR that merged/closed without the card following).
-# Read-only: name the card; the reconcile write is the agent's call.
-flagged=0
-check_board() {   # <board-flag-or-empty> <label> <repo-dir>
-  local flag="$1" label="$2" repo="/home/kanban/$3" review_col="${4:-in_review}"
-  local open_prs cards
-  open_prs="$( (cd "$repo" 2>/dev/null && gh pr list --state open --limit 100 --json number --jq '.[].number') 2>/dev/null | sort -n | tr '\n' ' ' )" || open_prs=""
-  # shellcheck disable=SC2086
-  cards="$("$HOME/.local/bin/kbcard" $flag list --column "$review_col" 2>/dev/null)" || return 0
-  while IFS=$'\t' read -r id pr name; do
-    [[ -z "$id" ]] && continue
-    if [[ -z "$pr" || "$pr" == "null" ]]; then
-      echo "  ⚠ ${label} #${id} In Review with NO pr_number recorded — verify + reconcile: ${name}"
-      flagged=$((flagged+1))
-    elif [[ " $open_prs " != *" $pr "* ]]; then
-      echo "  ⚠ ${label} #${id} In Review but PR #${pr} is not open — verify + reconcile: ${name}"
-      flagged=$((flagged+1))
-    fi
-  done < <(printf '%s' "$cards" | jq -r '.[] | [.id, (.pr // "null"), .name] | @tsv' 2>/dev/null)
+# resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
+# WITHOUT a version-pinned path (a future plugin bump must not break this). Prints
+# the resolved path on stdout (rc 0), or rc 1 if none of the sources have it — the
+# caller then fails LOUD rather than silently skipping the drift check. Order:
+#   1. $KANBAN_RECONCILE_HOOK explicit operator override.
+#   2. The coord plugin version THIS session loaded (its dir is named on $PATH) —
+#      runs the exact version the rest of the session's coord tooling uses.
+#   3. The git-maintained marketplace clone (stable, version-less path).
+#   4. The newest cached plugin version carrying the hook (sort -V).
+resolve_reconcile_hook() {
+  local rel="hooks/bin/kanban-reconcile.py" c pdir
+  if [[ -n "${KANBAN_RECONCILE_HOOK:-}" ]]; then
+    [[ -f "$KANBAN_RECONCILE_HOOK" ]] && { printf '%s' "$KANBAN_RECONCILE_HOOK"; return 0; }
+    return 1
+  fi
+  pdir="$(printf '%s\n' "${PATH//:/$'\n'}" | grep -m1 '/agent-board-framework/coord/[^/]*/bin$' 2>/dev/null || true)"
+  if [[ -n "$pdir" ]]; then
+    c="${pdir%/bin}/$rel"
+    [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+  fi
+  c="$HOME/.claude/plugins/marketplaces/agent-board-framework/plugins/coord/$rel"
+  [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+  # A non-matching glob stays literal (no nullglob) → the trailing -f guard rejects it.
+  c="$(printf '%s\n' "$HOME"/.claude/plugins/cache/agent-board-framework/coord/*/"$rel" | sort -V | tail -1)"
+  [[ -n "$c" && -f "$c" ]] && { printf '%s' "$c"; return 0; }
+  return 1
 }
-check_board ""                 "kanban"  kanbanboard
-check_board "--board bridge"   "bridge"  agent-webhook-bridge-dev
-check_board "--board toolkit"  "toolkit" agent-board-toolkit
-[[ "$flagged" -eq 0 ]] && echo "  (none — every In-Review card tracks an open PR)"
-exit 0
+
+main() {
+  local d wt b dirty hook rc
+  echo "═══ SESSION-CLOSE RECONCILIATION ═══"
+  echo "Fix any board card below that doesn't match the git/PR reality, then close."
+  echo
+  "$HOME/.local/bin/board-snapshot" 2>/dev/null || echo "(board-snapshot unavailable)"
+  echo
+  echo "── Local branch reality (cross-check against the cards above) ──"
+  for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard; do
+    wt="/home/kanban/$d"
+    [[ -e "$wt/.git" ]] || continue
+    b="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
+    dirty=""; [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]] && dirty=" (uncommitted changes)"
+    echo "• ${d}: branch=${b:-?}${dirty}"
+  done
+  echo
+  echo "── Open PRs (each should have a card in In Review / Held) ──"
+  for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do   # one entry per unique repo
+    wt="/home/kanban/$d"
+    [[ -e "$wt/.git" ]] || continue
+    ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
+        | sed "s#^#  ${d}: #" ) || true
+  done
+  echo
+  echo "── Inverse-drift check — In-Review cards with NO open PR (#3651), plus un-carded open PRs ──"
+  echo "   (delegated to the shipped kanban-reconcile.py --detect; read-only)"
+  if ! hook="$(resolve_reconcile_hook)"; then
+    {
+      echo "  ⚠ board-session-close: could NOT locate the shipped kanban-reconcile.py --detect hook."
+      echo "    The inverse-drift check DID NOT RUN — do not close on an un-run drift check."
+      echo "    Searched: \$KANBAN_RECONCILE_HOOK, the coord plugin dir on \$PATH, the marketplace"
+      echo "    clone (~/.claude/plugins/marketplaces/agent-board-framework/plugins/coord/hooks/bin/),"
+      echo "    and the plugin cache (~/.claude/plugins/cache/agent-board-framework/coord/*/hooks/bin/)."
+      echo "    Fix: run /coord:update (or reinstall the coord plugin), or set KANBAN_RECONCILE_HOOK."
+    } >&2
+    return 1
+  fi
+  python3 "$hook" --detect 2>&1 | sed 's/^/  /'
+  rc=${PIPESTATUS[0]}
+  if [[ "$rc" -ne 0 ]]; then
+    echo "  ⚠ kanban-reconcile.py --detect exited $rc — the inverse-drift check may be INCOMPLETE" >&2
+    echo "    (config/API error above); investigate before treating the board as reconciled." >&2
+    return "$rc"
+  fi
+  return 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
