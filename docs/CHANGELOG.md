@@ -6,6 +6,9 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`release-pr-body` `tag_format` config knob + 2–4-segment version extraction** (card#4761, roundtable PupFuzz/agent-roundtable#39). Adopted from the agent-board-framework's `templates/release/release-pr-body`, which had evolved ahead of the toolkit copy: a new optional `.tag_format` key in `.release-pr.json` (default `v{{version}}`, preserving the historical behavior byte-for-byte) maps a version to its git tag name for non-`v`-prefixed schemes (`{{version}}`, `release-{{version}}`, …) — and the own-tag exclude in the baseline resolution now derives from it instead of a hardcoded `v` prefix, so a re-run after tagging under a non-`v` scheme no longer reports the current release as its own previous tag. Version-file extraction accepts 2–4 numeric segments (`[0-9]+(\.[0-9]+){1,3}`), so a .NET `Major.Minor.Build.Revision` version (`1.22.1.0`) is no longer silently truncated to `1.22.1`. Both behaviors gain red-when-reverted selftest coverage (verified: 5 checks fail on the pre-sync bin). **Ownership declared** (README): the toolkit owns both release bins (`release-pr-body` + `promote-released-cards`) — tests and release discipline live here; the framework's `templates/release/` copies are mirrors synced at toolkit tags, closing the fork this change reconciles.
+
 ## [0.19.0] - 2026-07-19
 
 **Minor — the swimlane write-side lands: `kbcard patch --swimlane` plus a defined-swimlane enumeration on every unresolved name.** 1 PR since v0.18.0 (#140, bundling cards #4714 + #4713, roundtable PupFuzz/agent-roundtable#101 + #100), plus a docs-only solo-orientation sync. Both features activate only on a board env that declares `KB_SWIMLANE_<id>=<name>` entries; `promote/action.yml` vendor surface unchanged.
