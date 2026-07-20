@@ -114,6 +114,100 @@ eq "delete --dry-run (no --hard) omits force-delete"  "false" "$(has 'force-dele
 out="$(cmd_delete --task 42 --hard --dry-run 2>/dev/null)"
 eq "delete --hard --dry-run includes force-delete"    "true"  "$(has 'force-delete.json' "$out")"
 
+# ---------------------------------------------------------------------------
+echo "== _kbc_archive_decision — null/absent .data fails closed before the board fetch =="
+# A 2xx whose .data is JSON null (trashed / permission-limited / edge card) yields
+# the literal "null" at rc 0 — the fetch `||` guard never fires. The bash guard must
+# short-circuit to a noprimitive token BEFORE fetch_board_cards / the shim run, so a
+# null card can never reach the shim as a source-less `{}` that would false-`ok`.
+# RED-when-reverted: without the guard the literal "null" card falls through to the
+# board fetch (sentinel set) → the unsafe path this guard closes.
+_saved_fbc="$(declare -f fetch_board_cards || true)"
+_FBC_SENTINEL="$(mktemp)"; : > "$_FBC_SENTINEL"
+kb_api() { printf '{"data":null}'; }
+fetch_board_cards() { echo REACHED > "$_FBC_SENTINEL"; printf '[]'; }
+_dec="$(_kbc_archive_decision 42)"
+eq "null .data → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
+eq "null .data → board fetch NOT reached"   ""            "$(cat "$_FBC_SENTINEL")"
+unset -f kb_api fetch_board_cards
+[[ -n "$_saved_fbc" ]] && eval "$_saved_fbc"
+rm -f "$_FBC_SENTINEL"; unset _saved_fbc _FBC_SENTINEL _dec
+
+# ---------------------------------------------------------------------------
+echo "== cmd_archive — may_archive gate wiring (roundtable #39) =="
+# The gate DECISION (fetch card + board, run the shim over the framework primitive)
+# is a separate seam _kbc_archive_decision; here we stub THAT to canned tokens and
+# assert cmd_archive's wiring: block → refuse + NO PATCH, --force → PATCH + audited
+# override line, ok → PATCH, noprimitive → fail-loud refuse. Network-free: a numeric
+# --task short-circuits resolve_task, and kb_api is stubbed to record the PATCH.
+# RED-when-reverted: delete the gate call and the block/noprimitive refusals archive.
+# kb_api records the PATCH body to a FILE (a $()-subshell side effect on a global
+# would not survive the command-substitution boundary the stderr capture needs).
+KB_LOG_FILE="$(mktemp)"; export KB_LOG_FILE
+_PATCH_FILE="$(mktemp)"; _ERR_FILE="$(mktemp)"
+trap 'rm -f "$KB_LOG_FILE" "$_PATCH_FILE" "$_ERR_FILE"' EXIT
+kb_api() { case "$2" in */tasks/*) printf '%s' "$3" > "$_PATCH_FILE" ;; esac; printf '{"data":{"id":42}}'; }
+_reset() { : > "$_PATCH_FILE"; : > "$KB_LOG_FILE"; }
+# run <args...> — cmd_archive at TOP LEVEL (no $() around it) so rc + the file side
+# effects are the parent's; sets rc/err/patched/logtxt for the assertions.
+run() { rc=0; cmd_archive "$@" >/dev/null 2>"$_ERR_FILE" || rc=$?;
+        err="$(cat "$_ERR_FILE")"; patched="$(cat "$_PATCH_FILE")"; logtxt="$(cat "$KB_LOG_FILE")"; }
+
+# blocked, no --force → refuse (rc 1), NO archive PATCH sent, drift-vocab line.
+_kbc_archive_decision() { printf 'blocked\tsource live (pr o/r#5) and no surviving twin — archive blocked'; }
+_reset; run --task 42
+eq "blocked → rc 1"                         "1"    "$rc"
+eq "blocked → no archive PATCH sent"        ""     "$patched"
+eq "blocked → '⚠ archive withheld' line"    "true" "$(has '⚠ archive withheld: card #42' "$err")"
+eq "blocked → names --force override"        "true" "$(has 'pass --force to override' "$err")"
+
+# blocked + --force → archive PATCH IS sent + audited FORCED line on stderr + log.
+_reset; run --task 42 --force
+eq "force → archive PATCH sent"             "true" "$(has '"_action":"archive"' "$patched")"
+eq "force → audited FORCED line on stderr"  "true" "$(has '⚠ archive FORCED past live-source gate: card #42' "$err")"
+eq "force → override written to durable log" "true" "$(has 'ARCHIVE-FORCE task=42' "$logtxt")"
+
+# ok (gate cleared) → archive PATCH sent, no withheld/forced noise.
+_kbc_archive_decision() { printf 'ok\tall backing sources terminal or twin-covered'; }
+_reset; run --task 42
+eq "ok → archive PATCH sent"                "true"  "$(has '"_action":"archive"' "$patched")"
+eq "ok → no FORCED audit line"              "false" "$(has 'FORCED past live-source gate' "$err")"
+eq "ok → clean run, no override in log"     "false" "$(has 'ARCHIVE-FORCE' "$logtxt")"
+
+# noprimitive (gate unverifiable) → fail LOUD refuse, NO PATCH; --force still archives.
+_kbc_archive_decision() { printf 'noprimitive\tmay_archive primitive not found'; }
+_reset; run --task 42
+eq "noprimitive → rc 1 (fail-loud refuse)" "1"     "$rc"
+eq "noprimitive → no archive PATCH sent"   ""      "$patched"
+eq "noprimitive → says cannot verify"      "true"  "$(has 'cannot verify archive safety' "$err")"
+_reset; run --task 42 --force
+eq "noprimitive + --force → archive PATCH sent"  "true" "$(has '"_action":"archive"' "$patched")"
+eq "noprimitive + --force → audited override"    "true" "$(has 'ARCHIVE-FORCE task=42' "$logtxt")"
+
+# gate-infra failure (e.g. python3 absent → the decision fetch exits non-zero). Under
+# --force the escape hatch must NOT be blocked by the very gate infra it bypasses: the
+# archive PATCH still goes AND the audited override line is STILL written (never a
+# silent forced archive). RED-when-reverted: without `|| decision=""` the set -e
+# assignment aborts cmd_archive so --force fails to archive at all.
+_kbc_archive_decision() { return 127; }
+_reset; run --task 42 --force
+eq "force + gate-infra failure → archive PATCH sent" "true" "$(has '"_action":"archive"' "$patched")"
+eq "force + gate-infra failure → audited override"   "true" "$(has 'ARCHIVE-FORCE task=42' "$logtxt")"
+eq "force + gate-infra failure → FORCED line names it" "true" "$(has 'infra could not run' "$err")"
+# Non-force stays FAIL-CLOSED: a gate-infra failure aborts before any PATCH (the
+# non-force assignment intentionally has no `|| …`, so set -e refuses).
+_reset; run --task 42
+eq "non-force + gate-infra failure → no archive PATCH" "" "$patched"
+
+# --dry-run stays offline: prints the PATCH, never calls the gate (a stub that would
+# fatal proves the gate is not reached under --dry-run).
+_kbc_archive_decision() { echo "GATE MUST NOT RUN UNDER DRY-RUN" >&2; return 99; }
+out="$(cmd_archive --task 42 --dry-run 2>/dev/null)"
+eq "dry-run still prints the archive PATCH" "true" "$(has '"_action":"archive"' "$out")"
+unset -f _kbc_archive_decision kb_api _reset run
+rm -f "$KB_LOG_FILE" "$_PATCH_FILE" "$_ERR_FILE" 2>/dev/null || true
+unset KB_LOG_FILE _PATCH_FILE _ERR_FILE; trap - EXIT
+
 # THE safety guard: --hard without --yes in a non-interactive shell refuses UP
 # FRONT (rc 2, before any soft-delete) — never leaves the card half-trashed.
 # </dev/null forces a non-TTY fd 0 so the check is deterministic in any CI shell.
