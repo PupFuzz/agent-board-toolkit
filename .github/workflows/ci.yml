@@ -54,6 +54,7 @@ jobs:
           - kbc-may-archive-selftest
           - kbcard-selftest
           - next-dl-selftest
+          - no-task-wrapper-selftest
           - promote-pagination-selftest
           - release-pr-body-selftest
           - runtime-check-selftest
