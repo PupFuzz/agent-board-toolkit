@@ -8,10 +8,10 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 
 | Tool | Role |
 |---|---|
-| `bin/kbcard` | board CRUD CLI: `create-card` / `move` / `patch` / `list` / `show` / `link` / `archive` / `delete` (`--hard` releases the DL ref) |
+| `bin/kbcard` | board CRUD CLI: `create-card` / `move` / `patch` / `list` / `show` / `link` / `archive` (gated: refuses to archive a card whose backing PR/issue is still live-and-untwinned unless `--force`) / `delete` (`--hard` releases the DL ref) |
 | `bin/promote-released-cards` | move a release's shipped cards to the "released" stage (run by release CI) |
 | `promote/action.yml` | SHA-pinned composite-action wrapper around `bin/promote-released-cards` for GitHub-Actions consumers (INSTALL.md §6a) |
-| `bin/release-pr-body` | generate the release-PR body/scaffold from repo config |
+| `bin/release-pr-body` | generate the release-PR body/scaffold from repo config. **This copy is authoritative** — same as `promote-released-cards`: the toolkit owns both release bins (tests + release discipline live here); the agent-board-framework's `templates/release/` copies are mirrors synced at toolkit tags. Framework-side needs land as toolkit PRs first, never as a fork of the mirror |
 | `bin/board-snapshot` | session-start board snapshot |
 | `bin/board-session-close` | session-close board↔git reconcile |
 | `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |

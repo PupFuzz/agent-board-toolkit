@@ -99,9 +99,9 @@ body="$(jq -n \
     --argjson stage "$STAGE" \
     --argjson swimlane "$SWIMLANE" \
     --argjson sentinel "$SENTINEL" \
-    '{task: {board_id: $board, workflow_stage_id: $stage, swimlane_id: $swimlane,
-             name: "[A1-verify] dl_number throwaway — delete me",
-             payload: {dl_number: $sentinel}}}')"
+    '{board_id: $board, workflow_stage_id: $stage, swimlane_id: $swimlane,
+      name: "[A1-verify] dl_number throwaway — delete me",
+      payload: {dl_number: $sentinel}}')"
 create="$(kb_api POST "/tasks.json" "$body")" || {
     # kb_api's KB_HTTP global doesn't cross this $(), so don't claim a code we can't see.
     echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
@@ -116,7 +116,7 @@ echo "  throwaway card $TID created with dl_number=$SENTINEL"
 
 # The two throwaway-teardown request bodies, single-sourced: the EXIT trap and the
 # explicit success path below issue the identical clear-dl-then-delete pair.
-CLEAR_DL_BODY='{"task":{"payload":{"dl_number":null}}}'
+CLEAR_DL_BODY='{"payload":{"dl_number":null}}'
 DELETE_BODY='{"_action":"delete"}'
 
 # --- cleanup trap: a leaked sentinel poisons the minter, so always try to ---

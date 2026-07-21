@@ -94,6 +94,9 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-pr.json
 # edit: set promote.{board_id, released_stage_id, api_base}, ref_token_regex (e.g. "DL-[0-9]+"),
 # version_file/version_regex, dev/main branch names, and the artifacts checklist.
+# tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
+# set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
+# accepts 2-4 numeric segments (SemVer and .NET Major.Minor.Build.Revision alike).
 jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove the "_comment" line if you like
 ```
 

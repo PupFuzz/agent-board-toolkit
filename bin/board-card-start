@@ -402,7 +402,7 @@ if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
         if [ -n "$want" ]; then
-            _bcs_patch "$cid" "$(jq -nc --arg dl "$want" '{task: {payload: {dl_number: $dl}}}')" \
+            _bcs_patch "$cid" "$(jq -nc --arg dl "$want" '{payload: {dl_number: $dl}}')" \
                 "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" \
                 "card #$cid dl_number stamp (=$want) failed"
         fi
@@ -430,7 +430,7 @@ case "$cur" in
     *) exit 0 ;;
 esac
 
-_bcs_patch "$cid" "{\"task\":{\"workflow_stage_id\":$inprog}}" \
+_bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" \
     "board-card-start: card #$cid ($label) → In Progress" \
     "card #$cid ($label) → In Progress move failed"
 exit 0

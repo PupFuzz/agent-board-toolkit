@@ -3,6 +3,9 @@
 *-token
 *.env
 .kanban-*
+# Python bytecode from the bin/*.py shims + their CI py_compile step.
+__pycache__/
+*.pyc
 # .release-pr.json IS committed (non-secret project config: board id + public API
 # base + artifact list) — same as agent-webhook-bridge and kanban-board. It drives
 # bin/release-pr-body + bin/promote-released-cards and must be in-repo for the

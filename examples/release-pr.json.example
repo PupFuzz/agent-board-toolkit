@@ -5,6 +5,7 @@
   "main_branch": "main",
   "version_file": "config/app.php",
   "version_regex": "'version' => '[0-9.]+'",
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "artifacts": [
     "config/app.php → {{version}}",
