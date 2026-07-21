@@ -430,7 +430,7 @@ case "$cur" in
     *) exit 0 ;;
 esac
 
-_bcs_patch "$cid" "{\"task\":{\"workflow_stage_id\":$inprog}}" \
+_bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" \
     "board-card-start: card #$cid ($label) → In Progress" \
     "card #$cid ($label) → In Progress move failed"
 exit 0
