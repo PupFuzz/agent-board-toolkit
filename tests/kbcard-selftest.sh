@@ -226,14 +226,14 @@ kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { cat; }
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
 
-# has_tag <body-json> <tag> → membership of the created card's .task.tags array.
-has_tag() { jq -e --arg t "$2" '((.task.tags // []) | index($t)) != null' <<<"$1" >/dev/null && echo true || echo false; }
+# has_tag <body-json> <tag> → membership of the created card's flat .tags array.
+has_tag() { jq -e --arg t "$2" '((.tags // []) | index($t)) != null' <<<"$1" >/dev/null && echo true || echo false; }
 
 # Native-type board: --triaged adds `triaged`; the native id is used, no type: tag.
 export KB_TYPE_TASK=21; unset KB_TYPING_MODE 2>/dev/null || true
 b="$(cmd_create_card --type task --name x --triaged 2>/dev/null)"
 eq "native + --triaged → triaged tag present" "true"  "$(has_tag "$b" triaged)"
-eq "native + --triaged → native card_type_id" "21"    "$(jq -c '.task.card_type_id' <<<"$b")"
+eq "native + --triaged → native card_type_id" "21"    "$(jq -c '.card_type_id' <<<"$b")"
 eq "native + --triaged → no type: tag"        "false" "$(has_tag "$b" 'type:task')"
 
 # Negative control: WITHOUT --triaged, no triaged tag (proves the flag is load-bearing).
@@ -390,35 +390,35 @@ eq "malformed --dl → rc 2"       "2" "$rc"
 eq "malformed --dl → no payload" ""  "$out"
 
 # Integration: create-card and patch, given the SAME dl/pr/pr_url/version, must send
-# byte-identical task.payload — the whole point of sharing one assembler. Stub the
-# API to echo the request body; assert the .task.payload objects match.
+# byte-identical payload — the whole point of sharing one assembler. Stub the
+# API to echo the request body; assert the flat .payload objects match.
 kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { cat; }
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21 KB_CF_VERSION_TARGET=99
 unset KB_TYPING_MODE 2>/dev/null || true
-cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.task.payload')"
-ppay="$(cmd_patch --task 99 --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.task.payload')"
+cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
+ppay="$(cmd_patch --task 99 --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
 eq "create + patch send identical payload" "$cpay" "$ppay"
 eq "and it is the expected object" \
    '{"dl_number":"DL-0007","pr_number":42,"pr_url":"https://github.com/o/r/pull/0","version_target":"v1.0.0"}' "$cpay"
 
 # --issue / --issue-url wired through create-card AND patch: issue_number number-typed, and a
 # card co-stamped with --issue + --pr carries BOTH lifecycle pairs, independently.
-ci="$(cmd_create_card --type task --name x --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.task.payload')"
+ci="$(cmd_create_card --type task --name x --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.payload')"
 eq "create-card --issue → number-typed issue_number + issue_url" \
    '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' "$ci"
-pi="$(cmd_patch --task 99 --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.task.payload')"
+pi="$(cmd_patch --task 99 --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.payload')"
 eq "patch --issue sends the identical issue payload" "$ci" "$pi"
-co="$(cmd_create_card --type task --name x --issue 300 --pr 305 2>/dev/null | jq -Sc '.task.payload')"
+co="$(cmd_create_card --type task --name x --issue 300 --pr 305 2>/dev/null | jq -Sc '.payload')"
 eq "create-card --issue + --pr co-stamp both keys, independent" \
    '{"issue_number":300,"pr_number":305}' "$co"
 
 # card-4714: patch --swimlane writes the card's TOP-LEVEL swimlane_id (not a payload
 # key), resolving a name through the SAME swimlane_id() helper `list` uses. A numeric
 # --task short-circuits resolve_task (no search call) and kb_api is stubbed to echo the
-# request body, so this is network-free. Assert on .task.swimlane_id.
+# request body, so this is network-free. Assert on the flat .swimlane_id.
 export KB_SWIMLANE_1=device KB_SWIMLANE_2=backend
-sp() { cmd_patch --task 99 "$@" 2>/dev/null | jq -c '.task'; }
+sp() { cmd_patch --task 99 "$@" 2>/dev/null | jq -c '.'; }
 eq "patch --swimlane by name → resolved id"        "2"    "$(sp --swimlane backend | jq -c '.swimlane_id')"
 eq "patch --swimlane by numeric id → passthrough"  "5"    "$(sp --swimlane 5 | jq -c '.swimlane_id')"
 # none/0 unassign: the key must be PRESENT and null (an EXPLICIT null clears the column

@@ -283,7 +283,8 @@ cmd_create_card() {
         return 2
     fi
 
-    # Build inner task object; POST body wraps it in {task: ...} per V3 API contract.
+    # Build the task object; the v3 write API takes task fields FLAT at the top level
+    # (kanban DL-219 dropped the {task: ...} body wrapper), so the object IS the POST body.
     local body
     body="$(jq -n \
         --arg name "$name" \
@@ -299,8 +300,7 @@ cmd_create_card() {
          + (if $desc  != "" then {description: $desc} else {} end)
          + (if $tags  != "" then {tags: ($tags | split(","))} else {} end)
          + (if $ext_id != "" then {external_id: ($ext_id | tonumber)} else {} end)
-         + (if ($payload | length) > 0 then {payload: $payload} else {} end)
-         | {task: .}')"
+         + (if ($payload | length) > 0 then {payload: $payload} else {} end)')"
 
     kb_api POST "/tasks.json" "$body" | _kbc_write_echo
 }
@@ -318,7 +318,7 @@ cmd_move() {
     local task stage body
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
-    body="$(jq -n --argjson stage "$stage" '{task: {workflow_stage_id: $stage}}')"
+    body="$(jq -n --argjson stage "$stage" '{workflow_stage_id: $stage}')"
     kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id}'
 }
 
@@ -391,7 +391,7 @@ cmd_patch() {
         new_tags="$(jq -n --argjson cur "$cur_tags" '($cur + ["triaged"]) | unique')"
         inner="$(jq -n --argjson cur "$inner" --argjson tags "$new_tags" '$cur + {tags: $tags}')"
     fi
-    body="$(jq -n --argjson t "$inner" '{task: $t}')"
+    body="$inner"
     # Surface swimlane_id in the write echo only when it was set, so a --swimlane patch
     # confirms the resulting lane (null after an unassign) — parity with the echo always
     # showing workflow_stage_id; other patches keep their existing echo shape.

@@ -118,7 +118,7 @@ fi
 ok=0
 for t in "${targets_json[@]}"; do
     id="$(printf '%s' "$t" | jq -r '.id')"
-    body="$(printf '%s' "$t" | jq -c '{task: {tags: .newtags}}')"
+    body="$(printf '%s' "$t" | jq -c '{tags: .newtags}')"
     if kb_api PATCH "/tasks/$id.json" "$body" >/dev/null; then
         ok=$((ok + 1))
     else
