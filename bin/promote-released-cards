@@ -272,7 +272,7 @@ while IFS= read -r row; do
   ref="$(printf '%s' "$row" | jq -r '.ref')"
   if [ "$cur" = "$STAGE" ]; then echo "  = $ref (#$id): already released"; skipped=$((skipped + 1)); continue; fi
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
-  if api -X PATCH -H "Content-Type: application/json" -d "{\"task\":{\"workflow_stage_id\":$STAGE}}" "$API/tasks/$id.json" >/dev/null; then
+  if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
     echo "  ✓ $ref (#$id): moved $cur → $STAGE"; moved=$((moved + 1))
   else
     echo "  ✗ $ref (#$id): move failed (left in place)" >&2; failed=$((failed + 1))
