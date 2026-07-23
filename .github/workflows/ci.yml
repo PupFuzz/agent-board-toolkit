@@ -56,6 +56,7 @@ jobs:
           - next-dl-selftest
           - no-task-wrapper-selftest
           - promote-pagination-selftest
+          - promote-stage-guard-selftest
           - release-pr-body-selftest
           - runtime-check-selftest
     steps:
@@ -74,6 +75,7 @@ jobs:
           test -x bin/promote-released-cards
           # the flags the wrapper passes must exist in the script's CLI parser
           grep -q -- '--dls)' bin/promote-released-cards
+          grep -q -- '--shipped-stages)' bin/promote-released-cards
           grep -q -- '--dry-run)' bin/promote-released-cards
           # extract the embedded run block and shellcheck it under the runner's flags
           python3 - <<'PY'

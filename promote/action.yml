@@ -35,6 +35,17 @@ inputs:
     description: 'DLs to promote (comma-separated). Blank = derive from the git range.'
     required: false
     default: ''
+  shipped-stage-ids:
+    description: >-
+      Optional comma-separated numeric workflow_stage_ids that count as a
+      "Shipped-class" source stage. When set, a DL/PR-matched card whose CURRENT
+      stage is NOT in this list is SKIPPED (with a log line) instead of moved —
+      promotion only ever moves a card from a Shipped-class stage to Released, so
+      it never resurrects a declined/backlog card carrying a stale or recycled
+      DL/PR stamp. Blank (default) = no source-stage guard, byte-identical prior
+      behavior — consumers opt in on their own windows.
+    required: false
+    default: ''
   dry-run:
     description: "'true' = report only, move nothing."
     required: false
@@ -50,6 +61,7 @@ runs:
         KANBAN_EXPECTED_HOST: ${{ inputs.expected-host }}
         API_BASE_IN: ${{ inputs.api-base }}
         INPUT_DLS: ${{ inputs.dls }}
+        SHIPPED_STAGE_IDS: ${{ inputs.shipped-stage-ids }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         if [ -n "$API_BASE_IN" ]; then
@@ -58,5 +70,6 @@ runs:
         fi
         args=()
         [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
+        [ -n "$SHIPPED_STAGE_IDS" ] && args+=(--shipped-stages "$SHIPPED_STAGE_IDS")
         [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
         "$GITHUB_ACTION_PATH/../bin/promote-released-cards" "${args[@]}"

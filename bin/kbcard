@@ -14,8 +14,16 @@
 #                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
-#   kbcard move --task ID-OR-EXT --column COLUMN
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs]
+#     Moving a card to wont_do (decline) CLEARS its correlation stamps
+#     (payload.dl_number / pr_number / pr_url) in the SAME PATCH, so a stale stamp
+#     can't later match a recycled DL/PR and resurrect the card in a release-promote
+#     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
+#     target column is unaffected.
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged] [--keep-refs]
+#     --column wont_do declines: same stamp-clearing as `move` (see above) — the
+#     correlation stamps are nulled unless --keep-refs; a ref flag passed IN THIS
+#     CALL wins over the null (explicit beats hygiene).
 #     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
 #     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
 #     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
@@ -203,6 +211,21 @@ resolve_task() {
 # needn't pass an empty placeholder for it. Everything rides the SAME coercion path — a value
 # must flow through this single merge rather than be appended by the caller, which would
 # re-duplicate the merge jq this helper exists to unify.
+# Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
+# dl_number/pr_number left on a declined card can later match a recycled DL/PR and
+# resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
+# an explicit JSON null DELETES a key, an omitted key is untouched. Merge order makes an
+# explicitly-passed ref flag win over the null (right-hand precedence), so a caller who
+# stamps a ref while declining keeps what they explicitly set. Shared by BOTH decline
+# call-sites (move + patch --column wont_do) so the hygiene invariant has one owner.
+_kbc_decline_nulls() {
+    # NB: not `${1:-{}}` — bash ends the expansion at the FIRST `}`, mangling a
+    # supplied argument into `<arg>}` (invalid JSON).
+    local p="${1:-}"
+    [[ -n "$p" ]] || p='{}'
+    jq -n --argjson p "$p" '{dl_number: null, pr_number: null, pr_url: null} + $p'
+}
+
 _kbc_build_payload() {
     local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
     local payload_args=()
@@ -306,11 +329,12 @@ cmd_create_card() {
 }
 
 cmd_move() {
-    local task_ref="" column=""
+    local task_ref="" column="" keep_refs=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
             --column) column="$2"; shift 2 ;;
+            --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -318,12 +342,21 @@ cmd_move() {
     local task stage body
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
-    body="$(jq -n --argjson stage "$stage" '{workflow_stage_id: $stage}')"
+    # Decline hygiene lives in _kbc_decline_nulls (shared with patch --column wont_do).
+    # --keep-refs opts out. Only wont_do clears — no other move touches the payload.
+    if [[ "$column" == "wont_do" && -z "$keep_refs" ]]; then
+        body="$(jq -n --argjson stage "$stage" --argjson p "$(_kbc_decline_nulls '{}')" \
+            '{workflow_stage_id: $stage, payload: $p}')"
+        echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
+    else
+        body="$(jq -n --argjson stage "$stage" '{workflow_stage_id: $stage}')"
+        [[ "$column" == "wont_do" ]] && echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
+    fi
     kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id}'
 }
 
 cmd_patch() {
-    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane=""
+    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane="" keep_refs=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task_ref="$2"; shift 2 ;;
@@ -337,6 +370,7 @@ cmd_patch() {
             --description) desc="$2"; shift 2 ;;
             --dl) dl="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
+            --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -350,6 +384,15 @@ cmd_patch() {
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
     local payload_json
     payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url")" || return 2
+
+    # patch --column wont_do is the SECOND decline call-site — same hygiene as move
+    # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win.
+    if [[ "$column" == "wont_do" && -z "$keep_refs" ]]; then
+        payload_json="$(_kbc_decline_nulls "$payload_json")"
+        echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
+    elif [[ "$column" == "wont_do" ]]; then
+        echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
+    fi
 
     local body inner='{}'
     # Send only the keys we're changing: the kanban v3 API MERGES task.payload

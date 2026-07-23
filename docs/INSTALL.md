@@ -129,6 +129,7 @@ Consume `promote-released-cards` via the [`promote/`](../promote/action.yml) com
     expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
     api-base: ${{ vars.KANBAN_API_BASE }}   # injected into the checked-out .release-pr.json when the committed value is a placeholder
     dls: ${{ github.event.inputs.dls }}         # optional workflow_dispatch passthrough
+    shipped-stage-ids: ${{ vars.KANBAN_SHIPPED_STAGE_IDS }} # optional: comma-separated Shipped-class stage ids — a matched card NOT in one is skipped, so a stale/recycled DL stamp on a declined card is never promoted. Blank = no guard (prior behavior)
     dry-run: ${{ github.event.inputs.dry_run }} # optional workflow_dispatch passthrough
 ```
 
