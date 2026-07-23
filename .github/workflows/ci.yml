@@ -46,6 +46,7 @@ jobs:
       matrix:
         test:
           - adopt-to-dl-selftest
+          - agent-dispatch-card-start-selftest
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
