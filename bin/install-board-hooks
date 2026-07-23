@@ -13,6 +13,10 @@
 # NON-symlink hook (a repo's own hook is never lost). Refuses a hooksPath that resolves inside
 # the tracked work tree (a machine-specific absolute symlink there would show as a work-tree
 # change and break on other clones) — it guides the operator instead of polluting the tree.
+#
+# SCOPE: this installer handles GIT hooks only. The Claude Code agent-dispatch card-start hook
+# (hooks/agent-dispatch-card-start) is a settings.json PreToolUse hook, NOT a git hook — it is
+# registered by hand (operator-owned config; see docs/HOOKS.md), never written here.
 set -euo pipefail
 
 # _ibh_hooks_dir <repo-root> <core.hooksPath-value>: echo the directory the post-checkout hook

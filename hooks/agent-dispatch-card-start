@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# agent-board-toolkit agent-dispatch-card-start hook.
+#
+# A Claude Code PreToolUse hook for the Agent (subagent-dispatch) tool. It moves a
+# kanban card to "In Progress" the moment a subagent build is dispatched — closing the
+# dispatch -> branch-creation latency window that hooks/post-checkout (-> board-card-start)
+# only closes at branch creation. It is a peer of that hook, not a replacement.
+#
+# MARKER CONVENTION (load-bearing, opt-in per dispatch): this hook acts ONLY on an
+# explicit marker line in the dispatch prompt, anchored at line start:
+#
+#     BOARD-CARD: <board-key>#<card-id>          e.g.  BOARD-CARD: toolkit#4945
+#
+# A bare card-number regex is deliberately NOT used — review/report dispatches routinely
+# mention many card ids in prose (e.g. "card#1234"), so a number scan would move the wrong
+# cards. The marker is deterministic and must be added on purpose. Multiple marker lines are
+# each acted on (exact duplicates deduped). A marker appearing mid-line (not at line start)
+# is ignored.
+#
+# MECHANICS: Claude Code delivers the PreToolUse event as a JSON object on STDIN (never env
+# vars). For an Agent-tool dispatch the prompt is at `.tool_input.prompt`. This hook parses
+# stdin, scans the prompt for markers, and for each resolved marker invokes the existing
+# primitive `kbcard --board <key> move --task <id> --column in_progress` (kbcard is on PATH;
+# it owns board-env/token resolution — the hook does not hand-roll curl).
+#
+# FAIL-SOFT, ALWAYS: the hook must never block or materially delay a dispatch. It exits 0 on
+# EVERY path (unparseable stdin, no marker, unknown board key, kbcard missing, API error),
+# bounds each move with `timeout`, and writes a one-line diagnostic to stderr on failure
+# (stderr is visible in hook debug and never fatal). Mirrors hooks/post-checkout's posture.
+#
+# REGISTRATION is a manual operator step — a PreToolUse matcher "Agent" entry in Claude Code
+# settings.json (see docs/HOOKS.md). It is NOT installed by bin/install-board-hooks (that
+# symlinks git hooks, not Claude Code settings).
+
+# No `set -e`: every exit path is controlled explicitly so a failure can never escape as a
+# non-zero status that stalls the dispatch. The final line is `exit 0`.
+
+KBADS_TIMEOUT="${KBADS_TIMEOUT:-10}"   # per-move wall-clock bound (seconds)
+
+_kbads_diag() { printf 'agent-dispatch-card-start: %s\n' "$*" >&2; }
+
+# Read the whole event object from stdin.
+input="$(cat)"
+
+# Extract the dispatch prompt. jq is a repo dependency; a parse failure (malformed JSON)
+# makes jq exit non-zero -> we diagnose and exit 0 (never act on garbage).
+if ! prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null)"; then
+    _kbads_diag "unparseable hook stdin JSON; skipping"
+    exit 0
+fi
+# Valid JSON with no prompt (wrong event, empty prompt) -> nothing to do.
+[ -n "$prompt" ] || exit 0
+
+seen=" "   # space-delimited set of already-processed "<key>#<id>" tokens
+while IFS= read -r line; do
+    # Anchored at line start (leading indentation is tolerated; any non-space prefix is not).
+    if [[ "$line" =~ ^[[:space:]]*BOARD-CARD:[[:space:]]*([A-Za-z0-9_-]+)#([0-9]+) ]]; then
+        key="${BASH_REMATCH[1]}"
+        id="${BASH_REMATCH[2]}"
+        token="$key#$id"
+        # Dedupe exact repeats.
+        case "$seen" in *" $token "*) continue ;; esac
+        seen="$seen$token "
+
+        env_file="$HOME/.kanban-$key-board.env"
+        if [ ! -f "$env_file" ]; then
+            _kbads_diag "no board env for key '$key' ($env_file); skipping card $id"
+            continue
+        fi
+        if ! command -v kbcard >/dev/null 2>&1; then
+            _kbads_diag "kbcard not on PATH; skipping $token"
+            continue
+        fi
+        if ! timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress >/dev/null 2>&1; then
+            _kbads_diag "kbcard move failed for $token (fail-soft; dispatch unaffected)"
+        fi
+    fi
+done <<< "$prompt"
+
+exit 0

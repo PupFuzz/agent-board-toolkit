@@ -33,6 +33,83 @@ checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug').
 
 The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md).
 
+## Agent-dispatch card-start (`hooks/agent-dispatch-card-start`, card-4945)
+
+`post-checkout` only fires when a **branch** is created — but when work is dispatched to a
+subagent, the card should move to In Progress at **dispatch time**, not at the later
+branch-creation. `hooks/agent-dispatch-card-start` closes that latency window: it is a **Claude
+Code `PreToolUse` hook for the `Agent` (subagent-dispatch) tool** that moves a card the moment a
+build is dispatched. It is a peer of `post-checkout`, not a replacement — either can fire first;
+`kbcard move` is idempotent, so a second move of an already-In-Progress card is a no-op.
+
+### Marker convention (load-bearing — opt-in per dispatch)
+
+The hook acts **only** on an explicit marker line in the dispatch prompt, anchored at line start:
+
+```
+BOARD-CARD: <board-key>#<card-id>
+```
+
+e.g. `BOARD-CARD: toolkit#4945`. A **bare card-number scan is deliberately NOT used** — review
+and report dispatches routinely mention many card ids in prose (`card#1234`, `#91`), so a number
+scan would move the wrong cards. The marker must be added on purpose, which makes the behavior
+deterministic. Multiple marker lines are each acted on (exact duplicates deduped); a marker
+appearing **mid-line** (any non-whitespace before it) is ignored. Leading indentation is
+tolerated (the marker may sit inside an indented block). Any line-start occurrence of the marker
+fires, including inside quoted or example text in a prompt (worst case: a benign idempotent
+In-Progress move) — so avoid quoting live marker lines at column 0 in dispatch prompts.
+`<board-key>` is the same key you pass to `kbcard --board <key>` (it resolves `~/.kanban-<key>-board.env`).
+
+### Mechanics
+
+Claude Code delivers the event as a **JSON object on stdin** (never env vars — the event name is
+`hook_event_name` in the stdin JSON). For an `Agent`-tool dispatch the prompt is at
+`.tool_input.prompt`. The hook parses stdin, scans the prompt for markers, and for each resolved
+marker invokes the existing primitive:
+
+```
+kbcard --board <key> move --task <card-id> --column in_progress
+```
+
+`kbcard` (on PATH at `~/.local/bin`) owns board-env/token resolution — the hook does not hand-roll
+`curl`.
+
+### Fail-soft, always
+
+The hook must never block or materially delay a dispatch. It **exits 0 on every path**
+(unparseable stdin, no marker, unknown board key, `kbcard` missing, API error), bounds each move
+with `timeout` (~10s; `KBADS_TIMEOUT` overrides), and writes a one-line diagnostic to **stderr** on
+failure (visible in hook debug, never fatal) — mirroring `post-checkout`'s posture.
+
+### Registration is a MANUAL operator step (not auto-installed)
+
+`bin/install-board-hooks` symlinks **git** hooks; a Claude Code hook lives in Claude Code
+**settings.json**, which the installer deliberately does **not** touch (settings.json is
+operator-owned config, not a repo-tracked git hook). Register it by hand — add a `PreToolUse`
+matcher `"Agent"` entry that runs the script (adjust the absolute path to your toolkit checkout):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/agent-board-toolkit/hooks/agent-dispatch-card-start"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Place it in your user-level `~/.claude/settings.json` (applies to every project) or a project's
+`.claude/settings.json`. No other setup is needed — the hook self-resolves boards from your
+existing `~/.kanban-<key>-board.env` files.
+
 ## Correlation naming — one token drives the whole lifecycle
 
 Two independent movers advance a card, and **they read different surfaces with different grammars** — so a single naming habit is what makes the *whole* lifecycle auto-move with **zero manual `dl_number` stamping**:
