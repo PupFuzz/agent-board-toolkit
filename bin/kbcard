@@ -51,6 +51,26 @@
 #     RELEASES dl_number; two-step soft-then-force). --hard prompts to confirm unless
 #     --yes, and refuses without --yes in a non-interactive shell. --dry-run prints
 #     the exact API calls without executing them.
+#   kbcard field list
+#     READ: list the board's custom fields (id/key/label/type); enum & multi_select
+#     fields include their full {value,label} option sets. The board index
+#     (GET /boards/<id>/custom_fields.json) is the ONLY field read surface — there
+#     is no per-field GET (that route is PATCH/DELETE only). Board is selected with
+#     the global --board flag: `kbcard --board <key> field list`.
+#   kbcard field set-options --field <name|id> --options a,b,c
+#     WRITE: an idempotent converge-to-set on an enum/multi_select field's options —
+#     after the call the field's option set equals EXACTLY the given comma list (in
+#     that order). A second call with the same list detects no drift and SKIPS the
+#     PATCH (no-op, says so on stderr). Reconciles by value; labels default to the
+#     value (labels for retained values are not preserved across a rewrite). Refuses
+#     a non-enum/multi_select field, empty/duplicate values, and an unresolved
+#     --field (enumerating the board's defined fields).
+#     OBSERVED option-removal semantic (empirically pinned on the sandbox instance,
+#     board 1162): removing an option is a DEFINITION-ONLY change — a card still
+#     holding a removed value KEEPS it verbatim in tasks.payload (orphaned: no longer
+#     a defined option, but preserved, not cleared and not cascaded), and the removal
+#     PATCH is NOT rejected (HTTP 200) even while a card references the dropped value.
+#     add-option / rename-option are intentionally not provided (deferred to v2).
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -743,6 +763,140 @@ cmd_delete() {
     echo "kbcard: task $task HARD-deleted (permanent; DL ref released)"
 }
 
+# --- field verb: per-board custom-field schema read + option reconcile -------
+# Custom fields are per-board definitions; tasks.payload values are gated to the
+# registered keys (an unknown key 422s on a task write). The board index
+# GET /boards/<id>/custom_fields.json is the ONLY read surface — there is no
+# GET /custom_fields/<id>.json (that route is PATCH/DELETE only), so BOTH `list`
+# and set-options' drift check read the whole board's field set and select by id/key.
+
+# _KBC_FIELD_ROW: the jq projection for one custom field. enum/multi_select carry
+# their {value,label} option set (label defaults to value); every other type reports
+# options as null (the API stores none). Shared by `field list` (mapped over the
+# array), the set-options no-op echo, and the PATCH-result echo.
+_KBC_FIELD_ROW='{id, key, label, type,
+    options: (if (.options // null) == null then null
+              else (.options | map({value, label: (.label // .value)})) end)}'
+
+# _kbc_fetch_fields: the board's custom fields as a JSON array (.data). One read
+# surface for both sub-verbs. A non-2xx propagates loudly (kb_api prints the error
+# body — KB_API_ERRBODY=1 — and returns non-zero, aborting under set -e/pipefail).
+_kbc_fetch_fields() {
+    kb_api GET "/boards/$KB_BOARD_ID/custom_fields.json" | jq '.data'
+}
+
+# _kbc_field_enumerate <fields-json>: the board's defined fields as `id=key [type]`,
+# id-sorted, to stderr — mirrors swimlane_id()'s "defined swimlanes: …" so an
+# unresolved --field reads as "wrong name, here are the real ones", never a false
+# "the board has no fields".
+_kbc_field_enumerate() {
+    local defined
+    defined="$(jq -r 'sort_by(.id) | map("\(.id)=\(.key) [\(.type)]") | join(", ")' <<<"$1")"
+    if [[ -n "$defined" ]]; then
+        echo "kbcard:   defined fields: $defined" >&2
+    else
+        echo "kbcard:   this board defines no custom fields" >&2
+    fi
+}
+
+_kbc_field_list() {
+    [[ $# -gt 0 ]] && { echo "kbcard: field list takes no arguments (select the board with the global --board flag)" >&2; return 2; }
+    _kbc_fetch_fields | jq "map($_KBC_FIELD_ROW)"
+}
+
+# _kbc_field_set_options: idempotent converge-to-set on an enum/multi_select field.
+# The option set converges to EXACTLY the given comma list (membership AND order),
+# so the result is deterministic and a second identical call is a no-op. Drift is
+# computed on the ordered VALUE list — labels are out of scope (a value being
+# written gets label=value, the API's default when a label is omitted), which also
+# makes the no-op detection independent of whether existing options carry labels.
+_kbc_field_set_options() {
+    local field="" options="" have_options=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --field)   field="$2"; shift 2 ;;
+            --options) options="$2"; have_options=1; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -z "$field" ]]        && { echo "kbcard: field set-options requires --field <name|id>" >&2; return 2; }
+    [[ -z "$have_options" ]] && { echo "kbcard: field set-options requires --options <a,b,c> (converge-to-set; at least one value)" >&2; return 2; }
+
+    # Desired value set from the CSV (trim outer whitespace per value; internal
+    # spaces are preserved so "In Progress" is one value). A set has no empty and
+    # no duplicate members — reject either loudly rather than reconcile a malformed
+    # target (the whole point is a deterministic end state).
+    local desired n_total n_empty n_uniq
+    desired="$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$";""))' <<<"$options")"
+    n_total="$(jq 'length' <<<"$desired")"
+    n_empty="$(jq '[.[] | select(. == "")] | length' <<<"$desired")"
+    n_uniq="$(jq '[.[]] | unique | length' <<<"$desired")"
+    [[ "$n_total" -eq 0 ]] && { echo "kbcard: --options needs at least one value" >&2; return 2; }
+    [[ "$n_empty" -gt 0 ]] && { echo "kbcard: --options has an empty value (check for a stray/leading/trailing comma)" >&2; return 2; }
+    [[ "$n_total" -ne "$n_uniq" ]] && { echo "kbcard: --options has duplicate values; a converge-to-set target must be distinct" >&2; return 2; }
+
+    # Resolve --field by numeric id OR key against the board's field set. Propagate
+    # a read failure EXPLICITLY (kb_api already surfaced the error body) rather than
+    # leaning on set -e — errexit is suppressed when this fn runs in a `||`/`if`
+    # context, and a swallowed empty read would mis-surface as "field not defined".
+    local fields fld
+    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    if [[ "$field" =~ ^[0-9]+$ ]]; then
+        fld="$(jq -c --argjson id "$field" 'map(select(.id == $id)) | .[0] // empty' <<<"$fields")"
+    else
+        fld="$(jq -c --arg k "$field" 'map(select(.key == $k)) | .[0] // empty' <<<"$fields")"
+    fi
+    if [[ -z "$fld" ]]; then
+        echo "kbcard: custom field '$field' is not defined on board $KB_BOARD_ID" >&2
+        _kbc_field_enumerate "$fields"
+        return 2
+    fi
+
+    local fid ftype fkey
+    fid="$(jq -r '.id' <<<"$fld")"
+    ftype="$(jq -r '.type' <<<"$fld")"
+    fkey="$(jq -r '.key' <<<"$fld")"
+
+    # Options only mean something for the option-bearing types; on any other type the
+    # API would STORE the array but never interpret it — a silent no-effect. Refuse.
+    if [[ "$ftype" != "enum" && "$ftype" != "multi_select" ]]; then
+        echo "kbcard: field '$fkey' is type '$ftype'; set-options applies only to enum / multi_select fields" >&2
+        return 2
+    fi
+
+    local current
+    current="$(jq -c '(.options // []) | map(.value)' <<<"$fld")"
+    if [[ "$current" == "$desired" ]]; then
+        echo "kbcard: field '$fkey' options already match [$(jq -r 'join(", ")' <<<"$desired")] — no change" >&2
+        jq "$_KBC_FIELD_ROW" <<<"$fld"
+        return 0
+    fi
+
+    # Converge: PATCH the whole options array (the API replaces it wholesale). Send
+    # value-only entries; the server defaults each label to its value.
+    local body result
+    body="$(jq -nc --argjson vals "$desired" '{options: ($vals | map({value: .}))}')"
+    # Propagate a write failure EXPLICITLY (not via set -e — suppressed in a `||`/`if`
+    # caller); kb_api already surfaced the HTTP status + error body on stderr, so a
+    # failed reconcile never prints the success echo below.
+    if ! result="$(kb_api PATCH "/custom_fields/$fid.json" "$body")"; then
+        return 1
+    fi
+    echo "kbcard: field '$fkey' options reconciled: [$(jq -r 'join(", ")' <<<"$current")] -> [$(jq -r 'join(", ")' <<<"$desired")]" >&2
+    jq ".data | $_KBC_FIELD_ROW" <<<"$result"
+}
+
+cmd_field() {
+    local sub="${1:-}"
+    [[ -z "$sub" ]] && { echo "kbcard: field requires a sub-verb: list | set-options" >&2; return 2; }
+    shift
+    case "$sub" in
+        list)        _kbc_field_list "$@" ;;
+        set-options) _kbc_field_set_options "$@" ;;
+        *) echo "kbcard: unknown field sub-verb '$sub' (expected: list | set-options)" >&2; return 2 ;;
+    esac
+}
+
 main() {
     # Optional global `--board NAME` before the subcommand selects the board env.
     local board_name=""
@@ -765,6 +919,7 @@ main() {
         show)        cmd_show "$@" ;;
         archive)     cmd_archive "$@" ;;
         delete)      cmd_delete "$@" ;;
+        field)       cmd_field "$@" ;;
         *) echo "kbcard: unknown command '$cmd'" >&2; exit 2 ;;
     esac
 }

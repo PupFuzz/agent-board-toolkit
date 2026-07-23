@@ -52,6 +52,7 @@ jobs:
           - kb-board-lib-selftest
           - kb-host-guard-selftest
           - kbc-may-archive-selftest
+          - kbcard-field-selftest
           - kbcard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
