@@ -68,7 +68,7 @@ BOARD-CARD: toolkit#4945
 Do the thing."
 eq "single marker exits 0"                 "0" "$RC"
 eq "single marker → exactly one call"      "1" "$(recn)"
-eq "call selects the board"                "true" "$(has -- '--board toolkit' "$(recall)")"
+eq "call selects the board"                "true" "$(has '--board toolkit' "$(recall)")"
 eq "call moves the right task to in_progress" "true" \
    "$(has 'move --task 4945 --column in_progress' "$(recall)")"
 
@@ -103,7 +103,9 @@ BOARD-CARD: bridge#100"
 eq "multi-marker exits 0"                   "0" "$RC"
 eq "multi-marker → two calls"               "2" "$(recn)"
 eq "first board moved"                      "true" "$(has 'move --task 4945' "$(recall)")"
+eq "first call routes to toolkit board"     "true" "$(has '--board toolkit' "$(recall)")"
 eq "second board moved"                     "true" "$(has 'move --task 100' "$(recall)")"
+eq "second call routes to bridge board"     "true" "$(has '--board bridge' "$(recall)")"
 
 # ---------------------------------------------------------------------------
 echo "== exact duplicate marker → deduped to one move =="
@@ -122,5 +124,23 @@ eq "mid-line marker → zero calls (anchored)" "0" "$(recn)"
 echo "== leading-whitespace marker still fires (indentation tolerated) =="
 run_prompt "  BOARD-CARD: toolkit#4945"
 eq "indented marker → one call"             "1" "$(recn)"
+
+# ---------------------------------------------------------------------------
+echo "== kbcard exit 1 (failure) → hook exits 0, diagnostic on stderr =="
+# Temporarily replace kbcard with a stub that exits 1 on the marker.
+cat > "$TMP/bin/kbcard" <<'STUB_FAIL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+# Exit 1 if this is a move for toolkit#4945.
+if [[ "$*" == *"--task 4945"* ]]; then
+    exit 1
+fi
+exit 0
+STUB_FAIL
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "kbcard failure exits hook 0"            "0" "$RC"
+eq "kbcard failure records the call"        "1" "$(recn)"
+eq "kbcard failure writes diagnostic"       "true" "$(has 'kbcard move failed' "$ERR")"
 
 _summary "agent-dispatch-card-start-selftest"

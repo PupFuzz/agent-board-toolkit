@@ -55,8 +55,10 @@ and report dispatches routinely mention many card ids in prose (`card#1234`, `#9
 scan would move the wrong cards. The marker must be added on purpose, which makes the behavior
 deterministic. Multiple marker lines are each acted on (exact duplicates deduped); a marker
 appearing **mid-line** (any non-whitespace before it) is ignored. Leading indentation is
-tolerated (the marker may sit inside an indented block). `<board-key>` is the same key you pass to
-`kbcard --board <key>` (it resolves `~/.kanban-<key>-board.env`).
+tolerated (the marker may sit inside an indented block). Any line-start occurrence of the marker
+fires, including inside quoted or example text in a prompt (worst case: a benign idempotent
+In-Progress move) — so avoid quoting live marker lines at column 0 in dispatch prompts.
+`<board-key>` is the same key you pass to `kbcard --board <key>` (it resolves `~/.kanban-<key>-board.env`).
 
 ### Mechanics
 
