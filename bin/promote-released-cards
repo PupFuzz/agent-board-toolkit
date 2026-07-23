@@ -7,6 +7,9 @@
 # `payload.dl_number` matches a shipped DL token OR its `payload.pr_number` matches
 # a shipped PR number — so cards tracked only by PR (no DL) are promoted too.
 # Idempotent (skips a card already at target), best-effort per card.
+# With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
+# Shipped-class source stage is skipped, not moved (promotion never resurrects a
+# declined/backlog card carrying a stale/recycled stamp); see the Usage note below.
 #
 # Shipped refs come from `--dls "DL-1,DL-2"` (DL-only), else from `git log <base>..<head>`:
 #   - DL tokens via `ref_token_regex` (default DL-[0-9]+), matched on the numeric part;
@@ -29,11 +32,22 @@
 #     non-merge commit pushed directly to main whose range carries cardless DLs would fail
 #     loud by the same rule — intended, given the assumption.
 #
-# Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--dry-run] [--config PATH]
+# Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--shipped-stages IDS] [--dry-run] [--config PATH]
+#
+# --shipped-stages "51,52": comma-separated numeric workflow_stage_ids that count as a
+#   "Shipped-class" source stage. When set, a DL/PR-matched card whose CURRENT stage is
+#   NOT in this set is SKIPPED (with a log line) rather than moved — promotion means
+#   Shipped→Released and must never resurrect a declined/backlog card carrying a stale or
+#   recycled DL/PR stamp. Absent (default) = no source-stage guard, byte-identical prior
+#   behavior — consumers opt in.
 set -euo pipefail
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
+
+# in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.
+# Only consulted when SHIPPED_STAGES is non-empty (the guard is opt-in).
+in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
 # subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
@@ -66,18 +80,29 @@ merge_commit_tip() {
   [ "$(printf '%s' "$line" | wc -w)" -ge 3 ]
 }
 
-CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0
+CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dls)     DLS_IN="$2"; shift 2;;
-    --base)    BASE="$2"; shift 2;;
-    --head)    HEAD_REF="$2"; shift 2;;
-    --dry-run) DRY=1; shift;;
-    --config)  CONFIG="$2"; shift 2;;
+    --dls)            DLS_IN="$2"; shift 2;;
+    --base)           BASE="$2"; shift 2;;
+    --head)           HEAD_REF="$2"; shift 2;;
+    --shipped-stages) SHIPPED_STAGES="$2"; shift 2;;
+    --dry-run)        DRY=1; shift;;
+    --config)         CONFIG="$2"; shift 2;;
     -h|--help) sed -n '2,20p' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
+
+# Normalize + validate the opt-in source-stage guard set: strip whitespace, then require a
+# non-empty comma-separated list of positive integers (mirrors the board_id/stage numeric
+# checks). A malformed set is a config error, not a silent no-guard — fail loud.
+if [ -n "$SHIPPED_STAGES" ]; then
+  SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
+  case "$SHIPPED_STAGES" in
+    ''|*[!0-9,]*|,*|*,|*,,*) die "--shipped-stages must be a comma-separated list of numeric stage ids (got '$SHIPPED_STAGES')";;
+  esac
+fi
 
 # SECURITY: .release-pr.json is security-sensitive — .promote.api_base is where the
 # writeback token (KANBAN_WRITEBACK_TOKEN) is sent. A PR editing api_base to point at an
@@ -264,13 +289,22 @@ MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" '
   [ $sd[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]')"
 
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0
+moved=0; skipped=0; failed=0; guarded=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
   cur="$(printf '%s' "$row" | jq -r '.stage')"
   ref="$(printf '%s' "$row" | jq -r '.ref')"
   if [ "$cur" = "$STAGE" ]; then echo "  = $ref (#$id): already released"; skipped=$((skipped + 1)); continue; fi
+  # Source-stage guard (opt-in via --shipped-stages). Promotion means Shipped→Released, so a
+  # matched card NOT in a Shipped-class source stage is skipped, not moved — promotion never
+  # resurrects a declined/backlog card carrying a stale or recycled DL/PR stamp. Evaluated
+  # AFTER the already-released check so an idempotent re-run of a genuinely-released card still
+  # reads as "already released" (its now-Released stage is not a Shipped-class one).
+  if [ -n "$SHIPPED_STAGES" ] && ! in_shipped_stage "$cur"; then
+    echo "  ⊘ $ref (#$id): current stage $cur not in a Shipped-class source stage — skipped; promotion never resurrects declined/backlog cards" >&2
+    guarded=$((guarded + 1)); continue
+  fi
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
     echo "  ✓ $ref (#$id): moved $cur → $STAGE"; moved=$((moved + 1))
@@ -283,7 +317,9 @@ nmiss="$(printf '%s' "$MISSING" | jq 'length')"
 if [ "${nmiss:-0}" -gt 0 ]; then
   echo "promote-released-cards: WARNING — $nmiss shipped ref(s) matched NO card (unstamped card, or none): $(printf '%s' "$MISSING" | jq -r 'join(", ")')" >&2
 fi
-echo "promote-released-cards: $moved moved, $skipped already-released, $nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# The stage-guarded count is surfaced only when the guard is active, so a run with no
+# --shipped-stages keeps a byte-identical summary line (backward compatibility).
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
 # Systemic move failure (a card matched but every PATCH errored) → exit 1.
 if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
@@ -299,7 +335,13 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 #     incident) → FAIL loud so the operator verifies + promotes by hand.
 # NOTE: `skipped` is deliberately NOT in the guard — a squash release whose siblings were
 # already promoted (a partial/earlier run) still has moved==0 and must FAIL; the legit
-# merge-commit re-run is exempted by the tip check, not by skipped.
+# merge-commit re-run is exempted by the tip check, not by skipped. `guarded` is NOT in
+# the guard either: a source-stage-skipped card proves only that a DL token survived the
+# squash — the die guards PR-marker completeness, and the squashed feature commits' (#NNN)
+# markers can be lost while a title DL still matches. A guarded-skip therefore cannot
+# disprove a dropped sibling ref; on this off-process path (non-merge tip only) the
+# ~2-minute manual verification a false alarm costs is the right side of the asymmetry
+# vs a silently un-promoted shipped card.
 if [ "$moved" = 0 ] && [ -z "$DLS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi

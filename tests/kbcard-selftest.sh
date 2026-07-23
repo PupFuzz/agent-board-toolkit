@@ -216,6 +216,72 @@ eq "non-TTY --hard without --yes → rc 2"      "2"    "$rc"
 eq "non-TTY --hard refusal names --yes"       "true" "$(has '--yes' "$err")"
 
 # ---------------------------------------------------------------------------
+echo "== cmd_move — decline (→ wont_do) clears correlation stamps in the same PATCH =="
+# Moving a card to wont_do CLEARS payload.dl_number/pr_number/pr_url (explicit JSON nulls,
+# which the kanban v3 per-key payload merge deletes) so a stale/recycled stamp can't later
+# resurrect the declined card in a release-promote scan. --keep-refs opts out; every other
+# target column leaves the payload untouched. Network-free: a numeric --task short-circuits
+# resolve_task, and kb_api records the request body ($3) to a file (a command-substitution
+# subshell side effect on a global would not survive back to the parent).
+_MOVE_BODY="$(mktemp)"; _MOVE_ERR="$(mktemp)"
+trap 'rm -f "$_MOVE_BODY" "$_MOVE_ERR"' EXIT
+kb_api() { printf '%s' "$3" > "$_MOVE_BODY"; printf '{"data":{"id":99,"name":"x","workflow_stage_id":60}}'; }
+export KB_BOARD_ID=12 KB_STAGE_WONT_DO=60 KB_STAGE_IN_REVIEW=50
+# mv_body <args...> — run cmd_move, return the request body it sent; err in $_MOVE_ERR.
+mv_body() { : > "$_MOVE_BODY"; cmd_move "$@" >/dev/null 2>"$_MOVE_ERR"; cat "$_MOVE_BODY"; }
+
+# Decline: the three correlation keys are PRESENT and null ([has,value]=[true,null]) — an
+# explicit null (the API delete form), NOT an omitted key. RED-when-reverted: drop the clear
+# and the payload key is absent, so [false,null] reds instead of reading like a real null.
+b="$(mv_body --task 99 --column wont_do)"
+eq "wont_do move → stage set to wont_do"            "60" "$(jq -c '.workflow_stage_id' <<<"$b")"
+eq "wont_do move → dl_number present + null"        '[true,null]' "$(jq -c '[(.payload|has("dl_number")), .payload.dl_number]' <<<"$b")"
+eq "wont_do move → pr_number present + null"        '[true,null]' "$(jq -c '[(.payload|has("pr_number")), .payload.pr_number]' <<<"$b")"
+eq "wont_do move → pr_url present + null"           '[true,null]' "$(jq -c '[(.payload|has("pr_url")), .payload.pr_url]' <<<"$b")"
+eq "wont_do move → prints what it cleared"          "true" "$(has 'cleared correlation stamps' "$(cat "$_MOVE_ERR")")"
+
+# --keep-refs opts out: the payload key is entirely ABSENT (no clear), and the notice says so.
+b="$(mv_body --task 99 --column wont_do --keep-refs)"
+eq "wont_do --keep-refs → no payload clear"         "false" "$(jq 'has("payload")' <<<"$b")"
+eq "wont_do --keep-refs → still sets the stage"     "60"    "$(jq -c '.workflow_stage_id' <<<"$b")"
+eq "wont_do --keep-refs → prints the retained note" "true"  "$(has 'retained' "$(cat "$_MOVE_ERR")")"
+
+# A NON-wont_do move is byte-unchanged: no payload key, no clear/keep notice on stderr.
+b="$(mv_body --task 99 --column in_review)"
+eq "non-wont_do move → no payload key (unchanged)"  "false" "$(jq 'has("payload")' <<<"$b")"
+eq "non-wont_do move → stage set"                   "50"    "$(jq -c '.workflow_stage_id' <<<"$b")"
+eq "non-wont_do move → no clear/keep notice"        "false" "$(has 'correlation stamps' "$(cat "$_MOVE_ERR")")"
+
+echo "== cmd_patch — the SECOND decline call-site clears the same stamps (canon #7 sibling) =="
+# patch --column wont_do declines too; the clear is shared via _kbc_decline_nulls so the
+# hygiene invariant has ONE owner. An explicit ref flag passed IN THIS CALL wins over the
+# null (merge order: right-hand precedence). RED-when-reverted: dropping the cmd_patch
+# decline block leaves the payload key absent → [false,null] reds.
+pt_body() { : > "$_MOVE_BODY"; cmd_patch "$@" >/dev/null 2>"$_MOVE_ERR"; cat "$_MOVE_BODY"; }
+b="$(pt_body --task 99 --column wont_do)"
+eq "wont_do patch → stage set to wont_do"           "60" "$(jq -c '.workflow_stage_id' <<<"$b")"
+eq "wont_do patch → dl_number present + null"       '[true,null]' "$(jq -c '[(.payload|has("dl_number")), .payload.dl_number]' <<<"$b")"
+eq "wont_do patch → pr_url present + null"          '[true,null]' "$(jq -c '[(.payload|has("pr_url")), .payload.pr_url]' <<<"$b")"
+eq "wont_do patch → prints what it cleared"         "true" "$(has 'cleared correlation stamps' "$(cat "$_MOVE_ERR")")"
+
+# Explicit flag beats hygiene: --dl in the SAME declining call keeps its value; the other
+# two keys still clear.
+b="$(pt_body --task 99 --column wont_do --dl DL-7)"
+eq "wont_do patch + --dl → explicit dl wins"        '"DL-0007"' "$(jq -c '.payload.dl_number' <<<"$b")"
+eq "wont_do patch + --dl → pr_number still null"    '[true,null]' "$(jq -c '[(.payload|has("pr_number")), .payload.pr_number]' <<<"$b")"
+
+b="$(pt_body --task 99 --column wont_do --keep-refs)"
+eq "wont_do patch --keep-refs → no payload key"     "false" "$(jq 'has("payload")' <<<"$b")"
+eq "wont_do patch --keep-refs → retained notice"    "true"  "$(has 'retained' "$(cat "$_MOVE_ERR")")"
+
+b="$(pt_body --task 99 --column in_review)"
+eq "non-wont_do patch → no payload key"             "false" "$(jq 'has("payload")' <<<"$b")"
+
+unset -f kb_api mv_body pt_body
+unset KB_BOARD_ID KB_STAGE_WONT_DO KB_STAGE_IN_REVIEW
+rm -f "$_MOVE_BODY" "$_MOVE_ERR"; unset _MOVE_BODY _MOVE_ERR; trap - EXIT
+
+# ---------------------------------------------------------------------------
 echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
 # Network-free: stub the POST to echo the request body ($3) and the write-echo to
 # pass it through, so we assert on the tags the create body WOULD send. Defined
