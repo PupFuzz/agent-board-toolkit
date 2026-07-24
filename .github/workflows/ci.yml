@@ -52,6 +52,7 @@ jobs:
           - board-snapshot-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
+          - kbc-archive-eligible-selftest
           - kbc-may-archive-selftest
           - kbcard-field-selftest
           - kbcard-selftest

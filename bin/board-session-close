@@ -12,6 +12,14 @@
 # reads the same boards from the coord config (kanban.boards[]) and is READ-ONLY
 # by construction, plus adds a forward un-carded-open-PR leg the retired bash
 # check never had.
+#
+# A second READ-ONLY leg — "Archive-eligible done cards" — is DELEGATED to the
+# sibling `_kbc-archive-eligible.py`: for each configured board it reports how many
+# terminal (done-lane) cards are not yet archived, and runs the framework's shipped
+# `may_archive` gate over a BOUNDED SAMPLE of them to show a concrete "safe to
+# archive now" starting point (the gate is per-card in `kbcard archive` at archive
+# time; gating the whole done backlog here would be a slow network storm). It only
+# surfaces (never archives); a missing sibling is a warning, not a hard failure.
 set -uo pipefail
 
 # resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
@@ -43,7 +51,7 @@ resolve_reconcile_hook() {
 }
 
 main() {
-  local d wt b dirty hook rc out line cur_key
+  local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
   echo "Fix any board card below that doesn't match the git/PR reality, then close."
   echo
@@ -105,9 +113,26 @@ main() {
   if [[ "$rc" -ne 0 ]]; then
     echo "  ⚠ kanban-reconcile.py --detect exited $rc — the inverse-drift check may be INCOMPLETE" >&2
     echo "    (config/API error above); investigate before treating the board as reconciled." >&2
-    return "$rc"
   fi
-  return 0
+
+  echo
+  echo "── Archive-eligible done cards (consider: kbcard archive #N) ──"
+  echo "   (read-only surfacing via _kbc-archive-eligible.py over the shipped may_archive gate)"
+  ae_helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_kbc-archive-eligible.py"
+  if [[ ! -f "$ae_helper" ]]; then
+    echo "  ⚠ board-session-close: _kbc-archive-eligible.py sibling not found ($ae_helper) — the" >&2
+    echo "    archive-eligible surfacing DID NOT RUN. It is advisory (the drift check above still" >&2
+    echo "    ran), so this does not block close; reinstall the toolkit bin/ to restore it." >&2
+  else
+    ae_out="$(python3 "$ae_helper" 2>&1)"; ae_rc=$?
+    printf '%s\n' "$ae_out" | sed 's/^/  /'
+    if [[ "$ae_rc" -ne 0 ]]; then
+      echo "  ⚠ _kbc-archive-eligible.py exited $ae_rc — the archive-eligible surfacing may be" >&2
+      echo "    INCOMPLETE (config/API error above); it is advisory and does not block close." >&2
+    fi
+  fi
+
+  return "$rc"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
