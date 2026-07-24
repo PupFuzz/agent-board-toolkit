@@ -12,7 +12,9 @@ It is a THIN caller of the framework's shipped `may_archive` primitive
 job is to (a) locate the plugin-maintained `kanban_common` version-agnostically,
 (b) build the tri-state per-source resolver over the card's backing coordination
 sources using the framework's own `gh_json` GitHub-state reader, and (c) surface
-the primitive's `(ok, reason)` in a shape kbcard's bash can branch on.
+the primitive's `(ok, reason)` in a shape kbcard's bash can branch on. Both (a) and
+(b) live in the shared `_kbc-archive-lib.py` — the session-close archive-eligible
+leg is the second consumer of that same plumbing (canon #5).
 
 The resolver contract (see may_archive's docstring): given one source descriptor
 from `_card_backing_sources` return "live" (open PR/issue), "terminal"
@@ -28,44 +30,25 @@ newest cache) so a plugin bump never breaks it.
 """
 from __future__ import annotations
 
-import glob
 import importlib.util
 import json
 import os
 import sys
 
-
-def _resolve_kanban_common() -> "str | None":
-    """Path to the plugin's bundled kanban_common.py, or None. Order mirrors
-    board-session-close resolve_reconcile_hook, targeting the examples/ copy the
-    reconcile hook path-loads (never the optional user-site coord package)."""
-    rel = os.path.join("templates", "kanban", "examples", "kanban_common.py")
-    override = os.environ.get("KBCARD_KANBAN_COMMON")
-    if override:
-        return override if os.path.isfile(override) else None
-    for pdir in os.environ.get("PATH", "").split(os.pathsep):
-        # A coord plugin bin dir names the loaded version: .../coord/<ver>/bin
-        norm = pdir.rstrip("/")
-        if norm.endswith("/bin") and "/agent-board-framework/coord/" in norm:
-            c = os.path.join(norm[: -len("/bin")], rel)
-            if os.path.isfile(c):
-                return c
-    home = os.path.expanduser("~")
-    c = os.path.join(home, ".claude", "plugins", "marketplaces",
-                     "agent-board-framework", "plugins", "coord", rel)
-    if os.path.isfile(c):
-        return c
-    cache = sorted(glob.glob(os.path.join(
-        home, ".claude", "plugins", "cache", "agent-board-framework",
-        "coord", "*", rel)))
-    return cache[-1] if cache else None
+_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_kbc-archive-lib.py")
 
 
-def _load(path: str):
-    spec = importlib.util.spec_from_file_location("kanban_common_kbc", path)
+def _load_lib():
+    spec = importlib.util.spec_from_file_location("kbc_archive_lib", _LIB)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
+
+
+_lib = _load_lib()
+# The selftest execs this module and calls `_resolve_kanban_common()` directly, so
+# keep the name bound to the shared locator.
+_resolve_kanban_common = _lib.resolve_kanban_common
 
 
 def _emit(token: str, reason: str) -> int:
@@ -79,16 +62,16 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — malformed input is a fail-closed refusal
         return _emit("noprimitive", f"archive-gate input unreadable: {e}")
 
-    path = _resolve_kanban_common()
+    path = _lib.resolve_kanban_common()
     if not path:
         return _emit("noprimitive",
                      "may_archive primitive not found (kanban_common unresolvable "
                      "via $KBCARD_KANBAN_COMMON, the coord plugin on $PATH, the "
                      "marketplace clone, or the plugin cache)")
     try:
-        kc = _load(path)
+        kc = _lib.load_kanban_common(path)
         may_archive = kc.may_archive
-        derive_source = kc._derive_card_source
+        kc._derive_card_source  # presence check — the shared resolver needs it
     except Exception as e:  # noqa: BLE001
         return _emit("noprimitive", f"kanban_common loaded but unusable: {e}")
 
@@ -99,33 +82,9 @@ def main() -> int:
     card = req.get("card")
     surviving = req.get("surviving_cards") or []
     cfg_repo = (req.get("repo") or "").strip() or None
-    # The card's own source (from pr_url / issue_url / payload.repo) via the
-    # framework's server-mirroring normalizer — used when a by-ref descriptor
-    # carries no explicit repo. For a single-repo board the config repo is the
-    # authority; per-card derivation is the fallback for a card without it.
-    card_source = derive_source(card)
-
-    def resolve(src):
-        kind, ref = src
-        if kind != "by_ref":
-            # A stable-id (id:<sid>) mirrors a coordination source kbcard has no
-            # GitHub handle for — cannot determine liveness → fail-closed.
-            return "unresolvable"
-        repo = ref.get("repo") or cfg_repo or card_source
-        if not repo:
-            return "unresolvable"
-        sub = "pr" if ref.get("kind") == "pr" else "issue"
-        try:
-            data = kc.gh_json([sub, "view", str(ref.get("number")),
-                               "--repo", repo, "--json", "state"])
-        except Exception:  # noqa: BLE001 — 404 / network / auth → unresolvable
-            return "unresolvable"
-        state = str((data or {}).get("state") or "").upper()
-        if state == "OPEN":
-            return "live"
-        if state in ("CLOSED", "MERGED"):
-            return "terminal"
-        return "unresolvable"
+    # The card's own source is the resolver's fallback repo (built inside the
+    # shared factory); for a single-repo board the config repo is the authority.
+    resolve = _lib.make_github_state_resolver(kc, card, cfg_repo)
 
     try:
         ok, reason = may_archive(card, resolve, surviving_cards=surviving)
