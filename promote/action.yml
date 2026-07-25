@@ -68,6 +68,12 @@ runs:
           jq --arg a "$API_BASE_IN" '.promote.api_base=$a' .release-pr.json > .rp.tmp
           mv .rp.tmp .release-pr.json
         fi
+        # Each optional input is translated to an ABSENT flag when blank — never to a flag
+        # carrying an empty value. Load-bearing since card#5144: the script now REJECTS
+        # `--flag ""` (an empty value silently selected the flag's default path — for
+        # --shipped-stages that meant an unguarded promote reported as a clean run). So
+        # "unconditionally pass the flag and let the script sort it out" would fail-closed on
+        # every consumer that leaves an optional input blank. Keep these conditional.
         args=()
         [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
         [ -n "$SHIPPED_STAGE_IDS" ] && args+=(--shipped-stages "$SHIPPED_STAGE_IDS")

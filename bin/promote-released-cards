@@ -39,11 +39,28 @@
 #   NOT in this set is SKIPPED (with a log line) rather than moved — promotion means
 #   Shipped→Released and must never resurrect a declined/backlog card carrying a stale or
 #   recycled DL/PR stamp. Absent (default) = no source-stage guard, byte-identical prior
-#   behavior — consumers opt in.
+#   behavior — consumers opt in. ABSENT is the only way to select that default: an
+#   explicitly EMPTY value (`--shipped-stages ""`) is a config error and dies, like any
+#   other malformed set — it never silently degrades to the unguarded default.
 set -euo pipefail
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
+
+# require_value <flag> <value>: die unless a value-taking flag was given a non-empty value.
+# An option that consumes "$2" must dispatch on the FLAG being SEEN, not on its VALUE being
+# non-empty — otherwise `--flag ""` (an unexpanded shell variable, an empty CI input) is
+# indistinguishable from the flag being absent and silently selects the DEFAULT path. For
+# --shipped-stages that default is "no source-stage guard", so an empty value produced an
+# UNGUARDED promote with a summary line byte-identical to a guarded one (card#5144). None of
+# these flags has a meaningful empty value; an intentional "none" would be a spelled
+# sentinel. Also catches a trailing flag with no argument at all, which `set -u` would
+# otherwise report as an unbound-variable error naming no flag.
+# The same parse shape lives in kbcard and release-pr-body (card#5146). This script is
+# vendored standalone into consumer repos and MUST NOT source _kb-board-lib.sh, so when that
+# lib gains the shared guard this copy stays duplicated — keep it in sync, as with host_ok
+# and numlist.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.
 # Only consulted when SHIPPED_STAGES is non-empty (the guard is opt-in).
@@ -83,12 +100,12 @@ merge_commit_tip() {
 CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dls)            DLS_IN="$2"; shift 2;;
-    --base)           BASE="$2"; shift 2;;
-    --head)           HEAD_REF="$2"; shift 2;;
-    --shipped-stages) SHIPPED_STAGES="$2"; shift 2;;
+    --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
+    --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
+    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
-    --config)         CONFIG="$2"; shift 2;;
+    --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     -h|--help) sed -n '2,20p' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
@@ -97,6 +114,10 @@ done
 # Normalize + validate the opt-in source-stage guard set: strip whitespace, then require a
 # non-empty comma-separated list of positive integers (mirrors the board_id/stage numeric
 # checks). A malformed set is a config error, not a silent no-guard — fail loud.
+# require_value has already rejected an explicitly-empty value, so a non-empty
+# $SHIPPED_STAGES here means exactly "the flag was passed". The '' arm below is NOT dead
+# code: a whitespace-only value (`--shipped-stages " "`) survives require_value and
+# normalizes to empty right here, which is the case that arm exists to reject.
 if [ -n "$SHIPPED_STAGES" ]; then
   SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
   case "$SHIPPED_STAGES" in
