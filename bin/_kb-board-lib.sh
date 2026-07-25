@@ -258,6 +258,31 @@ KB_HTTP=""
 # also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
+# kb_require_value <flag> <value>: returns 1 (with a diagnostic) unless a value-taking
+# option was given a non-empty value. Callers pass `"$1" "${2:-}"` from the arg loop.
+#
+# WHY THIS EXISTS. An option that consumes "$2" and is later dispatched with `[[ -n "$var" ]]`
+# treats an explicitly-EMPTY value as an ABSENT flag, so `--flag ""` silently selects the
+# default path instead of doing what was asked. The unexpanded shell variable is the common
+# way in: `--dl "$DL"` with DL unset stamps nothing and still exits 0, so a card that should
+# carry a correlation ref silently doesn't — and never promotes at release. In
+# promote-released-cards the same shape disabled the anti-resurrection guard while printing a
+# summary identical to a guarded run (card#5144, its own mirrored copy). None of these flags
+# has a meaningful empty value: an intentional clear is a SPELLED sentinel, as `--swimlane
+# none` already is. Dispatching on the FLAG being seen rather than on its VALUE being
+# non-empty is what the guard restores.
+#
+# It also converts a trailing flag with no argument at all — `kbcard patch --task 5 --dl` —
+# from a bare `set -u` unbound-variable error naming nothing into a diagnostic naming the flag.
+#
+# (promote-released-cards carries an inline mirror of this — it is vendored standalone and
+# must not source this lib; keep the two in sync, as with kb_require_https_host.)
+kb_require_value() {
+    [[ -n "${2:-}" ]] && return 0
+    echo "$(_kb_prog): $1 requires a non-empty value" >&2
+    return 1
+}
+
 # kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base
 # (the .release-pr.json .promote.api_base, which a PR can edit). Asserts the base is
 # https:// AND its host is the expected host or a subdomain of it — so a malicious

@@ -178,4 +178,17 @@ base_hdr="$(printf '%s\n' "$body6" | head -1)"
 contains "--base header still honors tag_format" "$base_hdr" "release PR — release-0.3.0."
 contains "--base uses the given baseline"        "$body6"    "since v0.1.0"
 
+echo "== value-taking flags reject an EMPTY value (card#5146) =="
+# `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact
+# reading this tool takes pains to make explicit, silently substituted for the one the caller
+# named. Every value-taking flag now dies by name instead.
+for f in --version --base --head --config; do
+    rc=0; err="$("$BIN" "$f" "" 2>&1)" || rc=$?
+    eq "$f \"\" → rc 2"           "2"    "$rc"
+    eq "$f \"\" names the flag"   "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
+done
+rc=0; err="$("$BIN" --base 2>&1)" || rc=$?
+eq "trailing --base → rc 2"                   "2"     "$rc"
+eq "trailing --base does not leak set -u"     "false" "$(case "$err" in *'unbound variable'*) echo true ;; *) echo false ;; esac)"
+
 _summary "release-pr-body-selftest"
