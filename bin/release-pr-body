@@ -24,13 +24,24 @@ die() { echo "release-pr-body: $*" >&2; exit 2; }
 command -v jq  >/dev/null || die "jq is required"
 command -v git >/dev/null || die "git is required"
 
+# require_value <flag> <value>: die unless a value-taking option was given a non-empty
+# value. An option that consumes "$2" and is then dispatched with `[ -n "$var" ]` reads an
+# explicitly-EMPTY value as an ABSENT flag, so `--flag ""` silently selects the default path
+# instead of doing what was asked — here `--base ""` would fall back to deriving the
+# baseline from local tags, which is the reading this tool exists to make explicit. Also
+# converts a trailing flag with no argument from a bare `set -u` unbound-variable error into
+# one naming the flag. Mirrors kb_require_value in _kb-board-lib.sh — like the sibling
+# mover, this script is self-contained and does not source that lib, so the guard is
+# duplicated; keep the two in sync.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+
 CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2;;
-    --base)    BASE="$2"; shift 2;;
-    --head)    HEAD_REF="$2"; shift 2;;
-    --config)  CONFIG="$2"; shift 2;;
+    --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
+    --base)    require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
+    --head)    require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    --config)  require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     --manifest) MANIFEST_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. This
     # header is currently 19 lines, so the old `2,20p` happened to print all of it; it

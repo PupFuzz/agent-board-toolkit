@@ -56,10 +56,10 @@ for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; don
 # these flags has a meaningful empty value; an intentional "none" would be a spelled
 # sentinel. Also catches a trailing flag with no argument at all, which `set -u` would
 # otherwise report as an unbound-variable error naming no flag.
-# The same parse shape lives in kbcard and release-pr-body (card#5146). This script is
-# vendored standalone into consumer repos and MUST NOT source _kb-board-lib.sh, so when that
-# lib gains the shared guard this copy stays duplicated — keep it in sync, as with host_ok
-# and numlist.
+# Mirrors kb_require_value in _kb-board-lib.sh (card#5146) — this script is vendored
+# standalone into consumer repos and MUST NOT source that lib, so the guard is duplicated;
+# keep the two in sync, as with host_ok and numlist. release-pr-body carries the third copy
+# for the same reason.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.

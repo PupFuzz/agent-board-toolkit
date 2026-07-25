@@ -515,6 +515,43 @@ eq "patch WITHOUT --swimlane echo omits swimlane_id" "false" "$(cmd_patch --task
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 unset -f sp _kbc_write_echo_orig
 
+# ---------------------------------------------------------------------------
+echo "== value-taking flags reject an EMPTY value (card#5146) =="
+# An option that consumes "$2" and is then dispatched with `[[ -n "$var" ]]` reads an
+# explicitly-empty value as an ABSENT flag. `kbcard patch --dl "$DL"` with DL unset
+# therefore stamped NOTHING and still exited 0 — a card silently left without the
+# correlation ref it was told to carry, which never promotes at release. The guard makes
+# the flag's PRESENCE the dispatch signal. RED-when-reverted: drop kb_require_value from
+# the --dl arm and the first two assertions flip (rc 0, body `{}`).
+# Echo the request body back and pass the write echo through (the block above restored the
+# REAL _kbc_write_echo, which expects a server {data:…} envelope this stub does not send).
+kb_api() { printf '%s' "$3"; }   # $3 is the request body
+_kbc_write_echo() { cat; }
+
+rc=0; err="$(cmd_patch --task 99 --dl "" 2>&1 >/dev/null)" || rc=$?
+eq "patch --dl \"\" → rc 2"                        "2"    "$rc"
+eq "patch --dl \"\" names the flag"                "true" "$(case "$err" in *'--dl requires a non-empty value'*) echo true ;; *) echo false ;; esac)"
+# The negative control that makes the above attributable: a REAL value still stamps.
+eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
+   "$(cmd_patch --task 99 --dl DL-7 2>/dev/null | jq -r '.payload.dl_number')"
+
+# The whole class, not the one reported instance.
+for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description; do
+    rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
+    eq "patch $f \"\" → rc 2"                      "2"    "$rc"
+    eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
+done
+
+# A trailing flag with no argument at all names the flag rather than leaking `set -u`.
+rc=0; err="$(cmd_patch --task 99 --dl 2>&1 >/dev/null)" || rc=$?
+eq "patch trailing --dl → rc 2"                    "2"    "$rc"
+eq "patch trailing --dl does not leak set -u"      "false" "$(case "$err" in *'unbound variable'*) echo true ;; *) echo false ;; esac)"
+
+# --task itself is a REQUIRED flag and was already guarded by its own -z check; assert the
+# empty case still fails loud so the new guard didn't displace it into a different verdict.
+rc=0; cmd_patch --task "" --dl DL-7 >/dev/null 2>&1 || rc=$?
+eq "patch --task \"\" → rc 2"                      "2"    "$rc"
+
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
 
 # ---------------------------------------------------------------------------
