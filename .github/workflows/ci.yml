@@ -50,6 +50,7 @@ jobs:
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
+          - help-output-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
           - kbc-archive-eligible-selftest
