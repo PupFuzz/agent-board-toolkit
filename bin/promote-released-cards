@@ -106,7 +106,12 @@ while [ $# -gt 0 ]; do
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
     --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0;;
+    # Print the contiguous leading comment block, whatever its length. A FIXED line range
+    # silently truncates the moment the header outgrows it — this header reached 43 lines
+    # while the range still said 20, so --help stopped before `Usage:`, the one block a
+    # --help user needs. Widening the range is not the fix either: it would leak
+    # `set -euo pipefail` and the helpers into user-facing output.
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
