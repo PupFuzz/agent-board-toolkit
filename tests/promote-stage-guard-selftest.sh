@@ -95,6 +95,8 @@ eq "skip log names the card id"                     "true"  "$(has '(#2)' "$err"
 eq "skip log names its current stage"               "true"  "$(has 'stage 99' "$err")"
 eq "skip log explains the reason"                   "true"  "$(has 'never resurrects declined/backlog cards' "$err")"
 eq "summary surfaces the stage-guarded count"       "true"  "$(has '1 stage-guarded' "$out")"
+eq "guard-on states stage-guard ON on stderr"      "true"  "$(has 'stage-guard ON' "$err")"
+eq "guard-on ON line names the guarded stage ids"  "true"  "$(has 'Shipped-class source stages: 51' "$err")"
 
 echo "== guard ON, whitespace in the input is tolerated (normalized) =="
 run_promote --shipped-stages " 51 , 51 "
@@ -146,6 +148,12 @@ eq "guard off → rc 0"                               "0"     "$rc"
 eq "card #1 promoted"                               "true"  "$(has '/tasks/1.json' "$patched")"
 eq "card #2 ALSO promoted (unconditional prior)"    "true"  "$(has '/tasks/2.json' "$patched")"
 eq "guard-off summary omits stage-guarded (byte-identical line)" "false" "$(has 'stage-guarded' "$out")"
+# card#5152: the summary stays byte-identical (above) AND the guard's state is stated on
+# its own stderr line, every run. Before this, an ABSENT guard produced a summary
+# indistinguishable from a guarded one — an unguarded promote that reads as clean.
+eq "guard-off states stage-guard OFF on stderr"     "true"  "$(has 'stage-guard OFF' "$err")"
+eq "guard-off OFF line names the remedy"            "true"  "$(has 'Pass --shipped-stages' "$err")"
+eq "guard-off OFF line is not on stdout"            "false" "$(has 'stage-guard OFF' "$out")"
 eq "guard-off run logs no skip line"                "false" "$(has 'never resurrects' "$err")"
 
 
