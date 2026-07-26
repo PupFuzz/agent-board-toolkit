@@ -346,6 +346,22 @@ fi
 # The stage-guarded count is surfaced only when the guard is active, so a run with no
 # --shipped-stages keeps a byte-identical summary line (backward compatibility).
 echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
+# --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
+# a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
+# isn't" shape the guard exists to prevent, one layer out.
+#
+# Deliberately NOT folded into the summary line above: that line is byte-identical when the
+# guard is absent by an explicit v0.21.0 fleet-adoption decision, anything parsing it would
+# break, and a selftest asserts it. Reporting on a SEPARATE stderr line gets the visibility
+# without overturning that decision — the summary stays a stable parse target, and stderr is
+# where this tool already puts its operator-facing findings (the no-card WARNING above, the
+# per-card guard skips).
+if [ -n "$SHIPPED_STAGES" ]; then
+  echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
+else
+  echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
+fi
 # --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
 # Systemic move failure (a card matched but every PATCH errored) → exit 1.
 if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
