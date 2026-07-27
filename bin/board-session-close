@@ -242,6 +242,11 @@ _bsc_runnable() {
 #   * `#` comments are stripped before matching, so a hook that only MENTIONS the tool in a
 #     comment reads as not reaching it — and the strip also blanks the tail of a line whose
 #     earlier text quotes a `#` (`echo "#"; board-card-start`).
+#   * a chain target whose PATH CONTAINS WHITESPACE is never followed: the match excludes
+#     whitespace, so `exec "/opt/tk with space/hooks/post-checkout"` dispatches for real
+#     (probed) while reading as a finding. The class is deliberately NOT widened — it is what
+#     stops the loop below ingesting a line of prose, and widening it without a fixture would
+#     trade this disclosed false-FINDING for an undisclosed false-OK.
 #   * only ABSOLUTE, literal chain targets are followed. A chain written with a variable
 #     (`exec "$TOOLKIT/hooks/post-checkout"`) or relative to the work tree
 #     (`exec ../toolkit/hooks/post-checkout`) reads as a finding even though it works. Neither
@@ -362,10 +367,12 @@ _bsc_manual_wiring() {
 #
 # It does NOT model install-board-hooks' preconditions; it ASKS, via that tool's own `--check`
 # dry run, and gates on the verdict. Modelling them is what produced a wrong answer in two
-# consecutive reviews: a partial copy proved 2 of the 9 preconditions, so the modal finding — a
+# consecutive reviews: a partial copy proved two of them and missed the rest (the count is
+# deliberately not written here — it has already moved twice), so the modal finding — a
 # repo carrying its own committed hook, which the installer refuses to clobber — was told to run
-# a command that exits 1. Adding the two missing predicates would have made it 4 of 9 and left
-# the shape intact (canon #5: fix the primitive, do not re-derive it at the call site).
+# a command that exits 1. Adding the two missing predicates would have left the shape intact —
+# and the installer has since grown two more (canon #5: fix the primitive, never re-derive it
+# at the call site).
 #
 # What stays here is the question `--check` cannot answer: whether the directory the installer
 # would target is the one git DISPATCHES from. The installer can succeed while installing where
@@ -379,8 +386,14 @@ _bsc_fix_line() {
   local repo="$1" dir="$2"; shift 2
   local hooks=("$@") ibh itgt main err h
   ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
+  # Say what was ATTEMPTED, not why it failed: this gates on executability while the resolver
+  # gates on readability, so a sibling that is readable-but-not-executable resolves fine and
+  # would have been reported "not beside this tool" — it is. A wrong-but-specific cause is
+  # worse than an honest generic one (the same rule applied to git's refusals above), and
+  # reachable on the Windows/MSYS copy topology and after a mode-dropping extract.
   if [[ ! -x "$ibh" ]]; then
-    printf 'install-board-hooks is not beside this tool, so no remedy could be verified; wire it by hand: %s' "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
+    printf 'install-board-hooks could not be run (%s), so no remedy could be verified; wire it by hand: %s' \
+           "$ibh" "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
     return 0
   fi
   # TWO questions, in this order, because each has its own right words and the wrong order
@@ -461,7 +474,9 @@ _bsc_hook_dispatch_report() {
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
       7|8) echo "• ${name}: — skipped: ${dir}"
          skipped=$((skipped + 1)); continue ;;
-      5) echo "• ${name}: ⚠ CHECK DID NOT RUN — install-board-hooks (which owns the core.hooksPath resolver) is not beside this tool"
+      # Sibling of the fix-line's arm: this gates on READABILITY, so an unreadable sibling that
+      # is present would have been called absent. Say what failed, not why.
+      5) echo "• ${name}: ⚠ CHECK DID NOT RUN — install-board-hooks (which owns the core.hooksPath resolver) could not be read beside this tool"
          findings=$((findings + 1)); skipped=$((skipped + 1)); continue ;;
     esac
     # An empty dir would silently degrade every hook below to a false MISSING — the one
