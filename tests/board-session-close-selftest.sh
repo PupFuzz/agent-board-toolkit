@@ -478,11 +478,21 @@ eq "witness: that interpreter is itself a real executable" "true" \
    "$([ -x "$longdir/sh" ] && echo true || echo false)"
 eq "BOUND: over-long interpreter reads as runnable — disclosed, not detected" \
    "OK" "$(state "$r/.git/hooks")"
-# The half that errs safe: a LONG line whose interpreter terminates early is genuinely fine, so
-# the bound must not be widened to "long shebang line".
-printf '#!/bin/sh %s\nboard-card-start\n' "$(printf 'a%.0s' $(seq 1 500))" > "$r/.git/hooks/post-checkout"
+# BOUND (broader than the truncation case, and the reason the previous "safe half" assertion
+# here was WRONG): the shebang ARGUMENT is never judged. `#!/bin/sh zzz` is twelve bytes, reads
+# as runnable, and is DEAD — /bin/sh treats zzz as a script path and exits "cannot open zzz".
+# The old assertion claimed a 500-byte argument was "genuinely runnable"; run for real it dies
+# the same way, so that fixture pinned a dead hook as healthy and blocked the correct fix.
+r="$H/bound-shebang-arg"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh zzz\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
 chmod +x "$r/.git/hooks/post-checkout"
-eq "a 500-byte line naming a SHORT interpreter is genuinely runnable" "OK" "$(state "$r/.git/hooks")"
+eq "BOUND: an interpreter ARGUMENT that kills the hook reads as runnable" \
+   "OK" "$(state "$r/.git/hooks")"
+# The control that keeps the bound honest: an argument the interpreter ACCEPTS is genuinely
+# fine, so the bound is about the argument not being judged — not about arguments per se.
+printf '#!/bin/sh -e\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "an interpreter flag argument (-e) is genuinely runnable" "OK" "$(state "$r/.git/hooks")"
 
 # --- the remediation line must name a command that actually works -----------
 # A `.git` FILE (linked worktree, --separate-git-dir, submodule) makes install-board-hooks

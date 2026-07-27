@@ -101,10 +101,19 @@ main() {
     local card_id="" repo="" board_name="" req_dl="" req_issue=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --repo)  shift; repo="${1:-}" ;;
-            --board) shift; board_name="${1:-}" ;;
-            --dl)    shift; req_dl="${1:-}" ;;
-            --issue) shift; req_issue="${1:-}" ;;
+            # Every value-taking flag is gated on the flag being SEEN with a value, via the
+            # shared kb_require_value (already in scope) — the same guard kbcard applies at all
+            # 36 of its arms. Without it `--dl ""` (an unexpanded variable) read as "no --dl"
+            # and took the MINT path, so a crash-retry that meant "re-stamp DL-N" minted a
+            # SECOND DL instead — orphaning DL-N and stranding any branch or PR named for it,
+            # the exact outcome _ata_adopt_decision's refuse-adopted arm exists to prevent.
+            # `--issue ""` silently dropped the co-stamp while still reporting "verified via
+            # by-ref". It also turns a trailing flag with no argument from a bare `shift`
+            # failure (rc 1, no output) into a named diagnostic.
+            --repo)  kb_require_value "$1" "${2:-}" || exit 2; shift; repo="$1" ;;
+            --board) kb_require_value "$1" "${2:-}" || exit 2; shift; board_name="$1" ;;
+            --dl)    kb_require_value "$1" "${2:-}" || exit 2; shift; req_dl="$1" ;;
+            --issue) kb_require_value "$1" "${2:-}" || exit 2; shift; req_issue="$1" ;;
             -h|--help) usage; exit 0 ;;
             --) ;;
             -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;

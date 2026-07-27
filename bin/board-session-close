@@ -186,11 +186,20 @@ _bsc_active_toolkit() {
 #     interpreter name silently trimmed to something runnable, while git failed "cannot exec"
 #     (both verified). `#!<TAB>/bin/sh` and `#!/bin/sh<TAB>` do run and must not be called dead;
 #   * the interpreter itself must exist, be a regular file, and be executable.
-# NOT covered, and disclosed rather than claimed: a shebang line longer than the kernel's
-# buffer (BINPRM_BUF_SIZE, 256 bytes on Linux) is truncated, while this reads the whole line.
-# On the kernel this was verified against (6.8) the effect is that the NAMED INTERPRETER is
-# silently ignored and the file is run by the shell instead — the hook still fires, so this is
-# a wrong-interpreter hazard, not a dead hook. The effect may differ elsewhere.
+# NOT covered, and disclosed rather than claimed — TWO shapes, both verified against real
+# dispatch:
+#   * the shebang ARGUMENT is never judged. `#!/bin/sh zzz` is twelve bytes and reads as
+#     runnable; /bin/sh takes zzz as a script path and dies "cannot open zzz", so the hook is
+#     DEAD. `#!/bin/sh -e` is accepted and genuinely fires. Deciding which is which needs each
+#     interpreter's own CLI, not a read — and `#!/usr/bin/env bash` is a correct hook whose
+#     argument is deliberately not a file, so a "does the argument exist?" heuristic would
+#     invent findings.
+#   * an interpreter name that does not TERMINATE within the kernel's shebang buffer
+#     (BINPRM_BUF_SIZE, 256 bytes on Linux) is truncated there, while this reads the whole
+#     line. On the kernel verified against (6.8) execve returns ENOEXEC and the shell runs the
+#     file, so the NAMED INTERPRETER is silently ignored — a wrong-interpreter hazard rather
+#     than a dead hook, and the truncated remainder can then land in the argument shape above.
+#     The effect may differ elsewhere.
 # A file with no `#!` is not judged: it may be a binary, or be run by the shell.
 # `/usr/bin/env foo` is judged on `env` alone — resolving `foo` needs the PATH git will have at
 # dispatch time, not this one, and guessing it would invent findings.

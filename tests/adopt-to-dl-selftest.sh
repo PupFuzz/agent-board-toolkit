@@ -66,4 +66,23 @@ _rc=0; out="$(bash "$BIN" 2>&1)" || _rc=$?
 case "$out" in *"<card-id> is required"*) ok "no positional at all still reports the missing id" ;;
                *) bad "expected the required-id diagnostic, got: $out" ;; esac
 
+# Every value-taking flag must be gated on the flag being SEEN with a value. `--dl ""` (an
+# unexpanded variable) used to read as "no --dl" and take the MINT path — so a crash-retry that
+# meant "re-stamp DL-N" would mint a SECOND DL, orphaning DL-N and stranding any branch or PR
+# named for it. kbcard already rejected the identical input; this bin did not.
+echo "== value-taking flags reject an empty value (kb_require_value) =="
+for f in --dl --issue --repo --board; do
+    _rc=0; out="$(bash "$BIN" 4242 "$f" "" 2>&1)" || _rc=$?
+    if [[ "$_rc" -eq 2 ]]; then ok "$f '' is rejected (rc 2), not read as absent"
+    else bad "$f '' expected rc=2, got $_rc"; fi
+    case "$out" in *"$f requires a non-empty value"*) ok "…and the diagnostic names $f" ;;
+                   *) bad "$f '' diagnostic missing, got: $out" ;; esac
+done
+# A trailing flag with no argument at all was a bare `shift` failure: rc 1, zero output.
+_rc=0; out="$(bash "$BIN" 4242 --dl 2>&1)" || _rc=$?
+if [[ "$_rc" -eq 2 ]]; then ok "a trailing --dl with no argument exits 2, not a silent rc 1"
+else bad "trailing --dl expected rc=2, got $_rc"; fi
+if [[ -n "$out" ]]; then ok "…and says why (it used to print nothing at all)"
+else bad "trailing --dl produced no output"; fi
+
 _summary "adopt-to-dl-selftest"

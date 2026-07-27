@@ -117,8 +117,11 @@ _ibh_hooks_dir() {
 }
 
 _ibh_main() {
-    # --check <repo-dir>: DRY RUN. Evaluate every precondition a real run evaluates, in the same
-    # order, in this same function — then stop before the first write. On success it prints the
+    # --check <repo-dir>: DRY RUN. Evaluate every precondition a real run evaluates — except the
+    # toolkit-side `chmod +x` on the hook SOURCES, which is itself a write and which a dry run
+    # must not perform (it can EPERM on sources you do not own even when the mode is already
+    # right; no root-owned install topology is documented, so this is claim precision, not a
+    # live path) — in the same order, in this same function, then stop before the first write. On success it prints the
     # directory the install WOULD target (stdout, nothing else) and exits 0; on refusal it
     # prints the same diagnostic a real run would and exits non-zero, with empty stdout.
     #
