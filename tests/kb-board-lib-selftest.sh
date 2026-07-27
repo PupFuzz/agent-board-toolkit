@@ -547,4 +547,27 @@ expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'           
 if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
 
 # ---------------------------------------------------------------------------
+echo "== kb_require_value — a value-taking flag's PRESENCE is the dispatch signal =="
+# The primitive behind card#5146. Consumers pass `"$1" "${2:-}"` from their arg loop, so
+# this must reject BOTH an explicitly-empty value and a missing argument entirely — the two
+# inputs that a later `[[ -n "$var" ]]` cannot tell apart from the flag being absent.
+rc=0; err="$(kb_require_value --dl "" 2>&1)" || rc=$?
+eq "empty value → rc 1"                    "1" "$rc"
+eq "empty value names the flag"            "true" "$(case "$err" in *'--dl requires a non-empty value'*) echo true ;; *) echo false ;; esac)"
+eq "diagnostic is prefixed with the prog"  "true" "$(case "$err" in "$KB_PROG:"*) echo true ;; *) echo false ;; esac)"
+
+rc=0; kb_require_value --dl >/dev/null 2>&1 || rc=$?
+eq "missing argument entirely → rc 1"      "1" "$rc"
+
+rc=0; err="$(kb_require_value --dl "DL-7" 2>&1)" || rc=$?
+eq "non-empty value → rc 0"                "0" "$rc"
+eq "non-empty value is silent"             ""  "$err"
+
+# Whitespace is a VALUE, not emptiness — this guard's job is presence-vs-absence only, and a
+# domain-meaningless value stays the caller's validation to make (promote-released-cards, for
+# one, normalizes whitespace and then rejects it with its own message).
+rc=0; kb_require_value --dl " " >/dev/null 2>&1 || rc=$?
+eq "whitespace-only value → rc 0 (not this guard's call)" "0" "$rc"
+
+# ---------------------------------------------------------------------------
 _summary "kb-board-lib-selftest"

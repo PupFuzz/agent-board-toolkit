@@ -280,19 +280,19 @@ cmd_create_card() {
     local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --type) type="$2"; shift 2 ;;
-            --name) name="$2"; shift 2 ;;
-            --column) column="$2"; shift 2 ;;
-            --description) desc="$2"; shift 2 ;;
-            --tags) tags="$2"; shift 2 ;;
-            --external-id) ext_id="$2"; shift 2 ;;
-            --dl) dl="$2"; shift 2 ;;
-            --pr) pr="$2"; shift 2 ;;
-            --pr-url) pr_url="$2"; shift 2 ;;
-            --issue) issue="$2"; shift 2 ;;
-            --issue-url) issue_url="$2"; shift 2 ;;
-            --version) version="$2"; shift 2 ;;
-            --origin) origin="$2"; shift 2 ;;
+            --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
+            --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
+            --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
+            --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
+            --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
+            --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
+            --pr) kb_require_value "$1" "${2:-}" || return 2; pr="$2"; shift 2 ;;
+            --pr-url) kb_require_value "$1" "${2:-}" || return 2; pr_url="$2"; shift 2 ;;
+            --issue) kb_require_value "$1" "${2:-}" || return 2; issue="$2"; shift 2 ;;
+            --issue-url) kb_require_value "$1" "${2:-}" || return 2; issue_url="$2"; shift 2 ;;
+            --version) kb_require_value "$1" "${2:-}" || return 2; version="$2"; shift 2 ;;
+            --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
@@ -352,8 +352,8 @@ cmd_move() {
     local task_ref="" column="" keep_refs=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --task) task_ref="$2"; shift 2 ;;
-            --column) column="$2"; shift 2 ;;
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
+            --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
@@ -379,16 +379,16 @@ cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane="" keep_refs=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --task) task_ref="$2"; shift 2 ;;
-            --pr) pr="$2"; shift 2 ;;
-            --pr-url) pr_url="$2"; shift 2 ;;
-            --issue) issue="$2"; shift 2 ;;
-            --issue-url) issue_url="$2"; shift 2 ;;
-            --version) version="$2"; shift 2 ;;
-            --column) column="$2"; shift 2 ;;
-            --swimlane) swimlane="$2"; shift 2 ;;
-            --description) desc="$2"; shift 2 ;;
-            --dl) dl="$2"; shift 2 ;;
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
+            --pr) kb_require_value "$1" "${2:-}" || return 2; pr="$2"; shift 2 ;;
+            --pr-url) kb_require_value "$1" "${2:-}" || return 2; pr_url="$2"; shift 2 ;;
+            --issue) kb_require_value "$1" "${2:-}" || return 2; issue="$2"; shift 2 ;;
+            --issue-url) kb_require_value "$1" "${2:-}" || return 2; issue_url="$2"; shift 2 ;;
+            --version) kb_require_value "$1" "${2:-}" || return 2; version="$2"; shift 2 ;;
+            --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
+            --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
+            --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
             --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
@@ -506,9 +506,9 @@ cmd_list() {
     local column="" type="" swimlane=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --column) column="$2"; shift 2 ;;
-            --type) type="$2"; shift 2 ;;
-            --swimlane) swimlane="$2"; shift 2 ;;
+            --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
+            --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -537,9 +537,9 @@ cmd_link() {
     local from="" to="" relation=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --from) from="$2"; shift 2 ;;
-            --to) to="$2"; shift 2 ;;
-            --relation) relation="$2"; shift 2 ;;
+            --from) kb_require_value "$1" "${2:-}" || return 2; from="$2"; shift 2 ;;
+            --to) kb_require_value "$1" "${2:-}" || return 2; to="$2"; shift 2 ;;
+            --relation) kb_require_value "$1" "${2:-}" || return 2; relation="$2"; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -581,7 +581,7 @@ cmd_show() {
     local task_ref=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --task) task_ref="$2"; shift 2 ;;
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -653,7 +653,7 @@ cmd_archive() {
     local task_ref="" dry="" force=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --task) task_ref="$2"; shift 2 ;;
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
             --force) force=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
@@ -721,7 +721,7 @@ cmd_delete() {
     local task_ref="" hard="" dry="" yes="" ans=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --task) task_ref="$2"; shift 2 ;;
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --hard) hard=1; shift ;;
             --dry-run) dry=1; shift ;;
             --yes|-y) yes=1; shift ;;
@@ -814,8 +814,8 @@ _kbc_field_set_options() {
     local field="" options="" have_options=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --field)   field="$2"; shift 2 ;;
-            --options) options="$2"; have_options=1; shift 2 ;;
+            --field)   kb_require_value "$1" "${2:-}" || return 2; field="$2"; shift 2 ;;
+            --options) kb_require_value "$1" "${2:-}" || return 2; options="$2"; have_options=1; shift 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -901,7 +901,11 @@ main() {
     # Optional global `--board NAME` before the subcommand selects the board env.
     local board_name=""
     if [[ "${1:-}" == "--board" ]]; then
-        board_name="${2:-}"
+        # The highest-stakes instance of the empty-value class: an empty --board falls
+        # through to the DEFAULT board, so `--board "$KEY"` with KEY unset writes to a
+        # different board than the caller named — a wrong-board write, not a no-op.
+        kb_require_value "$1" "${2:-}" || exit 2
+        board_name="$2"
         shift 2
     fi
     # Resolves board env + host env + token; sets KB_API / KB_BOARD_ID / KB_TOKEN.

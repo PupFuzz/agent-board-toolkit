@@ -95,6 +95,8 @@ eq "skip log names the card id"                     "true"  "$(has '(#2)' "$err"
 eq "skip log names its current stage"               "true"  "$(has 'stage 99' "$err")"
 eq "skip log explains the reason"                   "true"  "$(has 'never resurrects declined/backlog cards' "$err")"
 eq "summary surfaces the stage-guarded count"       "true"  "$(has '1 stage-guarded' "$out")"
+eq "guard-on states stage-guard ON on stderr"      "true"  "$(has 'stage-guard ON' "$err")"
+eq "guard-on ON line names the guarded stage ids"  "true"  "$(has 'Shipped-class source stages: 51' "$err")"
 
 echo "== guard ON, whitespace in the input is tolerated (normalized) =="
 run_promote --shipped-stages " 51 , 51 "
@@ -106,6 +108,38 @@ rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" --shipped-sta
 eq "non-numeric token → dies rc 2"                  "2"     "$rc"
 eq "die names the bad --shipped-stages value"       "true"  "$(has 'comma-separated list of numeric stage ids' "$err")"
 
+echo "== whitespace-ONLY --shipped-stages → normalizes to empty and dies (the '' case arm) =="
+# Pins that the '' arm in the validation case is REACHABLE and doing work: this input passes
+# require_value (non-empty as typed) and only becomes empty after the whitespace strip. It is
+# the reason that arm must not be deleted as dead code once require_value covers "".
+rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" --shipped-stages " " 2>&1)" || rc=$?
+eq "whitespace-only → dies rc 2"                    "2"     "$rc"
+eq "die reports the normalized-empty value"         "true"  "$(has "(got '')" "$err")"
+
+echo "== EXPLICITLY EMPTY --shipped-stages → dies; never a silent unguarded promote (#5144) =="
+# RED-when-reverted: drop require_value from the --shipped-stages arm and this block fails on
+# every assertion — rc becomes 0, the wont_do card #2 is PATCHed (resurrected off its stale
+# stamp), and the summary is byte-identical to a run with no guard at all. That silence is the
+# defect: an unexpanded shell variable or an empty CI input selected the unguarded default.
+run_promote --shipped-stages ""
+eq "explicit empty → dies rc 2"                     "2"     "$rc"
+eq "die names the flag, not an unbound variable"    "true"  "$(has '--shipped-stages requires a non-empty value' "$err")"
+eq "no card was PATCHed (died before any move)"     ""      "$patched"
+eq "no summary line was printed"                    "false" "$(has 'moved,' "$out")"
+
+echo "== every value-taking flag rejects an empty value (the whole class, not one instance) =="
+for f in --dls --base --head --shipped-stages --config; do
+  rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" "$f" "" 2>&1)" || rc=$?
+  eq "$f \"\" → dies rc 2"                          "2"     "$rc"
+  eq "$f \"\" die names the flag"                   "true"  "$(has "$f requires a non-empty value" "$err")"
+done
+
+echo "== a trailing flag with no argument dies by flag name, not 'unbound variable' =="
+rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls 2>&1)" || rc=$?
+eq "trailing --dls → dies rc 2"                     "2"     "$rc"
+eq "die names the flag"                             "true"  "$(has '--dls requires a non-empty value' "$err")"
+eq "no raw set -u unbound-variable leak"            "false" "$(has 'unbound variable' "$err")"
+
 echo "== guard OFF (input absent): SAME fixture → prior behavior, both cards promoted =="
 # RED-when-reverted anchor: if the guard is removed, the guard-ON block above would ALSO
 # promote #2 (its 'NOT PATCHed' assertion flips to true→fail, and the skip-log asserts fail).
@@ -114,6 +148,12 @@ eq "guard off → rc 0"                               "0"     "$rc"
 eq "card #1 promoted"                               "true"  "$(has '/tasks/1.json' "$patched")"
 eq "card #2 ALSO promoted (unconditional prior)"    "true"  "$(has '/tasks/2.json' "$patched")"
 eq "guard-off summary omits stage-guarded (byte-identical line)" "false" "$(has 'stage-guarded' "$out")"
+# card#5152: the summary stays byte-identical (above) AND the guard's state is stated on
+# its own stderr line, every run. Before this, an ABSENT guard produced a summary
+# indistinguishable from a guarded one — an unguarded promote that reads as clean.
+eq "guard-off states stage-guard OFF on stderr"     "true"  "$(has 'stage-guard OFF' "$err")"
+eq "guard-off OFF line names the remedy"            "true"  "$(has 'Pass --shipped-stages' "$err")"
+eq "guard-off OFF line is not on stdout"            "false" "$(has 'stage-guard OFF' "$out")"
 eq "guard-off run logs no skip line"                "false" "$(has 'never resurrects' "$err")"
 
 

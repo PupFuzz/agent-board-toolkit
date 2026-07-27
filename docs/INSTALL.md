@@ -129,11 +129,39 @@ Consume `promote-released-cards` via the [`promote/`](../promote/action.yml) com
     expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
     api-base: ${{ vars.KANBAN_API_BASE }}   # injected into the checked-out .release-pr.json when the committed value is a placeholder
     dls: ${{ github.event.inputs.dls }}         # optional workflow_dispatch passthrough
-    shipped-stage-ids: ${{ vars.KANBAN_SHIPPED_STAGE_IDS }} # optional: comma-separated Shipped-class stage ids — a matched card NOT in one is skipped, so a stale/recycled DL stamp on a declined card is never promoted. Blank = no guard (prior behavior)
+    shipped-stage-ids: '52'                    # optional, EXAMPLE id — use YOUR board's Shipped-class stage id(s), comma-separated. A matched card NOT in one is skipped, so a stale/recycled DL stamp on a declined card is never promoted. Blank = no guard (prior behavior). Prefer a LITERAL — see below
     dry-run: ${{ github.event.inputs.dry_run }} # optional workflow_dispatch passthrough
 ```
 
 Pin by **full 40-char SHA with the `# vX.Y.Z` comment** (the comment is what dependabot parses). The consumer repo still needs its own `.release-pr.json` (§4) and unset-guards for the two repo variables if it wants friendlier errors than the script's own fail-closed ones.
+
+> **Give `shipped-stage-ids` a literal, not a bare `${{ vars.… }}`.** The stage ids are per-board
+> constants that change only when the board's columns are reconfigured, so a repo variable buys
+> nothing — and it fails **silently** in the one direction that matters. An unset variable renders
+> as a blank input, the action correctly omits the flag, and the source-stage guard is simply
+> **off**: no error, no warning, and a promote summary identical to a run that never asked for the
+> guard. The workflow file still *reads* as guard-enabled, so the next person to audit it sees a
+> protection that isn't running. That is the same "looks enabled, isn't" shape the guard exists to
+> prevent, one layer up.
+>
+> If you do source it from a variable, **preflight it** exactly like `KANBAN_API_BASE` and
+> `KANBAN_EXPECTED_HOST` above — an explicit `::error::` on empty, so an unset variable fails the
+> job instead of quietly downgrading it:
+>
+> ```yaml
+> - name: Preflight the source-stage guard
+>   env:
+>     KANBAN_SHIPPED_STAGE_IDS: ${{ vars.KANBAN_SHIPPED_STAGE_IDS }}
+>   run: |
+>     if [ -z "$KANBAN_SHIPPED_STAGE_IDS" ]; then
+>       echo "::error::vars.KANBAN_SHIPPED_STAGE_IDS is unset — this workflow reads as guard-enabled but the source-stage guard would run OFF. Set it, or pass a literal." >&2
+>       exit 1
+>     fi
+> ```
+>
+> Note this is a *consumer-side* choice: the action cannot tell "the operator omitted the input" from
+> "the operator wired a variable that is unset", so it cannot warn on blank without crying wolf at
+> every consumer who has deliberately not adopted the guard. Only the consumer knows its own intent.
 
 ### 6b. Non-Actions consumer — vendor + drift-check
 

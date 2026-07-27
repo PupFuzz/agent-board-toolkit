@@ -39,11 +39,28 @@
 #   NOT in this set is SKIPPED (with a log line) rather than moved — promotion means
 #   Shipped→Released and must never resurrect a declined/backlog card carrying a stale or
 #   recycled DL/PR stamp. Absent (default) = no source-stage guard, byte-identical prior
-#   behavior — consumers opt in.
+#   behavior — consumers opt in. ABSENT is the only way to select that default: an
+#   explicitly EMPTY value (`--shipped-stages ""`) is a config error and dies, like any
+#   other malformed set — it never silently degrades to the unguarded default.
 set -euo pipefail
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
+
+# require_value <flag> <value>: die unless a value-taking flag was given a non-empty value.
+# An option that consumes "$2" must dispatch on the FLAG being SEEN, not on its VALUE being
+# non-empty — otherwise `--flag ""` (an unexpanded shell variable, an empty CI input) is
+# indistinguishable from the flag being absent and silently selects the DEFAULT path. For
+# --shipped-stages that default is "no source-stage guard", so an empty value produced an
+# UNGUARDED promote with a summary line byte-identical to a guarded one (card#5144). None of
+# these flags has a meaningful empty value; an intentional "none" would be a spelled
+# sentinel. Also catches a trailing flag with no argument at all, which `set -u` would
+# otherwise report as an unbound-variable error naming no flag.
+# Mirrors kb_require_value in _kb-board-lib.sh (card#5146) — this script is vendored
+# standalone into consumer repos and MUST NOT source that lib, so the guard is duplicated;
+# keep the two in sync, as with host_ok and numlist. release-pr-body carries the third copy
+# for the same reason.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.
 # Only consulted when SHIPPED_STAGES is non-empty (the guard is opt-in).
@@ -83,13 +100,18 @@ merge_commit_tip() {
 CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dls)            DLS_IN="$2"; shift 2;;
-    --base)           BASE="$2"; shift 2;;
-    --head)           HEAD_REF="$2"; shift 2;;
-    --shipped-stages) SHIPPED_STAGES="$2"; shift 2;;
+    --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
+    --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
+    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
-    --config)         CONFIG="$2"; shift 2;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0;;
+    --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    # Print the contiguous leading comment block, whatever its length. A FIXED line range
+    # silently truncates the moment the header outgrows it — this header reached 43 lines
+    # while the range still said 20, so --help stopped before `Usage:`, the one block a
+    # --help user needs. Widening the range is not the fix either: it would leak
+    # `set -euo pipefail` and the helpers into user-facing output.
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
@@ -97,6 +119,10 @@ done
 # Normalize + validate the opt-in source-stage guard set: strip whitespace, then require a
 # non-empty comma-separated list of positive integers (mirrors the board_id/stage numeric
 # checks). A malformed set is a config error, not a silent no-guard — fail loud.
+# require_value has already rejected an explicitly-empty value, so a non-empty
+# $SHIPPED_STAGES here means exactly "the flag was passed". The '' arm below is NOT dead
+# code: a whitespace-only value (`--shipped-stages " "`) survives require_value and
+# normalizes to empty right here, which is the case that arm exists to reject.
 if [ -n "$SHIPPED_STAGES" ]; then
   SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
   case "$SHIPPED_STAGES" in
@@ -320,6 +346,22 @@ fi
 # The stage-guarded count is surfaced only when the guard is active, so a run with no
 # --shipped-stages keeps a byte-identical summary line (backward compatibility).
 echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
+# --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
+# a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
+# isn't" shape the guard exists to prevent, one layer out.
+#
+# Deliberately NOT folded into the summary line above: that line is byte-identical when the
+# guard is absent by an explicit v0.21.0 fleet-adoption decision, anything parsing it would
+# break, and a selftest asserts it. Reporting on a SEPARATE stderr line gets the visibility
+# without overturning that decision — the summary stays a stable parse target, and stderr is
+# where this tool already puts its operator-facing findings (the no-card WARNING above, the
+# per-card guard skips).
+if [ -n "$SHIPPED_STAGES" ]; then
+  echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
+else
+  echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
+fi
 # --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
 # Systemic move failure (a card matched but every PATCH errored) → exit 1.
 if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
