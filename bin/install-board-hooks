@@ -294,7 +294,12 @@ _ibh_main() {
                 echo "  not this one. To wire this submodule, symlink the toolkit hooks into $cdir/hooks by hand"
                 echo "  (see docs/HOOKS.md; check first whether a hook already lives there)."
             else
-                echo "install-board-hooks: $root has a SEPARATE git directory — .git is a file pointing at $cdir."
+                # Deliberately does NOT assert "`.git` is a file pointing at it": that is true of a
+                # --separate-git-dir checkout, which is what reaches this arm in practice, but this
+                # is also the fall-through for any state where the common dir is simply elsewhere
+                # (an exported GIT_DIR, say), and a wrong-but-specific cause is worse than an
+                # honest generic one. What IS known is stated: where git dispatches from.
+                echo "install-board-hooks: $root has a SEPARATE git directory, at $cdir."
                 echo "  Refusing: git dispatches this repository's hooks from $cdir/hooks, and this installer services"
                 echo "  only a checkout whose hooks directory is inside its own .git directory."
                 echo "  There is no second checkout to run this against — that git directory is this repository's only one."
