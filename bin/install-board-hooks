@@ -24,12 +24,16 @@ set -euo pipefail
 # _ibh_read_hooks_path <repo-dir>: the ONE reader of core.hooksPath. Echoes the value git will
 # actually use and returns its PRESENCE as a status — the two facts a caller must not conflate.
 #   0  SET (the value may be EMPTY — see below)   1  unset   2  set but git cannot expand it
-# Two properties are load-bearing and both were verified against git 2.43:
+# Two properties are load-bearing. Both were measured on git 2.43.0, and the selftest fixtures
+# exercise this resolver's answers for both, so CI re-verifies them on its own git build — the
+# second environment this file needs, after an ordering claim measured only here survived four
+# review passes and failed on CI's first run:
 #   * `--path` EXPANDS a leading `~` / `~user` (core.hooksPath is a path-type variable, and git
 #     dispatches from the expanded dir). Reading the raw value makes `~/hooks` look relative.
 #     A RELATIVE value is returned unchanged by `--path`, so the relative arm is unaffected.
 #   * an EMPTY value is SET, and git does NOT fall back to <git-dir>/hooks — it dispatches NO
-#     hooks at all. `--get` distinguishes it from unset by EXIT STATUS ONLY (unset → 1, empty →
+#     hooks at all (measured on git 2.43.0; the fixture pins this resolver's answer, not git's
+#     dispatch, so a build that DID fall back would make our "disabled" state a false finding). `--get` distinguishes it from unset by EXIT STATUS ONLY (unset → 1, empty →
 #     0 with empty output), so any caller testing the VALUE for emptiness silently reads
 #     "hooks disabled" as "no hooksPath configured". That is why this returns a status.
 # rc 2 is `~unknownuser` and friends: git fatals expanding it here AND at hook dispatch, so the
@@ -190,10 +194,13 @@ _ibh_main() {
     # separates "no hooksPath" from "hooksPath disabled", and installing on the latter is a
     # silent no-op — the #4281 shape this installer exists to avoid.
     hp_rc=0; hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
-    # UNREACHABLE in practice, and deliberately kept: every value `git config --path` cannot
-    # expand also fatals the `rev-parse` probe above, which reports git's own words first
-    # (verified). The arm stays because folding an unknown read status into "unset" is the guess
-    # this tool exists to avoid — the same disclosure the session-close report carries.
+    # REACHABLE, and which of this and the `rev-parse` probe above fires is git-version-
+    # dependent: on git 2.43.0 an unexpandable path-type value fatals every command in the repo
+    # (so the probe reports it first), while on git 2.54.0 `rev-parse` succeeds and only this
+    # explicit `--path` read fatals. Measured in both environments after four review passes on
+    # ONE host agreed this arm was dead; the boundary version is unknown, so no ordering is
+    # claimed. It stays because folding an unknown read status into "unset" is the guess this
+    # tool exists to avoid.
     if [ "$hp_rc" = 2 ]; then
         {
             echo "install-board-hooks: core.hooksPath is set to a value git cannot expand (e.g. '~unknownuser/...')."

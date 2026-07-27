@@ -76,8 +76,8 @@ BSC_WORKTREES=(
 BSC_HOOKS=(post-checkout pre-push)
 
 # _bsc_hooks_dir <repo-dir> — echo the directory git ACTUALLY dispatches this repo's hooks
-# from.  rc 0 = resolved · 1 = git REFUSES this checkout, and stdout carries git's own
-# diagnostic instead of a directory · 2 = no checkout there · 7 = a bare repository · 8 = a
+# from.  rc 0 = resolved · 1 and 6 = REFUSED, and stdout carries the cause instead of a
+# directory (git's own words for 1, ours for 6) · 2 = no checkout there · 7 = a bare repository · 8 = a
 # directory inside someone else's work tree, not a checkout root (stdout explains, for both) ·
 # 3 = resolved, but core.hooksPath is inside the tracked work tree (install-board-hooks
 # refuses that target; git still dispatches from it) · 4 = core.hooksPath is SET but EMPTY, so
@@ -135,7 +135,12 @@ _bsc_hooks_dir() {
     # false branch and silently become "not a work tree" at the caller.
     local hp hp_rc=0 hp_set=""
     hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
-    if [ "$hp_rc" = 2 ]; then exit 6; fi
+    # Carry a cause out on stdout, exactly as the rc-1 arm does: the contract is "a refusal
+    # names why", and it must not depend on WHICH refusal arm the local git version routes to.
+    if [ "$hp_rc" = 2 ]; then
+      printf 'core.hooksPath is set to a value git cannot expand'
+      exit 6
+    fi
     if [ "$hp_rc" = 0 ]; then hp_set=1; fi
     _ibh_hooks_dir "$root" "$hp" "$cdir" "$hp_set"
   )
@@ -179,6 +184,9 @@ _bsc_active_toolkit() {
 #   * a trailing CR makes the interpreter name carry the stray \r — git then fails "cannot
 #     exec". This is the native hazard of the Windows/MSYS COPY install topology this toolkit
 #     supports (docs/INSTALL.md §2);
+# Every kernel behaviour below was measured on ONE kernel (6.8) — the suite asserts THIS
+# function's verdicts, which are pure bash, so CI does not re-verify the kernel side on a second
+# one. Read them as "measured there", not as universal.
 #   * SPACE and TAB — and ONLY those two — separate the interpreter: Linux fs/binfmt_script.c
 #     skips leading spaces/tabs and ends the name at the next one. A POSIX [[:space:]] class is
 #     a SUPERSET (it also matches \n \v \f \r) and reading it as "the kernel's whitespace
@@ -343,8 +351,13 @@ _bsc_main_checkout() {
   printf '%s' "$parent"
 }
 
-# _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically,
-# never as strings: `--git-common-dir` is answered relative to the path the caller typed while
+# _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically
+# WHERE `readlink -m` EXISTS — which is a GNU coreutils extension. On a host without it the
+# fallback below degrades to a string compare, i.e. exactly the defect this function was written
+# to fix (see below). That is an UNVERIFIED environment: every measurement behind this function
+# was taken on GNU coreutils, so the degradation is disclosed rather than claimed handled, and a
+# lexical fallback (the pure-bash `_ibh_norm` next door) is the obvious follow-up. Compared
+# canonically, then, and never as strings where the tool is available: `--git-common-dir` is answered relative to the path the caller typed while
 # the classification uses `--show-toplevel`, which is always canonical, so a symlinked repo
 # path, a trailing slash, or a sub-directory of the work tree all make identical directories
 # compare unequal. That difference used to fall through to the "your .git is a file" arm, which
@@ -466,10 +479,20 @@ _bsc_hook_dispatch_report() {
          echo "      (an empty value does NOT fall back to .git/hooks; a hook file sitting there is never read)"
          echo "      fix: git -C ${repo} config --unset core.hooksPath   then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
-      # In practice the rc-1 arm ALWAYS reports this first: every value git cannot expand also
-      # fatals `rev-parse` (verified). The arm stays so an unknown read status is never silently
-      # folded into "unset" — that guess is the defect class this check exists for.
-      6) echo "• ${name}: ✗ core.hooksPath is set to a value git cannot expand — git fatals when it dispatches, so NO hook runs"
+      # BOTH arms are reachable, and WHICH one fires is git-version-dependent — measured, not
+      # assumed, after four review passes on one host agreed this was unreachable and CI proved
+      # otherwise on the first run in a second environment:
+      #   git 2.43.0 — an unexpandable path-type config value is expanded during the GENERAL
+      #     config read, so EVERY command in the repo fatals, `rev-parse --git-dir` included,
+      #     and the rc-1 arm reports it in git's own words. (It is not hooksPath-specific:
+      #     core.excludesFile and core.attributesFile behave the same way there.)
+      #   git 2.54.0 — `rev-parse --git-dir` SUCCEEDS; only the explicit `config --path --get`
+      #     fatals, so control reaches here and THIS arm reports it.
+      # The boundary version between those two is not known — only that the two differ — so no
+      # ordering is claimed. The arm exists because folding an unknown read status into "unset"
+      # is the guess this check exists to prevent, and it is now the only thing standing between
+      # a newer git and exactly that guess.
+      6) echo "• ${name}: ✗ ${dir} — git fatals when it dispatches, so NO hook runs"
          echo "      fix: git -C ${repo} config core.hooksPath <dir>   (or --unset), then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
       7|8) echo "• ${name}: — skipped: ${dir}"

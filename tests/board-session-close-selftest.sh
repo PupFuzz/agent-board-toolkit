@@ -193,7 +193,11 @@ state()   { _bsc_hook_state "$1" "${2:-post-checkout}" "$TK"; }
 # PATH itself, so the fixture toolkit's bin/ goes on PATH inside the substitution subshell (the
 # assignment cannot leak back out). report_nopath runs the same leg with the tool ABSENT.
 ROUT=""; RN=0
+# PATH is scoped to each substitution ON PURPOSE: every probe needs its own, and none may leak
+# into the next.
+# shellcheck disable=SC2030,SC2031
 report()        { RN=0; ROUT="$(PATH="$TK/bin:$UB"; _bsc_hook_dispatch_report "$@")" || RN=$?; }
+# shellcheck disable=SC2030,SC2031
 report_nopath() { RN=0; ROUT="$(PATH="$UB"; _bsc_hook_dispatch_report "$@")" || RN=$?; }
 saw()     { case "$ROUT" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
@@ -310,25 +314,68 @@ export HOME="$_saveH"
 eq "REGRESSION PIN: the raw value would resolve inside the work tree" \
    "$r/~/tildehooks" "$(_ibh_hooks_dir_probe "$r" '~/tildehooks')"
 
-# --- core.hooksPath git cannot expand ⇒ report GIT'S OWN cause, never a guessed one ---
-# Verified: such a value fatals EVERY git command in the repo — `rev-parse` included, which is
-# why the resolver's own dedicated arm is not what surfaces it. The failure mode that matters is
-# the DIAGNOSIS: "not a git work tree" would be a confident wrong cause (the repo is fine; its
-# config is not), and it points the operator at the wrong fix. A wired .git/hooks sits there to
-# prove the check is not merely reading the filesystem.
+# --- core.hooksPath git cannot expand ⇒ a REFUSAL with a specific cause, by either route ---
+# WHICH arm reports this is git-version-dependent, so this block asserts the BEHAVIOUR both arms
+# must guarantee and accepts either route to it. The history is the reason it is written this
+# way: on git 2.43.0 an unexpandable path-type value is expanded during the general config read,
+# so every command in the repo fatals and the rc-1 arm reports it in git's own words; on git
+# 2.54.0 `rev-parse` succeeds and only the explicit `--path` read fatals, so the rc-6 arm
+# reports it. This test previously pinned rc 1 — it passed four review rounds on one host and
+# failed on CI's first run in a second environment. Pinning the arm was the defect; the
+# guarantee is what matters, and it is the same either way:
+#   * NEVER folded into "unset" (rc 0/2 here would mean the repo was read as ordinarily
+#     configured, and a perfectly-wired .git/hooks sits in this fixture to make that a ✓);
+#   * reported as a FINDING, with a cause specific enough to act on.
 r="$H/hookspath-baduser"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
 git -C "$r" config core.hooksPath '~nosuchuser-abc/x'
 _rc=0; _d="$(_bsc_hooks_dir "$r")" || _rc=$?
-eq "unexpandable hooksPath: rc 1 — git refuses the checkout"  "1" "$_rc"
-eq "unexpandable hooksPath: carries out the message git itself printed" "true" \
-   "$(case "$_d" in *"expand user dir"*) echo true ;; *) echo false ;; esac)"
+case "$_rc" in
+  1) ok "unexpandable hooksPath: refused via the rc-1 arm (git fatals repo-wide on this build)" ;;
+  6) ok "unexpandable hooksPath: refused via the rc-6 arm (only the --path read fatals here)" ;;
+  *) bad "unexpandable hooksPath: expected a refusal (rc 1 or 6), got rc=$_rc — rc 0/2 would mean it was folded into 'unset'" ;;
+esac
+eq "unexpandable hooksPath: a cause is carried out, not an empty answer" "true" \
+   "$([ -n "$_d" ] && echo true || echo false)"
+case "$_d" in
+  *"expand user dir"*|*"cannot expand"*) ok "unexpandable hooksPath: the cause names the expansion failure" ;;
+  *) bad "unexpandable hooksPath: cause did not name the expansion failure: $_d" ;;
+esac
 report "$r"
 eq "unexpandable hooksPath: IS a finding"                     "1" "$RN"
-eq "unexpandable hooksPath: the report quotes that refusal"    "true" "$(saw "expand user dir")"
-# The cause must be git's, and it must be the FIRST thing the line says — an assertion on the
-# absence of some wording we no longer emit anywhere could never go red.
-eq "unexpandable hooksPath: the line leads with 'git refuses this checkout'" "true" \
-   "$(saw "✗ git refuses this checkout")"
+case "$ROUT" in
+  *"expand user dir"*|*"cannot expand"*) ok "unexpandable hooksPath: the report states the cause" ;;
+  *) bad "unexpandable hooksPath: the report did not state the cause" ;;
+esac
+# The guarantee that actually matters: a wired .git/hooks must NOT let this read as healthy.
+eq "unexpandable hooksPath: never reported ✓ despite a perfect .git/hooks" "false" \
+   "$(saw "✓ post-checkout")"
+
+# …and the OTHER arm, on every host. The block above exercises whichever route the local git
+# takes; this one forces the other with a `git` shim that reproduces the newer build's shape
+# (rev-parse succeeds, only the explicit --path read fatals), so both arms are covered wherever
+# the suite runs. Without this, an arm is only ever exercised on the git versions that happen to
+# route to it — which is precisely how it stayed uncovered while four review passes on one host
+# called it dead code.
+shimdir="$TMP/gitshim"; mkdir -p "$shimdir"
+# shellcheck disable=SC2016  # the unexpanded $ are the SHIM's own source, not this script's
+{ printf '#!/bin/sh\n'
+  printf 'for a in "$@"; do case "$a" in --path) p=1 ;; core.hooksPath) k=1 ;; esac; done\n'
+  printf 'if [ -n "$p" ] && [ -n "$k" ]; then echo "fatal: failed to expand user dir in: '"'"'~nosuchuser-abc/x'"'"'" >&2; exit 128; fi\n'
+  printf 'exec %s "$@"\n' "$(command -v git)"
+} > "$shimdir/git"; chmod +x "$shimdir/git"
+r="$H/hookspath-baduser-shim"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+# shellcheck disable=SC2031  # the "modified in a subshell" chain is report()'s, not this line's
+_savedpath="$PATH"; PATH="$shimdir:$PATH"    # restored below
+_rc=0; _d="$(_bsc_hooks_dir "$r")" || _rc=$?
+eq "forced rc-6 arm: refused, not folded into 'unset'" "6" "$_rc"
+eq "forced rc-6 arm: carries a cause out, like the rc-1 arm does" "true" \
+   "$(case "$_d" in *"cannot expand"*) echo true ;; *) echo false ;; esac)"
+_out="$(_bsc_hook_dispatch_report "$r" 2>&1)"
+PATH="$_savedpath"
+eq "forced rc-6 arm: the report states the cause" "true" \
+   "$(case "$_out" in *"cannot expand"*) echo true ;; *) echo false ;; esac)"
+eq "forced rc-6 arm: never reported ✓ despite a perfect .git/hooks" "false" \
+   "$(case "$_out" in *"✓ post-checkout"*) echo true ;; *) echo false ;; esac)"
 
 # --- in-tree core.hooksPath: git dispatches from it, install-board-hooks refuses it ---
 r="$H/hookspath-intree"; mkrepo "$r"; mkdir -p "$r/.githooks"; wire "$r/.githooks" "$TK"
