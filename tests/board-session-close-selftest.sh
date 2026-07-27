@@ -235,7 +235,7 @@ eq "wrong toolkit clone: says it still fires"              "true"  "$(saw "it st
 r="$H/noexec"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
 rm -f "$r/.git/hooks/post-checkout"
 cp "$TK/hooks/post-checkout" "$r/.git/hooks/post-checkout"; chmod -x "$r/.git/hooks/post-checkout"
-eq "not executable: NOT-EXECUTABLE"          "NOT-EXECUTABLE" "$(state "$r/.git/hooks")"
+eq "not executable: NOT-RUNNABLE"            "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
 report "$r"
 eq "not executable: exactly 1 finding" "1" "$RN"
 chmod +x "$r/.git/hooks/post-checkout"
@@ -402,6 +402,16 @@ eq "…and names the target it cannot exec"          "true" "$(saw "$H/toolkit-c
 chmod +x "$H/toolkit-chain/hooks/post-checkout"
 eq "…the SAME chain with the target executable is OK" "OK" "$(state "$r/.git/hooks")"
 
+# The extraction closed a gap nobody had reported: a DIRECTORY named post-checkout is -e and
+# -x, so only a file-type test catches it. It is covered here because the ONE predicate now
+# owns every runnability fact — this is the property the extraction was for.
+r="$H/hook-is-a-dir"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+mkdir -p "$r/.git/hooks/post-checkout"
+eq "a DIRECTORY where the hook should be: NOT-RUNNABLE" "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
+eq "…and the reason says so"  "true" \
+   "$(case "$(_bsc_state_reason NOT-RUNNABLE "$r/.git/hooks/post-checkout" post-checkout)" in *"is a directory"*) echo true ;; *) echo false ;; esac)"
+rm -rf "$r/.git/hooks/post-checkout"
+
 # --- DISCLOSED BOUNDS: two shapes that read as OK on purpose ----------------
 # Both are documented in bin/board-session-close and docs/HOOKS.md as accepted false-OK bounds:
 # closing either requires EXECUTING an arbitrary hook, which a read-only session check must not
@@ -428,8 +438,8 @@ eq "separate-git-dir: dispatch dir is the EXTERNAL git dir" "$H/sgd-gitdir/hooks
 report "$H/sgd"
 eq "separate-git-dir: does NOT print an install command that would exit 1" "false" \
    "$(saw "fix: install-board-hooks")"
-eq "separate-git-dir: says the installer cannot service it, and names the manual wiring" "true" \
-   "$(saw "cannot service this checkout")"
+eq "separate-git-dir: says it cannot fix this, naming BOTH directories" "true" \
+   "$(saw "would target $H/sgd/.git/hooks, but git dispatches from $H/sgd-gitdir/hooks")"
 eq "separate-git-dir: the manual wiring names the real dispatch dir" "true" \
    "$(saw "ln -s <toolkit>/hooks/post-checkout $H/sgd-gitdir/hooks/")"
 
@@ -443,7 +453,7 @@ eq "separate-git-dir: the manual wiring names the real dispatch dir" "true" \
 r="$H/crlf"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
 printf '#!/bin/sh\r\nboard-card-start\r\n' > "$r/.git/hooks/post-checkout"
 chmod +x "$r/.git/hooks/post-checkout"
-eq "CRLF shebang (and -x): BAD-SHEBANG"  "BAD-SHEBANG" "$(state "$r/.git/hooks")"
+eq "CRLF shebang (and -x): NOT-RUNNABLE"  "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
 report "$r"
 eq "CRLF shebang: IS a finding"          "1" "$RN"
 eq "CRLF shebang: names CRLF as the cause" "true" "$(saw "CRLF")"
@@ -452,12 +462,31 @@ eq "CRLF shebang: names CRLF as the cause" "true" "$(saw "CRLF")"
 printf '#!/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
 eq "the SAME hook with LF endings is OK"  "OK" "$(state "$r/.git/hooks")"
 
+# Tabs: the kernel skips leading whitespace after `#!` and ends the interpreter at the next
+# one. git RUNS both of these (verified); calling them DEAD is a false red on a healthy repo,
+# and it used to be followed by a remediation that fails.
+for tabcase in leading trailing; do
+    r="$H/tab-$tabcase"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+    if [[ "$tabcase" == leading ]]; then printf '#!\t/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+    else printf '#!/bin/sh\t\nboard-card-start\n' > "$r/.git/hooks/post-checkout"; fi
+    chmod +x "$r/.git/hooks/post-checkout"
+    eq "tab ($tabcase) in the shebang is NOT a finding — git runs it" "OK" "$(state "$r/.git/hooks")"
+done
+# A shebang naming a DIRECTORY is not runnable, though -x is true for one.
+r="$H/interp-dir"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/tmp\nboard-card-start\n' > "$r/.git/hooks/post-checkout"; chmod +x "$r/.git/hooks/post-checkout"
+eq "a shebang interpreter that is a DIRECTORY: NOT-RUNNABLE" "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
+# A first line with NO trailing newline must still be judged.
+r="$H/nonewline"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/usr/bin/nosuchinterp-xyz' > "$r/.git/hooks/post-checkout"; chmod +x "$r/.git/hooks/post-checkout"
+eq "an unterminated first line is still judged" "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
+
 r="$H/nointerp"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
 printf '#!/usr/bin/nosuchinterp-abc\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
 chmod +x "$r/.git/hooks/post-checkout"
-eq "missing shebang interpreter (and -x): BAD-SHEBANG" "BAD-SHEBANG" "$(state "$r/.git/hooks")"
+eq "missing shebang interpreter (and -x): NOT-RUNNABLE" "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
 eq "…and it names the interpreter"       "true" \
-   "$(case "$(_bsc_state_reason BAD-SHEBANG "$r/.git/hooks/post-checkout" post-checkout)" in *nosuchinterp-abc*) echo true ;; *) echo false ;; esac)"
+   "$(case "$(_bsc_state_reason NOT-RUNNABLE "$r/.git/hooks/post-checkout" post-checkout)" in *nosuchinterp-abc*) echo true ;; *) echo false ;; esac)"
 # A hook with NO shebang claims nothing: it may be a binary, or run by the shell.
 printf 'board-card-start\n' > "$r/.git/hooks/post-checkout"
 eq "no shebang at all ⇒ nothing is claimed (OK)" "OK" "$(state "$r/.git/hooks")"
@@ -475,34 +504,86 @@ report "$r"
 eq "chain to a CRLF target: IS a finding"         "1" "$RN"
 eq "…and the reason names CRLF, not just 'not executable'" "true" "$(saw "CRLF")"
 
-# --- a fix-line target that string-matches but is NOT creatable -------------
-# "Same path" is not "creatable": a core.hooksPath naming a regular file makes the installer
-# exit 1, and the fix-line contract is never to print a command that does that.
+# --- the fix-line must never name a command that exits 1 --------------------
+# It gates on install-board-hooks' OWN `--check` dry run rather than modelling its
+# preconditions: a partial copy proved 2 of 9 and put a failing command in front of the MOST
+# COMMON finding. Every case below asserts the TEXT that is printed, not merely the absence of
+# the wrong text — an absence-only assertion let incoherent operator-facing wording through
+# twice in this suite.
+#
+# THE MODAL CASE: a repo carrying its own committed post-checkout. That is the likeliest real
+# cause of a dead auto-move, and the installer refuses to clobber it.
+r="$H/ownhook"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\nexec ./scripts/local-secret-scan\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+_rc=0; bash "$IBH2" --check "$r" >/dev/null 2>&1 || _rc=$?
+eq "own committed hook: install-board-hooks --check REFUSES it (rc 1)" "1" "$_rc"
+report "$r"
+eq "own committed hook: the finding is reported"       "1" "$RN"
+eq "own committed hook: no install command is offered" "false" "$(saw "fix: install-board-hooks")"
+eq "own committed hook: quotes the installer's OWN refusal" "true" \
+   "$(saw "refusing to overwrite an existing non-symlink hook")"
+eq "own committed hook: tells the operator to resolve it and re-run" "true" \
+   "$(saw "resolve that, then re-run it")"
+# …and NEVER suggests an ln -s here: on this case it would destroy the operator's own hook.
+eq "own committed hook: no ln -s suggestion (it would destroy that hook)" "false" "$(saw "ln -s")"
+
+# An UNWRITABLE dispatch dir — the second instance of the same class.
+r="$H/unwritable"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+chmod a-w "$r/.git/hooks"
+report "$r"
+eq "unwritable hooks dir: no install command is offered" "false" "$(saw "fix: install-board-hooks")"
+eq "unwritable hooks dir: names writability as the obstacle" "true" "$(saw "not writable")"
+chmod u+w "$r/.git/hooks"
+
+# A core.hooksPath naming a REGULAR FILE: same path on both sides, so the old arm asserted the
+# two "differ" while printing one path twice. It must name the real obstacle instead.
 r="$H/hookspath-isfile"; mkrepo "$r"; : > "$H/not-a-dir"
 git -C "$r" config core.hooksPath "$H/not-a-dir"
 report "$r"
-eq "hooksPath is a regular file: does NOT print an install command that exits 1" "false" \
-   "$(saw "fix: install-board-hooks")"
+eq "hooksPath is a regular file: no install command is offered" "false" "$(saw "fix: install-board-hooks")"
+eq "hooksPath is a regular file: names the real obstacle"       "true" \
+   "$(saw "exists but is not a directory")"
+eq "hooksPath is a regular file: does NOT claim the two paths differ" "false" \
+   "$(saw "but git dispatches from")"
+
+# install-board-hooks --check itself: the contract the fix-line depends on.
+_rc=0; _out="$(bash "$IBH2" --check "$H/healthy" 2>/dev/null)" || _rc=$?
+eq "--check on a healthy repo: rc 0"                    "0" "$_rc"
+eq "--check prints the target dir and nothing else"     "$H/healthy/.git/hooks" "$_out"
+eq "--check WROTE nothing (dry run)" "true" \
+   "$([ ! -e "$H/fresh-probe/.git/hooks/post-checkout" ] && echo true || echo false)"
+mkrepo "$H/fresh-probe"
+bash "$IBH2" --check "$H/fresh-probe" >/dev/null 2>&1
+eq "--check on a fresh repo installs NOTHING" "false" \
+   "$([ -e "$H/fresh-probe/.git/hooks/post-checkout" ] && echo true || echo false)"
 
 # --- MAJOR 1: a non-canonical path spelling must not be told its .git is a file ---
 # `--git-common-dir` answers relative to the path the caller typed; `--show-toplevel` is always
 # canonical. Comparing the two as STRINGS made every alternate spelling of an ordinary checkout
 # fall into the "your .git is a file" arm — asserting a falsehood AND withholding the command
 # that works (the installer canonicalizes, so it succeeds rc 0 on all of these).
+# NOTE: `$r/sub` was a case here until the misattribution rule above superseded it — a
+# sub-directory is no longer resolved to its enclosing repo at all, so it is skipped rather than
+# given a fix-line. The symlink and trailing-slash spellings still name the SAME work tree, so
+# they must still resolve and still get the working command.
 r="$H/canon"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; mkdir -p "$r/sub"; ln -s "$r" "$H/canon-link"
-for spelling in "$r" "$H/canon-link" "$r/" "$r/sub"; do
+report "$r/sub"
+eq "spelling [canon/sub]: a sub-directory is skipped, not attributed to canon" "true" \
+   "$(saw "not a checkout root")"
+for spelling in "$r" "$H/canon-link" "$r/"; do
     report "$spelling"
     eq "spelling [${spelling#"$H/"}]: no finding" "0" "$RN"
     eq "spelling [${spelling#"$H/"}]: the hooks are found where git dispatches" "true" \
        "$(saw "✓ post-checkout pre-push dispatch from")"
 done
 rm -f "$r/.git/hooks/post-checkout"      # force the fix-line to print for each spelling
-for spelling in "$r" "$H/canon-link" "$r/" "$r/sub"; do
+for spelling in "$r" "$H/canon-link" "$r/"; do
     report "$spelling"
     eq "spelling [${spelling#"$H/"}]: names install-board-hooks, not the .git-is-a-file arm" "true" \
        "$(saw "fix: install-board-hooks")"
-    eq "spelling [${spelling#"$H/"}]: never claims .git is a file" "false" \
-       "$(saw "cannot service this checkout")"
+    eq "spelling [${spelling#"$H/"}]: never falls into the wrong-target arm" "false" \
+       "$(saw "but git dispatches from")"
 done
 wire "$r/.git/hooks" "$TK"
 
@@ -521,6 +602,23 @@ mkdir -p "$H/notarepo"
 report "$H/notarepo"
 eq "path exists but git refuses it ⇒ finding" "1" "$RN"
 eq "…and says why, in git's own words"       "true" "$(saw "not a git repository")"
+
+# --- a bare repo, and a plain directory nested inside someone else's work tree ---
+# `-e "$repo"` alone attributed a nested plain directory to the ENCLOSING repo: it reported that
+# repo's hooks under this path's name and named this path in the fix-line — a false statement
+# about the repo the operator actually asked about.
+git init -q --bare "$H/bare-repo"
+report "$H/bare-repo"
+eq "bare repo: skipped, not a finding"       "0" "$RN"
+eq "bare repo: says it has no work tree"     "true" "$(saw "no work tree")"
+eq "bare repo: does NOT claim git refused it" "false" "$(saw "git refuses this checkout")"
+mkdir -p "$H/healthy/plain-subdir"
+report "$H/healthy/plain-subdir"
+eq "nested plain dir: skipped, not a finding"        "0" "$RN"
+eq "nested plain dir: says it is not a checkout root" "true" "$(saw "not a checkout root")"
+eq "nested plain dir: names the work tree it sits in" "true" "$(saw "$H/healthy")"
+eq "nested plain dir: does NOT report the enclosing repo's hooks under this name" "false" \
+   "$(saw "✓ post-checkout")"
 
 # --- the resolver itself missing ⇒ the check reports DID NOT RUN (fail loud) ---
 mkdir -p "$H/lonely"; cp "$BIN" "$H/lonely/board-session-close"   # no install-board-hooks sibling

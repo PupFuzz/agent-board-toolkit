@@ -3,6 +3,8 @@
 #
 #     install-board-hooks <repo-dir>
 #
+#     install-board-hooks --check <repo-dir>   # dry run: print the target dir, write nothing
+#
 # Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
 # feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
 # name references a card in a spelling the auto-move grammar won't recognize; card-4621).
@@ -115,7 +117,19 @@ _ibh_hooks_dir() {
 }
 
 _ibh_main() {
-    local repo="${1:?usage: install-board-hooks <repo-dir>}"
+    # --check <repo-dir>: DRY RUN. Evaluate every precondition a real run evaluates, in the same
+    # order, in this same function — then stop before the first write. On success it prints the
+    # directory the install WOULD target (stdout, nothing else) and exits 0; on refusal it
+    # prints the same diagnostic a real run would and exits non-zero, with empty stdout.
+    #
+    # It exists so a caller never has to MODEL these preconditions. board-session-close used to
+    # re-derive them to decide whether to print `install-board-hooks <repo>` as a remedy, and a
+    # partial copy — 2 of the 9 — produced a wrong answer in two consecutive reviews: the copy,
+    # not the missing predicates, was the defect (canon #5). A caller now asks instead of
+    # guessing, and gains any precondition added here without being changed.
+    local check=""
+    if [ "${1:-}" = "--check" ]; then check=1; shift; fi
+    local repo="${1:?usage: install-board-hooks [--check] <repo-dir>}"
     # Print git's OWN refusal rather than asserting "not a git repo": `dubious ownership`
     # (safe.directory) and a core.hooksPath git cannot expand also land here, and each needs a
     # different fix than "this isn't a repository".
@@ -136,7 +150,7 @@ _ibh_main() {
     local hook
     for hook in "${hooks[@]}"; do
         [ -f "$toolkit/hooks/$hook" ] || { echo "install-board-hooks: hook source missing: $toolkit/hooks/$hook" >&2; exit 1; }
-        chmod +x "$toolkit/hooks/$hook"
+        [ -n "$check" ] || chmod +x "$toolkit/hooks/$hook"
     done
 
     local hp dir rc hp_rc hp_set=""
@@ -144,6 +158,10 @@ _ibh_main() {
     # separates "no hooksPath" from "hooksPath disabled", and installing on the latter is a
     # silent no-op — the #4281 shape this installer exists to avoid.
     hp_rc=0; hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
+    # UNREACHABLE in practice, and deliberately kept: every value `git config --path` cannot
+    # expand also fatals the `rev-parse` probe above, which reports git's own words first
+    # (verified). The arm stays because folding an unknown read status into "unset" is the guess
+    # this tool exists to avoid — the same disclosure the session-close report carries.
     if [ "$hp_rc" = 2 ]; then
         {
             echo "install-board-hooks: core.hooksPath is set to a value git cannot expand (e.g. '~unknownuser/...')."
@@ -177,7 +195,28 @@ _ibh_main() {
         exit 1
     fi
 
-    mkdir -p "$dir"
+    # Creatability + writability: what `mkdir -p` and `ln -sf` need. A real run learns this by
+    # failing; --check must learn it without writing, so the same two facts are tested here for
+    # both modes — a check that skipped them would answer a different question than it is asked.
+    if [ ! -d "$dir" ]; then
+        local anc="$dir" prev=""
+        if [ -e "$dir" ] || [ -L "$dir" ]; then
+            echo "install-board-hooks: the hooks path exists but is not a directory: $dir" >&2
+            exit 1
+        fi
+        while [ -n "$anc" ] && [ "$anc" != "/" ] && [ "$anc" != "$prev" ]; do
+            prev="$anc"; anc="$(dirname -- "$anc")"
+            if [ -e "$anc" ] || [ -L "$anc" ]; then break; fi
+        done
+        if [ ! -d "$anc" ] || [ ! -w "$anc" ]; then
+            echo "install-board-hooks: cannot create the hooks directory $dir (nearest existing parent: $anc)" >&2
+            exit 1
+        fi
+    elif [ ! -w "$dir" ]; then
+        echo "install-board-hooks: the hooks directory is not writable: $dir" >&2
+        exit 1
+    fi
+    [ -n "$check" ] || mkdir -p "$dir"
     for hook in "${hooks[@]}"; do
         local src="$toolkit/hooks/$hook" dst="$dir/$hook"
         if [ -e "$dst" ] && [ ! -L "$dst" ]; then
@@ -185,9 +224,13 @@ _ibh_main() {
             echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
             exit 1
         fi
+        [ -n "$check" ] && continue
         ln -sf "$src" "$dst"
         echo "install-board-hooks: $dst -> $src"
     done
+    # The dry run's ONLY stdout is the target directory: empty stdout means "do not act", the
+    # same fail-closed contract the rest of the toolkit uses.
+    if [ -n "$check" ]; then printf '%s\n' "$dir"; return 0; fi
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi
