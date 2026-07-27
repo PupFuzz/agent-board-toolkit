@@ -93,11 +93,12 @@ BSC_HOOKS=(post-checkout pre-push)
 # lets the two drift apart again. They are sourced in a SUBSHELL because install-board-hooks
 # sets -euo pipefail at top level and this ritual deliberately runs without -e.
 # With a second argument of `installer`, it answers a different question: which directory
-# `install-board-hooks` would TARGET for this repo (it passes <root>/.git, never the real common
-# dir). Same code path, one substituted input — so "can the installer service this checkout?" is
+# `install-board-hooks` would TARGET for this repo — <root>/.git/hooks, the only place it ever
+# installs (on a topology whose real common dir is elsewhere it now refuses outright, card#5226).
+# Same code path, one substituted input — so "can the installer service this checkout?" is
 # answered by comparing the two views, not by pattern-matching path shapes that miss topologies.
 _bsc_hooks_dir() {
-  local repo="$1" view="${2:-}" ibh root cdir err
+  local repo="$1" view="${2:-}" ibh root err
   [[ -e "$repo" ]] || return 2
   # Report git's OWN words when it refuses the checkout, never a guessed cause. Several real
   # states land here and each has a different fix: not a repository, `dubious ownership`
@@ -119,12 +120,6 @@ _bsc_hooks_dir() {
   if ! _bsc_same_dir "$root" "$repo"; then
     printf 'not a checkout root — it is a directory inside the work tree at %s' "$root"; return 8
   fi
-  # A LINKED WORKTREE (.git is a FILE) dispatches hooks from the main checkout's common dir,
-  # not <worktree>/.git/hooks. `rev-parse -C <repo>` may answer relative to <repo>.
-  cdir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)"
-  [[ -n "$cdir" ]] || cdir="$root/.git"
-  [[ "$cdir" == /* ]] || cdir="$repo/$cdir"
-  [[ "$view" == "installer" ]] && cdir="$root/.git"   # mirrors _ibh_main's own argument
   ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
   [[ -r "$ibh" ]] || return 5
   # shellcheck source=/dev/null
@@ -133,7 +128,17 @@ _bsc_hooks_dir() {
     # `-e` is live in here (the sourced bin sets it), so every status is captured in an ||
     # context and every branch is an `if` — a bare `[ x ] && exit N` would exit 1 on the
     # false branch and silently become "not a work tree" at the caller.
-    local hp hp_rc=0 hp_set=""
+    local hp hp_rc=0 hp_set="" cdir
+    # A LINKED WORKTREE (.git is a FILE) dispatches hooks from the main checkout's common dir,
+    # not <worktree>/.git/hooks. Resolution is the installer's own `_ibh_common_dir` (it also
+    # owns the "answered relative to the path the caller typed" rule), never a second copy.
+    cdir="$(_ibh_common_dir "$repo")" || cdir="$root/.git"
+    # The `installer` view mirrors _ibh_main's own argument: it targets <root>/.git/hooks and
+    # nothing else — on any topology where the real common dir differs it now REFUSES outright
+    # (card#5226) rather than targeting a path git never reads. Substituting that one input is
+    # still what answers "can the installer service this checkout?", without pattern-matching
+    # path shapes that miss topologies.
+    if [ "$view" = "installer" ]; then cdir="$root/.git"; fi
     hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
     # Carry a cause out on stdout, exactly as the rc-1 arm does: the contract is "a refusal
     # names why", and it must not depend on WHICH refusal arm the local git version routes to.
@@ -340,15 +345,21 @@ _bsc_state_reason() {
 # dir (a linked worktree's main checkout). Empty + rc 1 when there is none: a --separate-git-dir
 # repo and a submodule also have a `.git` FILE, but their common dir is an external path or
 # <super>/.git/modules/<name>, so no sibling checkout owns it.
+#
+# NOT re-derived here. install-board-hooks owns `_ibh_main_checkout` because it needs the same
+# predicate to word its per-topology refusal (card#5226), and this check and that installer
+# disagreeing about which checkout owns a shared hook dir is precisely the drift a second copy
+# produces — the defect class this whole check exists to catch. Sourced in a SUBSHELL for the
+# same reason _bsc_hooks_dir does it: that bin sets -euo pipefail at top level and this ritual
+# deliberately runs without -e.
 _bsc_main_checkout() {
-  local cdir parent
-  cdir="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  [[ -n "$cdir" ]] || return 1
-  [[ "$cdir" == /* ]] || cdir="$1/$cdir"
-  [[ "$(basename "$cdir")" == ".git" && -d "$cdir" ]] || return 1
-  parent="$(dirname "$cdir")"
-  [[ -d "$parent" && "$parent" != "$1" ]] || return 1
-  printf '%s' "$parent"
+  local ibh out
+  ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
+  [[ -r "$ibh" ]] || return 1
+  # shellcheck source=/dev/null
+  out="$( . "$ibh" >/dev/null 2>&1; _ibh_main_checkout "$1" )" || return 1
+  [[ -n "$out" ]] || return 1
+  printf '%s' "$out"
 }
 
 # _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically
