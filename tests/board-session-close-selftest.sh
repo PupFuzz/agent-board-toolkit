@@ -439,9 +439,18 @@ printf '#!/bin/sh\nTOOLKIT=%s\nexec "$TOOLKIT/hooks/post-checkout" "$@"\n' "$TK"
 chmod +x "$r/.git/hooks/post-checkout"
 eq "BOUND: a VARIABLE chain target reads as a finding though it works" \
    "NO-REACH" "$(state "$r/.git/hooks")"
+# The target must EXIST, or this is green for the wrong reason: with no ../tk the hook is just
+# `exec: not found` (rc 127), and the assertion cannot tell "relative chains are not followed"
+# from "the target is absent" — an implementation of relative-chain resolution would flip real
+# behaviour while this stayed green. git runs hooks with CWD at the work-tree root
+# (githooks(5)), so ../tk resolves beside the repo; it is created and exercised here.
 r="$H/bound-relchain"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+mkdir -p "$H/tk/hooks"
+printf '#!/bin/sh\nboard-card-start\n' > "$H/tk/hooks/post-checkout"; chmod +x "$H/tk/hooks/post-checkout"
 printf '#!/bin/sh\nexec ../tk/hooks/post-checkout "$@"\n' > "$r/.git/hooks/post-checkout"
 chmod +x "$r/.git/hooks/post-checkout"
+eq "witness: the relative chain target exists and RUNS from the work-tree root" "0" \
+   "$(cd "$r" && PATH="$TK/bin:$UB" ./.git/hooks/post-checkout >/dev/null 2>&1; echo $?)"
 eq "BOUND: a RELATIVE chain target reads as a finding though it works" \
    "NO-REACH" "$(state "$r/.git/hooks")"
 r="$H/bound-wrapper"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
@@ -451,6 +460,29 @@ printf '#!/bin/sh\nexec %s/wrapdir/run-hooks.sh "$@"\n' "$H" > "$r/.git/hooks/po
 chmod +x "$r/.git/hooks/post-checkout"
 eq "BOUND: a chain through a non-hooks/<name> wrapper reads as a finding" \
    "NO-REACH" "$(state "$r/.git/hooks")"
+
+# BOUND: an interpreter name that does not TERMINATE within the kernel's shebang buffer
+# (BINPRM_BUF_SIZE, 256 bytes on Linux). The check reads the whole line and answers "runnable";
+# the kernel truncates, and on the kernel verified here (6.8, git 2.43) the named interpreter is
+# then silently ignored and the shell runs the file — a wrong-interpreter hazard, not a dead
+# hook. The trigger is the interpreter not terminating in 256 bytes, NOT the line being long.
+r="$H/bound-binprm"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+longdir="$H/$(printf 'd%.0s' $(seq 1 250))"; mkdir -p "$longdir"
+cp "$TK/bin/board-card-start" "$longdir/sh"; chmod +x "$longdir/sh"
+printf '#!%s/sh\nboard-card-start\n' "$longdir" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+_first="$(head -1 "$r/.git/hooks/post-checkout")"
+eq "witness: the interpreter does NOT terminate within 256 bytes" "true" \
+   "$([ "${#_first}" -gt 256 ] && echo true || echo false)"
+eq "witness: that interpreter is itself a real executable" "true" \
+   "$([ -x "$longdir/sh" ] && echo true || echo false)"
+eq "BOUND: over-long interpreter reads as runnable — disclosed, not detected" \
+   "OK" "$(state "$r/.git/hooks")"
+# The half that errs safe: a LONG line whose interpreter terminates early is genuinely fine, so
+# the bound must not be widened to "long shebang line".
+printf '#!/bin/sh %s\nboard-card-start\n' "$(printf 'a%.0s' $(seq 1 500))" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "a 500-byte line naming a SHORT interpreter is genuinely runnable" "OK" "$(state "$r/.git/hooks")"
 
 # --- the remediation line must name a command that actually works -----------
 # A `.git` FILE (linked worktree, --separate-git-dir, submodule) makes install-board-hooks
@@ -604,6 +636,24 @@ eq "…and it installed nothing"                 "false" \
    "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
 _rc=0; bash "$IBH2" --bogus "$H/argpos" >/dev/null 2>&1 || _rc=$?
 eq "an unknown option is rejected (rc 2)"      "2" "$_rc"
+
+# An explicitly-empty positional must not be invisible: it used to be swallowed, so the NEXT
+# positional silently became the repo and the rc-2 guarantee above was defeated. Each guard is
+# asserted by its OWN message, so mutating either one changes which message appears.
+_rc=0; _o="$(bash "$IBH2" "" 2>&1)" || _rc=$?
+eq "a lone EMPTY positional is rejected (rc 2), not treated as a repo" "2" "$_rc"
+eq "…and says the argument was empty"  "true" \
+   "$(case "$_o" in *"is empty"*) echo true ;; *) echo false ;; esac)"
+_rc=0; _o="$(bash "$IBH2" "" "$H/argpos" 2>&1)" || _rc=$?
+eq "an empty positional does not let the NEXT one become the repo (rc 2)" "2" "$_rc"
+eq "…and it installed nothing"                 "false" \
+   "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
+_rc=0; _o="$(bash "$IBH2" --check "" "$H/argpos" 2>&1)" || _rc=$?
+eq "…the same with --check in front (rc 2)"    "2" "$_rc"
+_rc=0; _o="$(bash "$IBH2" "$H/argpos" "$H/healthy" 2>&1)" || _rc=$?
+eq "two non-empty positionals: rejected as an extra argument (rc 2)" "2" "$_rc"
+eq "…and says WHICH guard fired (extra, not empty)" "true" \
+   "$(case "$_o" in *"unexpected extra argument"*) echo true ;; *) echo false ;; esac)"
 
 # A symlink-to-DIRECTORY at the hook path: `ln -sf` dereferences it, so the hook lands INSIDE
 # the directory, the installer reports success, and git never sees a hook — #4281 again.

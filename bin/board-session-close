@@ -329,14 +329,6 @@ _bsc_main_checkout() {
   printf '%s' "$parent"
 }
 
-# _bsc_fix_line <repo> <dispatch-dir> <hook> — the remediation, verified against the topology
-# rather than assumed. `install-board-hooks <repo>` is named ONLY when the directory it would
-# target is provably the one git dispatches from; where a sibling checkout owns that directory,
-# that path is named instead (and likewise proven); and where NO invocation can service the
-# checkout, it says so and names the manual wiring. Printing a command that exits 1 is worse
-# than printing none, and the topologies where it does are not rare (a linked worktree, a
-# --separate-git-dir clone and a submodule all have a `.git` FILE, so the installer's
-# <repo>/.git/hooks target is un-creatable).
 # _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically,
 # never as strings: `--git-common-dir` is answered relative to the path the caller typed while
 # the classification uses `--show-toplevel`, which is always canonical, so a symlinked repo
@@ -349,7 +341,15 @@ _bsc_same_dir() {
      == "$(readlink -m -- "$2" 2>/dev/null || printf '%s' "$2")" ]]
 }
 
-# _bsc_fix_line <repo> <dispatch-dir> <hook> — the remediation line.
+# _bsc_manual_wiring <dir> <hook…> — the by-hand symlink command, one per BROKEN hook.
+_bsc_manual_wiring() {
+  local dir="$1"; shift
+  local h out=""
+  for h in "$@"; do out+="${out:+ && }ln -s <toolkit>/hooks/$h $dir/$h"; done
+  printf '%s' "${out:-ln -s <toolkit>/hooks/<hook> $dir/}"
+}
+
+# _bsc_fix_line <repo> <dispatch-dir> <broken-hook…> — the remediation line.
 #
 # It does NOT model install-board-hooks' preconditions; it ASKS, via that tool's own `--check`
 # dry run, and gates on the verdict. Modelling them is what produced a wrong answer in two
@@ -366,14 +366,6 @@ _bsc_same_dir() {
 # told an operator to re-wire a hook that was already fine, never mentioned the one that was
 # not, and — since the fixed name's target already existed — named a command that exits 1. That
 # is the exact class the --check gate was added to close, reintroduced by the caller.
-# _bsc_manual_wiring <dir> <hook…> — the by-hand symlink command, one per BROKEN hook.
-_bsc_manual_wiring() {
-  local dir="$1"; shift
-  local h out=""
-  for h in "$@"; do out+="${out:+ && }ln -s <toolkit>/hooks/$h $dir/$h"; done
-  printf '%s' "${out:-ln -s <toolkit>/hooks/<hook> $dir/}"
-}
-
 _bsc_fix_line() {
   local repo="$1" dir="$2"; shift 2
   local hooks=("$@") ibh itgt main err h
@@ -427,8 +419,8 @@ _bsc_fix_line() {
 # a warning printed by the caller could not be counted, and an all-clear verdict printed
 # underneath it asserted the exact thing the warning denied.
 _bsc_hook_dispatch_report() {
-  local repo name dir rc hook st findings=0 lines tk
-  local -a broken tk_rc=0 inspected=0 skipped=0
+  local repo name dir rc hook st findings=0 lines tk tk_rc=0 inspected=0 skipped=0
+  local -a broken=()
   tk="$(_bsc_active_toolkit)" || tk_rc=$?
   if [[ "$tk_rc" == 1 ]]; then
     # The single most consequential host-wide failure: every post-checkout below is a trampoline

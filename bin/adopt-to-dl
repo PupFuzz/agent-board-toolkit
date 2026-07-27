@@ -108,7 +108,13 @@ main() {
             -h|--help) usage; exit 0 ;;
             --) ;;
             -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;
-            *)  [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage; exit 2; }
+            *)  # An EMPTY positional is rejected rather than stored — that is what makes the
+                # `-z "$card_id"` test a sound "have I seen one?". It was invisible before, so
+                # `adopt-to-dl "" 4242` silently adopted 4242 while the caller had written two
+                # positionals: the empty-value class v0.23.1 fixed for flag VALUES, reaching
+                # positionals this time.
+                [[ -n "$1" ]] || { echo "adopt-to-dl: <card-id> is empty (an unexpanded variable?)" >&2; usage; exit 2; }
+                [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage; exit 2; }
                 card_id="$1" ;;
         esac
         shift

@@ -48,4 +48,22 @@ expect_out "mixed name too"            "owner/my-repo"       _ata_canon_source "
 # NB: the DL-int (lenient) and by-ref-hit predicates moved to the shared lib
 # (kb_dl_int_lenient / kb_by_ref_hit) — their coverage lives in tests/kb-board-lib-selftest.sh.
 
+# An explicitly-empty positional must not be swallowed: `adopt-to-dl "" 4242` used to adopt
+# card 4242 while the caller had written two positionals. Presence is tracked as SEEN, never as
+# non-empty — the v0.23.1 empty-value class, reaching positionals this time.
+echo "== positional presence is SEEN, not non-empty =="
+_rc=0; out="$(bash "$BIN" "" 4242 2>&1)" || _rc=$?
+if [[ "$_rc" -eq 2 ]]; then ok "an empty positional does not let the next one become <card-id> (rc 2)"
+else bad "expected rc=2 for an empty positional, got $_rc"; fi
+case "$out" in *"is empty"*) ok "…and it names the EMPTY argument as the problem" ;;
+               *) bad "expected the empty-argument diagnostic, got: $out" ;; esac
+_rc=0; out="$(bash "$BIN" 4242 4243 2>&1)" || _rc=$?
+if [[ "$_rc" -eq 2 ]]; then ok "two non-empty positionals are still rejected (rc 2)"
+else bad "expected rc=2 for two positionals, got $_rc"; fi
+case "$out" in *"unexpected extra argument"*) ok "…and that guard names itself (extra, not empty)" ;;
+               *) bad "expected the extra-argument diagnostic, got: $out" ;; esac
+_rc=0; out="$(bash "$BIN" 2>&1)" || _rc=$?
+case "$out" in *"<card-id> is required"*) ok "no positional at all still reports the missing id" ;;
+               *) bad "expected the required-id diagnostic, got: $out" ;; esac
+
 _summary "adopt-to-dl-selftest"

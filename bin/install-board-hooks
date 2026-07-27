@@ -138,7 +138,18 @@ _ibh_main() {
             --check) check=1 ;;
             -*)      echo "install-board-hooks: unknown option: $arg" >&2
                      echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2 ;;
-            *)       if [ -n "$repo" ]; then
+            *)       # An EMPTY positional is rejected outright rather than stored. That is
+                     # what makes the `-n "$repo"` test below a sound "have I seen one?": an
+                     # empty positional used to be invisible to it, so the NEXT positional
+                     # silently became the repo and the rc-2 guarantee was defeated (an
+                     # unexpanded shell variable is the way in — the empty-value class again).
+                     # A separate seen-flag was tried and removed: with empties rejected here,
+                     # nothing could reach it, and a mutation of it could not be made to fail.
+                     if [ -z "$arg" ]; then
+                         echo "install-board-hooks: <repo-dir> is empty (an unexpanded variable?)" >&2
+                         echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+                     fi
+                     if [ -n "$repo" ]; then
                          echo "install-board-hooks: unexpected extra argument: $arg" >&2
                          echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
                      fi
