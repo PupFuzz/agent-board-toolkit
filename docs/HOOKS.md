@@ -216,7 +216,12 @@ Every bound above is pinned by a fixture, so this disclosure and the behaviour c
 board-card-start                     # current branch — move the correlated card to In Progress
 board-card-start feature/dl156-foo   # a specific branch name
 board-card-start --lint <branch>     # advisory only: print the branch-name warning (if any), no move
+board-card-start <branch> --lint     # same — the flag is honoured in ANY position
 ```
+
+`--lint` is recognised wherever it appears in the argument list, not only first: accepting it only in position 1 meant `board-card-start <branch> --lint` silently dropped it and performed a **real** card move.
+
+An argument the tool cannot act on is **refused by name, with no move** — an **empty** branch argument (`board-card-start "$BRANCH"` with `BRANCH` unexpanded, which previously retargeted the move to whatever `HEAD` was on), an **unknown option**, or a **second** positional. Passing **no** branch argument is unchanged and still means "the current branch" — that is how `hooks/post-checkout` calls it. Every one of these refusals prints to stderr and still **exits 0**: fail-soft is a contract here (see below), so a refusal is a *no-move*, never a non-zero exit.
 
 ## Scope / limits
 

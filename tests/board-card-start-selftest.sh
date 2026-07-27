@@ -81,6 +81,91 @@ printf '%s' "$_lout" | grep -q "board-branch-lint:.*card 4524" && ok "--lint war
 _lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
 [[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
 
+echo "== board-card-start argument surface — flag position, empty positional, HEAD default (card#5333) =="
+# Exercises the REAL argument path in a subprocess, network-free: a fixture repo whose branch
+# CORRELATES (card-4242), a scratch HOME (so no ~/.kanban-* token/host file is readable) and no
+# board id anywhere, so a run that reaches board work fail-softs at the FIRST board gate — loudly,
+# naming the branch it resolved, and appending the same line to the durable log. That pair is the
+# observable for "a move was attempted"; its ABSENCE is the observable for "the refusal held".
+# Every case asserts rc 0 as well: a refusal here is a no-move, NEVER a non-zero exit (this runs
+# from post-checkout, which must never block a checkout — docs/HOOKS.md).
+if command -v git >/dev/null 2>&1; then
+    _t="$(mktemp -d)"
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    _repo="$_t/repo"; _home="$_t/home"; _log="$_t/bcs.log"; mkdir -p "$_home"
+    git init -q "$_repo"
+    ( cd "$_repo" && echo a > a && git add a && git commit -qm a && git checkout -q -b fix/card-4242-x )
+    _bcs_run() {  # <args…> — run the bin in the fixture; sets _rc/_out, with a fresh durable log
+        # The scratch HOME + emptied ambient KBCARD_* are what keep this network-free no matter
+        # whose shell runs it: the bin reads an ambient KBCARD_API/KBCARD_TOKEN_FILE ahead of the
+        # host env, so leaving a real one in scope is the one way a fixture run could go live.
+        rm -f "$_log"; _rc=0
+        _out="$(cd "$_repo" && HOME="$_home" KBCARD_API= KBCARD_TOKEN_FILE= KB_BCS_LOG="$_log" \
+                bash "$BCS" "$@" 2>&1)" || _rc=$?
+    }
+    _bcs_attempted_move() {   # did the run get past argument handling into board work?
+        [[ -s "$_log" ]] || printf '%s' "$_out" | grep -q "fix/card-4242-x"
+    }
+
+    # ZERO ARGS → the current branch. hooks/post-checkout passes NO arguments at all, so this is
+    # the production path and the empty-positional refusal must not touch it. It is also the
+    # POSITIVE CONTROL for _bcs_attempted_move: without it, a probe that can never fire would
+    # make every "no move" assertion below pass vacuously.
+    _bcs_run
+    [[ "$_rc" -eq 0 ]] && ok "no args: exits 0" || bad "no args: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && ok "no args: defaults to the CURRENT branch, and board work IS detectable (control)" \
+        || bad "no args: did not resolve HEAD's branch: $_out"
+
+    # AN EXPLICITLY-EMPTY BRANCH → refuse. It must NOT silently become the HEAD default — that
+    # moves a card the caller never named (an unexpanded "$BRANCH" is the way in).
+    _bcs_run ""
+    [[ "$_rc" -eq 0 ]] && ok "empty branch: exits 0 (fail-soft)" || bad "empty branch: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "is empty" \
+        && ok "empty branch: refuses loudly" || bad "empty branch: no refusal on stderr: $_out"
+    _bcs_attempted_move \
+        && bad "empty branch: fell through to HEAD and attempted a move: $_out" \
+        || ok "empty branch: NO board work attempted"
+
+    # TRAILING --lint → lint only. The fixture branch correlates, so a dropped flag shows up as
+    # real board work; an rc-0-only assertion would pass with the flag silently ignored.
+    _bcs_run "fix/card-4242-x" --lint
+    [[ "$_rc" -eq 0 ]] && ok "<branch> --lint: exits 0" || bad "<branch> --lint: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && bad "<branch> --lint: flag dropped — a REAL move was attempted: $_out" \
+        || ok "<branch> --lint: no move attempted"
+    # …and it is lint MODE, not merely an early exit: a warn-worthy branch must still warn.
+    _bcs_run "fix/card_4524-x" --lint
+    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4524" \
+        && ok "<branch> --lint: actually lints (the warning is emitted)" || bad "<branch> --lint: no lint warning: $_out"
+
+    # LEADING --lint — hooks/pre-push's call form — keeps working: lint only, no move.
+    _bcs_run --lint "fix/card-4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "--lint <branch>: exits 0" || bad "--lint <branch>: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && bad "--lint <branch>: attempted a move: $_out" || ok "--lint <branch>: no move attempted"
+
+    # An unrecognised flag or a second positional is refused by name, never silently
+    # reinterpreted — a flag read as a branch name is a move nobody asked for. The fixture flag
+    # deliberately CARRIES a card token (`--card-4242`), so "no board work" is a live assertion
+    # here: with a token-free `--bogus` it would pass even when the flag is stored as the branch.
+    _bcs_run --card-4242
+    [[ "$_rc" -eq 0 ]] && ok "unknown option: exits 0" || bad "unknown option: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unknown option" \
+        && ok "unknown option: refuses loudly" || bad "unknown option: not refused: $_out"
+    _bcs_attempted_move \
+        && bad "unknown option: attempted a move: $_out" || ok "unknown option: NO board work attempted"
+    _bcs_run "fix/card-4242-x" "fix/card-9999-y"
+    [[ "$_rc" -eq 0 ]] && ok "extra positional: exits 0" || bad "extra positional: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unexpected extra argument" \
+        && ok "extra positional: refuses loudly" || bad "extra positional: not refused: $_out"
+    _bcs_attempted_move \
+        && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
+    rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
 echo "== _ibh_hooks_dir — install-target resolution + refuse discriminator (F7) =="
 expect_rc  "unset → default .git/hooks (safe)"  0 _ibh_hooks_dir "/repo" ""
 expect_out "unset → default path"   "/repo/.git/hooks"     _ibh_hooks_dir "/repo" ""
