@@ -147,33 +147,66 @@ _bsc_active_toolkit() {
   printf '%s' "$root"
 }
 
-# _bsc_hook_reaches <hook-file> <hook-name> — rc 0 when the dispatched hook actually reaches
-# board-card-start. Reads the file with symlinks followed, so a symlinked hook and a copied
-# one (Windows/MSYS `ln -s` yields copies) both match, and follows ONE level of chaining — a
-# committed hook that execs the toolkit hook, which is the remedy install-board-hooks prints
-# for an in-tree core.hooksPath.
+# _bsc_exec_problem <file> — print WHY the OS would refuse to exec this hook, rc 1; silent rc 0
+# when nothing is detectably wrong. PURE READ: it reads the first line, nothing more.
 #
-# It READS the hook, it never executes it, so the answer is a textual approximation with bounds
-# in BOTH directions — stated here because a check whose limits are undisclosed gets trusted
-# past them:
-# It matches TEXT, so the answer is an approximation whose bounds run in BOTH directions.
-# They are stated here, and in docs/HOOKS.md, because a check whose limits are undisclosed gets
+# The executable BIT is not exec-ABILITY, and the gap is not academic — both shapes below make
+# git fail with `fatal: cannot exec '<hook>': No such file or directory` while the file is `-x`
+# and looks perfect (verified against git 2.43). CRLF is the native hazard of the Windows/MSYS
+# COPY install topology this toolkit explicitly supports (docs/INSTALL.md §2), where the stray
+# `\r` becomes part of the interpreter path the kernel is asked to run.
+# Only a `#!` line is judged: a hook with no shebang may legitimately be a binary or be run by
+# the shell, so nothing is claimed about it.
+_bsc_exec_problem() {
+  local first interp
+  IFS= read -r first < "$1" 2>/dev/null || return 0
+  case "$first" in '#!'*) ;; *) return 0 ;; esac
+  case "$first" in
+    *$'\r') printf 'its shebang line ends with CRLF — the OS looks for an interpreter whose name carries the stray \\r and git fails with "cannot exec"'
+             return 1 ;;
+  esac
+  interp="${first#\#!}"; interp="${interp#"${interp%%[! ]*}"}"; interp="${interp%% *}"
+  [[ -n "$interp" ]] || return 0
+  # `/usr/bin/env foo` is judged on `env` only: resolving `foo` needs the PATH git will have at
+  # dispatch time, which is not this one — guessing it would invent findings.
+  if [[ ! -x "$interp" ]]; then
+    printf 'its shebang interpreter (%s) is missing or not executable — git fails with "cannot exec"' "$interp"
+    return 1
+  fi
+  return 0
+}
+
+# _bsc_hook_reaches <hook-file> <hook-name> — rc 0 when the dispatched hook actually reaches
+# board-card-start; rc 2 (printing the target) when it chains to a hook the OS could not run.
+# Reads the file with symlinks followed, so a symlinked hook and a copied one (Windows/MSYS
+# `ln -s` yields copies) both match, and follows ONE level of chaining — a committed hook that
+# execs the toolkit hook, the remedy install-board-hooks prints for an in-tree core.hooksPath.
+#
+# It matches TEXT, so the answer is an approximation whose bounds run in BOTH directions. They
+# are stated here and in docs/HOOKS.md, because a check whose limits are undisclosed gets
 # trusted past them — and this one's whole purpose is to stop a dead hook reading as healthy.
+#
 # Bounds that err toward a false FINDING (safe):
 #   * `#` comments are stripped before matching, so a hook that only MENTIONS the tool in a
-#     comment ("# we used to call board-card-start here") is correctly reported as not reaching
-#     it — and the strip also blanks the tail of a line whose earlier text quotes a `#`
-#     (`echo "#"; board-card-start`).
-#   * only ONE level of chaining is followed: a hook reaching the tool through a further
-#     indirection (a wrapper that is not itself a `hooks/<name>` path) reads as a finding.
-# Bounds that can produce a false OK — ACCEPTED, because the only way to close them is to
-# EXECUTE an arbitrary hook, which a read-only session check must not do:
+#     comment reads as not reaching it — and the strip also blanks the tail of a line whose
+#     earlier text quotes a `#` (`echo "#"; board-card-start`).
+#   * only ABSOLUTE, literal chain targets are followed. A chain written with a variable
+#     (`exec "$TOOLKIT/hooks/post-checkout"`) or relative to the work tree
+#     (`exec ../toolkit/hooks/post-checkout`) reads as a finding even though it works: the
+#     first needs the hook's runtime environment to resolve and the second needs git's
+#     dispatch-time CWD. The guidance this chain support exists for prints an absolute literal
+#     path, so the population we generate is covered; a hand-written variant may not be.
+#   * a chain through a wrapper that is not itself a `hooks/<name>` path reads as a finding.
+#
+# Bounds that can produce a false OK — ACCEPTED, because the ONLY way to close them is to
+# EXECUTE an arbitrary hook, which a read-only session check must not do. (That rationale is
+# what makes them acceptable, so it is not extended to anything a pure read can catch — see
+# _bsc_exec_problem, which is why exec-ability is checked rather than disclosed.)
 #   * a mention inside a string literal (`echo "run board-card-start yourself"`) reads as a
 #     reach.
-#   * an invocation that is UNREACHABLE at runtime reads as a reach — most realistically a call
-#     sitting after an early `exit 0`, which is how a hook gets "temporarily" disabled.
-# Both were reproduced against this implementation; neither is detectable without running the
-# hook. What IS checked is that the chain's target could actually be exec'd (below).
+#   * an invocation UNREACHABLE at runtime reads as a reach — most realistically a call sitting
+#     after an early `exit 0`, which is how a hook gets "temporarily" disabled.
+# Both were reproduced against this implementation.
 _bsc_hook_reaches() {
   local f="$1" hook="$2" p refs code broken=""
   code="$(sed 's/#.*//' "$f" 2>/dev/null)" || return 1
@@ -183,9 +216,10 @@ _bsc_hook_reaches() {
   while IFS= read -r p; do
     [[ -n "$p" && -r "$p" ]] || continue
     if sed 's/#.*//' "$p" 2>/dev/null | grep -q 'board-card-start'; then
-      # The chained hook must be EXECUTABLE or git's exec fails and the auto-move is dead —
-      # the direct path checks this, so the chained path must too, or a broken chain reads OK.
-      [[ -x "$p" ]] && return 0
+      # The chained hook must be RUNNABLE or git's exec fails and the auto-move is dead. The
+      # direct path checks both the bit and exec-ability, so this path checks both too — the
+      # -x sibling was fixed in only one of the two places once already (canon #7).
+      if [[ -x "$p" ]] && _bsc_exec_problem "$p" >/dev/null; then return 0; fi
       broken="$p"
     fi
   done <<< "$refs"
@@ -194,7 +228,8 @@ _bsc_hook_reaches() {
 }
 
 # _bsc_hook_state <dispatch-dir> <hook> <toolkit-root> — echo ONE status token:
-#   OK · MISSING · DANGLING · NOT-EXECUTABLE · NO-REACH · CHAIN-BROKEN · CLONE-DRIFT
+#   OK · MISSING · DANGLING · NOT-EXECUTABLE · BAD-SHEBANG · NO-REACH · CHAIN-BROKEN ·
+#   CLONE-DRIFT
 _bsc_hook_state() {
   local dir="$1" hook="$2" tk="${3:-}" f="$1/$2" real
   if [[ -L "$f" && ! -e "$f" ]]; then echo "DANGLING"; return 0; fi
@@ -202,6 +237,9 @@ _bsc_hook_state() {
   # git IGNORES a non-executable hook (only a suppressible `advice.ignoredHook` hint says
   # so, and nothing says it at the next session) — the file being there proves nothing.
   [[ -x "$f" ]] || { echo "NOT-EXECUTABLE"; return 0; }
+  # The bit is not exec-ability: a CRLF shebang or a missing interpreter is `-x` and still
+  # makes git fail with "cannot exec". Catching it is a PURE READ of line 1 (_bsc_exec_problem).
+  _bsc_exec_problem "$f" >/dev/null || { echo "BAD-SHEBANG"; return 0; }
   local reach_rc=0
   _bsc_hook_reaches "$f" "$hook" >/dev/null || reach_rc=$?
   if [[ "$reach_rc" == 2 ]]; then echo "CHAIN-BROKEN"; return 0; fi
@@ -222,8 +260,10 @@ _bsc_hook_state() {
 _bsc_state_reason() {
   local tgt
   case "$1" in
+    BAD-SHEBANG)    printf 'executable, but %s' "$(_bsc_exec_problem "$2" || true)" ;;
     CHAIN-BROKEN)   tgt="$(_bsc_hook_reaches "$2" "${3:-post-checkout}" 2>/dev/null || true)"
-                    printf 'chains to a hook that is NOT executable (%s) — git cannot exec it' "${tgt:-?}" ;;
+                    printf 'chains to a hook git cannot run (%s%s)' "${tgt:-?}" \
+                           "$([[ -n "$tgt" && -x "$tgt" ]] && printf ': %s' "$(_bsc_exec_problem "$tgt" || true)" || printf ': not executable')" ;;
     MISSING)        printf 'no hook file in the dispatch dir' ;;
     DANGLING)       printf 'symlink target is gone (%s)' "$(readlink "$2" 2>/dev/null || echo '?')" ;;
     NOT-EXECUTABLE) printf 'present but NOT executable — git ignores it' ;;
@@ -256,18 +296,49 @@ _bsc_main_checkout() {
 # than printing none, and the topologies where it does are not rare (a linked worktree, a
 # --separate-git-dir clone and a submodule all have a `.git` FILE, so the installer's
 # <repo>/.git/hooks target is un-creatable).
+# _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically,
+# never as strings: `--git-common-dir` is answered relative to the path the caller typed while
+# the classification uses `--show-toplevel`, which is always canonical, so a symlinked repo
+# path, a trailing slash, or a sub-directory of the work tree all make identical directories
+# compare unequal. That difference used to fall through to the "your .git is a file" arm, which
+# then asserted a falsehood about an ordinary checkout AND withheld the command that works.
+_bsc_same_dir() {
+  [[ -n "$1" && -n "$2" ]] || return 1
+  [[ "$(readlink -m -- "$1" 2>/dev/null || printf '%s' "$1")" \
+     == "$(readlink -m -- "$2" 2>/dev/null || printf '%s' "$2")" ]]
+}
+
+# _bsc_dir_creatable <dir> — could `mkdir -p <dir>` succeed? "Same path" is not "creatable": a
+# core.hooksPath naming a regular file or a dangling symlink makes install-board-hooks exit 1,
+# and _bsc_fix_line's whole contract is never to print a command that does that.
+_bsc_dir_creatable() {
+  local p="$1" prev=""
+  [[ -d "$p" ]] && return 0
+  [[ -e "$p" || -L "$p" ]] && return 1     # exists, but not a directory
+  while [[ -n "$p" && "$p" != "/" && "$p" != "$prev" ]]; do
+    prev="$p"; p="$(dirname -- "$p")"
+    if [[ -e "$p" || -L "$p" ]]; then [[ -d "$p" ]] && return 0 || return 1; fi
+  done
+  return 0
+}
+
 _bsc_fix_line() {
   local repo="$1" dir="$2" hook="$3" itgt main
   itgt="$(_bsc_hooks_dir "$repo" installer 2>/dev/null)" || itgt=""
-  if [[ -n "$itgt" && "$itgt" == "$dir" ]]; then
+  if _bsc_same_dir "$itgt" "$dir" && _bsc_dir_creatable "$itgt"; then
     printf 'fix: install-board-hooks %s' "$repo"; return 0
   fi
   main="$(_bsc_main_checkout "$repo" 2>/dev/null)" || main=""
-  if [[ -n "$main" && "$(_bsc_hooks_dir "$main" installer 2>/dev/null)" == "$dir" ]]; then
+  if [[ -n "$main" ]] && _bsc_same_dir "$(_bsc_hooks_dir "$main" installer 2>/dev/null)" "$dir" \
+     && _bsc_dir_creatable "$dir"; then
     printf 'fix: install-board-hooks %s   (this checkout dispatches from that one'"'"'s hook dir)' "$main"
     return 0
   fi
-  printf 'install-board-hooks cannot service this checkout: its .git is a file (linked worktree / --separate-git-dir / submodule) and the installer targets <repo>/.git/hooks. Wire it by hand: ln -s <toolkit>/hooks/%s %s/' "$hook" "$dir"
+  # Reached when no invocation can service the checkout: the installer would target a directory
+  # that is not the one git dispatches from (a `.git` FILE — linked worktree, --separate-git-dir
+  # or submodule) or one it could not create. Say what is true of THIS repo, not a guess.
+  printf 'install-board-hooks cannot service this checkout — it would target %s, but git dispatches from %s. Wire it by hand: ln -s <toolkit>/hooks/%s %s/' \
+         "${itgt:-<unresolvable>}" "$dir" "$hook" "$dir"
 }
 
 # _bsc_hook_dispatch_report <repo-dir>… — print one line per checkout plus a findings summary;
@@ -301,7 +372,10 @@ _bsc_hook_dispatch_report() {
          echo "      (an empty value does NOT fall back to .git/hooks; a hook file sitting there is never read)"
          echo "      fix: git -C ${repo} config --unset core.hooksPath   then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
-      6) echo "• ${name}: ✗ core.hooksPath is set to a value git cannot expand — git fatals when it dispatches, so NO hook runs (in practice the rc-1 arm above ALWAYS reports this first: every value git cannot expand also fatals rev-parse — verified; this arm exists so an unknown read status is never silently folded into 'unset')"
+      # In practice the rc-1 arm ALWAYS reports this first: every value git cannot expand also
+      # fatals `rev-parse` (verified). The arm stays so an unknown read status is never silently
+      # folded into "unset" — that guess is the defect class this check exists for.
+      6) echo "• ${name}: ✗ core.hooksPath is set to a value git cannot expand — git fatals when it dispatches, so NO hook runs"
          echo "      fix: git -C ${repo} config core.hooksPath <dir>   (or --unset), then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
       5) echo "• ${name}: ⚠ CHECK DID NOT RUN — install-board-hooks (which owns the core.hooksPath resolver) is not beside this tool"

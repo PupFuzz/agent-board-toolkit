@@ -325,7 +325,10 @@ eq "unexpandable hooksPath: carries out the message git itself printed" "true" \
 report "$r"
 eq "unexpandable hooksPath: IS a finding"                     "1" "$RN"
 eq "unexpandable hooksPath: the report quotes that refusal"    "true" "$(saw "expand user dir")"
-eq "unexpandable hooksPath: does NOT misdiagnose it as 'not a work tree'" "false" "$(saw "not a git work tree")"
+# The cause must be git's, and it must be the FIRST thing the line says — an assertion on the
+# absence of some wording we no longer emit anywhere could never go red.
+eq "unexpandable hooksPath: the line leads with 'git refuses this checkout'" "true" \
+   "$(saw "✗ git refuses this checkout")"
 
 # --- in-tree core.hooksPath: git dispatches from it, install-board-hooks refuses it ---
 r="$H/hookspath-intree"; mkrepo "$r"; mkdir -p "$r/.githooks"; wire "$r/.githooks" "$TK"
@@ -430,6 +433,79 @@ eq "separate-git-dir: says the installer cannot service it, and names the manual
 eq "separate-git-dir: the manual wiring names the real dispatch dir" "true" \
    "$(saw "ln -s <toolkit>/hooks/post-checkout $H/sgd-gitdir/hooks/")"
 
+# --- EXECUTABLE but not EXEC-ABLE: the bit is not the ability (round-3 MAJOR 2) ---
+# Verified against git 2.43: both shapes are -x, look perfect, and make git fail with
+# `fatal: cannot exec '<hook>': No such file or directory`. CRLF is the native hazard of the
+# Windows/MSYS COPY install topology this toolkit supports, so this is a supported-platform
+# failure, not a hypothetical. Catching it is a PURE READ of line 1 — which is exactly why it
+# is NOT covered by the "closing it would require executing the hook" rationale that makes the
+# other two false-OK bounds acceptable.
+r="$H/crlf"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\r\nboard-card-start\r\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "CRLF shebang (and -x): BAD-SHEBANG"  "BAD-SHEBANG" "$(state "$r/.git/hooks")"
+report "$r"
+eq "CRLF shebang: IS a finding"          "1" "$RN"
+eq "CRLF shebang: names CRLF as the cause" "true" "$(saw "CRLF")"
+# The positive control: the SAME hook with LF endings is OK, so the line endings are what
+# decided it — not the content, the bit, or the path.
+printf '#!/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+eq "the SAME hook with LF endings is OK"  "OK" "$(state "$r/.git/hooks")"
+
+r="$H/nointerp"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/usr/bin/nosuchinterp-abc\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "missing shebang interpreter (and -x): BAD-SHEBANG" "BAD-SHEBANG" "$(state "$r/.git/hooks")"
+eq "…and it names the interpreter"       "true" \
+   "$(case "$(_bsc_state_reason BAD-SHEBANG "$r/.git/hooks/post-checkout" post-checkout)" in *nosuchinterp-abc*) echo true ;; *) echo false ;; esac)"
+# A hook with NO shebang claims nothing: it may be a binary, or run by the shell.
+printf 'board-card-start\n' > "$r/.git/hooks/post-checkout"
+eq "no shebang at all ⇒ nothing is claimed (OK)" "OK" "$(state "$r/.git/hooks")"
+
+# …and the CHAIN path must apply the same rule — the -x sibling was fixed in only one of the
+# two places once already, and this is that shape's next sibling (canon #7).
+r="$H/chain-crlf"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+mkdir -p "$H/toolkit-crlf/hooks"
+printf '#!/bin/sh\r\nboard-card-start\r\n' > "$H/toolkit-crlf/hooks/post-checkout"
+chmod +x "$H/toolkit-crlf/hooks/post-checkout"
+printf '#!/bin/sh\nexec "%s/hooks/post-checkout" "$@"\n' "$H/toolkit-crlf" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "chain to an -x but CRLF target: CHAIN-BROKEN" "CHAIN-BROKEN" "$(state "$r/.git/hooks")"
+report "$r"
+eq "chain to a CRLF target: IS a finding"         "1" "$RN"
+eq "…and the reason names CRLF, not just 'not executable'" "true" "$(saw "CRLF")"
+
+# --- a fix-line target that string-matches but is NOT creatable -------------
+# "Same path" is not "creatable": a core.hooksPath naming a regular file makes the installer
+# exit 1, and the fix-line contract is never to print a command that does that.
+r="$H/hookspath-isfile"; mkrepo "$r"; : > "$H/not-a-dir"
+git -C "$r" config core.hooksPath "$H/not-a-dir"
+report "$r"
+eq "hooksPath is a regular file: does NOT print an install command that exits 1" "false" \
+   "$(saw "fix: install-board-hooks")"
+
+# --- MAJOR 1: a non-canonical path spelling must not be told its .git is a file ---
+# `--git-common-dir` answers relative to the path the caller typed; `--show-toplevel` is always
+# canonical. Comparing the two as STRINGS made every alternate spelling of an ordinary checkout
+# fall into the "your .git is a file" arm — asserting a falsehood AND withholding the command
+# that works (the installer canonicalizes, so it succeeds rc 0 on all of these).
+r="$H/canon"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; mkdir -p "$r/sub"; ln -s "$r" "$H/canon-link"
+for spelling in "$r" "$H/canon-link" "$r/" "$r/sub"; do
+    report "$spelling"
+    eq "spelling [${spelling#"$H/"}]: no finding" "0" "$RN"
+    eq "spelling [${spelling#"$H/"}]: the hooks are found where git dispatches" "true" \
+       "$(saw "✓ post-checkout pre-push dispatch from")"
+done
+rm -f "$r/.git/hooks/post-checkout"      # force the fix-line to print for each spelling
+for spelling in "$r" "$H/canon-link" "$r/" "$r/sub"; do
+    report "$spelling"
+    eq "spelling [${spelling#"$H/"}]: names install-board-hooks, not the .git-is-a-file arm" "true" \
+       "$(saw "fix: install-board-hooks")"
+    eq "spelling [${spelling#"$H/"}]: never claims .git is a file" "false" \
+       "$(saw "cannot service this checkout")"
+done
+wire "$r/.git/hooks" "$TK"
+
 # --- dangling symlink (the toolkit clone it pointed at is gone) -------------
 r="$H/dangling"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
 ln -sf "$H/deleted-toolkit/hooks/post-checkout" "$r/.git/hooks/post-checkout"
@@ -487,6 +563,12 @@ report_nopath "$H/healthy"
 eq "off-PATH: counted as a finding"            "1" "$RN"
 eq "off-PATH: says the tool is not on PATH"    "true" "$(saw "NOT on PATH")"
 eq "off-PATH: does NOT print the all-clear"    "false" "$(saw "no findings")"
+# POSITIVE CONTROL for the two absence assertions in this block and the next: the exact strings
+# they assert the ABSENCE of must be strings the healthy fixture PRODUCES — otherwise rewording
+# the summary leaves both green and the invariants become decorations.
+report "$H/healthy"
+eq "witness: a healthy run really does print 'no findings'"          "true" "$(saw "no findings")"
+eq "witness: …and the 'every INSPECTED checkout' wording"            "true" "$(saw "every INSPECTED checkout")"
 
 # --- M2 — zero inspected checkouts must NOT read as clean (canon #9) --------
 report "$H/does-not-exist" "$H/also-not-here"
