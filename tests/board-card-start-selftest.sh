@@ -110,7 +110,7 @@ if command -v git >/dev/null 2>&1; then
         # shell — but the exposure is not this test's alone, so a shell where the shape did fail
         # would take those two tools' bare invocation down before it reached here.
         rm -f "$_log"; _rc=0
-        _out="$(cd "$_repo" && HOME="$_home" KBCARD_API= KBCARD_TOKEN_FILE= KB_BCS_LOG="$_log" \
+        _out="$(cd "$_repo" && HOME="$_home" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_log" \
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
@@ -241,7 +241,7 @@ if command -v git >/dev/null 2>&1; then
         chmod +x "$_ppbin/board-card-start"
         _pp_run() {  # <bare-branch-name> — feed the hook one pushed ref, as git does
             rm -f "$_log"; _rc=0
-            _out="$(cd "$_repo" && PATH="$_ppbin:$PATH" HOME="$_home" KBCARD_API= KBCARD_TOKEN_FILE= \
+            _out="$(cd "$_repo" && PATH="$_ppbin:$PATH" HOME="$_home" KBCARD_API='' KBCARD_TOKEN_FILE='' \
                     KB_BCS_LOG="$_log" bash "$_pp" origin "$_repo" \
                     <<<"refs/heads/$1 1111111111111111111111111111111111111111 refs/heads/$1 0000000000000000000000000000000000000000" 2>&1)" || _rc=$?
         }
