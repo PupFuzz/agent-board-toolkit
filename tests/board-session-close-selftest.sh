@@ -351,6 +351,7 @@ eq "worktree: dispatch dir is the MAIN checkout's hooks dir" \
 report "$H/wt-linked"
 eq "worktree: unwired main ⇒ finding on the worktree too" "2" "$RN"
 eq "worktree: remediation names the MAIN checkout"         "true" "$(saw "fix: install-board-hooks $r")"
+eq "worktree: and says why that path is the one that installs" "true" "$(saw "dispatches from that one")"
 wire "$r/.git/hooks" "$TK"
 report "$H/wt-linked"
 eq "worktree: wiring the main checkout clears the worktree's finding" "0" "$RN"
@@ -379,6 +380,55 @@ eq "comment-only mention: IS a finding"          "1" "$RN"
 # absence of the string.
 printf '#!/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
 eq "the same call as CODE reaches it"            "OK" "$(state "$r/.git/hooks")"
+
+# --- a chain to a NON-EXECUTABLE toolkit hook is broken, not OK -------------
+# git execs the chained hook; a non-executable target fails there exactly as it does for a
+# direct hook. The direct path checked -x from the start and the chained path did not, so a
+# broken chain reported healthy — a false GREEN, the defect class this whole check exists for.
+r="$H/chain-noexec"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+cp "$TK/hooks/post-checkout" "$TK/hooks/chain-target-src"
+mkdir -p "$H/toolkit-chain/hooks"
+cp "$TK/hooks/post-checkout" "$H/toolkit-chain/hooks/post-checkout"; chmod -x "$H/toolkit-chain/hooks/post-checkout"
+rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\nexec "%s/hooks/post-checkout" "$@"\n' "$H/toolkit-chain" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "chain to a NON-executable hook: CHAIN-BROKEN" "CHAIN-BROKEN" "$(state "$r/.git/hooks")"
+report "$r"
+eq "chain to a NON-executable hook: IS a finding"  "1" "$RN"
+eq "…and names the target it cannot exec"          "true" "$(saw "$H/toolkit-chain/hooks/post-checkout")"
+chmod +x "$H/toolkit-chain/hooks/post-checkout"
+eq "…the SAME chain with the target executable is OK" "OK" "$(state "$r/.git/hooks")"
+
+# --- DISCLOSED BOUNDS: two shapes that read as OK on purpose ----------------
+# Both are documented in bin/board-session-close and docs/HOOKS.md as accepted false-OK bounds:
+# closing either requires EXECUTING an arbitrary hook, which a read-only session check must not
+# do. They are pinned so the disclosure and the behaviour can never drift apart.
+r="$H/bound-string"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\necho "run board-card-start yourself"\nexit 0\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "DISCLOSED BOUND: a string-literal mention reads as a reach" "OK" "$(state "$r/.git/hooks")"
+r="$H/bound-dead"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\nexit 0\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "DISCLOSED BOUND: a call after an early exit 0 reads as a reach" "OK" "$(state "$r/.git/hooks")"
+
+# --- the remediation line must name a command that actually works -----------
+# A `.git` FILE (linked worktree, --separate-git-dir, submodule) makes install-board-hooks
+# target an un-creatable <repo>/.git/hooks and exit 1. Printing it anyway is worse than
+# printing nothing, so the line is derived from the topology, not assumed.
+r="$H/fixline-plain"; mkrepo "$r"
+report "$r"
+eq "plain repo: names install-board-hooks on the repo itself" "true" "$(saw "fix: install-board-hooks $r")"
+git init -q --separate-git-dir="$H/sgd-gitdir" "$H/sgd" 2>/dev/null
+eq "separate-git-dir: .git really is a file" "true" "$([ -f "$H/sgd/.git" ] && echo true || echo false)"
+eq "separate-git-dir: dispatch dir is the EXTERNAL git dir" "$H/sgd-gitdir/hooks" "$(_bsc_hooks_dir "$H/sgd")"
+report "$H/sgd"
+eq "separate-git-dir: does NOT print an install command that would exit 1" "false" \
+   "$(saw "fix: install-board-hooks")"
+eq "separate-git-dir: says the installer cannot service it, and names the manual wiring" "true" \
+   "$(saw "cannot service this checkout")"
+eq "separate-git-dir: the manual wiring names the real dispatch dir" "true" \
+   "$(saw "ln -s <toolkit>/hooks/post-checkout $H/sgd-gitdir/hooks/")"
 
 # --- dangling symlink (the toolkit clone it pointed at is gone) -------------
 r="$H/dangling"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
@@ -442,6 +492,10 @@ eq "off-PATH: does NOT print the all-clear"    "false" "$(saw "no findings")"
 report "$H/does-not-exist" "$H/also-not-here"
 eq "0 inspected: no findings (an absent checkout is not a defect)" "0" "$RN"
 eq "0 inspected: says NOTHING was verified"                        "true" "$(saw "NOTHING was verified")"
+# A bare/refused path yields findings while inspecting nothing; the summary is the line an
+# operator skims, so it must not drop the count in that branch.
+report "$H/notarepo" "$H/does-not-exist"
+eq "0 inspected WITH a finding: the count survives in the summary" "true" "$(saw "1 finding(s)")"
 eq "0 inspected: does NOT claim every checkout dispatches"         "false" "$(saw "every INSPECTED checkout")"
 
 # --- multi-repo run: the summary counts inspected / skipped / findings ------

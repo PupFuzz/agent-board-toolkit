@@ -69,6 +69,7 @@ BSC_WORKTREES=(
   "$HOME/agent-webhook-bridge-prod"
   "$HOME/kanbanboard"
   "$HOME/agent-board-toolkit"
+  "$HOME/agent-board-toolkit-prod"
 )
 # The hooks install-board-hooks installs. post-checkout is load-bearing (it is what moves
 # the card to In Progress); pre-push is the fail-soft branch-name advisory.
@@ -90,8 +91,12 @@ BSC_HOOKS=(post-checkout pre-push)
 # the precise silent no-op the installer was fixed for (#4281). A second copy of either is what
 # lets the two drift apart again. They are sourced in a SUBSHELL because install-board-hooks
 # sets -euo pipefail at top level and this ritual deliberately runs without -e.
+# With a second argument of `installer`, it answers a different question: which directory
+# `install-board-hooks` would TARGET for this repo (it passes <root>/.git, never the real common
+# dir). Same code path, one substituted input — so "can the installer service this checkout?" is
+# answered by comparing the two views, not by pattern-matching path shapes that miss topologies.
 _bsc_hooks_dir() {
-  local repo="$1" ibh root cdir err
+  local repo="$1" view="${2:-}" ibh root cdir err
   [[ -e "$repo" ]] || return 2
   # Report git's OWN words when it refuses the checkout, never a guessed cause. Several real
   # states land here and each has a different fix: not a repository, `dubious ownership`
@@ -108,6 +113,7 @@ _bsc_hooks_dir() {
   cdir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)"
   [[ -n "$cdir" ]] || cdir="$root/.git"
   [[ "$cdir" == /* ]] || cdir="$repo/$cdir"
+  [[ "$view" == "installer" ]] && cdir="$root/.git"   # mirrors _ibh_main's own argument
   ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
   [[ -r "$ibh" ]] || return 5
   # shellcheck source=/dev/null
@@ -150,30 +156,45 @@ _bsc_active_toolkit() {
 # It READS the hook, it never executes it, so the answer is a textual approximation with bounds
 # in BOTH directions — stated here because a check whose limits are undisclosed gets trusted
 # past them:
+# It matches TEXT, so the answer is an approximation whose bounds run in BOTH directions.
+# They are stated here, and in docs/HOOKS.md, because a check whose limits are undisclosed gets
+# trusted past them — and this one's whole purpose is to stop a dead hook reading as healthy.
+# Bounds that err toward a false FINDING (safe):
 #   * `#` comments are stripped before matching, so a hook that only MENTIONS the tool in a
 #     comment ("# we used to call board-card-start here") is correctly reported as not reaching
-#     it. A mention inside a string literal (`echo "run board-card-start"`) still reads as a
-#     reach — accepted; report-only, and the alternative is executing an arbitrary hook.
+#     it — and the strip also blanks the tail of a line whose earlier text quotes a `#`
+#     (`echo "#"; board-card-start`).
 #   * only ONE level of chaining is followed: a hook reaching the tool through a further
-#     indirection (a wrapper script that is not itself a `hooks/<name>` path) reads as a
-#     finding. The reported dispatch path is enough for an operator to see why.
-#   * stripping from `#` also blanks the tail of a line whose earlier text quotes a `#`
-#     (`echo "#"; board-card-start`) — that errs toward a false FINDING, never a false OK.
+#     indirection (a wrapper that is not itself a `hooks/<name>` path) reads as a finding.
+# Bounds that can produce a false OK — ACCEPTED, because the only way to close them is to
+# EXECUTE an arbitrary hook, which a read-only session check must not do:
+#   * a mention inside a string literal (`echo "run board-card-start yourself"`) reads as a
+#     reach.
+#   * an invocation that is UNREACHABLE at runtime reads as a reach — most realistically a call
+#     sitting after an early `exit 0`, which is how a hook gets "temporarily" disabled.
+# Both were reproduced against this implementation; neither is detectable without running the
+# hook. What IS checked is that the chain's target could actually be exec'd (below).
 _bsc_hook_reaches() {
-  local f="$1" hook="$2" p refs code
+  local f="$1" hook="$2" p refs code broken=""
   code="$(sed 's/#.*//' "$f" 2>/dev/null)" || return 1
   grep -q 'board-card-start' <<< "$code" && return 0
   refs="$(grep -o "/[^\"'[:space:]]*/hooks/$hook" <<< "$code" | sort -u)"
   [[ -n "$refs" ]] || return 1
   while IFS= read -r p; do
     [[ -n "$p" && -r "$p" ]] || continue
-    sed 's/#.*//' "$p" 2>/dev/null | grep -q 'board-card-start' && return 0
+    if sed 's/#.*//' "$p" 2>/dev/null | grep -q 'board-card-start'; then
+      # The chained hook must be EXECUTABLE or git's exec fails and the auto-move is dead —
+      # the direct path checks this, so the chained path must too, or a broken chain reads OK.
+      [[ -x "$p" ]] && return 0
+      broken="$p"
+    fi
   done <<< "$refs"
+  if [[ -n "$broken" ]]; then printf '%s' "$broken"; return 2; fi
   return 1
 }
 
 # _bsc_hook_state <dispatch-dir> <hook> <toolkit-root> — echo ONE status token:
-#   OK · MISSING · DANGLING · NOT-EXECUTABLE · NO-REACH · CLONE-DRIFT
+#   OK · MISSING · DANGLING · NOT-EXECUTABLE · NO-REACH · CHAIN-BROKEN · CLONE-DRIFT
 _bsc_hook_state() {
   local dir="$1" hook="$2" tk="${3:-}" f="$1/$2" real
   if [[ -L "$f" && ! -e "$f" ]]; then echo "DANGLING"; return 0; fi
@@ -181,7 +202,10 @@ _bsc_hook_state() {
   # git IGNORES a non-executable hook (only a suppressible `advice.ignoredHook` hint says
   # so, and nothing says it at the next session) — the file being there proves nothing.
   [[ -x "$f" ]] || { echo "NOT-EXECUTABLE"; return 0; }
-  _bsc_hook_reaches "$f" "$hook" || { echo "NO-REACH"; return 0; }
+  local reach_rc=0
+  _bsc_hook_reaches "$f" "$hook" >/dev/null || reach_rc=$?
+  if [[ "$reach_rc" == 2 ]]; then echo "CHAIN-BROKEN"; return 0; fi
+  if [[ "$reach_rc" != 0 ]]; then echo "NO-REACH"; return 0; fi
   # A symlink into a DIFFERENT toolkit checkout still fires today, but the wiring has
   # drifted: that clone can be mid-edit, on another branch, or removed. A copy is not a
   # symlink and is not flagged (that is the supported Windows topology).
@@ -194,16 +218,56 @@ _bsc_hook_state() {
   echo "OK"
 }
 
-# _bsc_state_reason <status> <hook-file> — the one-line human reason for a status token.
+# _bsc_state_reason <status> <hook-file> [hook-name] — the one-line human reason for a status.
 _bsc_state_reason() {
+  local tgt
   case "$1" in
+    CHAIN-BROKEN)   tgt="$(_bsc_hook_reaches "$2" "${3:-post-checkout}" 2>/dev/null || true)"
+                    printf 'chains to a hook that is NOT executable (%s) — git cannot exec it' "${tgt:-?}" ;;
     MISSING)        printf 'no hook file in the dispatch dir' ;;
     DANGLING)       printf 'symlink target is gone (%s)' "$(readlink "$2" 2>/dev/null || echo '?')" ;;
     NOT-EXECUTABLE) printf 'present but NOT executable — git ignores it' ;;
-    NO-REACH)       printf 'does not reach board-card-start' ;;
+    NO-REACH)       printf 'does not reach board-card-start' ;;   # comments stripped first
     CLONE-DRIFT)    printf 'symlinked into another toolkit checkout (%s)' "$(readlink -f "$2" 2>/dev/null || echo '?')" ;;
     *)              printf '%s' "$1" ;;
   esac
+}
+
+# _bsc_main_checkout <repo-dir> — the checkout whose OWN .git directory is this repo's common
+# dir (a linked worktree's main checkout). Empty + rc 1 when there is none: a --separate-git-dir
+# repo and a submodule also have a `.git` FILE, but their common dir is an external path or
+# <super>/.git/modules/<name>, so no sibling checkout owns it.
+_bsc_main_checkout() {
+  local cdir parent
+  cdir="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [[ -n "$cdir" ]] || return 1
+  [[ "$cdir" == /* ]] || cdir="$1/$cdir"
+  [[ "$(basename "$cdir")" == ".git" && -d "$cdir" ]] || return 1
+  parent="$(dirname "$cdir")"
+  [[ -d "$parent" && "$parent" != "$1" ]] || return 1
+  printf '%s' "$parent"
+}
+
+# _bsc_fix_line <repo> <dispatch-dir> <hook> — the remediation, verified against the topology
+# rather than assumed. `install-board-hooks <repo>` is named ONLY when the directory it would
+# target is provably the one git dispatches from; where a sibling checkout owns that directory,
+# that path is named instead (and likewise proven); and where NO invocation can service the
+# checkout, it says so and names the manual wiring. Printing a command that exits 1 is worse
+# than printing none, and the topologies where it does are not rare (a linked worktree, a
+# --separate-git-dir clone and a submodule all have a `.git` FILE, so the installer's
+# <repo>/.git/hooks target is un-creatable).
+_bsc_fix_line() {
+  local repo="$1" dir="$2" hook="$3" itgt main
+  itgt="$(_bsc_hooks_dir "$repo" installer 2>/dev/null)" || itgt=""
+  if [[ -n "$itgt" && "$itgt" == "$dir" ]]; then
+    printf 'fix: install-board-hooks %s' "$repo"; return 0
+  fi
+  main="$(_bsc_main_checkout "$repo" 2>/dev/null)" || main=""
+  if [[ -n "$main" && "$(_bsc_hooks_dir "$main" installer 2>/dev/null)" == "$dir" ]]; then
+    printf 'fix: install-board-hooks %s   (this checkout dispatches from that one'"'"'s hook dir)' "$main"
+    return 0
+  fi
+  printf 'install-board-hooks cannot service this checkout: its .git is a file (linked worktree / --separate-git-dir / submodule) and the installer targets <repo>/.git/hooks. Wire it by hand: ln -s <toolkit>/hooks/%s %s/' "$hook" "$dir"
 }
 
 # _bsc_hook_dispatch_report <repo-dir>… — print one line per checkout plus a findings summary;
@@ -213,7 +277,7 @@ _bsc_state_reason() {
 # a warning printed by the caller could not be counted, and an all-clear verdict printed
 # underneath it asserted the exact thing the warning denied.
 _bsc_hook_dispatch_report() {
-  local repo name dir rc hook st findings=0 lines fix tk tk_rc=0 inspected=0 skipped=0
+  local repo name dir rc hook st findings=0 lines tk tk_rc=0 inspected=0 skipped=0
   tk="$(_bsc_active_toolkit)" || tk_rc=$?
   if [[ "$tk_rc" == 1 ]]; then
     # The single most consequential host-wide failure: every post-checkout below is a trampoline
@@ -237,7 +301,7 @@ _bsc_hook_dispatch_report() {
          echo "      (an empty value does NOT fall back to .git/hooks; a hook file sitting there is never read)"
          echo "      fix: git -C ${repo} config --unset core.hooksPath   then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
-      6) echo "• ${name}: ✗ core.hooksPath is set to a value git cannot expand — git fatals when it dispatches, so NO hook runs (usually surfaced by the rc-1 arm above, which git reaches first)"
+      6) echo "• ${name}: ✗ core.hooksPath is set to a value git cannot expand — git fatals when it dispatches, so NO hook runs (in practice the rc-1 arm above ALWAYS reports this first: every value git cannot expand also fatals rev-parse — verified; this arm exists so an unknown read status is never silently folded into 'unset')"
          echo "      fix: git -C ${repo} config core.hooksPath <dir>   (or --unset), then: install-board-hooks ${repo}"
          findings=$((findings + 1)); inspected=$((inspected + 1)); continue ;;
       5) echo "• ${name}: ⚠ CHECK DID NOT RUN — install-board-hooks (which owns the core.hooksPath resolver) is not beside this tool"
@@ -259,11 +323,11 @@ _bsc_hook_dispatch_report() {
       # drift, not a dead hook), so labelling it DEAD would contradict both this file and the
       # docs. Only post-checkout can be "the auto-move is dead" — pre-push is advisory.
       if [[ "$st" == "CLONE-DRIFT" ]]; then
-        lines+="    ⚠ ${hook}: $(_bsc_state_reason "$st" "$dir/$hook") — it still fires, but from a checkout other than the on-PATH tools'"$'\n'
+        lines+="    ⚠ ${hook}: $(_bsc_state_reason "$st" "$dir/$hook" "$hook") — it still fires, but from a checkout other than the on-PATH tools'"$'\n'
       elif [[ "$hook" == "post-checkout" ]]; then
-        lines+="    ✗ post-checkout: $(_bsc_state_reason "$st" "$dir/$hook") — the card auto-move is DEAD for this repo"$'\n'
+        lines+="    ✗ post-checkout: $(_bsc_state_reason "$st" "$dir/$hook" "$hook") — the card auto-move is DEAD for this repo"$'\n'
       else
-        lines+="    ⚠ ${hook}: $(_bsc_state_reason "$st" "$dir/$hook") — the branch-name advisory is off"$'\n'
+        lines+="    ⚠ ${hook}: $(_bsc_state_reason "$st" "$dir/$hook" "$hook") — the branch-name advisory is off"$'\n'
       fi
     done
     if [[ -z "$lines" ]]; then
@@ -272,22 +336,16 @@ _bsc_hook_dispatch_report() {
     fi
     echo "• ${name}: dispatch dir ${dir}"
     printf '%s' "$lines"
-    # A linked worktree shares the MAIN checkout's hook dir, so name the path that installs.
-    fix="$repo"
-    if [[ -f "$repo/.git" && "$dir" == */.git/hooks && "$dir" != "$repo"/* ]]; then
-      fix="${dir%/.git/hooks}"
-      echo "      (linked worktree — hooks are shared from the main checkout)"
-    fi
     if [[ "$rc" == 3 ]]; then
       echo "      core.hooksPath is inside the tracked work tree: install-board-hooks refuses that target — chain the toolkit hook into the committed hook by hand (see docs/HOOKS.md)"
     else
-      echo "      fix: install-board-hooks ${fix}"
+      echo "      $(_bsc_fix_line "$repo" "$dir" "post-checkout")"
     fi
   done
   # Canon #9: an empty result is a measurement that never happened. Never print an all-clear
   # over zero inspected checkouts — say what was and was not measured.
   if [[ "$inspected" -eq 0 ]]; then
-    echo "  (0 checkout(s) inspected, ${skipped} skipped — NOTHING was verified here; point this at your checkouts before reading it as clean)"
+    echo "  (0 checkout(s) inspected, ${skipped} skipped, ${findings} finding(s) — NOTHING was verified here; point this at your checkouts before reading it as clean)"
   elif [[ "$findings" -eq 0 ]]; then
     echo "  (${inspected} inspected / ${skipped} skipped — no findings: every INSPECTED checkout dispatches post-checkout → board-card-start)"
   else

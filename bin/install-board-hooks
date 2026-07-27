@@ -61,6 +61,31 @@ _ibh_read_hooks_path() {
 # LINKED WORKTREE must pass its real common dir (`git rev-parse --git-common-dir`): there `.git`
 # is a FILE and git dispatches hooks from the MAIN checkout's hooks dir, so <root>/.git/hooks is
 # not a path git ever reads (verified against git 2.43).
+# _ibh_norm <path>: LEXICAL path normalization — collapse `//`, `.` and `x/..` with NO
+# filesystem access, so _ibh_hooks_dir stays pure. Used ONLY for the in-tree/out-of-tree prefix
+# decision, never for the echoed path: a `..`-relative hooksPath such as `../shared-hooks`
+# resolves OUTSIDE the work tree, but the raw string still begins with the repo root, so an
+# un-normalized prefix test classifies it as in-tree and prints the wrong remediation. The
+# echoed path is left as-is because the OS resolves it exactly as git does when it opens the
+# hook — including through symlinked components, which a lexical collapse would not.
+_ibh_norm() {
+    local p="$1" seg out="" oldifs="$IFS"
+    local -a segs=() st=()
+    IFS='/'; read -r -a segs <<< "$p"; IFS="$oldifs"
+    for seg in ${segs[@]+"${segs[@]}"}; do
+        case "$seg" in
+            ''|.) ;;
+            ..)   if [ "${#st[@]}" -gt 0 ]; then st=("${st[@]:0:${#st[@]}-1}"); fi ;;
+            *)    st+=("$seg") ;;
+        esac
+    done
+    for seg in ${st[@]+"${st[@]}"}; do out="$out/$seg"; done
+    case "$p" in
+        /*) printf '%s' "${out:-/}" ;;
+        *)  printf '%s' "${out#/}" ;;
+    esac
+}
+
 _ibh_hooks_dir() {
     local root="$1" hp="${2:-}" gitdir="${3:-$1/.git}" hp_set="${4:-}"
     if [ -z "$hp" ]; then
@@ -74,7 +99,9 @@ _ibh_hooks_dir() {
         /*) dir="$hp" ;;     # absolute — as-is
         *)  dir="$root/$hp" ;;   # relative — against the work-tree top
     esac
-    local nroot="${root%/}" ndir="${dir%/}"
+    # Normalize the CLASSIFICATION inputs only (see _ibh_norm): '../x' must not read as in-tree.
+    local nroot ndir
+    nroot="$(_ibh_norm "${root%/}")"; ndir="$(_ibh_norm "${dir%/}")"
     # Under .git/ → untracked, safe to symlink (never shows as a work-tree change).
     case "$ndir/" in
         "$nroot"/.git/*|"$nroot"/.git/) printf '%s\n' "$dir"; return 0 ;;
