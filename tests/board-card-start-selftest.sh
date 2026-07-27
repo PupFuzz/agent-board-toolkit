@@ -141,6 +141,78 @@ else
     echo "  skip (git not on PATH)"
 fi
 
+echo "== install-board-hooks — a git common dir that is not <root>/.git is REFUSED, per topology (card#5226) =="
+# Three separated topologies, three DIFFERENT right answers. They are built for real rather than
+# faked, because the discriminator is what git actually reports for each: `--git-common-dir` !=
+# `--git-dir` is true ONLY for the linked worktree (measured on git 2.43 — the other two report
+# them EQUAL), so a check built on that comparison would pass here while missing two of three.
+if command -v git >/dev/null 2>&1; then
+    _t="$(mktemp -d)"
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git init -q "$_t/main"; ( cd "$_t/main" && echo a > a && git add a && git commit -qm a )
+    git -C "$_t/main" worktree add -q "$_t/wt" -b wtb
+    git init -q --separate-git-dir="$_t/sepgit" "$_t/sep"
+    git init -q "$_t/super"
+    ( cd "$_t/super" && echo s > s && git add s && git commit -qm s \
+      && git -c protocol.file.allow=always submodule add -q "$_t/main" sub && git commit -qm sub ) >/dev/null 2>&1
+
+    # Each topology: non-zero, AND its own words — a generic message would satisfy a bare rc test.
+    _topo() {   # <label> <path> <must-contain> <must-NOT-contain>
+        local _rc=0 _o
+        _o="$(bash "$IBH" --check "$2" 2>&1)" || _rc=$?
+        [[ "$_rc" -ne 0 ]] && ok "$1: refused (rc=$_rc)" || bad "$1: must refuse (got rc=$_rc, out=$_o)"
+        printf '%s' "$_o" | grep -q "$3" \
+            && ok "$1: message names its own topology ($3)" || bad "$1: wrong message: $_o"
+        printf '%s' "$_o" | grep -q "$4" \
+            && bad "$1: message carries another topology's wording ($4): $_o" \
+            || ok "$1: does NOT emit another topology's wording"
+    }
+    _topo "linked worktree"  "$_t/wt"       "LINKED WORKTREE"      "SEPARATE git directory"
+    _topo "--separate-git-dir" "$_t/sep"    "SEPARATE git directory" "LINKED WORKTREE"
+    _topo "submodule"        "$_t/super/sub" "is a SUBMODULE of"    "LINKED WORKTREE"
+
+    # Only the worktree has another checkout to redirect to; the message must name it, since a
+    # classification without the command to run is what this refusal replaced.
+    # Captured, never piped: `set -o pipefail` is live here, so `<refusal> | grep -q` reports the
+    # REFUSAL's rc 1 and a matching pattern reads as a failure.
+    _out="$(bash "$IBH" --check "$_t/wt" 2>&1 || true)"
+    printf '%s' "$_out" | grep -q "install-board-hooks $_t/main\$" \
+        && ok "worktree refusal names the MAIN checkout as the command to run" \
+        || bad "worktree refusal did not name the main checkout: $_out"
+
+    # …and it must be TRUE: the command the refusal prints has to actually succeed.
+    bash "$IBH" "$_t/main" >/dev/null 2>&1 && [[ -L "$_t/main/.git/hooks/post-checkout" ]] \
+        && ok "the redirected command works (main checkout installs)" \
+        || bad "the refusal named a command that does not work"
+    # Installing at the main checkout wires the worktree too — the claim the message makes.
+    [[ -L "$(git -C "$_t/wt" rev-parse --git-common-dir)/hooks/post-checkout" ]] \
+        && ok "…and that wires the worktree's dispatch dir, as the message claims" \
+        || bad "main-checkout install did not reach the worktree's dispatch dir"
+
+    # THE REFUSAL IS TOPOLOGY-CONDITIONAL, NOT TOPOLOGY-ABSOLUTE: a set core.hooksPath wins on
+    # every topology, so a worktree that configures one is installable and refusing it would be
+    # a FALSE refusal. This is the positive control for the guard — without it, a guard keyed on
+    # topology alone passes every assertion above.
+    mkdir -p "$_t/outhooks"; git -C "$_t/wt" config core.hooksPath "$_t/outhooks"
+    _rc=0; _out="$(bash "$IBH" --check "$_t/wt" 2>&1)" || _rc=$?
+    [[ "$_rc" -eq 0 && "$_out" == "$_t/outhooks" ]] \
+        && ok "worktree + out-of-tree core.hooksPath: NOT refused, targets the hooksPath" \
+        || bad "worktree with core.hooksPath must install (rc=$_rc out=$_out)"
+    git -C "$_t/wt" config --unset core.hooksPath
+
+    # An ordinary checkout is unaffected, and a SUB-DIRECTORY argument still prints the canonical
+    # <root>/.git/hooks — `--git-common-dir` is answered relative to the typed path, so passing it
+    # through would print `<root>/subdir/../.git/hooks` into a stdout other tools consume.
+    mkdir -p "$_t/main/subdir"
+    _out="$(bash "$IBH" --check "$_t/main/subdir" 2>&1)"
+    [[ "$_out" == "$_t/main/.git/hooks" ]] \
+        && ok "sub-directory argument still prints the canonical <root>/.git/hooks" \
+        || bad "sub-directory argument printed a non-canonical target: $_out"
+    rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
 echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the captured status; always fail-soft (#4510) =="
 # Stub the shared writer so the decision logic is exercised network-free. Redefining kb_api here
 # shadows the lib's (sourced via $BCS); this is the last block, so the stub can't leak into others.
