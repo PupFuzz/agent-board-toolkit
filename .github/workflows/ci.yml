@@ -29,6 +29,20 @@ jobs:
       - name: drift-check runs and reports no drift against itself
         run: ./bin/agent-board-toolkit-drift-check . .
 
+  ci-matrix-parity:
+    # Asserts every tests/*-selftest.sh is actually RUN by this file — the guard for the
+    # matrix list below, which was hand-aligned behind a comment until card#5355.
+    #
+    # Deliberately its OWN job, not a `selftest` matrix entry: a matrix entry would be
+    # self-referential, so deleting that one line would disable the guard silently — the exact
+    # hole it closes. Being named in this `run:` block is also how it satisfies the rule it
+    # enforces (matrix entry OR named in a run: block), with no exception list.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: every selftest on disk is run by ci.yml
+        run: bash tests/ci-matrix-parity-selftest.sh
+
   selftest:
     # The network-free `tests/*-selftest.sh` scripts, one matrix job each — they were 10
     # byte-for-byte-identical checkout+`bash tests/X.sh` jobs whose only difference was the
@@ -38,8 +52,11 @@ jobs:
     # as the separate jobs did — one failure must never cancel the siblings. The `drift-check`,
     # `shellcheck`, and `promote-action` jobs stay separate: they do NOT run `bash tests/X.sh`.
     #
-    # KEEP THIS LIST IN SYNC with `tests/*-selftest.sh` — a new selftest needs a matrix entry
-    # here, the same as it needed its own job before.
+    # A new selftest needs a matrix entry here, the same as it needed its own job before.
+    # This list is no longer kept in sync by diligence alone: the `ci-matrix-parity` job above
+    # fails the build when a `tests/*-selftest.sh` exists that nothing here runs (card#5355).
+    # An intentionally non-matrix test is wired by naming it in its own job's `run:` block —
+    # that satisfies the guard too, so there is no exception list to maintain.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
