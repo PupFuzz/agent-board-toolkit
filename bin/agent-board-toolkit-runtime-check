@@ -22,6 +22,9 @@
 #
 # Exit codes: 0 current/coherent · 1 stale or incoherent (the loud failure the recipe
 # lacked) · 0 with warnings for cannot-verify (honest UNKNOWN ≠ ok is stated in the output).
+#
+# Usage: agent-board-toolkit-runtime-check [--quiet] [--reference DIR]
+#
 # --quiet prints nothing when everything is current (board-snapshot's SessionStart wiring).
 # --reference <dir> names the checkout copies are compared against (default: auto-derive
 # from the newest-modified ~/agent-board-toolkit* checkout carrying a VERSION file).
@@ -35,7 +38,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --quiet) QUIET=1 ;;
         --reference) REFERENCE="${2:?--reference needs a dir}"; shift ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        # Contiguous leading comment block, not a fixed range — see the release movers.
+        -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0 ;;
         *) echo "runtime-check: unknown arg '$1'" >&2; exit 2 ;;
     esac
     shift
