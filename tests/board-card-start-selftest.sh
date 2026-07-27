@@ -89,6 +89,26 @@ expect_rc  "relative .git/hooks (under .git) → safe" 0 _ibh_hooks_dir "/repo" 
 expect_rc  "absolute out-of-tree → safe"        0 _ibh_hooks_dir "/repo" "/etc/git/hooks"
 expect_rc  "absolute inside tree → REFUSE"      3 _ibh_hooks_dir "/repo" "/repo/.githooks"
 expect_out "relative .githooks resolves vs root" "/repo/.githooks" _ibh_hooks_dir "/repo" ".githooks"
+# A '..'-relative hooksPath resolves OUTSIDE the work tree, but the RAW string still starts with
+# the repo root — an un-normalized prefix test called it in-tree and printed the wrong fix.
+expect_rc  "'../shared-hooks' escapes the tree → safe, not the in-tree refuse" 0 _ibh_hooks_dir "/repo/proj" "../shared-hooks"
+expect_rc  "'sub/../.githooks' still lands in-tree → REFUSE"  3 _ibh_hooks_dir "/repo/proj" "sub/../.githooks"
+expect_out "the echoed path is NOT lexically rewritten (the OS resolves it as git does)" \
+           "/repo/proj/../shared-hooks" _ibh_hooks_dir "/repo/proj" "../shared-hooks"
+
+echo "== _ibh_hooks_dir — SET-but-EMPTY core.hooksPath is 'hooks disabled', not 'unset' =="
+# git does not fall back on an empty value: it dispatches NO hooks. Presence therefore has to
+# arrive as an explicit argument, because the value alone cannot carry it.
+expect_rc  "empty value + presence flag → rc 4 (disabled)"     4 _ibh_hooks_dir "/repo" "" "/repo/.git" "1"
+expect_rc  "empty value WITHOUT the flag → the unset default"  0 _ibh_hooks_dir "/repo" "" "/repo/.git" ""
+expect_out "…and that default is <git-dir>/hooks"  "/repo/.git/hooks" _ibh_hooks_dir "/repo" "" "/repo/.git" ""
+expect_out "an explicit common dir wins (linked worktree)" "/main/.git/hooks" _ibh_hooks_dir "/wt" "" "/main/.git"
+
+echo "== _ibh_norm — pure lexical normalization (no filesystem access) =="
+expect_out "collapses x/.."        "/a/c"    _ibh_norm "/a/b/../c"
+expect_out "collapses . and //"    "/a/b"    _ibh_norm "/a/./b//"
+expect_out "keeps a relative path relative" "a/b" _ibh_norm "a/./b"
+expect_out "root stays root"       "/"       _ibh_norm "/a/.."
 
 echo "== kb_bcs_log — writes the durable log (F5) + is set -u-safe with branch unset =="
 _tmpd="$(mktemp -d)"
