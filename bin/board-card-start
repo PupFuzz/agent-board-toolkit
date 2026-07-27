@@ -164,7 +164,8 @@ _bcs_branch_lint_warning() {
 # refuses `-foo` as an unknown option: a FALSE refusal, printing a "no card moved" line on every
 # push of such a branch while the mover still moves its card (post-checkout passes no args, so it
 # reaches the `git rev-parse HEAD` fallback and never enters this parser) — i.e. exactly the
-# "the lint and the mover can never disagree" property docs/HOOKS.md claims for the pre-push lint.
+# "can never disagree about the grammar" property docs/HOOKS.md claims for the pre-push lint,
+# broken on the one axis the shared matchers do not cover.
 # Everything after `--` is a positional, and there is ONE positional owner below that both sides
 # of the terminator reach — a second copy of it is how the two arms would drift apart.
 #

@@ -9,7 +9,8 @@
 #
 # git feeds one "<local-ref> <local-sha> <remote-ref> <remote-sha>" line per pushed ref
 # on stdin. We lint each pushed local branch via `board-card-start --lint` (which reuses
-# the exact card-id grammar, so the lint and the auto-move never disagree).
+# the exact card-id grammar, so the lint and the auto-move never disagree about the GRAMMAR —
+# the argument surface is a separate question, which the `--` below is what settles).
 #
 # `--` before the branch name is load-bearing, not decoration: git accepts a ref whose
 # branch name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0, and
