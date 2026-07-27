@@ -19,18 +19,24 @@
 # registered by hand (operator-owned config; see docs/HOOKS.md), never written here.
 set -euo pipefail
 
-# _ibh_hooks_dir <repo-root> <core.hooksPath-value>: echo the directory the post-checkout hook
-# must live in for git to dispatch it, and return a status telling the caller how to treat it.
-# Pure (no filesystem writes) so tests/board-card-start-selftest.sh can assert on it.
-#   0  safe install target — the default .git/hooks, a hooksPath under .git/ (untracked), or one
-#      OUTSIDE the work tree (an absolute/global dir): symlink into it.
+# _ibh_hooks_dir <repo-root> <core.hooksPath-value> [git-common-dir]: echo the directory the
+# post-checkout hook must live in for git to dispatch it, and return a status telling the caller
+# how to treat it. Pure (no filesystem writes) so tests/board-card-start-selftest.sh can assert
+# on it — and so the session-close hook-dispatch check can REUSE it rather than re-derive the
+# resolution (a second copy of it is the exact defect class that check exists to catch).
+#   0  safe install target — the default <git-dir>/hooks, a hooksPath under .git/ (untracked), or
+#      one OUTSIDE the work tree (an absolute/global dir): symlink into it.
 #   3  hooksPath resolves INSIDE the tracked work tree (under repo root but NOT under .git/):
 #      the caller must REFUSE. The directory is still echoed (for the diagnostic).
 # Git resolves a RELATIVE core.hooksPath against the work-tree top (verified), not the CWD.
+# <git-common-dir> defaults to <repo-root>/.git, which is right for every ordinary checkout. A
+# LINKED WORKTREE must pass its real common dir (`git rev-parse --git-common-dir`): there `.git`
+# is a FILE and git dispatches hooks from the MAIN checkout's hooks dir, so <root>/.git/hooks is
+# not a path git ever reads (verified against git 2.43).
 _ibh_hooks_dir() {
-    local root="$1" hp="${2:-}"
+    local root="$1" hp="${2:-}" gitdir="${3:-$1/.git}"
     if [ -z "$hp" ]; then
-        printf '%s\n' "$root/.git/hooks"; return 0
+        printf '%s\n' "$gitdir/hooks"; return 0
     fi
     local dir
     case "$hp" in

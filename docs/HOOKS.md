@@ -133,6 +133,8 @@ install-board-hooks /path/to/your-repo     # installs the post-checkout + pre-pu
 ```
 Re-run after `git pull`-ing a new toolkit version only if the hook set changed (it's a symlink, so the content tracks the toolkit automatically — **but on Windows/MSYS/Git-Bash hosts `ln -s` produces copies**, and a copies install must re-run `install-board-hooks` after every toolkit upgrade; see INSTALL.md §2's copy-topology warning).
 
+**Linked worktrees share the main checkout's hook dir.** In a `git worktree` the `.git` entry is a *file*, and git dispatches hooks from the **main** checkout's hooks dir (`git rev-parse --git-common-dir`) — installing once against the main checkout wires every worktree of it. Run `install-board-hooks` against the **main checkout path**; pointed at a linked worktree it currently errors out (`mkdir: … .git: Not a directory`) rather than resolving the shared dir.
+
 The installer **honors `core.hooksPath`**: if the repo sets it (gitleaks, the pre-commit framework, Husky, many Windows setups) git dispatches hooks *only* from there, so the hook is installed into `<core.hooksPath>/post-checkout` — otherwise the install would be a silent no-op. It still refuses to clobber an existing non-symlink hook, and refuses a `core.hooksPath` that resolves **inside the tracked work tree** (a machine-specific absolute symlink there would show as a work-tree change and break on other clones) — guiding you to chain the toolkit hook into your committed hook by hand instead.
 
 Requirements: the repo resolves a **board id** — a repo-local `git config kanban.board-id <id>` (uncommitted; needs no `.release-pr.json`, and so adds no committed `api_base` surface), **or** a `.release-pr.json` with `promote.board_id` (release repos). The `git config` value wins if both are set; in practice they are mutually-exclusive populations. You also have `~/.kanban-host.env`, a token file, and a `~/.kanban-<name>-board.env` whose `KB_BOARD_ID` matches the repo's board. Same config the rest of the toolkit uses (see [INSTALL.md](INSTALL.md)).
@@ -142,6 +144,30 @@ Requirements: the repo resolves a **board id** — a repo-local `git config kanb
 **`~/.kanban-host.env` must export both** (the same setup `kbcard`/`promote-released-cards` use):
 - **`KBCARD_API`** — the real kanban api base, e.g. `https://<host>/api/v3`. `board-card-start` reads `promote.api_base` from the committed `.release-pr.json`, but that value is typically a **host-scrubbed reserved placeholder** (`*.example.com`, `.invalid`, `.test`, `.localhost`, or the bare `.example` TLD — RFC-2606/6761) because the real host must not live in a repo — and it is absent entirely for a repo without a `.release-pr.json`. When it detects such a placeholder (or an empty/absent value) it **falls back to `KBCARD_API`** — so the hook reaches the real board with no per-repo config. The detector is anchored to host-label boundaries, so a real host that merely *contains* one of those substrings (e.g. `kanban.latest-corp.com`) is not misread. A genuinely real committed host (a multi-host install that didn't scrub) is used as-is.
 - **`KANBAN_EXPECTED_HOST`** — the expected api host (e.g. `<host>`, the host part of `KBCARD_API`). The anti-exfiltration guard refuses to send the writeback token unless the resolved `api_base` host equals this (or is a subdomain of it). Without it set, `board-card-start` fail-softs (loud on stderr **and appended to the diagnostic log**, no move). One host-level setting activates every repo on the machine.
+
+## Is the hook still wired? — the dispatch check
+
+A repo can **lose** its hook wiring and nothing routine notices. The failure is silent by construction, from three directions at once:
+
+- `board-card-start` is **fail-soft** by contract (it must never block a checkout), so from the operator's seat a missing hook and a working hook look identical — no error, no output, just a card that never moves.
+- A session-close reconcile sees only the **symptom** (a card still sitting in its backlog column) and corrects it as ordinary drift, **masking the cause** — so the wiring can stay dead for an unbounded time while every session ends "clean".
+- `agent-board-toolkit-drift-check` compares a repo's **vendored tool copies** against the toolkit. It says nothing about hook wiring, which is host state, not repo content.
+
+So `board-session-close` reports it. Under `── Git hook dispatch ──` it prints one line per local checkout:
+
+```
+• some-repo: ✓ post-checkout pre-push dispatch from /path/some-repo/.git/hooks
+• other-repo: dispatch dir /path/other-repo/.git/hooks
+    ✗ post-checkout: no hook file in the dispatch dir — the card auto-move is DEAD for this repo
+    ⚠ pre-push: no hook file in the dispatch dir — the branch-name advisory is off
+      fix: install-board-hooks /path/other-repo
+```
+
+What it reports per hook: **missing**, a **dangling symlink**, present but **not executable** (git ignores it, saying so only through a suppressible `advice.ignoredHook` hint at the moment of the checkout), present but **not reaching `board-card-start`** (a foreign hook), and — as a lower-severity wiring drift — a hook **symlinked into a different toolkit checkout** than the one whose `board-card-start` is on `PATH` (it fires today, but that clone can be mid-edit, on another branch, or removed). A copied hook is *not* flagged as drift: copies are the supported Windows/MSYS topology. It also flags the case where `board-card-start` is **not on `PATH` at all** — then every `post-checkout` on the host is a no-op however it is wired. A path with no checkout is reported as skipped, not as a finding.
+
+It resolves the dispatch directory the way **git** does, not the way it is usually assumed: it reuses `install-board-hooks`' own `core.hooksPath` resolver (one implementation, not a second copy) and passes the repo's git **common dir**, so a `core.hooksPath` repo and a linked worktree are both read where git actually dispatches from. A check that read `.git/hooks` alone would reproduce the exact silent no-op the installer was fixed for — reporting a repo healthy on the strength of a hook git never runs.
+
+**It is report-only.** It never installs, repairs, or touches a repo, and it does **not** change the ritual's exit code (which stays owned by the inverse-drift check) — remediation is your `install-board-hooks <repo-dir>` call, which the output names per finding.
 
 ## Manual use
 

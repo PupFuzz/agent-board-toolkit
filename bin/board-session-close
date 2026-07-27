@@ -13,7 +13,17 @@
 # by construction, plus adds a forward un-carded-open-PR leg the retired bash
 # check never had.
 #
-# A second READ-ONLY leg — "Archive-eligible done cards" — is DELEGATED to the
+# A READ-ONLY "Git hook dispatch" leg reports, per local checkout, whether the
+# post-checkout hook git ACTUALLY dispatches reaches `board-card-start`. A repo can
+# lose that wiring and every routine check stays green: `board-card-start` is
+# fail-soft by contract (it must never block a checkout), so from the operator's
+# seat a missing hook and a working hook are indistinguishable, and the inverse-drift
+# leg below sees only the SYMPTOM (a card that never left its backlog column) and
+# reconciles it as ordinary drift — masking the cause. This leg reports the cause. It
+# is REPORT-ONLY: it never installs, repairs or mutates anything, and it never changes
+# this ritual's exit code (the inverse-drift leg owns that).
+#
+# A third READ-ONLY leg — "Archive-eligible done cards" — is DELEGATED to the
 # sibling `_kbc-archive-eligible.py`: for each configured board it reports how many
 # terminal (done-lane) cards are not yet archived, and runs the framework's shipped
 # `may_archive` gate over a BOUNDED SAMPLE of them to show a concrete "safe to
@@ -50,25 +60,210 @@ resolve_reconcile_hook() {
   return 1
 }
 
+# The local checkouts this ritual inspects — ONE list, read by BOTH the branch-reality
+# leg and the hook-dispatch leg (a second hardcoded copy is how two legs silently come
+# to disagree about which repos are covered). Host-local by nature: board-session-close
+# is the agent host's own session tool, not a vendored per-repo tool.
+BSC_WORKTREES=(
+  "$HOME/agent-webhook-bridge-dev"
+  "$HOME/agent-webhook-bridge-prod"
+  "$HOME/kanbanboard"
+  "$HOME/agent-board-toolkit"
+)
+# The hooks install-board-hooks installs. post-checkout is load-bearing (it is what moves
+# the card to In Progress); pre-push is the fail-soft branch-name advisory.
+BSC_HOOKS=(post-checkout pre-push)
+
+# _bsc_hooks_dir <repo-dir> — echo the directory git ACTUALLY dispatches this repo's hooks
+# from.  rc 0 = resolved · 1 = the path is not a git work tree · 2 = no checkout there ·
+# 3 = resolved, but core.hooksPath is inside the tracked work tree (install-board-hooks
+# refuses that target; git still dispatches from it) · 4 = the resolver could not be loaded.
+#
+# The core.hooksPath resolution is NOT re-derived here: it is `_ibh_hooks_dir`, the primitive
+# bin/install-board-hooks already owns and deliberately exposes (that bin is main-guarded, so
+# sourcing it defines the function and installs nothing). A checker that looked in .git/hooks
+# alone would report a core.hooksPath repo healthy on the strength of a hook git never
+# dispatches — the precise silent no-op the installer was fixed for (#4281) — and a second
+# copy of the resolution is what lets the two drift apart again. It is sourced in a SUBSHELL
+# because install-board-hooks sets -euo pipefail at top level and this ritual runs without -e.
+_bsc_hooks_dir() {
+  local repo="$1" ibh root hp cdir
+  [[ -e "$repo" ]] || return 2
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)"
+  [[ -n "$root" ]] || return 1
+  # A LINKED WORKTREE (.git is a FILE) dispatches hooks from the main checkout's common dir,
+  # not <worktree>/.git/hooks. `rev-parse -C <repo>` may answer relative to <repo>.
+  cdir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)"
+  [[ -n "$cdir" ]] || cdir="$root/.git"
+  [[ "$cdir" == /* ]] || cdir="$repo/$cdir"
+  hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+  ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
+  [[ -r "$ibh" ]] || return 4
+  # shellcheck source=/dev/null
+  ( . "$ibh" >/dev/null 2>&1; _ibh_hooks_dir "$root" "$hp" "$cdir" )
+}
+
+# _bsc_active_toolkit — the toolkit checkout that owns the on-PATH `board-card-start`: the
+# copy that actually runs when a hook fires. rc 1 (empty) when the tool is not on PATH.
+_bsc_active_toolkit() {
+  local p
+  p="$(command -v board-card-start 2>/dev/null)" || return 1
+  [[ -n "$p" ]] || return 1
+  p="$(readlink -f "$p" 2>/dev/null || printf '%s' "$p")"
+  case "$p" in
+    */bin/board-card-start) printf '%s' "${p%/bin/board-card-start}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _bsc_hook_reaches <hook-file> <hook-name> — rc 0 when the dispatched hook actually reaches
+# board-card-start. Reads the file with symlinks followed, so a symlinked hook and a copied
+# one (Windows/MSYS `ln -s` yields copies) both match, and follows ONE level of chaining — a
+# committed hook that execs the toolkit hook, which is the remedy install-board-hooks prints
+# for an in-tree core.hooksPath. It never EXECUTES the hook, so a hook that reaches the tool
+# through some further indirection reads as a finding (deliberate: this is report-only, and
+# the reported dispatch path is enough for an operator to see why).
+_bsc_hook_reaches() {
+  local f="$1" hook="$2" p refs
+  grep -q 'board-card-start' "$f" 2>/dev/null && return 0
+  refs="$(grep -o "/[^\"'[:space:]]*/hooks/$hook" "$f" 2>/dev/null | sort -u)"
+  [[ -n "$refs" ]] || return 1
+  while IFS= read -r p; do
+    [[ -n "$p" && -r "$p" ]] || continue
+    grep -q 'board-card-start' "$p" 2>/dev/null && return 0
+  done <<< "$refs"
+  return 1
+}
+
+# _bsc_hook_state <dispatch-dir> <hook> <toolkit-root> — echo ONE status token:
+#   OK · MISSING · DANGLING · NOT-EXECUTABLE · NO-REACH · CLONE-DRIFT
+_bsc_hook_state() {
+  local dir="$1" hook="$2" tk="${3:-}" f="$1/$2" real
+  if [[ -L "$f" && ! -e "$f" ]]; then echo "DANGLING"; return 0; fi
+  [[ -e "$f" ]] || { echo "MISSING"; return 0; }
+  # git IGNORES a non-executable hook (only a suppressible `advice.ignoredHook` hint says
+  # so, and nothing says it at the next session) — the file being there proves nothing.
+  [[ -x "$f" ]] || { echo "NOT-EXECUTABLE"; return 0; }
+  _bsc_hook_reaches "$f" "$hook" || { echo "NO-REACH"; return 0; }
+  # A symlink into a DIFFERENT toolkit checkout still fires today, but the wiring has
+  # drifted: that clone can be mid-edit, on another branch, or removed. A copy is not a
+  # symlink and is not flagged (that is the supported Windows topology).
+  if [[ -n "$tk" && -L "$f" ]]; then
+    real="$(readlink -f "$f" 2>/dev/null || true)"
+    # Prefix test by string strip, not a `case` glob: a toolkit path containing a glob
+    # metacharacter would otherwise decide a finding by pattern-matching accident.
+    if [[ "${real#"$tk"/}" == "$real" ]]; then echo "CLONE-DRIFT"; return 0; fi
+  fi
+  echo "OK"
+}
+
+# _bsc_state_reason <status> <hook-file> — the one-line human reason for a status token.
+_bsc_state_reason() {
+  case "$1" in
+    MISSING)        printf 'no hook file in the dispatch dir' ;;
+    DANGLING)       printf 'symlink target is gone (%s)' "$(readlink "$2" 2>/dev/null || echo '?')" ;;
+    NOT-EXECUTABLE) printf 'present but NOT executable — git ignores it' ;;
+    NO-REACH)       printf 'does not reach board-card-start' ;;
+    CLONE-DRIFT)    printf 'symlinked into another toolkit checkout (%s)' "$(readlink -f "$2" 2>/dev/null || echo '?')" ;;
+    *)              printf '%s' "$1" ;;
+  esac
+}
+
+# _bsc_hook_dispatch_report <toolkit-root> <repo-dir>… — print one line per checkout plus a
+# findings summary; echo nothing to stderr and mutate nothing. Returns the finding COUNT so a
+# caller can assert on it; main deliberately does NOT fold it into the ritual's exit code.
+_bsc_hook_dispatch_report() {
+  local tk="${1:-}"; shift
+  local repo name dir rc hook st findings=0 lines fix
+  for repo in "$@"; do
+    name="$(basename "$repo")"
+    rc=0; dir="$(_bsc_hooks_dir "$repo")" || rc=$?
+    case "$rc" in
+      2) echo "• ${name}: — no checkout at ${repo} (skipped)"; continue ;;
+      1) echo "• ${name}: ✗ ${repo} exists but is not a git work tree — no checkout to cut branches in, so no hook can dispatch there"
+         findings=$((findings + 1)); continue ;;
+      4) echo "• ${name}: ⚠ CHECK DID NOT RUN — install-board-hooks (which owns the core.hooksPath resolver) is not beside this tool"
+         findings=$((findings + 1)); continue ;;
+    esac
+    # An empty dir would silently degrade every hook below to a false MISSING — the one
+    # answer this check must never invent. (Reachable: an unreadable/corrupt resolver.)
+    if [[ -z "$dir" ]]; then
+      echo "• ${name}: ⚠ CHECK DID NOT RUN — could not resolve the hook dispatch dir (resolver rc ${rc})"
+      findings=$((findings + 1)); continue
+    fi
+    lines=""
+    for hook in "${BSC_HOOKS[@]}"; do
+      st="$(_bsc_hook_state "$dir" "$hook" "$tk")"
+      [[ "$st" == "OK" ]] && continue
+      findings=$((findings + 1))
+      # post-checkout carries the auto-move; pre-push is only the advisory lint.
+      if [[ "$hook" == "post-checkout" ]]; then
+        lines+="    ✗ post-checkout: $(_bsc_state_reason "$st" "$dir/$hook") — the card auto-move is DEAD for this repo"$'\n'
+      else
+        lines+="    ⚠ ${hook}: $(_bsc_state_reason "$st" "$dir/$hook") — the branch-name advisory is off"$'\n'
+      fi
+    done
+    if [[ -z "$lines" ]]; then
+      echo "• ${name}: ✓ ${BSC_HOOKS[*]} dispatch from ${dir}"
+      continue
+    fi
+    echo "• ${name}: dispatch dir ${dir}"
+    printf '%s' "$lines"
+    # A linked worktree shares the MAIN checkout's hook dir, so name the path that installs.
+    fix="$repo"
+    if [[ -f "$repo/.git" && "$dir" == */.git/hooks && "$dir" != "$repo"/* ]]; then
+      fix="${dir%/.git/hooks}"
+      echo "      (linked worktree — hooks are shared from the main checkout)"
+    fi
+    if [[ "$rc" == 3 ]]; then
+      echo "      core.hooksPath is inside the tracked work tree: install-board-hooks refuses that target — chain the toolkit hook into the committed hook by hand (see docs/HOOKS.md)"
+    else
+      echo "      fix: install-board-hooks ${fix}"
+    fi
+  done
+  if [[ "$findings" -eq 0 ]]; then
+    echo "  (no findings — every checkout above dispatches post-checkout → board-card-start)"
+  else
+    echo "  (${findings} finding(s) — REPORT-ONLY: nothing was installed, repaired or changed here)"
+  fi
+  return "$findings"
+}
+
 main() {
-  local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc
+  local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc tk
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
   echo "Fix any board card below that doesn't match the git/PR reality, then close."
   echo
   "$HOME/.local/bin/board-snapshot" 2>/dev/null || echo "(board-snapshot unavailable)"
   echo
   echo "── Local branch reality (cross-check against the cards above) ──"
-  for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard; do
-    wt="/home/kanban/$d"
+  for wt in "${BSC_WORKTREES[@]}"; do
+    d="$(basename "$wt")"
     [[ -e "$wt/.git" ]] || continue
     b="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
     dirty=""; [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]] && dirty=" (uncommitted changes)"
     echo "• ${d}: branch=${b:-?}${dirty}"
   done
   echo
+  echo "── Git hook dispatch — does each checkout's post-checkout still reach board-card-start? ──"
+  echo "   (report-only; remediation is yours: install-board-hooks <repo-dir>)"
+  # board-card-start is fail-soft by contract, so a dead hook looks exactly like a working
+  # one from here — this leg is the only thing on the host that reads the wiring itself.
+  if ! tk="$(_bsc_active_toolkit)"; then
+    tk=""
+    echo "  ⚠ board-card-start is NOT on PATH — every post-checkout hook below is a silent no-op on this host, however it is wired (install the toolkit bin/ onto PATH)"
+  fi
+  # Report-only by design: the finding count is deliberately NOT folded into the ritual's
+  # exit code (which stays owned by the inverse-drift leg) — a lost hook is an operator fix,
+  # not a reason to fail a session close.
+  _bsc_hook_dispatch_report "$tk" "${BSC_WORKTREES[@]}" || true
+  echo
   echo "── Open PRs (each should have a card in In Review / Held) ──"
-  for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do   # one entry per unique repo
-    wt="/home/kanban/$d"
+  # One entry per unique GitHub repo — the deduped projection of BSC_WORKTREES (a second
+  # checkout of the same repo, e.g. a -prod deploy clone, lists the same open PRs).
+  for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do
+    wt="$HOME/$d"
     [[ -e "$wt/.git" ]] || continue
     ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
         | sed "s#^#  ${d}: #" ) || true

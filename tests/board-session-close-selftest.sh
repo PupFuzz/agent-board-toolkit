@@ -10,6 +10,11 @@
 #   2. main's delegation — it must SURFACE the hook's ⚠ drift lines, FAIL LOUD (rc 1,
 #      "DID NOT RUN") when the hook can't be found, and PROPAGATE a non-zero hook exit
 #      (so a config/API failure isn't read as a clean board).
+#   3. the git-hook DISPATCH leg (card#5200) — over REAL `git init` fixture repos, it must
+#      resolve the dir git actually dispatches from (core.hooksPath and linked worktrees
+#      included, via the shared install-board-hooks resolver) and report a hook that is
+#      missing / dangling / non-executable / not reaching board-card-start / symlinked into
+#      another toolkit checkout, while staying report-only.
 #
 # The bin is main-guarded, so sourcing it defines the functions and renders nothing.
 # resolve_reconcile_hook is probed in a fresh `bash -c` per case (hermetic HOME/PATH/
@@ -142,6 +147,195 @@ rc="$(run_main "$skiphook")"
 eq "a skipped board still exits 0" "0" "$rc"
 eq "the skip is re-emitted as a ⚠ warning on STDERR naming the board key" \
    "true" "$(has '⚠ board bridge was SKIPPED' "$(cat "$ERRF")")"
+
+# ---------------------------------------------------------------------------
+# The git-hook DISPATCH check (card#5200). Real fixture repos (`git init` in a temp dir),
+# never a mock: the whole point of the leg is what GIT actually dispatches, and a mocked
+# `git config` / faked `.git` layout would assert the check's own assumptions back at it.
+#
+# THE LOAD-BEARING CASE is `core.hooksPath`. When a repo sets it, git dispatches hooks ONLY
+# from there, so a checker that reads `.git/hooks` reports a repo healthy on the strength of
+# a hook git never runs — the exact silent no-op install-board-hooks was fixed for (#4281).
+# The two hooksPath cases below therefore assert BOTH directions against the naive
+# `.git/hooks` answer, so "simplifying" the resolver back to `.git/hooks` goes red.
+# ---------------------------------------------------------------------------
+echo "== hook-dispatch check — fixture repos =="
+if ! command -v git >/dev/null 2>&1; then
+    echo "  skip (git not on PATH)"
+else
+# shellcheck source=/dev/null
+source "$BIN"       # main-guarded: defines the _bsc_* helpers, runs nothing
+
+H="$TMP/hooks"; mkdir -p "$H"
+# Two toolkit checkouts: the "active" one (owns the on-PATH board-card-start) and a second
+# clone — the observed drift shape is a hook symlinked into the wrong one.
+for tkdir in "$H/toolkit" "$H/toolkit-other"; do
+    mkdir -p "$tkdir/hooks" "$tkdir/bin"
+    for hk in post-checkout pre-push; do
+        printf '#!/bin/sh\ncommand -v board-card-start >/dev/null && board-card-start\n' > "$tkdir/hooks/$hk"
+        chmod +x "$tkdir/hooks/$hk"
+    done
+    printf '#!/bin/sh\nexit 0\n' > "$tkdir/bin/board-card-start"; chmod +x "$tkdir/bin/board-card-start"
+done
+TK="$H/toolkit"; TKO="$H/toolkit-other"
+
+mkrepo()  { git init -q "$1"; }                      # <dir>
+wire()    { ln -sf "$2/hooks/post-checkout" "$1/post-checkout"; ln -sf "$2/hooks/pre-push" "$1/pre-push"; }
+state()   { _bsc_hook_state "$1" "${2:-post-checkout}" "$TK"; }
+# report <repo…> — run the leg IN THIS SHELL (a $(…) call would lose both globals):
+# leaves the finding count in $RN and the printed text in $ROUT.
+ROUT=""; RN=0
+report()  { RN=0; ROUT="$(_bsc_hook_dispatch_report "$TK" "$@")" || RN=$?; }
+saw()     { case "$ROUT" in *"$1"*) echo true ;; *) echo false ;; esac; }
+
+# --- healthy: both hooks symlinked from the active toolkit ------------------
+r="$H/healthy"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+eq "healthy: dispatch dir is .git/hooks"  "$r/.git/hooks" "$(_bsc_hooks_dir "$r")"
+eq "healthy: post-checkout OK"            "OK" "$(state "$r/.git/hooks")"
+eq "healthy: pre-push OK"                 "OK" "$(state "$r/.git/hooks" pre-push)"
+report "$r"
+eq "healthy: report finds NOTHING" "0" "$RN"
+eq "healthy: reported as ✓"               "true" "$(saw "✓")"
+
+# PROVE-IT-CAN-FAIL for the whole leg: break the SAME fixture and it must go red.
+rm -f "$r/.git/hooks/post-checkout"
+report "$r"
+eq "prove-it-can-fail: same repo, hook removed ⇒ finding" "1" "$RN"
+eq "prove-it-can-fail: names the dead auto-move"          "true" "$(saw "auto-move is DEAD")"
+wire "$r/.git/hooks" "$TK"                                  # restore
+
+# --- no hook at all (the observed ~kanbanboard case) ------------------------
+r="$H/nohooks"; mkrepo "$r"
+eq "no hook at all: post-checkout MISSING" "MISSING" "$(state "$r/.git/hooks")"
+report "$r"
+eq "no hook at all: 2 findings (both hooks)" "2" "$RN"
+eq "no hook at all: names the remediation"   "true" "$(saw "fix: install-board-hooks $r")"
+
+# --- hook symlinked into a DIFFERENT toolkit clone (the observed -prod/dev case) ---
+r="$H/otherclone"; mkrepo "$r"; wire "$r/.git/hooks" "$TKO"
+eq "wrong toolkit clone: CLONE-DRIFT"        "CLONE-DRIFT" "$(state "$r/.git/hooks")"
+report "$r"
+eq "wrong toolkit clone: report finds it" "2" "$RN"
+eq "wrong toolkit clone: names the clone"    "true" "$(saw "$TKO/hooks/post-checkout")"
+
+# --- present but NOT executable (git skips it without a word) ---------------
+r="$H/noexec"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+rm -f "$r/.git/hooks/post-checkout"
+cp "$TK/hooks/post-checkout" "$r/.git/hooks/post-checkout"; chmod -x "$r/.git/hooks/post-checkout"
+eq "not executable: NOT-EXECUTABLE"          "NOT-EXECUTABLE" "$(state "$r/.git/hooks")"
+report "$r"
+eq "not executable: exactly 1 finding" "1" "$RN"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "…and a COPY (not a symlink) of the same hook is OK — the Windows topology is not drift" \
+   "OK" "$(state "$r/.git/hooks")"
+
+# --- core.hooksPath → a custom OUT-OF-TREE dir holding a correct hook ⇒ NO finding ---
+r="$H/hookspath"; mkrepo "$r"; hp="$H/custom-hooks"; mkdir -p "$hp"; wire "$hp" "$TK"
+git -C "$r" config core.hooksPath "$hp"
+eq "core.hooksPath: resolver returns the custom dir" "$hp" "$(_bsc_hooks_dir "$r")"
+report "$r"
+eq "core.hooksPath: no finding" "0" "$RN"
+# The regression pin, direction 1: a .git/hooks-only checker would call this repo BROKEN.
+eq "REGRESSION PIN: .git/hooks says MISSING while git dispatches a healthy hook" \
+   "MISSING" "$(state "$r/.git/hooks")"
+
+# --- core.hooksPath set, hook absent there, a stale CORRECT hook in .git/hooks ⇒ finding ---
+r="$H/hookspath-stale"; mkrepo "$r"; hp2="$H/empty-hooks"; mkdir -p "$hp2"
+wire "$r/.git/hooks" "$TK"                       # the stale, no-longer-dispatched copy
+git -C "$r" config core.hooksPath "$hp2"
+eq "stale .git/hooks: dispatch dir is the hooksPath" "$hp2" "$(_bsc_hooks_dir "$r")"
+eq "stale .git/hooks: post-checkout MISSING where git looks" "MISSING" "$(state "$hp2")"
+report "$r"
+eq "stale .git/hooks: report finds it" "2" "$RN"
+# The regression pin, direction 2: a .git/hooks-only checker would call this repo HEALTHY.
+eq "REGRESSION PIN: .git/hooks says OK while git dispatches nothing" \
+   "OK" "$(state "$r/.git/hooks")"
+
+# --- in-tree core.hooksPath: git dispatches from it, install-board-hooks refuses it ---
+r="$H/hookspath-intree"; mkrepo "$r"; mkdir -p "$r/.githooks"; wire "$r/.githooks" "$TK"
+git -C "$r" config core.hooksPath .githooks
+_rc=0; _d="$(_bsc_hooks_dir "$r")" || _rc=$?
+eq "in-tree hooksPath: resolved (relative to the work-tree top)" "$r/.githooks" "$_d"
+eq "in-tree hooksPath: flagged rc 3 (installer refuses that target)" "3" "$_rc"
+report "$r"
+eq "in-tree hooksPath: a wired hook is still NO finding" "0" "$RN"
+rm -f "$r/.githooks/post-checkout"
+report "$r"
+eq "in-tree hooksPath: a missing hook IS a finding" "1" "$RN"
+eq "in-tree hooksPath: remediation is chain-by-hand, not install-board-hooks" \
+   "true" "$(saw "chain the toolkit hook")"
+
+# --- linked worktree (.git is a FILE; hooks come from the MAIN checkout) ----
+r="$H/wt-main"; mkrepo "$r"
+git -C "$r" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+git -C "$r" worktree add -q "$H/wt-linked" -b wtbranch
+eq "worktree: .git is a file, not a dir" "true" "$([ -f "$H/wt-linked/.git" ] && echo true || echo false)"
+eq "worktree: dispatch dir is the MAIN checkout's hooks dir" \
+   "$r/.git/hooks" "$(_bsc_hooks_dir "$H/wt-linked")"
+report "$H/wt-linked"
+eq "worktree: unwired main ⇒ finding on the worktree too" "2" "$RN"
+eq "worktree: remediation names the MAIN checkout"         "true" "$(saw "fix: install-board-hooks $r")"
+wire "$r/.git/hooks" "$TK"
+report "$H/wt-linked"
+eq "worktree: wiring the main checkout clears the worktree's finding" "0" "$RN"
+
+# --- a hook that exists but does not reach board-card-start (foreign hook) ---
+r="$H/foreign"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\nexec ./scripts/local-secret-scan --staged\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "foreign hook: NO-REACH"           "NO-REACH" "$(state "$r/.git/hooks")"
+report "$r"
+eq "foreign hook: 1 finding" "1" "$RN"
+# …and the documented in-tree remedy — a committed hook that CHAINS to the toolkit hook —
+# does reach it (one level of indirection is followed).
+printf '#!/bin/sh\nexec "%s/hooks/post-checkout" "$@"\n' "$TK" > "$r/.git/hooks/post-checkout"
+eq "chained hook reaches board-card-start ⇒ OK" "OK" "$(state "$r/.git/hooks")"
+
+# --- dangling symlink (the toolkit clone it pointed at is gone) -------------
+r="$H/dangling"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+ln -sf "$H/deleted-toolkit/hooks/post-checkout" "$r/.git/hooks/post-checkout"
+eq "dangling symlink: DANGLING"       "DANGLING" "$(state "$r/.git/hooks")"
+report "$r"
+eq "dangling symlink: 1 finding" "1" "$RN"
+
+# --- a configured repo whose path does not exist / is not a repo ------------
+report "$H/does-not-exist"
+eq "absent checkout: skipped, NOT a finding" "0" "$RN"
+eq "absent checkout: says so"                "true" "$(saw "no checkout at")"
+mkdir -p "$H/notarepo"
+report "$H/notarepo"
+eq "path exists but is not a git work tree ⇒ finding" "1" "$RN"
+eq "…and says why"                               "true" "$(saw "not a git work tree")"
+
+# --- the resolver itself missing ⇒ the check reports DID NOT RUN (fail loud) ---
+mkdir -p "$H/lonely"; cp "$BIN" "$H/lonely/board-session-close"   # no install-board-hooks sibling
+_rc=0; bash -c 'source "$1/lonely/board-session-close"; _bsc_hooks_dir "$1/healthy"' _ "$H" >/dev/null 2>&1 || _rc=$?
+eq "resolver unavailable ⇒ rc 4 (never a guessed .git/hooks answer)" "4" "$_rc"
+_out="$(bash -c 'source "$1/lonely/board-session-close"; _bsc_hook_dispatch_report "" "$1/healthy"' _ "$H" 2>&1 || true)"
+eq "resolver unavailable ⇒ the report says the CHECK DID NOT RUN" \
+   "true" "$(case "$_out" in *"CHECK DID NOT RUN"*) echo true ;; *) echo false ;; esac)"
+
+# …and a resolver that loads but yields NOTHING must report the same, never a false MISSING
+# (an empty dispatch dir would otherwise make every hook look absent and call the auto-move dead).
+mkdir -p "$H/broken"; cp "$BIN" "$H/broken/board-session-close"
+printf '#!/usr/bin/env bash\n# a resolver with no _ibh_hooks_dir in it\n' > "$H/broken/install-board-hooks"
+_out="$(bash -c 'source "$1/broken/board-session-close"; _bsc_hook_dispatch_report "" "$1/healthy"' _ "$H" 2>&1 || true)"
+eq "broken resolver ⇒ CHECK DID NOT RUN" "true" \
+   "$(case "$_out" in *"CHECK DID NOT RUN"*) echo true ;; *) echo false ;; esac)"
+eq "broken resolver ⇒ does NOT invent a dead auto-move" "false" \
+   "$(case "$_out" in *"auto-move is DEAD"*) echo true ;; *) echo false ;; esac)"
+
+# --- _bsc_active_toolkit — the clone that owns the on-PATH board-card-start ---
+eq "active toolkit resolves from PATH" "$TK" \
+   "$(PATH="$TK/bin:$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN")"
+_rc=0; PATH="$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN" >/dev/null 2>&1 || _rc=$?
+eq "board-card-start absent from PATH ⇒ rc 1 (caller warns, never guesses)" "1" "$_rc"
+
+# --- multi-repo run: the summary line reports the total ---------------------
+report "$H/healthy" "$H/dangling" "$H/nohooks" "$H/hookspath"   # 0 + 1 + 2 + 0
+eq "multi-repo: findings accumulate across repos" "3" "$RN"
+eq "multi-repo: summary states it is report-only" "true" "$(saw "REPORT-ONLY")"
+fi
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
