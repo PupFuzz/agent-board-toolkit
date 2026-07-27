@@ -99,6 +99,16 @@ if command -v git >/dev/null 2>&1; then
         # The scratch HOME + emptied ambient KBCARD_* are what keep this network-free no matter
         # whose shell runs it: the bin reads an ambient KBCARD_API/KBCARD_TOKEN_FILE ahead of the
         # host env, so leaving a real one in scope is the one way a fixture run could go live.
+        #
+        # `"$@"` is expanded with ZERO arguments for the zero-args case below, and that is
+        # deliberate rather than overlooked: it is the shape the shipped bins already run on their
+        # own production path — `bin/kbcard` and `bin/adopt-to-dl` both end in `main "$@"` under
+        # the STRICTER `set -euo pipefail`, and both are routinely invoked bare. (This bin's parser
+        # reads `$#`/`$1` because it consumes arguments one at a time, not to avoid `"$@"`.)
+        # Measured on the reference host, bash 5.2.21: a zero-arg `"$@"` under `set -euo pipefail`
+        # expands to zero words and does not trip `set -u`. That measurement is scoped to that
+        # shell — but the exposure is not this test's alone, so a shell where the shape did fail
+        # would take those two tools' bare invocation down before it reached here.
         rm -f "$_log"; _rc=0
         _out="$(cd "$_repo" && HOME="$_home" KBCARD_API= KBCARD_TOKEN_FILE= KB_BCS_LOG="$_log" \
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
@@ -161,6 +171,97 @@ if command -v git >/dev/null 2>&1; then
         && ok "extra positional: refuses loudly" || bad "extra positional: not refused: $_out"
     _bcs_attempted_move \
         && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
+
+    # `--` IS AN END-OF-OPTIONS TERMINATOR, and the population it serves is live, not theoretical:
+    # git ACCEPTS a branch whose name starts with '-' — `git check-ref-format refs/heads/-foo` is
+    # rc 0 and `git update-ref` creates it (only the `git branch` PORCELAIN refuses the name) — and
+    # hooks/pre-push is fed whatever is being pushed. So the refs below are created the way git
+    # actually allows, rather than passed as bare strings: the shape under test is a REAL ref.
+    # Without the terminator the `-*` arm refuses these names, which is a FALSE refusal (the mover
+    # moves their cards regardless — post-checkout passes no arguments and resolves HEAD).
+    # The premise is ASSERTED, not assumed: if a future git rejected these names the terminator
+    # would be serving a population that no longer exists, and every assertion below would keep
+    # passing while the premise had silently gone false.
+    _mkref_ok=1
+    for _r in "-card-4242-x" "-card_4242-x" "-foo"; do
+        git -C "$_repo" update-ref "refs/heads/$_r" HEAD 2>/dev/null || _mkref_ok=0
+    done
+    [[ "$_mkref_ok" -eq 1 ]] \
+        && ok "git CREATES branches whose names start with '-' (the premise the terminator serves)" \
+        || bad "git refused a '-'-leading branch name — the premise for the -- terminator no longer holds"
+
+    # …on the LINT path: accepted, and it still lints (a terminator that merely stopped the refusal
+    # while dropping the argument would pass an rc-0-and-no-refusal test).
+    _bcs_run --lint -- "-card_4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "--lint -- <dash-name>: exits 0" || bad "--lint -- <dash-name>: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unknown option" \
+        && bad "--lint -- <dash-name>: refused as an option — the terminator is decorative: $_out" \
+        || ok "--lint -- <dash-name>: NOT refused as an unknown option"
+    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+        && ok "--lint -- <dash-name>: the name reached the lint (it warns)" \
+        || bad "--lint -- <dash-name>: no lint warning — the argument was dropped: $_out"
+    # "no move attempted" is asserted on the CORRELATING dash-name, never on the warn-worthy one:
+    # the lint warns only where the grammar does NOT recognize the branch, so a warn-worthy name
+    # can never reach board work and a no-move assertion on it could not fail under any mutation.
+    _bcs_run --lint -- "-card-4242-x"
+    _bcs_attempted_move \
+        && bad "--lint -- <dash-name>: flag dropped — a REAL move was attempted: $_out" \
+        || ok "--lint -- <dash-name>: no move attempted"
+
+    # …and on the MOVER path: after `--` a dash-leading name is the BRANCH, so a correlating one
+    # reaches board work. This is what makes it a terminator rather than an early `exit 0`.
+    _bcs_run -- "-card-4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "-- <dash-name>: exits 0" || bad "-- <dash-name>: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && ok "-- <dash-name>: became the branch (board work reached)" \
+        || bad "-- <dash-name>: never reached board work — dropped or refused: $_out"
+
+    # The terminator does NOT reopen the empty-positional hole: one positional owner serves both
+    # sides of `--`, so an empty argument after it is refused exactly as before it. A second copy
+    # of that arm is how the two sides would drift apart, so this is the assertion that pins it.
+    _bcs_run -- ""
+    [[ "$_rc" -eq 0 ]] && ok "-- \"\": exits 0" || bad "-- \"\": expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "is empty" \
+        && ok "-- \"\": still refuses an empty positional" || bad "-- \"\": empty not refused: $_out"
+    _bcs_attempted_move \
+        && bad "-- \"\": fell through to HEAD and attempted a move: $_out" \
+        || ok "-- \"\": NO board work attempted"
+
+    # THE CALL SITE. The false refusal was reachable only through hooks/pre-push, which is where
+    # the branch name arrives unsanitised, so the hook itself is exercised — real stdin in git's
+    # "<local-ref> <local-sha> <remote-ref> <remote-sha>" shape, real `board-card-start` on PATH.
+    # Asserting the parser alone would leave the hook free to drop the `--` and go back to
+    # printing "no card moved" on every push of such a branch.
+    _pp="$HERE/../hooks/pre-push"
+    if [[ -r "$_pp" ]]; then
+        _ppbin="$_t/ppbin"; mkdir -p "$_ppbin"
+        # A wrapper, not a symlink: `ln -s` yields copies on the Windows/MSYS topology this
+        # toolkit supports, and a copied board-card-start cannot find _kb-board-lib.sh beside it.
+        printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$BCS" > "$_ppbin/board-card-start"
+        chmod +x "$_ppbin/board-card-start"
+        _pp_run() {  # <bare-branch-name> — feed the hook one pushed ref, as git does
+            rm -f "$_log"; _rc=0
+            _out="$(cd "$_repo" && PATH="$_ppbin:$PATH" HOME="$_home" KBCARD_API= KBCARD_TOKEN_FILE= \
+                    KB_BCS_LOG="$_log" bash "$_pp" origin "$_repo" \
+                    <<<"refs/heads/$1 1111111111111111111111111111111111111111 refs/heads/$1 0000000000000000000000000000000000000000" 2>&1)" || _rc=$?
+        }
+        _pp_run "-foo"
+        # WHAT THIS rc ASSERTION ACTUALLY PINS: the hook's `|| true` and its trailing `exit 0` each
+        # independently force rc 0, so no change to what board-card-start returns can red it — it
+        # is a SMOKE test that the hook parses and runs at all, and it reds on the failure that
+        # would (a syntax error: rc 2, verified). Recorded because reading it as "a non-zero
+        # board-card-start would be caught here" would be wrong.
+        [[ "$_rc" -eq 0 ]] && ok "pre-push '-foo': exits 0 (runs, and never blocks a push)" \
+            || bad "pre-push '-foo': expected rc=0 got $_rc"
+        [[ -z "$_out" ]] && ok "pre-push '-foo': SILENT — no 'no card moved' refusal on a valid branch" \
+            || bad "pre-push '-foo': the hook printed a refusal for a branch git accepts: $_out"
+        _pp_run "-card_4242-x"
+        printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+            && ok "pre-push '-card_4242-x': still LINTS through the terminator" \
+            || bad "pre-push '-card_4242-x': the advisory did not fire: $_out"
+    else
+        bad "hooks/pre-push not readable — the call site could not be exercised"
+    fi
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"
