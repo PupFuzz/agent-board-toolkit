@@ -425,6 +425,33 @@ printf '#!/bin/sh\nexit 0\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
 chmod +x "$r/.git/hooks/post-checkout"
 eq "DISCLOSED BOUND: a call after an early exit 0 reads as a reach" "OK" "$(state "$r/.git/hooks")"
 
+# --- the four bounds that were claimed as pinned but were not (M3) ----------
+# docs/HOOKS.md asserts every disclosed bound is fixture-pinned. Three were. These are the rest,
+# so the claim is now true rather than aspirational.
+r="$H/bound-hashquote"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\necho "#"; board-card-start\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "BOUND: the # strip blanks a line that quotes # (errs to a FINDING)" \
+   "NO-REACH" "$(state "$r/.git/hooks")"
+r="$H/bound-varchain"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+# shellcheck disable=SC2016  # $TOOLKIT must reach the hook UNexpanded — that is the fixture
+printf '#!/bin/sh\nTOOLKIT=%s\nexec "$TOOLKIT/hooks/post-checkout" "$@"\n' "$TK" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "BOUND: a VARIABLE chain target reads as a finding though it works" \
+   "NO-REACH" "$(state "$r/.git/hooks")"
+r="$H/bound-relchain"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\nexec ../tk/hooks/post-checkout "$@"\n' > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "BOUND: a RELATIVE chain target reads as a finding though it works" \
+   "NO-REACH" "$(state "$r/.git/hooks")"
+r="$H/bound-wrapper"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+mkdir -p "$H/wrapdir"; printf '#!/bin/sh\nboard-card-start\n' > "$H/wrapdir/run-hooks.sh"
+chmod +x "$H/wrapdir/run-hooks.sh"
+printf '#!/bin/sh\nexec %s/wrapdir/run-hooks.sh "$@"\n' "$H" > "$r/.git/hooks/post-checkout"
+chmod +x "$r/.git/hooks/post-checkout"
+eq "BOUND: a chain through a non-hooks/<name> wrapper reads as a finding" \
+   "NO-REACH" "$(state "$r/.git/hooks")"
+
 # --- the remediation line must name a command that actually works -----------
 # A `.git` FILE (linked worktree, --separate-git-dir, submodule) makes install-board-hooks
 # target an un-creatable <repo>/.git/hooks and exit 1. Printing it anyway is worse than
@@ -472,6 +499,22 @@ for tabcase in leading trailing; do
     chmod +x "$r/.git/hooks/post-checkout"
     eq "tab ($tabcase) in the shebang is NOT a finding — git runs it" "OK" "$(state "$r/.git/hooks")"
 done
+# …and the separator set is SPACE AND TAB ONLY. A POSIX [[:space:]] class also matches CR, VT,
+# NL and FF, which silently trimmed a broken interpreter name down to a runnable one: git said
+# "cannot exec" while we said healthy. Both verified against real dispatch.
+for wscase in cr vt; do
+    r="$H/ws-$wscase"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+    if [[ "$wscase" == cr ]]; then printf '#!/bin/sh\r -e\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+    else printf '#!\v/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"; fi
+    chmod +x "$r/.git/hooks/post-checkout"
+    eq "shebang separated by $wscase is NOT runnable (git: cannot exec)" \
+       "NOT-RUNNABLE" "$(state "$r/.git/hooks")"
+done
+# The control that keeps the fix honest: space and tab still separate, so these stay runnable.
+r="$H/ws-ok"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!  /bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"; chmod +x "$r/.git/hooks/post-checkout"
+eq "leading SPACES still separate (runnable)" "OK" "$(state "$r/.git/hooks")"
+
 # A shebang naming a DIRECTORY is not runnable, though -x is true for one.
 r="$H/interp-dir"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
 printf '#!/tmp\nboard-card-start\n' > "$r/.git/hooks/post-checkout"; chmod +x "$r/.git/hooks/post-checkout"
@@ -547,16 +590,51 @@ eq "hooksPath is a regular file: names the real obstacle"       "true" \
 eq "hooksPath is a regular file: does NOT claim the two paths differ" "false" \
    "$(saw "but git dispatches from")"
 
+# --check must NEVER write, from any argument position, and a mis-invocation must not be read
+# as an install. Accepting the flag only in position 1 made `install-board-hooks <repo> --check`
+# perform a real install — the one contract this flag has, broken by its likeliest mis-spelling.
+mkrepo "$H/argpos"
+_rc=0; bash "$IBH2" "$H/argpos" --check >/dev/null 2>&1 || _rc=$?
+eq "--check AFTER the repo: rc 0"              "0" "$_rc"
+eq "--check AFTER the repo: still wrote NOTHING" "false" \
+   "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
+_rc=0; bash "$IBH2" "$H/argpos" extra-arg >/dev/null 2>&1 || _rc=$?
+eq "an extra positional is rejected (rc 2), not ignored" "2" "$_rc"
+eq "…and it installed nothing"                 "false" \
+   "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
+_rc=0; bash "$IBH2" --bogus "$H/argpos" >/dev/null 2>&1 || _rc=$?
+eq "an unknown option is rejected (rc 2)"      "2" "$_rc"
+
+# A symlink-to-DIRECTORY at the hook path: `ln -sf` dereferences it, so the hook lands INSIDE
+# the directory, the installer reports success, and git never sees a hook — #4281 again.
+mkrepo "$H/symdir"; mkdir -p "$H/symdir-target"
+ln -sfn "$H/symdir-target" "$H/symdir/.git/hooks/post-checkout"
+_rc=0; bash "$IBH2" "$H/symdir" >/dev/null 2>&1 || _rc=$?
+eq "symlink-to-directory at the hook path: REFUSED (rc 1)" "1" "$_rc"
+eq "…and nothing was installed inside that directory" "false" \
+   "$([ -e "$H/symdir-target/post-checkout" ] && echo true || echo false)"
+eq "…and --check refuses it too (the consolidation working)" "1" \
+   "$(_rc2=0; bash "$IBH2" --check "$H/symdir" >/dev/null 2>&1 || _rc2=$?; echo "$_rc2")"
+
 # install-board-hooks --check itself: the contract the fix-line depends on.
 _rc=0; _out="$(bash "$IBH2" --check "$H/healthy" 2>/dev/null)" || _rc=$?
 eq "--check on a healthy repo: rc 0"                    "0" "$_rc"
 eq "--check prints the target dir and nothing else"     "$H/healthy/.git/hooks" "$_out"
-eq "--check WROTE nothing (dry run)" "true" \
-   "$([ ! -e "$H/fresh-probe/.git/hooks/post-checkout" ] && echo true || echo false)"
 mkrepo "$H/fresh-probe"
 bash "$IBH2" --check "$H/fresh-probe" >/dev/null 2>&1
 eq "--check on a fresh repo installs NOTHING" "false" \
    "$([ -e "$H/fresh-probe/.git/hooks/post-checkout" ] && echo true || echo false)"
+
+# --- the fix-line names the hook that is actually broken --------------------
+# Hardcoding post-checkout told the operator to re-wire a hook that was already fine, never
+# named the broken one, and (its target existing) named a command that exits 1.
+r="$H/only-prepush"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/pre-push"
+git init -q --separate-git-dir="$H/opp-gd" "$H/opp" 2>/dev/null   # a topology needing manual wiring
+ln -sf "$TK/hooks/post-checkout" "$H/opp-gd/hooks/post-checkout"
+report "$H/opp"
+eq "only pre-push broken: the manual wiring names pre-push"      "true" "$(saw "hooks/pre-push")"
+eq "only pre-push broken: it does NOT name the healthy post-checkout" "false" \
+   "$(saw "ln -s <toolkit>/hooks/post-checkout")"
 
 # --- MAJOR 1: a non-canonical path spelling must not be told its .git is a file ---
 # `--git-common-dir` answers relative to the path the caller typed; `--show-toplevel` is always

@@ -179,10 +179,18 @@ _bsc_active_toolkit() {
 #   * a trailing CR makes the interpreter name carry the stray \r — git then fails "cannot
 #     exec". This is the native hazard of the Windows/MSYS COPY install topology this toolkit
 #     supports (docs/INSTALL.md §2);
-#   * leading WHITESPACE after `#!` is skipped and the interpreter ends at the next one —
-#     SPACES AND TABS both, so `#!<TAB>/bin/sh` and `#!/bin/sh<TAB>` run fine (verified) and
-#     must not be called dead;
+#   * SPACE and TAB — and ONLY those two — separate the interpreter: Linux fs/binfmt_script.c
+#     skips leading spaces/tabs and ends the name at the next one. A POSIX [[:space:]] class is
+#     a SUPERSET (it also matches \n \v \f \r) and reading it as "the kernel's whitespace
+#     rule" produced false GREENs: `#!/bin/sh<CR> -e` and `#!<VT>/bin/sh` both had their real
+#     interpreter name silently trimmed to something runnable, while git failed "cannot exec"
+#     (both verified). `#!<TAB>/bin/sh` and `#!/bin/sh<TAB>` do run and must not be called dead;
 #   * the interpreter itself must exist, be a regular file, and be executable.
+# NOT covered, and disclosed rather than claimed: a shebang line longer than the kernel's
+# buffer (BINPRM_BUF_SIZE, 256 bytes on Linux) is truncated, while this reads the whole line.
+# On the kernel this was verified against (6.8) the effect is that the NAMED INTERPRETER is
+# silently ignored and the file is run by the shell instead — the hook still fires, so this is
+# a wrong-interpreter hazard, not a dead hook. The effect may differ elsewhere.
 # A file with no `#!` is not judged: it may be a binary, or be run by the shell.
 # `/usr/bin/env foo` is judged on `env` alone — resolving `foo` needs the PATH git will have at
 # dispatch time, not this one, and guessing it would invent findings.
@@ -201,7 +209,8 @@ _bsc_runnable() {
     *$'\r') printf 'has a CRLF shebang line — the OS looks for an interpreter whose name carries the stray \\r, and git fails with "cannot exec"'
              return 1 ;;
   esac
-  interp="${first#\#!}"; interp="${interp#"${interp%%[![:space:]]*}"}"; interp="${interp%%[[:space:]]*}"
+  local sp=$' \t'   # the kernel's separator set, exactly: space and tab
+  interp="${first#\#!}"; interp="${interp#"${interp%%[!"$sp"]*}"}"; interp="${interp%%["$sp"]*}"
   [[ -n "$interp" ]] || return 0
   if [[ -d "$interp" || ! -f "$interp" || ! -x "$interp" ]]; then
     printf 'names a shebang interpreter (%s) that is missing, not a regular file, or not executable — git fails with "cannot exec"' "$interp"
@@ -353,11 +362,24 @@ _bsc_same_dir() {
 # would target is the one git DISPATCHES from. The installer can succeed while installing where
 # git never looks (a linked worktree), so "the command works" and "the command fixes what I am
 # reporting" are two different facts and both are required.
+# <hook…> is every hook that is actually BROKEN, not a fixed name: hardcoding `post-checkout`
+# told an operator to re-wire a hook that was already fine, never mentioned the one that was
+# not, and — since the fixed name's target already existed — named a command that exits 1. That
+# is the exact class the --check gate was added to close, reintroduced by the caller.
+# _bsc_manual_wiring <dir> <hook…> — the by-hand symlink command, one per BROKEN hook.
+_bsc_manual_wiring() {
+  local dir="$1"; shift
+  local h out=""
+  for h in "$@"; do out+="${out:+ && }ln -s <toolkit>/hooks/$h $dir/$h"; done
+  printf '%s' "${out:-ln -s <toolkit>/hooks/<hook> $dir/}"
+}
+
 _bsc_fix_line() {
-  local repo="$1" dir="$2" hook="$3" ibh itgt main err
+  local repo="$1" dir="$2"; shift 2
+  local hooks=("$@") ibh itgt main err h
   ibh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-board-hooks"
   if [[ ! -x "$ibh" ]]; then
-    printf 'install-board-hooks is not beside this tool, so no remedy could be verified; wire it by hand: ln -s <toolkit>/hooks/%s %s/' "$hook" "$dir"
+    printf 'install-board-hooks is not beside this tool, so no remedy could be verified; wire it by hand: %s' "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
     return 0
   fi
   # TWO questions, in this order, because each has its own right words and the wrong order
@@ -390,8 +412,8 @@ _bsc_fix_line() {
   # dispatch from. Name both directories, assert no cause, and only offer the manual symlink if
   # the dispatch dir could actually take one.
   if [[ -d "$dir" && -w "$dir" ]]; then
-    printf 'install-board-hooks would target %s, but git dispatches from %s, so it cannot fix this. Wire it by hand: ln -s <toolkit>/hooks/%s %s/' \
-           "${itgt:-<unresolvable>}" "$dir" "$hook" "$dir"
+    printf 'install-board-hooks would target %s, but git dispatches from %s, so it cannot fix this. Wire it by hand: %s' \
+           "${itgt:-<unresolvable>}" "$dir" "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
   else
     printf 'install-board-hooks would target %s, but git dispatches from %s, which is not a writable directory — no remedy applies until that is resolved' \
            "${itgt:-<unresolvable>}" "$dir"
@@ -405,7 +427,8 @@ _bsc_fix_line() {
 # a warning printed by the caller could not be counted, and an all-clear verdict printed
 # underneath it asserted the exact thing the warning denied.
 _bsc_hook_dispatch_report() {
-  local repo name dir rc hook st findings=0 lines tk tk_rc=0 inspected=0 skipped=0
+  local repo name dir rc hook st findings=0 lines tk
+  local -a broken tk_rc=0 inspected=0 skipped=0
   tk="$(_bsc_active_toolkit)" || tk_rc=$?
   if [[ "$tk_rc" == 1 ]]; then
     # The single most consequential host-wide failure: every post-checkout below is a trampoline
@@ -447,11 +470,11 @@ _bsc_hook_dispatch_report() {
       findings=$((findings + 1)); skipped=$((skipped + 1)); continue
     fi
     inspected=$((inspected + 1))
-    lines=""
+    lines=""; broken=()
     for hook in "${BSC_HOOKS[@]}"; do
       st="$(_bsc_hook_state "$dir" "$hook" "$tk")"
       [[ "$st" == "OK" ]] && continue
-      findings=$((findings + 1))
+      findings=$((findings + 1)); broken+=("$hook")
       # Severity follows the STATUS, not the hook: CLONE-DRIFT still fires today (it is wiring
       # drift, not a dead hook), so labelling it DEAD would contradict both this file and the
       # docs. Only post-checkout can be "the auto-move is dead" — pre-push is advisory.
@@ -472,7 +495,7 @@ _bsc_hook_dispatch_report() {
     if [[ "$rc" == 3 ]]; then
       echo "      core.hooksPath is inside the tracked work tree: install-board-hooks refuses that target — chain the toolkit hook into the committed hook by hand (see docs/HOOKS.md)"
     else
-      echo "      $(_bsc_fix_line "$repo" "$dir" "post-checkout")"
+      echo "      $(_bsc_fix_line "$repo" "$dir" "${broken[@]}")"
     fi
   done
   # Canon #9: an empty result is a measurement that never happened. Never print an all-clear

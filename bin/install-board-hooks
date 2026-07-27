@@ -127,9 +127,27 @@ _ibh_main() {
     # partial copy — 2 of the 9 — produced a wrong answer in two consecutive reviews: the copy,
     # not the missing predicates, was the defect (canon #5). A caller now asks instead of
     # guessing, and gains any precondition added here without being changed.
-    local check=""
-    if [ "${1:-}" = "--check" ]; then check=1; shift; fi
-    local repo="${1:?usage: install-board-hooks [--check] <repo-dir>}"
+    local check="" repo="" arg
+    # Parse in a LOOP and reject anything unrecognised. Accepting --check only in position 1
+    # meant `install-board-hooks <repo> --check` silently discarded it and performed a REAL
+    # install — a flag whose entire contract is "writes nothing" doing the write, on its most
+    # natural mis-spelling. Silently ignoring an extra positional is the same hazard one step
+    # further out, so both are rc 2 with the usage line.
+    for arg in "$@"; do
+        case "$arg" in
+            --check) check=1 ;;
+            -*)      echo "install-board-hooks: unknown option: $arg" >&2
+                     echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2 ;;
+            *)       if [ -n "$repo" ]; then
+                         echo "install-board-hooks: unexpected extra argument: $arg" >&2
+                         echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+                     fi
+                     repo="$arg" ;;
+        esac
+    done
+    if [ -z "$repo" ]; then
+        echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+    fi
     # Print git's OWN refusal rather than asserting "not a git repo": `dubious ownership`
     # (safe.directory) and a core.hooksPath git cannot expand also land here, and each needs a
     # different fix than "this isn't a repository".
@@ -222,6 +240,15 @@ _ibh_main() {
         if [ -e "$dst" ] && [ ! -L "$dst" ]; then
             echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
             echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
+            exit 1
+        fi
+        # `ln -sf` DEREFERENCES a symlink-to-directory: the hook would be created INSIDE that
+        # directory, this tool would report success, and git would never see a hook at $dst —
+        # the #4281 "success on a path git never reads" shape in a new place.
+        if [ -L "$dst" ] && [ -d "$dst" ]; then
+            echo "install-board-hooks: refusing: $dst is a symlink to a directory ($(readlink -- "$dst"))." >&2
+            echo "  Installing would put the hook INSIDE that directory, where git never looks." >&2
+            echo "  Remove it first: rm -- '$dst'" >&2
             exit 1
         fi
         [ -n "$check" ] && continue
