@@ -21,7 +21,9 @@ It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id t
 
 ## Branch-name advisory (`pre-push`, card-4621)
 
-`hooks/pre-push` → `board-card-start --lint <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**): it warns, on stderr, only when a branch name **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize — so the card would silently never move to In Progress. It reuses the *exact* card-id matcher `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree.
+`hooks/pre-push` → `board-card-start --lint -- <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**): it warns, on stderr, only when a branch name **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize — so the card would silently never move to In Progress. It reuses the *exact* card-id matcher `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree.
+
+The `--` is load-bearing, not boilerplate. git **accepts** a branch whose name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0 and `git update-ref` creates it — only the `git branch` *porcelain* refuses the name), and this hook is fed whatever is being pushed. Passed bare, such a name reads as an unknown option and the lint refuses it, while the mover still moves that branch's card — `post-checkout` passes **no** arguments, so it resolves `HEAD` and never enters the argument parser. The shared matchers are what make the two agree on the *grammar*; the **argument surface** is the one place left where they could still disagree, and the terminator is what closes it.
 
 It is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling:
 
@@ -216,7 +218,15 @@ Every bound above is pinned by a fixture, so this disclosure and the behaviour c
 board-card-start                     # current branch — move the correlated card to In Progress
 board-card-start feature/dl156-foo   # a specific branch name
 board-card-start --lint <branch>     # advisory only: print the branch-name warning (if any), no move
+board-card-start <branch> --lint     # same — the flag is honoured in ANY position
+board-card-start -- -foo             # a branch name starting with '-' — after the -- terminator
 ```
+
+`--lint` is recognised wherever it appears in the argument list, not only first: accepting it only in position 1 meant `board-card-start <branch> --lint` silently dropped it and performed a **real** card move.
+
+`--` ends option parsing: every argument after it is treated as the branch name, however it is spelled. It is there because git accepts a branch name starting with `-` (see the advisory section above), which would otherwise be refused as an unknown option — so `board-card-start -- -foo` and `board-card-start --lint -- -foo` are the way to name one, and `hooks/pre-push` uses that form.
+
+An argument the tool cannot act on is **refused by name, with no move** — an **empty** branch argument (`board-card-start "$BRANCH"` with `BRANCH` unexpanded, which previously retargeted the move to whatever `HEAD` was on), an **unknown option** (its refusal names `--` as the fix), or a **second** positional. Passing **no** branch argument is unchanged and still means "the current branch" — that is how `hooks/post-checkout` calls it. Every one of these refusals prints to **stderr only** — it is deliberately *not* written to the diagnostic log, whose wording asserts a DL/card token an argument refusal has not established — and still **exits 0**: fail-soft is a contract here (see below), so a refusal is a *no-move*, never a non-zero exit. The exit code matters because an operator who **chains** this hook into a committed one carries no `|| true`, and `post-checkout`'s exit status becomes `git switch`/`git checkout`'s own (`githooks(5)`); the installed wrapper's `|| true` covers only the toolkit's own hook.
 
 ## Scope / limits
 
