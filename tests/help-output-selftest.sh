@@ -15,6 +15,10 @@
 # this survive. Comparing against the file's own contiguous-leading-comment count means the
 # check re-derives the expected length from the file on every run, so it cannot go stale as
 # the header grows.
+#
+# The LEAK direction is not hypothetical: agent-board-toolkit-runtime-check, missed by that
+# card's sibling audit, carried `sed -n '2,30p'` over a 28-line header and printed
+# `set -euo pipefail` as its last --help line (card#5334).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -22,7 +26,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
 
 # The CLIs whose --help prints a leading comment header.
-CLIS=(promote-released-cards release-pr-body)
+CLIS=(promote-released-cards release-pr-body agent-board-toolkit-runtime-check)
 
 # header_lines <file>: the count of contiguous comment lines after the shebang — the
 # authoritative expected length, re-derived from the file itself.
