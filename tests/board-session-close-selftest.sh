@@ -179,13 +179,22 @@ for tkdir in "$H/toolkit" "$H/toolkit-other"; do
 done
 TK="$H/toolkit"; TKO="$H/toolkit-other"
 
+IBH2="$HERE/../bin/install-board-hooks"; _need -r "$IBH2"
 mkrepo()  { git init -q "$1"; }                      # <dir>
+# _ibh_hooks_dir_probe <repo-root> <RAW hooksPath> — what the resolver answers for an
+# UNEXPANDED value; the B2 pin compares the real answer against it. Sourced in a subshell
+# because install-board-hooks sets -e and this harness deliberately does not.
+# shellcheck source=/dev/null
+_ibh_hooks_dir_probe() { ( . "$IBH2" >/dev/null 2>&1; _ibh_hooks_dir "$1" "$2" "$1/.git" 1 ); }
 wire()    { ln -sf "$2/hooks/post-checkout" "$1/post-checkout"; ln -sf "$2/hooks/pre-push" "$1/pre-push"; }
 state()   { _bsc_hook_state "$1" "${2:-post-checkout}" "$TK"; }
-# report <repo…> — run the leg IN THIS SHELL (a $(…) call would lose both globals):
-# leaves the finding count in $RN and the printed text in $ROUT.
+# report <repo…> — run the leg IN THIS SHELL (a $(…) call would lose both globals): leaves the
+# finding count in $RN and the printed text in $ROUT. The leg resolves the active toolkit from
+# PATH itself, so the fixture toolkit's bin/ goes on PATH inside the substitution subshell (the
+# assignment cannot leak back out). report_nopath runs the same leg with the tool ABSENT.
 ROUT=""; RN=0
-report()  { RN=0; ROUT="$(_bsc_hook_dispatch_report "$TK" "$@")" || RN=$?; }
+report()        { RN=0; ROUT="$(PATH="$TK/bin:$UB"; _bsc_hook_dispatch_report "$@")" || RN=$?; }
+report_nopath() { RN=0; ROUT="$(PATH="$UB"; _bsc_hook_dispatch_report "$@")" || RN=$?; }
 saw()     { case "$ROUT" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # --- healthy: both hooks symlinked from the active toolkit ------------------
@@ -217,8 +226,12 @@ eq "wrong toolkit clone: CLONE-DRIFT"        "CLONE-DRIFT" "$(state "$r/.git/hoo
 report "$r"
 eq "wrong toolkit clone: report finds it" "2" "$RN"
 eq "wrong toolkit clone: names the clone"    "true" "$(saw "$TKO/hooks/post-checkout")"
+# M3 — drift is NOT death: the hook still fires, and the docs say so. Labelling it DEAD would
+# make the report contradict itself two lines from the ✗/⚠ legend.
+eq "wrong toolkit clone: NOT reported as a dead auto-move" "false" "$(saw "auto-move is DEAD")"
+eq "wrong toolkit clone: says it still fires"              "true"  "$(saw "it still fires")"
 
-# --- present but NOT executable (git skips it without a word) ---------------
+# --- present but NOT executable (git ignores it; only a suppressible hint says so) ---
 r="$H/noexec"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
 rm -f "$r/.git/hooks/post-checkout"
 cp "$TK/hooks/post-checkout" "$r/.git/hooks/post-checkout"; chmod -x "$r/.git/hooks/post-checkout"
@@ -250,6 +263,69 @@ eq "stale .git/hooks: report finds it" "2" "$RN"
 # The regression pin, direction 2: a .git/hooks-only checker would call this repo HEALTHY.
 eq "REGRESSION PIN: .git/hooks says OK while git dispatches nothing" \
    "OK" "$(state "$r/.git/hooks")"
+
+# --- core.hooksPath SET but EMPTY ⇒ git dispatches NOTHING (B1) --------------
+# Verified against git 2.43: an empty value does NOT fall back to .git/hooks — hook dispatch is
+# OFF for the repo. `git config --get` separates it from UNSET by EXIT STATUS ONLY (unset → 1,
+# empty → 0 + empty output), so a resolver that tests the VALUE for emptiness certifies a repo
+# whose auto-move is dead. This fixture wires a PERFECT .git/hooks precisely so that the only
+# thing standing between it and a false ✓ is the rc discriminator.
+r="$H/hookspath-empty"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+git -C "$r" config core.hooksPath ""
+_rc=0; _d="$(_bsc_hooks_dir "$r")" || _rc=$?
+eq "empty hooksPath: rc 4 (hooks DISABLED, a state of its own)" "4" "$_rc"
+eq "empty hooksPath: no directory is echoed — there is none"    ""  "$_d"
+report "$r"
+eq "empty hooksPath: IS a finding"                    "1" "$RN"
+eq "empty hooksPath: says dispatch is off, not that a file is missing" "true" "$(saw "EMPTY value")"
+eq "empty hooksPath: remediation is --unset, not install" "true" "$(saw "config --unset core.hooksPath")"
+# The pin: a perfectly-wired .git/hooks sits right there, so anything that reads emptiness as
+# "unset" reports this repo ✓.
+eq "REGRESSION PIN: .git/hooks is perfectly wired, and git still runs NOTHING" \
+   "OK" "$(state "$r/.git/hooks")"
+# install-board-hooks must refuse rather than plant into a directory git never reads.
+_rc=0; _out="$(bash "$IBH2" "$r" 2>&1)" || _rc=$?
+eq "installer refuses an empty hooksPath (rc 1)" "1" "$_rc"
+eq "installer names the --unset fix"             "true" \
+   "$(case "$_out" in *"--unset core.hooksPath"*) echo true ;; *) echo false ;; esac)"
+
+# --- core.hooksPath with a leading ~ ⇒ git EXPANDS it (B2) -------------------
+# Verified: core.hooksPath is a path-type variable, a hook in ~/<dir> fires. Reading the raw
+# value makes `~/x` look RELATIVE, which yields a false RED (a working repo called dead, and
+# mis-flagged as an in-tree path so the operator is told to hand-chain a hook it doesn't need)
+# AND a false GREEN (planting at <root>/~/x while the real dir stays empty).
+THOME="$H/tilde-home"; mkdir -p "$THOME/tildehooks"; wire "$THOME/tildehooks" "$TK"
+r="$H/hookspath-tilde"; mkrepo "$r"
+# shellcheck disable=SC2088  # the literal, shell-UNexpanded ~ is the fixture: git expands it
+git -C "$r" config core.hooksPath '~/tildehooks'
+_rc=0; _d="$(HOME="$THOME" _bsc_hooks_dir "$r")" || _rc=$?
+eq "tilde hooksPath: expanded to the real dir" "$THOME/tildehooks" "$_d"
+eq "tilde hooksPath: rc 0 — NOT the in-tree refuse"    "0" "$_rc"
+_saveH="$HOME"; export HOME="$THOME"
+report "$r"
+eq "tilde hooksPath: no finding (the hook is genuinely wired)" "0" "$RN"
+export HOME="$_saveH"
+# The pin: unexpanded, this resolves under the work tree and reports rc 3 + a dead hook.
+# shellcheck disable=SC2088  # the literal, shell-UNexpanded ~ is the fixture
+eq "REGRESSION PIN: the raw value would resolve inside the work tree" \
+   "$r/~/tildehooks" "$(_ibh_hooks_dir_probe "$r" '~/tildehooks')"
+
+# --- core.hooksPath git cannot expand ⇒ report GIT'S OWN cause, never a guessed one ---
+# Verified: such a value fatals EVERY git command in the repo — `rev-parse` included, which is
+# why the resolver's own dedicated arm is not what surfaces it. The failure mode that matters is
+# the DIAGNOSIS: "not a git work tree" would be a confident wrong cause (the repo is fine; its
+# config is not), and it points the operator at the wrong fix. A wired .git/hooks sits there to
+# prove the check is not merely reading the filesystem.
+r="$H/hookspath-baduser"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
+git -C "$r" config core.hooksPath '~nosuchuser-abc/x'
+_rc=0; _d="$(_bsc_hooks_dir "$r")" || _rc=$?
+eq "unexpandable hooksPath: rc 1 — git refuses the checkout"  "1" "$_rc"
+eq "unexpandable hooksPath: carries out the message git itself printed" "true" \
+   "$(case "$_d" in *"expand user dir"*) echo true ;; *) echo false ;; esac)"
+report "$r"
+eq "unexpandable hooksPath: IS a finding"                     "1" "$RN"
+eq "unexpandable hooksPath: the report quotes that refusal"    "true" "$(saw "expand user dir")"
+eq "unexpandable hooksPath: does NOT misdiagnose it as 'not a work tree'" "false" "$(saw "not a git work tree")"
 
 # --- in-tree core.hooksPath: git dispatches from it, install-board-hooks refuses it ---
 r="$H/hookspath-intree"; mkrepo "$r"; mkdir -p "$r/.githooks"; wire "$r/.githooks" "$TK"
@@ -291,6 +367,19 @@ eq "foreign hook: 1 finding" "1" "$RN"
 printf '#!/bin/sh\nexec "%s/hooks/post-checkout" "$@"\n' "$TK" > "$r/.git/hooks/post-checkout"
 eq "chained hook reaches board-card-start ⇒ OK" "OK" "$(state "$r/.git/hooks")"
 
+# --- a hook that only MENTIONS the tool in a comment does NOT reach it (M4) ---
+r="$H/commentonly"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/post-checkout"
+printf '#!/bin/sh\n# we used to call board-card-start here; removed 2026-01\nexit 0\n' \
+    > "$r/.git/hooks/post-checkout"; chmod +x "$r/.git/hooks/post-checkout"
+eq "comment-only mention: NO-REACH (comments are stripped before matching)" \
+   "NO-REACH" "$(state "$r/.git/hooks")"
+report "$r"
+eq "comment-only mention: IS a finding"          "1" "$RN"
+# …and the same text as real code is a reach — proving the strip is what decided it, not the
+# absence of the string.
+printf '#!/bin/sh\nboard-card-start\n' > "$r/.git/hooks/post-checkout"
+eq "the same call as CODE reaches it"            "OK" "$(state "$r/.git/hooks")"
+
 # --- dangling symlink (the toolkit clone it pointed at is gone) -------------
 r="$H/dangling"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"
 ln -sf "$H/deleted-toolkit/hooks/post-checkout" "$r/.git/hooks/post-checkout"
@@ -304,14 +393,14 @@ eq "absent checkout: skipped, NOT a finding" "0" "$RN"
 eq "absent checkout: says so"                "true" "$(saw "no checkout at")"
 mkdir -p "$H/notarepo"
 report "$H/notarepo"
-eq "path exists but is not a git work tree ⇒ finding" "1" "$RN"
-eq "…and says why"                               "true" "$(saw "not a git work tree")"
+eq "path exists but git refuses it ⇒ finding" "1" "$RN"
+eq "…and says why, in git's own words"       "true" "$(saw "not a git repository")"
 
 # --- the resolver itself missing ⇒ the check reports DID NOT RUN (fail loud) ---
 mkdir -p "$H/lonely"; cp "$BIN" "$H/lonely/board-session-close"   # no install-board-hooks sibling
 _rc=0; bash -c 'source "$1/lonely/board-session-close"; _bsc_hooks_dir "$1/healthy"' _ "$H" >/dev/null 2>&1 || _rc=$?
-eq "resolver unavailable ⇒ rc 4 (never a guessed .git/hooks answer)" "4" "$_rc"
-_out="$(bash -c 'source "$1/lonely/board-session-close"; _bsc_hook_dispatch_report "" "$1/healthy"' _ "$H" 2>&1 || true)"
+eq "resolver unavailable ⇒ rc 5 (never a guessed .git/hooks answer)" "5" "$_rc"
+_out="$(bash -c 'source "$1/lonely/board-session-close"; _bsc_hook_dispatch_report "$1/healthy"' _ "$H" 2>&1 || true)"
 eq "resolver unavailable ⇒ the report says the CHECK DID NOT RUN" \
    "true" "$(case "$_out" in *"CHECK DID NOT RUN"*) echo true ;; *) echo false ;; esac)"
 
@@ -319,7 +408,7 @@ eq "resolver unavailable ⇒ the report says the CHECK DID NOT RUN" \
 # (an empty dispatch dir would otherwise make every hook look absent and call the auto-move dead).
 mkdir -p "$H/broken"; cp "$BIN" "$H/broken/board-session-close"
 printf '#!/usr/bin/env bash\n# a resolver with no _ibh_hooks_dir in it\n' > "$H/broken/install-board-hooks"
-_out="$(bash -c 'source "$1/broken/board-session-close"; _bsc_hook_dispatch_report "" "$1/healthy"' _ "$H" 2>&1 || true)"
+_out="$(bash -c 'source "$1/broken/board-session-close"; _bsc_hook_dispatch_report "$1/healthy"' _ "$H" 2>&1 || true)"
 eq "broken resolver ⇒ CHECK DID NOT RUN" "true" \
    "$(case "$_out" in *"CHECK DID NOT RUN"*) echo true ;; *) echo false ;; esac)"
 eq "broken resolver ⇒ does NOT invent a dead auto-move" "false" \
@@ -330,11 +419,36 @@ eq "active toolkit resolves from PATH" "$TK" \
    "$(PATH="$TK/bin:$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN")"
 _rc=0; PATH="$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN" >/dev/null 2>&1 || _rc=$?
 eq "board-card-start absent from PATH ⇒ rc 1 (caller warns, never guesses)" "1" "$_rc"
+# N2 — the root is confirmed by LAYOUT, not by a `bin` path literal: a copy install under any
+# other directory name must still resolve, or every correctly-wired repo reports CLONE-DRIFT.
+mkdir -p "$TK/localbin"; cp "$TK/bin/board-card-start" "$TK/localbin/"
+eq "a non-'bin' install dir still resolves the toolkit root" "$TK" \
+   "$(PATH="$TK/localbin:$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN")"
+# …and a tool that is NOT inside a toolkit checkout is reported as underivable (rc 2), never
+# as a confident wrong root — which would turn every healthy repo into a CLONE-DRIFT finding.
+mkdir -p "$H/strayb"; cp "$TK/bin/board-card-start" "$H/strayb/"
+_rc=0; PATH="$H/strayb:$UB" bash -c 'source "$1"; _bsc_active_toolkit' _ "$BIN" >/dev/null 2>&1 || _rc=$?
+eq "a board-card-start outside any toolkit checkout ⇒ rc 2, not a guessed root" "2" "$_rc"
 
-# --- multi-repo run: the summary line reports the total ---------------------
-report "$H/healthy" "$H/dangling" "$H/nohooks" "$H/hookspath"   # 0 + 1 + 2 + 0
+# --- M1 — board-card-start off PATH is a FINDING, not a footnote ------------
+# Every post-checkout is a trampoline into a tool that does not exist, so the leg must not
+# print an all-clear whose text asserts the very thing the warning above it denies.
+report_nopath "$H/healthy"
+eq "off-PATH: counted as a finding"            "1" "$RN"
+eq "off-PATH: says the tool is not on PATH"    "true" "$(saw "NOT on PATH")"
+eq "off-PATH: does NOT print the all-clear"    "false" "$(saw "no findings")"
+
+# --- M2 — zero inspected checkouts must NOT read as clean (canon #9) --------
+report "$H/does-not-exist" "$H/also-not-here"
+eq "0 inspected: no findings (an absent checkout is not a defect)" "0" "$RN"
+eq "0 inspected: says NOTHING was verified"                        "true" "$(saw "NOTHING was verified")"
+eq "0 inspected: does NOT claim every checkout dispatches"         "false" "$(saw "every INSPECTED checkout")"
+
+# --- multi-repo run: the summary counts inspected / skipped / findings ------
+report "$H/healthy" "$H/dangling" "$H/nohooks" "$H/hookspath" "$H/does-not-exist"   # 0+1+2+0
 eq "multi-repo: findings accumulate across repos" "3" "$RN"
 eq "multi-repo: summary states it is report-only" "true" "$(saw "REPORT-ONLY")"
+eq "multi-repo: summary reports the inspected/skipped split" "true" "$(saw "4 inspected / 1 skipped")"
 fi
 
 # ---------------------------------------------------------------------------

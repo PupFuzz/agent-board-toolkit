@@ -19,23 +19,54 @@
 # registered by hand (operator-owned config; see docs/HOOKS.md), never written here.
 set -euo pipefail
 
-# _ibh_hooks_dir <repo-root> <core.hooksPath-value> [git-common-dir]: echo the directory the
-# post-checkout hook must live in for git to dispatch it, and return a status telling the caller
-# how to treat it. Pure (no filesystem writes) so tests/board-card-start-selftest.sh can assert
-# on it — and so the session-close hook-dispatch check can REUSE it rather than re-derive the
-# resolution (a second copy of it is the exact defect class that check exists to catch).
+# _ibh_read_hooks_path <repo-dir>: the ONE reader of core.hooksPath. Echoes the value git will
+# actually use and returns its PRESENCE as a status — the two facts a caller must not conflate.
+#   0  SET (the value may be EMPTY — see below)   1  unset   2  set but git cannot expand it
+# Two properties are load-bearing and both were verified against git 2.43:
+#   * `--path` EXPANDS a leading `~` / `~user` (core.hooksPath is a path-type variable, and git
+#     dispatches from the expanded dir). Reading the raw value makes `~/hooks` look relative.
+#     A RELATIVE value is returned unchanged by `--path`, so the relative arm is unaffected.
+#   * an EMPTY value is SET, and git does NOT fall back to <git-dir>/hooks — it dispatches NO
+#     hooks at all. `--get` distinguishes it from unset by EXIT STATUS ONLY (unset → 1, empty →
+#     0 with empty output), so any caller testing the VALUE for emptiness silently reads
+#     "hooks disabled" as "no hooksPath configured". That is why this returns a status.
+# rc 2 is `~unknownuser` and friends: git fatals expanding it here AND at hook dispatch, so the
+# repo's hooks are broken — never fold it into "unset", which would certify the repo healthy.
+_ibh_read_hooks_path() {
+    local out rc=0
+    out="$(git -C "$1" config --path --get core.hooksPath 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0) printf '%s' "$out"; return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# _ibh_hooks_dir <repo-root> <core.hooksPath-value> [git-common-dir] [hooksPath-is-set]: echo the
+# directory the post-checkout hook must live in for git to dispatch it, and return a status
+# telling the caller how to treat it. Pure (no filesystem writes) so
+# tests/board-card-start-selftest.sh can assert on it — and so the session-close hook-dispatch
+# check can REUSE it rather than re-derive the resolution (a second copy of it is the exact
+# defect class that check exists to catch).
 #   0  safe install target — the default <git-dir>/hooks, a hooksPath under .git/ (untracked), or
 #      one OUTSIDE the work tree (an absolute/global dir): symlink into it.
 #   3  hooksPath resolves INSIDE the tracked work tree (under repo root but NOT under .git/):
 #      the caller must REFUSE. The directory is still echoed (for the diagnostic).
+#   4  hooksPath is SET but EMPTY: git dispatches NO hooks for this repo. There is no directory
+#      to echo and nothing to install — the caller must REFUSE (installing into <git-dir>/hooks
+#      would report success on a path git never reads). Only reachable when the caller passes
+#      <hooksPath-is-set>=1, which is why `_ibh_read_hooks_path` returns presence as a status.
 # Git resolves a RELATIVE core.hooksPath against the work-tree top (verified), not the CWD.
 # <git-common-dir> defaults to <repo-root>/.git, which is right for every ordinary checkout. A
 # LINKED WORKTREE must pass its real common dir (`git rev-parse --git-common-dir`): there `.git`
 # is a FILE and git dispatches hooks from the MAIN checkout's hooks dir, so <root>/.git/hooks is
 # not a path git ever reads (verified against git 2.43).
 _ibh_hooks_dir() {
-    local root="$1" hp="${2:-}" gitdir="${3:-$1/.git}"
+    local root="$1" hp="${2:-}" gitdir="${3:-$1/.git}" hp_set="${4:-}"
     if [ -z "$hp" ]; then
+        # SET-but-empty is "hooks disabled", NOT "no hooksPath" — distinguished by the caller's
+        # presence flag, never by this empty value (that conflation is the defect itself).
+        [ "$hp_set" = "1" ] && return 4
         printf '%s\n' "$gitdir/hooks"; return 0
     fi
     local dir
@@ -58,8 +89,14 @@ _ibh_hooks_dir() {
 
 _ibh_main() {
     local repo="${1:?usage: install-board-hooks <repo-dir>}"
-    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
-        || { echo "install-board-hooks: not a git repo: $repo" >&2; exit 1; }
+    # Print git's OWN refusal rather than asserting "not a git repo": `dubious ownership`
+    # (safe.directory) and a core.hooksPath git cannot expand also land here, and each needs a
+    # different fix than "this isn't a repository".
+    local probe_err
+    if ! probe_err="$(git -C "$repo" rev-parse --git-dir 2>&1 >/dev/null)"; then
+        echo "install-board-hooks: git refuses this checkout ($repo): ${probe_err:-unknown error}" >&2
+        exit 1
+    fi
     local root
     root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
     [ -n "$root" ] || { echo "install-board-hooks: cannot resolve the work-tree root for: $repo" >&2; exit 1; }
@@ -75,12 +112,33 @@ _ibh_main() {
         chmod +x "$toolkit/hooks/$hook"
     done
 
-    local hp dir rc
-    hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+    local hp dir rc hp_rc hp_set=""
+    # Read PRESENCE and value together: `|| true` on a bare `--get` would erase the one bit that
+    # separates "no hooksPath" from "hooksPath disabled", and installing on the latter is a
+    # silent no-op — the #4281 shape this installer exists to avoid.
+    hp_rc=0; hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
+    if [ "$hp_rc" = 2 ]; then
+        {
+            echo "install-board-hooks: core.hooksPath is set to a value git cannot expand (e.g. '~unknownuser/...')."
+            echo "  Refusing: git fails the same way when it dispatches hooks, so this repo runs NO hooks."
+            echo "  Fix the value (git -C '$repo' config core.hooksPath <dir>) or remove it (--unset), then re-run."
+        } >&2
+        exit 1
+    fi
+    [ "$hp_rc" = 0 ] && hp_set=1
     # Capture rc in an || context: a bare `dir="$(cmd)"; rc=$?` would trip `set -e` on the
     # command-substitution's non-zero exit (rc=3, the in-tree refuse signal) and quit at the
     # assignment BEFORE rc is read — killing the guidance block below (impl-review HIGH).
-    rc=0; dir="$(_ibh_hooks_dir "$root" "$hp")" || rc=$?
+    rc=0; dir="$(_ibh_hooks_dir "$root" "$hp" "$root/.git" "$hp_set")" || rc=$?
+    if [ "$rc" = 4 ]; then
+        {
+            echo "install-board-hooks: core.hooksPath is set to an EMPTY value — git dispatches NO hooks for this repo."
+            echo "  Refusing: an empty value does not fall back to .git/hooks, so installing there would report"
+            echo "  success on a directory git never reads (the silent no-op this installer exists to prevent)."
+            echo "  Fix: git -C '$repo' config --unset core.hooksPath   (or point it at a hooks directory), then re-run."
+        } >&2
+        exit 1
+    fi
     if [ "$rc" = 3 ]; then
         {
             echo "install-board-hooks: core.hooksPath='$hp' resolves inside the tracked work tree ($dir)."
