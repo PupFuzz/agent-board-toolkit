@@ -93,6 +93,7 @@ jobs:
           - no-task-wrapper-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
+          - readme-bin-coverage-selftest
           - release-pr-body-selftest
           - runtime-check-selftest
     steps:

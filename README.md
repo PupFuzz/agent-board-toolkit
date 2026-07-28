@@ -23,6 +23,8 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
 | `bin/dl-a0-backfill-triaged` | **DL-board setup:** backfill the `triaged` tag onto pre-existing `id:*-pr-*` cards (dry-run default; `--apply` / `--remove`), so untriaged-discovery doesn't read the legacy corpus as untriaged |
 
+Since this is the *only* list of the tools (ADOPTION.md points here rather than keeping a second copy), CI asserts it: [`tests/readme-bin-coverage-selftest.sh`](tests/readme-bin-coverage-selftest.sh) fails the build on a tool with no row **or** a row with no tool. That gate compares **names only** — it cannot tell you a row's description is still accurate.
+
 ## Configuration model (no IDs are hard-coded; nothing secret is stored in this repo)
 
 The tools read all environment-specific values from files **outside** this repo:
