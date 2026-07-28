@@ -35,6 +35,18 @@
 # idiom grep appears below, but only to CHALLENGE an exclusion, a direction in which it can
 # add a member and never silently drop one.
 #
+# WHY THE CHANNEL IS ASSERTED (card#5337). Which STREAM help lands on is a property of every
+# bin here, not only of the ones printing a header, so it is asserted over the whole registry —
+# CLIS and EXCLUDED alike. adopt-to-dl baked `>&2` into usage() itself, so `adopt-to-dl --help
+# > f` produced an EMPTY f at rc 0: a false success reading as "this tool has no help" to any
+# caller redirecting stdout. The channel is the CALLER's to choose because the two uses differ —
+# a requested `--help` is the requested OUTPUT (pipeable, pageable), while usage-after-a-bad-
+# argument is diagnostic. Moving the redirect out to the four error arms is what makes both
+# true at once, and that is exactly why the ERROR direction is asserted too: the redirect now
+# lives at each call site, so a later tidy dropping one `>&2` would put diagnostics on stdout
+# with nothing to notice. That leg is adopt-to-dl-only — a population of one, deliberately,
+# because it guards the regression THIS change creates rather than a property of the registry.
+#
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property the assertions support:
 #   * for each CLIS member, that its `--help` reproduces that file's own contiguous header
 #     exactly. Nothing about whether the header's PROSE is accurate, current, or complete.
@@ -42,9 +54,13 @@
 #     every bin offering help is. A bin dispatching help under some other spelling entirely
 #     (`-?`, a `help` subcommand, `--usage`) mentions no `--help` and stays invisible here.
 #   * for each EXCLUDED member, only that it does not use the contiguous-header idiom. It says
-#     nothing about whether that bin's help is correct, complete, or even on the right
-#     CHANNEL — adopt-to-dl prints its usage to stderr, a live open question (card#5337) that
-#     this file deliberately does not rule on in either direction.
+#     nothing about whether that bin's help is correct or complete.
+#   * for every REGISTRY member, that `--help` exits 0 with output on stdout and stderr silent.
+#     Nothing about that output's CONTENT — for the three EXCLUDED bins the channel is the only
+#     thing asserted about their help at all — and nothing about any spelling other than
+#     `--help`, nor about the other five bins' ERROR channel.
+#   * for adopt-to-dl alone, that ONE rejected shape — an unknown flag — exits 2 with the
+#     diagnostic on stderr and stdout empty. Its other three error arms are not exercised.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -93,6 +109,20 @@ _help_bins() {
 # authoritative expected length, re-derived from the file itself.
 header_lines() { awk 'NR>1 { if (substr($0,1,1) == "#") c++; else exit } END { print c+0 }' "$1"; }
 
+# _channel <cmd> <args...> — run a command and reduce it to `rc/stdout/stderr` occupancy. Both
+# streams are reported in ONE record so every assertion using it carries its own presence
+# witness: "stderr=empty" is only meaningful next to a "stdout=data" measured on the same run,
+# which is what distinguishes a silent stream from a command that produced nothing at all (or
+# never executed). Occupancy is `[ -s ]`, a byte-count test, not a command substitution — the
+# latter strips trailing newlines, so a stream holding only "\n" would read as empty.
+_channel() {
+    local rc=0
+    "$@" >"$TMP/ch.out" 2>"$TMP/ch.err" || rc=$?
+    printf 'rc=%s stdout=%s stderr=%s' "$rc" \
+        "$([ -s "$TMP/ch.out" ] && echo data || echo empty)" \
+        "$([ -s "$TMP/ch.err" ] && echo data || echo empty)"
+}
+
 # The contiguous-header idiom, used ONLY to challenge an exclusion (see the header rationale).
 HEADER_IDIOM="awk 'NR>1"
 
@@ -130,6 +160,22 @@ for cli in "${EXCLUDED[@]}"; do
     eq "$cli is excluded on FORM: it does not carry the header idiom" "false" \
        "$(grep -qF -- "$HEADER_IDIOM" "$BINDIR/$cli" && echo true || echo false)"
 done
+
+echo "== --help goes to the CALLER's channel, over the WHOLE registry =="
+# Over _registry(), not over CLIS + EXCLUDED written out again: the registry has one owner, so a
+# name added to either list is channel-asserted without a second edit.
+while read -r cli; do
+    _need -x "$BINDIR/$cli"
+    eq "$cli: --help ⇒ rc 0, help on stdout, stderr silent" \
+       "rc=0 stdout=data stderr=empty" "$(_channel "$BINDIR/$cli" --help)"
+done < <(_registry)
+
+echo "== adopt-to-dl's ERROR channel is the other one (card#5337) =="
+# Population of one on purpose — this guards the regression the fix introduces, not a registry
+# property. The redirect moved out of usage() into the four error arms, so it is now droppable
+# one call site at a time. Only the unknown-flag arm is exercised.
+eq "adopt-to-dl: an unknown flag ⇒ rc 2, diagnostic on stderr, stdout silent" \
+   "rc=2 stdout=empty stderr=data" "$(_channel "$BINDIR/adopt-to-dl" --nope)"
 
 echo "== the header assertions, over CLIS =="
 for cli in "${CLIS[@]}"; do
@@ -188,5 +234,49 @@ mkdir -p "$TMP/idiom"
 printf '%s\n' "        -h|--help) awk 'NR>1 { print }' \"\$0\"; exit 0 ;;" > "$TMP/idiom/converted"
 eq "a converted bin trips the header-idiom discriminator" "true" \
    "$(grep -qF -- "$HEADER_IDIOM" "$TMP/idiom/converted" && echo true || echo false)"
+
+echo "== prove-it-can-fail: both channel predicates REPORT the shapes they exist to catch =="
+# Two fixtures, each carrying exactly one of the two defects, and each therefore the OTHER's
+# presence witness: every run below asserts BOTH predicates, so the passing one is observed
+# present on the same fixture that fails the other. A fixture failing both would prove nothing —
+# it would be indistinguishable from a file that does not execute.
+#
+# These are synthetic rather than `git show <rev>:bin/adopt-to-dl`: the real pre-fix binary IS a
+# faithful negative control and was run as one by hand, but naming a revision pins the check to
+# a history position that a squash-merge invalidates, and the extracted file needs
+# _kb-board-lib.sh copied alongside it or it exits 1 before reaching any argument.
+mkdir -p "$TMP/channel"
+cat > "$TMP/channel/help-on-stderr" <<'FIXTURE'
+#!/usr/bin/env bash
+usage() { echo "usage: help-on-stderr <x>" >&2; }
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    *) echo "help-on-stderr: unknown flag '${1:-}'" >&2; usage; exit 2 ;;
+esac
+FIXTURE
+cat > "$TMP/channel/usage-on-stdout" <<'FIXTURE'
+#!/usr/bin/env bash
+usage() { echo "usage: usage-on-stdout <x>"; }
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    *) echo "usage-on-stdout: unknown flag '${1:-}'" >&2; usage; exit 2 ;;
+esac
+FIXTURE
+chmod +x "$TMP/channel/help-on-stderr" "$TMP/channel/usage-on-stdout"
+
+# Fixture 1 — usage() bakes in `>&2`, i.e. adopt-to-dl before this fix. The help predicate must
+# go red; the error predicate is unaffected, which is why the fix could not be verified by the
+# error path alone.
+eq "the pre-fix shape FAILS the --help channel predicate" \
+   "rc=0 stdout=empty stderr=data" "$(_channel "$TMP/channel/help-on-stderr" --help)"
+eq "…while still SATISFYING the error predicate (witness: the fixture runs)" \
+   "rc=2 stdout=empty stderr=data" "$(_channel "$TMP/channel/help-on-stderr" --nope)"
+
+# Fixture 2 — the regression this change makes possible: usage() prints on stdout (correct) and
+# an error arm calls it without the redirect, putting the diagnostic's own usage on stdout.
+eq "a dropped error-arm redirect FAILS the error-channel predicate" \
+   "rc=2 stdout=data stderr=data" "$(_channel "$TMP/channel/usage-on-stdout" --nope)"
+eq "…while still SATISFYING the --help predicate (witness: the fixture runs)" \
+   "rc=0 stdout=data stderr=empty" "$(_channel "$TMP/channel/usage-on-stdout" --help)"
 
 _summary "help-output-selftest"
