@@ -4,9 +4,11 @@
 #
 # WHY THIS FILE EXISTS. Before it, `grep -rn dl-a0-backfill-triaged tests/` returned nothing: no
 # selftest named the tool and `tests/help-output-selftest.sh`'s CLIS registry does not carry it
-# either (that registry gap is card#5339's, and is deliberately left alone here — the tool echoes
-# a one-line $USAGE rather than a header block, so CLIS's line-count-equality assertion does not
-# apply to it). Its --apply path PATCHes the tags array of every matched card on a real board,
+# either — the tool echoes a one-line $USAGE rather than a header block, so CLIS's
+# line-count-equality assertion does not apply to it. That is now a STATED exclusion rather than
+# an omission: card#5339 made CLIS one half of a completeness gate, so this tool sits in that
+# file's EXCLUDED list with its reason, and a bin belonging to neither list reds the build.
+# Its --apply path PATCHes the tags array of every matched card on a real board,
 # and a tag write REPLACES the whole array — so a defect here does not fail loudly, it quietly
 # drops the id:/repo:/type: tags that every other consumer keys on. An uncovered write path is
 # the worst tier of the uncovered set, and per canon #4 a bin with no coverage cannot be
