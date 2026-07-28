@@ -165,6 +165,22 @@ _ibh_hooks_dir() {
     printf '%s\n' "$dir"; return 0
 }
 
+# _ibh_require_positional <slot> <arg> <name> [suffix]: mirrors kb_require_positional in
+# _kb-board-lib.sh — this script is vendored standalone and MUST NOT source that lib; keep the
+# two in sync, and read the rationale there. tests/kb-positional-guard-selftest.sh runs one
+# assertion matrix against BOTH copies rather than trusting this comment.
+_ibh_require_positional() {
+    if [ -z "$2" ]; then
+        echo "install-board-hooks: $3 is empty (an unexpanded variable?)${4:-}" >&2
+        return 1
+    fi
+    if [ -n "$1" ]; then
+        echo "install-board-hooks: unexpected extra argument: $2${4:-}" >&2
+        return 1
+    fi
+    return 0
+}
+
 _ibh_main() {
     # --check <repo-dir>: DRY RUN. Evaluate every precondition a real run evaluates — except the
     # toolkit-side `chmod +x` on the hook SOURCES, which is itself a write and which a dry run
@@ -190,21 +206,9 @@ _ibh_main() {
             --check) check=1 ;;
             -*)      echo "install-board-hooks: unknown option: $arg" >&2
                      echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2 ;;
-            *)       # An EMPTY positional is rejected outright rather than stored. That is
-                     # what makes the `-n "$repo"` test below a sound "have I seen one?": an
-                     # empty positional used to be invisible to it, so the NEXT positional
-                     # silently became the repo and the rc-2 guarantee was defeated (an
-                     # unexpanded shell variable is the way in — the empty-value class again).
-                     # A separate seen-flag was tried and removed: with empties rejected here,
-                     # nothing could reach it, and a mutation of it could not be made to fail.
-                     if [ -z "$arg" ]; then
-                         echo "install-board-hooks: <repo-dir> is empty (an unexpanded variable?)" >&2
+            *)       _ibh_require_positional "$repo" "$arg" "<repo-dir>" || {
                          echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
-                     fi
-                     if [ -n "$repo" ]; then
-                         echo "install-board-hooks: unexpected extra argument: $arg" >&2
-                         echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
-                     fi
+                     }
                      repo="$arg" ;;
         esac
     done
