@@ -79,6 +79,8 @@ jobs:
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
+          - dl-a0-backfill-triaged-selftest
+          - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
           - help-output-selftest
           - kb-board-lib-selftest
