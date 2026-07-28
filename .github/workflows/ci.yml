@@ -85,6 +85,7 @@ jobs:
           - help-output-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
+          - kb-positional-guard-selftest
           - kbc-archive-eligible-selftest
           - kbc-may-archive-selftest
           - kbcard-field-selftest

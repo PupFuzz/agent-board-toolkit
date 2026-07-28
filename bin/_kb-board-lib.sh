@@ -283,6 +283,50 @@ kb_require_value() {
     return 1
 }
 
+# kb_require_positional <slot> <arg> <name> [suffix]: the POSITIONAL-axis twin of
+# kb_require_value. Returns 1 with a diagnostic when <arg> is empty, or when <slot> — the
+# destination variable's CURRENT value — is already set, i.e. <arg> is a SECOND positional.
+# <name> is the placeholder as the usage line spells it (`<card-id>`); [suffix] is appended to
+# every diagnostic, for a caller whose refusals carry a standing qualifier.
+#
+# THE CALLER OWNS THE EXIT STATUS, and its own usage line. board-card-start refuses at 0 — it
+# runs from a git hook and must never block a checkout (docs/HOOKS.md) — while adopt-to-dl and
+# install-board-hooks are ordinary CLIs and refuse at 2. An owner that also owned the exit
+# would have to pick one and break the other, so it answers the QUESTION and leaves the POLICY
+# at the call site, the same split promote-released-cards documents for its own guards.
+#
+# WHY <slot> IS THE DESTINATION VARIABLE and not a seen-flag: rejecting an EMPTY positional
+# outright rather than storing it is exactly what makes `-n "$slot"` a sound "have I seen
+# one?". While an empty was invisible to that test, `adopt-to-dl "" 4242` silently adopted
+# 4242 though the caller had written two positionals. install-board-hooks tried a separate
+# seen-flag and removed it: with empties refused here nothing could reach it, and a mutation
+# of it could not be made to fail.
+#
+# NOT MERGEABLE WITH kb_require_value despite the twin naming. Inside a function `$#` is the
+# FUNCTION's arity, and kb_require_value's 1-arg shape is contracted with the OPPOSITE answer
+# (`kb_require_value --dl` → rc 1, asserted in tests/kb-board-lib-selftest.sh). The flag-value
+# axis and the positional axis need opposite verdicts on the same input shape.
+#
+# EMPTY IS TESTED FIRST, deliberately: all three call sites tested it first before this hoist,
+# so "slot already full AND arg empty" still reports the EMPTY. Reordering would be a silent
+# user-visible change on a case nobody would have thought to test.
+#
+# (install-board-hooks carries an inline mirror of this — it is vendored standalone and does
+# not source this lib; keep the two in sync, as with kb_require_https_host.
+# tests/kb-positional-guard-selftest.sh runs one assertion matrix against BOTH copies.)
+kb_require_positional() {
+    local slot="$1" arg="$2" name="$3" suffix="${4:-}"
+    if [[ -z "$arg" ]]; then
+        echo "$(_kb_prog): $name is empty (an unexpanded variable?)$suffix" >&2
+        return 1
+    fi
+    if [[ -n "$slot" ]]; then
+        echo "$(_kb_prog): unexpected extra argument: $arg$suffix" >&2
+        return 1
+    fi
+    return 0
+}
+
 # kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base
 # (the .release-pr.json .promote.api_base, which a PR can edit). Asserts the base is
 # https:// AND its host is the expected host or a subdomain of it — so a malicious

@@ -205,14 +205,9 @@ while [ "$#" -gt 0 ]; do
         esac
     fi
     # The single positional owner, reached both before and after `--`.
-    if [ -z "$arg" ]; then
-        echo "board-card-start: <branch-name> is empty (an unexpanded variable?) — no card moved" >&2
+    kb_require_positional "$branch" "$arg" "<branch-name>" " — no card moved" || {
         echo "$_bcs_usage" >&2; exit 0
-    fi
-    if [ -n "$branch" ]; then
-        echo "board-card-start: unexpected extra argument: $arg — no card moved" >&2
-        echo "$_bcs_usage" >&2; exit 0
-    fi
+    }
     branch="$arg"
 done
 
