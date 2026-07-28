@@ -162,12 +162,13 @@ eq "the skip is re-emitted as a ⚠ warning on STDERR naming the board key" \
    "true" "$(has '⚠ board bridge was SKIPPED' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
-# The Open-PRs leg (card#5358) — the `gh pr list` loop over its own literal repo list.
-# The cases above never reach it: $SCRATCH holds no checkouts, so the leg's `-e .git`
-# guard skips every entry and $SHIM/gh is never executed. Its repo list, its per-repo
-# label and its skip guard were therefore free to change with a green suite — which is
-# the surface card#5227 (deriving the list from BSC_WORKTREES by de-duplicating on the
-# remote URL) has to be validated against.
+# The Open-PRs leg (card#5358) — the `gh pr list` loop, since card#5227 over a query set
+# DERIVED from BSC_WORKTREES by de-duplicating on the remote URL rather than its own
+# literal repo list. The cases above never reach it: $SCRATCH holds no checkouts, so the
+# leg's `-e .git` guard skips every entry and $SHIM/gh is never executed. Its repo set,
+# its per-repo label and its skip guard were therefore free to change with a green suite
+# — which is why this block exists, and it is what card#5227's derivation was validated
+# against.
 #
 # Its OWN shim dir, deliberately. The gh above is a silent `exit 0` and the cases above
 # were written against that; a recording stub that also PRINTS would become a live input
@@ -188,9 +189,40 @@ for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard \
 done
 
 PRSHIM="$TMP/prshim"; mkdir -p "$PRSHIM"
-# git stays a silent `exit 0`: the branch-reality and hook-dispatch legs run over these
-# same fixture dirs and neither is this block's subject.
-printf '#!/bin/sh\nexit 0\n' > "$PRSHIM/git"; chmod +x "$PRSHIM/git"
+# git answers `remote get-url origin` and NOTHING else — the leg derives its query set from
+# that URL, so a silent `exit 0` would hand every entry an empty key. Empty is not "no
+# duplicate"; it is the leg's UNREADABLE signal, so all five would take their own slot and
+# the dedupe would never be exercised at all. Every other subcommand stays the silent
+# `exit 0` the branch-reality and hook-dispatch legs in this same invocation were written
+# against — they are not this block's subject.
+#
+# The two -prod clones deliberately return the SAME url as their siblings. That byte-for-byte
+# identity is the entire input to the dedupe; if these ever diverge, the -prod absence
+# assertions below would pass for the wrong reason.
+#
+# PR_NOREMOTE_REPO makes one checkout's remote unreadable (git REFUSING, the real-world
+# shape: no origin configured, or a broken repo), for the fail-closed case.
+cat > "$PRSHIM/git" <<'EOF'
+#!/bin/sh
+_d=''
+[ "$1" = '-C' ] && { _d="$(basename "$2")"; shift 2; }
+case "$1 ${2:-} ${3:-}" in
+  'remote get-url origin')
+    for _n in ${PR_NOREMOTE_REPO:-}; do
+        [ "$_d" = "$_n" ] && { echo "error: No such remote 'origin'" >&2; exit 2; }
+    done
+    case "$_d" in
+      agent-webhook-bridge-dev|agent-webhook-bridge-prod)
+        echo https://github.com/PupFuzz/agent-webhook-bridge.git ;;
+      kanbanboard)
+        echo https://github.com/PupFuzz/kanban-board.git ;;
+      agent-board-toolkit|agent-board-toolkit-prod)
+        echo https://github.com/PupFuzz/agent-board-toolkit.git ;;
+    esac ;;
+esac
+exit 0
+EOF
+chmod +x "$PRSHIM/git"
 cat > "$PRSHIM/gh" <<'EOF'
 #!/bin/sh
 # Records "<cwd basename>|<argv>" per call — the cwd IS the evidence of which repo was
@@ -212,23 +244,24 @@ GH_LOG="$TMP/gh.log"
 run_prs() {
     : > "$GH_LOG"
     HOME="$PRHOME" PATH="$PRSHIM:$UB" KANBAN_RECONCILE_HOOK="$goodhook" \
-        GH_LOG="$GH_LOG" GH_FAIL_REPO="${1:-}" \
+        GH_LOG="$GH_LOG" GH_FAIL_REPO="${1:-}" PR_NOREMOTE_REPO="${2:-}" \
         bash "$BIN" >"$OUTF" 2>"$ERRF"; echo $?
 }
 
 echo "== Open-PRs leg — queries exactly the three unique GitHub repos, in list order =="
 rc="$(run_prs)"
 eq "the ritual still exits 0" "0" "$rc"
-eq "exactly the three listed repos are queried, in order, with the same argv" \
+eq "exactly the three unique repos are queried, in BSC_WORKTREES order, with the same argv" \
 "agent-webhook-bridge-dev|pr list --state open --limit 10
 kanbanboard|pr list --state open --limit 10
 agent-board-toolkit|pr list --state open --limit 10" "$(cat "$GH_LOG")"
 
-# ABSENCE + WITNESS, same run. A second checkout of an already-listed repo reports the
-# same open PRs twice, so the -prod clones are excluded BY THE LIST — card#5227's
-# dedupe-on-remote-URL refactor has to keep them out. Each absence is paired with the
-# non--prod sibling of the SAME repo observed present in the SAME log, so a gh that never
-# ran at all cannot read as a pass.
+# ABSENCE + WITNESS, same run. A second checkout of an already-queried repo reports the
+# same open PRs twice, so the -prod clones must not be queried. Since card#5227 they are
+# excluded BY THE DEDUPE — their remote URL is byte-identical to their sibling's — not by
+# a literal list that omitted them. Each absence is paired with the non--prod sibling of
+# the SAME repo observed present in the SAME log, so a gh that never ran at all cannot
+# read as a pass.
 eq "witness: agent-board-toolkit WAS queried" "true" \
    "$(has 'agent-board-toolkit|' "$(cat "$GH_LOG")")"
 eq "the -prod toolkit clone is NOT queried" "false" \
@@ -244,7 +277,51 @@ eq "witness: the -prod toolkit checkout IS present in the fixture" "true" \
 eq "witness: the -prod bridge checkout IS present in the fixture" "true" \
    "$([[ -e "$PRHOME/agent-webhook-bridge-prod/.git" ]] && echo true || echo false)"
 
+echo "== Open-PRs leg — an UNREADABLE remote keeps its own slot; it is never deduped away =="
+# The load-bearing case, and the one that inverts the naive derivation. Dropping an entry
+# whose remote cannot be read would fail OPEN: the section would render clean having
+# silently queried fewer repos. So an unreadable remote must land in the query set on its
+# own AND be named. Directly paired with the assertion above that the SAME checkout is
+# absent when its remote IS readable — so this cannot pass on a leg that simply queries
+# everything.
+rc="$(run_prs "" agent-board-toolkit-prod)"
+eq "an unreadable remote does not change the ritual's exit code" "0" "$rc"
+eq "the unreadable checkout IS queried, on its own slot, after the three it could not join" \
+"agent-webhook-bridge-dev|pr list --state open --limit 10
+kanbanboard|pr list --state open --limit 10
+agent-board-toolkit|pr list --state open --limit 10
+agent-board-toolkit-prod|pr list --state open --limit 10" "$(cat "$GH_LOG")"
+eq "…and the unreadable checkout is NAMED, not silently absorbed" "true" \
+   "$(has '⚠ agent-board-toolkit-prod: could not read' "$(cat "$OUTF")")"
+# The warning is on STDOUT, inside this leg's own section — deliberately not stderr. The
+# failure direction here is safe by construction (an extra query, never a drop), so it is
+# not the canon-#9 'degraded coverage must not read as a clean pass' class this file
+# reserves stderr + ⚠ for; and stderr is shared by every leg, so a per-leg diagnostic
+# there would couple every other block's $ERRF assertions to THIS leg's stub fidelity.
+eq "the warning does not leak onto the shared stderr channel" "false" \
+   "$(has 'could not read' "$(cat "$ERRF")")"
+# Witness that the dedupe still ran in the SAME run: the bridge -prod clone, whose remote
+# is still readable, is still absent. Without this, the assertion above would also pass on
+# a leg whose dedupe had been disabled outright.
+eq "witness: the still-readable -prod bridge clone is STILL deduped away in that run" "false" \
+   "$(has 'agent-webhook-bridge-prod|' "$(cat "$GH_LOG")")"
+
+# TWO unreadable remotes must NOT collapse into each other. The empty key is deliberately
+# never recorded as a seen key — recording it would make the FIRST unreadable entry dedupe
+# away every later one, which is the same silent-drop this whole branch exists to prevent,
+# and the single-unreadable case above cannot tell the two implementations apart.
+rc="$(run_prs "" "agent-webhook-bridge-prod agent-board-toolkit-prod")"
+eq "two unreadable remotes each keep their own slot — an empty key is not a dedup key" \
+"agent-webhook-bridge-dev|pr list --state open --limit 10
+agent-webhook-bridge-prod|pr list --state open --limit 10
+kanbanboard|pr list --state open --limit 10
+agent-board-toolkit|pr list --state open --limit 10
+agent-board-toolkit-prod|pr list --state open --limit 10" "$(cat "$GH_LOG")"
+eq "…and BOTH are named, not just the first" "true" \
+   "$([[ $(grep -c '⚠ agent-.*: could not read' "$OUTF") == 2 ]] && echo true || echo false)"
+
 echo "== Open-PRs leg — every emitted line carries its own '  <repo>: ' label =="
+rc="$(run_prs)"
 eq "the FIRST line of a repo's output is labelled" "true" \
    "$(has '  agent-board-toolkit: 11 OPEN first-pr' "$(cat "$OUTF")")"
 eq "…and so is the SECOND — the label is per LINE, not per repo" "true" \
@@ -293,8 +370,17 @@ eq "gh's stderr is suppressed, so its failure never reaches the ritual's stderr"
 #
 # The CHECKOUT TREE is reused — $PRHOME already creates all five BSC_WORKTREES entries, and
 # a second one would be a second thing to keep in step with that list. The SHIM is its own:
-# $PRSHIM/git is a silent `exit 0` ON PURPOSE, and a git that ANSWERS would become an
-# unobserved live input to the cases above, which were written against silence.
+# $PRSHIM/git answers `remote get-url origin` and stays a silent `exit 0` for everything
+# else ON PURPOSE, and a git that answered `branch --show-current` or `status --porcelain`
+# there would become an unobserved live input to the cases above, which were written
+# against silence for exactly those two subcommands.
+#
+# The converse holds here and is why this shim is NOT given a `remote get-url` answer: the
+# Open-PRs leg runs inside these same invocations, so under $BRSHIM every entry's remote
+# reads UNREADABLE and each takes its own slot. That is inert for this block — the
+# assertions below read the branch-reality section and $BR_LOG, and the leg's warning is
+# confined to its own stdout section — and it is deliberate: it keeps this block's
+# subject the branch-reality leg, not a second copy of the dedupe's coverage.
 # ---------------------------------------------------------------------------
 echo "== branch-reality leg — fixture =="
 BRSHIM="$TMP/brshim"; mkdir -p "$BRSHIM"

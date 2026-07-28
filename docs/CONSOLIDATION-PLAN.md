@@ -29,10 +29,11 @@ Measured against `origin/dev` at the time of writing; the CHANGELOG is the runni
 | **B** | make the gates able to fail | **shipped** (5/5) |
 | **C** | one value-guard on every axis | **not started**; its positional half was superseded by a *different, better* fix (below) |
 | **D** | one library (`promote-released-cards` sources the lib) | **recommended dropped** — see *Stage D* |
-| **E** | de-duplicate the PR-query set | **not started**; open as card #5227 |
+| **E** | de-duplicate the PR-query set | **shipped** (card #5227); its other half stays dropped |
 
-C and E remain design-only by direction: they may be planned and reviewed, not built, without a
-fresh decision. **This document does not authorize any of them** — it records where they stand.
+**C remains design-only by direction:** it may be planned and reviewed, not built, without a fresh
+decision — and **this document does not authorize it**. E was design-only under the same rule until
+it received that fresh decision and was built (card #5227); C has not.
 
 ---
 
@@ -173,7 +174,7 @@ Each item landed as its own PR; see the CHANGELOG for what each changed.
   `dl-a1-register-field` exercised **as processes** (neither is main-guarded), and
   `agent-board-toolkit-drift-check` covered by the fixture job above.
 - **The Open-PRs leg of `board-session-close`** (card #5358) — previously unasserted, and named on
-  card #5227 as the reason that code could not be touched safely. Stage E depends on it.
+  card #5227 as the reason that code could not be touched safely. Stage E was built on it.
 - **CI-matrix ↔ selftest-file parity** (card #5355) — the matrix list was hand-aligned behind a
   *"keep this list in sync"* comment; a test absent from it never ran and nothing said so. The
   guard is deliberately its **own** CI job rather than a matrix entry: a matrix entry would be
@@ -291,16 +292,40 @@ would need the lib too — that mirror is currently healthy, and this stage woul
 
 ---
 
-## Stage E — de-duplicate the PR-query set · not started
+## Stage E — de-duplicate the PR-query set · shipped
 
-`board-session-close` holds a hardcoded repo list for its Open-PRs leg while `BSC_WORKTREES`
-hardcodes the local checkouts, and the code itself admits *"keeping the two in step is manual
+`board-session-close` held a hardcoded repo list for its Open-PRs leg while `BSC_WORKTREES`
+hardcoded the local checkouts, and the code itself admitted *"keeping the two in step is manual
 today"*. It was left out of card #5200's hoist **deliberately**, and card #5227 records why: it is a
 *different semantic* — unique GitHub remotes, not local checkouts, and two worktrees of one repo are
-two entries in `BSC_WORKTREES` but must be one entry in a PR query. So the consolidation is not
+two entries in `BSC_WORKTREES` but must be one entry in a PR query. So the consolidation was not
 "reuse the array"; it is to derive the PR set from `BSC_WORKTREES` by de-duplicating on
-`git remote get-url`, which measured out to exactly the current list when the card was written.
-That is a behavior change to a leg that had no coverage — which is why Stage B had to come first.
+`git remote get-url`. That is a behavior change to a leg that had no coverage — which is why Stage B
+had to come first.
+
+**What shipped, and the two decisions that shaped it.** The derivation keeps the first *present*
+checkout of each distinct remote, in `BSC_WORKTREES` order — which reproduces the retired literal
+list exactly, verified byte-identical against the live host before merge.
+
+- **The dedupe key is the raw `git remote get-url origin` string, with no normalizer.** An
+  ssh-vs-https re-clone under-dedupes and lists one repo twice under two labels — visible, labelled,
+  harmless. A normalizer would be a new primitive with its own defect surface bought for no measured
+  benefit. The weakest property, stated at the call site: the dedupe holds for byte-identical URLs
+  only, and it assumes each checkout's `gh` target *is* its `origin` (a fork remote or
+  `gh repo set-default` could disagree).
+- **An entry whose remote cannot be read keeps its own slot and is named — it is never deduped
+  away.** This inverts the naive derivation and is the reason the change is worth making at all.
+  The query set is the *required* side, so dropping an unreadable entry would fail **open**: a
+  clean-looking section that silently covered fewer repos, with no diff anywhere to record it —
+  strictly worse than the literal list it replaced, which at least needed a human edit to lose a
+  repo. An extra query is the harmless direction. The warning rides the leg's own stdout section
+  rather than stderr, because the failure direction is safe by construction and stderr is shared by
+  every leg.
+
+Since the `-e .git` filter necessarily runs before the remote read, the rule is first *present*
+checkout: if a repo's primary checkout lost its `.git` while a `-prod` clone kept one, the repo is
+now covered via the clone where it previously went unqueried. That is a real behavior change, and a
+strict improvement in coverage.
 
 **Its other half is impossible and was dropped.** The coord config has **zero** path-like keys;
 `BSC_WORKTREES` spans more checkouts than there are repos, and the board-name → directory-name
@@ -309,8 +334,14 @@ mapping is not a mechanical transform. Deriving worktrees from the config would 
 copies of one list" was a category error: the config maps *boards → repos*, `BSC_WORKTREES` maps
 *local checkouts*, and the PR loop maps *unique remotes*. Three different sets.
 
-**Depends on Stage B** (its Open-PRs coverage shipped, so this is now unblocked on that axis).
-Partially closes card #5227 — note the split on the card. Filed separately as roundtable **#187**:
+**Depended on Stage B** — its Open-PRs coverage is what made this leg safe to touch, and that
+coverage is what caught the two traps this change had to clear: the fixture's `git` stub had to
+learn `remote get-url` (a silent stub hands every entry an empty key, collapsing all five into one
+group), and the fail-closed path needed its own case, directly paired with the readable-remote
+assertion so it cannot pass on a leg that simply queries everything.
+
+Partially closes card #5227 — note the split on the card; the operator-specific absolute paths stay
+out of scope. Filed separately as roundtable **#187**:
 a coord-config schema FR for a `worktrees[]` surface, which is the prerequisite for ever removing
 the operator-specific absolute paths. That FR asks for an explicitly declared array and records why
 deriving the list from the config's repo list is the wrong fix — the same reasons this stage's other
@@ -372,7 +403,7 @@ bash tests/<each>.sh
 bin/board-card-start "$(git branch --show-current)" --lint   # Stage A: must NOT move a card
 bin/agent-board-toolkit-runtime-check --help | tail -3       # Stage A: must not leak `set -euo`
 bin/promote-released-cards --dry-run                         # Stage D, if revived: plan unchanged
-bin/board-session-close                                      # Stage E, if built: same findings
+bin/board-session-close                                      # Stage E: same findings, byte-identical
 ```
 
 **A pass is evidence only if failure was possible.** Every check added by this program was made to

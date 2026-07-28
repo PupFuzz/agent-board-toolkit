@@ -600,6 +600,8 @@ _bsc_hook_dispatch_report() {
 
 main() {
   local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc
+  local pr_key pr_dup pr_k
+  local -a pr_dirs pr_seen
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
   echo "Fix any board card below that doesn't match the git/PR reality, then close."
   echo
@@ -624,13 +626,47 @@ main() {
   _bsc_hook_dispatch_report "${BSC_WORKTREES[@]}" || true
   echo
   echo "── Open PRs (each should have a card in In Review / Held) ──"
-  # A SECOND, independently maintained literal list — one entry per unique GitHub repo, since
-  # a second checkout of the same repo (a -prod deploy clone) would list the same open PRs.
-  # It is NOT derived from BSC_WORKTREES: keeping the two in step is manual today, and
-  # deriving it (dedupe by remote URL) is carded separately rather than done here.
-  for d in agent-webhook-bridge-dev kanbanboard agent-board-toolkit; do
-    wt="$HOME/$d"
+  # Derived from BSC_WORKTREES rather than a third hardcoded repo list: one query per
+  # unique GitHub repo, since a second checkout of the same repo (a -prod deploy clone)
+  # reports the same open PRs. First PRESENT checkout of each distinct remote wins, in
+  # list order. The `-e .git` filter necessarily runs BEFORE the remote read (there is no
+  # remote to read without a checkout), so the rule is first *present* checkout — if a
+  # repo's primary checkout lost its .git and a -prod clone kept one, the repo is now
+  # covered via the clone where it previously went unqueried.
+  #
+  # WEAKEST PROPERTY: the dedupe is asserted for byte-identical URLs only. An
+  # ssh-vs-https re-clone under-dedupes and lists one repo twice under two labels —
+  # visible, labelled, harmless. It also assumes each checkout's `gh` target IS its
+  # `origin`; a fork remote or `gh repo set-default` could disagree. Both are why the
+  # key is never allowed to DROP a repo (below) — only to merge two that agree exactly.
+  #
+  # Fail-closed, and this inverts the naive derivation: an entry whose remote cannot be
+  # read keeps its OWN slot and is named. This set is the REQUIRED side, so dropping an
+  # unreadable entry would fail OPEN — a clean-looking section that silently covered
+  # fewer repos, with no diff anywhere to record it, replacing a failure mode that at
+  # least needed a human to edit a literal. An extra query is the harmless direction.
+  pr_dirs=(); pr_seen=()
+  for wt in "${BSC_WORKTREES[@]}"; do
+    d="$(basename "$wt")"
     [[ -e "$wt/.git" ]] || continue
+    pr_key="$(git -C "$wt" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$pr_key" ]]; then
+      echo "  ⚠ ${d}: could not read 'git remote get-url origin' — querying it on its own"
+      echo "    rather than de-duplicating it away (an unreadable remote must not silently"
+      echo "    drop a repo from this section)."
+      pr_dirs+=("$wt")
+      continue
+    fi
+    pr_dup=""
+    for pr_k in ${pr_seen[@]+"${pr_seen[@]}"}; do
+      [[ "$pr_k" == "$pr_key" ]] && { pr_dup=1; break; }
+    done
+    [[ -n "$pr_dup" ]] && continue
+    pr_seen+=("$pr_key")
+    pr_dirs+=("$wt")
+  done
+  for wt in ${pr_dirs[@]+"${pr_dirs[@]}"}; do
+    d="$(basename "$wt")"
     ( cd "$wt" 2>/dev/null && gh pr list --state open --limit 10 2>/dev/null \
         | sed "s#^#  ${d}: #" ) || true
   done
