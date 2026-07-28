@@ -45,11 +45,32 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# The canonical tool set: every bin/ entry of the runtime this script itself belongs to,
-# falling back to the known names when run standalone. The LIB is checked as a sourced
-# sibling of whichever kbcard executes.
+# The canonical tool set: every PUBLIC entry of bin/ (`_`-prefixed entries are the shared lib
+# and the python helpers — implementation, not tools, and not on PATH under those names).
+#
+# STATIC ON PURPOSE, and gated rather than derived. This script is standalone by design and
+# runs from PATH, where the runtime's bin/ is not reliably adjacent — under the copies topology
+# the directory beside it is a general-purpose ~/.local/bin, not a toolkit bin/. It ships in the
+# same release as the bin/ it enumerates, so `tests/runtime-check-selftest.sh` asserting the two
+# sets are EQUAL gives every released runtime the same answer a derivation would, with no
+# directory-sniffing heuristic and no second fallback list to rot. A superset probe is also the
+# right shape when this script and the runtime it judges are different versions: the
+# ships-it-but-PATH-lacks-it warning below re-checks `$root/bin/$m` per root, so a name the
+# judged runtime does not ship is never cried wolf over.
+#
+# It had silently under-covered by 3 of 13 — under a comment claiming it was derived from bin/,
+# which it never was (card#5389). This list INCLUDES this script's own name: a stale copy of the
+# checker is the one worth reporting most, and it is resolved through `command -v` like every
+# other tool, so running this file by absolute path from a checkout that is not on PATH does not
+# make it report itself as a second runtime.
+#
+# NOT COVERED, and no wording here can fix it: `_kb-board-lib.sh`'s currency under the COPIES
+# topology. Every lib-sourcing tool loads the lib from beside its own resolved path, but a lib
+# name is not on PATH, so it cannot enter this set and the byte-compare below never sees it — a
+# stale copied lib beside byte-current copied tools reports `ok`. Tracked as card#5414.
 TOOLS=(kbcard next-dl board-snapshot board-card-start board-session-close adopt-to-dl
-       release-pr-body promote-released-cards install-board-hooks agent-board-toolkit-drift-check)
+       release-pr-body promote-released-cards install-board-hooks agent-board-toolkit-drift-check
+       dl-a0-backfill-triaged dl-a1-register-field agent-board-toolkit-runtime-check)
 
 fails=0
 warns=0
