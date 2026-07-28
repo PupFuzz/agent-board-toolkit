@@ -82,7 +82,9 @@ BSC_HOOKS=(post-checkout pre-push)
 # 3 = resolved, but core.hooksPath is inside the tracked work tree (install-board-hooks
 # refuses that target; git still dispatches from it) · 4 = core.hooksPath is SET but EMPTY, so
 # git dispatches NO hooks at all (there is no directory to echo) · 5 = the resolver could not
-# be loaded · 6 = core.hooksPath is set to a value git cannot expand (git fatals at dispatch).
+# be loaded · 6 = core.hooksPath is set to a value git cannot expand (git fatals at dispatch) ·
+# 9 = `installer` view only: install-board-hooks refuses this topology outright, so there is no
+# target directory to name (stdout is EMPTY — see the view's own note below).
 #
 # NEITHER the core.hooksPath READ nor its resolution is re-derived here: both are primitives
 # bin/install-board-hooks already owns and deliberately exposes (`_ibh_read_hooks_path`,
@@ -93,8 +95,8 @@ BSC_HOOKS=(post-checkout pre-push)
 # lets the two drift apart again. They are sourced in a SUBSHELL because install-board-hooks
 # sets -euo pipefail at top level and this ritual deliberately runs without -e.
 # With a second argument of `installer`, it answers a different question: which directory
-# `install-board-hooks` would TARGET for this repo — <root>/.git/hooks, the only place it ever
-# installs (on a topology whose real common dir is elsewhere it now refuses outright, card#5226).
+# `install-board-hooks` would TARGET for this repo — obtained from that tool's own
+# `_ibh_install_dir_source`, which owns the per-topology disposition (install here, or refuse).
 # Same code path, one substituted input — so "can the installer service this checkout?" is
 # answered by comparing the two views, not by pattern-matching path shapes that miss topologies.
 _bsc_hooks_dir() {
@@ -133,12 +135,13 @@ _bsc_hooks_dir() {
     # not <worktree>/.git/hooks. Resolution is the installer's own `_ibh_common_dir` (it also
     # owns the "answered relative to the path the caller typed" rule), never a second copy.
     cdir="$(_ibh_common_dir "$repo")" || cdir="$root/.git"
-    # The `installer` view mirrors _ibh_main's own argument: it targets <root>/.git/hooks and
-    # nothing else — on any topology where the real common dir differs it now REFUSES outright
-    # (card#5226) rather than targeting a path git never reads. Substituting that one input is
-    # still what answers "can the installer service this checkout?", without pattern-matching
-    # path shapes that miss topologies.
-    if [ "$view" = "installer" ]; then cdir="$root/.git"; fi
+    # The `installer` view ASKS the installer where it would put the hook — it does not MODEL it.
+    # It used to substitute <root>/.git here under the claim that was "the only place it ever
+    # installs"; card#5311 made a --separate-git-dir checkout and a submodule install into their
+    # real common dir instead, which turned that model into a false statement and would have made
+    # _bsc_fix_line tell an operator to wire by hand the very repos the installer now fixes. The
+    # disposition has ONE owner (_ibh_install_dir_source) and this is a caller of it — a second
+    # copy is exactly the drift this whole dispatch check exists to catch (canon #5).
     hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
     # Carry a cause out on stdout, exactly as the rc-1 arm does: the contract is "a refusal
     # names why", and it must not depend on WHICH refusal arm the local git version routes to.
@@ -147,6 +150,18 @@ _bsc_hooks_dir() {
       exit 6
     fi
     if [ "$hp_rc" = 0 ]; then hp_set=1; fi
+    # AFTER the hooksPath read, and gated on it being UNSET — mirroring _ibh_main's own gate. A
+    # set core.hooksPath wins on EVERY topology, so the installer does not consult the topology
+    # disposition at all in that case: asking it here regardless made this view report "refused"
+    # for a linked worktree that configures a hooksPath, which the installer installs into
+    # perfectly happily (measured). The two views must diverge exactly where the installer does.
+    if [ "$view" = "installer" ] && [ -z "$hp_set" ]; then
+        # rc 1 = the installer refuses this topology outright (a linked worktree): it targets
+        # NOTHING, so this view must yield EMPTY stdout and a non-zero status rather than name a
+        # directory. _bsc_same_dir then fails, and the caller reaches the main-checkout branch —
+        # which is the correct remedy for precisely that topology.
+        cdir="$(_ibh_install_dir_source "$repo" "$root" "$cdir")" || exit 9
+    fi
     _ibh_hooks_dir "$root" "$hp" "$cdir" "$hp_set"
   )
 }
@@ -444,6 +459,22 @@ _bsc_fix_line() {
   if [[ -n "$main" ]] && _bsc_same_dir "$(_bsc_hooks_dir "$main" installer 2>/dev/null)" "$dir" \
      && "$ibh" --check "$main" >/dev/null 2>&1; then
     printf 'fix: install-board-hooks %s   (this checkout dispatches from that one'"'"'s hook dir)' "$main"
+    return 0
+  fi
+  # The installer REFUSES this topology outright (empty installer view, rc 9): it would target
+  # nothing at all, so "would target <unresolvable>" states something false about it — and that
+  # line was reachable for a linked worktree whose main checkout the branch above could not
+  # confirm. Quote the installer's own refusal instead of inventing a target, the same way the
+  # right-directory-but-refuses branch above does.
+  if [[ -z "$itgt" ]]; then
+    err="$("$ibh" --check "$repo" 2>&1 >/dev/null | head -1)" || true
+    if [[ -d "$dir" && -w "$dir" ]]; then
+      printf 'install-board-hooks refuses this checkout, so it is not the fix: %s — wire it by hand: %s' \
+             "${err##*install-board-hooks: }" "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
+    else
+      printf 'install-board-hooks refuses this checkout (%s), and git dispatches from %s, which is not a writable directory — no remedy applies until that is resolved' \
+             "${err##*install-board-hooks: }" "$dir"
+    fi
     return 0
   fi
   # No invocation can service this checkout: the installer would write where git does not

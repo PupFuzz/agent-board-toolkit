@@ -327,22 +327,32 @@ else
     echo "  skip (git not on PATH)"
 fi
 
-echo "== install-board-hooks — a git common dir that is not <root>/.git is REFUSED, per topology (card#5226) =="
-# Three separated topologies, three DIFFERENT right answers. They are built for real rather than
-# faked, because the discriminator is what git actually reports for each: `--git-common-dir` !=
-# `--git-dir` is true ONLY for the linked worktree (measured on git 2.43 — the other two report
-# them EQUAL), so a check built on that comparison would pass here while missing two of three.
+echo "== install-board-hooks — separated git topologies: worktree REFUSED, the other two INSTALL (card#5226, card#5311) =="
+# Three separated topologies, three DIFFERENT right answers, split by BLAST RADIUS: only the
+# linked worktree shares its hooks dir with checkouts the operator did not name, so only it is
+# refused. They are built for real rather than faked, because the discriminator is what git
+# actually reports for each: `--git-common-dir` != `--git-dir` is true ONLY for the linked
+# worktree (measured on git 2.43 — the other two report them EQUAL), so a check built on that
+# comparison would pass here while missing two of three.
 if command -v git >/dev/null 2>&1; then
     _t="$(mktemp -d)"
     export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
     git init -q "$_t/main"; ( cd "$_t/main" && echo a > a && git add a && git commit -qm a )
     git -C "$_t/main" worktree add -q "$_t/wt" -b wtb
     git init -q --separate-git-dir="$_t/sepgit" "$_t/sep"
+    # The COMMIT is load-bearing, not fixture decoration: `git checkout -b` on an UNBORN head does
+    # not dispatch post-checkout, so the dispatch proof below would be a check that cannot pass
+    # (measured — it failed exactly this way before the commit was added). The submodule fixture
+    # is committed already, by virtue of being a clone.
+    ( cd "$_t/sep" && echo x > x && git add x && git commit -qm x )
     git init -q "$_t/super"
     ( cd "$_t/super" && echo s > s && git add s && git commit -qm s \
       && git -c protocol.file.allow=always submodule add -q "$_t/main" sub && git commit -qm sub ) >/dev/null 2>&1
 
-    # Each topology: non-zero, AND its own words — a generic message would satisfy a bare rc test.
+    _sepgit="$_t/sepgit"
+    _subgit="$_t/super/.git/modules/sub"
+
+    # THE REFUSED ONE: non-zero, AND its own words — a generic message would satisfy a bare rc test.
     _topo() {   # <label> <path> <must-contain> <must-NOT-contain>
         local _rc=0 _o
         _o="$(bash "$IBH" --check "$2" 2>&1)" || _rc=$?
@@ -354,8 +364,95 @@ if command -v git >/dev/null 2>&1; then
             || ok "$1: does NOT emit another topology's wording"
     }
     _topo "linked worktree"  "$_t/wt"       "LINKED WORKTREE"      "SEPARATE git directory"
-    _topo "--separate-git-dir" "$_t/sep"    "SEPARATE git directory" "LINKED WORKTREE"
-    _topo "submodule"        "$_t/super/sub" "is a SUBMODULE of"    "LINKED WORKTREE"
+
+    # ── THE TWO THAT NOW INSTALL (card#5311) ────────────────────────────────────────────────
+    # Asserted on the MESSAGE and on the hook landing where git READS, never on rc: all of these
+    # paths exited 1 before this card, so an rc-only test could not have failed on the old code.
+    _installs() {   # <label> <repo> <expected-common-dir> <must-contain> <must-NOT-contain>
+        local _label="$1" _repo="$2" _cdir="$3" _want="$4" _not="$5" _rc=0 _o _err
+        # (a) DISPATCH PROOF, before installing anything: git itself must run a hook placed in
+        # <cdir>/hooks. Every other assertion in this block rests on that dir being the one git
+        # reads, and an `-L` presence check alone would never establish it.
+        printf '#!/bin/sh\necho fired > %s/DISPATCHED\n' "$_cdir" > "$_cdir/hooks/post-checkout"
+        chmod +x "$_cdir/hooks/post-checkout"
+        git -C "$_repo" checkout -qb "probe-$$" 2>/dev/null
+        [[ -f "$_cdir/DISPATCHED" ]] \
+            && ok "$_label: git DISPATCHES hooks from $_cdir/hooks (proven by running one)" \
+            || bad "$_label: git did not dispatch from $_cdir/hooks — the whole disposition rests on this"
+        rm -f "$_cdir/DISPATCHED" "$_cdir/hooks/post-checkout"
+
+        # (b) --check: rc 0, and stdout EXACTLY the dispatch dir. Captured WITHOUT stderr — the
+        # topology note is deliberately on stderr in both modes because --check's only stdout is
+        # the target dir (a contract board-session-close consumes), and folding 2>&1 in here would
+        # both pollute the equality and hide a regression that moved the note onto stdout.
+        _rc=0; _o="$(bash "$IBH" --check "$_repo" 2>/dev/null)" || _rc=$?
+        [[ "$_rc" -eq 0 && "$_o" == "$_cdir/hooks" ]] \
+            && ok "$_label: --check rc 0, stdout is exactly the dispatch dir" \
+            || bad "$_label: --check must print only $_cdir/hooks (rc=$_rc out=$_o)"
+
+        # (c) the note is on STDERR, names this topology, and not another's.
+        _err="$(bash "$IBH" --check "$_repo" 2>&1 >/dev/null)"
+        printf '%s' "$_err" | grep -q "$_want" \
+            && ok "$_label: stderr note names its own topology ($_want)" \
+            || bad "$_label: wrong/absent stderr note: $_err"
+        printf '%s' "$_err" | grep -q "$_not" \
+            && bad "$_label: note carries another topology's wording ($_not): $_err" \
+            || ok "$_label: does NOT emit another topology's wording"
+
+        # (d) a SUB-DIRECTORY argument prints the SAME canonical dir. git answers the common dir
+        # ABSOLUTE for both these topologies even from a sub-directory (measured, git 2.43.0),
+        # which is why no normalization is needed here — and this pins that measurement.
+        mkdir -p "$_repo/subdir"
+        _o="$(bash "$IBH" --check "$_repo/subdir" 2>/dev/null)"
+        [[ "$_o" == "$_cdir/hooks" ]] \
+            && ok "$_label: sub-directory argument prints the same canonical dir" \
+            || bad "$_label: sub-directory argument printed $_o, wanted $_cdir/hooks"
+
+        # (e) the REAL install lands where git dispatches — both hooks — and writes nothing into
+        # the work tree's own .git (the path the installer used to be hardcoded to).
+        bash "$IBH" "$_repo" >/dev/null 2>&1 \
+            && ok "$_label: install succeeds" || bad "$_label: install failed"
+        local _h
+        for _h in post-checkout pre-push; do
+            [[ -L "$_cdir/hooks/$_h" ]] \
+                && ok "$_label: $_h symlinked into the dispatch dir" \
+                || bad "$_label: $_h is NOT at $_cdir/hooks/$_h"
+        done
+        [[ ! -e "$_repo/.git/hooks/post-checkout" ]] \
+            && ok "$_label: nothing written into the work tree's own .git/hooks" \
+            || bad "$_label: also wrote into $_repo/.git/hooks — the old hardcoded target"
+    }
+    _installs "--separate-git-dir" "$_t/sep"        "$_sepgit" "SEPARATE git directory" "LINKED WORKTREE"
+    _installs "submodule"          "$_t/super/sub"  "$_subgit" "is a SUBMODULE of"      "LINKED WORKTREE"
+
+    # PROVE-IT-CAN-FAIL: with the disposition mutated back to the pre-card behaviour (always
+    # <root>/.git), the assertions above must RED. Without this the block could be passing on a
+    # target that happens to be right for another reason.
+    # The mutant must live in a REAL toolkit LAYOUT: the installer resolves its hook sources at
+    # <dirname $0>/../hooks and exits 1 before reading a single argument if they are absent. A
+    # bare copy in a scratch dir therefore dies at "hook source missing" and never reaches the
+    # code under mutation — a control that silently never ran. (It did, on the first pass here.)
+    _mut="$_t/mutant"; mkdir -p "$_mut/bin"
+    ln -s "$(cd "$(dirname "$IBH")/.." && pwd)/hooks" "$_mut/hooks"
+    sed 's|^    if \[ "\$cdir" -ef "\$root/\.git" \]; then printf .*$|    printf "%s" "$root/.git"; return 0|' \
+        "$IBH" > "$_mut/bin/install-board-hooks"
+    if cmp -s "$IBH" "$_mut/bin/install-board-hooks"; then
+        bad "prove-it-can-fail: the mutation did not apply — the control never ran"
+    else
+        # TWO facts, both required. A bare "stdout != the right dir" is satisfied by the mutant
+        # dying for an unrelated reason, which is exactly how an earlier version of this control
+        # passed while never reaching the mutated code at all.
+        #   (a) WITNESS — the mutated value reached the downstream code. <sep>/.git is a FILE, so
+        #       the mutant cannot create a hooks dir under it and says so, naming the mutated
+        #       target. That diagnostic is producible ONLY by the mutated disposition.
+        #   (b) the --check assertion above genuinely reds on this mutant.
+        _rc=0; _o="$(bash "$_mut/bin/install-board-hooks" --check "$_t/sep" 2>"$_t/mut.err")" || _rc=$?
+        if grep -q "$_t/sep/\.git/hooks" "$_t/mut.err" && [[ "$_o" != "$_sepgit/hooks" ]]; then
+            ok "prove-it-can-fail: the mutant targeted $_t/sep/.git/hooks (witnessed in its own diagnostic) and the assertion reds"
+        else
+            bad "prove-it-can-fail: control did not run — mutant stdout='$_o' rc=$_rc stderr='$(cat "$_t/mut.err")'"
+        fi
+    fi
 
     # Only the worktree has another checkout to redirect to; the message must name it, since a
     # classification without the command to run is what this refusal replaced.

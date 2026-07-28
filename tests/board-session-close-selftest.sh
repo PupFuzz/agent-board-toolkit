@@ -795,21 +795,25 @@ chmod +x "$r/.git/hooks/post-checkout"
 eq "an interpreter flag argument (-e) is genuinely runnable" "OK" "$(state "$r/.git/hooks")"
 
 # --- the remediation line must name a command that actually works -----------
-# A `.git` FILE (linked worktree, --separate-git-dir, submodule) makes install-board-hooks
-# target an un-creatable <repo>/.git/hooks and exit 1. Printing it anyway is worse than
-# printing nothing, so the line is derived from the topology, not assumed.
+# The line is derived from the INSTALLER's own disposition, never assumed from the path shape.
+# Until card#5311 a `--separate-git-dir` checkout was refused, so the right answer here was "it
+# cannot fix this, wire it by hand". That topology now installs, so the right answer is the
+# installer itself — and these assertions moved with the behaviour rather than being relaxed:
+# each still pins an exact string, and the by-hand fallback is now asserted ABSENT.
 r="$H/fixline-plain"; mkrepo "$r"
 report "$r"
 eq "plain repo: names install-board-hooks on the repo itself" "true" "$(saw "fix: install-board-hooks $r")"
 git init -q --separate-git-dir="$H/sgd-gitdir" "$H/sgd" 2>/dev/null
 eq "separate-git-dir: .git really is a file" "true" "$([ -f "$H/sgd/.git" ] && echo true || echo false)"
 eq "separate-git-dir: dispatch dir is the EXTERNAL git dir" "$H/sgd-gitdir/hooks" "$(_bsc_hooks_dir "$H/sgd")"
+eq "separate-git-dir: the INSTALLER view names that same dir (card#5311)" "$H/sgd-gitdir/hooks" \
+   "$(_bsc_hooks_dir "$H/sgd" installer)"
 report "$H/sgd"
-eq "separate-git-dir: does NOT print an install command that would exit 1" "false" \
-   "$(saw "fix: install-board-hooks")"
-eq "separate-git-dir: says it cannot fix this, naming BOTH directories" "true" \
-   "$(saw "would target $H/sgd/.git/hooks, but git dispatches from $H/sgd-gitdir/hooks")"
-eq "separate-git-dir: the manual wiring names the real dispatch dir" "true" \
+eq "separate-git-dir: the installer IS the fix, named on this repo" "true" \
+   "$(saw "fix: install-board-hooks $H/sgd")"
+eq "separate-git-dir: no longer claims it cannot fix this" "false" \
+   "$(saw "cannot fix this")"
+eq "separate-git-dir: does NOT fall back to manual wiring" "false" \
    "$(saw "ln -s <toolkit>/hooks/post-checkout $H/sgd-gitdir/hooks/")"
 
 # --- EXECUTABLE but not EXEC-ABLE: the bit is not the ability (round-3 MAJOR 2) ---
@@ -989,8 +993,15 @@ eq "--check on a fresh repo installs NOTHING" "false" \
 # Hardcoding post-checkout told the operator to re-wire a hook that was already fine, never
 # named the broken one, and (its target existing) named a command that exits 1.
 r="$H/only-prepush"; mkrepo "$r"; wire "$r/.git/hooks" "$TK"; rm -f "$r/.git/hooks/pre-push"
-git init -q --separate-git-dir="$H/opp-gd" "$H/opp" 2>/dev/null   # a topology needing manual wiring
-ln -sf "$TK/hooks/post-checkout" "$H/opp-gd/hooks/post-checkout"
+# A topology needing MANUAL wiring. It used to be a --separate-git-dir checkout; card#5311 made
+# that install, so the fixture moved to one the installer still cannot service: a linked worktree
+# (refused on blast radius) whose MAIN checkout is also unserviceable — its post-checkout is a
+# COPY, which reaches board-card-start (so that hook is healthy and must not be named) while the
+# installer's refuse-to-clobber guard stops it there too. Only pre-push is broken.
+mkrepo "$H/opp-main"; ( cd "$H/opp-main" && echo a > a && git add a && git commit -qm a ) >/dev/null 2>&1
+cp "$TK/hooks/post-checkout" "$H/opp-main/.git/hooks/post-checkout"
+chmod +x "$H/opp-main/.git/hooks/post-checkout"
+git -C "$H/opp-main" worktree add -q "$H/opp" -b oppb >/dev/null 2>&1
 report "$H/opp"
 eq "only pre-push broken: the manual wiring names pre-push"      "true" "$(saw "hooks/pre-push")"
 eq "only pre-push broken: it does NOT name the healthy post-checkout" "false" \
@@ -1121,6 +1132,64 @@ report "$H/healthy" "$H/dangling" "$H/nohooks" "$H/hookspath" "$H/does-not-exist
 eq "multi-repo: findings accumulate across repos" "3" "$RN"
 eq "multi-repo: summary states it is report-only" "true" "$(saw "REPORT-ONLY")"
 eq "multi-repo: summary reports the inspected/skipped split" "true" "$(saw "4 inspected / 1 skipped")"
+
+# --- the remedy line tracks the INSTALLER's disposition, never a model of it (card#5311) ----
+# This check used to substitute <root>/.git for the installer view under the claim that was "the
+# only place it ever installs". Once a --separate-git-dir checkout and a submodule began
+# installing into their real common dir, that model would have told an operator to wire by hand
+# the very repos the installer now fixes — and, for a linked worktree, would have named a target
+# the installer has refused outright since card#5226. Both are asserted here on the MESSAGE.
+TOPO="$TMP/topo"; mkdir -p "$TOPO"
+git init -q "$TOPO/main"; ( cd "$TOPO/main" && echo a > a && git add a && git commit -qm a ) >/dev/null 2>&1
+git -C "$TOPO/main" worktree add -q "$TOPO/wt" -b wtb >/dev/null 2>&1
+git init -q --separate-git-dir="$TOPO/sepgit" "$TOPO/sep" >/dev/null 2>&1
+( cd "$TOPO/sep" && echo x > x && git add x && git commit -qm x ) >/dev/null 2>&1
+
+# The sep-git-dir repo's hook is BROKEN (absent from the dir git dispatches from), which is the
+# state the remedy line answers.
+_fix() { bash -c 'source "$1" >/dev/null 2>&1; d="$(_bsc_hooks_dir "$2" 2>/dev/null)"; _bsc_fix_line "$2" "$d" post-checkout' _ "$BIN" "$1"; }
+
+_o="$(_fix "$TOPO/sep")"
+eq "sep-git-dir: the remedy is the installer itself, run against this repo" "true" \
+   "$(case "$_o" in "fix: install-board-hooks $TOPO/sep"*) echo true ;; *) echo false ;; esac)"
+eq "sep-git-dir: does NOT tell the operator to wire it by hand" "false" \
+   "$(case "$_o" in *"by hand"*) echo true ;; *) echo false ;; esac)"
+
+# The installer view must be EMPTY + non-zero for the topology the installer refuses, so
+# _bsc_same_dir fails and the main-checkout branch (the correct remedy) is reached.
+_rc=0; _iv="$(bash -c 'source "$1" >/dev/null 2>&1; _bsc_hooks_dir "$2" installer' _ "$BIN" "$TOPO/wt" 2>/dev/null)" || _rc=$?
+eq "linked worktree: installer view is rc 9 (refused outright)" "9" "$_rc"
+eq "linked worktree: installer view names NO target directory"  ""  "$_iv"
+_o="$(_fix "$TOPO/wt")"
+eq "linked worktree: remedy redirects to the main checkout" "true" \
+   "$(case "$_o" in *"install-board-hooks $TOPO/main"*) echo true ;; *) echo false ;; esac)"
+eq "linked worktree: never claims the installer 'would target' a dir it refuses" "false" \
+   "$(case "$_o" in *"would target"*) echo true ;; *) echo false ;; esac)"
+
+# …and when the main checkout is ALSO unserviceable, the fall-through must quote the installer's
+# own refusal rather than invent a target. Without this the rc-9 tail is never exercised.
+printf '#!/bin/sh\n# a hook the operator wrote\n' > "$TOPO/main/.git/hooks/post-checkout"
+chmod +x "$TOPO/main/.git/hooks/post-checkout"
+_o="$(_fix "$TOPO/wt")"
+eq "worktree + unserviceable main: quotes the installer's refusal" "true" \
+   "$(case "$_o" in *"refuses this checkout"*) echo true ;; *) echo false ;; esac)"
+eq "worktree + unserviceable main: invents no target"             "false" \
+   "$(case "$_o" in *"would target"*) echo true ;; *) echo false ;; esac)"
+
+# THE DISPOSITION IS CONSULTED ONLY WHILE core.hooksPath IS UNSET — the installer's own gate. A
+# set hooksPath wins on every topology, so a worktree that configures one INSTALLS, and this view
+# must say so. Asking the topology question before reading hooksPath made this view answer
+# "refused" for a checkout the installer services (caught in build; the two views must diverge
+# exactly where the installer does, and nowhere else).
+mkdir -p "$TOPO/outhooks"; git -C "$TOPO/wt" config core.hooksPath "$TOPO/outhooks"
+eq "worktree + hooksPath SET: installer view agrees with the installer, no refusal" \
+   "$TOPO/outhooks" "$(bash -c 'source "$1" >/dev/null 2>&1; _bsc_hooks_dir "$2" installer' _ "$BIN" "$TOPO/wt" 2>/dev/null)"
+_o="$(_fix "$TOPO/wt")"
+eq "worktree + hooksPath SET: the remedy is the installer on THIS checkout" "true" \
+   "$(case "$_o" in "fix: install-board-hooks $TOPO/wt"*) echo true ;; *) echo false ;; esac)"
+git -C "$TOPO/wt" config --unset core.hooksPath
+_rc=0; bash -c 'source "$1" >/dev/null 2>&1; _bsc_hooks_dir "$2" installer' _ "$BIN" "$TOPO/wt" >/dev/null 2>&1 || _rc=$?
+eq "…and unsetting it restores the refusal (the gate, not a one-way door)" "9" "$_rc"
 fi
 
 # ---------------------------------------------------------------------------
