@@ -63,6 +63,7 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
 - **Consume from GitHub Actions CI:** the [`promote/`](promote/action.yml) composite action, SHA-pinned — INSTALL.md §6a (preferred over vendoring for Actions consumers; dependabot bumps the pin)
 - **Upgrade an existing install:** [`docs/UPGRADE.md`](docs/UPGRADE.md)
 - **`next-dl` minting wrong-range numbers?** [`docs/DL-COUNTER-RECOVERY.md`](docs/DL-COUNTER-RECOVERY.md) — recover a stranded per-board DL allocation counter over the API (no server shell)
+- **Changing something shared across these tools?** [`docs/CONSOLIDATION-PLAN.md`](docs/CONSOLIDATION-PLAN.md) — the consolidation program's durable record: which invariants look alike but need opposite answers, which consolidations were rejected and why, and the rules a further one is bound by
 
 ## Versioning
 
