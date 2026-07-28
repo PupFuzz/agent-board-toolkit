@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# board-session-close-selftest.sh — network-free tests for the inverse-drift leg's
-# adoption of the shipped kanban-reconcile.py --detect hook (card#4751).
+# board-session-close-selftest.sh — network-free tests for the board-session-close ritual.
+# It began as coverage of the inverse-drift leg's adoption of the shipped
+# kanban-reconcile.py --detect hook (card#4751) and has grown a leg at a time since.
 #
-# Four surfaces are covered:
+# Five surfaces are covered:
 #   1. resolve_reconcile_hook — the version-UNPINNED, fail-loud path resolver. It
 #      must honor an explicit override, then derive the session-loaded plugin from
 #      $PATH, then the marketplace clone, then the newest cached version (sort -V),
@@ -18,6 +19,10 @@
 #   4. the Open-PRs leg (card#5358) — which repos it queries, that each queried repo's output
 #      is labelled with that repo's name, that a repo with no local checkout is skipped, and
 #      that a failing `gh` is swallowed without stopping the repos after it.
+#   5. the branch-reality leg (card#5370) — the OTHER BSC_WORKTREES consumer: that every present
+#      checkout gets one line under its own name in list order, that the dirty suffix tracks the
+#      porcelain output in both directions, that an unresolvable branch renders `?` whether git
+#      answered empty or refused, and that a checkout-less entry is skipped rather than queried.
 #
 # The bin is main-guarded, so sourcing it defines the functions and renders nothing.
 # resolve_reconcile_hook is probed in a fresh `bash -c` per case (hermetic HOME/PATH/
@@ -270,6 +275,131 @@ eq "the failing repo emits no labelled output" "false" \
    "$(has '  kanbanboard: ' "$(cat "$OUTF")")"
 eq "gh's stderr is suppressed, so its failure never reaches the ritual's stderr" "false" \
    "$(has 'gh: boom' "$(cat "$ERRF")")"
+
+# ---------------------------------------------------------------------------
+# The '── Local branch reality ──' leg (card#5370) — main's FIRST loop, and the OTHER
+# consumer of BSC_WORKTREES (so card#5227's dedupe-on-remote-URL lands on this leg's input
+# too, and the Open-PRs block above pinned only the PR side).
+#
+# Nothing asserted on it before: every case above runs main with a HOME holding no
+# checkouts, so `[[ -e $wt/.git ]]` skips every entry and the silent `exit 0` git stub is
+# never executed — from there, a leg that works and a leg that renders nothing are
+# indistinguishable.
+#
+# The CHECKOUT TREE is reused — $PRHOME already creates all five BSC_WORKTREES entries, and
+# a second one would be a second thing to keep in step with that list. The SHIM is its own:
+# $PRSHIM/git is a silent `exit 0` ON PURPOSE, and a git that ANSWERS would become an
+# unobserved live input to the cases above, which were written against silence.
+# ---------------------------------------------------------------------------
+echo "== branch-reality leg — fixture =="
+BRSHIM="$TMP/brshim"; mkdir -p "$BRSHIM"
+BR_LOG="$TMP/br-git.log"
+# Per-repo answers, so ONE run carries every rendering this leg can produce: a clean repo on
+# a branch, a dirty one, and the two distinct ways `branch=?` is reached — git answering
+# EMPTY (detached HEAD) and git REFUSING. Every other subcommand stays the silent `exit 0`
+# the hook-dispatch leg in the same invocation was written against.
+cat > "$BRSHIM/git" <<'EOF'
+#!/bin/sh
+# Records "<repo>|<argv after -C>" so the SKIP case can assert git was never ASKED about a
+# checkout-less entry — a stronger claim than "nothing was printed for it".
+_d=''
+[ "$1" = '-C' ] && { _d="$(basename "$2")"; shift 2; }
+printf '%s|%s\n' "$_d" "$*" >> "$BR_LOG"
+case "$1 ${2:-}" in
+  'branch --show-current')
+    case "$_d" in
+      agent-webhook-bridge-dev)  echo dev ;;
+      agent-webhook-bridge-prod) echo release/v1.2.3 ;;
+      kanbanboard)               echo main ;;
+      agent-board-toolkit)       : ;;          # empty stdout at rc 0 — detached HEAD
+      agent-board-toolkit-prod)  exit 128 ;;   # git refused this checkout outright
+    esac ;;
+  'status --porcelain')
+    case "$_d" in
+      agent-webhook-bridge-prod) echo ' M bin/board-session-close' ;;
+    esac ;;
+esac
+exit 0
+EOF
+chmod +x "$BRSHIM/git"
+# gh is stubbed silent as well: the Open-PRs leg runs in these same invocations, and a real
+# gh on $UB would turn this block into a network test the moment it is found.
+printf '#!/bin/sh\nexit 0\n' > "$BRSHIM/gh"; chmod +x "$BRSHIM/gh"
+
+run_br() {
+    : > "$BR_LOG"
+    HOME="$PRHOME" PATH="$BRSHIM:$UB" KANBAN_RECONCILE_HOOK="$goodhook" \
+        BR_LOG="$BR_LOG" bash "$BIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+# The leg's own section, bounded by its header and the blank line that closes it — NOT a
+# grep for 'branch=', under which a mutated label would read as an empty section rather
+# than a changed one, and the ORDER and COUNT of the lines would go unpinned.
+brblock() { sed -n '/── Local branch reality/,/^$/p' "$OUTF" | sed '1d;$d'; }
+# Only this leg issues these two subcommands; the hook-dispatch leg's rev-parse/config calls
+# share the log and are not this block's subject.
+brcalls() { grep -E '\|(branch --show-current|status --porcelain)$' "$BR_LOG" || true; }
+
+echo "== branch-reality leg — one line per PRESENT checkout, in BSC_WORKTREES order =="
+rc="$(run_br)"
+eq "the branch-reality run exits 0" "0" "$rc"
+eq "every present checkout gets exactly one line, in list order, under its OWN name" \
+"• agent-webhook-bridge-dev: branch=dev
+• agent-webhook-bridge-prod: branch=release/v1.2.3 (uncommitted changes)
+• kanbanboard: branch=main
+• agent-board-toolkit: branch=?
+• agent-board-toolkit-prod: branch=?" "$(brblock)"
+eq "git is asked for BOTH the branch and the dirty state of every one of the five" \
+"agent-webhook-bridge-dev|branch --show-current
+agent-webhook-bridge-dev|status --porcelain
+agent-webhook-bridge-prod|branch --show-current
+agent-webhook-bridge-prod|status --porcelain
+kanbanboard|branch --show-current
+kanbanboard|status --porcelain
+agent-board-toolkit|branch --show-current
+agent-board-toolkit|status --porcelain
+agent-board-toolkit-prod|branch --show-current
+agent-board-toolkit-prod|status --porcelain" "$(brcalls)"
+
+echo "== branch-reality leg — the dirty suffix, and its ABSENCE on a clean tree =="
+eq "a tree with porcelain output carries the ' (uncommitted changes)' suffix" "true" \
+   "$(has '• agent-webhook-bridge-prod: branch=release/v1.2.3 (uncommitted changes)' "$(brblock)")"
+eq "witness: the CLEAN repo's line is rendered in that same run" "true" \
+   "$(has '• agent-webhook-bridge-dev: branch=dev' "$(brblock)")"
+eq "…and it does NOT carry the suffix — the suffix is keyed on the porcelain output" "false" \
+   "$(has '• agent-webhook-bridge-dev: branch=dev (uncommitted changes)' "$(brblock)")"
+
+echo "== branch-reality leg — an unresolvable branch renders '?', not an empty value =="
+# Witnessed against the stub ITSELF, so 'the fallback fired' is distinguishable from 'the
+# stub never ran' — the failure mode this whole block exists to close.
+brwit="$(BR_LOG=/dev/null "$BRSHIM/git" -C "$PRHOME/agent-board-toolkit" branch --show-current)"; brwrc=$?
+eq "witness: the stub answers EMPTY at rc 0 for the detached-HEAD repo" "0|" "$brwrc|$brwit"
+brwit="$(BR_LOG=/dev/null "$BRSHIM/git" -C "$PRHOME/agent-board-toolkit-prod" branch --show-current)"; brwrc=$?
+eq "witness: …and REFUSES at rc 128 for the other one" "128|" "$brwrc|$brwit"
+eq "an EMPTY branch answer renders 'branch=?'" "true" \
+   "$(has '• agent-board-toolkit: branch=?' "$(brblock)")"
+eq "a REFUSED branch query renders 'branch=?' as well" "true" \
+   "$(has '• agent-board-toolkit-prod: branch=?' "$(brblock)")"
+
+echo "== branch-reality leg — a checkout-less entry is SKIPPED, not rendered as unknown =="
+mv "$PRHOME/kanbanboard/.git" "$PRHOME/kanbanboard/.git-off"
+rc="$(run_br)"
+eq "a missing checkout leaves the branch-reality run's exit code alone" "0" "$rc"
+eq "witness: that entry really has no checkout in this run" "false" \
+   "$([[ -e "$PRHOME/kanbanboard/.git" ]] && echo true || echo false)"
+eq "witness: …while the entries around it still do" "true" \
+   "$([[ -e "$PRHOME/agent-board-toolkit/.git" ]] && echo true || echo false)"
+eq "the checkout-less entry gets NO line — not even a 'branch=?' one" "false" \
+   "$(has '• kanbanboard: ' "$(brblock)")"
+eq "…and git is never asked about it, while the other four still are" \
+"agent-webhook-bridge-dev|branch --show-current
+agent-webhook-bridge-dev|status --porcelain
+agent-webhook-bridge-prod|branch --show-current
+agent-webhook-bridge-prod|status --porcelain
+agent-board-toolkit|branch --show-current
+agent-board-toolkit|status --porcelain
+agent-board-toolkit-prod|branch --show-current
+agent-board-toolkit-prod|status --porcelain" "$(brcalls)"
+mv "$PRHOME/kanbanboard/.git-off" "$PRHOME/kanbanboard/.git"
 
 # ---------------------------------------------------------------------------
 # The git-hook DISPATCH check (card#5200). Real fixture repos (`git init` in a temp dir),
@@ -812,7 +942,7 @@ eq "--check AFTER the repo: still wrote NOTHING" "false" \
    "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
 _rc=0; bash "$IBH2" "$H/argpos" extra-arg >/dev/null 2>&1 || _rc=$?
 eq "an extra positional is rejected (rc 2), not ignored" "2" "$_rc"
-eq "…and it installed nothing"                 "false" \
+eq "…and the extra-positional refusal installed nothing" "false" \
    "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
 _rc=0; bash "$IBH2" --bogus "$H/argpos" >/dev/null 2>&1 || _rc=$?
 eq "an unknown option is rejected (rc 2)"      "2" "$_rc"
@@ -826,7 +956,7 @@ eq "…and says the argument was empty"  "true" \
    "$(case "$_o" in *"is empty"*) echo true ;; *) echo false ;; esac)"
 _rc=0; _o="$(bash "$IBH2" "" "$H/argpos" 2>&1)" || _rc=$?
 eq "an empty positional does not let the NEXT one become the repo (rc 2)" "2" "$_rc"
-eq "…and it installed nothing"                 "false" \
+eq "…and the empty-positional refusal installed nothing" "false" \
    "$([ -e "$H/argpos/.git/hooks/post-checkout" ] && echo true || echo false)"
 _rc=0; _o="$(bash "$IBH2" --check "" "$H/argpos" 2>&1)" || _rc=$?
 eq "…the same with --check in front (rc 2)"    "2" "$_rc"
