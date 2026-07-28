@@ -340,7 +340,7 @@ _ibh_main() {
             {
                 if [ -n "$super" ]; then
                     echo "install-board-hooks: $root is a SUBMODULE of $super — its hooks live outside its own work tree,"
-                    echo "  at $hooks_src/hooks, which is where git dispatches them from and where these hooks are being installed."
+                    echo "  at $hooks_src/hooks. That is where git dispatches them from, and it is the install target."
                     echo "  This wires THIS submodule only; the superproject's own hooks are a different repository's and are untouched."
                 else
                     # Deliberately does NOT assert "`.git` is a file pointing at it": that is true
@@ -351,7 +351,7 @@ _ibh_main() {
                     # dispatches from. This checkout is that git directory's only work tree, which
                     # is what makes installing here safe.
                     echo "install-board-hooks: $root has a SEPARATE git directory, at $hooks_src."
-                    echo "  git dispatches this repository's hooks from $hooks_src/hooks, which is where these hooks are being installed."
+                    echo "  git dispatches this repository's hooks from $hooks_src/hooks, and that is the install target."
                 fi
             } >&2
         fi

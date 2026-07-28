@@ -480,6 +480,13 @@ _bsc_fix_line() {
   # No invocation can service this checkout: the installer would write where git does not
   # dispatch from. Name both directories, assert no cause, and only offer the manual symlink if
   # the dispatch dir could actually take one.
+  # REACHABILITY, stated honestly rather than assumed: since card#5311 the two views are computed
+  # from the same code and differ ONLY where the installer refuses — which the `-z "$itgt"` branch
+  # above now takes. No topology this suite can construct reaches the lines below; the fixture
+  # that used to (a --separate-git-dir checkout) is now serviced by the installer. It is kept as a
+  # fail-safe tail rather than deleted, because "the views can never disagree otherwise" is an
+  # argument, not a measurement, and inventing a remedy would be the worse failure if it is wrong.
+  # `${itgt:-<unresolvable>}` is retained for the same reason and is not expected to render.
   if [[ -d "$dir" && -w "$dir" ]]; then
     printf 'install-board-hooks would target %s, but git dispatches from %s, so it cannot fix this. Wire it by hand: %s' \
            "${itgt:-<unresolvable>}" "$dir" "$(_bsc_manual_wiring "$dir" "${hooks[@]}")"
