@@ -19,6 +19,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `bin/adopt-to-dl` | **pull-into-build adoption seam:** stamp an existing plain card with `dl_number` + a source-qualified placeholder `pr_url` in one atomic write (via `next-dl` + `kbcard patch`), then fail-loud-verify by `by-ref?system=dl&ref=N&source=<repo>`. Refuses to re-mint over an already-adopted card (`--dl N` re-stamps idempotently for a crash-retry) |
 | `bin/install-board-hooks` | install the `post-checkout` (card auto-move on branch checkout) + `pre-push` (fail-soft branch-name advisory) hooks into a repo |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
+| `bin/agent-board-toolkit-runtime-check` | what `agent-board-toolkit-drift-check` is for a vendored copy, but for the **`PATH` install itself**: resolves each on-PATH tool through its symlink chain to the runtime that actually executes, and fails loud on a stale pin, stale copies, or a mixed-runtime split (`board-snapshot` runs it quietly at SessionStart) |
 | `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
 | `bin/dl-a0-backfill-triaged` | **DL-board setup:** backfill the `triaged` tag onto pre-existing `id:*-pr-*` cards (dry-run default; `--apply` / `--remove`), so untriaged-discovery doesn't read the legacy corpus as untriaged |
 

@@ -44,7 +44,9 @@ Full step-by-step, troubleshooting, and the optional "consume a tool from a prod
 
 ## What you get (`bin/`)
 
-`kbcard` (board CRUD CLI) · `promote-released-cards` · `release-pr-body` · `board-snapshot` · `board-transition-sync` · `board-session-close` · `next-dl` · `agent-board-toolkit-drift-check`. See [`README.md`](README.md) for the one-line role of each.
+Tools that do three things: **drive cards on the board** (the CRUD CLI, the session start/close reports, DL minting + card adoption, and the git hooks that move a card when work begins), **cut and promote releases**, and **keep the install itself honest** (a currency check for a repo's vendored copy, and one for the `PATH` install).
+
+**[`README.md`](README.md#whats-here) is the tool list** — one row per tool with its one-line role. It is the only list; this page deliberately keeps no second copy to drift against it.
 
 ## Principles (so you adopt it the way it's meant to work)
 
