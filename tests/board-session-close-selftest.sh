@@ -3,7 +3,7 @@
 # It began as coverage of the inverse-drift leg's adoption of the shipped
 # kanban-reconcile.py --detect hook (card#4751) and has grown a leg at a time since.
 #
-# Five surfaces are covered:
+# Six surfaces are covered:
 #   1. resolve_reconcile_hook — the version-UNPINNED, fail-loud path resolver. It
 #      must honor an explicit override, then derive the session-loaded plugin from
 #      $PATH, then the marketplace clone, then the newest cached version (sort -V),
@@ -23,6 +23,11 @@
 #      checkout gets one line under its own name in list order, that the dirty suffix tracks the
 #      porcelain output in both directions, that an unresolvable branch renders `?` whether git
 #      answered empty or refused, and that a checkout-less entry is skipped rather than queried.
+#   6. the archive-eligible DELEGATION (card#5371) — the sibling `_kbc-archive-eligible.py` leg,
+#      whose rc contract INVERTS surface 2's: a missing sibling and a non-zero helper each WARN on
+#      stderr and leave the ritual's exit code alone, where the reconcile hook propagates. Run
+#      against a COPY of the bin with a FAKE sibling, since the helper is resolved by path beside
+#      the bin with no env override.
 #
 # The bin is main-guarded, so sourcing it defines the functions and renders nothing.
 # resolve_reconcile_hook is probed in a fresh `bash -c` per case (hermetic HOME/PATH/
@@ -1191,6 +1196,100 @@ git -C "$TOPO/wt" config --unset core.hooksPath
 _rc=0; bash -c 'source "$1" >/dev/null 2>&1; _bsc_hooks_dir "$2" installer' _ "$BIN" "$TOPO/wt" >/dev/null 2>&1 || _rc=$?
 eq "…and unsetting it restores the refusal (the gate, not a one-way door)" "9" "$_rc"
 fi
+
+# ---------------------------------------------------------------------------
+# The '── Archive-eligible done cards ──' leg (card#5371) — main's SECOND delegation, to
+# the `_kbc-archive-eligible.py` sibling, and the one whose rc contract INVERTS the
+# inverse-drift leg's: a failing archive helper WARNS and leaves the ritual's exit code
+# alone, where a failing reconcile hook PROPAGATES. Nothing asserted that difference
+# before, so the two legs were free to converge on either answer with a green suite.
+#
+# The helper is resolved as a SIBLING OF THE BIN (`dirname $(readlink -f $BASH_SOURCE)`),
+# never from $HOME or $PATH — there is no env override pointing it elsewhere. So these
+# cases run a COPY of the bin from a scratch dir (the $H/lonely pattern) with a FAKE
+# sibling beside it: that copy is the only way to reach the missing-sibling arm at all,
+# and it turns the delegate's rc/stdout/stderr into an INPUT instead of an observation.
+#
+# The REAL helper is never executed here. The main-delegation cases far above DO execute
+# it — on a scratch HOME it finds no token and exits non-zero — so they have been
+# traversing this leg's failure arm all along with nothing asserting on it, which is
+# exactly the hole this block closes.
+# ---------------------------------------------------------------------------
+echo "== Archive-eligible leg — fixture =="
+AEDIR="$TMP/ae/bin"; mkdir -p "$AEDIR"
+cp "$BIN" "$AEDIR/board-session-close"
+AEBIN="$AEDIR/board-session-close"
+AEHELPER="$AEDIR/_kbc-archive-eligible.py"
+
+# run_ae <fake-reconcile-hook> — run the COPIED bin; echo rc, leave out/err in $OUTF/$ERRF.
+run_ae() {
+    HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
+        bash "$AEBIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+
+echo "== Archive-eligible leg — the fixture's rc channel is LIVE (witness for the claims below) =="
+# Every rc claim below is "a failing archive helper does NOT change the ritual's exit code" —
+# an ABSENCE claim, and worthless if this fixture cannot produce a non-zero rc at all. Same
+# copied bin, same fake sibling, a FAILING reconcile hook ⇒ rc 2 must be observed here first.
+printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: helper ran")' > "$AEHELPER"
+rc="$(run_ae "$badhook")"
+eq "a failing reconcile hook still exits 2 THROUGH the copied bin (rc channel is live)" "2" "$rc"
+
+echo "== Archive-eligible leg — a MISSING sibling warns and does NOT block the close =="
+rm -f "$AEHELPER"
+rc="$(run_ae "$goodhook")"
+eq "missing sibling: the ritual still exits 0 (advisory, not blocking)" "0" "$rc"
+eq "…stderr names the missing sibling" \
+   "true" "$(has '_kbc-archive-eligible.py sibling not found' "$(cat "$ERRF")")"
+eq "…and says the surfacing DID NOT RUN, so an absent leg is never read as 'nothing to archive'" \
+   "true" "$(has 'archive-eligible surfacing DID NOT RUN' "$(cat "$ERRF")")"
+eq "…naming the path it looked for, so the fix is actionable" \
+   "true" "$(has "$AEHELPER" "$(cat "$ERRF")")"
+
+echo "== Archive-eligible leg — a non-zero helper WARNS but does not fail the ritual =="
+# The deliberate contrast with the inverse-drift leg, which propagates. Both answers are
+# defensible; the point is that the difference is a decision, and nothing pinned it.
+printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
+              'print("archive-eligible: boom", file=sys.stderr)' 'sys.exit(3)' > "$AEHELPER"
+rc="$(run_ae "$goodhook")"
+eq "helper rc 3 does NOT become the ritual's exit code (inverse-drift's rc 2 above DOES)" "0" "$rc"
+# The head is pinned WHOLE — not just `exited 3` — so that the absence assertion at the end of
+# this block ('_kbc-archive-eligible.py exited') is a strict PREFIX of a string observed present
+# here. A witness that merely overlaps the absence target leaves the absence able to pass
+# vacuously after a reword, which is the failure mode the witness exists to rule out.
+eq "…stderr names the helper AND its exit status" \
+   "true" "$(has '_kbc-archive-eligible.py exited 3' "$(cat "$ERRF")")"
+eq "…and flags the surfacing as INCOMPLETE, so degraded coverage is not read as clean" \
+   "true" "$(has 'archive-eligible surfacing may be' "$(cat "$ERRF")")"
+# The INCOMPLETE token itself sits on the continuation line, so the assertion above stops one
+# word short of the property its label claims; this pins the rest of it. The reconcile leg's
+# near-identical warning splits the two across a newline, so this needle matches only here.
+eq "…the INCOMPLETE token itself, with the advisory framing that keeps it non-blocking" \
+   "true" "$(has 'INCOMPLETE (config/API error above); it is advisory and does not block close.' "$(cat "$ERRF")")"
+
+echo "== Archive-eligible leg — the helper's output is INDENTED into the report =="
+printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
+              'print("SYNTHETIC board 5: 7 done card(s), 2 eligible")' \
+              'print("SYNTHETIC note on stderr", file=sys.stderr)' > "$AEHELPER"
+rc="$(run_ae "$goodhook")"
+eq "a clean helper leaves the ritual at 0" "0" "$rc"
+eq "the section header renders" "true" "$(has '── Archive-eligible done cards' "$(cat "$OUTF")")"
+eq "the helper's stdout is indented by exactly two spaces (line-exact)" "true" \
+   "$(grep -qxF '  SYNTHETIC board 5: 7 done card(s), 2 eligible' "$OUTF" && echo true || echo false)"
+eq "…and the UN-indented form does not appear (the indent is what is asserted)" "false" \
+   "$(grep -qxF 'SYNTHETIC board 5: 7 done card(s), 2 eligible' "$OUTF" && echo true || echo false)"
+# The delegate's stderr is folded into its captured stdout (`2>&1`), so it lands INDENTED in
+# the report rather than on the ritual's stderr — where it would read as a ritual-level ⚠.
+eq "the helper's STDERR is folded into the report, indented the same way" "true" \
+   "$(grep -qxF '  SYNTHETIC note on stderr' "$OUTF" && echo true || echo false)"
+eq "…and does NOT leak to the ritual's own stderr" \
+   "false" "$(has 'SYNTHETIC note on stderr' "$(cat "$ERRF")")"
+# Both needles below were OBSERVED PRESENT two cases up, each as a strict prefix of the string
+# asserted there — so these are assertions about this run rather than about a string the suite
+# can no longer produce.
+eq "a clean helper emits NO exit-status ⚠ on stderr" \
+   "false" "$(has '_kbc-archive-eligible.py exited' "$(cat "$ERRF")")"
+eq "…and no missing-sibling ⚠ either" "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
