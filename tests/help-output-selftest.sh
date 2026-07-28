@@ -94,7 +94,7 @@ _registry() { printf '%s\n' "${CLIS[@]}" "${EXCLUDED[@]}" | LC_ALL=C sort; }
 #   * NOT the `-h|--help)` case-arm shape. A bin dispatching help as `--help)` alone, from an
 #     `if`, or behind an extra alias would be invisible to that pattern and slip through green.
 # Directories are skipped because a directory has no source to scan — the OPPOSITE of
-# readme-bin-coverage-selftest.sh's _public_bins, which must NOT skip them (a non-`_` directory
+# readme-bin-coverage-selftest.sh's `_public_bin_names` (tests/_bin-set-lib.sh), which must NOT skip them (a non-`_` directory
 # there is a real entry with no README row). Same directory, two checks, two correct answers;
 # do not "harmonize" them.
 _help_bins() {

@@ -32,7 +32,9 @@
 #      (`_kb-board-lib.sh`, `_kbc-archive-lib.py`, `_kbc-archive-eligible.py`,
 #      `_kbc-may-archive.py`) are implementation, deliberately undocumented as tools. The
 #      rule is the NAME, applied to every directory entry — `__pycache__` is `_`-prefixed and
-#      is a DIRECTORY, so this must not assume an entry is a file.
+#      is a DIRECTORY, so this must not assume an entry is a file. The rule itself lives in
+#      `_bin-set-lib.sh` (`_public_bin_names`) because runtime-check's TOOLS gate needs the
+#      identical set; WHY it is right *here* is this paragraph and stays here.
 #   2. Table rows not keyed by `bin/…` are out of scope — today exactly one,
 #      `promote/action.yml`, a real row for a real artifact that simply does not live in
 #      bin/. It is dropped by a NAMED partition step, not by a `^| \`bin/` pattern that would
@@ -48,6 +50,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_bin-set-lib.sh"
 
 README="$HERE/../README.md"
 BINDIR="$HERE/../bin"
@@ -80,29 +84,20 @@ _bin_rows() { _table_rows "$1" | sed -n 's|^bin/||p' | LC_ALL=C sort; }
 # Never compared; printed, so exclusion 2 is observable on every run.
 _nonbin_rows() { _table_rows "$1" | grep -v '^bin/' || true; }
 
-# _public_bins <dir> — exclusion 1 applied: every entry of bin/ that is a documented TOOL,
-# C-collated. Globs the directory rather than `find -type f` on purpose (see exclusion 1 —
-# a `_`-prefixed DIRECTORY must be excluded by the name rule, not by a file-type filter).
+# The required set is `_public_bin_names` from `_bin-set-lib.sh` — exclusion 1 above IS that
+# rule, and runtime-check's TOOLS gate compares against the same one. Two properties of it are
+# load-bearing HERE specifically, so they are restated where they are relied on: a `_`-prefixed
+# DIRECTORY is excluded by the name rule rather than by a file-type filter (so a non-`_`
+# directory in bin/ still enters the set and reads as undocumented), and the set is not
+# filtered to executables (a tool that lost its +x bit must not drop out of the required set
+# and take this check green on a README that no longer documents it).
 #
-# Deliberately NOT filtered to executables. A tool that lost its +x bit would then drop out
-# of the required set and the check would go green on a README that no longer documents it —
-# under-coverage by exactly the silent mechanism this file exists to close.
-_public_bins() {
-    local d="$1" f b
-    for f in "$d"/*; do
-        [[ -e "$f" ]] || continue
-        b="$(basename "$f")"
-        case "$b" in _*) continue ;; esac
-        printf '%s\n' "$b"
-    done | LC_ALL=C sort
-}
-
 # `comm` validates its inputs' order in the AMBIENT locale, so it is pinned to C alongside
 # both producers, not merely for tidiness: en_US.UTF-8 ignores punctuation in its primary
 # collation pass and orders `-`-bearing names differently from codepoint order, which makes
 # comm report "not in sorted order" and emit an unreliable diff.
-undocumented() { LC_ALL=C comm -23 <(_public_bins "$2") <(_bin_rows "$1"); }
-phantom()      { LC_ALL=C comm -13 <(_public_bins "$2") <(_bin_rows "$1"); }
+undocumented() { LC_ALL=C comm -23 <(_public_bin_names "$2") <(_bin_rows "$1"); }
+phantom()      { LC_ALL=C comm -13 <(_public_bin_names "$2") <(_bin_rows "$1"); }
 
 # ---------------------------------------------------------------------------
 # Positive control FIRST. Every live assertion below is an assertion of ABSENCE ("no
@@ -112,7 +107,7 @@ phantom()      { LC_ALL=C comm -13 <(_public_bins "$2") <(_bin_rows "$1"); }
 # ---------------------------------------------------------------------------
 echo "== positive control — both streams are non-empty and carry a known member =="
 rows="$(_table_rows "$README")"
-bins="$(_public_bins "$BINDIR")"
+bins="$(_public_bin_names "$BINDIR")"
 eq "README table extraction is non-empty" "false" "$([ -z "$rows" ] && echo true || echo false)"
 eq "bin/ enumeration is non-empty"        "false" "$([ -z "$bins" ] && echo true || echo false)"
 # A named member, not a count: a count pins the check to a past value and goes stale as the
@@ -183,7 +178,7 @@ eq "witness: the fixture's _-prefixed entry is a directory, and is present" "tru
 # dropped. It enters the required set and reads as undocumented (red), forcing an explicit
 # decision — the alternative, a -type f filter, would make it vanish with no signal.
 eq "a _-prefixed directory is excluded; a non-_ directory is not" "$(printf 'kbcard\nrealdir')" \
-   "$(_public_bins "$TMP/bin-dir")"
+   "$(_public_bin_names "$TMP/bin-dir")"
 
 echo "== prove-it-can-fail: exclusion 2 drops a non-bin/ row, and keeps the bin/ ones =="
 # A standalone fixture, not the live README: this proves the PARTITION's behaviour, so it
