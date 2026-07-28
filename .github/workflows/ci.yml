@@ -23,6 +23,18 @@ jobs:
         run: python3 -m py_compile bin/*.py
 
   drift-check-selftest:
+    # NARROW BY DESIGN — and narrower than it reads. Passing the same directory as both
+    # TOOLKIT and REPO leaves only ONE of drift-check's three legs able to fail: content-drift
+    # diffs every file against itself, and version-skew is gated on a
+    # `.agent-board-toolkit-version` the toolkit root does not carry. What a green tick here
+    # certifies is that the shipped tree still carries `bin/_kb-board-lib.sh` beside its
+    # sourcers (card#5356).
+    #
+    # KEEP IT ANYWAY: that MISSING-LIB assertion is about the SHIPPED tree, which the
+    # fixture-driven `drift-check-fixture-selftest` cannot make a claim about. The two are
+    # complements, not duplicates — the fixture test ADDS the two dead legs, it does not
+    # replace this job. This job's NAME is also a required status check on `main`; renaming it
+    # would leave that context permanently unreported.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -67,6 +79,7 @@ jobs:
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
+          - drift-check-fixture-selftest
           - help-output-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
