@@ -2,7 +2,7 @@
 # board-session-close-selftest.sh — network-free tests for the inverse-drift leg's
 # adoption of the shipped kanban-reconcile.py --detect hook (card#4751).
 #
-# Two surfaces are covered:
+# Four surfaces are covered:
 #   1. resolve_reconcile_hook — the version-UNPINNED, fail-loud path resolver. It
 #      must honor an explicit override, then derive the session-loaded plugin from
 #      $PATH, then the marketplace clone, then the newest cached version (sort -V),
@@ -15,6 +15,9 @@
 #      included, via the shared install-board-hooks resolver) and report a hook that is
 #      missing / dangling / non-executable / not reaching board-card-start / symlinked into
 #      another toolkit checkout, while staying report-only.
+#   4. the Open-PRs leg (card#5358) — which repos it queries, that each queried repo's output
+#      is labelled with that repo's name, that a repo with no local checkout is skipped, and
+#      that a failing `gh` is swallowed without stopping the repos after it.
 #
 # The bin is main-guarded, so sourcing it defines the functions and renders nothing.
 # resolve_reconcile_hook is probed in a fresh `bash -c` per case (hermetic HOME/PATH/
@@ -147,6 +150,126 @@ rc="$(run_main "$skiphook")"
 eq "a skipped board still exits 0" "0" "$rc"
 eq "the skip is re-emitted as a ⚠ warning on STDERR naming the board key" \
    "true" "$(has '⚠ board bridge was SKIPPED' "$(cat "$ERRF")")"
+
+# ---------------------------------------------------------------------------
+# The Open-PRs leg (card#5358) — the `gh pr list` loop over its own literal repo list.
+# The cases above never reach it: $SCRATCH holds no checkouts, so the leg's `-e .git`
+# guard skips every entry and $SHIM/gh is never executed. Its repo list, its per-repo
+# label and its skip guard were therefore free to change with a green suite — which is
+# the surface card#5227 (deriving the list from BSC_WORKTREES by de-duplicating on the
+# remote URL) has to be validated against.
+#
+# Its OWN shim dir, deliberately. The gh above is a silent `exit 0` and the cases above
+# were written against that; a recording stub that also PRINTS would become a live input
+# to them the moment anyone gives $SCRATCH a checkout — an unobserved change of stub
+# contract is exactly how a stub starts lying about a leg nobody is asserting on.
+# ---------------------------------------------------------------------------
+echo "== Open-PRs leg — fixture =="
+PRHOME="$TMP/prs"; mkdir -p "$PRHOME/.local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$PRHOME/.local/bin/board-snapshot"
+chmod +x "$PRHOME/.local/bin/board-snapshot"
+# All FIVE BSC_WORKTREES entries exist here ON PURPOSE: the two -prod clones must be
+# absent from the query because the PR list excludes them, not because the `-e .git`
+# skip guard fired. Without them present, the absence assertions below would pass on a
+# leg that queried every repo it was given.
+for d in agent-webhook-bridge-dev agent-webhook-bridge-prod kanbanboard \
+         agent-board-toolkit agent-board-toolkit-prod; do
+    mkdir -p "$PRHOME/$d/.git"
+done
+
+PRSHIM="$TMP/prshim"; mkdir -p "$PRSHIM"
+# git stays a silent `exit 0`: the branch-reality and hook-dispatch legs run over these
+# same fixture dirs and neither is this block's subject.
+printf '#!/bin/sh\nexit 0\n' > "$PRSHIM/git"; chmod +x "$PRSHIM/git"
+cat > "$PRSHIM/gh" <<'EOF'
+#!/bin/sh
+# Records "<cwd basename>|<argv>" per call — the cwd IS the evidence of which repo was
+# queried, since the leg identifies the repo by cd-ing into it. Then emits TWO lines, so
+# an assertion can tell a label applied to every line from one applied to the first.
+_r="$(basename "$(pwd)")"
+printf '%s|%s\n' "$_r" "$*" >> "$GH_LOG"
+case "$_r" in
+    "${GH_FAIL_REPO:-__no_such_repo__}") echo "gh: boom" >&2; exit 1 ;;
+esac
+echo "11 OPEN first-pr"
+echo "22 OPEN second-pr"
+EOF
+chmod +x "$PRSHIM/gh"
+GH_LOG="$TMP/gh.log"
+
+# run_prs [fail-repo] — run the ritual against $PRHOME with the recording gh, on a hook
+# that detects cleanly (so the ritual's own rc is 0 and any change to it is this leg's).
+run_prs() {
+    : > "$GH_LOG"
+    HOME="$PRHOME" PATH="$PRSHIM:$UB" KANBAN_RECONCILE_HOOK="$goodhook" \
+        GH_LOG="$GH_LOG" GH_FAIL_REPO="${1:-}" \
+        bash "$BIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+
+echo "== Open-PRs leg — queries exactly the three unique GitHub repos, in list order =="
+rc="$(run_prs)"
+eq "the ritual still exits 0" "0" "$rc"
+eq "exactly the three listed repos are queried, in order, with the same argv" \
+"agent-webhook-bridge-dev|pr list --state open --limit 10
+kanbanboard|pr list --state open --limit 10
+agent-board-toolkit|pr list --state open --limit 10" "$(cat "$GH_LOG")"
+
+# ABSENCE + WITNESS, same run. A second checkout of an already-listed repo reports the
+# same open PRs twice, so the -prod clones are excluded BY THE LIST — card#5227's
+# dedupe-on-remote-URL refactor has to keep them out. Each absence is paired with the
+# non--prod sibling of the SAME repo observed present in the SAME log, so a gh that never
+# ran at all cannot read as a pass.
+eq "witness: agent-board-toolkit WAS queried" "true" \
+   "$(has 'agent-board-toolkit|' "$(cat "$GH_LOG")")"
+eq "the -prod toolkit clone is NOT queried" "false" \
+   "$(has 'agent-board-toolkit-prod|' "$(cat "$GH_LOG")")"
+eq "witness: agent-webhook-bridge-dev WAS queried" "true" \
+   "$(has 'agent-webhook-bridge-dev|' "$(cat "$GH_LOG")")"
+eq "the -prod bridge clone is NOT queried" "false" \
+   "$(has 'agent-webhook-bridge-prod|' "$(cat "$GH_LOG")")"
+# …and it is the LIST that excluded them, not the skip guard: both -prod checkouts are
+# present in the fixture. Without this the two assertions above are decorations.
+eq "witness: the -prod toolkit checkout IS present in the fixture" "true" \
+   "$([[ -e "$PRHOME/agent-board-toolkit-prod/.git" ]] && echo true || echo false)"
+eq "witness: the -prod bridge checkout IS present in the fixture" "true" \
+   "$([[ -e "$PRHOME/agent-webhook-bridge-prod/.git" ]] && echo true || echo false)"
+
+echo "== Open-PRs leg — every emitted line carries its own '  <repo>: ' label =="
+eq "the FIRST line of a repo's output is labelled" "true" \
+   "$(has '  agent-board-toolkit: 11 OPEN first-pr' "$(cat "$OUTF")")"
+eq "…and so is the SECOND — the label is per LINE, not per repo" "true" \
+   "$(has '  agent-board-toolkit: 22 OPEN second-pr' "$(cat "$OUTF")")"
+eq "six labelled PR lines in all (2 per queried repo), each under its own repo's name" "6" \
+   "$(grep -cE '^  (agent-webhook-bridge-dev|kanbanboard|agent-board-toolkit): [0-9]+ OPEN ' "$OUTF")"
+
+echo "== Open-PRs leg — a repo with no local checkout is SKIPPED, the rest still run =="
+mv "$PRHOME/kanbanboard/.git" "$PRHOME/kanbanboard/.git-off"
+rc="$(run_prs)"
+eq "a missing checkout does not change the ritual's exit code" "0" "$rc"
+eq "the checkout-less repo is not queried; the other two still are (witness in the same log)" \
+"agent-webhook-bridge-dev|pr list --state open --limit 10
+agent-board-toolkit|pr list --state open --limit 10" "$(cat "$GH_LOG")"
+eq "…and the skipped repo produces no labelled output either" "false" \
+   "$(has '  kanbanboard: ' "$(cat "$OUTF")")"
+mv "$PRHOME/kanbanboard/.git-off" "$PRHOME/kanbanboard/.git"
+
+echo "== Open-PRs leg — a failing gh is swallowed and does NOT stop the repos after it =="
+# WITNESS for the stderr-suppression assertion below: the stub really does write that
+# string to stderr, so its absence from the ritual's stderr is SUPPRESSION and not a stub
+# that stayed silent.
+ghwit="$(cd "$PRHOME/kanbanboard" && GH_LOG=/dev/null GH_FAIL_REPO=kanbanboard \
+         "$PRSHIM/gh" pr list 2>&1 >/dev/null)"
+eq "witness: the failing stub writes 'gh: boom' to STDERR" "true" "$(has 'gh: boom' "$ghwit")"
+rc="$(run_prs kanbanboard)"
+eq "a failing gh does not change the ritual's exit code" "0" "$rc"
+eq "the repo AFTER the failing one is still queried" "true" \
+   "$(has 'agent-board-toolkit|' "$(cat "$GH_LOG")")"
+eq "…and its PR lines still reach stdout" "true" \
+   "$(has '  agent-board-toolkit: 11 OPEN first-pr' "$(cat "$OUTF")")"
+eq "the failing repo emits no labelled output" "false" \
+   "$(has '  kanbanboard: ' "$(cat "$OUTF")")"
+eq "gh's stderr is suppressed, so its failure never reaches the ritual's stderr" "false" \
+   "$(has 'gh: boom' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 # The git-hook DISPATCH check (card#5200). Real fixture repos (`git init` in a temp dir),
