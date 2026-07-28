@@ -95,7 +95,12 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
-usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]" >&2; }
+# Prints on STDOUT; the error arms redirect. The channel is the CALLER's to choose because the
+# two uses differ: an explicitly-requested `--help` is the requested OUTPUT (rc 0, pipeable,
+# pageable), while usage-after-a-bad-argument is diagnostic. Baking `>&2` in here made
+# `adopt-to-dl --help > f` yield an EMPTY file at rc 0 — a false success that reads as "this
+# tool has no help" to any caller redirecting stdout.
+usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]"; }
 
 main() {
     local card_id="" repo="" board_name="" req_dl="" req_issue=""
@@ -116,21 +121,21 @@ main() {
             --issue) kb_require_value "$1" "${2:-}" || exit 2; shift; req_issue="$1" ;;
             -h|--help) usage; exit 0 ;;
             --) ;;
-            -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;
+            -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage >&2; exit 2 ;;
             *)  # An EMPTY positional is rejected rather than stored — that is what makes the
                 # `-z "$card_id"` test a sound "have I seen one?". It was invisible before, so
                 # `adopt-to-dl "" 4242` silently adopted 4242 while the caller had written two
                 # positionals: the empty-value class v0.23.1 fixed for flag VALUES, reaching
                 # positionals this time.
-                [[ -n "$1" ]] || { echo "adopt-to-dl: <card-id> is empty (an unexpanded variable?)" >&2; usage; exit 2; }
-                [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage; exit 2; }
+                [[ -n "$1" ]] || { echo "adopt-to-dl: <card-id> is empty (an unexpanded variable?)" >&2; usage >&2; exit 2; }
+                [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage >&2; exit 2; }
                 card_id="$1" ;;
         esac
         shift
     done
 
     # 1. readiness gate
-    [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage; exit 2; }
+    [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage >&2; exit 2; }
     [[ "$card_id" =~ ^[0-9]+$ ]] || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
     _ata_validate_repo "$repo" || { echo "adopt-to-dl: --repo must be <owner>/<name> (got '$repo')" >&2; exit 2; }
     [[ -n "$board_name" ]] || { echo "adopt-to-dl: --board <name> is required (a deliberate adoption must name its board)" >&2; exit 2; }
