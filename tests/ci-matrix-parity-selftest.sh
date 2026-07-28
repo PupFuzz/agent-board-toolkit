@@ -6,9 +6,10 @@
 # tests/ were kept aligned BY HAND, behind a `# KEEP THIS LIST IN SYNC` comment. A comment is
 # not a gate. Add a selftest, forget the matrix line, and the test never runs in CI —
 # permanently, silently, and every PR stays green. The author sees it pass locally and has no
-# signal at all that CI skipped it. This is card#5339's defect shape (a hand-maintained
+# signal at all that CI skipped it. This was card#5339's defect shape (a hand-maintained
 # registry that silently under-covers) one layer up: the registry that decides which tests run
-# AT ALL (card#5355).
+# AT ALL (card#5355). Both registries are now gated — help-output-selftest.sh's CLIS by its own
+# completeness assertion — so the shape survives in neither.
 #
 # THE RULE IS ONE RULE, WITH NO HAND-MAINTAINED EXCEPTION LIST: every tests/*-selftest.sh must
 # be run by ci.yml — either as a `selftest` matrix entry, or named as a literal `tests/<name>.sh`
