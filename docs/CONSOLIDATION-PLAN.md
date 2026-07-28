@@ -310,9 +310,11 @@ copies of one list" was a category error: the config maps *boards → repos*, `B
 *local checkouts*, and the PR loop maps *unique remotes*. Three different sets.
 
 **Depends on Stage B** (its Open-PRs coverage shipped, so this is now unblocked on that axis).
-Partially closes card #5227 — note the split on the card. Filed separately: a coord-config schema
-FR for a `worktrees[]` surface, which is the prerequisite for ever removing the operator-specific
-absolute paths.
+Partially closes card #5227 — note the split on the card. Filed separately as roundtable **#187**:
+a coord-config schema FR for a `worktrees[]` surface, which is the prerequisite for ever removing
+the operator-specific absolute paths. That FR asks for an explicitly declared array and records why
+deriving the list from the config's repo list is the wrong fix — the same reasons this stage's other
+half was dropped, above.
 
 ---
 
