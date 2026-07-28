@@ -1253,9 +1253,19 @@ printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
               'print("archive-eligible: boom", file=sys.stderr)' 'sys.exit(3)' > "$AEHELPER"
 rc="$(run_ae "$goodhook")"
 eq "helper rc 3 does NOT become the ritual's exit code (inverse-drift's rc 2 above DOES)" "0" "$rc"
-eq "…stderr names the helper's exit status" "true" "$(has 'exited 3' "$(cat "$ERRF")")"
+# The head is pinned WHOLE — not just `exited 3` — so that the absence assertion at the end of
+# this block ('_kbc-archive-eligible.py exited') is a strict PREFIX of a string observed present
+# here. A witness that merely overlaps the absence target leaves the absence able to pass
+# vacuously after a reword, which is the failure mode the witness exists to rule out.
+eq "…stderr names the helper AND its exit status" \
+   "true" "$(has '_kbc-archive-eligible.py exited 3' "$(cat "$ERRF")")"
 eq "…and flags the surfacing as INCOMPLETE, so degraded coverage is not read as clean" \
    "true" "$(has 'archive-eligible surfacing may be' "$(cat "$ERRF")")"
+# The INCOMPLETE token itself sits on the continuation line, so the assertion above stops one
+# word short of the property its label claims; this pins the rest of it. The reconcile leg's
+# near-identical warning splits the two across a newline, so this needle matches only here.
+eq "…the INCOMPLETE token itself, with the advisory framing that keeps it non-blocking" \
+   "true" "$(has 'INCOMPLETE (config/API error above); it is advisory and does not block close.' "$(cat "$ERRF")")"
 
 echo "== Archive-eligible leg — the helper's output is INDENTED into the report =="
 printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
@@ -1274,8 +1284,9 @@ eq "the helper's STDERR is folded into the report, indented the same way" "true"
    "$(grep -qxF '  SYNTHETIC note on stderr' "$OUTF" && echo true || echo false)"
 eq "…and does NOT leak to the ritual's own stderr" \
    "false" "$(has 'SYNTHETIC note on stderr' "$(cat "$ERRF")")"
-# Both absences below were OBSERVED PRESENT on this same fixture two cases up, so they are
-# assertions about this run rather than about a string the suite can no longer produce.
+# Both needles below were OBSERVED PRESENT two cases up, each as a strict prefix of the string
+# asserted there — so these are assertions about this run rather than about a string the suite
+# can no longer produce.
 eq "a clean helper emits NO exit-status ⚠ on stderr" \
    "false" "$(has '_kbc-archive-eligible.py exited' "$(cat "$ERRF")")"
 eq "…and no missing-sibling ⚠ either" "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
