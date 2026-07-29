@@ -244,6 +244,31 @@ consent for a smaller change than would ship — which is why this is ask-first.
 terminator belongs in the shared shape — currently `install-board-hooks` refuses a bare `--`, and
 `adopt-to-dl`'s `--) ;;` arm is decorative), #5429, #5409.
 
+### Ruling 2026-07-29 — **DEFERRED, not declined. Do not build it off this section alone.**
+
+Put to the user with the trade stated and deferred **by decision, not by neglect**. Three reasons,
+recorded so this is not re-litigated from the defect list alone:
+
+1. **The benefit is real but small, and its blast radius is not.** What the stage buys is one exit
+   code and one message quality across ~5 bins. What it touches is the **error contract every
+   consumer of those bins sees** — a caller scripting `rc == 2 ⇒ usage error` is relying on the
+   current shape, including the `runtime-check` outlier. Changing what a tool rejects, and how, is
+   ask-first in its own right; the size of the diff is not the size of the change.
+2. **The build prerequisite above is unmet, and it is the load-bearing one.** A complete
+   per-call-site behavior-delta table must exist BEFORE any dispatch. The first attempt's table had
+   four rows and review found at least four more — so the table is not a formality, it is the thing
+   that establishes what would actually ship. Building without it buys consent for a smaller change
+   than lands.
+3. **A dry queue is not a reason to build.** This stage came up precisely because nothing else in
+   the toolkit queue was runnable, which is the worst reason to touch a shared error contract.
+
+**What would change the ruling:** a reason to be in these bins anyway (a defect fix in `next-dl`,
+`dl-a0-backfill-triaged`, `dl-a1-register-field`, or `runtime-check`), at which point the delta
+table is cheap to produce and the axis rides along with work that justifies itself. Absent that,
+the current state is accepted **with its cost named**: one invariant, two exit codes, three message
+qualities — and `agent-board-toolkit-runtime-check`'s `rc 1` is fixed in place by its deliberate
+exclusion (it validates `_kb-board-lib.sh`, so it must not source it).
+
 ---
 
 ## Stage D — one library · recommended dropped
