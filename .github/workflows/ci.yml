@@ -90,6 +90,7 @@ jobs:
           - kbc-may-archive-selftest
           - kbcard-field-selftest
           - kbcard-selftest
+          - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
           - promote-pagination-selftest

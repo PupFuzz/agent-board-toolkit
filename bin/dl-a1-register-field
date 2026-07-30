@@ -65,7 +65,7 @@ if [[ -z "$STAGE" ]]; then
     echo "dl-a1-register-field: no throwaway stage — pass --stage or set KB_A1_STAGE/KB_STAGE_BACKLOG in $KB_BOARD_ENV" >&2
     exit 2
 fi
-[[ "$SENTINEL" =~ ^[0-9]+$ ]] || { echo "dl-a1-register-field: --sentinel must be a positive integer" >&2; exit 2; }
+kb_is_uint "$SENTINEL" || { echo "dl-a1-register-field: --sentinel must be a positive integer" >&2; exit 2; }
 
 # True if the by-ref response for $SENTINEL contains a row with id == $1.
 by_ref_has() {
@@ -108,7 +108,7 @@ create="$(kb_api POST "/tasks.json" "$body")" || {
     exit 1
 }
 TID="$(printf '%s' "$create" | jq -r '.data.id // empty')"
-if [[ ! "$TID" =~ ^[0-9]+$ ]]; then
+if ! kb_is_uint "$TID"; then
     echo "dl-a1-register-field: FATAL create throwaway: no task id in response" >&2
     exit 1
 fi

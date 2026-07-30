@@ -66,6 +66,22 @@ require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 # Only consulted when SHIPPED_STAGES is non-empty (the guard is opt-in).
 in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
+# uint_ok <s> / uint_csv_ok <s>: true iff <s> is a non-empty run of ASCII digits, or a
+# non-empty comma-separated list of them (no leading/trailing/doubled comma).
+#
+# WHY THE LC_ALL — the non-obvious constraint. A bracket RANGE in a bash pattern is a
+# COLLATION range, not an ASCII range: it means "every character that sorts between these
+# two in the CURRENT locale". Under an ordinary en_US.UTF-8 shell, `case $x in *[!0-9]*)`
+# does NOT fire for U+0663 ARABIC-INDIC DIGIT THREE — measured — so a board_id /
+# released_stage_id / --shipped-stages / meta.total carrying one passed a check whose
+# message says "numeric". Writing the class out longhand also works; LC_ALL=C is used
+# because it is one mechanism for both the digit and CSV shapes. `local` scopes it to the
+# call and restores it on return. Mirrors kb_ere_match/kb_is_uint in _kb-board-lib.sh —
+# this script is vendored standalone into consumer repos and MUST NOT source that lib, so
+# the guard is duplicated; keep the two in sync, as with require_value and host_ok.
+uint_ok()     { local LC_ALL=C; case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; }
+uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return 1 ;; esac; }
+
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
 # subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
 # calling — see the required-var check below). Host is parsed per RFC 3986 — the authority
@@ -125,9 +141,8 @@ done
 # normalizes to empty right here, which is the case that arm exists to reject.
 if [ -n "$SHIPPED_STAGES" ]; then
   SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
-  case "$SHIPPED_STAGES" in
-    ''|*[!0-9,]*|,*|*,|*,,*) die "--shipped-stages must be a comma-separated list of numeric stage ids (got '$SHIPPED_STAGES')";;
-  esac
+  uint_csv_ok "$SHIPPED_STAGES" \
+    || die "--shipped-stages must be a comma-separated list of numeric stage ids (got '$SHIPPED_STAGES')"
 fi
 
 # SECURITY: .release-pr.json is security-sensitive — .promote.api_base is where the
@@ -143,8 +158,8 @@ API="$(cfg '.promote.api_base')"
 REF_RE="$(cfg '.ref_token_regex')"; REF_RE="${REF_RE:-DL-[0-9]+}"
 [ -n "$BOARD" ] && [ -n "$STAGE" ] && [ -n "$API" ] \
   || die ".promote.{board_id,released_stage_id,api_base} are required in $CONFIG"
-case "$BOARD" in ''|*[!0-9]*) die ".promote.board_id must be numeric (got '$BOARD')";; esac
-case "$STAGE" in ''|*[!0-9]*) die ".promote.released_stage_id must be numeric (got '$STAGE')";; esac
+uint_ok "$BOARD" || die ".promote.board_id must be numeric (got '$BOARD')"
+uint_ok "$STAGE" || die ".promote.released_stage_id must be numeric (got '$STAGE')"
 TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
 [ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
 API="${API%/}"
@@ -243,7 +258,7 @@ fetch_whole_board() {
       # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A
       # last_page of 0 on a full page would otherwise break the scan at page 1 (the same
       # truncation class as an absent value).
-      case "$last_page" in ''|*[!0-9]*) last_page='' ;; esac
+      uint_ok "$last_page" || last_page=''
       [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
       total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
     fi
@@ -273,17 +288,12 @@ fetch_whole_board() {
   # un-promoted ⇒ REFUSE (die), same policy as the page-cap guard above. sum_n >= total
   # with read_n < total ⇒ one card straddled a page boundary and dedup collapsed it ⇒
   # the read is complete ⇒ warn only, promote proceeds.
-  case "$total" in
-    ''|*[!0-9]*) : ;;
-    *)
-      if [ "$total" -gt "${read_n:-0}" ]; then
-        if [ "$sum_n" -lt "$total" ]; then
-          die "board $BOARD has $total cards but pages delivered only $sum_n ($read_n after dedup) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry; if the board is genuinely larger than the page cap, raise PROMOTE_PAGE_CAP."
-        fi
-        echo "promote-released-cards: NOTE — read $read_n distinct of $total ($sum_n across pages); a card straddled a page boundary and dedup collapsed it — read complete." >&2
-      fi
-      ;;
-  esac
+  if uint_ok "$total" && [ "$total" -gt "${read_n:-0}" ]; then
+    if [ "$sum_n" -lt "$total" ]; then
+      die "board $BOARD has $total cards but pages delivered only $sum_n ($read_n after dedup) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry; if the board is genuinely larger than the page cap, raise PROMOTE_PAGE_CAP."
+    fi
+    echo "promote-released-cards: NOTE — read $read_n distinct of $total ($sum_n across pages); a card straddled a page boundary and dedup collapsed it — read complete." >&2
+  fi
   printf '%s' "$cards"
 }
 CARDS="$(fetch_whole_board)"

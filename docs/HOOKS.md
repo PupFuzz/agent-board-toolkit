@@ -62,6 +62,12 @@ fires, including inside quoted or example text in a prompt (worst case: a benign
 In-Progress move) — so avoid quoting live marker lines at column 0 in dispatch prompts.
 `<board-key>` is the same key you pass to `kbcard --board <key>` (it resolves `~/.kanban-<key>-board.env`).
 
+`<board-key>` is **ASCII** letters/digits/`_`/`-`, and `<card-id>` is **ASCII** digits — matched
+under `LC_ALL=C` regardless of the shell's own locale, because a bash bracket range is a
+*collation* range: under an ordinary `en_US.UTF-8` shell an unpinned `[0-9]` also matches
+non-ASCII digits, and `BOARD-CARD: toolkit#٣` parsed, sending a non-number to `kbcard move
+--task` (card#5409). A marker whose key or id is not ASCII does not parse, in any locale.
+
 ### Mechanics
 
 Claude Code delivers the event as a **JSON object on stdin** (never env vars — the event name is

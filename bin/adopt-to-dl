@@ -130,7 +130,7 @@ main() {
 
     # 1. readiness gate
     [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage >&2; exit 2; }
-    [[ "$card_id" =~ ^[0-9]+$ ]] || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
+    kb_is_uint "$card_id" || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
     _ata_validate_repo "$repo" || { echo "adopt-to-dl: --repo must be <owner>/<name> (got '$repo')" >&2; exit 2; }
     [[ -n "$board_name" ]] || { echo "adopt-to-dl: --board <name> is required (a deliberate adoption must name its board)" >&2; exit 2; }
 
@@ -141,7 +141,7 @@ main() {
     # --issue is a bare positive integer (the GitHub issue number). Reject anything else LOUD
     # rather than stamp a non-numeric issue_number (kbcard would coerce a non-number to a string
     # and the number-typed field would 422 — fail here with a clearer cause).
-    if [[ -n "$req_issue" && ! "$req_issue" =~ ^[0-9]+$ ]]; then
+    if [[ -n "$req_issue" ]] && ! kb_is_uint "$req_issue"; then
         echo "adopt-to-dl: --issue must be a positive integer (the GitHub issue number); got '$req_issue'" >&2
         exit 2
     fi

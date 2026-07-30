@@ -43,6 +43,35 @@ _KB_BOARD_LIB_LOADED=1
 # Message prefix; a script may set KB_PROG, else its own basename is used.
 _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
 
+# --- ASCII-safe pattern matching --------------------------------------------
+#
+# WHY THESE EXIST — the non-obvious constraint. A bracket RANGE in a bash pattern
+# (`[[ $x =~ [0-9] ]]`, and glob `case` arms alike) is a COLLATION range, not an
+# ASCII range: it means "every character that sorts between these two in the
+# CURRENT locale". Under an ordinary en_US.UTF-8 developer shell — measured on the
+# reference host — `^[0-9]+$` matches U+0663 ARABIC-INDIC DIGIT THREE and
+# `^[A-Za-z0-9_-]+$` matches é, Ⅳ and ﬁ; the same patterns reject all four under
+# LC_ALL=C. Writing the class out longhand (`[0123456789]`) fixes it, but only
+# where the class is short enough to stay readable, and it cannot be spelled at all
+# for a pattern that arrives in a variable. A POSIX class is NOT the fix:
+# `[[:alnum:]]` is locale-defined by construction, and `[[:digit:]]` is ASCII only
+# because glibc happens to define it so. Matching under LC_ALL=C is what makes a
+# class mean what every reader — and every error message quoting it — already
+# thinks it says.
+#
+# WHAT THIS IS AND IS NOT. It is a MECHANISM (what "digit" means), so it belongs in
+# the primitive; the POLICY on a refusal — die, warn, fall back, return an rc —
+# stays at each caller, unchanged (docs/CONSOLIDATION-PLAN.md ground rule 5).
+#
+# kb_ere_match <string> <ere>: `[[ string =~ ere ]]` with ASCII bracket semantics.
+# LC_ALL is `local`, so the C locale covers exactly this match and is restored on
+# return; BASH_REMATCH is deliberately NOT local, so a caller's captures survive.
+kb_ere_match() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }
+
+# kb_is_uint <string>: true iff the string is a non-empty run of ASCII digits.
+# The shape behind most `^[0-9]+$` guards in these tools.
+kb_is_uint() { kb_ere_match "${1-}" '^[0-9]+$'; }
+
 # --- config resolution ------------------------------------------------------
 #
 # ONE token-file precedence, uniform across every resolver below:
@@ -529,7 +558,7 @@ fetch_board_cards() {
             # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
             # when the server positively declares it.
             last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-            [[ "$last_page" =~ ^[0-9]+$ ]] || last_page=""
+            kb_is_uint "$last_page" || last_page=""
             [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
             total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         fi
@@ -548,7 +577,7 @@ fetch_board_cards() {
     done
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"
-    if [[ "${total:-}" =~ ^[0-9]+$ && "${read_n:-}" =~ ^[0-9]+$ && "$total" -gt "$read_n" ]]; then
+    if kb_is_uint "${total:-}" && kb_is_uint "${read_n:-}" && [[ "$total" -gt "$read_n" ]]; then
         # Distinguish a REAL undercount from a dedup artifact (card #4338): the
         # PRE-dedup page sum is the tell. sum_n < total ⇒ pages genuinely delivered
         # fewer rows than the server claims exist ⇒ emit the partial data and
@@ -578,7 +607,7 @@ fetch_board_cards() {
 # silently becoming a plausible-but-wrong DL. The {1,6} bound keeps base-10
 # arithmetic in int range. Prints the integer; returns 2 on a non-DL / zero.
 kb_dl_num() {
-    [[ "$1" =~ ^([Dd][Ll]-?)?0*([0-9]{1,6})$ ]] \
+    kb_ere_match "$1" '^([Dd][Ll]-?)?0*([0-9]{1,6})$' \
         || { echo "$(_kb_prog): '$1' is not a DL number (expect e.g. DL-093 or 93)" >&2; return 2; }
     local n="$((10#${BASH_REMATCH[2]}))"   # 10# forces base-10 so a zero-padded value isn't read as octal
     [[ "$n" -ge 1 ]] || { echo "$(_kb_prog): '$1' resolves to 0 — not a valid DL number" >&2; return 2; }
