@@ -148,7 +148,7 @@ native_type_id() {
     var="KB_TYPE_$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
     id="${!var:-}"
     # A real native id is a positive integer; "", "0", "000", non-numeric ⇒ tag fallback.
-    [[ "$id" =~ ^[0-9]+$ && "$id" -gt 0 ]] && printf '%s' "$id"
+    kb_is_uint "$id" && [[ "$id" -gt 0 ]] && printf '%s' "$id"
     return 0
 }
 
@@ -174,7 +174,7 @@ _kbc_swimlane_map() {
 # so a typo never silently lists nothing — parity with stage_id's unknown-column contract.
 swimlane_id() {
     local arg="$1" var
-    [[ "$arg" =~ ^[0-9]+$ ]] && { printf '%s' "$arg"; return 0; }
+    kb_is_uint "$arg" && { printf '%s' "$arg"; return 0; }
     for var in "${!KB_SWIMLANE_@}"; do
         [[ -n "${!var}" && "${!var}" == "$arg" ]] || continue
         printf '%s' "${var#KB_SWIMLANE_}"; return 0
@@ -202,7 +202,7 @@ swimlane_id() {
 #   Non-numeric → looked up by external_id on the board (search endpoint).
 resolve_task() {
     local ref="$1"
-    if [[ "$ref" =~ ^[0-9]+$ ]]; then
+    if kb_is_uint "$ref"; then
         [[ "$ref" -ge 1 ]] || { echo "kbcard: invalid task id '$ref'" >&2; exit 1; }
         echo "$ref"; return 0
     fi
@@ -214,7 +214,7 @@ resolve_task() {
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
-    [[ "$id" =~ ^[0-9]+$ && "$id" -ge 1 ]] || { echo "kbcard: invalid task id '$id'" >&2; exit 1; }
+    kb_is_uint "$id" && [[ "$id" -ge 1 ]] || { echo "kbcard: invalid task id '$id'" >&2; exit 1; }
     echo "$id"
 }
 
@@ -301,7 +301,10 @@ cmd_create_card() {
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     # The alias maps to KB_TYPE_<NAME> and (on a non-native board) a `type:<name>`
     # tag, so it must be tag-safe — reject commas/spaces that would corrupt the CSV.
-    [[ "$type" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "kbcard: --type '$type' must be alphanumeric / '-' / '_'" >&2; return 2; }
+    # Matched through kb_ere_match so `[A-Za-z0-9]` means ASCII: as a bare bash
+    # bracket RANGE it is a COLLATION range, and an en_US.UTF-8 shell then accepted
+    # é / Ⅳ / ﬁ against an error message promising alphanumeric / '-' / '_'.
+    kb_ere_match "$type" '^[A-Za-z0-9_-]+$' || { echo "kbcard: --type '$type' must be alphanumeric / '-' / '_'" >&2; return 2; }
 
     local stage type_id
     stage="$(stage_id "$column")"
@@ -321,7 +324,7 @@ cmd_create_card() {
     # external_id is the integer per-board sync id (tasks.external_id is an
     # unsignedBigInteger). Reject a non-numeric value LOUDLY instead of silently
     # coercing it to null and discarding the caller's input (fail-loud stance).
-    if [[ -n "$ext_id" && ! "$ext_id" =~ ^[0-9]+$ ]]; then
+    if [[ -n "$ext_id" ]] && ! kb_is_uint "$ext_id"; then
         echo "kbcard: --external-id must be numeric (the integer per-board sync id); got '$ext_id'. For a DL id use --dl." >&2
         return 2
     fi
@@ -841,7 +844,7 @@ _kbc_field_set_options() {
     # context, and a swallowed empty read would mis-surface as "field not defined".
     local fields fld
     fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
-    if [[ "$field" =~ ^[0-9]+$ ]]; then
+    if kb_is_uint "$field"; then
         fld="$(jq -c --argjson id "$field" 'map(select(.id == $id)) | .[0] // empty' <<<"$fields")"
     else
         fld="$(jq -c --arg k "$field" 'map(select(.key == $k)) | .[0] // empty' <<<"$fields")"

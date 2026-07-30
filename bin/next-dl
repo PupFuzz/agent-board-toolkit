@@ -137,7 +137,7 @@ board_claim() (
     case "$http" in
         2[0-9][0-9])
             val="$(printf '%s' "$body" | jq -r '.data.value // empty' 2>/dev/null || true)"
-            [[ "$val" =~ ^[0-9]+$ && "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
+            kb_is_uint "$val" && [[ "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
             printf '%s' "$val" ;;
         404) exit 1 ;;   # endpoint not deployed — benign; fall back to the offline scan
         *)
@@ -152,7 +152,7 @@ board_claim() (
 # here — silently degrading to the non-atomic scan is what masked AIMLA's real error.
 if [[ $peek -eq 0 ]]; then
     if claimed="$(board_claim)"; then crc=0; else crc=$?; fi
-    if [[ $crc -eq 0 && "$claimed" =~ ^[0-9]+$ ]]; then
+    if [[ $crc -eq 0 ]] && kb_is_uint "$claimed"; then
         canon="$(kb_dl_canon "$claimed")" || { echo "next-dl: atomic claim returned '$claimed', not a canonical DL number" >&2; exit 1; }
         printf '%s\n' "$canon"
         exit 0
@@ -203,7 +203,7 @@ board_dl_max() (
 # assignment would otherwise exit before $? is captured).
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
 [[ "$dlrc" -eq 2 ]] && exit 1
-[[ "$bmax" =~ ^[0-9]+$ && "$bmax" -gt "$max" ]] && max="$bmax"
+kb_is_uint "$bmax" && [[ "$bmax" -gt "$max" ]] && max="$bmax"
 
 [[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$project' — check the checkout paths" >&2; exit 1; }
 canon="$(kb_dl_canon "$((max + 1))")" || { echo "next-dl: computed DL $((max + 1)) exceeds the canonical range" >&2; exit 1; }

@@ -39,6 +39,22 @@ KBADS_TIMEOUT="${KBADS_TIMEOUT:-10}"   # per-move wall-clock bound (seconds)
 
 _kbads_diag() { printf 'agent-dispatch-card-start: %s\n' "$*" >&2; }
 
+# _kbads_marker <line>: true iff <line> carries the marker at line start, with
+# BASH_REMATCH[1]=<board-key> and BASH_REMATCH[2]=<card-id> for the caller.
+#
+# WHY THE LC_ALL — the non-obvious constraint. A bracket RANGE in a bash regex is a
+# COLLATION range, not an ASCII range. Under an ordinary en_US.UTF-8 shell,
+# `[A-Za-z0-9_-]` also matches é / Ⅳ / ﬁ and `[0-9]` also matches U+0663 ARABIC-INDIC
+# DIGIT THREE — measured — so `BOARD-CARD: toolkit#<U+0663>` PARSED and a non-number
+# reached `kbcard move --task`. LC_ALL is `local`, so the C locale covers exactly this
+# match and is restored on return; BASH_REMATCH is deliberately not local. Mirrors
+# kb_ere_match in bin/_kb-board-lib.sh — this hook is installed standalone (it depends
+# only on `kbcard` being on PATH) and must not source that lib; keep the two in sync.
+_kbads_marker() {
+    local LC_ALL=C
+    [[ "$1" =~ ^[[:space:]]*BOARD-CARD:[[:space:]]*([A-Za-z0-9_-]+)#([0-9]+) ]]
+}
+
 # Read the whole event object from stdin.
 input="$(cat)"
 
@@ -54,7 +70,7 @@ fi
 seen=" "   # space-delimited set of already-processed "<key>#<id>" tokens
 while IFS= read -r line; do
     # Anchored at line start (leading indentation is tolerated; any non-space prefix is not).
-    if [[ "$line" =~ ^[[:space:]]*BOARD-CARD:[[:space:]]*([A-Za-z0-9_-]+)#([0-9]+) ]]; then
+    if _kbads_marker "$line"; then
         key="${BASH_REMATCH[1]}"
         id="${BASH_REMATCH[2]}"
         token="$key#$id"
