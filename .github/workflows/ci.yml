@@ -12,7 +12,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest   # ships shellcheck preinstalled — no third-party action needed
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: shellcheck bin/, hooks/ and tests/
         # Gate at hard errors only for now; tighten to `-S warning` once a clean
         # run confirms the existing scripts are warning-clean. Non-shell helpers
@@ -37,7 +37,7 @@ jobs:
     # would leave that context permanently unreported.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: drift-check runs and reports no drift against itself
         run: ./bin/agent-board-toolkit-drift-check . .
 
@@ -51,7 +51,7 @@ jobs:
     # enforces (matrix entry OR named in a run: block), with no exception list.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: every selftest on disk is run by ci.yml
         run: bash tests/ci-matrix-parity-selftest.sh
 
@@ -99,7 +99,7 @@ jobs:
           - release-pr-body-selftest
           - runtime-check-selftest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: bash tests/${{ matrix.test }}.sh
         run: bash "tests/${{ matrix.test }}.sh"
 
@@ -108,7 +108,7 @@ jobs:
     # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Wiring assertions (parse, script path, flag contract, embedded shellcheck)
         run: |
           test -x bin/promote-released-cards
