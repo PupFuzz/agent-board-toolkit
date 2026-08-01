@@ -28,7 +28,7 @@ Measured against `origin/dev` at the time of writing; the CHANGELOG is the runni
 | **A** | three live defects found *by* the plan's own review passes | **shipped** |
 | **B** | make the gates able to fail | **shipped** (5/5) |
 | **C** | one value-guard on every axis | **shipped, narrower than its own title** (card #5566) — the *flag* axis only: its positional half was superseded by a *different, better* fix, and its exit-code half is **unreachable by construction** (both below) |
-| **D** | one library (`promote-released-cards` sources the lib) | **recommended dropped** — see *Stage D* |
+| **D** | one library (`promote-released-cards` sources the lib) | **DROPPED — decided 2026-08-01**, not merely recommended (see *Stage D*). It is the program's strongest argument *against* consolidating. |
 | **E** | de-duplicate the PR-query set | **shipped** (card #5227); its other half stays dropped |
 
 **C was design-only by direction** — plannable and reviewable, not buildable, without a fresh
@@ -368,7 +368,7 @@ finding 2 first.
 
 ---
 
-## Stage D — one library · recommended dropped
+## Stage D — one library · DROPPED (decided 2026-08-01)
 
 The stage would have made `promote-released-cards` source `_kb-board-lib.sh` and drop its mirrors.
 It is recommended **dropped**, and the reasoning is worth keeping because it is the strongest
@@ -411,6 +411,31 @@ both name `promote-released-cards` in the second group, alongside a §6b recipe 
 single file. This stage moves it into the first group, so both statements and that recipe need
 amending, plus an entry in [`UPGRADE.md`](UPGRADE.md). The framework's `templates/release/` mirror
 would need the lib too — that mirror is currently healthy, and this stage would make its job harder.
+
+---
+
+### Ruling 2026-08-01 — **DROPPED.** The recommendation is now a decision.
+
+The program was directed to completion, which required D to be *decided* rather than left standing as
+a recommendation — a recommendation is a thing a later session re-opens from the defect list.
+
+**Dropped on the reasoning already recorded above, unchanged.** Nothing new was measured to reach this;
+the four arguments were already sufficient and are restated here only as the decision's basis:
+the trade buys **one deduplicated line** and sells a hard lib dependency plus a co-vendoring obligation
+onto a network-free, git-only tool; the retry is a **restructure, not a knob**; a knob honored only by
+`kb_api` leaves two other fetchers unprotected; and dropping promote's 0-visible-cards refusal would
+turn a lost-membership token into `0 moved` and **exit 0** — trading a live guard for tidiness.
+
+**What this closes and what it does not.** It closes D as a *stage*. It does **not** claim the
+duplication is gone: `promote-released-cards` still carries its `require_value` and `host_ok` mirrors
+by design, and `tests/kb-host-guard-selftest.sh` still pins the host-guard mirror row-by-row against
+the lib and **exits 1 if it cannot extract `host_ok`** — so a rename or removal of that mirror fails
+the build rather than silently reducing coverage. The mirror is *guarded duplication*, which is the
+outcome this stage chose over consolidation.
+
+**If it is ever revived,** the § Stage D revival checklist above still applies in full (the literal
+`source "$KB_LIB"`, the INSTALL.md §6b / ADOPTION.md group split, the UPGRADE.md entry, and the
+framework's `templates/release/` mirror).
 
 ---
 
