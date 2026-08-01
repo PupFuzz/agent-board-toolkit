@@ -108,7 +108,7 @@ main() {
         case "$1" in
             # Every value-taking flag is gated on the flag being SEEN with a value, via the
             # shared kb_require_value (already in scope) — the same guard kbcard applies at all
-            # 36 of its arms. Without it `--dl ""` (an unexpanded variable) read as "no --dl"
+            # 37 of its arms. Without it `--dl ""` (an unexpanded variable) read as "no --dl"
             # and took the MINT path, so a crash-retry that meant "re-stamp DL-N" minted a
             # SECOND DL instead — orphaning DL-N and stranding any branch or PR named for it,
             # the exact outcome _ata_adopt_decision's refuse-adopted arm exists to prevent.

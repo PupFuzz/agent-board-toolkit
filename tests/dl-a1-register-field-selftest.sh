@@ -286,15 +286,26 @@ run_a1 -h
 eq "-h → rc 0"                            "0" "$rc"
 eq "-h prints the same usage"             "$USAGE" "$out"
 
+# Every value-taking flag, in BOTH short forms — explicitly empty and missing-because-trailing.
+# The two are separate inputs (a guard dispatching on the flag being SEEN would keep one green),
+# and each refusal must name ITS OWN flag: this tool takes four, so the usage line alone told the
+# operator only that one of them was short. The expected string is built per flag, so a guard
+# that named a hardcoded flag for all four reds on three of them.
 for f in --board --stage --swimlane --sentinel; do
+    NO_VALUE="dl-a1-register-field: $f requires a non-empty value"
     run_a1 "$f" ""
     eq "$f with an empty value → rc 2"    "2" "$rc"
-    eq "$f empty-value refusal prints usage" "true" "$(has "$USAGE" "$err")"
+    eq "$f empty-value refusal names $f itself" "$NO_VALUE" "$err"
     eq "$f empty value issues no request" "0" "$(kb_stub_total)"
     run_a1 "$f"
     eq "a trailing $f with no argument → rc 2" "2" "$rc"
+    eq "a trailing $f is refused identically to an empty one" "$NO_VALUE" "$err"
     eq "a trailing $f does not leak an unbound-variable error" "false" "$(has 'unbound variable' "$err")"
 done
+# Only the EMPTY form carries an "issues no request" zero. Measured on the sibling tool with its
+# guard deleted outright: a TRAILING flag still reaches no request, because the arg loop's closing
+# `shift` fails on an exhausted stack and `set -e` ends the run first. That zero cannot be made to
+# fail by any regression in this guard, and a check that cannot fail is decoration (canon #9).
 
 run_a1 --bogus
 eq "an unknown option → rc 2"             "2" "$rc"
@@ -325,5 +336,19 @@ eq "the refusal names the missing env file" "true" "$(has '.kanban-nosuchboard-b
 run_a1
 eq "witness: the same harness DOES issue requests when the arguments are valid" "7" \
    "$(kb_stub_total)"
+
+echo "== a lib-less copy is refused before the argument surface, --help included =="
+# The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That
+# ordering is caller-visible on a BROKEN install only, and this is where it shows: a copy vendored
+# without _kb-board-lib.sh beside it now answers every invocation with the missing-lib refusal,
+# where it used to answer --help first (rc 0) and only fail once an argument reached the config.
+# next-dl, kbcard and adopt-to-dl have always behaved this way; this pins the alignment.
+mkdir -p "$TMP/nolib"
+cp "$A1" "$TMP/nolib/"
+nolib_rc=0
+nolib_err="$("$TMP/nolib/dl-a1-register-field" --help 2>&1 >/dev/null)" || nolib_rc=$?
+eq "a lib-less copy refuses --help → rc 1" "1" "$nolib_rc"
+eq "the refusal names the lib and how to fix it" "true" \
+   "$(has 'shared lib _kb-board-lib.sh not found next to this script' "$nolib_err")"
 
 _summary "dl-a1-register-field-selftest"

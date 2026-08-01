@@ -25,25 +25,11 @@
 
 set -euo pipefail
 
-USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
-
-board_name=""
-stage_arg=""
-swimlane_arg=""
-sentinel_arg=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --board)    shift; board_name="${1:-}"; [[ -n "$board_name" ]] || { echo "$USAGE" >&2; exit 2; } ;;
-        --stage)    shift; stage_arg="${1:-}";  [[ -n "$stage_arg" ]]  || { echo "$USAGE" >&2; exit 2; } ;;
-        --swimlane) shift; swimlane_arg="${1:-}"; [[ -n "$swimlane_arg" ]] || { echo "$USAGE" >&2; exit 2; } ;;
-        --sentinel) shift; sentinel_arg="${1:-}"; [[ -n "$sentinel_arg" ]] || { echo "$USAGE" >&2; exit 2; } ;;
-        -h|--help)  echo "$USAGE"; exit 0 ;;
-        *) echo "$USAGE" >&2; exit 2 ;;
-    esac
-    shift
-done
-
-# --- config resolution (shared lib) -----------------------------------------
+# --- shared lib -------------------------------------------------------------
+# Sourced BEFORE the arg loop, which parses with the lib's kb_require_value. The
+# ordering is load-bearing (it matches next-dl/kbcard/adopt-to-dl): a lib-less
+# install now reports the missing lib for EVERY invocation, `--help` included,
+# where it previously answered `--help` first.
 # Board env: ~/.kanban-<name>-board.env (default kanban-dev). API base lives in
 # ~/.kanban-host.env (board-independent). Token file path may be set inside
 # either config; kb_load_config resolves it AFTER both are sourced.
@@ -55,6 +41,26 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 KB_PROG="dl-a1-register-field"
 KB_API_QUIET=1
+
+USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
+
+board_name=""
+stage_arg=""
+swimlane_arg=""
+sentinel_arg=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --board)    kb_require_value "$1" "${2:-}" || exit 2; shift; board_name="$1" ;;
+        --stage)    kb_require_value "$1" "${2:-}" || exit 2; shift; stage_arg="$1" ;;
+        --swimlane) kb_require_value "$1" "${2:-}" || exit 2; shift; swimlane_arg="$1" ;;
+        --sentinel) kb_require_value "$1" "${2:-}" || exit 2; shift; sentinel_arg="$1" ;;
+        -h|--help)  echo "$USAGE"; exit 0 ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# --- config resolution (shared lib, sourced above) ---------------------------
 kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN / KB_HTTP
 BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $KB_BOARD_ENV}"
 
