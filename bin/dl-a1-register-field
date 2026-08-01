@@ -28,8 +28,10 @@ set -euo pipefail
 # --- shared lib -------------------------------------------------------------
 # Sourced BEFORE the arg loop, which parses with the lib's kb_require_value. The
 # ordering is load-bearing (it matches next-dl/kbcard/adopt-to-dl): a lib-less
-# install now reports the missing lib for EVERY invocation, `--help` included,
-# where it previously answered `--help` first.
+# install now reports the missing lib at rc 1 on EVERY invocation, where it
+# previously answered the whole arg loop first. `--help` is the widest-known case
+# but not the only one — measured lib-less, `--help` went 0 -> 1 and `--bogus`, a
+# trailing value-taking flag and a stray positional each went 2 -> 1.
 # Board env: ~/.kanban-<name>-board.env (default kanban-dev). API base lives in
 # ~/.kanban-host.env (board-independent). Token file path may be set inside
 # either config; kb_load_config resolves it AFTER both are sourced.

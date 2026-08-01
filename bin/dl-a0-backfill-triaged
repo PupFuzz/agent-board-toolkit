@@ -23,8 +23,10 @@ set -euo pipefail
 # --- shared lib -------------------------------------------------------------
 # Sourced BEFORE the arg loop, which parses with the lib's kb_require_value. The
 # ordering is load-bearing (it matches next-dl/kbcard/adopt-to-dl): a lib-less
-# install now reports the missing lib for EVERY invocation, `--help` included,
-# where it previously answered `--help` first.
+# install now reports the missing lib at rc 1 on EVERY invocation, where it
+# previously answered the whole arg loop first. `--help` is the widest-known case
+# but not the only one — measured lib-less, `--help` went 0 -> 1 and `--bogus`, a
+# trailing `--board` and a stray positional each went 2 -> 1.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 [ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh

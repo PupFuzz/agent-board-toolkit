@@ -290,8 +290,10 @@ eq "witness: the same harness DOES issue a request when the arguments are valid"
 echo "== a lib-less copy is refused before the argument surface, --help included =="
 # The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That
 # ordering is caller-visible on a BROKEN install only, and this is where it shows: a copy vendored
-# without _kb-board-lib.sh beside it now answers every invocation with the missing-lib refusal,
-# where it used to answer --help first (rc 0) and only fail once an argument reached the config.
+# without _kb-board-lib.sh beside it now answers every invocation with the missing-lib refusal at
+# rc 1. With the check BELOW the loop it reported the missing lib only for an invocation the loop
+# let through: measured lib-less on the pre-change binary, --help answered rc 0 and each arg-loop
+# refusal (--bogus, a trailing --board, a stray positional) answered rc 2 with the usage line.
 # next-dl, kbcard and adopt-to-dl have always behaved this way; this pins the alignment.
 mkdir -p "$TMP/nolib"
 cp "$A0" "$TMP/nolib/"

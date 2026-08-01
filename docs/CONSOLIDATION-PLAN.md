@@ -265,13 +265,18 @@ lib, so the primitive did not exist at the point of the check; the source block 
 loop (the ordering `next-dl`, `kbcard`, `adopt-to-dl` and `board-card-start` already had). On a
 **broken install only** — a bin vendored without `_kb-board-lib.sh` beside it — those two now
 answer *every* invocation with the missing-lib refusal at rc 1, including `--help`, which
-previously answered rc 0 before the lib was ever consulted. The two alternatives were both worse:
+previously answered rc 0 before the lib was ever consulted. `--help` is the widest-known case but
+not the only rc that moves: with the check below the loop the missing lib was reported only for an
+invocation the loop let through, so the loop's own refusals (`--bogus`, a trailing value-taking
+flag, a stray positional) went **2 → 1** too — measured lib-less on both binaries, pre and post.
+The two alternatives were both worse:
 an inline mirror of the primitive is the defect this program exists to remove, and sourcing
 conditionally (`[ -r "$KB_LIB" ] && source "$KB_LIB"`) evades `agent-board-toolkit-drift-check`'s
 anchored `^[[:space:]]*source "\$KB_LIB"` probe, deleting a live guard to preserve a refusal path.
 Both bins' selftests now pin the lib-less behaviour.
 
-**Preserve — each now asserted by a test, not by inspection:**
+**Preserve — each asserted by a test rather than by inspection, each bullet naming what that
+test actually covers (an rc-only assertion is not coverage of a message, and was not here):**
 
 - `install-board-hooks`/`adopt-to-dl` **empty-positional rejection** — untouched by this stage;
   `tests/kb-positional-guard-selftest.sh` continues to own it.
@@ -281,7 +286,14 @@ Both bins' selftests now pin the lib-less behaviour.
   **generic usage line** (a mutual-exclusion violation is not a value-guard failure), and to
   minting nothing and issuing no request. Both halves of the split were driven red independently.
 - **`kbcard field`'s sub-verb dispatch** — deliberately **not** converted (finding 4 above);
-  `tests/kbcard-field-selftest.sh` owns it.
+  `tests/kbcard-field-selftest.sh` owns it, pinning the missing-sub-verb refusal by **message**
+  and the unknown-sub-verb one by rc. The message half was added when review measured this
+  bullet's own claim false: the file asserted rc **only**, and rc cannot separate the two arms —
+  with the guard deleted an absent sub-verb falls through to the `*)` catch-all, which answers rc
+  2 as well, so the whole 25-file suite stayed green over a deleted Preserve item (measured, then
+  driven red by the added assertion). Driven as a process the delta is wider still and remains
+  unasserted: `kbcard field` goes from a named rc 2 to a **silent rc 1** (the arm's own `shift` on
+  an exhausted stack under `set -e`), which no function-level case can reach.
 
 **Honest scope:** this retired the *argv* axis. It does **not** retire the class. Card #5276
 records the axis as four positions found in order — flag values, a `core.hooksPath` **config read**,
@@ -519,7 +531,11 @@ bin/board-session-close                                      # Stage E: same fin
 ```
 
 **A pass is evidence only if failure was possible.** Every check added by this program was made to
-fail once before it was trusted — and two traps are worth naming, because both produced a green run
+fail once before it was trusted — and three traps are worth naming, because each produced a green run
 that meant nothing: a mutated copy of a bin extracted for testing can die on an unrelated
-`$0`-anchored sibling *before* reaching the mutation, and an inequality assertion passes trivially
-against a mutant that crashed. Assert on the outcome, not on an exit code.
+`$0`-anchored sibling *before* reaching the mutation; an inequality assertion passes trivially
+against a mutant that crashed; and an **rc-only** assertion over an arm whose neighbour answers the
+**same rc** pins nothing at all — Stage C's `kbcard field` Preserve item was rc-pinned only, and
+deleting its guard left the entire suite green, because the `*)` catch-all it then fell through to
+also returns 2 (measured; the message assertion that fixes it is in § Stage C). Assert on the
+outcome, not on an exit code — and where the rc is shared, the message *is* the outcome.

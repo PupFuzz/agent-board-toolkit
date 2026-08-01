@@ -69,8 +69,6 @@ kb_stub_board_config alt 77       # a second RESOLVABLE board, so the refusals b
 kb_stub_board_config bridge 88    # `bridge` is a bare project TOKEN here, resolvable for the same reason
 kb_stub_install
 
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
 NO_VALUE='next-dl: --board requires a non-empty value'
 
