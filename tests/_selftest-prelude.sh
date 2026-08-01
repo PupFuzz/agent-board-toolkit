@@ -24,12 +24,11 @@ eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
 # has <needle> <haystack> → true/false on a LITERAL substring match (robust against
 # the JSON quotes/braces and glob metacharacters in captured output).
 #
-# NEEDLE FIRST. Eleven selftests had each defined this locally; ten used that order and
-# one used the reverse, so the order is a real contract, not a preference: a caller that
-# passes them the other way round gets a substring test between two different strings
-# and reads as a silent false. The ten local definitions still standing SHADOW this one
-# and are unaffected; they are migrated to it under card#5740, which has to audit the
-# inverted copy's call sites rather than flip its arguments blind.
+# NEEDLE FIRST — a real contract, not a preference. Reversing the arguments is not a type
+# error and not a syntax error: it silently becomes a substring test between two different
+# strings, so it reads as a plain `false` and an assertion expecting `false` still passes.
+# Eleven selftests once defined this locally and one of them had exactly that inversion,
+# which is why this lives here and nowhere else (card#5740).
 has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
