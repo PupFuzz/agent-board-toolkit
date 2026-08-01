@@ -10,10 +10,15 @@
 #     native card_type_id; an unset/`000` alias (or KB_TYPING_MODE=tags) instead
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
-#                      [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
+#                      [--swimlane NAME-OR-ID] [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
 #                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
+#     --swimlane births the card directly ON a lane (symmetric with `patch --swimlane`,
+#     same board-env name map): the create POST honours swimlane_id, so this needs no
+#     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
+#     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
+#     rc 2 BEFORE the POST — no card is created at all.
 #   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs]
 #     Moving a card to wont_do (decline) CLEARS its correlation stamps
 #     (payload.dl_number / pr_number / pr_url) in the SAME PATCH, so a stale stamp
@@ -194,6 +199,22 @@ swimlane_id() {
     return 2
 }
 
+# Resolve a `--swimlane <name|id|none|0>` ref to the JSON value written to a task's
+# top-level swimlane_id column. `none`/`0` are the explicit un-assign forms and MUST be
+# special-cased BEFORE the resolver: a numeric ref passes through swimlane_id()
+# unvalidated, so `0` would write swimlane_id:0 — a real-looking id — instead of the
+# intended null. Every other ref resolves through the SAME swimlane_id() helper `list`
+# uses (name→id, numeric passthrough, loud rc 2 on a typo).
+# One owner for the none/0→null rule, shared by `patch` and `create-card` (canon #5 —
+# extracted at the second real caller, not copied into it). Consequence of that rule,
+# unchanged since v0.19.0: a lane literally NAMED `none` is unreachable by name and must
+# be addressed by id.
+_kbc_swimlane_value() {
+    local ref="$1"
+    if [[ "$ref" == "none" || "$ref" == "0" ]]; then printf 'null'; return 0; fi
+    swimlane_id "$ref"
+}
+
 # DL canonicalization (the strict `--dl` → DL-NNN write-site fix, #3400 / canon #5)
 # lives in kb_dl_canon in the shared lib; call it directly below.
 
@@ -277,12 +298,13 @@ _kbc_build_payload() {
 }
 
 cmd_create_card() {
-    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged=""
+    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged="" swimlane=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
             --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
@@ -309,6 +331,13 @@ cmd_create_card() {
     local stage type_id
     stage="$(stage_id "$column")"
     type_id="$(native_type_id "$type")"
+    # Resolve the lane BEFORE the POST so a typo'd --swimlane fails rc 2 with no write
+    # at all — a card born in the wrong lane (or laneless after an accepted flag) is
+    # worse than no card. Empty when the flag was absent; "null" for the un-assign forms.
+    local swim_json=""
+    if [[ -n "$swimlane" ]]; then
+        swim_json="$(_kbc_swimlane_value "$swimlane")" || return 2
+    fi
     # Tag fallback (generalizes BR-3.3): a board with no native type for this alias
     # (all-tag, mixed, or KB_TYPING_MODE=tags) gets a `type:<alias>` tag instead of a
     # bad card_type_id:0. The native path (real id) is unchanged.
@@ -340,15 +369,21 @@ cmd_create_card() {
         --arg desc "$desc" \
         --arg tags "$tags" \
         --arg ext_id "$ext_id" \
+        --arg swim_set "${swimlane:+1}" \
+        --argjson swim "${swim_json:-null}" \
         --argjson payload "$payload_json" \
         '{name: $name, board_id: $board, workflow_stage_id: $stage}
          + (if $type_id != "" then {card_type_id: ($type_id | tonumber)} else {} end)
          + (if $desc  != "" then {description: $desc} else {} end)
          + (if $tags  != "" then {tags: ($tags | split(","))} else {} end)
          + (if $ext_id != "" then {external_id: ($ext_id | tonumber)} else {} end)
+         + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)')"
 
-    kb_api POST "/tasks.json" "$body" | _kbc_write_echo
+    # Surface swimlane_id in the echo only when --swimlane was passed — same rule as
+    # `patch`, so the caller sees the lane the server actually recorded (the whole point
+    # of birthing the card on a lane) without changing every other create's echo shape.
+    kb_api POST "/tasks.json" "$body" | _kbc_write_echo "${swimlane:+swimlane_id: (.swimlane_id // null)}"
 }
 
 cmd_move() {
@@ -433,17 +468,10 @@ cmd_patch() {
     fi
     if [[ -n "$swimlane" ]]; then
         # swimlane_id is a top-level column (not a payload key), so it rides the inner
-        # task object like workflow_stage_id — not the payload merge. `none`/`0` are the
-        # explicit un-assign forms (→ null); every other ref resolves through the SAME
-        # swimlane_id() helper `list` uses (name→id, numeric passthrough, loud rc 2 on a
-        # typo). 0 is special-cased BEFORE the resolver because it passes a numeric ref
-        # through unvalidated — writing swimlane_id:0 instead of the intended null.
+        # task object like workflow_stage_id — not the payload merge. The ref→JSON rule
+        # (none/0 → null, else resolve) is shared with create-card in _kbc_swimlane_value.
         local swim_id
-        if [[ "$swimlane" == "none" || "$swimlane" == "0" ]]; then
-            swim_id="null"
-        else
-            swim_id="$(swimlane_id "$swimlane")" || return 2
-        fi
+        swim_id="$(_kbc_swimlane_value "$swimlane")" || return 2
         inner="$(jq -n --argjson cur "$inner" --argjson s "$swim_id" '$cur + {swimlane_id: $s}')"
     fi
     if [[ -n "$desc" ]]; then

@@ -509,8 +509,77 @@ kb_api() { printf '%s' '{"data":{"id":99,"name":"x","workflow_stage_id":5,"swiml
 eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
 eq "patch --swimlane echo surfaces swimlane_id"      "true"  "$(cmd_patch --task 99 --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
 eq "patch WITHOUT --swimlane echo omits swimlane_id" "false" "$(cmd_patch --task 99 --dl DL-1 2>/dev/null | jq 'has("swimlane_id")')"
+unset -f sp
+
+# ---------------------------------------------------------------------------
+echo "== cmd_create_card --swimlane — birth a card ON a lane (card#5671, roundtable #205) =="
+# The gap: create-card rejected --swimlane (rc 2, `unknown arg`) while patch and list both
+# advertised it two lines away in the same usage block, so minting onto a lane took
+# create-then-patch — leaving a laneless window any lane-keyed reader can observe.
+# The create POST honours swimlane_id at birth (measured on a swimlaned board, roundtable
+# #205), so the flag rides the create body directly; no create+patch composition.
+# Network-free: kb_api echoes the request body ($3); the write-echo passes it through.
+# _CC_POSTED records whether kb_api was reached AT ALL — the fail-before-write assertion
+# below is about a POST that must never happen, which a body assertion alone cannot show.
+_CC_POSTED="$(mktemp)"; trap 'rm -f "$_CC_POSTED"' EXIT
+kb_api() { printf 'yes' > "$_CC_POSTED"; printf '%s' "$3"; }
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
+cc() { : > "$_CC_POSTED"; cmd_create_card --type task --name x "$@" 2>/dev/null | jq -c '.'; }
+
+eq "create --swimlane by name → resolved id"       "2" "$(cc --swimlane backend | jq -c '.swimlane_id')"
+eq "create --swimlane by numeric id → passthrough" "5" "$(cc --swimlane 5       | jq -c '.swimlane_id')"
+# none/0 birth the card explicitly laneless: the key must be PRESENT and null, so an
+# absent key (flag silently dropped) reds instead of reading the same as a genuine null.
+eq "create --swimlane none → key present + null" '[true,null]' \
+   "$(cc --swimlane none | jq -c '[has("swimlane_id"), .swimlane_id]')"
+eq "create --swimlane 0 → key present + null"    '[true,null]' \
+   "$(cc --swimlane 0    | jq -c '[has("swimlane_id"), .swimlane_id]')"
+# swimlane_id is a top-level column, NOT a payload key — must not leak into task.payload.
+eq "create --swimlane sets a top-level column, not payload" "false" \
+   "$(cc --swimlane backend | jq '(.payload // {}) | has("swimlane_id")')"
+# Negative control: without the flag the key is ABSENT (proves the flag is load-bearing,
+# and that an ordinary create's body is byte-unchanged by this feature).
+eq "create without --swimlane → key ABSENT" "false" "$(cc | jq 'has("swimlane_id")')"
+
+# A typo'd lane must fail rc 2 with NO POST AT ALL. Accepting the flag and then birthing
+# the card laneless (or in a wrong lane) is strictly worse than the old rc-2 rejection —
+# a wrong card exists and something has to notice it. Assert the write never happened.
+: > "$_CC_POSTED"
+rc=0; cmd_create_card --type task --name x --swimlane bogus >/dev/null 2>&1 || rc=$?
+eq "create --swimlane typo → rc 2"              "2"  "$rc"
+eq "create --swimlane typo → NO card POSTed"    ""   "$(cat "$_CC_POSTED")"
+# Positive control for that assertion: the same probe records a POST on the happy path,
+# so the empty result above is a measurement, not a stub that never writes.
+: > "$_CC_POSTED"; cmd_create_card --type task --name x --swimlane backend >/dev/null 2>&1
+eq "control: a valid create DOES reach the POST" "yes" "$(cat "$_CC_POSTED")"
+# An explicitly-empty value is a caller bug (an unexpanded var), not "use the default".
+rc=0; cmd_create_card --type task --name x --swimlane "" >/dev/null 2>&1 || rc=$?
+eq "create --swimlane \"\" → rc 2" "2" "$rc"
+
+# ONE owner for the none/0→null rule (canon #5): create-card and patch must map the SAME
+# ref to the SAME swimlane_id. RED-when-reverted: re-inline a second none/0 branch in
+# either command and any divergence — notably `0` writing 0 instead of null — reds here.
+for ref in backend 5 none 0; do
+    eq "create/patch agree on --swimlane $ref" \
+       "$(cmd_patch --task 99 --swimlane "$ref" 2>/dev/null | jq -c '.swimlane_id')" \
+       "$(cc --swimlane "$ref" | jq -c '.swimlane_id')"
+done
+
+# The write echo surfaces swimlane_id ONLY when the flag was passed — same rule as patch,
+# so the caller sees the lane the server recorded. Uses the REAL projection over a server
+# {data:…} envelope (captured before the patch block; restored here, not re-implemented).
+kb_api() { printf '%s' '{"data":{"id":77,"name":"x","workflow_stage_id":48,"swimlane_id":2}}'; }
+eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
+eq "create --swimlane echo surfaces swimlane_id"      "true" \
+   "$(cmd_create_card --type task --name x --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
+eq "create WITHOUT --swimlane echo omits swimlane_id" "false" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq 'has("swimlane_id")')"
+
+rm -f "$_CC_POSTED"; unset _CC_POSTED; trap - EXIT
+unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
-unset -f sp _kbc_write_echo_orig
+unset -f cc _kbc_write_echo_orig
 
 # ---------------------------------------------------------------------------
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
