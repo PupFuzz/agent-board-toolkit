@@ -26,7 +26,7 @@ Measured against `origin/dev` at the time of writing; the CHANGELOG is the runni
 | stage | what it was | status |
 |---|---|---|
 | **A** | three live defects found *by* the plan's own review passes | **shipped** |
-| **B** | make the gates able to fail | **shipped** (5/5) |
+| **B** | make the gates able to fail | **shipped** (5/5), plus a later addition on the same axis — the harness's own shared helper (card #5740); see *Stage B* |
 | **C** | one value-guard on every axis | **shipped, narrower than its own title** (card #5566) — the *flag* axis only: its positional half was superseded by a *different, better* fix, and its exit-code half is **unreachable by construction** (both below) |
 | **D** | one library (`promote-released-cards` sources the lib) | **DROPPED — decided 2026-08-01**, not merely recommended (see *Stage D*). It is the program's strongest argument *against* consolidating. |
 | **E** | de-duplicate the PR-query set | **shipped** (card #5227); its other half stays dropped |
@@ -186,6 +186,42 @@ Each item landed as its own PR; see the CHANGELOG for what each changed.
 
 **Extensibility gained:** a change to any of these bins is now verifiable, and a new test cannot be
 silently skipped.
+
+### Later addition on this axis — the harness's own helper (card #5740)
+
+Stage B made the gates *runnable*. It did not ask whether the assertions **inside** them could
+fail, and one of them could not.
+
+`has()` — a literal-substring assertion helper — was defined locally in **ten** selftests, and one
+copy took its arguments in the opposite order. That divergence is invisible to every gate this
+stage built, and the mechanism is the durable part: reversing the arguments of a substring test is
+neither a syntax nor a type error. Under a needle-first definition, `has <haystack> <needle>`
+compares two unrelated strings and answers `false` — so **every assertion expecting `false` keeps
+passing while testing nothing**. Per-file review cannot see it either: the inverted file had
+carried its spelling since it was written and was internally consistent across its own eight call
+sites, so neither that file nor the prelude could reveal the inversion in isolation. Only comparing
+the two definitions could.
+
+**The rule this leaves, binding on every future selftest:** a helper used by more than one selftest
+lives in `_selftest-prelude.sh` and is *sourced*, never re-declared. A deliberate **variant** is
+still fine and is not what this forbids — `kb-board-lib-selftest` defines `expect_rc`/`expect_out`
+that route failures through the shared `eq`, which the prelude's docblock sanctions. The test is
+whether a second definition can silently **disagree** with the shared one, not whether it exists.
+
+**Deleting the copies did not close the class, and the first cut of this section said it had.**
+Card #5740 left `has()` with one definition and a prelude comment asserting it "lives here and
+nowhere else" — enforced by nothing executable. That is the shape *Stage B itself* was built to
+remove (`ci-matrix-parity-selftest`'s `# KEEP THIS LIST IN SYNC` comment), re-minted one layer
+down: fixing N copies without the guard that forbids the N+1th leaves the cause in place.
+`prelude-shadow-selftest.sh` is that guard — it derives the helper set **from the prelude** rather
+than restating it (a hardcoded list would be this program's own defect again), allow-lists the
+sanctioned variants by name so adding a shadow costs an explicit edit, and fails if an allow-list
+entry outlives the shadow it excuses.
+
+**Weakest property, stated so it is not over-cited:** that guard compares **names**, not behaviour.
+It catches a re-declared helper; it cannot catch a selftest that hand-rolls the same logic inline
+under a different name, and it says nothing about whether the prelude's argument order is the right
+one. It closes the copy channel that actually minted the bug — not every conceivable one.
 
 ---
 

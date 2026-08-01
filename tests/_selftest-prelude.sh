@@ -27,8 +27,9 @@ eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
 # NEEDLE FIRST — a real contract, not a preference. Reversing the arguments is not a type
 # error and not a syntax error: it silently becomes a substring test between two different
 # strings, so it reads as a plain `false` and an assertion expecting `false` still passes.
-# Eleven selftests once defined this locally and one of them had exactly that inversion,
-# which is why this lives here and nowhere else (card#5740).
+# Ten selftests once defined this locally and one of them had exactly that inversion, which is
+# why this lives here and nowhere else (card#5740). `prelude-shadow-selftest.sh` is what keeps
+# that true — re-declaring any helper defined here reds it.
 has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.

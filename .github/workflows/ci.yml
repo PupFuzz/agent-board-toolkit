@@ -93,6 +93,7 @@ jobs:
           - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
+          - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
           - readme-bin-coverage-selftest
