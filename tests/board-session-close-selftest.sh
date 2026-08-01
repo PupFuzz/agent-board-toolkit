@@ -45,8 +45,6 @@ _need -r "$BIN"
 _mktmp_scratch          # TMP + EXIT-cleanup trap
 UB="/usr/bin:/bin"
 
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # run_resolve <HOME> <PATH> <OVERRIDE> — resolve in a hermetic env; echo "rc|stdout".
 run_resolve() {
     local h="$1" p="$2" ov="$3" out rc

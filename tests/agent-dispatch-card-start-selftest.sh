@@ -26,9 +26,6 @@ _need -x "$HOOK"
 
 _mktmp_scratch --home   # scratch HOME=$TMP so only the board-env files we create exist
 
-# has <needle> <haystack> — literal-substring match (robust vs JSON/flag punctuation).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # --- kbcard PATH shim: records each invocation's argv to $KBADS_REC, one line per call ----
 export KBADS_REC="$TMP/kbcard.calls"
 mkdir -p "$TMP/bin"

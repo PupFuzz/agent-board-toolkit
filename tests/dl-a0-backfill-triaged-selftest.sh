@@ -59,10 +59,6 @@ kb_stub_board_config dev 42
 kb_stub_board_config alt 77     # a second board, so "--board routes" is a real assertion
 kb_stub_install
 
-# has <needle> <haystack> → true/false on a LITERAL substring match (robust against the JSON
-# brackets and the U+2026 in the tool's "… and N more" line).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # --- board fixture ----------------------------------------------------------------------------
 # 11 cards, chosen so every arm of the jq selector is exercised by a card that must NOT be
 # selected as well as one that must:

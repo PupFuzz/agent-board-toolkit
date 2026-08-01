@@ -67,9 +67,6 @@ _run() {
     ERR="$(cat "$TMP/stderr")"
 }
 
-# has <needle> <haystack> — literal substring test, printed as true/false for `eq`.
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # _vendor <dir> <tool>... — a fixture repo whose bin/ holds verbatim toolkit copies.
 _vendor() {
     local d="$1" t; shift

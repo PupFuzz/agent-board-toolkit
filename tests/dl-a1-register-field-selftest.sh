@@ -52,8 +52,6 @@ kb_stub_board_config alt     77 'export KB_STAGE_BACKLOG=51'   # proves --board 
 kb_stub_board_config nostage 88                                # no stage anywhere → refusal
 kb_stub_install
 
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 export KB_STUB_TASK_ID=777
 export KB_STUB_BYREF="hit miss miss"   # one answer per by-ref read, in order; the last repeats
 

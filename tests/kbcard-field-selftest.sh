@@ -32,9 +32,6 @@ _need -r "$BIN"
 source "$BIN"   # main-guarded — defines the field fns without running main()
 
 _mktmp_scratch
-# has <needle> <haystack> → true/false on a LITERAL substring match (robust against
-# the JSON quotes/braces in captured output).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # The verb reads KB_BOARD_ID; kb_api is stubbed so KB_API/KB_TOKEN are never used.
 export KB_BOARD_ID=1

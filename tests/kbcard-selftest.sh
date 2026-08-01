@@ -93,9 +93,6 @@ echo "== cmd_archive / cmd_delete — arg guards + dry-run + non-TTY --hard refu
 # These paths are network-free: a NUMERIC --task short-circuits resolve_task (no
 # search call), --dry-run returns before any API call, and the non-TTY --hard
 # guard refuses before the soft-delete — so no kb_api call is ever reached here.
-# has <needle> <haystack> → true/false on a LITERAL substring match (no globbing,
-# no regex — robust against the JSON quotes/braces in the dry-run output).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 rc=0; cmd_archive >/dev/null 2>&1 || rc=$?
 eq "archive without --task → rc 2" "2" "$rc"
