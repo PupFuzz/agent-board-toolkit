@@ -44,7 +44,15 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --peek|--no-claim) peek=1 ;;
         --board)   # FR-2: an arbitrary PM-project board, not just kanban|bridge
-            shift; [[ -n "${1:-}" && -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
+            # TWO refusals, deliberately not one condition. This was a single
+            # `[[ -n "${1:-}" && -z "$project" ]]` doing two unrelated jobs: the left
+            # operand is the shared flag-value invariant (kb_require_value owns it and
+            # names the flag), the right one is next-dl's OWN mutual exclusion — a
+            # project named twice — which no value guard can express. Presence is still
+            # tested first, so the order the `&&` short-circuited in is unchanged.
+            kb_require_value "$1" "${2:-}" || exit 2
+            shift
+            [[ -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
             project="$1" ;;
         kanban|board|kanban-board|bridge|agent-bridge)
             [[ -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }

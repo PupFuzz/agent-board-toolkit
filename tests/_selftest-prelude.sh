@@ -6,7 +6,7 @@
 #     source "$HERE/_selftest-prelude.sh"
 #
 # It carries only the harness the selftests all shared verbatim — the assertion
-# helpers (ok/bad/fails, eq, expect_rc/expect_out), the required-bin guard, the
+# helpers (ok/bad/fails, eq, expect_rc/expect_out, has), the required-bin guard, the
 # temp-dir+trap[+scratch-HOME] setup, and the PASS/FAIL summary. It defines no test
 # cases and asserts nothing; the fixtures and cases stay in each selftest.
 #
@@ -20,6 +20,17 @@ bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
 
 # eq <label> <expected> <got> — string-equality assertion.
 eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
+
+# has <needle> <haystack> → true/false on a LITERAL substring match (robust against
+# the JSON quotes/braces and glob metacharacters in captured output).
+#
+# NEEDLE FIRST. Eleven selftests had each defined this locally; ten used that order and
+# one used the reverse, so the order is a real contract, not a preference: a caller that
+# passes them the other way round gets a substring test between two different strings
+# and reads as a silent false. The ten local definitions still standing SHADOW this one
+# and are unaffected; they are migrated to it under card#5740, which has to audit the
+# inverted copy's call sites rather than flip its arguments blind.
+has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
 expect_rc() {

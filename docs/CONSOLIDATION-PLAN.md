@@ -27,13 +27,13 @@ Measured against `origin/dev` at the time of writing; the CHANGELOG is the runni
 |---|---|---|
 | **A** | three live defects found *by* the plan's own review passes | **shipped** |
 | **B** | make the gates able to fail | **shipped** (5/5) |
-| **C** | one value-guard on every axis | **not started**; its positional half was superseded by a *different, better* fix (below) |
+| **C** | one value-guard on every axis | **shipped, narrower than its own title** (card #5566) — the *flag* axis only: its positional half was superseded by a *different, better* fix, and its exit-code half is **unreachable by construction** (both below) |
 | **D** | one library (`promote-released-cards` sources the lib) | **recommended dropped** — see *Stage D* |
 | **E** | de-duplicate the PR-query set | **shipped** (card #5227); its other half stays dropped |
 
-**C remains design-only by direction:** it may be planned and reviewed, not built, without a fresh
-decision — and **this document does not authorize it**. E was design-only under the same rule until
-it received that fresh decision and was built (card #5227); C has not.
+**C was design-only by direction** — plannable and reviewable, not buildable, without a fresh
+decision, which **this document never granted**. It received that decision on 2026-08-01, once the
+build prerequisite below was discharged, and shipped. E had run the same course (card #5227).
 
 ---
 
@@ -189,7 +189,7 @@ silently skipped.
 
 ---
 
-## Stage C — one value-guard on every axis · not started; positional half superseded
+## Stage C — one value-guard on every axis · flag half shipped; positional half superseded; exit-code half unreachable
 
 **The positional half is settled, and not the way this stage proposed.** Stage C said to *extend
 `kb_require_value` to the positional axis*. That directly contradicts the diagnosis above, which
@@ -204,24 +204,98 @@ primitive and `install-board-hooks`' standalone mirror **agree on the inputs it 
 blind by construction to a call site left hand-rolled — and a fourth such site was found
 afterwards (`agent-board-toolkit-drift-check` silently discards a third positional; card #5429).
 
-**What remains of Stage C is the flag axis alone**, and it is still open. Measured on `origin/dev`:
+**What remained of Stage C was the flag axis alone**, and it shipped on 2026-08-01 (card #5566).
+The four spellings this section carried, measured on `origin/dev` before the build:
 
 | spelling | where | rc | names the offending flag? |
 |---|---|---|---|
 | `kb_require_value` | `kbcard`, `adopt-to-dl` | 2 | yes |
 | `shift; [[ -n … ]] \|\| { echo "$USAGE" >&2; exit 2; }` | `next-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field` | 2 | **no** — prints usage only |
-| `"${2:?…}"` | `agent-board-toolkit-runtime-check` | **1** | no — a raw bash diagnostic |
+| `"${2:?…}"` | `agent-board-toolkit-runtime-check` | **1** | partially — see the correction below |
 | a local `require_value` mirror | `promote-released-cards`, `release-pr-body` | 2 (via `die`) | yes |
 
-So one invariant still yields **two exit codes** and three message qualities.
+**Scope.** Only the bins that source the lib can adopt the primitive; the two standalone tools are
+vendored into consumer repos and cannot. `agent-board-toolkit-runtime-check` is **excluded on
+purpose** — it validates `_kb-board-lib.sh`, so it must not source it; making the mixed-runtime
+*detector* depend on the artifact under test is backwards, and its rc is fixed in place by that.
 
-**Scope, if it is ever built.** Only the bins that source the lib can adopt the primitive; the two
-standalone tools are vendored into consumer repos and cannot. `agent-board-toolkit-runtime-check`
-is **excluded on purpose** — it validates `_kb-board-lib.sh`, so it must not source it; making the
-mixed-runtime *detector* depend on the artifact under test is backwards, and its rc is fixed in
-place by that.
+### What the delta table found, and what it cost this section's own framing
 
-**Honest scope:** this would retire the *argv* axis. It does **not** retire the class. Card #5276
+The build prerequisite (a complete per-call-site behaviour-delta table) was discharged first, by
+grepping the call-site set out of `bin/` rather than hand-listing it and then **running** every
+site in both its missing and its explicitly-empty form. Four findings changed the stage:
+
+1. **The four rows above are 57 individual call sites across 8 files** — the grouping is by
+   spelling-and-bin, and per-flag granularity was hidden inside it (`dl-a1-register-field` alone is
+   4 sites, not 1). Of those 57, **6** were caller-visibly adoptable; the rest were already at the
+   target state, already at message parity, or out of scope. The stage's real size is 6 call sites
+   across 3 files, not the "~5 bins" this section implied.
+2. **The exit-code half of the headline is UNREACHABLE, and the stage did not retire it.** Every
+   adoptable site already exited 2. The only rc 1 in the corpus is `agent-board-toolkit-runtime-
+   check`'s `"${2:?…}"`, which is excluded by design and stays rc 1. So *"one invariant, two exit
+   codes → one"* was never available: what shipped retires the **message-quality** divergence on
+   the adoptable set, and **the exit-code divergence remains, by design**. Say it that way; the
+   stronger claim is an overclaim in the exact program that exists to stop them.
+3. **`next-dl`'s `--board` guard was COMPOUND**, and a drop-in swap would have shipped green while
+   deleting a Preserve item. One condition — `[[ -n "${1:-}" && -z "$project" ]]` — did the
+   value-presence test *and* the "project named twice" mutual exclusion. It was **split** into two
+   sequential checks (presence via the primitive, exclusion kept as its own guard with its own
+   message), presence first, which is the order the `&&` already short-circuited in. That order is
+   now a choice rather than an accident, so it is asserted.
+4. **`bin/kbcard`'s `cmd_field` sub-verb check is a false-positive lookalike.** It matches the
+   diagnostic vocabulary and sits in the file most of this axis lives in, but it reads a positional
+   sub-verb, not a flag's value. Not converted — see Preserve.
+
+**One correction to this section's own starting table.** It called `runtime-check`'s row *"no — a
+raw bash diagnostic"*. Run, it emits `…: line 40: 2: --reference needs a dir`: bash's own
+positional slot (`2`) stands where the flag should be, but the custom text after it **does** carry
+the literal `--reference`. Inconsistent and un-prefixed, not absent. The row's disposition is
+unchanged.
+
+### What shipped (card #5566)
+
+`kb_require_value` adopted at all 6 caller-visible sites — `dl-a0-backfill-triaged --board`,
+`dl-a1-register-field --board/--stage/--swimlane/--sentinel`, and `next-dl --board` — every one an
+**rc-2-stays-rc-2 message-text upgrade** from a bare usage line to one naming the offending flag,
+in both the missing and the explicitly-empty form. **No exit code changed on any healthy install.**
+
+**One structural consequence the delta table did not predict, and it is caller-visible.**
+`dl-a0-backfill-triaged` and `dl-a1-register-field` parsed their arguments **before** sourcing the
+lib, so the primitive did not exist at the point of the check; the source block moved above the arg
+loop (the ordering `next-dl`, `kbcard`, `adopt-to-dl` and `board-card-start` already had). On a
+**broken install only** — a bin vendored without `_kb-board-lib.sh` beside it — those two now
+answer *every* invocation with the missing-lib refusal at rc 1, including `--help`, which
+previously answered rc 0 before the lib was ever consulted. `--help` is the widest-known case but
+not the only rc that moves: with the check below the loop the missing lib was reported only for an
+invocation the loop let through, so the loop's own refusals (`--bogus`, a trailing value-taking
+flag, a stray positional) went **2 → 1** too — measured lib-less on both binaries, pre and post.
+The two alternatives were both worse:
+an inline mirror of the primitive is the defect this program exists to remove, and sourcing
+conditionally (`[ -r "$KB_LIB" ] && source "$KB_LIB"`) evades `agent-board-toolkit-drift-check`'s
+anchored `^[[:space:]]*source "\$KB_LIB"` probe, deleting a live guard to preserve a refusal path.
+Both bins' selftests now pin the lib-less behaviour.
+
+**Preserve — each asserted by a test rather than by inspection, each bullet naming what that
+test actually covers (an rc-only assertion is not coverage of a message, and was not here):**
+
+- `install-board-hooks`/`adopt-to-dl` **empty-positional rejection** — untouched by this stage;
+  `tests/kb-positional-guard-selftest.sh` continues to own it.
+- `next-dl`'s **"project named twice" mutual exclusion** — asserted in
+  `tests/next-dl-selftest.sh` across all four spellings of the collision (`kanban --board dev`,
+  `--board dev kanban`, `kanban bridge`, `--board dev --board alt`), each pinned to rc 2, to the
+  **generic usage line** (a mutual-exclusion violation is not a value-guard failure), and to
+  minting nothing and issuing no request. Both halves of the split were driven red independently.
+- **`kbcard field`'s sub-verb dispatch** — deliberately **not** converted (finding 4 above);
+  `tests/kbcard-field-selftest.sh` owns it, pinning the missing-sub-verb refusal by **message**
+  and the unknown-sub-verb one by rc. The message half was added when review measured this
+  bullet's own claim false: the file asserted rc **only**, and rc cannot separate the two arms —
+  with the guard deleted an absent sub-verb falls through to the `*)` catch-all, which answers rc
+  2 as well, so the whole 25-file suite stayed green over a deleted Preserve item (measured, then
+  driven red by the added assertion). Driven as a process the delta is wider still and remains
+  unasserted: `kbcard field` goes from a named rc 2 to a **silent rc 1** (the arm's own `shift` on
+  an exhausted stack under `set -e`), which no function-level case can reach.
+
+**Honest scope:** this retired the *argv* axis. It does **not** retire the class. Card #5276
 records the axis as four positions found in order — flag values, a `core.hooksPath` **config read**,
 the positionals in `install-board-hooks`/`adopt-to-dl`, and `kbcard`'s own positional (still open).
 The config read is the one **no argument primitive can reach**; it needed, and got, its own fix
@@ -233,21 +307,23 @@ intact.
 > **never the category of source it was last found in.** An earlier sweep passed `kbcard` clean, and
 > that verdict was correct *for the axis it examined*; it simply examined a different one.
 
-**Build prerequisite:** enumerate **every** behavior delta per call-site before dispatching. The
-first attempt's table had four rows and review found at least four more. A partial table buys
-consent for a smaller change than would ship — which is why this is ask-first.
-
-**Preserve:** `install-board-hooks`/`adopt-to-dl` empty-positional rejection; `next-dl`'s
-"project named twice" mutual exclusion; `kbcard field`'s sub-verb dispatch.
+**Build prerequisite — discharged, and it earned its cost.** The rule was: enumerate **every**
+behaviour delta per call-site before dispatching, because a partial table buys consent for a
+smaller change than would ship. The first attempt's table had four rows; the discharged one derived
+57 call sites and produced the four findings above — including the compound `next-dl` guard, whose
+naive swap would have deleted a Preserve item **and still gone green**, since `next-dl` had no
+argument-surface coverage at all until this stage added it. The prerequisite is what made the
+difference between building the stage and building a regression that looked like it.
 
 **Related open cards:** #5276 (the empty-positional case), #5427 and #5351 (whether a `--`
 terminator belongs in the shared shape — currently `install-board-hooks` refuses a bare `--`, and
 `adopt-to-dl`'s `--) ;;` arm is decorative), #5429, #5409.
 
-### Ruling 2026-07-29 — **DEFERRED, not declined. Do not build it off this section alone.**
+### Ruling 2026-07-29 — DEFERRED, not declined · **superseded 2026-08-01, kept as the record**
 
 Put to the user with the trade stated and deferred **by decision, not by neglect**. Three reasons,
-recorded so this is not re-litigated from the defect list alone:
+recorded so this is not re-litigated from the defect list alone — and reason 1 turned out to be
+measurably smaller than it assumed, which is why the reasons are kept rather than deleted:
 
 1. **The benefit is real but small, and its blast radius is not.** What the stage buys is one exit
    code and one message quality across ~5 bins. What it touches is the **error contract every
@@ -268,6 +344,27 @@ table is cheap to produce and the axis rides along with work that justifies itse
 the current state is accepted **with its cost named**: one invariant, two exit codes, three message
 qualities — and `agent-board-toolkit-runtime-check`'s `rc 1` is fixed in place by its deliberate
 exclusion (it validates `_kb-board-lib.sh`, so it must not source it).
+
+### Ruling 2026-08-01 — **BUILT**, on the discharged prerequisite
+
+The user directed the consolidation program to completion; that is the fresh decision this document
+requires, and the delta table was produced **first**, as the deferral demanded. Two of its
+measurements bear directly on the reasoning above and are recorded here rather than left to be
+re-derived:
+
+- **Reason 1 was narrower than it read.** *"A caller scripting `rc == 2 ⇒ usage error` is relying
+  on the current shape, including the `runtime-check` outlier"* — measured, no rc changed anywhere
+  in the 57-site corpus on a healthy install, and `runtime-check` was never reachable from this
+  build at all. The blast radius that justified deferring was **message text on 6 call sites**. The
+  deferral was still not wrong: nothing in the section *established* that before the table existed,
+  which is precisely what reason 2 said.
+- **Reason 2 was load-bearing, and it paid.** The table is what surfaced the compound `next-dl`
+  guard. A build off the four-row section would have swapped it wholesale, deleted the mutual
+  exclusion, and passed every test in the repo.
+
+What the stage did **not** buy is stated in the status table and above: the exit-code divergence
+survives by design. A future reader tempted to write "Stage C unified the exit codes" should read
+finding 2 first.
 
 ---
 
@@ -379,10 +476,10 @@ half was dropped, above.
 - **A new `kb_parse` option parser** — a sibling implementation beside the `kb_require_value` that
   already owns the flag invariant. Building it would *be* the defect this program exists to remove.
   Its value-return mechanism would also rewrite option plumbing across the largest tool in the
-  repo, which drives three live boards. Stage C gets the win without the rewrite.
+  repo, which drives three live boards. Stage C got the win without the rewrite.
 - **A "keep in sync" comment sweep** — the premise evaporated. The genuine instances nearly all
   describe the standalone mirrors Stage D would remove at the source, and the proposed
-  guard was a decoration by construction: it would have matched the dispatch sites Stage C changes
+  guard was a decoration by construction: it would have matched the dispatch sites Stage C changed
   and greened permanently without ever firing on the ones that remain. Deleting the prose would
   also have destroyed **measured** knowledge — `_ibh_read_hooks_path`'s header records the git-2.43
   measurements that are the whole reason it returns a status, and `kb_require_positional`'s header
@@ -427,12 +524,18 @@ gradient in the PR body; every `Preserve:` item asserted by a test, not by inspe
 bash tests/<each>.sh
 bin/board-card-start "$(git branch --show-current)" --lint   # Stage A: must NOT move a card
 bin/agent-board-toolkit-runtime-check --help | tail -3       # Stage A: must not leak `set -euo`
+bin/next-dl kanban --board dev                               # Stage C: still rc 2 + the usage line
+bin/next-dl --board ''                                       # Stage C: rc 2, now naming --board
 bin/promote-released-cards --dry-run                         # Stage D, if revived: plan unchanged
 bin/board-session-close                                      # Stage E: same findings, byte-identical
 ```
 
 **A pass is evidence only if failure was possible.** Every check added by this program was made to
-fail once before it was trusted — and two traps are worth naming, because both produced a green run
+fail once before it was trusted — and three traps are worth naming, because each produced a green run
 that meant nothing: a mutated copy of a bin extracted for testing can die on an unrelated
-`$0`-anchored sibling *before* reaching the mutation, and an inequality assertion passes trivially
-against a mutant that crashed. Assert on the outcome, not on an exit code.
+`$0`-anchored sibling *before* reaching the mutation; an inequality assertion passes trivially
+against a mutant that crashed; and an **rc-only** assertion over an arm whose neighbour answers the
+**same rc** pins nothing at all — Stage C's `kbcard field` Preserve item was rc-pinned only, and
+deleting its guard left the entire suite green, because the `*)` catch-all it then fell through to
+also returns 2 (measured; the message assertion that fixes it is in § Stage C). Assert on the
+outcome, not on an exit code — and where the rc is shared, the message *is* the outcome.

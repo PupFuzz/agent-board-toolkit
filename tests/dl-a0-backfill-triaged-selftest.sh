@@ -256,14 +256,25 @@ run_a0 -h
 eq "-h → rc 0"                           "0" "$rc"
 eq "-h prints the same usage"            "usage: dl-a0-backfill-triaged [--board NAME] [--apply] [--remove]" "$out"
 
+# MISSING and EMPTY are separate inputs and are asserted separately: the two are the same
+# behaviour here only because the guard tests the VALUE, and a regression that dispatched on the
+# flag being seen would keep one of them green. Both must name the offending flag — the usage
+# line alone left the operator to work out WHICH flag was short, and this tool takes four.
+NO_VALUE='dl-a0-backfill-triaged: --board requires a non-empty value'
 run_a0 --board ""
 eq "--board with an empty value → rc 2"  "2" "$rc"
-eq "the empty-value refusal prints usage on stderr" "true" "$(has 'usage: dl-a0-backfill-triaged' "$err")"
+eq "the empty-value refusal names the offending flag" "$NO_VALUE" "$err"
 eq "an empty --board never selects the default board" "0" "$(kb_stub_total)"
 run_a0 --board
 eq "a trailing --board with no argument → rc 2" "2" "$rc"
-eq "the trailing-flag refusal prints usage, not an unbound-variable error" "false" \
+eq "a trailing --board is refused identically to an empty one" "$NO_VALUE" "$err"
+eq "the trailing-flag refusal does not leak an unbound-variable error" "false" \
    "$(has 'unbound variable' "$err")"
+# There is deliberately no "and it issued no request" here, though there is one for the EMPTY
+# form above. Measured: with the guard deleted outright, a TRAILING --board still reaches no
+# request — the arg loop's own closing `shift` fails on an exhausted stack and `set -e` ends the
+# run first. No regression in this guard can make that assertion fail, and a check that cannot
+# fail is decoration (canon #9). The empty form has no such backstop, so its zero is live.
 run_a0 --bogus
 eq "an unknown option → rc 2"            "2" "$rc"
 eq "the unknown-option refusal prints usage" "true" "$(has 'usage: dl-a0-backfill-triaged' "$err")"
@@ -275,5 +286,21 @@ eq "a stray positional → rc 2"           "2" "$rc"
 run_a0 --remove
 eq "witness: the same harness DOES issue a request when the arguments are valid" "1" \
    "$(kb_stub_count "${GET_SEARCH[@]}")"
+
+echo "== a lib-less copy is refused before the argument surface, --help included =="
+# The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That
+# ordering is caller-visible on a BROKEN install only, and this is where it shows: a copy vendored
+# without _kb-board-lib.sh beside it now answers every invocation with the missing-lib refusal at
+# rc 1. With the check BELOW the loop it reported the missing lib only for an invocation the loop
+# let through: measured lib-less on the pre-change binary, --help answered rc 0 and each arg-loop
+# refusal (--bogus, a trailing --board, a stray positional) answered rc 2 with the usage line.
+# next-dl, kbcard and adopt-to-dl have always behaved this way; this pins the alignment.
+mkdir -p "$TMP/nolib"
+cp "$A0" "$TMP/nolib/"
+nolib_rc=0
+nolib_err="$("$TMP/nolib/dl-a0-backfill-triaged" --help 2>&1 >/dev/null)" || nolib_rc=$?
+eq "a lib-less copy refuses --help → rc 1" "1" "$nolib_rc"
+eq "the refusal names the lib and how to fix it" "true" \
+   "$(has 'shared lib _kb-board-lib.sh not found next to this script' "$nolib_err")"
 
 _summary "dl-a0-backfill-triaged-selftest"
