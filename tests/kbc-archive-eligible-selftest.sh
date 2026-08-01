@@ -117,18 +117,16 @@ export FAKE_GH_STATE_6=OPEN
 export FAKE_GH_STATE_7=CLOSED
 export FAKE_GH_STATE_8=CLOSED
 
-has() { case "$1" in *"$2"*) echo true ;; *) echo false ;; esac; }
-
 echo "== _kbc-archive-eligible.py over the REAL may_archive (kanban_common: $REAL_KC) =="
 out="$(python3 "$HELPER" 2>&1)"; rc=$?
 eq "helper exits 0 (no infra error)"                       "0"    "$rc"
-eq "(a) done card, all sources terminal → LISTED eligible" "true"  "$(has "$out" "done-with-terminal-source")"
-eq "(b) done card, live source no twin → NOT listed"       "false" "$(has "$out" "done-with-live-source")"
-eq "(c) in-progress card (terminal src) → NOT a candidate" "false" "$(has "$out" "inprogress-with-terminal-source")"
-eq "(d) archived done card → skipped"                      "false" "$(has "$out" "archived-done-card")"
-eq "summary reports 2 done cards not yet archived (total)"  "true"  "$(has "$out" "2 done card(s) not yet archived")"
-eq "sample reports exactly 1 safe to archive now"          "true"  "$(has "$out" "1 safe to archive now")"
-eq "eligible line carries the [Done] column"               "true"  "$(has "$out" "[Done]")"
+eq "(a) done card, all sources terminal → LISTED eligible" "true"  "$(has "done-with-terminal-source" "$out")"
+eq "(b) done card, live source no twin → NOT listed"       "false" "$(has "done-with-live-source" "$out")"
+eq "(c) in-progress card (terminal src) → NOT a candidate" "false" "$(has "inprogress-with-terminal-source" "$out")"
+eq "(d) archived done card → skipped"                      "false" "$(has "archived-done-card" "$out")"
+eq "summary reports 2 done cards not yet archived (total)"  "true"  "$(has "2 done card(s) not yet archived" "$out")"
+eq "sample reports exactly 1 safe to archive now"          "true"  "$(has "1 safe to archive now" "$out")"
+eq "eligible line carries the [Done] column"               "true"  "$(has "[Done]" "$out")"
 
 # ── PROVE-IT-CAN-FAIL: widen the done-lane filter → case (c) must appear ─────────
 # A mutant copy (lib copied alongside so its sibling path-load still resolves) whose
@@ -139,7 +137,7 @@ mkdir -p "$TMP/mut"
 cp "$LIB" "$TMP/mut/_kbc-archive-lib.py"
 sed 's/== "done"/in ("done", "in_progress")/' "$HELPER" > "$TMP/mut/_kbc-archive-eligible.py"
 mut="$(python3 "$TMP/mut/_kbc-archive-eligible.py" 2>&1)"
-eq "mutant (widened filter) NOW lists the in-progress card" "true" "$(has "$mut" "inprogress-with-terminal-source")"
+eq "mutant (widened filter) NOW lists the in-progress card" "true" "$(has "inprogress-with-terminal-source" "$mut")"
 eq "pristine filter change was the only difference (mutant differs)" "true" "$([[ "$mut" != "$out" ]] && echo true || echo false)"
 
 _summary "kbc-archive-eligible-selftest"
