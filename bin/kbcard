@@ -40,6 +40,10 @@
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
+#     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
+#     same spelling on create-card/patch, so a deliberately laneless card is queryable
+#     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
+#     lane literally NAMED `none` must be addressed by id.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
 #   kbcard archive --task ID-OR-EXT [--force] [--dry-run]
@@ -199,19 +203,24 @@ swimlane_id() {
     return 2
 }
 
+# Is this `--swimlane` ref the LANELESS spelling? One owner for which refs mean "no lane"
+# (canon #5 — extracted at the third real caller: patch, create-card, and now the list
+# filter). `0` is included because swimlane ids are positive, so `0` never named a real
+# lane; it must be recognised BEFORE swimlane_id(), which passes any numeric through
+# unvalidated and would otherwise treat it as a real-looking id.
+# Consequence of that rule, unchanged since v0.19.0 and now extended to `list`: a lane
+# literally NAMED `none` is unreachable by name and must be addressed by id.
+_kbc_swimlane_is_laneless_ref() {
+    [[ "$1" == "none" || "$1" == "0" ]]
+}
+
 # Resolve a `--swimlane <name|id|none|0>` ref to the JSON value written to a task's
-# top-level swimlane_id column. `none`/`0` are the explicit un-assign forms and MUST be
-# special-cased BEFORE the resolver: a numeric ref passes through swimlane_id()
-# unvalidated, so `0` would write swimlane_id:0 — a real-looking id — instead of the
-# intended null. Every other ref resolves through the SAME swimlane_id() helper `list`
+# top-level swimlane_id column. The laneless refs become an explicit JSON null (the
+# un-assign form). Every other ref resolves through the SAME swimlane_id() helper `list`
 # uses (name→id, numeric passthrough, loud rc 2 on a typo).
-# One owner for the none/0→null rule, shared by `patch` and `create-card` (canon #5 —
-# extracted at the second real caller, not copied into it). Consequence of that rule,
-# unchanged since v0.19.0: a lane literally NAMED `none` is unreachable by name and must
-# be addressed by id.
 _kbc_swimlane_value() {
     local ref="$1"
-    if [[ "$ref" == "none" || "$ref" == "0" ]]; then printf 'null'; return 0; fi
+    if _kbc_swimlane_is_laneless_ref "$ref"; then printf 'null'; return 0; fi
     swimlane_id "$ref"
 }
 
@@ -511,6 +520,13 @@ cmd_patch() {
 #   (number vs string) is unverifiable; stringifying both sides matches either and
 #   shares the exact key derivation the name-map lookup uses (a numeric == would
 #   silently drop a string-typed id — the quiet-wrong class this whole change fights).
+#   That key derivation is why the swimlane filter arrives as a STRING (--arg, absent
+#   = ""), not JSON (--argjson, absent = null) like stage/type: a laneless card's key
+#   is `(null | tostring)` == "null", so the LANELESS filter is that same derived key
+#   rather than a new comparison. It also keeps "filter absent" ("") distinguishable
+#   from "filter on laneless" ("null") — collapsing those two is the trap this filter
+#   exists to avoid, since a laneless filter that reads as absent returns the WHOLE
+#   BOARD while looking correct (see _kbc_swimlane_is_laneless_ref's callers).
 _kbc_list_project() {
     local stage_filter="$1" type_filter="$2" typetag="$3" swimlane_filter="$4"
     local swmap; swmap="$(_kbc_swimlane_map)"
@@ -518,14 +534,14 @@ _kbc_list_project() {
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
         --arg typetag "$typetag" \
-        --argjson swim "${swimlane_filter:-null}" \
+        --arg swim "${swimlane_filter:-}" \
         --argjson swmap "$swmap" \
         '(. // [])
          | map(select(($stage == null or .workflow_stage_id == $stage)
                 and ($typetag == ""
                      or ($type != null and .card_type_id == $type)
                      or ($type == null and ((.tags // []) | index($typetag)) != null))
-                and ($swim == null or ((.swimlane_id // null) | tostring) == ($swim | tostring))))
+                and ($swim == "" or ((.swimlane_id // null) | tostring) == $swim)))
          | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
                 swimlane_id: (.swimlane_id // null),
@@ -551,7 +567,18 @@ cmd_list() {
     local stage_filter type_filter swimlane_filter
     if [[ -n "$column" ]];   then stage_filter="$(stage_id "$column")"; fi
     if [[ -n "$type" ]];     then type_filter="$(native_type_id "$type")"; fi
-    if [[ -n "$swimlane" ]]; then swimlane_filter="$(swimlane_id "$swimlane")"; fi
+    if [[ -n "$swimlane" ]]; then
+        # The laneless refs must NOT reach swimlane_id() — it would reject `none` as an
+        # undefined lane name (the read/write asymmetry this closes: the write side can
+        # create a laneless card the read side could not query). The filter value is the
+        # projection's own key for a laneless card, `(null | tostring)` — see
+        # _kbc_list_project on why that is a string and not JSON null.
+        if _kbc_swimlane_is_laneless_ref "$swimlane"; then
+            swimlane_filter="null"
+        else
+            swimlane_filter="$(swimlane_id "$swimlane")"
+        fi
+    fi
 
     # Whole-board fetch (paginated, accumulate-via-STDIN, dedup) is the shared
     # fetch_board_cards primitive — reading only page 1 silently UNDERCOUNTS every

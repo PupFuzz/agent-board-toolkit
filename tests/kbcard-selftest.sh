@@ -331,6 +331,16 @@ export KB_SWIMLANE_3=""
 eq "empty-valued swimlane var skipped"  '{"1":"device","2":"backend"}' "$(_kbc_swimlane_map)"
 unset KB_SWIMLANE_3
 
+# _kbc_swimlane_is_laneless_ref — the ONE owner of which refs mean "no lane", shared by
+# the two write paths and the list filter. `0` counts because lane ids are positive, so
+# it never named a real lane; a lane NAME never does, which is why a lane literally named
+# `none` must be addressed by id.
+lanelessq() { if _kbc_swimlane_is_laneless_ref "$1"; then echo yes; else echo no; fi; }
+eq "'none' is a laneless ref"        "yes" "$(lanelessq none)"
+eq "'0' is a laneless ref"           "yes" "$(lanelessq 0)"
+eq "a lane name is NOT laneless"     "no"  "$(lanelessq device)"
+eq "a real lane id is NOT laneless"  "no"  "$(lanelessq 2)"
+
 # swimlane_id — name→id, numeric passthrough, unmapped name errors LOUD (rc 2) —
 # so a typo'd --swimlane never silently lists nothing (parity with stage_id).
 eq "name resolves to its id"     "2"    "$(swimlane_id backend)"
@@ -373,6 +383,22 @@ eq "--swimlane 2 → only card 2"          "[2]"      "$(proj '' '' '' 2  | jq -
 eq "--swimlane 1 + stage 48 → card 1"    "[1]"      "$(proj 48 '' '' 1  | jq -c 'map(.id)')"
 eq "no swimlane filter → all 3 rows"     "3"        "$(proj '' '' '' '' | jq 'length')"
 
+# card-5766: the LANELESS filter. Its value is the projection's own key for a card with
+# no lane, `(null | tostring)` == "null" — deliberately distinct from the filter-absent
+# value "". The pair below is the whole point: collapsing "laneless" into "absent" (the
+# naive reuse of the WRITE-side none→JSON-null rule) returns the WHOLE BOARD while
+# looking correct, so the length assertion is what reds on it — the id list alone would
+# not, since the laneless card is a member of the whole board either way.
+eq "--swimlane none → only the laneless card" "[3]" "$(proj '' '' '' null | jq -c 'map(.id)')"
+eq "--swimlane none is NOT the whole board"   "1"   "$(proj '' '' '' null | jq 'length')"
+eq "--swimlane none + stage 49 → card 3"      "[3]" "$(proj 49 '' '' null | jq -c 'map(.id)')"
+# A laned card must never fall into the laneless bucket, and an EXPLICIT swimlane_id:null
+# must land in it exactly like an absent key (the API may spell "no lane" either way).
+eq "a laned card never matches laneless" "[]" \
+   "$(printf '%s' '[{"id":9,"swimlane_id":2,"payload":{}}]' | _kbc_list_project '' '' '' null | jq -c 'map(.id)')"
+eq "explicit swimlane_id:null is laneless" "[8]" \
+   "$(printf '%s' '[{"id":8,"swimlane_id":null,"payload":{}}]' | _kbc_list_project '' '' '' null | jq -c 'map(.id)')"
+
 # Robustness: the API's swimlane_id JSON type can't be verified on a board without
 # lanes, so the filter keys on the STRINGIFIED id — a STRING-typed swimlane_id must
 # still match (a numeric == would silently drop it). Positive control for the type
@@ -396,6 +422,18 @@ eq "valid --swimlane lists that lane"           "[1]" "$(jq -c 'map(.id)' <<<"$o
 rc=0; out="$(bash -c "$_lane_child" _ bogus 2>/dev/null)" || rc=$?
 eq "typo'd --swimlane → rc 2 (loud, no drop)"   "2"   "$rc"
 eq "typo'd --swimlane prints NO cards"          ""    "$out"
+
+# card-5766 end-to-end through the real arg parse: the mock board is one laned card (1)
+# + one laneless card (2), so the whole-board regression is [1,2] and the correct answer
+# is [2] — this is the assertion that separates them. `none` must also never reach
+# swimlane_id(), which would reject it rc 2 as an undefined lane name (the pre-fix
+# behaviour), so a nonzero rc here is itself a failure.
+rc=0; out="$(bash -c "$_lane_child" _ none 2>/dev/null)" || rc=$?
+eq "--swimlane none → rc 0 (not an unknown lane)" "0"   "$rc"
+eq "--swimlane none lists ONLY the laneless card" "[2]" "$(jq -c 'map(.id)' <<<"$out")"
+rc=0; out="$(bash -c "$_lane_child" _ 0 2>/dev/null)" || rc=$?
+eq "--swimlane 0 → rc 0"                          "0"   "$rc"
+eq "--swimlane 0 is the same laneless filter"     "[2]" "$(jq -c 'map(.id)' <<<"$out")"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 
 # ---------------------------------------------------------------------------
