@@ -183,6 +183,21 @@ eq "discharges are extracted, scoped above the stop header" \
    "card#9001" "$(_discharged "$FIX/changelog.md" "0.23.1")"
 eq "the fixture's stop header is found (scoping is real, not a no-op scan)" "true" \
    "$(_has_version_header "$FIX/changelog.md" "0.23.1" && echo true || echo false)"
+# The FALSE arm, without which `_has_version_header` could be a function that always says yes
+# and the live precondition guarding the only err-GREEN path would never be able to fire. It is
+# checked here rather than only against a real checkout because CI runs this file, not that
+# experiment. Two shapes: the header genuinely absent, and a version that merely APPEARS in the
+# file without being a section header of its own.
+grep -v '^## \[0\.23\.1\]' "$FIX/changelog.md" > "$FIX/changelog-noheader.md"
+eq "a CHANGELOG with no stop header is REPORTED as missing it" "false" \
+   "$(_has_version_header "$FIX/changelog-noheader.md" "0.23.1" && echo true || echo false)"
+eq "a version named only in prose is not mistaken for its section header" "false" \
+   "$(_has_version_header "$FIX/changelog.md" "0.9.0" && echo true || echo false)"
+# And the consequence that precondition exists to prevent, shown rather than asserted about:
+# with the stop header gone the scan reaches the released section, and card#9003's old entry
+# silently discharges a commit that landed after the tag.
+eq "without the stop header, a released-section entry wrongly discharges (errs GREEN)" \
+   "card#9002" "$(_missing "$FIX/subjects" "$FIX/changelog-noheader.md" "0.23.1")"
 
 echo "== prove-it-can-fail: an undocumented card is REPORTED =="
 eq "the prose-only and released-section-only cards are named" \
