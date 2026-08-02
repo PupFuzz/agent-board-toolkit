@@ -67,12 +67,25 @@
 # "always reports something" would satisfy the can-fail legs vacuously. The live repo is then
 # trusted to answer "" honestly.
 #
-# THE ONE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs:
-# on a shallow clone `git log <tag>..HEAD` reports a truncated range, and with no tags fetched
-# it fails outright. Both are refused BEFORE any assertion runs, loudly, rather than being
-# allowed to produce a small or empty obligation set that looks like a clean repo. ci.yml gives
-# this job `fetch-depth: 0` for exactly that reason, which is also why it is its own job and
-# not a `selftest` matrix entry (that job checks out at the default depth 1).
+# THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, so
+# the three preconditions below are refused BEFORE any assertion runs. ci.yml gives this job
+# `fetch-depth: 0` for that reason, which is also why it is its own job and not a `selftest`
+# matrix entry (that job checks out at the default depth 1).
+#
+# The load-bearing one is the MISSING STOP HEADER: with no `## [<last tag>]` section the scan
+# widens to the whole file and an entry under any past version discharges a commit that landed
+# after the tag — that one errs GREEN, silently, and is the reason this block exists.
+#
+# The shallow guard is a DIAGNOSTIC, and saying so is the point — measured, not assumed. A
+# shallow clone does not actually produce a wrong answer: either no `v*` tag is reachable from
+# the truncated history and `git describe` fails (the tag guard catches it), or the tag IS
+# reachable, in which case every commit between it and HEAD is present and the range is
+# COMPLETE. What the shallow guard buys is an accurate message. Verified against a real
+# `--depth 1` clone carrying all 36 tags after `fetch --tags`: `describe` still finds none, so
+# without this guard that checkout is told "a checkout that fetched no tags lands here; fetch
+# them" — advice that is simply false for the state it is describing, and sends the reader
+# after the wrong fix. Do not read this guard as a second correctness catch; it is ordered
+# first so the true diagnosis wins.
 #
 # KNOWN, ACCEPTED FRICTION: a commit subject that cites a card it is not about ("supersedes
 # card#1234") creates a real obligation for card#1234. This errs RED and is fixed by rewording
@@ -213,23 +226,26 @@ eq "a card named only by the PR title is obliged" "true" \
       grep -qx 'card#9004' && echo true || echo false)"
 
 # ---------------------------------------------------------------------------
-# Live preconditions. Each is a HARD exit, not an assertion: every one of them, if merely
-# reported, would leave the live leg below answering "" for a reason unrelated to the repo
-# being clean.
+# Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
+# ABSENCE, so anything that can make it answer "" for a reason unrelated to the repo being
+# clean has to stop the run rather than be reported alongside a pass.
 # ---------------------------------------------------------------------------
 git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
     echo "selftest: $ROOT is not a git work tree — the obligation set cannot be derived" >&2
     exit 1
 }
 if [[ "$(git -C "$ROOT" rev-parse --is-shallow-repository)" != "false" ]]; then
-    echo "selftest: shallow clone — 'git log <tag>..HEAD' would report a truncated range that" >&2
-    echo "          reads as a clean repo. Check out with fetch-depth: 0." >&2
+    echo "selftest: shallow clone. The range would still be correct IF a tag were reachable," >&2
+    echo "          but on a truncated history 'git describe' usually finds none — and the tag" >&2
+    echo "          guard below would then blame missing tags you may already have. Check out" >&2
+    echo "          with fetch-depth: 0." >&2
     exit 1
 fi
 LAST_TAG="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)"
 if [[ -z "$LAST_TAG" ]]; then
     echo "selftest: no v* tag is reachable from HEAD — no release baseline to measure from." >&2
-    echo "          A checkout that fetched no tags lands here; fetch them." >&2
+    echo "          A checkout that fetched no tags lands here (the shallow case is caught" >&2
+    echo "          above), as does a branch with no tagged ancestor. Fetch tags." >&2
     exit 1
 fi
 LAST_VERSION="${LAST_TAG#v}"

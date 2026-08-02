@@ -62,9 +62,9 @@ jobs:
     #
     # Deliberately its OWN job, not a `selftest` matrix entry, for a mechanical reason: the
     # obligation set comes from `git log <last release tag>..HEAD`, which needs full history
-    # AND tags — the matrix job checks out at the default depth 1. The selftest REFUSES to run
-    # on a shallow clone rather than reporting the truncated range, which would read exactly
-    # like a clean repo. Being named in this `run:` block satisfies ci-matrix-parity's one rule.
+    # AND tags — the matrix job checks out at the default depth 1, whose truncated history
+    # resolves no tag at all, so the selftest would refuse to run rather than pass blindly.
+    # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
