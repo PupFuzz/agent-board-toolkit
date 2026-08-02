@@ -24,6 +24,14 @@ The toolkit is pre-1.0. The effective cadence — matching the actual tag histor
 
 When a release mixes a feature with fixes, lean toward minor; a release that is only fixes/refactors/docs is a patch. When in doubt, state the reasoning in the release PR.
 
+## The `[Unreleased]` entry rule — every card-carrying PR, not the release
+
+**A PR whose title carries a `card#<id>` token adds a line-initial `- **card#<id>** — …` bullet to `[Unreleased]` in [`docs/CHANGELOG.md`](docs/CHANGELOG.md), in the same PR.** The release (step 4 below) *collects* those bullets; it does not author them. A PR with no `card#` token (a `chore(deps)` bump, a `docs(orientation)` sync) owes nothing.
+
+**Line-initial is the rule, not "the file mentions the card"** — a mention can be prose that misinforms. `docs/CHANGELOG.md` once carried *"card#5374 proposes the selftest…"* inside a different card's entry, written before card#5374 shipped it, so a release cut from that file told the reader the gate was proposed rather than delivered. A PR that folds two cards owes **two** bullets; one bullet naming both discharges only the card it leads with.
+
+This is gated, not conventional: [`tests/changelog-card-entry-selftest.sh`](tests/changelog-card-entry-selftest.sh) (its own `ci.yml` job) derives obligations from the commit subjects since the last release tag **plus the PR title** — under squash-merge the title *is* the coming subject, so the check fires before the merge rather than reddening `dev` after it. Until card#5767 the rule was enforced by nothing and written down nowhere, and 3 of the 24 cards merged since v0.23.1 had no entry.
+
 ## Release flow
 
 Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green; only the user merges to `main`.
@@ -31,7 +39,7 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 1. **Pick the next version** per the bump-sizing rule above (`tr -d '\n' < VERSION` for the current one).
 2. **Feature branch off `dev`:** `release/v<version>`.
 3. **Bump `VERSION`** to the new semver.
-4. **Update [`docs/CHANGELOG.md`](docs/CHANGELOG.md):** add a `## [X.Y.Z] - YYYY-MM-DD` section (one bullet per bundled PR, Keep-a-Changelog headers) directly under `## [Unreleased]`, keeping `[Unreleased]` empty.
+4. **Update [`docs/CHANGELOG.md`](docs/CHANGELOG.md):** retitle the accumulated `## [Unreleased]` block as `## [X.Y.Z] - YYYY-MM-DD` and open a fresh, empty `## [Unreleased]` above it. The bullets are already there — each landed with its own PR (see § The `[Unreleased]` entry rule above); this step collects them, and authoring one here means a PR shipped without its entry. Keep the Keep-a-Changelog headers; add only what is genuinely release-level (an upgrade note, a bundling summary).
 5. **Add a `CLAUDE.md § Recent releases` row** at the top of the table, and **trim the oldest row back to 10**. The table is the ergonomic snapshot and is always truncated to its stated cap; `docs/CHANGELOG.md` (step 4) is the canonical record and is never truncated, so a trimmed row is still fully documented there.
 6. **ASK the user** before opening the release PR.
 7. Open the release PR `release/v<version>` → **`main`** with full release notes. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly** — a `dev`-headed PR merged with auto-delete-head-branches enabled deletes `dev`.
