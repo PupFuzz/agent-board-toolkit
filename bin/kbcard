@@ -25,7 +25,19 @@
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged] [--keep-refs]
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged] [--keep-refs] \
+#                [--name "title"] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>]
+#     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
+#     writes the same field the identically-named create-card flag writes at birth, so a card
+#     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
+#     instead of being permanently wrong (a card name stamped once from a retargeted PR title
+#     is the shipped case). Nothing here is implicit — an omitted flag leaves its field alone.
+#     --tags REPLACES the whole tag list (the API stores it as one list and replaces it
+#     wholesale); to add a tag, pass the full intended set. --triaged still appends to what
+#     the card already carries, and composes with --tags (given set, then `triaged`).
+#     --type re-types the card: it writes the board's native card_type_id for the alias, or
+#     the `type:<alias>` tag on a board with no native type for it — and either way DROPS any
+#     `type:*` tag the card was carrying, so a retyped card never reads as two types at once.
 #     --column wont_do declines: same stamp-clearing as `move` (see above) — the
 #     correlation stamps are nulled unless --keep-refs; a ref flag passed IN THIS
 #     CALL wins over the null (explicit beats hygiene).
@@ -257,10 +269,11 @@ resolve_task() {
 # exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
 # alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
-# callers, so patch passes exactly that prefix; origin is create-card-only and trails so patch
-# needn't pass an empty placeholder for it. Everything rides the SAME coercion path — a value
-# must flow through this single merge rather than be appended by the caller, which would
-# re-duplicate the merge jq this helper exists to unify.
+# callers, so patch passes exactly that prefix; origin trails because it was create-card-only
+# until card#5776 made it patchable, and keeping it last left every existing call site
+# untouched. Everything rides the SAME coercion path — a value must flow through this single
+# merge rather than be appended by the caller, which would re-duplicate the merge jq this
+# helper exists to unify.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
 # dl_number/pr_number left on a declined card can later match a recycled DL/PR and
 # resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
@@ -306,6 +319,99 @@ _kbc_build_payload() {
     printf '%s' "$payload_json"
 }
 
+# _kbc_require_type_alias <alias>: a --type alias must be tag-safe, because on a board
+# with no native card type for it the alias becomes a `type:<alias>` member of a COMMA-
+# separated tag list. Matched through kb_ere_match so `[A-Za-z0-9]` means ASCII: as a
+# bare bash bracket RANGE it is a COLLATION range, and an en_US.UTF-8 shell then
+# accepted é / Ⅳ / ﬁ against an error message promising alphanumeric / '-' / '_'.
+_kbc_require_type_alias() {
+    kb_ere_match "$1" '^[A-Za-z0-9_-]+$' && return 0
+    echo "kbcard: --type '$1' must be alphanumeric / '-' / '_'" >&2
+    return 2
+}
+
+# _kbc_require_ext_id <value>: external_id is the integer per-board sync id
+# (tasks.external_id is an unsignedBigInteger). Reject a non-numeric value LOUDLY
+# instead of silently coercing it to null and discarding the caller's input.
+_kbc_require_ext_id() {
+    kb_is_uint "$1" && return 0
+    echo "kbcard: --external-id must be numeric (the integer per-board sync id); got '$1'. For a DL id use --dl." >&2
+    return 2
+}
+
+# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json>:
+# assemble the OPTIONAL top-level task-object fields shared by create-card and patch, as a JSON
+# object carrying ONLY the keys whose argument was supplied. Each caller then adds the keys IT
+# requires — create-card `board_id` + `workflow_stage_id`, patch the stage of a `--column`.
+# This is the second half of the create/patch consolidation `_kbc_build_payload` began
+# (card#4511): payload keys share one assembler, and these top-level task columns now share
+# this one, so the NEXT settable field is added in ONE place and cannot land on create-card
+# alone — which is exactly how the five write-once-at-birth fields of card#5776 accumulated.
+# "" means "not supplied" for every argument, which is safe because kb_require_value already
+# rejects `--flag ""` at every arm — EXCEPT swimlane, whose un-assign form is a real JSON null:
+# <swim_set> non-empty is what makes swimlane_id ride at all, <swim_json> carries its value.
+# <tags_json> is a JSON ARRAY (or ""), not a CSV, so a caller that read the live tag list back
+# off the API round-trips it without a lossy re-split on a tag containing a comma.
+_kbc_task_fields() {
+    # NB: not `${4:-null}` / `${8:-{\}}` — bash ends a `${x:-{}}` expansion at the FIRST `}`,
+    # mangling a supplied argument (see _kbc_decline_nulls).
+    local name="$1" type_id="$2" desc="$3" tags_json="${4:-}" ext_id="$5" swim_set="$6" swim_json="${7:-}" payload_json="${8:-}"
+    [[ -n "$tags_json" ]] || tags_json='null'
+    [[ -n "$swim_json" ]] || swim_json='null'
+    [[ -n "$payload_json" ]] || payload_json='{}'
+    jq -n \
+        --arg name "$name" \
+        --arg type_id "$type_id" \
+        --arg desc "$desc" \
+        --argjson tags "$tags_json" \
+        --arg ext_id "$ext_id" \
+        --arg swim_set "$swim_set" \
+        --argjson swim "$swim_json" \
+        --argjson payload "$payload_json" \
+        '{}
+         + (if $name    != "" then {name: $name} else {} end)
+         + (if $type_id != "" then {card_type_id: ($type_id | tonumber)} else {} end)
+         + (if $desc    != "" then {description: $desc} else {} end)
+         + (if $tags    != null then {tags: $tags} else {} end)
+         + (if $ext_id  != "" then {external_id: ($ext_id | tonumber)} else {} end)
+         + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
+         + (if ($payload | length) > 0 then {payload: $payload} else {} end)'
+}
+
+# _kbc_patch_tags <task> <tags_csv> <type_alias> <type_id> <triaged>: resolve the tag array a
+# patch should WRITE, printing nothing when the call touches no tag at all. `tags` is a
+# top-level string list the API replaces WHOLESALE, so adding one tag means re-sending the
+# others — hence the read-merge-write here; create-card needs none because it builds the whole
+# list at birth. The three inputs compose in one place so they can't fight each other:
+#   --tags     supplies the base list outright (and spares the read).
+#   --type     strips ANY existing `type:*` tag, then re-adds `type:<alias>` only when the
+#              board has no native id for the alias. The strip runs on BOTH paths on purpose:
+#              on a MIXED board a card retyped from a tag-mode alias to a native one would
+#              otherwise keep its stale `type:<old>` tag and still answer `list --type <old>`
+#              (which resolves that alias through the tag clause) — a card reading as two
+#              types at once, and the quiet-wrong the retype was meant to fix.
+#   --triaged  appends `triaged`.
+# Dedupe preserves FIRST-SEEN order instead of sorting, so a patch that only adds `triaged`
+# leaves the caller's existing tag order alone, and `--tags a,b` writes the order it was given
+# exactly as create-card does.
+_kbc_patch_tags() {
+    local task="$1" tags_csv="$2" type_alias="$3" type_id="$4" triaged="$5"
+    [[ -n "$tags_csv" || -n "$type_alias" || -n "$triaged" ]] || return 0
+    local base
+    if [[ -n "$tags_csv" ]]; then
+        base="$(jq -n --arg t "$tags_csv" '$t | split(",")')"
+    else
+        base="$(kb_api GET "/tasks/$task.json" | jq '.data.tags // []')"
+    fi
+    jq -n --argjson base "$base" \
+        --arg type_alias "$type_alias" --arg type_id "$type_id" --arg triaged "$triaged" \
+        '($base
+          | (if $type_alias != "" then map(select(startswith("type:") | not)) else . end)
+          | (if $type_alias != "" and $type_id == "" then . + ["type:\($type_alias)"] else . end)
+          | (if $triaged != "" then . + ["triaged"] else . end))
+         | reduce .[] as $t ([]; if index($t) then . else . + [$t] end)'
+}
+
 cmd_create_card() {
     local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged="" swimlane=""
     while [[ $# -gt 0 ]]; do
@@ -330,12 +436,8 @@ cmd_create_card() {
     done
     [[ -z "$name" ]] && { echo "kbcard: --name required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
-    # The alias maps to KB_TYPE_<NAME> and (on a non-native board) a `type:<name>`
-    # tag, so it must be tag-safe — reject commas/spaces that would corrupt the CSV.
-    # Matched through kb_ere_match so `[A-Za-z0-9]` means ASCII: as a bare bash
-    # bracket RANGE it is a COLLATION range, and an en_US.UTF-8 shell then accepted
-    # é / Ⅳ / ﬁ against an error message promising alphanumeric / '-' / '_'.
-    kb_ere_match "$type" '^[A-Za-z0-9_-]+$' || { echo "kbcard: --type '$type' must be alphanumeric / '-' / '_'" >&2; return 2; }
+    _kbc_require_type_alias "$type" || return 2
+    if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
 
     local stage type_id
     stage="$(stage_id "$column")"
@@ -359,35 +461,17 @@ cmd_create_card() {
     local payload_json
     payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin")" || return 2
 
-    # external_id is the integer per-board sync id (tasks.external_id is an
-    # unsignedBigInteger). Reject a non-numeric value LOUDLY instead of silently
-    # coercing it to null and discarding the caller's input (fail-loud stance).
-    if [[ -n "$ext_id" ]] && ! kb_is_uint "$ext_id"; then
-        echo "kbcard: --external-id must be numeric (the integer per-board sync id); got '$ext_id'. For a DL id use --dl." >&2
-        return 2
-    fi
+    # The whole tag list is known at birth, so a plain CSV→array split is all this needs
+    # (patch has to read-merge-write instead — see _kbc_patch_tags).
+    local tags_json=""
+    [[ -n "$tags" ]] && tags_json="$(jq -n --arg t "$tags" '$t | split(",")')"
 
     # Build the task object; the v3 write API takes task fields FLAT at the top level
     # (kanban DL-219 dropped the {task: ...} body wrapper), so the object IS the POST body.
-    local body
-    body="$(jq -n \
-        --arg name "$name" \
-        --argjson board "$KB_BOARD_ID" \
-        --argjson stage "$stage" \
-        --arg type_id "$type_id" \
-        --arg desc "$desc" \
-        --arg tags "$tags" \
-        --arg ext_id "$ext_id" \
-        --arg swim_set "${swimlane:+1}" \
-        --argjson swim "${swim_json:-null}" \
-        --argjson payload "$payload_json" \
-        '{name: $name, board_id: $board, workflow_stage_id: $stage}
-         + (if $type_id != "" then {card_type_id: ($type_id | tonumber)} else {} end)
-         + (if $desc  != "" then {description: $desc} else {} end)
-         + (if $tags  != "" then {tags: ($tags | split(","))} else {} end)
-         + (if $ext_id != "" then {external_id: ($ext_id | tonumber)} else {} end)
-         + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
-         + (if ($payload | length) > 0 then {payload: $payload} else {} end)')"
+    local fields body
+    fields="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json")" || return 2
+    body="$(jq -n --argjson f "$fields" --argjson board "$KB_BOARD_ID" --argjson stage "$stage" \
+        '$f + {board_id: $board, workflow_stage_id: $stage}')"
 
     # Surface swimlane_id in the echo only when --swimlane was passed — same rule as
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
@@ -424,6 +508,7 @@ cmd_move() {
 
 cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane="" keep_refs=""
+    local name="" tags="" type="" ext_id="" origin=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -436,13 +521,36 @@ cmd_patch() {
             --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
             --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
+            --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
+            --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
+            --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
+            --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
+            --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
             --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
     [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
+
+    # Everything resolvable WITHOUT the network is resolved first, so a typo'd --type /
+    # --external-id / --column / --swimlane fails rc 2 having issued no request at all —
+    # not even the tag read below, and never a half-applied PATCH.
+    if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
+    if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
+    local stage=""
+    if [[ -n "$column" ]]; then stage="$(stage_id "$column")" || return 2; fi
+    # swimlane_id is a top-level column (not a payload key), so it rides the inner task
+    # object like workflow_stage_id — not the payload merge. The ref→JSON rule (none/0 →
+    # null, else resolve) is shared with create-card in _kbc_swimlane_value.
+    local swim_json=""
+    if [[ -n "$swimlane" ]]; then swim_json="$(_kbc_swimlane_value "$swimlane")" || return 2; fi
+
     local task; task="$(resolve_task "$task_ref")"
+    # Empty when the board has no native card type for the alias — _kbc_patch_tags then
+    # writes the `type:<alias>` tag instead, exactly as create-card does at birth.
+    local type_id=""
+    if [[ -n "$type" ]]; then type_id="$(native_type_id "$type")"; fi
 
     # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
     # pr_url sets payload.pr_url, from which the kanban derives a card's by-ref `source`
@@ -450,7 +558,7 @@ cmd_patch() {
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
     local payload_json
-    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url")" || return 2
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin")" || return 2
 
     # patch --column wont_do is the SECOND decline call-site — same hygiene as move
     # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win.
@@ -461,45 +569,30 @@ cmd_patch() {
         echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
     fi
 
-    local body inner='{}'
+    # Empty unless --tags/--type/--triaged makes this call touch the tag list at all.
+    local tags_json
+    tags_json="$(_kbc_patch_tags "$task" "$tags" "$type" "$type_id" "$triaged")" || return 2
+
     # Send only the keys we're changing: the kanban v3 API MERGES task.payload
     # per-key (kanban #2180) — a key we omit is left as-is, an explicit null
     # clears it. So a bare {dl_number} no longer wipes the other custom fields,
     # and no read-merge-write is needed. Sending only the delta also preserves a
     # concurrent edit to any OTHER field: a full read-merge-write would clobber
     # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
-    if [[ "$payload_json" != "{}" ]]; then
-        inner="$(jq -n --argjson p "$payload_json" '{payload: $p}')"
-    fi
+    # `tags` is the documented exception — the API replaces that list wholesale.
+    local body
+    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json")" || return 2
     if [[ -n "$column" ]]; then
-        local stage; stage="$(stage_id "$column")"
-        inner="$(jq -n --argjson cur "$inner" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
+        body="$(jq -n --argjson cur "$body" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
-    if [[ -n "$swimlane" ]]; then
-        # swimlane_id is a top-level column (not a payload key), so it rides the inner
-        # task object like workflow_stage_id — not the payload merge. The ref→JSON rule
-        # (none/0 → null, else resolve) is shared with create-card in _kbc_swimlane_value.
-        local swim_id
-        swim_id="$(_kbc_swimlane_value "$swimlane")" || return 2
-        inner="$(jq -n --argjson cur "$inner" --argjson s "$swim_id" '$cur + {swimlane_id: $s}')"
-    fi
-    if [[ -n "$desc" ]]; then
-        inner="$(jq -n --argjson cur "$inner" --arg d "$desc" '$cur + {description: $d}')"
-    fi
-    if [[ -n "$triaged" ]]; then
-        # tags are a top-level string list, replaced WHOLESALE by the API — so
-        # read-merge-write to add `triaged` without dropping existing tags.
-        local cur_tags new_tags
-        cur_tags="$(kb_api GET "/tasks/$task.json" | jq '.data.tags // []')"
-        new_tags="$(jq -n --argjson cur "$cur_tags" '($cur + ["triaged"]) | unique')"
-        inner="$(jq -n --argjson cur "$inner" --argjson tags "$new_tags" '$cur + {tags: $tags}')"
-    fi
-    body="$inner"
-    # Surface swimlane_id in the write echo only when it was set, so a --swimlane patch
-    # confirms the resulting lane (null after an unassign) — parity with the echo always
-    # showing workflow_stage_id; other patches keep their existing echo shape.
+    # Surface a field in the write echo only when this call set it, so the caller sees what
+    # the server actually recorded (the whole point of a corrective patch) without changing
+    # the echo shape of every other patch. `name` already rides _kbc_write_echo's projection.
     local echo_extra='description: (.description // "" | .[0:80])'
     [[ -n "$swimlane" ]] && echo_extra="$echo_extra, swimlane_id: (.swimlane_id // null)"
+    [[ -n "$tags_json" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
+    [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
+    [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
     kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo "$echo_extra"
 }
 
