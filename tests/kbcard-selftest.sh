@@ -620,6 +620,130 @@ unset KB_SWIMLANE_1 KB_SWIMLANE_2
 unset -f cc _kbc_write_echo_orig
 
 # ---------------------------------------------------------------------------
+echo "== patch's corrective setters — the five write-once-at-birth fields (card#5776) =="
+# THE CLASS: --name/--tags/--type/--external-id/--origin were settable only by create-card,
+# so a card minted wrong stayed wrong. The shipped consequence was a card name stamped once
+# from a PR title that Dependabot then RETARGETED — the card asserted a version the merged
+# diff never landed, with no supported way to retitle it.
+#
+# Network-free: a numeric --task short-circuits resolve_task; kb_api dispatches on the METHOD
+# so the tag read-merge-write has a GET to read (patch must re-send the whole list — the API
+# replaces `tags` wholesale) while the PATCH echoes its request body back to be asserted on.
+# The request log is what makes "no write happened" a measurement rather than an assumption.
+_REQ_LOG="$(mktemp)"
+trap 'rm -f "$_REQ_LOG"' EXIT
+_CUR_TAGS='[]'
+kb_api() {
+    printf '%s\n' "$1" >> "$_REQ_LOG"
+    case "$1" in
+        GET) printf '{"data":{"id":99,"tags":%s}}' "$_CUR_TAGS" ;;
+        *)   printf '%s' "$3" ;;
+    esac
+}
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_IN_REVIEW=50
+# pb <args…> — run cmd_patch on a fresh request log, return the PATCH request body.
+pb() { : > "$_REQ_LOG"; cmd_patch --task 99 "$@" 2>/dev/null; }
+# reqs — the methods this call issued, in order (e.g. "GET PATCH").
+reqs() { tr '\n' ' ' < "$_REQ_LOG" | sed 's/ $//'; }
+
+echo "-- --name: the member with the shipped consequence (card#5385) --"
+eq "--name writes the new title"      '"retitled"' "$(pb --name retitled | jq -c '.name')"
+eq "--name needs no tag read"         "PATCH"      "$(reqs)"
+# Negative control: the key is ABSENT without the flag, so the assertion above is the flag's
+# doing and not a field this body always carries.
+eq "no --name → name key ABSENT"      "false"      "$(pb --dl DL-7 | jq 'has("name")')"
+
+echo "-- --external-id: numeric, fail-loud, and no half-write --"
+eq "--external-id writes a JSON number" "4242"     "$(pb --external-id 4242 | jq -c '.external_id')"
+eq "no --external-id → key ABSENT"      "false"    "$(pb --dl DL-7 | jq 'has("external_id")')"
+: > "$_REQ_LOG"
+rc=0; err="$(cmd_patch --task 99 --external-id abc 2>&1 >/dev/null)" || rc=$?
+eq "--external-id non-numeric → rc 2"          "2"    "$rc"
+eq "--external-id non-numeric names the flag"  "true" "$(has '--external-id must be numeric' "$err")"
+eq "--external-id non-numeric → NO request"    ""     "$(reqs)"
+# Positive control for that empty result: the same probe DOES record a PATCH when the value
+# is valid, so "no request" is a measurement and not a stub that never writes.
+eq "control: a valid --external-id reaches the PATCH" "PATCH" "$(pb --external-id 4242 >/dev/null; reqs)"
+
+echo "-- --type: re-type the card, and never leave it reading as two types --"
+export KB_TYPE_TASK=21; unset KB_TYPING_MODE 2>/dev/null || true
+_CUR_TAGS='["type:bug","keep"]'
+b="$(pb --type task)"
+eq "native board → card_type_id written"        "21"          "$(jq -c '.card_type_id' <<<"$b")"
+eq "native board → stale type: tag dropped"     '["keep"]'    "$(jq -c '.tags' <<<"$b")"
+eq "--type reads the current tags first"        "GET PATCH"   "$(reqs)"
+# The mixed-board hazard this strip exists for: `list --type bug` resolves an alias with no
+# native id through the `type:` TAG clause, so a card retyped to a native type while keeping
+# `type:bug` would still answer as a bug. RED-when-reverted: drop the strip and the tags
+# assertion above becomes ["type:bug","keep"].
+unset KB_TYPE_TASK; export KB_TYPING_MODE=tags
+b="$(pb --type task)"
+eq "tag board → no card_type_id"                "false"                 "$(jq 'has("card_type_id")' <<<"$b")"
+eq "tag board → type: tag swapped, not added"   '["keep","type:task"]'  "$(jq -c '.tags' <<<"$b")"
+unset KB_TYPING_MODE; export KB_TYPE_TASK=21
+rc=0; err="$(cmd_patch --task 99 --type 'not an alias' 2>&1 >/dev/null)" || rc=$?
+eq "--type with a space → rc 2"                 "2"    "$rc"
+eq "--type with a space names the flag"         "true" "$(has "--type 'not an alias'" "$err")"
+eq "no --type → card_type_id key ABSENT"        "false" "$(pb --dl DL-7 | jq 'has("card_type_id")')"
+
+echo "-- --tags: replaces the list wholesale, and composes with --triaged --"
+_CUR_TAGS='["dropped"]'
+eq "--tags replaces the whole list"     '["a","b"]'          "$(pb --tags a,b | jq -c '.tags')"
+eq "--tags spares the read"             "PATCH"              "$(reqs)"
+eq "--tags + --triaged appends triaged" '["a","b","triaged"]' "$(pb --tags a,b --triaged | jq -c '.tags')"
+eq "no tag flag → tags key ABSENT"      "false"              "$(pb --dl DL-7 | jq 'has("tags")')"
+
+echo "-- --triaged keeps the card's existing tag ORDER (it no longer sorts) --"
+# `unique` re-sorted every tag a card carried on an unrelated --triaged patch. First-seen
+# order is what create-card writes, so both writers now agree.
+_CUR_TAGS='["zeta","alpha"]'
+eq "--triaged appends without re-sorting" '["zeta","alpha","triaged"]' "$(pb --triaged | jq -c '.tags')"
+_CUR_TAGS='["alpha","triaged"]'
+eq "--triaged is idempotent (no dupe)"    '["alpha","triaged"]'        "$(pb --triaged | jq -c '.tags')"
+_CUR_TAGS='[]'
+
+echo "-- --origin: provenance is correctable, through the same payload assembler --"
+eq "--origin stamps payload.origin"  '"consumer-driven"' "$(pb --origin consumer-driven | jq -c '.payload.origin')"
+eq "no --origin → payload key ABSENT" "false"            "$(pb --name x | jq 'has("payload")')"
+
+echo "-- everything resolvable offline is resolved BEFORE any request --"
+# A typo'd column must not leave a card tag-read (or worse, half-written): rc 2, no traffic.
+: > "$_REQ_LOG"
+rc=0; cmd_patch --task 99 --column bogus --triaged >/dev/null 2>&1 || rc=$?
+eq "--column typo → rc 2"          "2" "$rc"
+eq "--column typo → NO request"    ""  "$(reqs)"
+eq "control: a valid --column reaches the PATCH" "50" "$(pb --column in_review | jq -c '.workflow_stage_id')"
+
+echo "-- ONE owner assembles the task fields for BOTH writers (canon #5) --"
+# The consolidation IS the fix: five fields drifted onto create-card alone because each
+# command carried its own top-level field assembly, so a sixth would drift the same way.
+# Stub the shared owner with a sentinel and assert both bodies carry it — re-inline the jq
+# in either command and this reds, which no per-field value assertion would.
+eval "_kbc_task_fields_orig() $(declare -f _kbc_task_fields | tail -n +2)"
+_kbc_task_fields() { printf '{"_shared_owner":true}'; }
+eq "create-card assembles via _kbc_task_fields" "true" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq '._shared_owner')"
+eq "patch assembles via _kbc_task_fields"       "true" \
+   "$(cmd_patch --task 99 --name y 2>/dev/null | jq '._shared_owner')"
+eval "_kbc_task_fields() $(declare -f _kbc_task_fields_orig | tail -n +2)"
+unset -f _kbc_task_fields_orig
+# And they agree on the RESOLVED value, not just the code path: the same --type alias must
+# produce the same card_type_id from both, on a native board and a tag-typed one alike.
+eq "create/patch agree on --type (native)" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')" \
+   "$(pb --type task | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')"
+unset KB_TYPE_TASK; export KB_TYPING_MODE=tags
+eq "create/patch agree on --type (tag mode)" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')" \
+   "$(pb --type task | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')"
+
+unset KB_TYPING_MODE KB_BOARD_ID KB_STAGE_BACKLOG KB_STAGE_IN_REVIEW
+unset -f kb_api pb reqs
+unset _CUR_TAGS
+rm -f "$_REQ_LOG"; unset _REQ_LOG; trap - EXIT
+
+# ---------------------------------------------------------------------------
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # An option that consumes "$2" and is then dispatched with `[[ -n "$var" ]]` reads an
 # explicitly-empty value as an ABSENT flag. `kbcard patch --dl "$DL"` with DL unset
@@ -640,7 +764,8 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
    "$(cmd_patch --task 99 --dl DL-7 2>/dev/null | jq -r '.payload.dl_number')"
 
 # The whole class, not the one reported instance.
-for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description; do
+for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
+         --name --tags --type --external-id --origin; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
