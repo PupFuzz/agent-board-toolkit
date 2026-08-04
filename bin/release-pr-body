@@ -17,7 +17,8 @@
 # fails — a baseline read from a stale local ref reports already-shipped PRs as
 # new, which is worse than no body (pass --base <tag> as the explicit offline
 # override). An empty range yields an empty (but valid) bundled section, not a
-# failure.
+# failure — and neither is a range that matches no `ref_token_regex` token: that
+# simply omits the optional manifest footer, and still exits 0.
 set -euo pipefail
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
@@ -218,5 +219,13 @@ card_coverage_section
 # consumer (e.g. a bridge classifier) can parse instead of the prose above.
 if [ -n "$REF_TOKEN_REGEX" ]; then
   MANIFEST="$(emit_manifest | paste -sd, -)"
-  [ -n "$MANIFEST" ] && printf '\n<!-- release-manifest:shipped-refs=%s -->\n' "$MANIFEST"
+  if [ -n "$MANIFEST" ]; then
+    printf '\n<!-- release-manifest:shipped-refs=%s -->\n' "$MANIFEST"
+  fi
 fi
+
+# Reaching here means the body was generated: under `set -e` every real failure has already
+# aborted, and a no-token range is valid by contract. Say so explicitly rather than inheriting
+# whatever the last statement's status happens to be — an absent manifest previously left a
+# failed `[ -n … ]` test as the script's exit status, reporting a correct body as a failure.
+exit 0

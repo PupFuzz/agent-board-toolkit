@@ -178,6 +178,38 @@ base_hdr="$(printf '%s\n' "$body6" | head -1)"
 contains "--base header still honors tag_format" "$base_hdr" "release PR — release-0.3.0."
 contains "--base uses the given baseline"        "$body6"    "since v0.1.0"
 
+echo "== a range with no ref-token match still exits 0 (card#5874) =="
+# The manifest footer is optional by contract ("an empty range yields an empty (but valid)
+# bundled section, not a failure"), but the generator's LAST statement was
+# `[ -n "$MANIFEST" ] && printf …` — the failed test became the script's own exit status, so
+# a complete, correct body was reported as a failed generation. `set -e` cannot catch it: the
+# left arm of an `&&` list is exempt. Only the regex varies between the two arms below.
+tokencfg() { # <ref_token_regex> — everything else held constant
+  cat > "$W/.release-pr.json" <<EOF
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "ref_token_regex": "$1",
+  "title_prefix": "Release",
+  "tag_format": "release-{{version}}"
+}
+EOF
+}
+
+tokencfg 'card#[0-9]+'   # matches nothing in this range (the fixture's tokens are DL-N)
+rc=0; body7="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
+eq "no-token range exits 0"                  "0"     "$rc"
+eq "…and the body is still complete"         "true"  "$(has '## Bundled' "$body7")"
+eq "…with the range's commit in it"          "true"  "$(has 'new work for cycle two' "$body7")"
+eq "…and simply carries no manifest footer"  "false" "$(has 'release-manifest:shipped-refs' "$body7")"
+
+# CONTROL — same tool, same range, same config but a regex that DOES match. It must exit 0
+# *and* emit the footer, so the arm above is discriminating rather than vacuously green.
+tokencfg 'DL-[0-9]+'
+rc=0; body8="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
+eq "control: matching range exits 0"         "0"     "$rc"
+eq "control: footer names the shipped token" "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$body8")"
+
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact
 # reading this tool takes pains to make explicit, silently substituted for the one the caller
