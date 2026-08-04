@@ -93,9 +93,6 @@ echo "== cmd_archive / cmd_delete — arg guards + dry-run + non-TTY --hard refu
 # These paths are network-free: a NUMERIC --task short-circuits resolve_task (no
 # search call), --dry-run returns before any API call, and the non-TTY --hard
 # guard refuses before the soft-delete — so no kb_api call is ever reached here.
-# has <needle> <haystack> → true/false on a LITERAL substring match (no globbing,
-# no regex — robust against the JSON quotes/braces in the dry-run output).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 rc=0; cmd_archive >/dev/null 2>&1 || rc=$?
 eq "archive without --task → rc 2" "2" "$rc"
@@ -334,6 +331,16 @@ export KB_SWIMLANE_3=""
 eq "empty-valued swimlane var skipped"  '{"1":"device","2":"backend"}' "$(_kbc_swimlane_map)"
 unset KB_SWIMLANE_3
 
+# _kbc_swimlane_is_laneless_ref — the ONE owner of which refs mean "no lane", shared by
+# the two write paths and the list filter. `0` counts because lane ids are positive, so
+# it never named a real lane; a lane NAME never does, which is why a lane literally named
+# `none` must be addressed by id.
+lanelessq() { if _kbc_swimlane_is_laneless_ref "$1"; then echo yes; else echo no; fi; }
+eq "'none' is a laneless ref"        "yes" "$(lanelessq none)"
+eq "'0' is a laneless ref"           "yes" "$(lanelessq 0)"
+eq "a lane name is NOT laneless"     "no"  "$(lanelessq device)"
+eq "a real lane id is NOT laneless"  "no"  "$(lanelessq 2)"
+
 # swimlane_id — name→id, numeric passthrough, unmapped name errors LOUD (rc 2) —
 # so a typo'd --swimlane never silently lists nothing (parity with stage_id).
 eq "name resolves to its id"     "2"    "$(swimlane_id backend)"
@@ -376,6 +383,22 @@ eq "--swimlane 2 → only card 2"          "[2]"      "$(proj '' '' '' 2  | jq -
 eq "--swimlane 1 + stage 48 → card 1"    "[1]"      "$(proj 48 '' '' 1  | jq -c 'map(.id)')"
 eq "no swimlane filter → all 3 rows"     "3"        "$(proj '' '' '' '' | jq 'length')"
 
+# card-5766: the LANELESS filter. Its value is the projection's own key for a card with
+# no lane, `(null | tostring)` == "null" — deliberately distinct from the filter-absent
+# value "". The pair below is the whole point: collapsing "laneless" into "absent" (the
+# naive reuse of the WRITE-side none→JSON-null rule) returns the WHOLE BOARD while
+# looking correct, so the length assertion is what reds on it — the id list alone would
+# not, since the laneless card is a member of the whole board either way.
+eq "--swimlane none → only the laneless card" "[3]" "$(proj '' '' '' null | jq -c 'map(.id)')"
+eq "--swimlane none is NOT the whole board"   "1"   "$(proj '' '' '' null | jq 'length')"
+eq "--swimlane none + stage 49 → card 3"      "[3]" "$(proj 49 '' '' null | jq -c 'map(.id)')"
+# A laned card must never fall into the laneless bucket, and an EXPLICIT swimlane_id:null
+# must land in it exactly like an absent key (the API may spell "no lane" either way).
+eq "a laned card never matches laneless" "[]" \
+   "$(printf '%s' '[{"id":9,"swimlane_id":2,"payload":{}}]' | _kbc_list_project '' '' '' null | jq -c 'map(.id)')"
+eq "explicit swimlane_id:null is laneless" "[8]" \
+   "$(printf '%s' '[{"id":8,"swimlane_id":null,"payload":{}}]' | _kbc_list_project '' '' '' null | jq -c 'map(.id)')"
+
 # Robustness: the API's swimlane_id JSON type can't be verified on a board without
 # lanes, so the filter keys on the STRINGIFIED id — a STRING-typed swimlane_id must
 # still match (a numeric == would silently drop it). Positive control for the type
@@ -399,6 +422,18 @@ eq "valid --swimlane lists that lane"           "[1]" "$(jq -c 'map(.id)' <<<"$o
 rc=0; out="$(bash -c "$_lane_child" _ bogus 2>/dev/null)" || rc=$?
 eq "typo'd --swimlane → rc 2 (loud, no drop)"   "2"   "$rc"
 eq "typo'd --swimlane prints NO cards"          ""    "$out"
+
+# card-5766 end-to-end through the real arg parse: the mock board is one laned card (1)
+# + one laneless card (2), so the whole-board regression is [1,2] and the correct answer
+# is [2] — this is the assertion that separates them. `none` must also never reach
+# swimlane_id(), which would reject it rc 2 as an undefined lane name (the pre-fix
+# behaviour), so a nonzero rc here is itself a failure.
+rc=0; out="$(bash -c "$_lane_child" _ none 2>/dev/null)" || rc=$?
+eq "--swimlane none → rc 0 (not an unknown lane)" "0"   "$rc"
+eq "--swimlane none lists ONLY the laneless card" "[2]" "$(jq -c 'map(.id)' <<<"$out")"
+rc=0; out="$(bash -c "$_lane_child" _ 0 2>/dev/null)" || rc=$?
+eq "--swimlane 0 → rc 0"                          "0"   "$rc"
+eq "--swimlane 0 is the same laneless filter"     "[2]" "$(jq -c 'map(.id)' <<<"$out")"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 
 # ---------------------------------------------------------------------------
@@ -512,8 +547,201 @@ kb_api() { printf '%s' '{"data":{"id":99,"name":"x","workflow_stage_id":5,"swiml
 eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
 eq "patch --swimlane echo surfaces swimlane_id"      "true"  "$(cmd_patch --task 99 --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
 eq "patch WITHOUT --swimlane echo omits swimlane_id" "false" "$(cmd_patch --task 99 --dl DL-1 2>/dev/null | jq 'has("swimlane_id")')"
+unset -f sp
+
+# ---------------------------------------------------------------------------
+echo "== cmd_create_card --swimlane — birth a card ON a lane (card#5671, roundtable #205) =="
+# The gap: create-card rejected --swimlane (rc 2, `unknown arg`) while patch and list both
+# advertised it two lines away in the same usage block, so minting onto a lane took
+# create-then-patch — leaving a laneless window any lane-keyed reader can observe.
+# The create POST honours swimlane_id at birth (measured on a swimlaned board, roundtable
+# #205), so the flag rides the create body directly; no create+patch composition.
+# Network-free: kb_api echoes the request body ($3); the write-echo passes it through.
+# _CC_POSTED records whether kb_api was reached AT ALL — the fail-before-write assertion
+# below is about a POST that must never happen, which a body assertion alone cannot show.
+_CC_POSTED="$(mktemp)"; trap 'rm -f "$_CC_POSTED"' EXIT
+kb_api() { printf 'yes' > "$_CC_POSTED"; printf '%s' "$3"; }
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
+cc() { : > "$_CC_POSTED"; cmd_create_card --type task --name x "$@" 2>/dev/null | jq -c '.'; }
+
+eq "create --swimlane by name → resolved id"       "2" "$(cc --swimlane backend | jq -c '.swimlane_id')"
+eq "create --swimlane by numeric id → passthrough" "5" "$(cc --swimlane 5       | jq -c '.swimlane_id')"
+# none/0 birth the card explicitly laneless: the key must be PRESENT and null, so an
+# absent key (flag silently dropped) reds instead of reading the same as a genuine null.
+eq "create --swimlane none → key present + null" '[true,null]' \
+   "$(cc --swimlane none | jq -c '[has("swimlane_id"), .swimlane_id]')"
+eq "create --swimlane 0 → key present + null"    '[true,null]' \
+   "$(cc --swimlane 0    | jq -c '[has("swimlane_id"), .swimlane_id]')"
+# swimlane_id is a top-level column, NOT a payload key — must not leak into task.payload.
+eq "create --swimlane sets a top-level column, not payload" "false" \
+   "$(cc --swimlane backend | jq '(.payload // {}) | has("swimlane_id")')"
+# Negative control: without the flag the key is ABSENT (proves the flag is load-bearing,
+# and that an ordinary create's body is byte-unchanged by this feature).
+eq "create without --swimlane → key ABSENT" "false" "$(cc | jq 'has("swimlane_id")')"
+
+# A typo'd lane must fail rc 2 with NO POST AT ALL. Accepting the flag and then birthing
+# the card laneless (or in a wrong lane) is strictly worse than the old rc-2 rejection —
+# a wrong card exists and something has to notice it. Assert the write never happened.
+: > "$_CC_POSTED"
+rc=0; cmd_create_card --type task --name x --swimlane bogus >/dev/null 2>&1 || rc=$?
+eq "create --swimlane typo → rc 2"              "2"  "$rc"
+eq "create --swimlane typo → NO card POSTed"    ""   "$(cat "$_CC_POSTED")"
+# Positive control for that assertion: the same probe records a POST on the happy path,
+# so the empty result above is a measurement, not a stub that never writes.
+: > "$_CC_POSTED"; cmd_create_card --type task --name x --swimlane backend >/dev/null 2>&1
+eq "control: a valid create DOES reach the POST" "yes" "$(cat "$_CC_POSTED")"
+# An explicitly-empty value is a caller bug (an unexpanded var), not "use the default".
+rc=0; cmd_create_card --type task --name x --swimlane "" >/dev/null 2>&1 || rc=$?
+eq "create --swimlane \"\" → rc 2" "2" "$rc"
+
+# ONE owner for the none/0→null rule (canon #5): create-card and patch must map the SAME
+# ref to the SAME swimlane_id. RED-when-reverted: re-inline a second none/0 branch in
+# either command and any divergence — notably `0` writing 0 instead of null — reds here.
+for ref in backend 5 none 0; do
+    eq "create/patch agree on --swimlane $ref" \
+       "$(cmd_patch --task 99 --swimlane "$ref" 2>/dev/null | jq -c '.swimlane_id')" \
+       "$(cc --swimlane "$ref" | jq -c '.swimlane_id')"
+done
+
+# The write echo surfaces swimlane_id ONLY when the flag was passed — same rule as patch,
+# so the caller sees the lane the server recorded. Uses the REAL projection over a server
+# {data:…} envelope (captured before the patch block; restored here, not re-implemented).
+kb_api() { printf '%s' '{"data":{"id":77,"name":"x","workflow_stage_id":48,"swimlane_id":2}}'; }
+eval "_kbc_write_echo() $(declare -f _kbc_write_echo_orig | tail -n +2)"
+eq "create --swimlane echo surfaces swimlane_id"      "true" \
+   "$(cmd_create_card --type task --name x --swimlane backend 2>/dev/null | jq 'has("swimlane_id")')"
+eq "create WITHOUT --swimlane echo omits swimlane_id" "false" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq 'has("swimlane_id")')"
+
+rm -f "$_CC_POSTED"; unset _CC_POSTED; trap - EXIT
+unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
-unset -f sp _kbc_write_echo_orig
+unset -f cc _kbc_write_echo_orig
+
+# ---------------------------------------------------------------------------
+echo "== patch's corrective setters — the five write-once-at-birth fields (card#5776) =="
+# THE CLASS: --name/--tags/--type/--external-id/--origin were settable only by create-card,
+# so a card minted wrong stayed wrong. The shipped consequence was a card name stamped once
+# from a PR title that Dependabot then RETARGETED — the card asserted a version the merged
+# diff never landed, with no supported way to retitle it.
+#
+# Network-free: a numeric --task short-circuits resolve_task; kb_api dispatches on the METHOD
+# so the tag read-merge-write has a GET to read (patch must re-send the whole list — the API
+# replaces `tags` wholesale) while the PATCH echoes its request body back to be asserted on.
+# The request log is what makes "no write happened" a measurement rather than an assumption.
+_REQ_LOG="$(mktemp)"
+trap 'rm -f "$_REQ_LOG"' EXIT
+_CUR_TAGS='[]'
+kb_api() {
+    printf '%s\n' "$1" >> "$_REQ_LOG"
+    case "$1" in
+        GET) printf '{"data":{"id":99,"tags":%s}}' "$_CUR_TAGS" ;;
+        *)   printf '%s' "$3" ;;
+    esac
+}
+_kbc_write_echo() { cat; }
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_IN_REVIEW=50
+# pb <args…> — run cmd_patch on a fresh request log, return the PATCH request body.
+pb() { : > "$_REQ_LOG"; cmd_patch --task 99 "$@" 2>/dev/null; }
+# reqs — the methods this call issued, in order (e.g. "GET PATCH").
+reqs() { tr '\n' ' ' < "$_REQ_LOG" | sed 's/ $//'; }
+
+echo "-- --name: the member with the shipped consequence (card#5385) --"
+eq "--name writes the new title"      '"retitled"' "$(pb --name retitled | jq -c '.name')"
+eq "--name needs no tag read"         "PATCH"      "$(reqs)"
+# Negative control: the key is ABSENT without the flag, so the assertion above is the flag's
+# doing and not a field this body always carries.
+eq "no --name → name key ABSENT"      "false"      "$(pb --dl DL-7 | jq 'has("name")')"
+
+echo "-- --external-id: numeric, fail-loud, and no half-write --"
+eq "--external-id writes a JSON number" "4242"     "$(pb --external-id 4242 | jq -c '.external_id')"
+eq "no --external-id → key ABSENT"      "false"    "$(pb --dl DL-7 | jq 'has("external_id")')"
+: > "$_REQ_LOG"
+rc=0; err="$(cmd_patch --task 99 --external-id abc 2>&1 >/dev/null)" || rc=$?
+eq "--external-id non-numeric → rc 2"          "2"    "$rc"
+eq "--external-id non-numeric names the flag"  "true" "$(has '--external-id must be numeric' "$err")"
+eq "--external-id non-numeric → NO request"    ""     "$(reqs)"
+# Positive control for that empty result: the same probe DOES record a PATCH when the value
+# is valid, so "no request" is a measurement and not a stub that never writes.
+eq "control: a valid --external-id reaches the PATCH" "PATCH" "$(pb --external-id 4242 >/dev/null; reqs)"
+
+echo "-- --type: re-type the card, and never leave it reading as two types --"
+export KB_TYPE_TASK=21; unset KB_TYPING_MODE 2>/dev/null || true
+_CUR_TAGS='["type:bug","keep"]'
+b="$(pb --type task)"
+eq "native board → card_type_id written"        "21"          "$(jq -c '.card_type_id' <<<"$b")"
+eq "native board → stale type: tag dropped"     '["keep"]'    "$(jq -c '.tags' <<<"$b")"
+eq "--type reads the current tags first"        "GET PATCH"   "$(reqs)"
+# The mixed-board hazard this strip exists for: `list --type bug` resolves an alias with no
+# native id through the `type:` TAG clause, so a card retyped to a native type while keeping
+# `type:bug` would still answer as a bug. RED-when-reverted: drop the strip and the tags
+# assertion above becomes ["type:bug","keep"].
+unset KB_TYPE_TASK; export KB_TYPING_MODE=tags
+b="$(pb --type task)"
+eq "tag board → no card_type_id"                "false"                 "$(jq 'has("card_type_id")' <<<"$b")"
+eq "tag board → type: tag swapped, not added"   '["keep","type:task"]'  "$(jq -c '.tags' <<<"$b")"
+unset KB_TYPING_MODE; export KB_TYPE_TASK=21
+rc=0; err="$(cmd_patch --task 99 --type 'not an alias' 2>&1 >/dev/null)" || rc=$?
+eq "--type with a space → rc 2"                 "2"    "$rc"
+eq "--type with a space names the flag"         "true" "$(has "--type 'not an alias'" "$err")"
+eq "no --type → card_type_id key ABSENT"        "false" "$(pb --dl DL-7 | jq 'has("card_type_id")')"
+
+echo "-- --tags: replaces the list wholesale, and composes with --triaged --"
+_CUR_TAGS='["dropped"]'
+eq "--tags replaces the whole list"     '["a","b"]'          "$(pb --tags a,b | jq -c '.tags')"
+eq "--tags spares the read"             "PATCH"              "$(reqs)"
+eq "--tags + --triaged appends triaged" '["a","b","triaged"]' "$(pb --tags a,b --triaged | jq -c '.tags')"
+eq "no tag flag → tags key ABSENT"      "false"              "$(pb --dl DL-7 | jq 'has("tags")')"
+
+echo "-- --triaged keeps the card's existing tag ORDER (it no longer sorts) --"
+# `unique` re-sorted every tag a card carried on an unrelated --triaged patch. First-seen
+# order is what create-card writes, so both writers now agree.
+_CUR_TAGS='["zeta","alpha"]'
+eq "--triaged appends without re-sorting" '["zeta","alpha","triaged"]' "$(pb --triaged | jq -c '.tags')"
+_CUR_TAGS='["alpha","triaged"]'
+eq "--triaged is idempotent (no dupe)"    '["alpha","triaged"]'        "$(pb --triaged | jq -c '.tags')"
+_CUR_TAGS='[]'
+
+echo "-- --origin: provenance is correctable, through the same payload assembler --"
+eq "--origin stamps payload.origin"  '"consumer-driven"' "$(pb --origin consumer-driven | jq -c '.payload.origin')"
+eq "no --origin → payload key ABSENT" "false"            "$(pb --name x | jq 'has("payload")')"
+
+echo "-- everything resolvable offline is resolved BEFORE any request --"
+# A typo'd column must not leave a card tag-read (or worse, half-written): rc 2, no traffic.
+: > "$_REQ_LOG"
+rc=0; cmd_patch --task 99 --column bogus --triaged >/dev/null 2>&1 || rc=$?
+eq "--column typo → rc 2"          "2" "$rc"
+eq "--column typo → NO request"    ""  "$(reqs)"
+eq "control: a valid --column reaches the PATCH" "50" "$(pb --column in_review | jq -c '.workflow_stage_id')"
+
+echo "-- ONE owner assembles the task fields for BOTH writers (canon #5) --"
+# The consolidation IS the fix: five fields drifted onto create-card alone because each
+# command carried its own top-level field assembly, so a sixth would drift the same way.
+# Stub the shared owner with a sentinel and assert both bodies carry it — re-inline the jq
+# in either command and this reds, which no per-field value assertion would.
+eval "_kbc_task_fields_orig() $(declare -f _kbc_task_fields | tail -n +2)"
+_kbc_task_fields() { printf '{"_shared_owner":true}'; }
+eq "create-card assembles via _kbc_task_fields" "true" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq '._shared_owner')"
+eq "patch assembles via _kbc_task_fields"       "true" \
+   "$(cmd_patch --task 99 --name y 2>/dev/null | jq '._shared_owner')"
+eval "_kbc_task_fields() $(declare -f _kbc_task_fields_orig | tail -n +2)"
+unset -f _kbc_task_fields_orig
+# And they agree on the RESOLVED value, not just the code path: the same --type alias must
+# produce the same card_type_id from both, on a native board and a tag-typed one alike.
+eq "create/patch agree on --type (native)" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')" \
+   "$(pb --type task | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')"
+unset KB_TYPE_TASK; export KB_TYPING_MODE=tags
+eq "create/patch agree on --type (tag mode)" \
+   "$(cmd_create_card --type task --name x 2>/dev/null | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')" \
+   "$(pb --type task | jq -c '[.card_type_id, (.tags//[]|index("type:task"))]')"
+
+unset KB_TYPING_MODE KB_BOARD_ID KB_STAGE_BACKLOG KB_STAGE_IN_REVIEW
+unset -f kb_api pb reqs
+unset _CUR_TAGS
+rm -f "$_REQ_LOG"; unset _REQ_LOG; trap - EXIT
 
 # ---------------------------------------------------------------------------
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
@@ -536,7 +764,8 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
    "$(cmd_patch --task 99 --dl DL-7 2>/dev/null | jq -r '.payload.dl_number')"
 
 # The whole class, not the one reported instance.
-for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description; do
+for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
+         --name --tags --type --external-id --origin; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"

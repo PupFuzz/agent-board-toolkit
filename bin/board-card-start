@@ -3,7 +3,7 @@
 #
 # Codifies "work has begun" so it's never a forgotten manual step (the recurring
 # board-drift fix). Called by the post-checkout git hook; also runnable by hand:
-#     board-card-start [<branch-name>]      (default: the current branch)
+#     board-card-start [--lint] [--] [<branch-name>]   (no branch argument: the current branch)
 #
 # Correlation — try-in-order-with-fallback (framework contract #112), on the
 # OUTCOME of a token not its presence:
@@ -147,12 +147,71 @@ _bcs_branch_lint_warning() {
 # stop here — sourcing must not run the checkout mover.
 (return 0 2>/dev/null) && return 0
 
-# `--lint <branch>`: the pre-push advisory path — print the branch-name warning (if any)
-# and exit, without any board/network work. Fail-soft like every other exit here.
+# Argument surface: `[--lint] [--] [<branch-name>]`. `--lint` is the pre-push advisory path —
+# print the branch-name warning (if any) and exit, without any board/network work; no branch
+# argument is the post-checkout path (the hook passes none), which targets the CURRENT branch.
+#
+# Parsed in a LOOP so the flag is honored in ANY position. Honoring `--lint` only in position 1
+# meant `board-card-start <branch> --lint` silently dropped it and performed a REAL card move —
+# the same defect install-board-hooks documents fixing for `--check` (see its parser), on the
+# most natural mis-spelling of a flag whose entire contract is "moves nothing".
+#
+# `--` is a REAL end-of-options terminator (it sets a flag the loop honors), never the decorative
+# `--) ;;` that is accepted and then ignored. It is load-bearing, not boilerplate: git ACCEPTS a
+# branch whose name starts with `-` — `git check-ref-format refs/heads/-foo` is rc 0 and
+# `git update-ref refs/heads/-foo HEAD` creates it; only the `git branch` PORCELAIN refuses the
+# name — and hooks/pre-push hands us whatever git is pushing. Without the terminator the `-*` arm
+# refuses `-foo` as an unknown option: a FALSE refusal, printing a "no card moved" line on every
+# push of such a branch while the mover still moves its card (post-checkout passes no args, so it
+# reaches the `git rev-parse HEAD` fallback and never enters this parser) — i.e. exactly the
+# "can never disagree about the grammar" property docs/HOOKS.md claims for the pre-push lint,
+# broken on the one axis the shared matchers do not cover.
+# Everything after `--` is a positional, and there is ONE positional owner below that both sides
+# of the terminator reach — a second copy of it is how the two arms would drift apart.
+#
+# An EMPTY positional is REFUSED rather than read as absent. `${1:-<HEAD>}` fires on empty as
+# well as unset, so `board-card-start "$BRANCH"` with BRANCH unexpanded silently retargeted the
+# move to whatever HEAD was on — a wrong-card write, not a no-op (the empty-value class, in a
+# parser the earlier positional sweep did not reach). Rejecting it here is also what makes the
+# `-n "$branch"` tests below sound: they are the "have I seen a positional?" question, and zero
+# args (post-checkout's only call form) must still fall back to HEAD.
+#
+# Every refusal is LOUD on stderr and still exits 0. The binding reason is NOT post-checkout:
+# that hook passes ZERO arguments, so no refusal arm here is reachable from it at all, and its
+# wrapper is `board-card-start >/dev/null 2>&1 || true`, which would swallow a non-zero exit
+# anyway. What binds is the OPERATOR-AUTHORED CHAINED hook — an explicitly supported topology
+# (docs/HOOKS.md tells operators to chain the toolkit hook into a committed hook by hand;
+# board-session-close models its CHAIN-BROKEN state and tests/board-session-close-selftest.sh
+# fixtures the unguarded `command -v board-card-start && board-card-start` shape) whose wrapper
+# carries no `|| true`. A non-zero exit there propagates: per githooks(5), post-checkout's exit
+# status becomes the exit status of `git switch`/`git checkout` (measured on git 2.43 — the
+# checkout is not undone, but the command reports failure), so anything driving the checkout
+# sees it fail. Deliberately NOT bcs_skip/kb_bcs_log: their wording asserts the branch carries a
+# DL/card token, which an argument refusal has not established — and since these forms are
+# reachable only from a hand-typed invocation, stderr, not the log file, is the surface that
+# reaches whoever typed the command.
+_bcs_usage="usage: board-card-start [--lint] [--] [<branch-name>]"
 lint_mode=0
-if [ "${1:-}" = "--lint" ]; then lint_mode=1; shift; fi
+branch=""
+end_of_opts=0
+while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    if [ "$end_of_opts" = 0 ]; then
+        case "$arg" in
+            --lint) lint_mode=1; continue ;;
+            --)     end_of_opts=1; continue ;;
+            -*)     echo "board-card-start: unknown option: $arg — no card moved (for a branch name that starts with '-', pass it after --)" >&2
+                    echo "$_bcs_usage" >&2; exit 0 ;;
+        esac
+    fi
+    # The single positional owner, reached both before and after `--`.
+    kb_require_positional "$branch" "$arg" "<branch-name>" " — no card moved" || {
+        echo "$_bcs_usage" >&2; exit 0
+    }
+    branch="$arg"
+done
 
-branch="${1:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+[ -n "$branch" ] || branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 [ -n "$branch" ] && [ "$branch" != "HEAD" ] || exit 0
 
 if [ "$lint_mode" = 1 ]; then

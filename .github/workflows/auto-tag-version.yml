@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with tags)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -44,7 +44,15 @@ jobs:
             echo "ERROR: .release-pr.json has no .version_regex to validate VERSION against"
             exit 1
           fi
-          if [[ ! "$VERSION" =~ ^${REGEX}$ ]]; then
+          # Matched under LC_ALL=C because a bash bracket RANGE is a COLLATION range, not
+          # an ASCII range: under a UTF-8 locale `[0-9]` also matches non-ASCII digits, so
+          # a VERSION of e.g. "0.23.<U+0663>" satisfies this gate and gets tagged. (The
+          # hosted runner's own locale was not read — this may be latent here rather than
+          # live, which is exactly why it should not depend on the ambient locale.)
+          # Mirrors kb_ere_match in bin/_kb-board-lib.sh; a workflow run: block cannot
+          # source it.
+          version_ok() { local LC_ALL=C; [[ "$1" =~ ^${2}$ ]]; }
+          if ! version_ok "$VERSION" "$REGEX"; then
             echo "ERROR: VERSION '$VERSION' does not match .release-pr.json version_regex '$REGEX'"
             exit 1
           fi

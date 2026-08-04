@@ -81,6 +81,192 @@ printf '%s' "$_lout" | grep -q "board-branch-lint:.*card 4524" && ok "--lint war
 _lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
 [[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
 
+echo "== board-card-start argument surface — flag position, empty positional, HEAD default (card#5333) =="
+# Exercises the REAL argument path in a subprocess, network-free: a fixture repo whose branch
+# CORRELATES (card-4242), a scratch HOME (so no ~/.kanban-* token/host file is readable) and no
+# board id anywhere, so a run that reaches board work fail-softs at the FIRST board gate — loudly,
+# naming the branch it resolved, and appending the same line to the durable log. That pair is the
+# observable for "a move was attempted"; its ABSENCE is the observable for "the refusal held".
+# Every case asserts rc 0 as well: a refusal here is a no-move, NEVER a non-zero exit (this runs
+# from post-checkout, which must never block a checkout — docs/HOOKS.md).
+if command -v git >/dev/null 2>&1; then
+    _t="$(mktemp -d)"
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    _repo="$_t/repo"; _home="$_t/home"; _log="$_t/bcs.log"; mkdir -p "$_home"
+    git init -q "$_repo"
+    ( cd "$_repo" && echo a > a && git add a && git commit -qm a && git checkout -q -b fix/card-4242-x )
+    _bcs_run() {  # <args…> — run the bin in the fixture; sets _rc/_out, with a fresh durable log
+        # The scratch HOME + emptied ambient KBCARD_* are what keep this network-free no matter
+        # whose shell runs it: the bin reads an ambient KBCARD_API/KBCARD_TOKEN_FILE ahead of the
+        # host env, so leaving a real one in scope is the one way a fixture run could go live.
+        #
+        # `"$@"` is expanded with ZERO arguments for the zero-args case below, and that is
+        # deliberate rather than overlooked: it is the shape the shipped bins already run on their
+        # own production path — `bin/kbcard` and `bin/adopt-to-dl` both end in `main "$@"` under
+        # the STRICTER `set -euo pipefail`, and both are routinely invoked bare. (This bin's parser
+        # reads `$#`/`$1` because it consumes arguments one at a time, not to avoid `"$@"`.)
+        # Measured on the reference host, bash 5.2.21: a zero-arg `"$@"` under `set -euo pipefail`
+        # expands to zero words and does not trip `set -u`. That measurement is scoped to that
+        # shell — but the exposure is not this test's alone, so a shell where the shape did fail
+        # would take those two tools' bare invocation down before it reached here.
+        rm -f "$_log"; _rc=0
+        _out="$(cd "$_repo" && HOME="$_home" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_log" \
+                bash "$BCS" "$@" 2>&1)" || _rc=$?
+    }
+    _bcs_attempted_move() {   # did the run get past argument handling into board work?
+        [[ -s "$_log" ]] || printf '%s' "$_out" | grep -q "fix/card-4242-x"
+    }
+
+    # ZERO ARGS → the current branch. hooks/post-checkout passes NO arguments at all, so this is
+    # the production path and the empty-positional refusal must not touch it. It is also the
+    # POSITIVE CONTROL for _bcs_attempted_move: without it, a probe that can never fire would
+    # make every "no move" assertion below pass vacuously.
+    _bcs_run
+    [[ "$_rc" -eq 0 ]] && ok "no args: exits 0" || bad "no args: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && ok "no args: defaults to the CURRENT branch, and board work IS detectable (control)" \
+        || bad "no args: did not resolve HEAD's branch: $_out"
+
+    # AN EXPLICITLY-EMPTY BRANCH → refuse. It must NOT silently become the HEAD default — that
+    # moves a card the caller never named (an unexpanded "$BRANCH" is the way in).
+    _bcs_run ""
+    [[ "$_rc" -eq 0 ]] && ok "empty branch: exits 0 (fail-soft)" || bad "empty branch: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "is empty" \
+        && ok "empty branch: refuses loudly" || bad "empty branch: no refusal on stderr: $_out"
+    _bcs_attempted_move \
+        && bad "empty branch: fell through to HEAD and attempted a move: $_out" \
+        || ok "empty branch: NO board work attempted"
+
+    # TRAILING --lint → lint only. The fixture branch correlates, so a dropped flag shows up as
+    # real board work; an rc-0-only assertion would pass with the flag silently ignored.
+    _bcs_run "fix/card-4242-x" --lint
+    [[ "$_rc" -eq 0 ]] && ok "<branch> --lint: exits 0" || bad "<branch> --lint: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && bad "<branch> --lint: flag dropped — a REAL move was attempted: $_out" \
+        || ok "<branch> --lint: no move attempted"
+    # …and it is lint MODE, not merely an early exit: a warn-worthy branch must still warn.
+    _bcs_run "fix/card_4524-x" --lint
+    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4524" \
+        && ok "<branch> --lint: actually lints (the warning is emitted)" || bad "<branch> --lint: no lint warning: $_out"
+
+    # LEADING --lint — hooks/pre-push's call form — keeps working: lint only, no move.
+    _bcs_run --lint "fix/card-4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "--lint <branch>: exits 0" || bad "--lint <branch>: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && bad "--lint <branch>: attempted a move: $_out" || ok "--lint <branch>: no move attempted"
+
+    # An unrecognised flag or a second positional is refused by name, never silently
+    # reinterpreted — a flag read as a branch name is a move nobody asked for. The fixture flag
+    # deliberately CARRIES a card token (`--card-4242`), so "no board work" is a live assertion
+    # here: with a token-free `--bogus` it would pass even when the flag is stored as the branch.
+    _bcs_run --card-4242
+    [[ "$_rc" -eq 0 ]] && ok "unknown option: exits 0" || bad "unknown option: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unknown option" \
+        && ok "unknown option: refuses loudly" || bad "unknown option: not refused: $_out"
+    _bcs_attempted_move \
+        && bad "unknown option: attempted a move: $_out" || ok "unknown option: NO board work attempted"
+    _bcs_run "fix/card-4242-x" "fix/card-9999-y"
+    [[ "$_rc" -eq 0 ]] && ok "extra positional: exits 0" || bad "extra positional: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unexpected extra argument" \
+        && ok "extra positional: refuses loudly" || bad "extra positional: not refused: $_out"
+    _bcs_attempted_move \
+        && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
+
+    # `--` IS AN END-OF-OPTIONS TERMINATOR, and the population it serves is live, not theoretical:
+    # git ACCEPTS a branch whose name starts with '-' — `git check-ref-format refs/heads/-foo` is
+    # rc 0 and `git update-ref` creates it (only the `git branch` PORCELAIN refuses the name) — and
+    # hooks/pre-push is fed whatever is being pushed. So the refs below are created the way git
+    # actually allows, rather than passed as bare strings: the shape under test is a REAL ref.
+    # Without the terminator the `-*` arm refuses these names, which is a FALSE refusal (the mover
+    # moves their cards regardless — post-checkout passes no arguments and resolves HEAD).
+    # The premise is ASSERTED, not assumed: if a future git rejected these names the terminator
+    # would be serving a population that no longer exists, and every assertion below would keep
+    # passing while the premise had silently gone false.
+    _mkref_ok=1
+    for _r in "-card-4242-x" "-card_4242-x" "-foo"; do
+        git -C "$_repo" update-ref "refs/heads/$_r" HEAD 2>/dev/null || _mkref_ok=0
+    done
+    [[ "$_mkref_ok" -eq 1 ]] \
+        && ok "git CREATES branches whose names start with '-' (the premise the terminator serves)" \
+        || bad "git refused a '-'-leading branch name — the premise for the -- terminator no longer holds"
+
+    # …on the LINT path: accepted, and it still lints (a terminator that merely stopped the refusal
+    # while dropping the argument would pass an rc-0-and-no-refusal test).
+    _bcs_run --lint -- "-card_4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "--lint -- <dash-name>: exits 0" || bad "--lint -- <dash-name>: expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "unknown option" \
+        && bad "--lint -- <dash-name>: refused as an option — the terminator is decorative: $_out" \
+        || ok "--lint -- <dash-name>: NOT refused as an unknown option"
+    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+        && ok "--lint -- <dash-name>: the name reached the lint (it warns)" \
+        || bad "--lint -- <dash-name>: no lint warning — the argument was dropped: $_out"
+    # "no move attempted" is asserted on the CORRELATING dash-name, never on the warn-worthy one:
+    # the lint warns only where the grammar does NOT recognize the branch, so a warn-worthy name
+    # can never reach board work and a no-move assertion on it could not fail under any mutation.
+    _bcs_run --lint -- "-card-4242-x"
+    _bcs_attempted_move \
+        && bad "--lint -- <dash-name>: flag dropped — a REAL move was attempted: $_out" \
+        || ok "--lint -- <dash-name>: no move attempted"
+
+    # …and on the MOVER path: after `--` a dash-leading name is the BRANCH, so a correlating one
+    # reaches board work. This is what makes it a terminator rather than an early `exit 0`.
+    _bcs_run -- "-card-4242-x"
+    [[ "$_rc" -eq 0 ]] && ok "-- <dash-name>: exits 0" || bad "-- <dash-name>: expected rc=0 got $_rc"
+    _bcs_attempted_move \
+        && ok "-- <dash-name>: became the branch (board work reached)" \
+        || bad "-- <dash-name>: never reached board work — dropped or refused: $_out"
+
+    # The terminator does NOT reopen the empty-positional hole: one positional owner serves both
+    # sides of `--`, so an empty argument after it is refused exactly as before it. A second copy
+    # of that arm is how the two sides would drift apart, so this is the assertion that pins it.
+    _bcs_run -- ""
+    [[ "$_rc" -eq 0 ]] && ok "-- \"\": exits 0" || bad "-- \"\": expected rc=0 got $_rc"
+    printf '%s' "$_out" | grep -q "is empty" \
+        && ok "-- \"\": still refuses an empty positional" || bad "-- \"\": empty not refused: $_out"
+    _bcs_attempted_move \
+        && bad "-- \"\": fell through to HEAD and attempted a move: $_out" \
+        || ok "-- \"\": NO board work attempted"
+
+    # THE CALL SITE. The false refusal was reachable only through hooks/pre-push, which is where
+    # the branch name arrives unsanitised, so the hook itself is exercised — real stdin in git's
+    # "<local-ref> <local-sha> <remote-ref> <remote-sha>" shape, real `board-card-start` on PATH.
+    # Asserting the parser alone would leave the hook free to drop the `--` and go back to
+    # printing "no card moved" on every push of such a branch.
+    _pp="$HERE/../hooks/pre-push"
+    if [[ -r "$_pp" ]]; then
+        _ppbin="$_t/ppbin"; mkdir -p "$_ppbin"
+        # A wrapper, not a symlink: `ln -s` yields copies on the Windows/MSYS topology this
+        # toolkit supports, and a copied board-card-start cannot find _kb-board-lib.sh beside it.
+        printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$BCS" > "$_ppbin/board-card-start"
+        chmod +x "$_ppbin/board-card-start"
+        _pp_run() {  # <bare-branch-name> — feed the hook one pushed ref, as git does
+            rm -f "$_log"; _rc=0
+            _out="$(cd "$_repo" && PATH="$_ppbin:$PATH" HOME="$_home" KBCARD_API='' KBCARD_TOKEN_FILE='' \
+                    KB_BCS_LOG="$_log" bash "$_pp" origin "$_repo" \
+                    <<<"refs/heads/$1 1111111111111111111111111111111111111111 refs/heads/$1 0000000000000000000000000000000000000000" 2>&1)" || _rc=$?
+        }
+        _pp_run "-foo"
+        # WHAT THIS rc ASSERTION ACTUALLY PINS: the hook's `|| true` and its trailing `exit 0` each
+        # independently force rc 0, so no change to what board-card-start returns can red it — it
+        # is a SMOKE test that the hook parses and runs at all, and it reds on the failure that
+        # would (a syntax error: rc 2, verified). Recorded because reading it as "a non-zero
+        # board-card-start would be caught here" would be wrong.
+        [[ "$_rc" -eq 0 ]] && ok "pre-push '-foo': exits 0 (runs, and never blocks a push)" \
+            || bad "pre-push '-foo': expected rc=0 got $_rc"
+        [[ -z "$_out" ]] && ok "pre-push '-foo': SILENT — no 'no card moved' refusal on a valid branch" \
+            || bad "pre-push '-foo': the hook printed a refusal for a branch git accepts: $_out"
+        _pp_run "-card_4242-x"
+        printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+            && ok "pre-push '-card_4242-x': still LINTS through the terminator" \
+            || bad "pre-push '-card_4242-x': the advisory did not fire: $_out"
+    else
+        bad "hooks/pre-push not readable — the call site could not be exercised"
+    fi
+    rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
 echo "== _ibh_hooks_dir — install-target resolution + refuse discriminator (F7) =="
 expect_rc  "unset → default .git/hooks (safe)"  0 _ibh_hooks_dir "/repo" ""
 expect_out "unset → default path"   "/repo/.git/hooks"     _ibh_hooks_dir "/repo" ""
@@ -89,6 +275,26 @@ expect_rc  "relative .git/hooks (under .git) → safe" 0 _ibh_hooks_dir "/repo" 
 expect_rc  "absolute out-of-tree → safe"        0 _ibh_hooks_dir "/repo" "/etc/git/hooks"
 expect_rc  "absolute inside tree → REFUSE"      3 _ibh_hooks_dir "/repo" "/repo/.githooks"
 expect_out "relative .githooks resolves vs root" "/repo/.githooks" _ibh_hooks_dir "/repo" ".githooks"
+# A '..'-relative hooksPath resolves OUTSIDE the work tree, but the RAW string still starts with
+# the repo root — an un-normalized prefix test called it in-tree and printed the wrong fix.
+expect_rc  "'../shared-hooks' escapes the tree → safe, not the in-tree refuse" 0 _ibh_hooks_dir "/repo/proj" "../shared-hooks"
+expect_rc  "'sub/../.githooks' still lands in-tree → REFUSE"  3 _ibh_hooks_dir "/repo/proj" "sub/../.githooks"
+expect_out "the echoed path is NOT lexically rewritten (the OS resolves it as git does)" \
+           "/repo/proj/../shared-hooks" _ibh_hooks_dir "/repo/proj" "../shared-hooks"
+
+echo "== _ibh_hooks_dir — SET-but-EMPTY core.hooksPath is 'hooks disabled', not 'unset' =="
+# git does not fall back on an empty value: it dispatches NO hooks. Presence therefore has to
+# arrive as an explicit argument, because the value alone cannot carry it.
+expect_rc  "empty value + presence flag → rc 4 (disabled)"     4 _ibh_hooks_dir "/repo" "" "/repo/.git" "1"
+expect_rc  "empty value WITHOUT the flag → the unset default"  0 _ibh_hooks_dir "/repo" "" "/repo/.git" ""
+expect_out "…and that default is <git-dir>/hooks"  "/repo/.git/hooks" _ibh_hooks_dir "/repo" "" "/repo/.git" ""
+expect_out "an explicit common dir wins (linked worktree)" "/main/.git/hooks" _ibh_hooks_dir "/wt" "" "/main/.git"
+
+echo "== _ibh_norm — pure lexical normalization (no filesystem access) =="
+expect_out "collapses x/.."        "/a/c"    _ibh_norm "/a/b/../c"
+expect_out "collapses . and //"    "/a/b"    _ibh_norm "/a/./b//"
+expect_out "keeps a relative path relative" "a/b" _ibh_norm "a/./b"
+expect_out "root stays root"       "/"       _ibh_norm "/a/.."
 
 echo "== kb_bcs_log — writes the durable log (F5) + is set -u-safe with branch unset =="
 _tmpd="$(mktemp -d)"
@@ -116,6 +322,175 @@ if command -v git >/dev/null 2>&1; then
     [[ -L "$_t/ok/.git/hooks/pre-push" ]] \
         && ok "default install symlinks .git/hooks/pre-push (card-4621)" \
         || bad "default install did not create the .git/hooks/pre-push symlink"
+    rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
+echo "== install-board-hooks — separated git topologies: worktree REFUSED, the other two INSTALL (card#5226, card#5311) =="
+# Three separated topologies, three DIFFERENT right answers, split by BLAST RADIUS: only the
+# linked worktree shares its hooks dir with checkouts the operator did not name, so only it is
+# refused. They are built for real rather than faked, because the discriminator is what git
+# actually reports for each: `--git-common-dir` != `--git-dir` is true ONLY for the linked
+# worktree (measured on git 2.43 — the other two report them EQUAL), so a check built on that
+# comparison would pass here while missing two of three.
+if command -v git >/dev/null 2>&1; then
+    _t="$(mktemp -d)"
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git init -q "$_t/main"; ( cd "$_t/main" && echo a > a && git add a && git commit -qm a )
+    git -C "$_t/main" worktree add -q "$_t/wt" -b wtb
+    git init -q --separate-git-dir="$_t/sepgit" "$_t/sep"
+    # The COMMIT is load-bearing, not fixture decoration: `git checkout -b` on an UNBORN head does
+    # not dispatch post-checkout, so the dispatch proof below would be a check that cannot pass
+    # (measured — it failed exactly this way before the commit was added). The submodule fixture
+    # is committed already, by virtue of being a clone.
+    ( cd "$_t/sep" && echo x > x && git add x && git commit -qm x )
+    git init -q "$_t/super"
+    ( cd "$_t/super" && echo s > s && git add s && git commit -qm s \
+      && git -c protocol.file.allow=always submodule add -q "$_t/main" sub && git commit -qm sub ) >/dev/null 2>&1
+
+    _sepgit="$_t/sepgit"
+    _subgit="$_t/super/.git/modules/sub"
+
+    # THE REFUSED ONE: non-zero, AND its own words — a generic message would satisfy a bare rc test.
+    _topo() {   # <label> <path> <must-contain> <must-NOT-contain>
+        local _rc=0 _o
+        _o="$(bash "$IBH" --check "$2" 2>&1)" || _rc=$?
+        [[ "$_rc" -ne 0 ]] && ok "$1: refused (rc=$_rc)" || bad "$1: must refuse (got rc=$_rc, out=$_o)"
+        printf '%s' "$_o" | grep -q "$3" \
+            && ok "$1: message names its own topology ($3)" || bad "$1: wrong message: $_o"
+        printf '%s' "$_o" | grep -q "$4" \
+            && bad "$1: message carries another topology's wording ($4): $_o" \
+            || ok "$1: does NOT emit another topology's wording"
+    }
+    _topo "linked worktree"  "$_t/wt"       "LINKED WORKTREE"      "SEPARATE git directory"
+
+    # ── THE TWO THAT NOW INSTALL (card#5311) ────────────────────────────────────────────────
+    # Asserted on the MESSAGE and on the hook landing where git READS, never on rc: all of these
+    # paths exited 1 before this card, so an rc-only test could not have failed on the old code.
+    _installs() {   # <label> <repo> <expected-common-dir> <must-contain> <must-NOT-contain>
+        local _label="$1" _repo="$2" _cdir="$3" _want="$4" _not="$5" _rc=0 _o _err
+        # (a) DISPATCH PROOF, before installing anything: git itself must run a hook placed in
+        # <cdir>/hooks. Every other assertion in this block rests on that dir being the one git
+        # reads, and an `-L` presence check alone would never establish it.
+        printf '#!/bin/sh\necho fired > %s/DISPATCHED\n' "$_cdir" > "$_cdir/hooks/post-checkout"
+        chmod +x "$_cdir/hooks/post-checkout"
+        git -C "$_repo" checkout -qb "probe-$$" 2>/dev/null
+        [[ -f "$_cdir/DISPATCHED" ]] \
+            && ok "$_label: git DISPATCHES hooks from $_cdir/hooks (proven by running one)" \
+            || bad "$_label: git did not dispatch from $_cdir/hooks — the whole disposition rests on this"
+        rm -f "$_cdir/DISPATCHED" "$_cdir/hooks/post-checkout"
+
+        # (b) --check: rc 0, and stdout EXACTLY the dispatch dir. Captured WITHOUT stderr — the
+        # topology note is deliberately on stderr in both modes because --check's only stdout is
+        # the target dir (a contract board-session-close consumes), and folding 2>&1 in here would
+        # both pollute the equality and hide a regression that moved the note onto stdout.
+        _rc=0; _o="$(bash "$IBH" --check "$_repo" 2>/dev/null)" || _rc=$?
+        [[ "$_rc" -eq 0 && "$_o" == "$_cdir/hooks" ]] \
+            && ok "$_label: --check rc 0, stdout is exactly the dispatch dir" \
+            || bad "$_label: --check must print only $_cdir/hooks (rc=$_rc out=$_o)"
+
+        # (c) the note is on STDERR, names this topology, and not another's.
+        _err="$(bash "$IBH" --check "$_repo" 2>&1 >/dev/null)"
+        printf '%s' "$_err" | grep -q "$_want" \
+            && ok "$_label: stderr note names its own topology ($_want)" \
+            || bad "$_label: wrong/absent stderr note: $_err"
+        printf '%s' "$_err" | grep -q "$_not" \
+            && bad "$_label: note carries another topology's wording ($_not): $_err" \
+            || ok "$_label: does NOT emit another topology's wording"
+
+        # (d) a SUB-DIRECTORY argument prints the SAME canonical dir. git answers the common dir
+        # ABSOLUTE for both these topologies even from a sub-directory (measured, git 2.43.0),
+        # which is why no normalization is needed here — and this pins that measurement.
+        mkdir -p "$_repo/subdir"
+        _o="$(bash "$IBH" --check "$_repo/subdir" 2>/dev/null)"
+        [[ "$_o" == "$_cdir/hooks" ]] \
+            && ok "$_label: sub-directory argument prints the same canonical dir" \
+            || bad "$_label: sub-directory argument printed $_o, wanted $_cdir/hooks"
+
+        # (e) the REAL install lands where git dispatches — both hooks — and writes nothing into
+        # the work tree's own .git (the path the installer used to be hardcoded to).
+        bash "$IBH" "$_repo" >/dev/null 2>&1 \
+            && ok "$_label: install succeeds" || bad "$_label: install failed"
+        local _h
+        for _h in post-checkout pre-push; do
+            [[ -L "$_cdir/hooks/$_h" ]] \
+                && ok "$_label: $_h symlinked into the dispatch dir" \
+                || bad "$_label: $_h is NOT at $_cdir/hooks/$_h"
+        done
+        [[ ! -e "$_repo/.git/hooks/post-checkout" ]] \
+            && ok "$_label: nothing written into the work tree's own .git/hooks" \
+            || bad "$_label: also wrote into $_repo/.git/hooks — the old hardcoded target"
+    }
+    _installs "--separate-git-dir" "$_t/sep"        "$_sepgit" "SEPARATE git directory" "LINKED WORKTREE"
+    _installs "submodule"          "$_t/super/sub"  "$_subgit" "is a SUBMODULE of"      "LINKED WORKTREE"
+
+    # PROVE-IT-CAN-FAIL: with the disposition mutated back to the pre-card behaviour (always
+    # <root>/.git), the assertions above must RED. Without this the block could be passing on a
+    # target that happens to be right for another reason.
+    # The mutant must live in a REAL toolkit LAYOUT: the installer resolves its hook sources at
+    # <dirname $0>/../hooks and exits 1 before reading a single argument if they are absent. A
+    # bare copy in a scratch dir therefore dies at "hook source missing" and never reaches the
+    # code under mutation — a control that silently never ran. (It did, on the first pass here.)
+    _mut="$_t/mutant"; mkdir -p "$_mut/bin"
+    ln -s "$(cd "$(dirname "$IBH")/.." && pwd)/hooks" "$_mut/hooks"
+    sed 's|^    if \[ "\$cdir" -ef "\$root/\.git" \]; then printf .*$|    printf "%s" "$root/.git"; return 0|' \
+        "$IBH" > "$_mut/bin/install-board-hooks"
+    if cmp -s "$IBH" "$_mut/bin/install-board-hooks"; then
+        bad "prove-it-can-fail: the mutation did not apply — the control never ran"
+    else
+        # TWO facts, both required. A bare "stdout != the right dir" is satisfied by the mutant
+        # dying for an unrelated reason, which is exactly how an earlier version of this control
+        # passed while never reaching the mutated code at all.
+        #   (a) WITNESS — the mutated value reached the downstream code. <sep>/.git is a FILE, so
+        #       the mutant cannot create a hooks dir under it and says so, naming the mutated
+        #       target. That diagnostic is producible ONLY by the mutated disposition.
+        #   (b) the --check assertion above genuinely reds on this mutant.
+        _rc=0; _o="$(bash "$_mut/bin/install-board-hooks" --check "$_t/sep" 2>"$_t/mut.err")" || _rc=$?
+        if grep -q "$_t/sep/\.git/hooks" "$_t/mut.err" && [[ "$_o" != "$_sepgit/hooks" ]]; then
+            ok "prove-it-can-fail: the mutant targeted $_t/sep/.git/hooks (witnessed in its own diagnostic) and the assertion reds"
+        else
+            bad "prove-it-can-fail: control did not run — mutant stdout='$_o' rc=$_rc stderr='$(cat "$_t/mut.err")'"
+        fi
+    fi
+
+    # Only the worktree has another checkout to redirect to; the message must name it, since a
+    # classification without the command to run is what this refusal replaced.
+    # Captured, never piped: `set -o pipefail` is live here, so `<refusal> | grep -q` reports the
+    # REFUSAL's rc 1 and a matching pattern reads as a failure.
+    _out="$(bash "$IBH" --check "$_t/wt" 2>&1 || true)"
+    printf '%s' "$_out" | grep -q "install-board-hooks $_t/main\$" \
+        && ok "worktree refusal names the MAIN checkout as the command to run" \
+        || bad "worktree refusal did not name the main checkout: $_out"
+
+    # …and it must be TRUE: the command the refusal prints has to actually succeed.
+    bash "$IBH" "$_t/main" >/dev/null 2>&1 && [[ -L "$_t/main/.git/hooks/post-checkout" ]] \
+        && ok "the redirected command works (main checkout installs)" \
+        || bad "the refusal named a command that does not work"
+    # Installing at the main checkout wires the worktree too — the claim the message makes.
+    [[ -L "$(git -C "$_t/wt" rev-parse --git-common-dir)/hooks/post-checkout" ]] \
+        && ok "…and that wires the worktree's dispatch dir, as the message claims" \
+        || bad "main-checkout install did not reach the worktree's dispatch dir"
+
+    # THE REFUSAL IS TOPOLOGY-CONDITIONAL, NOT TOPOLOGY-ABSOLUTE: a set core.hooksPath wins on
+    # every topology, so a worktree that configures one is installable and refusing it would be
+    # a FALSE refusal. This is the positive control for the guard — without it, a guard keyed on
+    # topology alone passes every assertion above.
+    mkdir -p "$_t/outhooks"; git -C "$_t/wt" config core.hooksPath "$_t/outhooks"
+    _rc=0; _out="$(bash "$IBH" --check "$_t/wt" 2>&1)" || _rc=$?
+    [[ "$_rc" -eq 0 && "$_out" == "$_t/outhooks" ]] \
+        && ok "worktree + out-of-tree core.hooksPath: NOT refused, targets the hooksPath" \
+        || bad "worktree with core.hooksPath must install (rc=$_rc out=$_out)"
+    git -C "$_t/wt" config --unset core.hooksPath
+
+    # An ordinary checkout is unaffected, and a SUB-DIRECTORY argument still prints the canonical
+    # <root>/.git/hooks — `--git-common-dir` is answered relative to the typed path, so passing it
+    # through would print `<root>/subdir/../.git/hooks` into a stdout other tools consume.
+    mkdir -p "$_t/main/subdir"
+    _out="$(bash "$IBH" --check "$_t/main/subdir" 2>&1)"
+    [[ "$_out" == "$_t/main/.git/hooks" ]] \
+        && ok "sub-directory argument still prints the canonical <root>/.git/hooks" \
+        || bad "sub-directory argument printed a non-canonical target: $_out"
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"

@@ -9,6 +9,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_bin-set-lib.sh"
 CHECK="$HERE/../bin/agent-board-toolkit-runtime-check"
 _need -x "$CHECK"
 
@@ -108,7 +110,9 @@ if [[ -r "$SNAP" ]]; then
         || bad "snapshot invocation lacks 2>&1 — a stale-pin warning would be discarded by the hook"
     # Empirical: stdout ALONE (stderr dropped, as a stdout-capturing hook sees it) must
     # still carry the STALE warning. $CHECK by absolute path = board-snapshot's line with
-    # the guard resolved (it deliberately does not scan itself, so this cannot self-mix).
+    # the guard resolved. It DOES scan itself (card#5389), but through `command -v` on the
+    # fixture PATH, which lacks it — so it lands in `missing`, the fixture repos ship no
+    # such file, and neither a second root nor a gap warning can be manufactured here.
     # NB the first draft of this test used the bare name on a fixture PATH lacking the
     # guard: it returned EMPTY and read as a pass-shaped failure — the same
     # can't-bootstrap trap the guard exists for. Hence the positive control below.
@@ -132,5 +136,66 @@ if [[ -r "$SNAP" ]]; then
 else
     bad "board-snapshot not found next to the selftest"
 fi
+
+echo "== TOOLS probes exactly bin/'s public tool set (card#5389) =="
+# WHY THIS LEG EXISTS. TOOLS was a hand-maintained enumeration of bin/ that had drifted to 10 of
+# 13 — dl-a0-backfill-triaged, dl-a1-register-field and this check itself were structurally
+# invisible to BOTH failure legs above, so the tool that exists to prove an install is honest
+# could not see three of the tools it installs and said nothing about the gap. Nothing reported
+# it: the README gate (readme-bin-coverage-selftest.sh) covers the doc inventory, not this array.
+#
+# THE SET IS READ BACK FROM THE TOOL, never parsed out of its source. On a PATH carrying none of
+# the tools, every name lands in `missing` and the no-roots arm prints the whole array on stdout.
+# So this asserts the set the check ACTUALLY probes and survives any refactor of how the array is
+# spelled — a source grep would instead assert the spelling and could pass over an array the code
+# no longer reads.
+#
+# WHAT A GREEN RUN HERE PROVES — the weakest property these assertions support: that two NAME
+# SETS agree. It says nothing about whether probing a given name is USEFUL, whether the legs that
+# consume TOOLS are correct, or whether the set is the right one to probe — in particular
+# `_`-prefixed entries are outside it by construction, so `_kb-board-lib.sh` staying unchecked in
+# the copies topology (card#5414) is invisible to this leg and always will be.
+# Its OWN scratch HOME, like the channel control above: the cases before this one create and
+# delete $HOME/agent-board-toolkit, and a readback that silently depended on which of them ran
+# last is the fixture-ordering dependency this file has already been bitten by once.
+_probed_tools() {
+    HOME="$TMP/nohome" PATH=/usr/bin:/bin "$CHECK" 2>/dev/null \
+        | sed -n 's/^runtime-check: not on PATH (fine if unused): //p' | tr ' ' '\n' | LC_ALL=C sort
+}
+mkdir -p "$TMP/nohome"
+probed="$(_probed_tools)"
+
+# Positive control FIRST. Both live assertions below are assertions of ABSENCE, and their shared
+# failure mode is an EMPTY readback — a reworded line, a moved channel, or a non-zero exit would
+# make both pass by comparing nothing against nothing.
+eq "probe readback is non-empty" "false" "$([ -z "$probed" ] && echo true || echo false)"
+# A named member, not a count: a count pins the check to a past value and rots as bin/ grows.
+eq "probe readback carries a known member" "true" \
+   "$(printf '%s\n' "$probed" | grep -qx 'kbcard' && echo true || echo false)"
+eq "witness: the bin/ side is non-empty too" "true" \
+   "$([ -n "$(_public_bin_names "$HERE/../bin")" ] && echo true || echo false)"
+
+eq "every public bin/ tool is probed (add the name below to TOOLS)" "" \
+   "$(LC_ALL=C comm -23 <(_public_bin_names "$HERE/../bin") <(printf '%s\n' "$probed"))"
+eq "every probed name is a public bin/ tool (drop the name below from TOOLS)" "" \
+   "$(LC_ALL=C comm -13 <(_public_bin_names "$HERE/../bin") <(printf '%s\n' "$probed"))"
+
+# PROVE IT CAN FAIL. Each direction is pointed at a fixture bin/ carrying the exact defect it
+# claims to catch, compared against the REAL readback — so a fixture that produced no comparison
+# at all would fail its own witness rather than read as clean.
+echo "== prove-it-can-fail: a bin/ tool absent from TOOLS is REPORTED =="
+mkdir -p "$TMP/bin-extra"; touch "$TMP/bin-extra/kbcard" "$TMP/bin-extra/ghost-tool"
+eq "the unprobed tool is named" "ghost-tool" \
+   "$(LC_ALL=C comm -23 <(_public_bin_names "$TMP/bin-extra") <(printf '%s\n' "$probed"))"
+eq "the probed sibling is NOT named (witness: the comparison saw the real readback)" "" \
+   "$(LC_ALL=C comm -23 <(_public_bin_names "$TMP/bin-extra") <(printf '%s\n' "$probed") | grep -x 'kbcard' || true)"
+
+echo "== prove-it-can-fail: a probed name with no bin/ tool is REPORTED =="
+mkdir -p "$TMP/bin-min"; touch "$TMP/bin-min/kbcard"
+eq "witness: the fixture holds exactly the one tool" "kbcard" "$(_public_bin_names "$TMP/bin-min")"
+extra="$(LC_ALL=C comm -13 <(_public_bin_names "$TMP/bin-min") <(printf '%s\n' "$probed"))"
+eq "every other probed name is reported" "false" "$([ -z "$extra" ] && echo true || echo false)"
+eq "…and the name the fixture DOES hold is not among them" "" \
+   "$(printf '%s\n' "$extra" | grep -x 'kbcard' || true)"
 
 _summary "runtime-check-selftest"

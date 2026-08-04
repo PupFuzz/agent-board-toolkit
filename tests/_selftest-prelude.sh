@@ -6,7 +6,7 @@
 #     source "$HERE/_selftest-prelude.sh"
 #
 # It carries only the harness the selftests all shared verbatim — the assertion
-# helpers (ok/bad/fails, eq, expect_rc/expect_out), the required-bin guard, the
+# helpers (ok/bad/fails, eq, expect_rc/expect_out, has), the required-bin guard, the
 # temp-dir+trap[+scratch-HOME] setup, and the PASS/FAIL summary. It defines no test
 # cases and asserts nothing; the fixtures and cases stay in each selftest.
 #
@@ -20,6 +20,17 @@ bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
 
 # eq <label> <expected> <got> — string-equality assertion.
 eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
+
+# has <needle> <haystack> → true/false on a LITERAL substring match (robust against
+# the JSON quotes/braces and glob metacharacters in captured output).
+#
+# NEEDLE FIRST — a real contract, not a preference. Reversing the arguments is not a type
+# error and not a syntax error: it silently becomes a substring test between two different
+# strings, so it reads as a plain `false` and an assertion expecting `false` still passes.
+# Ten selftests once defined this locally and one of them had exactly that inversion, which is
+# why this lives here and nowhere else (card#5740). `prelude-shadow-selftest.sh` is what keeps
+# that true — re-declaring any helper defined here reds it.
+has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
 expect_rc() {

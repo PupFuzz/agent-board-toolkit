@@ -16,7 +16,11 @@
 #   - set-options refuses a non-enum/multi_select field, and empty / duplicate /
 #     missing --options (a converge-to-set target must be a real set);
 #   - a failing PATCH propagates non-zero AND its error body reaches stderr (the
-#     lost-error-body defect class #4337 must not reappear on this path).
+#     lost-error-body defect class #4337 must not reappear on this path);
+#   - `cmd_field`'s sub-verb dispatch, the one Preserve item of the flag-axis
+#     consolidation: a MISSING sub-verb is pinned by its own message, because the
+#     `*)` catch-all answers the same rc 2 and an rc-only check therefore stays
+#     green with the guard deleted (measured).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -28,9 +32,6 @@ _need -r "$BIN"
 source "$BIN"   # main-guarded — defines the field fns without running main()
 
 _mktmp_scratch
-# has <needle> <haystack> → true/false on a LITERAL substring match (robust against
-# the JSON quotes/braces in captured output).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
 # The verb reads KB_BOARD_ID; kb_api is stubbed so KB_API/KB_TOKEN are never used.
 export KB_BOARD_ID=1
@@ -123,6 +124,13 @@ eq "unknown arg → rc 2"                           "2"    "$rc"
 echo "== field verb dispatch =="
 rc=0; cmd_field >/dev/null 2>&1 || rc=$?
 eq "field with no sub-verb → rc 2"                "2"    "$rc"
+# The rc above cannot tell the two arms apart, so it is NOT what pins the missing-sub-verb
+# guard: measured with that guard deleted, an absent sub-verb falls through to the `*)`
+# catch-all, which answers rc 2 as well — the whole suite stays green while `bin/kbcard field`
+# driven as a PROCESS goes from a named rc 2 to a silent rc 1 (the arm's own `shift` failing on
+# an exhausted stack under `set -e`). The MESSAGE is the only channel that separates them.
+eq "field with no sub-verb names the missing sub-verb" \
+   "kbcard: field requires a sub-verb: list | set-options" "$(cmd_field 2>&1)"
 rc=0; cmd_field bogus >/dev/null 2>&1 || rc=$?
 eq "field with unknown sub-verb → rc 2"           "2"    "$rc"
 

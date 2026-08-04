@@ -13,14 +13,17 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `promote/action.yml` | SHA-pinned composite-action wrapper around `bin/promote-released-cards` for GitHub-Actions consumers (INSTALL.md §6a) |
 | `bin/release-pr-body` | generate the release-PR body/scaffold from repo config. **This copy is authoritative** — same as `promote-released-cards`: the toolkit owns both release bins (tests + release discipline live here); the agent-board-framework's `templates/release/` copies are mirrors synced at toolkit tags. Framework-side needs land as toolkit PRs first, never as a fork of the mirror |
 | `bin/board-snapshot` | session-start board snapshot |
-| `bin/board-session-close` | session-close board↔git reconcile |
+| `bin/board-session-close` | session-close board↔git reconcile — plus a report-only **git-hook dispatch check** (does each local checkout's `post-checkout` still reach `board-card-start`? see [`docs/HOOKS.md`](docs/HOOKS.md#is-the-hook-still-wired--the-dispatch-check)) |
 | `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
 | `bin/adopt-to-dl` | **pull-into-build adoption seam:** stamp an existing plain card with `dl_number` + a source-qualified placeholder `pr_url` in one atomic write (via `next-dl` + `kbcard patch`), then fail-loud-verify by `by-ref?system=dl&ref=N&source=<repo>`. Refuses to re-mint over an already-adopted card (`--dl N` re-stamps idempotently for a crash-retry) |
 | `bin/install-board-hooks` | install the `post-checkout` (card auto-move on branch checkout) + `pre-push` (fail-soft branch-name advisory) hooks into a repo |
 | `bin/agent-board-toolkit-drift-check` | verify a repo's vendored copy of a tool matches this toolkit |
+| `bin/agent-board-toolkit-runtime-check` | what `agent-board-toolkit-drift-check` is for a vendored copy, but for the **`PATH` install itself**: resolves each on-PATH tool through its symlink chain to the runtime that actually executes, and fails loud on a stale pin, stale copies, or a mixed-runtime split (`board-snapshot` runs it quietly at SessionStart) |
 | `bin/dl-a1-register-field` | **DL-board setup:** register the `dl_number` custom field + real-surface-verify the `system=dl` by-ref derivation, then fully remove the throwaway (idempotent) — so the toolkit can *stand up* a DL board, not just operate one |
 | `bin/dl-a0-backfill-triaged` | **DL-board setup:** backfill the `triaged` tag onto pre-existing `id:*-pr-*` cards (dry-run default; `--apply` / `--remove`), so untriaged-discovery doesn't read the legacy corpus as untriaged |
+
+Since this is the *only* list of the tools (ADOPTION.md points here rather than keeping a second copy), CI asserts it: [`tests/readme-bin-coverage-selftest.sh`](tests/readme-bin-coverage-selftest.sh) fails the build on a tool with no row **or** a row with no tool. That gate compares **names only** — it cannot tell you a row's description is still accurate.
 
 ## Configuration model (no IDs are hard-coded; nothing secret is stored in this repo)
 
@@ -60,6 +63,7 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
 - **Consume from GitHub Actions CI:** the [`promote/`](promote/action.yml) composite action, SHA-pinned — INSTALL.md §6a (preferred over vendoring for Actions consumers; dependabot bumps the pin)
 - **Upgrade an existing install:** [`docs/UPGRADE.md`](docs/UPGRADE.md)
 - **`next-dl` minting wrong-range numbers?** [`docs/DL-COUNTER-RECOVERY.md`](docs/DL-COUNTER-RECOVERY.md) — recover a stranded per-board DL allocation counter over the API (no server shell)
+- **Changing something shared across these tools?** [`docs/CONSOLIDATION-PLAN.md`](docs/CONSOLIDATION-PLAN.md) — the consolidation program's durable record: which invariants look alike but need opposite answers, which consolidations were rejected and why, and the rules a further one is bound by
 
 ## Versioning
 

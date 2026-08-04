@@ -9,12 +9,21 @@
 #
 # git feeds one "<local-ref> <local-sha> <remote-ref> <remote-sha>" line per pushed ref
 # on stdin. We lint each pushed local branch via `board-card-start --lint` (which reuses
-# the exact card-id grammar, so the lint and the auto-move never disagree).
+# the exact card-id grammar, so the lint and the auto-move never disagree about the GRAMMAR —
+# the argument surface is a separate question, which the `--` below is what settles).
+#
+# `--` before the branch name is load-bearing, not decoration: git accepts a ref whose
+# branch name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0, and
+# `git update-ref` creates it — only the `git branch` porcelain refuses), and this hook is
+# fed whatever is being pushed. Passed bare, such a name reads as an unknown option and the
+# lint refuses it while the mover — which reaches HEAD through post-checkout's no-argument
+# call — still moves its card. The shared matchers make the two agree on the GRAMMAR; the
+# argument surface is the one place left where they could still disagree, and this closes it.
 command -v board-card-start >/dev/null 2>&1 || exit 0
 
 while read -r local_ref _ _ _; do
     case "$local_ref" in
-        refs/heads/*) board-card-start --lint "${local_ref#refs/heads/}" || true ;;
+        refs/heads/*) board-card-start --lint -- "${local_ref#refs/heads/}" || true ;;
     esac
 done
 

@@ -21,9 +21,6 @@ _need -x "$PRC"
 
 _mktmp_scratch --home
 
-# has <needle> <haystack> — literal-substring test (robust to JSON/emoji punctuation).
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # --- fake curl on PATH: serves the canned board on a GET, records PATCH targets+bodies ----
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'STUB'

@@ -3,6 +3,8 @@
 #
 #     install-board-hooks <repo-dir>
 #
+#     install-board-hooks --check <repo-dir>   # dry run: print the target dir, write nothing
+#
 # Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
 # feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
 # name references a card in a spelling the auto-move grammar won't recognize; card-4621).
@@ -13,31 +15,183 @@
 # NON-symlink hook (a repo's own hook is never lost). Refuses a hooksPath that resolves inside
 # the tracked work tree (a machine-specific absolute symlink there would show as a work-tree
 # change and break on other clones) — it guides the operator instead of polluting the tree.
+# SEPARATED GIT TOPOLOGIES (the git COMMON dir is not <root>/.git): a --separate-git-dir checkout
+# and a submodule INSTALL — into the hooks directory git actually dispatches from, outside their
+# own work tree — and report where. A LINKED WORKTREE is REFUSED, naming the main checkout to run
+# against instead (card#5226, card#5311). The split is by BLAST RADIUS, not by "is the git dir
+# elsewhere": a worktree's hooks dir is shared with the main checkout and every sibling worktree,
+# so installing from one silently rewires all of them, while the other two topologies have exactly
+# one work tree each. The disposition lives in _ibh_install_dir_source, and no caller models it.
+# It applies only while core.hooksPath is unset: a set hooksPath wins on every topology, which
+# makes such a checkout perfectly installable.
 #
 # SCOPE: this installer handles GIT hooks only. The Claude Code agent-dispatch card-start hook
 # (hooks/agent-dispatch-card-start) is a settings.json PreToolUse hook, NOT a git hook — it is
 # registered by hand (operator-owned config; see docs/HOOKS.md), never written here.
 set -euo pipefail
 
-# _ibh_hooks_dir <repo-root> <core.hooksPath-value>: echo the directory the post-checkout hook
-# must live in for git to dispatch it, and return a status telling the caller how to treat it.
-# Pure (no filesystem writes) so tests/board-card-start-selftest.sh can assert on it.
-#   0  safe install target — the default .git/hooks, a hooksPath under .git/ (untracked), or one
-#      OUTSIDE the work tree (an absolute/global dir): symlink into it.
+# _ibh_read_hooks_path <repo-dir>: the ONE reader of core.hooksPath. Echoes the value git will
+# actually use and returns its PRESENCE as a status — the two facts a caller must not conflate.
+#   0  SET (the value may be EMPTY — see below)   1  unset   2  set but git cannot expand it
+# Two properties are load-bearing. Both were measured on git 2.43.0, and the selftest fixtures
+# exercise this resolver's answers for both, so CI re-verifies them on its own git build — the
+# second environment this file needs, after an ordering claim measured only here survived four
+# review passes and failed on CI's first run:
+#   * `--path` EXPANDS a leading `~` / `~user` (core.hooksPath is a path-type variable, and git
+#     dispatches from the expanded dir). Reading the raw value makes `~/hooks` look relative.
+#     A RELATIVE value is returned unchanged by `--path`, so the relative arm is unaffected.
+#   * an EMPTY value is SET, and git does NOT fall back to <git-dir>/hooks — it dispatches NO
+#     hooks at all (measured on git 2.43.0; the fixture pins this resolver's answer, not git's
+#     dispatch, so a build that DID fall back would make our "disabled" state a false finding). `--get` distinguishes it from unset by EXIT STATUS ONLY (unset → 1, empty →
+#     0 with empty output), so any caller testing the VALUE for emptiness silently reads
+#     "hooks disabled" as "no hooksPath configured". That is why this returns a status.
+# rc 2 is `~unknownuser` and friends: git fatals expanding it here AND at hook dispatch, so the
+# repo's hooks are broken — never fold it into "unset", which would certify the repo healthy.
+_ibh_read_hooks_path() {
+    local out rc=0
+    out="$(git -C "$1" config --path --get core.hooksPath 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0) printf '%s' "$out"; return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# _ibh_common_dir <repo-dir>: echo this checkout's git COMMON dir as an ABSOLUTE path; rc 1 when
+# git will not answer. It is <root>/.git for an ordinary checkout and something else for every
+# separated topology (linked worktree, --separate-git-dir, submodule), which is exactly the
+# condition under which a hooks dir derived from <root>/.git is a path git never reads.
+# `rev-parse -C <path>` answers a RELATIVE common dir against the path the CALLER TYPED, not
+# against the work-tree root (measured on git 2.43: from `<root>/subdir` it answers `../.git`),
+# so it is absolutized against that same path — resolving it against the root would silently
+# name a sibling of the repo.
+_ibh_common_dir() {
+    local cdir
+    cdir="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$cdir" ] || return 1
+    case "$cdir" in /*) ;; *) cdir="$1/$cdir" ;; esac
+    printf '%s' "$cdir"
+}
+
+# _ibh_main_checkout <repo-dir>: the OTHER checkout whose own `.git` directory is this repo's
+# common dir — i.e. the MAIN checkout of a linked worktree, the one an operator must install
+# against. rc 1 when no such checkout exists, which is the answer for BOTH other separated
+# topologies and is what makes this the discriminator between them: a --separate-git-dir repo's
+# common dir is an arbitrary path (not named `.git`) and a submodule's is
+# <super>/.git/modules/<name>, so in neither case does a sibling work tree own it.
+# Detection is by COMMON DIR, never by `.git`-is-a-FILE: all three topologies share that shape
+# and they need three different answers.
+_ibh_main_checkout() {
+    local cdir parent root
+    cdir="$(_ibh_common_dir "$1")" || return 1
+    if [ "$(basename -- "$cdir")" != ".git" ] || [ ! -d "$cdir" ]; then return 1; fi
+    parent="$(dirname -- "$cdir")"
+    [ -d "$parent" ] || return 1
+    root="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    # Compared by INODE, not by spelling: the two paths come from different git queries — one
+    # canonical (`--show-toplevel`), one relative to the typed path — so identical directories
+    # routinely differ as strings (a trailing slash, a symlinked repo path, a sub-directory
+    # argument), and a string compare would call an ordinary checkout its own main checkout.
+    if [ -n "$root" ] && [ "$parent" -ef "$root" ]; then return 1; fi
+    printf '%s' "$parent"
+}
+
+# _ibh_install_dir_source <repo-dir> <repo-root> <git-common-dir>: echo the directory whose
+# `hooks/` this installer must write into — the <git-common-dir> argument _ibh_hooks_dir needs —
+# and return whether installing here is serviceable at all.
+#   0  install target echoed
+#   1  REFUSED: a linked worktree. Echoes NOTHING — there is no directory this installer may
+#      write; the caller words the refusal (and only it has the main checkout to name).
+# THE DISPOSITION LIVES HERE, IN ONE PLACE. It used to be spelled out at the call site, and
+# board-session-close then MODELLED that spelling to decide whether to offer the installer as a
+# remedy — the second copy is the drift this toolkit's own dispatch check exists to catch, so
+# that caller now asks this instead (canon #5).
+#
+# Only the linked worktree is refused, and the rationale is why: the refusal was decided on
+# SURPRISING BLAST RADIUS — installing here silently rewires checkouts the operator never named.
+# A linked worktree's common dir is shared by the main checkout AND every other worktree, so that
+# is true of it. It is NOT true of the other two separated topologies: a --separate-git-dir
+# checkout and a submodule each have exactly ONE work tree, so the blast radius is precisely the
+# repo the operator is standing in and they install (card#5311). They were previously refused on
+# a rationale that does not apply to them.
+#
+# The caller passes the root and common dir it has already resolved, so there is no second
+# `rev-parse` here and no unreachable "cannot resolve" arm.
+# The ordinary checkout echoes "$root/.git" — the CANONICAL spelling, not the passed common dir:
+# git answers a relative common dir (`.git`, or `../.git` from a sub-directory) for that topology
+# alone, and --check's stdout is a consumed contract. Both other topologies are answered ABSOLUTE
+# even from a sub-directory (measured, git 2.43.0), so echoing the common dir needs no
+# normalization there — and no `--path-format`, which would impose a git-version floor.
+_ibh_install_dir_source() {
+    local repo="$1" root="$2" cdir="$3"
+    if [ "$cdir" -ef "$root/.git" ]; then printf '%s' "$root/.git"; return 0; fi
+    # Discriminated by "does another checkout own this common dir?", never by `.git`-is-a-file:
+    # all three separated topologies share that shape. rc 0 here means a linked worktree — the
+    # other two have no sibling work tree owning their common dir (measured; the selftest pins it).
+    if _ibh_main_checkout "$repo" >/dev/null 2>&1; then return 1; fi
+    printf '%s' "$cdir"; return 0
+}
+
+# _ibh_hooks_dir <repo-root> <core.hooksPath-value> [git-common-dir] [hooksPath-is-set]: echo the
+# directory the post-checkout hook must live in for git to dispatch it, and return a status
+# telling the caller how to treat it. Pure (no filesystem writes) so
+# tests/board-card-start-selftest.sh can assert on it — and so the session-close hook-dispatch
+# check can REUSE it rather than re-derive the resolution (a second copy of it is the exact
+# defect class that check exists to catch).
+#   0  safe install target — the default <git-dir>/hooks, a hooksPath under .git/ (untracked), or
+#      one OUTSIDE the work tree (an absolute/global dir): symlink into it.
 #   3  hooksPath resolves INSIDE the tracked work tree (under repo root but NOT under .git/):
 #      the caller must REFUSE. The directory is still echoed (for the diagnostic).
+#   4  hooksPath is SET but EMPTY: git dispatches NO hooks for this repo. There is no directory
+#      to echo and nothing to install — the caller must REFUSE (installing into <git-dir>/hooks
+#      would report success on a path git never reads). Only reachable when the caller passes
+#      <hooksPath-is-set>=1, which is why `_ibh_read_hooks_path` returns presence as a status.
 # Git resolves a RELATIVE core.hooksPath against the work-tree top (verified), not the CWD.
+# <git-common-dir> defaults to <repo-root>/.git, which is right for every ordinary checkout. A
+# LINKED WORKTREE must pass its real common dir (`git rev-parse --git-common-dir`): there `.git`
+# is a FILE and git dispatches hooks from the MAIN checkout's hooks dir, so <root>/.git/hooks is
+# not a path git ever reads (verified against git 2.43).
+# _ibh_norm <path>: LEXICAL path normalization — collapse `//`, `.` and `x/..` with NO
+# filesystem access, so _ibh_hooks_dir stays pure. Used ONLY for the in-tree/out-of-tree prefix
+# decision, never for the echoed path: a `..`-relative hooksPath such as `../shared-hooks`
+# resolves OUTSIDE the work tree, but the raw string still begins with the repo root, so an
+# un-normalized prefix test classifies it as in-tree and prints the wrong remediation. The
+# echoed path is left as-is because the OS resolves it exactly as git does when it opens the
+# hook — including through symlinked components, which a lexical collapse would not.
+_ibh_norm() {
+    local p="$1" seg out="" oldifs="$IFS"
+    local -a segs=() st=()
+    IFS='/'; read -r -a segs <<< "$p"; IFS="$oldifs"
+    for seg in ${segs[@]+"${segs[@]}"}; do
+        case "$seg" in
+            ''|.) ;;
+            ..)   if [ "${#st[@]}" -gt 0 ]; then st=("${st[@]:0:${#st[@]}-1}"); fi ;;
+            *)    st+=("$seg") ;;
+        esac
+    done
+    for seg in ${st[@]+"${st[@]}"}; do out="$out/$seg"; done
+    case "$p" in
+        /*) printf '%s' "${out:-/}" ;;
+        *)  printf '%s' "${out#/}" ;;
+    esac
+}
+
 _ibh_hooks_dir() {
-    local root="$1" hp="${2:-}"
+    local root="$1" hp="${2:-}" gitdir="${3:-$1/.git}" hp_set="${4:-}"
     if [ -z "$hp" ]; then
-        printf '%s\n' "$root/.git/hooks"; return 0
+        # SET-but-empty is "hooks disabled", NOT "no hooksPath" — distinguished by the caller's
+        # presence flag, never by this empty value (that conflation is the defect itself).
+        [ "$hp_set" = "1" ] && return 4
+        printf '%s\n' "$gitdir/hooks"; return 0
     fi
     local dir
     case "$hp" in
         /*) dir="$hp" ;;     # absolute — as-is
         *)  dir="$root/$hp" ;;   # relative — against the work-tree top
     esac
-    local nroot="${root%/}" ndir="${dir%/}"
+    # Normalize the CLASSIFICATION inputs only (see _ibh_norm): '../x' must not read as in-tree.
+    local nroot ndir
+    nroot="$(_ibh_norm "${root%/}")"; ndir="$(_ibh_norm "${dir%/}")"
     # Under .git/ → untracked, safe to symlink (never shows as a work-tree change).
     case "$ndir/" in
         "$nroot"/.git/*|"$nroot"/.git/) printf '%s\n' "$dir"; return 0 ;;
@@ -50,10 +204,64 @@ _ibh_hooks_dir() {
     printf '%s\n' "$dir"; return 0
 }
 
+# _ibh_require_positional <slot> <arg> <name> [suffix]: mirrors kb_require_positional in
+# _kb-board-lib.sh — this script is vendored standalone and MUST NOT source that lib; keep the
+# two in sync, and read the rationale there. tests/kb-positional-guard-selftest.sh runs one
+# assertion matrix against BOTH copies rather than trusting this comment.
+_ibh_require_positional() {
+    if [ -z "$2" ]; then
+        echo "install-board-hooks: $3 is empty (an unexpanded variable?)${4:-}" >&2
+        return 1
+    fi
+    if [ -n "$1" ]; then
+        echo "install-board-hooks: unexpected extra argument: $2${4:-}" >&2
+        return 1
+    fi
+    return 0
+}
+
 _ibh_main() {
-    local repo="${1:?usage: install-board-hooks <repo-dir>}"
-    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
-        || { echo "install-board-hooks: not a git repo: $repo" >&2; exit 1; }
+    # --check <repo-dir>: DRY RUN. Evaluate every precondition a real run evaluates — except the
+    # toolkit-side `chmod +x` on the hook SOURCES, which is itself a write and which a dry run
+    # must not perform (it can EPERM on sources you do not own even when the mode is already
+    # right; no root-owned install topology is documented, so this is claim precision, not a
+    # live path) — in the same order, in this same function, then stop before the first write. On success it prints the
+    # directory the install WOULD target (stdout, nothing else) and exits 0; on refusal it
+    # prints the same diagnostic a real run would and exits non-zero, with empty stdout.
+    #
+    # It exists so a caller never has to MODEL these preconditions. board-session-close used to
+    # re-derive them to decide whether to print `install-board-hooks <repo>` as a remedy, and a
+    # partial copy — 2 of the 9 — produced a wrong answer in two consecutive reviews: the copy,
+    # not the missing predicates, was the defect (canon #5). A caller now asks instead of
+    # guessing, and gains any precondition added here without being changed.
+    local check="" repo="" arg
+    # Parse in a LOOP and reject anything unrecognised. Accepting --check only in position 1
+    # meant `install-board-hooks <repo> --check` silently discarded it and performed a REAL
+    # install — a flag whose entire contract is "writes nothing" doing the write, on its most
+    # natural mis-spelling. Silently ignoring an extra positional is the same hazard one step
+    # further out, so both are rc 2 with the usage line.
+    for arg in "$@"; do
+        case "$arg" in
+            --check) check=1 ;;
+            -*)      echo "install-board-hooks: unknown option: $arg" >&2
+                     echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2 ;;
+            *)       _ibh_require_positional "$repo" "$arg" "<repo-dir>" || {
+                         echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+                     }
+                     repo="$arg" ;;
+        esac
+    done
+    if [ -z "$repo" ]; then
+        echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+    fi
+    # Print git's OWN refusal rather than asserting "not a git repo": `dubious ownership`
+    # (safe.directory) and a core.hooksPath git cannot expand also land here, and each needs a
+    # different fix than "this isn't a repository".
+    local probe_err
+    if ! probe_err="$(git -C "$repo" rev-parse --git-dir 2>&1 >/dev/null)"; then
+        echo "install-board-hooks: git refuses this checkout ($repo): ${probe_err:-unknown error}" >&2
+        exit 1
+    fi
     local root
     root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
     [ -n "$root" ] || { echo "install-board-hooks: cannot resolve the work-tree root for: $repo" >&2; exit 1; }
@@ -66,15 +274,101 @@ _ibh_main() {
     local hook
     for hook in "${hooks[@]}"; do
         [ -f "$toolkit/hooks/$hook" ] || { echo "install-board-hooks: hook source missing: $toolkit/hooks/$hook" >&2; exit 1; }
-        chmod +x "$toolkit/hooks/$hook"
+        [ -n "$check" ] || chmod +x "$toolkit/hooks/$hook"
     done
 
-    local hp dir rc
-    hp="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+    local hp dir rc hp_rc hp_set=""
+    # Read PRESENCE and value together: `|| true` on a bare `--get` would erase the one bit that
+    # separates "no hooksPath" from "hooksPath disabled", and installing on the latter is a
+    # silent no-op — the #4281 shape this installer exists to avoid.
+    hp_rc=0; hp="$(_ibh_read_hooks_path "$repo")" || hp_rc=$?
+    # REACHABLE, and which of this and the `rev-parse` probe above fires is git-version-
+    # dependent: on git 2.43.0 an unexpandable path-type value fatals every command in the repo
+    # (so the probe reports it first), while on git 2.54.0 `rev-parse` succeeds and only this
+    # explicit `--path` read fatals. Measured in both environments after four review passes on
+    # ONE host agreed this arm was dead; the boundary version is unknown, so no ordering is
+    # claimed. It stays because folding an unknown read status into "unset" is the guess this
+    # tool exists to avoid.
+    if [ "$hp_rc" = 2 ]; then
+        {
+            echo "install-board-hooks: core.hooksPath is set to a value git cannot expand (e.g. '~unknownuser/...')."
+            echo "  Refusing: git fails the same way when it dispatches hooks, so this repo runs NO hooks."
+            echo "  Fix the value (git -C '$repo' config core.hooksPath <dir>) or remove it (--unset), then re-run."
+        } >&2
+        exit 1
+    fi
+    [ "$hp_rc" = 0 ] && hp_set=1
+
+    # The common dir this tool passes to _ibh_hooks_dir is resolved by _ibh_install_dir_source,
+    # which owns the per-topology disposition: <root>/.git for an ordinary checkout (the canonical
+    # spelling — see that function on why the passed value is not reused), the real common dir for
+    # the two separated topologies that install, and a refusal for the linked worktree. It is
+    # consulted ONLY while core.hooksPath is unset, because only then is the hooks dir derived
+    # from the common dir at all.
+    local cdir
+    cdir="$(_ibh_common_dir "$repo")" || cdir=""
+    if [ -z "$cdir" ]; then
+        echo "install-board-hooks: cannot resolve the git common directory for: $repo" >&2
+        exit 1
+    fi
+    # The gate is on hooksPath being UNSET, not on the topology alone: a set core.hooksPath wins
+    # on every topology, so a linked worktree that configures one is perfectly installable and
+    # refusing it here would be a false refusal. Only when the hooks dir is DERIVED from the
+    # common dir does the topology decide anything.
+    local hooks_src="$root/.git" super
+    if [ -z "$hp_set" ]; then
+        if ! hooks_src="$(_ibh_install_dir_source "$repo" "$root" "$cdir")"; then
+            # The ONE refused topology. `main` is non-empty by construction here (that is the
+            # predicate the primitive refused on), but it is read rather than assumed — the
+            # message is worthless if it names an empty path.
+            local main
+            main="$(_ibh_main_checkout "$repo")" || main=""
+            {
+                echo "install-board-hooks: $root is a LINKED WORKTREE — git dispatches its hooks from the main checkout."
+                echo "  Refusing: $cdir/hooks is shared by the main checkout AND EVERY worktree of this repository,"
+                echo "  so installing from here would change hook behavior for all of them, not just this one."
+                echo "  Run it against the main checkout instead — that wires this worktree too:"
+                echo "      install-board-hooks ${main:-<the main checkout>}"
+            } >&2
+            exit 1
+        fi
+        # A separated topology that DOES install: say where, because the hooks land outside the
+        # work tree the operator named and a silent success there is surprising. On stderr in BOTH
+        # modes — `--check`'s only stdout is the target directory, a contract other tools consume.
+        if [ "$hooks_src" != "$root/.git" ]; then
+            super="$(git -C "$repo" rev-parse --show-superproject-working-tree 2>/dev/null)" || super=""
+            {
+                if [ -n "$super" ]; then
+                    echo "install-board-hooks: $root is a SUBMODULE of $super — its hooks live outside its own work tree,"
+                    echo "  at $hooks_src/hooks. That is where git dispatches them from, and it is the install target."
+                    echo "  This wires THIS submodule only; the superproject's own hooks are a different repository's and are untouched."
+                else
+                    # Deliberately does NOT assert "`.git` is a file pointing at it": that is true
+                    # of a --separate-git-dir checkout, which is what reaches this arm in practice,
+                    # but this is also the fall-through for any state where the common dir is
+                    # simply elsewhere (an exported GIT_DIR, say), and a wrong-but-specific cause
+                    # is worse than an honest generic one. What IS known is stated: where git
+                    # dispatches from. This checkout is that git directory's only work tree, which
+                    # is what makes installing here safe.
+                    echo "install-board-hooks: $root has a SEPARATE git directory, at $hooks_src."
+                    echo "  git dispatches this repository's hooks from $hooks_src/hooks, and that is the install target."
+                fi
+            } >&2
+        fi
+    fi
     # Capture rc in an || context: a bare `dir="$(cmd)"; rc=$?` would trip `set -e` on the
     # command-substitution's non-zero exit (rc=3, the in-tree refuse signal) and quit at the
     # assignment BEFORE rc is read — killing the guidance block below (impl-review HIGH).
-    rc=0; dir="$(_ibh_hooks_dir "$root" "$hp")" || rc=$?
+    rc=0; dir="$(_ibh_hooks_dir "$root" "$hp" "$hooks_src" "$hp_set")" || rc=$?
+    if [ "$rc" = 4 ]; then
+        {
+            echo "install-board-hooks: core.hooksPath is set to an EMPTY value — git dispatches NO hooks for this repo."
+            echo "  Refusing: an empty value does not fall back to .git/hooks, so installing there would report"
+            echo "  success on a directory git never reads (the silent no-op this installer exists to prevent)."
+            echo "  Fix: git -C '$repo' config --unset core.hooksPath   (or point it at a hooks directory), then re-run."
+        } >&2
+        exit 1
+    fi
     if [ "$rc" = 3 ]; then
         {
             echo "install-board-hooks: core.hooksPath='$hp' resolves inside the tracked work tree ($dir)."
@@ -86,7 +380,28 @@ _ibh_main() {
         exit 1
     fi
 
-    mkdir -p "$dir"
+    # Creatability + writability: what `mkdir -p` and `ln -sf` need. A real run learns this by
+    # failing; --check must learn it without writing, so the same two facts are tested here for
+    # both modes — a check that skipped them would answer a different question than it is asked.
+    if [ ! -d "$dir" ]; then
+        local anc="$dir" prev=""
+        if [ -e "$dir" ] || [ -L "$dir" ]; then
+            echo "install-board-hooks: the hooks path exists but is not a directory: $dir" >&2
+            exit 1
+        fi
+        while [ -n "$anc" ] && [ "$anc" != "/" ] && [ "$anc" != "$prev" ]; do
+            prev="$anc"; anc="$(dirname -- "$anc")"
+            if [ -e "$anc" ] || [ -L "$anc" ]; then break; fi
+        done
+        if [ ! -d "$anc" ] || [ ! -w "$anc" ]; then
+            echo "install-board-hooks: cannot create the hooks directory $dir (nearest existing parent: $anc)" >&2
+            exit 1
+        fi
+    elif [ ! -w "$dir" ]; then
+        echo "install-board-hooks: the hooks directory is not writable: $dir" >&2
+        exit 1
+    fi
+    [ -n "$check" ] || mkdir -p "$dir"
     for hook in "${hooks[@]}"; do
         local src="$toolkit/hooks/$hook" dst="$dir/$hook"
         if [ -e "$dst" ] && [ ! -L "$dst" ]; then
@@ -94,9 +409,22 @@ _ibh_main() {
             echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
             exit 1
         fi
+        # `ln -sf` DEREFERENCES a symlink-to-directory: the hook would be created INSIDE that
+        # directory, this tool would report success, and git would never see a hook at $dst —
+        # the #4281 "success on a path git never reads" shape in a new place.
+        if [ -L "$dst" ] && [ -d "$dst" ]; then
+            echo "install-board-hooks: refusing: $dst is a symlink to a directory ($(readlink -- "$dst"))." >&2
+            echo "  Installing would put the hook INSIDE that directory, where git never looks." >&2
+            echo "  Remove it first: rm -- '$dst'" >&2
+            exit 1
+        fi
+        [ -n "$check" ] && continue
         ln -sf "$src" "$dst"
         echo "install-board-hooks: $dst -> $src"
     done
+    # The dry run's ONLY stdout is the target directory: empty stdout means "do not act", the
+    # same fail-closed contract the rest of the toolkit uses.
+    if [ -n "$check" ]; then printf '%s\n' "$dir"; return 0; fi
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi

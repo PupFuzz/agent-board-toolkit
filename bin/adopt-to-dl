@@ -95,28 +95,42 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
-usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]" >&2; }
+# Prints on STDOUT; the error arms redirect. The channel is the CALLER's to choose because the
+# two uses differ: an explicitly-requested `--help` is the requested OUTPUT (rc 0, pipeable,
+# pageable), while usage-after-a-bad-argument is diagnostic. Baking `>&2` in here made
+# `adopt-to-dl --help > f` yield an EMPTY file at rc 0 — a false success that reads as "this
+# tool has no help" to any caller redirecting stdout.
+usage() { echo "usage: adopt-to-dl <card-id> --repo <owner/name> --board <name> [--dl <N>] [--issue <N>]"; }
 
 main() {
     local card_id="" repo="" board_name="" req_dl="" req_issue=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --repo)  shift; repo="${1:-}" ;;
-            --board) shift; board_name="${1:-}" ;;
-            --dl)    shift; req_dl="${1:-}" ;;
-            --issue) shift; req_issue="${1:-}" ;;
+            # Every value-taking flag is gated on the flag being SEEN with a value, via the
+            # shared kb_require_value (already in scope) — the same guard kbcard applies at all
+            # 37 of its arms. Without it `--dl ""` (an unexpanded variable) read as "no --dl"
+            # and took the MINT path, so a crash-retry that meant "re-stamp DL-N" minted a
+            # SECOND DL instead — orphaning DL-N and stranding any branch or PR named for it,
+            # the exact outcome _ata_adopt_decision's refuse-adopted arm exists to prevent.
+            # `--issue ""` silently dropped the co-stamp while still reporting "verified via
+            # by-ref". It also turns a trailing flag with no argument from a bare `shift`
+            # failure (rc 1, no output) into a named diagnostic.
+            --repo)  kb_require_value "$1" "${2:-}" || exit 2; shift; repo="$1" ;;
+            --board) kb_require_value "$1" "${2:-}" || exit 2; shift; board_name="$1" ;;
+            --dl)    kb_require_value "$1" "${2:-}" || exit 2; shift; req_dl="$1" ;;
+            --issue) kb_require_value "$1" "${2:-}" || exit 2; shift; req_issue="$1" ;;
             -h|--help) usage; exit 0 ;;
             --) ;;
-            -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage; exit 2 ;;
-            *)  [[ -z "$card_id" ]] || { echo "adopt-to-dl: unexpected extra argument '$1'" >&2; usage; exit 2; }
+            -*) echo "adopt-to-dl: unknown flag '$1'" >&2; usage >&2; exit 2 ;;
+            *)  kb_require_positional "$card_id" "$1" "<card-id>" || { usage >&2; exit 2; }
                 card_id="$1" ;;
         esac
         shift
     done
 
     # 1. readiness gate
-    [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage; exit 2; }
-    [[ "$card_id" =~ ^[0-9]+$ ]] || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
+    [[ -n "$card_id" ]] || { echo "adopt-to-dl: <card-id> is required" >&2; usage >&2; exit 2; }
+    kb_is_uint "$card_id" || { echo "adopt-to-dl: <card-id> must be numeric (got '$card_id')" >&2; exit 2; }
     _ata_validate_repo "$repo" || { echo "adopt-to-dl: --repo must be <owner>/<name> (got '$repo')" >&2; exit 2; }
     [[ -n "$board_name" ]] || { echo "adopt-to-dl: --board <name> is required (a deliberate adoption must name its board)" >&2; exit 2; }
 
@@ -127,7 +141,7 @@ main() {
     # --issue is a bare positive integer (the GitHub issue number). Reject anything else LOUD
     # rather than stamp a non-numeric issue_number (kbcard would coerce a non-number to a string
     # and the number-typed field would 422 — fail here with a clearer cause).
-    if [[ -n "$req_issue" && ! "$req_issue" =~ ^[0-9]+$ ]]; then
+    if [[ -n "$req_issue" ]] && ! kb_is_uint "$req_issue"; then
         echo "adopt-to-dl: --issue must be a positive integer (the GitHub issue number); got '$req_issue'" >&2
         exit 2
     fi

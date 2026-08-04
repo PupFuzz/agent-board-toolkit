@@ -21,8 +21,6 @@ _need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines board_env_scrub/board_report, renders nothing
 
-has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
-
 # Stubs — network-free. fetch_board_cards logs each call to a file so the count
 # survives board_report's subshell (a var would not). kb_api stubs the preload.
 FETCH_LOG="$(mktemp)"
