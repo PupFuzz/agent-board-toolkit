@@ -1062,8 +1062,20 @@ main() {
     # Resolves board env + host env + token; sets KB_API / KB_BOARD_ID / KB_TOKEN.
     kb_load_config "$board_name" || exit 2
 
-    local cmd="${1:-}"
-    [[ -z "$cmd" ]] && { sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# //'; exit 0; }
+    # NO ARGUMENTS is a help request; an EMPTY first argument is a failed expansion. One
+    # `-z "$cmd"` answered both with the usage block at rc 0, so `kbcard "$VERB" move --task N
+    # --column in_progress` with VERB unset was a silent no-op a caller checking rc read as a
+    # completed move. Same discriminator as the three positional sites card#5200 fixed — an
+    # empty string is not an absent argument — reached here through the same owner, so kbcard's
+    # verb refusal cannot drift from theirs. The help path keeps stdout + rc 0 (it is the
+    # requested output); the refusal is diagnostic, so stderr + rc 2, matching this file's own
+    # unknown-command arm below.
+    if [[ $# -eq 0 ]]; then
+        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# //'
+        exit 0
+    fi
+    local cmd="$1"
+    kb_require_positional "" "$cmd" "<command>" || exit 2
     shift
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;

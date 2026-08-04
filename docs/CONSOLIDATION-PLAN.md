@@ -51,7 +51,7 @@ on the same input shape:
 | axis | what a 1-arg / zero-arg call must mean | where the contract lives |
 |---|---|---|
 | **flag-value** — a flag consuming a value must get a non-empty one | **FAIL** | `kb_require_value`, asserted in `tests/kb-board-lib-selftest.sh` |
-| **positional** — an empty positional ≠ an absent one | **SUCCEED** (bare `kbcard` → usage; `board-card-start` with no args → the current branch) | `hooks/post-checkout` calls `board-card-start` with **zero args** — the primary production path |
+| **positional** — an empty positional ≠ an absent one | **ZERO-arg SUCCEEDS** (bare `kbcard` → usage; `board-card-start` with no args → the current branch) while a **1-arg EMPTY call FAILS** — the two answers this axis must keep apart, and `$#` is the only thing that can | `hooks/post-checkout` calls `board-card-start` with **zero args** — the primary production path |
 | **config-read** — an empty `core.hooksPath` ≠ an unset one | distinguished by **exit status**, not by value | `_ibh_read_hooks_path` in `install-board-hooks` |
 
 So `kb_require_value` **cannot** absorb the positional axis: inside a function `$#` is the
@@ -333,7 +333,10 @@ test actually covers (an rc-only assertion is not coverage of a message, and was
 
 **Honest scope:** this retired the *argv* axis. It does **not** retire the class. Card #5276
 records the axis as four positions found in order — flag values, a `core.hooksPath` **config read**,
-the positionals in `install-board-hooks`/`adopt-to-dl`, and `kbcard`'s own positional (still open).
+the positionals in `install-board-hooks`/`adopt-to-dl`, and `kbcard`'s own positional (**closed
+2026-08-04** — the verb dispatch now splits `$# -eq 0` from `$1 == ""` and refuses the second
+through this stage's own `kb_require_positional`; it needed no new primitive, which is the
+strongest evidence the shared shape was the right one).
 The config read is the one **no argument primitive can reach**; it needed, and got, its own fix
 under card #5200. Retiring the argv axis retires three of the four positions and leaves the class
 intact.
@@ -351,7 +354,7 @@ naive swap would have deleted a Preserve item **and still gone green**, since `n
 argument-surface coverage at all until this stage added it. The prerequisite is what made the
 difference between building the stage and building a regression that looked like it.
 
-**Related open cards:** #5276 (the empty-positional case), #5427 and #5351 (whether a `--`
+**Related cards:** #5276 (the empty-positional case — **closed 2026-08-04**), #5427 and #5351 (whether a `--`
 terminator belongs in the shared shape — currently `install-board-hooks` refuses a bare `--`, and
 `adopt-to-dl`'s `--) ;;` arm is decorative), #5429, #5409.
 

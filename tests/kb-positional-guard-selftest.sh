@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kb-positional-guard-selftest.sh — deterministic, network-free unit checks for the positional
 # argument guard, in BOTH of its copies:
-#   1. kb_require_positional    (bin/_kb-board-lib.sh)     — used by adopt-to-dl, board-card-start
+#   1. kb_require_positional    (bin/_kb-board-lib.sh)     — used by adopt-to-dl, board-card-start, kbcard
 #   2. _ibh_require_positional  (bin/install-board-hooks)  — the standalone vendored mirror
 #
 # WHY THIS FILE EXISTS. One rule — refuse an empty positional BY NAME, refuse a second one —
@@ -18,7 +18,7 @@
 # WEAKEST PROPERTY of the both-copies matrix: it proves the two implementations agree on the
 # inputs it feeds, and nothing about an input class absent from it. It is also blind to a call
 # site left hand-rolled — a bin that never calls either copy passes it. That is why the second
-# section RUNS all three bins.
+# section RUNS every bin that owns a positional.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -96,9 +96,10 @@ out="$(_ibh_mir "" "" "<card-id>" 2>/dev/null || true)"
 eq "the mirror prints nothing on stdout" "" "$out"
 
 # ---------------------------------------------------------------------------------------
-# CALL-SITE PINS. The matrix above cannot see a bin left hand-rolled, so run all three. Each
-# refuses inside its argument loop, before any config read, API call or git invocation, so
-# these are network-free; the scratch HOME keeps a real ~/.kanban-* file out of the result.
+# CALL-SITE PINS. The matrix above cannot see a bin left hand-rolled, so run all four. The
+# first three refuse inside their argument loop, before any config read, API call or git
+# invocation; kbcard refuses after its config load and carries its own fixture (see below).
+# All are network-free; the scratch HOME keeps a real ~/.kanban-* file out of the result.
 _mktmp_scratch --home
 
 # pin <label> <want-rc> <want-first-stderr-line> <bin> <args...>
@@ -127,5 +128,29 @@ pin "adopt-to-dl 1 2" 2 "adopt-to-dl: unexpected extra argument: 2"             
 echo "== board-card-start — fail-soft by contract: refuses LOUD at rc 0, never blocking a checkout =="
 pin "board-card-start ''"  0 "board-card-start: <branch-name> is empty (an unexpanded variable?) — no card moved" "$BCS" ""
 pin "board-card-start a b" 0 "board-card-start: unexpected extra argument: b — no card moved"                     "$BCS" a b
+
+# kbcard is the fourth call site (card#5276) and the one exception to "refuses before any config
+# read": its verb dispatch sits after kb_load_config, so a scratch HOME alone would make every
+# arm below report the board-env error instead of the thing under test. The fixture is therefore
+# a MINIMAL WORKING config — nothing is faked about the guard itself, and the unknown-command arm
+# is the witness that config really resolved (a broken fixture says "board env file not readable"
+# there and reds). Still network-free: every arm exits inside main's dispatch, before any request.
+unset KBCARD_BOARD_ENV KBCARD_API KBCARD_TOKEN_FILE
+KBC="$HERE/../bin/kbcard"
+_need -x "$KBC"
+: > "$TMP/board.token"
+{ echo "export KBCARD_API=\"https://kbcard-guard.invalid/api/v3\""
+  echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$HOME/.kanban-host.env"
+echo 'KB_BOARD_ID=42' > "$HOME/.kanban-dev-board.env"
+
+echo "== kbcard — an ordinary CLI: refuses at rc 2 =="
+pin "kbcard ''"                 2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" ""
+pin "kbcard --board dev ''"     2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" --board dev ""
+# The discrimination the guard exists to make: NO arguments is a help request and stays rc 0 on
+# stdout, while an EMPTY first argument is a failed expansion and is refused. Asserting only the
+# refusal would pass just as well for a kbcard that refused its own help.
+pin "kbcard <no args> is still help, not a refusal" 0 "" "$KBC"
+eq "kbcard <no args> prints the usage block on STDOUT" "true" "$(has 'Usage:' "$("$KBC" 2>/dev/null)")"
+pin "kbcard nope — witness that the fixture config resolved" 2 "kbcard: unknown command 'nope'" "$KBC" nope
 
 _summary "kb-positional-guard-selftest"

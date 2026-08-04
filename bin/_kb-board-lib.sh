@@ -319,8 +319,8 @@ kb_require_value() {
 # every diagnostic, for a caller whose refusals carry a standing qualifier.
 #
 # THE CALLER OWNS THE EXIT STATUS, and its own usage line. board-card-start refuses at 0 — it
-# runs from a git hook and must never block a checkout (docs/HOOKS.md) — while adopt-to-dl and
-# install-board-hooks are ordinary CLIs and refuse at 2. An owner that also owned the exit
+# runs from a git hook and must never block a checkout (docs/HOOKS.md) — while adopt-to-dl,
+# install-board-hooks and kbcard are ordinary CLIs and refuse at 2. An owner that also owned the exit
 # would have to pick one and break the other, so it answers the QUESTION and leaves the POLICY
 # at the call site, the same split promote-released-cards documents for its own guards.
 #
