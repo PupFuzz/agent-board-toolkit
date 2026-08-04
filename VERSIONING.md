@@ -48,6 +48,11 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 10. Open the back-merge sync PR `sync/main-to-dev-post-v<version>` → `dev`; auto-merge on green with a **merge commit**.
 11. **DEPLOY the release to the host that actually runs the tools. A tag is not a deploy** (the sibling of agent-webhook-bridge's release≠deploy rule — this repo lacked the step entirely until v0.15.0 shipped and the on-PATH runtime silently stayed at v0.14.0):
     ```bash
+    # <pinned-runtime> is a SECOND checkout kept deliberately DETACHED at a release tag.
+    # Do not run this against a clone that tracks main (docs/INSTALL.md §1 Option A) — and do
+    # not relay this line as an upgrade recipe to anyone who has one: `checkout` would convert
+    # their self-advancing install into a pin. That topology upgrades with `git pull --ff-only`
+    # (docs/UPGRADE.md §2), which lands the identical bits.
     git -C <pinned-runtime> fetch --tags && git -C <pinned-runtime> checkout "v<version>"
     for t in <pinned-runtime>/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done   # REQUIRED
     hash -r && agent-board-toolkit-runtime-check                                            # must print `ok — … @ v<version>`

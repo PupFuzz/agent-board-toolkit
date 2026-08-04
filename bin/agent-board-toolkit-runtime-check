@@ -138,7 +138,18 @@ for root in "${!roots[@]}"; do
         # it is the maintainer topology; name it rather than failing.
         case "$ver" in
             "$newest"-*) say "runtime-check: ok — PATH executes $root @ $ver (dev, ahead of $newest)" ;;
-            *) fail "STALE runtime — PATH executes $root @ $ver but the newest local tag is $newest; advance the pin (git -C $root fetch --tags && git -C $root checkout $newest) or your tools silently run the old version" ;;
+            *)
+                # The remedy is topology-dependent and the wrong one is silently costly. A clone
+                # that tracks a branch (INSTALL §1 Option A) upgrades by pulling; telling it to
+                # check out a tag DETACHES it, which is the state INSTALL §2's warning box exists
+                # to keep readers out of — and the state where the pull it should be running
+                # exits 1. Only a checkout already off a branch advances by moving the pin.
+                if branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+                    remedy="upgrade it: git -C $root pull --ff-only — it is on branch $branch, and a tag checkout would detach it (docs/UPGRADE.md §2)"
+                else
+                    remedy="advance the pin: git -C $root fetch --tags && git -C $root checkout $newest"
+                fi
+                fail "STALE runtime — PATH executes $root @ $ver but the newest local tag is $newest, so your tools silently run the old version; $remedy" ;;
         esac
     fi
 done
