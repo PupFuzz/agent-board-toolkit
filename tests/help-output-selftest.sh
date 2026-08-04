@@ -41,7 +41,7 @@
 # > f` produced an EMPTY f at rc 0: a false success reading as "this tool has no help" to any
 # caller redirecting stdout. The channel is the CALLER's to choose because the two uses differ —
 # a requested `--help` is the requested OUTPUT (pipeable, pageable), while usage-after-a-bad-
-# argument is diagnostic. Moving the redirect out to the four error arms is what makes both
+# argument is diagnostic. Moving the redirect out to each error arm is what makes both
 # true at once, and that is exactly why the ERROR direction is asserted too: the redirect now
 # lives at each call site, so a later tidy dropping one `>&2` would put diagnostics on stdout
 # with nothing to notice. That leg is adopt-to-dl-only — a population of one, deliberately,
@@ -56,11 +56,11 @@
 #   * for each EXCLUDED member, only that it does not use the contiguous-header idiom. It says
 #     nothing about whether that bin's help is correct or complete.
 #   * for every REGISTRY member, that `--help` exits 0 with output on stdout and stderr silent.
-#     Nothing about that output's CONTENT — for the three EXCLUDED bins the channel is the only
+#     Nothing about that output's CONTENT — for the EXCLUDED bins the channel is the only
 #     thing asserted about their help at all — and nothing about any spelling other than
-#     `--help`, nor about the other five bins' ERROR channel.
+#     `--help`, nor about any registry member's ERROR channel but adopt-to-dl's.
 #   * for adopt-to-dl alone, that ONE rejected shape — an unknown flag — exits 2 with the
-#     diagnostic on stderr and stdout empty. Its other three error arms are not exercised.
+#     diagnostic on stderr and stdout empty. Its other error arms are not exercised.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -75,10 +75,11 @@ CLIS=(promote-released-cards release-pr-body agent-board-toolkit-runtime-check)
 
 # Bins that carry `--help` and are deliberately NOT asserted above. Each entry states WHY, and
 # the reason is machine-checked below — an exclusion here is a claim, not a licence. A one-line
-# usage string can never satisfy a line-count equality against an 18–43 line header, so the
-# assertion simply does not apply to these three.
+# usage string can never satisfy a line-count equality against a multi-line header, so the
+# assertion simply does not apply to the entries below.
 EXCLUDED=(
     adopt-to-dl             # usage() one-liner
+    board-card-start        # $_bcs_usage one-liner
     dl-a0-backfill-triaged  # $USAGE one-liner
     dl-a1-register-field    # $USAGE one-liner
 )
@@ -172,7 +173,7 @@ done < <(_registry)
 
 echo "== adopt-to-dl's ERROR channel is the other one (card#5337) =="
 # Population of one on purpose — this guards the regression the fix introduces, not a registry
-# property. The redirect moved out of usage() into the four error arms, so it is now droppable
+# property. The redirect moved out of usage() into each error arm, so it is now droppable
 # one call site at a time. Only the unknown-flag arm is exercised.
 eq "adopt-to-dl: an unknown flag ⇒ rc 2, diagnostic on stderr, stdout silent" \
    "rc=2 stdout=empty stderr=data" "$(_channel "$BINDIR/adopt-to-dl" --nope)"
