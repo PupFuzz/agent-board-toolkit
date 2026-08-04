@@ -240,6 +240,29 @@ primitive and `install-board-hooks`' standalone mirror **agree on the inputs it 
 blind by construction to a call site left hand-rolled — and a fourth such site was found
 afterwards (`agent-board-toolkit-drift-check` silently discards a third positional; card #5429).
 
+**That fourth site is closed (card #5429), and deliberately NOT as a fourth adoption.** The bin
+now refuses an extra positional and names which slot is empty, but it does so **hand-rolled**, on
+the grounds this section already states two paragraphs down for `agent-board-toolkit-runtime-check`:
+`agent-board-toolkit-drift-check` is a **detector of `_kb-board-lib.sh`** — the content-drift loop
+diffs it and the MISSING-LIB leg reads it — so sourcing the lib would make the detector depend on
+the artifact under test, and a drifted or broken lib would take out the very tool that exists to
+report it. (An earlier draft of this paragraph justified the exclusion by co-vendoring cost
+instead; that was wrong and is corrected here — **no consumer vendors this tool at all.** Per
+`INSTALL.md` §6b consumers run it *from* the toolkit checkout against their repo, and both
+consumer drift-gates were retired for the SHA-pinned composite action.) `kb_require_positional` is
+also single-slot by construction (`<slot>` *is* the destination variable, which is what makes
+"have I seen one?" a one-variable test). Generalising the primitive to N slots was the other
+option and was rejected under canon #5: it costs the property that makes the current one simple,
+to serve the repo's **only** two-positional bin — extraction belongs at the second real caller,
+and there is no second.
+So the rule now has **three implementations** (the lib primitive, `install-board-hooks`' standalone
+mirror, and this two-slot hand-roll) — but three *argument shapes*, not three copies of one shape:
+a single-slot loop, its vendored mirror, and a fixed-arity pair where `$#` answers both halves
+directly. What IS shared and must stay shared is the **diagnostic wording**; the drift-check copy
+carries a header comment saying so. `tests/drift-check-fixture-selftest.sh` pins all nine input
+classes (arity 0/1/2/3+ x which slot is empty), each observed red under a mutation that removes
+the guard it covers, including the empty-before-extra ordering that nothing else can witness.
+
 **What remained of Stage C was the flag axis alone**, and it shipped on 2026-08-01 (card #5566).
 The four spellings this section carried, measured on `origin/dev` before the build:
 
@@ -356,7 +379,8 @@ difference between building the stage and building a regression that looked like
 
 **Related cards:** #5276 (the empty-positional case — **closed 2026-08-04**), #5427 and #5351 (whether a `--`
 terminator belongs in the shared shape — currently `install-board-hooks` refuses a bare `--`, and
-`adopt-to-dl`'s `--) ;;` arm is decorative), #5429, #5409.
+`adopt-to-dl`'s `--) ;;` arm is decorative), #5429 (**closed 2026-08-04** — see the fourth-site
+paragraph above), #5409.
 
 ### Ruling 2026-07-29 — DEFERRED, not declined · **superseded 2026-08-01, kept as the record**
 
