@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# release-artifacts-check — assert that every artifact a repo DECLARES as part of its
+# release set actually moved in a release PR.
+#
+# `.release-pr.json`'s `artifacts` array is the explicit must-move-together release set.
+# Until this tool existed its only consumer was `release-pr-body`, which PRINTS it as a
+# `- [ ]` checklist — a printer is not an asserter, so a member left behind shipped in
+# silence. A guard that reads a proper SUBSET of a must-move-together file set cannot fail
+# on the member it never reads; this one reads the whole declared set and fails on any
+# member that did not move, no longer exists, or does not carry the version being shipped.
+#
+# Usage:
+#   release-artifacts-check --base <ref> --head <ref> [--config PATH]
+#
+#   --base   the PR's base commit/ref (e.g. github.event.pull_request.base.sha)
+#   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
+#   --config per-repo release config (default `.release-pr.json`)
+#
+# Release-PR classification is BY VERSION VALUE, not by "the version file appears in the
+# diff": a repo may point `version_file` at a whole config file (kanban's is
+# `config/app.php`), where a file-moved test would misfire on any unrelated edit to it.
+# Base version == head version ⇒ not a release PR ⇒ nothing to assert, exit 0.
+#
+# Exit status: 0 = nothing to assert, or every declared member passed. 1 = at least one
+# member failed (every failure is reported, not just the first). 2 = usage/config error,
+# or the version could not be read at either end — an unreadable base is NEVER classified
+# as "not a release PR", because that misclassification is a silent non-run of the whole
+# gate rather than a pass.
+set -euo pipefail
+# Pinned so version extraction and the fixed-string matching below mean the same thing on
+# every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
+# non-ASCII digits (card#5409). Exported so the `grep`s inherit it, not just this shell.
+export LC_ALL=C
+
+die() { echo "release-artifacts-check: $*" >&2; exit 2; }
+command -v jq  >/dev/null || die "jq is required"
+command -v git >/dev/null || die "git is required"
+
+# require_value <flag> <value>: die unless a value-taking option was given a non-empty
+# value. An option that consumes "$2" and is then dispatched with `[ -n "$var" ]` reads an
+# explicitly-EMPTY value as an ABSENT flag, so `--flag ""` silently selects the default path
+# instead of doing what was asked — here `--config ""` would fall back to `.release-pr.json`,
+# reading a DIFFERENT repo's declared set than the caller named. Also converts a trailing
+# flag with no argument from a bare `set -u` unbound-variable error into one naming the flag.
+# Mirrors kb_require_value in _kb-board-lib.sh — like the two release siblings, this script
+# is self-contained and does not source that lib, so the guard is duplicated; keep them in sync.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+
+CONFIG=".release-pr.json"; BASE=""; HEAD_REF=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base)   require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
+    --head)   require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    --config) require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    # Contiguous leading comment block, not a fixed range — a fixed `sed -n '2,20p'` is
+    # silently wrong in both directions as the header grows or shrinks (card#5145).
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+[ -n "$BASE" ]     || die "--base <ref> is required"
+[ -n "$HEAD_REF" ] || die "--head <ref> is required"
+[ -f "$CONFIG" ]   || die "no $CONFIG in this repo (per-project config — see examples/release-pr.json.example for the shape)"
+
+cfg_opt() { jq -r "$1 // empty" "$CONFIG" 2>/dev/null; }
+
+# Parsed once, up front, so the artifacts read below cannot mistake an UNPARSEABLE config for
+# a repo that declared no artifacts — the two are the opposite verdict (refuse vs. exit 0).
+jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CONFIG is not valid JSON (a trailing comma?)"
+
+# An absent, non-array, or EMPTY `artifacts` declares no must-move-together set, so there is
+# nothing this tool can assert. Reported rather than silently exited so a repo that MEANT to
+# declare a set can see that it did not — and checked before the version legs, because a
+# fail-closed version read would otherwise refuse a repo that never opted in.
+if [ "$(jq -r 'if (.artifacts | type) == "array" then (.artifacts | length) else -1 end' "$CONFIG")" -lt 1 ]; then
+  echo "release-artifacts-check: no artifacts declared — nothing to assert"
+  exit 0
+fi
+
+VERSION_FILE="$(cfg_opt '.version_file')"
+VERSION_REGEX="$(cfg_opt '.version_regex')"
+[ -n "$VERSION_FILE" ]  || die "$CONFIG declares artifacts but no version_file — the release-PR classification cannot run"
+[ -n "$VERSION_REGEX" ] || die "$CONFIG declares artifacts but no version_regex — the release-PR classification cannot run"
+
+# _extract_version <ref> — sets EXTRACTED_VERSION from <ref>:<version_file>.
+#
+# Sets a global instead of printing, deliberately: `die` inside a command substitution exits
+# only the SUBSHELL, so `V="$(_extract_version …)"` would depend on `set -e` noticing the
+# assignment's status to abort — an implicit path that a later `|| true` or an `if` context
+# would silently defeat. Here `die` runs in the script's own shell and the exit is explicit.
+#
+# The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
+# a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
+# `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
+# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
+# perfectly good extraction. Emptiness is what is tested, immediately below.
+EXTRACTED_VERSION=""
+_extract_version() {
+  local ref="$1" content
+  content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
+    || die "cannot read '$VERSION_FILE' at '$ref' (ref or path missing from this clone) — the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
+  EXTRACTED_VERSION="$(printf '%s\n' "$content" \
+    | grep -oiE "$VERSION_REGEX" | head -1 \
+    | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+  [ -n "$EXTRACTED_VERSION" ] \
+    || die "no version matched version_regex in '$VERSION_FILE' at '$ref' — refusing rather than classifying this as 'not a release PR'"
+}
+
+_extract_version "$BASE";     BASE_VERSION="$EXTRACTED_VERSION"
+_extract_version "$HEAD_REF"; HEAD_VERSION="$EXTRACTED_VERSION"
+
+if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) — not a release PR; nothing to assert"
+  exit 0
+fi
+V="$HEAD_VERSION"
+
+# Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
+# match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
+# reading as a failure. Every membership test below is a shell `case`, so no subprocess and
+# no pipeline is involved in answering "did this path move".
+CHANGED="$(git diff --name-only "$BASE" "$HEAD_REF")" \
+  || die "cannot diff '$BASE'..'$HEAD_REF' — the caller must check out with fetch-depth: 0"
+
+# _expand_braces <spec> — one path per line, expanding a single-level `{a,b,c}` comma set.
+# Deliberately NOT a glob: the members of a release set are DECLARED, so a path that does not
+# yet exist must still be asserted (that is the whole point) — a glob would silently expand
+# to nothing and take the check green on the missing member.
+#
+# It never calls `die`, and that is structural rather than stylistic: the caller consumes it
+# through a process substitution, whose `exit` unwinds only the SUBSHELL — the message would
+# print and the script would carry on with the member silently dropped. The emptiness verdict
+# is therefore the CALLER's, taken in the main shell (see the `paths` array below).
+_expand_braces() {
+  local s="$1" pre post alts_str a
+  local -a alts
+  case "$s" in
+    *'{'*'}'*)
+      pre="${s%%\{*}"
+      alts_str="${s#*\{}"; alts_str="${alts_str%%\}*}"
+      post="${s#*\}}"
+      IFS=, read -r -a alts <<<"$alts_str"
+      for a in "${alts[@]}"; do printf '%s%s%s\n' "$pre" "$a" "$post"; done
+      ;;
+    *) printf '%s\n' "$s" ;;
+  esac
+}
+
+FAILED=0
+MEMBERS=0
+
+while IFS= read -r raw; do
+  [ -n "$raw" ] || continue
+  expanded="${raw//\{\{version\}\}/$V}"
+  # The path spec is the LEADING whitespace-delimited token; everything after it is prose
+  # describing what the member must carry (`→ {{version}}`, `§ Recent releases row`).
+  spec="${expanded%%[[:space:]]*}"
+  # A leading-whitespace entry yields an empty spec, which would assert nothing and be
+  # counted as nothing — the declared member would vanish with no signal.
+  [ -n "$spec" ] || die "artifact entry has no leading path token: '$raw'"
+
+  # Materialized in the MAIN shell before any assertion runs, so an entry that expands to no
+  # path at all (a literal `{}`) is a loud config error rather than a member silently dropped
+  # from both the assertions and the count — this tool's own defect class one layer up.
+  # Boundary validation, not defensive coding: the input is a hand-edited config file.
+  paths=()
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    paths+=("$p")
+  done < <(_expand_braces "$spec")
+  [ "${#paths[@]}" -gt 0 ] || die "artifact path '$spec' expands to no member (an empty brace set?) — declared as: $raw"
+
+  for p in "${paths[@]}"; do
+    MEMBERS=$((MEMBERS + 1))
+    member_failed=0
+
+    # (a) MOVED — an exact line of the captured diff.
+    case $'\n'"$CHANGED"$'\n' in
+      *$'\n'"$p"$'\n'*) ;;
+      *) echo "::error::release artifact not moved: '$p' is absent from the diff $BASE..$HEAD_REF (declared as: $raw)"
+         member_failed=1;;
+    esac
+
+    # (b) EXISTS at HEAD — a DELETION also appears in the diff, so (a) alone would pass it.
+    if git cat-file -e "$HEAD_REF:$p" 2>/dev/null; then
+      # (c) AGREES — read from the commit, never the working tree: the working tree is not
+      # necessarily the head commit (a runner may have a dirty or differently-checked-out tree).
+      content="$(git show "$HEAD_REF:$p" 2>/dev/null || true)"
+      case "$raw" in
+        *'[{{version}}] section'*)
+          # A LINE beginning `## [<version>]`. Matched as a fixed string against a
+          # newline-prefixed copy rather than as `^## \[$V\]`: the dots in a version are
+          # regex metacharacters, so an unescaped `0.1.2` would also match `0x1x2`.
+          case $'\n'"$content" in
+            *$'\n'"## [$V]"*) ;;
+            *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF has no '## [$V]' section line (declared as: $raw)"
+               member_failed=1;;
+          esac;;
+        *)
+          case "$p" in
+            *"$V"*) ;;  # the filename itself carries the version (e.g. sboms/vX.Y.Z.json)
+            *) case "$content" in
+                 *"$V"*) ;;
+                 *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF does not mention the version being shipped ($V) (declared as: $raw)"
+                    member_failed=1;;
+               esac;;
+          esac;;
+      esac
+    else
+      echo "::error::release artifact missing at head: '$p' does not exist at $HEAD_REF (deleted or renamed?) (declared as: $raw)"
+      member_failed=1
+    fi
+
+    if [ "$member_failed" -eq 0 ]; then
+      echo "release-artifacts-check: OK — $p moved, exists at $HEAD_REF, and agrees with $V"
+    else
+      FAILED=$((FAILED + 1))
+    fi
+  done
+done < <(jq -r '.artifacts[]' "$CONFIG")
+
+if [ "$FAILED" -gt 0 ]; then
+  echo "release-artifacts-check: $FAILED of $MEMBERS artifact member(s) failed" >&2
+  exit 1
+fi
+echo "release-artifacts-check: all $MEMBERS declared artifact member(s) moved and agree with $V"
+exit 0

@@ -1,0 +1,50 @@
+name: 'release-artifacts-check'
+description: >-
+  Assert that every member of a repo's declared release artifact set
+  (.release-pr.json's `artifacts` array) actually moved in this release PR.
+  Thin composite wrapper around bin/release-artifacts-check — all logic stays
+  in the script (host installs and vendoring consumers run it directly).
+  Consume this action SHA-pinned
+  (uses: <owner>/agent-board-toolkit/release-artifacts@<full-SHA>  # vX.Y.Z)
+  so dependabot's github-actions ecosystem tracks and bumps it.
+  PRECONDITIONS in the calling job: the consumer repo must already be checked
+  out with fetch-depth: 0 (the script reads the version file and the artifact
+  contents at BOTH ends of the range via `git show`, and a shallow clone makes
+  that read fail — it refuses rather than classifying an unreadable base as
+  "not a release PR"), and a .release-pr.json must exist at the workspace root.
+  A PR that does not change the version value exits 0 without asserting
+  anything, so this action is safe to run on every pull request.
+  NOTE: composite-action `required:` is not runner-enforced — the script's own
+  fail-closed guards (missing --base/--head, unreadable version file) are the
+  real gate and die with actionable messages.
+
+inputs:
+  base-sha:
+    description: "The PR's base commit (pass github.event.pull_request.base.sha)."
+    required: true
+  head-sha:
+    description: "The PR's head commit (pass github.event.pull_request.head.sha)."
+    required: true
+  config:
+    description: 'Per-repo release config, relative to the workspace root.'
+    required: false
+    default: '.release-pr.json'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Assert the declared release artifacts moved
+      shell: bash
+      # Passed through the environment, never interpolated into the run: body — a
+      # `${{ }}` expansion inside a run: script is textual substitution into the shell
+      # source, i.e. the Actions script-injection class.
+      env:
+        BASE: ${{ inputs.base-sha }}
+        HEAD: ${{ inputs.head-sha }}
+        CONFIG: ${{ inputs.config }}
+      # --config is passed unconditionally: unlike promote/'s optional inputs it has a
+      # meaningful DEFAULT value, so a blank one is a wiring error (an unset repo
+      # variable), not "use the default" — the script's require_value fails closed on it.
+      run: |
+        "$GITHUB_ACTION_PATH/../bin/release-artifacts-check" \
+          --base "$BASE" --head "$HEAD" --config "$CONFIG"
