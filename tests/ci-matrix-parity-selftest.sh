@@ -44,12 +44,16 @@
 #
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property the assertions support: that
 # every selftest file is REFERENCED by an unconditional job in some workflow that subscribes
-# `pull_request`. It does not prove the job succeeded, that the reference is spelled in a form
-# the runner can execute, or that a `paths:`/`branches:` filter on that workflow doesn't skip
-# it on a given PR. Both directions of imprecision err RED, never green: a job gated by `if:`
+# `pull_request`. It does not prove the job succeeded, or that the reference is spelled in a
+# form the runner can execute. Those imprecisions err RED, never green: a job gated by `if:`
 # is skipped by the extractor, and an invocation not spelled as a literal `tests/<name>.sh`
 # (`cd tests && bash foo.sh`) simply isn't seen — each reads as "unrun" and fails the build
 # rather than passing it.
+#
+# ONE ACCEPTED GAP ERRS GREEN: a `paths:`/`branches:` filter on a workflow's `pull_request`
+# does not demote it — its tests count as run even on PRs the filter excludes. No workflow
+# here carries such a filter today; the day one does, tighten `_pr_workflows` to reject it
+# (forcing an explicit decision) rather than letting this paragraph go stale.
 #
 # The workflows are PARSED, never grepped: the matrix is structured data, and a grep for
 # `- foo` would match a `- foo` under any other key.
