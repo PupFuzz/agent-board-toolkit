@@ -30,7 +30,7 @@ When a release mixes a feature with fixes, lean toward minor; a release that is 
 
 **Line-initial is the rule, not "the file mentions the card"** — a mention can be prose that misinforms. `docs/CHANGELOG.md` once carried *"card#5374 proposes the selftest…"* inside a different card's entry, written before card#5374 shipped it, so a release cut from that file told the reader the gate was proposed rather than delivered. A PR that folds two cards owes **two** bullets; one bullet naming both discharges only the card it leads with.
 
-This is gated, not conventional: [`tests/changelog-card-entry-selftest.sh`](tests/changelog-card-entry-selftest.sh) (its own `ci.yml` job) derives obligations from the commit subjects since the last release tag **plus the PR title** — under squash-merge the title *is* the coming subject, so the check fires before the merge rather than reddening `dev` after it. Until card#5767 the rule was enforced by nothing and written down nowhere, and 3 of the 24 cards merged since v0.23.1 had no entry.
+This is gated, not conventional: [`tests/changelog-card-entry-selftest.sh`](tests/changelog-card-entry-selftest.sh) (its own [`changelog-card-entry.yml`](.github/workflows/changelog-card-entry.yml) workflow, which subscribes `edited` so a **title edit** re-runs it) derives obligations from the commit subjects since the last release tag **plus the PR title** — under squash-merge the title *is* the coming subject, so the check fires before the merge rather than reddening `dev` after it. Until card#5767 the rule was enforced by nothing and written down nowhere, and 3 of the 24 cards merged since v0.23.1 had no entry.
 
 ## Release flow
 
