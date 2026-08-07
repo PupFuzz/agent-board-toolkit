@@ -153,13 +153,15 @@ jobs:
           run = step['run']
           assert SCRIPT in run, 'the promote step no longer execs bin/promote-released-cards'
 
-          # Every `--flag` token appearing ANYWHERE inside an `args+=( … )` append, plus any on
-          # the exec line itself. Scanning the whole append rather than anchoring on its first
-          # token is deliberate: `args+=("--bogus-flag" …)` and `args+=(--a --b)` both escaped
-          # a first-token-only pattern silently, which is the very shape this check exists to
-          # stop. It OVER-collects by design — a `--`-leading VALUE literal would also be
-          # picked up and demand a case arm, which errs RED (a spurious required arm), never
-          # green (a flag nobody guards).
+          # Every `--flag` token appearing anywhere ON an `args+=( … )` append LINE, plus any on
+          # the exec line itself. The scan is per line, so a multi-line append derives nothing
+          # from its continuation lines — today's wrapper writes one append per line. Scanning
+          # the whole line rather than anchoring on the append's first token is deliberate:
+          # `args+=("--bogus-flag" …)` and `args+=(--a --b)` both escaped a first-token-only
+          # pattern silently, which is the very shape this check exists to stop. It
+          # OVER-collects by design — a `--`-leading VALUE literal would also be picked up and
+          # demand a case arm, which errs RED (a spurious required arm), never green (a flag
+          # nobody guards).
           FLAG = r'--[A-Za-z0-9][A-Za-z0-9-]*'
           flags = set()
           for line in run.splitlines():

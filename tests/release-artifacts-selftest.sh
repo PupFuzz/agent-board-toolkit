@@ -516,6 +516,28 @@ run base-0.1.0 head-good --config two-well-formed.json
 eq "control: the well-formed pair passes"  "0"    "$RC"
 eq "control: …and counts BOTH members"     "true" "$(has 'all 2 declared artifact member(s)' "$OUT")"
 
+echo "== a config that is valid JSON but not an OBJECT is rc 2, not a jq traceback =="
+# `.artifacts` — and every other `.key` read — is a jq RUNTIME ERROR on a non-object top level
+# (`Cannot index array with "artifacts"`, jq rc 5), which `set -e` propagates as the script's
+# own exit status: an undocumented rc plus a raw traceback, where the header promises rc 2 for
+# every config error. `null` is in the set because it is a SHAPE error that `jq -e .` reports
+# as a parse failure, so it must be diagnosed by the object check rather than mis-named.
+for bad in '[1,2]' '"hello"' '42' 'null'; do
+  printf '%s' "$bad" > "$R/not-an-object.json"
+  run base-0.1.0 head-good --config not-an-object.json
+  eq "top-level $bad → rc 2 (the documented config-error code)" "2" "$RC"
+  eq "…the message names the config file"       "true"  "$(has 'not-an-object.json' "$OUT")"
+  eq "…and says an object is expected"          "true"  "$(has 'not a JSON object at the top level' "$OUT")"
+  eq "…with no raw jq traceback"                "false" "$(has 'Cannot index' "$OUT")"
+  eq "…and no undocumented rc leaking through"  "false" "$(has 'jq: error' "$OUT")"
+done
+# CONTROL — a genuine syntax error still reports as one, so the two verdicts stay distinct.
+printf '%s' '{"artifacts": [,]}' > "$R/bad-syntax.json"
+run base-0.1.0 head-good --config bad-syntax.json
+eq "control: a syntax error is rc 2"          "2"     "$RC"
+eq "control: …and is named as invalid JSON"   "true"  "$(has 'is not valid JSON' "$OUT")"
+eq "control: …not as a shape error"           "false" "$(has 'not a JSON object' "$OUT")"
+
 echo "== a MALFORMED artifacts is a config error — never 'no artifacts declared' =="
 # Opt-out and malformed are opposite verdicts. Answering a malformed declaration with "no
 # artifacts declared" states something false about the config AND silently disables the gate

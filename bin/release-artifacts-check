@@ -75,9 +75,21 @@ done
 
 cfg_opt() { jq -r "$1 // empty" "$CONFIG" 2>/dev/null; }
 
-# Parsed once, up front, so the artifacts read below cannot mistake an UNPARSEABLE config for
-# a repo that declared no artifacts — the two are the opposite verdict (refuse vs. exit 0).
-jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CONFIG is not valid JSON (a trailing comma?)"
+# The config's SHAPE is validated once, here, before any `.key` read. Two separate verdicts,
+# because they have different fixes — and both must be rc 2, this script's config-error code.
+#
+# The top-level OBJECT check is not pedantry: `.artifacts` (and every other read below) is a
+# jq runtime ERROR on an array/string/number top level — `Cannot index array with "artifacts"`,
+# jq rc 5 — which `set -e` would propagate as the script's own exit status, so a config typo
+# surfaced as an undocumented rc and a raw jq traceback instead of the documented rc 2. One
+# guard at the boundary covers every read below; adding `|| die` per call-site would be the
+# same fix written N times. `jq .` (not `jq -e .`) does the parse leg, because `-e` also fails
+# on a valid config whose content is literally `null` — which is a SHAPE error, and is
+# reported as one by the second check rather than mis-diagnosed as a syntax error.
+jq . "$CONFIG" >/dev/null 2>&1 \
+  || die "$CONFIG is not valid JSON (a trailing comma?)"
+jq -e 'type == "object"' "$CONFIG" >/dev/null 2>&1 \
+  || die "$CONFIG parses but is not a JSON object at the top level (it is $(jq -r 'type' "$CONFIG")) — it must be an object of config keys; see examples/release-pr.json.example"
 
 # OPT-OUT and MALFORMED are different verdicts and must not share a branch. An absent/null or
 # EMPTY `artifacts` is a repo that never opted in — nothing to assert, exit 0, reported rather
@@ -217,7 +229,6 @@ while IFS= read -r raw; do
   for p in "${paths[@]}"; do
     MEMBERS=$((MEMBERS + 1))
     member_failed=0
-    arm="(agreement not evaluated — the member does not exist at head)"
 
     # (a) MOVED — an exact line of the captured diff.
     case $'\n'"$CHANGED"$'\n' in
