@@ -194,7 +194,8 @@ Consume `release-artifacts-check` via the [`release-artifacts/`](../release-arti
 name: Release artifacts
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # `edited` fires on a base RETARGET, and the verdict is a function of the base
+    types: [opened, edited, reopened, synchronize]
 permissions:
   contents: read
 jobs:
@@ -203,7 +204,7 @@ jobs:
     steps:
       - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
         with:
-          fetch-depth: 0     # REQUIRED — both ends of the range are read with `git show`
+          fetch-depth: 0     # REQUIRED — resolves the fork point; the version file is read at both ends
       - uses: <owner>/agent-board-toolkit/release-artifacts@<full-40-char-SHA>  # vX.Y.Z
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}

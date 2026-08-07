@@ -12,9 +12,9 @@ description: >-
   can neither spuriously satisfy "this artifact moved" nor make a real release
   PR read as "version unchanged".
   PRECONDITIONS in the calling job: the consumer repo must already be checked
-  out with fetch-depth: 0 (the script resolves the merge base and reads the
-  version file plus the artifact contents at both ends via `git show`, and a
-  shallow clone makes those fail — it refuses rather than classifying an
+  out with fetch-depth: 0 (the script resolves the merge base, reads the
+  version file at both ends and the artifact contents at head via `git show`,
+  and a shallow clone makes those fail — it refuses rather than classifying an
   unresolvable fork point or unreadable base as "not a release PR"), and a
   .release-pr.json must exist at the workspace root.
   A PR that does not change the version value exits 0 without asserting
