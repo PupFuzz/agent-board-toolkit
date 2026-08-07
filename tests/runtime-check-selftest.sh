@@ -54,6 +54,22 @@ run_check "$TMP/bin2"
 eq "stale pin → rc 1" "1" "$RC"
 grep -q "STALE runtime" <<<"$ERR" && ok "names the staleness" || bad "missing STALE runtime message"
 grep -q "v0.1.0.*v0.2.0" <<<"$ERR" && ok "names both versions" || bad "missing version pair"
+grep -q "checkout v0.2.0" <<<"$ERR" && ok "detached pin → advance-the-pin remedy" || bad "pinned remedy lost its checkout"
+
+echo "== clone TRACKING a branch, behind the newest tag → rc 1, remedy must not detach it =="
+# INSTALL §1 Option A: a clone whose HEAD stays on its branch, upgraded by `git pull`. Telling
+# this topology to `checkout <tag>` converts a self-advancing install into a detached pin — the
+# very state INSTALL §2's warning box tells the reader to stay out of, and the state in which
+# UPGRADE §2's own `git pull --ff-only` exits 1 (`You are not currently on a branch.`).
+mk_repo "$TMP/repo2b-origin"
+git clone -q "$TMP/repo2b-origin" "$TMP/repo2b"
+git -C "$TMP/repo2b" reset --hard -q v0.1.0    # on its branch, behind origin's v0.2.0
+mkdir -p "$TMP/bin2b"; ln -s "$TMP/repo2b/bin/kbcard" "$TMP/bin2b/kbcard"
+run_check "$TMP/bin2b"
+eq "stale clone → rc 1" "1" "$RC"
+grep -q "STALE runtime" <<<"$ERR" && ok "names the staleness" || bad "missing STALE runtime message"
+grep -q "pull --ff-only" <<<"$ERR" && ok "remedy is the topology-preserving pull" || bad "remedy does not name pull --ff-only"
+grep -q "checkout v0.2.0" <<<"$ERR" && bad "remedy would DETACH a branch-tracking clone" || ok "remedy does not detach the clone"
 
 echo "== dev checkout AHEAD of the newest tag → ok (maintainer topology) =="
 mk_repo "$TMP/repo3"

@@ -4,6 +4,9 @@
 # version no longer matches the toolkit (version skew).
 #
 # Usage:  agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>
+#         Exactly two positionals, neither empty. A third is refused, not ignored — this is a
+#         gate, and a caller who believes they passed a scoping flag must not get a green
+#         report about something else.
 # Exit:   0 = in sync ("drift-check: OK");  1 = drift/skew;  2 = bad invocation.
 #
 # Checks every file in <repo-dir>/bin whose name matches a tool in
@@ -13,8 +16,22 @@ set -euo pipefail
 
 die() { echo "drift-check: $*" >&2; exit 2; }
 
-TOOLKIT="${1:-}"; REPO="${2:-}"
-[ -n "$TOOLKIT" ] && [ -n "$REPO" ] || die "usage: agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>"
+# The two-positional twin of kb_require_positional (_kb-board-lib.sh) — same rule, same wording,
+# hand-rolled rather than adopted, for the same reason agent-board-toolkit-runtime-check is
+# excluded from the lib: this tool is a DETECTOR of _kb-board-lib.sh (it diffs it, and the
+# MISSING-LIB leg reads it), so sourcing it would make the detector depend on the artifact under
+# test — and a drifted or broken lib would take out the tool that exists to report it. The
+# primitive is also single-slot by construction (<slot> IS the destination variable, which is what
+# makes "have I seen one?" a one-variable test), and this is the repo's only two-positional bin,
+# so generalising it would cost that simplicity for a first caller rather than a second (canon #5).
+# With fixed arity and no argument loop, "$#" answers both halves directly. Keep the diagnostic
+# WORDING in sync with the primitive — that is the part that is shared, not the mechanism.
+# EMPTY IS TESTED BEFORE EXTRA, matching the primitive's documented order.
+[ "$#" -ge 2 ] || die "usage: agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>"
+TOOLKIT="$1"; REPO="$2"
+[ -n "$TOOLKIT" ] || die "<toolkit-dir> is empty (an unexpanded variable?)"
+[ -n "$REPO" ] || die "<repo-dir> is empty (an unexpanded variable?)"
+[ "$#" -le 2 ] || die "unexpected extra argument: ${3:-(empty — an unexpanded variable?)}"
 [ -d "$TOOLKIT/bin" ] || die "no bin/ under toolkit dir: $TOOLKIT"
 [ -d "$REPO" ] || die "no such repo dir: $REPO"
 

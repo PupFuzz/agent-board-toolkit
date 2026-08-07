@@ -69,8 +69,9 @@ done
 # name is not on PATH, so it cannot enter this set and the byte-compare below never sees it — a
 # stale copied lib beside byte-current copied tools reports `ok`. Tracked as card#5414.
 TOOLS=(kbcard next-dl board-snapshot board-card-start board-session-close adopt-to-dl
-       release-pr-body promote-released-cards install-board-hooks agent-board-toolkit-drift-check
-       dl-a0-backfill-triaged dl-a1-register-field agent-board-toolkit-runtime-check)
+       release-pr-body release-artifacts-check promote-released-cards install-board-hooks
+       agent-board-toolkit-drift-check dl-a0-backfill-triaged dl-a1-register-field
+       agent-board-toolkit-runtime-check)
 
 fails=0
 warns=0
@@ -138,7 +139,18 @@ for root in "${!roots[@]}"; do
         # it is the maintainer topology; name it rather than failing.
         case "$ver" in
             "$newest"-*) say "runtime-check: ok — PATH executes $root @ $ver (dev, ahead of $newest)" ;;
-            *) fail "STALE runtime — PATH executes $root @ $ver but the newest local tag is $newest; advance the pin (git -C $root fetch --tags && git -C $root checkout $newest) or your tools silently run the old version" ;;
+            *)
+                # The remedy is topology-dependent and the wrong one is silently costly. A clone
+                # that tracks a branch (INSTALL §1 Option A) upgrades by pulling; telling it to
+                # check out a tag DETACHES it, which is the state INSTALL §2's warning box exists
+                # to keep readers out of — and the state where the pull it should be running
+                # exits 1. Only a checkout already off a branch advances by moving the pin.
+                if branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+                    remedy="upgrade it: git -C $root pull --ff-only — it is on branch $branch, and a tag checkout would detach it (docs/UPGRADE.md §2)"
+                else
+                    remedy="advance the pin: git -C $root fetch --tags && git -C $root checkout $newest"
+                fi
+                fail "STALE runtime — PATH executes $root @ $ver but the newest local tag is $newest, so your tools silently run the old version; $remedy" ;;
         esac
     fi
 done

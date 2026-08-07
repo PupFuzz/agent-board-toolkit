@@ -90,15 +90,49 @@ eq "premise: bin/$STANDALONE does not source the lib (the documented exception)"
 # Bad invocation — the documented rc 2 contract.
 # ---------------------------------------------------------------------------
 echo "== bad invocation exits 2 =="
-rc=0; "$DRIFT" >/dev/null 2>&1 || rc=$?
-eq "no arguments" "2" "$rc"
-rc=0; "$DRIFT" "$TOOLKIT" >/dev/null 2>&1 || rc=$?
-eq "one argument" "2" "$rc"
-rc=0; "$DRIFT" "$TOOLKIT" "$TMP/does-not-exist" >/dev/null 2>&1 || rc=$?
-eq "repo dir does not exist" "2" "$rc"
+# _bad <label> <expected-stderr-substring> [argv...] — assert BOTH the rc and the message.
+# rc ALONE CANNOT DISCRIMINATE HERE: every argument-shape below exits 2, so an rc-only
+# assertion passes just as well when the refusal came from the wrong guard, or from a guard
+# that named nothing. The message is the only part that distinguishes them, which is why the
+# empty-argument cases stayed anonymous under a green suite from v0.1.0 until card#5429.
+_bad() {
+    local label="$1" want="$2"; shift 2
+    local rc=0
+    "$DRIFT" "$@" >/dev/null 2>"$TMP/stderr" || rc=$?
+    eq "$label: rc 2" "2" "$rc"
+    eq "$label: says '$want'" "true" "$(has "$want" "$(cat "$TMP/stderr")")"
+}
+
+USAGE="usage: agent-board-toolkit-drift-check <toolkit-dir> <repo-dir>"
+_bad "no arguments" "$USAGE"
+_bad "one argument" "$USAGE" "$TOOLKIT"
+
+# An ABSENT argument is a usage error; an argument explicitly PRESENT and empty is the
+# unexpanded-variable hazard, and must name WHICH slot — with two positionals a bare usage line
+# leaves the caller to guess. Both slots are covered because a guard naming only the first would
+# satisfy a single-slot test.
+_bad "empty toolkit dir" "<toolkit-dir> is empty (an unexpanded variable?)" "" "$TMP"
+_bad "empty repo dir" "<repo-dir> is empty (an unexpanded variable?)" "$TOOLKIT" ""
+_bad "both empty: reports the FIRST" "<toolkit-dir> is empty" "" ""
+
+# A third positional is REFUSED, not discarded. This tool is the drift GATE: silently dropping
+# `--some-flag` and reporting OK is a green report about something other than what was asked for.
+_bad "extra positional" "unexpected extra argument: IGNORED-THIRD" "$TOOLKIT" "$TMP" "IGNORED-THIRD"
+_bad "extra positional, empty" "unexpected extra argument: (empty" "$TOOLKIT" "$TMP" ""
+_bad "two extra positionals" "unexpected extra argument: c" "$TOOLKIT" "$TMP" "c" "d"
+# Ordering: an empty slot AND an extra argument in one call reports the EMPTY. Not cosmetic —
+# the empty slot is the unexpanded-variable diagnosis, and it is also the ordering the shared
+# primitive documents. Nothing else in this file can observe which of the two guards runs first.
+_bad "empty slot + extra: reports the EMPTY" "<toolkit-dir> is empty" "" "$TMP" "x"
+
+_bad "repo dir does not exist" "no such repo dir" "$TOOLKIT" "$TMP/does-not-exist"
 mkdir -p "$TMP/no-bin"   # its own dir, not $TMP: $TMP gains files as the cases below run
-rc=0; "$DRIFT" "$TMP/no-bin" "$TMP/no-bin" >/dev/null 2>&1 || rc=$?
-eq "toolkit dir has no bin/" "2" "$rc"
+_bad "toolkit dir has no bin/" "no bin/ under toolkit dir" "$TMP/no-bin" "$TMP/no-bin"
+
+# The positive complement: two good positionals must still REACH the checks. Without this, every
+# assertion above is satisfied by a bin that refuses everything.
+rc=0; "$DRIFT" "$TOOLKIT" "$TMP/no-bin" >/dev/null 2>&1 || rc=$?
+eq "two good positionals: not refused as a bad invocation" "0" "$rc"
 
 # ---------------------------------------------------------------------------
 # A repo that vendors nothing is OK — stated here, up front, because it is why every rc-0

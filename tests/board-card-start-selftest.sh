@@ -172,6 +172,32 @@ if command -v git >/dev/null 2>&1; then
     _bcs_attempted_move \
         && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
 
+    # `-h`/`--help` (card#5354). Asserted on STDOUT ALONE, not the merged stream `_bcs_run`
+    # captures: a requested help is the requested OUTPUT, and every refusal arm here also prints
+    # the same usage line — to stderr. Merged, "prints the usage line" cannot tell the help arm
+    # from the `-*` refusal it was added to stop reaching, so the assertion would pass either way.
+    _bcs_help_stdout() {  # <args…> — stdout only; sets _hout
+        _hout="$(cd "$_repo" && HOME="$_home" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_log" \
+                 bash "$BCS" "$@" 2>/dev/null)" || true
+    }
+    for _hflag in --help -h; do
+        rm -f "$_log"; _bcs_help_stdout "$_hflag"
+        printf '%s' "$_hout" | grep -q "^usage: board-card-start" \
+            && ok "$_hflag: prints the usage line on STDOUT" \
+            || bad "$_hflag: no usage line on stdout: $_hout"
+        [[ -s "$_log" ]] \
+            && bad "$_hflag: attempted board work" || ok "$_hflag: NO board work attempted"
+    done
+
+    # THE REGRESSION THIS PAIRING EXISTS TO CATCH: the help arm lives INSIDE the end-of-options
+    # guard, so `-- --help` is still a BRANCH NAME (git accepts the ref). Move the arm above the
+    # guard — the natural "simplification" — and this goes red while every assertion above stays
+    # green, because help would then be printed for an argument the terminator already claimed.
+    rm -f "$_log"; _bcs_help_stdout -- --help
+    [[ -z "$_hout" ]] \
+        && ok "-- --help: help NOT printed — the terminator still claims the argument" \
+        || bad "-- --help: printed help for a terminated argument — the arm escaped the guard: $_hout"
+
     # `--` IS AN END-OF-OPTIONS TERMINATOR, and the population it serves is live, not theoretical:
     # git ACCEPTS a branch whose name starts with '-' — `git check-ref-format refs/heads/-foo` is
     # rc 0 and `git update-ref` creates it (only the `git branch` PORCELAIN refuses the name) — and

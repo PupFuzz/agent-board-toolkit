@@ -88,17 +88,24 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 ## 4. Per-repo release config (only for repos that cut releases)
 
-`promote-released-cards` and `release-pr-body` read `<repo>/.release-pr.json`:
+`promote-released-cards`, `release-pr-body` and `release-artifacts-check` read `<repo>/.release-pr.json`:
 
 ```bash
 cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-pr.json
 # edit: set promote.{board_id, released_stage_id, api_base}, ref_token_regex (e.g. "DL-[0-9]+"),
-# version_file/version_regex, dev/main branch names, and the artifacts checklist.
+# version_file/version_regex, dev/main branch names, and the artifacts set.
 # tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
 # set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
 # accepts 2-4 numeric segments (SemVer and .NET Major.Minor.Build.Revision alike).
 jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove the "_comment" line if you like
 ```
+
+> **`artifacts` is a must-move-together SET, not a memo.** Each entry is `<path> <prose>` — the path is the **leading whitespace-delimited token**, so **a member path may not contain whitespace**; everything after the first space is prose. `{{version}}` is expanded, and a single-level `{a,b}` brace set is allowed in the path (`sboms/v{{version}}.{spdx,cdx}.json` ⇒ two members). `release-pr-body` renders the set as the release PR's `- [ ]` checklist; `release-artifacts-check` (§6c) **asserts** it. Three member shapes, distinguished by the prose you write — and the shape a member was judged by is **printed on its OK line**, so check it says what you intended:
+> - `docs/CHANGELOG.md → [{{version}}] section` — the literal text `[{{version}}] section` (matched case-insensitively) requires a **line beginning `## [<version>]`** in the file at head. This is the only **strong** shape. The trigger is that exact wording: `[{{version}}] entry` or `… heading` is **not** recognized and silently falls through to the weak shape below — which is why the OK line names the shape it used (`via '## [X.Y.Z]' heading line` vs `via content mention`).
+> - a path whose **filename carries the version** (`sboms/v{{version}}.json`) — existence at head is the whole assertion.
+> - anything else (`CLAUDE.md § Recent releases row`) — the file's content at head must **contain the version string. This test is UNANCHORED**: with version `0.25.0`, a file containing only `10.25.0` (or `0.25.01`) satisfies it. It is the catch-all for members whose agreement has no structure to key on, so it is deliberately weak — a member that needs a real assertion should use the `[{{version}}] section` shape.
+>
+> Every member must additionally appear in the PR's own changes and still exist at head (a deletion appears in a diff, so the existence leg is what catches it). Declare only what a release genuinely must move: an over-declared entry fails every release PR, and an under-declared one is invisible — no tool can assert a member you never named.
 
 > **`.release-pr.json` is security-sensitive.** `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to. A PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` (and `board-card-start`) reject any `api_base` that is not `https://` on the **expected host** before sending the token. **`KANBAN_EXPECTED_HOST` is REQUIRED — there is no baked default** (the toolkit ships onto your own kanban host, so it assumes none). Set **`KANBAN_EXPECTED_HOST`** in the promote-CI env (a repo/org variable — out-of-band from this PR-editable file) to your kanban host; the guard accepts that host or a subdomain of it. Leaving it unset makes the guard **fail closed** — the token is never sent. Review any `api_base` change as a credential-scope change.
 
@@ -175,9 +182,45 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit <repo>   # -> "drift-check: OK"
 ```
 
-> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins — `kbcard`, `next-dl`, `board-snapshot`, `board-card-start`, `adopt-to-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field` — `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). Without it the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. `promote-released-cards` / `release-pr-body` are standalone and need no lib.
+> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins — `kbcard`, `next-dl`, `board-snapshot`, `board-card-start`, `adopt-to-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field` — `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). Without it the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. `promote-released-cards`, `release-pr-body` and `release-artifacts-check` are standalone and need no lib.
 
 **Both paths** require **`KANBAN_EXPECTED_HOST`** — §6a supplies it via the `expected-host` **input** (step-level env overrides job env, so setting it only as job env does NOT reach the action's script; pin it as a repo variable and pass it through), §6b sets it in the CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`). It pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). See [`UPGRADE.md`](UPGRADE.md) for keeping a vendored copy (§6b) current; action consumers (§6a) upgrade via the pin.
+
+### 6c. GitHub Actions consumer — the release-artifact gate
+
+Consume `release-artifacts-check` via the [`release-artifacts/`](../release-artifacts/action.yml) composite action, SHA-pinned on the same terms as §6a. It asserts every member of your `.release-pr.json` `artifacts` set (§4) actually moved in a release PR:
+
+```yaml
+name: Release artifacts
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+jobs:
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          fetch-depth: 0     # REQUIRED — both ends of the range are read with `git show`
+      - uses: <owner>/agent-board-toolkit/release-artifacts@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          # config: .release-pr.json   # optional; the default
+```
+
+**The asserted range is `merge-base(base-sha, head-sha)..head-sha` — the PR's own changes — never base's tip.** That is a correctness requirement, not a refinement, because base-branch drift after the fork point corrupts both halves of the check:
+
+- **the MOVED leg:** a hotfix landing on the base branch after the fork makes that file differ between base's tip and head, so it appears in a base-tip diff and *spuriously satisfies* "this artifact moved" for a member the PR never touched. Measured on a fixture: base-tip exits **0** with `all 5 declared artifact member(s) moved and agree`, merge-base exits **1** naming the member.
+- **the CLASSIFICATION:** a version bump arriving on the base branch makes base's tip read the *same* version as head, so a real release PR is classified "version unchanged" and the entire gate silently does not run. Base-tip exits **0** with `not a release PR; nothing to assert` on a PR that is genuinely missing a member.
+
+You still pass `base-sha` — it is what the fork point is resolved *from*.
+
+**No `paths:` filter, deliberately.** The gate must observe every PR in order to *classify* it: a PR whose version **value** is unchanged between the fork point and head is not a release PR and exits 0 after two `git show`s. Classifying by value rather than by "the version file appears in the diff" is what makes this correct for a repo whose `version_file` is a whole config file (kanban's is `config/app.php`), where the file-moved test would misfire on any unrelated edit.
+
+**It fails closed** (rc 2) on an unresolvable merge base or an unreadable version file, naming which end of the range it is and the path, rather than reading either as "not a release PR" — that misclassification would be a silent non-run of the entire gate. A shallow checkout is the usual cause, hence `fetch-depth: 0`.
 
 ## Worked example (host install, primary board named `dev`)
 

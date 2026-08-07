@@ -3,7 +3,7 @@
 #
 # Codifies "work has begun" so it's never a forgotten manual step (the recurring
 # board-drift fix). Called by the post-checkout git hook; also runnable by hand:
-#     board-card-start [--lint] [--] [<branch-name>]   (no branch argument: the current branch)
+#     board-card-start [--lint] [-h|--help] [--] [<branch-name>]   (no branch argument: the current branch)
 #
 # Correlation — try-in-order-with-fallback (framework contract #112), on the
 # OUTCOME of a token not its presence:
@@ -147,9 +147,14 @@ _bcs_branch_lint_warning() {
 # stop here — sourcing must not run the checkout mover.
 (return 0 2>/dev/null) && return 0
 
-# Argument surface: `[--lint] [--] [<branch-name>]`. `--lint` is the pre-push advisory path —
-# print the branch-name warning (if any) and exit, without any board/network work; no branch
-# argument is the post-checkout path (the hook passes none), which targets the CURRENT branch.
+# Argument surface: `[--lint] [-h|--help] [--] [<branch-name>]`. `--lint` is the pre-push
+# advisory path — print the branch-name warning (if any) and exit, without any board/network
+# work; no branch argument is the post-checkout path (the hook passes none), which targets the
+# CURRENT branch. `-h`/`--help` prints the usage line to STDOUT at rc 0 and does nothing else:
+# before it existed, a hand-typed `--help` fell to the `-*` arm, whose remedy line reads as
+# advice to run `board-card-start -- --help` — which would target a BRANCH named `--help`
+# (card#5354). The refusal text is deliberately unchanged: it is phrased conditionally ("for a
+# branch name that starts with `-`"), and the actionable defect was the absent help surface.
 #
 # Parsed in a LOOP so the flag is honored in ANY position. Honoring `--lint` only in position 1
 # meant `board-card-start <branch> --lint` silently dropped it and performed a REAL card move —
@@ -190,7 +195,7 @@ _bcs_branch_lint_warning() {
 # DL/card token, which an argument refusal has not established — and since these forms are
 # reachable only from a hand-typed invocation, stderr, not the log file, is the surface that
 # reaches whoever typed the command.
-_bcs_usage="usage: board-card-start [--lint] [--] [<branch-name>]"
+_bcs_usage="usage: board-card-start [--lint] [-h|--help] [--] [<branch-name>]"
 lint_mode=0
 branch=""
 end_of_opts=0
@@ -199,6 +204,11 @@ while [ "$#" -gt 0 ]; do
     if [ "$end_of_opts" = 0 ]; then
         case "$arg" in
             --lint) lint_mode=1; continue ;;
+            # STDOUT and rc 0: a REQUESTED help is the requested OUTPUT (pipeable, pageable),
+            # unlike the refusals below, which are diagnostics and stay on stderr. Inside the
+            # terminator guard on purpose — `board-card-start -- --help` still targets a branch
+            # literally named `--help`, which git accepts.
+            -h|--help) printf '%s\n' "$_bcs_usage"; exit 0 ;;
             --)     end_of_opts=1; continue ;;
             -*)     echo "board-card-start: unknown option: $arg — no card moved (for a branch name that starts with '-', pass it after --)" >&2
                     echo "$_bcs_usage" >&2; exit 0 ;;
