@@ -79,14 +79,23 @@ cfg_opt() { jq -r "$1 // empty" "$CONFIG" 2>/dev/null; }
 # a repo that declared no artifacts — the two are the opposite verdict (refuse vs. exit 0).
 jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CONFIG is not valid JSON (a trailing comma?)"
 
-# An absent, non-array, or EMPTY `artifacts` declares no must-move-together set, so there is
-# nothing this tool can assert. Reported rather than silently exited so a repo that MEANT to
-# declare a set can see that it did not — and checked before the version legs, because a
-# fail-closed version read would otherwise refuse a repo that never opted in.
-if [ "$(jq -r 'if (.artifacts | type) == "array" then (.artifacts | length) else -1 end' "$CONFIG")" -lt 1 ]; then
-  echo "release-artifacts-check: no artifacts declared — nothing to assert"
-  exit 0
-fi
+# OPT-OUT and MALFORMED are different verdicts and must not share a branch. An absent/null or
+# EMPTY `artifacts` is a repo that never opted in — nothing to assert, exit 0, reported rather
+# than silent so a repo that MEANT to declare a set can see that it did not. Any OTHER type
+# (object, string, number, boolean) is a malformed declaration: printing "no artifacts
+# declared" there would be a false statement about the config, and would silently disable the
+# gate for a repo that plainly intended to enable it. Checked before the version legs, because
+# a fail-closed version read would otherwise refuse a repo that never opted in.
+ARTIFACTS_TYPE="$(jq -r '.artifacts | type' "$CONFIG")"
+case "$ARTIFACTS_TYPE" in
+  null)  echo "release-artifacts-check: no artifacts declared — nothing to assert"; exit 0;;
+  array)
+    if [ "$(jq -r '.artifacts | length' "$CONFIG")" -eq 0 ]; then
+      echo "release-artifacts-check: no artifacts declared (empty array) — nothing to assert"
+      exit 0
+    fi;;
+  *) die "$CONFIG has .artifacts of type '$ARTIFACTS_TYPE' — it must be an array of strings (omit the key entirely to opt out)";;
+esac
 
 VERSION_FILE="$(cfg_opt '.version_file')"
 VERSION_REGEX="$(cfg_opt '.version_regex')"
@@ -138,7 +147,12 @@ V="$HEAD_VERSION"
 # match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
 # reading as a failure. Every membership test below is a shell `case`, so no subprocess and
 # no pipeline is involved in answering "did this path move".
-CHANGED="$(git diff --name-only "$BASEREF" "$HEAD_REF")" \
+#
+# `core.quotePath=false` is load-bearing, not tidiness: by default git C-quotes any path
+# containing a non-ASCII byte (`"docs/caf\303\251.md"`), which matches no declared member, so
+# a member that DID move is reported "not moved" — a false failure carrying a wrong diagnosis.
+# The `git show`/`cat-file` reads below take the path verbatim and are unaffected.
+CHANGED="$(git -c core.quotePath=false diff --name-only "$BASEREF" "$HEAD_REF")" \
   || die "cannot diff '$BASE'...'$HEAD_REF' — the caller must check out with fetch-depth: 0"
 
 # _expand_braces <spec> — one path per line, expanding a single-level `{a,b,c}` comma set.
@@ -150,6 +164,17 @@ CHANGED="$(git diff --name-only "$BASEREF" "$HEAD_REF")" \
 # through a process substitution, whose `exit` unwinds only the SUBSHELL — the message would
 # print and the script would carry on with the member silently dropped. The emptiness verdict
 # is therefore the CALLER's, taken in the main shell (see the `paths` array below).
+#
+# SINGLE-LEVEL, FIRST-BRACE-ONLY, and every pathological input FAILS LOUD rather than
+# expanding oddly in silence — which is why neither is defended against beyond this note:
+#   * `post` is everything after the FIRST `}`, so `a{b,c}d}e` yields `abd}e` / `acd}e` and a
+#     second brace set is not expanded. Such a path will not exist at head and is reported as
+#     a missing member, naming the path it actually looked for.
+#   * `read -a` keeps a LEADING empty field but DROPS a trailing one (measured: `,x` ⇒ 2
+#     alternatives, `x,` ⇒ 1), so `v{,a}.json` expands to two members and `v{a,}.json` to one.
+#     The asymmetry is bash's, not this function's; a member lost to it is a member never
+#     asserted, so the count on the summary line is the place it shows.
+#   * a literal `{}` yields zero alternatives, which the caller turns into a rc-2 refusal.
 _expand_braces() {
   local s="$1" pre post alts_str a
   local -a alts
@@ -192,6 +217,7 @@ while IFS= read -r raw; do
   for p in "${paths[@]}"; do
     MEMBERS=$((MEMBERS + 1))
     member_failed=0
+    arm="(agreement not evaluated — the member does not exist at head)"
 
     # (a) MOVED — an exact line of the captured diff.
     case $'\n'"$CHANGED"$'\n' in
@@ -205,22 +231,45 @@ while IFS= read -r raw; do
       # (c) AGREES — read from the commit, never the working tree: the working tree is not
       # necessarily the head commit (a runner may have a dirty or differently-checked-out tree).
       content="$(git show "$HEAD_REF:$p" 2>/dev/null || true)"
-      case "$raw" in
+      # WHICH ARM was taken is reported on the OK line, and that is a correctness feature, not
+      # cosmetics. The strong arm is selected by a magic substring in FREE PROSE, so a prose
+      # edit ('… entry', '… heading') silently DOWNGRADES the member to the weak
+      # content-mention arm — and before the arm was named, a downgraded pass was
+      # byte-identical to a strong one, so the loss of assertion strength was invisible in the
+      # CI log. Naming the arm is what makes a downgrade legible without guessing at synonyms.
+      #
+      # The selector is matched case-INSENSITIVELY (`${raw,,}`, ASCII-only under LC_ALL=C).
+      # Synonyms are deliberately NOT accepted: every extra spelling widens what silently
+      # TRIGGERS the strong arm, and the legibility above is the general fix — a reader who
+      # wrote 'entry' sees `via content mention` on the OK line and corrects the prose.
+      raw_lc="${raw,,}"
+      case "$raw_lc" in
         *'[{{version}}] section'*)
-          # A LINE beginning `## [<version>]`. Matched as a fixed string against a
-          # newline-prefixed copy rather than as `^## \[$V\]`: the dots in a version are
-          # regex metacharacters, so an unescaped `0.1.2` would also match `0x1x2`.
+          # A LINE beginning `## [<version>]`. Matched as a FIXED STRING against a
+          # newline-prefixed copy rather than as `^## \[$V\]`: the dots in a version are regex
+          # metacharacters, so an unescaped `0.1.2` would also match `0x1x2`. The leading
+          # $'\n' is the left anchor — without it an inline mid-line mention ('see ## [0.1.2]
+          # below') would satisfy a check that claims to be about a heading LINE.
+          arm="via '## [$V]' heading line"
           case $'\n'"$content" in
             *$'\n'"## [$V]"*) ;;
-            *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF has no '## [$V]' section line (declared as: $raw)"
+            *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF has no line beginning '## [$V]' (declared as: $raw)"
                member_failed=1;;
           esac;;
         *)
           case "$p" in
-            *"$V"*) ;;  # the filename itself carries the version (e.g. sboms/vX.Y.Z.json)
-            *) case "$content" in
+            *"$V"*) arm="via version-bearing path" ;;  # e.g. sboms/vX.Y.Z.json
+            *) arm="via content mention"
+               # DISCLOSED WEAKNESS: an UNANCHORED substring test. With V=0.25.0 a file
+               # containing only `10.25.0` (or `0.25.01`) satisfies this arm. It is the
+               # catch-all for members whose agreement has no structure to key on (a table
+               # row, a prose line), where there is nothing to anchor to — so the arm is
+               # deliberately weak rather than accidentally so, and `docs/INSTALL.md` §4
+               # states the same limit to the person writing the declaration. A member that
+               # needs a real assertion should declare the `[{{version}}] section` shape.
+               case "$content" in
                  *"$V"*) ;;
-                 *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF does not mention the version being shipped ($V) (declared as: $raw)"
+                 *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF does not contain the version being shipped ($V) (declared as: $raw)"
                     member_failed=1;;
                esac;;
           esac;;
@@ -231,7 +280,7 @@ while IFS= read -r raw; do
     fi
 
     if [ "$member_failed" -eq 0 ]; then
-      echo "release-artifacts-check: OK — $p moved, exists at $HEAD_REF, and agrees with $V"
+      echo "release-artifacts-check: OK — $p moved, exists at $HEAD_REF, agrees with $V $arm"
     else
       FAILED=$((FAILED + 1))
     fi

@@ -142,6 +142,37 @@ mk_head() {
 
 for m in nonrelease good not-moved no-section deleted two-bad; do mk_head "head-$m" "$m"; done
 
+# --- heads for the AGREES arms ----------------------------------------------
+# Each carries a CHANGELOG that mentions 0.2.0 in a way the WEAK (content-mention) arm accepts
+# but the STRONG (heading-line) arm must not, so the two arms are separable: if the strong arm
+# ever silently downgraded to the weak one, these would go green.
+mk_agrees_head() { # <branch> <changelog-body>
+  g -C "$R" checkout -q -B "$1" base-0.1.0
+  echo "0.2.0" > "$R/VERSION"
+  printf '%s' "$2" > "$R/docs/CHANGELOG.md"
+  printf '# Notes\n\n| v0.2.0 | 2026-02-02 |\n| v0.1.0 | 2026-01-01 |\n' > "$R/NOTES.md"
+  echo '{"v":"0.2.0"}' > "$R/sboms/v0.2.0.a.json"
+  echo '{"v":"0.2.0"}' > "$R/sboms/v0.2.0.b.json"
+  g -C "$R" add -A; g -C "$R" commit -qm "release: $1"
+}
+# (1) the version appears only as INLINE PROSE — never at the start of a line.
+mk_agrees_head head-inline-mention \
+  '# Changelog
+
+## [0.1.0] - 2026-01-01
+
+- bumped to 0.2.0, see ## [0.2.0] below for the entry
+'
+# (2) a heading whose brackets hold a REGEX-METACHAR LOOK-ALIKE of the version. `0.2.0` as an
+# unescaped regex matches `0x2x0`; as a fixed string it must not.
+mk_agrees_head head-metachar-heading \
+  '# Changelog
+
+## [0x2x0] - 2026-02-02
+
+- 0.2.0 is mentioned here in prose so the WEAK arm would still pass
+'
+
 # A head that deletes the version file — the HEAD-side unreadable read, with a readable fork
 # point, so the two ends fail closed independently rather than one masking the other.
 g -C "$R" checkout -q -B head-noversion base-0.1.0
@@ -182,6 +213,19 @@ g -C "$R" add -A; g -C "$R" commit -qm "release: 0.2.0 without touching NOTES.md
 g -C "$R" checkout -q -B bump-base base-0.1.0
 echo "0.2.0" > "$R/VERSION"
 g -C "$R" add -A; g -C "$R" commit -qm "chore: a version bump lands on the base branch after the fork"
+
+# --- a NON-ASCII member path ------------------------------------------------
+# git C-quotes such a path in `diff --name-only` output unless core.quotePath=false, so an
+# artifact that genuinely moved reads as "not moved" — a false failure with a wrong diagnosis.
+# The name is written as explicit UTF-8 BYTES, not a literal: the bytes are what reach git, and
+# a byte escape cannot be re-encoded by the shell's locale or mangled by an editor.
+ACCENT=$'\xc3\xa9'                      # U+00E9 LATIN SMALL LETTER E WITH ACUTE
+UPATH="docs/caf${ACCENT}.md"
+g -C "$R" checkout -q -B head-utf8 base-0.1.0
+echo "0.2.0" > "$R/VERSION"
+printf '# Changelog\n\n## [0.2.0] - 2026-02-02\n\n## [0.1.0] - 2026-01-01\n' > "$R/docs/CHANGELOG.md"
+printf 'release 0.2.0\n' > "$R/$UPATH"
+g -C "$R" add -A; g -C "$R" commit -qm "release: a non-ASCII member path"
 
 # Two refs with NO common ancestor — the merge base itself is unresolvable.
 g -C "$R" checkout -q --orphan unrelated
@@ -251,7 +295,7 @@ run base-0.1.0 head-no-section
 eq "rc 1"                                   "1"    "$RC"
 eq "the failure is the AGREES leg, not the moved leg" "true" \
    "$(has "::error::release artifact does not agree: 'docs/CHANGELOG.md'" "$OUT")"
-eq "…and names the section line it wanted"  "true" "$(has "no '## [0.2.0]' section line" "$OUT")"
+eq "…and names the heading line it wanted"  "true" "$(has "has no line beginning '## [0.2.0]'" "$OUT")"
 eq "…and the moved leg did NOT fire for it" "false" \
    "$(has "not moved: 'docs/CHANGELOG.md'" "$OUT")"
 eq "exactly one member failed"              "true" "$(has '1 of 5 artifact member(s) failed' "$OUT")"
@@ -351,6 +395,77 @@ eq "…naming the missing member"                        "true"  "$(has "not mov
 eq "…and counting the full declared set"               "true"  "$(has 'of 5 artifact member(s) failed' "$OUT")"
 
 # ---------------------------------------------------------------------------
+# THE AGREES ARMS. Which arm a member took is REPORTED, because the strong arm is selected by
+# a magic substring in free prose: a prose edit downgrades the member to the weak
+# content-mention arm, and before the arm was named that downgrade was byte-identical to a
+# strong pass in the CI log. Both anchors of the strong arm are witnessed here too — nothing
+# asserted either, so a mutation dropping the left anchor or unescaping the version stayed
+# green across the whole suite.
+# ---------------------------------------------------------------------------
+strongcfg() { # <selector-prose> — only the CHANGELOG entry's prose varies
+  printf '%s\n' "{ \"version_file\": \"VERSION\", \"version_regex\": \"[0-9]+\\\\.[0-9]+\\\\.[0-9]+\",
+    \"artifacts\": [\"VERSION → {{version}}\", \"docs/CHANGELOG.md → $1\"] }" > "$R/strong.json"
+}
+
+echo "== the OK line NAMES the arm each member's agreement was decided by =="
+run base-0.1.0 head-good
+eq "the heading-line arm is named"      "true" "$(has "OK — docs/CHANGELOG.md moved, exists at head-good, agrees with 0.2.0 via '## [0.2.0]' heading line" "$OUT")"
+eq "the version-bearing-path arm is named" "true" "$(has 'OK — sboms/v0.2.0.a.json moved, exists at head-good, agrees with 0.2.0 via version-bearing path' "$OUT")"
+eq "the content-mention arm is named"   "true" "$(has 'OK — NOTES.md moved, exists at head-good, agrees with 0.2.0 via content mention' "$OUT")"
+
+echo "== an unrecognized selector DOWNGRADES to the weak arm — and now says so =="
+# The fixture mentions 0.2.0 only in inline prose, so the strong arm fails and the weak one
+# passes. That is what makes the downgrade observable rather than a difference of nothing.
+strongcfg '[{{version}}] section'
+run base-0.1.0 head-inline-mention --config strong.json
+eq "the CORRECT selector still reds on a missing heading" "1"    "$RC"
+eq "…naming the heading line"                             "true" "$(has "has no line beginning '## [0.2.0]'" "$OUT")"
+
+strongcfg '[{{version}}] entry'      # a synonym the selector does NOT recognize
+run base-0.1.0 head-inline-mention --config strong.json
+eq "the typo'd selector passes (the downgrade is real)"   "0"    "$RC"
+eq "…but the OK line names the WEAK arm, so it is legible" "true" \
+   "$(has 'agrees with 0.2.0 via content mention' "$OUT")"
+eq "…and does NOT claim the heading-line arm"             "false" "$(has 'heading line' "$OUT")"
+
+echo "== the selector is case-insensitive =="
+strongcfg '[{{version}}] SECTION'
+run base-0.1.0 head-inline-mention --config strong.json
+eq "an upper-case selector still takes the STRONG arm" "1"    "$RC"
+eq "…reporting the missing heading"                    "true" "$(has "has no line beginning '## [0.2.0]'" "$OUT")"
+
+echo "== the strong arm's LEFT anchor: a mid-line mention is not a heading line =="
+# Witness first, from raw content: the text the weak arm sees DOES contain the needle, so the
+# strong arm's refusal is the anchor working — not the string being absent.
+eq "witness: the file DOES contain '## [0.2.0]' somewhere" "true" \
+   "$(has '## [0.2.0]' "$(g -C "$R" show head-inline-mention:docs/CHANGELOG.md)")"
+eq "witness: …but never at the start of a line"            "false" \
+   "$(has "$(printf '\n## [0.2.0]')" "$(g -C "$R" show head-inline-mention:docs/CHANGELOG.md)")"
+strongcfg '[{{version}}] section'
+run base-0.1.0 head-inline-mention --config strong.json
+eq "the tool refuses the mid-line mention" "1" "$RC"
+
+echo "== the strong arm's RIGHT anchor: the version is a FIXED string, not a regex =="
+# `0.2.0` as an unescaped ERE matches `0x2x0`. The heading here is `## [0x2x0]`.
+eq "witness: the heading is a metachar look-alike, at a line start" "true" \
+   "$(has "$(printf '\n## [0x2x0]')" "$(g -C "$R" show head-metachar-heading:docs/CHANGELOG.md)")"
+run base-0.1.0 head-metachar-heading --config strong.json
+eq "the tool refuses the look-alike heading" "1"    "$RC"
+eq "…naming the heading it wanted"           "true" "$(has "has no line beginning '## [0.2.0]'" "$OUT")"
+
+echo "== a NON-ASCII member path that moved is not reported as 'not moved' =="
+# Default core.quotePath C-quotes such a path in the diff, matching no declared member.
+eq "witness: git's DEFAULT diff output C-quotes the path" "true" \
+   "$(has '\303\251' "$(g -C "$R" -c core.quotePath=true diff --name-only base-0.1.0 head-utf8)")"
+eq "witness: …and quotePath=false emits it verbatim"      "true" \
+   "$(has "$UPATH" "$(g -C "$R" -c core.quotePath=false diff --name-only base-0.1.0 head-utf8)")"
+printf '%s\n' "{ \"version_file\": \"VERSION\", \"version_regex\": \"[0-9]+\\\\.[0-9]+\\\\.[0-9]+\",
+  \"artifacts\": [\"VERSION → {{version}}\", \"$UPATH → {{version}}\"] }" > "$R/utf8.json"
+run base-0.1.0 head-utf8 --config utf8.json
+eq "the tool passes the non-ASCII member"  "0"    "$RC"
+eq "…and never claims it did not move"     "false" "$(has 'not moved' "$OUT")"
+
+# ---------------------------------------------------------------------------
 # Config / usage surface.
 # ---------------------------------------------------------------------------
 echo "== a config with no artifacts array asserts nothing and exits 0 =="
@@ -400,6 +515,19 @@ printf '%s\n' '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.
 run base-0.1.0 head-good --config two-well-formed.json
 eq "control: the well-formed pair passes"  "0"    "$RC"
 eq "control: …and counts BOTH members"     "true" "$(has 'all 2 declared artifact member(s)' "$OUT")"
+
+echo "== a MALFORMED artifacts is a config error — never 'no artifacts declared' =="
+# Opt-out and malformed are opposite verdicts. Answering a malformed declaration with "no
+# artifacts declared" states something false about the config AND silently disables the gate
+# for a repo that plainly meant to enable it.
+for bad in '{"a":1}' '"docs/CHANGELOG.md"' '7' 'true'; do
+  printf '%s\n' "{ \"version_file\": \"VERSION\", \"version_regex\": \"[0-9]+\\\\.[0-9]+\\\\.[0-9]+\", \"artifacts\": $bad }" > "$R/bad-artifacts.json"
+  wanted="$(printf '%s' "$bad" | python3 -c 'import json,sys; v=json.loads(sys.stdin.read()); print({dict:"object",str:"string",int:"number",bool:"boolean"}[type(v)])')"
+  run base-0.1.0 head-good --config bad-artifacts.json
+  eq "artifacts: $bad → rc 2"                  "2"     "$RC"
+  eq "…naming the type it found ($wanted)"     "true"  "$(has "of type '$wanted'" "$OUT")"
+  eq "…and NOT claiming none were declared"    "false" "$(has 'no artifacts declared' "$OUT")"
+done
 
 echo "== a declared set with no version_file is a CONFIG error, not a pass =="
 printf '%s\n' '{ "artifacts": ["VERSION → {{version}}"] }' > "$R/no-version-file.json"
