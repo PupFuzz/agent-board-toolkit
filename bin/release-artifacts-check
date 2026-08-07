@@ -16,16 +16,26 @@
 #   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
 #   --config per-repo release config (default `.release-pr.json`)
 #
+# THE RANGE IS `merge-base(base, head)..head` — the PR's OWN changes — never base's tip.
+# Both are resolved against the MERGE BASE, and that is a correctness requirement, not a
+# refinement: base-branch drift after the fork point corrupts both halves otherwise.
+#   * the MOVED leg: a hotfix landing on base after the fork makes that file differ between
+#     base's tip and head, so it appears in a two-dot diff and spuriously satisfies "moved"
+#     for a member THIS PR never touched;
+#   * the CLASSIFICATION: a version bump landing on base after the fork makes base's tip
+#     read the same version as head, so a real release PR is classified "version unchanged"
+#     and the entire gate silently does not run.
+#
 # Release-PR classification is BY VERSION VALUE, not by "the version file appears in the
 # diff": a repo may point `version_file` at a whole config file (kanban's is
 # `config/app.php`), where a file-moved test would misfire on any unrelated edit to it.
-# Base version == head version ⇒ not a release PR ⇒ nothing to assert, exit 0.
+# Merge-base version == head version ⇒ not a release PR ⇒ nothing to assert, exit 0.
 #
 # Exit status: 0 = nothing to assert, or every declared member passed. 1 = at least one
 # member failed (every failure is reported, not just the first). 2 = usage/config error,
-# or the version could not be read at either end — an unreadable base is NEVER classified
-# as "not a release PR", because that misclassification is a silent non-run of the whole
-# gate rather than a pass.
+# an unresolvable merge base, or a version that could not be read at either end — none of
+# these is EVER classified as "not a release PR", because that misclassification is a
+# silent non-run of the whole gate rather than a pass.
 set -euo pipefail
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
@@ -83,7 +93,9 @@ VERSION_REGEX="$(cfg_opt '.version_regex')"
 [ -n "$VERSION_FILE" ]  || die "$CONFIG declares artifacts but no version_file — the release-PR classification cannot run"
 [ -n "$VERSION_REGEX" ] || die "$CONFIG declares artifacts but no version_regex — the release-PR classification cannot run"
 
-# _extract_version <ref> — sets EXTRACTED_VERSION from <ref>:<version_file>.
+# _extract_version <ref> <label> — sets EXTRACTED_VERSION from <ref>:<version_file>. <label>
+# names which END of the range <ref> is, because <ref> is often a resolved merge-base SHA that
+# appears in none of the caller's inputs — an error naming only that SHA is not actionable.
 #
 # Sets a global instead of printing, deliberately: `die` inside a command substitution exits
 # only the SUBSHELL, so `V="$(_extract_version …)"` would depend on `set -e` noticing the
@@ -97,21 +109,27 @@ VERSION_REGEX="$(cfg_opt '.version_regex')"
 # perfectly good extraction. Emptiness is what is tested, immediately below.
 EXTRACTED_VERSION=""
 _extract_version() {
-  local ref="$1" content
+  local ref="$1" label="$2" content
   content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
-    || die "cannot read '$VERSION_FILE' at '$ref' (ref or path missing from this clone) — the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
+    || die "cannot read '$VERSION_FILE' at $label ($ref) (ref or path missing from this clone) — the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
   EXTRACTED_VERSION="$(printf '%s\n' "$content" \
     | grep -oiE "$VERSION_REGEX" | head -1 \
     | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
   [ -n "$EXTRACTED_VERSION" ] \
-    || die "no version matched version_regex in '$VERSION_FILE' at '$ref' — refusing rather than classifying this as 'not a release PR'"
+    || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
 }
 
-_extract_version "$BASE";     BASE_VERSION="$EXTRACTED_VERSION"
-_extract_version "$HEAD_REF"; HEAD_VERSION="$EXTRACTED_VERSION"
+# The fork point, resolved once and used for BOTH the version read and the diff (see the
+# header). Fail-closed: an unresolvable merge base means the two refs share no history this
+# clone can see, which is a refusal — never a "not a release PR" pass.
+BASEREF="$(git merge-base "$BASE" "$HEAD_REF" 2>/dev/null)" \
+  || die "cannot resolve the merge base of '$BASE' and '$HEAD_REF' (no common ancestor in this clone) — the caller must check out with fetch-depth: 0 so the fork point is present; refusing rather than classifying this as 'not a release PR'"
+
+_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"
+_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"
 
 if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
-  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) — not a release PR; nothing to assert"
+  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
   exit 0
 fi
 V="$HEAD_VERSION"
@@ -120,8 +138,8 @@ V="$HEAD_VERSION"
 # match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
 # reading as a failure. Every membership test below is a shell `case`, so no subprocess and
 # no pipeline is involved in answering "did this path move".
-CHANGED="$(git diff --name-only "$BASE" "$HEAD_REF")" \
-  || die "cannot diff '$BASE'..'$HEAD_REF' — the caller must check out with fetch-depth: 0"
+CHANGED="$(git diff --name-only "$BASEREF" "$HEAD_REF")" \
+  || die "cannot diff '$BASE'...'$HEAD_REF' — the caller must check out with fetch-depth: 0"
 
 # _expand_braces <spec> — one path per line, expanding a single-level `{a,b,c}` comma set.
 # Deliberately NOT a glob: the members of a release set are DECLARED, so a path that does not
@@ -178,7 +196,7 @@ while IFS= read -r raw; do
     # (a) MOVED — an exact line of the captured diff.
     case $'\n'"$CHANGED"$'\n' in
       *$'\n'"$p"$'\n'*) ;;
-      *) echo "::error::release artifact not moved: '$p' is absent from the diff $BASE..$HEAD_REF (declared as: $raw)"
+      *) echo "::error::release artifact not moved: '$p' is absent from this PR's own changes ($BASE...$HEAD_REF) (declared as: $raw)"
          member_failed=1;;
     esac
 

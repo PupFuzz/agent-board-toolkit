@@ -23,8 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Required by the action: it reads the version file and each artifact's contents at
-          # BOTH ends of the range through `git show`, which a shallow clone cannot serve.
+          # Required by the action: it resolves the FORK POINT of base and head and reads the
+          # version file plus each artifact's contents at both ends through `git show`, none of
+          # which a shallow clone can serve.
           fetch-depth: 0
       - uses: ./release-artifacts
         with:

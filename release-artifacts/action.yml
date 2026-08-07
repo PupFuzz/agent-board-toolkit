@@ -7,20 +7,27 @@ description: >-
   Consume this action SHA-pinned
   (uses: <owner>/agent-board-toolkit/release-artifacts@<full-SHA>  # vX.Y.Z)
   so dependabot's github-actions ecosystem tracks and bumps it.
+  The asserted range is the PR's OWN changes — merge-base(base, head)..head —
+  never base's tip, so a commit landing on the base branch after the fork point
+  can neither spuriously satisfy "this artifact moved" nor make a real release
+  PR read as "version unchanged".
   PRECONDITIONS in the calling job: the consumer repo must already be checked
-  out with fetch-depth: 0 (the script reads the version file and the artifact
-  contents at BOTH ends of the range via `git show`, and a shallow clone makes
-  that read fail — it refuses rather than classifying an unreadable base as
-  "not a release PR"), and a .release-pr.json must exist at the workspace root.
+  out with fetch-depth: 0 (the script resolves the merge base and reads the
+  version file plus the artifact contents at both ends via `git show`, and a
+  shallow clone makes those fail — it refuses rather than classifying an
+  unresolvable fork point or unreadable base as "not a release PR"), and a
+  .release-pr.json must exist at the workspace root.
   A PR that does not change the version value exits 0 without asserting
   anything, so this action is safe to run on every pull request.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
-  fail-closed guards (missing --base/--head, unreadable version file) are the
-  real gate and die with actionable messages.
+  fail-closed guards (missing --base/--head, unresolvable merge base,
+  unreadable version file) are the real gate and die with actionable messages.
 
 inputs:
   base-sha:
-    description: "The PR's base commit (pass github.event.pull_request.base.sha)."
+    description: >-
+      The PR's base commit (pass github.event.pull_request.base.sha). Used only
+      to resolve the fork point — the range asserted is merge-base(base, head)..head.
     required: true
   head-sha:
     description: "The PR's head commit (pass github.event.pull_request.head.sha)."

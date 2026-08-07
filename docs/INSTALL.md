@@ -211,9 +211,16 @@ jobs:
           # config: .release-pr.json   # optional; the default
 ```
 
-**No `paths:` filter, deliberately.** The gate must observe every PR in order to *classify* it: a PR whose version **value** is unchanged between base and head is not a release PR and exits 0 after two `git show`s. Classifying by value rather than by "the version file appears in the diff" is what makes this correct for a repo whose `version_file` is a whole config file (kanban's is `config/app.php`), where the file-moved test would misfire on any unrelated edit.
+**The asserted range is `merge-base(base-sha, head-sha)..head-sha` — the PR's own changes — never base's tip.** That is a correctness requirement, not a refinement, because base-branch drift after the fork point corrupts both halves of the check:
 
-**It fails closed on an unreadable version file** (rc 2, naming the ref and the path) rather than reading it as "not a release PR" — that misclassification would be a silent non-run of the entire gate. A shallow checkout is the usual cause, hence `fetch-depth: 0`.
+- **the MOVED leg:** a hotfix landing on the base branch after the fork makes that file differ between base's tip and head, so it appears in a base-tip diff and *spuriously satisfies* "this artifact moved" for a member the PR never touched. Measured on a fixture: base-tip exits **0** with `all 5 declared artifact member(s) moved and agree`, merge-base exits **1** naming the member.
+- **the CLASSIFICATION:** a version bump arriving on the base branch makes base's tip read the *same* version as head, so a real release PR is classified "version unchanged" and the entire gate silently does not run. Base-tip exits **0** with `not a release PR; nothing to assert` on a PR that is genuinely missing a member.
+
+You still pass `base-sha` — it is what the fork point is resolved *from*.
+
+**No `paths:` filter, deliberately.** The gate must observe every PR in order to *classify* it: a PR whose version **value** is unchanged between the fork point and head is not a release PR and exits 0 after two `git show`s. Classifying by value rather than by "the version file appears in the diff" is what makes this correct for a repo whose `version_file` is a whole config file (kanban's is `config/app.php`), where the file-moved test would misfire on any unrelated edit.
+
+**It fails closed** (rc 2) on an unresolvable merge base or an unreadable version file, naming which end of the range it is and the path, rather than reading either as "not a release PR" — that misclassification would be a silent non-run of the entire gate. A shallow checkout is the usual cause, hence `fetch-depth: 0`.
 
 ## Worked example (host install, primary board named `dev`)
 

@@ -69,6 +69,14 @@ run() {
 mkdir -p "$R"
 g init -q "$R"
 mkdir -p "$R/docs" "$R/sboms"
+# A root commit that predates the version file, kept as its own branch. It is an ANCESTOR of
+# everything below, so `merge-base pre-version <head>` resolves to it — which is what makes
+# the unreadable-version-file case reachable through a real fork point rather than only
+# through two refs with no common history (that case has its own fixture further down).
+echo "seed" > "$R/src.txt"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: root, before the version file exists"
+g -C "$R" branch pre-version
+
 cat > "$R/.release-pr.json" <<'JSON'
 {
   "main_branch": "main",
@@ -133,15 +141,69 @@ mk_head() {
 }
 
 for m in nonrelease good not-moved no-section deleted two-bad; do mk_head "head-$m" "$m"; done
+
+# A head that deletes the version file — the HEAD-side unreadable read, with a readable fork
+# point, so the two ends fail closed independently rather than one masking the other.
+g -C "$R" checkout -q -B head-noversion base-0.1.0
+rm -f "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: head with no VERSION file"
+
+# --- the BASE-DRIFT scenario (the two-dot defect) ----------------------------
+# `drift-fork` is the fork point, and it ALREADY carries NOTES.md's v0.2.0 row — the realistic
+# case where a member was updated on the integration branch before the release branch was cut.
+# `drift-base` is the base branch moving ON after the fork (a hotfix touching that same
+# member). `drift-head` is the release PR: it bumps the version and moves everything EXCEPT
+# NOTES.md, which it never touches.
+#
+# Under a base-TIP (two-dot) diff, NOTES.md differs between drift-base and drift-head, so it
+# appears in the diff and satisfies the MOVED leg; it exists at head and its content carries
+# 0.2.0, so AGREES passes too — a full, silent, spurious PASS for a member this PR never
+# touched. Against the merge base it is correctly absent. This is the fixture that tells the
+# two implementations apart, so both verdicts are asserted explicitly below.
+g -C "$R" checkout -q -B drift-fork base-0.1.0
+printf '# Notes\n\n| Version | Date |\n| --- | --- |\n| v0.2.0 | 2026-02-02 |\n| v0.1.0 | 2026-01-01 |\n' > "$R/NOTES.md"
+g -C "$R" add -A; g -C "$R" commit -qm "docs: NOTES.md row added before the release branch was cut"
+
+g -C "$R" checkout -q -B drift-base drift-fork
+printf '# Notes\n\n| Version | Date |\n| --- | --- |\n| v0.2.0 | 2026-02-02 (hotfix touched this line) |\n| v0.1.0 | 2026-01-01 |\n' > "$R/NOTES.md"
+g -C "$R" add -A; g -C "$R" commit -qm "fix: a hotfix lands on the base branch after the fork"
+
+g -C "$R" checkout -q -B drift-head drift-fork
+echo "0.2.0" > "$R/VERSION"
+printf '# Changelog\n\n## [0.2.0] - 2026-02-02\n\n- second\n\n## [0.1.0] - 2026-01-01\n\n- first\n' > "$R/docs/CHANGELOG.md"
+echo '{"v":"0.2.0"}' > "$R/sboms/v0.2.0.a.json"
+echo '{"v":"0.2.0"}' > "$R/sboms/v0.2.0.b.json"
+g -C "$R" add -A; g -C "$R" commit -qm "release: 0.2.0 without touching NOTES.md"
+
+# --- the BASE-BUMP scenario (the two-dot MISCLASSIFICATION) ------------------
+# The base branch acquires the SAME version as the PR after the fork. Reading base's tip then
+# says "version unchanged ⇒ not a release PR" and the entire gate silently does not run, on a
+# PR that IS a release and IS missing a member.
+g -C "$R" checkout -q -B bump-base base-0.1.0
+echo "0.2.0" > "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: a version bump lands on the base branch after the fork"
+
+# Two refs with NO common ancestor — the merge base itself is unresolvable.
+g -C "$R" checkout -q --orphan unrelated
+g -C "$R" rm -rq --cached . >/dev/null 2>&1 || true
+g -C "$R" clean -qfd
+echo "an unrelated history" > "$R/other.txt"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: an unrelated root"
+
 g -C "$R" checkout -q base-0.1.0
 
-# A base that predates the version file entirely (a root commit carrying no VERSION), so the
-# base-side `git show` fails the way a shallow clone's `git show` of an absent object would.
-g -C "$R" checkout -q --orphan noversion
-g -C "$R" rm -q --cached VERSION >/dev/null
-rm -f "$R/VERSION"
-g -C "$R" commit -qm "chore: a base with no VERSION file"
-g -C "$R" checkout -q base-0.1.0
+# two_dot_moved / merge_base_moved <base> <head> <path> — what each range says about the MOVED
+# leg, computed from raw git rather than from the tool, so the fixture's discriminating power
+# is established independently of the implementation being tested.
+two_dot_moved() {
+  local d; d="$(g -C "$R" diff --name-only "$1" "$2")"
+  case $'\n'"$d"$'\n' in *$'\n'"$3"$'\n'*) echo true ;; *) echo false ;; esac
+}
+merge_base_moved() {
+  local mb d; mb="$(g -C "$R" merge-base "$1" "$2")"; d="$(g -C "$R" diff --name-only "$mb" "$2")"
+  case $'\n'"$d"$'\n' in *$'\n'"$3"$'\n'*) echo true ;; *) echo false ;; esac
+}
+ver_at() { g -C "$R" show "$1:VERSION" 2>/dev/null | tr -d '[:space:]'; }
 
 echo "== precondition: the fixture is a throwaway repo, not this checkout =="
 eq "fixture root is under the temp dir" "true" \
@@ -178,7 +240,7 @@ echo "== (iii-a) POSITIVE CONTROL: a declared member that did not move is REPORT
 run base-0.1.0 head-not-moved
 eq "rc 1"                                    "1"    "$RC"
 eq "the failure is an ::error:: annotation"  "true" "$(has '::error::release artifact not moved' "$OUT")"
-eq "…and names the member path"              "true" "$(has "'NOTES.md' is absent from the diff" "$OUT")"
+eq "…and names the member path"              "true" "$(has "'NOTES.md' is absent from this PR's own changes" "$OUT")"
 eq "…and names the original declared entry"  "true" "$(has 'declared as: NOTES.md § Recent releases row' "$OUT")"
 eq "…while the moved siblings still pass (witness: the run got past member 1)" "true" \
    "$(has 'OK — VERSION moved' "$OUT")"
@@ -205,20 +267,31 @@ eq "…and the exists-at-head leg is what fails" "true" \
    "$(has "::error::release artifact missing at head: 'NOTES.md'" "$OUT")"
 eq "exactly one member failed"               "true" "$(has '1 of 5 artifact member(s) failed' "$OUT")"
 
-echo "== (iii-d) POSITIVE CONTROL: an unreadable version_file at BASE refuses (rc 2) =="
+echo "== (iii-d) POSITIVE CONTROL: an unreadable version_file at the FORK POINT refuses (rc 2) =="
 # It must NOT read as "version unchanged ⇒ not a release PR": that misclassification is a
 # silent non-run of the entire gate, which is strictly worse than a loud refusal.
-run noversion head-good
+run pre-version head-good
 eq "rc 2"                                        "2"    "$RC"
-eq "the error names the file and the ref"        "true" "$(has "cannot read 'VERSION' at 'noversion'" "$OUT")"
+eq "the error names the file"                    "true" "$(has "cannot read 'VERSION' at" "$OUT")"
+# The resolved merge base appears in none of the caller's inputs, so the message must say
+# which END of the range it is, not just print a bare SHA.
+eq "…and names WHICH end of the range it is"     "true" "$(has "the fork point of 'pre-version' and 'head-good'" "$OUT")"
 eq "…and names the fetch-depth precondition"     "true" "$(has 'fetch-depth: 0' "$OUT")"
 eq "…and did NOT classify it as a non-release PR" "false" "$(has 'version unchanged' "$OUT")"
 eq "…and asserted no member"                     "false" "$(has 'artifact member(s) failed' "$OUT")"
 
 echo "== an unreadable version_file at HEAD refuses the same way (both ends fail closed) =="
-run base-0.1.0 noversion
+# A readable fork point, so this end fails on its own rather than being masked by the other.
+run base-0.1.0 head-noversion
 eq "rc 2"                                 "2"    "$RC"
-eq "the error names the head ref"         "true" "$(has "cannot read 'VERSION' at 'noversion'" "$OUT")"
+eq "the error names the head end"         "true" "$(has "cannot read 'VERSION' at head 'head-noversion'" "$OUT")"
+
+echo "== two refs with no common ancestor refuse — never a 'not a release PR' pass =="
+run unrelated head-good
+eq "rc 2"                                    "2"    "$RC"
+eq "the error names both refs"               "true" "$(has "merge base of 'unrelated' and 'head-good'" "$OUT")"
+eq "…and the fetch-depth precondition"       "true" "$(has 'fetch-depth: 0' "$OUT")"
+eq "…and did NOT classify it as non-release" "false" "$(has 'version unchanged' "$OUT")"
 
 echo "== (iii-e) EVERY failing member is reported, not just the first =="
 # NOTES.md never moves AND the brace set's `b` member is never created: two independent
@@ -231,6 +304,51 @@ eq "failure 2 named (one member of a brace set)"       "true" \
    "$(has "not moved: 'sboms/v0.2.0.b.json'" "$OUT")"
 eq "the sibling brace member still passes"    "true" "$(has 'OK — sboms/v0.2.0.a.json moved' "$OUT")"
 eq "the summary counts BOTH"                  "true" "$(has '2 of 5 artifact member(s) failed' "$OUT")"
+
+# ---------------------------------------------------------------------------
+# THE RANGE IS THE PR'S OWN CHANGES — merge-base(base, head)..head, never base's tip.
+# Both legs below are RED under a base-tip (two-dot) range and GREEN against the merge base,
+# and the raw-git facts that make them differ are asserted FIRST — otherwise "the tool says
+# rc 1" would be equally true of a tool that had never been fixed.
+# ---------------------------------------------------------------------------
+echo "== base drift after the fork must not satisfy the MOVED leg (two-dot defect) =="
+# The fixture's discriminating power, established from raw git, independent of the tool:
+eq "witness: a base-tip range WOULD have called NOTES.md moved" "true" \
+   "$(two_dot_moved drift-base drift-head NOTES.md)"
+eq "…while the PR's own changes do NOT contain it"              "false" \
+   "$(merge_base_moved drift-base drift-head NOTES.md)"
+# …and the member is otherwise fully satisfiable, which is what makes the two-dot pass SILENT
+# rather than merely wrong on one leg: it exists at head and its content carries the version.
+eq "witness: NOTES.md at head carries 0.2.0 (so AGREES would have passed too)" "true" \
+   "$(has 'v0.2.0' "$(g -C "$R" show drift-head:NOTES.md)")"
+
+run drift-base drift-head
+eq "the tool FAILS on the unmoved member"        "1"    "$RC"
+eq "…naming it"                                  "true" "$(has "not moved: 'NOTES.md'" "$OUT")"
+eq "…and describing the range as the PR's own changes" "true" \
+   "$(has "this PR's own changes (drift-base...drift-head)" "$OUT")"
+eq "…while the members the PR DID move still pass" "true" \
+   "$(has 'OK — docs/CHANGELOG.md moved' "$OUT")"
+# CONTROL — the same head against the fork point itself. Identical verdict, which is the
+# point: the merge-base resolution NORMALIZES base drift away rather than reacting to it.
+run drift-fork drift-head
+eq "control: against the fork point directly, the same verdict" "1"    "$RC"
+eq "control: …and the same member"                              "true" "$(has "not moved: 'NOTES.md'" "$OUT")"
+
+echo "== a version bump landing on BASE after the fork must not misclassify the PR =="
+# The worst of the two shapes: a base-tip read makes a real release PR look like a non-release
+# one, so the gate exits 0 and asserts NOTHING while a member is genuinely missing.
+eq "witness: base's TIP and head carry the SAME version (two-dot ⇒ 'unchanged')" "0.2.0" \
+   "$(ver_at bump-base)"
+eq "witness: …and head does too"                                   "0.2.0" "$(ver_at head-not-moved)"
+eq "witness: …while the FORK POINT carries the older one"          "0.1.0" \
+   "$(ver_at "$(g -C "$R" merge-base bump-base head-not-moved)")"
+
+run bump-base head-not-moved
+eq "the tool classifies it as a release PR and FAILS"  "1"     "$RC"
+eq "…rather than exiting 0 as 'version unchanged'"     "false" "$(has 'version unchanged' "$OUT")"
+eq "…naming the missing member"                        "true"  "$(has "not moved: 'NOTES.md'" "$OUT")"
+eq "…and counting the full declared set"               "true"  "$(has 'of 5 artifact member(s) failed' "$OUT")"
 
 # ---------------------------------------------------------------------------
 # Config / usage surface.
