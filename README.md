@@ -16,7 +16,7 @@ Single source of truth for kanban-dev's **bash** board tooling — the CLI + hel
 | `release-artifacts/action.yml` | SHA-pinned composite-action wrapper around `bin/release-artifacts-check` for GitHub-Actions consumers (INSTALL.md §6c) |
 | `bin/board-snapshot` | session-start board snapshot |
 | `bin/board-session-close` | session-close board↔git reconcile — plus a report-only **git-hook dispatch check** (does each local checkout's `post-checkout` still reach `board-card-start`? see [`docs/HOOKS.md`](docs/HOOKS.md#is-the-hook-still-wired--the-dispatch-check)) |
-| `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read |
+| `bin/next-dl` | next `DL-NNN` number — **atomically claims** server-side when the board exposes the DL-sequence endpoint (race-free; DL-157), else offline `max+1`. `--peek` = non-consuming read of that same counter (falls back to `max+1` only when the endpoint is absent) |
 | `bin/board-card-start` | move a feature branch's correlated card to In Progress (idempotent, fail-soft) |
 | `bin/adopt-to-dl` | **pull-into-build adoption seam:** stamp an existing plain card with `dl_number` + a source-qualified placeholder `pr_url` in one atomic write (via `next-dl` + `kbcard patch`), then fail-loud-verify by `by-ref?system=dl&ref=N&source=<repo>`. Refuses to re-mint over an already-adopted card (`--dl N` re-stamps idempotently for a crash-retry) |
 | `bin/install-board-hooks` | install the `post-checkout` (card auto-move on branch checkout) + `pre-push` (fail-soft branch-name advisory) hooks into a repo |
