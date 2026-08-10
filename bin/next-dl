@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # next-dl — mint the next DL-NNN for a project's decision log.
 #
-# Two modes:
+# Two modes. BOTH prefer the server's authoritative counter; they differ only in
+# whether the number is RESERVED.
 #
 #   DEFAULT (atomic claim, DL-157): when the board's kanban exposes the
 #   `dl-sequence/claim` endpoint, next-dl ATOMICALLY claims the next number
@@ -11,10 +12,21 @@
 #   back SILENTLY to the offline max+1 scan below — so behaviour is unchanged
 #   until the endpoint ships.
 #
-#   --peek: skip the endpoint and return max+1 WITHOUT reserving (the original,
-#   non-consuming behaviour) — use it to just see the next number.
+#   --peek: return the next number WITHOUT reserving it — reads the board's
+#   NON-CONSUMING `dl-sequence` inspect endpoint when reachable, and falls back to
+#   the offline max+1 scan only when that endpoint is absent/unreachable, under the
+#   same 404-absent vs present-but-errored discipline the claim path uses.
 #
-# The offline max+1 scan takes the max over BOTH:
+# WHY --peek PREFERS THE ENDPOINT (card#6232). --peek used to go straight to the
+# offline scan. That scan maxes over DLs that reached a CARD, so a number that was
+# CLAIMED but never STAMPED is invisible to it: it under-reports by one per burned
+# claim. Measured — it returned DL-0220 on a board whose authoritative next was 222,
+# handing back an already-allocated correlation key, which is the one thing an
+# allocator must never do. Only the counter knows the claimed-but-unstamped numbers.
+# Do not "simplify" this back to the scan: what makes --peek non-consuming is
+# skipping the CLAIM, not skipping the read.
+#
+# The offline max+1 scan — the FALLBACK for both modes — takes the max over BOTH:
 #   (1) `## DL-NNN` headers in CLAUDE_DECISIONS.md across every local checkout
 #       (so an in-flight DL on a worktree / held PR can't be reused), AND
 #   (2) the project's kanban board's stamped `dl_number`s, when reachable.
@@ -22,7 +34,9 @@
 # The board check is FAIL-SOFT — an unreachable board/token/API warns and falls
 # back to the header scan, never blocking allocation offline. NOTE: the offline
 # path is NOT atomic — safe for single-stream allocation; concurrent allocators
-# on a shared board need the claim endpoint (the default) to avoid duplicates.
+# on a shared board need the claim endpoint (the default) to avoid duplicates —
+# and, per card#6232 above, it is a FLOOR rather than the truth: it cannot observe
+# a claimed-but-unstamped number, so it can only ever under-report.
 #
 # Minting numbers in the wrong (far-too-high) range? The board's DL counter is
 # stranded — recover it over the API: see docs/DL-COUNTER-RECOVERY.md.
@@ -122,37 +136,70 @@ resolve_board_cfg() (
     printf '%s\t%s\t%s' "$KB_API" "$KB_BOARD_ID" "$KB_TOKEN_FILE"
 )
 
-# Atomic server-side claim (DL-157). Echoes the claimed integer on success.
-# Exit code tells the caller HOW it failed, so a real endpoint error isn't masked
-# as "absent" (the bug that made AIMLA misdiagnose a deployed endpoint as missing):
-#   0 → claimed (positive integer on stdout).
-#   1 → endpoint ABSENT (HTTP 404) or unreachable / no config — benign during rollout;
-#       caller falls back silently to the offline max+1 scan.
-#   3 → endpoint PRESENT but the claim FAILED (any non-2xx other than 404, or a 2xx
-#       with no positive value) — surfaced loudly here; the caller MUST abort rather
-#       than silently mint via the non-atomic offline scan (which could re-mint on a
-#       shared board and hides the real cause: token board-membership, board id, api_base).
-# No -f on curl: we need the status to tell 404-absent from a present-but-errored claim.
-board_claim() (
+# The exit code tells the caller HOW a call failed, so a real endpoint error is never
+# masked as "absent" — the bug that made a downstream adopter misdiagnose a deployed
+# endpoint as missing. The contract is stated ONCE, on dl_sequence_call below; it is not
+# restated per wrapper, because the previous copy of it here had already drifted (it
+# assigned "a 2xx with no positive value" to rc 3, while the code has always exited 1
+# there — the benign-fallback arm).
+# No -f on curl: we need the status to tell 404-absent from a present-but-errored call.
+#
+# ONE transport for BOTH DL-sequence routes. The claim (POST .../dl-sequence/claim.json,
+# `.data.value`) and the peek (GET .../dl-sequence.json, `.data.next`) differ only in
+# method, path and response field: everything that MATTERS — the status-case split, what
+# counts as "absent", the fallback-vs-abort decision — is identical, and must stay
+# identical. Written as two functions (card#6232) it was ~18 duplicated lines held in
+# agreement by a comment asking the next editor to keep them in sync; a divergence there
+# would not fail any test, it would just make one route quietly answer a 500 by falling
+# back to the offline scan. The variable parts are arguments; the contract is code.
+#
+# dl_sequence_call <method> <path> <jq-field> <endpoint-label> <fallback-risk>
+#   0 → the positive integer on stdout.
+#   1 → endpoint ABSENT (HTTP 404) or unreachable / no config / a 2xx carrying no usable
+#       value — benign; the caller falls back to the offline max+1 scan. A 2xx with no
+#       value is deliberately here and not below: it is indistinguishable from an older
+#       response shape, so aborting would break every board predating the route.
+#   3 → endpoint PRESENT but the call FAILED (any non-2xx other than 404) — surfaced
+#       loudly; the caller MUST abort rather than quietly answer from the offline scan.
+#       A wrong-but-plausible DL is worse than no DL: it lands in a decision log and
+#       becomes a duplicate correlation key nobody re-checks.
+dl_sequence_call() (
+    method="$1"; path="$2"; field="$3"; label="$4"; risk="$5"
     cfg="$(resolve_board_cfg 2>/dev/null)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) + portable
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
-    resp="$(curl -sS -w $'\n%{http_code}' -X POST \
+    resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
-        "$api/boards/$board/dl-sequence/claim.json" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || exit 1   # connection failure → benign fallback
+        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || exit 1   # connection failure → benign fallback
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     case "$http" in
         2[0-9][0-9])
-            val="$(printf '%s' "$body" | jq -r '.data.value // empty' 2>/dev/null || true)"
+            val="$(printf '%s' "$body" | jq -r "$field // empty" 2>/dev/null || true)"
             kb_is_uint "$val" && [[ "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
             printf '%s' "$val" ;;
         404) exit 1 ;;   # endpoint not deployed — benign; fall back to the offline scan
         *)
-            echo "next-dl: the atomic claim endpoint is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the non-atomic offline scan. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(printf '%s' "$body" | tr '\n' ' ' | head -c 300)" >&2
+            echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(printf '%s' "$body" | tr '\n' ' ' | head -c 300)" >&2
             exit 3 ;;
     esac
 )
+
+# Atomic server-side claim (DL-157) — CONSUMES a number.
+board_claim() {
+    dl_sequence_call POST dl-sequence/claim.json .data.value \
+        "atomic claim endpoint" \
+        "which is not atomic and could re-mint on a shared board"
+}
+
+# Authoritative NON-CONSUMING read of the next DL (card#6232) — the whole point of the
+# preference: the offline scan maxes over DLs that reached a CARD, so only this route
+# knows a number that was claimed but never stamped.
+board_peek() {
+    dl_sequence_call GET dl-sequence.json .data.next \
+        "DL-sequence inspect endpoint" \
+        "which cannot see a claimed-but-unstamped DL and would under-report"
+}
 
 # DEFAULT: prefer the atomic claim. Fall back to the offline peek ONLY when the
 # endpoint is genuinely absent/unreachable (exit 1, the rollout case). A claim that
@@ -168,7 +215,22 @@ if [[ $peek -eq 0 ]]; then
     [[ $crc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT mint via the racy scan
 fi
 
-# Offline / --peek path: max+1 over local headers + board-stamped dl_numbers.
+# --peek: prefer the authoritative NON-CONSUMING read, with the same fall-through
+# shape as the claim above (absent/unreachable ⇒ offline scan; present-but-errored
+# ⇒ abort, already surfaced). Kept as a sibling `if` rather than folded into an
+# if/else with the claim block: both arms fall through to the SAME offline scan
+# below, and an else-branch would have to re-state that.
+if [[ $peek -eq 1 ]]; then
+    if peeked="$(board_peek)"; then prc=0; else prc=$?; fi
+    if [[ $prc -eq 0 ]] && kb_is_uint "$peeked"; then
+        canon="$(kb_dl_canon "$peeked")" || { echo "next-dl: the DL-sequence inspect endpoint returned '$peeked', not a canonical DL number" >&2; exit 1; }
+        printf '%s\n' "$canon"
+        exit 0
+    fi
+    [[ $prc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT answer from the scan
+fi
+
+# Offline fallback (either mode): max+1 over local headers + board-stamped dl_numbers.
 max=0
 
 # (1) local CLAUDE_DECISIONS.md headers across all checkouts.
