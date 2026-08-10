@@ -93,12 +93,23 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 ```bash
 cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-pr.json
 # edit: set promote.{board_id, released_stage_id, api_base}, ref_token_regex (e.g. "DL-[0-9]+"),
-# version_file/version_regex, dev/main branch names, and the artifacts set.
+# card_token_regex (e.g. "card#[0-9]+"), version_file/version_regex, dev/main branch names,
+# and the artifacts set.
 # tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
 # set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
 # accepts 2-4 numeric segments (SemVer and .NET Major.Minor.Build.Revision alike).
 jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove the "_comment" line if you like
 ```
+
+> **`ref_token_regex` and `card_token_regex` are TWO ID SPACES, not two spellings of one.** Both are optional and independent; set whichever your commit subjects actually use (set both if they use both).
+> - **`ref_token_regex`** (e.g. `"DL-[0-9]+"`) — the token's numeric part is a **decision-log number**, correlated against a card's `payload.dl_number`.
+> - **`card_token_regex`** (e.g. `"card#[0-9]+"`) — the token's numeric part is a **card id**, correlated against the card's own `id`.
+>
+> **Do not migrate by re-spelling `ref_token_regex`.** If your subjects moved from `DL-NNN` to `card#NNNN`, add the second key — do not change the first. `promote-released-cards` reads `ref_token_regex` too and matches on `dl_number`, so a `card#` spelling there makes a range naming `card#42` correlate with whichever card carries `DL-42`: it **moves that card and reports `0 no-card`**. Leaving `ref_token_regex` unset (or on its old spelling) with no matching tokens in range is harmless — the manifest footer is simply omitted.
+>
+> **What each key buys.** `release-pr-body` renders a `## Card coverage` section that dry-runs `promote-released-cards` over the range's refs and names any that have **no tracking card** — so a typo'd id, or a card belonging to a different board, is caught at release-prep rather than by a red post-merge promote run. It needs `.promote.board_id` + `$KANBAN_WRITEBACK_TOKEN` + the promote tool on `PATH`; without them the section says so instead of reporting clean. Each key also adds a machine-readable footer: `<!-- release-manifest:shipped-refs=DL-1,DL-2 -->` and `<!-- release-manifest:shipped-cards=5877,5874 -->` (bare ids — there is no token spelling for a consumer to parse).
+>
+> **Card ids are never derived from commit subjects by the mover.** `promote-released-cards` accepts them only via the explicit `--cards "5877,5874"` flag, because a descriptive `card#NNNN` mention in a subject ("supersedes card#1234") would otherwise relocate an unrelated card — with a DL token that misfire needs a matching `dl_number` stamp as well, but an id *is* the match. `release-pr-body` does derive them from subjects, and passes them with `--dry-run`.
 
 > **`artifacts` is a must-move-together SET, not a memo.** Each entry is `<path> <prose>` — the path is the **leading whitespace-delimited token**, so **a member path may not contain whitespace**; everything after the first space is prose. `{{version}}` is expanded, and a single-level `{a,b}` brace set is allowed in the path (`sboms/v{{version}}.{spdx,cdx}.json` ⇒ two members). `release-pr-body` renders the set as the release PR's `- [ ]` checklist; `release-artifacts-check` (§6c) **asserts** it. Three member shapes, distinguished by the prose you write — and the shape a member was judged by is **printed on its OK line**, so check it says what you intended:
 > - `docs/CHANGELOG.md → [{{version}}] section` — the literal text `[{{version}}] section` (matched case-insensitively) requires a **line beginning `## [<version>]`** in the file at head. This is the only **strong** shape. The trigger is that exact wording: `[{{version}}] entry` or `… heading` is **not** recognized and silently falls through to the weak shape below — which is why the OK line names the shape it used (`via '## [X.Y.Z]' heading line` vs `via content mention`).
@@ -194,7 +205,8 @@ Consume `release-artifacts-check` via the [`release-artifacts/`](../release-arti
 name: Release artifacts
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # `edited` fires on a base RETARGET, and the verdict is a function of the base
+    types: [opened, edited, reopened, synchronize]
 permissions:
   contents: read
 jobs:
@@ -203,7 +215,7 @@ jobs:
     steps:
       - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
         with:
-          fetch-depth: 0     # REQUIRED — both ends of the range are read with `git show`
+          fetch-depth: 0     # REQUIRED — resolves the fork point; the version file is read at both ends
       - uses: <owner>/agent-board-toolkit/release-artifacts@<full-40-char-SHA>  # vX.Y.Z
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}

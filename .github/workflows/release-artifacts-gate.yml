@@ -12,7 +12,10 @@ name: Release artifacts
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # `edited` is load-bearing: retargeting a PR's BASE fires `edited`, and the verdict is a
+    # function of the base (merge-base drives both the classification and the asserted diff) —
+    # NOT for the title, which the action never reads.
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: read
@@ -23,9 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Required by the action: it resolves the FORK POINT of base and head and reads the
-          # version file plus each artifact's contents at both ends through `git show`, none of
-          # which a shallow clone can serve.
+          # Required by the action: it resolves the FORK POINT of base and head, reads the
+          # version file at both ends and each artifact's contents at head through `git show`,
+          # none of which a shallow clone can serve.
           fetch-depth: 0
       - uses: ./release-artifacts
         with:

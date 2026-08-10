@@ -1,3 +1,26 @@
+# ⛔ Dependabot SECURITY updates are OFF for this repo — permanently, by
+# decision. Vulnerability ALERTS stay ON: detection is intact, only the
+# automatic security-PR channel (`automated-security-fixes`) is disabled.
+#
+# Security updates ignore `target-branch:` and open against the default branch
+# (`main`), which carries the version/tag invariant — `VERSION` +
+# `auto-tag-version.yml`. A dependency PR never bumps `VERSION`, so merging one
+# on `main` leaves it at a version an older tag already claims and auto-tag
+# refuses to re-mint it, leaving the branch untagged. Full analysis: card#6169.
+#
+# Permanent, not transitional scaffolding — this does not lift. Re-enabling the
+# channel as cleanup re-arms the incident.
+#
+# Remediation still arrives: alerts fire, and the version updates below DO
+# honour `target-branch: dev`, so bumps keep landing on `dev` weekly. Anything
+# urgent is hand-cut as a PR to `dev` and reaches `main` through the normal
+# release — never auto-patched onto the release branch.
+#
+# Precondition to re-check, not trust: this holds only while the alert channel on
+# `main` is non-vacuous. Verified 2026-08-09 on `origin/main`: this repo carries
+# no package manifests at all, so its 4 workflow files are the whole scanned
+# surface — and `github-actions`, declared below, is the only ecosystem it has.
+#
 # Dependabot config for agent-board-toolkit.
 #
 # This is a pure-bash toolkit — no composer/pip/npm manifest — so the only

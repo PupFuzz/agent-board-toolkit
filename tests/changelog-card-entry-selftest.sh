@@ -41,9 +41,16 @@
 # PR title, so before merge the branch's own subjects may carry no token and the obligation
 # would not exist yet — the gate would pass on the PR and fail on the push to `dev`
 # AFTERWARDS, leaving a red integration branch and a merged omission. Reading `$PR_TITLE`
-# (set by ci.yml from the pull_request event) makes the check pre-merge, against the exact
-# string that is about to become the subject. It is a plain env var, so a local run without it
-# simply checks the merged history — the weaker of the two, never a different rule.
+# (set from the pull_request event by .github/workflows/changelog-card-entry.yml) makes the
+# check pre-merge, against the exact string that is about to become the subject. It is a plain
+# env var, so a local run without it simply checks the merged history — the weaker of the two,
+# never a different rule.
+#
+# THAT PRE-MERGE CLAIM IS ONLY TRUE IF THE JOB RE-RUNS WHEN THE TITLE CHANGES, which is why
+# this gate has its OWN workflow rather than a job in ci.yml (card#6062): editing a PR title
+# fires `edited`, never `synchronize`, so under ci.yml's event set the last run kept answering
+# about the PRE-EDIT title — a token added by a title edit reached `dev` unchecked, exactly the
+# merged-omission case above. The workflow subscribes `edited` for that reason.
 #
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property the assertions support: that
 # every `card#NNNN` appearing in a commit subject since the last release tag also appears at
@@ -68,9 +75,9 @@
 # trusted to answer "" honestly.
 #
 # THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, so
-# the three preconditions below are refused BEFORE any assertion runs. ci.yml gives this job
-# `fetch-depth: 0` for that reason, which is also why it is its own job and not a `selftest`
-# matrix entry (that job checks out at the default depth 1).
+# the three preconditions below are refused BEFORE any assertion runs. The workflow gives this
+# job `fetch-depth: 0` for that reason, which is also why it is its own job and not a
+# `selftest` matrix entry in ci.yml (that job checks out at the default depth 1).
 #
 # The load-bearing one is the MISSING STOP HEADER: with no `## [<last tag>]` section the scan
 # widens to the whole file and an entry under any past version discharges a commit that landed
@@ -86,6 +93,15 @@
 # them" — advice that is simply false for the state it is describing, and sends the reader
 # after the wrong fix. Do not read this guard as a second correctness catch; it is ordered
 # first so the true diagnosis wins.
+#
+# THE `card#[0-9]+` SPELLING HERE IS DELIBERATELY HARDCODED, not read from `.release-pr.json`'s
+# `card_token_regex` — even though that key now exists and carries the same string (card#5877).
+# They are two copies on purpose, with different trust models: this is a GATE, and a gate whose
+# obligation-detecting pattern comes from a PR-editable config file can be switched off by the
+# same PR that needs switching off. The cost of the divergence is bounded and visible — the live
+# leg prints its obligation and discharge COUNTS every run, so a spelling migration that emptied
+# the obligation set would show as `0 obligation(s)` rather than pass quietly. Do not "consolidate"
+# the two; if the repo's subject spelling changes, change this literal in the same PR.
 #
 # KNOWN, ACCEPTED FRICTION: a commit subject that cites a card it is not about ("supersedes
 # card#1234") creates a real obligation for card#1234. This errs RED and is fixed by rewording

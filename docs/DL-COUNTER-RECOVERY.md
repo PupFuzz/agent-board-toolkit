@@ -45,6 +45,12 @@ GET  boards/<board>/dl-sequence.json?show_refs=1
 #   → { last_value, live_max, next, trashed_pinner, refs:[{ref,task_id,status,…}] }
 ```
 
+> **`--peek` reads the counter** (the same `dl-sequence` route as the inspect call below), so it
+> shows the stranded value. Before card#6232 it answered from an offline `max+1` scan over the
+> board's *stamped* DL numbers, which returns `liveMax + 1` — the **correct-looking low value** —
+> so on a stranded board the old `--peek` hid the very symptom this step looks for. If your
+> `--peek` disagrees with the inspect call, your `next-dl` predates that fix.
+
 `trashed_pinner` (non-null) is the auto-flag for cause #2: a **trashed** card still pinning
 `live_max`. `refs` lists the highest DL refs with each owning card's `status`
 (`live`/`archived`/`trashed`). Read it in full — you need **every** trashed pinner, not just
@@ -102,8 +108,17 @@ non-null you missed a pinner in step 2 — go back.
 
 ```bash
 GET  boards/<board>/dl-sequence.json          # next == the expected low value, trashed_pinner == null
-next-dl <project> --peek                       # agrees
+next-dl <project> --peek                       # same value, through the tool operators actually use
 ```
+
+The inspect call is the **authoritative** check: `next` back in the expected range and
+`trashed_pinner: null` is what "recovered" means.
+
+The `--peek` line is **not a second opinion on the counter** — since card#6232 it reads that same
+route, so a matching answer is one measurement displayed twice, not corroboration. What it does
+check is the leg the inspect call cannot: that the **operator's own tool** — its board env, token
+and `api_base` — resolves to the board you just fixed. A mismatch means your `next-dl` is reading a
+different board or predates card#6232, not that the reset failed.
 
 ## One-line summary
 

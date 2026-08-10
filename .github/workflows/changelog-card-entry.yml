@@ -1,0 +1,44 @@
+# Split out of ci.yml (card#6062) for its TRIGGER, not for isolation: a job living in ci.yml
+# gets ci.yml's `pull_request` event set, which does not include `edited` — and this gate's
+# obligation set is a function of the PR TITLE, which only an `edited` event reports.
+name: Changelog card entry
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    # `edited` is load-bearing HERE for the TITLE (not, as in release-artifacts-gate.yml, for
+    # the base): the obligation set includes the PR title, and adding the `card#NNNN` token to
+    # a title fires `edited` — never `synchronize`, which needs a push. Without it the gate
+    # answers on the pre-edit title, err-GREENS on the PR, and reds on `dev` after the merge,
+    # with the omission already landed. `edited` also fires on body and base edits, which
+    # re-run the job for nothing: accepted — one checkout plus a `git log` and a grep.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog-card-entry:
+    # Asserts every card shipped since the last release tag owns a line-initial
+    # `- **card#NNNN**` entry in docs/CHANGELOG.md — the convention that was enforced by
+    # nothing until card#5767, and that 3 of the 24 cards merged since v0.23.1 had skipped.
+    #
+    # Deliberately its OWN job, not a `selftest` matrix entry, for a mechanical reason: the
+    # obligation set comes from `git log <last release tag>..HEAD`, which needs full history
+    # AND tags — the matrix job checks out at the default depth 1, whose truncated history
+    # resolves no tag at all, so the selftest would refuse to run rather than pass blindly.
+    # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: every card shipped since the last tag owns a CHANGELOG entry
+        env:
+          # Under squash-merge the commit subject IS the PR title, so before merge the title is
+          # the only witness of the card this PR will land under — without it the check would
+          # pass here and fail on the push to `dev` afterwards, with the omission already
+          # merged. Passed through the environment, never interpolated into the run: script.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bash tests/changelog-card-entry-selftest.sh

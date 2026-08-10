@@ -210,6 +210,143 @@ rc=0; body8="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
 eq "control: matching range exits 0"         "0"     "$rc"
 eq "control: footer names the shipped token" "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$body8")"
 
+echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) =="
+# WHAT WAS BROKEN. `card_coverage_section` computed its manifest from `ref_token_regex` only,
+# and short-circuited on an empty one with a confident `_No shipped DL refs in range._`. This
+# repo's commit subjects had migrated to `card#NNNN` while that key still said `DL-`, so the
+# manifest was unconditionally empty and the section rendered clean WITHOUT CHECKING — the
+# canon-#9 shape, a check that cannot fail. Nothing here exercised it: every case above runs
+# without a board token, so they all take the "_Not checked here_" branch.
+#
+# WHY NOT JUST RE-SPELL ref_token_regex. Measured, not argued: promote-released-cards reads the
+# SAME key and matches the token's NUMERIC part against `payload.dl_number`, so a `card#`
+# spelling makes `card#42` correlate with whatever card carries DL-42 — it moves that card and
+# reports "0 no-card". Hence a second key, `card_token_regex`, whose numeric part means a card ID.
+#
+# END-TO-END ON PURPOSE. This drives the REAL bin/promote-released-cards over a stubbed `curl`,
+# not a stub promoter: the two halves agree via a flag name and a WARNING line format, and a
+# hand-written stub would pin release-pr-body to a format promote could then change freely.
+# The only thing that varies between the two arms is WHICH CARDS THE BOARD HOLDS.
+COV="$T/cov"; mkdir -p "$COV"
+g init -q "$COV/repo"; CR="$COV/repo"
+echo one > "$CR/f"; g -C "$CR" add f; g -C "$CR" commit -qm "chore: init"; g -C "$CR" tag v0.1.0
+echo two > "$CR/f"; g -C "$CR" commit -qam "feat: a thing (card#9999) (#42)"
+
+mkdir -p "$COV/bin"
+# `curl` stand-in: serves $BOARD_FILE on the paged GET. A PATCH must never happen on this path
+# (--dry-run), so it exits non-zero rather than succeeding quietly — a move here would otherwise
+# be invisible to a section that only reads the report.
+cat > "$COV/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in -X) echo "selftest curl stub: unexpected write on a dry-run path" >&2; exit 9 ;; esac; done
+cat "$BOARD_FILE"
+STUB
+chmod +x "$COV/bin/curl"
+
+cat > "$CR/.release-pr.json" <<'EOF'
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "ref_token_regex": "DL-[0-9]+",
+  "card_token_regex": "card#[0-9]+",
+  "title_prefix": "Release",
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
+}
+EOF
+
+export BOARD_FILE="$COV/board.json"
+# coverage_body — the whole body, generated with the real promote tool reachable on PATH.
+coverage_body() {
+  ( cd "$CR" \
+    && PATH="$COV/bin:$HERE/../bin:$PATH" \
+       KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+       "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )
+}
+
+# PROVE-IT-CAN-FAIL: card#9999 is shipped in the range and the board holds no such card.
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}}],"meta":{"last_page":1,"total":1}}
+EOF
+covmiss="$(coverage_body)"
+eq "an uncarded card# ref is REPORTED"                "true"  "$(has '**Shipped refs with no tracking card:** card#9999' "$covmiss")"
+eq "…and the section is not the never-checked branch" "false" "$(has 'Not checked here' "$covmiss")"
+eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipped refs in range' "$covmiss")"
+# The id-space confusion the second key exists to prevent, asserted rather than described: the
+# board's only card carries DL-42, and 42 is NOT what card#9999 asks about.
+eq "the unrelated DL-42 card is not read as coverage" "false" "$(has 'card#42' "$covmiss")"
+
+# CONTROL: same tool, same range, same config — the board now holds card 9999. Without this the
+# assertions above are satisfied by a section that reports every ref unconditionally.
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}},
+         {"id":9999,"workflow_stage_id":51,"payload":{}}],"meta":{"last_page":1,"total":2}}
+EOF
+covok="$(coverage_body)"
+eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
+eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+
+echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
+# The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
+# consumer as CARD#9999. Card ids are emitted as bare integers instead — there is no spelling to
+# fold, and the id space is what a consumer correlates on.
+cardman="$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest) 2>/dev/null )"
+eq "--card-manifest prints the bare id"          "9999"  "$cardman"
+eq "--manifest is unchanged (DL side, no match)" ""      "$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --manifest) 2>/dev/null )"
+eq "the footer carries the bare id"              "true"  "$(has '<!-- release-manifest:shipped-cards=9999 -->' "$covok")"
+eq "…and never the case-folded token spelling"   "false" "$(has 'CARD#9999' "$covok")"
+eq "the bundled line shows the card token"       "true"  "$(has '(`card#9999`)' "$covok")"
+
+# The id is the token's TRAILING digit run, per matched token. `card_token_regex` is
+# operator-supplied and need not be `card#…`; a prefix carrying its own digits makes a
+# stream-wide `grep -oE '[0-9]+'` yield an extra id that belongs to an unrelated card.
+# Only the regex varies here — the fixture's subject and range are held constant.
+python3 - "$CR/.release-pr.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["card_token_regex"] = "PROJ2-card#[0-9]+"
+json.dump(d, open(p, "w"), indent=2)
+PY
+g -C "$CR" commit -q --allow-empty -m "feat: a prefixed token (PROJ2-card#77) (#43)"
+eq "a digit-bearing token prefix yields ONE id" "77" \
+   "$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest) 2>/dev/null )"
+g -C "$CR" reset -q --hard HEAD~1
+# Put the fixture's spelling back — `reset --hard` does not touch this file (it is written,
+# never committed), and leaving the prefixed regex in place makes every later card-manifest
+# read answer "" for a reason unrelated to what is being asserted.
+python3 - "$CR/.release-pr.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["card_token_regex"] = "card#[0-9]+"
+json.dump(d, open(p, "w"), indent=2)
+PY
+
+echo "== the two query modes refuse to answer a question that was not asked =="
+# Each mode REPLACES the body with one list, so accepting both would print one and drop the
+# other in silence — the card#5429 shape (an argument read, then discarded, at rc 0), and
+# worse here because the output is machine-read.
+# --base is passed so the baseline FETCH is skipped: this fixture repo has no origin, and a
+# fetch failure is also rc 2 — without it the rc assertion passes for the wrong reason and
+# stays green with the guard removed (observed).
+rc=0; xerr="$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --manifest --card-manifest) 2>&1 )" || rc=$?
+eq "--manifest --card-manifest → rc 2"           "2"     "$rc"
+eq "…and names the conflict"                     "true"  "$(has 'mutually exclusive' "$xerr")"
+eq "…printing neither list"                      "false" "$(has '9999' "$xerr")"
+# CONTROL — each flag ALONE on the same invocation still answers, so the rc above is the
+# guard's and not "this invocation cannot run".
+eq "control: --card-manifest alone still answers" "9999" \
+   "$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest) 2>/dev/null )"
+
+echo "== a repo that sets NEITHER token key still renders (no new required config) =="
+cat > "$CR/.release-pr.json" <<'EOF'
+{ "main_branch": "main", "dev_branch": "dev", "title_prefix": "Release",
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
+EOF
+rc=0; notok="$(coverage_body)" || rc=$?
+eq "no token keys → still rc 0"                  "0"     "$rc"
+eq "…body is complete"                           "true"  "$(has '## Bundled' "$notok")"
+eq "…and the coverage section is omitted whole"  "false" "$(has '## Card coverage' "$notok")"
+unset BOARD_FILE
+
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact
 # reading this tool takes pains to make explicit, silently substituted for the one the caller

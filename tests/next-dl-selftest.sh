@@ -25,9 +25,10 @@
 # DOES reach the API when the arguments are valid.
 #
 # WHAT A GREEN RUN PROVES — the weakest property these assertions support: that next-dl
-# refuses these argument shapes with these messages and these exit codes, and that a valid
-# --board reaches board resolution. It says nothing about the atomic-claim endpoint's real
-# behaviour or the offline scan against real checkouts.
+# refuses these argument shapes with these messages and these exit codes, that a valid
+# --board reaches board resolution, and that --peek prefers the inspect endpoint over the
+# offline scan and falls back only when that endpoint is absent. It says nothing about the
+# atomic-claim endpoint's real behaviour or the offline scan against real checkouts.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -147,5 +148,104 @@ eq "--board dev → rc 0"                        "0" "$rc"
 eq "--board dev mints the claimed number"      "DL-0093" "$out"
 eq "--board dev claimed against board 42"      "1" "$(kb_stub_count "${CLAIM[@]}")"
 eq "--board dev issued exactly one request"    "1" "$(kb_stub_total)"
+
+# --- --peek prefers the authoritative NON-CONSUMING counter (card#6232) ------------------------
+# THE DEFECT, reproduced network-free in the exact shape it was measured in: --peek used to go
+# straight to the offline max+1 scan, which maxes over DLs that reached a CARD. A number that was
+# CLAIMED but never STAMPED is invisible to that scan, so it under-reports by one per burned claim
+# and hands back an ALREADY-ALLOCATED number. On the real board it returned DL-0220 against an
+# authoritative next of 222.
+#
+# WHY THIS PAIR IS A CONTROL AND NOT TWO PASSES. Both cases below run against BYTE-IDENTICAL board
+# contents — one card stamped DL-0219, so the offline scan's answer is 220 either way. The ONLY
+# variable is whether the inspect endpoint answers. Endpoint present ⇒ 222 (the counter's truth);
+# endpoint absent ⇒ 220 (the scan's floor). A fix that ignored the endpoint would return 220 for
+# both and red the first assertion; a "fix" that broke the fallback would return nothing for the
+# second. Neither can pass by accident, and 222 is not derivable from the board contents at all.
+NDL_BOARD_CARDS='{"data":[{"id":7,"payload":{"dl_number":"DL-0219"}}],"meta":{"last_page":1,"total":1}}'
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/boards/42/dl-sequence.json*)
+            printf '%s\n%s' "${NDL_PEEK_HTTP:-200}" "${NDL_PEEK_BODY:-'{"data":{"next":222}}'}" ;;
+        "POST "*/dl-sequence/claim.json) printf '%s\n%s' 200 '{"data":{"value":93}}' ;;
+        "GET "*/tasks/search.json*)       printf '%s\n%s' 200 "$NDL_BOARD_CARDS" ;;
+    esac
+}
+export -f kb_stub_route
+export NDL_BOARD_CARDS
+INSPECT=(GET /boards/42/dl-sequence.json)
+CLAIM_URL=/dl-sequence/claim.json
+SEARCH=/tasks/search.json
+
+echo "== --peek reads the authoritative counter, NOT the card-derived floor =="
+NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{"next":222}}' run_ndl --board dev --peek
+eq "endpoint present → rc 0"                        "0" "$rc"
+# 222 exists ONLY in the counter. The board's cards top out at DL-0219, so a scan-derived
+# answer is necessarily 220 — this value cannot be reached by the path being replaced.
+eq "endpoint present → the counter's next, not max+1" "DL-0222" "$out"
+eq "endpoint present → the inspect endpoint was read" "1" "$(kb_stub_count "${INSPECT[@]}")"
+# NON-CONSUMING is the whole contract of --peek: a claim here would burn a number per peek.
+eq "--peek claims NOTHING"                          "0" "$(kb_stub_count_any "$CLAIM_URL")"
+# The scan is not merely unused-for-the-answer, it is not even reached — no wasted board read.
+eq "--peek does not fall through to the scan"       "0" "$(kb_stub_count_any "$SEARCH")"
+
+echo "== CONTROL: same board contents, endpoint ABSENT → the offline floor, as before =="
+NDL_PEEK_HTTP=404 NDL_PEEK_BODY='{"message":"not found"}' run_ndl --board dev --peek
+eq "endpoint 404 → rc 0 (benign fallback)"          "0" "$rc"
+eq "endpoint 404 → falls back to the card-derived max+1" "DL-0220" "$out"
+eq "endpoint 404 → the scan WAS consulted"          "1" "$(kb_stub_count_any "$SEARCH")"
+eq "endpoint 404 → still claims nothing"            "0" "$(kb_stub_count_any "$CLAIM_URL")"
+
+echo "== a PRESENT-but-errored endpoint aborts — it never answers from the floor =="
+# Mirrors the claim path's rc-3 discipline. Answering 220 here would be the worst outcome of
+# all: a plausible, wrong, already-allocated number minted into a decision log on a bad token.
+NDL_PEEK_HTTP=500 NDL_PEEK_BODY='{"message":"boom"}' run_ndl --board dev --peek
+eq "endpoint 500 → rc 1"                            "1" "$rc"
+eq "endpoint 500 → mints nothing"                   ""  "$out"
+eq "endpoint 500 → says the endpoint is present but failed" "true" "$(has 'PRESENT but FAILED' "$err")"
+eq "endpoint 500 → names the HTTP status"           "true" "$(has 'HTTP 500' "$err")"
+eq "endpoint 500 → does NOT silently answer from the scan" "0" "$(kb_stub_count_any "$SEARCH")"
+
+echo "== a 2xx carrying no usable value is a BENIGN fallback, not an abort =="
+# Deliberately the claim path's semantics, not the 500 path's: a 2xx with no number means the
+# route exists but told us nothing, which is indistinguishable from an older shape — falling
+# back is right, aborting would break every pre-inspect-endpoint board.
+NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{}}' run_ndl --board dev --peek
+eq "2xx with no .data.next → rc 0"                  "0" "$rc"
+eq "2xx with no .data.next → the offline floor"     "DL-0220" "$out"
+
+echo "== the DEFAULT (claim) path is untouched by the --peek change =="
+# Regression guard for the sibling `if`: the claim block must still win when --peek is absent,
+# and must NOT read the inspect endpoint.
+run_ndl --board dev
+eq "no --peek → still the atomic claim"             "DL-0093" "$out"
+eq "no --peek → claimed exactly once"               "1" "$(kb_stub_count_any "$CLAIM_URL")"
+eq "no --peek → never touches the inspect endpoint" "0" "$(kb_stub_count "${INSPECT[@]}")"
+
+echo "== the claim path's ERROR arms survive the shared-transport extraction =="
+# The two routes now share one transport (card#6232), so the claim's 404-vs-errored split is
+# no longer its own code and could regress silently while the happy path above stayed green.
+# Its rc-3 message is BUILT from arguments now, so the label and the consequence clause are
+# assertable text rather than a literal — a swapped argument pair would hand the operator the
+# peek endpoint's reasoning for a claim failure.
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/dl-sequence/claim.json) printf '%s\n%s' "${NDL_CLAIM_HTTP:-200}" "${NDL_CLAIM_BODY:-'{"data":{"value":93}}'}" ;;
+        "GET "*/tasks/search.json*)      printf '%s\n%s' 200 "$NDL_BOARD_CARDS" ;;
+    esac
+}
+export -f kb_stub_route
+
+NDL_CLAIM_HTTP=404 NDL_CLAIM_BODY='{"message":"not found"}' run_ndl --board dev
+eq "claim 404 → rc 0, falls back to the scan"       "0" "$rc"
+eq "claim 404 → mints the offline floor"            "DL-0220" "$out"
+
+NDL_CLAIM_HTTP=500 NDL_CLAIM_BODY='{"message":"boom"}' run_ndl --board dev
+eq "claim 500 → rc 1"                               "1" "$rc"
+eq "claim 500 → mints nothing"                      ""  "$out"
+eq "claim 500 → names the CLAIM endpoint, not the inspect one" "true" "$(has 'atomic claim endpoint is PRESENT but FAILED' "$err")"
+eq "claim 500 → carries the claim's own consequence clause"    "true" "$(has 'not atomic and could re-mint on a shared board' "$err")"
+eq "claim 500 → does NOT borrow the peek's reasoning"          "false" "$(has 'claimed-but-unstamped' "$err")"
+eq "claim 500 → never falls through to the scan"    "0" "$(kb_stub_count_any "$SEARCH")"
 
 _summary "next-dl-selftest"

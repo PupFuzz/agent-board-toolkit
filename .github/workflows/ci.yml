@@ -42,8 +42,11 @@ jobs:
         run: ./bin/agent-board-toolkit-drift-check . .
 
   ci-matrix-parity:
-    # Asserts every tests/*-selftest.sh is actually RUN by this file — the guard for the
-    # matrix list below, which was hand-aligned behind a comment until card#5355.
+    # Asserts every tests/*-selftest.sh is actually RUN by some pull-request-triggered workflow
+    # — the guard for the matrix list below, which was hand-aligned behind a comment until
+    # card#5355. Its population is the whole workflow directory, not this file: card#6062 moved
+    # the `changelog-card-entry` job into its own workflow (for a trigger this file cannot
+    # give it), and a scan of ci.yml alone would report that test as unrun.
     #
     # Deliberately its OWN job, not a `selftest` matrix entry: a matrix entry would be
     # self-referential, so deleting that one line would disable the guard silently — the exact
@@ -52,32 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: every selftest on disk is run by ci.yml
+      - name: every selftest on disk is run by a PR-triggered workflow
         run: bash tests/ci-matrix-parity-selftest.sh
-
-  changelog-card-entry:
-    # Asserts every card shipped since the last release tag owns a line-initial
-    # `- **card#NNNN**` entry in docs/CHANGELOG.md — the convention that was enforced by
-    # nothing until card#5767, and that 3 of the 24 cards merged since v0.23.1 had skipped.
-    #
-    # Deliberately its OWN job, not a `selftest` matrix entry, for a mechanical reason: the
-    # obligation set comes from `git log <last release tag>..HEAD`, which needs full history
-    # AND tags — the matrix job checks out at the default depth 1, whose truncated history
-    # resolves no tag at all, so the selftest would refuse to run rather than pass blindly.
-    # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: every card shipped since the last tag owns a CHANGELOG entry
-        env:
-          # Under squash-merge the commit subject IS the PR title, so before merge the title is
-          # the only witness of the card this PR will land under — without it the check would
-          # pass here and fail on the push to `dev` afterwards, with the omission already
-          # merged. Passed through the environment, never interpolated into the run: script.
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: bash tests/changelog-card-entry-selftest.sh
 
   selftest:
     # The network-free `tests/*-selftest.sh` scripts, one matrix job each — they were 10
@@ -90,9 +69,10 @@ jobs:
     #
     # A new selftest needs a matrix entry here, the same as it needed its own job before.
     # This list is no longer kept in sync by diligence alone: the `ci-matrix-parity` job above
-    # fails the build when a `tests/*-selftest.sh` exists that nothing here runs (card#5355).
-    # An intentionally non-matrix test is wired by naming it in its own job's `run:` block —
-    # that satisfies the guard too, so there is no exception list to maintain.
+    # fails the build when a `tests/*-selftest.sh` exists that no PR-triggered workflow runs
+    # (card#5355). An intentionally non-matrix test is wired by naming it in its own job's
+    # `run:` block — in this file or in a sibling workflow (card#6062) — which satisfies the
+    # guard too, so there is no exception list to maintain.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
