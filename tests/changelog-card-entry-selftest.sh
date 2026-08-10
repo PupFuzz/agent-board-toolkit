@@ -94,6 +94,15 @@
 # after the wrong fix. Do not read this guard as a second correctness catch; it is ordered
 # first so the true diagnosis wins.
 #
+# THE `card#[0-9]+` SPELLING HERE IS DELIBERATELY HARDCODED, not read from `.release-pr.json`'s
+# `card_token_regex` — even though that key now exists and carries the same string (card#5877).
+# They are two copies on purpose, with different trust models: this is a GATE, and a gate whose
+# obligation-detecting pattern comes from a PR-editable config file can be switched off by the
+# same PR that needs switching off. The cost of the divergence is bounded and visible — the live
+# leg prints its obligation and discharge COUNTS every run, so a spelling migration that emptied
+# the obligation set would show as `0 obligation(s)` rather than pass quietly. Do not "consolidate"
+# the two; if the repo's subject spelling changes, change this literal in the same PR.
+#
 # KNOWN, ACCEPTED FRICTION: a commit subject that cites a card it is not about ("supersedes
 # card#1234") creates a real obligation for card#1234. This errs RED and is fixed by rewording
 # the subject — which the repo already requires for an unrelated reason: a foreign `card#` token

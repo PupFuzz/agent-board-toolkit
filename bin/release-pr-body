@@ -12,13 +12,27 @@
 # Usage:
 #   release-pr-body [--version X.Y.Z] [--base REF] [--head REF] [--config PATH]
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
+#   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
+#
+# TWO REF SPELLINGS, TWO ID SPACES — the config declares each separately because
+# they correlate against DIFFERENT card fields, and conflating them promotes the
+# wrong card:
+#   * `ref_token_regex`  (e.g. "DL-[0-9]+")   — the token's numeric part is a DECISION-LOG
+#     number, correlated against a card's `payload.dl_number`.
+#   * `card_token_regex` (e.g. "card#[0-9]+") — the token's numeric part is a CARD ID,
+#     correlated against the card's own `id`.
+# Both are optional and independent; a repo whose commit subjects carry `card#NNNN`
+# sets the second. Re-spelling `ref_token_regex` as `card#[0-9]+` is NOT the same
+# thing and is a live defect: the numeric part would still be matched against
+# `dl_number`, so a range naming card#42 promotes whichever card happens to carry
+# DL-42 (measured — it moves that card and reports "0 no-card").
 #
 # Exit non-zero on a config/usage error, or when the baseline fetch from origin
 # fails — a baseline read from a stale local ref reports already-shipped PRs as
 # new, which is worse than no body (pass --base <tag> as the explicit offline
 # override). An empty range yields an empty (but valid) bundled section, not a
-# failure — and neither is a range that matches no `ref_token_regex` token: that
-# simply omits the optional manifest footer, and still exits 0.
+# failure — and neither is a range that matches neither token spelling: that
+# simply omits the optional manifest footers, and still exits 0.
 set -euo pipefail
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
@@ -36,7 +50,7 @@ command -v git >/dev/null || die "git is required"
 # duplicated; keep the two in sync.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
@@ -44,13 +58,25 @@ while [ $# -gt 0 ]; do
     --head)    require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config)  require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     --manifest) MANIFEST_ONLY=1; shift;;
-    # Contiguous leading comment block, not a fixed range — see the sibling mover. This
-    # header is currently 19 lines, so the old `2,20p` happened to print all of it; it
-    # would have started truncating silently at the first header line added.
+    --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
+    # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
+    # `sed -n '2,20p'` happened to print all of the header it was written against, and would
+    # have started truncating silently at the first header line added. No line COUNT is
+    # restated here on purpose: a number in a comment is the same rot as a number in the
+    # range, one indirection out. help-output-selftest re-derives it from the file.
     -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
+
+# The two query modes are mutually exclusive: each replaces the body with one list, so a
+# caller passing both gets one of them and silently loses the other. This repo has already
+# ruled on that shape once (card#5429 — drift-check read two positionals and dropped the
+# rest at rc 0), and a query whose answer is about a different question than the one asked
+# is worse here than in a body generator, because the output is machine-read.
+if [ "$MANIFEST_ONLY" = 1 ] && [ "$CARD_MANIFEST_ONLY" = 1 ]; then
+  die "--manifest and --card-manifest are mutually exclusive (they print different lists — run the tool twice)"
+fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
 cfg() { jq -re "$1" "$CONFIG" 2>/dev/null; }
@@ -60,7 +86,8 @@ MAIN_BRANCH="$(cfg_opt '.main_branch')"; MAIN_BRANCH="${MAIN_BRANCH:-main}"
 DEV_BRANCH="$(cfg_opt '.dev_branch')";  DEV_BRANCH="${DEV_BRANCH:-dev}"
 VERSION_FILE="$(cfg_opt '.version_file')"
 VERSION_REGEX="$(cfg_opt '.version_regex')"
-REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"   # e.g. "DL-[0-9]+"; optional
+REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"    # e.g. "DL-[0-9]+"; optional — numeric part is a DL number
+CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optional — numeric part is a CARD ID
 TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release}"
 # How a version maps to its git tag name, with {{version}} as the placeholder
 # (symmetric with the `artifacts` template expansion below). Drives both the
@@ -124,8 +151,33 @@ emit_manifest() {
     | grep -oiE "$REF_TOKEN_REGEX" | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++'; } || true
 }
 
+# The card-id half of the manifest. Emits BARE INTEGERS, not tokens: the id space is
+# what a consumer correlates on, and a bare id has no spelling to normalize — the
+# DL side's `tr '[:lower:]' '[:upper:]'` fold would otherwise reach `card#7` as
+# `CARD#7`. Leading zeros are stripped (>=1 digit kept) so `card#007` and `card#7`
+# are one id, matching promote-released-cards' `numlist`/`norm` rule on both sides
+# of its comparison.
+#
+# The id is the token's TRAILING digit run — `s/^.*[^0-9]//` per matched token, not a
+# `grep -oE '[0-9]+'` over the stream. `card_token_regex` is operator-supplied and need
+# not be `card#…`: a prefix that itself contains digits (`PROJ2-card#77`) makes the
+# stream-grep yield TWO ids, `2` and `77`, and `2` is a real id belonging to some other
+# card. Erring toward DROPPING an id is the right side of that asymmetry here — a token
+# whose id is not trailing yields nothing and the coverage section says so, whereas a
+# minted id silently reports an unrelated card as covered.
+emit_card_ids() {
+  [ -n "$CARD_TOKEN_REGEX" ] || return 0
+  { git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
+    | grep -oiE "$CARD_TOKEN_REGEX" | sed -E 's/^.*[^0-9]//' \
+    | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; } || true
+}
+
 if [ "$MANIFEST_ONLY" = 1 ]; then
   emit_manifest
+  exit 0
+fi
+if [ "$CARD_MANIFEST_ONLY" = 1 ]; then
+  emit_card_ids
   exit 0
 fi
 
@@ -136,9 +188,24 @@ bundle_lines() {
     found=1
     local pr ref
     pr="$(printf '%s' "$subj" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)')"
+    # The trailing `|| true` on each grep pipeline is load-bearing under `set -o
+    # pipefail`, not decoration: a subject with no token makes grep exit 1 and the
+    # assignment inherit it. Today the whole function runs inside `$(bundle_lines)`,
+    # and bash suppresses errexit for a command substitution in an assignment — so
+    # the abort is masked by WHERE the caller happens to put the call, and a future
+    # caller that invokes it directly would silently truncate the bundled list at the
+    # first token-less commit. Make the no-match case explicitly valid here instead.
+    ref=""
     if [ -n "$REF_TOKEN_REGEX" ]; then
-      ref="$(printf '%s' "$subj" | grep -oiE "$REF_TOKEN_REGEX" | head -1 | tr '[:lower:]' '[:upper:]')"
-    else ref=""; fi
+      ref="$(printf '%s' "$subj" | grep -oiE "$REF_TOKEN_REGEX" | head -1 | tr '[:lower:]' '[:upper:]' || true)"
+    fi
+    # Card tokens are the fallback, so a repo configuring both keeps its existing
+    # DL-first rendering. Rendered VERBATIM (no case fold) — this is a display column,
+    # and `card#5877` is the token's canonical spelling; the fold exists on the DL side
+    # only to make `dl-1`/`DL-1` one manifest entry.
+    if [ -z "$ref" ] && [ -n "$CARD_TOKEN_REGEX" ]; then
+      ref="$(printf '%s' "$subj" | grep -oiE "$CARD_TOKEN_REGEX" | head -1 || true)"
+    fi
     local clean; clean="$(printf '%s' "$subj" | sed -E 's/ *\(#[0-9]+\)$//')"
     printf -- '- %s%s%s\n' \
       "${pr:+**#$pr** }" \
@@ -148,14 +215,22 @@ bundle_lines() {
   [ "$found" = 1 ] || echo "_(no non-merge commits in \`$RANGE\`)_"
 }
 
-# Shift-left card coverage: surface, IN THE RELEASE PR, any shipped DL that has no
+# Shift-left card coverage: surface, IN THE RELEASE PR, any shipped ref that has no
 # board tracking card — so the gap is caught at release-prep (cheap to fix) instead of
 # only on the post-merge promote run (a red check needing manual board surgery). Reuses
-# `promote-released-cards --dls <manifest> --dry-run` (the --dls path → no squash/
-# parent-count branch, just the cardless report). Best-effort: needs the promote tool +
-# a board token + a `.promote` config; otherwise a static reminder.
+# `promote-released-cards --dls/--cards <manifest> --dry-run` (an explicit ref set → no
+# squash/parent-count branch, just the cardless report). Best-effort: needs the promote
+# tool + a board token + a `.promote` config; otherwise a static reminder.
+#
+# The two legs are passed SEPARATELY because they correlate against different card
+# fields (see the header): DL tokens against `payload.dl_number`, card ids against the
+# card's `id`. Deriving card ids from commit subjects is safe HERE and only here — this
+# call is `--dry-run`, so a descriptive `card#NNNN` mention in a subject can at worst
+# make a coverage line read "covered". promote-released-cards deliberately does NOT
+# derive ids from subjects for its MOVE path, where the same mention would relocate an
+# unrelated card.
 card_coverage_section() {
-  [ -n "$REF_TOKEN_REGEX" ] || return 0
+  [ -n "$REF_TOKEN_REGEX" ] || [ -n "$CARD_TOKEN_REGEX" ] || return 0
   echo ""; echo "## Card coverage"
   local board promote
   board="$(cfg_opt '.promote.board_id')"
@@ -168,14 +243,23 @@ card_coverage_section() {
     echo "_Not checked here (needs a board token + a \`.promote\` config + the promote tool). Run \`promote-released-cards --dry-run\` before merge._"
     return 0
   fi
-  local manifest
-  manifest="$(emit_manifest | paste -sd, -)"
-  if [ -z "$manifest" ]; then echo "_No shipped DL refs in range._"; return 0; fi
-  # --dls dry-run never moves and never hits the squash/parent-count branch, so a
-  # non-zero exit is a real error (bad token / board read) — distinguish it from a
+  local dl_manifest card_manifest
+  dl_manifest="$(emit_manifest | paste -sd, -)"
+  card_manifest="$(emit_card_ids | paste -sd, -)"
+  if [ -z "$dl_manifest" ] && [ -z "$card_manifest" ]; then
+    echo "_No shipped refs in range._"; return 0
+  fi
+  # Built as an array with plain `if` blocks, never `[ -n "$x" ] && args+=(…)`: that
+  # trailing-test form is what leaked a false status out of this script once already
+  # (card#5874), and it is one edit away from becoming a function's last statement again.
+  local -a args=(--dry-run)
+  if [ -n "$dl_manifest" ]; then args+=(--dls "$dl_manifest"); fi
+  if [ -n "$card_manifest" ]; then args+=(--cards "$card_manifest"); fi
+  # An explicit-ref dry-run never moves and never hits the squash/parent-count branch, so
+  # a non-zero exit is a real error (bad token / board read) — distinguish it from a
   # clean run, else a failed check would falsely read as "all carded".
   local out rc
-  out="$("$promote" --dls "$manifest" --dry-run 2>&1)" && rc=0 || rc=$?
+  out="$("$promote" "${args[@]}" 2>&1)" && rc=0 || rc=$?
   if [ "${rc:-0}" -ne 0 ]; then
     echo "_Coverage check could not run (\`promote-released-cards\` exited ${rc}). Run it manually before merge._"
     return 0
@@ -183,11 +267,11 @@ card_coverage_section() {
   local miss
   miss="$(printf '%s\n' "$out" | grep -oE 'matched NO card[^:]*: .*' | sed 's/[^:]*: //' || true)"
   if [ -n "$miss" ]; then
-    echo "⚠ **Shipped DLs with no tracking card:** $miss"
+    echo "⚠ **Shipped refs with no tracking card:** $miss"
     echo ""
-    echo "Create a board card for each before merging — a cardless *feature* DL is a tracking gap; a cardless *docs* DL is acceptable but better carded. Otherwise the post-merge promote step reports them as no-card."
+    echo "Create (or correct) a board card for each before merging — a cardless *feature* ref is a tracking gap; a cardless *docs* ref is acceptable but better carded. A \`card#NNNN\` naming no card on this board is usually a typo or a card belonging to a different board. Otherwise the post-merge promote step reports them as no-card."
   else
-    echo "_All shipped DLs have a tracking card._"
+    echo "_All shipped refs have a tracking card._"
   fi
 }
 
@@ -216,11 +300,21 @@ fi
 card_coverage_section
 
 # Machine-readable manifest of shipped refs — a deterministic footer a downstream
-# consumer (e.g. a bridge classifier) can parse instead of the prose above.
+# consumer (e.g. a bridge classifier) can parse instead of the prose above. The two id
+# spaces get two SEPARATE keys rather than one merged list: a consumer has to know which
+# field to correlate each value against, and `shipped-cards` carries bare ids so there is
+# no token spelling to parse. `shipped-refs` is unchanged, so an existing consumer that
+# only knows that key is unaffected.
 if [ -n "$REF_TOKEN_REGEX" ]; then
   MANIFEST="$(emit_manifest | paste -sd, -)"
   if [ -n "$MANIFEST" ]; then
     printf '\n<!-- release-manifest:shipped-refs=%s -->\n' "$MANIFEST"
+  fi
+fi
+if [ -n "$CARD_TOKEN_REGEX" ]; then
+  CARD_MANIFEST="$(emit_card_ids | paste -sd, -)"
+  if [ -n "$CARD_MANIFEST" ]; then
+    printf '\n<!-- release-manifest:shipped-cards=%s -->\n' "$CARD_MANIFEST"
   fi
 fi
 

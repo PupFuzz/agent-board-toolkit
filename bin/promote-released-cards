@@ -3,17 +3,33 @@
 #
 # Generic across repos (sibling to release-pr-body). Board / stage / API base come
 # from `.release-pr.json` (`.promote` block); the API token comes from
-# $KANBAN_WRITEBACK_TOKEN. A card is "shipped in this release" if EITHER its
-# `payload.dl_number` matches a shipped DL token OR its `payload.pr_number` matches
-# a shipped PR number — so cards tracked only by PR (no DL) are promoted too.
+# $KANBAN_WRITEBACK_TOKEN. A card is "shipped in this release" if its
+# `payload.dl_number` matches a shipped DL token, its `payload.pr_number` matches a
+# shipped PR number, or its own `id` is in an explicitly-passed `--cards` set — so
+# cards tracked only by PR (no DL) are promoted too.
 # Idempotent (skips a card already at target), best-effort per card.
 # With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
 # Shipped-class source stage is skipped, not moved (promotion never resurrects a
 # declined/backlog card carrying a stale/recycled stamp); see the Usage note below.
 #
-# Shipped refs come from `--dls "DL-1,DL-2"` (DL-only), else from `git log <base>..<head>`:
-#   - DL tokens via `ref_token_regex` (default DL-[0-9]+), matched on the numeric part;
-#   - PR numbers from each commit's trailing `(#NNN)` (the squash-merge marker GitHub appends).
+# Shipped refs come from an EXPLICIT set (`--dls "DL-1,DL-2"` and/or `--cards "12,34"`),
+# else from `git log <base>..<head>`:
+#   - DL tokens via `ref_token_regex` (default DL-[0-9]+), matched on the numeric part
+#     against a card's `payload.dl_number`;
+#   - PR numbers from each commit's trailing `(#NNN)` (the squash-merge marker GitHub appends),
+#     matched against `payload.pr_number`;
+#   - card IDs from `--cards` only, matched against the card's own `id`.
+#
+# WHY CARD IDS ARE EXPLICIT-ONLY AND NEVER DERIVED FROM COMMIT SUBJECTS. A `card#NNNN`
+# token in a subject is not reliably a claim that the commit SHIPS that card — descriptive
+# citations ("supersedes card#1234", "sibling of card#5678") are common and are already
+# known to hijack correlation elsewhere. For a DL token that misfire is bounded by the
+# card also needing a matching `dl_number` stamp; for an id it is not — the id IS the
+# match, so a passing mention would relocate an unrelated card. Deriving ids from subjects
+# is therefore left to the caller, and the one caller that does it (release-pr-body's
+# read-only coverage section) passes them with --dry-run, where the worst outcome is a
+# coverage line that reads "covered". Do not "complete" this by adding a
+# `card_token_regex` read to the derive path below.
 #
 # Robustness (these states are silent-but-wrong, so they're made loud):
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
@@ -22,8 +38,9 @@
 #     promoting from an incomplete scan would silently leave a shipped card un-promoted.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
-#     by the ROOT CAUSE: a MERGE-commit release tip (or explicit --dls) means ref-derivation
-#     was COMPLETE, so the DLs are genuinely cardless => WARN (exit 0); a non-merge tip means
+#     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
+#     ref-derivation was COMPLETE, so the refs are genuinely cardless => WARN (exit 0); a
+#     non-merge tip means
 #     a squash/rebase merge may have dropped the per-PR refs (the v0.32.0 silent-green class)
 #     => FAIL (exit 2). This converges two divergent prior behaviors: the bridge copy
 #     blanket-failed any 0-promoted run (DL-165), the toolkit/kanban copies exited 0
@@ -32,7 +49,13 @@
 #     non-merge commit pushed directly to main whose range carries cardless DLs would fail
 #     loud by the same rule — intended, given the assumption.
 #
-# Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--shipped-stages IDS] [--dry-run] [--config PATH]
+# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--shipped-stages IDS] [--dry-run] [--config PATH]
+#
+# --cards "12,34": comma-separated numeric CARD IDS, correlated against each card's own
+#   `id` (not against dl_number/pr_number). Opt-in and additive — ABSENT is the only way
+#   to select the prior behavior, and with it absent every run is byte-identical to
+#   before. Combinable with --dls; either flag selects the explicit-ref path, so no git
+#   range is read. Strictly numeric: `--cards "card#12"` is a config error, not a parse.
 #
 # --shipped-stages "51,52": comma-separated numeric workflow_stage_ids that count as a
 #   "Shipped-class" source stage. When set, a DL/PR-matched card whose CURRENT stage is
@@ -113,10 +136,11 @@ merge_commit_tip() {
   [ "$(printf '%s' "$line" | wc -w)" -ge 3 ]
 }
 
-CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
+CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
+    --cards)          require_value "$1" "${2:-}"; CARDS_IN="$2"; shift 2;;
     --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
@@ -143,6 +167,16 @@ if [ -n "$SHIPPED_STAGES" ]; then
   SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
   uint_csv_ok "$SHIPPED_STAGES" \
     || die "--shipped-stages must be a comma-separated list of numeric stage ids (got '$SHIPPED_STAGES')"
+fi
+
+# Same normalize-then-validate rule for --cards, and STRICT on purpose. --dls is a token
+# stream that gets grepped, so junk in it degrades to "matched nothing"; --cards is an id
+# list where junk that greps down to a number would move a card nobody named. A token
+# spelling (`card#12`), a `#`, or anything else non-numeric is a config error here.
+if [ -n "$CARDS_IN" ]; then
+  CARDS_IN="$(printf '%s' "$CARDS_IN" | tr -d '[:space:]')"
+  uint_csv_ok "$CARDS_IN" \
+    || die "--cards must be a comma-separated list of numeric card ids, e.g. '5877,5874' (got '$CARDS_IN')"
 fi
 
 # SECURITY: .release-pr.json is security-sensitive — .promote.api_base is where the
@@ -185,7 +219,8 @@ host_ok "$API" \
 # must not source the lib. Keep the two in sync (like the host_ok mirror): "093" and 93 must
 # compare equal, so a change to either strip must be mirrored in the other.
 numlist() { grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
-if [ -n "$DLS_IN" ]; then
+CARD_IDS="$(printf '%s' "$CARDS_IN" | numlist || true)"
+if [ -n "$DLS_IN" ] || [ -n "$CARDS_IN" ]; then
   DL_NUMS="$(printf '%s' "$DLS_IN" | grep -oiE "$REF_RE" | numlist || true)"
   PR_NUMS=""
 else
@@ -210,9 +245,9 @@ else
   # The squash-merge PR marker is the TRAILING (#NNN) — not the inline #card refs.
   PR_NUMS="$(printf '%s\n' "$SUBJECTS" | grep -oE '\(#[0-9]+\)[[:space:]]*$' | numlist || true)"
 fi
-[ -n "$DL_NUMS$PR_NUMS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
+[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
-DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
+DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_IDS")"
 
 # --- read the WHOLE board (paged) --------------------------------------------
 # Auth is fed OUT-OF-BAND via a stdin herestring (-H @- <<<) so the bearer token never
@@ -298,31 +333,43 @@ fetch_whole_board() {
 }
 CARDS="$(fetch_whole_board)"
 
-# --- correlate: a card ships if its dl_number OR pr_number is in the shipped sets
-PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" '
-  # normalize a card ref (dl_number or pr_number) to the bare-integer, zero-stripped form
-  # numlist produces for the shipped side, so "093"/93 correlate. Single-sourced so the two
+# --- correlate: a card ships if its dl_number, pr_number OR own id is in the shipped sets
+PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" '
+  # normalize a card ref (dl_number, pr_number or id) to the bare-integer, zero-stripped
+  # form numlist produces for the shipped side, so "093"/93 correlate. Single-sourced so the
   # ref fields cannot strip differently.
   def norm: (. // "")|tostring|gsub("[^0-9]";"")|sub("^0+(?=.)";"");
   [ .[]
     | . as $c
     | ($c.payload.dl_number | norm) as $cdl
     | ($c.payload.pr_number | norm) as $cpr
+    | ($c.id | norm) as $cid
     | (($cdl != "") and ($dls|index($cdl) != null)) as $byDl
     | (($cpr != "") and ($prs|index($cpr) != null)) as $byPr
-    | select($byDl or $byPr)
+    | (($cid != "") and ($cids|index($cid) != null)) as $byId
+    | select($byDl or $byPr or $byId)
+    # Display precedence keeps DL first so a run with no --cards renders exactly as before.
     | { id: $c.id, stage: ($c.workflow_stage_id|tostring),
-        ref: (if $byDl then "DL-\($cdl)" else "#\($cpr)" end),
+        ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" else "#\($cpr)" end),
         dl: (if $byDl then $cdl else null end),
-        pr: (if $byPr then $cpr else null end) } ]')"
+        pr: (if $byPr then $cpr else null end),
+        card: (if $byId then $cid else null end) } ]')"
 
-# A shipped DL with no matching card is the high-value miss (a decision whose card
-# is unstamped/absent) — warn on it. Unmatched PRs are NOT reported: a PR is only a
-# correlation fallback and routinely has no card (dep bumps, release commits), so
-# warning on them is cry-wolf noise.
+# A shipped DL or CARD ID with no matching card is the high-value miss (a decision whose
+# card is unstamped/absent, or an id naming no card on this board) — warn on it. Unmatched
+# PRs are NOT reported: a PR is only a correlation fallback and routinely has no card (dep
+# bumps, release commits), so warning on them is cry-wolf noise.
+#
+# Both kinds go into ONE list so the single WARNING line stays the whole no-card report —
+# release-pr-body's coverage section reads that one line, and a second line would give it a
+# report it silently half-read. With --cards absent the card leg is empty and the list is
+# byte-identical to the DL-only one.
 MATCHED_DLS="$(printf '%s' "$PLAN" | jq -c '[.[].dl|select(.!=null)]|unique')"
-MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" '
-  [ $sd[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]')"
+MATCHED_CARDS="$(printf '%s' "$PLAN" | jq -c '[.[].card|select(.!=null)]|unique')"
+MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" \
+                    --argjson sc "$CARDS_J" --argjson mc "$MATCHED_CARDS" '
+  [ $sd[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]
+  + [ $sc[] | select(. as $x | ($mc|index($x))|not) | "card#\(.)" ]')"
 
 # --- move --------------------------------------------------------------------
 moved=0; skipped=0; failed=0; guarded=0
@@ -378,7 +425,7 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 # Newly promoted NOTHING (moved==0) despite a non-empty shipped-ref set (an empty set
 # already exited "nothing to do"). Two distinct causes, told apart by whether ref-
 # derivation was COMPLETE:
-#   - complete (explicit --dls, or a MERGE-commit release tip whose range carries every
+#   - complete (an explicit --dls/--cards set, or a MERGE-commit release tip whose range carries every
 #     feature/prep subject) → the derived DLs are genuinely cardless (docs-only, or tracked
 #     elsewhere) → the WARNING above suffices, exit 0. An idempotent re-run of a legit
 #     merge-commit release (everything already at target, skipped>0) lands here too.
@@ -394,7 +441,7 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 # disprove a dropped sibling ref; on this off-process path (non-merge tip only) the
 # ~2-minute manual verification a false alarm costs is the right side of the asymmetry
 # vs a silently un-promoted shipped card.
-if [ "$moved" = 0 ] && [ -z "$DLS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
+if [ "$moved" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi
 exit 0
