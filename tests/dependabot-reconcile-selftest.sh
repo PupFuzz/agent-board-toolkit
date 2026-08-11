@@ -454,6 +454,81 @@ printf '{"message":"Not Found"}\n' > "$TMP/raw-obj.json"
 DR_GH_RAW="$TMP/raw-obj.json" run_dr
 eq "an error DOCUMENT at 200 ⇒ rc 1" "1" "$RC"
 eq "…named as not-an-array" "true" "$(has 'not a JSON array' "$(cat "$ERRF")")"
+# An array whose ELEMENTS are not objects passes the array check and then kills the first
+# `.get` downstream. That was an AttributeError traceback — no INSTRUMENT FAILURE framing and
+# no artifact, contradicting the exit contract's promise that a gate failure still records what
+# was measured. The shape is asserted in the gate so no consumer has to repeat the check.
+printf '["not-an-alert", 42]\n' > "$TMP/raw-elems.json"
+DR_GH_RAW="$TMP/raw-elems.json" run_dr
+eq "an array of NON-OBJECTS ⇒ rc 1" "1" "$RC"
+eq "…named as a bad element, with its type and index" "true" \
+   "$(has 'returned a str at index 0, not an alert object' "$(cat "$ERRF")")"
+eq "…framed as an INSTRUMENT FAILURE, not a raw traceback" "true" \
+   "$(has 'INSTRUMENT FAILURE' "$(cat "$ERRF")")"
+eq "…with no python traceback leaking at all" "false" \
+   "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+eq "…and the artifact IS written, as the exit contract promises for a gate failure" "false" \
+   "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+# The nit this case closes on the way past: with the population never measured, the summary
+# used to render "a population of None alert(s)".
+eq "…and an unmeasured denominator says so rather than rendering None" "true" \
+   "$(has 'a population that was never measured' "$(cat "$OUTF")")"
+eq "…so the literal 'None alert(s)' never appears" "false" \
+   "$(has 'None alert(s)' "$(cat "$OUTF")")"
+
+echo "== a malformed NESTED object degrades to a disposition, never to a traceback =="
+# The other half of the same class, one level down and NOT covered by the element gate above:
+# `x.get(k) or {}` guards against null and a missing key, but a present-but-wrong-typed value
+# is truthy, sails through, and kills the next `.get`. Each of these produced an AttributeError
+# traceback. Degrading to an empty object is safe HERE only because every field read out of it
+# feeds a fail-closed disposition — an absent ecosystem becomes UNVERIFIABLE naming it, never a
+# clean verdict — which is the property these cases assert.
+# Written straight into the state fixture rather than through DR_GH_RAW: that override
+# answers EVERY query with the same body, so the per-state totals would disagree with the
+# unfiltered one and the integrity gate — not the shape handling — would be what fired.
+printf '%s\n' '[{"number": 1, "state": "fixed", "dependency": "not-an-object"}]' \
+    > "$FIX/alerts-fixed.json"
+mk_states
+run_dr
+A="$(art "$REAL_ART")"
+eq "a string where dependency should be ⇒ rc 0, a row, not a crash" "0" "$RC"
+eq "…disposed UNVERIFIABLE naming the unusable ecosystem" "true" \
+   "$(has 'UNVERIFIABLE: ecosystem None not in this run' "$(disp "$A" 1)")"
+eq "…with no traceback anywhere" "false" \
+   "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+printf '%s\n' '[{"number": 1, "state": "fixed", "dependency": {"package": "not-an-object"}}]' \
+    > "$FIX/alerts-fixed.json"
+mk_states
+run_dr
+A="$(art "$REAL_ART")"
+eq "a string where dependency.package should be ⇒ rc 0 and a row" "0" "$RC"
+eq "…also UNVERIFIABLE rather than a crash" "true" \
+   "$(has 'UNVERIFIABLE: ecosystem None' "$(disp "$A" 1)")"
+eq "…with no traceback either" "false" \
+   "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+
+echo "== a package.json that parses to a NON-OBJECT is unreadable, not version-less =="
+# Same class, filesystem-sourced rather than API-sourced: `json.load` succeeds and the result
+# is not a dict, so the version read crashed. It is a failed read, so UNVERIFIABLE.
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+SPECS
+mk_states
+printf '[1,2,3]\n' > "$NM/hono/package.json"
+touch -d '-10 minutes' "$NM/hono/package.json"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a package.json parsing to a JSON array ⇒ rc 0 with a disposition" "0" "$RC"
+eq "…named as a non-object rather than crashing on the version read" "true" \
+   "$(has 'package.json parses to a JSON list, not an object' "$(disp "$A" 1)")"
+eq "…as UNVERIFIABLE (a failed read), not UNDECIDABLE (a read that found nothing)" "true" \
+   "$(has 'UNVERIFIABLE' "$(disp "$A" 1)")"
+eq "…with no traceback" "false" "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+mk_pkg hono 4.13.0
+touch -d '-10 minutes' "$NM/hono/package.json"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: a well-formed package.json disposes normally" "FIXED_CONFIRMED" "$(disp "$A" 1)"
 
 echo "== gate: a zero-length population is an INSTRUMENT FAILURE unless the repo is empty =="
 # The five reads AGREE (0+2+1+3 == 6) so the integrity gate below is satisfied and this gate is
@@ -669,6 +744,149 @@ eq "control: restoring the tree restores real dispositions" "FIXED_CONFIRMED" "$
 eq "…for both alerts" "FIXED_CONFIRMED" "$(disp "$A" 2)"
 eq "…and the coverage statement claims coverage again" "true" \
    "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+
+echo "== an unscannable SUBTREE inverts the nested-copy answer, so it is a tree-level fault =="
+# THE DANGEROUS DIRECTION, and the reason this is not just "one more unreadable-path case":
+# "no nested copy found" is precisely what LETS the top-level read stand. A subtree this run
+# could not enter therefore does not degrade the verdict, it UPGRADES it — straight to
+# FIXED_CONFIRMED, the strongest claim the tool can make, out of a directory nobody read.
+mkdir -p "$NM/type-is/node_modules/hono"
+printf '{"name":"hono","version":"1.0.0"}\n' > "$NM/type-is/node_modules/hono/package.json"
+find "$NM" -name package.json -exec touch -d '-10 minutes' {} +
+run_dr
+A="$(art "$REAL_ART")"
+# Baseline: with the subtree readable the nested copy IS found, so the flip below is a real one.
+eq "baseline: a readable nested copy is found and reported ambiguous" "true" \
+   "$(has 'nested node_modules copy of hono present' "$(disp "$A" 1)")"
+
+# Arm 1 — mode 000: `os.walk` raises internally and swallows it unless onerror is supplied.
+chmod 000 "$NM/type-is"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an UNLISTABLE subtree ⇒ UNVERIFIABLE, never the FIXED_CONFIRMED it used to mint" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…and the coverage statement is coupled to the same fault" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+eq "…naming the subtree it could not read" "true" \
+   "$(has 'type-is' "$(get "$A" scope.legs.0.coverage_scope.0.reason)")"
+chmod 755 "$NM/type-is"
+
+# Arm 2 — mode 444: readable, NOT traversable. This one raises NOTHING: walk lists the
+# directory fine, then fails to stat each child and quietly files every one of them as a
+# non-directory, so the nested node_modules simply ceases to exist. An onerror handler cannot
+# see it; only checking the directory itself can. Kept as its own case because the two arms
+# are closed by two different mechanisms and a single fixture would leave one untested.
+chmod 444 "$NM/type-is"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an UNTRAVERSABLE (444) subtree ⇒ UNVERIFIABLE too, though nothing raised" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…and its coverage statement is not covered either" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+chmod 755 "$NM/type-is"
+
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: restoring the mode restores the nested-copy finding" "true" \
+   "$(has 'nested node_modules copy of hono present' "$(disp "$A" 1)")"
+eq "…and coverage is claimed again" "true" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+rm -rf "$NM/type-is"
+
+# Arm 3 — a LEAF directory at 444, and this is the one the per-directory check exists for.
+# The two arms above are both caught by the walk's onerror handler (a 444 dir WITH children
+# still gets descended into on this filesystem, because readdir's d_type classifies them
+# without a stat, and the scandir then raises). A leaf has nothing below it to scandir, so
+# onerror can NEVER fire for it — an unreadable package directory reads exactly like one
+# holding no nested copy. Without this fixture both the per-dirpath check and the X_OK bit of
+# the readability predicate are unfalsifiable: mutating either one away left the suite green.
+chmod 444 "$NM/hono"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an unreadable LEAF package dir ⇒ UNVERIFIABLE, though nothing raised anywhere" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…naming the leaf it could not traverse" "true" \
+   "$(has 'hono' "$(get "$A" scope.legs.0.coverage_scope.0.reason)")"
+eq "…and never the FIXED_CONFIRMED a read-only permission check would have allowed" "false" \
+   "$(has 'FIXED_CONFIRMED' "$(disp "$A" 1)")"
+eq "…with coverage coupled to it" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+chmod 755 "$NM/hono"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: restoring the leaf's mode restores its disposition" "FIXED_CONFIRMED" \
+   "$(disp "$A" 1)"
+
+echo "== a package path that is present but NOT A DIRECTORY is unreadable, not absent =="
+# The read_installed half of the same class: `os.path.exists` on the package.json answers False
+# both when the package is missing and when what holds it cannot be traversed, so an install
+# this run could not read reported the decidable "package not in deployment". The docstring
+# claimed the two were separated; they were not.
+rm -rf "$NM/fast-uri"
+printf 'this is a file where a package directory belongs\n' > "$NM/fast-uri"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a non-directory in the package's place ⇒ UNVERIFIABLE" "true" \
+   "$(has 'UNVERIFIABLE: package directory' "$(disp "$A" 2)")"
+eq "…named as not-a-directory rather than as an absent package" "true" \
+   "$(has 'is not a directory' "$(disp "$A" 2)")"
+eq "…and NOT reported as 'package not in deployment'" "false" \
+   "$(has 'package not in deployment' "$(disp "$A" 2)")"
+# The control that keeps "absent" meaningful: a genuinely missing package is still UNDECIDABLE.
+rm -f "$NM/fast-uri"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: a genuinely absent package is still the decidable 'not in deployment'" \
+   "UNDECIDABLE: package not in deployment" "$(disp "$A" 2)"
+mk_pkg fast-uri 3.1.5
+touch -d '-10 minutes' "$NM/fast-uri/package.json"
+
+echo "== a process merely NAMING the .mjs is not the server running it =="
+# `_is_node` is load-bearing and was unfalsifiable: mutating it to `return True` left the whole
+# suite green, because no fixture ever put the launch path on a NON-node command line. Anything
+# that merely mentions the path — an editor, a tail, a grep, this instrument's own reader —
+# would then have counted as the running server, and the staleness comparison would have been
+# made against that process's clock.
+: > "$PSF"
+printf '%s %s tail -f %s\n' 5150 "$(date -d '-5 minutes' +'%a %b %e %H:%M:%S %Y')" "$MJS" > "$PSF"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a non-node process on the same path is NOT the server" \
+   "UNVERIFIABLE: no running process for this install" "$(disp "$A" 1)"
+eq "…so the coverage statement does not claim this install" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+# Control: the identical line under `node` IS the server — one token apart, so the assertion
+# above is about the command and not about the fixture being malformed.
+printf '%s %s node %s\n' 5150 "$(date -d '-5 minutes' +'%a %b %e %H:%M:%S %Y')" "$MJS" > "$PSF"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: the same path under node IS the server" "FIXED_CONFIRMED" "$(disp "$A" 1)"
+mk_ps
+
+echo "== the staleness clock is the OLDEST matching process, not the newest =="
+# Also unfalsifiable until now: `min` → `max` survived every fixture, because no case ever ran
+# two processes from one tree. The conservatism is the whole point — a package.json newer than
+# the EARLIEST thing still running from this tree is a file that process did not load, so the
+# oldest clock is the only safe one. Two processes, and a package.json mtime BETWEEN their
+# start times: `min` must call it stale, `max` would call it fresh and confirm a fix that the
+# still-running older process never loaded.
+_old="$(date -d '-20 minutes' +'%a %b %e %H:%M:%S %Y')"
+_new="$(date -d '-2 minutes'  +'%a %b %e %H:%M:%S %Y')"
+{ printf '%s %s node %s\n' 4242 "$_old" "$MJS"
+  printf '%s %s node %s\n' 4243 "$_new" "$MJS"; } > "$PSF"
+touch -d '-10 minutes' "$NM/hono/package.json"      # between the two start times
+run_dr
+A="$(art "$REAL_ART")"
+eq "a package.json newer than the OLDEST process ⇒ UNVERIFIABLE" \
+   "UNVERIFIABLE: package.json modified after the running process started" "$(disp "$A" 1)"
+# Control: aged below BOTH clocks it is fresh again, so the assertion above is the ordering and
+# not simply "this fixture always reports stale".
+touch -d '-30 minutes' "$NM/hono/package.json"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: older than both processes ⇒ disposed for real" "FIXED_CONFIRMED" "$(disp "$A" 1)"
+touch -d '-10 minutes' "$NM/hono/package.json"
+mk_ps
 
 echo "== other installs on the host are REPORTED as uncovered, never ignored (F16) =="
 # TWO foreign installs, and the second one is the assertion: it lives under a directory that

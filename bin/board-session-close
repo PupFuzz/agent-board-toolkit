@@ -661,8 +661,21 @@ _bsc_advisory_leg() {
     } >&2
     return 0
   fi
+  # `timeout` is coreutils and NOT universally present — macOS ships none by default, and the
+  # MSYS/Git-Bash install INSTALL.md §2 warns about is another. Probing rather than assuming is
+  # the difference between a bounded leg and a leg that dies rc 127 with whatever cause string
+  # its caller happened to pass: this helper was extracted from two legs, one of which
+  # PRE-DATES the bound, so making it a hard dependency would have broken a working leg on
+  # those hosts to add a guarantee they simply cannot have. Unbounded-but-running beats
+  # bounded-and-dead for an advisory leg; the degraded state is stated, never silent.
   local budget="${BSC_ADVISORY_TIMEOUT:-60}"
-  out="$(timeout "$budget" "$@" "$path" 2>&1)"; rc=$?
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout "$budget" "$@" "$path" 2>&1)"; rc=$?
+  else
+    echo "  ⚠ board-session-close: no \`timeout\` on PATH (coreutils), so the $subject runs" >&2
+    echo "    UNBOUNDED — it cannot hang the close's exit code, but it can hang its clock." >&2
+    out="$("$@" "$path" 2>&1)"; rc=$?
+  fi
   printf '%s\n' "$out" | sed 's/^/  /'
   if [[ "$rc" -eq 124 ]]; then
     # The timeout is THIS function's doing, so this function explains it — the per-leg <cause>

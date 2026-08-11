@@ -33,6 +33,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -253,12 +254,24 @@ def gh_alerts(state) -> list:
     # point of a boundary check, and finding out by reading a wrong population would be worse
     # than the loop costs. (`state=None` is the deliberate no-filter query and has nothing to
     # re-assert.)
+    # ELEMENT SHAPE, asserted here so nothing downstream has to. An array whose ELEMENTS are
+    # not objects satisfies the array check above and then kills the first `.get` it reaches —
+    # an AttributeError traceback, no INSTRUMENT FAILURE framing, and no artifact, which
+    # contradicts the exit contract's promise that a gate failure still records what was
+    # measured. Every consumer of an alert population in this file (the disposition loop, the
+    # name set, the sort key) assumes a dict, so this is the one place to establish it.
+    for i, alert in enumerate(data):
+        if not isinstance(alert, dict):
+            raise InstrumentError(
+                f"gh api ({label}) returned a {type(alert).__name__} at index {i}, not an "
+                f"alert object — the array is well-formed but its contents are not alerts, "
+                f"and nothing here can be disposed from them")
     if state is not None:
         for alert in data:
-            got = (alert or {}).get("state")
+            got = alert.get("state")
             if got != state:
                 raise InstrumentError(
-                    f"gh api (state={state}) returned alert #{(alert or {}).get('number')} "
+                    f"gh api (state={state}) returned alert #{alert.get('number')} "
                     f"in state {got!r} — the server did not honour the filter, so this "
                     f"population is not the one that was asked for")
     return data
@@ -336,6 +349,63 @@ def semver_key(version: str):
     return (int(major), int(minor), int(patch), pre_key)
 
 
+# --------------------------------------------------------------------------- readability
+
+# The one string that means "this directory is genuinely not there" — a DECIDABLE fact about
+# the deployment, and the only fault below that a caller may treat as one.
+DIR_ABSENT = "directory does not exist"
+
+
+def as_obj(value):
+    """`value` when it is a JSON object, else an empty one.
+
+    THE NESTED HALF of the element-shape gate in `gh_alerts`, and it is a separate primitive
+    because it closes a separate hole. The `x.get(...) or {}` idiom this replaces guards
+    against null and a MISSING key only: a present-but-wrong-typed value is truthy, sails
+    through, and kills the next `.get`. Measured, not theorised — `dependency` as a string,
+    `dependency.package` as a string, and a package.json parsing to a JSON array each produced
+    an AttributeError traceback instead of a named instrument failure.
+
+    Degrading a malformed nested object to an empty one is deliberate and safe HERE precisely
+    because every field read out of it feeds a fail-closed disposition: an absent ecosystem or
+    version does not become a clean verdict, it becomes UNVERIFIABLE/UNDECIDABLE naming what
+    was missing. The shape of a remote payload is not this program's to assume at any depth.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def dir_fault(path: str):
+    """None when `path` is a directory this process can list AND traverse; else why not.
+
+    THE ONE READABILITY PREDICATE, and it exists because this file kept re-deriving it. Every
+    directory read here goes through it, because the stdlib calls it replaces all report a
+    PERMISSION failure as ABSENCE: `os.path.exists` answers False, `os.walk` yields nothing,
+    `os.listdir` raises where the caller was not looking. Absence is a decidable fact about a
+    deployment; a read that failed is not — collapsing the second into the first is how this
+    instrument mints its most confident claims out of things it never saw. Naming them apart
+    once, here, is the fix; a third hand-written copy of the check would be the defect.
+
+    R_OK|X_OK, not R_OK alone: LISTING a directory needs read, and stat-ing anything inside it
+    needs execute. A directory with read but no execute (mode 444) lists its children happily
+    and then answers "not a directory" for every one of them — the quietest form of the same
+    lie, invisible to an `onerror` handler because nothing ever raises.
+
+    `os.stat` rather than `os.path.exists`, so a PermissionError on the path's own parent is
+    reported as what it is instead of as DIR_ABSENT, which a caller is entitled to trust.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return DIR_ABSENT
+    except OSError as e:
+        return f"not stat-able ({e.strerror or e})"
+    if not stat.S_ISDIR(st.st_mode):
+        return "is not a directory"
+    if not os.access(path, os.R_OK | os.X_OK):
+        return "not readable under this agent's credentials"
+    return None
+
+
 # --------------------------------------------------------------------------- the leg
 
 def read_installed(node_modules: str, name: str):
@@ -351,53 +421,105 @@ def read_installed(node_modules: str, name: str):
     present and will not parse is a read this instrument cannot trust — and collapsing the
     second into "package not in deployment" would be a wrong-but-specific cause, which is
     worse than an honest generic one.
+
+    That separation used to be FALSE AS WRITTEN, which is why the package DIRECTORY is now
+    gated by `dir_fault` before the file is looked for: `os.path.exists` on the package.json
+    answers False when the package is missing AND when the directory holding it cannot be
+    traversed, so an unreadable install reported "package not in deployment" — the docstring
+    above described an intent the code did not implement.
     """
-    pkg = os.path.join(node_modules, name, "package.json")
+    pkg_dir = os.path.join(node_modules, name)
+    pkg = os.path.join(pkg_dir, "package.json")
+    fault = dir_fault(pkg_dir)
+    if fault == DIR_ABSENT:
+        return None, pkg, "absent"      # the one decidable answer here
+    if fault:
+        return None, pkg, f"package directory {fault}"
     if not os.path.exists(pkg):
+        # The directory IS traversable (checked above), so this absence is a real one.
         return None, pkg, "absent"
     try:
         with open(pkg, encoding="utf-8") as fh:
             data = json.load(fh)
     except Exception as e:  # noqa: BLE001
-        return None, pkg, f"unreadable ({e})"
+        return None, pkg, f"package.json unreadable ({e})"
+    if not isinstance(data, dict):
+        return None, pkg, (f"package.json parses to a JSON {type(data).__name__}, not an "
+                           f"object")
     version = data.get("version")
     if not isinstance(version, str) or not version:
-        return None, pkg, "present but carries no version string"
+        return None, pkg, "package.json present but carries no version string"
     return version, pkg, None
 
 
-def nested_copies(node_modules: str, names) -> dict:
-    """{name: [paths]} for every alerted name that also exists under a NESTED node_modules.
+def nested_copies(node_modules: str, names):
+    """({name: [paths]}, fault) for every alerted name also under a NESTED node_modules.
 
     A nested copy means npm resolved two versions of one package, and which one the running
     process loaded depends on the import graph — a fact this instrument cannot read. So the
     presence of ANY nested copy of an alerted name makes that alert UNVERIFIABLE rather than
     letting the top-level read stand in for it.
+
+    WHICH MAKES AN INCOMPLETE SCAN THE DANGEROUS DIRECTION, and why this returns a fault
+    instead of just a dict: "no nested copy found" is what LETS the top-level read stand, so a
+    subtree this process could not enter does not degrade the answer — it INVERTS it, turning
+    the tool's strongest clean verdict (FIXED_CONFIRMED) out of a directory nobody read. Both
+    ways that can happen are closed here, and they need different mechanisms:
+
+      * a subtree that cannot be LISTED raises inside `os.walk`, which by default swallows it
+        silently (`onerror=None`) — hence the handler;
+      * a LEAF directory that can be listed but not TRAVERSED (mode 444) raises nothing at
+        all. There is nothing below it for walk to scandir, so `onerror` can never fire for
+        it, and a package directory that could not be read reads exactly like one holding no
+        nested copy. Only checking the directory itself catches this, which is what the
+        per-`dirpath` check below is for.
+
+    The 444 case with subdirectories sits between the two and is caught by the handler on
+    Linux, though for a reason worth writing down rather than relying on silently: `readdir`
+    supplies `d_type`, so `entry.is_dir()` answers without a stat, walk tries to descend, and
+    the scandir raises. On a filesystem that answers `DT_UNKNOWN` (some network mounts),
+    `is_dir()` falls back to a stat that fails, the child is quietly filed as a non-directory,
+    and the per-`dirpath` check is again the only thing that sees it. That fallback is not
+    reproducible on this host's filesystem and is therefore asserted by the leaf case above
+    rather than directly — a stated bound, not a claim of coverage.
     """
     found: dict = {}
+    faults: list = []
     wanted = set(names)
-    if not os.path.isdir(node_modules):
-        return found
-    for dirpath, dirnames, _files in os.walk(node_modules):
+    root_fault = dir_fault(node_modules)
+    if root_fault:
+        return found, f"nested-copy scan could not start at {node_modules} ({root_fault})"
+
+    def _onerror(err):
+        faults.append(f"{getattr(err, 'filename', node_modules)} ({err.strerror or err})")
+
+    for dirpath, _dirnames, _files in os.walk(node_modules, onerror=_onerror):
+        sub_fault = dir_fault(dirpath)
+        if sub_fault:
+            faults.append(f"{dirpath} ({sub_fault})")
+            continue
         if dirpath == node_modules or os.path.basename(dirpath) != "node_modules":
             continue
         for name in wanted:
             candidate = os.path.join(dirpath, name)
             if os.path.exists(candidate):
                 found.setdefault(name, []).append(candidate)
-    return found
+    if faults:
+        return found, ("nested-copy scan incomplete, so an absent nested copy is not a "
+                       "measured absence: " + "; ".join(sorted(set(faults))))
+    return found, None
 
 
 def disposition_for(alert, ctx):
     """The one disposition engine. Ordered fail-closed: a reason the read cannot be trusted
     is reported BEFORE any comparison is attempted on it."""
-    dep = alert.get("dependency") or {}
-    pkg = dep.get("package") or {}
+    dep = as_obj(alert.get("dependency"))
+    pkg = as_obj(dep.get("package"))
     ecosystem = pkg.get("ecosystem")
     name = pkg.get("name") or ""
     manifest = dep.get("manifest_path")
-    patched = (((alert.get("security_vulnerability") or {})
-                .get("first_patched_version") or {}).get("identifier"))
+    patched = as_obj(as_obj(alert.get("security_vulnerability"))
+                     .get("first_patched_version")).get("identifier")
 
     if ecosystem not in DECLARED_ECOSYSTEMS:
         return (f"UNVERIFIABLE: ecosystem {ecosystem} not in this run's declared leg set "
@@ -409,7 +531,8 @@ def disposition_for(alert, ctx):
     # From here the alert IS this leg's business, so every row carries the deployed path.
     if ctx["process_error"]:
         return (f"UNVERIFIABLE: {ctx['process_error']}", None, patched, True)
-    # The tree itself could not be read. This MUST come before any per-package read, because
+    # The tree itself could not be read — either its root, or a subtree the nested-copy scan
+    # could not enter. This MUST come before any per-package read, because
     # `read_installed` cannot tell "this package is not installed" from "no package in this
     # tree is visible to me": both surface as a missing package.json, and the second one
     # answered as the first is a decidable FACT about the deployment minted out of a read that
@@ -433,7 +556,9 @@ def disposition_for(alert, ctx):
         if fault == "absent":
             return ("UNDECIDABLE: package not in deployment", None, patched, True)
         if fault:
-            return (f"UNVERIFIABLE: package.json {fault}", None, patched, True)
+            # Each fault names its own subject (package.json vs package directory), so this
+            # renders one message instead of guessing a prefix that fits only some of them.
+            return (f"UNVERIFIABLE: {fault}", None, patched, True)
         try:
             mtime = os.path.getmtime(pkg_json)
         except OSError as e:
@@ -517,11 +642,13 @@ def main(argv) -> int:
             if m.group(0) == launch:
                 continue
             install = os.path.dirname(m.group(0))
-            readable = os.access(os.path.join(install, "node_modules"), os.R_OK | os.X_OK)
-            reason = ("detected via ps, not readable under this agent's credentials"
-                      if not readable else
-                      "detected via ps, outside this run's declared leg (this agent's own "
-                      "install only)")
+            # Same predicate as the own-install gate below and as both per-package reads —
+            # one primitive, four call sites (canon #5). It was hand-written here.
+            foreign_fault = dir_fault(os.path.join(install, "node_modules"))
+            reason = ("detected via ps, outside this run's declared leg (this agent's own "
+                      "install only)" if foreign_fault is None else
+                      f"detected via ps, and its node_modules is unreadable from here "
+                      f"({foreign_fault})")
             entry = {"machine": scope["machine"], "install_path": install,
                      "covered": False, "reason": reason}
             if entry not in others:
@@ -546,25 +673,27 @@ def main(argv) -> int:
         # deployment. Absent and unreadable are named apart because they are different
         # operator actions — wait for the reinstall to finish, versus fix the permissions —
         # while sharing one prefix so the row and the coverage entry stay one claim.
-        if not os.path.isdir(node_modules):
-            nm_error = (f"node_modules not readable at {node_modules} "
-                        f"(directory does not exist)")
-        elif not os.access(node_modules, os.R_OK | os.X_OK):
-            nm_error = (f"node_modules not readable at {node_modules} "
-                        f"(not readable under this agent's credentials)")
-        else:
-            nm_error = None
+        root_fault = dir_fault(node_modules)
+        nm_error = (f"node_modules not readable at {node_modules} ({root_fault})"
+                    if root_fault else None)
 
         # ONE reason string, shared: a row saying UNVERIFIABLE beside a coverage entry saying
         # `covered: true` would be the instrument contradicting itself, and a reader would have
         # no way to tell which half to believe.
+        #
+        # The entry is built NOW and amended later rather than built once at the end, because
+        # the two are in tension: the nested-copy fault is only knowable after the alert names
+        # are (it needs them), while an instrument failure in the queries below must not leave
+        # the coverage statement missing entirely. So `coverage_faults` accumulates and
+        # `own_coverage` is re-derived from it in place.
         coverage_faults = [f for f in (process_error, nm_error) if f]
-        leg["coverage_scope"] = [{
+        own_coverage = {
             "machine": scope["machine"],
             "install_path": deployed,
             "covered": not coverage_faults,
             "reason": "; ".join(coverage_faults) or None,
-        }] + others
+        }
+        leg["coverage_scope"] = [own_coverage] + others
 
         # --- the alert population, and its measured exclusions --------------------------
         population = gh_alerts(POPULATION_STATE)
@@ -602,21 +731,31 @@ def main(argv) -> int:
                 "genuinely has zero alerts in every state)")
 
         # --- dispositions ---------------------------------------------------------------
-        names = sorted({((a.get("dependency") or {}).get("package") or {}).get("name")
+        names = sorted({as_obj(as_obj(a.get("dependency")).get("package")).get("name")
                         for a in population
-                        if (((a.get("dependency") or {}).get("package") or {})
-                            .get("ecosystem")) in DECLARED_ECOSYSTEMS} - {None})
+                        if as_obj(as_obj(a.get("dependency")).get("package"))
+                        .get("ecosystem") in DECLARED_ECOSYSTEMS} - {None})
+        nested, nested_fault = nested_copies(node_modules, names)
+        if nested_fault:
+            # A subtree this run could not enter is a TREE-LEVEL fault, exactly like an
+            # unreadable node_modules root, and is promoted to one: "no nested copy here" is
+            # what lets the top-level read stand, so an unscanned subtree would otherwise
+            # upgrade every alert to FIXED_CONFIRMED. Same value into the rows and into the
+            # coverage entry, so the two cannot disagree.
+            coverage_faults.append(nested_fault)
+            own_coverage["covered"] = False
+            own_coverage["reason"] = "; ".join(coverage_faults)
         ctx = {
             "node_modules": node_modules,
-            "nested": nested_copies(node_modules, names),
+            "nested": nested,
             "injected": opts.injected,
             "process_error": process_error,
             "process_start": process_start,
-            "nm_error": nm_error,
+            "nm_error": nm_error or nested_fault,
         }
         for alert in sorted(population, key=lambda a: a.get("number") or 0):
-            dep = alert.get("dependency") or {}
-            pkg = dep.get("package") or {}
+            dep = as_obj(alert.get("dependency"))
+            pkg = as_obj(dep.get("package"))
             disposition, installed, patched, in_leg = disposition_for(alert, ctx)
             rows.append({
                 "alert_number": alert.get("number"),
@@ -691,9 +830,15 @@ def render(scope, rows, artifact):
               f"{versions}  [scope: {row['scope']}]  {disposition}")
     denominator = scope["denominator"]
     tally = ", ".join(f"{k}={v}" for k, v in sorted(denominator["by_disposition"].items()))
-    print(f"  {denominator['rows_emitted']} row(s) over a population of "
-          f"{denominator['alerts_in_population']} alert(s) "
-          f"(state={POPULATION_STATE}); {tally or 'no dispositions'}")
+    # `alerts_in_population` is None when the run died before the population was measured, and
+    # "a population of None alert(s)" reads as a number nobody can act on. An unmeasured
+    # denominator is said out loud instead (canon #9).
+    measured = denominator["alerts_in_population"]
+    population_phrase = (f"a population of {measured} alert(s) (state={POPULATION_STATE})"
+                         if measured is not None else
+                         "a population that was never measured")
+    print(f"  {denominator['rows_emitted']} row(s) over {population_phrase}; "
+          f"{tally or 'no dispositions'}")
     print("  scope object:")
     for line in json.dumps(scope, indent=2, sort_keys=False).splitlines():
         print(f"    {line}")

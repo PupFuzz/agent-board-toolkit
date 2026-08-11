@@ -1508,5 +1508,38 @@ eq "…while still rendering its output into the report" "true" \
 eq "the real default budget is 60s, not whatever a test happened to set" "true" \
    "$(grep -qF 'BSC_ADVISORY_TIMEOUT:-60' "$BIN" && echo true || echo false)"
 
+echo "== a host with no \`timeout\` still RUNS the leg, and says the bound is gone =="
+# `timeout` is coreutils and not universal — macOS ships none by default, and the MSYS install
+# INSTALL.md §2 warns about is another. The bound was added to a helper extracted from two
+# legs, one of which PRE-DATES it, so a hard dependency would have broken a working leg on
+# those hosts in order to add a guarantee they cannot have. Unbounded-but-running beats
+# bounded-and-dead for an advisory leg — but never silently.
+NOTO="$TMP/no-timeout-bin"; mkdir -p "$NOTO"
+# Everything the ritual needs EXCEPT timeout, so the only variable is the missing bound.
+for _b in bash sh env python3 dirname readlink sed cat grep date git ln mkdir rm chmod find sort; do
+    _p="$(command -v "$_b" 2>/dev/null)" && ln -sf "$_p" "$NOTO/$_b"
+done
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: ran unbounded"' > "$DRTOOL"; chmod +x "$DRTOOL"
+# Positive control FIRST: this stripped PATH really has no timeout, so the arm below is
+# reached because of that and not because of some other breakage in the fixture.
+eq "positive control: the stripped PATH genuinely has no timeout" "false" \
+   "$(PATH="$NOTO" command -v timeout >/dev/null 2>&1 && echo true || echo false)"
+rc="$(HOME="$SCRATCH" PATH="$NOTO" KANBAN_RECONCILE_HOOK="$goodhook" \
+        bash "$DRBIN" >"$OUTF" 2>"$ERRF"; echo $?)"
+eq "with no timeout the close still completes at rc 0" "0" "$rc"
+eq "…the leg still RAN (its output is in the report)" "true" \
+   "$(grep -qxF '  dr fixture: ran unbounded' "$OUTF" && echo true || echo false)"
+eq "…and the lost bound is stated, not silent" "true" \
+   "$(has 'no `timeout` on PATH' "$(cat "$ERRF")")"
+eq "…naming the consequence precisely (clock, not exit code)" "true" \
+   "$(has 'it can hang its clock' "$(cat "$ERRF")")"
+eq "…and NOT mis-reported as the leg exiting 127" "false" \
+   "$(has 'exited 127' "$(cat "$ERRF")")"
+# Control: the same fixture WITH timeout on PATH emits no such warning.
+rc="$(run_dr_leg "$goodhook")"
+eq "control: with timeout present the close is still 0" "0" "$rc"
+eq "…and no missing-timeout warning appears" "false" \
+   "$(has 'no `timeout` on PATH' "$(cat "$ERRF")")"
+
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
