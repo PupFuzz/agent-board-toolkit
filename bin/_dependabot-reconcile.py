@@ -50,10 +50,12 @@ DECLARED_MANIFESTS = ("examples/channel-servers/package-lock.json",)
 MCP_SERVER_KEY = "kanbanboard-agent"
 
 # THE VALIDATED STATE ENUM. Every `state=` literal this file sends comes from here, and the
-# reason is measured API behaviour, not tidiness: `?state=Fixed` (mis-cased) answers HTTP 200
-# with the UNFILTERED list, and `?state=all` / `?state=bogus` answer HTTP 200 with `[]`. So a
-# typo'd filter yields either a wrong population or an empty one, both at 200 — indistinguishable
-# from a real answer to anything that only checks the status code.
+# reason is measured API behaviour, not tidiness: an UNKNOWN state value answers HTTP 200 with
+# `[]` (`?state=all` and `?state=bogus` both do), so a typo'd filter yields an empty population
+# at a success status — indistinguishable from a real "no alerts in this state" to anything that
+# only checks the status code. A MIS-CASED known value is not that case: the filter is applied
+# case-insensitively (`?state=Fixed` / `?state=FIXED` return the same set as `?state=fixed`),
+# which is why the enum is spelled in the API's own lower case and not relied on for casing.
 ALERT_STATES = ("open", "fixed", "dismissed", "auto_dismissed")
 POPULATION_STATE = "fixed"
 
@@ -61,7 +63,14 @@ ARTIFACT_DIRS = {False: "dependabot-reconcile", True: "dependabot-reconcile-test
 
 # A channel-server process's own .mjs path, as it appears in `ps` output (space-delimited, so
 # \S+ is the whole path token). Used for the host-wide coverage statement (F16).
-CHANNEL_SERVER_RE = re.compile(r"\S*agent-webhook-bridge\S*channel-servers/\S+\.mjs")
+#
+# KEYED ON `channel-servers/<file>.mjs` ALONE, deliberately not on the repository name: an
+# install cloned into a differently-named directory is still a channel server this run does not
+# cover, and requiring the literal `agent-webhook-bridge` in the path made such an install match
+# neither the own-install branch nor the others list — it vanished from coverage_scope entirely,
+# which is the one outcome a coverage statement must never produce. The install is named by each
+# entry's own `install_path`, so nothing is lost by not spelling the repo here.
+CHANNEL_SERVER_RE = re.compile(r"\S*channel-servers/\S+\.mjs")
 
 # The official SemVer 2.0 grammar. A version that does not match is NOT ordered against
 # anything — it becomes UNDECIDABLE rather than a guess.
@@ -157,9 +166,9 @@ def _validate_state(state: str) -> str:
     if state not in ALERT_STATES:
         raise InstrumentError(
             f"refusing to query state={state!r}: not one of {', '.join(ALERT_STATES)} — "
-            f"this API answers 200 with the UNFILTERED list for a mis-cased value and 200 "
-            f"with [] for an unknown one, so an unvalidated literal yields a wrong "
-            f"population at a success status")
+            f"this API answers 200 with [] for an unknown value, so an unvalidated literal "
+            f"yields an EMPTY population at a success status, indistinguishable from a real "
+            f"'no alerts in this state'")
     return state
 
 
@@ -191,6 +200,13 @@ def gh_alerts(state) -> list:
         raise InstrumentError(
             f"gh api ({label}) returned {type(data).__name__}, not a JSON array — an alert "
             f"population is an array, and anything else is an error document at HTTP 200")
+    # GENERIC BOUNDARY VALIDATION, not a defence against a specific observed bug: the filter is
+    # an instruction to a remote server, and every disposition below is a claim about the
+    # population it returned, so each response is asserted to be the one that was asked for
+    # rather than trusted to be. No live shape is known that violates this today — that is the
+    # point of a boundary check, and finding out by reading a wrong population would be worse
+    # than the loop costs. (`state=None` is the deliberate no-filter query and has nothing to
+    # re-assert.)
     if state is not None:
         for alert in data:
             got = (alert or {}).get("state")

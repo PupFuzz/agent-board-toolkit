@@ -9,11 +9,20 @@
 # real processes — a real `ps` reports whatever the host happens to be running, which is not a
 # test input.
 #
-# EVERY CHECK IS POINTED AT A FIXTURE THAT DRIVES ITS FAILING BRANCH, and almost every one is
+# EACH CHECK IS POINTED AT A FIXTURE THAT DRIVES ITS FAILING BRANCH, and almost every one is
 # paired with a control that differs in exactly one input. That pairing is the point: this
 # instrument's whole job is to answer UNVERIFIABLE where it cannot see, so a suite that only
 # fed it healthy inputs would prove nothing about the answers that matter. Where the failing
 # branch is a whole-run gate, the control is the same fixture with the one defect removed.
+#
+# "EACH", not "every" — that is a correction, not a hedge. This header once claimed *every*
+# check drove its failing branch, and a review pass falsified it by mutating the shipped code
+# and watching the suite stay green in two places: the excluded-state COUNTS were emitted over
+# fixtures where all three states held 0, so hardcoding them to 0 survived; and `gh_alerts`
+# calling `_validate_state` was untested, because for the only literals a real run passes the
+# validated and unvalidated URLs are identical. Both are pinned below. The honest claim is the
+# weaker one: no check here is known to be unable to fail, and the way to keep that true is to
+# mutate the code, not to re-assert the sentence.
 #
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property these assertions support: that
 # the disposition engine and the five query gates answer as specified on the inputs below. It
@@ -122,6 +131,19 @@ mk_states() {
     printf '[]\n' > "$FIX/alerts-dismissed.json"
     printf '[]\n' > "$FIX/alerts-auto_dismissed.json"
     cp "$FIX/alerts-fixed.json" "$FIX/alerts-nofilter.json"
+}
+
+# mk_union <outfile> <infile…> — the unfiltered query's answer built as the real UNION of the
+# per-state fixtures, so the integrity gate's denominator is the sum of the populations the
+# state queries actually return rather than a hand-kept count that can drift away from them.
+mk_union() {
+    python3 -c '
+import json, sys
+merged = []
+for path in sys.argv[2:]:
+    merged.extend(json.load(open(path)))
+json.dump(merged, open(sys.argv[1], "w"))
+' "$@"
 }
 
 # run_dr <args...> — run the tool under the scratch environment; sets RC, fills $OUTF/$ERRF.
@@ -311,6 +333,12 @@ echo "== gate: the state literal comes from a validated enum =="
 # A unit-level check, because the literals are internal constants: no invocation can ask this
 # tool for state=Fixed, and the assertion is that the guard REFUSES one if a future edit tries.
 # Both directions, so a validator that refused everything would fail the control.
+#
+# WHAT THE ENUM IS FOR, measured rather than assumed: this API answers 200 with `[]` for an
+# UNKNOWN state value, so an unvalidated literal reads as a real empty population at a success
+# status. A mis-cased KNOWN value is a different (and benign) case — the filter is applied
+# case-insensitively — so `Fixed` is asserted refused because the enum is spelled in the API's
+# own lower case, not because a mis-cased query would return the wrong population.
 enum_probe() {
     python3 -c '
 import importlib.util, sys
@@ -323,13 +351,60 @@ except m.InstrumentError:
 ' "$HELPER" "$1"
 }
 eq "the enum accepts the real literal" "accepted" "$(enum_probe fixed)"
-eq "…refuses a MIS-CASED one (which this API answers 200 UNFILTERED for)" "refused" "$(enum_probe Fixed)"
+eq "…refuses a MIS-CASED one (not the API's own spelling of the state)" "refused" "$(enum_probe Fixed)"
 eq "…refuses 'all' (which this API answers 200 with [] for)" "refused" "$(enum_probe all)"
-eq "…refuses an unknown one" "refused" "$(enum_probe bogus)"
+eq "…refuses an unknown one (200 with [] again — an empty population at a success status)" \
+   "refused" "$(enum_probe bogus)"
+
+# THE CALL SITE, not just the validator. `_validate_state` being correct says nothing about
+# `gh_alerts` calling it: dropping the call leaves every case in this file green, because the
+# only literals a real run passes are already valid, so the validated and unvalidated URLs are
+# byte-identical. So this probe drives `gh_alerts` itself with `subprocess` replaced by a
+# recorder — no network, no `gh` — and asserts on what the function DID: refuse before running
+# anything, or run a command whose URL carries the literal.
+gh_call_probe() {
+    python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dr", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+ran = []
+class _Completed:
+    returncode = 0
+    stdout = "[]"
+    stderr = ""
+class _Sub:
+    @staticmethod
+    def run(argv, **kwargs):
+        ran.append(argv)
+        return _Completed()
+m.subprocess = _Sub          # only this module object is rebound, never the real subprocess
+state = None if sys.argv[2] == "none" else sys.argv[2]
+try:
+    m.gh_alerts(state)
+except m.InstrumentError as e:
+    print("REFUSED-BEFORE-RUNNING" if not ran else "ran-then-failed: %s" % e)
+else:
+    print(" ".join(ran[-1]) if ran else "no-command")
+' "$HELPER" "$1"
+}
+# Positive control first: the probe can observe a real command, so a "refused" answer below is
+# the guard firing and not the probe failing to see anything.
+eq "positive control: a valid state reaches gh with the literal in the query string" \
+   "gh api --paginate repos/PupFuzz/agent-webhook-bridge/dependabot/alerts?state=fixed" \
+   "$(gh_call_probe fixed)"
+eq "…and the no-filter query sends no state literal at all" \
+   "gh api --paginate repos/PupFuzz/agent-webhook-bridge/dependabot/alerts" \
+   "$(gh_call_probe none)"
+eq "the CALL SITE validates: an invalid literal is refused before any command runs" \
+   "REFUSED-BEFORE-RUNNING" "$(gh_call_probe bogus)"
 
 echo "== gate: every returned alert's own .state is re-asserted against the query =="
-# The live shape a mis-cased state produces: HTTP 200, a well-formed array, alerts that are not
-# in the queried state. Only the re-assert catches it.
+# A BOUNDARY CHECK on a remote answer, not a patch for a known bug — no live shape is known that
+# produces it (a mis-cased filter is honoured case-insensitively; an unknown one answers `[]`).
+# The fixture below is therefore synthetic on purpose: HTTP 200, a well-formed array, alerts
+# that are not in the queried state. Only the re-assert catches that, and the reason to keep it
+# is that finding out by disposing a population nobody asked for is the expensive way.
 mk_alerts "$TMP/mixed.json" open <<SPECS
 1|npm|hono|$IN_SCOPE|runtime|4.12.25
 SPECS
@@ -375,23 +450,50 @@ eq "an error DOCUMENT at 200 ⇒ rc 1" "1" "$RC"
 eq "…named as not-an-array" "true" "$(has 'not a JSON array' "$(cat "$ERRF")")"
 
 echo "== gate: a zero-length population is UNVERIFIABLE unless the repo is genuinely empty =="
-# The five reads AGREE (0+1+0+0 == 1) so the integrity gate below is satisfied and this gate is
-# the one under test — the repository holds an alert, and the queried population is empty.
+# The five reads AGREE (0+2+1+3 == 6) so the integrity gate below is satisfied and this gate is
+# the one under test — the repository holds alerts, and the queried population is empty.
+#
+# THE EXCLUDED STATES CARRY DISTINCT NON-ZERO COUNTS HERE, and that is this fixture's second job
+# (F20). Everywhere else in this suite all three are 0, so the emitted `counts` block could have
+# been hardcoded to zero — or had two of its states swapped — with nothing able to say so: the
+# emitted numbers were only ever compared against a population that was empty anyway. Distinct
+# non-zero values make each emitted number a claim about the state it is keyed to, and the
+# genuinely-empty control below re-reads the SAME three keys as 0, so neither a constant nor a
+# swap can satisfy both runs.
 printf '[]\n' > "$FIX/alerts-fixed.json"
-printf '[]\n' > "$FIX/alerts-dismissed.json"
-printf '[]\n' > "$FIX/alerts-auto_dismissed.json"
 mk_alerts "$FIX/alerts-open.json" open <<SPECS
 1|npm|hono|$IN_SCOPE|runtime|4.12.25
+2|npm|fast-uri|$IN_SCOPE|runtime|3.1.0
 SPECS
-mk_alerts "$FIX/alerts-nofilter.json" open <<SPECS
-1|npm|hono|$IN_SCOPE|runtime|4.12.25
+mk_alerts "$FIX/alerts-dismissed.json" dismissed <<SPECS
+3|npm|hono|$IN_SCOPE|runtime|4.12.25
 SPECS
+mk_alerts "$FIX/alerts-auto_dismissed.json" auto_dismissed <<SPECS
+4|npm|hono|$IN_SCOPE|runtime|4.12.25
+5|npm|fast-uri|$IN_SCOPE|runtime|3.1.0
+6|npm|body-parser|$IN_SCOPE|runtime|2.0.0
+SPECS
+mk_union "$FIX/alerts-nofilter.json" "$FIX/alerts-fixed.json" "$FIX/alerts-open.json" \
+         "$FIX/alerts-dismissed.json" "$FIX/alerts-auto_dismissed.json"
 run_dr
+A="$(art "$REAL_ART")"
 eq "empty population + a non-empty unfiltered query ⇒ rc 1" "1" "$RC"
 eq "…blaming the filter rather than the repository" "true" \
    "$(has 'the filter, not the repository, produced the empty population' "$(cat "$ERRF")")"
+eq "the emitted count for open is the one MEASURED for open" "2" \
+   "$(get "$A" scope.alert_states_queried.counts.open)"
+eq "…dismissed carries its own, different, count" "1" \
+   "$(get "$A" scope.alert_states_queried.counts.dismissed)"
+eq "…and auto_dismissed a third" "3" \
+   "$(get "$A" scope.alert_states_queried.counts.auto_dismissed)"
+eq "…while the INCLUDED state reads 0, which is what makes this run rc 1" "0" \
+   "$(get "$A" scope.alert_states_queried.counts.fixed)"
+eq "…and the failure is recorded with the counts, not instead of them" "6" \
+   "$(get "$A" scope.alert_states_queried.unfiltered_total)"
 # Control: genuinely zero alerts everywhere is a real (and clean) measurement, said out loud.
 printf '[]\n' > "$FIX/alerts-open.json"
+printf '[]\n' > "$FIX/alerts-dismissed.json"
+printf '[]\n' > "$FIX/alerts-auto_dismissed.json"
 printf '[]\n' > "$FIX/alerts-nofilter.json"
 run_dr
 A="$(art "$REAL_ART")"
@@ -400,6 +502,10 @@ eq "…with the emptiness CONFIRMED rather than assumed" "true" \
    "$(has 'genuinely has zero alerts' "$(cat "$OUTF")")"
 eq "…and a denominator of 0, not a missing one" "0" \
    "$(get "$A" scope.denominator.alerts_in_population)"
+eq "control: the same three keys now read 0 (open)" "0" \
+   "$(get "$A" scope.alert_states_queried.counts.open)"
+eq "…(dismissed)" "0" "$(get "$A" scope.alert_states_queried.counts.dismissed)"
+eq "…(auto_dismissed)" "0" "$(get "$A" scope.alert_states_queried.counts.auto_dismissed)"
 
 echo "== gate: the per-state total must equal the unfiltered total (F15) =="
 mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
@@ -501,7 +607,16 @@ eq "control: restoring the process restores both the disposition and the coverag
 eq "…and coverage" "true" "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
 
 echo "== other installs on the host are REPORTED as uncovered, never ignored (F16) =="
-mk_ps "9999 $(date -d '-5 minutes' +'%a %b %e %H:%M:%S %Y') node /home/other/agent-webhook-bridge/examples/channel-servers/agent-webhook-bridge-channel.mjs"
+# TWO foreign installs, and the second one is the assertion: it lives under a directory that
+# does NOT carry the repository's name, and its launcher is not named for it either. A detector
+# keyed on the repo name matches the first and silently loses the second — which is worse than
+# not looking, because a coverage statement that omits an install reads as a complete one. The
+# install is named by its own `install_path`, so the path pattern needs nothing but the
+# channel-servers/<file>.mjs shape.
+WHEN5="$(date -d '-5 minutes' +'%a %b %e %H:%M:%S %Y')"
+mk_ps \
+  "9999 $WHEN5 node /home/other/agent-webhook-bridge/examples/channel-servers/agent-webhook-bridge-channel.mjs" \
+  "9998 $WHEN5 node /home/other/bridge-fork/examples/channel-servers/channel.mjs"
 run_dr
 A="$(art "$REAL_ART")"
 eq "the foreign install gets its own coverage entry" \
@@ -510,11 +625,21 @@ eq "the foreign install gets its own coverage entry" \
 eq "…marked NOT covered" "false" "$(get "$A" scope.legs.0.coverage_scope.1.covered)"
 eq "…with the reason stated" "true" \
    "$(has 'detected via ps' "$(get "$A" scope.legs.0.coverage_scope.1.reason)")"
+eq "a foreign install under a RENAMED directory is reported too, not silently dropped" \
+   "/home/other/bridge-fork/examples/channel-servers" \
+   "$(get "$A" scope.legs.0.coverage_scope.2.install_path)"
+eq "…also marked NOT covered" "false" "$(get "$A" scope.legs.0.coverage_scope.2.covered)"
+eq "…so the host-wide statement covers three installs, not two" "3" \
+   "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["coverage_scope"]))' "$A")"
 mk_ps
 run_dr
 A="$(art "$REAL_ART")"
 eq "control: with no foreign process there is exactly one coverage entry" "1" \
    "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["coverage_scope"]))' "$A")"
+# …and THAT one is this agent's own install, reached through the `== launch` skip rather than by
+# failing to match the pattern at all: the own install matches it too, and must not be listed twice.
+eq "…which is this agent's own install, not a second copy of it" "$DEP" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.install_path)"
 
 echo "== an unresolvable deployment is an instrument failure, never a guessed path =="
 mv "$H/.mcp.json" "$TMP/mcp.bak"

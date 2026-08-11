@@ -32,10 +32,13 @@
 # parses `vulnerable_version_range` — it is an explicit conservative proxy that can over-report
 # and never silently clears a genuinely vulnerable version.
 #
-# EVERY ALERT QUERY IS GATED, because this API fails in ways a status code does not show:
-# `?state=Fixed` answers 200 with the UNFILTERED list, and `?state=all` / `?state=bogus` answer
-# 200 with `[]`. So each query checks the command's rc, asserts the body is a JSON array,
-# sends only a validated state literal, and re-asserts every returned alert's own `.state`.
+# EVERY ALERT QUERY IS GATED, because this API fails in ways a status code does not show: an
+# UNKNOWN state value answers 200 with `[]` (`?state=all` / `?state=bogus`), so a typo'd filter
+# yields an empty population at a success status. A mis-cased KNOWN value is not that case — the
+# filter is applied case-insensitively — which is why the enum guard, not casing luck, is what
+# keeps a typo out. So each query checks the command's rc, asserts the body is a JSON array,
+# sends only a validated state literal, and re-asserts every returned alert's own `.state` (a
+# boundary check on a remote answer, not a patch for a known bug).
 # The excluded states (open / dismissed / auto_dismissed) are COUNTED and reported, so
 # "state=fixed" is a named inclusion with measured exclusions rather than a silent filter,
 # and their total is checked against an unfiltered query.
@@ -49,9 +52,10 @@
 # Exit codes: 0 the instrument RAN and every alert carries a disposition — including
 # STILL_EXPOSED and UNVERIFIABLE rows, which are FINDINGS reported in the output and
 # deliberately not folded into the exit code (this is advisory at session close; a finding
-# must not read as a broken instrument) · 1 INSTRUMENT FAILURE: an input could not be read or
-# a gate failed, so the dispositions are absent or untrustworthy — the artifact still records
-# what was measured · 2 usage error. The 1-vs-2 split follows
+# must not read as a broken instrument) · 1 INSTRUMENT FAILURE: an input could not be read, a
+# gate failed, or the evidence artifact could not be written — so the dispositions are absent,
+# untrustworthy, or unrecorded; when a gate is what failed, the artifact still records what was
+# measured · 2 usage error. The 1-vs-2 split follows
 # agent-board-toolkit-runtime-check, the closest sibling: rc 1 is its loud "this host is not
 # what it claims" failure and rc 2 its bad-argument refusal, which is also the repo-wide
 # usage-error code.

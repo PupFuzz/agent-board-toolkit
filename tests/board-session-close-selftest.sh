@@ -1304,6 +1304,12 @@ AEDIR="$TMP/ae/bin"; mkdir -p "$AEDIR"
 cp "$BIN" "$AEDIR/board-session-close"
 AEBIN="$AEDIR/board-session-close"
 AEHELPER="$AEDIR/_kbc-archive-eligible.py"
+# The OTHER advisory sibling must exist and be quiet here — mirroring what the Dependabot block
+# below does for this one. Without it that leg warns on every run in this block, and the
+# absence assertions at the end could only ever be written narrowly enough to exclude its
+# warning. With both siblings present-and-quiet the broad needle discriminates again.
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: quiet"' > "$AEDIR/dependabot-deploy-reconcile"
+chmod +x "$AEDIR/dependabot-deploy-reconcile"
 
 # run_ae <fake-reconcile-hook> — run the COPIED bin; echo rc, leave out/err in $OUTF/$ERRF.
 run_ae() {
@@ -1373,13 +1379,14 @@ eq "…and does NOT leak to the ritual's own stderr" \
 # can no longer produce.
 eq "a clean helper emits NO exit-status ⚠ on stderr" \
    "false" "$(has '_kbc-archive-eligible.py exited' "$(cat "$ERRF")")"
-# QUALIFIED BY TOOL NAME, and that is the assertion, not tidiness: this fixture dir holds a
-# fake archive sibling and no OTHER sibling, so once main grew a second delegate an unqualified
-# `sibling not found` matched THAT leg's warning and this line failed on a run where the
-# archive leg was perfectly quiet. An absence assertion must name whose absence it is about.
-# The needle is a strict prefix of the string observed present two cases up.
-eq "…and no missing-sibling ⚠ either" \
-   "false" "$(has '_kbc-archive-eligible.py sibling not found' "$(cat "$ERRF")")"
+# BROAD AGAIN, and that is the assertion: this needle was once narrowed to the tool name because
+# the fixture dir held only the archive sibling, so once main grew a second delegate the
+# unqualified `sibling not found` matched THAT leg's warning and the line failed on a run where
+# the archive leg was perfectly quiet. The fix is the FIXTURE, not the needle — both siblings are
+# now present and quiet here — so this asserts what it always meant to: NO leg reports a missing
+# sibling on a healthy run. The needle is a substring of a string observed present two cases up.
+eq "…and no missing-sibling ⚠ from ANY leg" \
+   "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 # The '── Dependabot fixed-alert vs deployed-tree reconciliation ──' leg (card#6277) — main's
@@ -1458,8 +1465,10 @@ eq "…and does NOT leak to the ritual's own stderr" \
 # needles below were both observed PRESENT two cases up, so these are claims about this run.
 eq "a rc-0 run carrying a FINDING emits no exit-status ⚠" \
    "false" "$(has 'dependabot-deploy-reconcile exited' "$(cat "$ERRF")")"
-eq "…and no missing-sibling ⚠ either" \
-   "false" "$(has 'dependabot-deploy-reconcile sibling not found' "$(cat "$ERRF")")"
+# Broad for the same reason as its twin in the archive block: this dir carries a quiet archive
+# sibling too, so a healthy run must leave BOTH legs silent about a missing sibling.
+eq "…and no missing-sibling ⚠ from ANY leg" \
+   "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
