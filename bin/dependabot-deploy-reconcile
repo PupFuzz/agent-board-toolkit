@@ -40,8 +40,10 @@
 # sends only a validated state literal, and re-asserts every returned alert's own `.state` (a
 # boundary check on a remote answer, not a patch for a known bug).
 # The excluded states (open / dismissed / auto_dismissed) are COUNTED and reported, so
-# "state=fixed" is a named inclusion with measured exclusions rather than a silent filter,
-# and their total is checked against an unfiltered query.
+# "state=fixed" is a named inclusion with measured exclusions rather than a silent filter.
+# The integrity control is stronger than those three: ALL FOUR per-state counts, the
+# included one as well, must sum to an unfiltered query's total — so a short read of the
+# population itself is caught, not just a short read of what was excluded.
 #
 # Output: one line per alert on stdout, plus the scope object (run identity, states queried
 # with their counts, per-install coverage, denominator, any injected identity) — the same

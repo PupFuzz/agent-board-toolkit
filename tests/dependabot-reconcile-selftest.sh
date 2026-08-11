@@ -476,6 +476,55 @@ eq "…and an unmeasured denominator says so rather than rendering None" "true" 
 eq "…so the literal 'None alert(s)' never appears" "false" \
    "$(has 'None alert(s)' "$(cat "$OUTF")")"
 
+echo "== a wrong-typed SCALAR is named, not left to kill the run downstream =="
+# The element gate proves each element is an OBJECT; it says nothing about the TYPE of the
+# fields the code downstream keys on. All three shapes below were measured as raw tracebacks
+# with rc 1 and NO ARTIFACT AT ALL — so the one thing the exit contract promises about a failed
+# run, that the artifact still records what was measured, was false exactly when it mattered.
+# Each is asserted on its SPECIFIC cause: the catch-all backstop would also stop the crash, but
+# it can only say "unhandled TypeError", and a named cause is what makes a report actionable.
+#
+# THE CATCH-ALL BACKSTOP IN main() HAS NO FIXTURE HERE, and that is a stated bound rather than
+# an oversight: with the type assertions below in place, no INPUT reaches it — which is exactly
+# what "defence in depth" means, and building a seam to reach it would be building the hole it
+# guards. It is witnessed by mutation instead, re-runnable by hand: inject a `raise` after the
+# unfiltered query and the run must produce rc 1 + an artifact + INSTRUMENT FAILURE framing +
+# `scope.unhandled_traceback` and NO traceback on stderr; delete the handler and the same
+# injection must produce a raw traceback and no artifact at all. Both were observed.
+scalar_case() {   # <label> <json-array> <needle>
+    printf '%s\n' "$2" > "$FIX/alerts-fixed.json"
+    mk_states
+    run_dr
+    eq "$1 ⇒ rc 1" "1" "$RC"
+    eq "…named specifically: $3" "true" "$(has "$3" "$(cat "$ERRF")")"
+    eq "…with the artifact still written, as the exit contract promises" "false" \
+       "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+    eq "…and no traceback" "false" "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+}
+_DEP="\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":\"hono\"},\"manifest_path\":\"$IN_SCOPE\"}"
+scalar_case "a population mixing int and str alert numbers" \
+  "[{\"number\":1,\"state\":\"fixed\",$_DEP},{\"number\":\"2\",\"state\":\"fixed\",$_DEP}]" \
+  'returned a str `number`'
+scalar_case "an UNHASHABLE package name (it is used as a dict key)" \
+  "[{\"number\":1,\"state\":\"fixed\",\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":[\"a\"]},\"manifest_path\":\"$IN_SCOPE\"}}]" \
+  'returned a list package name'
+scalar_case "a non-string package name (it is used as a path segment)" \
+  "[{\"number\":1,\"state\":\"fixed\",\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":7},\"manifest_path\":\"$IN_SCOPE\"}}]" \
+  'returned a int package name'
+# A JSON `true` must not pass as a number: bool subclasses int, so an isinstance check would
+# accept it and render the alert as "#True".
+scalar_case "a boolean alert number (bool subclasses int — isinstance would admit it)" \
+  "[{\"number\":true,\"state\":\"fixed\",$_DEP}]" \
+  'returned a bool `number`'
+# Control: the same shapes with correct types run clean, so the assertions above are about the
+# types and not about the fixture being malformed in some other way.
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+SPECS
+mk_states
+run_dr
+eq "control: correctly-typed number and name ⇒ rc 0" "0" "$RC"
+
 echo "== a malformed NESTED object degrades to a disposition, never to a traceback =="
 # The other half of the same class, one level down and NOT covered by the element gate above:
 # `x.get(k) or {}` guards against null and a missing key, but a present-but-wrong-typed value
@@ -817,6 +866,50 @@ A="$(art "$REAL_ART")"
 eq "control: restoring the leaf's mode restores its disposition" "FIXED_CONFIRMED" \
    "$(disp "$A" 1)"
 
+echo "== a SYMLINKED subtree is never walked at all, so it is recorded as unscanned =="
+# The third route past this scan, and the quietest of the three: under the default
+# followlinks=False, os.walk lists a symlinked directory in `dirnames` and then NEVER yields it
+# as a `dirpath`. So the per-directory check never runs on it, onerror never fires, nothing
+# raises — the subtree is simply not scanned, and an unscanned subtree reads as "no nested copy
+# here", which is what lets the top-level read stand. Measured before fixing: a nested copy
+# behind a symlink produced FIXED_CONFIRMED at covered:true.
+SYMTARGET="$TMP/linked-subtree"
+mkdir -p "$SYMTARGET/node_modules/hono"
+printf '{"name":"hono","version":"1.0.0"}\n' > "$SYMTARGET/node_modules/hono/package.json"
+ln -sfn "$SYMTARGET" "$NM/type-is"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a nested copy behind a SYMLINK ⇒ UNVERIFIABLE, not the FIXED_CONFIRMED it produced" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…naming the symlink and why it was not followed" "true" \
+   "$(has 'symlinked subtree, not traversed' "$(get "$A" scope.legs.0.coverage_scope.0.reason)")"
+eq "…with the coverage statement coupled to it" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+
+# Arm two: the same symlink with an UNREADABLE target. Fails closed for the same reason and
+# not by luck — the link is recorded before anything tries to read through it, so the result
+# does not depend on what the target happens to permit.
+chmod 000 "$SYMTARGET"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an unreadable symlink target ⇒ the same fail-closed answer" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…still not covered" "false" "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+chmod 755 "$SYMTARGET"
+rm -f "$NM/type-is"
+
+# THE CONTROL THAT KEEPS IT USABLE: node_modules/.bin is full of symlinks to FILES, which land
+# in `filenames`, not `dirnames`. If those fired this, every real install on earth would report
+# an unscannable tree and the check would be worse than useless — it would be noise nobody
+# reads. A real run on this host carries such a link, so this is the shape that matters.
+mkdir -p "$NM/.bin"
+ln -sf "$NM/hono/package.json" "$NM/.bin/some-tool"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a .bin FILE-symlink does NOT fire the subtree check" "FIXED_CONFIRMED" "$(disp "$A" 1)"
+eq "…and coverage is unaffected" "true" "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+rm -rf "$NM/.bin"
+
 echo "== a package path that is present but NOT A DIRECTORY is unreadable, not absent =="
 # The read_installed half of the same class: `os.path.exists` on the package.json answers False
 # both when the package is missing and when what holds it cannot be traversed, so an install
@@ -913,6 +1006,32 @@ eq "a foreign install under a RENAMED directory is reported too, not silently dr
 eq "…also marked NOT covered" "false" "$(get "$A" scope.legs.0.coverage_scope.2.covered)"
 eq "…so the host-wide statement covers three installs, not two" "3" \
    "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["coverage_scope"]))' "$A")"
+# A foreign install whose tree EXISTS and is readable — the branch neither line above reaches.
+# Without it the whole `dir_fault` call here is unfalsifiable (hardcoding the fault to None
+# left every assertion green), and the two paths through it are indistinguishable. It also
+# pins the wrong-but-specific cause this fixed: a MISSING tree was reported as "unreadable",
+# sending a reader to check permissions on a path that is simply gone — the ordinary shape of
+# a process still running from a deleted or replaced release clone.
+FOREIGN="$TMP/foreign-install/examples/channel-servers"
+mkdir -p "$FOREIGN/node_modules"
+mk_ps "9997 $WHEN5 node $FOREIGN/channel.mjs"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a foreign install with a READABLE tree is reported uncovered as out-of-leg" "true" \
+   "$(has "outside this run's declared leg" "$(get "$A" scope.legs.0.coverage_scope.1.reason)")"
+eq "…and NOT described as unreadable, which it is not" "false" \
+   "$(has 'not readable from here' "$(get "$A" scope.legs.0.coverage_scope.1.reason)")"
+# One input apart: delete the tree and the SAME install must change its stated reason.
+rm -rf "$FOREIGN/node_modules"
+run_dr
+A="$(art "$REAL_ART")"
+eq "the same install with the tree GONE says so, not 'unreadable'" "true" \
+   "$(has 'no longer exists' "$(get "$A" scope.legs.0.coverage_scope.1.reason)")"
+eq "…naming the deleted-or-replaced install shape a reader should look for" "true" \
+   "$(has 'deleted or replaced install' "$(get "$A" scope.legs.0.coverage_scope.1.reason)")"
+eq "…and still not covered, either way" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.1.covered)"
+
 mk_ps
 run_dr
 A="$(art "$REAL_ART")"
@@ -998,6 +1117,40 @@ eq "control: restoring the config restores a clean run" "0" "$RC"
 # ---------------------------------------------------------------------------
 # 5. The comparator, and the two static properties.
 # ---------------------------------------------------------------------------
+echo "== an unwritable artifact directory is an INSTRUMENT FAILURE, and rc 1 says so =="
+# The exit contract names three rc-1 causes; this was the one with no case behind it. It is
+# not cosmetic: the artifact IS the evidence trail, so a run whose dispositions were all
+# correct but which recorded none of them must not exit 0 and read as filed.
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+SPECS
+mk_states
+# `run_dr` clears the artifact tree first, so the unwritable directory has to be created after
+# that — hence the inline invocation here rather than the helper. 500 = readable + traversable
+# but NOT writable, which is the shape a wrong-owner cache directory actually has; the EXIT
+# trap set at the top of this file unlocks $TMP before deleting, so a failing assertion here
+# cannot leave an undeletable directory behind.
+rm -rf "$H/.cache/coord"
+mkdir -p "$REAL_ART"
+chmod 500 "$REAL_ART"
+RC=0
+HOME="$H" PATH="$STUB:$UB" DR_FIXTURE="$FIX" DR_PS_FIXTURE="$PSF" \
+    "$BIN" >"$OUTF" 2>"$ERRF" || RC=$?
+chmod 755 "$REAL_ART"
+eq "an unwritable artifact directory ⇒ rc 1" "1" "$RC"
+eq "…framed as an INSTRUMENT FAILURE" "true" "$(has 'INSTRUMENT FAILURE' "$(cat "$ERRF")")"
+eq "…naming the artifact write as the cause" "true" \
+   "$(has 'could not write the JSON artifact' "$(cat "$ERRF")")"
+eq "…with no traceback" "false" "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+# The dispositions were fine — only the recording failed — so the rows still render.
+eq "…and the rows it DID compute are still reported to the operator" "true" \
+   "$(has 'FIXED_CONFIRMED' "$(cat "$OUTF")")"
+# Control: same fixture, writable directory ⇒ rc 0 and an artifact on disk.
+run_dr
+eq "control: a writable directory ⇒ rc 0" "0" "$RC"
+eq "…and the artifact exists" "false" \
+   "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+
 echo "== the comparator orders by SemVer precedence, not lexically =="
 cmp_probe() {
     python3 -c '

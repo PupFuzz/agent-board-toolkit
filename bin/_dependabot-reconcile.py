@@ -37,6 +37,7 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 
 # Host-local by nature, exactly like board-session-close's BSC_WORKTREES: this is the agent
 # host's own session instrument, not a vendored per-repo tool. The deployed DIRECTORY is
@@ -200,7 +201,12 @@ def resolve_launch_script() -> str:
         raise InstrumentError(
             f"{path}: mcpServers.{MCP_SERVER_KEY} is a JSON {type(entry).__name__}, not an "
             f"object — the entry is declared, so this is a broken config, not an absent one")
-    args = entry.get("args") or []
+    args = entry.get("args")
+    if not isinstance(args, list):
+        # Shape before content, same as the three checks above: a scalar here would make
+        # the membership scan below iterate a string (or die on an int) rather than look
+        # for a launch script. An empty list falls through to the broken-config arm.
+        args = []
     mjs = next((a for a in args if isinstance(a, str) and a.endswith(".mjs")), None)
     if not mjs:
         raise InstrumentError(
@@ -220,7 +226,12 @@ def _validate_state(state: str) -> str:
 
 
 def gh_alerts(state) -> list:
-    """One `gh api --paginate` alerts query, through four gates.
+    """One `gh api --paginate` alerts query, through the gates below.
+
+    NO COUNT OF THEM IS GIVEN, on purpose — this said "four" and was stale the moment the
+    element-shape gate was added. The gates are the guard clauses in the body; they are what
+    a reader should count, and `tests/dependabot-reconcile-selftest.sh` § "the per-query
+    gates" is what asserts each one can fire.
 
     `state=None` is the deliberate no-filter query (the integrity control's denominator); it
     has no state literal, so the re-assert gate does not apply to it and says so.
@@ -260,12 +271,30 @@ def gh_alerts(state) -> list:
     # contradicts the exit contract's promise that a gate failure still records what was
     # measured. Every consumer of an alert population in this file (the disposition loop, the
     # name set, the sort key) assumes a dict, so this is the one place to establish it.
+    #
+    # The SCALAR half is here too, for the two fields whose TYPE (not just presence) the code
+    # downstream depends on. It buys a NAMED cause where the backstop in main() would other-
+    # wise report a generic unhandled-exception line: both are correct, one is actionable.
+    # `type(x) is T` rather than isinstance, so a JSON `true` is not accepted as a `number`
+    # (bool subclasses int) and rendered as "#True".
     for i, alert in enumerate(data):
         if not isinstance(alert, dict):
             raise InstrumentError(
                 f"gh api ({label}) returned a {type(alert).__name__} at index {i}, not an "
                 f"alert object — the array is well-formed but its contents are not alerts, "
                 f"and nothing here can be disposed from them")
+        number = alert.get("number")
+        if number is not None and type(number) is not int:
+            raise InstrumentError(
+                f"gh api ({label}) returned a {type(number).__name__} `number` ({number!r}) "
+                f"at index {i}, not an integer — alert numbers are sorted and rendered as "
+                f"identities, and a population mixing types cannot even be ordered")
+        name = as_obj(as_obj(alert.get("dependency")).get("package")).get("name")
+        if name is not None and type(name) is not str:
+            raise InstrumentError(
+                f"gh api ({label}) returned a {type(name).__name__} package name ({name!r}) "
+                f"on alert #{number} — the name is used as a dict key and as a path segment, "
+                f"and it can be neither")
     if state is not None:
         for alert in data:
             got = alert.get("state")
@@ -463,8 +492,16 @@ def nested_copies(node_modules: str, names):
     WHICH MAKES AN INCOMPLETE SCAN THE DANGEROUS DIRECTION, and why this returns a fault
     instead of just a dict: "no nested copy found" is what LETS the top-level read stand, so a
     subtree this process could not enter does not degrade the answer — it INVERTS it, turning
-    the tool's strongest clean verdict (FIXED_CONFIRMED) out of a directory nobody read. Both
-    ways that can happen are closed here, and they need different mechanisms:
+    the tool's strongest clean verdict (FIXED_CONFIRMED) out of a directory nobody read.
+
+    NO COUNT OF THE WAYS THAT CAN HAPPEN IS CLAIMED HERE, deliberately. This docstring has
+    twice said "both ways are closed" and been wrong the next time somebody looked — first
+    when the unreadable LEAF turned up, then when the SYMLINK did. A number in prose is a
+    completeness claim nobody re-derives, so the authority is the fixture set instead:
+    `tests/dependabot-reconcile-selftest.sh`, the cases under "an unscannable SUBTREE" and
+    "a SYMLINKED subtree", each watched red against the mechanism it covers. What is written
+    here is only WHY each mechanism is needed, which is what a reader cannot recover from a
+    test name:
 
       * a subtree that cannot be LISTED raises inside `os.walk`, which by default swallows it
         silently (`onerror=None`) — hence the handler;
@@ -473,6 +510,10 @@ def nested_copies(node_modules: str, names):
         it, and a package directory that could not be read reads exactly like one holding no
         nested copy. Only checking the directory itself catches this, which is what the
         per-`dirpath` check below is for.
+      * a SYMLINKED directory is never yielded as a `dirpath` at all under the default
+        `followlinks=False`, so neither mechanism above ever runs on it — only inspecting
+        `dirnames` sees it. Recorded, not followed: following would need its own cycle guard,
+        and this scan's contract is to say when it could not see, not to see everything.
 
     The 444 case with subdirectories sits between the two and is caught by the handler on
     Linux, though for a reason worth writing down rather than relying on silently: `readdir`
@@ -493,11 +534,25 @@ def nested_copies(node_modules: str, names):
     def _onerror(err):
         faults.append(f"{getattr(err, 'filename', node_modules)} ({err.strerror or err})")
 
-    for dirpath, _dirnames, _files in os.walk(node_modules, onerror=_onerror):
+    for dirpath, dirnames, _files in os.walk(node_modules, onerror=_onerror):
         sub_fault = dir_fault(dirpath)
         if sub_fault:
             faults.append(f"{dirpath} ({sub_fault})")
             continue
+        # A SYMLINKED directory is the third route past this scan, and the quietest: with
+        # followlinks=False (the default, and the right default — following would need its own
+        # cycle guard) walk lists it in `dirnames` and then never yields it as a `dirpath`, so
+        # the per-directory check above never runs on it and `onerror` never fires. The
+        # subtree is simply not scanned, and an unscanned subtree reads as "no nested copy".
+        # Recorded rather than followed: this scan's job is to say when it could not see, not
+        # to see everything.
+        #
+        # `dirnames` only, never `filenames`: node_modules/.bin is full of symlinks to FILES,
+        # which are not subtrees and must not fire this.
+        for d in dirnames:
+            linked = os.path.join(dirpath, d)
+            if os.path.islink(linked):
+                faults.append(f"{linked} (symlinked subtree, not traversed)")
         if dirpath == node_modules or os.path.basename(dirpath) != "node_modules":
             continue
         for name in wanted:
@@ -645,10 +700,19 @@ def main(argv) -> int:
             # Same predicate as the own-install gate below and as both per-package reads —
             # one primitive, four call sites (canon #5). It was hand-written here.
             foreign_fault = dir_fault(os.path.join(install, "node_modules"))
-            reason = ("detected via ps, outside this run's declared leg (this agent's own "
-                      "install only)" if foreign_fault is None else
-                      f"detected via ps, and its node_modules is unreadable from here "
-                      f"({foreign_fault})")
+            if foreign_fault is None:
+                reason = ("detected via ps, outside this run's declared leg (this agent's "
+                          "own install only)")
+            elif foreign_fault == DIR_ABSENT:
+                # A DIFFERENT FINDING, not a flavour of unreadable: a process still running
+                # from a tree that no longer exists is the ordinary shape of a replaced or
+                # deleted release clone, and calling it "unreadable" would send a reader to
+                # check permissions on a path that is simply gone.
+                reason = ("detected via ps, but its node_modules no longer exists — a "
+                          "process still running from a deleted or replaced install")
+            else:
+                reason = (f"detected via ps, and its node_modules is not readable from "
+                          f"here ({foreign_fault})")
             entry = {"machine": scope["machine"], "install_path": install,
                      "covered": False, "reason": reason}
             if entry not in others:
@@ -779,6 +843,27 @@ def main(argv) -> int:
         return 0
     except InstrumentError as e:
         scope["instrument_failures"].append(str(e))
+    except Exception as e:  # noqa: BLE001
+        # THE BACKSTOP, and it is what makes every per-site type check defence-in-depth rather
+        # than the only wall. Three wrong-typed scalars in an alert payload (a `number` that
+        # mixes int and str so the sort dies, an unhashable `name`, a non-string `name` reaching
+        # os.path.join) each escaped as a raw traceback: rc 1 by accident of the interpreter,
+        # NO artifact at all, and no INSTRUMENT FAILURE framing — so the one thing the exit
+        # contract promises for a failed run, that the artifact still records what was measured,
+        # was false exactly when it mattered. Guarding those three sites individually would have
+        # left the fourth to be found the same way. Anything unexpected now lands here, keeps
+        # whatever was measured, and is reported in the instrument's own vocabulary.
+        #
+        # Deliberately AFTER the two handlers above, so NotConfigured's rc-0 skip and
+        # InstrumentError's named causes keep their own paths; this only catches what neither
+        # anticipated. It is stated as a defect in the instrument, never as a finding about the
+        # deployment — a reader must not mistake a bug here for exposure out there.
+        scope["unhandled_traceback"] = traceback.format_exc()
+        scope["instrument_failures"].append(
+            f"UNHANDLED {type(e).__name__}: {e} — this is a DEFECT IN THIS INSTRUMENT, not a "
+            f"finding about the deployment. The rows and scope recorded here are whatever had "
+            f"been measured when it fired; the traceback is in the artifact under "
+            f"scope.unhandled_traceback")
 
     scope["denominator"]["rows_emitted"] = len(rows)
     by_disposition: dict = {}
