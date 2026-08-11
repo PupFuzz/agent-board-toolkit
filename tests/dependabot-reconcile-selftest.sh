@@ -42,6 +42,12 @@ _need -x "$BIN"
 _need -r "$HELPER"
 
 _mktmp_scratch
+# RE-ARM THE CLEANUP TRAP before anything is created under $TMP. One fixture below sets a
+# directory to mode 000 to drive the unreadable-tree gate, and the prelude's plain
+# `rm -rf "$TMP"` cannot descend into such a directory — so a run that dies between the chmod
+# and its restore would leave a locked directory behind for every later run to trip over. This
+# unlocks first, then deletes; it is idempotent and harmless on every other run.
+trap 'chmod -R u+rwX "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 H="$TMP/home"; mkdir -p "$H"
 UB="/usr/bin:/bin"
 STUB="$TMP/bin"; mkdir -p "$STUB"
@@ -449,7 +455,7 @@ DR_GH_RAW="$TMP/raw-obj.json" run_dr
 eq "an error DOCUMENT at 200 ⇒ rc 1" "1" "$RC"
 eq "…named as not-an-array" "true" "$(has 'not a JSON array' "$(cat "$ERRF")")"
 
-echo "== gate: a zero-length population is UNVERIFIABLE unless the repo is genuinely empty =="
+echo "== gate: a zero-length population is an INSTRUMENT FAILURE unless the repo is empty =="
 # The five reads AGREE (0+2+1+3 == 6) so the integrity gate below is satisfied and this gate is
 # the one under test — the repository holds alerts, and the queried population is empty.
 #
@@ -606,6 +612,64 @@ eq "control: restoring the process restores both the disposition and the coverag
    "FIXED_CONFIRMED" "$(disp "$A" 1)"
 eq "…and coverage" "true" "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
 
+echo "== the deployed tree itself must be READABLE, or nothing about it is decidable =="
+# THE FAIL-CLOSED INVERSION this block exists to prevent. With node_modules absent or
+# unreadable, EVERY alerted package's package.json is missing, and the per-package read reports
+# exactly what it reports for a package that was genuinely never installed. Answered one package
+# at a time, that renders as `UNDECIDABLE: package not in deployment` — a DECIDABLE FACT about
+# the deployment, minted out of a read that never happened, at rc 0, next to a coverage entry
+# claiming the install is covered. The window is the ordinary one, not a contrived one: `npm ci`
+# REMOVES node_modules before repopulating it, and this instrument runs at session close.
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+2|npm|fast-uri|$IN_SCOPE|runtime|3.1.0
+SPECS
+mk_states
+mv "$NM" "$TMP/nm.away"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an ABSENT node_modules ⇒ rc 0 (a finding about the host, not a broken instrument)" "0" "$RC"
+eq "…every in-leg row is UNVERIFIABLE, never a claim about what is deployed" "true" \
+   "$(has 'UNVERIFIABLE: node_modules not readable' "$(disp "$A" 1)")"
+eq "…including the second" "true" \
+   "$(has 'UNVERIFIABLE: node_modules not readable' "$(disp "$A" 2)")"
+eq "…named as ABSENT rather than as a permission problem" "true" \
+   "$(has 'directory does not exist' "$(disp "$A" 1)")"
+# The half the inversion made self-contradictory: the rows and the coverage statement are one
+# claim about one install, and an instrument that reports both ways gives a reader no way to
+# tell which half to believe.
+eq "…and the coverage statement AGREES: this install is not covered" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+eq "…carrying the same reason the rows carry" "true" \
+   "$(has 'node_modules not readable' "$(get "$A" scope.legs.0.coverage_scope.0.reason)")"
+eq "…and no row anywhere claims the package is simply not deployed" "false" \
+   "$(has 'package not in deployment' "$(cat "$OUTF")")"
+mv "$TMP/nm.away" "$NM"
+
+# Arm two: the tree EXISTS and cannot be read. Same class of finding, different operator remedy
+# (fix the permissions vs. wait for the reinstall), so the reason names which — while the
+# disposition prefix stays one string, because the consequence for every row is identical.
+chmod 000 "$NM"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an UNREADABLE node_modules ⇒ rc 0 as well" "0" "$RC"
+eq "…its rows are UNVERIFIABLE too" "true" \
+   "$(has 'UNVERIFIABLE: node_modules not readable' "$(disp "$A" 1)")"
+eq "…named as a CREDENTIALS problem, not as an absent directory" "true" \
+   "$(has "not readable under this agent's credentials" "$(disp "$A" 1)")"
+eq "…and its coverage statement is not covered either" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+chmod 755 "$NM"
+
+# Control: the identical fixture with the tree readable again disposes both alerts for real, so
+# the UNVERIFIABLE rows above are the unreadable tree and not something else about this fixture.
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: restoring the tree restores real dispositions" "FIXED_CONFIRMED" "$(disp "$A" 1)"
+eq "…for both alerts" "FIXED_CONFIRMED" "$(disp "$A" 2)"
+eq "…and the coverage statement claims coverage again" "true" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+
 echo "== other installs on the host are REPORTED as uncovered, never ignored (F16) =="
 # TWO foreign installs, and the second one is the assertion: it lives under a directory that
 # does NOT carry the repository's name, and its launcher is not named for it either. A detector
@@ -641,16 +705,74 @@ eq "control: with no foreign process there is exactly one coverage entry" "1" \
 eq "…which is this agent's own install, not a second copy of it" "$DEP" \
    "$(get "$A" scope.legs.0.coverage_scope.0.install_path)"
 
-echo "== an unresolvable deployment is an instrument failure, never a guessed path =="
+echo "== an UNCONFIGURED host is not a broken one: rc 0, one line, no artifact =="
+# "This host runs no channel server" and "I could not read the channel server this host runs"
+# are different findings, and collapsing the first into the second makes every session close on
+# every out-of-scope host render an INSTRUMENT FAILURE, forever. A warning that always fires is
+# one nobody reads on the day it means something.
 mv "$H/.mcp.json" "$TMP/mcp.bak"
 run_dr
-eq "a missing MCP config ⇒ rc 1" "1" "$RC"
-eq "…naming the file" "true" "$(has '.mcp.json' "$(cat "$ERRF")")"
+eq "no ~/.mcp.json at all ⇒ rc 0, not an instrument failure" "0" "$RC"
+eq "…saying so on stdout" "true" "$(has 'not configured on this host' "$(cat "$OUTF")")"
+eq "…naming the file it looked for" "true" "$(has '.mcp.json' "$(cat "$OUTF")")"
+eq "…writing NO artifact: nothing was measured, so there is nothing to record" "true" \
+   "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+eq "…and emitting no INSTRUMENT FAILURE at all" "false" \
+   "$(has 'INSTRUMENT FAILURE' "$(cat "$ERRF")")"
+# A config that exists but declares some OTHER server is the same finding: not this host's job.
+printf '{"mcpServers":{"some-other-server":{"command":"node","args":["/x/y.mjs"]}}}\n' \
+    > "$H/.mcp.json"
+run_dr
+eq "a config with no kanbanboard-agent entry ⇒ rc 0 too" "0" "$RC"
+eq "…naming the key that is absent, so the state is actionable" "true" \
+   "$(has 'mcpServers.kanbanboard-agent' "$(cat "$OUTF")")"
+eq "…and still no artifact" "true" \
+   "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+
+echo "== a BROKEN config is still an instrument failure, never a guessed path =="
+# The control that stops the arm above from swallowing real breakage: the entry IS declared, so
+# something is meant to run here and could not be located. Both directions matter — the skip
+# must not eat a broken config, and the failure must not eat an unconfigured host.
 printf '{"mcpServers":{"kanbanboard-agent":{"command":"node","args":[]}}}\n' > "$H/.mcp.json"
 run_dr
 eq "an entry launching no .mjs ⇒ rc 1" "1" "$RC"
 eq "…saying the directory is not derivable" "true" \
    "$(has 'not derivable' "$(cat "$ERRF")")"
+eq "…and NOT reported as an unconfigured host" "false" \
+   "$(has 'not configured on this host' "$(cat "$OUTF")")"
+eq "…with the artifact recording the failure rather than being skipped" "false" \
+   "$([ -z "$(art "$REAL_ART")" ] && echo true || echo false)"
+# Present-but-unparseable is breakage too: the file exists, so something put it there, and
+# answering "nothing to reconcile" would be a guess about contents nobody read.
+printf 'not json at all\n' > "$H/.mcp.json"
+run_dr
+eq "a present-but-unparseable config ⇒ rc 1" "1" "$RC"
+eq "…and NOT reported as an unconfigured host" "false" \
+   "$(has 'not configured on this host' "$(cat "$OUTF")")"
+
+# A config that PARSES but is not the assumed SHAPE is breakage at every level, and each level
+# needs its own case because they fail differently. The middle one is the dangerous shape and
+# the reason this loop exists: with `mcpServers` a STRING, the key-presence test degrades into
+# a SUBSTRING test that answers "absent", so a malformed config reported itself as a host that
+# is merely unconfigured — rc 0, no artifact, no warning, forever. The outer two died on an
+# AttributeError traceback instead. All three are rc 1 with a named cause.
+for _bad in '[1,2,3]' '{"mcpServers":"nope"}' '{"mcpServers":{"kanbanboard-agent":"nope"}}'; do
+    printf '%s\n' "$_bad" > "$H/.mcp.json"
+    run_dr
+    eq "a parseable-but-malformed config ⇒ rc 1: $_bad" "1" "$RC"
+    eq "…named as malformed, not swallowed as an unconfigured host: $_bad" "false" \
+       "$(has 'not configured on this host' "$(cat "$OUTF")")"
+    eq "…and reported as an instrument failure rather than a traceback: $_bad" "true" \
+       "$(has 'INSTRUMENT FAILURE' "$(cat "$ERRF")")"
+    eq "…with no python traceback leaking to stderr: $_bad" "false" \
+       "$(has 'Traceback (most recent call last)' "$(cat "$ERRF")")"
+done
+# The control for the loop above: a well-formed config with the mcpServers key simply ABSENT
+# is the unconfigured host, so "malformed ⇒ rc 1" is not just "everything ⇒ rc 1".
+printf '{}\n' > "$H/.mcp.json"
+run_dr
+eq "control: a well-formed config with no mcpServers at all ⇒ rc 0, unconfigured" "0" "$RC"
+eq "…said as such" "true" "$(has 'not configured on this host' "$(cat "$OUTF")")"
 cp "$TMP/mcp.bak" "$H/.mcp.json"
 run_dr
 eq "control: restoring the config restores a clean run" "0" "$RC"

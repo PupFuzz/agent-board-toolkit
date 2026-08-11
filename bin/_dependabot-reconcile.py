@@ -89,6 +89,17 @@ class InstrumentError(Exception):
     """A read or a gate failed — the run cannot produce trustworthy dispositions."""
 
 
+class NotConfigured(Exception):
+    """This host runs no deployed channel server, so there is nothing here to reconcile.
+
+    NOT a failure, and the distinction is the whole point: an instrument that cannot tell
+    "this host is not part of what I measure" from "I could not read what I measure" reports
+    an INSTRUMENT FAILURE at every session close on every host that was never in scope,
+    forever — and a warning that always fires is one nobody reads when it means something.
+    A config that EXISTS but is broken is the other case and stays an InstrumentError.
+    """
+
+
 class UsageError(Exception):
     """The invocation itself is wrong."""
 
@@ -145,14 +156,49 @@ def resolve_launch_script() -> str:
     tree the running server was started from, so deriving the path from it is what ties the
     files read below to the process checked for staleness — and matching the process on this
     exact path is what makes "the tree I read" and "the tree it is running" the same claim.
+
+    Two outcomes besides success, and the split between them is deliberate. NO config file at
+    all, or a well-formed config that simply does not declare this server, means the host is
+    not one this instrument is about — NotConfigured, rc 0. Anything else that stops the
+    resolution is BREAKAGE: a config that is present and unreadable or unparseable, one whose
+    shape is not what this reader assumes at any level, or an entry that IS declared but
+    launches no `.mjs` — something meant to run here and cannot be located, which is exactly
+    the state a session-close instrument should shout about — InstrumentError, rc 1.
     """
     path = os.path.join(os.path.expanduser("~"), ".mcp.json")
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
+    except FileNotFoundError as e:
+        raise NotConfigured(f"{path} does not exist") from e
     except Exception as e:  # noqa: BLE001
+        # Present but unreadable/unparseable is NOT an unconfigured host — the file exists, so
+        # something put it there, and answering "nothing to reconcile" would be a guess about
+        # contents nobody read.
         raise InstrumentError(f"could not read {path}: {e}") from e
-    entry = ((cfg.get("mcpServers") or {}).get(MCP_SERVER_KEY) or {})
+    # SHAPE BEFORE CONTENT, at each level. A config that PARSES but is not the shape this
+    # reader assumes is breakage, and it has to be told apart from an unconfigured host at
+    # every level rather than once: a `mcpServers` that is a string makes the `not in` test
+    # below a SUBSTRING test that answers True, which would report a malformed config as a
+    # host that simply is not configured — the exact swallowing this split exists to prevent.
+    # Without these, two of the three shapes died on an AttributeError traceback instead.
+    if not isinstance(cfg, dict):
+        raise InstrumentError(
+            f"{path} parses but is a JSON {type(cfg).__name__}, not an object — a malformed "
+            f"config is breakage, not an unconfigured host")
+    servers = cfg.get("mcpServers")
+    if servers is None:
+        raise NotConfigured(f"{path} declares no mcpServers at all")
+    if not isinstance(servers, dict):
+        raise InstrumentError(
+            f"{path}: mcpServers is a JSON {type(servers).__name__}, not an object")
+    if MCP_SERVER_KEY not in servers:
+        raise NotConfigured(f"{path} declares no mcpServers.{MCP_SERVER_KEY} entry")
+    entry = servers.get(MCP_SERVER_KEY)
+    if not isinstance(entry, dict):
+        raise InstrumentError(
+            f"{path}: mcpServers.{MCP_SERVER_KEY} is a JSON {type(entry).__name__}, not an "
+            f"object — the entry is declared, so this is a broken config, not an absent one")
     args = entry.get("args") or []
     mjs = next((a for a in args if isinstance(a, str) and a.endswith(".mjs")), None)
     if not mjs:
@@ -363,6 +409,15 @@ def disposition_for(alert, ctx):
     # From here the alert IS this leg's business, so every row carries the deployed path.
     if ctx["process_error"]:
         return (f"UNVERIFIABLE: {ctx['process_error']}", None, patched, True)
+    # The tree itself could not be read. This MUST come before any per-package read, because
+    # `read_installed` cannot tell "this package is not installed" from "no package in this
+    # tree is visible to me": both surface as a missing package.json, and the second one
+    # answered as the first is a decidable FACT about the deployment minted out of a read that
+    # never happened — precisely the inversion the fail-closed rule exists to prevent. It is
+    # reachable in the ordinary way, not a contrived one: `npm ci` removes node_modules before
+    # repopulating it, and this instrument runs at session close.
+    if ctx["nm_error"]:
+        return (f"UNVERIFIABLE: {ctx['nm_error']}", None, patched, True)
 
     injected = ctx["injected"].get(name)
     if injected is not None:
@@ -484,11 +539,31 @@ def main(argv) -> int:
             # running from this tree is a file that process did not load.
             process_start = min(p[1] for p in own if p[1] is not None)
 
+        # --- can this run READ the tree it is about? --------------------------------------
+        # The same predicate already applied to every FOREIGN install above, now applied to
+        # the one install actually read (canon #5 — one primitive, not a sibling of it). Its
+        # absence here is what let an unreadable tree render as a decidable fact about the
+        # deployment. Absent and unreadable are named apart because they are different
+        # operator actions — wait for the reinstall to finish, versus fix the permissions —
+        # while sharing one prefix so the row and the coverage entry stay one claim.
+        if not os.path.isdir(node_modules):
+            nm_error = (f"node_modules not readable at {node_modules} "
+                        f"(directory does not exist)")
+        elif not os.access(node_modules, os.R_OK | os.X_OK):
+            nm_error = (f"node_modules not readable at {node_modules} "
+                        f"(not readable under this agent's credentials)")
+        else:
+            nm_error = None
+
+        # ONE reason string, shared: a row saying UNVERIFIABLE beside a coverage entry saying
+        # `covered: true` would be the instrument contradicting itself, and a reader would have
+        # no way to tell which half to believe.
+        coverage_faults = [f for f in (process_error, nm_error) if f]
         leg["coverage_scope"] = [{
             "machine": scope["machine"],
             "install_path": deployed,
-            "covered": process_error is None,
-            "reason": process_error,
+            "covered": not coverage_faults,
+            "reason": "; ".join(coverage_faults) or None,
         }] + others
 
         # --- the alert population, and its measured exclusions --------------------------
@@ -537,6 +612,7 @@ def main(argv) -> int:
             "injected": opts.injected,
             "process_error": process_error,
             "process_start": process_start,
+            "nm_error": nm_error,
         }
         for alert in sorted(population, key=lambda a: a.get("number") or 0):
             dep = alert.get("dependency") or {}
@@ -555,6 +631,13 @@ def main(argv) -> int:
                 "deployed_path": deployed if in_leg else None,
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
+    except NotConfigured as e:
+        # ONE LINE, no scope object, NO ARTIFACT, rc 0. An artifact is a record of a
+        # measurement, and nothing was measured here; writing one per session close on a host
+        # that runs no channel server would grow an evidence trail of non-events.
+        print(f"— not configured on this host ({e}) — no deployed channel server to "
+              f"reconcile; nothing was measured and no artifact was written")
+        return 0
     except InstrumentError as e:
         scope["instrument_failures"].append(str(e))
 

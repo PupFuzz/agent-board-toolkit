@@ -1415,6 +1415,7 @@ printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: quiet")' > "$DRDIR/_k
 
 run_dr_leg() {
     HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
+        BSC_ADVISORY_TIMEOUT="${BSC_ADVISORY_TIMEOUT:-60}" \
         bash "$DRBIN" >"$OUTF" 2>"$ERRF"; echo $?
 }
 
@@ -1469,6 +1470,43 @@ eq "a rc-0 run carrying a FINDING emits no exit-status ⚠" \
 # sibling too, so a healthy run must leave BOTH legs silent about a missing sibling.
 eq "…and no missing-sibling ⚠ from ANY leg" \
    "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
+
+echo "== Advisory legs are bounded in WALL-CLOCK, not just in exit code =="
+# "Advisory — never blocks the close" was true of the rc and false of the clock: a leg that
+# reaches the network (the reconciler makes five sequential `gh api` calls) could hang the
+# ritual indefinitely on a stalled connection, and a close that never returns is not one the
+# advisory contract protected. The bound lives in `_bsc_advisory_leg`, so every leg inherits it.
+#
+# BSC_ADVISORY_TIMEOUT is overridden to 1s here for exactly one reason: to test the bound
+# without making this suite wait out the real 60s budget. The real default is asserted below.
+printf '%s\n' '#!/bin/sh' 'sleep 30' 'echo "never reached"' > "$DRTOOL"; chmod +x "$DRTOOL"
+_t0=$SECONDS
+rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
+_elapsed=$((SECONDS - _t0))
+eq "a hanging leg does NOT hang the close — it still exits 0" "0" "$rc"
+eq "…and the ritual returns in about the budget, not the delegate's own runtime" "true" \
+   "$([ "$_elapsed" -lt 15 ] && echo true || echo false)"
+eq "…with a ⚠ naming the kill and the budget that caused it" "true" \
+   "$(has 'dependabot-deploy-reconcile was KILLED after 1s' "$(cat "$ERRF")")"
+eq "…said as an INCOMPLETE partial answer, not as a finished one" "true" \
+   "$(has 'a partial answer, not a finished one' "$(cat "$ERRF")")"
+# The timeout is the HELPER's doing, so the helper explains it: the per-leg <cause> text
+# describes that leg's own failure modes and would be simply wrong about a clock kill.
+eq "…and NOT mis-attributed to the leg's own input/gate failure modes" "false" \
+   "$(has 'an input was unreadable' "$(cat "$ERRF")")"
+# THE DISCRIMINATOR: the same 1s budget with a fast delegate must stay completely quiet. Without
+# it, this block would also pass for a helper that warns on every run under a short budget.
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: fast"' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
+eq "control: a FAST leg under the same 1s budget exits 0" "0" "$rc"
+eq "…and emits no kill ⚠ at all (the warning tracks the hang, not the budget)" "false" \
+   "$(has 'was KILLED after' "$(cat "$ERRF")")"
+eq "…while still rendering its output into the report" "true" \
+   "$(grep -qxF '  dr fixture: fast' "$OUTF" && echo true || echo false)"
+# The default is what a real close actually runs under, and nothing above exercises it because
+# every case overrides it. Asserted against the bin so the override cannot hide a changed default.
+eq "the real default budget is 60s, not whatever a test happened to set" "true" \
+   "$(grep -qF 'BSC_ADVISORY_TIMEOUT:-60' "$BIN" && echo true || echo false)"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
