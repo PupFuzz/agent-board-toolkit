@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# dependabot-deploy-reconcile — does the fix a CLOSED Dependabot alert claims actually exist
+# in what is DEPLOYED AND RUNNING?
+#
+# A Dependabot alert closes when its fix reaches the default branch. Production serves
+# something else — a tag, a release clone, an installed dependency tree — cut by a separate
+# process on its own cadence. Nothing otherwise compares "alert closed" against "fix present
+# in what is actually running", so a repo whose alerts read 0-open can be serving the
+# vulnerable version indefinitely with no symptom anywhere.
+#
+# THIS TOOL IMPLEMENTS ONE LEG: the bridge npm installed-tree leg. It resolves the deployed
+# channel-server directory from the MCP config that LAUNCHES it (never a hardcoded path),
+# reads each alerted package's installed `package.json` version, and compares it against the
+# alert's own `first_patched_version`. Its evidence class is `installed-file` — the identity
+# IS the version of the file Node loads — so no git tag is read and none is claimed. The other
+# legs of the design (git-state / composer, kanban-board, toolkit) are NOT implemented here;
+# an alert this leg does not cover gets an explicit UNVERIFIABLE row naming why, never
+# silence.
+#
+# FAIL-CLOSED. Four dispositions, and only the first two are answers:
+#   FIXED_CONFIRMED  installed >= first_patched_version (SemVer 2.0 precedence)
+#   STILL_EXPOSED    installed <  first_patched_version — the alert is closed, the fix is not
+#                    running
+#   UNDECIDABLE      the read is fine but the comparison cannot be made (no
+#                    first_patched_version, a non-semver version, the package is not in the
+#                    deployment)
+#   UNVERIFIABLE     the read itself cannot be trusted (no running process for this install,
+#                    a package.json newer than the running process, a nested node_modules copy
+#                    making the loaded copy ambiguous, an alert outside this leg's declared
+#                    ecosystem/manifest set)
+# `>=`, not `>`: a version EQUAL to the first patched version is fixed. The comparator never
+# parses `vulnerable_version_range` — it is an explicit conservative proxy that can over-report
+# and never silently clears a genuinely vulnerable version.
+#
+# EVERY ALERT QUERY IS GATED, because this API fails in ways a status code does not show:
+# `?state=Fixed` answers 200 with the UNFILTERED list, and `?state=all` / `?state=bogus` answer
+# 200 with `[]`. So each query checks the command's rc, asserts the body is a JSON array,
+# sends only a validated state literal, and re-asserts every returned alert's own `.state`.
+# The excluded states (open / dismissed / auto_dismissed) are COUNTED and reported, so
+# "state=fixed" is a named inclusion with measured exclusions rather than a silent filter,
+# and their total is checked against an unfiltered query.
+#
+# Output: one line per alert on stdout, plus the scope object (run identity, states queried
+# with their counts, per-install coverage, denominator, any injected identity) — the same
+# object is written into the JSON artifact under ~/.cache/coord/dependabot-reconcile/. It
+# reads only; it writes nothing but that artifact, runs no git command at all, and never
+# touches the network except through `gh api`.
+#
+# Exit codes: 0 the instrument RAN and every alert carries a disposition — including
+# STILL_EXPOSED and UNVERIFIABLE rows, which are FINDINGS reported in the output and
+# deliberately not folded into the exit code (this is advisory at session close; a finding
+# must not read as a broken instrument) · 1 INSTRUMENT FAILURE: an input could not be read or
+# a gate failed, so the dispositions are absent or untrustworthy — the artifact still records
+# what was measured · 2 usage error. The 1-vs-2 split follows
+# agent-board-toolkit-runtime-check, the closest sibling: rc 1 is its loud "this host is not
+# what it claims" failure and rc 2 its bad-argument refusal, which is also the repo-wide
+# usage-error code.
+#
+# Usage: dependabot-deploy-reconcile [--test-mode] [--inject-identity bridge-npm=<pkg>@<ver>]...
+#
+# --test-mode  route the JSON artifact to ~/.cache/coord/dependabot-reconcile-test/ so a
+#              synthetic run is never mixed into the real evidence trail.
+# --inject-identity bridge-npm=<pkg>@<version>  substitute an installed version for one
+#              package, to drive the disposition engine through the SHIPPED argument path
+#              (repeatable). Accepted ONLY alongside --test-mode; a stray one is a hard error,
+#              never a silent override, and every injection is stamped into the scope object.
+set -euo pipefail
+
+for arg in "$@"; do
+    case "$arg" in
+        # Contiguous leading comment block, not a fixed range — see the release movers.
+        -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0 ;;
+    esac
+done
+
+HELPER="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_dependabot-reconcile.py"
+if [ ! -r "$HELPER" ]; then
+    echo "dependabot-deploy-reconcile: the _dependabot-reconcile.py sibling is not readable ($HELPER) — the reconciliation DID NOT RUN" >&2
+    exit 1
+fi
+
+exec python3 "$HELPER" "$@"

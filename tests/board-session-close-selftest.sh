@@ -1373,7 +1373,93 @@ eq "…and does NOT leak to the ritual's own stderr" \
 # can no longer produce.
 eq "a clean helper emits NO exit-status ⚠ on stderr" \
    "false" "$(has '_kbc-archive-eligible.py exited' "$(cat "$ERRF")")"
-eq "…and no missing-sibling ⚠ either" "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
+# QUALIFIED BY TOOL NAME, and that is the assertion, not tidiness: this fixture dir holds a
+# fake archive sibling and no OTHER sibling, so once main grew a second delegate an unqualified
+# `sibling not found` matched THAT leg's warning and this line failed on a run where the
+# archive leg was perfectly quiet. An absence assertion must name whose absence it is about.
+# The needle is a strict prefix of the string observed present two cases up.
+eq "…and no missing-sibling ⚠ either" \
+   "false" "$(has '_kbc-archive-eligible.py sibling not found' "$(cat "$ERRF")")"
+
+# ---------------------------------------------------------------------------
+# The '── Dependabot fixed-alert vs deployed-tree reconciliation ──' leg (card#6277) — main's
+# THIRD delegation, to the `dependabot-deploy-reconcile` sibling. Its rc contract is the
+# archive leg's, not the inverse-drift leg's: a failing reconciler WARNS and leaves the
+# ritual's exit code alone. That is asserted rather than assumed, because the tool it
+# delegates to has an exit contract of its own (rc 1 = the INSTRUMENT failed; a STILL_EXPOSED
+# finding rides the report at rc 0), and folding either into the close would be wrong in a
+# different way — one blocks a close over an unreadable input, the other over a finding the
+# operator is supposed to read and act on.
+#
+# Same fixture shape as the archive block above: the sibling is resolved beside the BIN, so a
+# copied bin with a fake sibling is the only way to drive the delegate's rc/stdout as an input.
+# The real reconciler is never executed here (the main-delegation cases far above DO reach it,
+# on a scratch HOME with no .mcp.json, so they have been traversing its failure arm with
+# nothing asserted on it — which is the hole this block closes).
+# ---------------------------------------------------------------------------
+echo "== Dependabot-reconcile leg — fixture =="
+DRDIR="$TMP/dr/bin"; mkdir -p "$DRDIR"
+cp "$BIN" "$DRDIR/board-session-close"
+DRBIN="$DRDIR/board-session-close"
+DRTOOL="$DRDIR/dependabot-deploy-reconcile"
+# The archive sibling must exist and be quiet here, or its own warnings would be the reason
+# any absence assertion below passes.
+printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: quiet")' > "$DRDIR/_kbc-archive-eligible.py"
+
+run_dr_leg() {
+    HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
+        bash "$DRBIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+
+echo "== Dependabot-reconcile leg — the fixture's rc channel is LIVE (witness) =="
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: ran"' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$badhook")"
+eq "a failing reconcile hook still exits 2 THROUGH the copied bin (rc channel is live)" "2" "$rc"
+
+echo "== Dependabot-reconcile leg — a MISSING sibling warns and does NOT block the close =="
+rm -f "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "missing sibling: the ritual still exits 0 (advisory, not blocking)" "0" "$rc"
+eq "…stderr names the missing sibling" \
+   "true" "$(has 'dependabot-deploy-reconcile sibling not found' "$(cat "$ERRF")")"
+eq "…and says the reconciliation DID NOT RUN, so an absent leg is never read as 'no exposure'" \
+   "true" "$(has 'deploy reconciliation DID NOT RUN' "$(cat "$ERRF")")"
+eq "…naming the path it looked for, so the fix is actionable" \
+   "true" "$(has "$DRTOOL" "$(cat "$ERRF")")"
+
+echo "== Dependabot-reconcile leg — a non-zero tool WARNS but does not fail the ritual =="
+printf '%s\n' '#!/bin/sh' 'echo "dr: boom" >&2' 'exit 1' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "tool rc 1 does NOT become the ritual's exit code" "0" "$rc"
+eq "…stderr names the tool AND its exit status" \
+   "true" "$(has 'dependabot-deploy-reconcile exited 1' "$(cat "$ERRF")")"
+eq "…flags the reconciliation as INCOMPLETE rather than clean" \
+   "true" "$(has 'deploy reconciliation may be' "$(cat "$ERRF")")"
+# The distinction the whole leg turns on: a non-zero here is the INSTRUMENT, never a finding.
+eq "…and says a STILL_EXPOSED row is not what a non-zero means" \
+   "true" "$(has 'A STILL_EXPOSED row is NOT this' "$(cat "$ERRF")")"
+
+echo "== Dependabot-reconcile leg — the tool's output is INDENTED into the report =="
+printf '%s\n' '#!/bin/sh' 'echo "SYNTHETIC ✗ #17 npm hono STILL_EXPOSED"' \
+              'echo "SYNTHETIC dr note on stderr" >&2' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "a clean tool leaves the ritual at 0" "0" "$rc"
+eq "the section header renders" "true" \
+   "$(has '── Dependabot fixed-alert vs deployed-tree reconciliation' "$(cat "$OUTF")")"
+eq "the tool's stdout is indented by exactly two spaces (line-exact)" "true" \
+   "$(grep -qxF '  SYNTHETIC ✗ #17 npm hono STILL_EXPOSED' "$OUTF" && echo true || echo false)"
+eq "…and the UN-indented form does not appear (the indent is what is asserted)" "false" \
+   "$(grep -qxF 'SYNTHETIC ✗ #17 npm hono STILL_EXPOSED' "$OUTF" && echo true || echo false)"
+eq "the tool's STDERR is folded into the report, indented the same way" "true" \
+   "$(grep -qxF '  SYNTHETIC dr note on stderr' "$OUTF" && echo true || echo false)"
+eq "…and does NOT leak to the ritual's own stderr" \
+   "false" "$(has 'SYNTHETIC dr note on stderr' "$(cat "$ERRF")")"
+# A STILL_EXPOSED finding at rc 0 must leave the ritual completely quiet on stderr — the
+# needles below were both observed PRESENT two cases up, so these are claims about this run.
+eq "a rc-0 run carrying a FINDING emits no exit-status ⚠" \
+   "false" "$(has 'dependabot-deploy-reconcile exited' "$(cat "$ERRF")")"
+eq "…and no missing-sibling ⚠ either" \
+   "false" "$(has 'dependabot-deploy-reconcile sibling not found' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"

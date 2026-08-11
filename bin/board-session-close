@@ -30,6 +30,15 @@
 # archive now" starting point (the gate is per-card in `kbcard archive` at archive
 # time; gating the whole done backlog here would be a slow network storm). It only
 # surfaces (never archives); a missing sibling is a warning, not a hard failure.
+#
+# A fourth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
+# fix a CLOSED Dependabot alert claims actually exist in what is deployed and RUNNING? An
+# alert closes when its fix reaches the default branch, while production serves something
+# cut by a separate process — so a repo reading 0-open can be serving the vulnerable
+# version with no symptom anywhere. Advisory on the SAME contract as the archive leg: a
+# non-zero exit warns and never blocks the close. Note the asymmetry that warning states —
+# a STILL_EXPOSED finding rides the report at rc 0, so a non-zero from that tool means the
+# INSTRUMENT failed, not that the fleet is exposed.
 set -uo pipefail
 
 # resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
@@ -600,6 +609,7 @@ _bsc_hook_dispatch_report() {
 
 main() {
   local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc
+  local dr_tool dr_out dr_rc
   local pr_key pr_dup pr_k
   local -a pr_dirs pr_seen
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
@@ -726,6 +736,26 @@ main() {
     if [[ "$ae_rc" -ne 0 ]]; then
       echo "  ⚠ _kbc-archive-eligible.py exited $ae_rc — the archive-eligible surfacing may be" >&2
       echo "    INCOMPLETE (config/API error above); it is advisory and does not block close." >&2
+    fi
+  fi
+
+  echo
+  echo "── Dependabot fixed-alert vs deployed-tree reconciliation ──"
+  echo "   (read-only via dependabot-deploy-reconcile; a closed alert is not a deployed fix)"
+  dr_tool="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/dependabot-deploy-reconcile"
+  if [[ ! -x "$dr_tool" ]]; then
+    echo "  ⚠ board-session-close: dependabot-deploy-reconcile sibling not found or not" >&2
+    echo "    executable ($dr_tool) — the deploy reconciliation DID NOT RUN. It is advisory" >&2
+    echo "    (the drift check above still ran), so this does not block close; reinstall the" >&2
+    echo "    toolkit bin/ to restore it." >&2
+  else
+    dr_out="$("$dr_tool" 2>&1)"; dr_rc=$?
+    printf '%s\n' "$dr_out" | sed 's/^/  /'
+    if [[ "$dr_rc" -ne 0 ]]; then
+      echo "  ⚠ dependabot-deploy-reconcile exited $dr_rc — the deploy reconciliation may be" >&2
+      echo "    INCOMPLETE (an input was unreadable or a query gate failed above); it is" >&2
+      echo "    advisory and does not block close. A STILL_EXPOSED row is NOT this: findings" >&2
+      echo "    ride the report at rc 0, so a non-zero here means the instrument, not the fleet." >&2
     fi
   fi
 
