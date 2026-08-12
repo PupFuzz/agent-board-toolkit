@@ -159,8 +159,12 @@ _kb_discovered_boards() {
 # oversight: its main block carries the original inline copy of this PARSER (this function is
 # that block, unchanged in behavior), but its fallback is a different one — two hardcoded
 # board names kept for back-compat — so adopting this there changes what a roster-less box
-# renders at SessionStart, which is a decision and not a cleanup. Until that decision is made,
-# a parser fix landing here must be carried across by hand.
+# renders at SessionStart, which is a decision and not a cleanup. Its OUTPUT also differs:
+# this function emits `<name><TAB><label>` (a board name, which resolves to an env file),
+# while board-snapshot's inline block emits `<envfile><TAB><label>` — so adopting it there is
+# a call-site change too, not a drop-in. Until that decision is made, a parser fix landing here
+# must be carried across by hand. The open item is recorded in
+# docs/CONSOLIDATION-PLAN.md (post-program dispositions), which owns it.
 kb_board_roster() {
     local rosterf="${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
     local line name label envf n=0

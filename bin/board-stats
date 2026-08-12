@@ -25,12 +25,35 @@
 #   reported PER DESTINATION STAGE rather than collapsed into one number that reads the same
 #   whether work was shipped or declined.
 #
-# TERMINAL vs NON-TERMINAL is read from the board env's KB_STAGE_* map (shipped-to-dev /
-# released-to-main / won't-do), never from a baked-in stage id: board consumers key on
-# NUMERIC stage ids, and those ids differ per board. Column NAMES come from the board itself
-# (preload.json), falling back to the name the changelog event recorded and then to
-# "stage <id>" — an unnamed column is honest, a guessed one is how a hardcoded label reads as
-# working for years.
+# RELATIONSHIP TO THE SERVER'S OWN STATS SURFACE. kanban v0.38.0 (DL-227) ships
+# `GET /api/v3/boards/{board}/stats.json`, which owns these same answers server-side. The
+# changelog walk below is the PRE-v0.38.0 implementation, and it stays the fallback for a host
+# that does not serve that endpoint. Probing for it and consuming it when it is there — the
+# probe-then-fall-back shape `next-dl --peek` already uses for the DL-sequence endpoint — is
+# tracked as card#6418 and is deliberately NOT built here.
+#
+# TERMINAL vs PULLABLE is DERIVED from the board's own `lane_type`, read out of the same
+# preload.json this tool already fetches for column names: a `done`-typed lane is TERMINAL, a
+# `backlog_inventory`-typed one is PULLABLE — the classification `_kbc-archive-eligible.py`
+# already makes off the same stage shape. The board env's KB_STAGE_* ids are an OVERRIDE on
+# top of that, PER KEY: a key that is set adds its stage id to that class (which is how
+# "Shipped to dev" — `lane_type: waiting`, terminal by the workflow's meaning rather than the
+# lane's — stays a resolution), and a key that is ABSENT now costs nothing, because the
+# derivation already answered. That direction is the point: an env-only classification loses
+# every Won't-Do resolution and wash on a board whose env omits KB_STAGE_WONT_DO (the shipped
+# examples/kanban-board.env.example omits it) — silently, at rc 0, as a zero that reads like a
+# measurement. Nothing numeric is baked in either way: board consumers key on NUMERIC stage
+# ids and those ids differ per board. If a class comes out EMPTY even after derivation +
+# override, the board says so on its own ⚠ line instead of reporting the zeros that follow
+# from it. Column NAMES come from the same preload, falling back to the name the changelog
+# event recorded and then to "stage <id>" — an unnamed column is honest, a guessed one is how
+# a hardcoded label reads as working for years.
+#
+# A SWIMLANE-ONLY MOVE IS NOT A TRANSITION. The board emits `task.moved` when the stage OR the
+# swimlane changes, so a swimlaned board's log carries rows whose from_stage_id equals their
+# to_stage_id. Those are excluded from the transition grouping — one inside a terminal stage
+# would otherwise mint a phantom resolution every time a card changed lanes — and counted on
+# their own `same-stage moves` line, which is what keeps `moved` = Σ transitions + same-stage.
 #
 # FAIL-SOFT PER BOARD, and never silently. One unreachable board does not kill the report: its
 # failure is named on its own line, the sections it could not fill are marked UNAVAILABLE
@@ -44,8 +67,9 @@
 #                    ~/.kanban-<name>-board.env directly. Mutually exclusive with --all.
 #   --all            report on every board in the roster (~/.kanban-snapshot-boards, or every
 #                    ~/.kanban-*-board.env on the box when there is no roster). THE DEFAULT.
-#   --since <window> the FLOW window: <N>h, <N>d, or an ISO-8601 instant. Default 24h. The
-#                    STOCK section is a snapshot and is not affected by it.
+#   --since <window> the FLOW window: <N>h, <N>d, or an ISO-8601 instant IN THE PAST. Default
+#                    24h. Nothing else is accepted — the shape is checked before date(1) sees
+#                    it. The STOCK section is a snapshot and is not affected by it.
 #   --format <fmt>   text (human, the default) or json. Both are rendered from ONE derivation,
 #                    so the JSON carries exactly what the text prints — per-board stock,
 #                    per-transition counts with their human/service split, the created count,
@@ -99,6 +123,7 @@ def pget($k): ((.payload // {}) | if type == "object" then (.[$k] // null) else 
 | { n: ($d | length),
     last_id: ($d[-1].id // null),
     oldest: ep($d[-1].created_at),
+    oldest_at: ($d[-1].created_at // null),
     rows: [ $d[]
             | select(.action == "task.created" or .action == "task.moved")
             | select(ep(.created_at) != null and ep(.created_at) >= $cut)
@@ -107,18 +132,25 @@ def pget($k): ((.payload // {}) | if type == "object" then (.[$k] // null) else 
                 from_id: pget("from_stage_id"), to_id: pget("to_stage_id"),
                 from_name: pget("from_stage_name"), to_name: pget("to_stage_name") } ] }'
 
-# The board's columns + names, out of an UNTRUSTED preload body. Total over anything: a body
-# that is not JSON, or is JSON of another shape, costs the LABELS and nothing else — anything
-# less cascades and takes cards that fetched perfectly with it. The body arrives as a raw
-# string on stdin (-R -s) for the argv reason above.
+# The board's columns + names + LANE TYPES, out of an UNTRUSTED preload body. Total over
+# anything: a body that is not JSON, or is JSON of another shape, costs the LABELS and the
+# derived classification and nothing else — anything less cascades and takes cards that
+# fetched perfectly with it. The body arrives as a raw string on stdin (-R -s) for the argv
+# reason above. `lane_type` is the board's own answer to "is this stage a done lane / an
+# inventory lane", the same field `_kbc-archive-eligible.py` classifies done cards by; a stage
+# that carries none contributes to neither derived class rather than guessing one.
+_BS_EMPTY_MAP='{"names":{},"order":[],"derived_term":[],"derived_pull":[]}'
 _BS_STAGEMAP_JQ='
 (fromjson? // null) as $p
 | (try ($p | [ .data.workflows[]?.stages[]?
                | select(.id != null)
-               | {id: (.id|tostring), name: (.name // null), pos: (.position // 0)} ])
+               | {id: (.id|tostring), name: (.name // null), pos: (.position // 0),
+                  lane: (.lane_type // null)} ])
    catch []) as $s
 | { names: ([ $s[] | select(.name != null) | {(.id): (.name|tostring|gsub("\\s+"; " "))} ] | add // {}),
-    order: ([ $s[] | {id: .id, pos: .pos} ] | sort_by(.pos) | map(.id)) }'
+    order: ([ $s[] | {id: .id, pos: .pos} ] | sort_by(.pos) | map(.id)),
+    derived_term: [ $s[] | select(.lane == "done") | .id ],
+    derived_pull: [ $s[] | select(.lane == "backlog_inventory") | .id ] }'
 
 # The whole per-board derivation — stock and flow both, from the card file, the row file and
 # the board's meta. ONE derivation feeds both output formats, so the JSON cannot drift from
@@ -139,10 +171,15 @@ def round1: ((. * 10) | round) / 10;
 | [ $all[] | select(.deleted_at == null) ] as $live
 | (($rowpages | add) // []) as $rows
 | [ $rows[] | select(.action == "task.moved") ] as $moved
+# A task.moved row whose from_stage_id EQUALS its to_stage_id changed the SWIMLANE and not the
+# stage — the board emits the one action for both. Only the stage-changing rows are
+# transitions (and therefore resolutions/washes); the rest are counted on their own line.
+| [ $moved[] | select(.from_id != .to_id) ] as $stagemoved
+| (($moved | length) - ($stagemoved | length)) as $samestage
 | [ $rows[] | select(.action == "task.created") ] as $created
 | ([ $live[] | (.workflow_stage_id | tostring) ] | unique) as $seen
 | ($meta.order + (($seen - $meta.order) | sort_by(tonumber? // 0))) as $cols
-| [ $moved
+| [ $stagemoved
     | group_by([.from_id, .to_id])[]
     | { from_stage_id: .[0].from_id, to_stage_id: .[0].to_id,
         from_stage: stagelabel(.[0].from_id; .[0].from_name),
@@ -173,9 +210,10 @@ def round1: ((. * 10) | round) / 10;
     flow: (if $meta.flow_ok | not then null else
       { created: ($created | length),
         moved: ($moved | length),
+        same_stage_moves: $samestage,
         actors: ($moved | actorsplit),
         transitions: $trans,
-        resolutions: ([ $moved
+        resolutions: ([ $stagemoved
                         | map(select(isterm(.to_id)))
                         | group_by(.to_id)[]
                         | { stage_id: .[0].to_id,
@@ -185,7 +223,8 @@ def round1: ((. * 10) | round) / 10;
         washes: [ $trans[] | select(.wash) ],
         events_read: ($rows | length),
         pages: $meta.flow.pages,
-        truncated: $meta.flow.truncated } end),
+        truncated: $meta.flow.truncated,
+        data_available_from: $meta.flow.data_available_from } end),
     failures: $meta.failures }'
 
 # The text rendering — a pure function of the document above.
@@ -212,8 +251,12 @@ def split_note: (if .actors.other > 0 then "   human \(.actors.human) · service
       end ),
     ( if .flow == null then "  flow: UNAVAILABLE — see the ⚠ line(s) above"
       else "  flow — a rate question, read from the changelog\(if .flow.truncated then " (WINDOW TRUNCATED)" else "" end)",
+           ( if .flow.data_available_from != null
+             then "    ⤷ the changelog reaches back only to \(.flow.data_available_from) — anything before that is UNREADABLE, not absent"
+             else empty end ),
            "    \("created" | pad(24))\(.flow.created | lpad(6))",
            "    \("moved" | pad(24))\(.flow.moved | lpad(6))\(. | .flow | split_note)",
+           "    \("same-stage moves" | pad(24))\(.flow.same_stage_moves | lpad(6))   swimlane-only; not transitions, not resolutions",
            ( if (.flow.transitions | length) == 0 then "    transitions: none in window"
              else "    transitions:",
                   ( .flow.transitions[]
@@ -247,6 +290,13 @@ def split_note: (if .actors.other > 0 then "   human \(.actors.human) · service
 # the one every caller types, would silently produce an empty window that looks like a quiet
 # day. date(1) is reached only for an ISO-8601 spec, so a box whose date cannot parse one
 # still gets every relative window.
+#
+# THE SHAPE IS VALIDATED BEFORE date(1) IS CONSULTED, and that is the whole guard: date parses
+# far more than this tool's contract accepts, and every extra thing it parses answers at rc 0
+# with a plausible window nobody asked for — `--since 7` becomes 07:00 TODAY (a few hours, not
+# seven days), `--since tomorrow` becomes a FUTURE cutoff whose flow is all zeros. A window
+# that is not in the past is refused for the same reason: it can only ever report zeros, and a
+# zero from an impossible window is indistinguishable from a quiet board.
 _bs_since_epoch() {
     local spec="$1" now="$2" n e
     # An empty or whitespace-only spec is refused HERE and not left to date(1), which answers
@@ -267,16 +317,53 @@ _bs_since_epoch() {
         esac
         return 0
     fi
+    if ! kb_ere_match "$spec" '^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?(\.[0-9]+)?([Zz]|[+-][0-9]{2}:?[0-9]{2})?)?$'; then
+        echo "$KB_PROG: --since '$spec' is not an accepted window: <N>h / <N>d (24h, 7d) or an ISO-8601 instant (2026-08-01, 2026-08-01T12:00:00Z). It is refused HERE rather than handed to date(1), which reads '7' as 07:00 today and 'tomorrow' as a future window — both at rc 0" >&2
+        return 2
+    fi
     e="$(date -u -d "$spec" +%s 2>/dev/null)"
-    if kb_is_uint "${e:-}"; then printf '%s' "$e"; return 0; fi
-    echo "$KB_PROG: --since '$spec' is neither a <N>h / <N>d window nor an ISO-8601 instant this box's date(1) can read" >&2
+    if kb_is_uint "${e:-}"; then
+        if [[ "$e" -ge "$now" ]]; then
+            echo "$KB_PROG: --since '$spec' is not in the past — a flow window that starts at or after now can only report zeros, which reads exactly like a quiet board" >&2
+            return 2
+        fi
+        printf '%s' "$e"
+        return 0
+    fi
+    echo "$KB_PROG: --since '$spec' is ISO-8601-shaped but this box's date(1) cannot read it as an instant" >&2
     return 2
 }
 
-# _bs_stage_map <preload-body>: {names, order} for the board, or the empty map on any
-# unusable body (see _BS_STAGEMAP_JQ).
+# _bs_stage_map <preload-body>: {names, order, derived_term, derived_pull} for the board, or
+# the empty map on any unusable body (see _BS_STAGEMAP_JQ).
 _bs_stage_map() {
-    printf '%s' "${1:-}" | jq -c -R -s "$_BS_STAGEMAP_JQ" 2>/dev/null || printf '{"names":{},"order":[]}'
+    printf '%s' "${1:-}" | jq -c -R -s "$_BS_STAGEMAP_JQ" 2>/dev/null || printf '%s' "$_BS_EMPTY_MAP"
+}
+
+# _bs_classify <map-json> <shipped> <released> <wont-do> <backlog> <prioritized>:
+# {term, pull} — the board's terminal and pullable stage ids as strings.
+#
+# The board's own `lane_type` derivation is the BASE and the env keys are a PER-KEY OVERRIDE
+# on top of it, so the two can only ever ADD to a class. That asymmetry is deliberate: a
+# KB_STAGE_* key names a stage the operator asserts belongs to the class, while its ABSENCE
+# asserts nothing at all — treating absence as "not in the class" is exactly how a board env
+# without KB_STAGE_WONT_DO silently dropped every Won't-Do resolution and wash. An id the
+# board types `done` is terminal whether or not the env mentions it, and an id the env names
+# is terminal whether or not the board types it that way (a `waiting` Shipped-to-dev lane is
+# terminal by the workflow's meaning, which only the operator's env can say).
+#
+# It falls back to the empty classification for the same reason _bs_stage_map does: every
+# caller feeds this straight to `jq --argjson`, where an EMPTY string is a fatal argument
+# error, and the one failure mode this tool must not have is a board that produced no line at
+# all. An empty classification is then reported by the caller, loudly.
+_BS_EMPTY_CLS='{"term":[],"pull":[]}'
+_bs_classify() {
+    jq -n --argjson map "${1:-$_BS_EMPTY_MAP}" \
+        --arg sh "${2:-}" --arg rl "${3:-}" --arg wd "${4:-}" \
+        --arg bl "${5:-}" --arg pr "${6:-}" '
+        { term: ((($map.derived_term // []) + ([$sh, $rl, $wd] | map(select(. != "")))) | unique),
+          pull: ((($map.derived_pull // []) + ([$bl, $pr] | map(select(. != "")))) | unique) }' \
+        2>/dev/null || printf '%s' "$_BS_EMPTY_CLS"
 }
 
 # _bs_window_rows <board-id> <cutoff-epoch> <rows-file>: page the board changelog BACKWARDS,
@@ -289,13 +376,20 @@ _bs_stage_map() {
 # precedes the cutoff has therefore delivered every in-window row that exists, and every later
 # page is older still: that is the stop, and it is why the cutoff test reads the page's LAST
 # row rather than each row (each row is filtered too, but that is what to KEEP, not when to
-# stop). A short page — fewer rows than the endpoint's own limit — means the log itself is
-# exhausted. The page cap is the third stop and the ONLY one that can truncate a window: it
-# says so, and the board is reported partial rather than presenting a short read as a whole
-# one.
+# stop).
+#
+# TWO OF THE THREE STOPS CAN TRUNCATE A WINDOW, and both say so. The page cap is one. The
+# other is the short page — fewer rows than the endpoint's own limit, meaning the LOG is
+# exhausted — which is a complete window only when the log actually reaches back PAST the
+# cutoff. When its oldest row is still INSIDE the window (a board younger than the window, or
+# a log trimmed by retention), the read stopped because the data ran out, not because the
+# window did: that is recorded as `data_available_from` — the oldest timestamp the log holds —
+# flagged truncated, and reported on the board's own ⚠ line. Without it a `--since 90d` over a
+# 44-day-old log renders as a complete 90-day report at rc 0. An EMPTY log has no oldest row
+# and asserts nothing about retention, so it is not flagged: zero events is what it holds.
 _bs_window_rows() {
     local board_id="$1" cut="$2" out="$3"
-    local cursor="" pages=0 truncated=false err="" url resp page n oldest last
+    local cursor="" pages=0 truncated=false err="" avail="" url resp page n oldest oldest_at last
     while :; do
         url="/boards/$board_id/changelog.json?limit=${_BS_CL_LIMIT}&order=desc"
         [[ -n "$cursor" ]] && url+="&before=$cursor"
@@ -307,8 +401,16 @@ _bs_window_rows() {
         printf '%s' "$page" | jq -c '.rows' >> "$out"
         n="$(printf '%s' "$page" | jq -r '.n')"
         oldest="$(printf '%s' "$page" | jq -r 'if .oldest == null then "none" else (.oldest|tostring) end')"
+        oldest_at="$(printf '%s' "$page" | jq -r '.oldest_at // ""')"
         last="$(printf '%s' "$page" | jq -r 'if .last_id == null then "none" else (.last_id|tostring) end')"
-        [[ "$n" -lt "$_BS_CL_LIMIT" ]] && break
+        if [[ "$n" -lt "$_BS_CL_LIMIT" ]]; then
+            if [[ "$oldest" != none && "$oldest" -gt "$cut" ]]; then
+                truncated=true
+                avail="$oldest_at"
+                err="the changelog itself ends at $oldest_at, INSIDE this window — the log does not reach the cutoff (retention, or a board younger than the window), so this window is INCOMPLETE"
+            fi
+            break
+        fi
         [[ "$oldest" != none && "$oldest" -lt "$cut" ]] && break
         [[ "$last" != none ]] || { err="changelog page $pages carries no cursor id — cannot page further"; break; }
         if [[ "$pages" -ge "$_BS_PAGE_CAP" ]]; then
@@ -319,7 +421,10 @@ _bs_window_rows() {
         cursor="$last"
     done
     jq -n --argjson pages "$pages" --argjson truncated "$truncated" --arg err "$err" \
-        '{pages: $pages, truncated: $truncated, error: (if $err == "" then null else $err end)}'
+        --arg avail "$avail" \
+        '{pages: $pages, truncated: $truncated,
+          data_available_from: (if $avail == "" then null else $avail end),
+          error: (if $err == "" then null else $err end)}'
 }
 
 # _bs_board_json <card-file> <rows-file> <meta-json>: the per-board object. Both bulk inputs
@@ -339,10 +444,11 @@ _bs_one_board() {
     local envf="$HOME/.kanban-${name}-board.env"
     local -a fails=() vals=()
     local board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
-    local stock_ok=false flow_ok=false rc pre map err
+    local stock_ok=false flow_ok=false rc pre map cls err termn pulln
     local cardfile="$tmp/cards.json" rowsfile="$tmp/rows.jsonl"
-    local flowmeta='{"pages":0,"truncated":false,"error":null}'
-    map='{"names":{},"order":[]}'
+    local flowmeta='{"pages":0,"truncated":false,"data_available_from":null,"error":null}'
+    map="$_BS_EMPTY_MAP"
+    cls="$_BS_EMPTY_CLS"
     : > "$cardfile"; : > "$rowsfile"
 
     if [[ ! -r "$envf" ]]; then
@@ -367,7 +473,6 @@ _bs_one_board() {
             if ! kb_read_token "$tokfile"; then
                 fails+=("token file unreadable: $tokfile — this board contributes nothing to the report")
             else
-                KB_API="$API"   # the lib's kb_api reads this global
                 fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP" \
                     > "$cardfile" 2>/dev/null
                 rc=$?
@@ -381,8 +486,17 @@ _bs_one_board() {
 
                 pre="$(KB_API_QUIET=1 kb_api GET "/boards/$board_id/preload.json" 2>/dev/null)" || pre=""
                 map="$(_bs_stage_map "$pre")"
-                [[ "$map" == '{"names":{},"order":[]}' ]] \
-                    && fails+=("board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id")
+                [[ "$map" == "$_BS_EMPTY_MAP" ]] \
+                    && fails+=("board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id, and the lane_type classification below has nothing to derive from")
+
+                # Derived (lane_type) + override (KB_STAGE_*). An EMPTY class after both is
+                # reported, never left to render as zeros: with no terminal stage every
+                # resolution and wash is zero by construction, and with no pullable stage no
+                # column carries a queue age — in both cases a number that looks measured.
+                cls="$(_bs_classify "$map" "$sh" "$rl" "$wd" "$bl" "$pr")"
+                read -r termn pulln < <(printf '%s' "$cls" | jq -r '"\(.term|length) \(.pull|length)"')
+                [[ "${termn:-0}" -eq 0 ]] && fails+=("no TERMINAL stage could be classified: the board's preload named no lane_type=done stage and $envf sets none of KB_STAGE_SHIPPED_TO_DEV / KB_STAGE_RELEASED_TO_MAIN / KB_STAGE_WONT_DO — every resolution and wash below is a zero by construction, not by measurement")
+                [[ "${pulln:-0}" -eq 0 ]] && fails+=("no PULLABLE stage could be classified: the board's preload named no lane_type=backlog_inventory stage and $envf sets neither KB_STAGE_BACKLOG nor KB_STAGE_PRIORITIZED — no column below reports a queue age")
 
                 flowmeta="$(_bs_window_rows "$board_id" "$cut" "$rowsfile")"
                 err="$(printf '%s' "$flowmeta" | jq -r '.error // ""')"
@@ -408,12 +522,11 @@ _bs_one_board() {
     meta="$(jq -n --arg name "$name" --arg label "$label" --arg bid "$board_id" \
         --argjson map "$map" --argjson flow "$flowmeta" --argjson failures "$failures_json" \
         --argjson now "$now" --argjson stock_ok "$stock_ok" --argjson flow_ok "$flow_ok" \
-        --arg bl "$bl" --arg pr "$pr" --arg sh "$sh" --arg rl "$rl" --arg wd "$wd" '
+        --argjson cls "$cls" '
         { name: $name, label: $label,
           board_id: (if $bid == "" then null else ($bid | tonumber? // $bid) end),
           names: $map.names, order: $map.order,
-          term: ([$sh, $rl, $wd] | map(select(. != ""))),
-          pull: ([$bl, $pr] | map(select(. != ""))),
+          term: $cls.term, pull: $cls.pull,
           now: $now, flow: $flow, failures: $failures,
           stock_ok: $stock_ok, flow_ok: $flow_ok }')"
 

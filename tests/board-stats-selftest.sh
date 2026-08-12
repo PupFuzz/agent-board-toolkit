@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # board-stats-selftest.sh — network-free tests for board-stats' argument surface, for WHERE
-# ITS BACKWARD PAGING STOPS, and for the per-transition human/service split it computes off a
-# fixture changelog page.
+# ITS BACKWARD PAGING STOPS, for the per-transition human/service split it computes off a
+# fixture changelog page, and for the two classifications every count downstream depends on:
+# which stages are terminal/pullable, and which `task.moved` rows are transitions at all.
 #
-# WHY THESE THREE. board-stats reads two different surfaces to answer two different questions,
-# and each has a way of being quietly wrong that a live run cannot show you:
+# WHY THESE. board-stats reads two different surfaces to answer two different questions, and
+# each has a way of being quietly wrong that a live run cannot show you:
 #
 #   * THE WINDOW. The changelog endpoint has no date filter — a window is read by paging
 #     backwards until the rows precede the cutoff. Stop one page too early and the report is a
@@ -23,7 +24,18 @@
 #   * THE WINDOW ARITHMETIC. `--since 24h` must resolve to the PAST. GNU date reads "24h" as
 #     now + 24 hours, so a tool that handed the relative form to date(1) would report an empty
 #     window as a quiet day, at rc 0, forever. That trap is asserted directly — including a
-#     control that measures date(1) doing exactly it.
+#     control that measures date(1) doing exactly it, and the same control for every OTHER spec
+#     date parses at rc 0 (`7` = 07:00 today, `tomorrow` = a future window) which is why the
+#     spec's SHAPE is checked before date is consulted at all.
+#
+#   * THE CLASSIFICATIONS. Both are silent when wrong, and both produce zeros that read like a
+#     measurement. Terminal/pullable is derived from the board's `lane_type` with the env's
+#     KB_STAGE_* ids as a per-key override: the env alone lost every Won't-Do resolution on a
+#     board whose env omits KB_STAGE_WONT_DO, so the derivation is asserted with its own control
+#     (lane types stripped ⇒ the loss reappears), and an unclassifiable board is asserted to
+#     produce a failure LINE rather than zeros. And a `task.moved` row whose from-stage equals
+#     its to-stage is a SWIMLANE move, not a transition — ungrouped, one inside a terminal stage
+#     mints a phantom resolution on every lane change.
 #
 # WHAT A GREEN RUN HERE DOES NOT PROVE: nothing about the live API's shape. Every response is
 # a fixture, so a server that renamed `actor_type`, moved the cursor parameter, or started
@@ -52,6 +64,11 @@ expect_rc "--format with an empty value is rc 2"     2 "$BIN" --format ""
 expect_rc "--all and --board together are rc 2"      2 "$BIN" --all --board dev
 expect_rc "--board given twice is rc 2"              2 "$BIN" --board a --board b
 expect_rc "--since with an unreadable window is rc 2" 2 "$BIN" --since 24x
+# The two shapes date(1) answers at rc 0 with a window nobody asked for: a bare number is
+# TODAY at that hour (not N days), and any future instant is a window that can only ever be
+# empty. Both are refused by the spec check, before date is consulted.
+expect_rc "--since 7 (a bare number) is rc 2"        2 "$BIN" --since 7
+expect_rc "--since a FUTURE instant is rc 2"         2 "$BIN" --since 2999-01-01
 expect_rc "--help is rc 0"                           0 "$BIN" --help
 
 # The rc alone cannot separate these: every refusal above answers 2, so each message is what
@@ -66,6 +83,9 @@ msg="$("$BIN" --format xml 2>&1 >/dev/null)"
 eq "a bad --format names the accepted set"  "true"  "$(has "not one of: text, json" "$msg")"
 msg="$("$BIN" --since 24x 2>&1 >/dev/null)"
 eq "a bad --since names the accepted forms" "true"  "$(has '<N>h / <N>d' "$msg")"
+msg="$("$BIN" --since 2999-01-01 2>&1 >/dev/null)"
+eq "a future --since is refused AS future, not as unparseable" "true" \
+   "$(has 'is not in the past' "$msg")"
 out="$("$BIN" --nope 2>/dev/null)"
 eq "a refusal keeps stdout empty"           ""      "$out"
 
@@ -80,6 +100,28 @@ expect_rc "an unknown suffix is refused"          2 _bs_since_epoch 24x "$NOW"
 expect_rc "a bare number is refused"              2 _bs_since_epoch 24 "$NOW"
 expect_rc "an empty spec is refused"              2 _bs_since_epoch "" "$NOW"
 expect_rc "a whitespace-only spec is refused"     2 _bs_since_epoch " " "$NOW"
+# The SHAPE gate, asserted where date(1) would otherwise answer. Each of these parses on a GNU
+# box — `7` as 07:00 today, `tomorrow`/`next monday` as a future instant, `2026-08-01 UTC` as a
+# real instant in a spelling the contract does not accept — and each answered at rc 0 with a
+# window that reads as a measurement.
+# The MESSAGE leg below is the discriminating one: with the synthetic $NOW in 2001, `date -d 7`
+# lands in the future and the future-window refusal answers rc 2 as well, so an rc-only
+# assertion here cannot tell the two guards apart (the shared-rc trap this repo has been bitten
+# by — see docs/CONSOLIDATION-PLAN.md § Verification). The CLI leg above runs against the real
+# clock, where only the shape gate can answer.
+expect_rc "a bare 7 is refused (date reads it as 07:00 TODAY)" 2 _bs_since_epoch 7 "$NOW"
+expect_rc "an English relative spec is refused"   2 _bs_since_epoch tomorrow "$NOW"
+expect_rc "a non-ISO instant spelling is refused" 2 _bs_since_epoch "2026-08-01 UTC" "$NOW"
+msg="$(_bs_since_epoch 7 "$NOW" 2>&1 >/dev/null)"
+eq "…naming the accepted forms rather than blaming date(1)" "true" "$(has '<N>h / <N>d' "$msg")"
+# THE CONTROL for the three above: date(1) is measured reading each of them at rc 0, so the
+# refusals are pinned to a defect that was live in the alternative, not to a parse failure.
+for spec in 7 tomorrow "2026-08-01 UTC"; do
+    if dparsed="$(date -u -d "$spec" +%s 2>/dev/null)" && [[ "$dparsed" =~ ^[0-9]+$ ]]; then
+        eq "control: date(1) DOES answer '$spec' at rc 0 (which is why it is not asked)" \
+           "true" "$([[ "$dparsed" -gt 0 ]] && echo true || echo false)"
+    fi
+done
 # Not hypothetical: date(1) answers `date -d ""` with today's MIDNIGHT at rc 0, so an
 # unexpanded variable would silently become a since-midnight window rather than a refusal —
 # which is why the empty case is answered before date(1) is ever reached.
@@ -97,9 +139,16 @@ if datefut="$(date -u -d 24h +%s 2>/dev/null)" && [[ "$datefut" =~ ^[0-9]+$ ]]; 
        "true" "$([[ "$datefut" -gt "$nowreal" ]] && echo true || echo false)"
     eq "…while _bs_since_epoch reads it as the PAST" \
        "true" "$([[ "$(_bs_since_epoch 24h "$nowreal")" -lt "$nowreal" ]] && echo true || echo false)"
+    # Resolved against the REAL now, because an ISO instant in the future is now refused as a
+    # window that can only report zeros — and this fixture date is in the past only relative to
+    # a real clock, never to the synthetic $NOW.
     isoep="$(date -u -d '2026-08-01T00:00:00Z' +%s)"
     eq "an ISO-8601 spec resolves through date(1)" "$isoep" \
-       "$(_bs_since_epoch '2026-08-01T00:00:00Z' "$NOW")"
+       "$(_bs_since_epoch '2026-08-01T00:00:00Z' "$nowreal")"
+    expect_rc "…while a FUTURE ISO instant is refused, not silently accepted" \
+       2 _bs_since_epoch '2999-01-01T00:00:00Z' "$nowreal"
+    expect_rc "…and an instant AT now is refused too (a zero-length window)" \
+       2 _bs_since_epoch "$(date -u -d "@$nowreal" +%Y-%m-%dT%H:%M:%SZ)" "$nowreal"
 else
     echo "  note: date(1) cannot parse a relative/ISO spec here — the ISO leg is not exercised"
 fi
@@ -165,8 +214,36 @@ meta2="$(_bs_window_rows 1 $((T0 - 999999)) "$rowsf2")"
 eq "control: an older cutoff reaches the third page" "3" "$(printf '%s' "$meta2" | jq -r '.pages')"
 eq "control: …and its rows ARE collected"            "10" \
    "$(jq -s 'add // [] | [ .[] | select(.card >= 30000) ] | length' "$rowsf2")"
-eq "control: a short page ends the log without an error" "null" \
-   "$(printf '%s' "$meta2" | jq -r '.error | tostring')"
+
+echo "== _bs_window_rows — a log SHORTER than the window is a truncation, not a quiet board =="
+# The run above is exactly that case: the fixture log ends at page 3's last row, which is still
+# INSIDE a T0-999999 window. Before this was recorded the loop stopped on the short page and
+# reported the window complete — a `--since 90d` over a 44-day-old log rendered as a full
+# 90-day report at rc 0, with nothing in the output saying the data ran out rather than the
+# events.
+avail3="$(printf '%s' "$meta2" | jq -r '.data_available_from // "none"')"
+eq "the log running out inside the window flags truncated" "true" \
+   "$(printf '%s' "$meta2" | jq -r '.truncated')"
+eq "…and records how far back the log actually reaches" "true" \
+   "$([[ "$avail3" != none ]] && echo true || echo false)"
+eq "…which is the OLDEST row the log holds" "$(date -u -d "@$((T0 - 200000 - 9*60))" +%Y-%m-%dT%H:%M:%SZ)" \
+   "$avail3"
+eq "…and it says the log, not the page cap, is what ended the read" "true" \
+   "$(has 'the changelog itself ends at' "$(printf '%s' "$meta2" | jq -r '.error')")"
+
+# THE CONTROL: the SAME short page, the only change being a cutoff the log DOES reach past. A
+# flag that fired on every short page would be a decoration, and the third page would look
+# truncated in every run above.
+: > "$CALLS"; rowsf2b="$TMP/rows2b.jsonl"; : > "$rowsf2b"
+meta2b="$(_bs_window_rows 1 $((T0 - 200300)) "$rowsf2b")"
+eq "control: the same short page ends the log at 3 pages" "3" \
+   "$(printf '%s' "$meta2b" | jq -r '.pages')"
+eq "control: …and a log that REACHES the cutoff is not truncated" "false" \
+   "$(printf '%s' "$meta2b" | jq -r '.truncated')"
+eq "control: …carries no data_available_from"       "null" \
+   "$(printf '%s' "$meta2b" | jq -r '.data_available_from | tostring')"
+eq "control: …and no error"                          "null" \
+   "$(printf '%s' "$meta2b" | jq -r '.error | tostring')"
 
 echo "== _bs_window_rows — the page cap truncates LOUDLY, never silently =="
 : > "$CALLS"; rowsf3="$TMP/rows3.jsonl"; : > "$rowsf3"
@@ -307,6 +384,178 @@ eq "the column counts sum to the total"       "true" \
    "$(printf '%s' "$obj" | jq '([.stock.columns[].cards] | add) == .stock.total')"
 
 # ---------------------------------------------------------------------------
+echo "== _bs_board_json — a SWIMLANE-only move is not a transition, and not a resolution =="
+# The board emits `task.moved` for a swimlane change as well as a stage change, so a swimlaned
+# board's log carries rows whose from_stage_id EQUALS their to_stage_id. Ungrouped, one of
+# those inside a terminal stage mints a resolution out of a card that never moved column — and
+# on a board where the release lane is swimlaned, it does so every time.
+cat > "$TMP/fx-same.jsonl" <<'ROWS'
+[
+ {"action":"task.moved","at":"2026-08-11T10:00:00+00:00","card":1,"actor":"service","from_id":83,"to_id":84,"from_name":"Backlog","to_name":"In Progress"},
+ {"action":"task.moved","at":"2026-08-11T10:01:00+00:00","card":2,"actor":"human","from_id":89,"to_id":89,"from_name":"Shipped to dev","to_name":"Shipped to dev"},
+ {"action":"task.moved","at":"2026-08-11T10:02:00+00:00","card":3,"actor":"service","from_id":83,"to_id":83,"from_name":"Backlog","to_name":"Backlog"}
+]
+ROWS
+objs="$(_bs_board_json "$TMP/fx-cards.json" "$TMP/fx-same.jsonl" "$fxmeta")"
+eq "the two same-stage rows are counted on their own line" "2" \
+   "$(printf '%s' "$objs" | jq '.flow.same_stage_moves')"
+eq "…and are NOT transitions"                 "1" \
+   "$(printf '%s' "$objs" | jq '.flow.transitions | length')"
+eq "…the one transition being the real move"  "83->84" \
+   "$(printf '%s' "$objs" | jq -r '.flow.transitions[0] | "\(.from_stage_id)->\(.to_stage_id)"')"
+# The phantom this guards: stage 89 is terminal, so an ungrouped same-stage row there is a
+# resolution of a card that never moved column.
+eq "…so a same-stage row in a TERMINAL stage mints no resolution" "0" \
+   "$(printf '%s' "$objs" | jq '.flow.resolutions | length')"
+eq "…and no wash"                             "0" \
+   "$(printf '%s' "$objs" | jq '.flow.washes | length')"
+eq "moved still counts every task.moved event read" "3" \
+   "$(printf '%s' "$objs" | jq '.flow.moved')"
+eq "…so moved = the transitions plus the same-stage moves" "true" \
+   "$(printf '%s' "$objs" | jq '.flow.moved == (([.flow.transitions[].count] | add // 0) + .flow.same_stage_moves)')"
+# THE CONTROL: the same fixture with the two rows given a real destination. If the counter were
+# a constant, or the grouping still swallowed them, this would not move.
+jq -c 'map(if .from_id == .to_id then .to_id = 84 else . end)' "$TMP/fx-same.jsonl" > "$TMP/fx-same-ctl.jsonl"
+objsc="$(_bs_board_json "$TMP/fx-cards.json" "$TMP/fx-same-ctl.jsonl" "$fxmeta")"
+eq "control: with no same-stage row the counter is 0" "0" \
+   "$(printf '%s' "$objsc" | jq '.flow.same_stage_moves')"
+eq "control: …and all three rows are transitions"     "3" \
+   "$(printf '%s' "$objsc" | jq '[.flow.transitions[].count] | add')"
+printf '%s' "$objs" | jq -s --argjson now "$NOW2" '
+    { generated_at: ($now|todate), since: {spec:"24h", cutoff:(($now-86400)|todate), epoch:($now-86400)},
+      partial: false, failed_boards: 0, readable_boards: 1, boards: . }' > "$TMP/doc-same.json"
+txtsame="$(_bs_render_text "$TMP/doc-same.json")"
+eq "the same-stage count reaches the text on its own line" "true" \
+   "$(has 'same-stage moves' "$txtsame")"
+eq "…labelled as swimlane-only rather than left to read as a transition" "true" \
+   "$(has 'swimlane-only; not transitions' "$txtsame")"
+
+# ---------------------------------------------------------------------------
+echo "== the terminal/pullable classification is DERIVED from the board's lane_type =="
+# The board env is not the only source, and must not be the only source: it names stage ids by
+# ROLE, so a role it omits (the shipped examples/kanban-board.env.example has no
+# KB_STAGE_WONT_DO) silently emptied a whole class — every Won't-Do resolution and every wash
+# out of it vanished at rc 0, with no failure line. The board's own `lane_type` answers the
+# same question for stages the env never mentions.
+cat > "$TMP/fx-preload.json" <<'PRE'
+{"data":{"workflows":[{"id":1,"stages":[
+  {"id":88,"name":"Blocked/Gated","lane_type":"in_progress","position":1024},
+  {"id":83,"name":"Backlog","lane_type":"backlog_inventory","position":2048},
+  {"id":86,"name":"Prioritized","lane_type":"backlog_inventory","position":3072},
+  {"id":84,"name":"In Progress","lane_type":"in_progress","position":4096},
+  {"id":87,"name":"In Review","lane_type":"in_progress","position":5120},
+  {"id":89,"name":"Shipped to dev","lane_type":"waiting","position":6144},
+  {"id":85,"name":"Released to main","lane_type":"done","position":7168},
+  {"id":90,"name":"Won't Do","lane_type":"done","position":8192}]}]}}
+PRE
+fxmap="$(_bs_stage_map "$(cat "$TMP/fx-preload.json")")"
+eq "the stage map carries the done-typed stages"     '["85","90"]' \
+   "$(printf '%s' "$fxmap" | jq -c '.derived_term')"
+eq "…and the backlog_inventory-typed ones"           '["83","86"]' \
+   "$(printf '%s' "$fxmap" | jq -c '.derived_pull')"
+eq "…while still carrying the column names"          "Won't Do" \
+   "$(printf '%s' "$fxmap" | jq -r '.names["90"]')"
+
+# A board env with NO KB_STAGE_WONT_DO — the shipped example's shape.
+cls="$(_bs_classify "$fxmap" 89 85 "" 83 86)"
+eq "Won't Do is terminal with no env key naming it"  "true" \
+   "$(printf '%s' "$cls" | jq '.term | index("90") != null')"
+eq "…and the env-only Shipped to dev stays terminal too (lane_type waiting)" "true" \
+   "$(printf '%s' "$cls" | jq '.term | index("89") != null')"
+eq "…so the class is the UNION, not either source alone" '["85","89","90"]' \
+   "$(printf '%s' "$cls" | jq -c '.term')"
+eq "pullable derives the same way"                   '["83","86"]' \
+   "$(printf '%s' "$cls" | jq -c '.pull')"
+# THE CONTROL for the derivation: with the lane types stripped, only the env keys remain — the
+# pre-fix behaviour, and the defect itself, measured rather than asserted.
+fxmap_nolane="$(_bs_stage_map "$(jq -c '.data.workflows[0].stages |= map(del(.lane_type))' "$TMP/fx-preload.json")")"
+eq "control: with no lane_type the derivation is empty" "[]" \
+   "$(printf '%s' "$fxmap_nolane" | jq -c '.derived_term')"
+eq "control: …and Won't Do is then LOST to a wont-do-less env" "false" \
+   "$(_bs_classify "$fxmap_nolane" 89 85 "" 83 86 | jq '.term | index("90") != null')"
+eq "control: …while an env that DOES name it keeps it" "true" \
+   "$(_bs_classify "$fxmap_nolane" 89 85 90 83 86 | jq '.term | index("90") != null')"
+eq "an unusable preload plus an empty env classifies NOTHING" '{"term":[],"pull":[]}' \
+   "$(_bs_classify "$(_bs_stage_map '<html>a proxy said hello</html>')" "" "" "" "" "" | jq -c '.')"
+
+# ---------------------------------------------------------------------------
+echo "== _bs_one_board — the derivation reaches the report, and an empty class SAYS SO =="
+# End-to-end over stubs: a real board env (minus KB_STAGE_WONT_DO), the fixture preload, and a
+# changelog page whose last row precedes the cutoff so the window is complete.
+NOW4=1786000000
+CUT4=$((NOW4 - 86400))
+printf 'a-token\n' > "$TMP/fx-token"
+API="https://stub.invalid/api/v3"
+cat > "$HOME/.kanban-fx-board.env" <<ENVF
+export KB_BOARD_ID=1
+export KBCARD_TOKEN_FILE="$TMP/fx-token"
+export KB_STAGE_BACKLOG=83
+export KB_STAGE_PRIORITIZED=86
+export KB_STAGE_SHIPPED_TO_DEV=89
+export KB_STAGE_RELEASED_TO_MAIN=85
+ENVF
+jq -n --argjson t "$NOW4" '
+  { data: [ { id: 9, board_id: 1, subject_id: 1, action: "task.moved", actor_type: "service",
+              payload: {from_stage_id: 87, to_stage_id: 90, from_stage_name: "In Review", to_stage_name: "Wont Do"},
+              created_at: (($t - 3600) | todate) },
+            { id: 8, board_id: 1, subject_id: 2, action: "task.moved", actor_type: "human",
+              payload: {from_stage_id: 90, to_stage_id: 90, from_stage_name: "Wont Do", to_stage_name: "Wont Do"},
+              created_at: (($t - 3700) | todate) },
+            { id: 7, board_id: 1, subject_id: 3, action: "task.created", actor_type: "service",
+              payload: {}, created_at: (($t - 90000) | todate) } ] }' > "$TMP/fx-changelog.json"
+printf '%s' '[{"id":11,"workflow_stage_id":83,"created_at":"2026-08-01T00:00:00+00:00","deleted_at":null}]' \
+    > "$TMP/fx-onecards.json"
+kb_api() {
+    case "$2" in
+        */preload.json) cat "$TMP/fx-preload.json" ;;
+        */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        *) return 1 ;;
+    esac
+}
+fetch_board_cards() { cat "$TMP/fx-onecards.json"; }
+mkdir -p "$TMP/b1"
+onb="$(_bs_one_board fx "Fixture board" "$CUT4" "$NOW4" "$TMP/b1")"
+eq "the board reports no failure"                    "0" \
+   "$(printf '%s' "$onb" | jq '.failures | length')"
+eq "the Won't-Do move IS a resolution, with no env key for it" "1" \
+   "$(printf '%s' "$onb" | jq '[.flow.resolutions[] | select(.stage_id == 90)] | .[0].count')"
+eq "…and the swimlane-only move in that same stage is not" "1" \
+   "$(printf '%s' "$onb" | jq '.flow.same_stage_moves')"
+eq "the pullable column is classified from lane_type too" "true" \
+   "$(printf '%s' "$onb" | jq '[.stock.columns[] | select(.stage_id == 83)] | .[0].pullable')"
+
+echo "== _bs_one_board — an EMPTY class is a failure line, never a silent zero =="
+# Nothing to derive from (a preload with no lane_type) and nothing to override with (an env
+# with no KB_STAGE_* key at all). The counts that follow are all zero, and without this line
+# they read exactly like a board where nothing happened.
+cat > "$HOME/.kanban-fx2-board.env" <<ENVF
+export KB_BOARD_ID=1
+export KBCARD_TOKEN_FILE="$TMP/fx-token"
+ENVF
+jq -c '.data.workflows[0].stages |= map(del(.lane_type))' "$TMP/fx-preload.json" > "$TMP/fx-preload-nolane.json"
+kb_api() {
+    case "$2" in
+        */preload.json) cat "$TMP/fx-preload-nolane.json" ;;
+        */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        *) return 1 ;;
+    esac
+}
+mkdir -p "$TMP/b2"
+onb2="$(_bs_one_board fx2 "Unclassifiable board" "$CUT4" "$NOW4" "$TMP/b2")"
+eq "an unclassifiable terminal set is named"         "true" \
+   "$(has 'no TERMINAL stage could be classified' "$(printf '%s' "$onb2" | jq -r '.failures[]')")"
+eq "…and so is an unclassifiable pullable set"       "true" \
+   "$(has 'no PULLABLE stage could be classified' "$(printf '%s' "$onb2" | jq -r '.failures[]')")"
+eq "…each naming the board env that could override it" "true" \
+   "$(has '.kanban-fx2-board.env' "$(printf '%s' "$onb2" | jq -r '.failures[]')")"
+eq "the zeros it warns about are really there"       "0" \
+   "$(printf '%s' "$onb2" | jq '.flow.resolutions | length')"
+# THE CONTROL: the board above differs from the healthy one ONLY in what it can classify — so
+# the failure lines cannot be an artifact of the stub, the env file, or the fixture log.
+eq "control: the healthy board carries neither line"  "false" \
+   "$(has 'could be classified' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
+
+# ---------------------------------------------------------------------------
 echo "== _bs_render_text — the text renders what the JSON carries =="
 printf '%s' "$obj" | jq -s --argjson now "$NOW2" '
     { generated_at: ($now | todate),
@@ -320,6 +569,17 @@ eq "…and both destinations appear"            "true" \
    "$(has 'Shipped to dev' "$txt")"
 eq "the human/service split reaches the text" "true" "$(has 'human 1 · service 2' "$txt")"
 eq "the stock section names the oldest pullable card" "true" "$(has '(#12)' "$txt")"
+# A window the LOG could not fill must say so where the counts are read, not only in the JSON:
+# the counts themselves are indistinguishable from a quiet board.
+jq '.boards[0].flow.data_available_from = "2026-07-01T00:00:00Z" | .boards[0].flow.truncated = true' \
+    "$TMP/doc.json" > "$TMP/doc-short.json"
+txtshort="$(_bs_render_text "$TMP/doc-short.json")"
+eq "a log that ran out inside the window says so in the text" "true" \
+   "$(has 'the changelog reaches back only to 2026-07-01T00:00:00Z' "$txtshort")"
+eq "…and the flow heading is marked truncated"     "true" \
+   "$(has 'WINDOW TRUNCATED' "$txtshort")"
+eq "control: the untruncated report carries neither" "false" \
+   "$(has 'reaches back only to' "$txt")"
 
 echo "== _bs_render_text — a failed board is NAMED, never omitted =="
 jq -n '{ generated_at: "2026-08-12T00:00:00Z",

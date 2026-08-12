@@ -581,6 +581,28 @@ half was dropped, above.
 
 ---
 
+## Post-program dispositions
+
+Duplications found *after* the program closed, in the shapes it named. Parked here rather than on a
+tracker: this document already owns the reasoning for every consolidation in this repo, and a
+finding with no owner is abandoned, not filed.
+
+- **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
+  parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
+  inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not
+  a cleanup**: the fallbacks differ (two hardcoded board names for back-compat vs discovery of every
+  `~/.kanban-*-board.env`), so adopting the primitive changes what a roster-less box renders at
+  SessionStart — and the two emit different first fields (`<name>` vs `<envfile>`), so the call site
+  changes too. Recorded at the function; this is the owning record.
+- **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
+  and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
+  `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement
+  shape Stage B closed elsewhere by deleting the copy and pointing at the owner; the same fix applies
+  here, and the same caution does — the three copies are consumer-facing prose with different
+  audiences, so the replacement has to leave each audience an answer, not just a pointer.
+
+---
+
 ## Corrections carried forward
 
 Claims the review passes disproved. Kept, because a plan that quietly drops its refuted claims
