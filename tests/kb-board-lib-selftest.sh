@@ -29,6 +29,20 @@ printf 'ambient-token\n' > "$TMP/ambient.token"
 printf 'default-token\n' > "$TMP/.kanban-dev-token"
 printf 'spaced-token\n'  > "$TMP/tok with space.token"
 
+# expect_out drives a function and compares stdout; expect_rc compares exit status.
+# These deliberately shadow the prelude's like-named helpers: this variant routes
+# through eq() (different pass/fail wording), so it defines its own after sourcing.
+expect_out() { # <label> <expected> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local got; got="$("$@" 2>/dev/null || true)"
+    eq "$label" "$exp" "$got"
+}
+expect_rc() { # <label> <expected-rc> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
+    eq "$label (rc)" "$exp" "$rc"
+}
+
 # reset_env: drop every var the resolvers read or publish, so each case starts from a known
 # state — these functions communicate through globals and a leaked one would fake a pass.
 reset_env() {
@@ -539,20 +553,6 @@ unset -f curl _maxtime_arg
 unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
-# expect_out drives a function and compares stdout; expect_rc compares exit status.
-# These deliberately shadow the prelude's like-named helpers: this variant routes
-# through eq() (different pass/fail wording), so it defines its own after sourcing.
-expect_out() { # <label> <expected> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local got; got="$("$@" 2>/dev/null || true)"
-    eq "$label" "$exp" "$got"
-}
-expect_rc() { # <label> <expected-rc> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
-    eq "$label (rc)" "$exp" "$rc"
-}
-
 echo "== kb_dl_num — strict (rejects non-DL loudly) =="
 expect_out "bare int"                   "42"  kb_dl_num "42"
 expect_out "DL-093 -> 93"               "93"  kb_dl_num "DL-093"
