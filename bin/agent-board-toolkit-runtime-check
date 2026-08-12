@@ -71,7 +71,7 @@ done
 TOOLS=(kbcard next-dl board-snapshot board-card-start board-session-close adopt-to-dl
        release-pr-body release-artifacts-check promote-released-cards install-board-hooks
        agent-board-toolkit-drift-check dl-a0-backfill-triaged dl-a1-register-field
-       agent-board-toolkit-runtime-check)
+       agent-board-toolkit-runtime-check dependabot-deploy-reconcile)
 
 fails=0
 warns=0
