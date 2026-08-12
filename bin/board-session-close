@@ -668,13 +668,21 @@ _bsc_advisory_leg() {
   # PRE-DATES the bound, so making it a hard dependency would have broken a working leg on
   # those hosts to add a guarantee they simply cannot have. Unbounded-but-running beats
   # bounded-and-dead for an advisory leg; the degraded state is stated, never silent.
+  #
+  # `${@:+"$@"}` rather than a bare `"$@"` at both sites below: under `set -u`, bash BEFORE
+  # 4.4 treats an empty `"$@"` as an unset variable and aborts. These are the first sites in
+  # this file where `$@` is GUARANTEED empty — the reconciler leg passes no runner at all, so
+  # it is empty on every close, not in some corner case. Bash 4.4 (2016) fixed it and this
+  # host runs bash 5, so no fixture here can reach the failure; the spelling is free, and the
+  # hosts it protects are exactly the old-bash ones (a stock macOS /bin/bash is 3.2) that the
+  # `timeout` probe above already exists for.
   local budget="${BSC_ADVISORY_TIMEOUT:-60}"
   if command -v timeout >/dev/null 2>&1; then
-    out="$(timeout "$budget" "$@" "$path" 2>&1)"; rc=$?
+    out="$(timeout "$budget" ${@:+"$@"} "$path" 2>&1)"; rc=$?
   else
     echo "  ⚠ board-session-close: no \`timeout\` on PATH (coreutils), so the $subject runs" >&2
     echo "    UNBOUNDED — it cannot hang the close's exit code, but it can hang its clock." >&2
-    out="$("$@" "$path" 2>&1)"; rc=$?
+    out="$(${@:+"$@"} "$path" 2>&1)"; rc=$?
   fi
   printf '%s\n' "$out" | sed 's/^/  /'
   if [[ "$rc" -eq 124 ]]; then

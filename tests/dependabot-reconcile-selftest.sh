@@ -505,12 +505,6 @@ _DEP="\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":\"hono\"},\"ma
 scalar_case "a population mixing int and str alert numbers" \
   "[{\"number\":1,\"state\":\"fixed\",$_DEP},{\"number\":\"2\",\"state\":\"fixed\",$_DEP}]" \
   'returned a str `number`'
-scalar_case "an UNHASHABLE package name (it is used as a dict key)" \
-  "[{\"number\":1,\"state\":\"fixed\",\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":[\"a\"]},\"manifest_path\":\"$IN_SCOPE\"}}]" \
-  'returned a list package name'
-scalar_case "a non-string package name (it is used as a path segment)" \
-  "[{\"number\":1,\"state\":\"fixed\",\"dependency\":{\"package\":{\"ecosystem\":\"npm\",\"name\":7},\"manifest_path\":\"$IN_SCOPE\"}}]" \
-  'returned a int package name'
 # A JSON `true` must not pass as a number: bool subclasses int, so an isinstance check would
 # accept it and render the alert as "#True".
 scalar_case "a boolean alert number (bool subclasses int — isinstance would admit it)" \
@@ -524,6 +518,80 @@ SPECS
 mk_states
 run_dr
 eq "control: correctly-typed number and name ⇒ rc 0" "0" "$RC"
+
+echo "== a package name is validated POSITIVELY, and a bad one costs only its own alert =="
+# THE METHOD CHANGE, and the reason for it: every previous version of this check enumerated BAD
+# name shapes, and each review round found one the list had not named. The last two were the
+# expensive kind — a `None` name (via an `or ""`) joined to the node_modules ROOT and reported
+# FIXED_CONFIRMED about a package that does not exist, and a `../`-bearing name read a file
+# OUTSIDE the deployed tree and minted FIXED_CONFIRMED from it. So the check now states what a
+# package name IS (one component, or @scope/name) and refuses everything else.
+#
+# A bad name is that ALERT's problem, not the run's: rc stays 0 and the row says why, because
+# one malformed alert must not destroy the other eighteen measurements. That is a deliberate
+# change from the earlier type gate, which raised and killed the whole population.
+name_case() {   # <label> <json-name-literal> <needle>
+    python3 -c '
+import json, sys
+name = json.loads(sys.argv[2])
+alert = {"number": 1, "state": "fixed",
+         "dependency": {"package": {"ecosystem": "npm", "name": name},
+                        "manifest_path": sys.argv[3], "scope": "runtime"},
+         "security_vulnerability": {"first_patched_version": {"identifier": "1.0.0"}}}
+json.dump([alert], open(sys.argv[1], "w"))
+' "$FIX/alerts-fixed.json" "$2" "$IN_SCOPE"
+    mk_states
+    run_dr
+    A="$(art "$REAL_ART")"
+    eq "$1 ⇒ rc 0, the run survives it" "0" "$RC"
+    eq "…that alert is UNVERIFIABLE: $3" "true" "$(has "$3" "$(disp "$A" 1)")"
+    eq "…and it never reports a version it read from somewhere else" "false" \
+       "$(has 'FIXED_CONFIRMED' "$(disp "$A" 1)")"
+}
+name_case "a null package name (it used to path-join to the tree ROOT)" \
+          'null' 'UNVERIFIABLE: the alert carries no package name'
+name_case "an empty package name (same root-join)" \
+          '""' 'UNVERIFIABLE: the package name is empty'
+# A REAL package.json one level ABOVE node_modules, so the traversal below has something to
+# actually mint from. Without it the escaped path merely does not exist and the case passes for
+# the wrong reason — it would assert nothing about containment, and the belt that backs the
+# grammar up could be deleted with the suite still green (observed).
+#
+# KILLABILITY NOTE, since it is not symmetric and the asymmetry is the design: with the GRAMMAR
+# disabled the belt still stops this case (no version is minted), and only with BOTH disabled
+# does the run report a version read from outside the tree. Disabling the belt ALONE leaves the
+# suite green — the grammar shadows it. That is what defence in depth means here, not a gap:
+# the belt is the layer that holds when the grammar is wrong about a shape, which is the thing
+# that has actually happened five times.
+mkdir -p "$DEP/evil-pkg"
+printf '{"name":"evil","version":"99.0.0"}\n' > "$DEP/evil-pkg/package.json"
+touch -d '-10 minutes' "$DEP/evil-pkg/package.json"
+name_case "a ../ traversal (it used to read OUTSIDE the deployed tree)" \
+          '"../evil-pkg"' 'has an empty or relative path segment'
+name_case "an absolute path as a name" '"/tmp"' 'has an empty or relative path segment'
+name_case "a bare .. as a name" '".."' 'has an empty or relative path segment'
+name_case "a three-component name" '"a/b/c"' 'is neither a single component nor the @scope/name form'
+name_case "an empty @scope" '"@/x"' 'has two components but the first is not an @scope'
+name_case "a backslash separator" '"a\\b"' 'contains a path separator or NUL byte'
+name_case "an unhashable name (it is used as a dict key)" \
+          '["a"]' 'the package name is a list, not a string'
+name_case "a non-string name (it is used as a path segment)" \
+          '7' 'the package name is a int, not a string'
+
+# THE CONTROLS THAT KEEP IT USABLE — a positive rule that rejects real names would be worse
+# than the hole it closes. Both legal npm shapes must still reconcile for real.
+mk_pkg "@hono/node-server" 2.1.0
+touch -d '-10 minutes' "$NM/@hono/node-server/package.json"
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+2|npm|@hono/node-server|$IN_SCOPE|runtime|2.0.5
+SPECS
+mk_states
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: a plain name still reconciles" "FIXED_CONFIRMED" "$(disp "$A" 1)"
+eq "control: an @scope/name still reconciles" "FIXED_CONFIRMED" "$(disp "$A" 2)"
+rm -rf "$NM/@hono"
 
 echo "== a malformed NESTED object degrades to a disposition, never to a traceback =="
 # The other half of the same class, one level down and NOT covered by the element gate above:
@@ -909,6 +977,31 @@ A="$(art "$REAL_ART")"
 eq "a .bin FILE-symlink does NOT fire the subtree check" "FIXED_CONFIRMED" "$(disp "$A" 1)"
 eq "…and coverage is unaffected" "true" "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
 rm -rf "$NM/.bin"
+
+# Arm four: a symlink whose TARGET cannot be stat'd, because the target sits under a mode-000
+# parent. This is the shape that broke the previous fix: os.walk's own is_dir() swallows the
+# OSError and files the entry as a FILE, so it never reached `dirnames` and the symlink scan
+# never saw it — driven, it minted FIXED_CONFIRMED. The scan now classifies every entry
+# POSITIVELY (plain dir, plain file, or symlink-to-regular-file are the only harmless
+# outcomes) so no shape has to be predicted to be caught.
+LOCKED="$TMP/locked-parent"
+mkdir -p "$LOCKED/target/node_modules/hono"
+printf '{"name":"hono","version":"1.0.0"}\n' > "$LOCKED/target/node_modules/hono/package.json"
+ln -sfn "$LOCKED/target" "$NM/type-is"
+chmod 000 "$LOCKED"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a symlink whose target cannot be stat'd ⇒ UNVERIFIABLE, not FIXED_CONFIRMED" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+eq "…named as a symlink whose target will not stat" "true" \
+   "$(has "target cannot be stat'd" "$(get "$A" scope.legs.0.coverage_scope.0.reason)")"
+eq "…with coverage coupled to it" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+chmod 755 "$LOCKED"
+rm -f "$NM/type-is"
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: removing the symlink restores the disposition" "FIXED_CONFIRMED" "$(disp "$A" 1)"
 
 echo "== a package path that is present but NOT A DIRECTORY is unreadable, not absent =="
 # The read_installed half of the same class: `os.path.exists` on the package.json answers False

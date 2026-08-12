@@ -289,12 +289,6 @@ def gh_alerts(state) -> list:
                 f"gh api ({label}) returned a {type(number).__name__} `number` ({number!r}) "
                 f"at index {i}, not an integer — alert numbers are sorted and rendered as "
                 f"identities, and a population mixing types cannot even be ordered")
-        name = as_obj(as_obj(alert.get("dependency")).get("package")).get("name")
-        if name is not None and type(name) is not str:
-            raise InstrumentError(
-                f"gh api ({label}) returned a {type(name).__name__} package name ({name!r}) "
-                f"on alert #{number} — the name is used as a dict key and as a path segment, "
-                f"and it can be neither")
     if state is not None:
         for alert in data:
             got = alert.get("state")
@@ -385,6 +379,66 @@ def semver_key(version: str):
 DIR_ABSENT = "directory does not exist"
 
 
+def package_name_fault(name):
+    """None when `name` is a package name this run may turn into a path; else why not.
+
+    POSITIVE VALIDATION — the whole point, and a deliberate break with how this file grew.
+    Every earlier version of this check enumerated BAD shapes (not a str, unhashable, a list),
+    and each round of review found one more the list did not name: a `None` that `or ""` turned
+    into the node_modules ROOT (so the tool read `node_modules/package.json` and reported a
+    FIXED_CONFIRMED about a package that does not exist), an empty string doing the same, and a
+    `../`-bearing name that read a file OUTSIDE the deployed tree entirely and minted
+    FIXED_CONFIRMED from it. A blocklist cannot close that class, because the class is "the
+    shapes nobody thought of". So this states what a package name IS and refuses the rest.
+
+    The grammar, which is npm's: exactly ONE path component, or TWO in the `@scope/name` form.
+    Each segment must be non-empty and neither `.` nor `..`, and may not contain a separator or
+    a NUL. `@` alone is not a scope.
+
+    A fault here is that ALERT's problem, not the run's: it yields an UNVERIFIABLE row naming
+    the reason, because one malformed alert must not destroy the other eighteen measurements.
+    """
+    if name is None:
+        return "the alert carries no package name"
+    if type(name) is not str:
+        return f"the package name is a {type(name).__name__}, not a string"
+    if not name:
+        return "the package name is empty"
+    segments = name.split("/")
+    # Per-segment rules FIRST, so the message names the thing that is actually wrong: for
+    # "../pkg" the interesting fact is the relative segment, not the component count.
+    for segment in segments:
+        if not segment or segment in (".", ".."):
+            return f"package name {name!r} has an empty or relative path segment"
+        if "\\" in segment or "\0" in segment:
+            return f"package name {name!r} contains a path separator or NUL byte"
+    if len(segments) == 2:
+        if not segments[0].startswith("@") or len(segments[0]) < 2:
+            return (f"package name {name!r} has two components but the first is not an "
+                    f"@scope")
+    elif len(segments) != 1:
+        return (f"package name {name!r} is neither a single component nor the @scope/name "
+                f"form")
+    return None
+
+
+def contained_path(root: str, *parts):
+    """`root` joined with `parts`, or None if the result would escape `root`.
+
+    THE BELT, and it is independent of the grammar above on purpose. A grammar is a claim about
+    what inputs look like and can be wrong again; this is a claim about what this leg is allowed
+    to READ, and it holds whatever the grammar admits. It is what would have caught the `../`
+    traversal without anyone having predicted that particular shape — which, given that five
+    review rounds each found a shape the previous one had not predicted, is the check worth
+    having. Strictly UNDER the root: resolving to the root itself is what an empty name did.
+    """
+    root_normal = os.path.normpath(root)
+    candidate = os.path.normpath(os.path.join(root_normal, *parts))
+    if not candidate.startswith(root_normal + os.sep):
+        return None
+    return candidate
+
+
 def as_obj(value):
     """`value` when it is a JSON object, else an empty one.
 
@@ -457,7 +511,13 @@ def read_installed(node_modules: str, name: str):
     traversed, so an unreadable install reported "package not in deployment" — the docstring
     above described an intent the code did not implement.
     """
-    pkg_dir = os.path.join(node_modules, name)
+    pkg_dir = contained_path(node_modules, name)
+    if pkg_dir is None:
+        # The belt. The caller already validated the name's grammar, so reaching this means the
+        # grammar and this invariant disagree — and the invariant wins, because it is the one
+        # that says what this leg may read.
+        return None, os.path.join(node_modules, str(name)), (
+            f"package path for {name!r} would resolve outside the deployed tree")
     pkg = os.path.join(pkg_dir, "package.json")
     fault = dir_fault(pkg_dir)
     if fault == DIR_ABSENT:
@@ -534,30 +594,58 @@ def nested_copies(node_modules: str, names):
     def _onerror(err):
         faults.append(f"{getattr(err, 'filename', node_modules)} ({err.strerror or err})")
 
-    for dirpath, dirnames, _files in os.walk(node_modules, onerror=_onerror):
+    for dirpath, _dirnames, _files in os.walk(node_modules, onerror=_onerror):
         sub_fault = dir_fault(dirpath)
         if sub_fault:
             faults.append(f"{dirpath} ({sub_fault})")
             continue
-        # A SYMLINKED directory is the third route past this scan, and the quietest: with
-        # followlinks=False (the default, and the right default — following would need its own
-        # cycle guard) walk lists it in `dirnames` and then never yields it as a `dirpath`, so
-        # the per-directory check above never runs on it and `onerror` never fires. The
-        # subtree is simply not scanned, and an unscanned subtree reads as "no nested copy".
-        # Recorded rather than followed: this scan's job is to say when it could not see, not
-        # to see everything.
+        # POSITIVE CLASSIFICATION OF EVERY ENTRY, and this replaced a `dirnames`-only symlink
+        # scan for the reason that keeps recurring: the blocklist missed a shape. A symlink
+        # whose TARGET cannot be stat'd (a target under a mode-000 parent) is classified by
+        # os.walk's own is_dir() as a FILE — it swallows the OSError — so it never appeared in
+        # `dirnames` at all and the symlink scan never saw it. Driven, it minted
+        # FIXED_CONFIRMED.
         #
-        # `dirnames` only, never `filenames`: node_modules/.bin is full of symlinks to FILES,
-        # which are not subtrees and must not fire this.
-        for d in dirnames:
-            linked = os.path.join(dirpath, d)
-            if os.path.islink(linked):
-                faults.append(f"{linked} (symlinked subtree, not traversed)")
+        # THE PROPERTY, stated so it can be checked rather than trusted: every entry is either
+        # POSITIVELY CONFIRMED HARMLESS or RECORDED. There is no third bucket, and no shape has
+        # to be predicted. Exactly three things are harmless — a plain directory (walk will
+        # descend into it and every check here runs again there), a plain regular file (it
+        # cannot hide a subtree), and a symlink that resolves to a regular file (the
+        # node_modules/.bin case, which likewise cannot hide a subtree). Everything else —
+        # symlink to a directory, symlink whose target will not stat, device/socket/FIFO where
+        # a directory could have been, or an entry that raises while being classified — is a
+        # place a nested copy might be that this run did not look.
+        try:
+            entries = list(os.scandir(dirpath))
+        except OSError as e:
+            faults.append(f"{dirpath} (could not be listed: {e.strerror or e})")
+            continue
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    try:
+                        linked_stat = os.stat(entry.path)      # follows the link
+                    except OSError as e:
+                        faults.append(f"{entry.path} (symlink whose target cannot be "
+                                      f"stat'd: {e.strerror or e})")
+                        continue
+                    if stat.S_ISREG(linked_stat.st_mode):
+                        continue                               # a .bin-style file symlink
+                    faults.append(f"{entry.path} (symlinked subtree, not traversed)")
+                elif entry.is_dir(follow_symlinks=False):
+                    continue                                   # walk descends; rechecked there
+                elif entry.is_file(follow_symlinks=False):
+                    continue                                   # cannot hide a subtree
+                else:
+                    faults.append(f"{entry.path} (neither a regular file nor a directory, so "
+                                  f"it cannot be confirmed to hide nothing)")
+            except OSError as e:
+                faults.append(f"{entry.path} (could not be classified: {e.strerror or e})")
         if dirpath == node_modules or os.path.basename(dirpath) != "node_modules":
             continue
         for name in wanted:
-            candidate = os.path.join(dirpath, name)
-            if os.path.exists(candidate):
+            candidate = contained_path(dirpath, name)
+            if candidate is not None and os.path.exists(candidate):
                 found.setdefault(name, []).append(candidate)
     if faults:
         return found, ("nested-copy scan incomplete, so an absent nested copy is not a "
@@ -571,7 +659,7 @@ def disposition_for(alert, ctx):
     dep = as_obj(alert.get("dependency"))
     pkg = as_obj(dep.get("package"))
     ecosystem = pkg.get("ecosystem")
-    name = pkg.get("name") or ""
+    name = pkg.get("name")
     manifest = dep.get("manifest_path")
     patched = as_obj(as_obj(alert.get("security_vulnerability"))
                      .get("first_patched_version")).get("identifier")
@@ -584,6 +672,15 @@ def disposition_for(alert, ctx):
                 None, patched, False)
 
     # From here the alert IS this leg's business, so every row carries the deployed path.
+    #
+    # The name grammar is checked HERE and not earlier, and that placement is the point: the
+    # grammar is NPM'S, and an out-of-leg alert's name is legal in its own ecosystem —
+    # composer's `vendor/package` is the live example, and checking first reported a real
+    # composer alert as a malformed name instead of as an ecosystem this run does not cover.
+    # A name is only required to be path-safe for the leg that actually turns it into a path.
+    name_fault = package_name_fault(name)
+    if name_fault:
+        return (f"UNVERIFIABLE: {name_fault}", None, patched, True)
     if ctx["process_error"]:
         return (f"UNVERIFIABLE: {ctx['process_error']}", None, patched, True)
     # The tree itself could not be read — either its root, or a subtree the nested-copy scan
@@ -795,10 +892,15 @@ def main(argv) -> int:
                 "genuinely has zero alerts in every state)")
 
         # --- dispositions ---------------------------------------------------------------
-        names = sorted({as_obj(as_obj(a.get("dependency")).get("package")).get("name")
-                        for a in population
-                        if as_obj(as_obj(a.get("dependency")).get("package"))
-                        .get("ecosystem") in DECLARED_ECOSYSTEMS} - {None})
+        # Only names that PASSED validation may be joined into a path by the nested-copy
+        # scan; an unvalidated one would escape the tree there just as it did in the
+        # per-package read.
+        names = sorted({n for n in (
+            as_obj(as_obj(a.get("dependency")).get("package")).get("name")
+            for a in population
+            if as_obj(as_obj(a.get("dependency")).get("package"))
+            .get("ecosystem") in DECLARED_ECOSYSTEMS)
+            if package_name_fault(n) is None})
         nested, nested_fault = nested_copies(node_modules, names)
         if nested_fault:
             # A subtree this run could not enter is a TREE-LEVEL fault, exactly like an

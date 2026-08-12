@@ -36,9 +36,12 @@
 # UNKNOWN state value answers 200 with `[]` (`?state=all` / `?state=bogus`), so a typo'd filter
 # yields an empty population at a success status. A mis-cased KNOWN value is not that case — the
 # filter is applied case-insensitively — which is why the enum guard, not casing luck, is what
-# keeps a typo out. So each query checks the command's rc, asserts the body is a JSON array,
-# sends only a validated state literal, and re-asserts every returned alert's own `.state` (a
-# boundary check on a remote answer, not a patch for a known bug).
+# keeps a typo out. The gates a query passes are NOT enumerated here: that list has been
+# incomplete twice already (the element-shape and scalar-type gates were both added after this
+# prose was written, and neither appeared in it), and a stale enumeration reads as a complete
+# one. The gates are the guard clauses in `_dependabot-reconcile.py`'s `gh_alerts`, and
+# `tests/dependabot-reconcile-selftest.sh` is what asserts each of them can actually fire —
+# read either; do not trust a count in prose.
 # The excluded states (open / dismissed / auto_dismissed) are COUNTED and reported, so
 # "state=fixed" is a named inclusion with measured exclusions rather than a silent filter.
 # The integrity control is stronger than those three: ALL FOUR per-state counts, the
