@@ -72,7 +72,7 @@ _mktmp_scratch
 
 # The CLIs whose --help prints a leading comment header.
 CLIS=(promote-released-cards release-pr-body release-artifacts-check agent-board-toolkit-runtime-check
-      dependabot-deploy-reconcile)
+      dependabot-deploy-reconcile board-stats)
 
 # Bins that carry `--help` and are deliberately NOT asserted above. Each entry states WHY, and
 # the reason is machine-checked below — an exclusion here is a claim, not a licence. A one-line
@@ -191,10 +191,18 @@ for cli in "${CLIS[@]}"; do
 
     eq "$cli: --help prints the ENTIRE header (line-count equality)" "$want" "$got"
     eq "$cli: --help reaches the Usage: block"      "true"  "$(case "$out" in *"Usage:"*) echo true ;; *) echo false ;; esac)"
-    # Everything below the header is implementation, not user-facing help. `set -euo
-    # pipefail` is the first line after every header, so it is the canary for over-printing.
-    eq "$cli: --help does not leak code past the header" "false" \
-       "$(case "$out" in *"set -euo pipefail"*) echo true ;; *) echo false ;; esac)"
+    # Everything below the header is implementation, not user-facing help, so the canary for
+    # over-printing is the file's OWN first post-header line. It is DERIVED rather than the
+    # literal `set -euo pipefail` this leg used to carry: that is not the first line in every
+    # bin here — a fail-soft tool sets `set -uo pipefail` deliberately — and a literal that
+    # matches no line of the file under test is a check that cannot fail, which is precisely
+    # what this file exists to stop. The derivation feeds an ABSENCE assertion, i.e. it fails
+    # OPEN if it returns the wrong string, so it is witnessed first: the canary must be
+    # non-empty and must occur in the file, or "absent from --help" proves nothing.
+    canary="$(awk 'NR>1 { if (substr($0,1,1) != "#") { print; exit } }' "$bin")"
+    eq "$cli: the leak canary is a real line of this file" "true" \
+       "$([ -n "$canary" ] && grep -qxF -- "$canary" "$bin" && echo true || echo false)"
+    eq "$cli: --help does not leak code past the header" "false" "$(has "$canary" "$out")"
     # -h is the documented alias; assert it is the same output, not merely non-empty.
     eq "$cli: -h is identical to --help"            "true"  "$([ "$("$bin" -h)" = "$out" ] && echo true || echo false)"
 done

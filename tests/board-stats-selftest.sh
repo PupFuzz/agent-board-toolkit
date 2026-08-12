@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# board-stats-selftest.sh — network-free tests for board-stats' argument surface, for WHERE
+# ITS BACKWARD PAGING STOPS, and for the per-transition human/service split it computes off a
+# fixture changelog page.
+#
+# WHY THESE THREE. board-stats reads two different surfaces to answer two different questions,
+# and each has a way of being quietly wrong that a live run cannot show you:
+#
+#   * THE WINDOW. The changelog endpoint has no date filter — a window is read by paging
+#     backwards until the rows precede the cutoff. Stop one page too early and the report is a
+#     short read presented as a whole one; stop too late and every window walks 90 days of
+#     retention. Both look like a normal report. The pagination cases below therefore assert
+#     not just the rows returned but WHICH PAGES WERE REQUESTED, against a fixture whose third
+#     page holds rows that a correct run must never reach.
+#
+#   * THE SPLIT. Live boards can go weeks with no human `task.moved` row at all (measured: on
+#     all three of this box's boards the only human-actored rows in the 90-day retention are
+#     `board_member.role_changed`), so a human counter hardcoded to 0 would pass every live
+#     run. It is fixture-proven here, in both directions, and a `null` actor_type — the third
+#     value the API emits — is asserted to land in its own bucket rather than silently in one
+#     of the two named ones.
+#
+#   * THE WINDOW ARITHMETIC. `--since 24h` must resolve to the PAST. GNU date reads "24h" as
+#     now + 24 hours, so a tool that handed the relative form to date(1) would report an empty
+#     window as a quiet day, at rc 0, forever. That trap is asserted directly — including a
+#     control that measures date(1) doing exactly it.
+#
+# WHAT A GREEN RUN HERE DOES NOT PROVE: nothing about the live API's shape. Every response is
+# a fixture, so a server that renamed `actor_type`, moved the cursor parameter, or started
+# capping `limit` lower would leave this file green. The API facts it is built on were probed
+# live and are recorded in the tool's own header.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/_selftest-prelude.sh"
+BIN="$HERE/../bin/board-stats"
+_need -x "$BIN"
+# Scratch HOME: no real ~/.kanban-*-board.env or roster on this box may reach a case here.
+_mktmp_scratch --home
+# shellcheck source=/dev/null
+source "$BIN"   # main-guarded — defines the pure functions, issues no request
+
+# ---------------------------------------------------------------------------
+echo "== the argument surface refuses before it reads anything =="
+# Each of these must be answered by the parser, so none of them touches an API or a config.
+expect_rc "an unknown argument is rc 2"              2 "$BIN" --nope
+expect_rc "--format xml is rc 2"                     2 "$BIN" --format xml
+expect_rc "--board with an empty value is rc 2"      2 "$BIN" --board ""
+expect_rc "--since with an empty value is rc 2"      2 "$BIN" --since ""
+expect_rc "--format with an empty value is rc 2"     2 "$BIN" --format ""
+expect_rc "--all and --board together are rc 2"      2 "$BIN" --all --board dev
+expect_rc "--board given twice is rc 2"              2 "$BIN" --board a --board b
+expect_rc "--since with an unreadable window is rc 2" 2 "$BIN" --since 24x
+expect_rc "--help is rc 0"                           0 "$BIN" --help
+
+# The rc alone cannot separate these: every refusal above answers 2, so each message is what
+# says WHICH guard fired. (help-output-selftest.sh owns --help's content and channel.)
+msg="$("$BIN" --board "" 2>&1 >/dev/null)"
+eq "an empty --board names the flag"        "true"  "$(has '--board requires a non-empty value' "$msg")"
+msg="$("$BIN" --all --board dev 2>&1 >/dev/null)"
+eq "--all + --board names the exclusion"    "true"  "$(has 'mutually exclusive' "$msg")"
+msg="$("$BIN" --board a --board b 2>&1 >/dev/null)"
+eq "--board twice names the repetition"     "true"  "$(has '--board given twice' "$msg")"
+msg="$("$BIN" --format xml 2>&1 >/dev/null)"
+eq "a bad --format names the accepted set"  "true"  "$(has "not one of: text, json" "$msg")"
+msg="$("$BIN" --since 24x 2>&1 >/dev/null)"
+eq "a bad --since names the accepted forms" "true"  "$(has '<N>h / <N>d' "$msg")"
+out="$("$BIN" --nope 2>/dev/null)"
+eq "a refusal keeps stdout empty"           ""      "$out"
+
+# ---------------------------------------------------------------------------
+echo "== _bs_since_epoch — a relative window resolves into the PAST =="
+NOW=1000000000
+eq "24h is now minus 86400"  "$((NOW - 86400))"    "$(_bs_since_epoch 24h "$NOW")"
+eq "7d is now minus 604800"  "$((NOW - 604800))"   "$(_bs_since_epoch 7d "$NOW")"
+eq "1h is now minus 3600"    "$((NOW - 3600))"     "$(_bs_since_epoch 1h "$NOW")"
+expect_rc "a zero-length window is refused"       2 _bs_since_epoch 0h "$NOW"
+expect_rc "an unknown suffix is refused"          2 _bs_since_epoch 24x "$NOW"
+expect_rc "a bare number is refused"              2 _bs_since_epoch 24 "$NOW"
+expect_rc "an empty spec is refused"              2 _bs_since_epoch "" "$NOW"
+expect_rc "a whitespace-only spec is refused"     2 _bs_since_epoch " " "$NOW"
+# Not hypothetical: date(1) answers `date -d ""` with today's MIDNIGHT at rc 0, so an
+# unexpanded variable would silently become a since-midnight window rather than a refusal —
+# which is why the empty case is answered before date(1) is ever reached.
+if datemid="$(date -u -d "" +%s 2>/dev/null)" && [[ "$datemid" =~ ^[0-9]+$ ]]; then
+    eq "control: date(1) answers an EMPTY spec with a plausible number, at rc 0" \
+       "true" "$([[ "$datemid" -gt 0 ]] && echo true || echo false)"
+fi
+
+# THE CONTROL for the case above, and the reason the arithmetic is not delegated: date(1) is
+# measured here reading the very same spec as a FUTURE instant. Without this the assertion
+# above is just a number; with it, it is a defect that was live in the alternative.
+if datefut="$(date -u -d 24h +%s 2>/dev/null)" && [[ "$datefut" =~ ^[0-9]+$ ]]; then
+    nowreal="$(date -u +%s)"
+    eq "control: date(1) reads '24h' as the FUTURE (which is why it is not used here)" \
+       "true" "$([[ "$datefut" -gt "$nowreal" ]] && echo true || echo false)"
+    eq "…while _bs_since_epoch reads it as the PAST" \
+       "true" "$([[ "$(_bs_since_epoch 24h "$nowreal")" -lt "$nowreal" ]] && echo true || echo false)"
+    isoep="$(date -u -d '2026-08-01T00:00:00Z' +%s)"
+    eq "an ISO-8601 spec resolves through date(1)" "$isoep" \
+       "$(_bs_since_epoch '2026-08-01T00:00:00Z' "$NOW")"
+else
+    echo "  note: date(1) cannot parse a relative/ISO spec here — the ISO leg is not exercised"
+fi
+
+# ---------------------------------------------------------------------------
+echo "== _bs_window_rows — the backward paging stops at the cutoff, and not later =="
+# Fixture pages, newest-first, keyed by the cursor the tool would send. mkpage writes a page of
+# <count> task.moved rows descending from <first-id>, one every <step> seconds back from <t0>.
+mkpage() { # <file> <first-id> <t0-epoch> <step-seconds> <count> <subject-base>
+    jq -n --argjson n "$5" --argjson id0 "$2" --argjson t0 "$3" --argjson st "$4" --argjson sb "$6" '
+      { data: [ range(0; $n)
+                | { id: ($id0 - .), board_id: 1, subject_id: ($sb + .), user_id: 3,
+                    action: "task.moved",
+                    payload: { from_stage_id: 1, to_stage_id: 2,
+                               from_stage_name: "A", to_stage_name: "B",
+                               from_swimlane_id: null, to_swimlane_id: null, index: null },
+                    created_at: (($t0 - (. * $st)) | todate),
+                    actor_type: "service" } ] }' > "$1"
+}
+
+T0=1786000000
+mkpage "$TMP/page.first.json" 5000 "$T0"        60  200 10000   # newest 200, one per minute
+mkpage "$TMP/page.4801.json"  4800 "$((T0 - 12060))" 600 200 20000   # older 200, one per 10min
+mkpage "$TMP/page.4601.json"  4600 "$((T0 - 200000))" 60  10  30000  # a SHORT third page
+
+# The stub records every URL it is asked for, so "which pages were requested" is assertable —
+# the rows alone cannot tell a loop that stopped from one that fetched and filtered.
+CALLS="$TMP/calls"
+kb_api() {
+    local url="$2" key
+    printf '%s\n' "$url" >> "$CALLS"
+    key="${url##*before=}"
+    [[ "$key" == "$url" ]] && key=first
+    cat "$TMP/page.$key.json" 2>/dev/null || return 1
+}
+
+# Cutoff inside page 2: page 1 is wholly in-window, page 2 crosses it, page 3 must never be
+# requested at all.
+CUT=$((T0 - 20000))
+: > "$CALLS"; rowsf="$TMP/rows1.jsonl"; : > "$rowsf"
+meta="$(_bs_window_rows 1 "$CUT" "$rowsf")"
+rows="$(jq -s 'add // []' "$rowsf")"
+eq "it reports 2 pages"                        "2" "$(printf '%s' "$meta" | jq -r '.pages')"
+eq "…and it made exactly 2 requests"           "2" "$(wc -l < "$CALLS" | tr -d ' ')"
+eq "…the second one carrying the page-1 cursor" "true" \
+   "$(has 'before=4801' "$(cat "$CALLS")")"
+eq "…and it never requested a third"           "false" "$(has 'before=4601' "$(cat "$CALLS")")"
+eq "no error is reported"                      "null" "$(printf '%s' "$meta" | jq -r '.error | tostring')"
+eq "the window is not flagged truncated"       "false" "$(printf '%s' "$meta" | jq -r '.truncated')"
+# 200 from page 1, plus page 2's rows down to the cutoff: (12060 - 20000)/600 → 14 of them.
+eq "it keeps page 1 whole and page 2 only to the cutoff" "214" "$(printf '%s' "$rows" | jq 'length')"
+eq "every kept row is at or after the cutoff"  "true" \
+   "$(printf '%s' "$rows" | jq --argjson c "$CUT" 'all(.[]; (.at | sub("\\+00:00$";"Z") | fromdate) >= $c)')"
+# The third page's rows are IN-window by construction — impossible in a real descending log,
+# and exactly what makes their absence proof that the loop STOPPED rather than filtered.
+eq "no row from the unreached third page is present" "0" \
+   "$(printf '%s' "$rows" | jq '[ .[] | select(.card >= 30000) ] | length')"
+
+# THE CONTROL: same fixtures, a cutoff old enough that page 2 does not cross it. If the stop
+# above were structural (a bad cursor, a two-page ceiling) this would stop at 2 as well.
+: > "$CALLS"; rowsf2="$TMP/rows2.jsonl"; : > "$rowsf2"
+meta2="$(_bs_window_rows 1 $((T0 - 999999)) "$rowsf2")"
+eq "control: an older cutoff reaches the third page" "3" "$(printf '%s' "$meta2" | jq -r '.pages')"
+eq "control: …and its rows ARE collected"            "10" \
+   "$(jq -s 'add // [] | [ .[] | select(.card >= 30000) ] | length' "$rowsf2")"
+eq "control: a short page ends the log without an error" "null" \
+   "$(printf '%s' "$meta2" | jq -r '.error | tostring')"
+
+echo "== _bs_window_rows — the page cap truncates LOUDLY, never silently =="
+: > "$CALLS"; rowsf3="$TMP/rows3.jsonl"; : > "$rowsf3"
+_BS_PAGE_CAP_SAVED="$_BS_PAGE_CAP"; _BS_PAGE_CAP=1
+meta3="$(_bs_window_rows 1 $((T0 - 999999)) "$rowsf3")"
+_BS_PAGE_CAP="$_BS_PAGE_CAP_SAVED"
+eq "the cap stops the loop at one page"     "1"    "$(printf '%s' "$meta3" | jq -r '.pages')"
+eq "…and flags the window truncated"        "true" "$(printf '%s' "$meta3" | jq -r '.truncated')"
+eq "…naming the cap in the error"           "true" \
+   "$(has 'page cap' "$(printf '%s' "$meta3" | jq -r '.error')")"
+eq "…while still keeping the rows it read"  "200"  "$(jq -s 'add | length' "$rowsf3")"
+
+echo "== _bs_window_rows — an unreadable first page is an error, not an empty window =="
+: > "$CALLS"; rowsf4="$TMP/rows4.jsonl"; : > "$rowsf4"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; return 1; }
+meta4="$(_bs_window_rows 1 "$CUT" "$rowsf4")"
+eq "no page is reported read"            "0"     "$(printf '%s' "$meta4" | jq -r '.pages')"
+eq "an error is reported"                "false" "$(printf '%s' "$meta4" | jq -r '.error == null')"
+eq "…and no rows are claimed"            "0"     "$(jq -s 'add // [] | length' "$rowsf4")"
+
+echo "== _bs_window_rows — a body of the wrong shape is refused, not half-read =="
+: > "$CALLS"; rowsf5="$TMP/rows5.jsonl"; : > "$rowsf5"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; printf '%s' '<html>a proxy said hello</html>'; }
+meta5="$(_bs_window_rows 1 "$CUT" "$rowsf5")"
+eq "a non-JSON body is an error"         "true"  \
+   "$(has 'not the shape this tool reads' "$(printf '%s' "$meta5" | jq -r '.error')")"
+eq "…and no rows are claimed"            "0"     "$(jq -s 'add // [] | length' "$rowsf5")"
+
+# ---------------------------------------------------------------------------
+echo "== _bs_board_json — the human/service split, per transition =="
+# One fixture page carrying every shape the aggregation must keep apart: a multi-actor
+# transition, two DIFFERENT terminal destinations (which must not collapse into one
+# "resolutions" number), a terminal→terminal move (a resolution, NOT a wash), a
+# terminal→non-terminal move (a WASH, which must survive in the transition list rather than
+# being netted against the resolutions), and a null actor_type (the API's third value).
+# Timestamps here are the API's "+00:00" spelling, which fromdateiso8601 rejects unaided.
+NOW2=1786000000
+cat > "$TMP/fx-rows.jsonl" <<'ROWS'
+[
+ {"action":"task.moved","at":"2026-08-11T10:00:00+00:00","card":1,"actor":"service","from_id":83,"to_id":84,"from_name":"Backlog","to_name":"In Progress"},
+ {"action":"task.moved","at":"2026-08-11T10:01:00+00:00","card":2,"actor":"service","from_id":83,"to_id":84,"from_name":"Backlog","to_name":"In Progress"},
+ {"action":"task.moved","at":"2026-08-11T10:02:00+00:00","card":3,"actor":"human","from_id":83,"to_id":84,"from_name":"Backlog","to_name":"In Progress"},
+ {"action":"task.moved","at":"2026-08-11T10:03:00+00:00","card":4,"actor":"service","from_id":87,"to_id":89,"from_name":"In Review","to_name":"Shipped to dev"},
+ {"action":"task.moved","at":"2026-08-11T10:04:00+00:00","card":5,"actor":"service","from_id":87,"to_id":89,"from_name":"In Review","to_name":"Shipped to dev"},
+ {"action":"task.moved","at":"2026-08-11T10:05:00+00:00","card":6,"actor":"service","from_id":89,"to_id":85,"from_name":"Shipped to dev","to_name":"Released to main"},
+ {"action":"task.moved","at":"2026-08-11T10:06:00+00:00","card":7,"actor":"unknown","from_id":90,"to_id":83,"from_name":"Won't Do","to_name":"Backlog"},
+ {"action":"task.created","at":"2026-08-11T10:07:00+00:00","card":8,"actor":"service","from_id":null,"to_id":null,"from_name":null,"to_name":null},
+ {"action":"task.created","at":"2026-08-11T10:08:00+00:00","card":9,"actor":"human","from_id":null,"to_id":null,"from_name":null,"to_name":null}
+]
+ROWS
+cat > "$TMP/fx-cards.json" <<'CARDS'
+[{"id":11,"workflow_stage_id":83,"created_at":"2026-08-01T00:00:00+00:00","deleted_at":null},
+ {"id":12,"workflow_stage_id":83,"created_at":"2026-07-01T00:00:00+00:00","deleted_at":null},
+ {"id":13,"workflow_stage_id":84,"created_at":"2026-07-15T00:00:00+00:00","deleted_at":null},
+ {"id":14,"workflow_stage_id":85,"created_at":"2026-07-15T00:00:00+00:00","deleted_at":null},
+ {"id":15,"workflow_stage_id":77,"created_at":"2026-07-15T00:00:00+00:00","deleted_at":null},
+ {"id":16,"workflow_stage_id":83,"created_at":"2026-07-02T00:00:00+00:00","deleted_at":"2026-08-01T00:00:00+00:00"}]
+CARDS
+fxmeta="$(jq -n --argjson now "$NOW2" '
+  { name: "fx", label: "Fixture board", board_id: 1,
+    names: {"83":"Backlog","84":"In Progress","85":"Released to main","86":"Prioritized",
+            "87":"In Review","89":"Shipped to dev","90":"Won'"'"'t Do"},
+    order: ["83","86","84","87","89","85","90"],
+    term: ["89","85","90"], pull: ["83","86"],
+    now: $now, flow: {pages:1, truncated:false, error:null}, failures: [],
+    stock_ok: true, flow_ok: true }')"
+obj="$(_bs_board_json "$TMP/fx-cards.json" "$TMP/fx-rows.jsonl" "$fxmeta")"
+
+eq "created counts only task.created"        "2" "$(printf '%s' "$obj" | jq '.flow.created')"
+eq "moved counts only task.moved"            "7" "$(printf '%s' "$obj" | jq '.flow.moved')"
+eq "the board-wide split is 1 human"         "1" "$(printf '%s' "$obj" | jq '.flow.actors.human')"
+eq "…5 service"                              "5" "$(printf '%s' "$obj" | jq '.flow.actors.service')"
+eq "…and 1 unattributed (a null actor_type)" "1" "$(printf '%s' "$obj" | jq '.flow.actors.other')"
+
+t="$(printf '%s' "$obj" | jq -c '.flow.transitions[] | select(.from_stage_id == 83 and .to_stage_id == 84)')"
+eq "the multi-actor transition counts 3"     "3" "$(printf '%s' "$t" | jq '.count')"
+eq "…split 1 human"                          "1" "$(printf '%s' "$t" | jq '.actors.human')"
+eq "…and 2 service"                          "2" "$(printf '%s' "$t" | jq '.actors.service')"
+eq "…labelled from the board's own names"    "Backlog -> In Progress" \
+   "$(printf '%s' "$t" | jq -r '"\(.from_stage) -> \(.to_stage)"')"
+eq "…and not marked a resolution"            "false" "$(printf '%s' "$t" | jq '.resolution')"
+
+echo "== _bs_board_json — resolutions stay PER DESTINATION, and a wash is a row =="
+eq "two distinct terminal destinations stay two rows" "2" \
+   "$(printf '%s' "$obj" | jq '.flow.resolutions | length')"
+eq "…Shipped to dev counted on its own"      "2" \
+   "$(printf '%s' "$obj" | jq '[.flow.resolutions[] | select(.stage_id == 89)] | .[0].count')"
+eq "…Released to main counted on its own"    "1" \
+   "$(printf '%s' "$obj" | jq '[.flow.resolutions[] | select(.stage_id == 85)] | .[0].count')"
+eq "a terminal→terminal move is a resolution, not a wash" "true" \
+   "$(printf '%s' "$obj" | jq '[.flow.transitions[] | select(.from_stage_id == 89 and .to_stage_id == 85)] | .[0] | (.resolution and (.wash | not))')"
+eq "the terminal→non-terminal move is one wash" "1" \
+   "$(printf '%s' "$obj" | jq '.flow.washes | length')"
+eq "…identified by its endpoints"            "90->83" \
+   "$(printf '%s' "$obj" | jq -r '.flow.washes[0] | "\(.from_stage_id)->\(.to_stage_id)"')"
+eq "…carrying its own unattributed actor"    "1" \
+   "$(printf '%s' "$obj" | jq '.flow.washes[0].actors.other')"
+# The netting failure this guards is silent by construction: netted away, the wash simply
+# would not be in the transition list, and every count would still add up.
+eq "…and STILL present among the transitions (not netted away)" "1" \
+   "$(printf '%s' "$obj" | jq '[.flow.transitions[] | select(.wash)] | length')"
+
+echo "== _bs_board_json — the split is measured, not constant (control) =="
+# Same fixture with the human row's actor changed to service. Without this, a human counter
+# hardcoded to 1 — or one reading the board-wide count into every transition — passes above.
+jq -c 'map(if .actor == "human" then .actor = "service" else . end)' "$TMP/fx-rows.jsonl" > "$TMP/fx-rows-nohuman.jsonl"
+obj2="$(_bs_board_json "$TMP/fx-cards.json" "$TMP/fx-rows-nohuman.jsonl" "$fxmeta")"
+eq "control: with no human row the human count is 0" "0" \
+   "$(printf '%s' "$obj2" | jq '.flow.actors.human')"
+eq "control: …and the transition's own human count is 0 too" "0" \
+   "$(printf '%s' "$obj2" | jq '[.flow.transitions[] | select(.from_stage_id == 83)] | .[0].actors.human')"
+eq "control: the service count absorbs it" "6" \
+   "$(printf '%s' "$obj2" | jq '.flow.actors.service')"
+
+echo "== _bs_board_json — stock counts columns, and ages only the PULLABLE ones =="
+eq "a deleted card is not stock"             "5" "$(printf '%s' "$obj" | jq '.stock.total')"
+eq "Backlog holds 2 live cards"              "2" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 83)] | .[0].cards')"
+eq "…and reports its OLDEST live card"       "12" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 83)] | .[0].oldest_card.id')"
+eq "…as an age in days off the +00:00 timestamp" "true" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 83)] | .[0].oldest_card.age_days > 0')"
+eq "a NON-pullable column carrying cards has no age" "null" \
+   "$(printf '%s' "$obj" | jq -r '[.stock.columns[] | select(.stage_id == 84)] | .[0].oldest_card | tostring')"
+eq "an empty pullable column is still a row"  "0" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 86)] | .[0].cards')"
+eq "…with no age to report"                   "null" \
+   "$(printf '%s' "$obj" | jq -r '[.stock.columns[] | select(.stage_id == 86)] | .[0].oldest_card | tostring')"
+eq "the terminal columns are marked terminal" "true" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 85)] | .[0].terminal')"
+# A card sitting in a stage the board's own preload never named must still be counted, under
+# an honest label — dropping it would make `total` disagree with the column sum silently.
+eq "a card in an unnamed stage is still counted" "1" \
+   "$(printf '%s' "$obj" | jq '[.stock.columns[] | select(.stage_id == 77)] | .[0].cards')"
+eq "…and labelled by its id"                  "stage 77" \
+   "$(printf '%s' "$obj" | jq -r '[.stock.columns[] | select(.stage_id == 77)] | .[0].stage')"
+eq "the column counts sum to the total"       "true" \
+   "$(printf '%s' "$obj" | jq '([.stock.columns[].cards] | add) == .stock.total')"
+
+# ---------------------------------------------------------------------------
+echo "== _bs_render_text — the text renders what the JSON carries =="
+printf '%s' "$obj" | jq -s --argjson now "$NOW2" '
+    { generated_at: ($now | todate),
+      since: {spec: "24h", cutoff: (($now - 86400) | todate), epoch: ($now - 86400)},
+      partial: false, failed_boards: 0, readable_boards: 1, boards: . }' > "$TMP/doc.json"
+txt="$(_bs_render_text "$TMP/doc.json")"
+eq "the wash is rendered as a WASH row"       "true" "$(has '[WASH]' "$txt")"
+eq "the resolutions are labelled per destination" "true" \
+   "$(has 'resolutions, per destination stage' "$txt")"
+eq "…and both destinations appear"            "true" \
+   "$(has 'Shipped to dev' "$txt")"
+eq "the human/service split reaches the text" "true" "$(has 'human 1 · service 2' "$txt")"
+eq "the stock section names the oldest pullable card" "true" "$(has '(#12)' "$txt")"
+
+echo "== _bs_render_text — a failed board is NAMED, never omitted =="
+jq -n '{ generated_at: "2026-08-12T00:00:00Z",
+         since: {spec:"24h", cutoff:"2026-08-11T00:00:00Z", epoch: 0},
+         partial: true, failed_boards: 1, readable_boards: 0,
+         boards: [ {board:"gone", label:"Gone board", board_id:null, stock:null, flow:null,
+                    failures:["board env not readable: /nope — this board contributes nothing to the report"]} ] }' \
+    > "$TMP/doc-fail.json"
+txt2="$(_bs_render_text "$TMP/doc-fail.json")"
+eq "the failed board still has a heading"   "true" "$(has 'Gone board' "$txt2")"
+eq "its failure is printed"                 "true" "$(has 'board env not readable' "$txt2")"
+eq "its stock section says UNAVAILABLE"     "true" "$(has 'stock: UNAVAILABLE' "$txt2")"
+eq "its flow section says UNAVAILABLE"      "true" "$(has 'flow: UNAVAILABLE' "$txt2")"
+eq "the report ends with a PARTIAL line"    "true" "$(has 'PARTIAL REPORT' "$txt2")"
+# The control for the leg above: a healthy document must NOT carry that trailer, or "partial"
+# would be a decoration that fires on every run.
+eq "control: a healthy report carries no PARTIAL line" "false" "$(has 'PARTIAL REPORT' "$txt")"
+
+# ---------------------------------------------------------------------------
+_summary "board-stats-selftest"
