@@ -17,7 +17,9 @@ If you installed per INSTALL §2 (symlinks into `~/.local/bin`), the host tracks
 git -C ~/agent-board-toolkit pull --ff-only
 hash -r
 cat ~/agent-board-toolkit/VERSION                 # confirm the new version
-kbcard list --column backlog | jq 'length'  # smoke test -> a number, no error
+kbcard list --column backlog | jq 'length'  # smoke test -> a number on stdout, plus one stderr line
+                                            # `… <M> of <N> board cards matched` (the filter's denominator,
+                                            # printed on every filtered read — not an error)
 ```
 If any **new** tool was added, re-run the symlink loop from INSTALL §2 to pick it up:
 ```bash

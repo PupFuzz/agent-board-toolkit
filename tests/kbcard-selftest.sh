@@ -437,6 +437,98 @@ eq "--swimlane 0 is the same laneless filter"     "[2]" "$(jq -c 'map(.id)' <<<"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 
 # ---------------------------------------------------------------------------
+echo "== _kbc_list_project — the PROJECTED FIELD SET is the filterable surface =="
+# A consumer can only filter list OUTPUT on a key the projection emits, and a grep over
+# a field it drops returns 0 indistinguishably from an empty board — a live consumer
+# concluded "745 cards, 0 dependabot cards" while the `id:<sid>` provenance tag was on
+# the card the whole time (`show` returned it). The key set is asserted as an EQUALITY,
+# not a contains: a key silently dropped IS the defect, and a contains-check cannot see
+# it. RED-when-reverted — reverting the projection to its old key set reds five of the
+# assertions below, the prefix-grep one among them (measured, not assumed).
+PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"external_id":990,
+          "tags":["id:dep:acme#200","triaged"],"payload":{"dl_number":"DL-0007","pr_number":12}},
+         {"id":2,"name":"b","workflow_stage_id":48,"payload":{}}]'
+pproj() { printf '%s' "$PCARDS" | _kbc_list_project '' '' '' ''; }
+
+eq "row key set is EXACTLY the documented projection" \
+   '["id","name","stage","type","swimlane_id","swimlane","external_id","tags","dl","pr"]' \
+   "$(pproj | jq -c '.[0] | keys_unsorted')"
+eq "tags ride every row verbatim"   '["id:dep:acme#200","triaged"]' "$(pproj | jq -c '.[0].tags')"
+eq "external_id rides every row"    "990"  "$(pproj | jq -c '.[0].external_id')"
+# The measured consumer query itself: a PREFIX grep over the output for a provenance
+# namespace. Exactly what answered 0 before, so it is asserted end-to-end and not as
+# "the key exists" — the tag namespace is queried by prefix, not by exact value.
+eq "a downstream prefix grep for the provenance tag finds the card" "1" \
+   "$(pproj | grep -c 'id:dep:')"
+# Absent-key normalization: [] for tags (the same normalization the type FILTER above
+# applies, so the filter and the emitted value can never disagree about a card's tags),
+# null for external_id (matching dl/pr, whose absence has always projected null).
+eq "a card with no tags projects []"          "[]"   "$(pproj | jq -c '.[1].tags')"
+eq "a card with no external_id projects null" "null" "$(pproj | jq -c '.[1].external_id')"
+# description stays OUT by design — unbounded free text on every row of a whole-board
+# read. This assertion is the bound; `show` is where a description is read.
+eq "description is NOT projected, even when the card carries one" "false" \
+   "$(printf '%s' '[{"id":3,"description":"x","payload":{}}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '.[0] | has("description")')"
+
+# ---------------------------------------------------------------------------
+echo "== cmd_list — a FILTERED read reports its denominator on stderr =="
+# A filtered [] is indistinguishable from an empty board at the call site: the caller
+# sees the numerator and never the population. The line goes to STDERR so stdout stays
+# exactly the array every existing consumer parses. Run through the REAL arg parse in a
+# fresh subprocess (mocked fetch, network-free) — the stream split is a property of the
+# whole verb, not of the projection.
+_mktmp_scratch
+_diag_board='[{"id":1,"workflow_stage_id":48,"payload":{}},
+              {"id":2,"workflow_stage_id":49,"payload":{}},
+              {"id":3,"workflow_stage_id":49,"payload":{}}]'
+_diag_child='set -euo pipefail; source "'"$BIN"'";
+  fetch_board_cards() { printf "%s" "$DIAG_BOARD"; }
+  export KB_API=x KB_TOKEN=y KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_HELD=49 KB_STAGE_WONT_DO=99;
+  cmd_list "$@"'
+export DIAG_BOARD="$_diag_board"
+diag() { bash -c "$_diag_child" _ "$@" >"$TMP/diag.out" 2>"$TMP/diag.err"; }
+
+diag --column backlog
+eq "filtered stdout is still just the array"  "[1]" "$(jq -c 'map(.id)' <"$TMP/diag.out")"
+# …and byte-identically so. The assertion above cannot carry this alone: jq EMITS its
+# value before erroring on trailing garbage, so a diagnostic line leaking onto stdout
+# after the array leaves it green. The FILTERED run is the one that can leak (it is the
+# only one that prints a diagnostic at all), so it needs its own byte comparison — the
+# unfiltered `cmp` below can never observe this class.
+printf '%s' "$_diag_board" | _kbc_list_project 48 '' '' '' >"$TMP/diagf.want"
+eq "filtered stdout is byte-identical to the projection output (no leak onto stdout)" "true" \
+   "$(cmp -s "$TMP/diag.out" "$TMP/diagf.want" && echo true || echo false)"
+eq "filtered run names matched-of-total"      "true" \
+   "$(has 'kbcard: list --column backlog: 1 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# The 0-of-N case is the whole point: an empty answer that names its population is a
+# different statement from an empty answer that does not.
+diag --column wont_do
+eq "an empty filtered result is still []"     "[]" "$(jq -c '.' <"$TMP/diag.out")"
+eq "…and still reports the population it came out of" "true" \
+   "$(has 'kbcard: list --column wont_do: 0 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# Every active flag is echoed AS TYPED, so a caller running several list reads can tell
+# the lines apart.
+diag --column held --type bug
+eq "both active filters are named in the line" "true" \
+   "$(has 'kbcard: list --column held --type bug: 0 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# UNFILTERED: nothing on stderr — the array's own length IS the denominator, and a line
+# printed here would be noise on the most common invocation.
+diag
+eq "an unfiltered read prints NOTHING on stderr" "" "$(cat "$TMP/diag.err")"
+eq "…and still lists the whole board"            "3" "$(jq 'length' <"$TMP/diag.out")"
+# Byte-identity of stdout with the projection's own output, trailing newline included:
+# the diagnostic capture reprints what used to stream straight through, and a doubled or
+# missing final newline is invisible to every command-substitution assertion above.
+printf '%s' "$_diag_board" | _kbc_list_project '' '' '' '' >"$TMP/diag.want"
+eq "stdout is byte-identical to the projection output" "true" \
+   "$(cmp -s "$TMP/diag.out" "$TMP/diag.want" && echo true || echo false)"
+unset DIAG_BOARD
+
+# ---------------------------------------------------------------------------
 echo "== _kbc_build_payload — shared create/patch payload assembly (card-4511, dedup D2) =="
 # Single home for the payload-merge jq + version_target guard + DL-canon + pr
 # appends that create-card and patch both need. RED-when-reverted: these pin the

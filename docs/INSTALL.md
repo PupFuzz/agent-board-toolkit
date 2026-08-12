@@ -129,8 +129,12 @@ jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove th
 ## 5. Verify (expected output shown)
 
 ```bash
-kbcard list --column backlog            # -> JSON array of cards (or [] if empty). A non-empty, well-formed
-                                        #    result proves token + board IDs + API base are all correct.
+kbcard list --column backlog            # -> JSON array of cards (or [] if empty) on STDOUT, plus ONE line on
+                                        #    stderr: `kbcard: list --column backlog: <M> of <N> board cards
+                                        #    matched`. That line is the filter's denominator, not an error —
+                                        #    every filtered read prints it; an unfiltered one prints none. A
+                                        #    non-empty, well-formed result proves token + board IDs + API base
+                                        #    are all correct.
 kbcard show --task <some-id> | jq .id   # -> the task id echoed back
 ```
 If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong. `board env file not readable: …/.kanban-dev-board.env` → this box has no default (`dev`) board — set `KBCARD_BOARD_ENV` or pass `--board <name>` (see §3b); the error lists the boards that do exist.
@@ -248,5 +252,6 @@ for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$
 cp ~/agent-board-toolkit/examples/kanban-board.env.example ~/.kanban-dev-board.env && chmod 600 ~/.kanban-dev-board.env
 # ...fill in IDs in ~/.kanban-dev-board.env...
 printf '%s' 'TOKEN_HERE' > ~/.kanban-dev-token && chmod 600 ~/.kanban-dev-token
-kbcard list --column backlog        # -> [ {...}, ... ]   ✓ install verified
+kbcard list --column backlog        # -> [ {...}, ... ] on stdout, `… <M> of <N> board cards matched`
+                                    #    on stderr (the filter's denominator)   ✓ install verified
 ```

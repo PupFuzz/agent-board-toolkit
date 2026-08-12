@@ -52,10 +52,22 @@
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
+#     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
+#     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
+#     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
+#     no matter what the board holds. `show` returns a card whole; use it for the rest.
+#     `type` is the NATIVE card_type_id — null on every row of an all-tag board (and on
+#     a mixed board's tag-typed cards), where the type rides `tags` as `type:<alias>`.
+#     So select on `tags` there, not on `type`: `--type <alias>` matches those cards but
+#     their projected `type` is null, and a filter keyed on it returns a confident 0.
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
 #     lane literally NAMED `none` must be addressed by id.
+#     With ANY filter flag active, one line goes to STDERR: `list <flags>: <M> of <N>
+#     board cards matched` — the denominator a filtered result otherwise hides, so an
+#     empty answer is distinguishable from an empty board. stdout is unchanged (still
+#     just the array). Unfiltered, nothing is printed: the array's length IS N.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
 #   kbcard archive --task ID-OR-EXT [--force] [--dry-run]
@@ -620,6 +632,18 @@ cmd_patch() {
 #   from "filter on laneless" ("null") — collapsing those two is the trap this filter
 #   exists to avoid, since a laneless filter that reads as absent returns the WHOLE
 #   BOARD while looking correct (see _kbc_swimlane_is_laneless_ref's callers).
+#   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
+#   a downstream `grep`/`jq select` over a field this projection drops gets a confident
+#   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
+#   dependabot cards" while `show` returned the very tag it was looking for). `tags` and
+#   `external_id` therefore ride every row — tags carry the whole `id:<sid>` provenance
+#   namespace and the `type:*` fallback this same function already filters on, and
+#   external_id is the per-board sync id, i.e. the two identity surfaces a card is
+#   actually hunted by. `description` is deliberately NOT projected: it is unbounded
+#   free text on every row of a whole-board read, and the bound matters more here than
+#   on `show`, which returns one card. Absent tags project as [] (not null) — the same
+#   normalization the type filter above applies, so the filter and the emitted value can
+#   never disagree about what a card is tagged.
 _kbc_list_project() {
     local stage_filter="$1" type_filter="$2" typetag="$3" swimlane_filter="$4"
     local swmap; swmap="$(_kbc_swimlane_map)"
@@ -639,6 +663,8 @@ _kbc_list_project() {
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
                 swimlane_id: (.swimlane_id // null),
                 swimlane: ($swmap[((.swimlane_id // null) | tostring)] // null),
+                external_id: (.external_id // null),
+                tags: (.tags // []),
                 dl: .payload.dl_number, pr: .payload.pr_number})'
 }
 
@@ -680,8 +706,34 @@ cmd_list() {
     local cards
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
         || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
-    printf '%s' "$cards" | _kbc_list_project \
-        "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}"
+    local out
+    out="$(printf '%s' "$cards" | _kbc_list_project \
+        "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}")"
+    printf '%s\n' "$out"
+
+    # Denominator, on stderr, and only when a filter actually narrowed something. A
+    # filtered `[]` is indistinguishable from an empty board at the call site — the
+    # caller sees the numerator and never the population it came out of, so a filter
+    # that matched nothing for a WRONG reason reads exactly like a truthful empty
+    # answer. Naming both numbers makes a suspicious 0-of-N legible where it happens.
+    # stderr, so stdout stays the same bytes it always was (nothing parsing the array
+    # is affected); the flags are echoed AS TYPED so a caller running several list
+    # reads can tell the lines apart. Unfiltered there is nothing to say: the array's
+    # own length IS the denominator, already on stdout.
+    if [[ -n "$column" || -n "$type" || -n "$swimlane" ]]; then
+        local flags="" matched total
+        [[ -n "$column" ]]   && flags="$flags --column $column"
+        [[ -n "$type" ]]     && flags="$flags --type $type"
+        [[ -n "$swimlane" ]] && flags="$flags --swimlane $swimlane"
+        matched="$(jq 'length' <<<"$out")"
+        # `<<<`, never --argjson: a whole board is ~200KB, so passing it in argv trips
+        # "Argument list too long" over MAX_ARG_STRLEN — execve fails and jq never runs,
+        # which under set -e aborts a `list` that had already printed its cards. The
+        # denominator would be missing exactly on the biggest boards, i.e. the ones it
+        # matters most on. Same stdin rule the whole-board reads in this file follow.
+        total="$(jq '(. // []) | length' <<<"$cards")"
+        echo "kbcard: list$flags: $matched of $total board cards matched" >&2
+    fi
 }
 
 cmd_link() {
