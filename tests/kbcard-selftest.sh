@@ -491,6 +491,14 @@ diag() { bash -c "$_diag_child" _ "$@" >"$TMP/diag.out" 2>"$TMP/diag.err"; }
 
 diag --column backlog
 eq "filtered stdout is still just the array"  "[1]" "$(jq -c 'map(.id)' <"$TMP/diag.out")"
+# …and byte-identically so. The assertion above cannot carry this alone: jq EMITS its
+# value before erroring on trailing garbage, so a diagnostic line leaking onto stdout
+# after the array leaves it green. The FILTERED run is the one that can leak (it is the
+# only one that prints a diagnostic at all), so it needs its own byte comparison — the
+# unfiltered `cmp` below can never observe this class.
+printf '%s' "$_diag_board" | _kbc_list_project 48 '' '' '' >"$TMP/diagf.want"
+eq "filtered stdout is byte-identical to the projection output (no leak onto stdout)" "true" \
+   "$(cmp -s "$TMP/diag.out" "$TMP/diagf.want" && echo true || echo false)"
 eq "filtered run names matched-of-total"      "true" \
    "$(has 'kbcard: list --column backlog: 1 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
 

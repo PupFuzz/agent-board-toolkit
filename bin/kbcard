@@ -56,6 +56,10 @@
 #     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
 #     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
 #     no matter what the board holds. `show` returns a card whole; use it for the rest.
+#     `type` is the NATIVE card_type_id — null on every row of an all-tag board (and on
+#     a mixed board's tag-typed cards), where the type rides `tags` as `type:<alias>`.
+#     So select on `tags` there, not on `type`: `--type <alias>` matches those cards but
+#     their projected `type` is null, and a filter keyed on it returns a confident 0.
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
@@ -722,10 +726,11 @@ cmd_list() {
         [[ -n "$type" ]]     && flags="$flags --type $type"
         [[ -n "$swimlane" ]] && flags="$flags --swimlane $swimlane"
         matched="$(jq 'length' <<<"$out")"
-        # `<<<`, never --argjson: a whole board is ~200KB and would trip "Argument
-        # list too long" over MAX_ARG_STRLEN, whose failure mode here is a silently
-        # empty jq — i.e. a fabricated denominator of 0 on the biggest boards, the
-        # exact class of quiet-wrong this line exists to expose.
+        # `<<<`, never --argjson: a whole board is ~200KB, so passing it in argv trips
+        # "Argument list too long" over MAX_ARG_STRLEN — execve fails and jq never runs,
+        # which under set -e aborts a `list` that had already printed its cards. The
+        # denominator would be missing exactly on the biggest boards, i.e. the ones it
+        # matters most on. Same stdin rule the whole-board reads in this file follow.
         total="$(jq '(. // []) | length' <<<"$cards")"
         echo "kbcard: list$flags: $matched of $total board cards matched" >&2
     fi
