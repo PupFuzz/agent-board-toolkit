@@ -5,9 +5,15 @@ Follow top to bottom. Every command is copy-pasteable; placeholders are in `<ang
 ## 0. Prerequisites
 
 ```bash
-for c in bash curl jq git gh; do command -v "$c" >/dev/null && echo "ok: $c" || echo "MISSING: $c"; done
+for c in bash curl jq git gh ps timeout; do command -v "$c" >/dev/null && echo "ok: $c" || echo "MISSING: $c"; done
 ```
 All must print `ok:`. (`gh` is only needed for tools that touch GitHub, e.g. `board-session-close`. `release-pr-body` needs no `gh`, but it does need `git fetch` access to `origin` — it resolves the release baseline from the remote's release branch, since the local one is stale by design under the branch-off-dev flow.)
+
+Two of these are newer and **not** fatal if missing, so they are listed to be checked rather than assumed:
+
+- **`ps`** — `dependabot-deploy-reconcile` reads the whole process table to decide whether the tree it inspects is the one actually running. Without it that tool reports an instrument failure rather than a wrong answer.
+- **`timeout`** (coreutils) — bounds each advisory leg of `board-session-close`. **macOS ships no `timeout` by default**, and the MSYS/Git-Bash install in §2 may not either. When it is absent the legs still run, and each one prints a one-line warning saying it is running **unbounded**: it can no longer hang the close's exit code, but it can hang its clock. Install coreutils (`brew install coreutils` provides `gtimeout`; symlink or alias it as `timeout`) to get the bound back.
+
 
 ## 1. Get the toolkit
 

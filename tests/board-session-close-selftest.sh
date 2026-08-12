@@ -1304,6 +1304,12 @@ AEDIR="$TMP/ae/bin"; mkdir -p "$AEDIR"
 cp "$BIN" "$AEDIR/board-session-close"
 AEBIN="$AEDIR/board-session-close"
 AEHELPER="$AEDIR/_kbc-archive-eligible.py"
+# The OTHER advisory sibling must exist and be quiet here — mirroring what the Dependabot block
+# below does for this one. Without it that leg warns on every run in this block, and the
+# absence assertions at the end could only ever be written narrowly enough to exclude its
+# warning. With both siblings present-and-quiet the broad needle discriminates again.
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: quiet"' > "$AEDIR/dependabot-deploy-reconcile"
+chmod +x "$AEDIR/dependabot-deploy-reconcile"
 
 # run_ae <fake-reconcile-hook> — run the COPIED bin; echo rc, leave out/err in $OUTF/$ERRF.
 run_ae() {
@@ -1373,7 +1379,167 @@ eq "…and does NOT leak to the ritual's own stderr" \
 # can no longer produce.
 eq "a clean helper emits NO exit-status ⚠ on stderr" \
    "false" "$(has '_kbc-archive-eligible.py exited' "$(cat "$ERRF")")"
-eq "…and no missing-sibling ⚠ either" "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
+# BROAD AGAIN, and that is the assertion: this needle was once narrowed to the tool name because
+# the fixture dir held only the archive sibling, so once main grew a second delegate the
+# unqualified `sibling not found` matched THAT leg's warning and the line failed on a run where
+# the archive leg was perfectly quiet. The fix is the FIXTURE, not the needle — both siblings are
+# now present and quiet here — so this asserts what it always meant to: NO leg reports a missing
+# sibling on a healthy run. The needle is a substring of a string observed present two cases up.
+eq "…and no missing-sibling ⚠ from ANY leg" \
+   "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
+
+# ---------------------------------------------------------------------------
+# The '── Dependabot fixed-alert vs deployed-tree reconciliation ──' leg (card#6277) — main's
+# THIRD delegation, to the `dependabot-deploy-reconcile` sibling. Its rc contract is the
+# archive leg's, not the inverse-drift leg's: a failing reconciler WARNS and leaves the
+# ritual's exit code alone. That is asserted rather than assumed, because the tool it
+# delegates to has an exit contract of its own (rc 1 = the INSTRUMENT failed; a STILL_EXPOSED
+# finding rides the report at rc 0), and folding either into the close would be wrong in a
+# different way — one blocks a close over an unreadable input, the other over a finding the
+# operator is supposed to read and act on.
+#
+# Same fixture shape as the archive block above: the sibling is resolved beside the BIN, so a
+# copied bin with a fake sibling is the only way to drive the delegate's rc/stdout as an input.
+# The real reconciler is never executed here (the main-delegation cases far above DO reach it,
+# on a scratch HOME with no .mcp.json, so they have been traversing its failure arm with
+# nothing asserted on it — which is the hole this block closes).
+# ---------------------------------------------------------------------------
+echo "== Dependabot-reconcile leg — fixture =="
+DRDIR="$TMP/dr/bin"; mkdir -p "$DRDIR"
+cp "$BIN" "$DRDIR/board-session-close"
+DRBIN="$DRDIR/board-session-close"
+DRTOOL="$DRDIR/dependabot-deploy-reconcile"
+# The archive sibling must exist and be quiet here, or its own warnings would be the reason
+# any absence assertion below passes.
+printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: quiet")' > "$DRDIR/_kbc-archive-eligible.py"
+
+run_dr_leg() {
+    HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
+        BSC_ADVISORY_TIMEOUT="${BSC_ADVISORY_TIMEOUT:-60}" \
+        bash "$DRBIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+
+echo "== Dependabot-reconcile leg — the fixture's rc channel is LIVE (witness) =="
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: ran"' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$badhook")"
+eq "a failing reconcile hook still exits 2 THROUGH the copied bin (rc channel is live)" "2" "$rc"
+
+echo "== Dependabot-reconcile leg — a MISSING sibling warns and does NOT block the close =="
+rm -f "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "missing sibling: the ritual still exits 0 (advisory, not blocking)" "0" "$rc"
+eq "…stderr names the missing sibling" \
+   "true" "$(has 'dependabot-deploy-reconcile sibling not found' "$(cat "$ERRF")")"
+eq "…and says the reconciliation DID NOT RUN, so an absent leg is never read as 'no exposure'" \
+   "true" "$(has 'deploy reconciliation DID NOT RUN' "$(cat "$ERRF")")"
+eq "…naming the path it looked for, so the fix is actionable" \
+   "true" "$(has "$DRTOOL" "$(cat "$ERRF")")"
+
+echo "== Dependabot-reconcile leg — a non-zero tool WARNS but does not fail the ritual =="
+printf '%s\n' '#!/bin/sh' 'echo "dr: boom" >&2' 'exit 1' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "tool rc 1 does NOT become the ritual's exit code" "0" "$rc"
+eq "…stderr names the tool AND its exit status" \
+   "true" "$(has 'dependabot-deploy-reconcile exited 1' "$(cat "$ERRF")")"
+eq "…flags the reconciliation as INCOMPLETE rather than clean" \
+   "true" "$(has 'deploy reconciliation may be' "$(cat "$ERRF")")"
+# The distinction the whole leg turns on: a non-zero here is the INSTRUMENT, never a finding.
+eq "…and says a STILL_EXPOSED row is not what a non-zero means" \
+   "true" "$(has 'A STILL_EXPOSED row is NOT this' "$(cat "$ERRF")")"
+
+echo "== Dependabot-reconcile leg — the tool's output is INDENTED into the report =="
+printf '%s\n' '#!/bin/sh' 'echo "SYNTHETIC ✗ #17 npm hono STILL_EXPOSED"' \
+              'echo "SYNTHETIC dr note on stderr" >&2' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(run_dr_leg "$goodhook")"
+eq "a clean tool leaves the ritual at 0" "0" "$rc"
+eq "the section header renders" "true" \
+   "$(has '── Dependabot fixed-alert vs deployed-tree reconciliation' "$(cat "$OUTF")")"
+eq "the tool's stdout is indented by exactly two spaces (line-exact)" "true" \
+   "$(grep -qxF '  SYNTHETIC ✗ #17 npm hono STILL_EXPOSED' "$OUTF" && echo true || echo false)"
+eq "…and the UN-indented form does not appear (the indent is what is asserted)" "false" \
+   "$(grep -qxF 'SYNTHETIC ✗ #17 npm hono STILL_EXPOSED' "$OUTF" && echo true || echo false)"
+eq "the tool's STDERR is folded into the report, indented the same way" "true" \
+   "$(grep -qxF '  SYNTHETIC dr note on stderr' "$OUTF" && echo true || echo false)"
+eq "…and does NOT leak to the ritual's own stderr" \
+   "false" "$(has 'SYNTHETIC dr note on stderr' "$(cat "$ERRF")")"
+# A STILL_EXPOSED finding at rc 0 must leave the ritual completely quiet on stderr — the
+# needles below were both observed PRESENT two cases up, so these are claims about this run.
+eq "a rc-0 run carrying a FINDING emits no exit-status ⚠" \
+   "false" "$(has 'dependabot-deploy-reconcile exited' "$(cat "$ERRF")")"
+# Broad for the same reason as its twin in the archive block: this dir carries a quiet archive
+# sibling too, so a healthy run must leave BOTH legs silent about a missing sibling.
+eq "…and no missing-sibling ⚠ from ANY leg" \
+   "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
+
+echo "== Advisory legs are bounded in WALL-CLOCK, not just in exit code =="
+# "Advisory — never blocks the close" was true of the rc and false of the clock: a leg that
+# reaches the network (the reconciler makes five sequential `gh api` calls) could hang the
+# ritual indefinitely on a stalled connection, and a close that never returns is not one the
+# advisory contract protected. The bound lives in `_bsc_advisory_leg`, so every leg inherits it.
+#
+# BSC_ADVISORY_TIMEOUT is overridden to 1s here for exactly one reason: to test the bound
+# without making this suite wait out the real 60s budget. The real default is asserted below.
+printf '%s\n' '#!/bin/sh' 'sleep 30' 'echo "never reached"' > "$DRTOOL"; chmod +x "$DRTOOL"
+_t0=$SECONDS
+rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
+_elapsed=$((SECONDS - _t0))
+eq "a hanging leg does NOT hang the close — it still exits 0" "0" "$rc"
+eq "…and the ritual returns in about the budget, not the delegate's own runtime" "true" \
+   "$([ "$_elapsed" -lt 15 ] && echo true || echo false)"
+eq "…with a ⚠ naming the kill and the budget that caused it" "true" \
+   "$(has 'dependabot-deploy-reconcile was KILLED after 1s' "$(cat "$ERRF")")"
+eq "…said as an INCOMPLETE partial answer, not as a finished one" "true" \
+   "$(has 'a partial answer, not a finished one' "$(cat "$ERRF")")"
+# The timeout is the HELPER's doing, so the helper explains it: the per-leg <cause> text
+# describes that leg's own failure modes and would be simply wrong about a clock kill.
+eq "…and NOT mis-attributed to the leg's own input/gate failure modes" "false" \
+   "$(has 'an input was unreadable' "$(cat "$ERRF")")"
+# THE DISCRIMINATOR: the same 1s budget with a fast delegate must stay completely quiet. Without
+# it, this block would also pass for a helper that warns on every run under a short budget.
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: fast"' > "$DRTOOL"; chmod +x "$DRTOOL"
+rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
+eq "control: a FAST leg under the same 1s budget exits 0" "0" "$rc"
+eq "…and emits no kill ⚠ at all (the warning tracks the hang, not the budget)" "false" \
+   "$(has 'was KILLED after' "$(cat "$ERRF")")"
+eq "…while still rendering its output into the report" "true" \
+   "$(grep -qxF '  dr fixture: fast' "$OUTF" && echo true || echo false)"
+# The default is what a real close actually runs under, and nothing above exercises it because
+# every case overrides it. Asserted against the bin so the override cannot hide a changed default.
+eq "the real default budget is 60s, not whatever a test happened to set" "true" \
+   "$(grep -qF 'BSC_ADVISORY_TIMEOUT:-60' "$BIN" && echo true || echo false)"
+
+echo "== a host with no \`timeout\` still RUNS the leg, and says the bound is gone =="
+# `timeout` is coreutils and not universal — macOS ships none by default, and the MSYS install
+# INSTALL.md §2 warns about is another. The bound was added to a helper extracted from two
+# legs, one of which PRE-DATES it, so a hard dependency would have broken a working leg on
+# those hosts in order to add a guarantee they cannot have. Unbounded-but-running beats
+# bounded-and-dead for an advisory leg — but never silently.
+NOTO="$TMP/no-timeout-bin"; mkdir -p "$NOTO"
+# Everything the ritual needs EXCEPT timeout, so the only variable is the missing bound.
+for _b in bash sh env python3 dirname readlink sed cat grep date git ln mkdir rm chmod find sort; do
+    _p="$(command -v "$_b" 2>/dev/null)" && ln -sf "$_p" "$NOTO/$_b"
+done
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: ran unbounded"' > "$DRTOOL"; chmod +x "$DRTOOL"
+# Positive control FIRST: this stripped PATH really has no timeout, so the arm below is
+# reached because of that and not because of some other breakage in the fixture.
+eq "positive control: the stripped PATH genuinely has no timeout" "false" \
+   "$(PATH="$NOTO" command -v timeout >/dev/null 2>&1 && echo true || echo false)"
+rc="$(HOME="$SCRATCH" PATH="$NOTO" KANBAN_RECONCILE_HOOK="$goodhook" \
+        bash "$DRBIN" >"$OUTF" 2>"$ERRF"; echo $?)"
+eq "with no timeout the close still completes at rc 0" "0" "$rc"
+eq "…the leg still RAN (its output is in the report)" "true" \
+   "$(grep -qxF '  dr fixture: ran unbounded' "$OUTF" && echo true || echo false)"
+eq "…and the lost bound is stated, not silent" "true" \
+   "$(has 'no `timeout` on PATH' "$(cat "$ERRF")")"
+eq "…naming the consequence precisely (clock, not exit code)" "true" \
+   "$(has 'it can hang its clock' "$(cat "$ERRF")")"
+eq "…and NOT mis-reported as the leg exiting 127" "false" \
+   "$(has 'exited 127' "$(cat "$ERRF")")"
+# Control: the same fixture WITH timeout on PATH emits no such warning.
+rc="$(run_dr_leg "$goodhook")"
+eq "control: with timeout present the close is still 0" "0" "$rc"
+eq "…and no missing-timeout warning appears" "false" \
+   "$(has 'no `timeout` on PATH' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"

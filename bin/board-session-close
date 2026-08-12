@@ -30,6 +30,15 @@
 # archive now" starting point (the gate is per-card in `kbcard archive` at archive
 # time; gating the whole done backlog here would be a slow network storm). It only
 # surfaces (never archives); a missing sibling is a warning, not a hard failure.
+#
+# A fourth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
+# fix a CLOSED Dependabot alert claims actually exist in what is deployed and RUNNING? An
+# alert closes when its fix reaches the default branch, while production serves something
+# cut by a separate process — so a repo reading 0-open can be serving the vulnerable
+# version with no symptom anywhere. Advisory on the SAME contract as the archive leg: a
+# non-zero exit warns and never blocks the close. Note the asymmetry that warning states —
+# a STILL_EXPOSED finding rides the report at rc 0, so a non-zero from that tool means the
+# INSTRUMENT failed, not that the fleet is exposed.
 set -uo pipefail
 
 # resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
@@ -598,8 +607,106 @@ _bsc_hook_dispatch_report() {
   return "$findings"
 }
 
+# _bsc_advisory_leg <sibling> <predicate> <subject> <cause> <note> [runner…] — ONE advisory
+# delegation to a sibling of THIS bin.
+#
+# Resolves <sibling> beside board-session-close (never $PATH or $HOME — there is no env override
+# for either leg), checks it with <predicate>, runs `[runner…] <path>` under a WALL-CLOCK BOUND
+# with stderr folded into stdout, indents the whole answer two spaces into the report, and on a
+# non-zero exit warns on stderr WITHOUT propagating it: an advisory leg never blocks a close.
+# Always returns 0.
+#
+# THE TIME BOUND IS PART OF "ADVISORY", not an extra: without it the contract holds for the exit
+# code and not for the clock, and a leg that reaches the network (the reconciler makes five
+# sequential `gh api` calls) can hang a session close indefinitely on a stalled connection — the
+# close being "never blocked" is no comfort if it never returns. It lives HERE rather than in
+# either leg so every leg, including ones not yet written, inherits it (canon #5); the repo
+# precedent is `agent-board-toolkit-runtime-check`'s `timeout 10 git fetch`.
+#
+# 60s is deliberately far above need, not a tuned figure: a real reconciler run measured
+# 2.80/2.84/2.94s over three samples, so the budget is ~20x the observed cost. It is a
+# runaway-catcher, not a performance gate — set it near the measurement and it becomes a source
+# of false ⚠ on a slow morning, which is how a warning stops being read.
+# BSC_ADVISORY_TIMEOUT overrides it, and exists so the suite can test the bound in ~1s rather
+# than making every test run wait out the real one.
+#
+# EXTRACTED AT THE SECOND CALLER (canon #5). The archive-eligible and dependabot-reconcile legs
+# were the same eight lines differing only in the strings below, so every property that makes
+# the shape correct — the `2>&1` fold that keeps a delegate's stderr from reading as a
+# ritual-level ⚠, the two-space indent, the rc that warns instead of propagating — had two homes
+# and nothing asserting the two agreed.
+#
+#   <predicate>  `-f` or `-x`, and it is PER-LEG on purpose, not an inconsistency to tidy away:
+#                `_kbc-archive-eligible.py` ships mode 644 and is run THROUGH `python3`, so
+#                requiring `-x` would report the correctly-installed file as a missing sibling
+#                on every real checkout; `dependabot-deploy-reconcile` execs itself and ships
+#                755, so `-x` is the predicate that matches how it is actually run.
+#   <subject>    what DID NOT RUN / may be INCOMPLETE — e.g. "archive-eligible surfacing".
+#   <cause>      the parenthetical naming what a non-zero exit means for THIS leg.
+#   <note>       one further sentence, or "" — the reconciler uses it to say that a FINDING is
+#                not what a non-zero exit means.
+#
+# The warnings stay distinguishable per leg by sibling name AND subject, because the selftest's
+# absence assertions have to be able to say WHICH leg was silent (an unqualified `sibling not
+# found` needle once matched the other leg's warning).
+_bsc_advisory_leg() {
+  local sibling="$1" predicate="$2" subject="$3" cause="$4" note="$5"; shift 5
+  local path out rc
+  path="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/$sibling"
+  if ! test "$predicate" "$path"; then
+    {
+      echo "  ⚠ board-session-close: $sibling sibling not found or not runnable ($path) — the"
+      echo "    $subject DID NOT RUN. It is advisory (the drift check above still ran), so this"
+      echo "    does not block close; reinstall the toolkit bin/ to restore it."
+    } >&2
+    return 0
+  fi
+  # `timeout` is coreutils and NOT universally present — macOS ships none by default, and the
+  # MSYS/Git-Bash install INSTALL.md §2 warns about is another. Probing rather than assuming is
+  # the difference between a bounded leg and a leg that dies rc 127 with whatever cause string
+  # its caller happened to pass: this helper was extracted from two legs, one of which
+  # PRE-DATES the bound, so making it a hard dependency would have broken a working leg on
+  # those hosts to add a guarantee they simply cannot have. Unbounded-but-running beats
+  # bounded-and-dead for an advisory leg; the degraded state is stated, never silent.
+  #
+  # `${@:+"$@"}` rather than a bare `"$@"` at both sites below: under `set -u`, bash BEFORE
+  # 4.4 treats an empty `"$@"` as an unset variable and aborts. These are the first sites in
+  # this file where `$@` is GUARANTEED empty — the reconciler leg passes no runner at all, so
+  # it is empty on every close, not in some corner case. Bash 4.4 (2016) fixed it and this
+  # host runs bash 5, so no fixture here can reach the failure; the spelling is free, and the
+  # hosts it protects are exactly the old-bash ones (a stock macOS /bin/bash is 3.2) that the
+  # `timeout` probe above already exists for.
+  local budget="${BSC_ADVISORY_TIMEOUT:-60}"
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout "$budget" ${@:+"$@"} "$path" 2>&1)"; rc=$?
+  else
+    echo "  ⚠ board-session-close: no \`timeout\` on PATH (coreutils), so the $subject runs" >&2
+    echo "    UNBOUNDED — it cannot hang the close's exit code, but it can hang its clock." >&2
+    out="$(${@:+"$@"} "$path" 2>&1)"; rc=$?
+  fi
+  printf '%s\n' "$out" | sed 's/^/  /'
+  if [[ "$rc" -eq 124 ]]; then
+    # The timeout is THIS function's doing, so this function explains it — the per-leg <cause>
+    # describes the leg's own failure modes and would be simply wrong here. (`timeout` reports
+    # 124 on a kill; a delegate that exits 124 by itself would be described this way too, which
+    # is an accepted ambiguity: the remedy — go look at the leg — is the same either way.)
+    {
+      echo "  ⚠ $sibling was KILLED after ${budget}s — the $subject is INCOMPLETE, and what"
+      echo "    you see above is a partial answer, not a finished one. This bounds the close;"
+      echo "    it is advisory and does not block it. Re-run the tool directly to see it through."
+    } >&2
+  elif [[ "$rc" -ne 0 ]]; then
+    {
+      echo "  ⚠ $sibling exited $rc — the $subject may be"
+      echo "    INCOMPLETE ($cause); it is advisory and does not block close."
+      if [[ -n "$note" ]]; then echo "    $note"; fi
+    } >&2
+  fi
+  return 0
+}
+
 main() {
-  local d wt b dirty hook rc out line cur_key ae_helper ae_out ae_rc
+  local d wt b dirty hook rc out line cur_key
   local pr_key pr_dup pr_k
   local -a pr_dirs pr_seen
   echo "═══ SESSION-CLOSE RECONCILIATION ═══"
@@ -715,19 +822,16 @@ main() {
   echo
   echo "── Archive-eligible done cards (consider: kbcard archive #N) ──"
   echo "   (read-only surfacing via _kbc-archive-eligible.py over the shipped may_archive gate)"
-  ae_helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_kbc-archive-eligible.py"
-  if [[ ! -f "$ae_helper" ]]; then
-    echo "  ⚠ board-session-close: _kbc-archive-eligible.py sibling not found ($ae_helper) — the" >&2
-    echo "    archive-eligible surfacing DID NOT RUN. It is advisory (the drift check above still" >&2
-    echo "    ran), so this does not block close; reinstall the toolkit bin/ to restore it." >&2
-  else
-    ae_out="$(python3 "$ae_helper" 2>&1)"; ae_rc=$?
-    printf '%s\n' "$ae_out" | sed 's/^/  /'
-    if [[ "$ae_rc" -ne 0 ]]; then
-      echo "  ⚠ _kbc-archive-eligible.py exited $ae_rc — the archive-eligible surfacing may be" >&2
-      echo "    INCOMPLETE (config/API error above); it is advisory and does not block close." >&2
-    fi
-  fi
+  _bsc_advisory_leg _kbc-archive-eligible.py -f \
+    "archive-eligible surfacing" "config/API error above" "" python3
+
+  echo
+  echo "── Dependabot fixed-alert vs deployed-tree reconciliation ──"
+  echo "   (read-only via dependabot-deploy-reconcile; a closed alert is not a deployed fix)"
+  _bsc_advisory_leg dependabot-deploy-reconcile -x \
+    "deploy reconciliation" \
+    "an input was unreadable, a query gate failed, or the evidence artifact could not be written — see above" \
+    "A STILL_EXPOSED row is NOT this: findings ride the report at rc 0, so a non-zero here means the instrument, not the fleet."
 
   return "$rc"
 }
