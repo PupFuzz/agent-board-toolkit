@@ -11,6 +11,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# The comment/comments block at the end drives the bin as a PROCESS against a faked kanban
+# (a `curl` stand-in on PATH), so the real kb_api decides success on the HTTP status class.
+# shellcheck source=/dev/null
+source "$HERE/_kb-api-stub.sh"
 BIN="$HERE/../bin/kbcard"
 _need -r "$BIN"
 # shellcheck source=/dev/null
@@ -874,6 +878,202 @@ rc=0; cmd_patch --task "" --dl DL-7 >/dev/null 2>&1 || rc=$?
 eq "patch --task \"\" → rc 2"                      "2"    "$rc"
 
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
+
+# ---------------------------------------------------------------------------
+echo "== comment / comments — the card audit-trail verbs (card#6051) =="
+# THE GAP: posting a card comment — the routine audit trail — had no verb, so every caller
+# hand-rolled the API call. The API semantics below were MEASURED against the sandbox instance
+# (board 1162) before any of this was written, and each measurement is what one assertion here
+# pins: the body is FLAT `{"content": …}` (the wrapped `{"comment":{…}}` form is 422), the POST
+# 201s echoing the created row, adding a comment does NOT bump the card's updated_at (so the
+# echoed id is the only cheap write verification), and there is NO comment read route at all —
+# GET on the comments path is 405, POST-only, which is why `comments` projects the array the
+# task detail GET already carries.
+#
+# WHY THIS BLOCK DRIVES THE BIN AS A PROCESS while everything above stubs `kb_api` as a shell
+# function: the property under test is that success is decided on the HTTP STATUS CLASS and
+# never on the response body's shape, and a stubbed `kb_api` IS the code that decides that — a
+# test that replaces it cannot observe the thing it claims to check. The seam therefore sits
+# BELOW the lib (a `curl` stand-in on PATH, tests/_kb-api-stub.sh), so kb_load_config, kb_api,
+# the arg parse, main's dispatch and the process exit status all run for real.
+
+# _kbc_comments_render is pure, so it is asserted on synthetic comments first — the shapes a
+# faked board can produce cheaply, before the process-level checks.
+eq "render: one comment is a header line + its indented content" \
+   "$(printf 'comment 13 · user 2238 · 2026-08-12T23:40:36+00:00\n  hello')" \
+   "$(printf '%s' '[{"id":13,"user_id":2238,"content":"hello","created_at":"2026-08-12T23:40:36+00:00"}]' | _kbc_comments_render)"
+# EVERY line of a multi-line comment is indented: an unindented second line reads as the start
+# of the next comment, which is the whole reason the content is not printed verbatim.
+eq "render: every line of a multi-line comment is indented" \
+   "$(printf 'comment 14 · user 7 · 2026-08-12T23:41:12+00:00\n  line1\n  line2')" \
+   "$(printf '%s' '[{"id":14,"user_id":7,"content":"line1\nline2","created_at":"2026-08-12T23:41:12+00:00"}]' | _kbc_comments_render)"
+eq "render: two comments are two blocks" "2" \
+   "$(printf '%s' '[{"id":1,"user_id":7,"content":"a","created_at":"t"},{"id":2,"user_id":7,"content":"b","created_at":"t"}]' \
+      | _kbc_comments_render | grep -c '^comment ')"
+# The author is a bare user id because that is the ONLY author field a comment row carries
+# (measured) — a name would be a fabrication. A missing one degrades to `?`, not to "null".
+eq "render: a row with no user_id says ? rather than null" "comment 3 · user ? · ?" \
+   "$(printf '%s' '[{"id":3,"content":"","created_at":null}]' | _kbc_comments_render)"
+
+# --- process-level: the real kb_api, over a faked kanban --------------------
+rm -rf "$TMP"          # the earlier _mktmp_scratch's dir; its EXIT trap is replaced below
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42
+kb_stub_install
+
+# The route table. Every knob is per-scenario so exactly one leg can be failed at a time.
+# KB_STUB_POST_HTTP / KB_STUB_POST_BODY  — the comment POST's answer.
+# KB_STUB_GET_HTTP  / KB_STUB_GET_COMMENTS — the task detail GET's answer.
+# NOT_FOUND_BODY is the REAL 404 body the un-suffixed comments path returns (captured from the
+# sandbox, trace elided): well-formed JSON that any "did the body parse?" success test reads as
+# a success, and carrying no `.data` — so a body-shape reader degrades to a SILENT empty
+# success rather than to a crash. It is the fixture for the discrimination assertions below.
+NOT_FOUND_BODY='{"message":"The route api/v3/tasks/505/comments could not be found.","exception":"Symfony\\Component\\HttpKernel\\Exception\\NotFoundHttpException","file":"/app/vendor/laravel/framework/src/Illuminate/Routing/AbstractRouteCollection.php","line":44,"trace":[{"function":"handleMatchedRoute"}]}'
+# The 201 body the real API echoes for a created comment, verbatim in shape (measured).
+KB_STUB_CREATED='{"data":{"id":13,"task_id":505,"user_id":2238,"content":"x","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"}}'
+export NOT_FOUND_BODY KB_STUB_CREATED
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "POST "*/tasks/*/comments.json)
+            printf '%s\n%s' "${KB_STUB_POST_HTTP:-201}" \
+                "${KB_STUB_POST_BODY:-$KB_STUB_CREATED}" ;;
+        "GET "*/tasks/search.json*)
+            printf '200\n{"data":[{"id":505}]}' ;;
+        "GET "*/tasks/*.json)
+            printf '%s\n{"data":{"id":505,"name":"probe","comments":%s}}' \
+                "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_COMMENTS:-[]}" ;;
+    esac
+}
+export -f kb_stub_route
+
+# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
+kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+CPATH="/tasks/505/comments.json"
+
+echo "-- comment: path, method, and the MEASURED flat body key --"
+kbc comment --task 505 --content 'hello there'
+eq "comment → rc 0"                              "0" "$rc"
+eq "comment → exactly one POST to the .json comments path" "1" "$(kb_stub_count POST "$CPATH")"
+eq "comment → and no other request at all"       "1" "$(kb_stub_total)"
+# The body's key set is asserted as an EQUALITY, not a contains: the wrapped
+# {"comment":{"content":…}} form the API refuses (422, measured) would still "contain" the
+# text, and only a key-set equality can see that regression.
+eq "comment → body is FLAT, exactly {content}"   '["content"]' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c 'keys')"
+eq "comment → body carries the text verbatim"    '"hello there"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+# The write verification (the card's updated_at does not move on a comment-add, so this id is
+# the only confirmation the write landed).
+eq "comment → prints the CREATED comment id on stdout" "13" "$out"
+
+echo "-- comment: --content-file reaches the body, multi-line included --"
+printf 'file line 1\nfile line 2\n' > "$TMP/c.txt"
+kbc comment --task 505 --content-file "$TMP/c.txt"
+eq "--content-file → rc 0"                       "0" "$rc"
+eq "--content-file → the FILE's text is the body" '"file line 1\nfile line 2"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+
+echo "-- comment: ID-OR-EXT resolves exactly as move/patch does --"
+kbc comment --task EXT-9 --content x
+eq "external-id ref → search first, then the POST" "1" "$(kb_stub_count_any '/tasks/search.json')"
+eq "external-id ref → POSTs to the RESOLVED task id" "1" "$(kb_stub_count POST "$CPATH")"
+
+echo "-- comment: the refusals, each with NO request at all --"
+kbc comment --task 505 --content x --content-file "$TMP/c.txt"
+eq "--content + --content-file → rc 2"           "2" "$rc"
+eq "…names both flags"                           "true" "$(has 'mutually exclusive' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505
+eq "neither --content nor --content-file → rc 2" "2" "$rc"
+eq "…names both flags"                           "true" \
+   "$([[ "$(has '--content' "$err")" == true && "$(has '--content-file' "$err")" == true ]] && echo true || echo false)"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content ""
+eq "--content \"\" → rc 2 (the empty-value class)" "2" "$rc"
+eq "…names the flag"                             "true" "$(has '--content requires a non-empty value' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content-file "$TMP/nope.txt"
+eq "--content-file missing → rc 2"               "2" "$rc"
+eq "…names the path"                             "true" "$(has "$TMP/nope.txt" "$err")"
+# The readability guard is asserted by its OWN wording, not merely by the rc: without it the
+# `cat` failure arm below still refuses at rc 2 naming the same path (while leaking cat's raw
+# stderr), so an rc-only assertion cannot tell the two apart and the guard could be deleted
+# with the suite green. The two arms are both reachable — a directory is `-r` yet uncattable.
+eq "…via the readability guard, not the cat fallback" "true" "$(has 'is not readable' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+: > "$TMP/empty.txt"
+kbc comment --task 505 --content-file "$TMP/empty.txt"
+eq "--content-file with no text → rc 2"          "2" "$rc"
+eq "…says the file holds no comment text"        "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --content x
+eq "comment without --task → rc 2"               "2" "$rc"
+# The positive control that makes every "0 requests" above a MEASUREMENT rather than a harness
+# that never writes: the same probe records a POST on the happy path.
+kbc comment --task 505 --content x
+eq "control: a valid comment DOES reach the POST" "1" "$(kb_stub_count POST "$CPATH")"
+
+echo "-- comment: an HTTP failure carries the status AND the error body --"
+KB_STUB_POST_HTTP=422 \
+KB_STUB_POST_BODY='{"message":"The content field is required.","errors":{"content":["The content field is required."]}}' \
+    kbc comment --task 505 --content x
+eq "422 → rc 1"                                  "1" "$rc"
+eq "422 → the status is named"                   "true" "$(has "HTTP 422 on POST $CPATH" "$err")"
+eq "422 → the server's error body is echoed"     "true" "$(has 'The content field is required.' "$err")"
+eq "422 → nothing on stdout (no id was created)" "" "$out"
+
+echo "-- comment: success is decided on STATUS, never on a parseable body --"
+# The 404 the un-suffixed path returns is well-formed JSON with no `.data` — a body-shape
+# reader answers "parsed fine, no id" and exits 0. RED-when-reverted: swap the status check
+# for a body test and both assertions below flip (rc 0, and stdout empty-but-successful).
+KB_STUB_POST_HTTP=404 KB_STUB_POST_BODY="$NOT_FOUND_BODY" kbc comment --task 505 --content x
+eq "404 with parseable JSON → rc 1 (status, not shape)" "1" "$rc"
+eq "404 → the status is named"                   "true" "$(has 'HTTP 404' "$err")"
+eq "404 → nothing on stdout"                     "" "$out"
+# The other half of the same class, one layer in: a 2xx that carries no comment id leaves the
+# write UNVERIFIED (the card's updated_at does not move), so it must fail loudly rather than
+# print a plausible-looking `null`.
+KB_STUB_POST_HTTP=201 KB_STUB_POST_BODY='{"data":{}}' kbc comment --task 505 --content x
+eq "2xx with no comment id → rc 1"               "1" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "…and never prints a bare null as an id"      "" "$out"
+
+echo "-- comments: the read side projects the task detail's own array --"
+KB_STUB_GET_COMMENTS='[{"id":13,"task_id":505,"user_id":2238,"content":"first","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"},{"id":14,"task_id":505,"user_id":2238,"content":"second\nline","deleted_at":null,"created_at":"2026-08-12T23:41:12+00:00","updated_at":"2026-08-12T23:41:12+00:00"}]' \
+    kbc comments --task 505
+eq "comments → rc 0"                             "0" "$rc"
+eq "comments → one block per comment"            "2" "$(grep -c '^comment ' <<<"$out")"
+eq "comments → the exact rendered output"        \
+   "$(printf 'comment 13 · user 2238 · 2026-08-12T23:40:36+00:00\n  first\ncomment 14 · user 2238 · 2026-08-12T23:41:12+00:00\n  second\n  line')" \
+   "$out"
+# No new route: the read is the task detail GET, and nothing is sent to the comments path
+# (which is POST-only — a GET there is 405, measured).
+eq "comments → reads the task detail, not a comments route" "1" "$(kb_stub_count_any '/tasks/505.json')"
+eq "comments → never GETs the comments path"     "0" "$(kb_stub_count_any "$CPATH")"
+
+echo "-- comments: an empty array SAYS so, at rc 0 --"
+KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
+eq "no comments → rc 0"                          "0" "$rc"
+eq "no comments → an explicit line, not silence" "kbcard: card 505 has no comments" "$out"
+
+echo "-- comments: a 404 must NOT read as 'no comments' --"
+# The sharpest form of the body-shape trap: `.data.comments // []` over the 404's parseable
+# body yields [] — i.e. a body-shape reader reports "this card has no comments" at rc 0 for a
+# request that never reached a card. RED-when-reverted: tolerate kb_api's non-zero rc and the
+# rc assertion AND the no-comments assertion below both flip.
+KB_STUB_GET_HTTP=404 KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
+eq "404 on the detail read → rc 1"               "1" "$rc"
+eq "404 → the status is named"                   "true" "$(has 'HTTP 404' "$err")"
+eq "404 → does NOT claim the card has no comments" "false" "$(has 'no comments' "$out")"
+kbc comments
+eq "comments without --task → rc 2"              "2" "$rc"
+kbc comments --task 505 --bogus
+eq "comments unknown arg → rc 2"                 "2" "$rc"
+
+unset -f kbc kb_stub_route
+unset NOT_FOUND_BODY KB_STUB_CREATED
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
