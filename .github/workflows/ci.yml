@@ -83,6 +83,7 @@ jobs:
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
+          - board-stats-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
