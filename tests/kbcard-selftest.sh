@@ -916,9 +916,10 @@ eq "render: two comments are two blocks" "2" \
    "$(printf '%s' '[{"id":1,"user_id":7,"content":"a","created_at":"t"},{"id":2,"user_id":7,"content":"b","created_at":"t"}]' \
       | _kbc_comments_render | /usr/bin/grep -c '^comment ')"
 # The author is a bare user id because that is the ONLY author field a comment row carries
-# (measured) — a name would be a fabrication. A missing one degrades to `?`, not to "null".
-eq "render: a row with no user_id says ? rather than null" "comment 3 · user ? · ?" \
-   "$(printf '%s' '[{"id":3,"content":"","created_at":null}]' | _kbc_comments_render)"
+# (measured) — a name would be a fabrication. A missing header field degrades to `?`, not to
+# "null" — id, user_id and created_at alike.
+eq "render: a row with no header fields says ? rather than null" "comment ? · user ? · ?" \
+   "$(printf '%s' '[{"content":"","created_at":null}]' | _kbc_comments_render)"
 # The TAB is exempt alongside the newline. It IS a C0 control, but it cannot move the cursor
 # backward — it only advances to the next tab stop — so replacing it buys nothing against the
 # thing this filter exists for (an ESC sequence erasing the attribution line above) while

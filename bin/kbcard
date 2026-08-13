@@ -79,9 +79,7 @@
 #     Exactly one of --content / --content-file is required — both, or neither, is rc 2.
 #     --content-file sends the file's text, multi-line included; a missing or unreadable file
 #     — and, from EITHER source, text that is empty or whitespace-only — is rc 2 BEFORE any
-#     request, so a bad invocation costs no traffic. (The server trims before it validates, so
-#     a blank body is a 422 there: refusing locally is the same verdict for the price of no
-#     round trip, and at this verb's rc 2 rather than the wire's rc 1.)
+#     request, so a bad invocation costs no traffic.
 #     What goes on the wire, from either source: TRAILING NEWLINES ARE TRIMMED, while interior
 #     newlines and leading whitespace are preserved (a comment's own indentation is content),
 #     and CRLF line endings are normalized to LF — a --content-file written on Windows/Git-Bash
@@ -1003,7 +1001,7 @@ _kbc_comments_render() {
     jq -r '
       def c0_safe: explode | map(if . < 32 and . != 10 and . != 9 then 63 else . end) | implode;
       def c0_header: explode | map(if . < 32 then 63 else . end) | implode;
-      .[] | (("comment \(.id) · user \(.user_id // "?") · \(.created_at // "?")" | c0_header),
+      .[] | (("comment \(.id // "?") · user \(.user_id // "?") · \(.created_at // "?")" | c0_header),
              (((.content // "") | c0_safe | split("\n"))[] | "  " + .))'
 }
 
