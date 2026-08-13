@@ -225,13 +225,17 @@ jobs:
     steps:
       - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
         with:
-          fetch-depth: 0     # REQUIRED — resolves the fork point; the version file is read at both ends
+          fetch-depth: 0     # REQUIRED — see "What the check reads" in agent-board-toolkit docs/INSTALL.md §6c
       - uses: <owner>/agent-board-toolkit/release-artifacts@<full-40-char-SHA>  # vX.Y.Z
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           # config: .release-pr.json   # optional; the default
 ```
+
+**What the check reads.** It resolves the merge base of `base-sha` and `head-sha`, reads the version file at **both** ends of that range, and reads each declared member's contents at **head** — all of it `git show`/`git cat-file` against the local clone, none of which a shallow one can serve. That is what `fetch-depth: 0` is for. **This section owns that inventory**: the toolkit's own [`release-artifacts-gate.yml`](../.github/workflows/release-artifacts-gate.yml) points here rather than restating it.
+
+> **Lockstep — one sanctioned copy.** [`release-artifacts/action.yml`](../release-artifacts/action.yml)'s `description:` restates the read inventory above *and* the fail-closed rule below, because a SHA-pinned consumer reads the action itself and cannot follow a pointer into these docs. **Correcting either one here means correcting `release-artifacts/action.yml` in the same change.**
 
 **The asserted range is `merge-base(base-sha, head-sha)..head-sha` — the PR's own changes — never base's tip.** That is a correctness requirement, not a refinement, because base-branch drift after the fork point corrupts both halves of the check:
 

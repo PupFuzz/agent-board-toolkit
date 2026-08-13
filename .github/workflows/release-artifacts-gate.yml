@@ -6,8 +6,9 @@
 # auto-tag workflows stay fail-soft everywhere BY DESIGN; this asserts at release-PR time,
 # where the fix is a commit rather than a retag.
 #
-# No paths filter: the gate must observe EVERY pull request to classify it. Classification is
-# by version VALUE, so a non-release PR exits 0 after two `git show`s.
+# No `paths:` filter, deliberately — the gate must observe EVERY pull request to classify it.
+# docs/INSTALL.md §6c owns the classification rule and what a non-release PR costs; it is not
+# restated here, because a second copy is a second thing to correct.
 name: Release artifacts
 
 on:
@@ -26,9 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Required by the action: it resolves the FORK POINT of base and head, reads the
-          # version file at both ends and each artifact's contents at head through `git show`,
-          # none of which a shallow clone can serve.
+          # Required by the action — docs/INSTALL.md §6c ("What the check reads") owns the read
+          # inventory and why a shallow clone cannot serve it.
           fetch-depth: 0
       - uses: ./release-artifacts
         with:

@@ -35,10 +35,13 @@
 # fix a CLOSED Dependabot alert claims actually exist in what is deployed and RUNNING? An
 # alert closes when its fix reaches the default branch, while production serves something
 # cut by a separate process — so a repo reading 0-open can be serving the vulnerable
-# version with no symptom anywhere. Advisory on the SAME contract as the archive leg: a
+# version with no symptom anywhere. That tool also binds its read to the RUNNING process
+# (a tree written after the process started is code nothing is executing), which is why
+# this leg belongs at session close rather than in a build step: it can only be answered on
+# the host where the server runs. Advisory on the SAME contract as the archive leg: a
 # non-zero exit warns and never blocks the close. Note the asymmetry that warning states —
-# a STILL_EXPOSED finding rides the report at rc 0, so a non-zero from that tool means the
-# INSTRUMENT failed, not that the fleet is exposed.
+# a STILL_EXPOSED or PROCESS_PREDATES_TREE finding rides the report at rc 0, so a non-zero
+# from that tool means the INSTRUMENT failed, not that the fleet is exposed.
 set -uo pipefail
 
 # resolve_reconcile_hook — locate the shipped kanban-reconcile.py detect hook
@@ -831,7 +834,7 @@ main() {
   _bsc_advisory_leg dependabot-deploy-reconcile -x \
     "deploy reconciliation" \
     "an input was unreadable, a query gate failed, or the evidence artifact could not be written — see above" \
-    "A STILL_EXPOSED row is NOT this: findings ride the report at rc 0, so a non-zero here means the instrument, not the fleet."
+    "A STILL_EXPOSED row is NOT this: findings ride the report at rc 0 — including PROCESS_PREDATES_TREE, the loudest of them — so a non-zero here means the instrument, not the fleet."
 
   return "$rc"
 }

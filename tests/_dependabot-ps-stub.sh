@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # _dependabot-ps-stub.sh — the `ps` stand-in that dependabot-reconcile-selftest.sh copies onto
-# PATH, so the staleness leg (a package.json newer than the RUNNING process) and the host-wide
-# coverage statement can be driven deterministically. A real `ps` reports whatever this host
-# happens to be running, which is not a test input.
+# PATH, so the running-process binding (the newest write anywhere in the deployed TREE against
+# the start time of the oldest process running from it) and the host-wide coverage statement can
+# be driven deterministically. A real `ps` reports whatever this host happens to be running,
+# which is not a test input.
 #
 # It prints $DR_PS_FIXTURE verbatim (an absent/empty fixture is the "no process is running"
 # case, which is a real disposition and not an error), in the `pid lstart args` column shape the
