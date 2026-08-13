@@ -77,12 +77,16 @@
 #     cheap signal that the write landed, and a success carrying no id is reported as an
 #     UNVERIFIED write (rc 1) rather than printed as a plausible-looking `null`.
 #     Exactly one of --content / --content-file is required — both, or neither, is rc 2.
-#     --content-file sends the file's whole text (multi-line is stored verbatim); a missing or
-#     unreadable file — and, from EITHER source, text that is empty or whitespace-only — is
-#     rc 2 BEFORE any request, so a bad invocation costs no traffic. (The server trims before
-#     it validates, so a blank body is a 422 there: refusing locally is the same verdict for
-#     the price of no round trip, and at this verb's rc 2 rather than the wire's rc 1.)
-#     What goes on the wire is the UNTRIMMED text — a comment's own indentation is content.
+#     --content-file sends the file's text, multi-line included; a missing or unreadable file
+#     — and, from EITHER source, text that is empty or whitespace-only — is rc 2 BEFORE any
+#     request, so a bad invocation costs no traffic. (The server trims before it validates, so
+#     a blank body is a 422 there: refusing locally is the same verdict for the price of no
+#     round trip, and at this verb's rc 2 rather than the wire's rc 1.)
+#     What goes on the wire, from either source: TRAILING NEWLINES ARE TRIMMED, while interior
+#     newlines and leading whitespace are preserved (a comment's own indentation is content),
+#     and CRLF line endings are normalized to LF — a --content-file written on Windows/Git-Bash
+#     would otherwise put a literal \r on the wire, which the reader below renders as `?` at the
+#     end of every line. A LONE \r is NOT a line ending and is left to that same sanitizer.
 #   kbcard comments --task ID-OR-EXT
 #     READ the card's comments, one block each: `comment <id> · user <user_id> · <created_at>`
 #     followed by the content indented. The author is a bare user id because that is the only
@@ -92,8 +96,10 @@
 #     A card with none prints one explicit "no comments" line at rc 0, so an empty answer is
 #     never a silent one.
 #     Content is untrusted text printed to a terminal, so every C0 control character EXCEPT the
-#     newline is rendered as `?` — an embedded ESC is a terminal command, and `ESC[2K ESC[1A`
-#     erases the `comment <id> · user <n>` line above it, i.e. its own attribution.
+#     newline and the TAB is rendered as `?` — an embedded ESC is a terminal command, and
+#     `ESC[2K ESC[1A` erases the `comment <id> · user <n>` line above it, i.e. its own
+#     attribution. The tab is exempt because it cannot move the cursor backward (so it cannot
+#     reach that line) while replacing it damages every pasted diff or indented block.
 #   kbcard archive --task ID-OR-EXT [--force] [--dry-run]
 #     Take the card off the board without deleting it (PATCH _action:archive) —
 #     the row stays live + recoverable and keeps its stable id + dl_number.
@@ -778,6 +784,26 @@ cmd_link() {
     kb_api POST "/task_links.json" "$body" | jq '.data'
 }
 
+# _kbc_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
+# printing NOTHING when that body is not JSON at all instead of dying on jq's parse error.
+#
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read arrives at every projection below as a success. An unguarded `jq`
+# there exits 5 under `set -e`, with jq's raw parse error as the caller's whole diagnostic — a
+# status this tool documents nowhere, from a program the caller never ran. Swallowing the parse
+# failure hands the refusal back to the caller's OWN empty-value arm, which says it in kbcard's
+# words at kbcard's rc. Empty is the only thing this can print on a parse failure, so it can
+# never turn an unreadable body into a plausible value.
+#
+# Suppressing jq's stderr means ANY jq fault lands in that same arm — a filter this file got
+# wrong, or a jq that is missing/unrunnable. So a caller's diagnostic states the OBSERVATION
+# ("the body could not be parsed"), never the conclusion "the body is not JSON": the latter is
+# a specific claim about the server that would be wrong in those two cases.
+_kbc_parse_resp() {
+    local resp="$1"; shift
+    jq "$@" <<<"$resp" 2>/dev/null || true
+}
+
 # _kbc_annotate_card <task-json>: the task with `stage` populated from
 # workflow_stage_id (parity with cmd_list's stage field) and `column` set to the
 # board's column name for that stage (stage_name reverse lookup). A field this
@@ -812,9 +838,14 @@ cmd_show() {
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    local task data
+    local task resp data
     task="$(resolve_task "$task_ref")"
-    data="$(kb_api GET "/tasks/$task.json" | jq '.data')"
+    resp="$(kb_api GET "/tasks/$task.json")" || return 1
+    data="$(_kbc_parse_resp "$resp" '.data')"
+    [[ -n "$data" ]] || {
+        echo "kbcard: show on task $task: the read returned success but its body could not be parsed — nothing was read" >&2
+        return 1
+    }
     _kbc_annotate_card "$data"
 }
 
@@ -843,6 +874,11 @@ cmd_show() {
 # mutually-exclusive sources. Returns 2 (diagnostic naming the flag) when both or neither was
 # given, when the file is missing or unreadable, or when the resolved text is blank. Every one
 # of those is decided with no network at all, so a bad invocation can never half-write.
+#
+# TRAILING NEWLINES ARE TRIMMED from either source — the caller reads this through a command
+# substitution, which strips them — while interior newlines and leading whitespace ride verbatim.
+# That is the documented contract (the Usage block at the top of this file states it, and so
+# does README's comment section), not an accident of the plumbing.
 _kbc_comment_content() {
     local content="$1" file="$2"
     if [[ -n "$content" && -n "$file" ]]; then
@@ -855,12 +891,25 @@ _kbc_comment_content() {
     fi
     if [[ -n "$file" ]]; then
         [[ -r "$file" ]] || { echo "kbcard: --content-file is not readable: $file" >&2; return 2; }
-        content="$(cat -- "$file")" || { echo "kbcard: --content-file could not be read: $file" >&2; return 2; }
+        # The `x` sentinel keeps the file's own trailing newline INSIDE this substitution, which
+        # would otherwise strip it here — before the CRLF normalization below could see it, so a
+        # CRLF file's last line would keep a lone \r that nothing then owns. `&&` so a failed
+        # read is still a failed read (with `;` the substitution would carry printf's rc 0).
+        content="$(cat -- "$file" && printf x)" || { echo "kbcard: --content-file could not be read: $file" >&2; return 2; }
+        content="${content%x}"
     fi
+    # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
+    # install target, so a --content-file written there arrives CRLF-terminated and an unnormalized
+    # \r goes on the wire verbatim — where the reader, correctly, renders every C0 control as `?`,
+    # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
+    # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
+    # for that sanitizer rather than silently rewriting content here.
+    content="${content//$'\r'$'\n'/$'\n'}"
     # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the server trims before
     # it validates, so a whitespace-only body is a 422 there — a refusal that costs a round trip
-    # and arrives as rc 1 instead of the rc 2 this class is. What goes on the wire below is the
-    # UNTRIMMED text (a comment's own leading indentation is content).
+    # and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes on
+    # the wire keeps its leading whitespace and its interior newlines (a comment's own
+    # indentation is content), and loses only the trailing newlines described above.
     if [[ -z "${content//[[:space:]]/}" ]]; then
         if [[ -n "$file" ]]; then
             echo "kbcard: --content-file holds no comment text: $file" >&2
@@ -896,9 +945,9 @@ cmd_comment() {
     # not move on a comment-add, so a success carrying no echoed id leaves the write
     # unconfirmed — say so, rather than print a `null` that reads exactly like an id.
     # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the parse;
-    # that is the SAME "success with no confirmed id" state as a JSON body with no id, so it
-    # belongs to the arm below rather than dying at jq's raw parse error under `set -e`.
-    cid="$(jq -r '.data.id // empty' <<<"$resp" 2>/dev/null || true)"
+    # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
+    # _kbc_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
+    cid="$(_kbc_parse_resp "$resp" -r '.data.id // empty')"
     [[ -n "$cid" ]] || {
         echo "kbcard: comment on task $task returned success with no comment id — the write is UNVERIFIED (a comment does not bump the card's updated_at, so that id is the only confirmation)" >&2
         return 1
@@ -912,10 +961,13 @@ cmd_comment() {
 # Extracted from cmd_comments so it is unit-testable on synthetic comments.
 #
 # Content is UNTRUSTED text going straight to a terminal, so every C0 control but the newline
-# is replaced with `?` before it is printed: an embedded ESC is a terminal command, and
-# `ESC[2K ESC[1A` erases the attribution header line above it — i.e. the rendered content can
-# rewrite the part of the output that says who wrote it. The newline is exempt because it is
-# the structure this renderer reads (it drives the indent-every-line split).
+# and the tab is replaced with `?` before it is printed: an embedded ESC is a terminal command,
+# and `ESC[2K ESC[1A` erases the attribution header line above it — i.e. the rendered content
+# can rewrite the part of the output that says who wrote it. The newline is exempt because it is
+# the structure this renderer reads (it drives the indent-every-line split). The TAB is exempt
+# because it cannot move the cursor BACKWARD — it only advances to the next tab stop, so it
+# cannot reach the attribution line this filter exists to protect — while replacing it damages
+# every pasted diff, log line or indented block a comment carries.
 #
 # Done by CODEPOINT rather than a `gsub` character class, because the obvious spelling of that
 # class is silently wrong here: jq hands the pattern to Oniguruma, which does NOT read `\uXXXX`
@@ -924,7 +976,7 @@ cmd_comment() {
 # a sanitizer that damages the safe input and passes the dangerous one.
 _kbc_comments_render() {
     jq -r '
-      def c0_safe: explode | map(if . < 32 and . != 10 then 63 else . end) | implode;
+      def c0_safe: explode | map(if . < 32 and . != 10 and . != 9 then 63 else . end) | implode;
       .[] | ("comment \(.id) · user \(.user_id // "?") · \(.created_at // "?")",
              (((.content // "") | c0_safe | split("\n"))[] | "  " + .))'
 }
@@ -942,7 +994,14 @@ cmd_comments() {
     task="$(resolve_task "$task_ref")" || return 1
     # The task detail IS the read surface — there is no comment read route to call.
     resp="$(kb_api GET "/tasks/$task.json")" || return 1
-    comments="$(jq -c '.data.comments // []' <<<"$resp")"
+    # An unparseable 2xx body is NOT an empty comment list: the `no comments` line below is a
+    # statement about the card, and printing it here would answer a question this read never
+    # reached — the same silent-empty trap the 404's parseable body sets one layer up.
+    comments="$(_kbc_parse_resp "$resp" -c '.data.comments // []')"
+    [[ -n "$comments" ]] || {
+        echo "kbcard: comments on task $task: the read returned success but its body could not be parsed — nothing was read (this is NOT an empty comment list)" >&2
+        return 1
+    }
     n="$(jq 'length' <<<"$comments")"
     if [[ "$n" -eq 0 ]]; then
         # Explicit, never a bare empty stdout: "this card has no comments" and "the read
