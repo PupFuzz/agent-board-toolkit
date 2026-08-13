@@ -11,14 +11,33 @@ description: >-
   never base's tip, so a commit landing on the base branch after the fork point
   can neither spuriously satisfy "this artifact moved" nor make a real release
   PR read as "version unchanged".
+  THE VERDICT SURFACE IS READ FROM THE FORK POINT, because .release-pr.json is
+  editable by the PR being judged: the declared set and the classification keys
+  (version_file / version_regex) come from the config at merge-base, so a head
+  edit may only WIDEN the set. A member declared at the fork point and absent
+  from head fails in its own right — on a release PR and an ordinary one alike
+  — unless it is listed in the optional `retired_artifacts` array at head,
+  which is logged as a RETIRED: line instead. A member in BOTH arrays is a
+  config error. A fork point with no usable config (the adoption PR that
+  creates it, an unparseable or key-less one) is a ::warning:: and a fallback
+  to head's keys, never a refusal — and the same holds per ENTRY: a malformed
+  entry is rc 2 when HEAD declares it, but a ::warning:: dropped from the
+  baseline when the fork point does, since the only repair for one is to
+  delete it and that repair would otherwise be redded by the entry it removes.
   PRECONDITIONS in the calling job: the consumer repo must already be checked
-  out with fetch-depth: 0 (the script resolves the merge base, reads the
-  version file at both ends and the artifact contents at head via `git show`,
-  and a shallow clone makes those fail — it refuses rather than classifying an
-  unresolvable fork point or unreadable base as "not a release PR"), and a
-  .release-pr.json must exist at the workspace root.
-  A PR that does not change the version value exits 0 without asserting
-  anything, so this action is safe to run on every pull request.
+  out with fetch-depth: 0 (the script resolves the merge base, reads the CONFIG
+  at both ends, the version file at both ends, and each declared member's type
+  and contents at head via `git show` / `git ls-tree`, and a shallow clone makes
+  those fail — it refuses rather than classifying an unresolvable fork point or
+  unreadable base as "not a release PR"), and a .release-pr.json must exist at
+  the workspace root — COMMITTED at head, since the config is read from the
+  commit and not from the working tree (on a pull_request event the checkout is
+  the merge ref).
+  A PR that does not change the version value asserts no member — but that is
+  not the same as costing nothing: the fork-point comparison runs before the
+  classification and independently of it, so an ordinary PR that drops a
+  declared artifact without acknowledging it reds exactly as a release PR
+  would. Run it on every pull request, knowing that.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.
