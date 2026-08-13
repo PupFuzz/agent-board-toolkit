@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # release-artifacts-check — assert that every artifact a repo DECLARES as part of its
-# release set actually moved in a release PR.
+# release set actually moved in a release PR, against the set DECLARED AT THE FORK POINT.
 #
 # `.release-pr.json`'s `artifacts` array is the explicit must-move-together release set.
 # Until this tool existed its only consumer was `release-pr-body`, which PRINTS it as a
@@ -9,12 +9,48 @@
 # on the member it never reads; this one reads the whole declared set and fails on any
 # member that did not move, no longer exists, or does not carry the version being shipped.
 #
+# A PR UNDER REVIEW MUST NOT BE ABLE TO WEAKEN THE VERDICT IT IS JUDGED BY. The declared
+# set and the release-PR classification keys are both editable in the same PR the gate is
+# judging, so a head-only read lets a PR narrow — or switch off — its own gate:
+#   * delete an `artifacts` entry and the member it named is never asserted again, and from
+#     the next release the fork point no longer carries it either: a permanent, silent
+#     narrowing that leaves no trace in any CI log;
+#   * retarget `version_file`/`version_regex` at a constant and every release PR classifies
+#     as "version unchanged" — a silent non-run of the whole gate.
+# So the VERDICT SURFACE IS READ FROM THE FORK POINT, which the PR cannot edit:
+#   * `version_file` / `version_regex` come from the fork-point config. Head's retarget is
+#     IGNORED rather than refused, so this leg has no false-positive surface at all.
+#   * `artifacts` is read at BOTH ends. Head may only WIDEN the set. A member declared at
+#     the fork point and absent from head is `LOST` and fails IN ITS OWN RIGHT — whether or
+#     not that member's own legs would have passed, and on EVERY PR class, release or not
+#     (a classification-gated severity would be bought back by poisoning the version file).
+#   * the one narrowing channel is explicit: list the member in an optional
+#     `retired_artifacts` array — PR-declared, read at head, and printed as a `RETIRED:`
+#     line in the CI log. A member in BOTH arrays is a config error (rc 2), so a tombstone
+#     cannot be pre-planted against a member that is still declared.
+# Everything else in the config (`promote.*`, `ref_token_regex`, `title_prefix`,
+# `card_token_regex`, branch names) stays head-read and unguarded: none of it decides a
+# verdict.
+#
+# COMPARISON IS ON EXPANDED, VERSION-AGNOSTIC MEMBERS, not on entry strings: `{{version}}`
+# is replaced by a sentinel (never by a concrete version — otherwise every templated member
+# would read as removed at every release, since the two ends carry different versions), the
+# leading path token is taken, and a `{a,b}` brace set expands to one unit per alternative.
+# Adding an alternative is therefore a widening (rc 0), dropping one names that alternative,
+# and reordering a brace set is a no-op.
+#
+# THE CONFIG IS READ FROM COMMITS, NEVER FROM THE WORKING TREE — `git show <ref>:<path>` at
+# the resolved fork-point and head SHAs. On a `pull_request` event the checkout is the MERGE
+# ref, so a tree read would answer about a merge no one wrote. A config that exists only in
+# the checkout and is not committed at head is refused (rc 2); a config committed at head
+# but absent from the checkout is fine.
+#
 # Usage:
 #   release-artifacts-check --base <ref> --head <ref> [--config PATH]
 #
 #   --base   the PR's base commit/ref (e.g. github.event.pull_request.base.sha)
 #   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
-#   --config per-repo release config (default `.release-pr.json`)
+#   --config per-repo release config (default `.release-pr.json`), inside this repository
 #
 # THE RANGE IS `merge-base(base, head)..head` — the PR's OWN changes — never base's tip.
 # Both are resolved against the MERGE BASE, and that is a correctness requirement, not a
@@ -29,13 +65,29 @@
 # Release-PR classification is BY VERSION VALUE, not by "the version file appears in the
 # diff": a repo may point `version_file` at a whole config file (kanban's is
 # `config/app.php`), where a file-moved test would misfire on any unrelated edit to it.
-# Merge-base version == head version ⇒ not a release PR ⇒ nothing to assert, exit 0.
+# Merge-base version == head version ⇒ not a release PR ⇒ no member is asserted — but a
+# narrowed declaration is still refused, because that check never reads the classification.
+#
+# NO FORK-POINT CONFIG (the adoption PR that CREATES it, a config renamed since, an
+# unparseable or key-less one) is a WARN, never a refusal: those keys can only enter the
+# fork point through a merged release, so refusing would deadlock a repo that cannot then
+# release. The run says so on a `::warning::` line, falls back to head's classification
+# keys, and compares against an empty baseline — i.e. exactly today's head-only behaviour.
+#
+# A DECLARED MEMBER MUST BE A REGULAR FILE. The member's type at head is read from one
+# `git ls-tree` mode, because the content reads are answerable — wrongly — for three other
+# object types: `git show <ref>:<symlink>` yields the TARGET PATH string, `<ref>:<dir>` a
+# tree listing, and `<ref>:<gitlink>` a commit log when that commit happens to be in this
+# store. Each of those can satisfy a content assertion while asserting nothing about a
+# release artifact, so each is named and refused rather than read.
 #
 # Exit status: 0 = nothing to assert, or every declared member passed. 1 = at least one
-# member failed (every failure is reported, not just the first). 2 = usage/config error,
-# an unresolvable merge base, or a version that could not be read at either end — none of
-# these is EVER classified as "not a release PR", because that misclassification is a
-# silent non-run of the whole gate rather than a pass.
+# member failed, or a declared member was removed without acknowledgement (every failure is
+# reported, not just the first). 2 = usage/config error, an unresolvable merge base, a
+# config not committed at head, a member declared in both `artifacts` and
+# `retired_artifacts`, or a version that could not be read at either end — none of these is
+# EVER classified as "not a release PR", because that misclassification is a silent non-run
+# of the whole gate rather than a pass.
 set -euo pipefail
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
@@ -71,101 +123,125 @@ done
 
 [ -n "$BASE" ]     || die "--base <ref> is required"
 [ -n "$HEAD_REF" ] || die "--head <ref> is required"
-[ -f "$CONFIG" ]   || die "no $CONFIG in this repo (per-project config — see examples/release-pr.json.example for the shape)"
 
-cfg_opt() { jq -r "$1 // empty" "$CONFIG" 2>/dev/null; }
-
-# The config's SHAPE is validated once, here, before any `.key` read. Two separate verdicts,
-# because they have different fixes — and both must be rc 2, this script's config-error code.
+# --config is CWD-relative (that is what `-f` answers). A `git show "$REF:$path"` is
+# ROOT-relative UNLESS the path begins `./` or `../`, which git resolves against the CWD — so
+# from a subdirectory a bare `--config cfg.json` and its blob read name DIFFERENT files, while
+# a `../cfg.json` spelling happens to agree. The path is therefore normalized to root-relative
+# ONCE, here, and only that spelling is used for every blob read below; relying on the
+# agreeing spelling would be relying on the caller's punctuation.
 #
-# The top-level OBJECT check is not pedantry: `.artifacts` (and every other read below) is a
-# jq runtime ERROR on an array/string/number top level — `Cannot index array with "artifacts"`,
-# jq rc 5 — which `set -e` would propagate as the script's own exit status, so a config typo
-# surfaced as an undocumented rc and a raw jq traceback instead of the documented rc 2. One
-# guard at the boundary covers every read below; adding `|| die` per call-site would be the
-# same fix written N times. `jq .` (not `jq -e .`) does the parse leg, because `-e` also fails
-# on a valid config whose content is literally `null` — which is a SHAPE error, and is
-# reported as one by the second check rather than mis-diagnosed as a syntax error.
-jq . "$CONFIG" >/dev/null 2>&1 \
-  || die "$CONFIG is not valid JSON (a trailing comma?)"
-jq -e 'type == "object"' "$CONFIG" >/dev/null 2>&1 \
-  || die "$CONFIG parses but is not a JSON object at the top level (it is $(jq -r 'type' "$CONFIG")) — it must be an object of config keys; see examples/release-pr.json.example"
-
-# OPT-OUT and MALFORMED are different verdicts and must not share a branch. An absent/null or
-# EMPTY `artifacts` is a repo that never opted in — nothing to assert, exit 0, reported rather
-# than silent so a repo that MEANT to declare a set can see that it did not. Any OTHER type
-# (object, string, number, boolean) is a malformed declaration: printing "no artifacts
-# declared" there would be a false statement about the config, and would silently disable the
-# gate for a repo that plainly intended to enable it. Checked before the version legs, because
-# a fail-closed version read would otherwise refuse a repo that never opted in.
-ARTIFACTS_TYPE="$(jq -r '.artifacts | type' "$CONFIG")"
-case "$ARTIFACTS_TYPE" in
-  null)  echo "release-artifacts-check: no artifacts declared — nothing to assert"; exit 0;;
-  array)
-    if [ "$(jq -r '.artifacts | length' "$CONFIG")" -eq 0 ]; then
-      echo "release-artifacts-check: no artifacts declared (empty array) — nothing to assert"
-      exit 0
-    fi;;
-  *) die "$CONFIG has .artifacts of type '$ARTIFACTS_TYPE' — it must be an array of strings (omit the key entirely to opt out)";;
-esac
-
-VERSION_FILE="$(cfg_opt '.version_file')"
-VERSION_REGEX="$(cfg_opt '.version_regex')"
-[ -n "$VERSION_FILE" ]  || die "$CONFIG declares artifacts but no version_file — the release-PR classification cannot run"
-[ -n "$VERSION_REGEX" ] || die "$CONFIG declares artifacts but no version_regex — the release-PR classification cannot run"
-
-# _extract_version <ref> <label> — sets EXTRACTED_VERSION from <ref>:<version_file>. <label>
-# names which END of the range <ref> is, because <ref> is often a resolved merge-base SHA that
-# appears in none of the caller's inputs — an error naming only that SHA is not actionable.
+# The rc of `rev-parse` is captured, and that is load-bearing rather than tidy: on a
+# directory outside any repository it exits 128 with EMPTY stdout, so an unguarded `$( )`
+# would compose `"" + "$(basename …)"` and silently read THIS repo's own root config as the
+# baseline for a config the caller pointed somewhere else entirely.
 #
-# Sets a global instead of printing, deliberately: `die` inside a command substitution exits
-# only the SUBSHELL, so `V="$(_extract_version …)"` would depend on `set -e` noticing the
-# assignment's status to abort — an implicit path that a later `|| true` or an `if` context
-# would silently defeat. Here `die` runs in the script's own shell and the exit is explicit.
-#
-# The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
-# a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
-# `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
-# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
-# perfectly good extraction. Emptiness is what is tested, immediately below.
-EXTRACTED_VERSION=""
-_extract_version() {
-  local ref="$1" label="$2" content
-  content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
-    || die "cannot read '$VERSION_FILE' at $label ($ref) (ref or path missing from this clone) — the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
-  EXTRACTED_VERSION="$(printf '%s\n' "$content" \
-    | grep -oiE "$VERSION_REGEX" | head -1 \
-    | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
-  [ -n "$EXTRACTED_VERSION" ] \
-    || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
-}
+# STATED BOUND: this resolves the config's DIRECTORY in the checkout, so a `--config` whose
+# directory exists at head but not in the checkout is refused here rather than rescued by the
+# not-in-the-checkout fallback below. Rescuing it would need a second normalization path
+# (that fallback consumes this function's output), so the refusal names the directory.
+CONFIG_DIR="$(dirname "$CONFIG")"
+if CONFIG_PREFIX="$(git -C "$CONFIG_DIR" rev-parse --show-prefix 2>/dev/null)"; then
+  CONFIG_ROOTREL="$CONFIG_PREFIX$(basename "$CONFIG")"
+else
+  die "--config '$CONFIG': its directory '$CONFIG_DIR' does not resolve inside a git repository — the config must live in the repository whose refs are being compared, and its directory must exist in the checkout"
+fi
 
-# The fork point, resolved once and used for BOTH the version read and the diff (see the
-# header). Fail-closed: an unresolvable merge base means the two refs share no history this
-# clone can see, which is a refusal — never a "not a release PR" pass.
+# The config may legitimately be absent from the CHECKOUT while present at head: every read
+# below is a blob read, and the checkout is not necessarily head (on a `pull_request` event
+# it is the merge ref). Refusing on the tree alone diagnosed such a repo as having "no config
+# in this repo", which is false. The tree is checked first only because it is the cheap arm.
+if [ ! -f "$CONFIG" ] && ! git cat-file -e "$HEAD_REF:$CONFIG_ROOTREL" 2>/dev/null; then
+  die "no $CONFIG in this repo — not in the working tree, and not committed at head '$HEAD_REF' (per-project config — see examples/release-pr.json.example for the shape)"
+fi
+
+# The fork point, resolved once and used for the config reads, the version read and the diff
+# (see the header). Fail-closed: an unresolvable merge base means the two refs share no
+# history this clone can see, which is a refusal — never a "not a release PR" pass. It is
+# resolved BEFORE the opt-out test, because the opt-out itself is now a question about the
+# fork point's declared set as well as head's.
 BASEREF="$(git merge-base "$BASE" "$HEAD_REF" 2>/dev/null)" \
   || die "cannot resolve the merge base of '$BASE' and '$HEAD_REF' (no common ancestor in this clone) — the caller must check out with fetch-depth: 0 so the fork point is present; refusing rather than classifying this as 'not a release PR'"
 
-_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"
-_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"
+# Emptiness is tested through the same call, not beside it: `jq .` exits 0 on EMPTY input and
+# prints nothing, so a status-only test reads an empty committed config as valid JSON and the
+# object check then reports its type as the empty string — a refusal that names nothing.
+# A config whose content is literally `null` still prints `null` here, so it stays a SHAPE
+# error diagnosed by the object check rather than mis-named a syntax error.
+_json_parses() { [ -n "$(printf '%s\n' "$1" | jq -c . 2>/dev/null)" ]; }
+_json_type()   { printf '%s\n' "$1" | jq -r 'type' 2>/dev/null; }
+# _cfg <filter> <config-content> — a read from an ALREADY-VALIDATED top-level object. The
+# object check at the boundary is what makes every `.key` read below safe: `.artifacts` on an
+# array/string/number top level is a jq RUNTIME error (rc 5) that `set -e` would surface as
+# the script's own exit status — an undocumented rc plus a raw traceback where the header
+# promises rc 2. One guard at the boundary beats `|| die` written at N call-sites.
+_cfg() { printf '%s\n' "$2" | jq -r "$1"; }
 
-if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
-  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
-  exit 0
+# --- head config: the asserted set, the retirements, and the shape validation -------------
+HEAD_CFG="$(git show "$HEAD_REF:$CONFIG_ROOTREL" 2>/dev/null)" \
+  || die "$CONFIG_ROOTREL is not committed at head '$HEAD_REF' — this check reads the config from the COMMIT, not the working tree, so a copy that exists only in the checkout is not the one the PR proposes; commit it on the PR branch"
+
+# `jq .` (not `jq -e .`) does the parse leg, because `-e` also fails on a valid config whose
+# content is literally `null` — which is a SHAPE error, and is reported as one by the object
+# check rather than mis-diagnosed as a syntax error.
+_json_parses "$HEAD_CFG" \
+  || die "$CONFIG_ROOTREL at $HEAD_REF is not valid JSON (a trailing comma, or an empty file?)"
+[ "$(_json_type "$HEAD_CFG")" = "object" ] \
+  || die "$CONFIG_ROOTREL at $HEAD_REF parses but is not a JSON object at the top level (it is $(_json_type "$HEAD_CFG")) — it must be an object of config keys; see examples/release-pr.json.example"
+
+# OPT-OUT and MALFORMED are different verdicts and must not share a branch. An absent/null or
+# EMPTY `artifacts` is a repo that never opted in — nothing to assert, reported rather than
+# silent so a repo that MEANT to declare a set can see that it did not. Any OTHER type
+# (object, string, number, boolean) is a malformed declaration: printing "no artifacts
+# declared" there would be a false statement about the config, and would silently disable the
+# gate for a repo that plainly intended to enable it. The opt-out VERDICT is taken further
+# down, on the union of both ends — head alone would let a wholesale deletion opt itself out.
+HEAD_ARTIFACTS_TYPE="$(_cfg '.artifacts | type' "$HEAD_CFG")"
+case "$HEAD_ARTIFACTS_TYPE" in
+  null|array) ;;
+  *) die "$CONFIG_ROOTREL at $HEAD_REF has .artifacts of type '$HEAD_ARTIFACTS_TYPE' — it must be an array of strings (omit the key entirely to opt out)";;
+esac
+# Same guard on the retirement channel, and for a sharper reason: an unguarded `.[]` over a
+# string is a jq runtime error swallowed by the `while read` that consumes it, so the whole
+# retirement/tombstone comparison would run against an EMPTY set — the guard silently off,
+# with a raw traceback as the only sign.
+HEAD_RETIRED_TYPE="$(_cfg '.retired_artifacts | type' "$HEAD_CFG")"
+case "$HEAD_RETIRED_TYPE" in
+  null|array) ;;
+  *) die "$CONFIG_ROOTREL at $HEAD_REF has .retired_artifacts of type '$HEAD_RETIRED_TYPE' — it must be an array of strings (omit the key entirely if nothing has been retired)";;
+esac
+
+# --- fork-point config: the baseline the PR may not edit ----------------------------------
+# Every unusable shape lands on ONE disposition — warn, empty baseline, head's classification
+# keys — and never on rc 2. The fork point is a MERGED commit: a refusal there is an rc no PR
+# can fix, because the only way to change it is to merge a release the gate would be redding.
+FORK_CFG=""; FORK_USABLE=0; FORK_UNUSABLE_WHY=""
+if FORK_CFG="$(git show "$BASEREF:$CONFIG_ROOTREL" 2>/dev/null)"; then
+  if ! _json_parses "$FORK_CFG"; then
+    FORK_UNUSABLE_WHY="it is not valid JSON there"
+  elif [ "$(_json_type "$FORK_CFG")" != "object" ]; then
+    FORK_UNUSABLE_WHY="it is not a JSON object at the top level there (it is $(_json_type "$FORK_CFG"))"
+  else
+    FORK_ARTIFACTS_TYPE="$(_cfg '.artifacts | type' "$FORK_CFG")"
+    case "$FORK_ARTIFACTS_TYPE" in
+      null|array) FORK_USABLE=1;;
+      *) FORK_UNUSABLE_WHY="its .artifacts is of type '$FORK_ARTIFACTS_TYPE' there, not an array";;
+    esac
+  fi
+else
+  FORK_UNUSABLE_WHY="it does not exist there"
 fi
-V="$HEAD_VERSION"
+if [ "$FORK_USABLE" -eq 0 ]; then
+  echo "::warning::release-artifacts-check: no usable $CONFIG_ROOTREL at the fork point ($BASEREF) — $FORK_UNUSABLE_WHY. Falling back to head's version_file/version_regex for the release-PR classification, and comparing the declared set against an EMPTY baseline — so nothing can be reported as removed on this run."
+fi
 
-# Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
-# match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
-# reading as a failure. Every membership test below is a shell `case`, so no subprocess and
-# no pipeline is involved in answering "did this path move".
-#
-# `core.quotePath=false` is load-bearing, not tidiness: by default git C-quotes any path
-# containing a non-ASCII byte (`"docs/caf\303\251.md"`), which matches no declared member, so
-# a member that DID move is reported "not moved" — a false failure carrying a wrong diagnosis.
-# The `git show`/`cat-file` reads below take the path verbatim and are unaffected.
-CHANGED="$(git -c core.quotePath=false diff --name-only "$BASEREF" "$HEAD_REF")" \
-  || die "cannot diff '$BASE'...'$HEAD_REF' — the caller must check out with fetch-depth: 0"
+# --- comparison units ---------------------------------------------------------------------
+# The sentinel stands in for `{{version}}` on BOTH sides of every comparison, so a templated
+# member is stable across a release (substituting the concrete version would make every one of
+# them read as removed, since the two ends carry different versions). It must be brace-free —
+# `_expand_braces` splits on the first `{`, which `{{version}}`'s own brace would hit — and
+# whitespace-free, since the path token is taken after substitution.
+SENTINEL='@@ABTK_VERSION@@'
 
 # _expand_braces <spec> — one path per line, expanding a single-level `{a,b,c}` comma set.
 # Deliberately NOT a glob: the members of a release set are DECLARED, so a path that does not
@@ -175,7 +251,7 @@ CHANGED="$(git -c core.quotePath=false diff --name-only "$BASEREF" "$HEAD_REF")"
 # It never calls `die`, and that is structural rather than stylistic: the caller consumes it
 # through a process substitution, whose `exit` unwinds only the SUBSHELL — the message would
 # print and the script would carry on with the member silently dropped. The emptiness verdict
-# is therefore the CALLER's, taken in the main shell (see the `paths` array below).
+# is therefore the CALLER's, taken in the main shell (see `_paths_of_entry`).
 #
 # SINGLE-LEVEL, FIRST-BRACE-ONLY, and every pathological input FAILS LOUD rather than
 # expanding oddly in silence — which is why neither is defended against beyond this note:
@@ -202,31 +278,199 @@ _expand_braces() {
   esac
 }
 
-FAILED=0
-MEMBERS=0
-
-while IFS= read -r raw; do
-  [ -n "$raw" ] || continue
-  expanded="${raw//\{\{version\}\}/$V}"
+# _paths_of_entry <entry> <substitution> — fills PATHS_OUT with one path per expanded member.
+# ONE function serves both consumers, because they must agree exactly: the comparison pass
+# calls it with the SENTINEL (version-agnostic units) and the assertion pass with the concrete
+# version. Both substitutions are brace- and whitespace-free, so the two produce the same
+# member COUNT and the same brace structure from the same entry — which is what lets the
+# assertion pass rely on the boundary refusals below having already fired at comparison time.
+#
+# Materialized in the MAIN shell before any assertion runs, so an entry that expands to no
+# path at all (a literal `{}`) is a loud config error rather than a member silently dropped
+# from both the assertions and the count — this tool's own defect class one layer up.
+# Boundary validation, not defensive coding: the input is a hand-edited config file.
+PATHS_OUT=()
+_paths_of_entry() {
+  local raw="$1" sub="$2" expanded spec p
+  # A literal sentinel in a declared entry would compare equal to a templated member on the
+  # other side, i.e. it would be silently mistaken for `{{version}}`. `{{version}}` is the
+  # only templating token the format defines, so this is a malformed declaration, refused.
+  case "$raw" in
+    *"$SENTINEL"*) die "artifact entry contains the reserved comparison token '$SENTINEL': '$raw' — write '{{version}}' for the version being shipped; that token is the only templating the format defines";;
+  esac
+  expanded="${raw//\{\{version\}\}/$sub}"
   # The path spec is the LEADING whitespace-delimited token; everything after it is prose
   # describing what the member must carry (`→ {{version}}`, `§ Recent releases row`).
   spec="${expanded%%[[:space:]]*}"
   # A leading-whitespace entry yields an empty spec, which would assert nothing and be
   # counted as nothing — the declared member would vanish with no signal.
   [ -n "$spec" ] || die "artifact entry has no leading path token: '$raw'"
-
-  # Materialized in the MAIN shell before any assertion runs, so an entry that expands to no
-  # path at all (a literal `{}`) is a loud config error rather than a member silently dropped
-  # from both the assertions and the count — this tool's own defect class one layer up.
-  # Boundary validation, not defensive coding: the input is a hand-edited config file.
-  paths=()
+  PATHS_OUT=()
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    paths+=("$p")
+    PATHS_OUT+=("$p")
   done < <(_expand_braces "$spec")
-  [ "${#paths[@]}" -gt 0 ] || die "artifact path '$spec' expands to no member (an empty brace set?) — declared as: $raw"
+  [ "${#PATHS_OUT[@]}" -gt 0 ] || die "artifact path '$spec' expands to no member (an empty brace set?) — declared as: $raw"
+}
 
-  for p in "${paths[@]}"; do
+# _pasteable <unit> — a unit rendered back into the spelling a human writes in the config, so
+# the remedy a failure prints can be pasted verbatim into `retired_artifacts` (a diagnosis
+# naming an internal sentinel would have to be translated by hand, which is how a tombstone
+# ends up spelled wrong and the next run reds again on a different line).
+_pasteable() { local tok='{{version}}'; printf '%s' "${1//"$SENTINEL"/$tok}"; }
+
+# Units, in declaration order and deduped. Order matters only for the report; the comparisons
+# are set operations.
+B_UNITS=(); declare -A B_HAS=() B_RAW=()
+H_UNITS=(); declare -A H_HAS=()
+R_UNITS=(); declare -A R_HAS=()
+
+_collect() { # <config-content> <key> <destination set: B|H|R>
+  local content="$1" key="$2" dst="$3" raw p
+  while IFS= read -r raw; do
+    [ -n "$raw" ] || continue
+    _paths_of_entry "$raw" "$SENTINEL"
+    for p in "${PATHS_OUT[@]}"; do
+      case "$dst" in
+        B) if [ -z "${B_HAS[$p]:-}" ]; then B_HAS["$p"]=1; B_RAW["$p"]="$raw"; B_UNITS+=("$p"); fi;;
+        H) if [ -z "${H_HAS[$p]:-}" ]; then H_HAS["$p"]=1;                     H_UNITS+=("$p"); fi;;
+        R) if [ -z "${R_HAS[$p]:-}" ]; then R_HAS["$p"]=1;                     R_UNITS+=("$p"); fi;;
+      esac
+    done
+  done < <(printf '%s\n' "$content" | jq -r --arg k "$key" '(.[$k] // []) | .[]')
+}
+
+if [ "$FORK_USABLE" -eq 1 ]; then _collect "$FORK_CFG" artifacts B; fi
+_collect "$HEAD_CFG" artifacts         H
+_collect "$HEAD_CFG" retired_artifacts R
+
+# A member cannot be simultaneously asserted and retired. Refusing this is what stops a
+# tombstone being PRE-PLANTED against a still-declared member (the entry is deleted in a later
+# PR and the retirement is already acknowledged, so nothing ever reports the narrowing), and
+# it is equally what catches a retire-then-re-add that left its tombstone behind.
+if [ "${#H_UNITS[@]}" -gt 0 ]; then
+  for u in "${H_UNITS[@]}"; do
+    [ -z "${R_HAS[$u]:-}" ] \
+      || die "'$(_pasteable "$u")' is declared in BOTH .artifacts and .retired_artifacts at $HEAD_REF — a member cannot be asserted and retired at the same time; remove it from one of the two"
+  done
+fi
+
+# LOST — declared at the fork point, absent from head, unacknowledged. This is a SET
+# DIFFERENCE with its own verdict, evaluated regardless of whether the removed member's own
+# legs would have passed: a PR that deletes an entry while still updating the file it named
+# passes every leg, exits 0, and from the next release the fork point no longer carries the
+# entry either. It is also evaluated BEFORE, and independently of, the release-PR
+# classification — a severity that depended on classification would be bought back by
+# poisoning the version file's content, which costs no config edit at all.
+LOST=0
+if [ "${#B_UNITS[@]}" -gt 0 ]; then
+  for u in "${B_UNITS[@]}"; do
+    [ -z "${H_HAS[$u]:-}" ] || continue
+    if [ -n "${R_HAS[$u]:-}" ]; then
+      echo "release-artifacts-check: RETIRED: $(_pasteable "$u") — declared at the fork point, absent from .artifacts at head, acknowledged in .retired_artifacts; not asserted"
+    else
+      echo "::error::release artifact declaration NARROWED: '$(_pasteable "$u")' is declared at the fork point ($BASEREF) but absent from .artifacts at $HEAD_REF (declared there as: ${B_RAW[$u]}) — restore the entry, or acknowledge the retirement by adding \"$(_pasteable "$u")\" to .retired_artifacts in this PR"
+      LOST=$((LOST + 1))
+    fi
+  done
+fi
+
+# The opt-out tests the UNION: head alone would let a wholesale deletion of `artifacts` opt
+# the repo out of its own gate, and the fork point alone would refuse a repo adopting the key
+# for the first time. Checked after LOST (which cannot fire when the union is empty) and
+# before the version legs, because a fail-closed version read would otherwise refuse a repo
+# that never opted in.
+if [ "${#B_UNITS[@]}" -eq 0 ] && [ "${#H_UNITS[@]}" -eq 0 ]; then
+  case "$HEAD_ARTIFACTS_TYPE" in
+    array) echo "release-artifacts-check: no artifacts declared (empty array) — nothing to assert";;
+    *)     echo "release-artifacts-check: no artifacts declared — nothing to assert";;
+  esac
+  exit 0
+fi
+
+# --- classification keys: fork point, else head ------------------------------------------
+VERSION_FILE=""; VERSION_REGEX=""; KEY_SRC="the fork point ($BASEREF)"
+if [ "$FORK_USABLE" -eq 1 ]; then
+  VERSION_FILE="$(_cfg '.version_file // empty' "$FORK_CFG")"
+  VERSION_REGEX="$(_cfg '.version_regex // empty' "$FORK_CFG")"
+fi
+if [ -z "$VERSION_FILE" ] || [ -z "$VERSION_REGEX" ]; then
+  # Both keys move together: a fork point that declares only one of them cannot classify, and
+  # mixing one end's file with the other end's regex would be a third, unwritten config.
+  [ "$FORK_USABLE" -eq 0 ] || echo "::warning::release-artifacts-check: $CONFIG_ROOTREL at the fork point ($BASEREF) declares no version_file/version_regex — falling back to head's ($HEAD_REF) for the release-PR classification."
+  VERSION_FILE="$(_cfg '.version_file // empty' "$HEAD_CFG")"
+  VERSION_REGEX="$(_cfg '.version_regex // empty' "$HEAD_CFG")"
+  KEY_SRC="head ($HEAD_REF)"
+fi
+[ -n "$VERSION_FILE" ]  || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_file — the release-PR classification cannot run"
+[ -n "$VERSION_REGEX" ] || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_regex — the release-PR classification cannot run"
+
+# _extract_version <ref> <label> — sets EXTRACTED_VERSION from <ref>:<version_file>. <label>
+# names which END of the range <ref> is, because <ref> is often a resolved merge-base SHA that
+# appears in none of the caller's inputs — an error naming only that SHA is not actionable.
+#
+# Sets a global instead of printing, deliberately: `die` inside a command substitution exits
+# only the SUBSHELL, so `V="$(_extract_version …)"` would depend on `set -e` noticing the
+# assignment's status to abort — an implicit path that a later `|| true` or an `if` context
+# would silently defeat. Here `die` runs in the script's own shell and the exit is explicit.
+#
+# The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
+# a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
+# `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
+# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
+# perfectly good extraction. Emptiness is what is tested, immediately below.
+EXTRACTED_VERSION=""
+_extract_version() {
+  local ref="$1" label="$2" content
+  # The remediation names WHERE THE PATH CAME FROM, not just the path: `version_file` is read
+  # from the config at $KEY_SRC, so the commonest real cause is that head RELOCATED the file
+  # while the fork point still names the old path — a shallow-clone message alone would be
+  # wrong-but-specific, which is worse than a generic one.
+  content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
+    || die "cannot read '$VERSION_FILE' at $label ($ref) — that path is the version_file declared by $CONFIG_ROOTREL at $KEY_SRC, so this fails when head relocated the file the fork point still names, or when the path or ref is missing from this clone: the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
+  EXTRACTED_VERSION="$(printf '%s\n' "$content" \
+    | grep -oiE "$VERSION_REGEX" | head -1 \
+    | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+  [ -n "$EXTRACTED_VERSION" ] \
+    || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
+}
+
+_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"
+_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"
+
+if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+  if [ "$LOST" -gt 0 ]; then
+    echo "release-artifacts-check: version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR, so no member was asserted — but $LOST declared artifact(s) were removed without acknowledgement, which is refused on every PR class" >&2
+    exit 1
+  fi
+  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
+  exit 0
+fi
+V="$HEAD_VERSION"
+
+# Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
+# match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
+# reading as a failure. Every membership test below is a shell `case`, so no subprocess and
+# no pipeline is involved in answering "did this path move".
+#
+# `core.quotePath=false` is load-bearing, not tidiness: by default git C-quotes any path
+# containing a non-ASCII byte (`"docs/caf\303\251.md"`), which matches no declared member, so
+# a member that DID move is reported "not moved" — a false failure carrying a wrong diagnosis.
+# The `git show`/`ls-tree` reads below take the path verbatim and are unaffected.
+CHANGED="$(git -c core.quotePath=false diff --name-only "$BASEREF" "$HEAD_REF")" \
+  || die "cannot diff '$BASE'...'$HEAD_REF' — the caller must check out with fetch-depth: 0"
+
+FAILED=0
+MEMBERS=0
+
+while IFS= read -r raw; do
+  [ -n "$raw" ] || continue
+  # The boundary refusals inside this call (reserved token, no leading path token, an empty
+  # brace set) already fired during the comparison pass over the same entries, so they cannot
+  # be reached here — the substitution differs, the structure does not.
+  _paths_of_entry "$raw" "$V"
+
+  for p in "${PATHS_OUT[@]}"; do
     MEMBERS=$((MEMBERS + 1))
     member_failed=0
 
@@ -237,58 +481,81 @@ while IFS= read -r raw; do
          member_failed=1;;
     esac
 
-    # (b) EXISTS at HEAD — a DELETION also appears in the diff, so (a) alone would pass it.
-    if git cat-file -e "$HEAD_REF:$p" 2>/dev/null; then
-      # (c) AGREES — read from the commit, never the working tree: the working tree is not
-      # necessarily the head commit (a runner may have a dirty or differently-checked-out tree).
-      content="$(git show "$HEAD_REF:$p" 2>/dev/null || true)"
-      # WHICH ARM was taken is reported on the OK line, and that is a correctness feature, not
-      # cosmetics. The strong arm is selected by a magic substring in FREE PROSE, so a prose
-      # edit ('… entry', '… heading') silently DOWNGRADES the member to the weak
-      # content-mention arm — and before the arm was named, a downgraded pass was
-      # byte-identical to a strong one, so the loss of assertion strength was invisible in the
-      # CI log. Naming the arm is what makes a downgrade legible without guessing at synonyms.
-      #
-      # The selector is matched case-INSENSITIVELY (`${raw,,}`, ASCII-only under LC_ALL=C).
-      # Synonyms are deliberately NOT accepted: every extra spelling widens what silently
-      # TRIGGERS the strong arm, and the legibility above is the general fix — a reader who
-      # wrote 'entry' sees `via content mention` on the OK line and corrects the prose.
-      raw_lc="${raw,,}"
-      case "$raw_lc" in
-        *'[{{version}}] section'*)
-          # A LINE beginning `## [<version>]`. Matched as a FIXED STRING against a
-          # newline-prefixed copy rather than as `^## \[$V\]`: the dots in a version are regex
-          # metacharacters, so an unescaped `0.1.2` would also match `0x1x2`. The leading
-          # $'\n' is the left anchor — without it an inline mid-line mention ('see ## [0.1.2]
-          # below') would satisfy a check that claims to be about a heading LINE.
-          arm="via '## [$V]' heading line"
-          case $'\n'"$content" in
-            *$'\n'"## [$V]"*) ;;
-            *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF has no line beginning '## [$V]' (declared as: $raw)"
-               member_failed=1;;
-          esac;;
-        *)
-          case "$p" in
-            *"$V"*) arm="via version-bearing path" ;;  # e.g. sboms/vX.Y.Z.json
-            *) arm="via content mention"
-               # DISCLOSED WEAKNESS: an UNANCHORED substring test. With V=0.25.0 a file
-               # containing only `10.25.0` (or `0.25.01`) satisfies this arm. It is the
-               # catch-all for members whose agreement has no structure to key on (a table
-               # row, a prose line), where there is nothing to anchor to — so the arm is
-               # deliberately weak rather than accidentally so, and `docs/INSTALL.md` §4
-               # states the same limit to the person writing the declaration. A member that
-               # needs a real assertion should declare the `[{{version}}] section` shape.
-               case "$content" in
-                 *"$V"*) ;;
-                 *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF does not contain the version being shipped ($V) (declared as: $raw)"
-                    member_failed=1;;
-               esac;;
-          esac;;
-      esac
-    else
-      echo "::error::release artifact missing at head: '$p' does not exist at $HEAD_REF (deleted or renamed?) (declared as: $raw)"
-      member_failed=1
+    # (b) WHAT IS AT HEAD — one `ls-tree` mode read, which answers existence AND type in the
+    # same row. `--full-tree` is mandatory: a plain `ls-tree` pathspec is CWD-relative, so
+    # from a subdirectory it returns EMPTY AT RC 0 and every member reads as absent. No `-r`,
+    # because a directory member must return its own `040000` row rather than vanish into its
+    # children. The rc is captured because an unguarded `$( )` under `set -euo pipefail` would
+    # surface a git failure as a bare rc 128 with no diagnosis.
+    if ! row="$(git ls-tree --full-tree "$HEAD_REF" -- "$p")"; then
+      die "cannot read '$p' at $HEAD_REF (ref missing from this clone?) — the caller must check out with fetch-depth: 0"
     fi
+    mode="${row%% *}"
+    case "$mode" in
+      "")
+        echo "::error::release artifact missing at head: '$p' does not exist at $HEAD_REF (deleted or renamed?) (declared as: $raw)"
+        member_failed=1;;
+      100644|100755)
+        # (c) AGREES — read from the commit, never the working tree: the working tree is not
+        # necessarily the head commit (a runner may have a dirty or differently-checked-out tree).
+        content="$(git show "$HEAD_REF:$p" 2>/dev/null || true)"
+        # WHICH ARM was taken is reported on the OK line, and that is a correctness feature, not
+        # cosmetics. The strong arm is selected by a magic substring in FREE PROSE, so a prose
+        # edit ('… entry', '… heading') silently DOWNGRADES the member to the weak
+        # content-mention arm — and before the arm was named, a downgraded pass was
+        # byte-identical to a strong one, so the loss of assertion strength was invisible in the
+        # CI log. Naming the arm is what makes a downgrade legible without guessing at synonyms.
+        #
+        # The selector is matched case-INSENSITIVELY (`${raw,,}`, ASCII-only under LC_ALL=C).
+        # Synonyms are deliberately NOT accepted: every extra spelling widens what silently
+        # TRIGGERS the strong arm, and the legibility above is the general fix — a reader who
+        # wrote 'entry' sees `via content mention` on the OK line and corrects the prose.
+        raw_lc="${raw,,}"
+        case "$raw_lc" in
+          *'[{{version}}] section'*)
+            # A LINE beginning `## [<version>]`. Matched as a FIXED STRING against a
+            # newline-prefixed copy rather than as `^## \[$V\]`: the dots in a version are regex
+            # metacharacters, so an unescaped `0.1.2` would also match `0x1x2`. The leading
+            # $'\n' is the left anchor — without it an inline mid-line mention ('see ## [0.1.2]
+            # below') would satisfy a check that claims to be about a heading LINE.
+            arm="via '## [$V]' heading line"
+            case $'\n'"$content" in
+              *$'\n'"## [$V]"*) ;;
+              *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF has no line beginning '## [$V]' (declared as: $raw)"
+                 member_failed=1;;
+            esac;;
+          *)
+            case "$p" in
+              *"$V"*) arm="via version-bearing path" ;;  # e.g. sboms/vX.Y.Z.json
+              *) arm="via content mention"
+                 # DISCLOSED WEAKNESS: an UNANCHORED substring test. With V=0.25.0 a file
+                 # containing only `10.25.0` (or `0.25.01`) satisfies this arm. It is the
+                 # catch-all for members whose agreement has no structure to key on (a table
+                 # row, a prose line), where there is nothing to anchor to — so the arm is
+                 # deliberately weak rather than accidentally so, and `docs/INSTALL.md` §4
+                 # states the same limit to the person writing the declaration. A member that
+                 # needs a real assertion should declare the `[{{version}}] section` shape.
+                 case "$content" in
+                   *"$V"*) ;;
+                   *) echo "::error::release artifact does not agree: '$p' at $HEAD_REF does not contain the version being shipped ($V) (declared as: $raw)"
+                      member_failed=1;;
+                 esac;;
+            esac;;
+        esac;;
+      *)
+        # Not a regular file. Each of these answers the content reads above — wrongly: a
+        # symlink yields its TARGET PATH, a directory a tree listing, a gitlink whose commit is
+        # in this store its COMMIT LOG. Any of the three can carry the version string and pass
+        # an assertion that has read nothing about a release artifact.
+        case "$mode" in
+          120000) kind="a symlink";;
+          040000) kind="a directory";;
+          160000) kind="a gitlink (submodule entry)";;
+          *)      kind="not a regular file (tree mode $mode)";;
+        esac
+        echo "::error::release artifact is not a regular file: '$p' at $HEAD_REF is $kind — a declared release artifact must be a regular file whose contents can be asserted (declared as: $raw)"
+        member_failed=1;;
+    esac
 
     if [ "$member_failed" -eq 0 ]; then
       echo "release-artifacts-check: OK — $p moved, exists at $HEAD_REF, agrees with $V $arm"
@@ -296,10 +563,15 @@ while IFS= read -r raw; do
       FAILED=$((FAILED + 1))
     fi
   done
-done < <(jq -r '.artifacts[]' "$CONFIG")
+done < <(printf '%s\n' "$HEAD_CFG" | jq -r '(.artifacts // []) | .[]')
 
 if [ "$FAILED" -gt 0 ]; then
   echo "release-artifacts-check: $FAILED of $MEMBERS artifact member(s) failed" >&2
+fi
+if [ "$LOST" -gt 0 ]; then
+  echo "release-artifacts-check: $LOST declared artifact(s) removed without acknowledgement — add them to .retired_artifacts or restore them" >&2
+fi
+if [ "$FAILED" -gt 0 ] || [ "$LOST" -gt 0 ]; then
   exit 1
 fi
 echo "release-artifacts-check: all $MEMBERS declared artifact member(s) moved and agree with $V"
