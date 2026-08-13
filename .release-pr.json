@@ -9,7 +9,8 @@
   "artifacts": [
     "VERSION → {{version}}",
     "docs/CHANGELOG.md → [{{version}}] section",
-    "CLAUDE.md § Recent releases row"
+    "CLAUDE.md § Recent releases row",
+    "docs/UPGRADE.md → §6 v{{version}} entry"
   ],
   "promote": {
     "board_id": 12,
