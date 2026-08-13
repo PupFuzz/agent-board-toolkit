@@ -73,6 +73,10 @@
 # fork point through a merged release, so refusing would deadlock a repo that cannot then
 # release. The run says so on a `::warning::` line, falls back to head's classification
 # keys, and compares against an empty baseline — i.e. exactly today's head-only behaviour.
+# The same rule holds PER ENTRY: a malformed entry read from the fork point (no leading path
+# token, an empty brace set, a reserved sentinel) is warned about and dropped from the
+# baseline, while the same entry at head is rc 2. Otherwise the PR that REPAIRS such an entry
+# — by deleting it — is redded by the entry it is deleting, and the repair can never land.
 #
 # A DECLARED MEMBER MUST BE A REGULAR FILE. The member's type at head is read from one
 # `git ls-tree` mode, because the content reads are answerable — wrongly — for three other
@@ -136,16 +140,31 @@ done
 # would compose `"" + "$(basename …)"` and silently read THIS repo's own root config as the
 # baseline for a config the caller pointed somewhere else entirely.
 #
+# AND AN rc IS NOT ENOUGH, because the same silent re-rooting happens one step out: a
+# directory inside a DIFFERENT repository answers at rc 0, with a prefix that is root-relative
+# to THAT repository — which every read below then applies to THIS repository's refs. So
+# `--config ../other-clone/.release-pr.json` would be answered by this repo's own root config:
+# not a refusal and not the caller's file, but a confident verdict about the wrong one. The
+# two toplevels are therefore compared, and a mismatch is refused by name.
+#
+# `--show-toplevel` is the call whose rc is captured, not `--show-prefix`, because it is the
+# one that discriminates: in a BARE repository `--show-prefix` succeeds (rc 0, empty) while
+# `--show-toplevel` exits 128 — so guarding the prefix alone would let a config inside a bare
+# repo's directory through to be re-rooted here. Once a toplevel is in hand the work tree is
+# established, which is what makes the prefix read below safe without its own guard.
+#
 # STATED BOUND: this resolves the config's DIRECTORY in the checkout, so a `--config` whose
 # directory exists at head but not in the checkout is refused here rather than rescued by the
 # not-in-the-checkout fallback below. Rescuing it would need a second normalization path
 # (that fallback consumes this function's output), so the refusal names the directory.
 CONFIG_DIR="$(dirname "$CONFIG")"
-if CONFIG_PREFIX="$(git -C "$CONFIG_DIR" rev-parse --show-prefix 2>/dev/null)"; then
-  CONFIG_ROOTREL="$CONFIG_PREFIX$(basename "$CONFIG")"
-else
-  die "--config '$CONFIG': its directory '$CONFIG_DIR' does not resolve inside a git repository — the config must live in the repository whose refs are being compared, and its directory must exist in the checkout"
-fi
+CONFIG_TOPLEVEL="$(git -C "$CONFIG_DIR" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "--config '$CONFIG': its directory '$CONFIG_DIR' does not resolve inside a git repository's working tree — the config must live in the repository whose refs are being compared, and its directory must exist in the checkout"
+REPO_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  || die "this must run inside the working tree of the repository whose refs are being compared, and '$PWD' is not in one"
+[ "$CONFIG_TOPLEVEL" = "$REPO_TOPLEVEL" ] \
+  || die "--config '$CONFIG' resolves inside a DIFFERENT repository ('$CONFIG_TOPLEVEL') from the one whose refs are being compared ('$REPO_TOPLEVEL') — every config read here is a blob read against THIS repository's refs, so a foreign path would be re-rooted and the run would answer about this repository's own config instead of the one named"
+CONFIG_ROOTREL="$(git -C "$CONFIG_DIR" rev-parse --show-prefix)$(basename "$CONFIG")"
 
 # The config may legitimately be absent from the CHECKOUT while present at head: every read
 # below is a blob read, and the checkout is not necessarily head (on a `pull_request` event
@@ -168,8 +187,24 @@ BASEREF="$(git merge-base "$BASE" "$HEAD_REF" 2>/dev/null)" \
 # object check then reports its type as the empty string — a refusal that names nothing.
 # A config whose content is literally `null` still prints `null` here, so it stays a SHAPE
 # error diagnosed by the object check rather than mis-named a syntax error.
-_json_parses() { [ -n "$(printf '%s\n' "$1" | jq -c . 2>/dev/null)" ]; }
-_json_type()   { printf '%s\n' "$1" | jq -r 'type' 2>/dev/null; }
+#
+# BOTH the status AND the output are tested, and the conjunction is what makes these correct.
+# An output-only test is wrong on a PARSE-THEN-ERROR blob (`{…} trailing junk`): jq PRINTS the
+# leading value and THEN dies rc 5, so the output is non-empty and the type reads `object`,
+# both guards pass — and the first `_cfg` read afterwards dies on the same input, surfacing as
+# the script's own rc 5 with a raw jq traceback where the header promises rc 2. On the FORK
+# side that is worse still: an rc no PR can fix, since the fork point is a merged commit.
+# A status-only test is wrong on EMPTY input for the reason above; the conjunction is neither.
+_json_parses() {
+  local out
+  out="$(printf '%s\n' "$1" | jq -c . 2>/dev/null)" || return 1
+  [ -n "$out" ]
+}
+_json_type() {
+  local out
+  out="$(printf '%s\n' "$1" | jq -r 'type' 2>/dev/null)" || return 1
+  printf '%s\n' "$out"
+}
 # _cfg <filter> <config-content> — a read from an ALREADY-VALIDATED top-level object. The
 # object check at the boundary is what makes every `.key` read below safe: `.artifacts` on an
 # array/string/number top level is a jq RUNTIME error (rc 5) that `set -e` would surface as
@@ -212,9 +247,16 @@ case "$HEAD_RETIRED_TYPE" in
 esac
 
 # --- fork-point config: the baseline the PR may not edit ----------------------------------
-# Every unusable shape lands on ONE disposition — warn, empty baseline, head's classification
-# keys — and never on rc 2. The fork point is a MERGED commit: a refusal there is an rc no PR
-# can fix, because the only way to change it is to merge a release the gate would be redding.
+# NOTHING READ FROM THE FORK POINT EVER PRODUCES rc 2. The fork point is a MERGED commit: a
+# refusal there is an rc no PR can fix, because the only way to change it is to merge a release
+# the gate would be redding. The disposition is warn-and-exclude at both granularities, and
+# they are different exclusions rather than one rule stated twice:
+#   * the CONFIG is unusable (absent, unparseable, not an object, `.artifacts` not an array) ⇒
+#     one warning, an EMPTY baseline, and head's classification keys — below;
+#   * a single ENTRY is unusable (no leading path token, an empty brace set, a reserved
+#     sentinel) ⇒ one warning naming that entry, which is dropped from the baseline while its
+#     siblings still compare — in `_paths_of_entry`, whose disposition this file passes as
+#     `warn` for the fork-point read and `refuse` for both head reads.
 FORK_CFG=""; FORK_USABLE=0; FORK_UNUSABLE_WHY=""
 if FORK_CFG="$(git show "$BASEREF:$CONFIG_ROOTREL" 2>/dev/null)"; then
   if ! _json_parses "$FORK_CFG"; then
@@ -278,39 +320,64 @@ _expand_braces() {
   esac
 }
 
-# _paths_of_entry <entry> <substitution> — fills PATHS_OUT with one path per expanded member.
+# _paths_of_entry <entry> <substitution> <disposition: refuse|warn> <source> — fills PATHS_OUT
+# with one path per expanded member, and returns non-zero when the entry is unusable.
 # ONE function serves both consumers, because they must agree exactly: the comparison pass
 # calls it with the SENTINEL (version-agnostic units) and the assertion pass with the concrete
 # version. Both substitutions are brace- and whitespace-free, so the two produce the same
 # member COUNT and the same brace structure from the same entry — which is what lets the
-# assertion pass rely on the boundary refusals below having already fired at comparison time.
+# assertion pass rely on the boundary refusals having already fired at comparison time.
 #
 # Materialized in the MAIN shell before any assertion runs, so an entry that expands to no
 # path at all (a literal `{}`) is a loud config error rather than a member silently dropped
 # from both the assertions and the count — this tool's own defect class one layer up.
 # Boundary validation, not defensive coding: the input is a hand-edited config file.
+#
+# THE DISPOSITION IS A FUNCTION OF THE SOURCE, not of the shape. An unusable entry at HEAD is
+# rc 2, as it has always been: the PR that wrote it can fix it. The same entry read from the
+# FORK POINT is a merged commit no PR under review can edit, so refusing there is an rc no PR
+# can clear — repairing the entry means DELETING it, and the run that would carry the repair
+# is the run that reds, blaming the very entry the PR removes. A fork-point entry is therefore
+# a per-entry `::warning::` and is EXCLUDED from the baseline: it cannot be compared, so it
+# cannot be reported as removed, while every other fork-point entry still is. That is the same
+# rule the unusable-config path already follows one level up, applied per entry.
 PATHS_OUT=()
 _paths_of_entry() {
-  local raw="$1" sub="$2" expanded spec p
+  local raw="$1" sub="$2" disp="$3" src="$4" expanded spec p why=""
+  PATHS_OUT=()
   # A literal sentinel in a declared entry would compare equal to a templated member on the
   # other side, i.e. it would be silently mistaken for `{{version}}`. `{{version}}` is the
   # only templating token the format defines, so this is a malformed declaration, refused.
   case "$raw" in
-    *"$SENTINEL"*) die "artifact entry contains the reserved comparison token '$SENTINEL': '$raw' — write '{{version}}' for the version being shipped; that token is the only templating the format defines";;
+    *"$SENTINEL"*) why="artifact entry contains the reserved comparison token '$SENTINEL': '$raw' — write '{{version}}' for the version being shipped; that token is the only templating the format defines";;
+    *)
+      expanded="${raw//\{\{version\}\}/$sub}"
+      # The path spec is the LEADING whitespace-delimited token; everything after it is prose
+      # describing what the member must carry (`→ {{version}}`, `§ Recent releases row`).
+      spec="${expanded%%[[:space:]]*}"
+      # An EMPTY or leading-whitespace entry yields an empty spec, which would assert nothing
+      # and be counted as nothing — the declared member would vanish with no signal. The two
+      # spellings are one class and take one disposition: an empty entry used to be dropped by
+      # a `[ -n "$raw" ]` guard at each caller while a whitespace-only one died here, which is
+      # two answers to one question.
+      if [ -z "$spec" ]; then
+        why="artifact entry has no leading path token: '$raw'"
+      else
+        while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          PATHS_OUT+=("$p")
+        done < <(_expand_braces "$spec")
+        [ "${#PATHS_OUT[@]}" -gt 0 ] \
+          || why="artifact path '$spec' expands to no member (an empty brace set?) — declared as: $raw"
+      fi;;
   esac
-  expanded="${raw//\{\{version\}\}/$sub}"
-  # The path spec is the LEADING whitespace-delimited token; everything after it is prose
-  # describing what the member must carry (`→ {{version}}`, `§ Recent releases row`).
-  spec="${expanded%%[[:space:]]*}"
-  # A leading-whitespace entry yields an empty spec, which would assert nothing and be
-  # counted as nothing — the declared member would vanish with no signal.
-  [ -n "$spec" ] || die "artifact entry has no leading path token: '$raw'"
+  [ -n "$why" ] || return 0
   PATHS_OUT=()
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    PATHS_OUT+=("$p")
-  done < <(_expand_braces "$spec")
-  [ "${#PATHS_OUT[@]}" -gt 0 ] || die "artifact path '$spec' expands to no member (an empty brace set?) — declared as: $raw"
+  case "$disp" in
+    refuse) die "$why";;
+    *) echo "::warning::release-artifacts-check: $why. That entry is declared at $src, which no PR under review can edit, so it is EXCLUDED from the baseline rather than refused — it is not compared, and cannot be reported as removed. Fix it in the PR that removes it."
+       return 1;;
+  esac
 }
 
 # _pasteable <unit> — a unit rendered back into the spelling a human writes in the config, so
@@ -325,11 +392,12 @@ B_UNITS=(); declare -A B_HAS=() B_RAW=()
 H_UNITS=(); declare -A H_HAS=()
 R_UNITS=(); declare -A R_HAS=()
 
-_collect() { # <config-content> <key> <destination set: B|H|R>
-  local content="$1" key="$2" dst="$3" raw p
+_collect() { # <config-content> <key> <destination set: B|H|R> <disposition> <source>
+  local content="$1" key="$2" dst="$3" disp="$4" src="$5" raw p
   while IFS= read -r raw; do
-    [ -n "$raw" ] || continue
-    _paths_of_entry "$raw" "$SENTINEL"
+    # No emptiness guard: an EMPTY entry is an unusable declaration, not a blank line to skip.
+    # Dropping it here answered the same question two ways — silence for `""`, rc 2 for `" "`.
+    _paths_of_entry "$raw" "$SENTINEL" "$disp" "$src" || continue
     for p in "${PATHS_OUT[@]}"; do
       case "$dst" in
         B) if [ -z "${B_HAS[$p]:-}" ]; then B_HAS["$p"]=1; B_RAW["$p"]="$raw"; B_UNITS+=("$p"); fi;;
@@ -340,9 +408,9 @@ _collect() { # <config-content> <key> <destination set: B|H|R>
   done < <(printf '%s\n' "$content" | jq -r --arg k "$key" '(.[$k] // []) | .[]')
 }
 
-if [ "$FORK_USABLE" -eq 1 ]; then _collect "$FORK_CFG" artifacts B; fi
-_collect "$HEAD_CFG" artifacts         H
-_collect "$HEAD_CFG" retired_artifacts R
+if [ "$FORK_USABLE" -eq 1 ]; then _collect "$FORK_CFG" artifacts B warn "the fork point ($BASEREF)"; fi
+_collect "$HEAD_CFG" artifacts         H refuse "head ($HEAD_REF)"
+_collect "$HEAD_CFG" retired_artifacts R refuse "head ($HEAD_REF)"
 
 # A member cannot be simultaneously asserted and retired. Refusing this is what stops a
 # tombstone being PRE-PLANTED against a still-declared member (the entry is deleted in a later
@@ -464,11 +532,12 @@ FAILED=0
 MEMBERS=0
 
 while IFS= read -r raw; do
-  [ -n "$raw" ] || continue
-  # The boundary refusals inside this call (reserved token, no leading path token, an empty
-  # brace set) already fired during the comparison pass over the same entries, so they cannot
-  # be reached here — the substitution differs, the structure does not.
-  _paths_of_entry "$raw" "$V"
+  # The boundary refusals inside this call (reserved token, no leading path token — which an
+  # EMPTY entry also takes, hence no emptiness guard here either — an empty brace set) already
+  # fired during the comparison pass over the same entries, so they cannot be reached here:
+  # the substitution differs, the structure does not, and this pass reads HEAD's set, whose
+  # disposition is `refuse`. The `|| continue` is the one call shape both passes use.
+  _paths_of_entry "$raw" "$V" refuse "head ($HEAD_REF)" || continue
 
   for p in "${PATHS_OUT[@]}"; do
     MEMBERS=$((MEMBERS + 1))

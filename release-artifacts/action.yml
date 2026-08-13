@@ -20,7 +20,10 @@ description: >-
   which is logged as a RETIRED: line instead. A member in BOTH arrays is a
   config error. A fork point with no usable config (the adoption PR that
   creates it, an unparseable or key-less one) is a ::warning:: and a fallback
-  to head's keys, never a refusal.
+  to head's keys, never a refusal — and the same holds per ENTRY: a malformed
+  entry is rc 2 when HEAD declares it, but a ::warning:: dropped from the
+  baseline when the fork point does, since the only repair for one is to
+  delete it and that repair would otherwise be redded by the entry it removes.
   PRECONDITIONS in the calling job: the consumer repo must already be checked
   out with fetch-depth: 0 (the script resolves the merge base, reads the CONFIG
   at both ends, the version file at both ends, and each declared member's type
@@ -30,9 +33,11 @@ description: >-
   the workspace root — COMMITTED at head, since the config is read from the
   commit and not from the working tree (on a pull_request event the checkout is
   the merge ref).
-  A PR that does not change the version value exits 0 without asserting
-  anything — apart from the fork-point comparison, which does not read the
-  classification — so this action is safe to run on every pull request.
+  A PR that does not change the version value asserts no member — but that is
+  not the same as costing nothing: the fork-point comparison runs before the
+  classification and independently of it, so an ordinary PR that drops a
+  declared artifact without acknowledging it reds exactly as a release PR
+  would. Run it on every pull request, knowing that.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.

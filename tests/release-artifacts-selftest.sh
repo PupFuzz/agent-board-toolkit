@@ -43,6 +43,16 @@
 # pre-fix verdict in its own comment, so the fix is *seen* to change a verdict rather than
 # asserted to.
 #
+# FOUR MORE CASES (26–29) CAME FROM THE REVIEW ROUND, and each pins a verdict the fork-point
+# read got wrong on its first pass: a `--config` inside a DIFFERENT repository, which answered
+# confidently about THIS repo's own root config (26); a fork-point entry whose boundary refusal
+# fired rc 2, so the PR repairing it was redded by the entry it deleted (27); a config blob
+# that PARSES AND THEN ERRORS, which slipped both guards and died rc 5 with a raw jq traceback
+# on either side of the range (28); and an empty-string entry, silently dropped where its
+# whitespace-only twin died rc 2 (29). Cases 27 and 29 also pin the SOURCE-dependence itself:
+# the same shapes declared at HEAD keep rc 2, so the fork-point warning is a decision about
+# which ref declared the entry, not a weakening of the boundary check.
+#
 # The happy paths are equally load-bearing, as the controls for all of the above: a
 # version-unchanged PR and a fully-correct release PR must both exit 0, else "fails on defect
 # X" would also be true of a tool that fails on everything.
@@ -128,6 +138,25 @@ CFG_BASE='{
     "sboms/v{{version}}.{a,b}.json"
   ]
 }'
+# A FORK-POINT set carrying two well-formed entries and every unusable entry shape at once —
+# a leading-whitespace entry, an empty brace set, a literal comparison sentinel, and the empty
+# string. All four are rc 2 when they are read from HEAD (the PR that wrote them can fix them);
+# read from the fork point they are a merged commit no PR can edit, and the PR that repairs one
+# repairs it by DELETING it — so refusing there reds the repair on the very entry it removes.
+CFG_BADENTRY_BASE='{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": [
+    "VERSION → {{version}}",
+    "NOTES.md § Recent releases row",
+    "   docs/CHANGELOG.md → [{{version}}] section",
+    "sboms/v{{version}}{}.json",
+    "sboms/v@@ABTK_VERSION@@.a.json § the sbom",
+    ""
+  ] }'
+# A PARSE-THEN-ERROR blob: a complete JSON value followed by trailing junk. `jq` PRINTS the
+# value and THEN exits non-zero, so an output-only parse test reads it as valid.
+CFG_TRAILING_JUNK='{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] } and then some trailing junk'
+
 # The same set with the NOTES.md entry DELETED — E1, the narrowing this card exists to catch.
 CFG_NO_NOTES='{
   "version_file": "VERSION",
@@ -176,6 +205,11 @@ g -C "$R" branch pre-config
 printf '%s\n' "$CFG_BASE" > "$R/.release-pr.json"
 printf '%s\n' '{ "version_file": "VERSION", "artifacts": [,] }' > "$R/cfg-brokenbase.json"
 printf '%s\n' '{ "artifacts": ["VERSION → {{version}}"] }'      > "$R/cfg-keyless.json"
+# Two copies of the unusable-entry baseline, because the two runs over it want different heads:
+# one repairs the bad entries and keeps both good ones, the other also drops a good one.
+printf '%s\n' "$CFG_BADENTRY_BASE"   > "$R/cfg-badentry.json"
+printf '%s\n' "$CFG_BADENTRY_BASE"   > "$R/cfg-badentry-narrow.json"
+printf '%s\n' "$CFG_TRAILING_JUNK"   > "$R/cfg-trailingjunk-base.json"
 printf '%s\n' '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": [] }' > "$R/cfg-empty-both.json"
 # A config RESIDENT in a subdirectory, at both ends. `--config sub-cfg.json` from `sub/` names
 # `sub/sub-cfg.json`, and the root-relative spelling of that is the only one every blob read
@@ -479,6 +513,13 @@ cfg empty-artifacts.json '{ "version_file": "VERSION", "version_regex": "[0-9]+\
 cfg empty-brace.json     '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "sboms/v{{version}}{}.json"] }'
 cfg leading-space.json   '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "   docs/CHANGELOG.md → [{{version}}] section"] }'
 cfg two-well-formed.json '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "docs/CHANGELOG.md → [{{version}}] section"] }'
+cfg empty-entry.json     '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", ""] }'
+# The head halves of the three fork-point fixtures committed at c2. The badentry pair is the
+# REPAIR: the unusable entries are gone, which is the only way to repair them.
+cfg cfg-badentry.json        '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "NOTES.md § Recent releases row"] }'
+cfg cfg-badentry-narrow.json '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}"] }'
+cfg cfg-trailingjunk-base.json "$CFG_ONE_MEMBER"
+cfg cfg-trailingjunk.json      "$CFG_TRAILING_JUNK"
 cfg no-version-file.json '{ "artifacts": ["VERSION → {{version}}"] }'
 cfg bad-syntax.json      '{"artifacts": [,]}'
 cfg empty-cfg.json       ''
@@ -507,6 +548,18 @@ for p in "${!TREE_CFG[@]}"; do printf '%s\n' "${TREE_CFG[$p]}" > "$R/$p"; done
 printf '%s\n' "$CFG_ONE_MEMBER" > "$R/cfg-tree-only.json"
 # A config outside any repository, for the --config normalization refusal.
 mkdir -p "$T/outside"; printf '%s\n' "$CFG_ONE_MEMBER" > "$T/outside/.release-pr.json"
+
+# A config inside a DIFFERENT repository, with the same BASENAME as this one's root config —
+# the shape an rc guard alone does not catch. `git -C <that dir> rev-parse --show-prefix`
+# answers rc 0 there (it is a repository, just not this one), so the normalization composes a
+# path that is root-relative to the WRONG repo and every blob read below applies it to THIS
+# one: the run then answers, confidently and at rc 0, about a config the caller never named.
+mkdir -p "$T/otherrepo"
+g init -q "$T/otherrepo"
+printf '%s\n' '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": ["OTHER-REPO-ONLY.md → {{version}}"] }' > "$T/otherrepo/.release-pr.json"
+echo "0.1.0" > "$T/otherrepo/VERSION"
+g -C "$T/otherrepo" add -A; g -C "$T/otherrepo" commit -qm "chore: a second repository's release config"
 
 # two_dot_moved / merge_base_moved <base> <head> <path> — what each range says about the MOVED
 # leg, computed from raw git rather than from the tool, so the fixture's discriminating power
@@ -815,6 +868,87 @@ eq "control: key-less at HEAD too → rc 2"  "2"    "$RC"
 eq "control: …naming what is missing"      "true" "$(has 'no version_file' "$OUT")"
 eq "control: …and naming the BLOB it read, not a bare path" "true" "$(has 'cfg-keyless.json at head' "$OUT")"
 
+echo "== (case 27) an unusable ENTRY at the fork point warns and is EXCLUDED, never rc 2 =="
+# The config-level rule applied per entry. Every one of these four shapes is rc 2 when it is
+# read from HEAD (see the head-side controls below), and each is an rc NO PR CAN CLEAR when it
+# is read from the fork point: the fork point is a merged commit, the only repair for a
+# malformed entry is to DELETE it, and the run carrying that deletion is the run that would red
+# — blaming the very entry the PR removes. So the PR that repairs them must go green.
+FORK_SHA="$(g -C "$R" rev-parse base-0.1.0)"
+eq "witness: the fork point declares all four unusable shapes" "true" \
+   "$(case "$(g -C "$R" show base-0.1.0:cfg-badentry.json)" in *'   docs/CHANGELOG.md'*'{}.json'*'@@ABTK_VERSION@@'*'""'*) echo true ;; *) echo false ;; esac)"
+eq "witness: …and head repairs them by deleting them, keeping both good entries" "true" \
+   "$(case "$(g -C "$R" show head-good:cfg-badentry.json)" in *'{}'*|*'@@ABTK_'*) echo false ;; *'VERSION → {{version}}'*'NOTES.md § Recent releases row'*) echo true ;; *) echo false ;; esac)"
+run base-0.1.0 head-good --config cfg-badentry.json
+eq "the repair PR is NOT refused"                 "0"    "$RC"
+eq "…the leading-whitespace entry is warned about" "true" \
+   "$(has "::warning::release-artifacts-check: artifact entry has no leading path token: '   docs/CHANGELOG.md → [{{version}}] section'" "$OUT")"
+eq "…the empty brace set is warned about"          "true" \
+   "$(has "::warning::release-artifacts-check: artifact path 'sboms/v@@ABTK_VERSION@@{}.json' expands to no member (an empty brace set?) — declared as: sboms/v{{version}}{}.json" "$OUT")"
+eq "…the reserved sentinel is warned about"        "true" \
+   "$(has "::warning::release-artifacts-check: artifact entry contains the reserved comparison token '@@ABTK_VERSION@@'" "$OUT")"
+eq "…the EMPTY entry is warned about too"          "true" \
+   "$(has "::warning::release-artifacts-check: artifact entry has no leading path token: ''" "$OUT")"
+eq "…and each warning names WHICH ref the entry came from" "true" \
+   "$(has "That entry is declared at the fork point ($FORK_SHA)" "$OUT")"
+eq "…saying the entry is excluded rather than refused"     "true" \
+   "$(has 'EXCLUDED from the baseline rather than refused' "$OUT")"
+# EXCLUDED FROM THE COMPARISON, not merely tolerated: all four are absent from head, so a
+# baseline that still carried them would report four narrowings.
+eq "…and nothing is reported as narrowed"          "false" "$(has 'NARROWED' "$OUT")"
+eq "…while the two well-formed entries ARE asserted" "true" \
+   "$(has 'all 2 declared artifact member(s) moved and agree with 0.2.0' "$OUT")"
+
+# The same baseline against a head that ALSO drops a GOOD entry: the exclusion must be
+# per-entry, so exactly ONE narrowing is reported — not five, and not zero.
+run base-0.1.0 head-good --config cfg-badentry-narrow.json
+eq "a good entry dropped alongside them still reds" "1"   "$RC"
+eq "…naming that entry"                             "true" "$(has "'NOTES.md' is declared at the fork point" "$OUT")"
+eq "…and counting the unusable four as ZERO of it"  "true" \
+   "$(has '1 declared artifact(s) removed without acknowledgement' "$OUT")"
+eq "…with the same four warnings still printed"     "true" \
+   "$(has "::warning::release-artifacts-check: artifact entry has no leading path token: ''" "$OUT")"
+
+# HEAD-SIDE CONTROLS — the same four shapes, declared at head, keep today's rc 2. One class,
+# one disposition per source; these are what make the warn above a SOURCE decision rather than
+# a weakening of the boundary check.
+for c in leading-space.json empty-brace.json empty-entry.json; do
+  run base-0.1.0 head-good --config "$c"
+  eq "control: $c at HEAD is still rc 2"            "2"     "$RC"
+  eq "control: …and not a warning"                  "false" "$(has '::warning::release-artifacts-check: artifact' "$OUT")"
+done
+run base-0.1.0 head-sentinel --config cfg-sentinel.json
+eq "control: a sentinel entry at HEAD is still rc 2" "2"    "$RC"
+
+echo "== (case 28) a config that PARSES AND THEN ERRORS is a JSON refusal, not a jq traceback =="
+# `{…} trailing junk`: jq prints the leading value and THEN dies rc 5, so a parse test that
+# reads only the OUTPUT sees a non-empty string and passes it, the type guard reads `object`
+# and passes it too, and the first real `.key` read dies on the same input — surfacing as the
+# script's own rc 5 with a raw jq parse error, where the header promises rc 2.
+eq "witness: the blob really is a value followed by junk" "true" \
+   "$(has 'and then some trailing junk' "$(g -C "$R" show head-good:cfg-trailingjunk.json)")"
+eq "witness: …and jq PRINTS a value from it while failing" "true" \
+   "$(rc=0; out="$(g -C "$R" show head-good:cfg-trailingjunk.json | jq -c . 2>/dev/null)" || rc=$?; [ -n "$out" ] && [ "$rc" -ne 0 ] && echo true || echo false)"
+run base-0.1.0 head-good --config cfg-trailingjunk.json
+eq "rc 2"                                    "2"     "$RC"
+eq "…named as invalid JSON"                  "true"  "$(has 'is not valid JSON' "$OUT")"
+eq "…with no raw jq diagnostic leaking"      "false" "$(has 'jq:' "$OUT")"
+eq "…and no undocumented rc behind it"       "false" "$(has 'parse error' "$OUT")"
+
+# THE FORK SIDE — the same blob at the fork point was a SECOND rc no PR could fix, since the
+# `.artifacts` read that died was reached before any classification.
+eq "witness: the fork-point copy is the junk blob" "true" \
+   "$(has 'and then some trailing junk' "$(g -C "$R" show base-0.1.0:cfg-trailingjunk-base.json)")"
+eq "witness: …while head's copy is repaired"       "false" \
+   "$(has 'and then some trailing junk' "$(g -C "$R" show head-good:cfg-trailingjunk-base.json)")"
+run base-0.1.0 head-good --config cfg-trailingjunk-base.json
+eq "rc 0"                                    "0"     "$RC"
+eq "…warning that the fork-point copy is unusable" "true" \
+   "$(has 'no usable cfg-trailingjunk-base.json at the fork point' "$OUT")"
+eq "…naming it as invalid JSON there"        "true"  "$(has 'it is not valid JSON there' "$OUT")"
+eq "…and the verdict still runs"             "true"  "$(has 'all 1 declared artifact member(s)' "$OUT")"
+eq "…with no raw jq diagnostic leaking"      "false" "$(has 'jq:' "$OUT")"
+
 echo "== (case 16) an unresolvable merge base refuses even when artifacts is absent =="
 # PRE-FIX: the opt-out was taken first, so this exited 0 without ever resolving a fork point.
 # The merge base now decides the baseline and the classification keys, so it is resolved first
@@ -938,6 +1072,29 @@ run base-0.1.0 head-good --config "$T/outside/.release-pr.json"
 eq "rc 2"                                       "2"    "$RC"
 eq "…naming the config"                         "true" "$(has "--config '$T/outside/.release-pr.json'" "$OUT")"
 eq "…and naming the directory as the reason"    "true" "$(has "does not resolve inside a git repository" "$OUT")"
+
+echo "== (case 26) a --config inside a DIFFERENT repository is refused, not silently re-rooted =="
+# The rc guard above answers "is this a repository at all", which is the wrong question one step
+# out: a directory inside ANOTHER repository answers `--show-prefix` at rc 0, and the prefix it
+# returns is root-relative to THAT repo. Applied to this repo's refs it names this repo's own
+# root config — so the tool would report a clean verdict about a file the caller never pointed
+# at. Fail-closed here is not a nicety: a silent answer about the wrong config is exactly the
+# defect class this whole card exists to close, one layer out.
+eq "witness: the two directories really are different repositories" "true" \
+   "$(case "$(g -C "$T/otherrepo" rev-parse --show-toplevel)" in "$(g -C "$R" rev-parse --show-toplevel)") echo false ;; *) echo true ;; esac)"
+eq "witness: …the foreign config declares a set THIS repo has never heard of" "true" \
+   "$(has 'OTHER-REPO-ONLY.md' "$(cat "$T/otherrepo/.release-pr.json")")"
+eq "witness: …and this repo carries a root config of the same basename to be mistaken for it" "true" \
+   "$(g -C "$R" cat-file -e head-good:.release-pr.json 2>/dev/null && echo true || echo false)"
+run base-0.1.0 head-good --config "$T/otherrepo/.release-pr.json"
+eq "rc 2"                                       "2"    "$RC"
+eq "…naming the config the caller gave"         "true" "$(has "--config '$T/otherrepo/.release-pr.json'" "$OUT")"
+eq "…and saying it is a DIFFERENT repository"   "true" "$(has 'resolves inside a DIFFERENT repository' "$OUT")"
+eq "…naming both toplevels"                     "true" \
+   "$(has "('$(g -C "$T/otherrepo" rev-parse --show-toplevel)') from the one whose refs are being compared ('$(g -C "$R" rev-parse --show-toplevel)')" "$OUT")"
+eq "…and never answers about THIS repo's own config" "false" \
+   "$(has 'declared artifact member(s) moved and agree' "$OUT")"
+eq "…nor names a member of it"                  "false" "$(has 'OK — VERSION moved' "$OUT")"
 
 echo "== (case 18) invoked from a SUBDIRECTORY, the verdict is identical to the root one =="
 # `--config` is CWD-relative; every blob read is root-relative.
@@ -1134,6 +1291,19 @@ eq "…rather than quietly finishing with the member dropped" "false" \
 run base-0.1.0 head-good --config leading-space.json
 eq "a leading-whitespace entry → rc 2" "2"    "$RC"
 eq "…and echoes the entry"             "true" "$(has 'no leading path token' "$OUT")"
+
+echo "== (case 29) an EMPTY entry is the same class as a whitespace-only one, and answers alike =="
+# One question, one answer per source. An empty entry was DROPPED by a `[ -n "$raw" ]` guard at
+# each consumer while a whitespace-only entry died rc 2 two lines further in — two dispositions
+# for one shape, and the silent one is this tool's own defect class: a declared member that no
+# assertion reads and no count mentions.
+eq "witness: the config really declares an empty entry beside a good one" "true" \
+   "$(has '"VERSION → {{version}}", ""' "$(g -C "$R" show head-good:empty-entry.json)")"
+run base-0.1.0 head-good --config empty-entry.json
+eq "an EMPTY entry → rc 2, as a whitespace-only one does" "2" "$RC"
+eq "…diagnosed by the same message"    "true"  "$(has "no leading path token: ''" "$OUT")"
+eq "…rather than finishing with the entry dropped from the count" "false" \
+   "$(has 'artifact member(s) moved and agree' "$OUT")"
 
 # CONTROL — the same two entries, well-formed, DO assert and count.
 run base-0.1.0 head-good --config two-well-formed.json
