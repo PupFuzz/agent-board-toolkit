@@ -31,7 +31,10 @@
 #   * classification keys retargeted at head, so the PR classifies as "not a release PR";
 #   * a member that is a symlink, a directory or a gitlink at head — each of which answers
 #     the content read with something (a target path, a tree listing, a commit log) that can
-#     carry the version string while asserting nothing about a release artifact.
+#     carry the version string while asserting nothing about a release artifact;
+#   * a declared member path git REFUSES as a pathspec (one escaping the repository root),
+#     where an unguarded mode-read capture reads the failure as an empty row and answers
+#     `missing at head` — a statement about the tree for a defect in the declaration.
 # That expands-to-nothing pair is the tool's own defect class one layer up, and its rc
 # assertion is not decoration: `_expand_braces` is consumed through a process substitution, so
 # a `die` placed INSIDE it printed the right message and then let the run finish rc 0 with the
@@ -514,6 +517,9 @@ cfg empty-brace.json     '{ "version_file": "VERSION", "version_regex": "[0-9]+\
 cfg leading-space.json   '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "   docs/CHANGELOG.md → [{{version}}] section"] }'
 cfg two-well-formed.json '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "docs/CHANGELOG.md → [{{version}}] section"] }'
 cfg empty-entry.json     '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", ""] }'
+# A declared member path git REFUSES as a pathspec — it escapes the repository root, so the
+# mode read exits 128 rather than returning an empty row (case 30).
+cfg outside-pathspec.json '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "../outside.txt → {{version}}"] }'
 # The head halves of the three fork-point fixtures committed at c2. The badentry pair is the
 # REPAIR: the unusable entries are gone, which is the only way to repair them.
 cfg cfg-badentry.json        '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "artifacts": ["VERSION → {{version}}", "NOTES.md § Recent releases row"] }'
@@ -1028,6 +1034,26 @@ eq "…and the moved leg did not match the sibling either" "true" \
    "$(has "not moved: 'docs2/gone?.md'" "$OUT")"
 eq "…and no content disagreement was reported (which is what a glob read would have said)" "false" \
    "$(has "does not agree: 'docs2/gone?.md'" "$OUT")"
+
+echo "== (case 30) a member path git REFUSES as a pathspec is an rc-2 refusal, not 'missing at head' =="
+# The mode read's rc is captured, and that capture is what this case pins. `git ls-tree` exits
+# 128 on a declared path that escapes the repository root, so with the capture left unguarded
+# (`|| true`) `row` is EMPTY — indistinguishable from the absent-member row — and the run
+# answers rc 1 `missing at head`: a statement about the tree for a defect that is in the
+# declaration, and the shape a `fetch-depth: 0` remediation would send the reader chasing.
+eq "witness: git itself refuses the pathspec (so the row is a FAILURE, not an empty result)" "128" \
+   "$(rc=0; (cd "$R" && g ls-tree --full-tree head-good -- ../outside.txt) >/dev/null 2>&1 || rc=$?; echo "$rc")"
+run base-0.1.0 head-good --config outside-pathspec.json
+eq "rc 2"                                        "2"     "$RC"
+eq "…naming the member and the pathspec cause"   "true" \
+   "$(has "cannot read '../outside.txt' at head-good — git refused that member path as a pathspec" "$OUT")"
+eq "…and pointing at the config entry to fix"    "true"  "$(has 'fix that entry in outside-pathspec.json' "$OUT")"
+eq "…rather than reporting it missing at head"   "false" "$(has "missing at head: '../outside.txt'" "$OUT")"
+eq "…and asserting nothing further"              "false" "$(has 'artifact member(s) moved and agree' "$OUT")"
+# CONTROL — the same head and range with two readable members gives a normal verdict, so the
+# refusal above comes from the declared path and not from this fixture failing everything.
+run base-0.1.0 head-good --config two-well-formed.json
+eq "control: readable member paths → rc 0"       "0"     "$RC"
 
 # ---------------------------------------------------------------------------
 # Where the config lives, and where the tool is invoked from.

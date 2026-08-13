@@ -557,7 +557,7 @@ while IFS= read -r raw; do
     # children. The rc is captured because an unguarded `$( )` under `set -euo pipefail` would
     # surface a git failure as a bare rc 128 with no diagnosis.
     if ! row="$(git ls-tree --full-tree "$HEAD_REF" -- "$p")"; then
-      die "cannot read '$p' at $HEAD_REF (ref missing from this clone?) — the caller must check out with fetch-depth: 0"
+      die "cannot read '$p' at $HEAD_REF — git refused that member path as a pathspec, which is what a declared path escaping the repository root ('../…') or carrying pathspec magic (a leading ':') does; fix that entry in $CONFIG_ROOTREL (declared as: $raw). Failing that, '$HEAD_REF' itself is unreadable in this clone and the caller must check out with fetch-depth: 0 — the less likely half, since the version file was already read from that ref on this run"
     fi
     mode="${row%% *}"
     case "$mode" in
