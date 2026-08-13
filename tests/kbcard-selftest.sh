@@ -994,7 +994,13 @@ kbc comment --task 505 --content ""
 eq "--content \"\" → rc 2 (the empty-value class)" "2" "$rc"
 eq "…names the flag"                             "true" "$(has '--content requires a non-empty value' "$err")"
 eq "…and issues no request"                      "0" "$(kb_stub_total)"
-kbc comment --task 505 --content-file "$TMP/nope.txt"
+# THE ORDERING LEG, and the reason this one arm uses an EXTERNAL ref: `--task 505` is numeric,
+# and resolve_task's numeric branch issues no request at all, so a "0 requests" assertion under
+# a numeric ref holds no matter WHICH of the two resolutions runs first — it cannot see content
+# resolution being moved after task resolution. An external ref makes task resolution cost a
+# search, so 0 total requests here is the assertion that the offline refusal really did happen
+# BEFORE any resolution (RED when the `text=` line is moved below the `task=` line: 1 request).
+kbc comment --task EXT-9 --content-file "$TMP/nope.txt"
 eq "--content-file missing → rc 2"               "2" "$rc"
 eq "…names the path"                             "true" "$(has "$TMP/nope.txt" "$err")"
 # The readability guard is asserted by its OWN wording, not merely by the rc: without it the
@@ -1002,12 +1008,32 @@ eq "…names the path"                             "true" "$(has "$TMP/nope.txt"
 # stderr), so an rc-only assertion cannot tell the two apart and the guard could be deleted
 # with the suite green. The two arms are both reachable — a directory is `-r` yet uncattable.
 eq "…via the readability guard, not the cat fallback" "true" "$(has 'is not readable' "$err")"
-eq "…and issues no request"                      "0" "$(kb_stub_total)"
+eq "…and issues no request — NOT EVEN the external-ref lookup" "0" "$(kb_stub_total)"
 : > "$TMP/empty.txt"
 kbc comment --task 505 --content-file "$TMP/empty.txt"
 eq "--content-file with no text → rc 2"          "2" "$rc"
 eq "…says the file holds no comment text"        "true" "$(has 'holds no comment text' "$err")"
 eq "…and issues no request"                      "0" "$(kb_stub_total)"
+# BLANK, not merely empty: the server trims before it validates, so a whitespace-only body is a
+# 422 there — i.e. a POST that was always going to be refused, arriving as rc 1 (the wire's
+# verdict) instead of the rc 2 every other bad-invocation takes. The local check therefore has
+# to test the TRIMMED value; testing the raw one puts this on the wire. Both sources, because
+# both resolve through the one helper.
+printf ' \t\n \n' > "$TMP/blank.txt"
+kbc comment --task 505 --content-file "$TMP/blank.txt"
+eq "--content-file of only whitespace → rc 2"    "2" "$rc"
+eq "…says the file holds no comment text"        "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content '   '
+eq "--content of only whitespace → rc 2"         "2" "$rc"
+eq "…says it holds no comment text"              "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+# The other side of the trim: only the CHECK is trimmed. Content that merely BEGINS with
+# whitespace is real content and must reach the wire with its indentation intact.
+kbc comment --task 505 --content '  indented body'
+eq "leading whitespace is content, not emptiness → rc 0" "0" "$rc"
+eq "…and the body keeps it verbatim"             '"  indented body"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
 kbc comment --content x
 eq "comment without --task → rc 2"               "2" "$rc"
 # The positive control that makes every "0 requests" above a MEASUREMENT rather than a harness
@@ -1039,6 +1065,17 @@ KB_STUB_POST_HTTP=201 KB_STUB_POST_BODY='{"data":{}}' kbc comment --task 505 --c
 eq "2xx with no comment id → rc 1"               "1" "$rc"
 eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
 eq "…and never prints a bare null as an id"      "" "$out"
+# Same state, one step earlier: a 2xx whose body is not JSON AT ALL (a proxy's HTML error page,
+# a truncated read). kb_api has already said success on the status class, so this is still "the
+# write is unconfirmed" — but the id extraction is where it lands, and an unguarded `jq` there
+# dies on the parse under `set -e`, exiting the SCRIPT's rc 5 with jq's raw parse error as the
+# only diagnostic. The refusal must be this verb's own, at its own documented rc.
+KB_STUB_POST_HTTP=200 KB_STUB_POST_BODY='<html><body>502 Bad Gateway</body></html>' \
+    kbc comment --task 505 --content x
+eq "2xx with a NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+eq "…and never prints anything as an id"         "" "$out"
 
 echo "-- comments: the read side projects the task detail's own array --"
 KB_STUB_GET_COMMENTS='[{"id":13,"task_id":505,"user_id":2238,"content":"first","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"},{"id":14,"task_id":505,"user_id":2238,"content":"second\nline","deleted_at":null,"created_at":"2026-08-12T23:41:12+00:00","updated_at":"2026-08-12T23:41:12+00:00"}]' \
@@ -1052,6 +1089,28 @@ eq "comments → the exact rendered output"        \
 # (which is POST-only — a GET there is 405, measured).
 eq "comments → reads the task detail, not a comments route" "1" "$(kb_stub_count_any '/tasks/505.json')"
 eq "comments → never GETs the comments path"     "0" "$(kb_stub_count_any "$CPATH")"
+
+echo "-- comments: untrusted content cannot drive the terminal --"
+# Comment content is written by anyone who can comment on the card and is printed RAW to a
+# terminal. An embedded ESC is a terminal COMMAND, not a character: `ESC[2K ESC[1A` erases the
+# `comment <id> · user <n>` header line above it, so the content can delete its own
+# attribution. Every C0 control but the newline is therefore replaced before printing.
+# The ESC is built from its CODEPOINT — no raw control byte is typed into this file.
+ESC="$(printf '\033')"
+CTRL_COMMENTS="$(jq -nc --arg e "$ESC" \
+    '[{id:21,task_id:505,user_id:7,content:("before" + $e + "[2K" + $e + "[1Aimpostor"),deleted_at:null,created_at:"t","updated_at":"t"}]')"
+KB_STUB_GET_COMMENTS="$CTRL_COMMENTS" kbc comments --task 505
+eq "control chars → rc 0 (rendered, not refused)" "0" "$rc"
+eq "control chars → each replaced, text preserved" \
+   "$(printf 'comment 21 · user 7 · t\n  before?[2K?[1Aimpostor')" "$out"
+# The byte-level assertion, with /usr/bin/grep because the ambient `grep` on some hosts is a
+# shim. Its positive control is the line below it: the SAME grep over the same fixture's raw
+# content finds the byte, so a 0 here is an absence rather than a grep that never matches.
+eq "control chars → the raw ESC byte is ABSENT from stdout" "0" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c -e "$ESC" || true)"
+eq "control: that grep DOES find the ESC in the unsanitized fixture" "1" \
+   "$(printf '%s' "$CTRL_COMMENTS" | jq -r '.[0].content' | /usr/bin/grep -c -e "$ESC" || true)"
+unset ESC CTRL_COMMENTS
 
 echo "-- comments: an empty array SAYS so, at rc 0 --"
 KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
