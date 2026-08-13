@@ -17,17 +17,32 @@
 # an alert this leg does not cover gets an explicit UNVERIFIABLE row naming why, never
 # silence.
 #
-# FAIL-CLOSED. Four dispositions, and only the first two are answers:
+# THE READ IS BOUND TO THE RUNNING PROCESS, OR IT IS NOT AN ANSWER. A version read off disk is
+# a claim about a FILE; the question is about the code a live process LOADED, and the two part
+# company the moment the tree is written after the process started — `npm ci` into the install
+# of a server nobody restarted is the ordinary way in, and it is silent: the tree measures
+# clean while the process keeps serving what it loaded. So every run measures the oldest
+# running process's start time against the newest write anywhere in the deployed tree and
+# STATES the binding either way — "checked and holds" and "never checked" are the same report
+# otherwise — plus the limitations of that binding, and one line per other channel-server
+# install detected on this host, which this run does not measure.
+#
+# FAIL-CLOSED. Five dispositions, and only the first two are answers:
 #   FIXED_CONFIRMED  installed >= first_patched_version (SemVer 2.0 precedence)
 #   STILL_EXPOSED    installed <  first_patched_version — the alert is closed, the fix is not
 #                    running
+#   PROCESS_PREDATES_TREE  the deployed tree was written AFTER the running process started, so
+#                    whatever is running was NOT loaded from the tree this run measured. Its
+#                    own word rather than one more UNVERIFIABLE, because it is the state that
+#                    silently turns every other row into a confident answer about the wrong
+#                    artifact
 #   UNDECIDABLE      the read is fine but the comparison cannot be made (no
 #                    first_patched_version, a non-semver version, the package is not in the
 #                    deployment)
-#   UNVERIFIABLE     the read itself cannot be trusted (no running process for this install,
-#                    a package.json newer than the running process, a nested node_modules copy
-#                    making the loaded copy ambiguous, an alert outside this leg's declared
-#                    ecosystem/manifest set)
+#   UNVERIFIABLE     the read itself cannot be trusted (no running process for this install, a
+#                    nested node_modules copy making the loaded copy ambiguous, an unreadable
+#                    tree or subtree, an alert outside this leg's declared ecosystem/manifest
+#                    set)
 # `>=`, not `>`: a version EQUAL to the first patched version is fixed. The comparator never
 # parses `vulnerable_version_range` — it is an explicit conservative proxy that can over-report
 # and never silently clears a genuinely vulnerable version.

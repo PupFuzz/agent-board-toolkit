@@ -91,6 +91,23 @@ mk_deploy() {
     find "$NM" -name package.json -exec touch -d '-10 minutes' {} +
 }
 
+# age_tree — put the WHOLE deployed tree (directories included) 10 minutes in the past.
+#
+# WHY IT IS NOT OPTIONAL, and why it lives in run_dr rather than at each fixture: the tool binds
+# the tree to the running process by comparing the process start against the newest write
+# ANYWHERE under node_modules — and every fixture mutation in this file (creating a package,
+# deleting one, laying down a nested copy, making a symlink) is such a write, landing at `now`,
+# which is after the -5-minute process start. Left alone, every case in this suite would be
+# answered PROCESS_PREDATES_TREE and would be testing the fixture's own timestamps instead of
+# its input. Normalising once here keeps each case about what it is actually driving; the cases
+# that DO drive the binding set DR_AGE=0 and write deliberately.
+#
+# `-h` so a symlink's own mtime is set rather than its target's (the tool lstats, and one
+# fixture points a link OUTSIDE the tree). The failure suppression is for the deliberately
+# unreadable fixtures: files under a mode-000 or mode-444 directory cannot be touched, and they
+# were already aged before the chmod.
+age_tree() { find "$NM" -exec touch -h -d '-10 minutes' {} + 2>/dev/null || true; }
+
 # mk_ps [extra-line...] — the process table. The channel server's start time is -5 minutes:
 # NEWER than every package.json above (so the healthy state is "the files predate the process")
 # and OLDER than `now` (so `touch`ing one file drives the stale branch).
@@ -156,6 +173,7 @@ json.dump(merged, open(sys.argv[1], "w"))
 # Artifacts are cleared first so "the newest artifact" is unambiguously THIS run's (run_ts has
 # one-second resolution, and two runs in one second would otherwise collide).
 run_dr() {
+    if [ "${DR_AGE:-1}" = 1 ]; then age_tree; fi
     rm -rf "$H/.cache/coord"
     RC=0
     HOME="$H" PATH="$STUB:$UB" DR_FIXTURE="$FIX" DR_PS_FIXTURE="$PSF" \
@@ -769,22 +787,113 @@ run_dr
 A="$(art "$REAL_ART")"
 eq "control: restoring the file restores the disposition" "FIXED_CONFIRMED" "$(disp "$A" 2)"
 
-echo "== a package.json NEWER than the running process is UNVERIFIABLE (F9) =="
-# The staleness input is the mtime of each READ package.json, not the node_modules directory:
-# a reinstall that rewrites one package leaves the directory mtime saying nothing about which
-# file the running process actually loaded.
+echo "== a tree written AFTER the running process started is PROCESS_PREDATES_TREE (card#6442) =="
+# THE INCIDENT CLASS THIS LEG EXISTS FOR, and the reason it is a disposition word and not a
+# footnote: `npm ci` into the install of a server nobody restarted leaves the tree measuring
+# CLEAN while the still-running process serves the vulnerable code it loaded earlier. Every
+# version read below such a write is a confident answer about an artifact nothing is executing.
+DR_AGE=0
+touch "$NM/hono/package.json"      # a write after the -5-minute process start
+run_dr
+A="$(art "$REAL_ART")"
+eq "rc stays 0 — this is a finding about the host, not a broken instrument" "0" "$RC"
+eq "the freshly-written tree ⇒ PROCESS_PREDATES_TREE, not FIXED_CONFIRMED" "true" \
+   "$(has 'PROCESS_PREDATES_TREE' "$(disp "$A" 1)")"
+eq "…naming the write that proved it" "true" "$(has 'hono/package.json' "$(disp "$A" 1)")"
+eq "…and never folded into FIXED_CONFIRMED" "false" "$(has 'FIXED_CONFIRMED' "$(disp "$A" 1)")"
+# THE BINDING IS A PROPERTY OF THE TREE, NOT OF EACH FILE — deliberate, and asserted rather than
+# left to be discovered: node loads modules lazily, so a write anywhere under node_modules can
+# reach a package whose own files never moved. The over-report is the fail-closed direction and
+# it is stated in the report's own limitations.
+eq "…and its UNTOUCHED sibling is unbound too (the binding is tree-level, by design)" "true" \
+   "$(has 'PROCESS_PREDATES_TREE' "$(disp "$A" 2)")"
+eq "the binding says NOT BOUND in the scope object" "false" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+eq "…and on stdout, where a reader will actually see it" "true" \
+   "$(has 'running-process binding — NOT BOUND' "$(cat "$OUTF")")"
+eq "…with the coverage statement agreeing rather than claiming a covered install" "false" \
+   "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
+# Control: one input apart — age the same write back below the process start.
+DR_AGE=1
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: ageing the tree back below the process start restores the disposition" \
+   "FIXED_CONFIRMED" "$(disp "$A" 1)"
+eq "…and the binding reports BOUND, not silence" "true" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+
+echo "== a BOUND run states the binding out loud, so 'checked' is not silence (card#6442) =="
+# The affirmative half, and it is the half that decays quietest: a report that only speaks up on
+# trouble is indistinguishable from one that never looked. The one-shot 2026-08-11 measurement
+# this leg was funded from carried exactly this statement by hand ("the running channel server
+# loads this tree"); the tool now produces it mechanically or says why it cannot.
+eq "stdout states the binding holds" "true" \
+   "$(has 'running-process binding — BOUND' "$(cat "$OUTF")")"
+eq "…naming the process it bound to" "true" "$(has '4242' "$(cat "$OUTF")")"
+eq "…and the newest write it compared against" "true" \
+   "$(has 'newest tree write' "$(cat "$OUTF")")"
+eq "…with the scan recorded as complete, so the write is a maximum and not a floor" "true" \
+   "$(get "$A" scope.legs.0.running_process_binding.tree_scan_complete)"
+eq "the limitations of the binding ride the report, not a design document" "true" \
+   "$(has 'limitation: mtime is the only evidence' "$(cat "$OUTF")")"
+eq "…including that only this host's own install is measured" "true" \
+   "$(has "only this host's own configured install is measured" "$(cat "$OUTF")")"
+eq "…and they are in the artifact too, not stdout-only" "4" \
+   "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["running_process_binding"]["limitations"]))' "$A")"
+
+echo "== an INCOMPLETE tree scan makes the newest write a floor, never a binding (card#6442) =="
+# The asymmetry that keeps this fail-closed, and the one a "just compare the numbers" version
+# gets wrong in the dangerous direction. A scan that could not enter a subtree has a FLOOR, not
+# a maximum: a floor already past the process start still proves divergence, but a floor below
+# it proves nothing at all and must not be reported as BOUND.
+mkdir -p "$NM/type-is/node_modules"
+run_dr                                   # ages the tree, so the floor is BELOW the start
+chmod 000 "$NM/type-is"
+run_dr
+A="$(art "$REAL_ART")"
+eq "an unscannable subtree ⇒ the binding is NOT ESTABLISHED, never BOUND" "null" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+eq "…saying the write it saw is a floor" "true" \
+   "$(has 'that is a floor and not the tree' "$(get "$A" scope.legs.0.running_process_binding.statement)")"
+eq "…and the rows carry the tree-level fault, so nothing is disposed on the unread tree" "true" \
+   "$(has 'UNVERIFIABLE: nested-copy scan incomplete' "$(disp "$A" 1)")"
+# The other arm of the asymmetry: the SAME incomplete scan, with a write it CAN see already past
+# the process start, is a definite divergence — a fact from a partial read is still a fact.
+DR_AGE=0
 touch "$NM/hono/package.json"
 run_dr
 A="$(art "$REAL_ART")"
-eq "the freshly-written package ⇒ UNVERIFIABLE" \
-   "UNVERIFIABLE: package.json modified after the running process started" "$(disp "$A" 1)"
-eq "control: its untouched sibling keeps its disposition (the check is per-file)" \
-   "FIXED_CONFIRMED" "$(disp "$A" 2)"
-touch -d '-10 minutes' "$NM/hono/package.json"
+eq "an incomplete scan with a visible write past the start ⇒ a definite NOT BOUND" "false" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+eq "…and the incident word outranks the incomplete-scan UNVERIFIABLE on the rows" "true" \
+   "$(has 'PROCESS_PREDATES_TREE' "$(disp "$A" 1)")"
+DR_AGE=1
+chmod 755 "$NM/type-is"
+rm -rf "$NM/type-is"
 run_dr
 A="$(art "$REAL_ART")"
-eq "control: ageing the file back below the process start restores the disposition" \
-   "FIXED_CONFIRMED" "$(disp "$A" 1)"
+eq "control: a complete scan over an aged tree binds again" "true" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+
+echo "== a DIRECTORY-only write is a write: a removed package leaves no file behind (card#6442) =="
+# The reason the scan dates directories and not just files. `npm rm` deletes a package and the
+# only trace is the bumped parent — no entry anywhere is newer, so a files-only maximum would
+# report BOUND over a tree that demonstrably moved under the process.
+DR_AGE=0
+mkdir -p "$NM/ghost-dir"
+touch -h -d '-10 minutes' "$NM/ghost-dir"      # the ENTRY is old; only its parent is fresh
+run_dr
+A="$(art "$REAL_ART")"
+eq "a bumped parent directory alone ⇒ NOT BOUND" "false" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+eq "…naming the directory as the newest write" "true" \
+   "$(has 'node_modules' "$(get "$A" scope.legs.0.running_process_binding.tree_newest_path)")"
+rmdir "$NM/ghost-dir"
+DR_AGE=1
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: with the directory gone and the tree aged, it binds again" "true" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
 
 echo "== NO running process for this install is its own explicit disposition (F9) =="
 : > "$PSF"
@@ -797,6 +906,17 @@ eq "…and the coverage statement stops claiming this install is covered" "false
    "$(get "$A" scope.legs.0.coverage_scope.0.covered)"
 eq "…naming why" "no running process for this install" \
    "$(get "$A" scope.legs.0.coverage_scope.0.reason)"
+# With no process there is nothing to bind the tree to, and that is its own answer — reported,
+# never defaulted to bound and never left blank (card#6442).
+eq "…and the binding is NOT ESTABLISHED rather than absent or assumed" "null" \
+   "$(get "$A" scope.legs.0.running_process_binding.bound)"
+eq "…saying so on stdout, naming what is missing" "true" \
+   "$(has 'NOT ESTABLISHED: there is no running process for this install to bind' "$(cat "$OUTF")")"
+# This install is UNCOVERED here, which is exactly the state that would let the out-of-leg
+# renderer relabel it as somebody else's install — the reason that loop selects on the deployed
+# path rather than on list position.
+eq "…and this agent's OWN install is never rendered as another install" "false" \
+   "$(has "other channel-server install $DEP" "$(cat "$OUTF")")"
 mk_ps
 run_dr
 A="$(art "$REAL_ART")"
@@ -1049,29 +1169,32 @@ A="$(art "$REAL_ART")"
 eq "control: the same path under node IS the server" "FIXED_CONFIRMED" "$(disp "$A" 1)"
 mk_ps
 
-echo "== the staleness clock is the OLDEST matching process, not the newest =="
+echo "== the binding clock is the OLDEST matching process, not the newest =="
 # Also unfalsifiable until now: `min` → `max` survived every fixture, because no case ever ran
-# two processes from one tree. The conservatism is the whole point — a package.json newer than
-# the EARLIEST thing still running from this tree is a file that process did not load, so the
-# oldest clock is the only safe one. Two processes, and a package.json mtime BETWEEN their
-# start times: `min` must call it stale, `max` would call it fresh and confirm a fix that the
-# still-running older process never loaded.
+# two processes from one tree. The conservatism is the whole point — a tree written after the
+# EARLIEST thing still running from it is a tree that process did not load, so the oldest clock
+# is the only safe one. Two processes, and a tree write BETWEEN their start times: `min` must
+# call it diverged, `max` would call it bound and confirm a fix the still-running older process
+# never loaded.
+DR_AGE=0
 _old="$(date -d '-20 minutes' +'%a %b %e %H:%M:%S %Y')"
 _new="$(date -d '-2 minutes'  +'%a %b %e %H:%M:%S %Y')"
 { printf '%s %s node %s\n' 4242 "$_old" "$MJS"
   printf '%s %s node %s\n' 4243 "$_new" "$MJS"; } > "$PSF"
-touch -d '-10 minutes' "$NM/hono/package.json"      # between the two start times
+age_tree                                            # between the two start times
 run_dr
 A="$(art "$REAL_ART")"
-eq "a package.json newer than the OLDEST process ⇒ UNVERIFIABLE" \
-   "UNVERIFIABLE: package.json modified after the running process started" "$(disp "$A" 1)"
-# Control: aged below BOTH clocks it is fresh again, so the assertion above is the ordering and
-# not simply "this fixture always reports stale".
-touch -d '-30 minutes' "$NM/hono/package.json"
+eq "a tree written after the OLDEST process ⇒ PROCESS_PREDATES_TREE" "true" \
+   "$(has 'PROCESS_PREDATES_TREE' "$(disp "$A" 1)")"
+eq "…and both pids are named in the binding, not just the one it clocked" "2" \
+   "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["running_process_binding"]["process_pids"]))' "$A")"
+# Control: aged below BOTH clocks it is bound again, so the assertion above is the ordering and
+# not simply "this fixture always reports diverged".
+find "$NM" -exec touch -h -d '-30 minutes' {} + 2>/dev/null || true
 run_dr
 A="$(art "$REAL_ART")"
 eq "control: older than both processes ⇒ disposed for real" "FIXED_CONFIRMED" "$(disp "$A" 1)"
-touch -d '-10 minutes' "$NM/hono/package.json"
+DR_AGE=1
 mk_ps
 
 echo "== other installs on the host are REPORTED as uncovered, never ignored (F16) =="
@@ -1099,6 +1222,13 @@ eq "a foreign install under a RENAMED directory is reported too, not silently dr
 eq "…also marked NOT covered" "false" "$(get "$A" scope.legs.0.coverage_scope.2.covered)"
 eq "…so the host-wide statement covers three installs, not two" "3" \
    "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["coverage_scope"]))' "$A")"
+# THE RULING'S "not skipped silently" HALF (card#6442): an out-of-leg install is a stated
+# UNVERIFIABLE on the operator's own screen, not a `covered:false` buried a hundred lines into
+# the JSON dump that nobody scrolls to.
+eq "each foreign install gets its own UNVERIFIABLE line on stdout" "true" \
+   "$(has 'other channel-server install /home/other/agent-webhook-bridge/examples/channel-servers — UNVERIFIABLE' "$(cat "$OUTF")")"
+eq "…including the renamed one" "true" \
+   "$(has 'other channel-server install /home/other/bridge-fork/examples/channel-servers — UNVERIFIABLE' "$(cat "$OUTF")")"
 # A foreign install whose tree EXISTS and is readable — the branch neither line above reaches.
 # Without it the whole `dir_fault` call here is unfalsifiable (hardcoding the fault to None
 # left every assertion green), and the two paths through it are indistinguishable. It also
