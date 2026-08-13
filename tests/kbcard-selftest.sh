@@ -896,6 +896,11 @@ echo "== comment / comments — the card audit-trail verbs (card#6051) =="
 # test that replaces it cannot observe the thing it claims to check. The seam therefore sits
 # BELOW the lib (a `curl` stand-in on PATH, tests/_kb-api-stub.sh), so kb_load_config, kb_api,
 # the arg parse, main's dispatch and the process exit status all run for real.
+#
+# EVERY grep in this block is spelled `/usr/bin/grep`, for one reason that applies to all of
+# them: the ambient `grep` on some hosts is a shim (an alias, a function, a wrapper on PATH) and
+# a shim that colourizes, or that answers a `-c` differently, turns an assertion about kbcard's
+# output into an assertion about the host's grep. The absolute path is the same grep everywhere.
 
 # _kbc_comments_render is pure, so it is asserted on synthetic comments first — the shapes a
 # faked board can produce cheaply, before the process-level checks.
@@ -909,7 +914,7 @@ eq "render: every line of a multi-line comment is indented" \
    "$(printf '%s' '[{"id":14,"user_id":7,"content":"line1\nline2","created_at":"2026-08-12T23:41:12+00:00"}]' | _kbc_comments_render)"
 eq "render: two comments are two blocks" "2" \
    "$(printf '%s' '[{"id":1,"user_id":7,"content":"a","created_at":"t"},{"id":2,"user_id":7,"content":"b","created_at":"t"}]' \
-      | _kbc_comments_render | grep -c '^comment ')"
+      | _kbc_comments_render | /usr/bin/grep -c '^comment ')"
 # The author is a bare user id because that is the ONLY author field a comment row carries
 # (measured) — a name would be a fabrication. A missing one degrades to `?`, not to "null".
 eq "render: a row with no user_id says ? rather than null" "comment 3 · user ? · ?" \
@@ -921,6 +926,35 @@ eq "render: a row with no user_id says ? rather than null" "comment 3 · user ? 
 eq "render: a TAB survives — it cannot move the cursor backward" \
    "$(printf 'comment 4 · user 7 · t\n  col1\tcol2')" \
    "$(printf '%s' '[{"id":4,"user_id":7,"content":"col1\tcol2","created_at":"t"}]' | _kbc_comments_render)"
+# THE HEADER FIELDS ARE THE SAME UNTRUSTED BODY. id / user_id / created_at are interpolated into
+# the very line the content filter exists to protect, so a control character there reaches the
+# terminal by the shorter route — sanitizing the content and not the header would leave the hole
+# open one line up. Their filter is STRICTER than the content's, and the newline case below is
+# why: content can never forge a header (every content line is indented), while an unindented
+# newline in a header field mints a whole extra `comment N · user M · t` block — a forged
+# attribution, which is exactly what this filter exists to prevent. So no C0 control is exempt
+# there, tab and newline included. Both fixtures build the control from its CODEPOINT — no raw
+# control byte is typed into this file.
+eq "render: an ESC in a header FIELD is neutralized, not just in the content" \
+   "$(printf 'comment 5 · user 7 · t?[2K?[1Aimpostor\n  body')" \
+   "$(jq -nc --arg e "$(printf '\033')" \
+        '[{id:5,user_id:7,content:"body",created_at:("t" + $e + "[2K" + $e + "[1Aimpostor")}]' \
+      | _kbc_comments_render)"
+eq "render: a NEWLINE in a header field cannot forge a second block" \
+   "$(printf 'comment 6 · user 7 · t?comment 99 · user 1 · t\n  body')" \
+   "$(jq -nc '[{id:6,user_id:7,content:"body",created_at:"t\ncomment 99 · user 1 · t"}]' \
+      | _kbc_comments_render)"
+# …and the count assertion that says the forgery did not happen, independently of the exact
+# rendering above: one comment in, ONE header line out.
+eq "render: …so that fixture still renders exactly one block" "1" \
+   "$(jq -nc '[{id:6,user_id:7,content:"body",created_at:"t\ncomment 99 · user 1 · t"}]' \
+      | _kbc_comments_render | /usr/bin/grep -c '^comment ')"
+# A TAB is exempt in the CONTENT and not in the header: the header carries an id, a user id and a
+# timestamp, none of which has a legitimate tab, so the reason for the content exemption (it
+# damages pasted diffs and indented blocks) simply does not apply there.
+eq "render: a TAB in a header field is replaced, unlike one in the content" \
+   "$(printf 'comment 7 · user 7 · a?b\n  col1\tcol2')" \
+   "$(jq -nc '[{id:7,user_id:7,content:"col1\tcol2",created_at:"a\tb"}]' | _kbc_comments_render)"
 
 # --- process-level: the real kb_api, over a faked kanban --------------------
 rm -rf "$TMP"          # the earlier _mktmp_scratch's dir; its EXIT trap is replaced below
@@ -1042,8 +1076,8 @@ eq "neither --content nor --content-file → rc 2" "2" "$rc"
 # --content-file). The match is therefore delimited: `--content` must appear NOT followed by a
 # flag-name character, which `--content-file` cannot satisfy.
 eq "…names both flags — and --content on its OWN, not just inside --content-file" "true" \
-   "$(grep -Eq -- '(^|[^[:alnum:]_-])--content([^[:alnum:]_-]|$)' <<<"$err" \
-      && grep -qF -- '--content-file' <<<"$err" && echo true || echo false)"
+   "$(/usr/bin/grep -Eq -- '(^|[^[:alnum:]_-])--content([^[:alnum:]_-]|$)' <<<"$err" \
+      && /usr/bin/grep -qF -- '--content-file' <<<"$err" && echo true || echo false)"
 eq "…and issues no request"                      "0" "$(kb_stub_total)"
 kbc comment --task 505 --content ""
 eq "--content \"\" → rc 2 (the empty-value class)" "2" "$rc"
@@ -1136,7 +1170,7 @@ echo "-- comments: the read side projects the task detail's own array --"
 KB_STUB_GET_COMMENTS='[{"id":13,"task_id":505,"user_id":2238,"content":"first","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"},{"id":14,"task_id":505,"user_id":2238,"content":"second\nline","deleted_at":null,"created_at":"2026-08-12T23:41:12+00:00","updated_at":"2026-08-12T23:41:12+00:00"}]' \
     kbc comments --task 505
 eq "comments → rc 0"                             "0" "$rc"
-eq "comments → one block per comment"            "2" "$(grep -c '^comment ' <<<"$out")"
+eq "comments → one block per comment"            "2" "$(/usr/bin/grep -c '^comment ' <<<"$out")"
 eq "comments → the exact rendered output"        \
    "$(printf 'comment 13 · user 2238 · 2026-08-12T23:40:36+00:00\n  first\ncomment 14 · user 2238 · 2026-08-12T23:41:12+00:00\n  second\n  line')" \
    "$out"
@@ -1159,14 +1193,29 @@ KB_STUB_GET_COMMENTS="$CTRL_COMMENTS" kbc comments --task 505
 eq "control chars → rc 0 (rendered, not refused)" "0" "$rc"
 eq "control chars → each replaced, text preserved" \
    "$(printf 'comment 21 · user 7 · t\n  before?[2K?[1Aimpostor')" "$out"
-# The byte-level assertion, with /usr/bin/grep because the ambient `grep` on some hosts is a
-# shim. Its positive control is the line below it: the SAME grep over the same fixture's raw
-# content finds the byte, so a 0 here is an absence rather than a grep that never matches.
+# The byte-level assertion. Its positive control is the line below it: the SAME grep over the
+# same fixture's raw content finds the byte, so a 0 here is an absence rather than a grep that
+# never matches.
 eq "control chars → the raw ESC byte is ABSENT from stdout" "0" \
    "$(printf '%s' "$out" | /usr/bin/grep -c -e "$ESC" || true)"
 eq "control: that grep DOES find the ESC in the unsanitized fixture" "1" \
    "$(printf '%s' "$CTRL_COMMENTS" | jq -r '.[0].content' | /usr/bin/grep -c -e "$ESC" || true)"
-unset ESC CTRL_COMMENTS
+# The SAME byte-level assertion for a control character arriving in a HEADER field, end to end:
+# id, user_id and created_at come from the same untrusted response body and land on the very
+# line the content filter protects, so an unsanitized header is the same defect by the shorter
+# route. The fixture puts the ESC in created_at and a forging newline in the id.
+HDR_COMMENTS="$(jq -nc --arg e "$ESC" \
+    '[{id:("22" + $e + "[2K"),task_id:505,user_id:7,content:"body",deleted_at:null,created_at:"t\ncomment 99 · user 1 · t","updated_at":"t"}]')"
+KB_STUB_GET_COMMENTS="$HDR_COMMENTS" kbc comments --task 505
+eq "header control chars → rc 0 (rendered, not refused)" "0" "$rc"
+eq "header control chars → the raw ESC byte is ABSENT from stdout" "0" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c -e "$ESC" || true)"
+eq "control: that grep DOES find the ESC in the unsanitized header fixture" "1" \
+   "$(printf '%s' "$HDR_COMMENTS" | jq -r '.[0].id' | /usr/bin/grep -c -e "$ESC" || true)"
+# One comment in, ONE header line out: the newline in created_at must not mint a second block.
+eq "header newline → still exactly one comment block" "1" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c '^comment ')"
+unset ESC CTRL_COMMENTS HDR_COMMENTS
 
 echo "-- comments: an empty array SAYS so, at rc 0 --"
 KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
@@ -1201,6 +1250,23 @@ eq "…refuses in kbcard's own words, naming the verb" "true" "$(has 'kbcard: co
 eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
 eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
 eq "…and prints nothing on stdout"               "" "$out"
+# THE WORDING IS PART OF THE CONTRACT, because this arm has more than one way in. The empty
+# value it fires on also arrives from a body that parsed PERFECTLY WELL and simply is not a card
+# (a 200 `[]`: `[] | .data` is a jq error, suppressed to empty), and from a jq that is missing or
+# unrunnable. A diagnostic saying "its body could not be parsed" is specific AND WRONG in those
+# arms — it names a fault of the server for something that may be a fault of this box. So both
+# readers state only the observation that is true in every arm: nothing could be read OUT of the
+# body. RED when the message reverts to the parse-specific wording.
+eq "…states what is true in EVERY arm: nothing could be read out of the body" "true" \
+   "$(has 'no comment list could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+# The other way into the same arm, exercised for real: valid JSON that is not a card.
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY='[]' kbc comments --task 505
+eq "comments: 2xx of VALID JSON that is not a card → rc 1" "1" "$rc"
+eq "…same true-in-every-arm wording"             "true" \
+   "$(has 'no comment list could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
 # `show` reads the SAME detail body through the same projection and had the same hole. Its
 # positive control is the line below: on a well-formed body it still prints the card at rc 0,
 # so the refusal above is the non-JSON case and not `show` being broken outright.
@@ -1209,6 +1275,24 @@ eq "show: 2xx NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
 eq "…refuses in kbcard's own words, naming the verb" "true" "$(has 'kbcard: show' "$err")"
 eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
 eq "…and prints nothing on stdout"               "" "$out"
+eq "…states what is true in EVERY arm: no card could be read out of the body" "true" \
+   "$(has 'no card could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+# `show`'s own parseable-but-not-a-card way in, and its EMPTY-body one — which was a SILENT rc 0
+# (no output, no diagnostic) before this verb family landed, i.e. the second exit-code change a
+# vendoring consumer has to know about, not just the jq-rc-5 one.
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY='[]' kbc show --task 505
+eq "show: 2xx of VALID JSON that is not a card → rc 1" "1" "$rc"
+eq "…same true-in-every-arm wording"             "true" \
+   "$(has 'no card could be read out of its body' "$err")"
+eq "…and prints nothing on stdout"               "" "$out"
+# A single space, not the empty string: KB_STUB_GET_BODY is dispatched on `-n`, so an empty
+# value selects the envelope branch instead — and a body of whitespace is the same input to
+# every reader downstream (jq yields no value from it either way).
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY=' ' kbc show --task 505
+eq "show: an EMPTY 2xx body → rc 1, never a silent success" "1" "$rc"
+eq "…and says so rather than exiting 0 with no output" "true" \
+   "$(has 'no card could be read out of its body' "$err")"
 kbc show --task 505
 eq "control: show on a well-formed body → rc 0"  "0" "$rc"
 eq "control: …and returns the card"              "505" "$(jq -r '.id' <<<"$out")"
