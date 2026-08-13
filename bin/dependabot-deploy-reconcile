@@ -21,11 +21,12 @@
 # a claim about a FILE; the question is about the code a live process LOADED, and the two part
 # company the moment the tree is written after the process started — `npm ci` into the install
 # of a server nobody restarted is the ordinary way in, and it is silent: the tree measures
-# clean while the process keeps serving what it loaded. So every run measures the oldest
-# running process's start time against the newest write anywhere in the deployed tree and
-# STATES the binding either way — "checked and holds" and "never checked" are the same report
-# otherwise — plus the limitations of that binding, and one line per other channel-server
-# install detected on this host, which this run does not measure.
+# clean while the process keeps serving what it loaded. So every run that reports at all STATES
+# the binding — "checked and holds" and "never checked" are the same report otherwise — either
+# as the measurement (the oldest running process's start time against the newest write anywhere
+# in the deployed tree) or, where the run died before the tree scan, as an explicit NOT MEASURED
+# line; plus the limitations of that binding, and one line per other channel-server install
+# detected on this host, which this run does not measure.
 #
 # FAIL-CLOSED. Five dispositions, and only the first two are answers:
 #   FIXED_CONFIRMED  installed >= first_patched_version (SemVer 2.0 precedence)
@@ -35,7 +36,12 @@
 #                    whatever is running was NOT loaded from the tree this run measured. Its
 #                    own word rather than one more UNVERIFIABLE, because it is the state that
 #                    silently turns every other row into a confident answer about the wrong
-#                    artifact
+#                    artifact. The row still carries what the tree ON DISK says — the installed
+#                    version, and where that read succeeded an explicitly on-disk verdict in
+#                    the detail and in the `on_disk_disposition` field (`FIXED_ON_DISK` /
+#                    `STILL_EXPOSED_ON_DISK`, spelled so nothing can read one as a claim about
+#                    the running code). Where the read FAILED there is no such annotation: a
+#                    package missing mid-`npm ci` is not a decidable fact about the deployment
 #   UNDECIDABLE      the read is fine but the comparison cannot be made (no
 #                    first_patched_version, a non-semver version, the package is not in the
 #                    deployment)
@@ -70,11 +76,11 @@
 # touches the network except through `gh api`.
 #
 # Exit codes: 0 the instrument RAN and every alert carries a disposition — including
-# STILL_EXPOSED and UNVERIFIABLE rows, which are FINDINGS reported in the output and
-# deliberately not folded into the exit code (this is advisory at session close; a finding
-# must not read as a broken instrument) — OR this host is NOT CONFIGURED for it at all (no
-# ~/.mcp.json, or no mcpServers.kanbanboard-agent entry in it): one line saying so, no artifact,
-# nothing measured. A host that never ran a channel server is not a broken one, and an
+# STILL_EXPOSED, PROCESS_PREDATES_TREE and UNVERIFIABLE rows, which are FINDINGS reported in
+# the output and deliberately not folded into the exit code (this is advisory at session close;
+# a finding must not read as a broken instrument) — OR this host is NOT CONFIGURED for it at
+# all (no ~/.mcp.json, or no mcpServers.kanbanboard-agent entry in it): one line saying so, no
+# artifact, nothing measured. A host that never ran a channel server is not a broken one, and an
 # instrument that cannot say that shouts INSTRUMENT FAILURE at every close forever. A declared
 # entry that launches no .mjs is the other case — a BROKEN config — and stays rc 1 below ·
 # 1 INSTRUMENT FAILURE: an input could not be read, a gate failed, or the evidence artifact

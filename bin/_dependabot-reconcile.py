@@ -16,19 +16,29 @@ alert this leg does not cover gets an explicit UNVERIFIABLE row naming why, neve
 
 FAIL-CLOSED IS THE WHOLE POINT. Every path that cannot produce a trustworthy answer emits
 UNVERIFIABLE (the read itself is not to be trusted), UNDECIDABLE (the read is fine but the
-comparison cannot be made), or PROCESS_PREDATES_TREE (the read is fine and the comparison was
-made, about a tree the running process demonstrably never loaded). A silent skip would make the
-instrument's clean-looking output the most dangerous thing it produces.
+comparison cannot be made), or PROCESS_PREDATES_TREE (the read is fine, but it is about a tree
+the running process demonstrably never loaded). A silent skip would make the instrument's
+clean-looking output the most dangerous thing it produces.
 
 THE READ IS BOUND TO THE RUNNING PROCESS, OR IT IS NOT AN ANSWER. A version read off disk is a
 claim about a FILE; the question is about the code a live process LOADED. The two part company
 whenever the tree is written after the process started — `npm ci` into the install of a server
 nobody restarted is the ordinary way, and it is the shape that produced this leg's own incident:
 the tree measured clean while the still-running process carried the vulnerable code it had
-loaded before. So every run states the binding explicitly — the running process's start time
-against the newest write anywhere in the deployed tree — and a tree written after the process
-started is its OWN disposition, `PROCESS_PREDATES_TREE`, never folded into FIXED_CONFIRMED and
-never left as a footnote a reader has to go looking for.
+loaded before. So every run that reports at all states the binding explicitly — the running
+process's start time against the newest write anywhere in the deployed tree, or an explicit NOT
+MEASURED where the run died before the tree scan — and a tree written after the process started
+is its OWN disposition, `PROCESS_PREDATES_TREE`, never folded into FIXED_CONFIRMED and never
+left as a footnote a reader has to go looking for.
+
+A DIVERGED ROW STILL CARRIES ITS ON-DISK READ. The word says what is unknowable (which code the
+process loaded); it must not also erase what IS known (what the tree on disk holds), or the
+instrument answers a diverged host with a null version on every row and can never say
+STILL_EXPOSED about the population it was built to watch. So a diverged row keeps
+`installed_version`, and where the read succeeded it carries an explicitly on-disk verdict —
+in the disposition detail and in its own `on_disk_disposition` field. Where the read FAILED it
+carries nothing: a package missing while `npm ci` repopulates the tree must not mint a decidable
+fact about a deployment that is being rewritten underneath the scan.
 
 THE COMPARATOR IS A DELIBERATE PROXY: `installed >= first_patched_version` under SemVer 2.0
 precedence. `vulnerable_version_range` is never parsed — each ecosystem's range grammar differs
@@ -711,7 +721,8 @@ BINDING_LIMITS = (
     "the binding is a property of the TREE, not of each file: one write anywhere under "
     "node_modules unbinds every row, including packages whose own files did not move",
     "only this host's own configured install is measured — every other channel-server process "
-    "detected here is reported UNVERIFIABLE in coverage_scope, never read",
+    "detected here is reported `covered: false` in coverage_scope and named on stdout, never "
+    "read",
 )
 
 
@@ -723,7 +734,7 @@ def _iso(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
-def process_tree_binding(process_start, pids, write, scan_incomplete):
+def process_tree_binding(process_start, pids, clocked_pid, write, scan_incomplete):
     """(binding, divergence) — is the tree just measured the tree the running process LOADED?
 
     THE QUESTION THE ON-DISK READ CANNOT ANSWER ABOUT ITSELF. Every version this leg reports is
@@ -742,6 +753,10 @@ def process_tree_binding(process_start, pids, write, scan_incomplete):
     """
     binding = {
         "process_pids": list(pids),
+        # WHICH of those pids `process_start` came from. With several processes running from one
+        # install, the pid list beside a single start time reads as if they shared it; the clock
+        # is the OLDEST one, and naming it is what makes the comparison auditable.
+        "process_clocked_pid": clocked_pid,
         "process_start": _iso(process_start),
         "start_source": "ps lstart (one-second resolution, local time)",
         "tree_newest_write": _iso(write[0]) if write else None,
@@ -780,9 +795,83 @@ def process_tree_binding(process_start, pids, write, scan_incomplete):
     return binding, None
 
 
+# THE TWO ON-DISK VERDICTS, deliberately spelled so they cannot be joined with the live
+# vocabulary above. They are what the tree on disk says about a package whose RUNNING process
+# never loaded that tree, so a consumer must not be able to read one as a claim about what is
+# executing — `FIXED_CONFIRMED` in an `on_disk_disposition` field would invite exactly that,
+# because "confirmed" is the one thing a diverged tree cannot be. They ride a separate row field
+# and are never counted in `by_disposition`, which stays keyed on the live disposition alone.
+FIXED_ON_DISK = "FIXED_ON_DISK"
+STILL_EXPOSED_ON_DISK = "STILL_EXPOSED_ON_DISK"
+_ON_DISK_PHRASE = {FIXED_ON_DISK: "FIXED on disk",
+                   STILL_EXPOSED_ON_DISK: "STILL_EXPOSED on disk"}
+
+
+def version_verdict(installed, patched):
+    """(at_or_above, why_not) — the ONE comparator, for both callers below.
+
+    `at_or_above` is True/False when the pair can be ordered and None when it cannot, in which
+    case `why_not` names which of the two reasons it was. Two callers need the same comparison
+    and phrase its failure differently — the live disposition says UNDECIDABLE and names the
+    reason, the on-disk annotation simply has nothing to annotate — and a second spelling of
+    `semver_key(a) >= semver_key(b)` for the second caller would be a divergent copy of the one
+    predicate this whole instrument is about (canon #5).
+    """
+    if not patched:
+        return None, "no first_patched_version"
+    a, b = semver_key(installed), semver_key(patched)
+    if a is None or b is None:
+        return None, "non-semver version, cannot order"
+    return a >= b, None
+
+
+def installed_identity(ctx, name):
+    """(installed_version, fault) — the identity this leg reads for `name`, or why it could not.
+
+    `fault` is a whole disposition string (UNVERIFIABLE/UNDECIDABLE, already prefixed) because
+    each cause carries its own word: a nested copy is a read that cannot be trusted, a package
+    that is simply not installed is a decidable fact about the deployment.
+
+    EXTRACTED SO THE DIVERGENCE ARM CAN READ THE TREE WITHOUT COPYING THIS (canon #5): that arm
+    still returns PROCESS_PREDATES_TREE, but it annotates the row with what the tree on disk
+    says, and a second inline copy of the nested/absent/unreadable ladder is exactly the shape
+    that lets the two arms drift apart.
+
+    The ORDER is load-bearing and unchanged: an unreadable tree outranks even an injected
+    identity, because `nm_error` is a statement about the whole deployment rather than about one
+    package's file.
+    """
+    if ctx["nm_error"]:
+        return None, f"UNVERIFIABLE: {ctx['nm_error']}"
+    injected = ctx["injected"].get(name)
+    if injected is not None:
+        # An injected identity REPLACES the file read, so the check that qualifies that read
+        # (an ambiguous nested copy) has nothing to qualify and is skipped rather than run
+        # against a file this disposition is not about.
+        return injected, None
+    if name in ctx["nested"]:
+        return None, (f"UNVERIFIABLE: nested node_modules copy of {name} present — "
+                      f"loaded copy ambiguous")
+    installed, _pkg_json, fault = read_installed(ctx["node_modules"], name)
+    if fault == "absent":
+        return None, "UNDECIDABLE: package not in deployment"
+    if fault:
+        # Each fault names its own subject (package.json vs package directory), so this
+        # renders one message instead of guessing a prefix that fits only some of them.
+        return None, f"UNVERIFIABLE: {fault}"
+    # NO PER-FILE mtime CHECK HERE ANY MORE, and its removal is the point rather than a
+    # casualty: the tree-level binding subsumes it (the newest write over the whole tree is >=
+    # any file's, so a package.json newer than the process start can no longer reach this line)
+    # and answers the question the per-file version could not — a tree rewritten around this
+    # package still leaves it loaded from something else.
+    return installed, None
+
+
 def disposition_for(alert, ctx):
-    """The one disposition engine. Ordered fail-closed: a reason the read cannot be trusted
-    is reported BEFORE any comparison is attempted on it."""
+    """(disposition, installed, patched, in_leg, on_disk_disposition) for one alert.
+
+    The one disposition engine. Ordered fail-closed: a reason the read cannot be trusted is
+    reported BEFORE any comparison is attempted on it."""
     dep = as_obj(alert.get("dependency"))
     pkg = as_obj(dep.get("package"))
     ecosystem = pkg.get("ecosystem")
@@ -793,10 +882,10 @@ def disposition_for(alert, ctx):
 
     if ecosystem not in DECLARED_ECOSYSTEMS:
         return (f"UNVERIFIABLE: ecosystem {ecosystem} not in this run's declared leg set "
-                f"({', '.join(DECLARED_ECOSYSTEMS)})", None, patched, False)
+                f"({', '.join(DECLARED_ECOSYSTEMS)})", None, patched, False, None)
     if manifest not in DECLARED_MANIFESTS:
         return (f"UNVERIFIABLE: manifest_path {manifest} not in leg's declared scope",
-                None, patched, False)
+                None, patched, False, None)
 
     # From here the alert IS this leg's business, so every row carries the deployed path.
     #
@@ -807,17 +896,37 @@ def disposition_for(alert, ctx):
     # A name is only required to be path-safe for the leg that actually turns it into a path.
     name_fault = package_name_fault(name)
     if name_fault:
-        return (f"UNVERIFIABLE: {name_fault}", None, patched, True)
+        return (f"UNVERIFIABLE: {name_fault}", None, patched, True, None)
     if ctx["process_error"]:
-        return (f"UNVERIFIABLE: {ctx['process_error']}", None, patched, True)
-    # THE RUNNING-PROCESS BINDING, and it is checked BEFORE the tree-level read faults below
+        return (f"UNVERIFIABLE: {ctx['process_error']}", None, patched, True, None)
+    # THE RUNNING-PROCESS BINDING, and it is decided BEFORE the tree-level read faults below
     # because it is the only one of them that is a POSITIVE measurement: the tree was written
     # after the process started, which is a fact even from a scan that did not finish. It is
     # also the loudest thing this instrument can find — every version below it would be read
     # out of a tree the running process demonstrably never loaded — so it gets its own word
     # rather than one more UNVERIFIABLE among four, and the row says which write proved it.
+    #
+    # THE ORDERING IS NOT A LICENCE TO DISCARD THE READ, and it used to be exactly that: this
+    # arm returned before the read happened, so `installed_version` came back null on every row
+    # of a diverged run and STILL_EXPOSED became unreachable for the whole population — the tool
+    # ERASING the one number it exists to compare, in precisely the state that motivated it.
+    # What the ordering is actually protecting is the WORD (no consumer may read a diverged row
+    # as a live-running claim) and the FAILED read (a package missing mid-`npm ci` must not mint
+    # "UNDECIDABLE: package not in deployment", a decidable fact about a deployment that is
+    # being rewritten under the scan). Both survive: the disposition stays PROCESS_PREDATES_TREE
+    # whatever the tree says, an unreadable/absent read adds NOTHING, and a successful read is
+    # carried as an explicitly on-disk annotation plus its own row field.
     if ctx["tree_diverged"]:
-        return (f"PROCESS_PREDATES_TREE: {ctx['tree_diverged']}", None, patched, True)
+        installed, read_fault = installed_identity(ctx, name)
+        detail = f"PROCESS_PREDATES_TREE: {ctx['tree_diverged']}"
+        on_disk = None
+        if read_fault is None:
+            at_or_above, _why_not = version_verdict(installed, patched)
+            if at_or_above is not None:
+                on_disk = FIXED_ON_DISK if at_or_above else STILL_EXPOSED_ON_DISK
+                detail += (f"; on-disk read: installed {installed} vs patched {patched} → "
+                           f"{_ON_DISK_PHRASE[on_disk]}")
+        return (detail, installed, patched, True, on_disk)
     # The tree itself could not be read — either its root, or a subtree the nested-copy scan
     # could not enter. This MUST come before any per-package read, because
     # `read_installed` cannot tell "this package is not installed" from "no package in this
@@ -825,46 +934,44 @@ def disposition_for(alert, ctx):
     # answered as the first is a decidable FACT about the deployment minted out of a read that
     # never happened — precisely the inversion the fail-closed rule exists to prevent. It is
     # reachable in the ordinary way, not a contrived one: `npm ci` removes node_modules before
-    # repopulating it, and this instrument runs at session close.
-    if ctx["nm_error"]:
-        return (f"UNVERIFIABLE: {ctx['nm_error']}", None, patched, True)
+    # repopulating it, and this instrument runs at session close. It is the first gate inside
+    # `installed_identity`, which is what the arm above reads through as well.
+    installed, read_fault = installed_identity(ctx, name)
+    if read_fault:
+        return (read_fault, None, patched, True, None)
 
-    injected = ctx["injected"].get(name)
-    if injected is not None:
-        # An injected identity REPLACES the file read, so the check that qualifies that read
-        # (an ambiguous nested copy) has nothing to qualify and is skipped rather than run
-        # against a file this disposition is not about. The binding above is NOT skipped with
-        # it: it is a fact about the host, not about the file, and a synthetic version disposed
-        # against a tree nothing loaded is exactly as misleading as a real one.
-        installed = injected
-    else:
-        if name in ctx["nested"]:
-            return (f"UNVERIFIABLE: nested node_modules copy of {name} present — "
-                    f"loaded copy ambiguous", None, patched, True)
-        installed, _pkg_json, fault = read_installed(ctx["node_modules"], name)
-        if fault == "absent":
-            return ("UNDECIDABLE: package not in deployment", None, patched, True)
-        if fault:
-            # Each fault names its own subject (package.json vs package directory), so this
-            # renders one message instead of guessing a prefix that fits only some of them.
-            return (f"UNVERIFIABLE: {fault}", None, patched, True)
-        # NO PER-FILE mtime CHECK HERE ANY MORE, and its removal is the point rather than a
-        # casualty: the tree-level binding above subsumes it (the newest write over the whole
-        # tree is >= any file's, so a package.json newer than the process start can no longer
-        # reach this line) and answers the question the per-file version could not — a tree
-        # rewritten around this package still leaves it loaded from something else.
-
-    if not patched:
-        return ("UNDECIDABLE: no first_patched_version", installed, patched, True)
-    a, b = semver_key(installed), semver_key(patched)
-    if a is None or b is None:
-        return ("UNDECIDABLE: non-semver version, cannot order", installed, patched, True)
-    return ("FIXED_CONFIRMED" if a >= b else "STILL_EXPOSED", installed, patched, True)
+    at_or_above, why_not = version_verdict(installed, patched)
+    if at_or_above is None:
+        return (f"UNDECIDABLE: {why_not}", installed, patched, True, None)
+    return ("FIXED_CONFIRMED" if at_or_above else "STILL_EXPOSED", installed, patched, True,
+            None)
 
 
 # --------------------------------------------------------------------------- output
 
-_SYMBOL = {"FIXED_CONFIRMED": "✓", "STILL_EXPOSED": "✗"}
+# THE SYMBOL ANSWERS ONE QUESTION — "is this row an exposure finding?" — so ✓ is a fix that is
+# actually running, ✗ is exposure, and ⚠ is every row where nothing decidable about the RUNNING
+# code came back. PROCESS_PREDATES_TREE is ⚠ by that rule and now says so by NAME: it used to
+# reach ⚠ only by being absent from this table, which is indistinguishable from a disposition
+# nobody classified, and the lookup below is on the disposition's first WORD so a row carrying a
+# detail after the colon can be classified at all.
+_SYMBOL = {"FIXED_CONFIRMED": "✓", "STILL_EXPOSED": "✗", "PROCESS_PREDATES_TREE": "⚠"}
+
+
+def row_symbol(row):
+    """The eye-scan classification of one row.
+
+    The one modulation: a diverged row whose ON-DISK read is still below the patch is rendered
+    ✗ rather than ⚠. The running process loaded an EARLIER tree than the one measured, and the
+    newest tree is already exposed — so calling that ⚠ ("nothing decidable") buries the loudest
+    row this instrument can produce among the rows where it genuinely could not see. It is the
+    same deliberate over-reporting direction as the comparator itself: a downgrade install could
+    in principle leave the loaded copy at a higher version, which the disposition word (still
+    PROCESS_PREDATES_TREE, never STILL_EXPOSED) is what keeps honest.
+    """
+    if row["on_disk_disposition"] == STILL_EXPOSED_ON_DISK:
+        return "✗"
+    return _SYMBOL.get(row["disposition"].split(":", 1)[0], "⚠")
 
 
 def main(argv) -> int:
@@ -955,6 +1062,7 @@ def main(argv) -> int:
 
         process_error = None
         process_start = None
+        clocked_pid = None
         if not own:
             process_error = "no running process for this install"
         elif all(p[1] is None for p in own):
@@ -962,8 +1070,11 @@ def main(argv) -> int:
                              "from ps lstart")
         else:
             # The OLDEST matching process: a tree written after the earliest thing still
-            # running from it is a tree that process did not load.
-            process_start = min(p[1] for p in own if p[1] is not None)
+            # running from it is a tree that process did not load. The pid comes out with the
+            # timestamp rather than being looked up again, so the report can name which process
+            # was clocked without a second pass that could disagree with this one.
+            clocked_pid, process_start = min(
+                ((p[0], p[1]) for p in own if p[1] is not None), key=lambda pair: pair[1])
 
         # --- can this run READ the tree it is about? --------------------------------------
         # The same predicate already applied to every FOREIGN install above, now applied to
@@ -1044,7 +1155,7 @@ def main(argv) -> int:
         # it comes out — a report that only mentions the process when something is wrong cannot
         # be told apart from one that never looked.
         binding, tree_diverged = process_tree_binding(
-            process_start, [p[0] for p in own], tree_write, bool(nested_fault))
+            process_start, [p[0] for p in own], clocked_pid, tree_write, bool(nested_fault))
         leg["running_process_binding"] = binding
         if tree_diverged:
             # Into the coverage statement as well as the rows: an install whose running process
@@ -1073,7 +1184,7 @@ def main(argv) -> int:
         for alert in sorted(population, key=lambda a: a.get("number") or 0):
             dep = as_obj(alert.get("dependency"))
             pkg = as_obj(dep.get("package"))
-            disposition, installed, patched, in_leg = disposition_for(alert, ctx)
+            disposition, installed, patched, in_leg, on_disk = disposition_for(alert, ctx)
             rows.append({
                 "alert_number": alert.get("number"),
                 "repo": REPO,
@@ -1084,6 +1195,11 @@ def main(argv) -> int:
                 "installed_version": installed,
                 "first_patched_version": patched,
                 "disposition": disposition,
+                # Non-null ONLY on a PROCESS_PREDATES_TREE row whose tree read succeeded: it is
+                # what the tree on disk says about a package the running process did not load
+                # from it. Never counted in `by_disposition` — that tally stays keyed on the
+                # live disposition, so this cannot inflate a FIXED-looking total.
+                "on_disk_disposition": on_disk,
                 "deployed_path": deployed if in_leg else None,
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
@@ -1167,13 +1283,31 @@ def render_binding(leg):
         print(f"{symbol} running-process binding — {state}: {binding['statement']}")
         # `join`, not the list itself: a python repr (`['2004897']`) in an operator-facing
         # report is the implementation leaking into the one surface that is read by eye.
-        print(f"    process: {', '.join(binding['process_pids']) or 'none'} started "
+        pids = binding["process_pids"]
+        clocked = binding["process_clocked_pid"]
+        # ONE start time beside SEVERAL pids reads as if they shared it. The clock is the oldest
+        # of them, and which one that was is the difference between a reader being able to check
+        # this comparison and having to guess.
+        if len(pids) > 1 and clocked:
+            who = f"{', '.join(pids)} (clocked on the oldest, {clocked})"
+        else:
+            who = ", ".join(pids) or "none"
+        print(f"    process: {who} started "
               f"{binding['process_start'] or '?'} ({binding['start_source']}); "
               f"newest tree write {binding['tree_newest_write'] or '?'} at "
               f"{binding['tree_newest_path'] or '?'}"
               f"{'' if binding['tree_scan_complete'] else ' (SCAN INCOMPLETE — a floor)'}")
         for limit in binding["limitations"]:
             print(f"    limitation: {limit}")
+    else:
+        # THE ABSOLUTE IS ONLY TRUE IF THIS ARM PRINTS. Every surface of this tool says it
+        # states the binding on EVERY run — and a run that dies before the tree scan (a failed
+        # `gh` gate, an unreadable config, the backstop) leaves the field null and printed
+        # NOTHING at all, which is exactly the silence the binding exists to eliminate: no
+        # reader can tell "there was no binding to measure" from "this report forgot to mention
+        # it". Saying it was not measured, and why, is the whole claim.
+        print("⚠ running-process binding — NOT MEASURED (the run failed before the tree "
+              "scan; no binding was established either way)")
     # The out-of-leg installs are the declared-scope half of the same honesty: detected, named,
     # and never measured. Selected by NOT being the install this leg read — never by list
     # position, which would relabel this agent's own install as somebody else's the first time
@@ -1189,7 +1323,7 @@ def render(scope, rows, artifact):
         render_binding(leg)
     for row in rows:
         disposition = row["disposition"]
-        symbol = _SYMBOL.get(disposition, "⚠")
+        symbol = row_symbol(row)
         # No "installed ?" placeholder: a row this leg never read a version for must not
         # render a field suggesting it looked and found nothing.
         if row["installed_version"]:

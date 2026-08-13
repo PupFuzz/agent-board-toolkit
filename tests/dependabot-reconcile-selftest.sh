@@ -215,6 +215,26 @@ else:
 ' "$1" "$2"
 }
 
+# rowval <file> <alert-number> <field> — one field of that alert's row, or NO-ROW. Keyed on the
+# alert NUMBER like `disp`, never on the row's position: the rows are emitted in sorted order,
+# so an index would keep passing while pointing at a different alert.
+rowval() {
+    python3 -c '
+import json, sys
+rows = json.load(open(sys.argv[1]))["rows"]
+for r in rows:
+    if r["alert_number"] == int(sys.argv[2]):
+        v = r[sys.argv[3]]
+        print(v if isinstance(v, str) else json.dumps(v)); break
+else:
+    print("NO-ROW")
+' "$1" "$2" "$3"
+}
+
+# symbol_for <alert-number> — the leading symbol of that alert's line on stdout (the eye-scan
+# surface). `awk`, not `cut -c1`: the symbols are multi-byte and GNU cut counts bytes.
+symbol_for() { grep -F " #$1 " "$OUTF" | head -1 | awk '{print $1}'; }
+
 mkdir -p "$FIX"
 mk_deploy
 mk_ps
@@ -452,6 +472,21 @@ eq "a failing gh ⇒ rc 1" "1" "$RC"
 eq "…naming the exit status and gh's own words" "true" \
    "$(has 'gh api (state=fixed) exited 1' "$(cat "$ERRF")")"
 eq "…carrying gh's stderr" "true" "$(has 'HTTP 401' "$(cat "$ERRF")")"
+# THE BINDING IS STATED ON THIS RUN TOO (card#6442). Every surface of this tool claims the
+# binding is stated on every run that reports at all — and a run that dies HERE never reaches
+# the tree scan, so the field stays null and the renderer printed NOTHING, which is exactly the
+# silence the binding exists to eliminate: no reader can tell "there was nothing to measure"
+# from "this report forgot to mention it".
+eq "…and the binding is reported NOT MEASURED rather than omitted" "true" \
+   "$(has 'running-process binding — NOT MEASURED' "$(cat "$OUTF")")"
+eq "…never a binding it never made" "false" \
+   "$(has 'running-process binding — BOUND' "$(cat "$OUTF")")"
+# Control: the same fixture with gh working reaches the scan and states the measurement, so the
+# line above is the failed run's own answer and not something every run prints.
+run_dr
+eq "control: a run that reaches the tree scan states the MEASURED binding" "true" \
+   "$(has 'running-process binding — BOUND' "$(cat "$OUTF")")"
+eq "…and never says NOT MEASURED" "false" "$(has 'NOT MEASURED' "$(cat "$OUTF")")"
 
 echo "== gate: the response must PARSE, and must be an ARRAY =="
 printf 'not json at all\n' > "$TMP/raw-bad.json"
@@ -841,6 +876,82 @@ eq "…including that only this host's own install is measured" "true" \
 eq "…and they are in the artifact too, not stdout-only" "4" \
    "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["running_process_binding"]["limitations"]))' "$A")"
 
+echo "== a DIVERGED row still carries its ON-DISK read (card#6442) =="
+# THE FAILURE MODE AN ORDERING ARGUMENT MAKES INVISIBLE. The divergence arm returned BEFORE the
+# version comparison, so every row of a diverged run came back with a null installed_version and
+# STILL_EXPOSED was unreachable for the whole population — the instrument erasing the one number
+# it exists to compare, in precisely the state it was built for, and doing it in the artifact as
+# well as on screen. The WORD is what protects the reader (nothing here may be read as a claim
+# about the running code); the READ is what makes the row worth having at all.
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+2|npm|fast-uri|$IN_SCOPE|runtime|3.1.9
+SPECS
+mk_states
+DR_AGE=0
+touch "$NM/hono/package.json"      # a write after the -5-minute process start
+run_dr
+A="$(art "$REAL_ART")"
+eq "rc stays 0 — a finding about the host, not a broken instrument" "0" "$RC"
+eq "the diverged row keeps the WORD, whatever the tree on disk says" "true" \
+   "$(has 'PROCESS_PREDATES_TREE:' "$(disp "$A" 2)")"
+eq "…and it is never the bare STILL_EXPOSED a consumer reads as a live claim" "false" \
+   "$([ "$(disp "$A" 2)" = STILL_EXPOSED ] && echo true || echo false)"
+eq "…while the on-disk comparison rides the detail instead of being discarded" "true" \
+   "$(has 'on-disk read: installed 3.1.5 vs patched 3.1.9 → STILL_EXPOSED on disk' \
+        "$(disp "$A" 2)")"
+eq "…with the version it actually read on the row, not the null the gate used to leave" "3.1.5" \
+   "$(rowval "$A" 2 installed_version)"
+eq "…and an on_disk_disposition field a consumer can key on" "STILL_EXPOSED_ON_DISK" \
+   "$(rowval "$A" 2 on_disk_disposition)"
+# The other verdict in the SAME run, so the field is a measurement rather than a constant.
+eq "a diverged row whose on-disk read is at or above the patch says FIXED on disk" \
+   "FIXED_ON_DISK" "$(rowval "$A" 1 on_disk_disposition)"
+eq "…naming it in the detail too" "true" "$(has '→ FIXED on disk' "$(disp "$A" 1)")"
+eq "…and carrying its version as well" "4.13.0" "$(rowval "$A" 1 installed_version)"
+# The annotation must not reach the surface anything counts: `by_disposition` is the live word.
+eq "the tally counts the LIVE disposition only, never the on-disk one" \
+   '{"PROCESS_PREDATES_TREE": 2}' "$(get "$A" scope.denominator.by_disposition)"
+# The eye-scan surface. A still-exposed on-disk read under divergence is an exposure finding;
+# ⚠ would file it among the rows nothing is known about, which is where it was.
+eq "the still-exposed-on-disk row renders ✗ on stdout" "✗" "$(symbol_for 2)"
+eq "…while the fixed-on-disk one stays ⚠ — the process still loaded something else" "⚠" \
+   "$(symbol_for 1)"
+
+# THE ARM THAT MUST STAY SILENT — the valid half of the ordering argument the gate was built on.
+# `npm ci` REMOVES a package before repopulating it, so a read that failed under a diverged tree
+# is a transient state, and annotating it would mint a decidable "package not in deployment"
+# about a deployment being rewritten under the scan.
+mv "$NM/fast-uri" "$TMP/fast-uri.away"
+touch "$NM/hono/package.json"
+run_dr
+A="$(art "$REAL_ART")"
+eq "a FAILED read under divergence is still PROCESS_PREDATES_TREE" "true" \
+   "$(has 'PROCESS_PREDATES_TREE:' "$(disp "$A" 2)")"
+eq "…with NO on-disk annotation at all" "false" "$(has 'on-disk read:' "$(disp "$A" 2)")"
+eq "…no on_disk_disposition" "null" "$(rowval "$A" 2 on_disk_disposition)"
+eq "…and no installed_version invented for it" "null" "$(rowval "$A" 2 installed_version)"
+eq "…never the decidable 'package not in deployment' a transient absence would mint" "false" \
+   "$(has 'package not in deployment' "$(disp "$A" 2)")"
+eq "control: its readable sibling in the same run IS annotated" "true" \
+   "$(has 'on-disk read: installed 4.13.0' "$(disp "$A" 1)")"
+mv "$TMP/fast-uri.away" "$NM/fast-uri"
+
+# Control: one input apart — age the same tree back below the process start. A BOUND run needs
+# no on-disk qualifier, because the tree it read IS the tree the process loaded.
+DR_AGE=1
+mk_alerts "$FIX/alerts-fixed.json" fixed <<SPECS
+1|npm|hono|$IN_SCOPE|runtime|4.12.25
+2|npm|fast-uri|$IN_SCOPE|runtime|3.1.0
+SPECS
+mk_states
+run_dr
+A="$(art "$REAL_ART")"
+eq "control: aged below the process start, the rows dispose for real again" "FIXED_CONFIRMED" \
+   "$(disp "$A" 1)"
+eq "…and carry no on-disk annotation, because the tree IS what is running" "null" \
+   "$(rowval "$A" 1 on_disk_disposition)"
+
 echo "== an INCOMPLETE tree scan makes the newest write a floor, never a binding (card#6442) =="
 # The asymmetry that keeps this fail-closed, and the one a "just compare the numbers" version
 # gets wrong in the dangerous direction. A scan that could not enter a subtree has a FLOOR, not
@@ -1188,6 +1299,12 @@ eq "a tree written after the OLDEST process ⇒ PROCESS_PREDATES_TREE" "true" \
    "$(has 'PROCESS_PREDATES_TREE' "$(disp "$A" 1)")"
 eq "…and both pids are named in the binding, not just the one it clocked" "2" \
    "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["scope"]["legs"][0]["running_process_binding"]["process_pids"]))' "$A")"
+# …and WHICH of them supplied the start time is named, because one timestamp beside two pids
+# otherwise reads as if they shared it.
+eq "…with the clocked pid recorded as the OLDEST of them" "4242" \
+   "$(get "$A" scope.legs.0.running_process_binding.process_clocked_pid)"
+eq "…and said on stdout, not artifact-only" "true" \
+   "$(has 'process: 4242, 4243 (clocked on the oldest, 4242)' "$(cat "$OUTF")")"
 # Control: aged below BOTH clocks it is bound again, so the assertion above is the ordering and
 # not simply "this fixture always reports diverged".
 find "$NM" -exec touch -h -d '-30 minutes' {} + 2>/dev/null || true
