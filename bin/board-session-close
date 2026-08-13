@@ -389,21 +389,96 @@ _bsc_main_checkout() {
   printf '%s' "$out"
 }
 
-# _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory? Compared canonically
-# WHERE `readlink -m` EXISTS — which is a GNU coreutils extension. On a host without it the
-# fallback below degrades to a string compare, i.e. exactly the defect this function was written
-# to fix (see below). That is an UNVERIFIED environment: every measurement behind this function
-# was taken on GNU coreutils, so the degradation is disclosed rather than claimed handled, and a
-# lexical fallback (the pure-bash `_ibh_norm` next door) is the obvious follow-up. Compared
-# canonically, then, and never as strings where the tool is available: `--git-common-dir` is answered relative to the path the caller typed while
-# the classification uses `--show-toplevel`, which is always canonical, so a symlinked repo
-# path, a trailing slash, or a sub-directory of the work tree all make identical directories
-# compare unequal. That difference used to fall through to the "your .git is a file" arm, which
+# _bsc_canon <absolute-path> — canonicalise a path PHYSICALLY where the filesystem can answer and
+# lexically only where that is the correct answer. Used by _bsc_same_dir below, for the one case
+# the kernel cannot decide: a path that does not exist.
+#
+# CONTRACT: the argument is ABSOLUTE and names a directory or a path that does not exist yet. All
+# three call sites satisfy that (`$root` comes from `rev-parse --show-toplevel`, the repo comes
+# from the BSC_WORKTREES `$HOME/…` entries, and the dispatch/installer directories come from
+# `_ibh_hooks_dir`, which joins a relative core.hooksPath onto `$root` before echoing). There is
+# deliberately no relative-path arm: that state cannot occur here, and the `pwd` it would need
+# speaks for the CALLER's cwd — a deleted one at that. A final component that is a symlink to a
+# FILE is out of contract (it resolves to the file, which no caller asks about), and so is a
+# component name ENDING in a newline: this output and the `pwd -P` read below are both captured
+# through `$( )`, which strips trailing newlines, so such a name canonicalises to the same string
+# as the name without it (measured — as it was of the `readlink -m` capture this replaced). A
+# newline INSIDE a name is unaffected, here and on the -ef branch.
+#
+# `readlink -m` would do all of this in one call and is NOT used: it is a GNU coreutils extension,
+# so on macOS/BSD/busybox it fails and any `|| <the raw path>` fallback silently degrades to the
+# string compare this whole function exists to prevent. Reading ONE link with a flagless
+# `readlink` is not an extension and is used below; `-m` survives only as the selftest's oracle.
+#
+# Physical and lexical resolution INTERLEAVE — they are not two phases. After a `..` pop or a
+# symlink splice the next segment is re-attempted with `cd -P`, so `<base>/missing/../L` resolves
+# `L` through the filesystem instead of collapsing to the link's own name. A segment is taken
+# lexically only where lexical IS correct: it does not exist, or it exists and is not a symlink
+# (a plain file; an unreadable directory, whose children are unstatable to any canonicaliser).
+# Every `cd` argument is absolute, so CDPATH is never consulted. Termination is structural: each
+# iteration either consumes a segment or spends symlink budget.
+#
+# NOT `_ibh_norm` next door: that is a one-shot PURE-LEXICAL whole-path collapse for the in-tree /
+# out-of-tree CLASSIFICATION in a standalone-vendored file, and a plain lexical collapse is wrong
+# through symlinked components (#180). The tail here cannot be handed to it either — a `..` in the
+# tail must pop into the PHYSICAL prefix and re-trigger physical resolution — so the two contracts
+# do not meet, and one caller is no case for a third home.
+#
+# Two knowing departures from `readlink -m`, both pinned in the selftest's differential: leading
+# slashes collapse to one (GNU on glibc agrees, but POSIX leaves `//` implementation-defined, so
+# this is a normalisation of ours, not borrowed behaviour), and symlink resolution is bounded at
+# 40 hops, past which the remainder is appended lexically rather than resolved — reachable only by
+# a cycle or a dangling chain longer than the budget, where `-m` answers with its own arbitrary
+# hop. Neither can yield a wrong VERDICT: both compared spellings run this same code.
+_bsc_canon() {
+  local rest="$1" resolved="" seg cand tgt phys n=40
+  while [[ -n "$rest" ]]; do
+    while [[ "$rest" == /* ]]; do rest="${rest#/}"; done
+    [[ -n "$rest" ]] || break
+    seg="${rest%%/*}"
+    if [[ "$seg" == "$rest" ]]; then rest=""; else rest="${rest#*/}"; fi
+    case "$seg" in
+      ''|.) continue ;;
+      # The lexical pop is correct because `resolved` is already PHYSICAL; it floors at "" = root.
+      ..)   resolved="${resolved%/*}"; continue ;;
+    esac
+    cand="$resolved/$seg"
+    if phys="$(cd -P "$cand" 2>/dev/null && pwd -P)"; then
+      resolved="$phys"
+    elif [[ -L "$cand" ]] && (( n-- > 0 )); then
+      # A link `cd -P` could not follow: dangling, or pointing at a file or an unreadable target.
+      # Splice ONE level and let the loop re-attempt what it now names.
+      tgt="$(readlink "$cand")"
+      case "$tgt" in /*) resolved="" ;; esac
+      rest="$tgt${rest:+/$rest}"
+    else
+      resolved="$resolved/$seg"
+    fi
+  done
+  printf '%s' "${resolved:-/}"
+}
+
+# _bsc_same_dir <a> <b> — do two path SPELLINGS name the same directory?
+#
+# Where both paths EXIST the question is answered by the kernel's own identity primitive: `-ef`
+# (same device + inode). It follows symlinks, is immune to trailing and repeated slashes, needs no
+# canonicalisation and no external tool, and it is a stronger answer than comparing two strings a
+# canonicaliser produced. That matters because `--git-common-dir` is answered relative to the path
+# the caller typed while the classification uses `--show-toplevel`, which is always canonical, so a
+# symlinked repo path, a trailing slash, or a sub-directory of the work tree all arrive here as
+# different spellings. That difference used to fall through to the "your .git is a file" arm, which
 # then asserted a falsehood about an ordinary checkout AND withheld the command that works.
+#
+# Only when a compared path does NOT exist is there anything to canonicalise — a core.hooksPath
+# naming a not-yet-created directory, reachable at the two _bsc_fix_line sites — and that branch is
+# _bsc_canon's, above. Both sides always take the same branch, so the two never disagree.
 _bsc_same_dir() {
   [[ -n "$1" && -n "$2" ]] || return 1
-  [[ "$(readlink -m -- "$1" 2>/dev/null || printf '%s' "$1")" \
-     == "$(readlink -m -- "$2" 2>/dev/null || printf '%s' "$2")" ]]
+  if [[ -e "$1" && -e "$2" ]]; then
+    [[ "$1" -ef "$2" ]]
+  else
+    [[ "$(_bsc_canon "$1")" == "$(_bsc_canon "$2")" ]]
+  fi
 }
 
 # _bsc_manual_wiring <dir> <hook…> — the by-hand symlink command, one per BROKEN hook.

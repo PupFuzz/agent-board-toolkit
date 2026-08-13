@@ -84,6 +84,7 @@ jobs:
           - board-session-close-selftest
           - board-snapshot-selftest
           - board-stats-selftest
+          - bsc-same-dir-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
