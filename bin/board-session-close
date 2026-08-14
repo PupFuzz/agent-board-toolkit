@@ -23,10 +23,12 @@
 # is REPORT-ONLY: it never installs, repairs or mutates anything, and it never changes
 # this ritual's exit code (the inverse-drift leg owns that). ONE qualification, stated
 # rather than left to be discovered: the remedy line asks `install-board-hooks --check`,
-# whose symlink-capability probe creates and removes two `.ibhp*` entries under the
-# repo's hooks directory (never in the work tree). That is the whole of it — nothing is
-# installed, nothing survives the call — and it is why the remedy can say whether the
-# install would actually succeed on THIS seat rather than on a capable one.
+# which is NOT write-free — its symlink-capability probe creates and removes two `.ibhp*`
+# entries. WHICH directory it probes is that installer's own disposition, stated there and
+# deliberately not restated here (a second copy of it drifted from the original once). That
+# is the whole of it — nothing is installed, nothing survives the call — and it is why the
+# remedy can say whether the install would actually succeed on THIS seat rather than on a
+# capable one.
 #
 # A third READ-ONLY leg — "Archive-eligible done cards" — is DELEGATED to the
 # sibling `_kbc-archive-eligible.py`: for each configured board it reports how many

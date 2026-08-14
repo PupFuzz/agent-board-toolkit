@@ -278,6 +278,17 @@ _ibh_symlink_probe() {
         if [ -e "$src" ] || [ -e "$dst" ] || [ -L "$src" ] || [ -L "$dst" ]; then
             src=""; dst=""; verdict=INDETERMINATE reason=probe-name-collision; break
         fi
+        # ARMED HERE, NOT EARLIER, and that placement is the whole care: the collision check
+        # above has just established both names are ours to remove, and it deliberately clears
+        # them before breaking so a refusal to clobber cannot delete what it refused to clobber.
+        # A trap armed before it would do exactly that. Without a trap, a signal between the
+        # write below and the tail's cleanup leaves `.ibhp*` behind while this function's header
+        # claims removal on every path. The INT/TERM arms EXIT rather than let the shell resume:
+        # an interrupted measurement is void, and 130/143 is the status the shell itself would
+        # have reported for that signal — the caller reads exactly what it read before.
+        trap 'rm -f -- "$dst" "$src" 2>/dev/null || :' EXIT
+        trap 'rm -f -- "$dst" "$src" 2>/dev/null || :; exit 130' INT
+        trap 'rm -f -- "$dst" "$src" 2>/dev/null || :; exit 143' TERM
         # The subshell is load-bearing: a FAILED REDIRECTION is reported by the shell, not by
         # printf, so `printf … 2>/dev/null` does not suppress its message.
         if ! ( printf 'A%s\n' "$n" > "$src" ) 2>/dev/null; then
@@ -312,6 +323,10 @@ _ibh_symlink_probe() {
         break
     done
     if [ -n "$src" ]; then rm -f -- "$dst" "$src" 2>/dev/null || :; fi
+    # Disarmed on the normal path: the trap is this function's, not the caller's, and both
+    # shipped callers invoke the probe inside a command substitution (whose subshell would run
+    # an EXIT trap that outlived the function).
+    trap - EXIT INT TERM
     printf 'VERDICT=%s DIR=%s REASON=%s\n' "$verdict" "$dir" "$reason"
     # ONE mapping, at ONE place: a second spelling of it is how a caller's branch and the
     # operator's line come to say different things.
@@ -363,7 +378,7 @@ _ibh_main() {
     local check="" copies="" repo="" arg
     # Parse in a LOOP and reject anything unrecognised. Accepting --check only in position 1
     # meant `install-board-hooks <repo> --check` silently discarded it and performed a REAL
-    # install — a flag whose entire contract is "writes nothing" doing the write, on its most
+    # install — a flag whose entire contract is "install nothing" doing the install, on its most
     # natural mis-spelling. Silently ignoring an extra positional is the same hazard one step
     # further out, so both are rc 2 with the usage line.
     for arg in "$@"; do
@@ -572,9 +587,16 @@ _ibh_main() {
     # `set -e`, quits the script on the common (capable) path.
     local install_copies=""
     if [ "$probe_rc" = 1 ]; then install_copies=1; fi
-    [ -n "$check" ] || mkdir -p "$dir"
+    # PRE-PASS: every per-entry refusal is decided over the WHOLE hook set BEFORE the first
+    # write, so a run that refuses installs nothing at all. These guards used to run inside the
+    # install loop, which made the refusal PARTIAL: a set whose second hook was a hook the
+    # operator wrote exited 1 with the first hook already on disk. On the copies branch that is
+    # consequential — the rc-3 summary carrying the `rm` recipe and the re-run-after-every-
+    # upgrade obligation never prints, so a script gating on the status reads a clean refusal
+    # while a copy that never tracks the toolkit is installed and live.
+    local dst
     for hook in "${hooks[@]}"; do
-        local src="$toolkit/hooks/$hook" dst="$dir/$hook"
+        dst="$dir/$hook"
         if [ -e "$dst" ] && [ ! -L "$dst" ]; then
             echo "install-board-hooks: refusing to overwrite an existing non-symlink hook: $dst" >&2
             echo "  (merge the agent-board-toolkit hook into it by hand, or remove it first)" >&2
@@ -589,7 +611,25 @@ _ibh_main() {
             echo "  Remove it first: rm -- '$dst'" >&2
             exit 1
         fi
-        [ -n "$check" ] && continue
+    done
+    # THE DRY RUN STOPS HERE — one place, immediately before the first write, now that every
+    # per-entry refusal is decided above. Its ONLY stdout is the target directory: empty stdout
+    # means "do not act", the same fail-closed contract the rest of the toolkit uses. Its STATUS
+    # still carries the verdict — a would-be copies install answers 3 here exactly as the real
+    # one does, so a consumer gating on `--check` succeeding never reads a degraded install as a
+    # clean one.
+    if [ -n "$check" ]; then
+        printf '%s\n' "$dir"
+        if [ -n "$install_copies" ]; then
+            echo "install-board-hooks: this seat cannot symlink ($probe_out) — a real run with --allow-copies would install COPIES here." >&2
+            exit 3
+        fi
+        return 0
+    fi
+    mkdir -p "$dir"
+    local src
+    for hook in "${hooks[@]}"; do
+        src="$toolkit/hooks/$hook"; dst="$dir/$hook"
         if [ -n "$install_copies" ]; then
             # `rm` FIRST, then `cp`: `cp src dst` where dst is an existing symlink writes THROUGH
             # the link — on a re-install over a previous symlink install that means writing into
@@ -619,18 +659,6 @@ _ibh_main() {
             echo "install-board-hooks: $dst -> $src"
         fi
     done
-    # The dry run's ONLY stdout is the target directory: empty stdout means "do not act", the
-    # same fail-closed contract the rest of the toolkit uses. Its STATUS still carries the
-    # verdict — a would-be copies install answers 3 here exactly as the real one does, so a
-    # consumer gating on `--check` succeeding never reads a degraded install as a clean one.
-    if [ -n "$check" ]; then
-        printf '%s\n' "$dir"
-        if [ -n "$install_copies" ]; then
-            echo "install-board-hooks: this seat cannot symlink ($probe_out) — a real run with --allow-copies would install COPIES here." >&2
-            exit 3
-        fi
-        return 0
-    fi
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi

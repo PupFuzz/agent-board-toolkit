@@ -14,7 +14,11 @@
 # INDETERMINATE case here is produced by a FORCED condition — a stub `ln` on PATH reproducing
 # the measured shape (rc 0, result is a copy), a stub `ln` that fails outright, a stub `ln` that
 # links to a snapshot (a real symlink that does not track its source), and a stub `rm` whose
-# unlink silently no-ops. A stub is a simulation of the seat, never evidence about it: the
+# unlink silently no-ops. Two further stubs force paths a verdict cannot reach: an `ln` that is
+# capable for the probe's destination and copies only for one named `post-checkout` (the sole way
+# to red the installer's per-entry post-`ln` assertion, which by construction runs after a
+# CAPABLE probe), and an `rm` that terminates the shell that ran it (the probe's signal path,
+# which a race cannot test). A stub is a simulation of the seat, never evidence about it: the
 # standalone `tests/install-board-hooks-capability-windows-check.sh` is what a real Windows seat
 # runs to confirm the actual behaviour, and it uses no stubs at all.
 #
@@ -72,6 +76,29 @@ LN_SNAPSHOT="$(_stub_dir ln-snapshot ln \
 # An `rm` whose unlink silently does nothing — the probe cannot replace its own source, so the
 # measurement never happens.
 RM_NOOP="$(_stub_dir rm-noop rm 'exit 0')"
+# An `ln -s` that is CAPABLE everywhere except on a destination named `post-checkout`, where it
+# copies. It is what makes the installer's post-`ln` per-entry assertion able to fail at all: the
+# probe (whose destination is `.ibhp<n>.d`) passes, so the install proceeds down the symlink
+# branch, and the entry git will really dispatch is a copy — the exact disagreement between the
+# stand-in the probe measured and the entry it stands in for.
+LN_COPY_HOOK="$(_stub_dir ln-copy-hook ln \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'if [ "$(basename -- "${args[1]}")" = "post-checkout" ]; then' \
+    '    rm -f -- "${args[1]}"; cp -- "${args[0]}" "${args[1]}"; exit 0' \
+    'fi' \
+    'exec /bin/ln -sf -- "${args[0]}" "${args[1]}"')"
+# An `rm` that terminates the shell that invoked it — the only way to observe the probe's SIGNAL
+# path deterministically (a real race is not a test). It stubs `rm` rather than `ln` for a
+# measured reason: `$PPID` is the PROBE's shell only for a command the probe runs DIRECTLY, and
+# its `ln` runs inside a command substitution, so an `ln` killer signals that substitution's own
+# subshell instead — which reads back as an ordinary `ln-failed-rc143` NOT_CAPABLE and never
+# reaches the trap at all. The source-replacement `rm` is the probe's one direct external call,
+# and it lands mid-window with BOTH probe entries on disk. It fires ONCE per marker file and is a
+# real `rm` thereafter: a killer that also killed the trap's own cleanup would prove nothing.
+RM_KILL="$(_stub_dir rm-kill rm \
+    "once=\"$TMP/rm-kill.fired\"" \
+    'if [ ! -e "$once" ]; then : > "$once"; kill -TERM "$PPID"; exit 0; fi' \
+    'exec /bin/rm "$@"')"
 
 # _probe <dir> — run the probe, capture stdout/rc into _out/_rc (stderr to _err).
 _probe() {
@@ -95,6 +122,51 @@ _use_stub "$LN_COPY"; ln -s -- "$ctl/src" "$ctl/copy-dst"; _use_real
 eq "the copy-stub's 'ln -s' yields a NON-symlink" "false" \
    "$([ -L "$ctl/copy-dst" ] && echo true || echo false)"
 eq "…and a real file with the source's bytes" "one" "$(cat "$ctl/copy-dst")"
+# `ctl_rc`, not the harness's `_rc`: these controls run before the first `_probe`/`_run`, and
+# borrowing that variable here would leave a later assertion reading a status nothing set.
+ctl_rc=0; _use_stub "$LN_FAIL"; ln -s -- "$ctl/src" "$ctl/fail-dst" 2>"$TMP/ctl-fail.err" || ctl_rc=$?; _use_real
+eq "the fail-stub's 'ln -s' exits non-zero" "1" "$ctl_rc"
+eq "…and creates no entry at all" "false" \
+   "$(if [ -e "$ctl/fail-dst" ] || [ -L "$ctl/fail-dst" ]; then echo true; else echo false; fi)"
+eq "…with its own words on stderr" "true" \
+   "$(has "Operation not permitted" "$(cat "$TMP/ctl-fail.err")")"
+# The snapshot stub gets its own directory: it litters a `stub-snapshot.dat` beside the source.
+snapctl="$TMP/ctl-snap"; mkdir -p "$snapctl"; echo one > "$snapctl/src"
+_use_stub "$LN_SNAPSHOT"; ln -s -- "$snapctl/src" "$snapctl/snap-dst"; _use_real
+eq "the snapshot-stub's 'ln -s' DOES yield a symlink" "true" \
+   "$([ -L "$snapctl/snap-dst" ] && echo true || echo false)"
+eq "…but not one pointing at the source" "false" \
+   "$([ "$(readlink -- "$snapctl/snap-dst")" = "$snapctl/src" ] && echo true || echo false)"
+/bin/rm -f -- "$snapctl/src"; echo two > "$snapctl/src"
+eq "…so REPLACING the source never reaches it (the property the probe measures)" "one" \
+   "$(cat "$snapctl/snap-dst")"
+hookctl="$TMP/ctl-hook"; mkdir -p "$hookctl"; echo one > "$hookctl/src"
+_use_stub "$LN_COPY_HOOK"
+ln -sf "$hookctl/src" "$hookctl/other"; ln -sf "$hookctl/src" "$hookctl/post-checkout"
+_use_real
+eq "the hook-stub's 'ln -s' is capable for an ordinary destination" "true" \
+   "$([ -L "$hookctl/other" ] && echo true || echo false)"
+eq "…and yields a COPY for one named post-checkout" "false" \
+   "$([ -L "$hookctl/post-checkout" ] && echo true || echo false)"
+eq "…carrying the source's bytes" "one" "$(cat "$hookctl/post-checkout")"
+# The kill stub is witnessed against a THROWAWAY shell, never this one: in `bash -c 'cmd; cmd'`
+# the first command is that shell's child, so the stub's $PPID is it and not the selftest. The
+# `2>/dev/null` on the GROUP is what suppresses this shell's own `Terminated` job message —
+# emitted by the parent, so redirecting the inner command's stderr would not catch it.
+kill_rc=0
+_use_stub "$RM_KILL"
+{ bash -c 'rm -f -- "$1"; echo alive' _ "$ctl/kill-victim" >"$TMP/ctl-kill.out" 2>&1 \
+    || kill_rc=$?; } 2>/dev/null
+_use_real
+eq "the kill-stub terminates the shell that ran it (SIGTERM)" "143" "$kill_rc"
+eq "…before that shell can reach its next command" "false" \
+   "$(has "alive" "$(cat "$TMP/ctl-kill.out")")"
+# …and it is a REAL `rm` from here on, which is what lets the trap it interrupts clean up. The
+# marker is reset so the one firing left is the probe's.
+_use_stub "$RM_KILL"; printf 'x\n' > "$ctl/rm-me"; rm -f -- "$ctl/rm-me"; _use_real
+eq "…and removes for real on every later call" "false" \
+   "$([ -e "$ctl/rm-me" ] && echo true || echo false)"
+/bin/rm -f -- "$TMP/rm-kill.fired"
 _use_stub "$RM_NOOP"; rm -f -- "$ctl/src"; _use_real
 eq "the rm-stub's unlink leaves the file in place" "true" \
    "$([ -e "$ctl/src" ] && echo true || echo false)"
@@ -173,6 +245,18 @@ else
     eq "unwritable dir: reason"  "target-dir-not-writable"  "$(_reason "$_out")"
 fi
 chmod 700 "$uw"
+
+echo "== the probe — a SIGNAL leaves no residue either ('removed on every path' is the claim) =="
+# The probe writes into a directory it does not own, so cleanup is a contract rather than
+# tidiness — and a claim of "every path" that excludes the signal path is a false claim, not a
+# small one: `--check` performs this same write on a directory the operator never asked to have
+# written. The stub kills the probe's shell between the source write and the cleanup tail, which
+# is the whole window.
+sig="$TMP/sig"; mkdir -p "$sig"
+_use_stub "$RM_KILL"; { _probe "$sig"; } 2>/dev/null; _use_real
+eq "the probe dies on the signal (rc 143)" "143" "$_rc"
+eq "…and still leaves no .ibhp residue" "0" "$(_residue "$sig")"
+/bin/rm -f -- "$TMP/rm-kill.fired"
 
 echo "== the probe — the printed token and the returned status are ONE mapping =="
 # The caller branches on the status while the operator reads the token; a drift between them is
@@ -265,6 +349,46 @@ ln -s -- "$TMP/link-target" "$r/.git/hooks/post-checkout"
 _run "$LN_COPY" --allow-copies "$r"
 eq "the previous link's target is untouched" "original" "$(cat "$TMP/link-target")"
 eq "…and the hook is now a real file"        "false"    "$([ -L "$r/.git/hooks/post-checkout" ] && echo true || echo false)"
+
+echo "== installer — the per-entry post-'ln' assertion catches what the probe's stand-in cannot =="
+# The probe measures a `.ibhp<n>.d` stand-in; THIS asserts the entry git will really dispatch. It
+# is the last backstop of the whole invariant, and the only stub that can red it is one that is
+# capable for the probe's destination and copies for the hook's — anything cruder refuses at the
+# probe and never reaches this branch.
+r="$(_fresh_repo entry-contradicts-probe)"
+_run "$LN_COPY_HOOK" "$r"
+eq "rc is the refusal"                    "1"    "$_rc"
+eq "it names the contradiction"           "true" "$(has "reported success but $r/.git/hooks/post-checkout is not a symlink" "$_err")"
+eq "…and says the two disagree"           "true" "$(has "the install is NOT trustworthy" "$_err")"
+eq "…and names the deliberate opt-in"     "true" "$(has "--allow-copies" "$_err")"
+eq "the entry is left in place, as stated" "true" \
+   "$([ -e "$r/.git/hooks/post-checkout" ] && echo true || echo false)"
+eq "…and it really is not a symlink"      "false" \
+   "$([ -L "$r/.git/hooks/post-checkout" ] && echo true || echo false)"
+
+echo "== installer — a refusal is ALL-OR-NOTHING: no hook is written before the SET is checked =="
+# A guard that refused mid-loop had already installed the earlier hooks: rc 1 (a refusal) with a
+# copy on disk, and the rc-3 summary that carries the `rm` recipe and the re-run obligation never
+# printed. The operator's own hook is the natural way in — it is the second of the two.
+r="$(_fresh_repo partial)"
+mkdir -p "$r/.git/hooks"
+printf '#!/bin/sh\n# a hook the operator wrote\n' > "$r/.git/hooks/pre-push"
+_run "$LN_COPY" --allow-copies "$r"
+eq "rc is the refusal"                  "1"    "$_rc"
+eq "it refuses the operator's own hook" "true" "$(has "refusing to overwrite an existing non-symlink hook" "$_err")"
+eq "NOTHING was installed for the hook it had not reached yet" "false" \
+   "$(if [ -e "$r/.git/hooks/post-checkout" ] || [ -L "$r/.git/hooks/post-checkout" ]; then echo true; else echo false; fi)"
+eq "…and no COPY was reported"          "false" "$(has "COPY" "$_out")"
+eq "the operator's hook is untouched"   "true"  "$(has "a hook the operator wrote" "$(cat "$r/.git/hooks/pre-push")")"
+# The same set on a CAPABLE seat: the symlink branch refuses whole too (it was benign there —
+# `ln -sf` is idempotent — but the refusal is one guard, not one per branch).
+r="$(_fresh_repo partial-capable)"
+mkdir -p "$r/.git/hooks"
+printf '#!/bin/sh\n# a hook the operator wrote\n' > "$r/.git/hooks/pre-push"
+_run - "$r"
+eq "capable seat: rc is the refusal" "1" "$_rc"
+eq "…and post-checkout was not symlinked" "false" \
+   "$(if [ -e "$r/.git/hooks/post-checkout" ] || [ -L "$r/.git/hooks/post-checkout" ]; then echo true; else echo false; fi)"
 
 echo "== installer — INDETERMINATE fails closed at rc 4, distinctly from NOT_CAPABLE =="
 r="$(_fresh_repo indeterminate)"
