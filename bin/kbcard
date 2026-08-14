@@ -177,15 +177,29 @@
 #       (c) CAPTURE — every {task_id, from, to} printed to STDOUT before anything is
 #           mutated (the caller's belt: after (d) the definition is gone and the
 #           index purged, so these lines are the only record of what the values were);
-#       (d) DELETE the definition;  (e) RECREATE it with the same key/label/options
-#           and the new type;  (f) RESTAMP every captured card — rewrite the payload
-#           key with the value CAST to the target type;  (g) VERIFY by re-reading
-#           each card (authoritative GET, .data envelope) and asserting BOTH the
-#           value and its JSON type, reporting `restamped and verified N/N`.
+#       (d) DELETE the definition;  (e) RECREATE it with the same key and label,
+#           carrying the option set across VERBATIM in the server's own shape —
+#           explicit option LABELS included, since the server never re-derives one
+#           (a SCALAR target takes no options at all, the same body `field create`
+#           refuses);  (f) RESTAMP every captured card — rewrite the payload key
+#           with the value CAST to the target type;  (g) VERIFY by re-reading each
+#           card (authoritative GET, .data envelope) and comparing the stored
+#           value's `jq -c` ENCODING against the plan's target — the JSON type
+#           rides in that encoding, so an un-restamped `1` never matches a target
+#           of `"1"`. A card whose restamp PATCH was WATCHED TO FAIL is never
+#           counted as verified: on an identity cast (string->url/date,
+#           enum->string) the stored value already equals the target, so a
+#           read-back-only verdict would pass a card that was never written — and
+#           that write is what rebuilds the purged index row. `restamped and
+#           verified N/N` is printed only when every card verified.
 #     A value that cannot be cast to the target type refuses at rc 2 BEFORE the
 #     delete, naming the task ids — the board is left completely untouched. If the
 #     sequence does break after (d), the failure names EXACTLY what state the board
-#     is in and what to run to finish; it never exits silently mid-sequence.
+#     is in and what to run to finish; it never exits silently mid-sequence. The
+#     DELETE's own three outcomes are three DIFFERENT boards and are reported as
+#     such: refused (definition stands), 2xx-then-unreadable (assume DELETED —
+#     values orphaned, index purged), and 2xx-but-still-defined (board intact, and
+#     the recreate is NOT attempted, since a POST on a live key 422s).
 #     --restamp-dl canonicalizes each value through the shared DL renderer instead of
 #     a bare string cast, so a card holding the number 1 is restamped `DL-0001` — the
 #     one canonical stored form. It implies a string target (--to string).
@@ -1451,20 +1465,24 @@ _kbc_field_set_options() {
 # exactly one POST site and one DELETE site in this file, so retype cannot drift
 # from the verbs an operator runs by hand — and a fix to either lands once.
 
-# _kbc_field_create_call <key> <label> <type> <option-values-json|"">: POST the
-# board's custom_fields route and print the CREATED FIELD ID. That id is the write
+# _kbc_field_create_call <key> <label> <type> <options-json|"">: POST the board's
+# custom_fields route and print the CREATED FIELD ID. That id is the write
 # verification (the 201 echoes the whole CustomFieldResource, id first); a success
 # whose body carries no id is an UNVERIFIED write, reported as such rather than
 # printed as a plausible-looking `null` — same contract as `comment`.
-# The options wire shape is the server's: an ARRAY OF OBJECTS `[{value: …}]`, not a
-# bare string array. Labels are omitted deliberately; the server defaults each label
-# to its value, which is the same choice set-options already makes.
+# `options` is the server's OWN wire shape — an array of objects `[{value, label?}]`
+# — and goes on the wire verbatim. It is deliberately NOT a value list this
+# flattens: `retype` carries a definition's existing options across, and an explicit
+# label is data the server will not re-derive, so a `map({value: .})` here would
+# silently destroy it. A caller whose input IS a value list (the `create` verb, whose
+# --options is a comma list) builds the objects at its own call site, where omitting
+# the label is a deliberate choice the server answers by defaulting label to value.
 _kbc_field_create_call() {
     local key="$1" label="$2" type="$3" opts="${4:-}"
     local body resp fid
     if [[ -n "$opts" ]]; then
         body="$(jq -nc --arg k "$key" --arg l "$label" --arg t "$type" --argjson o "$opts" \
-            '{key: $k, label: $l, type: $t, options: ($o | map({value: .}))}')"
+            '{key: $k, label: $l, type: $t, options: $o}')"
     else
         body="$(jq -nc --arg k "$key" --arg l "$label" --arg t "$type" '{key: $k, label: $l, type: $t}')"
     fi
@@ -1485,16 +1503,27 @@ _kbc_field_create_call() {
 # index (the only field read surface) is re-read and the id asserted absent. A
 # delete reported as done but still defined would send retype straight into a
 # duplicate-key 422 on its recreate, with the values already deemed migrated.
+#
+# THE RC IS THE BOARD STATE, and the three failure arms are three DIFFERENT boards,
+# so they cannot share one:
+#   1 — the DELETE itself was refused. The definition stands; the board is INTACT.
+#   3 — the DELETE returned 2xx and the confirming re-read failed. The definition is
+#       gone as far as anything can tell (a 2xx is the server saying it acted), the
+#       index is purged and the values are orphaned. Assume it LANDED, unverified —
+#       a caller that reports this as "nothing happened" is describing a board that
+#       does not exist and hiding the one state that needs finishing.
+#   4 — the DELETE returned 2xx and the field is STILL defined. Board intact, but a
+#       recreate on that live key would 422 on the duplicate.
 _kbc_field_delete_call() {
     local fid="$1" fkey="$2" fields
     kb_api DELETE "/custom_fields/$fid.json" >/dev/null || return 1
     fields="$(_kbc_fetch_fields)" || {
-        echo "kbcard: field '$fkey' DELETE returned success but the board's field set could not be re-read — the delete is UNVERIFIED" >&2
-        return 1
+        echo "kbcard: field '$fkey' DELETE returned success but the board's field set could not be re-read — the delete is UNVERIFIED (treat it as LANDED: the server reported success)" >&2
+        return 3
     }
     if jq -e --argjson id "$fid" 'any(.[]?; .id == $id)' <<<"$fields" >/dev/null 2>&1; then
         echo "kbcard: field '$fkey' (id $fid) is STILL defined on board $KB_BOARD_ID after a successful DELETE — the delete is UNVERIFIED" >&2
-        return 1
+        return 4
     fi
     return 0
 }
@@ -1574,31 +1603,69 @@ _kbc_field_cast_plan() {
     # canonical DL renderer (next-dl and adopt-to-dl both stamp through it). A second
     # spelling of DL-%04d here would be exactly the divergent implementation that
     # makes two stored forms of one key — the defect this restamp exists to repair.
-    local jsonl="" tid raw canon
+    # EVERY failing task id at once, exactly as the cast plan above promises: dying on
+    # the first one makes the caller re-run to discover the second, each re-run being
+    # another full board read — and the whole point of computing the plan before the
+    # delete is that the refusal is complete while the board is still whole.
+    local jsonl="" tid raw canon bad=""
     while IFS=$'\t' read -r tid raw; do
         [[ -n "$tid" ]] || continue
-        canon="$(kb_dl_canon "$raw")" || {
-            echo "kbcard: task $tid holds '$raw', which --restamp-dl cannot canonicalize to a DL number — refusing BEFORE any mutation (the board is untouched)" >&2
-            return 2
-        }
-        jsonl+="$(jq -nc --argjson id "$tid" --arg c "$canon" '{task_id: $id, to: $c}')"$'\n'
+        if canon="$(kb_dl_canon "$raw")"; then
+            jsonl+="$(jq -nc --argjson id "$tid" --arg c "$canon" '{task_id: $id, to: $c}')"$'\n'
+        else
+            bad+="${bad:+, }$tid ('$raw')"
+        fi
     done < <(jq -r '.[] | [(.task_id|tostring), (.from | if type == "string" then . else tostring end)] | @tsv' <<<"$plan")
+    if [[ -n "$bad" ]]; then
+        echo "kbcard: these cards hold a value --restamp-dl cannot canonicalize to a DL number: $bad — refusing BEFORE any mutation (the board is untouched)" >&2
+        return 2
+    fi
     printf '%s' "$jsonl" | jq -c -s --argjson p "$plan" \
         '. as $canon | $p | map(. as $r | $r + {to: (first($canon[] | select(.task_id == $r.task_id)) | .to), ok: true})'
 }
 
-# _kbc_field_json_type <cf-type>: the JSON type the verification GET must see. This
-# is what makes the verify an assertion rather than a formality: after a recreate,
-# a card that was never restamped still holds the OLD type with a value that may
-# well compare equal when stringified (measured caveat A), so the value alone cannot
-# distinguish restamped from untouched.
-_kbc_field_json_type() {
-    case "$1" in
-        number)       printf 'number' ;;
-        boolean)      printf 'boolean' ;;
-        multi_select) printf 'array' ;;
-        *)            printf 'string' ;;
-    esac
+# _kbc_shq <word>: <word> as ONE shell word, single-quoted with embedded quotes
+# escaped, so a remediation command this file PRINTS is runnable exactly as printed.
+# A field label holding an apostrophe (`Owner's team`) otherwise ends the quote and
+# leaves the shell parsing the rest as syntax, and an option value holding a space
+# re-parses into two arguments — a remediation string is a doc surface, and one that
+# dies at the shell is a wrong one.
+_kbc_shq() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# _kbc_field_finish_cmd <key> <label> <to-type> <options-json|"">: the `field create`
+# that re-creates a definition the sequence deleted, on stderr, RUNNABLE AS PRINTED.
+# Two things this CLI cannot express are stated instead of being silently wrong:
+# --options is a comma list, so an option value CONTAINING a comma cannot round-trip
+# through it at all, and no verb here writes an option LABEL (create and set-options
+# both default it to the value), so explicit labels are named as lost-unless-manual.
+_kbc_field_finish_cmd() {
+    local fkey="$1" flabel="$2" to="$3" fopts="$4" csv=""
+    if [[ -n "$fopts" ]]; then
+        if [[ "$(jq '[.[] | select(.value | test(","))] | length' <<<"$fopts")" -gt 0 ]]; then
+            echo "kbcard:   To finish, re-create it BY HAND — an option value contains a comma, which --options (a comma list) cannot express: key $(_kbc_shq "$fkey"), label $(_kbc_shq "$flabel"), type '$to', options $fopts" >&2
+            return 0
+        fi
+        csv="$(jq -r 'map(.value) | join(",")' <<<"$fopts")"
+    fi
+    echo "kbcard:   To finish, first re-create it: kbcard --board <board> field create --key $(_kbc_shq "$fkey") --label $(_kbc_shq "$flabel") --type $to${csv:+ --options $(_kbc_shq "$csv")}" >&2
+    if [[ -n "$fopts" && "$(jq '[.[] | select((.label // .value) != .value)] | length' <<<"$fopts")" -gt 0 ]]; then
+        echo "kbcard:   ⚠ that restores the option VALUES only — no verb here writes an option LABEL, so re-apply these by hand: $fopts" >&2
+    fi
+}
+
+# _kbc_field_stranded <lead> <key> <label> <to-type> <options-json|""> <n> <from-type>:
+# the post-delete stranded-board report. BOTH arms that can reach that state — a
+# delete whose verification re-read failed, and a recreate that failed — print it
+# through here, so the state description and the finishing command cannot drift into
+# two spellings of one board.
+_kbc_field_stranded() {
+    local lead="$1" fkey="$2" flabel="$3" to="$4" fopts="$5" n="$6" ftype="$7"
+    echo "kbcard: $lead" >&2
+    echo "kbcard:   Board $KB_BOARD_ID state: no '$fkey' definition; $n card payload value(s) survive (orphaned, still $ftype-shaped); the search index for '$fkey' is PURGED." >&2
+    _kbc_field_finish_cmd "$fkey" "$flabel" "$to" "$fopts"
+    echo "kbcard:   Then rewrite '$fkey' on each captured task id — the capture lines on stdout above hold every task_id with its target value. Until each is rewritten, (A) its value keeps the OLD JSON type and (B) DSL filters on '$fkey' match ZERO cards." >&2
 }
 
 _kbc_field_create() {
@@ -1624,6 +1691,11 @@ _kbc_field_create() {
             return 2
         }
         opts="$(_kbc_field_option_values "$options")" || return 2
+        # --options is a VALUE list, so the wire objects are built here rather than in
+        # the POST primitive: omitting the label is this verb's own choice (the server
+        # then defaults each label to its value), not a shape the primitive imposes on
+        # `retype`, which has real labels to carry across.
+        opts="$(jq -c 'map({value: .})' <<<"$opts")"
     elif _kbc_field_type_takes_options "$type"; then
         echo "kbcard: type '$type' requires --options <a,b,c> (the server rejects an enum / multi_select carrying no options)" >&2
         return 2
@@ -1703,26 +1775,41 @@ _kbc_field_retype() {
     fi
 
     # (a) READ the definition.
-    local fields fld fid fkey flabel ftype fopts
+    local fields fld fid fkey flabel ftype fopts fopts_had
     fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
     fld="$(_kbc_field_resolve "$field" "$fields")" || return 2
     fid="$(jq -r '.id' <<<"$fld")"
     fkey="$(jq -r '.key' <<<"$fld")"
     flabel="$(jq -r '.label' <<<"$fld")"
     ftype="$(jq -r '.type' <<<"$fld")"
-    # Option VALUES only — the recreate sends value-only entries and the server
-    # defaults each label to its value, the same trade set-options documents.
-    fopts="$(jq -c 'if (.options // null) == null then empty else (.options | map(.value)) end' <<<"$fld")"
+    # The options in the server's OWN shape, explicit labels included. Flattening to
+    # values here would silently DESTROY every explicit label the definition carries
+    # (the server re-derives a missing one as the value, so the loss is invisible in
+    # the recreate's own 2xx) — and this command's contract is that the key, the
+    # label and the options survive the type change. An option that carries no label
+    # is passed through label-less rather than sent an explicit null.
+    fopts_had="$(jq -c 'if (.options // null) == null then empty
+                        else (.options | map(if has("label") and .label != null then {value, label} else {value} end)) end' <<<"$fld")"
+    fopts="$fopts_had"
 
     if [[ "$ftype" == "$to" ]]; then
         echo "kbcard: field '$fkey' is already type '$to' on board $KB_BOARD_ID — nothing to do" >&2
         jq "$_KBC_FIELD_ROW" <<<"$fld"
         return 0
     fi
-    if _kbc_field_type_takes_options "$to" && [[ -z "$fopts" ]]; then
+    # Emptiness here is a LENGTH question, not a string one: a definition whose
+    # server-returned `options` is `[]` yields a non-empty string that sails past a
+    # -z test, and the recreate would then POST `options: []` — which the server
+    # 422s AFTER the delete, i.e. exactly the stranded board this guard exists to
+    # make unreachable.
+    if _kbc_field_type_takes_options "$to" && [[ "$(jq 'length' <<<"${fopts:-[]}")" -eq 0 ]]; then
         echo "kbcard: retyping '$fkey' to '$to' needs an option set, and the current '$ftype' definition carries none — this command only CARRIES options across, it never invents them; use 'field delete --field $fkey --orphan-values' then 'field create … --options a,b,c' and accept both consequences explicitly" >&2
         return 2
     fi
+    # A SCALAR target takes no options at all: the server stores the array and never
+    # reads it, and `field create` refuses that exact body. Reaching the same POST
+    # through the shared create primitive must not be the way around its own refusal.
+    _kbc_field_type_takes_options "$to" || fopts=""
 
     # (b) ENUMERATE the populated cards — same fail-closed census `delete` uses.
     local rows n
@@ -1743,69 +1830,97 @@ _kbc_field_retype() {
     # is gone and the index purged, so these lines are the only record of what each
     # value WAS — the caller's belt, independent of anything below succeeding.
     echo "kbcard: field retype '$fkey': $ftype -> $to on board $KB_BOARD_ID; capturing $n populated card(s) BEFORE any mutation" >&2
+    # The DEFINITION is captured too, in the server's own option shape: after (d) it
+    # is gone, and an explicit option LABEL is the one part of it nothing else on
+    # this run records — no verb here can write one back, so an operator finishing by
+    # hand needs the text.
+    echo "kbcard:   definition captured: key '$fkey', label '$flabel', type '$ftype', options ${fopts_had:-none}" >&2
     jq -c '.[] | {task_id, from, to}' <<<"$plan"
 
     # (d) DELETE — the point of no return (type is immutable via PATCH by design).
-    _kbc_field_delete_call "$fid" "$fkey" || {
-        echo "kbcard: retype ABORTED at the delete — board $KB_BOARD_ID is UNCHANGED (field '$fkey' is still type '$ftype', every value intact)." >&2
-        return 1
-    }
+    # The three failure rcs are three different boards (see _kbc_field_delete_call):
+    # only rc 1 and rc 4 leave the definition standing. Reporting rc 3 as "the board
+    # is UNCHANGED" would be the worst line this command could print — the definition
+    # is gone, the index is purged and the values are orphaned, and the only
+    # actionable output would say nothing happened.
+    local drc=0
+    _kbc_field_delete_call "$fid" "$fkey" || drc=$?
+    case "$drc" in
+        0) ;;
+        3) _kbc_field_stranded \
+               "⚠ retype INCOMPLETE — field '$fkey' is DELETED and was NOT recreated (the DELETE returned success and its confirming re-read FAILED, so the delete is UNVERIFIED — this report assumes it LANDED; if the field IS still defined, the create below will 422 and nothing is lost)." \
+               "$fkey" "$flabel" "$to" "$fopts" "$n" "$ftype"
+           return 1 ;;
+        4) echo "kbcard: retype ABORTED after the delete — field '$fkey' (id $fid) is STILL defined on board $KB_BOARD_ID, so the board is UNCHANGED (still type '$ftype', every value intact); the recreate is NOT attempted, because a POST on a live key answers 422 on the duplicate." >&2
+           return 1 ;;
+        *) echo "kbcard: retype ABORTED at the delete — board $KB_BOARD_ID is UNCHANGED (field '$fkey' is still type '$ftype', every value intact)." >&2
+           return 1 ;;
+    esac
 
-    # (e) RECREATE with the same key/label/options and the new type.
-    local newid optcsv=""
-    [[ -n "$fopts" ]] && optcsv="$(jq -r 'join(",")' <<<"$fopts")"
+    # (e) RECREATE with the same key/label, the options carried across verbatim
+    # (labels included; empty for a scalar target), and the new type.
+    local newid
     if ! newid="$(_kbc_field_create_call "$fkey" "$flabel" "$to" "$fopts")"; then
-        echo "kbcard: ⚠ retype INCOMPLETE — field '$fkey' is DELETED and was NOT recreated." >&2
-        echo "kbcard:   Board $KB_BOARD_ID state: no '$fkey' definition; $n card payload value(s) survive (orphaned, still $ftype-shaped); the search index for '$fkey' is PURGED." >&2
-        echo "kbcard:   To finish, first re-create it: kbcard --board <board> field create --key $fkey --label '$flabel' --type $to${optcsv:+ --options $optcsv}" >&2
-        echo "kbcard:   Then rewrite '$fkey' on each captured task id — the capture lines on stdout above hold every task_id with its target value. Until each is rewritten, (A) its value keeps the OLD JSON type and (B) DSL filters on '$fkey' match ZERO cards." >&2
+        _kbc_field_stranded \
+            "⚠ retype INCOMPLETE — field '$fkey' is DELETED and was NOT recreated." \
+            "$fkey" "$flabel" "$to" "$fopts" "$n" "$ftype"
         return 1
     fi
 
     # (f) RESTAMP. The v3 payload PATCH merges per-key, so writing this one key
     # leaves every other payload key on the card alone.
-    local i len tid newval body
-    local -a patch_failed=() mismatch=()
+    local i len tid newval body pf_set=""
+    local -a patch_failed=() mismatch=() unread=() not_verified=()
     len="$(jq 'length' <<<"$plan")"
     for ((i = 0; i < len; i++)); do
         tid="$(jq -r --argjson i "$i" '.[$i].task_id' <<<"$plan")"
         newval="$(jq -c --argjson i "$i" '.[$i].to' <<<"$plan")"
         body="$(jq -nc --arg k "$fkey" --argjson v "$newval" '{payload: {($k): $v}}')"
-        kb_api PATCH "/tasks/$tid.json" "$body" >/dev/null || patch_failed+=("$tid")
+        kb_api PATCH "/tasks/$tid.json" "$body" >/dev/null || { patch_failed+=("$tid"); pf_set+=" $tid"; }
     done
 
-    # (g) VERIFY on the authoritative GET — never on the PATCH's own 2xx echo, and
-    # never only on the cards whose PATCH reported success: a card that was never
-    # restamped keeps a value that can compare EQUAL once stringified (caveat A), so
-    # the JSON TYPE is asserted alongside the value. That pair is what separates
-    # "migrated" from "looks migrated".
-    local want_type got got_type resp verified=0
-    want_type="$(_kbc_field_json_type "$to")"
+    # (g) VERIFY on the authoritative GET — never on the PATCH's own 2xx echo. Both
+    # sides of the compare are `jq -c` encodings, so the JSON TYPE rides in the value:
+    # a card that was never restamped holds `1` where the plan says `"DL-0001"`, and
+    # those are different strings. A card whose PATCH FAILED is not verifiable at all
+    # and is never counted: on an IDENTITY cast (string→url, string→date, enum→string)
+    # the stored value already equals the plan's target, so the GET would pass on a
+    # card that was never written — and the write is the whole point there, since it
+    # is what rebuilds the purged search-index row.
+    local got resp verified=0
     for ((i = 0; i < len; i++)); do
         tid="$(jq -r --argjson i "$i" '.[$i].task_id' <<<"$plan")"
         newval="$(jq -c --argjson i "$i" '.[$i].to' <<<"$plan")"
-        resp="$(kb_api GET "/tasks/$tid.json")" || { mismatch+=("$tid"); continue; }
+        case "$pf_set " in *" $tid "*) not_verified+=("$tid"); continue ;; esac
+        resp="$(kb_api GET "/tasks/$tid.json")" || { unread+=("$tid"); not_verified+=("$tid"); continue; }
         # shellcheck disable=SC2016  # $k is a jq --arg, not a shell variable
         got="$(_kbc_parse_resp "$resp" -c --arg k "$fkey" '.data.payload[$k]')"
-        # shellcheck disable=SC2016  # $k is a jq --arg, not a shell variable
-        got_type="$(_kbc_parse_resp "$resp" -r --arg k "$fkey" '.data.payload[$k] | type')"
-        if [[ "$got" == "$newval" && "$got_type" == "$want_type" ]]; then
+        if [[ "$got" == "$newval" ]]; then
             verified=$((verified + 1))
         else
-            mismatch+=("$tid")
+            mismatch+=("$tid"); not_verified+=("$tid")
         fi
     done
 
-    if [[ ${#patch_failed[@]} -gt 0 ]]; then
-        echo "kbcard: ⚠ the restamp PATCH failed on ${#patch_failed[@]} card(s): ${patch_failed[*]}" >&2
-    fi
-    if [[ ${#mismatch[@]} -eq 0 ]]; then
+    if [[ ${#not_verified[@]} -eq 0 ]]; then
         echo "kbcard: field '$fkey' retyped $ftype -> $to (id $fid -> $newid); restamped and verified $verified/$len" >&2
         return 0
     fi
     echo "kbcard: ⚠ retype INCOMPLETE — field '$fkey' IS recreated as '$to' (id $newid), but only $verified of $len card(s) verified." >&2
-    echo "kbcard:   NOT verified: ${mismatch[*]}" >&2
-    echo "kbcard:   Board $KB_BOARD_ID state: the definition says '$to'; each unverified card still holds its OLD value/JSON type and carries NO search-index row for '$fkey', so a DSL filter on that key will silently skip it." >&2
+    echo "kbcard:   NOT verified: ${not_verified[*]}" >&2
+    # Three lists, because they are three different boards and only two of them are
+    # observed: a failed PATCH and a wrong read-back are states this run SAW, while a
+    # failed verification GET is a state it could not see at all — printing one
+    # "still holds its OLD value" claim over all three asserts a board nothing read.
+    if [[ ${#patch_failed[@]} -gt 0 ]]; then
+        echo "kbcard:   ⚠ the restamp PATCH failed on ${#patch_failed[@]} card(s): ${patch_failed[*]} — those cards were never written, so each still holds its OLD value/JSON type and carries NO search-index row for '$fkey'." >&2
+    fi
+    if [[ ${#mismatch[@]} -gt 0 ]]; then
+        echo "kbcard:   read back a DIFFERENT value on ${#mismatch[@]} card(s): ${mismatch[*]} — each still holds its OLD value/JSON type and carries NO search-index row for '$fkey', so a DSL filter on that key will silently skip it." >&2
+    fi
+    if [[ ${#unread[@]} -gt 0 ]]; then
+        echo "kbcard:   the verification GET FAILED on ${#unread[@]} card(s): ${unread[*]} — their state is UNKNOWN: the restamp may well have landed, and this run cannot say either way. The remediation below is idempotent, so re-run it on these and then re-read them." >&2
+    fi
     echo "kbcard:   To finish, rewrite '$fkey' on each of those task ids to the value shown on its capture line above — any payload write touching the key re-indexes it. Re-running 'field retype' will NOT do it: the definition is already '$to', so it no-ops." >&2
     return 1
 }

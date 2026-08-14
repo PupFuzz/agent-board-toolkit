@@ -594,6 +594,24 @@ finding with no owner is abandoned, not filed.
   `~/.kanban-*-board.env`), so adopting the primitive changes what a roster-less box renders at
   SessionStart — and the two emit different first fields (`<name>` vs `<envfile>`), so the call site
   changes too. Recorded at the function; this is the owning record.
+- **The custom-field CREATE call, in two implementations** (card #6525) — `kbcard`'s
+  `_kbc_field_create_call` is now the one POST site the `field create` verb and the `field retype`
+  sequence share, and `dl-a1-register-field` carries a second, inline
+  `kb_api_status POST /boards/<id>/custom_fields.json` with its own body literal. Recorded at the
+  moment the second copy was *created*, per the ground rules — but migrating it is **decision-gated,
+  not a cleanup**, and the reason is the shape rule this document already states (*mechanism belongs
+  in the primitive; policy belongs at the caller*): the two disagree on **what a non-2xx means**.
+  `dl-a1-register-field` is idempotent by contract — its headline re-run guarantee is that a
+  **409/422 is success** (already registered) — and it reads the exact status through `kb_api_status`
+  to get that; `_kbc_field_create_call` reports rc only, treats an id-less 2xx as an **unverified
+  write**, and its caller `_kbc_field_create` refuses a duplicate key at rc 2 *before* the POST, off
+  a board field-index read the one-shot bin does not perform. Adopting the primitive would therefore
+  either change the bin's idempotency contract or push a status-exposing variant into the primitive
+  for its single second caller — extraction belongs at the second *real* caller, and this is a second
+  caller with a different invariant. What must not happen is the **wire contract** drifting between
+  them (the flat `{key,label,type[,options]}` body and the server's `[{value,label}]` option shape,
+  both read out of `CustomFieldsController` / `CustomField::TYPES` rather than recalled): that is the
+  part a fix has to land in both, and this bullet is the record that there are two.
 - **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
   and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
   `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement

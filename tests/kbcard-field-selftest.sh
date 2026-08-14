@@ -206,11 +206,17 @@ _POST_FAIL=""
 _POST_NOID=""      # the POST 2xxs but its body carries no id (the unverified write)
 _PATCH_FAIL=""     # space-separated task ids whose PATCH returns non-2xx
 _PATCH_NOOP=""     # ids whose PATCH 200s but silently does NOT land the write
+_DELETE_NOOP=""    # the DELETE 2xxs but the definition is STILL there on the re-read
+_FIELDS_FAIL_AFTER_DELETE=""   # the field-index GET fails once the DELETE has landed
+_GET_TASK_FAIL=""  # ids whose task-detail GET (the verification read) fails
+_DELETED="$TMP/deleted.marker"
 
 # _seed <fields-json> <board-json>: fresh board state + a fresh call log.
 _seed() {
     : > "$_CALLS"; : > "$_POST_BODY"
+    rm -f "$_DELETED" "$TMP"/task-patch-*.json
     _FETCH_RC=0; _POST_FAIL=""; _POST_NOID=""; _PATCH_FAIL=""; _PATCH_NOOP=""
+    _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -231,6 +237,13 @@ kb_api() {
     echo "$method $path" >> "$_CALLS"
     case "$method $path" in
         "GET /boards/"*"/custom_fields.json")
+            # The field index is read TWICE on a retype — once to resolve the
+            # definition, once to confirm the delete. This arm can fail only on the
+            # second, which is the board state the delete's rc has to distinguish.
+            if [[ -n "$_FIELDS_FAIL_AFTER_DELETE" && -f "$_DELETED" ]]; then
+                echo "kbcard: HTTP 503 on GET $path" >&2
+                return 1
+            fi
             jq -c '{data: .}' "$_FIELDS" ;;
         "POST /boards/"*"/custom_fields.json")
             printf '%s' "$body" > "$_POST_BODY"
@@ -250,10 +263,18 @@ kb_api() {
             jq -nc --argjson f "$nf" '{data: $f}' ;;
         "DELETE /custom_fields/"*)
             id="${path#/custom_fields/}"; id="${id%.json}"
-            jq -c --argjson id "$id" 'map(select(.id != $id))' "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+            : > "$_DELETED"
+            # _DELETE_NOOP is a 2xx that did NOT remove the definition — the arm the
+            # delete's own re-read exists to catch, and the one a recreate must never
+            # be attempted after (a POST on a live key 422s on the duplicate).
+            [[ -n "$_DELETE_NOOP" ]] || { jq -c --argjson id "$id" 'map(select(.id != $id))' "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"; }
             printf '' ;;   # the real route answers 204 with an EMPTY body
         "PATCH /tasks/"*)
             id="${path#/tasks/}"; id="${id%.json}"
+            # Record the body PER TASK: the fake MERGES per-key, so a body that
+            # clobbered the card's other payload keys would leave the merged board
+            # looking identical. Only the body itself can witness the per-key write.
+            printf '%s' "$body" > "$TMP/task-patch-$id.json"
             case " $_PATCH_FAIL " in *" $id "*) echo "kbcard: HTTP 500 on PATCH $path" >&2; return 1 ;; esac
             case " $_PATCH_NOOP " in *" $id "*) jq -nc '{data: {}}'; return 0 ;; esac
             jq -c --argjson id "$id" --argjson b "$body" \
@@ -262,6 +283,7 @@ kb_api() {
             jq -nc '{data: {}}' ;;
         "GET /tasks/"*)
             id="${path#/tasks/}"; id="${id%.json}"
+            case " $_GET_TASK_FAIL " in *" $id "*) echo "kbcard: HTTP 503 on GET $path" >&2; return 1 ;; esac
             jq -c --argjson id "$id" '{data: (map(select(.id == $id)) | .[0])}' "$_BOARD" ;;
         *) printf '{"data":null}' ;;
     esac
@@ -271,7 +293,22 @@ _F_DL_STR='[{"id":91,"board_id":1,"key":"dl_number","label":"DL Number","type":"
 _F_DL_NUM='[{"id":91,"board_id":1,"key":"dl_number","label":"DL Number","type":"number","options":null}]'
 # Card 8 carries NO dl_number: it is the denominator's other half. Without it every
 # "N of M" assertion would read the same with the numerator computed as the board size.
-_B_MIXED='[{"id":7,"payload":{"dl_number":1}},{"id":8,"payload":{"other":5}},{"id":9,"payload":{"dl_number":42}}]'
+# Card 7 carries dl_number AND a sibling key: the per-key write contract is only
+# observable on a card that is BOTH restamped and carrying something else to lose.
+_B_MIXED='[{"id":7,"payload":{"dl_number":1,"other":5}},{"id":8,"payload":{"other":5}},{"id":9,"payload":{"dl_number":42}}]'
+# The enum/multi_select fixtures. `severity` carries EXPLICIT labels that differ from
+# their values — the only shape in which a label-destroying recreate is observable.
+_F_SEV_ENUM='[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"Low"},{"value":"high","label":"High"}]}]'
+_B_SEV='[{"id":7,"payload":{"severity":"low"}},{"id":9,"payload":{"severity":"high"}}]'
+# A string field whose server-returned options are an EMPTY ARRAY — a non-empty
+# STRING, which is what makes a string-emptiness test on it answer wrongly.
+_F_NOTE_EMPTYOPTS='[{"id":93,"board_id":1,"key":"note","label":"Note","type":"string","options":[]}]'
+# A label holding an apostrophe and option values holding spaces: the shapes that
+# break a printed remediation command that is not shell-quoted.
+_F_ODD='[{"id":30,"board_id":1,"key":"weird","label":"Owner'"'"'s team","type":"enum","options":[{"value":"in progress"},{"value":"done"}]}]'
+# An option value holding a COMMA — which `--options` (a comma list) cannot express
+# at all, so no printed create command can be correct for it.
+_F_COMMA='[{"id":31,"board_id":1,"key":"csvish","label":"CSV","type":"enum","options":[{"value":"a,b"},{"value":"c"}]}]'
 
 echo "-- create --"
 _seed "$_F_DL_STR" '[]'
@@ -389,7 +426,15 @@ eq "…and the SAME label"                             '"DL Number"' "$(jq -c '.
 eq "…card 7's value is RESTAMPED canonical"          '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
 eq "…as a JSON string, not a number (caveat A)"      '"string"'  "$(jq -c '.[0].payload.dl_number | type' "$_BOARD")"
 eq "…card 9 likewise"                                '"DL-0042"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
-eq "…and an unrelated payload key is untouched"      "5"    "$(jq -c '.[1].payload.other' "$_BOARD")"
+# The per-key write contract, asserted on the BODY. The fake merges per-key exactly
+# as the v3 route does, so a body that carried the whole payload — or dropped the
+# sibling key — would leave the merged board reading identical; only the request can
+# witness it. Card 7 is the one carrying both keys.
+eq "…the restamp PATCH body is FLAT, one key deep"   '{"payload":{"dl_number":"DL-0001"}}' \
+   "$(jq -c . "$TMP/task-patch-7.json")"
+eq "…so card 7's SIBLING payload key survives"       "5"    "$(jq -c '.[0].payload.other' "$_BOARD")"
+eq "…and card 8, never restamped, is not written at all" "false" \
+   "$( [[ -f "$TMP/task-patch-8.json" ]] && echo true || echo false )"
 
 # An UNPOPULATED retype still runs the whole sequence — the empty-plan path, which
 # --restamp-dl's per-row loop and the verify loop both have to survive at length 0.
@@ -415,12 +460,123 @@ eq "…states the definition IS recreated"             "true" "$(has 'IS recreat
 eq "…states what the board's state now IS"           "true" "$(has 'carries NO search-index row' "$ERR")"
 eq "…and that re-running retype will NOT finish it"  "true" "$(has 'will NOT do it' "$ERR")"
 
+# The verify compares two `jq -c` ENCODINGS, and that is what carries the JSON type
+# through it: an un-restamped `1` against a target of `"1"` is exactly the shape
+# where a stringifying compare passes on the card the restamp missed (caveat A). No
+# --restamp-dl here on purpose — the plain tostring cast is what makes the two
+# sides stringify identically while remaining different JSON.
+_seed "$_F_DL_NUM" '[{"id":7,"payload":{"dl_number":1}}]'
+_PATCH_NOOP="7"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "an un-restamped value that STRINGIFIES equal → rc 1" "1" "$rc"
+eq "…is reported as read back DIFFERENT"             "true" "$(has 'read back a DIFFERENT value on 1 card(s): 7' "$ERR")"
+eq "…and is never counted as verified"               "true" "$(has 'only 0 of 1' "$ERR")"
+
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _PATCH_FAIL="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "a FAILING restamp PATCH → rc 1"                  "1"    "$rc"
 eq "…names the failing PATCH separately"             "true" "$(has 'restamp PATCH failed on 1 card(s): 9' "$ERR")"
 eq "…and still lists it as unverified"               "true" "$(has 'NOT verified: 9' "$ERR")"
+
+echo "-- retype — enum/multi_select: the option set AND its labels cross the retype --"
+# Every option-bearing retype path was uncovered. Two things ride on it: an explicit
+# option LABEL is data the server never re-derives (a recreate that flattens options
+# to values destroys it and still 2xxs), and a SCALAR target must be sent no options
+# at all — `field create` refuses that exact body, and reaching the same POST through
+# the shared primitive must not be the way around its own refusal.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; OUT="$(_kbc_field_retype --field severity --to multi_select 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "retype enum -> multi_select → rc 0"              "0"    "$rc"
+eq "…the recreate POST carries the options BYTE-EXACT, labels included" \
+   '[{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$(jq -c '.options' "$_POST_BODY")"
+eq "…so the surviving definition still has label 'Low'" '"Low"' "$(jq -c '.[0].options[0].label' "$_FIELDS")"
+eq "…and it is the target type"                      '"multi_select"' "$(jq -c '.[0].type' "$_FIELDS")"
+eq "…each scalar value restamps to a ONE-element array" '["low"]' "$(jq -c '.[0].payload.severity' "$_BOARD")"
+eq "…reporting verified 2/2"                         "true" "$(has 'restamped and verified 2/2' "$ERR")"
+# The pre-delete capture is the only record of the labels if the sequence breaks —
+# and no verb here can write one back, so it has to be in the output, not inferred.
+eq "…and the pre-delete CAPTURE records the definition" "true" "$(has 'definition captured: key' "$ERR")"
+eq "…with the option labels verbatim"                "true" \
+   "$(has 'options [{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$ERR")"
+
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to string 2>&1 >/dev/null)" || rc=$?
+eq "retype enum -> string → rc 0"                    "0"    "$rc"
+eq "…the recreate POST carries NO options at all"    "false" "$(jq -c 'has("options")' "$_POST_BODY")"
+eq "…the definition is the scalar type"              '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+eq "…and each value restamps to a plain string"      '"low"' "$(jq -c '.[0].payload.severity' "$_BOARD")"
+
+# A server-returned `options: []` is a NON-EMPTY string, so a string-emptiness test
+# sails past it and the recreate POSTs `options: []` — which the server 422s AFTER
+# the delete, the one genuinely stranded state. The test has to be on LENGTH.
+_seed "$_F_NOTE_EMPTYOPTS" '[{"id":7,"payload":{"note":"x"}}]'
+rc=0; ERR="$(_kbc_field_retype --field note --to enum 2>&1 >/dev/null)" || rc=$?
+eq "string carrying options:[] -> enum → rc 2"       "2"    "$rc"
+eq "…says it never invents an option set"            "true" "$(has 'never invents them' "$ERR")"
+eq "…and mutates NOTHING: no DELETE"                 "0"    "$(_calls DELETE)"
+eq "…and no POST"                                    "0"    "$(_calls POST)"
+
+echo "-- retype — the delete's three failure boards are three different reports --"
+# rc 3 — the DELETE 2xx'd and the confirming re-read failed. The definition is GONE,
+# the index purged, the values orphaned; reporting that as "board UNCHANGED" makes
+# the tool's only actionable line say that nothing happened.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_FIELDS_FAIL_AFTER_DELETE=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "DELETE 2xx + field-set re-read FAILED → rc 1"    "1"    "$rc"
+eq "…reports the DELETED-and-not-recreated state"    "true" "$(has 'is DELETED and was NOT recreated' "$ERR")"
+eq "…calling the delete UNVERIFIED, not failed"      "true" "$(has 'the delete is UNVERIFIED' "$ERR")"
+eq "…and NEVER claims the board is unchanged"        "false" "$(has 'is UNCHANGED' "$ERR")"
+eq "…names the orphaned value count"                 "true" "$(has '2 card payload value(s) survive' "$ERR")"
+eq "…and prints the same finishing create command"   "true" \
+   "$(has "field create --key 'dl_number' --label 'DL Number' --type string" "$ERR")"
+eq "…with no recreate attempted"                     "0"    "$(_calls POST)"
+
+# rc 4 — the DELETE 2xx'd and the field is STILL defined. THIS board is the intact
+# one, and the recreate must not be attempted (a POST on a live key 422s on the
+# duplicate). It is also what pins the delete-verification re-read itself: mutated to
+# `if false`, the run proceeds to the POST and both assertions below red.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_DELETE_NOOP=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "DELETE 2xx but the field is STILL defined → rc 1" "1"   "$rc"
+eq "…says exactly that, naming the field id"          "true" "$(has "field 'dl_number' (id 91) is STILL defined" "$ERR")"
+eq "…reports the board as UNCHANGED"                  "true" "$(has 'the board is UNCHANGED' "$ERR")"
+eq "…never reports the field as deleted"              "false" "$(has 'is DELETED' "$ERR")"
+eq "…and does NOT attempt the recreate"               "0"    "$(_calls POST)"
+eq "…the definition stands, still its old type"       '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+echo "-- retype — a card whose restamp PATCH failed is never 'verified' --"
+# The lethal shape is an IDENTITY cast (string->url/date, enum->string): the stored
+# value ALREADY equals the plan's target, so a read-back-only verify passes on a card
+# that was never written — and on an identity cast that write is the only thing the
+# retype does for it (it is what rebuilds the purged index row). Measured on the
+# pre-fix code: rc 0 and "restamped and verified 2/2" on a run with a failed PATCH.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"DL-0001"}},{"id":9,"payload":{"dl_number":"DL-0042"}}]'
+_PATCH_FAIL="9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to url 2>&1 >/dev/null)" || rc=$?
+eq "identity cast + a FAILED restamp PATCH → rc 1"   "1"    "$rc"
+eq "…never reports the run as fully verified"        "false" "$(has 'restamped and verified' "$ERR")"
+eq "…counts only the card that was written"          "true" "$(has 'only 1 of 2' "$ERR")"
+eq "…names the unwritten card under the PATCH failure" "true" "$(has 'restamp PATCH failed on 1 card(s): 9' "$ERR")"
+eq "…and lists it as NOT verified"                   "true" "$(has 'NOT verified: 9' "$ERR")"
+eq "…while the card that WAS written kept its value" '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+
+echo "-- retype — an unreadable verification GET is UNKNOWN state, not a wrong value --"
+# A GET that failed observed NOTHING. Folding it in with the read-back-wrong ids
+# makes the report assert a board state this run never saw ("still holds its OLD
+# value, no index row") about a card that may well be fully migrated.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_GET_TASK_FAIL="9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "a failed verification GET → rc 1"                "1"    "$rc"
+eq "…is reported as a FAILED verification read"      "true" "$(has 'the verification GET FAILED on 1 card(s): 9' "$ERR")"
+eq "…whose state is called UNKNOWN"                  "true" "$(has 'state is UNKNOWN' "$ERR")"
+eq "…never claimed to have read back a wrong value"  "false" "$(has 'read back a DIFFERENT value' "$ERR")"
+eq "…with the remediation named idempotent"          "true" "$(has 'idempotent' "$ERR")"
+eq "…and still listed as NOT verified"               "true" "$(has 'NOT verified: 9' "$ERR")"
 
 echo "-- retype — the failure modes that must not strand the board --"
 # An uncastable value is decided BEFORE the delete, so the board is left whole.
@@ -446,6 +602,17 @@ rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --restamp-dl 2>&1 >
 eq "--restamp-dl with a non-string target → rc 2"    "2"    "$rc"
 eq "…and issues no request at all"                   "0"    "$(_calls DELETE)"
 
+# EVERY failing id at once. The plan is computed before the delete precisely so the
+# refusal can be COMPLETE while the board is still whole; naming only the first
+# makes the caller re-run — a full board read each time — to discover the second.
+_seed "$_F_DL_NUM" '[{"id":7,"payload":{"dl_number":"nope"}},{"id":9,"payload":{"dl_number":"also-bad"}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "--restamp-dl with TWO uncanonicalizable values → rc 2" "2" "$rc"
+eq "…names the first failing task id, with its value" "true" "$(has "7 ('nope')" "$ERR")"
+eq "…and the second, in the SAME refusal"             "true" "$(has "9 ('also-bad')" "$ERR")"
+eq "…says the board is untouched"                     "true" "$(has 'the board is untouched' "$ERR")"
+eq "…and issues no DELETE"                            "0"    "$(_calls DELETE)"
+
 # The recreate failing after the delete is the one genuinely stranded state. It must
 # name the state AND the exact command that finishes it — the remediation string is a
 # doc surface, and here it is the only record of the label/options to restore.
@@ -456,8 +623,50 @@ eq "delete OK + recreate failed → rc 1"              "1"    "$rc"
 eq "…says the field is DELETED and NOT recreated"    "true" "$(has 'is DELETED and was NOT recreated' "$ERR")"
 eq "…names the surviving orphaned value count"       "true" "$(has '2 card payload value(s) survive' "$ERR")"
 eq "…and prints the exact create that finishes it"   "true" \
-   "$(has "field create --key dl_number --label 'DL Number' --type string" "$ERR")"
+   "$(has "field create --key 'dl_number' --label 'DL Number' --type string" "$ERR")"
 eq "…the board really is left without the field"     "0"    "$(jq 'length' "$_FIELDS")"
+
+# That command is a doc surface, so the assertion RUNS it rather than reading it: a
+# label holding an apostrophe and option values holding spaces re-parse into
+# different arguments — or die at the shell — unless every word is quoted.
+_seed "$_F_ODD" '[{"id":7,"payload":{"weird":"in progress"}}]'
+_POST_FAIL=1
+rc=0; ERR="$(_kbc_field_retype --field weird --to multi_select 2>&1 >/dev/null)" || rc=$?
+eq "recreate failed on an awkwardly-named field → rc 1" "1" "$rc"
+# `grep -m1`, never `grep | head -1`: under `pipefail` a reader that closes early
+# can leave the writer's SIGPIPE as the pipeline's status, so the assignment would
+# fail under `set -e` for a reason that has nothing to do with the assertion.
+CMD="$(grep -m1 -o 'kbcard --board .*' <<<"$ERR")"
+_ARGV="$TMP/argv"
+kbcard() { printf '%s\n' "$@" > "$_ARGV"; }
+eval "${CMD/--board <board>/--board test}"   # the ONE placeholder an operator fills in
+unset -f kbcard
+eq "…and the printed command PARSES into the intended argv" \
+   "--board|test|field|create|--key|weird|--label|Owner's team|--type|multi_select|--options|in progress,done" \
+   "$(paste -sd'|' "$_ARGV")"
+
+# Option LABELS are not restorable through this CLI at all (create and set-options
+# both default a label to its value), so they are named as a manual step and carried
+# verbatim — silently printing a command that drops them would be the wrong record.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+_POST_FAIL=1
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select 2>&1 >/dev/null)" || rc=$?
+eq "a stranded enum names the labels no verb can restore" "true" \
+   "$(has 'no verb here writes an option LABEL' "$ERR")"
+eq "…carrying them verbatim for the manual step"     "true" \
+   "$(has '[{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$ERR")"
+
+# An option value holding a comma cannot round-trip through --options (a comma
+# list) at ALL: a printed command carrying it would create a DIFFERENT option set.
+_seed "$_F_COMMA" '[{"id":7,"payload":{"csvish":"a,b"}}]'
+_POST_FAIL=1
+rc=0; ERR="$(_kbc_field_retype --field csvish --to multi_select 2>&1 >/dev/null)" || rc=$?
+eq "an option value holding a comma → no create command is printed" "false" \
+   "$(has 'first re-create it: kbcard' "$ERR")"
+eq "…it says --options cannot express that set"      "true" \
+   "$(has 'which --options (a comma list) cannot express' "$ERR")"
+eq "…and prints the definition as JSON instead"      "true" \
+   "$(has 'options [{"value":"a,b"},{"value":"c"}]' "$ERR")"
 
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _FETCH_RC=4
