@@ -114,17 +114,30 @@ _hooks_present() {   # count of installed hook entries (symlink or file)
     for h in "${HOOKS[@]}"; do if [ -e "$r/.git/hooks/$h" ] || [ -L "$r/.git/hooks/$h" ]; then n=$((n + 1)); fi; done
     printf '%s' "$n"
 }
+# _replace_file <path> — write stdin to <path> as a REPLACEMENT: unlink first, then create.
+#
+# THE UNLINK IS THE WHOLE POINT, AND IT IS THE OPERATION THIS SCRIPT IS ABOUT. `> "$path"`
+# truncates IN PLACE and keeps the inode; `git pull` REPLACES a hook source (unlink + create, a
+# new inode) and so does the shipped probe (bin/install-board-hooks, `rm -f` then re-write). An
+# entry that is a HARD LINK tracks a truncate perfectly and tracks no replacement at all, so a
+# leg that truncates tests a strictly WEAKER property than the one the upgrade contract needs —
+# and this file's arbiter is authorised to overrule the probe on exactly that property. ONE
+# owner for it, used by both legs that replace: the read-based `_tracks` and the dispatch
+# arbiter's `_write_dhook`.
+_replace_file() {
+    rm -f -- "$1"
+    cat > "$1"
+}
 # _tracks <repo> <hook> — the ONLY property that matters: does the installed entry still deliver
 # the toolkit's content after the SOURCE FILE IS REPLACED (which is what `git pull` does to it)?
 _tracks() {
     local r="$1" h="$2" marker="tracking-marker-$RANDOM-$$"
     local src="$TK/hooks/$h" dst="$r/.git/hooks/$h" saved="$TMP/saved-$h"
     cp "$src" "$saved"
-    rm -f -- "$src"
-    printf '#!/bin/sh\n# %s\n' "$marker" > "$src"
+    printf '#!/bin/sh\n# %s\n' "$marker" | _replace_file "$src"
     local got=no
     if grep -q "$marker" "$dst" 2>/dev/null; then got=yes; fi
-    rm -f -- "$src"; cp "$saved" "$src"; chmod +x "$src"
+    _replace_file "$src" < "$saved"; chmod +x "$src"
     printf '%s' "$got"
 }
 
@@ -167,6 +180,13 @@ else
     eq "a non-zero run installed nothing" "0" "$(_hooks_present "$r")"
     ok "rc $_rc — no hook was installed, so no untracked copy can be running (this IS the fix)"
 fi
+# The tracking test REPLACES the hook source and puts it back. If the restore is wrong, every
+# later assertion in this run measures a toolkit this script damaged rather than the shipped one
+# — a silent wrong answer on the seat there is one run to spend on. So it is checked, here, once.
+for h in "${HOOKS[@]}"; do
+    eq "the tracking test left the hook source byte-identical ($h)" "true" \
+       "$(cmp -s "$SRC_TOOLKIT/hooks/$h" "$TK/hooks/$h" && echo true || echo false)"
+done
 
 echo
 echo "== the disposition matches the verdict =="
@@ -244,7 +264,10 @@ dsrc="$TMP/dispatch-src"; mkdir -p "$dsrc"
 dhook="$dsrc/post-checkout"
 dmark="$TMP/dispatch-marker"
 _write_dhook() {   # <PRE|POST> — the hook SOURCE; it records which generation of it ran
-    printf '#!/bin/sh\nprintf %%s %s > "%s"\n' "$1" "$dmark" > "$dhook"
+    # REPLACED, never truncated — see _replace_file. The POST write must be the same operation a
+    # toolkit upgrade performs, or this leg overrules the probe on a weaker property than the one
+    # the probe measures (a hard-linked entry passes a truncate and fails a replacement).
+    printf '#!/bin/sh\nprintf %%s %s > "%s"\n' "$1" "$dmark" | _replace_file "$dhook"
     chmod +x "$dhook"
 }
 _fire() {   # <branch> — a real git operation that dispatches post-checkout; echoes the marker
@@ -289,9 +312,15 @@ case "$VERDICT" in
     *)           probe_tracking=unknown ;;
 esac
 case "$DISPATCH" in
-    tracks)          dispatch_tracking=yes ;;
-    frozen|broken)   dispatch_tracking=no ;;
-    *)               dispatch_tracking=unknown ;;
+    tracks)     dispatch_tracking=yes ;;
+    frozen)     dispatch_tracking=no ;;
+    # `broken` is NOT a "no": nothing executed after the replacement, though the control fired,
+    # so this leg made no observation about which content dispatch delivers. Folded into `no` it
+    # asserted a pairing it never measured and — on a CAPABLE seat — rendered the false-CAPABLE
+    # banner's sentence "a real `git checkout` dispatched the OLD content", which did not happen.
+    # It lands on `unknown`, i.e. the "no pairing assertion was made" arm, where it belongs.
+    broken)     dispatch_tracking=unknown ;;
+    *)          dispatch_tracking=unknown ;;
 esac
 
 case "$DISPATCH" in
@@ -307,6 +336,12 @@ control-failed)
 no-entry)
     printf '   `ln -s` REFUSED to make the entry at all, so no dispatch could be measured here.\n'
     eq "an 'ln -s' that fails outright ⇒ the probe must have refused too" "no" "$probe_tracking"
+    ;;
+broken)
+    ok "the dispatch leg produced a real measurement (control fired, then the replacement was tried)"
+    printf '   …but NOTHING executed after the replacement, though the control had fired. This leg\n'
+    printf '   therefore observed no dispatched content at all — it is NOT a finding that the OLD\n'
+    printf '   content ran — so it makes no pairing claim (dispatch=unknown). Report this output.\n'
     ;;
 *)
     ok "the dispatch leg produced a real measurement (control fired, then the replacement was tried)"

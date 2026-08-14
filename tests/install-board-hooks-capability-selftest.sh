@@ -84,6 +84,13 @@ LN_SNAPSHOT="$(_stub_dir ln-snapshot ln \
     'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
     'snap="$(dirname -- "${args[0]}")/stub-snapshot.dat"' \
     'cp -- "${args[0]}" "$snap"; exec /bin/ln -s -- "$snap" "${args[1]}"')"
+# An `ln -s` that yields a HARD LINK (rc 0). It is the one seat on which TRUNCATING a file and
+# REPLACING it (unlink + create, what `git pull` does to a hook source) give different answers —
+# a hard link follows the first and never sees the second — so it is what pins any leg claiming
+# to replace a source to actually doing it. The probe already refuses it at the `-L` clause.
+LN_HARDLINK="$(_stub_dir ln-hardlink ln \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'exec /bin/ln -- "${args[0]}" "${args[1]}"')"
 # An `rm` whose unlink silently does nothing — the probe cannot replace its own source, so the
 # measurement never happens.
 RM_NOOP="$(_stub_dir rm-noop rm 'exit 0')"
@@ -120,9 +127,38 @@ CAT_STALE="$(_stub_dir cat-stale cat \
 # A `git` whose `hash-object` fatals — the read the native clause depends on, failing. A failed
 # READ is not a measurement of the seat, so it must land on INDETERMINATE and never on
 # NOT_CAPABLE. Every other git subcommand is the real one.
+# The subcommand is read PAST a leading `-C <dir>`, which the probe's read carries: matching on
+# `$1` alone made this stub a no-op the moment that flag was added, and the arm it exists to
+# force then silently answered CAPABLE through the real git.
 GIT_FAIL="$(_stub_dir git-fail git \
-    'if [ "${1:-}" = "hash-object" ]; then' \
+    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
+    'if [ "$sub" = "hash-object" ]; then' \
     '    echo "fatal: could not open '"'"'x'"'"' for reading: Permission denied" >&2; exit 128' \
+    'fi' \
+    'exec /usr/bin/git "$@"')"
+# A `git` whose `hash-object` answers a DIFFERENT hash on every call — so the native reader can
+# never see the two probe paths as equal, while the shell's `cat` (the real one) resolves a real
+# symlink that really does track. That pair — the probe refusing a seat whose actual dispatch
+# follows the source — is the one no combination of real commands produces on Linux, and it is
+# the branch the single Windows run exists to obtain. Every other subcommand is the real git.
+GIT_FRESH_HASH="$(_stub_dir git-fresh-hash git \
+    "n_file=\"$TMP/git-fresh-hash.n\"" \
+    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
+    'if [ "$sub" = "hash-object" ]; then' \
+    '    n="$(cat "$n_file" 2>/dev/null || echo 0)"; n=$((n + 1)); printf "%s" "$n" > "$n_file"' \
+    '    printf "%040x\n" "$n"; exit 0' \
+    'fi' \
+    'exec /usr/bin/git "$@"')"
+# A `git` whose FIRST `checkout` is the real one and every later one is a silent no-op — so the
+# arbiter's control fires and nothing runs after the replacement. That is its `broken` outcome,
+# which no race can produce on demand, and it is a distinct classification from `frozen`: nothing
+# executed, so no content was observed and no pairing claim can be made from it.
+GIT_ONE_CHECKOUT="$(_stub_dir git-one-checkout git \
+    "n_file=\"\${IBH_CHECKOUT_COUNTER:-$TMP/git-one-checkout.n}\"" \
+    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
+    'if [ "$sub" = "checkout" ]; then' \
+    '    n="$(cat "$n_file" 2>/dev/null || echo 0)"; n=$((n + 1)); printf "%s" "$n" > "$n_file"' \
+    '    if [ "$n" != 1 ]; then exit 0; fi' \
     'fi' \
     'exec /usr/bin/git "$@"')"
 # A PATH on which git is genuinely ABSENT (not stubbed): the probe's other three external
@@ -184,6 +220,17 @@ eq "…but not one pointing at the source" "false" \
 /bin/rm -f -- "$snapctl/src"; echo two > "$snapctl/src"
 eq "…so REPLACING the source never reaches it (the property the probe measures)" "one" \
    "$(cat "$snapctl/snap-dst")"
+# The hard-link stub, and with it the TRUNCATE-vs-REPLACE distinction the whole card turns on.
+hlctl="$TMP/ctl-hardlink"; mkdir -p "$hlctl"; echo one > "$hlctl/src"
+_use_stub "$LN_HARDLINK"; ln -s -- "$hlctl/src" "$hlctl/hl-dst"; _use_real
+eq "the hardlink-stub's 'ln -s' yields a NON-symlink" "false" \
+   "$([ -L "$hlctl/hl-dst" ] && echo true || echo false)"
+eq "…sharing the source's inode (a hard link, not a copy)" "true" \
+   "$([ "$hlctl/hl-dst" -ef "$hlctl/src" ] && echo true || echo false)"
+printf 'two\n' > "$hlctl/src"
+eq "…so TRUNCATING the source in place does reach it" "two" "$(cat "$hlctl/hl-dst")"
+/bin/rm -f -- "$hlctl/src"; printf 'three\n' > "$hlctl/src"
+eq "…while REPLACING it (unlink+create, what 'git pull' does) does NOT" "two" "$(cat "$hlctl/hl-dst")"
 catctl="$TMP/ctl-cat"; mkdir -p "$catctl"
 printf 'live\n' > "$catctl/x.s"; printf 'stale\n' > "$catctl/x.d"
 _use_stub "$CAT_RESOLVE"
@@ -198,8 +245,37 @@ gitctl_rc=0
 _use_stub "$GIT_FAIL"
 git hash-object --no-filters -- "$catctl/x.s" >/dev/null 2>"$TMP/ctl-git.err" || gitctl_rc=$?
 eq "the git-stub's 'hash-object' fatals (rc 128)" "128" "$gitctl_rc"
+gitctlc_rc=0
+git -C "$catctl" hash-object --no-filters -- "$catctl/x.s" >/dev/null 2>&1 || gitctlc_rc=$?
+eq "…including through the '-C <dir>' form the probe uses" "128" "$gitctlc_rc"
 eq "…with git's own fatal on stderr" "true" "$(has "fatal:" "$(cat "$TMP/ctl-git.err")")"
 eq "…while another subcommand is still the real git" "true" "$(has "git version" "$(git --version)")"
+_use_stub "$GIT_FRESH_HASH"
+fh1="$(git hash-object --no-filters -- "$catctl/x.s")"
+fh2="$(git hash-object --no-filters -- "$catctl/x.s")"
+fh3="$(git -C "$catctl" hash-object --no-filters -- "$catctl/x.s")"
+fhv="$(git --version)"
+_use_real
+eq "the fresh-hash stub answers the SAME file with a different hash each call" "false" \
+   "$([ "$fh1" = "$fh2" ] && echo true || echo false)"
+eq "…each answer non-empty (a failed read is a different experiment)" "true" \
+   "$([ -n "$fh1" ] && [ -n "$fh2" ] && echo true || echo false)"
+eq "…including through the '-C <dir>' form the probe uses" "true" \
+   "$([ -n "$fh3" ] && [ "$fh3" != "$fh2" ] && echo true || echo false)"
+eq "…while another subcommand is still the real git" "true" "$(has "git version" "$fhv")"
+# The one-checkout stub, controlled against a throwaway repo and its OWN counter file, so the
+# control does not consume the count the leg that relies on it needs.
+ckctl="$TMP/ctl-checkout"; git init -q "$ckctl"
+git -C "$ckctl" -c user.email=t@invalid -c user.name=t commit -q --allow-empty -m x
+git -C "$ckctl" branch cb1; git -C "$ckctl" branch cb2
+_use_stub "$GIT_ONE_CHECKOUT"
+IBH_CHECKOUT_COUNTER="$TMP/ctl-checkout.n" git -C "$ckctl" checkout -q cb1 2>/dev/null || :
+ck_first="$(git -C "$ckctl" rev-parse --abbrev-ref HEAD)"
+IBH_CHECKOUT_COUNTER="$TMP/ctl-checkout.n" git -C "$ckctl" checkout -q cb2 2>/dev/null || :
+ck_second="$(git -C "$ckctl" rev-parse --abbrev-ref HEAD)"
+_use_real
+eq "the one-checkout stub performs the FIRST checkout for real" "cb1" "$ck_first"
+eq "…and silently no-ops every later one"                       "cb1" "$ck_second"
 _use_only "$NOGIT"
 eq "on the NOGIT path, git is genuinely absent" "false" \
    "$(command -v git >/dev/null 2>&1 && echo true || echo false)"
@@ -520,6 +596,51 @@ eq "rc is still 4"        "4" "$_rc"
 eq "still nothing installed" "0" "$(_installed "$r")"
 eq "and it says why the flag does not apply" "true" "$(has "--allow-copies does not apply" "$_err")"
 
+echo "== installer — a probe KILLED before it reports is refused without inventing a reason =="
+# The rc-4 message quotes the probe's one-line verdict, and on this path there is none: the
+# probe's own TERM trap exits 143 BEFORE it reports, so the refusal rendered "…symlinks ()." and
+# then named four local faults, not one of which can be the cause. That is a refusal the operator
+# cannot act on, and the fail-closed default (commit 2) is what made this arm reachable. Only the
+# words change here — same arm, same rc 4, same vocabulary.
+r="$(_fresh_repo probe-killed)"
+_run "$RM_KILL" "$r"
+eq "rc is still the INDETERMINATE refusal" "4" "$_rc"
+eq "nothing installed"                     "0" "$(_installed "$r")"
+eq "it no longer quotes an empty verdict"  "false" "$(has "tracking symlinks ()." "$_err")"
+eq "…it says the probe never reported"     "true"  "$(has "exited 143 without reporting" "$_err")"
+eq "…and drops the fault list none of whose entries can be the cause" "false" \
+   "$(has "Fix the reason named above" "$_err")"
+/bin/rm -f -- "$TMP/rm-kill.fired"
+# The other half of the same branch, so this is a case split and not a deletion: a refusal that
+# DOES carry a reason token keeps the fault list, unchanged.
+_run "$RM_NOOP" "$r"
+eq "a reported INDETERMINATE still names its reason" "true" "$(has "source-unlink-failed" "$_err")"
+eq "…and still carries the fault list"               "true" "$(has "Fix the reason named above" "$_err")"
+
+echo "== installer — the native read is pinned to the ENTRY's dir, not the caller's cwd =="
+# `git hash-object` resolves a repository context from ITS OWN cwd, and a BROKEN context there is
+# fatal — rc 128 → `git-read-failed` → INDETERMINATE → the whole install refuses at rc 4, naming
+# faults that are none of them the cause, so the operator re-runs from the same cwd forever. The
+# measured way in is a `.git` GITFILE naming a directory that does not exist. Symlink capability
+# is a property of the probed DIRECTORY; where the caller happens to be standing must not enter.
+bad_cwd="$TMP/broken-context"; mkdir -p "$bad_cwd"
+printf 'gitdir: %s\n' "$TMP/no-such-git-dir" > "$bad_cwd/.git"
+printf 'x\n' > "$TMP/hashme"
+# POSITIVE CONTROL: the context really is fatal to an unpinned read from there, and really is not
+# to a pinned one. Without this the assertions below pass on a cwd that was never broken.
+bc_rc=0; ( cd "$bad_cwd" && git hash-object --no-filters -- "$TMP/hashme" ) >/dev/null 2>&1 || bc_rc=$?
+eq "the broken cwd fatals a BARE 'git hash-object' (rc 128)" "128" "$bc_rc"
+bcp_rc=0; ( cd "$bad_cwd" && git -C "$TMP" hash-object --no-filters -- "$TMP/hashme" ) >/dev/null 2>&1 || bcp_rc=$?
+eq "…while the same read pinned with -C answers"             "0"   "$bcp_rc"
+bcv_rc=0
+bcv_out="$( cd "$bad_cwd" && bash -c 'source "$1"; _ibh_symlink_probe "$2"' _ "$IBH" "$TMP/cap" )" || bcv_rc=$?
+eq "the probe still answers CAPABLE from that cwd" "CAPABLE" "$(_verdict "$bcv_out")"
+eq "…at rc 0"                                      "0"       "$bcv_rc"
+r="$(_fresh_repo broken-context)"
+bci_rc=0; ( cd "$bad_cwd" && bash "$IBH" "$r" ) >/dev/null 2>"$TMP/run.err" || bci_rc=$?
+eq "…and the install from that cwd succeeds"       "0"       "$bci_rc"
+eq "…having installed both hooks"                  "2"       "$(_installed "$r")"
+
 echo "== installer — an UNEXPECTED probe status is REFUSED, never installed on =="
 # THE DEFAULT WAS FAIL-OPEN. The dispatch enumerated rc 2 (INDETERMINATE) and rc 1
 # (NOT_CAPABLE) and let every OTHER status fall through to the capable install path — so a
@@ -604,6 +725,66 @@ eq "its NOT_CAPABLE arm runs clean under a forced incapable seat" "0" "$wcn_rc"
 eq "…reporting that verdict"       "true" "$(has "SEAT VERDICT: VERDICT=NOT_CAPABLE" "$wcn_out")"
 eq "…and the arbiter measures a FROZEN dispatch, agreeing with the probe" "true" \
    "$(has "SEAT DISPATCH: frozen — probe says tracking=no, real git dispatch says tracking=no" "$wcn_out")"
+# AND THE ARBITER IS HELD TO THE OPERATION IT ARBITRATES. It is authorised to overrule the probe,
+# so it must test the same property: the hook source is REPLACED (unlink + create — what `git
+# pull` does), never truncated in place. A hard link follows a truncate and never sees a
+# replacement, so on that seat a truncating arbiter reports `tracks` while the probe correctly
+# refuses — and fires its "the refusal is WRONG" banner over a correct refusal, which is a wrong
+# instruction produced by the one Windows dispatch there is to spend. Nothing else reds that.
+wch_rc=0
+wch_out="$(PATH="$LN_HARDLINK:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wch_rc=$?
+eq "a hard-linking seat: the check runs clean"            "0"    "$wch_rc"
+eq "…the probe refuses it (the entry is not a symlink)"   "true" \
+   "$(has "SEAT VERDICT: VERDICT=NOT_CAPABLE" "$wch_out")"
+eq "…and the ARBITER agrees: a REPLACED source never reaches a hard link" "true" \
+   "$(has "SEAT DISPATCH: frozen — probe says tracking=no, real git dispatch says tracking=no" "$wch_out")"
+eq "…so no 'the refusal is WRONG' banner is raised over a correct refusal" "false" \
+   "$(has "THIS IS THE FINDING" "$wch_out")"
+# THE BRANCH THE SINGLE WINDOWS RUN IS SPENT TO OBTAIN — probe=no while a real dispatch=yes — is
+# executed here too, and it had never run: both forced-incapable legs above land on `frozen`, so
+# the highest-value arm of the arbiter (and the mechanism paragraph keyed on the reason token)
+# was shipping unexecuted. Forcing it needs the NATIVE reader to disagree with a dispatch that
+# really works, which no real command does on Linux — hence a `git` whose `hash-object` never
+# answers the same thing twice, paired with the seat's real `ln -s` and real `cat`.
+# THE RUN REDS BY DESIGN HERE: the pairing assertion is what fires the banner, and the banner —
+# not the exit status — is the deliverable on such a seat.
+wcf_rc=0
+wcf_out="$(PATH="$GIT_FRESH_HASH:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wcf_rc=$?
+eq "a seat the probe refuses but that really DISPATCHES the replacement" "true" \
+   "$(has "SEAT DISPATCH: tracks — probe says tracking=no, real git dispatch says tracking=yes" "$wcf_out")"
+eq "…reds the pairing assertion (the disagreement IS the finding)" "1" "$wcf_rc"
+# A non-zero rc is satisfied by ANY failure, including one from a leg this stub broke by
+# accident, so the count is pinned too: exactly one assertion fails, and it is that one.
+eq "…and reds THERE ONLY — one FAIL line in the whole run"          "1" \
+   "$({ printf '%s\n' "$wcf_out" | grep -c '^  FAIL'; } || true)"
+eq "…which is the pairing assertion by name"                        "true" \
+   "$(has "FAIL the PROBE's answer and what git ACTUALLY dispatches agree" "$wcf_out")"
+eq "…and renders the banner that says the refusal is wrong there"  "true" \
+   "$(has "THIS IS THE FINDING, AND IT IS WORTH MORE THAN A PASS" "$wcf_out")"
+# The mechanism paragraph is selected by the probe's REASON token, which is spelled in
+# `bin/install-board-hooks` and matched in the windows check — two files, and nothing else binds
+# them. A rename touching one would keep every existing assertion green while silently dropping
+# the paragraph from the one Windows run, so the token and the paragraph it selects are asserted
+# together, in a run that actually produces both.
+# Pinned WITH its line terminator: the token sits at end of line, and a plain substring test is
+# satisfied by any token that merely STARTS with it — a rename by suffix would pass it.
+eq "…quoting the reason token both files spell"      "true" \
+   "$(has $'REASON=readers-disagree-native-git-does-not-track\n' "$wcf_out")"
+eq "…and the mechanism paragraph that token selects" "true" \
+   "$(has "git's own binary reading the entry as opaque and the shell resolving it" "$wcf_out")"
+# THE THIRD ARBITER OUTCOME, `broken`: the control fired and then NOTHING executed after the
+# replacement. It is not a `no`. Folded into one it asserted a pairing nobody measured and, on a
+# CAPABLE seat, printed "a real `git checkout` dispatched the OLD content" — which did not
+# happen, since nothing was dispatched at all. It now makes no pairing claim.
+wcb_rc=0
+wcb_out="$(PATH="$GIT_ONE_CHECKOUT:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wcb_rc=$?
+eq "a seat whose hook stops firing: the check runs clean" "0" "$wcb_rc"
+eq "…the arbiter classifies it broken, and claims NOTHING about dispatch" "true" \
+   "$(has "SEAT DISPATCH: broken — probe says tracking=yes, real git dispatch says tracking=unknown" "$wcb_out")"
+eq "…landing on the no-pairing-assertion arm"  "true" \
+   "$(has "NO pairing assertion was made: probe=yes dispatch=unknown" "$wcb_out")"
+eq "…and never claiming the OLD content ran"   "false" \
+   "$(has "dispatched the OLD content" "$wcb_out")"
 
 echo "== installer — the usage line carries the flag it accepts =="
 _run - --nope "$r"

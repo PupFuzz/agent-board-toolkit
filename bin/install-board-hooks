@@ -252,15 +252,22 @@ _ibh_hooks_dir() {
 #     (`.ibhp<n>.s` / `.ibhp<n>.d`) — measured on git 2.43.0: a `*.d filter=…` attribute changes
 #     one hash and not the other, which would report a capable seat as NOT_CAPABLE. Raw bytes
 #     are also the right question: git dispatches a hook by EXEC'ing it, filters unapplied.
-#   * No repository is required and none is assumed. The paths are absolute and filters are off,
-#     so the answer does not depend on the caller's cwd (measured: outside a repo, inside a work
-#     tree, and from within a `.git/hooks` directory all answer identically).
+#   * No repository is required and none is assumed — but a repository CONTEXT is still resolved,
+#     so the read is pinned to the probed entry's own directory with `-C`. Bare `git hash-object`
+#     runs git's gentle repository setup from the CALLER's cwd, and a cwd whose context is BROKEN
+#     (a `.git` gitfile naming a directory that does not exist is the measured case) is fatal
+#     there — rc 128, mapped to `git-read-failed`, and the whole install refuses at rc 4 naming
+#     four faults that are none of them the cause. Measured: outside a repo, inside a work tree,
+#     and from within a `.git/hooks` directory all answered identically; a broken context was NOT
+#     measured, and it is the one that answered differently. `-C <dirname>` is also the context
+#     `git.exe` itself uses when it dispatches the hook, which is the reader this stands in for.
+#     Filters stay off, so the pinned directory's attributes change no answer either.
 #   * It READS. There is no `-w`, so nothing reaches any object database and the probe's only
 #     writes remain its two `.ibhp*` entries — which is what keeps `--check`'s disclosed write
 #     set (see _ibh_main) exactly what it was.
 _ibh_native_hash() {
     local h
-    h="$(git hash-object --no-filters -- "$1" 2>/dev/null)" || return 1
+    h="$(git -C "$(dirname -- "$1")" hash-object --no-filters -- "$1" 2>/dev/null)" || return 1
     [ -n "$h" ] || return 1
     printf '%s' "$h"
 }
@@ -374,12 +381,19 @@ _ibh_symlink_probe() {
         h_dst="$(_ibh_native_hash "$dst")" || { verdict=INDETERMINATE reason=git-read-failed; break; }
         if [ "$h_dst" = "$h_src" ]; then git_tracks=yes; fi
         # ONE case over the PAIR — see the table in this function's header. There is no arm in
-        # which one reader's answer is silently discarded.
+        # which one reader's answer is silently discarded, and the DEFAULT is a refusal rather
+        # than the CAPABLE initialiser: an unmapped pair would otherwise keep `verdict=CAPABLE
+        # reason=ok` and install on a pair nobody classified — the same fail-open shape the
+        # caller's probe-status dispatch just inverted. UNREACHABLE as written (both variables are
+        # assigned only `no` above and only `yes` below their reads), so this closes no live hole;
+        # it makes the enumeration's default match its intent, which is what the next arm added
+        # here inherits.
         case "$git_tracks:$shell_tracks" in
             yes:yes) ;;
             no:no)   verdict=NOT_CAPABLE reason=link-does-not-track-source-across-replacement ;;
             no:yes)  verdict=NOT_CAPABLE reason=readers-disagree-native-git-does-not-track ;;
             yes:no)  verdict=NOT_CAPABLE reason=readers-disagree-shell-does-not-track ;;
+            *)       verdict=INDETERMINATE reason=unmapped-reader-pair ;;
         esac
         break
     done
@@ -624,15 +638,27 @@ _ibh_main() {
     # 129/137. Fail-open is the exact class of silent success this whole tool exists to close.
     if [ "$probe_rc" != 0 ] && [ "$probe_rc" != 1 ]; then
         {
-            echo "install-board-hooks: could not DETERMINE whether $probe_dir supports tracking symlinks ($probe_out)."
+            # A KILLED probe prints NOTHING, and that is a live state on this arm: the probe's own
+            # INT/TERM traps exit 130/143 before its one-line report, and an uncaught signal reads
+            # back off the command substitution as 129/137. An empty `$probe_out` rendered as
+            # "(…)" — a refusal quoting nothing, followed by a fault list none of whose entries is
+            # the cause. So the empty case says what actually happened and skips that list.
+            echo "install-board-hooks: could not DETERMINE whether $probe_dir supports tracking symlinks (${probe_out:-the probe exited $probe_rc without reporting: it was terminated before it could measure})."
             echo "  Refusing: an undetermined probe is not evidence of capability, and installing on one is how a"
             echo "  silently-copied hook set gets reported as a healthy install. This is NOT a finding that symlinks"
             echo "  are unavailable here — that is a different verdict, with a different exit status (1, not 4)."
             echo "  --allow-copies does not apply: it opts into a KNOWN degradation, never into an unknown state."
-            echo "  Fix the reason named above (it is a local fault: permissions, a stray probe file, an unreadable"
-            echo "  directory, or a git that cannot read the probe's own entries), then re-run. Where the fault is"
-            echo "  the unlink itself, the probe could not remove its own entries either — any '.ibhp*' left in"
-            echo "  that directory is disposable."
+            if [ -n "$probe_out" ]; then
+                echo "  Fix the reason named above (it is a local fault: permissions, a stray probe file, an unreadable"
+                echo "  directory, or a git that cannot read the probe's own entries), then re-run. Where the fault is"
+                echo "  the unlink itself, the probe could not remove its own entries either — any '.ibhp*' left in"
+                echo "  that directory is disposable."
+            else
+                echo "  There is no reason token to act on: the measurement was interrupted, not completed, so nothing"
+                echo "  here is a finding about this seat. Re-run it — and if it keeps being killed, find what is"
+                echo "  signalling it (a job-control or timeout wrapper around this command is the usual cause). Any"
+                echo "  '.ibhp*' left in that directory belongs to the interrupted probe and is disposable."
+            fi
         } >&2
         exit 4
     fi
