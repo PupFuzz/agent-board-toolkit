@@ -30,7 +30,9 @@
 #                 smaller copy of the very information loss this probe exists to end. It also
 #                 fails closed THROUGH --allow-copies: that flag opts into a KNOWN degradation
 #                 (and records it in the operator's own paper trail), never into an unknown
-#                 state, and every INDETERMINATE reason is an actionable local fault.
+#                 state, and every INDETERMINATE reason is an actionable local fault. ANY OTHER
+#                 probe status lands here too: only 0 selects the install and only 1 selects the
+#                 not-capable refusal, so the default is the refusal, never the install.
 # --allow-copies is not "force copies": on a CAPABLE seat it changes nothing and symlinks are
 # installed. It permits the copies fallback on the seat that has no other option, and a run
 # that actually installs copies says COPY per hook, prints a re-run obligation, and exits 3 —
@@ -613,7 +615,14 @@ _ibh_main() {
     # SYMLINK CAPABILITY — measured before anything is installed, in BOTH modes (see --check).
     local probe_out probe_rc=0
     probe_out="$(_ibh_symlink_probe "$probe_dir")" || probe_rc=$?
-    if [ "$probe_rc" = 2 ]; then
+    # THE DEFAULT IS THE REFUSAL, not the install. Only 0 means CAPABLE and only 1 means
+    # NOT_CAPABLE; every other status is a measurement this dispatch cannot read, so it lands on
+    # the INDETERMINATE arm below — the existing one, with no message and no exit status of its
+    # own. Enumerating 2 here and letting the rest fall through installed symlinks on the
+    # strength of a status nobody mapped, and those statuses exist: the probe's INT/TERM traps
+    # exit 130/143, and a signal they do not catch reads back off the command substitution as
+    # 129/137. Fail-open is the exact class of silent success this whole tool exists to close.
+    if [ "$probe_rc" != 0 ] && [ "$probe_rc" != 1 ]; then
         {
             echo "install-board-hooks: could not DETERMINE whether $probe_dir supports tracking symlinks ($probe_out)."
             echo "  Refusing: an undetermined probe is not evidence of capability, and installing on one is how a"

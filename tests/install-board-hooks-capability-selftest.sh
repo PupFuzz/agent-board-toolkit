@@ -23,9 +23,12 @@
 # capable for the probe's destination and copies only for one named `post-checkout` (the sole way
 # to red the installer's per-entry post-`ln` assertion, which by construction runs after a
 # CAPABLE probe), and an `rm` that terminates the shell that ran it (the probe's signal path,
-# which a race cannot test). A stub is a simulation of the seat, never evidence about it: the
-# standalone `tests/install-board-hooks-capability-windows-check.sh` is what a real Windows seat
-# runs to confirm the actual behaviour, and it uses no stubs at all.
+# which a race cannot test). ONE case is forced by a FIXTURE TOOLKIT rather than a `PATH` stub —
+# an installer copy whose probe returns an UNMAPPED status — because the probe is an internal
+# function and no stub of an external command can make it answer one. A stub is a simulation of
+# the seat, never evidence about it: the standalone
+# `tests/install-board-hooks-capability-windows-check.sh` is what a real Windows seat runs to
+# confirm the actual behaviour, and it uses no stubs at all.
 #
 # EVERY STUB IS POSITIVE-CONTROLLED BEFORE IT IS RELIED ON. An assertion that a run REFUSED is
 # satisfied by any refusal, including one from a stub that never took effect and a `PATH` that
@@ -516,6 +519,44 @@ _run "$RM_NOOP" --allow-copies "$r"
 eq "rc is still 4"        "4" "$_rc"
 eq "still nothing installed" "0" "$(_installed "$r")"
 eq "and it says why the flag does not apply" "true" "$(has "--allow-copies does not apply" "$_err")"
+
+echo "== installer — an UNEXPECTED probe status is REFUSED, never installed on =="
+# THE DEFAULT WAS FAIL-OPEN. The dispatch enumerated rc 2 (INDETERMINATE) and rc 1
+# (NOT_CAPABLE) and let every OTHER status fall through to the capable install path — so a
+# status nobody mapped installed symlinks on the strength of a measurement that never said
+# CAPABLE. Those statuses are not hypothetical: the probe's own INT/TERM traps exit 130/143,
+# and a signal the traps do not catch (SIGHUP, SIGKILL) reads back off the command
+# substitution as 129/137. The default is now the EXISTING exit-4 refusal — no new message,
+# no new verdict, no new exit status.
+#
+# Forcing it needs the PROBE to answer something else, and no PATH stub can do that: the probe
+# is an internal function, not an external command. So a FIXTURE TOOLKIT is built — a copy of
+# the installer whose one-tail mapping returns 3 where it returned 0, beside a copy of the hook
+# sources — and the installer is run FROM it. The shipped tree is never edited.
+fx="$TMP/fixture-probe-rc3"
+mkdir -p "$fx/bin"
+cp -R "$TOOLKIT/hooks" "$fx/hooks"
+sed 's/^\(        CAPABLE)     return \)0\( ;;\)$/\13\2/' "$IBH" > "$fx/bin/install-board-hooks"
+chmod +x "$fx/bin/install-board-hooks"
+# POSITIVE CONTROL, the same bar every stub above meets: the fixture must actually produce the
+# unexpected status, and must do it on a seat that is otherwise CAPABLE. Without this, the rc-4
+# assertion below is satisfied by a fixture that broke the script some other way — a refusal
+# for the wrong reason, which is the failure mode this file exists to keep out.
+eq "the fixture differs from the shipped installer by exactly one line" "1" \
+   "$(diff "$IBH" "$fx/bin/install-board-hooks" | grep -c '^<')"
+fxp_rc=0
+fxp_out="$(bash -c 'source "$1"; _ibh_symlink_probe "$2"' _ "$fx/bin/install-board-hooks" "$TMP")" || fxp_rc=$?
+eq "…and its probe returns the unexpected status 3"                  "3"       "$fxp_rc"
+eq "…while still reporting CAPABLE (so a fall-through WOULD install)" "CAPABLE" "$(_verdict "$fxp_out")"
+r="$(_fresh_repo unexpected-rc)"
+_rc=0
+_out="$(bash "$fx/bin/install-board-hooks" "$r" 2>"$TMP/run.err")" || _rc=$?
+_err="$(cat "$TMP/run.err")"
+eq "rc"                "4" "$_rc"
+eq "nothing installed" "0" "$(_installed "$r")"
+eq "it takes the EXISTING indeterminate refusal, not a new one" "true" \
+   "$(has "could not DETERMINE" "$_err")"
+eq "no probe residue"  "0" "$(_residue "$r/.git/hooks")"
 
 echo "== installer — the dry run answers the SAME verdict, and stdout stays the contract =="
 r="$(_fresh_repo dryrun)"
