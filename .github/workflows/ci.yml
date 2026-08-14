@@ -90,6 +90,7 @@ jobs:
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
           - help-output-selftest
+          - install-board-hooks-capability-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
           - kb-positional-guard-selftest

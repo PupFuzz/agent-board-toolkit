@@ -3,7 +3,39 @@
 #
 #     install-board-hooks <repo-dir>
 #
-#     install-board-hooks --check <repo-dir>   # dry run: print the target dir, write nothing
+#     install-board-hooks --check <repo-dir>   # dry run: print the target dir, install nothing
+#
+#     install-board-hooks --allow-copies <repo-dir>   # a seat that cannot symlink: install
+#                                                     # COPIES, reported AS copies (rc 3)
+#
+# EXIT STATUS: 0 installed as symlinks (or the dry run's target dir) · 1 refused · 2 usage ·
+# 3 installed as COPIES (deliberate, degraded — NOT plain success) · 4 refused because symlink
+# capability could not be DETERMINED (distinct from 1's "determined absent" — see below).
+#
+# INSTALLS BY SYMLINK, AND PROBES FIRST THAT IT CAN. The symlink is the whole upgrade contract:
+# a `git pull` in this toolkit checkout updates every installed hook because each hook entry
+# points at the source. A seat whose OS/filesystem cannot create symlinks does NOT report a
+# failure — a POSIX-emulation layer (Windows/MSYS/Git-Bash with Developer Mode off and no
+# elevation) answers `ln -s` with rc 0 after silently substituting a COPY. The install then
+# reports plain success while the seat runs hook copies `git pull` never updates: a permanent
+# pin that is indistinguishable from a healthy install in every log this tool writes. So
+# capability is MEASURED before anything is installed (`_ibh_symlink_probe`), with three
+# verdicts and three dispositions:
+#   CAPABLE       install symlinks (the unchanged path — every existing caller on a capable
+#                 seat sees byte-identical behaviour).
+#   NOT_CAPABLE   REFUSE (rc 1), naming --allow-copies. The refusal follows the same shape as
+#                 this tool's other refusals: a wrong install here is silent, so it fails closed.
+#   INDETERMINATE REFUSE (rc 4) — reported SEPARATELY from NOT_CAPABLE, and that separation is
+#                 the point: "we could not determine" collapsed into "we know you cannot" is a
+#                 smaller copy of the very information loss this probe exists to end. It also
+#                 fails closed THROUGH --allow-copies: that flag opts into a KNOWN degradation
+#                 (and records it in the operator's own paper trail), never into an unknown
+#                 state, and every INDETERMINATE reason is an actionable local fault.
+# --allow-copies is not "force copies": on a CAPABLE seat it changes nothing and symlinks are
+# installed. It permits the copies fallback on the seat that has no other option, and a run
+# that actually installs copies says COPY per hook, prints a re-run obligation, and exits 3 —
+# never 0. That is what makes the copies install legible to a script; there is deliberately no
+# outcome that produces copies and reports what producing symlinks reports.
 #
 # Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
 # feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
@@ -29,6 +61,10 @@
 # (hooks/agent-dispatch-card-start) is a settings.json PreToolUse hook, NOT a git hook — it is
 # registered by hand (operator-owned config; see docs/HOOKS.md), never written here.
 set -euo pipefail
+
+# ONE owner for the usage line: it was written out at each of the three refusal sites, and a
+# flag added to the parser reaches an operator only through whichever copy they happened to hit.
+_IBH_USAGE="usage: install-board-hooks [--check] [--allow-copies] <repo-dir>"
 
 # _ibh_read_hooks_path <repo-dir>: the ONE reader of core.hooksPath. Echoes the value git will
 # actually use and returns its PRESENCE as a status — the two facts a caller must not conflate.
@@ -204,6 +240,88 @@ _ibh_hooks_dir() {
     printf '%s\n' "$dir"; return 0
 }
 
+# _ibh_symlink_probe <dir>: measure whether THIS directory supports the only symlink property
+# the install depends on — an entry that is a symlink AND that keeps tracking its source when
+# the source is REPLACED (what a `git pull` does to a hook file: a new inode, not a truncate-
+# and-rewrite). Prints exactly one line and returns the verdict as a status:
+#     VERDICT=CAPABLE|NOT_CAPABLE|INDETERMINATE DIR=<probed dir> REASON=<token>
+#   0  CAPABLE        · 1  NOT_CAPABLE        · 2  INDETERMINATE
+# The token and the status are emitted from ONE tail below, so the line an operator reads and
+# the branch the caller takes cannot disagree.
+#
+# NOT_CAPABLE vs INDETERMINATE is the whole design. NOT_CAPABLE is a MEASURED absence: the link
+# was attempted and the result is not one (`ln` failed, or — the shape measured on a real
+# Windows seat — `ln` succeeded and produced a regular file). INDETERMINATE is every state where
+# the measurement itself did not happen: the probe could not write, could not read back, or
+# could not get a clean name to probe with. Folding the second into the first would report a
+# fact about the seat that was never established.
+#
+# It writes two dot-prefixed entries into <dir> and removes them on every path. That is the one
+# write the dry run also performs (see --check), because the alternative is certifying an
+# install that would refuse.
+_ibh_symlink_probe() {
+    local dir="${1:-}" verdict=CAPABLE reason=ok n src="" dst="" got="" rc err
+    while :; do
+        [ -n "$dir" ] || { verdict=INDETERMINATE reason=no-target-dir; break; }
+        [ -d "$dir" ] || { verdict=INDETERMINATE reason=not-a-directory; break; }
+        # CANONICALISE BEFORE PROBING. `ln -s "$src" "$dst"` stores $src VERBATIM as the link
+        # target, and a relative one resolves against $dst's directory — so a relative <dir>
+        # would make the tracking clause below fail on a perfectly capable seat. The probe owns
+        # this; no caller is asked to pass a canonical path.
+        dir="$(cd -- "$dir" 2>/dev/null && pwd -P)" \
+            || { verdict=INDETERMINATE reason=target-dir-unreadable; dir="$1"; break; }
+        # Short names: MAX_PATH is real on the seats this exists for, and the probe must not be
+        # what overflows the path budget.
+        n="$$-$RANDOM"; src="$dir/.ibhp$n.s"; dst="$dir/.ibhp$n.d"
+        # Never clobber. Checked BEFORE the names are adopted for cleanup, so a refusal to
+        # clobber cannot delete the very entry it refused to clobber.
+        if [ -e "$src" ] || [ -e "$dst" ] || [ -L "$src" ] || [ -L "$dst" ]; then
+            src=""; dst=""; verdict=INDETERMINATE reason=probe-name-collision; break
+        fi
+        # The subshell is load-bearing: a FAILED REDIRECTION is reported by the shell, not by
+        # printf, so `printf … 2>/dev/null` does not suppress its message.
+        if ! ( printf 'A%s\n' "$n" > "$src" ) 2>/dev/null; then
+            verdict=INDETERMINATE reason=target-dir-not-writable; break
+        fi
+        rc=0; err="$(ln -s -- "$src" "$dst" 2>&1)" || rc=$?
+        if [ "$rc" != 0 ]; then
+            # The reason token stays a token and `ln`'s own words go to STDERR verbatim: the
+            # one-line stdout contract is what makes this parseable, and folding a message of
+            # unknown shape into a token would need a sanitiser (a bracket range = a COLLATION
+            # range under a UTF-8 locale) to protect it. Nothing is dropped; the channels differ.
+            [ -z "$err" ] || printf 'install-board-hooks: symlink probe: %s\n' "$err" >&2
+            verdict=NOT_CAPABLE reason="ln-failed-rc$rc"; break
+        fi
+        # THE CLAUSE THE MEASURED WINDOWS SHAPE FAILS: `ln -s` reported success and the result
+        # is a regular file (the emulation layer substituted a copy).
+        if [ ! -L "$dst" ]; then
+            verdict=NOT_CAPABLE reason=ln-reported-success-but-result-is-not-a-symlink; break
+        fi
+        # Does it track the source ACROSS A REPLACEMENT? This is the direct test of the property
+        # the upgrade contract needs. A hard link would also fail it; the clause above rejects a
+        # hard link first, so this one is not carrying that case.
+        rm -f -- "$src" 2>/dev/null || :
+        [ ! -e "$src" ] || { verdict=INDETERMINATE reason=source-unlink-failed; break; }
+        if ! ( printf 'B%s\n' "$n" > "$src" ) 2>/dev/null; then
+            verdict=INDETERMINATE reason=source-replace-failed; break
+        fi
+        got="$(cat -- "$dst" 2>/dev/null || :)"
+        if [ "$got" != "B$n" ]; then
+            verdict=NOT_CAPABLE reason=link-does-not-track-source-across-replacement; break
+        fi
+        break
+    done
+    if [ -n "$src" ]; then rm -f -- "$dst" "$src" 2>/dev/null || :; fi
+    printf 'VERDICT=%s DIR=%s REASON=%s\n' "$verdict" "$dir" "$reason"
+    # ONE mapping, at ONE place: a second spelling of it is how a caller's branch and the
+    # operator's line come to say different things.
+    case "$verdict" in
+        CAPABLE)     return 0 ;;
+        NOT_CAPABLE) return 1 ;;
+        *)           return 2 ;;
+    esac
+}
+
 # _ibh_require_positional <slot> <arg> <name> [suffix]: mirrors kb_require_positional in
 # _kb-board-lib.sh — this script is vendored standalone and MUST NOT source that lib; keep the
 # two in sync, and read the rationale there. tests/kb-positional-guard-selftest.sh runs one
@@ -229,12 +347,20 @@ _ibh_main() {
     # directory the install WOULD target (stdout, nothing else) and exits 0; on refusal it
     # prints the same diagnostic a real run would and exits non-zero, with empty stdout.
     #
+    # ONE PRECONDITION CANNOT BE EVALUATED WITHOUT WRITING, and it is evaluated anyway: symlink
+    # capability is measurable only by creating a symlink. The dry run therefore performs the
+    # probe's create-and-remove pair (two dot-prefixed `.ibhp*` entries, removed on every path)
+    # and installs nothing else. The alternative was worse in the direction that matters: a
+    # --check that skipped the probe would answer "this install would succeed" on exactly the
+    # seat where the real run refuses, and its consumer (board-session-close's remedy line)
+    # would print that refusal as the fix.
+    #
     # It exists so a caller never has to MODEL these preconditions. board-session-close used to
     # re-derive them to decide whether to print `install-board-hooks <repo>` as a remedy, and a
     # partial copy — 2 of the 9 — produced a wrong answer in two consecutive reviews: the copy,
     # not the missing predicates, was the defect (canon #5). A caller now asks instead of
     # guessing, and gains any precondition added here without being changed.
-    local check="" repo="" arg
+    local check="" copies="" repo="" arg
     # Parse in a LOOP and reject anything unrecognised. Accepting --check only in position 1
     # meant `install-board-hooks <repo> --check` silently discarded it and performed a REAL
     # install — a flag whose entire contract is "writes nothing" doing the write, on its most
@@ -242,17 +368,18 @@ _ibh_main() {
     # further out, so both are rc 2 with the usage line.
     for arg in "$@"; do
         case "$arg" in
-            --check) check=1 ;;
+            --check)        check=1 ;;
+            --allow-copies) copies=1 ;;
             -*)      echo "install-board-hooks: unknown option: $arg" >&2
-                     echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2 ;;
+                     echo "$_IBH_USAGE" >&2; exit 2 ;;
             *)       _ibh_require_positional "$repo" "$arg" "<repo-dir>" || {
-                         echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+                         echo "$_IBH_USAGE" >&2; exit 2
                      }
                      repo="$arg" ;;
         esac
     done
     if [ -z "$repo" ]; then
-        echo "usage: install-board-hooks [--check] <repo-dir>" >&2; exit 2
+        echo "$_IBH_USAGE" >&2; exit 2
     fi
     # Print git's OWN refusal rather than asserting "not a git repo": `dubious ownership`
     # (safe.directory) and a core.hooksPath git cannot expand also land here, and each needs a
@@ -383,6 +510,7 @@ _ibh_main() {
     # Creatability + writability: what `mkdir -p` and `ln -sf` need. A real run learns this by
     # failing; --check must learn it without writing, so the same two facts are tested here for
     # both modes — a check that skipped them would answer a different question than it is asked.
+    local probe_dir="$dir"
     if [ ! -d "$dir" ]; then
         local anc="$dir" prev=""
         if [ -e "$dir" ] || [ -L "$dir" ]; then
@@ -397,10 +525,53 @@ _ibh_main() {
             echo "install-board-hooks: cannot create the hooks directory $dir (nearest existing parent: $anc)" >&2
             exit 1
         fi
+        # The hooks dir does not exist yet, so the probe runs in the nearest existing ancestor —
+        # the directory `mkdir -p` is about to create it under, hence on the same filesystem and
+        # under the same process privilege, which is what symlink capability is a property of.
+        # ONE rule for both modes: the dry run must not create the directory, and a real run
+        # that probed a directory the dry run could not would answer a different question.
+        probe_dir="$anc"
     elif [ ! -w "$dir" ]; then
         echo "install-board-hooks: the hooks directory is not writable: $dir" >&2
         exit 1
     fi
+
+    # SYMLINK CAPABILITY — measured before anything is installed, in BOTH modes (see --check).
+    local probe_out probe_rc=0
+    probe_out="$(_ibh_symlink_probe "$probe_dir")" || probe_rc=$?
+    if [ "$probe_rc" = 2 ]; then
+        {
+            echo "install-board-hooks: could not DETERMINE whether $probe_dir supports tracking symlinks ($probe_out)."
+            echo "  Refusing: an undetermined probe is not evidence of capability, and installing on one is how a"
+            echo "  silently-copied hook set gets reported as a healthy install. This is NOT a finding that symlinks"
+            echo "  are unavailable here — that is a different verdict, with a different exit status (1, not 4)."
+            echo "  --allow-copies does not apply: it opts into a KNOWN degradation, never into an unknown state."
+            echo "  Fix the reason named above (it is a local fault: permissions, a stray probe file, an unreadable"
+            echo "  directory), then re-run. Where the fault is the unlink itself, the probe could not remove its"
+            echo "  own entries either — any '.ibhp*' left in that directory is disposable."
+        } >&2
+        exit 4
+    fi
+    if [ "$probe_rc" = 1 ] && [ -z "$copies" ]; then
+        {
+            echo "install-board-hooks: $probe_dir cannot create tracking symlinks ($probe_out)."
+            echo "  Refusing: the hooks are installed as symlinks so that a 'git pull' in $toolkit updates them."
+            echo "  Where 'ln -s' silently yields a COPY, the install reports success and the seat then runs hooks"
+            echo "  that never update again — a pin that is invisible in every log this tool writes."
+            echo "  Fix: enable symlink creation, then re-run. On Windows that is Developer Mode, or a shell with"
+            echo "  SeCreateSymbolicLinkPrivilege (an elevated one), plus MSYS/Git-Bash 'export MSYS=winsymlinks:nativestrict'."
+            echo "  Or install copies deliberately: install-board-hooks --allow-copies $repo"
+            echo "    — copies are reported AS copies and exit 3, and MUST be re-installed after every toolkit upgrade."
+        } >&2
+        exit 1
+    fi
+    # A copies install happens only where symlinks were MEASURED absent. On a capable seat the
+    # flag changes nothing: it permits the fallback, it does not select it — so an operator who
+    # carries the flag in a shared script does not silently pin a capable seat to stale copies.
+    # An `if`, never a trailing `[ … ] && x=1`: that form leaks its own false status and, under
+    # `set -e`, quits the script on the common (capable) path.
+    local install_copies=""
+    if [ "$probe_rc" = 1 ]; then install_copies=1; fi
     [ -n "$check" ] || mkdir -p "$dir"
     for hook in "${hooks[@]}"; do
         local src="$toolkit/hooks/$hook" dst="$dir/$hook"
@@ -419,15 +590,63 @@ _ibh_main() {
             exit 1
         fi
         [ -n "$check" ] && continue
-        ln -sf "$src" "$dst"
-        echo "install-board-hooks: $dst -> $src"
+        if [ -n "$install_copies" ]; then
+            # `rm` FIRST, then `cp`: `cp src dst` where dst is an existing symlink writes THROUGH
+            # the link — on a re-install over a previous symlink install that means writing into
+            # whatever it pointed at, i.e. this toolkit's own hook source.
+            rm -f -- "$dst"
+            cp -- "$src" "$dst"
+            # git silently ignores a non-executable hook (an `advice.ignoredHook` hint at most),
+            # and `cp` applies the umask to a new file — so the bit is set explicitly.
+            chmod +x "$dst"
+            echo "install-board-hooks: COPY $dst <= $src   (a copy — it does NOT track the toolkit)"
+        else
+            ln -sf "$src" "$dst"
+            # The probe said this directory can do it; this asserts that THIS entry actually is
+            # one. It is not a guard against an impossible state — it is the reported defect
+            # itself (an emulation layer answering `ln -s` with rc 0 and a copy), measured on the
+            # entry that will really be dispatched rather than on the probe's stand-in.
+            if [ ! -L "$dst" ]; then
+                {
+                    echo "install-board-hooks: 'ln -s' reported success but $dst is not a symlink."
+                    echo "  The capability probe passed on $probe_dir and this entry contradicts it, so the two"
+                    echo "  disagree and the install is NOT trustworthy. The entry is left in place (removing it"
+                    echo "  would leave the repo with no hook at all); it will run, but never track $src."
+                    echo "  Re-run with --allow-copies to install copies deliberately and have them reported as copies."
+                } >&2
+                exit 1
+            fi
+            echo "install-board-hooks: $dst -> $src"
+        fi
     done
     # The dry run's ONLY stdout is the target directory: empty stdout means "do not act", the
-    # same fail-closed contract the rest of the toolkit uses.
-    if [ -n "$check" ]; then printf '%s\n' "$dir"; return 0; fi
+    # same fail-closed contract the rest of the toolkit uses. Its STATUS still carries the
+    # verdict — a would-be copies install answers 3 here exactly as the real one does, so a
+    # consumer gating on `--check` succeeding never reads a degraded install as a clean one.
+    if [ -n "$check" ]; then
+        printf '%s\n' "$dir"
+        if [ -n "$install_copies" ]; then
+            echo "install-board-hooks: this seat cannot symlink ($probe_out) — a real run with --allow-copies would install COPIES here." >&2
+            exit 3
+        fi
+        return 0
+    fi
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi
+    if [ -n "$install_copies" ]; then
+        {
+            echo "install-board-hooks: installed ${#hooks[@]} hook(s) as COPIES, not symlinks ($probe_out)."
+            echo "  They do NOT track $toolkit: a 'git pull' there will not reach them."
+            echo "  RE-RUN THIS COMMAND AFTER EVERY TOOLKIT UPGRADE — and delete the stale copies first, because"
+            echo "  the installer refuses to overwrite a non-symlink hook (it cannot tell a stale copy of ours"
+            echo "  from a hook you wrote):"
+            for hook in "${hooks[@]}"; do echo "      rm -f -- '$dir/$hook'"; done
+            echo "      install-board-hooks --allow-copies $repo"
+            echo "  Exit status 3 — a deliberate degraded install, deliberately not 0."
+        } >&2
+        exit 3
+    fi
 }
 
 # run main only when executed directly, so the selftest can source _ibh_hooks_dir.
