@@ -240,6 +240,29 @@ _ibh_hooks_dir() {
     printf '%s\n' "$dir"; return 0
 }
 
+# _ibh_native_hash <path>: what the CONSUMER'S OWN BINARY sees at <path>. `git hash-object`
+# opens the path (following a symlink) and hashes the bytes it reads, so two paths that hash
+# equal deliver the same content to git — and git.exe is what dispatches hooks. rc 1 when git
+# cannot read it at all (absent from PATH, a dangling entry, an unreadable repository context):
+# a failed READ is never an answer about the seat, so the caller maps it to INDETERMINATE.
+#   * `--no-filters` is load-bearing, not tidiness. Without it git applies the clean filter the
+#     attributes mechanism selects FOR THAT PATH, and the probe's two paths differ in suffix
+#     (`.ibhp<n>.s` / `.ibhp<n>.d`) — measured on git 2.43.0: a `*.d filter=…` attribute changes
+#     one hash and not the other, which would report a capable seat as NOT_CAPABLE. Raw bytes
+#     are also the right question: git dispatches a hook by EXEC'ing it, filters unapplied.
+#   * No repository is required and none is assumed. The paths are absolute and filters are off,
+#     so the answer does not depend on the caller's cwd (measured: outside a repo, inside a work
+#     tree, and from within a `.git/hooks` directory all answer identically).
+#   * It READS. There is no `-w`, so nothing reaches any object database and the probe's only
+#     writes remain its two `.ibhp*` entries — which is what keeps `--check`'s disclosed write
+#     set (see _ibh_main) exactly what it was.
+_ibh_native_hash() {
+    local h
+    h="$(git hash-object --no-filters -- "$1" 2>/dev/null)" || return 1
+    [ -n "$h" ] || return 1
+    printf '%s' "$h"
+}
+
 # _ibh_symlink_probe <dir>: measure whether THIS directory supports the only symlink property
 # the install depends on — an entry that is a symlink AND that keeps tracking its source when
 # the source is REPLACED (what a `git pull` does to a hook file: a new inode, not a truncate-
@@ -249,18 +272,40 @@ _ibh_hooks_dir() {
 # The token and the status are emitted from ONE tail below, so the line an operator reads and
 # the branch the caller takes cannot disagree.
 #
+# THE REPLACED CONTENT IS READ TWICE, BY TWO DIFFERENT READERS, AND BOTH ANSWERS ARE KEPT.
+# `cat` is the SHELL's reader — on a Windows/MSYS seat that is the emulation layer, and under
+# `MSYS=winsymlinks:lnk` the layer creates a Windows `.lnk` shortcut which its own `cat` and
+# `test -L` both resolve. Read only through it, this probe would answer CAPABLE while `git.exe`
+# — a native binary, and the one that actually dispatches hooks — sees a shortcut FILE: a false
+# CAPABLE minted inside the detector for the exact silent degrade the detector exists to stop.
+# So the replaced content is read a second time by git's own binary (_ibh_native_hash), and the
+# two answers are reported as a pair rather than collapsed:
+#   git tracks | shell tracks | verdict       | REASON
+#   ---------- | ------------ | ------------- | ------------------------------------------------
+#   read failed (either path)  | INDETERMINATE | git-read-failed
+#   yes        | yes          | CAPABLE       | ok
+#   no         | no           | NOT_CAPABLE   | link-does-not-track-source-across-replacement
+#   no         | yes          | NOT_CAPABLE   | readers-disagree-native-git-does-not-track
+#   yes        | no           | NOT_CAPABLE   | readers-disagree-shell-does-not-track
+# Both disagreements fail CLOSED, and the token records the DIRECTION so one run on a real seat
+# identifies the mode instead of leaving a refusal nobody can attribute. The `lnk` signature is
+# the `no|yes` row. The `yes|no` row is refused because hooks execute under that same shell.
+# Dropping `cat` and keeping only git would refuse the `lnk` seat without ever saying why.
+#
 # NOT_CAPABLE vs INDETERMINATE is the whole design. NOT_CAPABLE is a MEASURED absence: the link
 # was attempted and the result is not one (`ln` failed, or — the shape measured on a real
-# Windows seat — `ln` succeeded and produced a regular file). INDETERMINATE is every state where
-# the measurement itself did not happen: the probe could not write, could not read back, or
-# could not get a clean name to probe with. Folding the second into the first would report a
-# fact about the seat that was never established.
+# Windows seat — `ln` succeeded and produced a regular file), or it is one and a reader does not
+# see through it. INDETERMINATE is every state where the measurement itself did not happen: the
+# probe could not write, could not read back, or could not get a clean name to probe with.
+# Folding the second into the first would report a fact about the seat that was never
+# established — which is why a git that fails to READ is `git-read-failed`, not "not capable".
 #
 # It writes two dot-prefixed entries into <dir> and removes them on every path. That is the one
 # write the dry run also performs (see --check), because the alternative is certifying an
 # install that would refuse.
 _ibh_symlink_probe() {
     local dir="${1:-}" verdict=CAPABLE reason=ok n src="" dst="" got="" rc err
+    local shell_tracks=no git_tracks=no h_src h_dst
     while :; do
         [ -n "$dir" ] || { verdict=INDETERMINATE reason=no-target-dir; break; }
         [ -d "$dir" ] || { verdict=INDETERMINATE reason=not-a-directory; break; }
@@ -316,10 +361,24 @@ _ibh_symlink_probe() {
         if ! ( printf 'B%s\n' "$n" > "$src" ) 2>/dev/null; then
             verdict=INDETERMINATE reason=source-replace-failed; break
         fi
+        # READER 1 — the shell's. On the seat this whole tool exists for, that is the POSIX
+        # emulation layer, and it resolves things a native binary does not.
         got="$(cat -- "$dst" 2>/dev/null || :)"
-        if [ "$got" != "B$n" ]; then
-            verdict=NOT_CAPABLE reason=link-does-not-track-source-across-replacement; break
-        fi
+        if [ "$got" = "B$n" ]; then shell_tracks=yes; fi
+        # READER 2 — the consumer's own binary. A read that FAILS is not an answer about the
+        # seat: it is the measurement not happening, so it is INDETERMINATE and stops here
+        # rather than being scored as "does not track".
+        h_src="$(_ibh_native_hash "$src")" || { verdict=INDETERMINATE reason=git-read-failed; break; }
+        h_dst="$(_ibh_native_hash "$dst")" || { verdict=INDETERMINATE reason=git-read-failed; break; }
+        if [ "$h_dst" = "$h_src" ]; then git_tracks=yes; fi
+        # ONE case over the PAIR — see the table in this function's header. There is no arm in
+        # which one reader's answer is silently discarded.
+        case "$git_tracks:$shell_tracks" in
+            yes:yes) ;;
+            no:no)   verdict=NOT_CAPABLE reason=link-does-not-track-source-across-replacement ;;
+            no:yes)  verdict=NOT_CAPABLE reason=readers-disagree-native-git-does-not-track ;;
+            yes:no)  verdict=NOT_CAPABLE reason=readers-disagree-shell-does-not-track ;;
+        esac
         break
     done
     if [ -n "$src" ]; then rm -f -- "$dst" "$src" 2>/dev/null || :; fi
@@ -562,8 +621,9 @@ _ibh_main() {
             echo "  are unavailable here — that is a different verdict, with a different exit status (1, not 4)."
             echo "  --allow-copies does not apply: it opts into a KNOWN degradation, never into an unknown state."
             echo "  Fix the reason named above (it is a local fault: permissions, a stray probe file, an unreadable"
-            echo "  directory), then re-run. Where the fault is the unlink itself, the probe could not remove its"
-            echo "  own entries either — any '.ibhp*' left in that directory is disposable."
+            echo "  directory, or a git that cannot read the probe's own entries), then re-run. Where the fault is"
+            echo "  the unlink itself, the probe could not remove its own entries either — any '.ibhp*' left in"
+            echo "  that directory is disposable."
         } >&2
         exit 4
     fi

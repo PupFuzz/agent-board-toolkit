@@ -147,7 +147,19 @@ Re-run after `git pull`-ing a new toolkit version only if the hook set changed: 
 | --- | --- | --- |
 | **CAPABLE** | 0 | symlinks are installed — the unchanged path |
 | **NOT_CAPABLE** | 1 | **refused**, nothing installed, with the reason and the opt-in named |
-| **INDETERMINATE** | 4 | **refused**, nothing installed — reported *separately* from NOT_CAPABLE, because "we could not determine" is not "we know you cannot". The reason names a local fault to fix (an unwritable or unreadable directory, a probe-name collision, an unlink that did not take); `--allow-copies` deliberately does **not** apply, since it opts into a *known* degradation, not an unknown one |
+| **INDETERMINATE** | 4 | **refused**, nothing installed — reported *separately* from NOT_CAPABLE, because "we could not determine" is not "we know you cannot". The reason names a local fault to fix (an unwritable or unreadable directory, a probe-name collision, an unlink that did not take, a `git` that cannot read the probe's own entries); `--allow-copies` deliberately does **not** apply, since it opts into a *known* degradation, not an unknown one |
+
+**The probe reads the entry twice, with two different readers, because on the seat that matters they disagree.** Its test is that the installed entry still delivers the source's content after the source is *replaced* — and the obvious way to check that, reading the entry from the shell, is exactly what the emulation layer defeats. Under `MSYS=winsymlinks:lnk` the layer creates a Windows `.lnk` shortcut that its own `cat` and `test -L` both resolve, while `git.exe` — the binary that actually dispatches hooks — opens the file and reads shortcut bytes. A shell-only probe would answer **CAPABLE** there: the silent degrade, reproduced inside the detector. So the replaced content is read again by git's own binary (`git hash-object`, which is why `git` is a requirement of this tool — it already was), and both answers are kept:
+
+| git tracks | shell tracks | Verdict | `REASON` |
+| --- | --- | --- | --- |
+| the read failed on either path | | INDETERMINATE | `git-read-failed` |
+| yes | yes | CAPABLE | `ok` |
+| no | no | NOT_CAPABLE | `link-does-not-track-source-across-replacement` |
+| no | yes | NOT_CAPABLE | `readers-disagree-native-git-does-not-track` — the `winsymlinks:lnk` signature |
+| yes | no | NOT_CAPABLE | `readers-disagree-shell-does-not-track` (hooks execute under that shell) |
+
+Both disagreements fail closed, and the token records *which* reader failed: a refusal nobody can attribute is not much better than no refusal. A failed *read* is never scored as "does not track" — that would report a fact about the seat that was never established, and would route you to `--allow-copies` over a local `git` fault.
 
 **If your seat genuinely cannot symlink, `--allow-copies` installs copies deliberately:**
 
@@ -165,6 +177,8 @@ install-board-hooks --allow-copies <repo>
 `install-board-hooks --check <repo>` reports what a run would do, answers the **same** verdict and exit status a real run would, and installs nothing. It is not write-free: the capability probe is measurable only by creating a symlink, so the dry run creates and removes the probe's two `.ibhp*` entries. That is deliberate — a `--check` that skipped the measurement would answer "this would succeed" on precisely the seat where the real run refuses, and the session-close remedy line that consumes it would print that refusal as the fix.
 
 **Validating this on a real Windows seat:** run `bash <toolkit>/tests/install-board-hooks-capability-windows-check.sh`. It needs only the checkout, `bash`, `git` and coreutils — no network, no board config — touches nothing but its own temp directory, and prints a seat report plus one `ok`/`FAIL` line per assertion. The behaviour above was developed on Linux, where an incapable seat can only be simulated; that script is how the real one is measured.
+
+It also carries the one thing the probe cannot do: an **end-to-end dispatch** leg that stops inferring. The probe decides by *reading* the entry; that leg makes an entry with the seat's own `ln -s`, replaces the hook source the way an upgrade does, runs a real `git checkout`, and reports which content actually **executed** — with its own control (the hook is fired once *before* the replacement), so "nothing happened" can never read as a pass. Its two trailing lines, `SEAT VERDICT:` and `SEAT DISPATCH:`, are the result: a seat the probe **refuses** whose dispatch nonetheless delivers the replacement means the refusal is **wrong** on that seat, and the script says so at length rather than just failing. Send the whole output; do not adjust anything to make it green.
 
 **A checkout whose git dir is not `<root>/.git` installs into the hooks directory git really dispatches from — except a linked worktree, which is refused and told where to go instead.** Three topologies put the hooks directory outside the work tree, and they need three *different* answers, so there is no single generic message:
 

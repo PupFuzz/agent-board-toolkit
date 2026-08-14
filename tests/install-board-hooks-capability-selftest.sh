@@ -14,7 +14,12 @@
 # INDETERMINATE case here is produced by a FORCED condition — a stub `ln` on PATH reproducing
 # the measured shape (rc 0, result is a copy), a stub `ln` that fails outright, a stub `ln` that
 # links to a snapshot (a real symlink that does not track its source), and a stub `rm` whose
-# unlink silently no-ops. Two further stubs force paths a verdict cannot reach: an `ln` that is
+# unlink silently no-ops. THE TWO-READER cases need a second command stubbed as well, because
+# the whole point of them is that the two readers answer differently and no single command can
+# express that on Linux: a `cat` that resolves what the native reader cannot (paired with the
+# snapshot `ln`, this is the `MSYS=winsymlinks:lnk` signature), a `cat` that fails to resolve
+# what the native reader does, a `git` whose `hash-object` fatals, and a PATH on which `git` is
+# genuinely absent. Two further stubs force paths a verdict cannot reach: an `ln` that is
 # capable for the probe's destination and copies only for one named `post-checkout` (the sole way
 # to red the installer's per-entry post-`ln` assertion, which by construction runs after a
 # CAPABLE probe), and an `rm` that terminates the shell that ran it (the probe's signal path,
@@ -56,6 +61,9 @@ _stub_dir() {
 # resolved path of every command it has run, so a PATH change alone can leave the ALREADY
 # resolved `ln`/`rm` in use and the stub silently unexercised.
 _use_stub() { PATH="$1:$REAL_PATH"; hash -r; }
+# _use_only <dir…> — a PATH that is ONLY these directories. Shadowing a command is not the same
+# experiment as not having it: `git-read-failed` must be reachable by a git that is ABSENT.
+_use_only() { PATH="$1"; hash -r; }
 _use_real() { PATH="$REAL_PATH"; hash -r; }
 
 # An `ln -s` that reports success and produces a COPY — the shape measured on a real Windows
@@ -87,6 +95,39 @@ LN_COPY_HOOK="$(_stub_dir ln-copy-hook ln \
     '    rm -f -- "${args[1]}"; cp -- "${args[0]}" "${args[1]}"; exit 0' \
     'fi' \
     'exec /bin/ln -sf -- "${args[0]}" "${args[1]}"')"
+# A `cat` that RESOLVES what the native reader cannot — the `MSYS=winsymlinks:lnk` signature,
+# reproduced with the only two commands that can express it on Linux. Under that mode the
+# emulation layer writes a Windows `.lnk` shortcut which its own `cat` follows to the LIVE
+# source, while `git.exe` opens the file and reads shortcut bytes. Here: `LN_SNAPSHOT` gives the
+# native reader a stale object (a link to a snapshot), and this `cat` answers for `<x>.d` by
+# reading its sibling `<x>.s` — i.e. the live source, exactly as the layer's `cat` does. Paired,
+# the two readers DISAGREE in the `lnk` direction, which no single-reader probe can see.
+CAT_RESOLVE="$(_stub_dir cat-resolve cat \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'p="${args[0]:-}"' \
+    'case "$p" in *.d) exec /usr/bin/cat -- "${p%.d}.s" ;; esac' \
+    'exec /usr/bin/cat "$@"')"
+# A `cat` that does NOT see through an entry the native reader does — the opposite direction.
+# Hooks execute under that shell, so this fails closed too, and the token says which side.
+CAT_STALE="$(_stub_dir cat-stale cat \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'p="${args[0]:-}"' \
+    'case "$p" in *.d) printf "STALE\n"; exit 0 ;; esac' \
+    'exec /usr/bin/cat "$@"')"
+# A `git` whose `hash-object` fatals — the read the native clause depends on, failing. A failed
+# READ is not a measurement of the seat, so it must land on INDETERMINATE and never on
+# NOT_CAPABLE. Every other git subcommand is the real one.
+GIT_FAIL="$(_stub_dir git-fail git \
+    'if [ "${1:-}" = "hash-object" ]; then' \
+    '    echo "fatal: could not open '"'"'x'"'"' for reading: Permission denied" >&2; exit 128' \
+    'fi' \
+    'exec /usr/bin/git "$@"')"
+# A PATH on which git is genuinely ABSENT (not stubbed): the probe's other three external
+# commands, and nothing else. `_use_only` — not `_use_stub` — is what makes it absence rather
+# than shadowing.
+NOGIT="$TMP/stubs/nogit"
+mkdir -p "$NOGIT"
+for _b in ln rm cat; do ln -s "/usr/bin/$_b" "$NOGIT/$_b"; done
 # An `rm` that terminates the shell that invoked it — the only way to observe the probe's SIGNAL
 # path deterministically (a real race is not a test). It stubs `rm` rather than `ln` for a
 # measured reason: `$PPID` is the PROBE's shell only for a command the probe runs DIRECTLY, and
@@ -140,6 +181,30 @@ eq "…but not one pointing at the source" "false" \
 /bin/rm -f -- "$snapctl/src"; echo two > "$snapctl/src"
 eq "…so REPLACING the source never reaches it (the property the probe measures)" "one" \
    "$(cat "$snapctl/snap-dst")"
+catctl="$TMP/ctl-cat"; mkdir -p "$catctl"
+printf 'live\n' > "$catctl/x.s"; printf 'stale\n' > "$catctl/x.d"
+_use_stub "$CAT_RESOLVE"
+eq "the resolve-stub's 'cat' answers a .d path with its .s sibling" "live" "$(cat -- "$catctl/x.d")"
+eq "…and is the real 'cat' for every other path"                    "live" "$(cat -- "$catctl/x.s")"
+_use_stub "$CAT_STALE"
+eq "the stale-stub's 'cat' answers a .d path with neither file's bytes" "STALE" "$(cat -- "$catctl/x.d")"
+eq "…and is the real 'cat' for every other path"                       "live" "$(cat -- "$catctl/x.s")"
+_use_real
+eq "…and OFF the stub PATH, 'cat' reads the file it is given" "stale" "$(cat -- "$catctl/x.d")"
+gitctl_rc=0
+_use_stub "$GIT_FAIL"
+git hash-object --no-filters -- "$catctl/x.s" >/dev/null 2>"$TMP/ctl-git.err" || gitctl_rc=$?
+eq "the git-stub's 'hash-object' fatals (rc 128)" "128" "$gitctl_rc"
+eq "…with git's own fatal on stderr" "true" "$(has "fatal:" "$(cat "$TMP/ctl-git.err")")"
+eq "…while another subcommand is still the real git" "true" "$(has "git version" "$(git --version)")"
+_use_only "$NOGIT"
+eq "on the NOGIT path, git is genuinely absent" "false" \
+   "$(command -v git >/dev/null 2>&1 && echo true || echo false)"
+eq "…while ln/rm/cat are still there (so the probe reaches its native read)" "true" \
+   "$(command -v ln >/dev/null 2>&1 && command -v rm >/dev/null 2>&1 && command -v cat >/dev/null 2>&1 && echo true || echo false)"
+_use_real
+eq "…and back on the real PATH, git resolves again" "true" \
+   "$(command -v git >/dev/null 2>&1 && echo true || echo false)"
 hookctl="$TMP/ctl-hook"; mkdir -p "$hookctl"; echo one > "$hookctl/src"
 _use_stub "$LN_COPY_HOOK"
 ln -sf "$hookctl/src" "$hookctl/other"; ln -sf "$hookctl/src" "$hookctl/post-checkout"
@@ -213,6 +278,49 @@ _use_stub "$LN_SNAPSHOT"; _probe "$ns"; _use_real
 eq "verdict" "NOT_CAPABLE"                                    "$(_verdict "$_out")"
 eq "rc"      "1"                                              "$_rc"
 eq "reason"  "link-does-not-track-source-across-replacement"  "$(_reason "$_out")"
+
+echo "== the probe — the two readers DISAGREE: the winsymlinks:lnk signature =="
+# The defect this arm exists for: read only through the shell and this seat answers CAPABLE,
+# because the emulation layer resolves an object `git.exe` reads as opaque bytes. The verdict
+# must be NOT_CAPABLE and the token must name WHICH reader failed — one run on a real seat is
+# all there is, so an unattributable refusal would waste it.
+rd="$TMP/readers-disagree"; mkdir -p "$rd"
+PATH="$CAT_RESOLVE:$LN_SNAPSHOT:$REAL_PATH"; hash -r
+_probe "$rd"; _use_real
+eq "verdict" "NOT_CAPABLE"                                  "$(_verdict "$_out")"
+eq "rc"      "1"                                            "$_rc"
+eq "reason"  "readers-disagree-native-git-does-not-track"   "$(_reason "$_out")"
+eq "…and NOT the both-readers-agree token (the direction is the finding)" "false" \
+   "$(has "REASON=link-does-not-track-source-across-replacement" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$rd")"
+
+echo "== the probe — the OTHER direction is refused too, and says so =="
+# git sees through the entry and the shell does not. Hooks execute under that shell, so this
+# fails closed as well; the two are distinguished only by the token.
+rs="$TMP/readers-disagree-shell"; mkdir -p "$rs"
+_use_stub "$CAT_STALE"; _probe "$rs"; _use_real
+eq "verdict" "NOT_CAPABLE"                             "$(_verdict "$_out")"
+eq "rc"      "1"                                       "$_rc"
+eq "reason"  "readers-disagree-shell-does-not-track"   "$(_reason "$_out")"
+eq "leaves no residue" "0" "$(_residue "$rs")"
+
+echo "== the probe — a FAILED native read is INDETERMINATE, never NOT_CAPABLE =="
+# An absent or erroring `git hash-object` means the measurement did not happen. Scoring it as
+# "does not track" would report a fact about the seat that was never established — and would
+# route the operator to --allow-copies, i.e. into a degradation, over a local git fault.
+gf="$TMP/git-fail"; mkdir -p "$gf"
+_use_stub "$GIT_FAIL"; _probe "$gf"; _use_real
+eq "hash-object fatals: verdict" "INDETERMINATE"    "$(_verdict "$_out")"
+eq "hash-object fatals: rc"      "2"                "$_rc"
+eq "hash-object fatals: reason"  "git-read-failed"  "$(_reason "$_out")"
+eq "…and it is not reported as a measured absence" "false" "$(has "NOT_CAPABLE" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$gf")"
+ga="$TMP/git-absent"; mkdir -p "$ga"
+_use_only "$NOGIT"; _probe "$ga"; _use_real
+eq "git absent from PATH: verdict" "INDETERMINATE"   "$(_verdict "$_out")"
+eq "git absent from PATH: rc"      "2"               "$_rc"
+eq "git absent from PATH: reason"  "git-read-failed" "$(_reason "$_out")"
+eq "leaves no residue" "0" "$(_residue "$ga")"
 
 echo "== the probe — INDETERMINATE is its own verdict, never folded into NOT_CAPABLE =="
 _probe ""
@@ -437,6 +545,24 @@ wc_out="$(bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" ||
 eq "the windows check runs clean on this seat" "0"    "$wc_rc"
 eq "…and reports the seat's verdict"           "true" "$(has "SEAT VERDICT: VERDICT=" "$wc_out")"
 eq "…having asserted the invariant"            "true" "$(has "TRACKS its source across a replacement" "$wc_out")"
+# Its END-TO-END leg is the one that stops inferring dispatch from a read, so its presence is
+# asserted too — a rot that silently dropped it would leave the seat run answering the same
+# question twice.
+eq "…and RAN the end-to-end dispatch arbiter"  "true" "$(has "DISPATCH RESULT: tracks" "$wc_out")"
+eq "…reporting the pair on one line"           "true" \
+   "$(has "SEAT DISPATCH: tracks — probe says tracking=yes, real git dispatch says tracking=yes" "$wc_out")"
+# AND ITS NOT_CAPABLE ARM IS EXECUTED ONCE, HERE, BEFORE THE REAL SEAT IS SPENT. That arm — and
+# the arbiter's `frozen` classification — is the branch a Windows seat takes, and there is one
+# Windows run to spend: shipping a branch nothing has ever executed risks spending it on a
+# scripting error instead of the measurement. The stub makes this a simulation, so it is
+# evidence that the BRANCH RUNS, never evidence about Windows; the script itself remains
+# stub-free, and this PATH is imposed by the caller for one invocation.
+wcn_rc=0
+wcn_out="$(PATH="$LN_COPY:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wcn_rc=$?
+eq "its NOT_CAPABLE arm runs clean under a forced incapable seat" "0" "$wcn_rc"
+eq "…reporting that verdict"       "true" "$(has "SEAT VERDICT: VERDICT=NOT_CAPABLE" "$wcn_out")"
+eq "…and the arbiter measures a FROZEN dispatch, agreeing with the probe" "true" \
+   "$(has "SEAT DISPATCH: frozen — probe says tracking=no, real git dispatch says tracking=no" "$wcn_out")"
 
 echo "== installer — the usage line carries the flag it accepts =="
 _run - --nope "$r"
