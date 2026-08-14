@@ -53,7 +53,7 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
 5. **Add a `CLAUDE.md § Recent releases` row** at the top of the table, and **trim the oldest row back to 10**. The table is the ergonomic snapshot and is always truncated to its stated cap; `docs/CHANGELOG.md` (step 4) is the canonical record and is never truncated, so a trimmed row is still fully documented there.
 6. **ASK the user** before opening the release PR.
 7. Open the release PR `release/v<version>` → **`main`** with full release notes. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly** — a `dev`-headed PR merged with auto-delete-head-branches enabled deletes `dev`.
-8. Wait for ALL CI checks (if the repo has CI) to complete + pass. **Claude does NOT `gh pr merge` a `main`-targeted PR** regardless of CI state.
+8. Wait for ALL CI checks (if the repo has CI) to complete + pass. **Claude does NOT `gh pr merge` a `main`-targeted PR** regardless of CI state. **Merge it with "Create a merge commit", never "Squash and merge"** — a squashed release loses the bundled commits' identity and breaks the next release PR's diff, and GitHub's merge button is **sticky**, so after any routine squash-merged `dev` PR it will be pre-set to the wrong method. This rule lives here, not in the release PR's body: a PR body is the wrong home for a process warning that applies to every release (`coord:release-pr` § PR body — write it like a senior dev).
 9. **After the user merges to `main` and confirms:** that confirmation authorizes the back-merge sync PR — no separate ask. (On the main-push, `auto-tag-version.yml` mints the `v<VERSION>` tag AND `release-promote-cards.yml` moves board-12 tracking cards to Released — both automatic; Claude does not hand-tag or hand-promote.)
 10. Open the back-merge sync PR `sync/main-to-dev-post-v<version>` → `dev`; auto-merge on green with a **merge commit**.
 11. **DEPLOY the release to the host that actually runs the tools. A tag is not a deploy** (the sibling of agent-webhook-bridge's release≠deploy rule — this repo lacked the step entirely until v0.15.0 shipped and the on-PATH runtime silently stayed at v0.14.0):
@@ -81,4 +81,4 @@ Its **`artifacts` array is the must-move-together release set** — steps 3, 4 a
 - **Don't reuse a tag.** Tags are immutable; if a release is broken, ship `vX.Y.Z+1`.
 - **Don't tag `dev`.** Only `main` gets tags.
 - **Don't PR `dev` directly to `main`.** Use a disposable `release/v<version>` branch as the PR head (see rule 7).
-- **Don't squash a back-merge sync PR** — it breaks the next release PR's diff. Use a merge commit.
+- **Don't squash a release PR or a back-merge sync PR** — either one breaks the next release PR's diff. Both use a merge commit; only `dev`-targeted PRs are squashed.
