@@ -69,6 +69,22 @@ _use_stub() { PATH="$1:$REAL_PATH"; hash -r; }
 _use_only() { PATH="$1"; hash -r; }
 _use_real() { PATH="$REAL_PATH"; hash -r; }
 
+# _stub_git <slot> <body…> — a `git` stub whose body reads the subcommand from `$sub`.
+#
+# IT OWNS THE `-C <dir>` SKIP, AND THAT IS THE POINT. Every git stub here shadows ONE subcommand
+# and execs the real git for the rest, so each needs to know which subcommand it was handed — and
+# the probe's read carries a leading `-C <dir>`, so `$1` is the flag and not the subcommand. The
+# predecessor of this prologue matched `$1` alone and went blind the moment that flag was added:
+# the arm each stub exists to force silently answered through the real git while the label still
+# claimed otherwise. It was then written out VERBATIM in three stubs, i.e. three places for the
+# next invocation change to go blind. It is one place now; a fourth git stub inherits it.
+_stub_git() {
+    local slot="$1"; shift
+    _stub_dir "$slot" git \
+        'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
+        "$@"
+}
+
 # An `ln -s` that reports success and produces a COPY — the shape measured on a real Windows
 # seat. Written to survive any flag spelling the probe or the installer uses.
 LN_COPY="$(_stub_dir ln-copy ln \
@@ -126,12 +142,9 @@ CAT_STALE="$(_stub_dir cat-stale cat \
     'exec /usr/bin/cat "$@"')"
 # A `git` whose `hash-object` fatals — the read the native clause depends on, failing. A failed
 # READ is not a measurement of the seat, so it must land on INDETERMINATE and never on
-# NOT_CAPABLE. Every other git subcommand is the real one.
-# The subcommand is read PAST a leading `-C <dir>`, which the probe's read carries: matching on
-# `$1` alone made this stub a no-op the moment that flag was added, and the arm it exists to
-# force then silently answered CAPABLE through the real git.
-GIT_FAIL="$(_stub_dir git-fail git \
-    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
+# NOT_CAPABLE. Every other git subcommand is the real one. (`$sub` — the subcommand read past a
+# leading `-C <dir>` — comes from `_stub_git`, the one owner of that parse.)
+GIT_FAIL="$(_stub_git git-fail \
     'if [ "$sub" = "hash-object" ]; then' \
     '    echo "fatal: could not open '"'"'x'"'"' for reading: Permission denied" >&2; exit 128' \
     'fi' \
@@ -141,9 +154,8 @@ GIT_FAIL="$(_stub_dir git-fail git \
 # symlink that really does track. That pair — the probe refusing a seat whose actual dispatch
 # follows the source — is the one no combination of real commands produces on Linux, and it is
 # the branch the single Windows run exists to obtain. Every other subcommand is the real git.
-GIT_FRESH_HASH="$(_stub_dir git-fresh-hash git \
+GIT_FRESH_HASH="$(_stub_git git-fresh-hash \
     "n_file=\"$TMP/git-fresh-hash.n\"" \
-    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
     'if [ "$sub" = "hash-object" ]; then' \
     '    n="$(cat "$n_file" 2>/dev/null || echo 0)"; n=$((n + 1)); printf "%s" "$n" > "$n_file"' \
     '    printf "%040x\n" "$n"; exit 0' \
@@ -153,9 +165,8 @@ GIT_FRESH_HASH="$(_stub_dir git-fresh-hash git \
 # arbiter's control fires and nothing runs after the replacement. That is its `broken` outcome,
 # which no race can produce on demand, and it is a distinct classification from `frozen`: nothing
 # executed, so no content was observed and no pairing claim can be made from it.
-GIT_ONE_CHECKOUT="$(_stub_dir git-one-checkout git \
+GIT_ONE_CHECKOUT="$(_stub_git git-one-checkout \
     "n_file=\"\${IBH_CHECKOUT_COUNTER:-$TMP/git-one-checkout.n}\"" \
-    'sub="${1:-}"; if [ "$sub" = "-C" ]; then sub="${3:-}"; fi' \
     'if [ "$sub" = "checkout" ]; then' \
     '    n="$(cat "$n_file" 2>/dev/null || echo 0)"; n=$((n + 1)); printf "%s" "$n" > "$n_file"' \
     '    if [ "$n" != 1 ]; then exit 0; fi' \
@@ -276,6 +287,16 @@ ck_second="$(git -C "$ckctl" rev-parse --abbrev-ref HEAD)"
 _use_real
 eq "the one-checkout stub performs the FIRST checkout for real" "cb1" "$ck_first"
 eq "…and silently no-ops every later one"                       "cb1" "$ck_second"
+# …and with its counter PRE-SEEDED past the first, the same stub no-ops EVERY checkout — which is
+# what makes the arbiter's `control-failed` state (the hook does not fire even BEFORE the source
+# is replaced) forceable without a fourth git stub. Witnessed here, on the same throwaway repo,
+# because "no checkout ran" is otherwise indistinguishable from "the stub never took effect".
+printf '1' > "$TMP/ctl-checkout-preseed.n"
+_use_stub "$GIT_ONE_CHECKOUT"
+IBH_CHECKOUT_COUNTER="$TMP/ctl-checkout-preseed.n" git -C "$ckctl" checkout -q cb2 2>/dev/null || :
+ck_preseeded="$(git -C "$ckctl" rev-parse --abbrev-ref HEAD)"
+_use_real
+eq "…and with its counter pre-seeded, no-ops the FIRST checkout too" "cb1" "$ck_preseeded"
 _use_only "$NOGIT"
 eq "on the NOGIT path, git is genuinely absent" "false" \
    "$(command -v git >/dev/null 2>&1 && echo true || echo false)"
@@ -633,7 +654,7 @@ eq "the broken cwd fatals a BARE 'git hash-object' (rc 128)" "128" "$bc_rc"
 bcp_rc=0; ( cd "$bad_cwd" && git -C "$TMP" hash-object --no-filters -- "$TMP/hashme" ) >/dev/null 2>&1 || bcp_rc=$?
 eq "…while the same read pinned with -C answers"             "0"   "$bcp_rc"
 bcv_rc=0
-bcv_out="$( cd "$bad_cwd" && bash -c 'source "$1"; _ibh_symlink_probe "$2"' _ "$IBH" "$TMP/cap" )" || bcv_rc=$?
+bcv_out="$( cd "$bad_cwd" && bash -c 'source "$1"; _ibh_symlink_probe "$2"' _ "$IBH" "$cap" )" || bcv_rc=$?
 eq "the probe still answers CAPABLE from that cwd" "CAPABLE" "$(_verdict "$bcv_out")"
 eq "…at rc 0"                                      "0"       "$bcv_rc"
 r="$(_fresh_repo broken-context)"
@@ -785,6 +806,37 @@ eq "…landing on the no-pairing-assertion arm"  "true" \
    "$(has "NO pairing assertion was made: probe=yes dispatch=unknown" "$wcb_out")"
 eq "…and never claiming the OLD content ran"   "false" \
    "$(has "dispatched the OLD content" "$wcb_out")"
+# THE TWO NON-MEASUREMENT CLASSIFICATIONS, `no-entry` and `control-failed`. They were the only
+# arbiter arms with no leg here, and both are reachable on the seat this ships for: an `ln -s`
+# that refuses outright is that seat's other documented answer, and a hook entry git will not
+# execute produces a control that never fires. Neither is a defect — each is exercised because an
+# unexecuted arm is a scripting error waiting to consume the single Windows dispatch.
+wcne_rc=0
+wcne_out="$(PATH="$LN_FAIL:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wcne_rc=$?
+eq "an 'ln -s' that refuses outright: the check runs clean"  "0"    "$wcne_rc"
+eq "…the arbiter classifies it no-entry"                     "true" \
+   "$(has "DISPATCH RESULT: no-entry" "$wcne_out")"
+# The arm's own assertion is what makes this a leg rather than a smoke test: it must PASS, i.e.
+# the seat whose `ln -s` refused is a seat the probe refused too.
+eq "…and its arm asserts the probe refused that seat as well" "true" \
+   "$(has "ok   an 'ln -s' that fails outright" "$wcne_out")"
+eq "…while claiming nothing about what dispatch delivers"     "true" \
+   "$(has "SEAT DISPATCH: no-entry — probe says tracking=no, real git dispatch says tracking=unknown" "$wcne_out")"
+# `control-failed` REDS BY DESIGN, and that is the arm's contract: the leg produced no measurement
+# at all, so an absent marker must not read as "the replacement did not reach dispatch".
+wccf_rc=0
+printf '1' > "$TMP/wc-control-failed.n"
+wccf_out="$(IBH_CHECKOUT_COUNTER="$TMP/wc-control-failed.n" PATH="$GIT_ONE_CHECKOUT:$REAL_PATH" \
+    bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wccf_rc=$?
+eq "a seat whose hook never fires at all: classified control-failed" "true" \
+   "$(has "DISPATCH RESULT: control-failed" "$wccf_out")"
+eq "…and it REDS — an unfired hook is not a pass"                    "1"    "$wccf_rc"
+eq "…there only, one FAIL line in the whole run"                     "1" \
+   "$({ printf '%s\n' "$wccf_out" | grep -c '^  FAIL'; } || true)"
+eq "…which is the measured-NOTHING assertion by name"                "true" \
+   "$(has "FAIL the dispatch leg measured NOTHING" "$wccf_out")"
+eq "…and it makes no pairing claim either"                           "true" \
+   "$(has "SEAT DISPATCH: control-failed — probe says tracking=yes, real git dispatch says tracking=unknown" "$wccf_out")"
 
 echo "== installer — the usage line carries the flag it accepts =="
 _run - --nope "$r"

@@ -259,8 +259,18 @@ _ibh_hooks_dir() {
 #     there — rc 128, mapped to `git-read-failed`, and the whole install refuses at rc 4 naming
 #     four faults that are none of them the cause. Measured: outside a repo, inside a work tree,
 #     and from within a `.git/hooks` directory all answered identically; a broken context was NOT
-#     measured, and it is the one that answered differently. `-C <dirname>` is also the context
-#     `git.exe` itself uses when it dispatches the hook, which is the reader this stands in for.
+#     measured, and it is the one that answered differently. `-C <dirname>` makes the read answer
+#     about the directory whose capability is being measured, so the answer no longer depends on
+#     where the caller stands. It is NOT the cwd git dispatches the hook from: measured on git
+#     2.43.0, a hook runs with cwd = the WORK-TREE ROOT (githooks(5): git changes to $GIT_DIR in a
+#     bare repository, or the root of the working tree otherwise) — a different directory from the
+#     hooks directory, and under a `core.hooksPath` pointing outside the repo not even the same
+#     repository. The pin is right for the reason above, not for standing where the dispatcher does.
+#     RESIDUAL, disclosed rather than left to be found: the pin MOVES the fatal repository context,
+#     it does not remove one. A broken context at the CALLER's cwd is now harmless (measured: rc 0),
+#     and the probed entry's OWN directory carrying a broken `.git` gitfile is now the fatal case
+#     (measured: rc 1 → `git-read-failed` → INDETERMINATE → the install refuses at rc 4). That is
+#     fail-closed, and the rc-4 text already names "a git that cannot read the probe's own entries".
 #     Filters stay off, so the pinned directory's attributes change no answer either.
 #   * It READS. There is no `-w`, so nothing reaches any object database and the probe's only
 #     writes remain its two `.ibhp*` entries — which is what keeps `--check`'s disclosed write

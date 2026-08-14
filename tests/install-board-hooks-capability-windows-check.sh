@@ -338,13 +338,16 @@ no-entry)
     eq "an 'ln -s' that fails outright ⇒ the probe must have refused too" "no" "$probe_tracking"
     ;;
 broken)
-    ok "the dispatch leg produced a real measurement (control fired, then the replacement was tried)"
+    # A DISTINCT label from the ordinary arm's below. Both arms reach a real measurement attempt,
+    # but only one of them observed dispatched content — printing the same `ok` line for both made
+    # the two outcomes indistinguishable in the transcript that gets reported off the seat.
+    ok "the dispatch leg ran its control and its replacement, but observed no dispatched content"
     printf '   …but NOTHING executed after the replacement, though the control had fired. This leg\n'
     printf '   therefore observed no dispatched content at all — it is NOT a finding that the OLD\n'
     printf '   content ran — so it makes no pairing claim (dispatch=unknown). Report this output.\n'
     ;;
 *)
-    ok "the dispatch leg produced a real measurement (control fired, then the replacement was tried)"
+    ok "the dispatch leg observed which content executed after the replacement ($DISPATCH)"
     ;;
 esac
 
