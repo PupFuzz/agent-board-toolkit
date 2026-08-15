@@ -86,7 +86,7 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     local data rc
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
-        || { echo "• ${label}: (board API unreachable)"; return 0; }
+        || { echo "• ${label}: (board read failed — fetch rc=$rc)"; return 0; }
     # in-flight = the board's In Progress + In Review + Held stages, selected by the
     # env stage ids (the env is the contract for WHICH stages are in-flight; a board
     # omitting one simply drops it from the map).

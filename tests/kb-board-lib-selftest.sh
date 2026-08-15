@@ -512,9 +512,10 @@ echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) 
 # The defect: `.data // []` answered a 200 carrying an HTML 502 with `[]` at rc 0 — byte-identical
 # to a genuinely EMPTY board — so next-dl dropped the board's DL floor and minted from the local
 # scan alone. The predicate is the ENVELOPE, not the row count: `.data` present AND an array.
-# EVERY refusal case below is paired with the empty-board control on the SAME route, because the
-# whole point is that the two are now distinguishable; a refusal leg that passes while the control
-# also refuses has broken a legitimate board read, not fixed anything.
+# The refusal legs below are bracketed by TWO controls on the same route — a genuinely empty
+# board and a one-card board — because the whole point is that a refusal and a legitimate read
+# are now distinguishable; a block that passed by refusing everything would have broken a
+# legitimate board read, not fixed anything.
 UNREAD_LOG="$TMP/unreadable.log"
 _fbc_case() { # <label> <body> <expect-rc> <expect-stdout>
     local label="$1" body="$2" exprc="$3" expout="$4" rc=0 out
@@ -544,13 +545,21 @@ _fbc_case "CONTROL: a genuinely EMPTY board still succeeds → rc 0" \
 [[ -s "$TMP/unread.err" ]] && bad "an empty board must be silent on stderr" || ok "an empty board is silent on stderr"
 [[ -s "$UNREAD_LOG" ]] && bad "an empty board must not write a failure-log line" || ok "an empty board writes no failure-log line"
 
-# The three other shapes that carried no readable card array and were answered `[]` at rc 0. The
-# last one is not merely empty — `.data` non-array reached the accumulator and could only ever
-# produce a garbage value, the other half of README's "never … emit a garbage value".
+# The other shapes that carried no readable card array. What each USED to produce differs, and
+# the difference is the point — rounding them all to `[]` is what made the class look smaller
+# than it was (measured at dev 0b2ea6b, HTTP 200 in every case):
+#   no .data / .data null → `[]` at rc 0        — the plausible empty board
+#   .data a STRING        → rc 0, EMPTY stdout  — the dedup's `reduce .[]` cannot iterate a
+#                                                 string, so jq faulted into its own 2>/dev/null
+#   .data an OBJECT       → rc 0, `[9]`         — a FABRICATED array: that same `reduce .[]`
+#                                                 iterates an object's VALUES. This one, not the
+#                                                 string, is the "garbage value" half of README's
+#                                                 "never … emit a garbage value".
 _fbc_case "200 + valid JSON with no .data at all → rc 1"      '{"error":"upstream connect error"}' 1 ""
 _fbc_case "200 + .data null → rc 1"                           '{"data":null,"meta":{"total":0}}'   1 ""
-_fbc_case "200 + .data present but not an array → rc 1"       '{"data":"not-an-array"}'            1 ""
-# …and the control again, one line up from the last of them, so the block cannot pass by refusing
+_fbc_case "200 + .data a string → rc 1"                       '{"data":"not-an-array"}'            1 ""
+_fbc_case "200 + .data an object (was a fabricated [9]) → rc 1" '{"data":{"id":9}}'                1 ""
+# …and the second control, after the last of them, so the block cannot pass by refusing
 # everything: a one-card board is a complete read at rc 0.
 _fbc_case "CONTROL: one real card → rc 0 with the card"       '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 0 '[{"id":7}]'
 

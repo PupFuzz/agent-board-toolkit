@@ -144,13 +144,13 @@
 # fields" (one measured exception, on `comments` — README) and an unreadable write echo is
 # UNCONFIRMED rather than printed. Two caller-visible boundaries on that: `list` reaches the same
 # posture by a different route — it reads the board through the shared paginator, which refuses a
-# page-1 body carrying no card array at its own rc 1 and takes `list` to rc 1 with empty stdout, so
-# a `[]` from `list` IS evidence the board is empty (card#6594) — and `patch
-# --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at all, when the
-# tag read it must re-send WHOLESALE yields no usable list (a card genuinely carrying no `tags`
-# key, or a null or empty one, is unaffected).
-# README.md § Reliability posture states in full what this covers and what it does not, and why.
-# It is the ONE owner of that statement: this block deliberately does not restate it.
+# page-1 body carrying no card array at its own rc 1 and takes `list` to rc 1 with empty stdout
+# (card#6594) — and `patch --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at
+# all, when the tag read it must re-send WHOLESALE yields no usable list (a card genuinely carrying
+# no `tags` key, or a null or empty one, is unaffected).
+# README.md § Reliability posture states in full what this covers and what it does not, and why —
+# including what a `[]` from `list` does and does not establish. It is the ONE owner of that
+# statement: this block deliberately does not restate it.
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -1203,10 +1203,12 @@ _kbc_archive_decision() {
     # false `ok` that archives a live-and-untwinned card), the mirror of the board
     # input's safe `[]` default above — so fail closed here, never reach the shim.
     [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
-    # Capture the board array regardless of the paginator's completeness rc — a
-    # partial set only removes twins (more conservative), never invents one. The
-    # `|| true` keeps a non-zero paginator rc (partial/short read) from aborting
-    # this function under `set -e`.
+    # Capture the board array regardless of the paginator's rc — a partial or EMPTY
+    # census only removes twins (more conservative), never invents one. The `|| true`
+    # keeps ANY non-zero paginator rc from aborting this function under `set -e`: a
+    # partial/short read, and also a page-1 refusal (no response, a non-2xx status, or
+    # a 2xx carrying no card array) that yields no array at all and lands on the `[]`
+    # below. Fewer twins is the fail-closed direction, per this function's header.
     board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true

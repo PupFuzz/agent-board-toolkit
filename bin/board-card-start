@@ -381,7 +381,7 @@ if [ -n "$dl" ]; then
     # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
     # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
     # "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves.
-    cards="$(fetch_board_cards "$api" "$token" "$board")" || bcs_skip "board $board fetch failed (unreachable or auth rejected)"
+    cards="$(fetch_board_cards "$api" "$token" "$board")" || bcs_skip "board $board fetch failed (no response, a non-2xx status, or a 2xx carrying no card array)"
     cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" '
         [ .[]
           | (.payload.dl_number // empty) as $raw

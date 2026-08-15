@@ -652,8 +652,11 @@ fetch_board_cards() {
         # became `[]`: byte-identical (rc 0, `[]`, silent) to the answer a genuinely
         # empty board gives, so no caller could refuse it. next-dl then read no
         # dl_number out of that `[]`, dropped the board's DL floor and minted from the
-        # local header scan alone — how a DL gets re-minted on a shared board, the
-        # failure bin/next-dl:244 names in its own comment (card#6594).
+        # local header scan alone — how a DL gets re-minted on a shared board, which is the
+        # failure board_dl_max's own exit-code comment in bin/next-dl names ("an undercount
+        # could re-mint a used DL"). card#6594. NB this refusal makes that re-mint AUDIBLE,
+        # not impossible: next-dl's rc-1 policy is fail-soft, so it still mints from the
+        # local scan — that residual is card#6631 and is not closed here.
         #
         # The tell is the ENVELOPE, not the row count. Measured against the live API: an
         # empty result is `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200 —
@@ -666,16 +669,22 @@ fetch_board_cards() {
         # The refusal is PAGE 1 only, matching the ruled scope and this function's rc-1
         # contract. A later page's unreadable body still falls back to `[]` and ends the
         # scan; that leaves the pre-dedup meta.total census below to catch it at rc 4,
-        # which it does on any server that declares meta.total (this API always does).
+        # which it does on any server that DECLARES meta.total — observed on every probe
+        # taken for card#6594, which is an observation and not a guarantee.
+        # The uncovered half — a server that omits meta.total — is card#6630, which owns
+        # the same shape in both copies of this loop.
         #
-        # This is the guard the co-vendored port at bin/promote-released-cards:302-304
-        # has always carried. It is deliberately NOT the same predicate: that tool dies
+        # This is the fail-closed posture the co-vendored port at
+        # bin/promote-released-cards:302-304 carries. It is deliberately NOT the same predicate: that tool dies
         # on zero CARDS, which it can afford because a board with nothing to promote is
         # never a working state for it. A board read verb cannot — `kbcard list` on an
         # empty board must still succeed — so the lib refuses on an unreadable ENVELOPE
-        # instead. Residual, accepted and shared with the mirror: this API answers a
-        # board the token cannot see with the same well-formed empty envelope as a board
-        # with no cards, so that case still reads as an empty board here.
+        # instead. Residual, accepted: this API answers a board the token cannot see with
+        # the same well-formed empty envelope as a board with no cards, so that case still
+        # reads as an empty board HERE. The API behaviour is shared with the mirror; the
+        # residual is not — the mirror's zero-CARDS die catches it, and this function must
+        # not adopt that predicate, for the reason just given. Closing it needs a membership
+        # signal the envelope does not carry, not a stricter row count.
         data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
         if [[ -z "$data" ]]; then
             if [[ "$page" -eq 1 ]]; then

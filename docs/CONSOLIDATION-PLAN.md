@@ -450,8 +450,11 @@ argument in the program *against* consolidation:
   mistake the lib documents making once with `KB_CURL_MAX_TIME`.
 - **Hoist, don't delete, the 0-visible-cards refusal.** `promote-released-cards` dies when page 1
   returns zero cards (*"the token's user is likely not a member of board N"*). `fetch_board_cards`
-  has **no equivalent** — rc 0 and `[]`. Dropping it would turn a lost-membership token into
-  `0 moved` and **exit 0**.
+  has **no equivalent ROW-COUNT refusal**: since card#6594 it refuses an unreadable page-1
+  *envelope* at rc 1, but zero rows in a well-formed envelope is still rc 0 and `[]`, and that
+  divergence is deliberate — the *"two implementations … disagreed on the safety branch — CLOSED"*
+  entry below states why a read verb must not adopt the mover's predicate. Dropping the mover's
+  refusal would turn a lost-membership token into `0 moved` and **exit 0**.
 
 **Correcting the stage's own supporting claim.** It asserted the two host guards are *"behaviorally
 identical — verified over 21 hostile URLs × 4 expected-hosts"*. The live assertion is
@@ -695,11 +698,12 @@ finding with no owner is abandoned, not filed.
 
   **Per-consumer exposure on page 1 is now settled by the rc-1 arm rather than predicted per
   consumer.** Measured on the shipped bins against a `200` carrying `<html>502</html>`: `kbcard list`
-  and `dl-a0-backfill-triaged` abort, `board-snapshot` prints `(board API unreachable)`,
+  and `dl-a0-backfill-triaged` abort, `board-snapshot` prints `(board read failed — fetch rc=1)`,
   `board-stats` marks the stock section unavailable, `board-card-start` skips the move, `next-dl`
-  warns and keeps its documented rc-1 fail-soft (so it announces the dropped DL floor rather than
-  refusing — a caller-policy question this card did not decide), and `kbcard archive` substitutes
-  `[]` for the twin census. That last one was recorded here as safe *by contract rather than by
+  warns and keeps its documented rc-1 fail-soft, so it announces the dropped DL floor rather than
+  refusing — **that residual is card#6631** (board 12, Backlog, triaged), which carries the
+  measurement and three options with a recommendation, and is not a parenthetical here — and
+  `kbcard archive` substitutes `[]` for the twin census. That last one was recorded here as safe *by contract rather than by
   measurement*; it has since been measured — the same card with `surviving_cards: []` returns
   `blocked … no surviving twin — archive withheld (fail-closed)` where the populated census returns
   `ok`, so an empty census can only withhold more archives, never permit one. Two sources and now a
@@ -728,8 +732,10 @@ finding with no owner is abandoned, not filed.
   a different server is where the assumption is not even that strong. **The fix is one line in each** — apply the
   page-1 predicate to every page and return the already-documented rc 2 — and it is deliberately
   NOT taken here: card#6594's ruling scoped the refusal to page 1, and extending it changes what
-  callers receive on a path the ruling did not cover. This is the class item for both instances;
-  do not file them separately (canon #18), and do not fix one copy without the other.
+  callers receive on a path the ruling did not cover. **The tracked owner is card#6630** (board 12,
+  Backlog, triaged) — ONE class item carrying both instances, not two (canon #18); do not fix one
+  copy without the other, and do not discharge it by making the two predicates identical (see the
+  page-1 divergence above). This entry is the doc surface; the card is the queue position.
 - **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
   enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
   (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
@@ -879,8 +885,10 @@ finding with no owner is abandoned, not filed.
     that — by the time the value reaches it the information is already gone — which is why
     **`card#6594` fixed it at the paginator, at page 1, at the existing rc 1**, and `list` now
     aborts instead of printing a `[]` it could not read. Fixing it here would have been #2's
-    symptom patch. This site stays unmigrated: what reaches it is now either real cards or a
-    genuinely empty board.
+    symptom patch. This site stays unmigrated: `cmd_list` aborts on every non-zero paginator
+    rc, so what reaches it is real cards or a genuinely empty board — with ONE exception, named
+    rather than implied: the later-page hole card#6630 owns, where a server that omits
+    `meta.total` lets a truncated list through at rc 0.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
   **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it
