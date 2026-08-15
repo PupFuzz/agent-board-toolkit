@@ -62,13 +62,15 @@ SENTINEL_DEFAULT=999000001
 # Prints "<http>\n<body>"; an unmatched request is answered 599 by the stub itself. The knobs are
 # per-step so a scenario can fail exactly one leg: KB_STUB_REGISTER_HTTP, KB_STUB_CREATE_HTTP /
 # KB_STUB_CREATE_BODY, KB_STUB_BYREF, KB_STUB_CLEAR_HTTP, KB_STUB_DELETE_HTTP.
+REG_OK_BODY='{"data":{"id":9}}'
+export REG_OK_BODY
 kb_stub_route() {
     local method="$1" url="$2" data="$3" route_n="$4" http body
     local -a byref
     case "$method $url" in
         "POST "*/custom_fields.json)
             http="${KB_STUB_REGISTER_HTTP:-201}"
-            if [[ "$http" == 2* ]]; then body='{"data":{"id":9}}'
+            if [[ "$http" == 2* ]]; then body="${KB_STUB_REGISTER_BODY:-$REG_OK_BODY}"
             else body='{"message":"the dl_number field already exists"}'; fi
             printf '%s\n%s' "$http" "$body" ;;
         "POST "*/tasks.json)
@@ -334,6 +336,29 @@ eq "the refusal names the missing env file" "true" "$(has '.kanban-nosuchboard-b
 run_a1
 eq "witness: the same harness DOES issue requests when the arguments are valid" "7" \
    "$(kb_stub_total)"
+
+echo "== a 2xx whose body is not JSON at all (card#6426) =="
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read reaches both body reads in this bin as a success. The registration
+# read already suppressed jq's MESSAGE with 2>/dev/null — but not its STATUS, so it still exited
+# 5 through `set -e`: quietly, which is worse than loudly, and skipping the cleanup trap whose
+# whole reason for existing is that a leaked sentinel card poisons the DL minter. Both reads now
+# go through the shared kb_parse_resp and land in the arm each already had.
+KB_STUB_REGISTER_BODY='<html><body>502 Bad Gateway</body></html>' run_a1
+eq "an unreadable REGISTER body → the run still completes (rc 0)" "0" "$rc"
+eq "…and reports the field id as unknown, not as a crash" "true" \
+   "$(has 'registered dl_number (field id ?)' "$out")"
+eq "…leaking no raw jq parse error"        "false" "$(has 'parse error' "$err")"
+eq "…and the throwaway is still created AND torn down" "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+KB_STUB_CREATE_BODY='<html><body>502 Bad Gateway</body></html>' run_a1
+eq "an unreadable CREATE body → FATAL rc 1, not jq's rc 5" "1" "$rc"
+eq "…in this tool's own words"             "true" "$(has 'FATAL create throwaway: no task id in response' "$err")"
+eq "…leaking no raw jq parse error"        "false" "$(has 'parse error' "$err")"
+# The control that makes both legs a measurement: the same route with a well-formed body still
+# reports the real id.
+run_a1
+eq "control: a well-formed body still reports the field id" "true" \
+   "$(has 'registered dl_number (field id 9)' "$out")"
 
 echo "== a lib-less copy is refused before the argument surface, --help included =="
 # The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That

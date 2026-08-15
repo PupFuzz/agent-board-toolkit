@@ -21,9 +21,12 @@
 # change here as having consumer blast radius, because it does.
 #
 # It is sourced, never executed. It collapses the config-resolution, kanban-API curl
-# wrapper, whole-board pagination, and DL-canonicalization logic that was
-# copy-pasted across kbcard / next-dl / dl-a0-backfill-triaged /
-# dl-a1-register-field / board-snapshot / board-card-start into one definition.
+# wrapper, tolerant response parse, whole-board pagination, and DL-canonicalization
+# logic that was copy-pasted across THE LIB-SOURCING BINS LISTED AT THE TOP OF THIS
+# HEADER into one definition. That list is deliberately not re-spelled here: this copy
+# had already drifted from it, omitting adopt-to-dl and board-stats — and adopt-to-dl is
+# a kb_parse_resp caller, so the omission was load-bearing, not cosmetic. One prose copy
+# per file; agent-board-toolkit-drift-check DERIVES the real set from the files.
 #
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
@@ -528,6 +531,39 @@ kb_api_status() {
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
+}
+
+# kb_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
+# printing NOTHING when that body is not JSON at all instead of dying on jq's parse error.
+#
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read arrives at every projection in every one of these tools as a success.
+# An unguarded `jq` there exits 5 under `set -e`, with jq's raw parse error as the caller's whole
+# diagnostic — a status these tools document nowhere, from a program the caller never ran.
+# Swallowing the parse failure hands the refusal back to the caller's OWN empty-value arm, which
+# says it in that tool's words at that tool's rc. Empty is the only thing this can print on a
+# parse failure, so it can never turn an unreadable body into a plausible value.
+#
+# Suppressing jq's stderr means ANY jq fault lands in that same arm — a filter the caller got
+# wrong, or a jq that is missing/unrunnable — and so does a body that parsed PERFECTLY WELL but
+# holds no such value (a 200 `[]` is valid JSON that `.data` cannot index). So a caller's
+# diagnostic states only what is true in EVERY one of those arms — "no <thing> could be read out
+# of the body" — never "the body is not JSON" and never "the body could not be parsed": both are
+# specific claims about the server that are wrong in the other arms.
+#
+# IT LIVES HERE, not in one bin, because the shape it fixes is not one bin's. Every tool that
+# reads through kb_api / kb_api_status meets the same 2xx, and the alternative to one owner is
+# what the tree already grew: several inline near-copies of `jq … 2>/dev/null`, agreeing by
+# habit, one of them (dl-a1's) silencing the MESSAGE while still letting the rc kill the script
+# — which is the failure the suppression was written to prevent (card#6426, canon #5).
+#
+# THE CALLER STILL OWNS THE POLICY. This decides only what the value is; whether an empty value
+# is fatal, fail-soft, or a fall-back default stays at each call site (the same mechanism/policy
+# split kb_ere_match documents above). A caller with no empty-value arm must add one — an empty
+# value silently accepted is the silent-empty trap, not a fix for it.
+kb_parse_resp() {
+    local resp="$1"; shift
+    jq "$@" <<<"$resp" 2>/dev/null || true
 }
 
 # --- whole-board pagination -------------------------------------------------

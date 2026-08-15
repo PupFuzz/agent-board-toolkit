@@ -92,7 +92,11 @@ reg_out="$(kb_api_status POST "/boards/$BOARD/custom_fields.json" '{"key":"dl_nu
 reg_http="${reg_out%%$'\n'*}"
 reg_body="${reg_out#*$'\n'}"
 if [[ "$reg_http" =~ ^2 ]]; then
-    fid="$(printf '%s' "$reg_body" | jq -r '.data.id // empty' 2>/dev/null)"
+    # 2>/dev/null alone silenced the MESSAGE and kept the STATUS: a 2xx whose body is not JSON
+    # (a proxy's HTML, a truncated read) still exited 5 through `set -e` — quietly, which is
+    # worse than loudly. kb_parse_resp (shared lib) yields the empty value the `${fid:-?}` arm
+    # below was already written for.
+    fid="$(kb_parse_resp "$reg_body" -r '.data.id // empty')"
     echo "  registered dl_number (field id ${fid:-?})"
 elif [[ "$reg_http" == "409" || "$reg_http" == "422" ]]; then
     echo "  dl_number already registered (HTTP $reg_http) — idempotent OK"
@@ -115,7 +119,11 @@ create="$(kb_api POST "/tasks.json" "$body")" || {
     echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
     exit 1
 }
-TID="$(printf '%s' "$create" | jq -r '.data.id // empty')"
+# Tolerant parse: a 2xx body this cannot read is the SAME state as a 2xx carrying no id — the
+# throwaway's id is unknown — and that is what the FATAL arm below already says. Dying at jq's
+# rc 5 instead skipped it, and with it the cleanup trap's whole reason for existing: a leaked
+# sentinel card poisons the minter.
+TID="$(kb_parse_resp "$create" -r '.data.id // empty')"
 if ! kb_is_uint "$TID"; then
     echo "dl-a1-register-field: FATAL create throwaway: no task id in response" >&2
     exit 1
