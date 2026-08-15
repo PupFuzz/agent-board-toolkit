@@ -1448,6 +1448,71 @@ shape_leg "patch --triaged (.data is null)"         '{"data":null}'
 shape_leg "patch --triaged (.data is a string)"     '{"data":"str"}'
 unset -f shape_leg
 
+echo "-- patch --triaged: a .data object whose tags is not a LIST is the same refusal --"
+# The `.data`-object test above is a test on the WRAPPER, and the value that actually gets
+# re-sent is `.data.tags`. A `.data` object carrying a non-array `tags` passes the wrapper test
+# and then faults one line later inside the merge (`jq: error … string ("abc") and array
+# (["triaged"]) cannot be added`) — already rc 2 with no PATCH, so no tag is destroyed, but the
+# caller's whole diagnostic is jq's, with no `kbcard:` line at all. Same harm class, same
+# refusal, same rc: CONTAINER type only. What `tags` CONTAINS is deliberately not tested here —
+# `{"data":{"tags":[1,2]}}` still patches `[1,2,"triaged"]`, which is a change to what this verb
+# ACCEPTS and is filed as its own ask-gated question.
+tags_leg() {
+    local label="$1" body="$2"
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 --triaged
+    eq "$label → rc 2, this verb's own refusal rc"  "2"    "$rc"
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+    eq "$label → leaks no raw jq diagnostic"        "false" "$(has 'jq: ' "$err")"
+    eq "$label → prints nothing on stdout"          ""     "$out"
+    eq "$label → issues NO PATCH at all"            "0"    "$(kb_stub_count PATCH '/tasks/505.json')"
+}
+tags_leg "patch --triaged (.data.tags is a string)" '{"data":{"id":505,"tags":"abc"}}'
+tags_leg "patch --triaged (.data.tags is an object)" '{"data":{"id":505,"tags":{"a":1}}}'
+tags_leg "patch --triaged (.data.tags is a number)" '{"data":{"id":505,"tags":5}}'
+unset -f tags_leg
+
+echo "-- patch --type: a tags OBJECT was a silent TAG WIPE, not just a bad diagnostic --"
+# The sharpest leg in this block, and the reason the container test is not cosmetic. `--type`'s
+# merge opens with `map(…)`, and jq's `map` over an OBJECT iterates its VALUES — so a `tags`
+# object whose values are all strings does not fault at all: it degrades into a plausible list,
+# the merge succeeds, and the PATCH replaces the card's real tags with that object's values.
+# MEASURED on the bin before the container test: `{"tags":{"0":"keep-me"}}` + `--type fr` wrote
+# `{"tags":["keep-me","type:fr"]}` at rc 0 — a card carrying other tags loses every one of them.
+# `--triaged` alone never reached this (object + array faults); it takes a `map`-first flag.
+wipe_leg() {
+    local label="$1" body="$2"; shift 2
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 "$@"
+    eq "$label → rc 2, this verb's own refusal rc" "2"    "$rc"
+    eq "$label → issues NO PATCH (no tag wipe)"    "0"    "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+}
+wipe_leg "patch --type (tags object of strings)"  '{"data":{"id":505,"tags":{"0":"keep-me"}}}' --type fr
+wipe_leg "patch --type (tags empty object)"       '{"data":{"id":505,"tags":{}}}'              --type fr
+wipe_leg "patch --type --triaged (tags object)"   '{"data":{"id":505,"tags":{"a":"x"}}}'       --type fr --triaged
+unset -f wipe_leg
+
+# THE ACCEPTED SET IS UNCHANGED — asserted, not assumed. These three bodies wrote before the
+# container test and must still write: a card whose `tags` key is absent, one whose `tags` is a
+# server-sent JSON null (both reach `// []`), and one whose list is genuinely empty. Without
+# these the container test could tighten acceptance and every leg above would still be green.
+tags_accept_leg() {
+    local label="$1" body="$2" want="$3"
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 --triaged
+    eq "$label → still writes at rc 0"     "0"     "$rc"
+    eq "$label → issues exactly one PATCH" "1"     "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label → with the merged tag list" "$want" "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+}
+tags_accept_leg "patch --triaged (no tags key)"      '{"data":{"id":505}}'              '["triaged"]'
+tags_accept_leg "patch --triaged (tags is null)"     '{"data":{"id":505,"tags":null}}'  '["triaged"]'
+tags_accept_leg "patch --triaged (tags is [])"       '{"data":{"id":505,"tags":[]}}'    '["triaged"]'
+tags_accept_leg "patch --triaged (tags is a list)"   '{"data":{"id":505,"tags":["a"]}}' '["a","triaged"]'
+unset -f tags_accept_leg
+
 echo "-- link: the relation echo --"
 KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
 kbc link --from 505 --to 506 --relation blocks

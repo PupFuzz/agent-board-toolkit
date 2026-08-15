@@ -140,17 +140,27 @@
 #
 # A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq. Success is decided on the
 # HTTP status class alone, so a 2xx carrying a proxy's HTML error page or a truncated read reaches
-# every projection above as a success. Each one refuses it through the empty-value arm it already
-# has — a read never reports "no such card" / "no comments" / "no custom fields" for a body it
-# could not read, and a write whose echo is unreadable is reported as UNCONFIRMED rather than
-# printed. `patch` is the one that refuses BEFORE the wire: a --tags/--type/--triaged patch must
-# read the current tag list to re-send it whole, so a read there that yields no tag list is rc 2
-# with no PATCH at all rather than a tag list rebuilt from nothing. That refusal covers a body
-# that PARSES perfectly well and simply carries no card (`{"ok":true}`, `{"data":null}`) as well
-# as one that does not parse: `.data.tags // []` supplies `[]` for the former without faulting, so
-# the read is tested for a `.data` OBJECT rather than merely for a readable one. That shape test
-# is scoped to this read alone — it is the only one here whose result is re-sent as a WHOLESALE
-# replacement of what it read. A card that genuinely carries no `tags` key is unaffected.
+# every projection above as a success. Every SINGLE-CARD / SINGLE-FIELD read and every write echo
+# refuses it through the empty-value arm the verb already has — such a read never reports "no such
+# card" / "no comments" / "no custom fields" for a body it could not read, and a write whose echo
+# is unreadable is reported as UNCONFIRMED rather than printed.
+#
+# `list` IS THE EXCEPTION, and it is stated rather than implied: it reads the board through the
+# shared paginator, which parses each page with its own inline guard and answers an unreadable
+# 2xx with an EMPTY ARRAY at rc 0 — indistinguishable from a board with no cards. Do not read a
+# `[]` from `list` as evidence the board is empty. `archive`'s twin check reads the same
+# paginator; see docs/CONSOLIDATION-PLAN.md for that side. Tracked as card#6594.
+#
+# `patch` is the one that refuses BEFORE the wire: a --tags/--type/--triaged patch must read the
+# current tag list to re-send it whole, so a read there that yields no tag list is rc 2 with no
+# PATCH at all rather than a tag list rebuilt from nothing. That refusal covers a body that PARSES
+# perfectly well and simply carries no card (`{"ok":true}`, `{"data":null}`) as well as one that
+# does not parse: `.data.tags // []` supplies `[]` for the former without faulting, so the read is
+# tested for a `.data` OBJECT — and its `tags` for an ARRAY, because jq's `map` iterates an
+# OBJECT's values, so a `tags` object degrades into a plausible list and merges without faulting.
+# That shape test is scoped to this read alone — it is the only one here whose result is re-sent
+# as a WHOLESALE replacement of what it read. A card that genuinely carries no `tags` key, or one
+# whose `tags` is null or empty, is unaffected.
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -495,9 +505,23 @@ _kbc_patch_tags() {
         # the read; an unreadable read there cannot produce a write built from nothing.) So this
         # is a dedicated path for one named harm, not a widened guard — no read verb's
         # acceptance changes with it.
+        #
+        # The CONTAINER test on `tags` closes the same refusal's second half. `.data` being an
+        # object says nothing about the value actually re-sent. A `tags` that is a SCALAR passes
+        # the wrapper test and then faults inside the merge below, so the caller's whole
+        # diagnostic is jq's, with no kbcard line at all — bad, but no tag is lost.
+        #
+        # AN OBJECT DOES NOT FAULT, which is why this is not a wording fix. jq's `map`
+        # iterates an OBJECT's values, so a `tags` object degrades into a plausible list: with
+        # --type (map-first), `{"tags":{"0":"keep-me"}}` merged cleanly and PATCHed
+        # `["keep-me","type:fr"]` at rc 0, replacing every tag the card actually held. That is the
+        # same wipe this guard exists to stop, reached one level deeper. --triaged alone never got
+        # there (object + array faults), which is what made it look diagnostic-only.
+        # Deliberately CONTAINER type only: what the list CONTAINS is a separate,
+        # acceptance-changing question and is not decided here.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_parse_resp "$resp" 'if (.data | type) == "object" then (.data.tags // []) else empty end')"
+        base="$(kb_parse_resp "$resp" 'if (.data | type) == "object" then ((.data.tags // []) | select(type == "array")) else empty end')"
         [[ -n "$base" ]] || {
             echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
             return 1
@@ -864,10 +888,15 @@ cmd_link() {
     printf '%s\n' "$link"
 }
 
-# The tolerant response parse every projection below reads through is kb_parse_resp, in the
-# shared lib — its contract (and why a caller's diagnostic may never say "the body is not
-# JSON") is documented there. It moved out of this file in card#6426: the same 2xx reaches
-# every tool that reads through kb_api, so one owner serves them all.
+# The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
+# caller's diagnostic may never say "the body is not JSON") is documented there. It moved out of
+# this file in card#6426: the same 2xx reaches every tool that reads through kb_api, so one owner
+# serves them all. It is applied at the FIRST projection off a response body, not at every jq in
+# this file: a value that has already come through it (or through a guard that refuses on empty)
+# is parsed bare afterwards on purpose. Two places below are neither — `_kbc_archive_decision`'s
+# board array, which comes from the paginator rather than from kb_api, and the `field` verbs'
+# reads off `_kbc_fetch_fields`, whose non-empty guard admits a `.data` that is not a list. Both
+# are recorded in docs/CONSOLIDATION-PLAN.md with their blockers; neither is silence.
 
 # _kbc_write_echo <verb> <subject> <response> [extra-fields]: the create/patch echo projection —
 # payload rides ONLY when the serializer sent the key (fabricating `payload: null` asserts "no
@@ -1154,9 +1183,10 @@ _kbc_archive_decision() {
     resp="$(kb_api GET "/tasks/$task.json")" \
         || { printf 'noprimitive\tcould not fetch card %s to verify archive safety' "$task"; return 0; }
     # Read the card out of the body TOLERANTLY. The unguarded jq that used to be piped here
-    # already fell into the fail-closed arm below (its own `||` caught jq's rc 5) — but only
-    # after printing jq's raw parse error to the operator's stderr, next to a kbcard refusal
-    # that reads as if the gate had a verdict. Empty lands in the same arm, quietly.
+    # already fell into the fail-closed arm below (its own `||` caught jq's rc 5), so the SAFETY
+    # posture is unchanged — this is about the diagnostic only: it printed jq's raw parse error
+    # to the operator's stderr above a refusal ("could not fetch card N") that names a fetch
+    # failure, which is not what happened. Empty lands in the same arm, quietly.
     card="$(kb_parse_resp "$resp" -c '.data')"
     # A 2xx with .data null/absent (trashed / permission-limited / edge card) yields
     # the literal "null" (or "") at rc 0 — non-empty, so the `||` above never fires.

@@ -626,19 +626,55 @@ finding with no owner is abandoned, not filed.
 
   This entry said "five" when it was first written, and that number had never been derived from the
   file. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message but not
-  the status, and whether that status
-  is fatal depends on **how the caller invoked the function** — bash suppresses `errexit` inside a
-  command substitution that is part of an `||` or `if` list, which is how every caller in this repo
-  calls it (measured on bash 5.2), so the rc never reaches `set -e`. That is a property of the
-  CALLERS, not of this function, and it is not asserted anywhere. Migrating them is therefore not a
-  cleanup but a hardening against a future caller that assigns the result unconditionally — worth
-  doing, and worth doing with a test that pins the caller shape rather than the parse.
+  the status, and whether that status is fatal depends on **how the caller invoked the function**.
+
+  **The mechanism this entry first recorded was measurably wrong, and the correction matters more
+  than the conclusion it leaves standing.** It said bash suppresses `errexit` inside a command
+  substitution *that is part of an `||` or `if` list*, "which is how every caller in this repo calls
+  it". Both halves fail. Re-measured on **bash 5.2.21**, driving the real function against a stub
+  answering `200` with `<html>502</html>`, five shapes:
+
+  | caller shape | outcome |
+  | --- | --- |
+  | `set -e`, substitution in **no** `\|\|`/`if` list | survives — rc 0, `[]` |
+  | `set -e`, substitution in an `\|\|` list | survives — rc 0, `[]` |
+  | `set -e`, **direct** call (no substitution) | **dies at rc 5** |
+  | `set -e` **+ `shopt -s inherit_errexit`**, substitution | **dies at rc 5** |
+  | **no `-e`**, direct call | survives — rc 0, `[]` |
+
+  So the `||`/`if` conjunct does no work here: **no command-substitution subshell inherits `errexit`
+  without `inherit_errexit`** (which no file in this repo sets — grep-verifiable), and that, not the
+  list shape, is what keeps jq's rc out of the caller's `set -e`. The `||`/`if` shape governs
+  something else entirely — the function's OWN explicit `return 1..4`, which every caller reads
+  deliberately and which is not what this entry is about.
+
+  **And "every caller in this repo" was false.** Derived, not recalled — **seven call sites across
+  six bins**: `cmd_list` and `_kbc_archive_decision` (`bin/kbcard`), `board_dl_max` (`bin/next-dl`),
+  `bin/dl-a0-backfill-triaged`, `board_report` (`bin/board-snapshot`), `_bs_one_board`
+  (`bin/board-stats`) and `bin/board-card-start`. Two are not in an `||`/`if` list at all:
+  `board-snapshot`'s is a bare `data="$(…)"; rc=$?`, and **`board-stats`' is not a substitution
+  either** — a direct call redirected to a file.
+
+  **Both are nonetheless safe, by a THIRD route the entry never named:** `board-snapshot`,
+  `board-stats` and `board-card-start` each run `set -uo pipefail` with **no `-e` at all** (one
+  `set` line per file, verified). For `board-stats` that is the *only* route available, because the
+  substitution boundary is not there to protect it.
+
+  **The conclusion survives — the rc reaches no caller's `set -e` today — but by the substitution
+  and the absent `-e`, never by the list shape.** Migrating the parses is therefore still a
+  hardening rather than a cleanup, against a future caller that invokes this function directly (or
+  a file that sets `inherit_errexit`) — and the test to write is **NOT** one that "pins the caller
+  shape": that would assert a property which is neither true today nor protective. Pin the
+  BOUNDARY instead — a direct `fetch_board_cards` call under `set -euo pipefail`, against a 2xx
+  body that is not JSON, must not exit 5. That test is **red today** (it exits 5), which is exactly
+  what makes it a test of the migration rather than of the callers' habits.
 
   **The population predicate that found this one — "bins that source the lib" — structurally
   excludes the mirror, and the mirror is the bigger half.** `bin/promote-released-cards` is the
   standalone that must never source the lib (the lib header says so, and `fetch_whole_board`'s own
   comment names itself the deliberate co-vendored port of `fetch_board_cards`). It carries the
-  **same shape again, seven more times** — the same recipe with `fetch_whole_board` as the anchor — of which only the `meta.last_page` and `meta.total` reads
+  **same shape again, seven more times** — the same recipe with `fetch_whole_board` as the anchor —
+  of which only the `meta.last_page` and `meta.total` reads
   carry `2>/dev/null`, so **five parse a response body raw**, under `set -euo pipefail`, in a tool
   that PATCHes cards. (The review that surfaced this said "6 sites, two without `2>/dev/null`"; the
   derived figures are seven and five — the accumulator `jq -c -s 'add'` was not in the reviewer's
@@ -655,6 +691,19 @@ finding with no owner is abandoned, not filed.
   That divergence is the duplication earning its keep as a defect rather than as a copy (canon #7).
   **Not fixed here** — the lib side is card#6594 and carries its own operator ruling; this entry
   exists so the next pass over this shape starts from the pair, not from the lib alone.
+
+  **Per-consumer exposure, because it is NOT uniform and the difference decides how urgent each is.**
+  `kbcard list` is the measured one: a `200` carrying `<html>502</html>` yields `[]` at rc 0 with an
+  empty stderr — a plausible-looking value a caller cannot distinguish from an empty board.
+  `next-dl`'s `board_dl_max` and `dl-a0-backfill-triaged` inherit the same shape (an empty scan
+  silently drops the board's floor / finds no targets). `board-snapshot`, `board-stats` and
+  `board-card-start` are fail-soft by design and degrade to their own defaults. `kbcard archive` is
+  the one that fails SAFE, and by contract rather than by measurement: the gate blocks unless *a
+  surviving twin keeps the source discoverable* (`_kbc-may-archive.py`'s own docstring), so a short
+  read can only withhold more archives, never permit one — which is also what
+  `_kbc_archive_decision`'s existing comment records ("a partial set only removes twins … never
+  invents one"). Two sources agreeing, neither of them a run: worth pinning with a fixture when
+  card#6594 is worked, not asserted harder here.
 - **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
   enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
   (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
@@ -701,10 +750,77 @@ finding with no owner is abandoned, not filed.
   list it demonstrably read; `dl-a1-register-field` and `board-card-start` send constants. **One
   instance, not a class** — so no class item, per the filing rule.
 
+  **A second mechanism inside that one instance, found by A/B-ing the accepted set rather than by
+  reading** (card#6426, fix round 2). Testing `.data` for an object closed the WRAPPER; the value
+  actually re-sent is `.data.tags`, and a **`tags` that is a JSON object** passed that test and then
+  did **not** fault, because **jq's `map` iterates an object's VALUES**. Measured on the bin before
+  the container test: `{"data":{"id":5,"tags":{"0":"keep-me"}}}` with `--type fr` issued
+  `PATCH {"tags":["keep-me","type:fr"]}` at **rc 0** — the object degraded into a plausible list,
+  the merge succeeded, and every tag the card actually carried was replaced. It takes a `map`-first
+  flag (`--type`); `--triaged` alone always faulted (`object + array`), which is why the first round
+  read as diagnostic-only. Closed by testing the CONTAINER type of `tags` in the same filter, at the
+  same refusal and the same rc. **This is the one place in this card where the accepted set really
+  did narrow** — 8 rows of a 120-row A/B matrix, every one of them the object-valued-`tags` class:
+  6 rows (3 bodies x 2 flag combinations) where the object's values were silently re-published as
+  the card's whole tag list, and 2 where an empty object produced a list built from a container
+  the tool could not read as one. `dl-a0-backfill-triaged` — the other tag read-modify-write this
+  entry's write enumeration above already names — was re-checked against this specific mechanism: `any(…)` also iterates an
+  object's values, so such a card can become a target, but `$tags + ["triaged"]` / `- ["triaged"]`
+  then faults on an object and no write is issued. Fail-safe there; still one instance, still no
+  class item.
+
+  **A NINTH row the instrument could not print, and the reason is a defect in the PREDICATE'S FORM**
+  (card#6426) — `_kbc_field_list` (`bin/kbcard`) pipes `_kbc_fetch_fields` straight into a bare
+  `jq "map(…)"`. That is a genuine unguarded response parse — measured: `field list` against a `200`
+  carrying `{"data":null}` exits **5** (*Cannot iterate over null*) — but the derivation's `R`
+  predicate matches on the PRODUCING TOKEN (`kb_api|fetch_board_cards|curl`) and the producer here
+  is a **local reader function**, so no pass could see it. The lesson is not "add
+  `_kbc_fetch_fields` to the list": a predicate that enumerates producers by NAME is blind to every
+  producer it does not happen to name, and the next reader wrapper re-mints the blind spot. The
+  criterion was amended instead — guardedness, not depth, and *a local reader function is
+  transparent, not a boundary*.
+
+  **The sibling audit that amendment demands, run and disposed.** Derivation, runnable rather than
+  recalled — over the lib-sourcing bins plus the lib, take every function whose body names
+  `kb_api` / `kb_api_status` / `fetch_board_cards` / `curl` (**26** at the time of writing — re-derive,
+  never quote), then keep only those
+  whose **stdout is a response-derived value that some OTHER site then parses**:
+
+      for f in $(grep -l '_kb-board-lib.sh' bin/*) bin/_kb-board-lib.sh; do
+        awk -v F="$f" '/^[_a-zA-Z][_a-zA-Z0-9]*\(\) *\{/ {n=$1; sub(/\(\).*/,"",n); i=1; b=""; next}
+                       i && /^\}/ {if (b ~ /kb_api|fetch_board_cards|curl /) print F"\t"n; i=0; next}
+                       i {b=b"\n"$0}' "$f"; done | sort -u
+
+  **Control that proves the derivation discriminates** (canon #9): renaming the `kb_api` token
+  inside exactly one function (`cmd_link`) drops **exactly** that row, 26 -> 25; the file was
+  restored by byte snapshot + `cmp`, never `git checkout --`. Note the candidate scan reaches
+  `bin/promote-released-cards` even though it must never `source` the lib — `grep -l` matches the
+  lib's name in its own header comment — which is the one thing the lib-sourcing predicate above
+  gets wrong, closed here by accident rather than by design. Do not rely on that.
+
+  **Exactly one member: `_kbc_fetch_fields`.** The other 25 are disposed, not silent — the `cmd_*`
+  verbs' stdout IS the tool's output and reaches no further jq; `kb_api` / `kb_api_status` /
+  `fetch_board_cards` / `fetch_whole_board` are the named producers the predicate already sees;
+  `_kbc_patch_tags` and `_bs_window_rows` emit a `jq -n`-BUILT value (`L`); `_kbc_archive_decision`
+  emits the python shim's tab-separated verdict, read by `IFS=$'\t' read`, never by jq;
+  `resolve_task` emits a `kb_is_uint`-validated scalar; `by_ref_has` is a boolean-by-rc predicate;
+  `_bcs_patch` and `delete_throwaway` are writers that discard the body; `adopt-to-dl`'s `main`,
+  `board_report` and `_bs_one_board` are top-level. The two functions pass 2 expected to be out
+  ARE out, for the reason it gave: `_kbc_swimlane_map` and `_kbc_board_repo` read local env/config
+  and never touch a response.
+
+  **Disposition of `_kbc_field_list` — REPORTED, deliberately NOT migrated.** The fix would have to
+  tighten `_kbc_fetch_fields` to require `.data` to be an ARRAY, which moves `field list` on
+  `{"data":null}` from jq's rc **5** to this tool's rc **1** refusal. It needs no new exit code, but
+  it is a change to what a READ verb accepts and to the status it reports — the ask-first axis
+  card#6426 §(b) is already fenced on, and the same axis `show`'s residual wording sits behind. It
+  is recorded here as an in-population, unmigrated site with a named blocker, not left as silence.
+
   **What these dispositions do NOT cover, said plainly:** `R` means the raw `jq` at that row is
   safe, not that its verb is. The read-verb residue is separate and stays filed — a `2xx` whose
   `.data` is valid JSON of the wrong shape still exits at jq's rc 5 in the projections that index it
-  (measured: `field list` on `{"data":null}`, `show --task 7` on `{"data":"str"}`, `list` on
+  (measured: `field list` on `{"data":null}`; `field set-options --field <k>` on `{"data":null}` and
+  on `{"data":{"id":9}}`; `show --task 7` on `{"data":"str"}` and `{"data":5}`; `list` on
   `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
   card's to make.
 - **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
