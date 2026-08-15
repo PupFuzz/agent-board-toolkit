@@ -23,6 +23,11 @@ source "$BIN"   # main-guarded — defines stage_name / _kbc_annotate_card witho
 # annot <task-json> <jq-expr>: run the annotator and project one value out.
 annot() { _kbc_annotate_card "$1" | jq -c "$2"; }
 
+# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
+# One definition serves every process-driving section below — the runner is identical for
+# all of them, so only the per-section `kb_stub_route` is torn down between them.
+kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+
 # The operator's shell may have a real board env sourced (they `export` their
 # keys) — scrub every KB_STAGE_* so no live board id can fake a pass or a fail.
 # shellcheck disable=SC2086
@@ -1011,8 +1016,6 @@ kb_stub_route() {
 }
 export -f kb_stub_route
 
-# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
-kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
 CPATH="/tasks/505/comments.json"
 
 echo "-- comment: path, method, and the MEASURED flat body key --"
@@ -1312,7 +1315,7 @@ eq "control: show on a well-formed body → rc 0"  "0" "$rc"
 eq "control: …and returns the card"              "505" "$(jq -r '.id' <<<"$out")"
 unset NONJSON_BODY
 
-unset -f kbc kb_stub_route
+unset -f kb_stub_route
 unset NOT_FOUND_BODY KB_STUB_CREATED
 
 # ---------------------------------------------------------------------------
@@ -1359,7 +1362,6 @@ kb_stub_route() {
     esac
 }
 export -f kb_stub_route
-kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
 
 # nonjson_leg <label> <expected-rc> <verb-word> <args…> — the four assertions this class needs,
 # stated once. `parse error` is jq's own wording; `jq:` catches its prefix if the text changes.
@@ -1640,7 +1642,7 @@ KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at"
 eq "control: an ordinary row is unaffected"      "0" "$rc"
 eq "control: …and renders verbatim"              "$(printf 'comment 1 · user 2 · t\n  hi')" "$out"
 
-unset -f kbc kb_stub_route nonjson_leg
+unset -f kb_stub_route nonjson_leg
 unset NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
 
 # ---------------------------------------------------------------------------
