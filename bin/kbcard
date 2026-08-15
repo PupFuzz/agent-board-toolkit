@@ -138,29 +138,18 @@
 #     PATCH is NOT rejected (HTTP 200) even while a card references the dropped value.
 #     add-option / rename-option are intentionally not provided (deferred to v2).
 #
-# A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq. Success is decided on the
-# HTTP status class alone, so a 2xx carrying a proxy's HTML error page or a truncated read reaches
-# every projection above as a success. Every SINGLE-CARD / SINGLE-FIELD read and every write echo
-# refuses it through the empty-value arm the verb already has — such a read never reports "no such
-# card" / "no comments" / "no custom fields" for a body it could not read, and a write whose echo
-# is unreadable is reported as UNCONFIRMED rather than printed.
-#
-# `list` IS THE EXCEPTION, and it is stated rather than implied: it reads the board through the
-# shared paginator, which parses each page with its own inline guard and answers an unreadable
-# 2xx with an EMPTY ARRAY at rc 0 — indistinguishable from a board with no cards. Do not read a
-# `[]` from `list` as evidence the board is empty. `archive`'s twin check reads the same
-# paginator; see docs/CONSOLIDATION-PLAN.md for that side. Tracked as card#6594.
-#
-# `patch` is the one that refuses BEFORE the wire: a --tags/--type/--triaged patch must read the
-# current tag list to re-send it whole, so a read there that yields no tag list is rc 2 with no
-# PATCH at all rather than a tag list rebuilt from nothing. That refusal covers a body that PARSES
-# perfectly well and simply carries no card (`{"ok":true}`, `{"data":null}`) as well as one that
-# does not parse: `.data.tags // []` supplies `[]` for the former without faulting, so the read is
-# tested for a `.data` OBJECT — and its `tags` for an ARRAY, because jq's `map` iterates an
-# OBJECT's values, so a `tags` object degrades into a plausible list and merges without faulting.
-# That shape test is scoped to this read alone — it is the only one here whose result is re-sent
-# as a WHOLESALE replacement of what it read. A card that genuinely carries no `tags` key, or one
-# whose `tags` is null or empty, is unaffected.
+# A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq: every single-card /
+# single-field read and every write echo takes the verb's own empty-value arm at the verb's own
+# rc, so an unreadable body is not reported as "no such card" / "no comments" / "no custom
+# fields" (one measured exception, on `comments` — README) and an unreadable write echo is
+# UNCONFIRMED rather than printed. Two caller-visible boundaries on that: `list` is NOT covered —
+# it reads the board through the shared paginator, which answers an unreadable 2xx with an EMPTY
+# ARRAY at rc 0, so do not read a `[]` from `list` as evidence the board is empty (card#6594) —
+# and `patch --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at all, when the
+# tag read it must re-send WHOLESALE yields no usable list (a card genuinely carrying no `tags`
+# key, or a null or empty one, is unaffected).
+# README.md § Reliability posture states in full what this covers and what it does not, and why.
+# It is the ONE owner of that statement: this block deliberately does not restate it.
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -519,9 +508,17 @@ _kbc_patch_tags() {
         # there (object + array faults), which is what made it look diagnostic-only.
         # Deliberately CONTAINER type only: what the list CONTAINS is a separate,
         # acceptance-changing question and is not decided here.
+        #
+        # THE SHAPE TEST RUNS ON THE NEAR SIDE OF THE DEFAULT, and that ordering is the whole
+        # point. jq's `//` yields its right-hand side for `false` as well as for `null`, so
+        # `(.tags // []) | select(type == "array")` handed the container test the DEFAULT
+        # whenever `tags` was `false` — the test was on the far side of the very substitution it
+        # exists to police, and `{"tags":false}` + --triaged PATCHed `{"tags":["triaged"]}` at
+        # rc 0. `has("tags") and .tags != null` decides absent-or-null explicitly instead, so
+        # `false` reaches `select(type == "array")` as itself and refuses.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_parse_resp "$resp" 'if (.data | type) == "object" then ((.data.tags // []) | select(type == "array")) else empty end')"
+        base="$(kb_parse_resp "$resp" '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")')"
         [[ -n "$base" ]] || {
             echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
             return 1
@@ -1136,6 +1133,17 @@ cmd_comments() {
     # SCOPE, deliberately: this tests the COMMENTS value, not `.data` itself — a 2xx that is
     # valid JSON but carries no `.data` still yields `[]` here and still reads as "no comments"
     # (card#6426 §b, an accepted-input question that is not this change's to answer).
+    #
+    # AND THE `select(type == "array")` BELOW SITS ON THE FAR SIDE OF `//`, so it never sees a
+    # `comments` of `false`. jq's `//` yields its right-hand side for `false` exactly as it does
+    # for `null`, so `(.data.comments // [])` substitutes `[]` before the container test runs and
+    # `{"data":{"id":505,"comments":false}}` prints "card 505 has no comments" at rc 0 — measured
+    # — which is precisely the claim the paragraph above forbids. KNOWN AND DELIBERATELY OPEN:
+    # the remedy is the one `_kbc_patch_tags` already carries (decide absent-or-null explicitly
+    # with `has("comments") and .comments != null`, so `false` reaches the container test as
+    # itself), but applying it moves a READ verb from rc 0 to rc 1, which changes what this verb
+    # ACCEPTS and was not granted. Filed as the class in docs/CONSOLIDATION-PLAN.md — "a shape
+    # test applied downstream of `//` does not see `false`" — instance 2 of 2.
     comments="$(kb_parse_resp "$resp" -c '
         (.data.comments // [])
         | select(type == "array")

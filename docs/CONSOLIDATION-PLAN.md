@@ -759,11 +759,17 @@ finding with no owner is abandoned, not filed.
   the merge succeeded, and every tag the card actually carried was replaced. It takes a `map`-first
   flag (`--type`); `--triaged` alone always faulted (`object + array`), which is why the first round
   read as diagnostic-only. Closed by testing the CONTAINER type of `tags` in the same filter, at the
-  same refusal and the same rc. **This is the one place in this card where the accepted set really
-  did narrow** — 8 rows of a 120-row A/B matrix, every one of them the object-valued-`tags` class:
-  6 rows (3 bodies x 2 flag combinations) where the object's values were silently re-published as
-  the card's whole tag list, and 2 where an empty object produced a list built from a container
-  the tool could not read as one. `dl-a0-backfill-triaged` — the other tag read-modify-write this
+  same refusal and the same rc. **This narrowed the accepted set by 8 rows**, re-derived in round 3
+  on a 184-row A/B matrix (23 body shapes x 8 flag combinations; see the `[Unreleased]` CHANGELOG
+  entry for the denominator), every one of them the object-valued-`tags` class. **The earlier
+  decomposition of those 8 — "6 rows (3 bodies x 2 flag combinations) … and 2 where an empty object
+  …" — was wrong and is corrected here:** the 8 are **2 bodies x 4 `--type` combinations**
+  (`--type` in its tag-alias and native-id forms, each with and without `--triaged`) — 4 rows where
+  `{"0":"keep-me"}`'s values were silently re-published as the card's whole tag list, and 4 where
+  `{}` produced a list built from a container the tool could not read as one (the native-id form
+  PATCHing `{"tags":[]}`, i.e. every tag gone with nothing put back). A third body,
+  `{"a":1}`, is NOT in the set: `startswith` faults on a number, so it refused at rc 2 both before
+  and after. `dl-a0-backfill-triaged` — the other tag read-modify-write this
   entry's write enumeration above already names — was re-checked against this specific mechanism: `any(…)` also iterates an
   object's values, so such a card can become a target, but `$tags + ["triaged"]` / `- ["triaged"]`
   then faults on an object and no write is issued. Fail-safe there; still one instance, still no
@@ -823,6 +829,79 @@ finding with no owner is abandoned, not filed.
   on `{"data":{"id":9}}`; `show --task 7` on `{"data":"str"}` and `{"data":5}`; `list` on
   `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
   card's to make.
+
+  **Two in-population members no pass of the derivation named, recorded rather than migrated**
+  (card#6426, fix round 3). Both are raw `jq` reads of a value that IS a response body, and both
+  are labelled **`L`** ("locally built input") by the instrument — wrongly, and for the same
+  mechanical reason in each: the resolver picks up the wrong variable. It reads the jq invocation's
+  *named* arguments rather than the value the filter is actually applied to, so a function whose
+  response body arrives as **stdin or a positional** while its `--arg*` bindings are locally built
+  resolves as local. That is the same failure mode as the producer-by-NAME predicate above, one
+  level down: an instrument that resolves by the wrong term answers about the wrong term.
+  - **`bin/board-stats` `_bs_stage_map`** — `printf '%s' "${1:-}" | jq -c -R -s "$_BS_STAGEMAP_JQ"`,
+    where `$1` is the raw body of `kb_api GET /boards/<id>/preload.json`. The resolver sees
+    `$_BS_STAGEMAP_JQ` (a filter constant) and the `|| printf '%s' "$_BS_EMPTY_MAP"` fallback, both
+    local. **NOT migrated, and the blocker is that it is already correct:** the read is fail-soft
+    by design — `2>/dev/null || <empty map>` — and its caller compares the result against
+    `$_BS_EMPTY_MAP` and appends a named `fails+=(…)` line, so an unusable preload is *reported*,
+    not silently rendered. `kb_parse_resp` would buy nothing here; the fallback IS the refusal.
+  - **`bin/kbcard` `_kbc_list_project`** — the filter opens on `(. // [])` over **stdin**, and
+    stdin is `$cards` from `fetch_board_cards`. The resolver sees `--argjson swmap "$swmap"`
+    (`_kbc_swimlane_map`'s locally built board-env map) and resolves the whole call as local.
+    **NOT migrated, and deliberately so:** the unguarded read is not here but one level up, in the
+    paginator's own inline per-page `jq … 2>/dev/null`, which is why an unreadable `2xx` arrives
+    here as a well-formed `[]` and `list` prints it at rc 0. Guarding this site cannot see that —
+    by the time the value reaches it the information is already gone. **`card#6594` owns the
+    paginator class and carries the ruling to fail closed at its existing rc 1**; fixing it there
+    fixes this site, and fixing it here would be #2's symptom patch.
+
+  **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
+  **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it
+  does for `null`, so any filter shaped `(.x // <default>) | select(type == …)` hands the container
+  test **the default** whenever `.x` is `false` — the test sits on the far side of the very
+  substitution it was written to police, and can never fail for that input. The remedy is the same
+  at both instances and is named here so whoever rules on the second does not re-derive it: **decide
+  absent-or-null explicitly and put the shape test on the near side** —
+  `(if has("x") and .x != null then .x else <default> end) | select(type == …)`. It adds no exit
+  code and no message class.
+  - **Instance 1 — `_kbc_patch_tags` (`bin/kbcard`), FIXED in round 3.** `(.data.tags // []) |
+    select(type == "array")` accepted `{"data":{"id":505,"tags":false}}` and, with `--triaged`,
+    issued `PATCH {"tags":["triaged"]}` at **rc 0** — measured — destroying every tag on the card.
+    It is the third distinct route to one harm — the `.data`-object test (round 1) and the
+    `tags`-container test (round 2) each closed one — which is why this is filed as a class and
+    not as a third one-off. Now **rc 2 with no PATCH**, in the refusal this verb already had.
+    Covered by
+    `tests/kbcard-selftest.sh` (`patch --triaged (tags is false)`, `patch --type (tags is false)`),
+    watched red.
+  - **Instance 2 — `cmd_comments` (`bin/kbcard`), OPEN and ask-gated.** `(.data.comments // []) |
+    select(type == "array")` accepts `{"data":{"id":505,"comments":false}}` and prints
+    **"card 505 has no comments" at rc 0** — measured — which is exactly the claim the comment two
+    lines above it forbids ("printing it here would answer a question this read never reached").
+    **NOT fixed: the round-3 grant was the write path only.** Applying the remedy moves a **READ**
+    verb from rc 0 to rc 1, i.e. a change to what it accepts — the same ask-first axis as
+    `_kbc_field_list` and `show`'s residual wording, and it needs the same ruling. The hazard is
+    strictly worse than those, though, and that is why it is recorded as a live wrong-answer rather
+    than a diagnostic residue: the other two *fail*, loudly, at a status nobody documented; this one
+    **succeeds with a false claim about the board**. Recorded at the site as well as here.
+
+  **Owner and queue position for the open half** — this document, as the preamble states, and
+  **blocked on one operator ruling**: the read-verb acceptance axis. That single ruling disposes
+  instance 2, `_kbc_field_list` and `show`'s residual wording together; they are three symptoms of
+  one gate, not three questions. **A NEW instance of this class arriving before that ruling lands
+  is the signal to stop patching instances and take the ruling** — the `//`-shaped filter is a
+  two-token idiom any new projection can reproduce, so the count moving is the thing to watch.
+  Re-derive it — do not quote the number — with a scan of the SHAPE rather than of the known
+  sites, over the whole file text so a filter spanning several lines is still one string:
+
+      for f in bin/*; do [ -f "$f" ] || continue; case "$f" in *.py) continue;; esac
+        tr '\n' ' ' < "$f" | grep -oE '//[^|]{0,12}\| *[^|]{0,40}(select\(type|\| *type *\))' \
+          | sed "s|^|$f: |"
+      done
+
+  **1 hit at the time of writing** — `cmd_comments`, i.e. exactly the open instance; the fixed one
+  no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
+  reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
+  **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
 - **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
   and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
   `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement

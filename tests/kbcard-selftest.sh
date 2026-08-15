@@ -1493,6 +1493,15 @@ wipe_leg() {
 wipe_leg "patch --type (tags object of strings)"  '{"data":{"id":505,"tags":{"0":"keep-me"}}}' --type fr
 wipe_leg "patch --type (tags empty object)"       '{"data":{"id":505,"tags":{}}}'              --type fr
 wipe_leg "patch --type --triaged (tags object)"   '{"data":{"id":505,"tags":{"a":"x"}}}'       --type fr --triaged
+# `tags:false` — the shape the container test could not see, because `//` was ABOVE it. jq's
+# `//` treats `false` exactly as it treats `null`, so `.data.tags // []` substituted `[]` and
+# `select(type == "array")` was then handed the DEFAULT rather than the value it was written to
+# police. MEASURED on the bin before this leg landed: `{"data":{"id":505,"tags":false}}` +
+# `--triaged` → rc 0, PATCH body `{"tags":["triaged"]}` — every real tag on the card gone, with
+# no diagnostic anywhere. `--type` reaches it identically. The fix moves the shape test to the
+# near side of the default; these legs red on any bin that reinstates the old ordering.
+wipe_leg "patch --triaged (tags is false)"        '{"data":{"id":505,"tags":false}}'           --triaged
+wipe_leg "patch --type (tags is false)"           '{"data":{"id":505,"tags":false}}'           --type fr
 unset -f wipe_leg
 
 # THE ACCEPTED SET IS UNCHANGED — asserted, not assumed. These three bodies wrote before the
@@ -1512,6 +1521,16 @@ tags_accept_leg "patch --triaged (tags is null)"     '{"data":{"id":505,"tags":n
 tags_accept_leg "patch --triaged (tags is [])"       '{"data":{"id":505,"tags":[]}}'    '["triaged"]'
 tags_accept_leg "patch --triaged (tags is a list)"   '{"data":{"id":505,"tags":["a"]}}' '["a","triaged"]'
 unset -f tags_accept_leg
+
+# `--tags` BYPASSES the read entirely, so the narrowing above must not reach it — asserted
+# against the sharpest input there is: the same `tags:false` body that now refuses on the read
+# path. A caller supplying the list explicitly never consults the card, so this writes.
+kb_stub_reset
+KB_STUB_GET_BODY='{"data":{"id":505,"tags":false}}' kbc patch --task 505 --tags a,b
+eq "patch --tags over a tags:false card → still writes at rc 0" "0" "$rc"
+eq "…issues exactly one PATCH"        "1"           "$(kb_stub_count PATCH '/tasks/505.json')"
+eq "…with the caller's own list"      '["a","b"]'   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+eq "…and never GETs the card at all"  "0"           "$(kb_stub_count GET '/tasks/505.json')"
 
 echo "-- link: the relation echo --"
 KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
