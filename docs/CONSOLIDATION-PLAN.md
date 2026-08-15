@@ -614,17 +614,99 @@ finding with no owner is abandoned, not filed.
   one edit away from that again. Decision-gated on the same axis as the roster parser above: it
   changes nothing a caller can see **only if** each default is preserved exactly, and that is a
   per-site judgement rather than a sweep.
-- **`fetch_board_cards`'s five internal body parses** (card#6426) — the lib's own paginator reads
-  `meta.last_page`, `meta.total`, `.data`, and two lengths straight off each page with
-  `jq … 2>/dev/null`, i.e. the primitive's shape written inline in the file that now defines the
-  primitive. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message
-  but not the status, and whether that status is fatal depends on **how the caller invoked the
-  function** — bash suppresses `errexit` inside a command substitution that is part of an `||` or
-  `if` list, which is how every caller in this repo calls it (measured on bash 5.2), so the rc
-  never reaches `set -e`. That is a property of the CALLERS, not of this function, and it is not
-  asserted anywhere. Migrating the five is therefore not a cleanup but a hardening against a
-  future caller that assigns the result unconditionally — worth doing, and worth doing with a
-  test that pins the caller shape rather than the parse.
+- **`fetch_board_cards`'s internal body parses — and its co-vendored MIRROR's** (card#6426) — the
+  lib's own paginator reads `meta.last_page`, `meta.total`, `.data`, and the page/dedup lengths
+  straight off each response with `jq … 2>/dev/null`, i.e. the primitive's shape written inline in
+  the file that now defines the primitive. Derived rather than recalled — **seven** `jq` invocations
+  inside `fetch_board_cards`, **all seven** carrying `2>/dev/null`. Re-derive rather than trust that
+  figure — the non-comment `jq ` lines of the function body, anchored on the function name so the
+  recipe survives every edit around it:
+
+      awk '/^fetch_board_cards\(\)/{f=1} f&&/jq /&&$0!~/^ *#/{print} f&&/^}/{exit}' bin/_kb-board-lib.sh
+
+  This entry said "five" when it was first written, and that number had never been derived from the
+  file. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message but not
+  the status, and whether that status
+  is fatal depends on **how the caller invoked the function** — bash suppresses `errexit` inside a
+  command substitution that is part of an `||` or `if` list, which is how every caller in this repo
+  calls it (measured on bash 5.2), so the rc never reaches `set -e`. That is a property of the
+  CALLERS, not of this function, and it is not asserted anywhere. Migrating them is therefore not a
+  cleanup but a hardening against a future caller that assigns the result unconditionally — worth
+  doing, and worth doing with a test that pins the caller shape rather than the parse.
+
+  **The population predicate that found this one — "bins that source the lib" — structurally
+  excludes the mirror, and the mirror is the bigger half.** `bin/promote-released-cards` is the
+  standalone that must never source the lib (the lib header says so, and `fetch_whole_board`'s own
+  comment names itself the deliberate co-vendored port of `fetch_board_cards`). It carries the
+  **same shape again, seven more times** — the same recipe with `fetch_whole_board` as the anchor — of which only the `meta.last_page` and `meta.total` reads
+  carry `2>/dev/null`, so **five parse a response body raw**, under `set -euo pipefail`, in a tool
+  that PATCHes cards. (The review that surfaced this said "6 sites, two without `2>/dev/null`"; the
+  derived figures are seven and five — the accumulator `jq -c -s 'add'` was not in the reviewer's
+  list.) Any future audit of this shape whose predicate is lib-sourcing will miss all seven; the
+  predicate has to be "reads a kanban response body", which is a grep of the files, not of the
+  source graph.
+
+  **And the two implementations of this one behaviour already disagree on the safety branch.** The
+  mirror refuses a page-1 read that returns zero cards — `fetch_whole_board` `die`s with *"board N
+  returned 0 visible cards — the token's user is likely not a member of board N … Refusing."* — and
+  the **lib has no such branch at all**: `fetch_board_cards` takes `n=0` as a short page, breaks,
+  and returns an EMPTY array at **rc 0**, indistinguishable from a genuinely empty board. (That
+  refusal is the same guard *Diagnosis 2* records revision 1 of this program as nearly deleting.)
+  That divergence is the duplication earning its keep as a defect rather than as a copy (canon #7).
+  **Not fixed here** — the lib side is card#6594 and carries its own operator ruling; this entry
+  exists so the next pass over this shape starts from the pair, not from the lib alone.
+- **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
+  enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
+  (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
+  of them. A clean result over a population with a silent remainder reports where the searcher
+  stopped, so the remainder is disposed here. Each row was re-decided by reading the parse's own
+  **input expression**, not by trusting the instrument's classifier. Two verdicts are used: **`R` —
+  response-derived, but downstream of a parse that already owns the risk** (the raw `jq` cannot meet
+  a body this tool has not already refused or made safe), and **`L` — locally built input, never a
+  response body at all**.
+
+  **Six are `R`:**
+  - `bin/dl-a0-backfill-triaged`, four rows — the two `$t` reads in the dry-run preview loop and the
+    two in the apply loop. All four read `$t`, an element of `targets_json[]`, and every member of
+    that array is a `#TARGET\t<@json>` row emitted by the single `$targets_jq` filter. That filter
+    **constructs** the object it emits (`{id, newtags, idtags}`), so `$t` is jq's own `@json` output
+    rather than anything the server sent. The response risk sits upstream, in that one filter over
+    `$cards_json`, and the `fetch_board_cards` call already guards it on rc.
+  - `kb_by_ref_hit` (`bin/_kb-board-lib.sh`) — its input genuinely *is* a raw response body, but the
+    `jq -e … >/dev/null 2>&1` **is the predicate**: its status is the function's return value,
+    consumed as a boolean, message suppressed, and any jq fault reads as a non-hit (fail-closed).
+    There is no status to leak into `set -e` and no value to misread.
+  - `_kbc_field_enumerate` (`bin/kbcard`) — reads `$fields`, which comes only from
+    `_kbc_fetch_fields`, and that read now refuses a body no custom-field set can be read out of.
+    Stronger than that: it is reached only from `_kbc_field_set_options`' "field not defined" arm,
+    i.e. only after that function already `map`ped the same value successfully, so by construction it
+    is an array.
+
+  **Two are `L`:**
+  - `bin/board-stats`' `failures_json` build — parses `printf '%s\n' "${fails[@]}"`, the shell array
+    the enclosing function appends its own diagnostics to.
+  - `swimlane_id`'s "defined swimlanes" enumeration (`bin/kbcard`) — parses `_kbc_swimlane_map`'s
+    output, which that function builds with `jq -c` from this board's `KB_SWIMLANE_*` env variables.
+
+  **The sibling audit that closed the write-path shape test, recorded so it is not re-derived**
+  (card#6426) — the harm the tag-read shape test exists to prevent is *a read whose own result
+  becomes the body of a write that REPLACES what it read*. Every write in the toolkit was checked
+  against that predicate, not just the greppable ones. Exactly one site matches: `_kbc_patch_tags`.
+  Disposed explicitly, so none of these is silence: `field set-options` PATCHes a
+  replace-wholesale `options` array but builds it from the caller's `--options`, so an unreadable
+  read there cannot yield a write built from nothing; `archive` / `delete` send constant bodies and
+  the read feeds only a fail-closed gate; `move` / `patch`'s other fields come from flags;
+  `dl-a0-backfill-triaged` *is* a tag read-modify-write, but a card whose tag list cannot be read
+  fails its `id:*-pr-*` selector and never becomes a target, so its write only ever fires on a tag
+  list it demonstrably read; `dl-a1-register-field` and `board-card-start` send constants. **One
+  instance, not a class** — so no class item, per the filing rule.
+
+  **What these dispositions do NOT cover, said plainly:** `R` means the raw `jq` at that row is
+  safe, not that its verb is. The read-verb residue is separate and stays filed — a `2xx` whose
+  `.data` is valid JSON of the wrong shape still exits at jq's rc 5 in the projections that index it
+  (measured: `field list` on `{"data":null}`, `show --task 7` on `{"data":"str"}`, `list` on
+  `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
+  card's to make.
 - **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
   and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
   `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement

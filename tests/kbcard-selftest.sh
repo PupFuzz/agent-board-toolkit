@@ -1414,6 +1414,40 @@ eq "control: the same patch on a readable card DOES write" "1" "$(kb_stub_count 
 eq "control: …and the write keeps the card's existing tags" '["keep-me","triaged"]' \
    "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
 
+echo "-- patch --triaged: a 2xx that PARSES but carries no card is the same refusal --"
+# The half of the tag-wipe class a tolerant parse alone does NOT close. `.data.tags // []`
+# only yields empty when jq FAULTS; on a body that parses perfectly well and simply has no
+# `.data` object, `//` supplies the string `[]` — non-empty, so the `[[ -n … ]]` arm passes and
+# the PATCH goes out carrying only what THIS call adds. `tags` is replaced WHOLESALE, so that
+# is the tag wipe the refusal exists to prevent, reached through the guard rather than around
+# it. Measured on the pre-fix bin: `{"ok":true}` → rc 0, 2 requests, PATCH body `{"tags":
+# ["triaged"]}`. Closed by a shape test on the READ that feeds this destructive write — the
+# write path only; a read verb's acceptance is not changed by it.
+#
+# Each leg carries its OWN well-formed control on the same route, so a green is a refusal that
+# discriminates rather than a verb that stopped writing.
+shape_leg() {
+    local label="$1" body="$2"
+    KB_STUB_GET_BODY="$body" nonjson_leg "$label" 2 "patch" patch --task 505 --triaged
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+    eq "$label → issues NO PATCH at all"  "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+    kbc patch --task 505 --triaged
+    eq "$label control: a well-formed card on the same route DOES write" "1" \
+       "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label control: …keeping the tags it already had" '["keep-me","triaged"]' \
+       "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+}
+# No `.data` key at all — a 2xx from something that is not this API, or a truncated envelope.
+shape_leg "patch --triaged (2xx with no .data key)" '{"ok":true,"note":"a 2xx with no data key"}'
+# `.data` present and JSON null — the trashed / permission-limited card shape.
+shape_leg "patch --triaged (.data is null)"         '{"data":null}'
+# `.data` a scalar. Already refused pre-fix (jq faults indexing a string, and the fault lands in
+# the same empty arm), so this leg is a REGRESSION GUARD, not evidence of the defect: it pins
+# that the shape test does not move a case the tolerant parse already covered.
+shape_leg "patch --triaged (.data is a string)"     '{"data":"str"}'
+unset -f shape_leg
+
 echo "-- link: the relation echo --"
 KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
 kbc link --from 505 --to 506 --relation blocks
@@ -1435,6 +1469,16 @@ eq "…states only what is true: nothing could be read out of the body" "true" \
 KB_STUB_SEARCH_BODY='{"data":[]}' kbc show --task EXT-9
 eq "control: a well-formed EMPTY result → the not-found arm" "1" "$rc"
 eq "control: …and says so"                       "true" "$(has 'no task found' "$err")"
+# A `.data` that is present and non-empty but NOT a list. The guard above is `[[ -n "$rows" ]]`,
+# which a JSON object satisfies, so the row projection right after it used to run unguarded and
+# print jq's own "Cannot index object with number" before the verb's message. THIS LEG ASSERTS
+# ONLY THE PART THAT IS FIXED — no raw jq text on stderr. The verb's rc and its wording are
+# DELIBERATELY unchanged and asserted as such: refusing here would change what a READ verb
+# accepts, which is a separate, filed decision and not this change's to make.
+KB_STUB_SEARCH_BODY='{"data":{"id":9}}' kbc show --task EXT-9
+eq "a non-list .data → leaks no raw jq error"    "false" "$(has 'jq:' "$err")"
+eq "…rc is UNCHANGED at 1"                       "1"     "$rc"
+eq "…and so is the (residual, filed) wording"    "true"  "$(has 'no task found' "$err")"
 
 echo "-- field list / field set-options --"
 KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field list" 1 "field" field list
@@ -1443,6 +1487,16 @@ eq "control: field list on a well-formed body → rc 0" "0" "$rc"
 eq "control: …and projects the field"            "stage" "$(jq -r '.[0].key' <<<"$out")"
 KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field set-options (read)" 1 "field" \
     field set-options --field stage --options a,b
+# _kbc_fetch_fields owns this refusal for BOTH sub-verbs, so set-options adding one of its own
+# on top prints a second line that names no cause the first did not. `field list` above is the
+# shape to match: one message, rc 1. Counted, not substring-matched — a second line is exactly
+# what a `has` assertion cannot see.
+KB_STUB_CF_BODY="$NONJSON" kbc field set-options --field stage --options a,b
+eq "field set-options (read) → ONE kbcard line, as field list emits" "1" \
+   "$(/usr/bin/grep -c '^kbcard: ' <<<"$err" || true)"
+KB_STUB_CF_BODY="$NONJSON" kbc field list
+eq "control: field list emits that same single line"                 "1" \
+   "$(/usr/bin/grep -c '^kbcard: ' <<<"$err" || true)"
 # The WRITE echo: the reconcile PATCH already landed (2xx), so this refusal is about the echo,
 # not the write — and it must still not print jq's rc 5.
 KB_STUB_CFW_BODY="$NONJSON" nonjson_leg "field set-options (write echo)" 1 "field" \

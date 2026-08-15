@@ -22,8 +22,11 @@
 #
 # It is sourced, never executed. It collapses the config-resolution, kanban-API curl
 # wrapper, tolerant response parse, whole-board pagination, and DL-canonicalization
-# logic that was copy-pasted across kbcard / next-dl / dl-a0-backfill-triaged /
-# dl-a1-register-field / board-snapshot / board-card-start into one definition.
+# logic that was copy-pasted across THE LIB-SOURCING BINS LISTED AT THE TOP OF THIS
+# HEADER into one definition. That list is deliberately not re-spelled here: this copy
+# had already drifted from it, omitting adopt-to-dl and board-stats — and adopt-to-dl is
+# a kb_parse_resp caller, so the omission was load-bearing, not cosmetic. One prose copy
+# per file; agent-board-toolkit-drift-check DERIVES the real set from the files.
 #
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"

@@ -144,8 +144,13 @@
 # has — a read never reports "no such card" / "no comments" / "no custom fields" for a body it
 # could not read, and a write whose echo is unreadable is reported as UNCONFIRMED rather than
 # printed. `patch` is the one that refuses BEFORE the wire: a --tags/--type/--triaged patch must
-# read the current tag list to re-send it whole, so an unreadable read there is rc 2 with no PATCH
-# at all rather than a tag list rebuilt from nothing.
+# read the current tag list to re-send it whole, so a read there that yields no tag list is rc 2
+# with no PATCH at all rather than a tag list rebuilt from nothing. That refusal covers a body
+# that PARSES perfectly well and simply carries no card (`{"ok":true}`, `{"data":null}`) as well
+# as one that does not parse: `.data.tags // []` supplies `[]` for the former without faulting, so
+# the read is tested for a `.data` OBJECT rather than merely for a readable one. That shape test
+# is scoped to this read alone — it is the only one here whose result is re-sent as a WHOLESALE
+# replacement of what it read. A card that genuinely carries no `tags` key is unaffected.
 #
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
@@ -318,7 +323,12 @@ resolve_task() {
         echo "kbcard: external-id lookup for '$ref' returned success but no result list could be read out of its body — nothing was read (this is NOT 'no such card')" >&2
         return 1
     }
-    id="$(jq -r '.[0].id // empty' <<<"$rows")"
+    # Through the primitive too: the guard above is a non-EMPTY test, which a `.data` that is a
+    # JSON object or scalar satisfies, so a bare jq here still printed its own "Cannot index …"
+    # ahead of the message below. Same rc, same stdout, same arm — this removes jq's stderr
+    # line only. The residual WRONG WORDING on that shape (it reads as the not-found arm) is
+    # left deliberately: refusing it would change what this READ verb accepts.
+    id="$(kb_parse_resp "$rows" -r '.[0].id // empty')"
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
@@ -472,9 +482,22 @@ _kbc_patch_tags() {
         # "the card has no tags" writes only what THIS call adds and DESTROYS every tag the
         # card carried. Refuse instead — the caller turns this rc into its own rc 2, before any
         # PATCH is issued.
+        #
+        # The `.data` OBJECT TEST is what makes that refusal reach the whole class. A tolerant
+        # parse only yields empty when jq FAULTS, and a body that parses perfectly well while
+        # carrying no card does not fault: on `{"ok":true}` or `{"data":null}`, `.data.tags //
+        # []` supplies the string `[]`, which is non-empty, so the arm below passes and the tag
+        # wipe happens THROUGH the guard. Requiring `.data` to be an object routes those into
+        # the same refusal, at the same rc, before the wire. It is deliberately scoped to this
+        # one read: audited across the toolkit, it is the only read whose OWN result becomes the
+        # body of a wholesale-replacement write. (`field set-options` also PATCHes a
+        # replace-wholesale array, but that array is built from the caller's --options, not from
+        # the read; an unreadable read there cannot produce a write built from nothing.) So this
+        # is a dedicated path for one named harm, not a widened guard — no read verb's
+        # acceptance changes with it.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_parse_resp "$resp" '.data.tags // []')"
+        base="$(kb_parse_resp "$resp" 'if (.data | type) == "object" then (.data.tags // []) else empty end')"
         [[ -n "$base" ]] || {
             echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
             return 1
@@ -1368,8 +1391,12 @@ _kbc_field_set_options() {
     # a read failure EXPLICITLY (kb_api already surfaced the error body) rather than
     # leaning on set -e — errexit is suppressed when this fn runs in a `||`/`if`
     # context, and a swallowed empty read would mis-surface as "field not defined".
+    # The `||` arm carries no message of its own: _kbc_fetch_fields already speaks on both of
+    # its failing paths (kb_api's error body on a non-2xx, its own refusal on a 2xx nothing
+    # could be read out of), so a second line here named no cause the first did not. `field
+    # list` is the shape — one message, rc 1.
     local fields fld
-    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    fields="$(_kbc_fetch_fields)" || return 1
     if kb_is_uint "$field"; then
         fld="$(jq -c --argjson id "$field" 'map(select(.id == $id)) | .[0] // empty' <<<"$fields")"
     else
