@@ -29,6 +29,20 @@ printf 'ambient-token\n' > "$TMP/ambient.token"
 printf 'default-token\n' > "$TMP/.kanban-dev-token"
 printf 'spaced-token\n'  > "$TMP/tok with space.token"
 
+# expect_out drives a function and compares stdout; expect_rc compares exit status.
+# These deliberately shadow the prelude's like-named helpers: this variant routes
+# through eq() (different pass/fail wording), so it defines its own after sourcing.
+expect_out() { # <label> <expected> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local got; got="$("$@" 2>/dev/null || true)"
+    eq "$label" "$exp" "$got"
+}
+expect_rc() { # <label> <expected-rc> <fn> <args...>
+    local label="$1" exp="$2"; shift 2
+    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
+    eq "$label (rc)" "$exp" "$rc"
+}
+
 # reset_env: drop every var the resolvers read or publish, so each case starts from a known
 # state — these functions communicate through globals and a leaked one would fake a pass.
 reset_env() {
@@ -324,6 +338,51 @@ get1 "$TMP/.kanban-a-board.env" KBCARD_TOKEN_FILE >/dev/null
 eq "does not leak the board env's KB_BOARD_ID into the caller" "" "${KB_BOARD_ID:-}"
 
 # ---------------------------------------------------------------------------
+echo "== kb_board_roster — the roster file, then DISCOVERY as the fallback =="
+# The parser half is board-snapshot's inline block hoisted for its second caller; the fallback
+# half is new, and it is the one that can fail SILENTLY — a box with no roster file must
+# report on the boards it has, not on an empty set that renders as a healthy quiet report.
+reset_env
+rm -f "$TMP"/.kanban-*-board.env
+export KANBAN_SNAPSHOT_BOARDS="$TMP/.kanban-snapshot-boards"
+{ echo '# a comment line'
+  echo ''
+  echo '   dev:Board 5 (kanban-board)'
+  echo 'toolkit'
+  echo '  spaced name  :Label: with a colon'
+  echo ':nameless'
+} > "$KANBAN_SNAPSHOT_BOARDS"
+roster="$(kb_board_roster)"
+eq "one line per usable entry (comment, blank and nameless dropped)" "3" \
+   "$(printf '%s\n' "$roster" | grep -c .)"
+eq "a name:label line splits at the FIRST colon" "dev	Board 5 (kanban-board)" \
+   "$(printf '%s\n' "$roster" | sed -n 1p)"
+eq "a line with no colon takes its name as its label" "toolkit	toolkit" \
+   "$(printf '%s\n' "$roster" | sed -n 2p)"
+eq "whitespace is stripped from the NAME and the label kept verbatim" "spacedname	Label: with a colon" \
+   "$(printf '%s\n' "$roster" | sed -n 3p)"
+
+# The fallback: no roster file at all ⇒ every board env on the box, label = name.
+rm -f "$KANBAN_SNAPSHOT_BOARDS"
+echo 'KB_BOARD_ID=7' > "$TMP/.kanban-sola-board.env"
+echo 'KB_BOARD_ID=9' > "$TMP/.kanban-sandbox-board.env"
+eq "with no roster it discovers every board env" "sandbox	sandbox
+sola	sola" "$(kb_board_roster | LC_ALL=C sort)"
+# A roster file present but holding nothing usable is the same case as none — the count, not
+# the file's existence, is what decides.
+printf '# only a comment\n\n' > "$KANBAN_SNAPSHOT_BOARDS"
+eq "an unusable roster file falls back the same way" "2" "$(kb_board_roster | grep -c .)"
+# The control: with the roster usable again, discovery must NOT also fire (or the two would
+# concatenate and every board on the box would be reported twice).
+printf 'dev:D\n' > "$KANBAN_SNAPSHOT_BOARDS"
+eq "control: a usable roster suppresses discovery" "dev	D" "$(kb_board_roster)"
+# And a box with neither returns nothing at all, quietly — the caller decides what that means.
+rm -f "$KANBAN_SNAPSHOT_BOARDS" "$TMP"/.kanban-*-board.env
+eq "no roster and no board env ⇒ empty output" "" "$(kb_board_roster)"
+expect_rc "…at rc 0 (emptiness is not an error here)" 0 kb_board_roster
+unset KANBAN_SNAPSHOT_BOARDS
+
+# ---------------------------------------------------------------------------
 echo "== kb_read_token =="
 reset_env
 kb_read_token "$TMP/board.token"
@@ -494,20 +553,6 @@ unset -f curl _maxtime_arg
 unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
-# expect_out drives a function and compares stdout; expect_rc compares exit status.
-# These deliberately shadow the prelude's like-named helpers: this variant routes
-# through eq() (different pass/fail wording), so it defines its own after sourcing.
-expect_out() { # <label> <expected> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local got; got="$("$@" 2>/dev/null || true)"
-    eq "$label" "$exp" "$got"
-}
-expect_rc() { # <label> <expected-rc> <fn> <args...>
-    local label="$1" exp="$2"; shift 2
-    local rc=0; "$@" >/dev/null 2>&1 || rc=$?
-    eq "$label (rc)" "$exp" "$rc"
-}
-
 echo "== kb_dl_num — strict (rejects non-DL loudly) =="
 expect_out "bare int"                   "42"  kb_dl_num "42"
 expect_out "DL-093 -> 93"               "93"  kb_dl_num "DL-093"

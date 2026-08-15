@@ -52,12 +52,57 @@
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
+#     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
+#     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
+#     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
+#     no matter what the board holds. `show` returns a card whole; use it for the rest.
+#     `type` is the NATIVE card_type_id — null on every row of an all-tag board (and on
+#     a mixed board's tag-typed cards), where the type rides `tags` as `type:<alias>`.
+#     So select on `tags` there, not on `type`: `--type <alias>` matches those cards but
+#     their projected `type` is null, and a filter keyed on it returns a confident 0.
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
 #     lane literally NAMED `none` must be addressed by id.
+#     With ANY filter flag active, one line goes to STDERR: `list <flags>: <M> of <N>
+#     board cards matched` — the denominator a filtered result otherwise hides, so an
+#     empty answer is distinguishable from an empty board. stdout is unchanged (still
+#     just the array). Unfiltered, nothing is printed: the array's length IS N.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
+#   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
+#     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
+#     stdout. That id is the write verification: adding a comment does NOT bump the card's
+#     updated_at (measured on the sandbox instance, board 1162), so the echoed id is the only
+#     cheap signal that the write landed, and a success carrying no id is reported as an
+#     UNVERIFIED write (rc 1) rather than printed as a plausible-looking `null`.
+#     Exactly one of --content / --content-file is required — both, or neither, is rc 2.
+#     --content-file sends the file's text, multi-line included; a missing or unreadable file
+#     — and, from EITHER source, text that is empty or whitespace-only — is rc 2 BEFORE any
+#     request, so a bad invocation costs no traffic.
+#     What goes on the wire, from either source: TRAILING NEWLINES ARE TRIMMED, while interior
+#     newlines and leading whitespace are preserved (a comment's own indentation is content),
+#     and CRLF line endings are normalized to LF — a --content-file written on Windows/Git-Bash
+#     would otherwise put a literal \r on the wire, which the reader below renders as `?` at the
+#     end of every line. A LONE \r is NOT a line ending and is left to that same sanitizer.
+#   kbcard comments --task ID-OR-EXT
+#     READ the card's comments, one block each: `comment <id> · user <user_id> · <created_at>`
+#     followed by the content indented. The author is a bare user id because that is the only
+#     author field a comment row carries. There is NO comment read route (GET on the comments
+#     path is 405, POST-only), so this projects the `comments` array the task detail GET
+#     already carries — the same array `show` returns, without the rest of the card.
+#     A card with none prints one explicit "no comments" line at rc 0, so an empty answer is
+#     never a silent one. The array is the WHOLE ordered comment history (measured at N=60 on the
+#     sandbox instance: 60 posted, 60 returned, created_at ascending, no gap) — this read is not
+#     paged and takes no page argument.
+#     Content is untrusted text printed to a terminal, so every C0 control character EXCEPT the
+#     newline and the TAB is rendered as `?` — an embedded ESC is a terminal command, and
+#     `ESC[2K ESC[1A` erases the `comment <id> · user <n>` line above it, i.e. its own
+#     attribution. The tab is exempt because it cannot move the cursor backward (so it cannot
+#     reach that line) while replacing it damages every pasted diff or indented block. The header
+#     line's own fields come from the same untrusted body and are sanitized too, more strictly:
+#     EVERY C0 control there, newline and tab included, since a newline in a header field would
+#     forge a second attribution block where one in the content cannot (content is indented).
 #   kbcard archive --task ID-OR-EXT [--force] [--dry-run]
 #     Take the card off the board without deleting it (PATCH _action:archive) —
 #     the row stays live + recoverable and keeps its stable id + dl_number.
@@ -620,6 +665,18 @@ cmd_patch() {
 #   from "filter on laneless" ("null") — collapsing those two is the trap this filter
 #   exists to avoid, since a laneless filter that reads as absent returns the WHOLE
 #   BOARD while looking correct (see _kbc_swimlane_is_laneless_ref's callers).
+#   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
+#   a downstream `grep`/`jq select` over a field this projection drops gets a confident
+#   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
+#   dependabot cards" while `show` returned the very tag it was looking for). `tags` and
+#   `external_id` therefore ride every row — tags carry the whole `id:<sid>` provenance
+#   namespace and the `type:*` fallback this same function already filters on, and
+#   external_id is the per-board sync id, i.e. the two identity surfaces a card is
+#   actually hunted by. `description` is deliberately NOT projected: it is unbounded
+#   free text on every row of a whole-board read, and the bound matters more here than
+#   on `show`, which returns one card. Absent tags project as [] (not null) — the same
+#   normalization the type filter above applies, so the filter and the emitted value can
+#   never disagree about what a card is tagged.
 _kbc_list_project() {
     local stage_filter="$1" type_filter="$2" typetag="$3" swimlane_filter="$4"
     local swmap; swmap="$(_kbc_swimlane_map)"
@@ -639,6 +696,8 @@ _kbc_list_project() {
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
                 swimlane_id: (.swimlane_id // null),
                 swimlane: ($swmap[((.swimlane_id // null) | tostring)] // null),
+                external_id: (.external_id // null),
+                tags: (.tags // []),
                 dl: .payload.dl_number, pr: .payload.pr_number})'
 }
 
@@ -680,8 +739,34 @@ cmd_list() {
     local cards
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
         || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
-    printf '%s' "$cards" | _kbc_list_project \
-        "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}"
+    local out
+    out="$(printf '%s' "$cards" | _kbc_list_project \
+        "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}")"
+    printf '%s\n' "$out"
+
+    # Denominator, on stderr, and only when a filter actually narrowed something. A
+    # filtered `[]` is indistinguishable from an empty board at the call site — the
+    # caller sees the numerator and never the population it came out of, so a filter
+    # that matched nothing for a WRONG reason reads exactly like a truthful empty
+    # answer. Naming both numbers makes a suspicious 0-of-N legible where it happens.
+    # stderr, so stdout stays the same bytes it always was (nothing parsing the array
+    # is affected); the flags are echoed AS TYPED so a caller running several list
+    # reads can tell the lines apart. Unfiltered there is nothing to say: the array's
+    # own length IS the denominator, already on stdout.
+    if [[ -n "$column" || -n "$type" || -n "$swimlane" ]]; then
+        local flags="" matched total
+        [[ -n "$column" ]]   && flags="$flags --column $column"
+        [[ -n "$type" ]]     && flags="$flags --type $type"
+        [[ -n "$swimlane" ]] && flags="$flags --swimlane $swimlane"
+        matched="$(jq 'length' <<<"$out")"
+        # `<<<`, never --argjson: a whole board is ~200KB, so passing it in argv trips
+        # "Argument list too long" over MAX_ARG_STRLEN — execve fails and jq never runs,
+        # which under set -e aborts a `list` that had already printed its cards. The
+        # denominator would be missing exactly on the biggest boards, i.e. the ones it
+        # matters most on. Same stdin rule the whole-board reads in this file follow.
+        total="$(jq '(. // []) | length' <<<"$cards")"
+        echo "kbcard: list$flags: $matched of $total board cards matched" >&2
+    fi
 }
 
 cmd_link() {
@@ -700,6 +785,28 @@ cmd_link() {
     t="$(resolve_task "$to")"
     body="$(jq -n --argjson from "$f" --argjson to "$t" --arg rel "$relation" '{from_task_id: $from, to_task_id: $to, relation_type: $rel}')"
     kb_api POST "/task_links.json" "$body" | jq '.data'
+}
+
+# _kbc_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
+# printing NOTHING when that body is not JSON at all instead of dying on jq's parse error.
+#
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read arrives at every projection below as a success. An unguarded `jq`
+# there exits 5 under `set -e`, with jq's raw parse error as the caller's whole diagnostic — a
+# status this tool documents nowhere, from a program the caller never ran. Swallowing the parse
+# failure hands the refusal back to the caller's OWN empty-value arm, which says it in kbcard's
+# words at kbcard's rc. Empty is the only thing this can print on a parse failure, so it can
+# never turn an unreadable body into a plausible value.
+#
+# Suppressing jq's stderr means ANY jq fault lands in that same arm — a filter this file got
+# wrong, or a jq that is missing/unrunnable — and so does a body that parsed PERFECTLY WELL but
+# holds no such value (a 200 `[]` is valid JSON that `.data` cannot index). So a caller's
+# diagnostic states only what is true in EVERY one of those arms — "no <thing> could be read out
+# of the body" — never "the body is not JSON" and never "the body could not be parsed": both are
+# specific claims about the server that are wrong in the other arms.
+_kbc_parse_resp() {
+    local resp="$1"; shift
+    jq "$@" <<<"$resp" 2>/dev/null || true
 }
 
 # _kbc_annotate_card <task-json>: the task with `stage` populated from
@@ -736,10 +843,199 @@ cmd_show() {
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    local task data
+    local task resp data
     task="$(resolve_task "$task_ref")"
-    data="$(kb_api GET "/tasks/$task.json" | jq '.data')"
+    resp="$(kb_api GET "/tasks/$task.json")" || return 1
+    data="$(_kbc_parse_resp "$resp" '.data')"
+    [[ -n "$data" ]] || {
+        echo "kbcard: show on task $task: the read returned success but no card could be read out of its body — nothing was read" >&2
+        return 1
+    }
     _kbc_annotate_card "$data"
+}
+
+# --- comment verbs: the card audit trail ------------------------------------
+# MEASURED semantics, on the sandbox instance (board 1162), because each one shapes the code:
+#   * POST /tasks/<id>/comments.json takes the comment object FLAT — {"content": "…"} — and
+#     201s echoing the created row (id, task_id, user_id, content, created_at, updated_at).
+#     The wrapped {"comment":{"content":…}} form is 422 "The content field is required", so
+#     the flat shape here is a measurement rather than a guess.
+#   * Adding a comment does NOT bump the card's updated_at, so the echoed id is the ONLY
+#     cheap write verification — hence the loud refusal below on a success carrying no id.
+#   * There is no comment READ route: GET on the same path is 405 (POST only). The task
+#     detail GET already carries the whole `comments` array, so `comments` projects that.
+#     user_id is the only author field a row carries — there is no name to print.
+#   * That array is COMPLETE and ORDERED, which is what makes projecting it a legitimate
+#     audit-trail read rather than a first-page one: 60 comments posted to one card came back
+#     as 60 rows, created_at ascending, first == probe-01 and last == probe-60, the returned
+#     content set equal to the posted set (no gap, no duplicate). Corroborated in the server's
+#     own source — Task::comments() is hasMany ordered by created_at with no limit, eager-loaded
+#     whole by fullTaskResource — so the detail GET carries the relation, not a page of it. The
+#     probe bounds what was OBSERVED (no cap and no re-ordering at 60); the source read is the
+#     argument that there is no cap at any N.
+#   * DELETE on a comment is a SOFT delete — it 200s echoing the row with deleted_at STAMPED,
+#     so the row is still live — and the task detail's array then EXCLUDES it rather than
+#     carrying it with that timestamp. So deleted_at is null on every row this read can
+#     return, and rendering it would be rendering a state this surface cannot observe.
+# And the trap none of this may fall into: the UN-suffixed path /tasks/<id>/comments 404s
+# with a well-formed JSON body ({message, exception, file, line, trace}) that any "did the
+# body parse?" test reads as SUCCESS — it carries no .data, so the failure degrades to a
+# silent empty-id success rather than a crash. Success is therefore decided by kb_api on the
+# HTTP STATUS CLASS alone; nothing below infers it from the response body's shape.
+
+# _kbc_comment_content <content> <content-file>: the comment text on stdout, resolving the two
+# mutually-exclusive sources. Returns 2 (diagnostic naming the flag) when both or neither was
+# given, when the file is missing or unreadable, or when the resolved text is blank. Every one
+# of those is decided with no network at all, so a bad invocation can never half-write.
+#
+# TRAILING NEWLINES ARE TRIMMED from either source — the caller reads this through a command
+# substitution, which strips them — while interior newlines and leading whitespace ride verbatim.
+# That is the documented contract (the Usage block at the top of this file states it, and so
+# does README's comment section), not an accident of the plumbing.
+_kbc_comment_content() {
+    local content="$1" file="$2"
+    if [[ -n "$content" && -n "$file" ]]; then
+        echo "kbcard: --content and --content-file are mutually exclusive — pass exactly one" >&2
+        return 2
+    fi
+    if [[ -z "$content" && -z "$file" ]]; then
+        echo "kbcard: comment requires --content \"text\" or --content-file PATH" >&2
+        return 2
+    fi
+    if [[ -n "$file" ]]; then
+        [[ -r "$file" ]] || { echo "kbcard: --content-file is not readable: $file" >&2; return 2; }
+        # The `x` sentinel keeps the file's own trailing newline INSIDE this substitution, which
+        # would otherwise strip it here — before the CRLF normalization below could see it, so a
+        # CRLF file's last line would keep a lone \r that nothing then owns. `&&` so a failed
+        # read is still a failed read (with `;` the substitution would carry printf's rc 0).
+        content="$(cat -- "$file" && printf x)" || { echo "kbcard: --content-file could not be read: $file" >&2; return 2; }
+        content="${content%x}"
+    fi
+    # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
+    # install target, so a --content-file written there arrives CRLF-terminated and an unnormalized
+    # \r goes on the wire verbatim — where the reader, correctly, renders every C0 control as `?`,
+    # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
+    # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
+    # for that sanitizer rather than silently rewriting content here.
+    content="${content//$'\r'$'\n'/$'\n'}"
+    # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the server trims before
+    # it validates, so a whitespace-only body is a 422 there — a refusal that costs a round trip
+    # and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes on
+    # the wire keeps its leading whitespace and its interior newlines (a comment's own
+    # indentation is content), and loses only the trailing newlines described above.
+    if [[ -z "${content//[[:space:]]/}" ]]; then
+        if [[ -n "$file" ]]; then
+            echo "kbcard: --content-file holds no comment text: $file" >&2
+        else
+            echo "kbcard: --content holds no comment text" >&2
+        fi
+        return 2
+    fi
+    printf '%s' "$content"
+}
+
+cmd_comment() {
+    local task_ref="" content="" content_file=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
+            --content) kb_require_value "$1" "${2:-}" || return 2; content="$2"; shift 2 ;;
+            --content-file) kb_require_value "$1" "${2:-}" || return 2; content_file="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
+    # Text FIRST, before resolve_task: an ambiguous, absent or unreadable source must cost no
+    # request at all — the same offline-first rule cmd_patch follows for its typo'd flags.
+    local text; text="$(_kbc_comment_content "$content" "$content_file")" || return 2
+
+    local task body resp cid
+    task="$(resolve_task "$task_ref")" || return 1
+    body="$(jq -nc --arg c "$text" '{content: $c}')"
+    resp="$(kb_api POST "/tasks/$task/comments.json" "$body")" || return 1
+    # kb_api has already decided success on the status class (and printed the status + error
+    # body on a failure). What is left is the WRITE VERIFICATION: the card's updated_at does
+    # not move on a comment-add, so a success carrying no echoed id leaves the write
+    # unconfirmed — say so, rather than print a `null` that reads exactly like an id.
+    # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the parse;
+    # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
+    # _kbc_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
+    cid="$(_kbc_parse_resp "$resp" -r '.data.id // empty')"
+    [[ -n "$cid" ]] || {
+        echo "kbcard: comment on task $task returned success with no comment id — the write is UNVERIFIED (a comment does not bump the card's updated_at, so that id is the only confirmation)" >&2
+        return 1
+    }
+    printf '%s\n' "$cid"
+}
+
+# _kbc_comments_render: the projection for a comments ARRAY on STDIN — one block per comment,
+# a header line then the content indented two spaces on EVERY line (content is stored
+# verbatim, multi-line included, and an unindented second line would read as a new comment).
+# Extracted from cmd_comments so it is unit-testable on synthetic comments.
+#
+# Content is UNTRUSTED text going straight to a terminal, so every C0 control but the newline
+# and the tab is replaced with `?` before it is printed: an embedded ESC is a terminal command,
+# and `ESC[2K ESC[1A` erases the attribution header line above it — i.e. the rendered content
+# can rewrite the part of the output that says who wrote it. The newline is exempt because it is
+# the structure this renderer reads (it drives the indent-every-line split). The TAB is exempt
+# because it cannot move the cursor BACKWARD — it only advances to the next tab stop, so it
+# cannot reach the attribution line this filter exists to protect — while replacing it damages
+# every pasted diff, log line or indented block a comment carries.
+#
+# THE HEADER FIELDS ARE THE SAME UNTRUSTED BODY and are sanitized too — id, user_id and
+# created_at all come from the response, so leaving them raw would leave the whole hole open one
+# line up from the content that is filtered. Their filter is STRICTER, and the difference is the
+# point: c0_safe exempts the newline because it is content STRUCTURE, and content can never forge
+# a header because every one of its lines is indented. Nothing in a header field is structure —
+# an unindented newline there mints a whole extra `comment N · user M · t` block, i.e. a forged
+# attribution, which is the very thing this filter exists to prevent. So the header replaces
+# every C0 control, newline and tab included. Applied to the ASSEMBLED line rather than per
+# field because id/user_id arrive as numbers and `explode` on a number is a jq error.
+#
+# Done by CODEPOINT rather than a `gsub` character class, because the obvious spelling of that
+# class is silently wrong here: jq hands the pattern to Oniguruma, which does NOT read `\uXXXX`
+# (jq-1.7 measured), so `gsub("[\\u0000-\\u001f]"; …)` degenerates into a class over the
+# literal characters and replaces ordinary printable text while leaving the ESC untouched —
+# a sanitizer that damages the safe input and passes the dangerous one.
+_kbc_comments_render() {
+    jq -r '
+      def c0_safe: explode | map(if . < 32 and . != 10 and . != 9 then 63 else . end) | implode;
+      def c0_header: explode | map(if . < 32 then 63 else . end) | implode;
+      .[] | (("comment \(.id // "?") · user \(.user_id // "?") · \(.created_at // "?")" | c0_header),
+             (((.content // "") | c0_safe | split("\n"))[] | "  " + .))'
+}
+
+cmd_comments() {
+    local task_ref=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
+    local task resp comments n
+    task="$(resolve_task "$task_ref")" || return 1
+    # The task detail IS the read surface — there is no comment read route to call.
+    resp="$(kb_api GET "/tasks/$task.json")" || return 1
+    # A 2xx body no comment list can be read out of — unparseable, or parseable but not a card
+    # (a proxy's HTML, a truncated read, a 200 `[]`) — is NOT an empty comment list: the
+    # `no comments` line below is a statement about the card, and printing it here would answer a
+    # question this read never reached — the same silent-empty trap the 404's parseable body sets
+    # one layer up.
+    comments="$(_kbc_parse_resp "$resp" -c '.data.comments // []')"
+    [[ -n "$comments" ]] || {
+        echo "kbcard: comments on task $task: the read returned success but no comment list could be read out of its body — nothing was read (this is NOT an empty comment list)" >&2
+        return 1
+    }
+    n="$(jq 'length' <<<"$comments")"
+    if [[ "$n" -eq 0 ]]; then
+        # Explicit, never a bare empty stdout: "this card has no comments" and "the read
+        # failed" must not look the same at the call site.
+        echo "kbcard: card $task has no comments"
+        return 0
+    fi
+    printf '%s' "$comments" | _kbc_comments_render
 }
 
 # _kbc_board_repo: the board's canonical GitHub repo (owner/name), read from the
@@ -1084,6 +1380,8 @@ main() {
         list)        cmd_list "$@" ;;
         link)        cmd_link "$@" ;;
         show)        cmd_show "$@" ;;
+        comment)     cmd_comment "$@" ;;
+        comments)    cmd_comments "$@" ;;
         archive)     cmd_archive "$@" ;;
         delete)      cmd_delete "$@" ;;
         field)       cmd_field "$@" ;;

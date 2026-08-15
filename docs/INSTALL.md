@@ -122,15 +122,28 @@ jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove th
 > - a path whose **filename carries the version** (`sboms/v{{version}}.json`) — existence at head is the whole assertion.
 > - anything else (`CLAUDE.md § Recent releases row`) — the file's content at head must **contain the version string. This test is UNANCHORED**: with version `0.25.0`, a file containing only `10.25.0` (or `0.25.01`) satisfies it. It is the catch-all for members whose agreement has no structure to key on, so it is deliberately weak — a member that needs a real assertion should use the `[{{version}}] section` shape.
 >
-> Every member must additionally appear in the PR's own changes and still exist at head (a deletion appears in a diff, so the existence leg is what catches it). Declare only what a release genuinely must move: an over-declared entry fails every release PR, and an under-declared one is invisible — no tool can assert a member you never named.
+> Every member must additionally appear in the PR's own changes and still exist at head **as a regular file** — a deletion appears in a diff, so the existence leg is what catches it, and a member that is a symlink, a directory or a submodule entry at head is refused by name rather than read (each of those answers a content read with something — a target path, a tree listing, a commit log — that can carry the version while asserting nothing about a release artifact). Declare only what a release genuinely must move: an over-declared entry fails every release PR, and an under-declared one is invisible — no tool can assert a member you never named.
+
+> **The declared set is read from the FORK POINT as well as head, and head may only WIDEN it.** `.release-pr.json` is editable by the very PR the gate is judging, so a head-only read let a PR narrow the verdict it was judged by: delete an entry while still updating the file it named and every leg passed, rc 0, with no trace anywhere — and from the next release the fork point no longer carried the entry either. `release-artifacts-check` therefore compares the set declared at `merge-base(base, head)` against head's:
+> - **added entries, and added brace alternatives, are free** — a widening is the normal case and changes nothing (the comparison is on *expanded members* with `{{version}}` held as a placeholder, so reordering a brace set is a no-op and adding an alternative is not a removal).
+> - **`version_file` / `version_regex` are read from the fork point only.** A head edit to either is *ignored*, not refused — so retargeting them can no longer make a real release PR classify as "version unchanged", and a legitimate change to them still costs nothing.
+> - **a member declared at the fork point and absent from head fails in its own right** (rc 1), whether or not that member's own checks would have passed, and **on every PR class** — a release PR *and* an ordinary one. The removal and its acknowledgement are wanted in the same PR.
+>
+> **`retired_artifacts` is how a legitimate retirement gets through** — an optional array beside `artifacts`, in the same entry format, read at **head** (it is the PR's own declaration; a fork-point read would make retirement impossible). Move the entry across and the run prints a `RETIRED: <entry>` line and exits 0 instead of refusing. The failure message prints the exact line to paste. Two rules: a member listed in **both** arrays is a config error (rc 2), so a tombstone cannot be planted against a member that is still declared; and once the retirement has passed through one release the entry is inert — the fork point no longer carries the member, so nothing consults it. Retiring is deliberately a *declaration*, not a silence: the diff shows a key named `retired_artifacts` changing, and the CI log names what stopped being asserted.
+>
+> **A repo whose fork point has no usable config is warned, never refused.** Config absent (the adoption PR that creates it — all three real adoptions created it *inside* a release PR), unparseable, or missing the classification keys: the run prints a `::warning::` naming the fallback, classifies with head's keys, and compares against an empty baseline — i.e. exactly the pre-fork-point behaviour. Refusing would be an rc no PR could fix, since those keys can only reach the fork point through a merged release. **The same rule holds per ENTRY.** A malformed entry (no leading path token — an empty string included — an empty brace set, or the reserved comparison token written literally) is `rc 2` when head declares it, because the PR that wrote it can fix it; read from the **fork point** it gets a `::warning::` naming the entry and is dropped from the baseline, its siblings still compared. Refusing there would be unfixable in the same way: the only repair for a malformed entry is to delete it, and the PR carrying that deletion would be redded by the entry it is deleting.
 
 > **`.release-pr.json` is security-sensitive.** `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to. A PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` (and `board-card-start`) reject any `api_base` that is not `https://` on the **expected host** before sending the token. **`KANBAN_EXPECTED_HOST` is REQUIRED — there is no baked default** (the toolkit ships onto your own kanban host, so it assumes none). Set **`KANBAN_EXPECTED_HOST`** in the promote-CI env (a repo/org variable — out-of-band from this PR-editable file) to your kanban host; the guard accepts that host or a subdomain of it. Leaving it unset makes the guard **fail closed** — the token is never sent. Review any `api_base` change as a credential-scope change.
 
 ## 5. Verify (expected output shown)
 
 ```bash
-kbcard list --column backlog            # -> JSON array of cards (or [] if empty). A non-empty, well-formed
-                                        #    result proves token + board IDs + API base are all correct.
+kbcard list --column backlog            # -> JSON array of cards (or [] if empty) on STDOUT, plus ONE line on
+                                        #    stderr: `kbcard: list --column backlog: <M> of <N> board cards
+                                        #    matched`. That line is the filter's denominator, not an error —
+                                        #    every filtered read prints it; an unfiltered one prints none. A
+                                        #    non-empty, well-formed result proves token + board IDs + API base
+                                        #    are all correct.
 kbcard show --task <some-id> | jq .id   # -> the task id echoed back
 ```
 If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong. `board env file not readable: …/.kanban-dev-board.env` → this box has no default (`dev`) board — set `KBCARD_BOARD_ENV` or pass `--board <name>` (see §3b); the error lists the boards that do exist.
@@ -199,7 +212,7 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit <repo>   # -> "drift-check: OK"
 ```
 
-> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins — `kbcard`, `next-dl`, `board-snapshot`, `board-card-start`, `adopt-to-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field` — `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). Without it the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. `promote-released-cards`, `release-pr-body` and `release-artifacts-check` are standalone and need no lib.
+> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins — `kbcard`, `next-dl`, `board-snapshot`, `board-stats`, `board-card-start`, `adopt-to-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field` — `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). Without it the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. `promote-released-cards`, `release-pr-body` and `release-artifacts-check` are standalone and need no lib.
 
 **Both paths** require **`KANBAN_EXPECTED_HOST`** — §6a supplies it via the `expected-host` **input** (step-level env overrides job env, so setting it only as job env does NOT reach the action's script; pin it as a repo variable and pass it through), §6b sets it in the CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`). It pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). See [`UPGRADE.md`](UPGRADE.md) for keeping a vendored copy (§6b) current; action consumers (§6a) upgrade via the pin.
 
@@ -221,13 +234,19 @@ jobs:
     steps:
       - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
         with:
-          fetch-depth: 0     # REQUIRED — resolves the fork point; the version file is read at both ends
+          fetch-depth: 0     # REQUIRED — see "What the check reads" in agent-board-toolkit docs/INSTALL.md §6c
       - uses: <owner>/agent-board-toolkit/release-artifacts@<full-40-char-SHA>  # vX.Y.Z
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           # config: .release-pr.json   # optional; the default
 ```
+
+**What the check reads.** It resolves the merge base of `base-sha` and `head-sha`, reads **the config itself at both ends** of that range (the fork point's copy is the declared set and the classification keys the PR is judged by — see §4), reads the version file at **both** ends, and reads each declared member's type and contents at **head** — all of it `git show`/`git ls-tree`/`git cat-file` against the local clone, none of which a shallow one can serve. That is what `fetch-depth: 0` is for. **This section owns that inventory**: the toolkit's own [`release-artifacts-gate.yml`](../.github/workflows/release-artifacts-gate.yml) points here rather than restating it.
+
+**The config is read from COMMITS, never from the working tree.** On a `pull_request` event the checkout is the *merge* ref, so a tree read answers about a merge nobody wrote. Two consequences worth knowing before you adopt: a config that exists only in the checkout and is **not committed at head** is refused (rc 2) rather than used, and a config **committed at head but absent from the checkout** is fine. `--config` may name a path in a subdirectory; it is normalized to repository-root-relative once, and a `--config` whose directory is not inside **this** repository's checkout is refused by name — including one that resolves inside a *different* repository, where the normalized path would otherwise be re-rooted here and the run would answer about this repository's own config instead of the one named.
+
+> **Lockstep — one sanctioned copy.** [`release-artifacts/action.yml`](../release-artifacts/action.yml)'s `description:` restates the read inventory above *and* the fail-closed rule below, because a SHA-pinned consumer reads the action itself and cannot follow a pointer into these docs. **Correcting either one here means correcting `release-artifacts/action.yml` in the same change.**
 
 **The asserted range is `merge-base(base-sha, head-sha)..head-sha` — the PR's own changes — never base's tip.** That is a correctness requirement, not a refinement, because base-branch drift after the fork point corrupts both halves of the check:
 
@@ -236,9 +255,18 @@ jobs:
 
 You still pass `base-sha` — it is what the fork point is resolved *from*.
 
-**No `paths:` filter, deliberately.** The gate must observe every PR in order to *classify* it: a PR whose version **value** is unchanged between the fork point and head is not a release PR and exits 0 after two `git show`s. Classifying by value rather than by "the version file appears in the diff" is what makes this correct for a repo whose `version_file` is a whole config file (kanban's is `config/app.php`), where the file-moved test would misfire on any unrelated edit.
+**No `paths:` filter, deliberately.** The gate must observe every PR in order to *classify* it: a PR whose version **value** is unchanged between the fork point and head is not a release PR and asserts no member. That is not the same as costing nothing — the config is read at **both** ends and the fork-point comparison (§4) runs *before* the classification and independently of it, so an ordinary PR that drops a declared entry without acknowledging it is refused exactly as a release PR would be. Classifying by value rather than by "the version file appears in the diff" is what makes this correct for a repo whose `version_file` is a whole config file (kanban's is `config/app.php`), where the file-moved test would misfire on any unrelated edit.
 
-**It fails closed** (rc 2) on an unresolvable merge base or an unreadable version file, naming which end of the range it is and the path, rather than reading either as "not a release PR" — that misclassification would be a silent non-run of the entire gate. A shallow checkout is the usual cause, hence `fetch-depth: 0`.
+**It fails closed** (rc 2) on an unresolvable merge base, an unreadable version file, a config not committed at head, or a member declared in both `artifacts` and `retired_artifacts` — naming which end of the range it is and the path, rather than reading any of them as "not a release PR", which would be a silent non-run of the entire gate. A shallow checkout is the usual cause of the first two, hence `fetch-depth: 0`.
+
+**What it deliberately does not close.** Stated so an adopter knows the shape of the guarantee rather than inferring a stronger one:
+
+1. **A prose edit that downgrades a member's assertion strength** (`[{{version}}] section` → `… entry`) still passes, at the weaker arm. The closing mechanism exists — prefer the fork point's prose — and is declined because attacker-weakening and a legitimate change of changelog format are the *same observable*, and since the fork point is the previous release the corrected prose could never land. The OK line **names the arm**, so a downgrade is legible in the CI log.
+2. **Renaming the config *and* retargeting the workflow's `config:` input in one PR** takes the no-usable-fork-point-config path, behind a single `::warning::` — or any PR whose merge base predates the config, which takes the same path. Bounded by the workflow file being head-editable, which no config-level design can close.
+3. **A rename with no workflow edit** is rc 2 — only the paired change goes green.
+4. **`retired_artifacts` is a head-editable narrowing surface by construction.** It is declared, logged and one line; it is not impossible.
+5. **Poisoning the version file's *contents*** so the version *value* reads unchanged makes the PR classify as a non-release one and skips the member checks — a property of classification-by-value, which predates this gate. The narrowing check is deliberately independent of the classification, so it still reds; the member legs do not run. (Tracked separately as its own defect, not folded in here.)
+6. **An under-declared `artifacts` array is invisible.** No tool can assert a member you never named.
 
 ## Worked example (host install, primary board named `dev`)
 
@@ -248,5 +276,6 @@ for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$
 cp ~/agent-board-toolkit/examples/kanban-board.env.example ~/.kanban-dev-board.env && chmod 600 ~/.kanban-dev-board.env
 # ...fill in IDs in ~/.kanban-dev-board.env...
 printf '%s' 'TOKEN_HERE' > ~/.kanban-dev-token && chmod 600 ~/.kanban-dev-token
-kbcard list --column backlog        # -> [ {...}, ... ]   ✓ install verified
+kbcard list --column backlog        # -> [ {...}, ... ] on stdout, `… <M> of <N> board cards matched`
+                                    #    on stderr (the filter's denominator)   ✓ install verified
 ```

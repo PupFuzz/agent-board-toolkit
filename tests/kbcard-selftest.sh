@@ -11,6 +11,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# The comment/comments block at the end drives the bin as a PROCESS against a faked kanban
+# (a `curl` stand-in on PATH), so the real kb_api decides success on the HTTP status class.
+# shellcheck source=/dev/null
+source "$HERE/_kb-api-stub.sh"
 BIN="$HERE/../bin/kbcard"
 _need -r "$BIN"
 # shellcheck source=/dev/null
@@ -437,6 +441,98 @@ eq "--swimlane 0 is the same laneless filter"     "[2]" "$(jq -c 'map(.id)' <<<"
 unset KB_SWIMLANE_1 KB_SWIMLANE_2
 
 # ---------------------------------------------------------------------------
+echo "== _kbc_list_project — the PROJECTED FIELD SET is the filterable surface =="
+# A consumer can only filter list OUTPUT on a key the projection emits, and a grep over
+# a field it drops returns 0 indistinguishably from an empty board — a live consumer
+# concluded "745 cards, 0 dependabot cards" while the `id:<sid>` provenance tag was on
+# the card the whole time (`show` returned it). The key set is asserted as an EQUALITY,
+# not a contains: a key silently dropped IS the defect, and a contains-check cannot see
+# it. RED-when-reverted — reverting the projection to its old key set reds five of the
+# assertions below, the prefix-grep one among them (measured, not assumed).
+PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"external_id":990,
+          "tags":["id:dep:acme#200","triaged"],"payload":{"dl_number":"DL-0007","pr_number":12}},
+         {"id":2,"name":"b","workflow_stage_id":48,"payload":{}}]'
+pproj() { printf '%s' "$PCARDS" | _kbc_list_project '' '' '' ''; }
+
+eq "row key set is EXACTLY the documented projection" \
+   '["id","name","stage","type","swimlane_id","swimlane","external_id","tags","dl","pr"]' \
+   "$(pproj | jq -c '.[0] | keys_unsorted')"
+eq "tags ride every row verbatim"   '["id:dep:acme#200","triaged"]' "$(pproj | jq -c '.[0].tags')"
+eq "external_id rides every row"    "990"  "$(pproj | jq -c '.[0].external_id')"
+# The measured consumer query itself: a PREFIX grep over the output for a provenance
+# namespace. Exactly what answered 0 before, so it is asserted end-to-end and not as
+# "the key exists" — the tag namespace is queried by prefix, not by exact value.
+eq "a downstream prefix grep for the provenance tag finds the card" "1" \
+   "$(pproj | grep -c 'id:dep:')"
+# Absent-key normalization: [] for tags (the same normalization the type FILTER above
+# applies, so the filter and the emitted value can never disagree about a card's tags),
+# null for external_id (matching dl/pr, whose absence has always projected null).
+eq "a card with no tags projects []"          "[]"   "$(pproj | jq -c '.[1].tags')"
+eq "a card with no external_id projects null" "null" "$(pproj | jq -c '.[1].external_id')"
+# description stays OUT by design — unbounded free text on every row of a whole-board
+# read. This assertion is the bound; `show` is where a description is read.
+eq "description is NOT projected, even when the card carries one" "false" \
+   "$(printf '%s' '[{"id":3,"description":"x","payload":{}}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '.[0] | has("description")')"
+
+# ---------------------------------------------------------------------------
+echo "== cmd_list — a FILTERED read reports its denominator on stderr =="
+# A filtered [] is indistinguishable from an empty board at the call site: the caller
+# sees the numerator and never the population. The line goes to STDERR so stdout stays
+# exactly the array every existing consumer parses. Run through the REAL arg parse in a
+# fresh subprocess (mocked fetch, network-free) — the stream split is a property of the
+# whole verb, not of the projection.
+_mktmp_scratch
+_diag_board='[{"id":1,"workflow_stage_id":48,"payload":{}},
+              {"id":2,"workflow_stage_id":49,"payload":{}},
+              {"id":3,"workflow_stage_id":49,"payload":{}}]'
+_diag_child='set -euo pipefail; source "'"$BIN"'";
+  fetch_board_cards() { printf "%s" "$DIAG_BOARD"; }
+  export KB_API=x KB_TOKEN=y KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_HELD=49 KB_STAGE_WONT_DO=99;
+  cmd_list "$@"'
+export DIAG_BOARD="$_diag_board"
+diag() { bash -c "$_diag_child" _ "$@" >"$TMP/diag.out" 2>"$TMP/diag.err"; }
+
+diag --column backlog
+eq "filtered stdout is still just the array"  "[1]" "$(jq -c 'map(.id)' <"$TMP/diag.out")"
+# …and byte-identically so. The assertion above cannot carry this alone: jq EMITS its
+# value before erroring on trailing garbage, so a diagnostic line leaking onto stdout
+# after the array leaves it green. The FILTERED run is the one that can leak (it is the
+# only one that prints a diagnostic at all), so it needs its own byte comparison — the
+# unfiltered `cmp` below can never observe this class.
+printf '%s' "$_diag_board" | _kbc_list_project 48 '' '' '' >"$TMP/diagf.want"
+eq "filtered stdout is byte-identical to the projection output (no leak onto stdout)" "true" \
+   "$(cmp -s "$TMP/diag.out" "$TMP/diagf.want" && echo true || echo false)"
+eq "filtered run names matched-of-total"      "true" \
+   "$(has 'kbcard: list --column backlog: 1 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# The 0-of-N case is the whole point: an empty answer that names its population is a
+# different statement from an empty answer that does not.
+diag --column wont_do
+eq "an empty filtered result is still []"     "[]" "$(jq -c '.' <"$TMP/diag.out")"
+eq "…and still reports the population it came out of" "true" \
+   "$(has 'kbcard: list --column wont_do: 0 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# Every active flag is echoed AS TYPED, so a caller running several list reads can tell
+# the lines apart.
+diag --column held --type bug
+eq "both active filters are named in the line" "true" \
+   "$(has 'kbcard: list --column held --type bug: 0 of 3 board cards matched' "$(cat "$TMP/diag.err")")"
+
+# UNFILTERED: nothing on stderr — the array's own length IS the denominator, and a line
+# printed here would be noise on the most common invocation.
+diag
+eq "an unfiltered read prints NOTHING on stderr" "" "$(cat "$TMP/diag.err")"
+eq "…and still lists the whole board"            "3" "$(jq 'length' <"$TMP/diag.out")"
+# Byte-identity of stdout with the projection's own output, trailing newline included:
+# the diagnostic capture reprints what used to stream straight through, and a doubled or
+# missing final newline is invisible to every command-substitution assertion above.
+printf '%s' "$_diag_board" | _kbc_list_project '' '' '' '' >"$TMP/diag.want"
+eq "stdout is byte-identical to the projection output" "true" \
+   "$(cmp -s "$TMP/diag.out" "$TMP/diag.want" && echo true || echo false)"
+unset DIAG_BOARD
+
+# ---------------------------------------------------------------------------
 echo "== _kbc_build_payload — shared create/patch payload assembly (card-4511, dedup D2) =="
 # Single home for the payload-merge jq + version_target guard + DL-canon + pr
 # appends that create-card and patch both need. RED-when-reverted: these pin the
@@ -782,6 +878,429 @@ rc=0; cmd_patch --task "" --dl DL-7 >/dev/null 2>&1 || rc=$?
 eq "patch --task \"\" → rc 2"                      "2"    "$rc"
 
 unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK KB_CF_VERSION_TARGET
+
+# ---------------------------------------------------------------------------
+echo "== comment / comments — the card audit-trail verbs (card#6051) =="
+# THE GAP: posting a card comment — the routine audit trail — had no verb, so every caller
+# hand-rolled the API call. The API semantics below were MEASURED against the sandbox instance
+# (board 1162) before any of this was written, and each measurement is what one assertion here
+# pins: the body is FLAT `{"content": …}` (the wrapped `{"comment":{…}}` form is 422), the POST
+# 201s echoing the created row, adding a comment does NOT bump the card's updated_at (so the
+# echoed id is the only cheap write verification), and there is NO comment read route at all —
+# GET on the comments path is 405, POST-only, which is why `comments` projects the array the
+# task detail GET already carries.
+#
+# WHY THIS BLOCK DRIVES THE BIN AS A PROCESS while everything above stubs `kb_api` as a shell
+# function: the property under test is that success is decided on the HTTP STATUS CLASS and
+# never on the response body's shape, and a stubbed `kb_api` IS the code that decides that — a
+# test that replaces it cannot observe the thing it claims to check. The seam therefore sits
+# BELOW the lib (a `curl` stand-in on PATH, tests/_kb-api-stub.sh), so kb_load_config, kb_api,
+# the arg parse, main's dispatch and the process exit status all run for real.
+#
+# EVERY grep in this block is spelled `/usr/bin/grep`, for one reason that applies to all of
+# them: the ambient `grep` on some hosts is a shim (an alias, a function, a wrapper on PATH) and
+# a shim that colourizes, or that answers a `-c` differently, turns an assertion about kbcard's
+# output into an assertion about the host's grep. The absolute path is the same grep everywhere.
+
+# _kbc_comments_render is pure, so it is asserted on synthetic comments first — the shapes a
+# faked board can produce cheaply, before the process-level checks.
+eq "render: one comment is a header line + its indented content" \
+   "$(printf 'comment 13 · user 2238 · 2026-08-12T23:40:36+00:00\n  hello')" \
+   "$(printf '%s' '[{"id":13,"user_id":2238,"content":"hello","created_at":"2026-08-12T23:40:36+00:00"}]' | _kbc_comments_render)"
+# EVERY line of a multi-line comment is indented: an unindented second line reads as the start
+# of the next comment, which is the whole reason the content is not printed verbatim.
+eq "render: every line of a multi-line comment is indented" \
+   "$(printf 'comment 14 · user 7 · 2026-08-12T23:41:12+00:00\n  line1\n  line2')" \
+   "$(printf '%s' '[{"id":14,"user_id":7,"content":"line1\nline2","created_at":"2026-08-12T23:41:12+00:00"}]' | _kbc_comments_render)"
+eq "render: two comments are two blocks" "2" \
+   "$(printf '%s' '[{"id":1,"user_id":7,"content":"a","created_at":"t"},{"id":2,"user_id":7,"content":"b","created_at":"t"}]' \
+      | _kbc_comments_render | /usr/bin/grep -c '^comment ')"
+# The author is a bare user id because that is the ONLY author field a comment row carries
+# (measured) — a name would be a fabrication. A missing header field degrades to `?`, not to
+# "null" — id, user_id and created_at alike.
+eq "render: a row with no header fields says ? rather than null" "comment ? · user ? · ?" \
+   "$(printf '%s' '[{"content":"","created_at":null}]' | _kbc_comments_render)"
+# The TAB is exempt alongside the newline. It IS a C0 control, but it cannot move the cursor
+# backward — it only advances to the next tab stop — so replacing it buys nothing against the
+# thing this filter exists for (an ESC sequence erasing the attribution line above) while
+# damaging every pasted diff, log line or indented block a comment carries.
+eq "render: a TAB survives — it cannot move the cursor backward" \
+   "$(printf 'comment 4 · user 7 · t\n  col1\tcol2')" \
+   "$(printf '%s' '[{"id":4,"user_id":7,"content":"col1\tcol2","created_at":"t"}]' | _kbc_comments_render)"
+# THE HEADER FIELDS ARE THE SAME UNTRUSTED BODY. id / user_id / created_at are interpolated into
+# the very line the content filter exists to protect, so a control character there reaches the
+# terminal by the shorter route — sanitizing the content and not the header would leave the hole
+# open one line up. Their filter is STRICTER than the content's, and the newline case below is
+# why: content can never forge a header (every content line is indented), while an unindented
+# newline in a header field mints a whole extra `comment N · user M · t` block — a forged
+# attribution, which is exactly what this filter exists to prevent. So no C0 control is exempt
+# there, tab and newline included. Both fixtures build the control from its CODEPOINT — no raw
+# control byte is typed into this file.
+eq "render: an ESC in a header FIELD is neutralized, not just in the content" \
+   "$(printf 'comment 5 · user 7 · t?[2K?[1Aimpostor\n  body')" \
+   "$(jq -nc --arg e "$(printf '\033')" \
+        '[{id:5,user_id:7,content:"body",created_at:("t" + $e + "[2K" + $e + "[1Aimpostor")}]' \
+      | _kbc_comments_render)"
+eq "render: a NEWLINE in a header field cannot forge a second block" \
+   "$(printf 'comment 6 · user 7 · t?comment 99 · user 1 · t\n  body')" \
+   "$(jq -nc '[{id:6,user_id:7,content:"body",created_at:"t\ncomment 99 · user 1 · t"}]' \
+      | _kbc_comments_render)"
+# …and the count assertion that says the forgery did not happen, independently of the exact
+# rendering above: one comment in, ONE header line out.
+eq "render: …so that fixture still renders exactly one block" "1" \
+   "$(jq -nc '[{id:6,user_id:7,content:"body",created_at:"t\ncomment 99 · user 1 · t"}]' \
+      | _kbc_comments_render | /usr/bin/grep -c '^comment ')"
+# A TAB is exempt in the CONTENT and not in the header: the header carries an id, a user id and a
+# timestamp, none of which has a legitimate tab, so the reason for the content exemption (it
+# damages pasted diffs and indented blocks) simply does not apply there.
+eq "render: a TAB in a header field is replaced, unlike one in the content" \
+   "$(printf 'comment 7 · user 7 · a?b\n  col1\tcol2')" \
+   "$(jq -nc '[{id:7,user_id:7,content:"col1\tcol2",created_at:"a\tb"}]' | _kbc_comments_render)"
+
+# --- process-level: the real kb_api, over a faked kanban --------------------
+rm -rf "$TMP"          # the earlier _mktmp_scratch's dir; its EXIT trap is replaced below
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42
+kb_stub_install
+
+# The route table. Every knob is per-scenario so exactly one leg can be failed at a time.
+# KB_STUB_POST_HTTP / KB_STUB_POST_BODY  — the comment POST's answer.
+# KB_STUB_GET_HTTP  / KB_STUB_GET_COMMENTS — the task detail GET's answer.
+# KB_STUB_GET_BODY — the detail GET's body VERBATIM, bypassing the envelope KB_STUB_GET_COMMENTS
+#   fills in. Without it the GET arm can only emit well-formed JSON, so the one 2xx body that
+#   breaks a reader — a proxy's HTML, a truncated read — would be unreachable on the READ side
+#   while the write side already has a leg for it (KB_STUB_POST_BODY is free-form).
+# NOT_FOUND_BODY is the REAL 404 body the un-suffixed comments path returns (captured from the
+# sandbox, trace elided): well-formed JSON that any "did the body parse?" success test reads as
+# a success, and carrying no `.data` — so a body-shape reader degrades to a SILENT empty
+# success rather than to a crash. It is the fixture for the discrimination assertions below.
+NOT_FOUND_BODY='{"message":"The route api/v3/tasks/505/comments could not be found.","exception":"Symfony\\Component\\HttpKernel\\Exception\\NotFoundHttpException","file":"/app/vendor/laravel/framework/src/Illuminate/Routing/AbstractRouteCollection.php","line":44,"trace":[{"function":"handleMatchedRoute"}]}'
+# The 201 body the real API echoes for a created comment, verbatim in shape (measured).
+KB_STUB_CREATED='{"data":{"id":13,"task_id":505,"user_id":2238,"content":"x","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"}}'
+export NOT_FOUND_BODY KB_STUB_CREATED
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "POST "*/tasks/*/comments.json)
+            printf '%s\n%s' "${KB_STUB_POST_HTTP:-201}" \
+                "${KB_STUB_POST_BODY:-$KB_STUB_CREATED}" ;;
+        "GET "*/tasks/search.json*)
+            printf '200\n{"data":[{"id":505}]}' ;;
+        "GET "*/tasks/*.json)
+            if [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
+                printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "$KB_STUB_GET_BODY"
+            else
+                printf '%s\n{"data":{"id":505,"name":"probe","comments":%s}}' \
+                    "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_COMMENTS:-[]}"
+            fi ;;
+    esac
+}
+export -f kb_stub_route
+
+# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
+kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+CPATH="/tasks/505/comments.json"
+
+echo "-- comment: path, method, and the MEASURED flat body key --"
+kbc comment --task 505 --content 'hello there'
+eq "comment → rc 0"                              "0" "$rc"
+eq "comment → exactly one POST to the .json comments path" "1" "$(kb_stub_count POST "$CPATH")"
+eq "comment → and no other request at all"       "1" "$(kb_stub_total)"
+# The body's key set is asserted as an EQUALITY, not a contains: the wrapped
+# {"comment":{"content":…}} form the API refuses (422, measured) would still "contain" the
+# text, and only a key-set equality can see that regression.
+eq "comment → body is FLAT, exactly {content}"   '["content"]' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c 'keys')"
+eq "comment → body carries the text verbatim"    '"hello there"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+# The write verification (the card's updated_at does not move on a comment-add, so this id is
+# the only confirmation the write landed).
+eq "comment → prints the CREATED comment id on stdout" "13" "$out"
+
+echo "-- comment: --content-file reaches the body, multi-line included --"
+printf 'file line 1\nfile line 2\n' > "$TMP/c.txt"
+kbc comment --task 505 --content-file "$TMP/c.txt"
+eq "--content-file → rc 0"                       "0" "$rc"
+# INTERIOR newlines ride verbatim; the file's TRAILING newline does not — the text is carried out
+# of its resolver through a command substitution, which strips every trailing newline. That is
+# the documented behaviour (the bin's usage block / README say so), not an accident, so it is
+# pinned here rather than left as an unremarked property of the expected string.
+eq "--content-file → the file's text is the body, trailing newline TRIMMED" \
+   '"file line 1\nfile line 2"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+printf 'file line 1\nfile line 2\n\n\n' > "$TMP/trail.txt"
+kbc comment --task 505 --content-file "$TMP/trail.txt"
+eq "--content-file → ALL trailing newlines are trimmed, not just one" \
+   '"file line 1\nfile line 2"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+
+echo "-- comment: a CRLF file does not put \\r on the wire --"
+# Windows/Git-Bash is a documented install target (docs/INSTALL.md), so a --content-file written
+# there arrives CRLF-terminated. An unnormalized \r is sent verbatim and then renders as `?` on
+# EVERY line of the comment (the reader sanitizes C0 controls) — including a stray trailing one,
+# because the command substitution above strips the \n and leaves the \r behind it. CR-before-LF
+# is therefore normalized at the WRITE site, which owns both sources.
+printf 'crlf line 1\r\ncrlf line 2\r\n' > "$TMP/crlf.txt"
+kbc comment --task 505 --content-file "$TMP/crlf.txt"
+eq "CRLF --content-file → rc 0"                  "0" "$rc"
+eq "CRLF → the wire body has LF line breaks and no \\r at all" \
+   '"crlf line 1\ncrlf line 2"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+# The same normalization from the OTHER source, because one helper owns both.
+kbc comment --task 505 --content "$(printf 'inline 1\r\ninline 2')"
+eq "CRLF --content → the same LF body"           '"inline 1\ninline 2"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+# A LONE \r is deliberately NOT normalized — it is not a line ending here, it is a cursor-return
+# control character, and the reader's sanitizer is what owns it. Asserting it survives the write
+# is what keeps the normalization narrow (a blanket \r→\n would silently rewrite content).
+kbc comment --task 505 --content "$(printf 'lone\rcarriage')"
+eq "a LONE \\r is left for the renderer's sanitizer, not rewritten here" \
+   '"lone\rcarriage"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+
+echo "-- comment: ID-OR-EXT resolves exactly as move/patch does --"
+kbc comment --task EXT-9 --content x
+eq "external-id ref → search first, then the POST" "1" "$(kb_stub_count_any '/tasks/search.json')"
+eq "external-id ref → POSTs to the RESOLVED task id" "1" "$(kb_stub_count POST "$CPATH")"
+
+echo "-- comment: the refusals, each with NO request at all --"
+kbc comment --task 505 --content x --content-file "$TMP/c.txt"
+eq "--content + --content-file → rc 2"           "2" "$rc"
+eq "…names both flags"                           "true" "$(has 'mutually exclusive' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505
+eq "neither --content nor --content-file → rc 2" "2" "$rc"
+# `--content` is a SUBSTRING of `--content-file`, so a plain contains-test for it is satisfied by
+# a diagnostic that names only the file flag — i.e. the half that says "you may pass text inline"
+# could be dropped with this leg still green (watched, by rewording the refusal to name only
+# --content-file). The match is therefore delimited: `--content` must appear NOT followed by a
+# flag-name character, which `--content-file` cannot satisfy.
+eq "…names both flags — and --content on its OWN, not just inside --content-file" "true" \
+   "$(/usr/bin/grep -Eq -- '(^|[^[:alnum:]_-])--content([^[:alnum:]_-]|$)' <<<"$err" \
+      && /usr/bin/grep -qF -- '--content-file' <<<"$err" && echo true || echo false)"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content ""
+eq "--content \"\" → rc 2 (the empty-value class)" "2" "$rc"
+eq "…names the flag"                             "true" "$(has '--content requires a non-empty value' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+# THE ORDERING LEG, and the reason this one arm uses an EXTERNAL ref: `--task 505` is numeric,
+# and resolve_task's numeric branch issues no request at all, so a "0 requests" assertion under
+# a numeric ref holds no matter WHICH of the two resolutions runs first — it cannot see content
+# resolution being moved after task resolution. An external ref makes task resolution cost a
+# search, so 0 total requests here is the assertion that the offline refusal really did happen
+# BEFORE any resolution (RED when the `text=` line is moved below the `task=` line: 1 request).
+kbc comment --task EXT-9 --content-file "$TMP/nope.txt"
+eq "--content-file missing → rc 2"               "2" "$rc"
+eq "…names the path"                             "true" "$(has "$TMP/nope.txt" "$err")"
+# The readability guard is asserted by its OWN wording, not merely by the rc: without it the
+# `cat` failure arm below still refuses at rc 2 naming the same path (while leaking cat's raw
+# stderr), so an rc-only assertion cannot tell the two apart and the guard could be deleted
+# with the suite green. The two arms are both reachable — a directory is `-r` yet uncattable.
+eq "…via the readability guard, not the cat fallback" "true" "$(has 'is not readable' "$err")"
+eq "…and issues no request — NOT EVEN the external-ref lookup" "0" "$(kb_stub_total)"
+: > "$TMP/empty.txt"
+kbc comment --task 505 --content-file "$TMP/empty.txt"
+eq "--content-file with no text → rc 2"          "2" "$rc"
+eq "…says the file holds no comment text"        "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+# BLANK, not merely empty: the server trims before it validates, so a whitespace-only body is a
+# 422 there — i.e. a POST that was always going to be refused, arriving as rc 1 (the wire's
+# verdict) instead of the rc 2 every other bad-invocation takes. The local check therefore has
+# to test the TRIMMED value; testing the raw one puts this on the wire. Both sources, because
+# both resolve through the one helper.
+printf ' \t\n \n' > "$TMP/blank.txt"
+kbc comment --task 505 --content-file "$TMP/blank.txt"
+eq "--content-file of only whitespace → rc 2"    "2" "$rc"
+eq "…says the file holds no comment text"        "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content '   '
+eq "--content of only whitespace → rc 2"         "2" "$rc"
+eq "…says it holds no comment text"              "true" "$(has 'holds no comment text' "$err")"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
+# The other side of the trim: only the CHECK is trimmed. Content that merely BEGINS with
+# whitespace is real content and must reach the wire with its indentation intact.
+kbc comment --task 505 --content '  indented body'
+eq "leading whitespace is content, not emptiness → rc 0" "0" "$rc"
+eq "…and the body keeps it verbatim"             '"  indented body"' \
+   "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
+kbc comment --content x
+eq "comment without --task → rc 2"               "2" "$rc"
+# The positive control that makes every "0 requests" above a MEASUREMENT rather than a harness
+# that never writes: the same probe records a POST on the happy path.
+kbc comment --task 505 --content x
+eq "control: a valid comment DOES reach the POST" "1" "$(kb_stub_count POST "$CPATH")"
+
+echo "-- comment: an HTTP failure carries the status AND the error body --"
+KB_STUB_POST_HTTP=422 \
+KB_STUB_POST_BODY='{"message":"The content field is required.","errors":{"content":["The content field is required."]}}' \
+    kbc comment --task 505 --content x
+eq "422 → rc 1"                                  "1" "$rc"
+eq "422 → the status is named"                   "true" "$(has "HTTP 422 on POST $CPATH" "$err")"
+eq "422 → the server's error body is echoed"     "true" "$(has 'The content field is required.' "$err")"
+eq "422 → nothing on stdout (no id was created)" "" "$out"
+
+echo "-- comment: success is decided on STATUS, never on a parseable body --"
+# The 404 the un-suffixed path returns is well-formed JSON with no `.data` — a body-shape
+# reader answers "parsed fine, no id" and exits 0. RED-when-reverted: swap the status check
+# for a body test and both assertions below flip (rc 0, and stdout empty-but-successful).
+KB_STUB_POST_HTTP=404 KB_STUB_POST_BODY="$NOT_FOUND_BODY" kbc comment --task 505 --content x
+eq "404 with parseable JSON → rc 1 (status, not shape)" "1" "$rc"
+eq "404 → the status is named"                   "true" "$(has 'HTTP 404' "$err")"
+eq "404 → nothing on stdout"                     "" "$out"
+# The other half of the same class, one layer in: a 2xx that carries no comment id leaves the
+# write UNVERIFIED (the card's updated_at does not move), so it must fail loudly rather than
+# print a plausible-looking `null`.
+KB_STUB_POST_HTTP=201 KB_STUB_POST_BODY='{"data":{}}' kbc comment --task 505 --content x
+eq "2xx with no comment id → rc 1"               "1" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "…and never prints a bare null as an id"      "" "$out"
+# Same state, one step earlier: a 2xx whose body is not JSON AT ALL (a proxy's HTML error page,
+# a truncated read). kb_api has already said success on the status class, so this is still "the
+# write is unconfirmed" — but the id extraction is where it lands, and an unguarded `jq` there
+# dies on the parse under `set -e`, exiting the SCRIPT's rc 5 with jq's raw parse error as the
+# only diagnostic. The refusal must be this verb's own, at its own documented rc.
+KB_STUB_POST_HTTP=200 KB_STUB_POST_BODY='<html><body>502 Bad Gateway</body></html>' \
+    kbc comment --task 505 --content x
+eq "2xx with a NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+eq "…and never prints anything as an id"         "" "$out"
+
+echo "-- comments: the read side projects the task detail's own array --"
+KB_STUB_GET_COMMENTS='[{"id":13,"task_id":505,"user_id":2238,"content":"first","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"},{"id":14,"task_id":505,"user_id":2238,"content":"second\nline","deleted_at":null,"created_at":"2026-08-12T23:41:12+00:00","updated_at":"2026-08-12T23:41:12+00:00"}]' \
+    kbc comments --task 505
+eq "comments → rc 0"                             "0" "$rc"
+eq "comments → one block per comment"            "2" "$(/usr/bin/grep -c '^comment ' <<<"$out")"
+eq "comments → the exact rendered output"        \
+   "$(printf 'comment 13 · user 2238 · 2026-08-12T23:40:36+00:00\n  first\ncomment 14 · user 2238 · 2026-08-12T23:41:12+00:00\n  second\n  line')" \
+   "$out"
+# No new route: the read is the task detail GET, and nothing is sent to the comments path
+# (which is POST-only — a GET there is 405, measured).
+eq "comments → reads the task detail, not a comments route" "1" "$(kb_stub_count_any '/tasks/505.json')"
+eq "comments → never GETs the comments path"     "0" "$(kb_stub_count_any "$CPATH")"
+
+echo "-- comments: untrusted content cannot drive the terminal --"
+# Comment content is written by anyone who can comment on the card and is printed RAW to a
+# terminal. An embedded ESC is a terminal COMMAND, not a character: `ESC[2K ESC[1A` erases the
+# `comment <id> · user <n>` header line above it, so the content can delete its own
+# attribution. Every C0 control but the newline and the tab is therefore replaced before
+# printing (the tab cannot move the cursor backward, so it cannot reach that header line).
+# The ESC is built from its CODEPOINT — no raw control byte is typed into this file.
+ESC="$(printf '\033')"
+CTRL_COMMENTS="$(jq -nc --arg e "$ESC" \
+    '[{id:21,task_id:505,user_id:7,content:("before" + $e + "[2K" + $e + "[1Aimpostor"),deleted_at:null,created_at:"t","updated_at":"t"}]')"
+KB_STUB_GET_COMMENTS="$CTRL_COMMENTS" kbc comments --task 505
+eq "control chars → rc 0 (rendered, not refused)" "0" "$rc"
+eq "control chars → each replaced, text preserved" \
+   "$(printf 'comment 21 · user 7 · t\n  before?[2K?[1Aimpostor')" "$out"
+# The byte-level assertion. Its positive control is the line below it: the SAME grep over the
+# same fixture's raw content finds the byte, so a 0 here is an absence rather than a grep that
+# never matches.
+eq "control chars → the raw ESC byte is ABSENT from stdout" "0" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c -e "$ESC" || true)"
+eq "control: that grep DOES find the ESC in the unsanitized fixture" "1" \
+   "$(printf '%s' "$CTRL_COMMENTS" | jq -r '.[0].content' | /usr/bin/grep -c -e "$ESC" || true)"
+# The SAME byte-level assertion for a control character arriving in a HEADER field, end to end:
+# id, user_id and created_at come from the same untrusted response body and land on the very
+# line the content filter protects, so an unsanitized header is the same defect by the shorter
+# route. The fixture puts the ESC in created_at and a forging newline in the id.
+HDR_COMMENTS="$(jq -nc --arg e "$ESC" \
+    '[{id:("22" + $e + "[2K"),task_id:505,user_id:7,content:"body",deleted_at:null,created_at:"t\ncomment 99 · user 1 · t","updated_at":"t"}]')"
+KB_STUB_GET_COMMENTS="$HDR_COMMENTS" kbc comments --task 505
+eq "header control chars → rc 0 (rendered, not refused)" "0" "$rc"
+eq "header control chars → the raw ESC byte is ABSENT from stdout" "0" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c -e "$ESC" || true)"
+eq "control: that grep DOES find the ESC in the unsanitized header fixture" "1" \
+   "$(printf '%s' "$HDR_COMMENTS" | jq -r '.[0].id' | /usr/bin/grep -c -e "$ESC" || true)"
+# One comment in, ONE header line out: the newline in created_at must not mint a second block.
+eq "header newline → still exactly one comment block" "1" \
+   "$(printf '%s' "$out" | /usr/bin/grep -c '^comment ')"
+unset ESC CTRL_COMMENTS HDR_COMMENTS
+
+echo "-- comments: an empty array SAYS so, at rc 0 --"
+KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
+eq "no comments → rc 0"                          "0" "$rc"
+eq "no comments → an explicit line, not silence" "kbcard: card 505 has no comments" "$out"
+
+echo "-- comments: a 404 must NOT read as 'no comments' --"
+# The sharpest form of the body-shape trap: `.data.comments // []` over the 404's parseable
+# body yields [] — i.e. a body-shape reader reports "this card has no comments" at rc 0 for a
+# request that never reached a card. RED-when-reverted: tolerate kb_api's non-zero rc and the
+# rc assertion AND the no-comments assertion below both flip.
+KB_STUB_GET_HTTP=404 KB_STUB_GET_COMMENTS='[]' kbc comments --task 505
+eq "404 on the detail read → rc 1"               "1" "$rc"
+eq "404 → the status is named"                   "true" "$(has 'HTTP 404' "$err")"
+eq "404 → does NOT claim the card has no comments" "false" "$(has 'no comments' "$out")"
+kbc comments
+eq "comments without --task → rc 2"              "2" "$rc"
+kbc comments --task 505 --bogus
+eq "comments unknown arg → rc 2"                 "2" "$rc"
+
+echo "-- comments / show: a 2xx whose body is not JSON at all --"
+# The same state the comment POST already has a leg for, on the READ side: kb_api has said
+# success on the status class, and the projection then meets a body that does not parse (a
+# proxy's HTML error page, a truncated read). An unguarded jq there dies under `set -e` at the
+# SCRIPT's rc 5 with jq's raw parse error as the only diagnostic. Both readers must refuse in
+# kbcard's own words, at kbcard's own rc — and `comments` must NOT degrade to "no comments",
+# which is the same silent-empty trap the 404 leg above pins.
+NONJSON_BODY='<html><body>502 Bad Gateway</body></html>'
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$NONJSON_BODY" kbc comments --task 505
+eq "comments: 2xx NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
+eq "…refuses in kbcard's own words, naming the verb" "true" "$(has 'kbcard: comments' "$err")"
+eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
+eq "…and prints nothing on stdout"               "" "$out"
+# THE WORDING IS PART OF THE CONTRACT, because this arm has more than one way in. The empty
+# value it fires on also arrives from a body that parsed PERFECTLY WELL and simply is not a card
+# (a 200 `[]`: `[] | .data` is a jq error, suppressed to empty), and from a jq that is missing or
+# unrunnable. A diagnostic saying "its body could not be parsed" is specific AND WRONG in those
+# arms — it names a fault of the server for something that may be a fault of this box. So both
+# readers state only the observation that is true in every arm: nothing could be read OUT of the
+# body. RED when the message reverts to the parse-specific wording.
+eq "…states what is true in EVERY arm: nothing could be read out of the body" "true" \
+   "$(has 'no comment list could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+# The other way into the same arm, exercised for real: valid JSON that is not a card.
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY='[]' kbc comments --task 505
+eq "comments: 2xx of VALID JSON that is not a card → rc 1" "1" "$rc"
+eq "…same true-in-every-arm wording"             "true" \
+   "$(has 'no comment list could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
+# `show` reads the SAME detail body through the same projection and had the same hole. Its
+# positive control is the line below: on a well-formed body it still prints the card at rc 0,
+# so the refusal above is the non-JSON case and not `show` being broken outright.
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$NONJSON_BODY" kbc show --task 505
+eq "show: 2xx NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
+eq "…refuses in kbcard's own words, naming the verb" "true" "$(has 'kbcard: show' "$err")"
+eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+eq "…and prints nothing on stdout"               "" "$out"
+eq "…states what is true in EVERY arm: no card could be read out of the body" "true" \
+   "$(has 'no card could be read out of its body' "$err")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$err")"
+# `show`'s own parseable-but-not-a-card way in, and its EMPTY-body one — which was a SILENT rc 0
+# (no output, no diagnostic) before this verb family landed, i.e. the second exit-code change a
+# vendoring consumer has to know about, not just the jq-rc-5 one.
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY='[]' kbc show --task 505
+eq "show: 2xx of VALID JSON that is not a card → rc 1" "1" "$rc"
+eq "…same true-in-every-arm wording"             "true" \
+   "$(has 'no card could be read out of its body' "$err")"
+eq "…and prints nothing on stdout"               "" "$out"
+# A single space, not the empty string: KB_STUB_GET_BODY is dispatched on `-n`, so an empty
+# value selects the envelope branch instead — and a body of whitespace is the same input to
+# every reader downstream (jq yields no value from it either way).
+KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY=' ' kbc show --task 505
+eq "show: an EMPTY 2xx body → rc 1, never a silent success" "1" "$rc"
+eq "…and says so rather than exiting 0 with no output" "true" \
+   "$(has 'no card could be read out of its body' "$err")"
+kbc show --task 505
+eq "control: show on a well-formed body → rc 0"  "0" "$rc"
+eq "control: …and returns the card"              "505" "$(jq -r '.id' <<<"$out")"
+unset NONJSON_BODY
+
+unset -f kbc kb_stub_route
+unset NOT_FOUND_BODY KB_STUB_CREATED
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

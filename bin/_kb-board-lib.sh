@@ -2,7 +2,7 @@
 # _kb-board-lib.sh — shared helpers for the agent-board-toolkit's OWN scripts.
 #
 # CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
-# board-snapshot, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
+# board-snapshot, board-stats, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
 # dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
 # MUST copy it too. Cited by line, not by section number — ADOPTION.md has no
 # numbered sections and its "§8" means the Task-tracking standard's §8:
@@ -143,6 +143,51 @@ _kb_discovered_boards() {
         out+="${out:+, }${name}"
     done
     printf '%s' "$out"
+}
+
+# kb_board_roster: the boards this box knows about, one `<name><TAB><label>` line per board,
+# in roster order. The roster file is ~/.kanban-snapshot-boards (override
+# $KANBAN_SNAPSHOT_BOARDS): one `<name>:<label>` per line, `#` comments and blank lines
+# skipped, a line with no `:` taking its name as its label. Whitespace inside a NAME is
+# stripped (it resolves to a filename); a label is taken verbatim after the first `:`.
+#
+# When the roster file is absent, unreadable, or holds no usable line, it falls back to
+# DISCOVERY — every ~/.kanban-<name>-board.env present, label = name — so a box that never
+# wrote a roster reports on the boards it actually has rather than on nothing.
+#
+# board-snapshot IS NOT YET A CALLER, and that is a deliberate open item rather than an
+# oversight: its main block carries the original inline copy of this PARSER (this function is
+# that block, unchanged in behavior), but its fallback is a different one — two hardcoded
+# board names kept for back-compat — so adopting this there changes what a roster-less box
+# renders at SessionStart, which is a decision and not a cleanup. Its OUTPUT also differs:
+# this function emits `<name><TAB><label>` (a board name, which resolves to an env file),
+# while board-snapshot's inline block emits `<envfile><TAB><label>` — so adopting it there is
+# a call-site change too, not a drop-in. Until that decision is made, a parser fix landing here
+# must be carried across by hand. The open item is recorded in
+# docs/CONSOLIDATION-PLAN.md (post-program dispositions), which owns it.
+kb_board_roster() {
+    local rosterf="${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
+    local line name label envf n=0
+    if [[ -r "$rosterf" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            name="${line%%:*}"
+            label="${line#*:}"
+            [[ "$label" == "$line" ]] && label="$name"   # no colon ⇒ label = name
+            name="${name//[[:space:]]/}"
+            [[ -z "$name" ]] && continue
+            printf '%s\t%s\n' "$name" "$label"
+            n=$((n + 1))
+        done < "$rosterf"
+    fi
+    [[ "$n" -gt 0 ]] && return 0
+    for envf in "$HOME"/.kanban-*-board.env; do
+        [[ -e "$envf" ]] || continue          # literal glob when none match → skip
+        name="${envf##*/.kanban-}"; name="${name%-board.env}"
+        printf '%s\t%s\n' "$name" "$name"
+    done
+    return 0
 }
 
 # kb_load_config [board_name]: public config entry for the name-driven scripts

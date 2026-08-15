@@ -83,11 +83,14 @@ jobs:
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
+          - board-stats-selftest
+          - bsc-same-dir-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
           - help-output-selftest
+          - install-board-hooks-capability-selftest
           - kb-board-lib-selftest
           - kb-host-guard-selftest
           - kb-positional-guard-selftest
