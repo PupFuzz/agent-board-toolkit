@@ -28,9 +28,10 @@
 #   3. THE READ-MODIFY-WRITE PRESERVES THE OTHER TAGS. The PATCH body is asserted whole, so a
 #      regression that sends `{"tags":["triaged"]}` — losing id:/repo: — is a red, not a silent
 #      data loss discovered later on the board.
-#   4. FAIL-CLOSED ON AN INCOMPLETE READ. A page-1 failure AND a short read (server total exceeds
-#      delivered rows) must both abort with NO writes: a partial read must never drive a partial
-#      backfill. That is the posture the tool's own comment claims and nothing asserted.
+#   4. FAIL-CLOSED ON ANYTHING SHORT OF A WHOLE READ. A page-1 HTTP failure, a page-1 body
+#      carrying no card array, and a short read (server total exceeds delivered rows) must all
+#      abort with NO writes: a partial or unreadable read must never drive a partial backfill.
+#      That is the posture the tool's own comment claims and nothing asserted.
 #
 # EVERY ABSENCE ASSERTION IS PAIRED WITH A WITNESS THAT THE RUN CANNOT DESTROY. "No PATCH was
 # issued" is meaningless if the tool never reached the API at all, and the two are indis-
@@ -40,8 +41,9 @@
 #
 # WHAT A GREEN RUN PROVES — the weakest property the assertions support: that against a faked
 # kanban API the tool selects, previews and writes what its header claims, and refuses to write
-# on an incomplete read. It does not prove anything about the real server's tag semantics, nor
-# that the board's `id:*-pr-*` convention is what any particular deployment uses.
+# on a read that is incomplete or unreadable. It does not prove anything about the real server's
+# tag semantics, nor that the board's `id:*-pr-*` convention is what any particular deployment
+# uses.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -201,11 +203,11 @@ eq "the count reports the shortfall"     "true" "$(has 'patched 5/6' "$out")"
 eq "the other 5 targets were still attempted" "6" "$(kb_stub_count "${PATCH_TASKS[@]}")"
 
 # ---------------------------------------------------------------------------
-echo "== fail-closed: an unreadable board aborts BEFORE any write =="
+echo "== fail-closed: a page-1 HTTP failure aborts BEFORE any write =="
 KB_STUB_GET_HTTP=403 run_a0 --apply
 eq "page-1 HTTP 403 → rc 1"              "1" "$rc"
-eq "the abort names the board and refuses a partial backfill" "true" \
-   "$(has 'board 42 read was incomplete or unreachable — aborting (no partial backfill)' "$err")"
+eq "the abort names the board, the fetch rc, and refuses a partial backfill" "true" \
+   "$(has 'board 42 did not return a complete card list (fetch rc=1) — aborting (no partial backfill)' "$err")"
 eq "loud fetch surfaces the status (KB_FETCH_LOUD)" "true" "$(has 'HTTP 403' "$err")"
 eq "witness: the read WAS attempted (this is a refusal, not a no-op)" "1" \
    "$(kb_stub_count "${GET_SEARCH[@]}")"
@@ -216,6 +218,23 @@ eq "witness: the read WAS attempted (this is a refusal, not a no-op)" "1" \
 # short-read leg below, where the fetcher legitimately emits the partial array, and it is
 # asserted there.
 
+echo "== fail-closed: a 2xx carrying no card array aborts too =="
+# The third cause of the paginator's rc 1 (card#6594), and the one no leg here reached: a 200
+# whose body is a proxy's HTML interstitial. It used to read as an EMPTY board — rc 0 and `[]` —
+# so this tool would have reported "0 targets" and exited clean over a board it never read. It
+# must abort exactly as the 403 above does, at the same fetch rc; the write-absence assertion is
+# likewise omitted, for the reason just stated (this is a page-1 failure too).
+KB_STUB_BOARD_JSON='<html><head><title>502 Bad Gateway</title></head></html>' run_a0 --apply
+eq "page-1 unreadable body → rc 1"       "1" "$rc"
+eq "the abort carries the same fetch rc=1 as any other page-1 refusal" "true" \
+   "$(has 'did not return a complete card list (fetch rc=1) — aborting (no partial backfill)' "$err")"
+eq "loud fetch names WHICH failure it was (KB_FETCH_LOUD)" "true" \
+   "$(has 'no readable card array' "$err")"
+eq "the run announced no target count over a board it never read" "false" \
+   "$(has 'ADD triaged to' "$out")"
+eq "witness: the read WAS attempted (this is a refusal, not a no-op)" "1" \
+   "$(kb_stub_count "${GET_SEARCH[@]}")"
+
 echo "== fail-closed: a SHORT READ aborts too (rc 4 is not a success) =="
 # The server claims 99 cards and delivers 11. fetch_board_cards returns 4 and still emits the
 # partial array — a caller that treated rc 4 as usable would backfill a subset of the board and
@@ -225,8 +244,8 @@ KB_STUB_BOARD_JSON="$(printf '%s' "$KB_STUB_BOARD_JSON" | jq -c '.meta.total = 9
     run_a0 --apply
 eq "short read → rc 1"                   "1" "$rc"
 eq "the short read is surfaced as INCOMPLETE" "true" "$(has 'INCOMPLETE' "$err")"
-eq "the abort message is the same fail-closed refusal" "true" \
-   "$(has 'no partial backfill' "$err")"
+eq "the abort message is the same refusal, carrying the rc that reached it" "true" \
+   "$(has 'did not return a complete card list (fetch rc=4) — aborting (no partial backfill)' "$err")"
 eq "no card was written on a short read" "0" "$(kb_stub_count "${PATCH_TASKS[@]}")"
 eq "witness: the short read DID deliver rows (11 of a claimed 99)" "true" \
    "$(has 'delivered only 11' "$err")"
