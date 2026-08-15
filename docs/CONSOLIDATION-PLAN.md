@@ -682,28 +682,54 @@ finding with no owner is abandoned, not filed.
   predicate has to be "reads a kanban response body", which is a grep of the files, not of the
   source graph.
 
-  **And the two implementations of this one behaviour already disagree on the safety branch.** The
+  **The two implementations of this one behaviour disagreed on the safety branch — CLOSED.** The
   mirror refuses a page-1 read that returns zero cards — `fetch_whole_board` `die`s with *"board N
   returned 0 visible cards — the token's user is likely not a member of board N … Refusing."* — and
-  the **lib has no such branch at all**: `fetch_board_cards` takes `n=0` as a short page, breaks,
-  and returns an EMPTY array at **rc 0**, indistinguishable from a genuinely empty board. (That
-  refusal is the same guard *Diagnosis 2* records revision 1 of this program as nearly deleting.)
-  That divergence is the duplication earning its keep as a defect rather than as a copy (canon #7).
-  **Not fixed here** — the lib side is card#6594 and carries its own operator ruling; this entry
-  exists so the next pass over this shape starts from the pair, not from the lib alone.
+  the lib had no such branch at all. Closed by **card#6594**, which landed second and therefore
+  deleted the divergence rather than re-syncing a second copy of it: both implementations now fail
+  closed on an unreadable page 1. The predicates are deliberately NOT identical — a mover can treat
+  zero cards as never a working state, a read verb cannot, because `kbcard list` on a genuinely
+  empty board must still succeed — and the reason lives with the code that has to honour it, in
+  `fetch_board_cards`' own parse-site comment. Do not converge them by copying the mirror's
+  predicate into the lib; that reintroduces a refusal on a legitimate board.
 
-  **Per-consumer exposure, because it is NOT uniform and the difference decides how urgent each is.**
-  `kbcard list` is the measured one: a `200` carrying `<html>502</html>` yields `[]` at rc 0 with an
-  empty stderr — a plausible-looking value a caller cannot distinguish from an empty board.
-  `next-dl`'s `board_dl_max` and `dl-a0-backfill-triaged` inherit the same shape (an empty scan
-  silently drops the board's floor / finds no targets). `board-snapshot`, `board-stats` and
-  `board-card-start` are fail-soft by design and degrade to their own defaults. `kbcard archive` is
-  the one that fails SAFE, and by contract rather than by measurement: the gate blocks unless *a
-  surviving twin keeps the source discoverable* (`_kbc-may-archive.py`'s own docstring), so a short
-  read can only withhold more archives, never permit one — which is also what
-  `_kbc_archive_decision`'s existing comment records ("a partial set only removes twins … never
-  invents one"). Two sources agreeing, neither of them a run: worth pinning with a fixture when
-  card#6594 is worked, not asserted harder here.
+  **Per-consumer exposure on page 1 is now settled by the rc-1 arm rather than predicted per
+  consumer.** Measured on the shipped bins against a `200` carrying `<html>502</html>`: `kbcard list`
+  and `dl-a0-backfill-triaged` abort, `board-snapshot` prints `(board API unreachable)`,
+  `board-stats` marks the stock section unavailable, `board-card-start` skips the move, `next-dl`
+  warns and keeps its documented rc-1 fail-soft (so it announces the dropped DL floor rather than
+  refusing — a caller-policy question this card did not decide), and `kbcard archive` substitutes
+  `[]` for the twin census. That last one was recorded here as safe *by contract rather than by
+  measurement*; it has since been measured — the same card with `surviving_cards: []` returns
+  `blocked … no surviving twin — archive withheld (fail-closed)` where the populated census returns
+  `ok`, so an empty census can only withhold more archives, never permit one. Two sources and now a
+  run.
+
+  **⚠ THE SAME SHAPE SURVIVES ON LATER PAGES, IN BOTH COPIES — 2 instances of one shape, measured,
+  and left open here rather than fixed under card#6594's page-1 ruling.** Both `fetch_board_cards`
+  and `fetch_whole_board` still read a page > 1 through `.data // []`, so an unreadable later body
+  is taken for a short page and ends the scan. The `meta.total` census is what covers it, and only
+  where the server declares `meta.total` — which is the whole exposure, because both copies default
+  an absent `meta.total` to UNKNOWN and then skip the census. Measured at page 1 = 200 rows with
+  page 2 answering `200` + `<html>502</html>`:
+
+  | copy | `meta.total` declared | outcome |
+  | --- | --- | --- |
+  | `fetch_board_cards` | yes | **rc 4** + `INCOMPLETE` on stderr — covered |
+  | `fetch_board_cards` | **no** | **rc 0, 200 cards, EMPTY STDERR** — a silent truncated read |
+  | `fetch_whole_board` | yes | **rc 2** (`die`, refuses to promote) — covered |
+  | `fetch_whole_board` | **no** | **rc 0, 200 cards, promotes** — the only tell is a raw `jq: parse error` on stderr, i.e. jq's voice, not the tool's |
+
+  The mirror's is the worse half: it is a tool that PATCHes cards, and it proceeds. Neither looks
+  reachable against this repo's kanban, whose `LengthAwarePaginator` carried `meta.total` on every
+  probe made for this entry — a populated page, an empty result, and a past-the-end page — which is
+  what makes these latent rather than live, and is the same reasoning (and the same unproven
+  "always") that card #4623 recorded for the `last_page` default. A vendoring consumer pointed at
+  a different server is where the assumption is not even that strong. **The fix is one line in each** — apply the
+  page-1 predicate to every page and return the already-documented rc 2 — and it is deliberately
+  NOT taken here: card#6594's ruling scoped the refusal to page 1, and extending it changes what
+  callers receive on a path the ruling did not cover. This is the class item for both instances;
+  do not file them separately (canon #18), and do not fix one copy without the other.
 - **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
   enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
   (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
@@ -849,11 +875,12 @@ finding with no owner is abandoned, not filed.
     stdin is `$cards` from `fetch_board_cards`. The resolver sees `--argjson swmap "$swmap"`
     (`_kbc_swimlane_map`'s locally built board-env map) and resolves the whole call as local.
     **NOT migrated, and deliberately so:** the unguarded read is not here but one level up, in the
-    paginator's own inline per-page `jq … 2>/dev/null`, which is why an unreadable `2xx` arrives
-    here as a well-formed `[]` and `list` prints it at rc 0. Guarding this site cannot see that —
-    by the time the value reaches it the information is already gone. **`card#6594` owns the
-    paginator class and carries the ruling to fail closed at its existing rc 1**; fixing it there
-    fixes this site, and fixing it here would be #2's symptom patch.
+    paginator's own inline per-page `jq … 2>/dev/null`. Guarding this site could never have seen
+    that — by the time the value reaches it the information is already gone — which is why
+    **`card#6594` fixed it at the paginator, at page 1, at the existing rc 1**, and `list` now
+    aborts instead of printing a `[]` it could not read. Fixing it here would have been #2's
+    symptom patch. This site stays unmigrated: what reaches it is now either real cards or a
+    genuinely empty board.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
   **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it

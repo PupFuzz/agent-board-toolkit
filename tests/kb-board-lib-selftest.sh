@@ -506,6 +506,77 @@ _PAGES=( [1]="$lp0" [2]='{"data":[{"id":200}]}' )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
 eq "last_page=0 → rc 0"                        "0"   "$rc"
 eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) =="
+# The defect: `.data // []` answered a 200 carrying an HTML 502 with `[]` at rc 0 — byte-identical
+# to a genuinely EMPTY board — so next-dl dropped the board's DL floor and minted from the local
+# scan alone. The predicate is the ENVELOPE, not the row count: `.data` present AND an array.
+# EVERY refusal case below is paired with the empty-board control on the SAME route, because the
+# whole point is that the two are now distinguishable; a refusal leg that passes while the control
+# also refuses has broken a legitimate board read, not fixed anything.
+UNREAD_LOG="$TMP/unreadable.log"
+_fbc_case() { # <label> <body> <expect-rc> <expect-stdout>
+    local label="$1" body="$2" exprc="$3" expout="$4" rc=0 out
+    curl() { _STUB_ARGS=("$@"); _stub_curl_respond "$body" 200; }
+    : > "$UNREAD_LOG"
+    out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$UNREAD_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/unread.err")" || rc=$?
+    eq "$label (rc)"     "$exprc"  "$rc"
+    eq "$label (stdout)" "$expout" "$out"
+}
+
+# The measured defect input: HTTP 200 whose body is a proxy's HTML error page.
+_fbc_case "200 + <html>502</html> → rc 1" '<html><head><title>502 Bad Gateway</title></head><body>502</body></html>' 1 ""
+eq "…and the refusal is in the lib's own voice, naming the status" "true" \
+   "$(has 'fetch_board_cards: page 1 for board 8 returned HTTP 200 with no readable card array' "$(cat "$TMP/unread.err")")"
+eq "…and says what it refused to do, so the diagnostic is not just 'failed'" "true" \
+   "$(has 'refusing rather than report it as an empty board' "$(cat "$TMP/unread.err")")"
+eq "…and the failure log distinguishes this cause from a non-2xx" "true" \
+   "$(has 'UNREADABLE-BODY' "$(cat "$UNREAD_LOG")")"
+eq "…and the log carries the body, so the cause is diagnosable after the fact" "true" \
+   "$(has '502 Bad Gateway' "$(cat "$UNREAD_LOG")")"
+
+# THE CONTROL, and the one that matters most: a genuinely empty board is a legitimate state and
+# must still SUCCEED. This is the real API's empty-result envelope, probed live before the fix was
+# written. A predicate that cannot separate this from the case above is the wrong predicate.
+_fbc_case "CONTROL: a genuinely EMPTY board still succeeds → rc 0" \
+    '{"data":[],"links":{"first":"x","last":"x","prev":null,"next":null},"meta":{"current_page":1,"from":null,"last_page":1,"per_page":200,"to":null,"total":0}}' 0 "[]"
+[[ -s "$TMP/unread.err" ]] && bad "an empty board must be silent on stderr" || ok "an empty board is silent on stderr"
+[[ -s "$UNREAD_LOG" ]] && bad "an empty board must not write a failure-log line" || ok "an empty board writes no failure-log line"
+
+# The three other shapes that carried no readable card array and were answered `[]` at rc 0. The
+# last one is not merely empty — `.data` non-array reached the accumulator and could only ever
+# produce a garbage value, the other half of README's "never … emit a garbage value".
+_fbc_case "200 + valid JSON with no .data at all → rc 1"      '{"error":"upstream connect error"}' 1 ""
+_fbc_case "200 + .data null → rc 1"                           '{"data":null,"meta":{"total":0}}'   1 ""
+_fbc_case "200 + .data present but not an array → rc 1"       '{"data":"not-an-array"}'            1 ""
+# …and the control again, one line up from the last of them, so the block cannot pass by refusing
+# everything: a one-card board is a complete read at rc 0.
+_fbc_case "CONTROL: one real card → rc 0 with the card"       '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 0 '[{"id":7}]'
+
+# The refusal must not break board-snapshot's SessionStart contract: WITHOUT KB_FETCH_LOUD the
+# paginator is return-code-only, and that is what keeps a fail-soft display quiet. Asserted
+# separately from _fbc_case, which always sets the knob.
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '<html>502</html>' 200; }
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/quiet.err")" || rc=$?
+eq "quiet mode (no KB_FETCH_LOUD) still refuses → rc 1" "1" "$rc"
+eq "quiet mode emits nothing on stdout"                 ""  "$out"
+[[ -s "$TMP/quiet.err" ]] && bad "quiet mode must stay silent on stderr (board-snapshot's contract)" || ok "quiet mode stays silent on stderr"
+
+# THE BOUNDARY, asserted because README now claims it: the refusal is page-1 only, and a LATER
+# page's unreadable body is caught by the pre-existing meta.total census at rc 4 — not silently
+# truncated — on any server that declares meta.total. Without that census leg the README sentence
+# would be unbacked.
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+fullp="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
+_PAGES=( [1]="$fullp" [2]='<html>502</html>' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2.err")" || rc=$?
+eq "an unreadable PAGE 2 is not rc 1 (the refusal is page-1 only)" "4" "$rc"
+eq "…and the 200 rows page 1 did deliver are still emitted"        "200" "$(printf '%s' "$out" | jq 'length')"
+eq "…and the short-read census calls the read INCOMPLETE"          "true" "$(has 'INCOMPLETE' "$(cat "$TMP/p2.err")")"
+unset -f _fbc_case
+unset UNREAD_LOG
+
 unset -f curl _stub_page_curl
 
 # --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---

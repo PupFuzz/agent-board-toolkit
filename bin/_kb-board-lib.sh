@@ -577,8 +577,11 @@ kb_parse_resp() {
 # stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
 # Returns:
-#   0  full read (array on stdout)
-#   1  page 1 unreachable (nothing usable) — a fail-soft caller skips the board
+#   0  full read (array on stdout) — INCLUDING a genuinely empty board, which is a
+#      legitimate state and answers `[]` at rc 0 like any other complete read
+#   1  page 1 failed (nothing usable) — a fail-soft caller skips the board. Three
+#      causes, one rc: curl could not complete the request, the status was not 2xx,
+#      or the 2xx body carried no readable card array (see the parse site below)
 #   2  incomplete: a page > 1 failed mid-pagination — a correctness-sensitive
 #      caller (the DL minter) MUST refuse rather than risk a truncated scan
 #   3  page cap hit: the partial array is still emitted (so a display caller can
@@ -643,7 +646,48 @@ fetch_board_cards() {
             [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
             total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         fi
-        data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
+        # A 2xx whose body carries no card ARRAY is a page that FAILED to read, not a
+        # page that was empty — and `.data // []` could not tell the two apart. An HTML
+        # 502 interstitial from a proxy, a truncated body, or a JSON error object all
+        # became `[]`: byte-identical (rc 0, `[]`, silent) to the answer a genuinely
+        # empty board gives, so no caller could refuse it. next-dl then read no
+        # dl_number out of that `[]`, dropped the board's DL floor and minted from the
+        # local header scan alone — how a DL gets re-minted on a shared board, the
+        # failure bin/next-dl:244 names in its own comment (card#6594).
+        #
+        # The tell is the ENVELOPE, not the row count. Measured against the live API: an
+        # empty result is `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200 —
+        # `.data` is present and an array. So "`.data` exists AND is an array" separates
+        # a read that returned nothing from a read that returned no answer, and keeps the
+        # empty board a rc-0 success. `empty`, not `// []`: on any jq fault the ONE thing
+        # this can print is nothing, which is the one value that cannot be mistaken for
+        # data (the kb_parse_resp rule above, applied to the whole-board read).
+        #
+        # The refusal is PAGE 1 only, matching the ruled scope and this function's rc-1
+        # contract. A later page's unreadable body still falls back to `[]` and ends the
+        # scan; that leaves the pre-dedup meta.total census below to catch it at rc 4,
+        # which it does on any server that declares meta.total (this API always does).
+        #
+        # This is the guard the co-vendored port at bin/promote-released-cards:302-304
+        # has always carried. It is deliberately NOT the same predicate: that tool dies
+        # on zero CARDS, which it can afford because a board with nothing to promote is
+        # never a working state for it. A board read verb cannot — `kbcard list` on an
+        # empty board must still succeed — so the lib refuses on an unreadable ENVELOPE
+        # instead. Residual, accepted and shared with the mirror: this API answers a
+        # board the token cannot see with the same well-formed empty envelope as a board
+        # with no cards, so that case still reads as an empty board here.
+        data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
+        if [[ -z "$data" ]]; then
+            if [[ "$page" -eq 1 ]]; then
+                if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
+                    echo "fetch_board_cards: page 1 for board $board returned HTTP $http with no readable card array — refusing rather than report it as an empty board: $resp" >&2
+                fi
+                [[ -n "${KB_LOG_FILE:-}" ]] && \
+                    echo "$(date -u +%FT%TZ) GET $url HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+                return 1
+            fi
+            data='[]'
+        fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
