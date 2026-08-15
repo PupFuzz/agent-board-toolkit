@@ -82,14 +82,27 @@ eq "other fields pass through" '"card"' "$(annot '{"id":1,"workflow_stage_id":48
 unset KB_STAGE_BACKLOG KB_STAGE_SHIPPED_TO_DEV
 
 echo "== _kbc_write_echo: payload rides only when the serializer sent the key (card #4390) =="
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5}}' | _kbc_write_echo)"
+# It takes the RESPONSE as an argument (card#6426) rather than reading stdin, because it now
+# owns the refusal for a 2xx body no card can be read out of — and a refusal needs the verb and
+# the subject the caller typed, which stdin cannot carry.
+we() { _kbc_write_echo patch "on task 1" "$@"; }
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5}}')"
 eq "absent payload key → omitted"  "false" "$(jq 'has("payload")' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":{"dl_number":"DL-0001"}}}' | _kbc_write_echo)"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":{"dl_number":"DL-0001"}}}')"
 eq "real payload → included"       '{"dl_number":"DL-0001"}' "$(jq -c '.payload' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":null}}' | _kbc_write_echo)"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":null}}')"
 eq "server-sent null → passed through (the server SAID null)" "true" "$(jq 'has("payload")' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"description":"abcdef"}}' | _kbc_write_echo 'description: (.description // "" | .[0:3])')"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"description":"abcdef"}}' 'description: (.description // "" | .[0:3])')"
 eq "extra-fields arg composes (patch echo)" '"abc"' "$(jq -c '.description' <<<"$r")"
+# The refusal it now owns, at the unit level: a body no card can be read out of prints nothing
+# and returns 1 — never a plausible-looking projection of nothing.
+rc=0; r="$(we '<html>502</html>' 2>/dev/null)" || rc=$?
+e="$(we '<html>502</html>' 2>&1 >/dev/null || true)"
+eq "a body that is not JSON → rc 1"          "1" "$rc"
+eq "…and nothing on stdout"                  ""  "$r"
+eq "…refuses in kbcard's words, naming the verb" "true" "$(has 'kbcard: patch on task 1' "$e")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$e")"
+unset -f we; unset e
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +303,7 @@ echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
 # Capture the real projection first — the echo-parity pair near the end restores it.
 eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
 
 # has_tag <body-json> <tag> → membership of the created card's flat .tags array.
@@ -590,7 +603,7 @@ eq "malformed --dl → no payload" ""  "$out"
 # byte-identical payload — the whole point of sharing one assembler. Stub the
 # API to echo the request body; assert the flat .payload objects match.
 kb_api() { printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21 KB_CF_VERSION_TARGET=99
 unset KB_TYPING_MODE 2>/dev/null || true
 cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
@@ -657,7 +670,7 @@ echo "== cmd_create_card --swimlane — birth a card ON a lane (card#5671, round
 # below is about a POST that must never happen, which a body assertion alone cannot show.
 _CC_POSTED="$(mktemp)"; trap 'rm -f "$_CC_POSTED"' EXIT
 kb_api() { printf 'yes' > "$_CC_POSTED"; printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
 cc() { : > "$_CC_POSTED"; cmd_create_card --type task --name x "$@" 2>/dev/null | jq -c '.'; }
 
@@ -736,7 +749,7 @@ kb_api() {
         *)   printf '%s' "$3" ;;
     esac
 }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_IN_REVIEW=50
 # pb <args…> — run cmd_patch on a fresh request log, return the PATCH request body.
 pb() { : > "$_REQ_LOG"; cmd_patch --task 99 "$@" 2>/dev/null; }
@@ -850,7 +863,7 @@ echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # Echo the request body back and pass the write echo through (the block above restored the
 # REAL _kbc_write_echo, which expects a server {data:…} envelope this stub does not send).
 kb_api() { printf '%s' "$3"; }   # $3 is the request body
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 
 rc=0; err="$(cmd_patch --task 99 --dl "" 2>&1 >/dev/null)" || rc=$?
 eq "patch --dl \"\" → rc 2"                        "2"    "$rc"
@@ -1301,6 +1314,196 @@ unset NONJSON_BODY
 
 unset -f kbc kb_stub_route
 unset NOT_FOUND_BODY KB_STUB_CREATED
+
+# ---------------------------------------------------------------------------
+echo "== every projection refuses a 2xx it cannot read, in kbcard's words =="
+# THE CLASS (card#6426). kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx
+# carrying a proxy's HTML error page or a truncated read arrives at EVERY projection in this
+# file as a success. An unguarded jq there exits 5 under `set -e`, with jq's raw parse error as
+# the caller's whole diagnostic — a status this tool documents nowhere, from a program the
+# caller never ran. card#6051 closed three of those sites; this block is the rest of the
+# population, one leg per verb, each asserting the same four things: the verb's OWN documented
+# rc (never jq's 5), a refusal in kbcard's words naming the verb, no raw jq parse error on
+# stderr, and nothing on stdout that could be mistaken for a value. Every leg is paired with a
+# control on the SAME route with a well-formed body, so a green here is a refusal that
+# discriminates and not a verb that is broken outright.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_install
+
+NONJSON='<html><body>502 Bad Gateway</body></html>'
+SEARCH_BODY='{"data":[{"id":505}]}'
+CARD_BODY='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep-me"]}}'
+LINK_BODY='{"data":{"id":9,"relation_type":"blocks"}}'
+FIELDS_BODY='{"data":[{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"}]}]}'
+# The custom-field WRITE echoes ONE field object, not the board's array — two distinct shapes
+# behind two distinct routes, so the read arm's fixture cannot stand in for the write arm's.
+FIELD_ROW_BODY='{"data":{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"},{"value":"b","label":"b"}]}}'
+export NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
+# One knob per ROUTE, so exactly one leg is failed at a time and every other request in the
+# same run still answers normally — a run that fails every route cannot tell which projection
+# refused.
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "GET "*/tasks/search.json*)  printf '%s\n%s' "${KB_STUB_SEARCH_HTTP:-200}" \
+                                        "${KB_STUB_SEARCH_BODY:-$SEARCH_BODY}" ;;
+        "POST "*/tasks.json)         printf '%s\n%s' "${KB_STUB_POST_HTTP:-201}" "${KB_STUB_POST_BODY:-$CARD_BODY}" ;;
+        "POST "*/task_links.json)    printf '%s\n%s' "${KB_STUB_LINK_HTTP:-201}" "${KB_STUB_LINK_BODY:-$LINK_BODY}" ;;
+        "PATCH "*/tasks/*.json)      printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" "${KB_STUB_PATCH_BODY:-$CARD_BODY}" ;;
+        "GET "*/tasks/*.json)        printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_BODY:-$CARD_BODY}" ;;
+        "GET "*/custom_fields.json)  printf '%s\n%s' "${KB_STUB_CF_HTTP:-200}" "${KB_STUB_CF_BODY:-$FIELDS_BODY}" ;;
+        "PATCH "*/custom_fields/*)   printf '%s\n%s' "${KB_STUB_CFW_HTTP:-200}" "${KB_STUB_CFW_BODY:-$FIELD_ROW_BODY}" ;;
+    esac
+}
+export -f kb_stub_route
+kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+
+# nonjson_leg <label> <expected-rc> <verb-word> <args…> — the four assertions this class needs,
+# stated once. `parse error` is jq's own wording; `jq:` catches its prefix if the text changes.
+nonjson_leg() {
+    local label="$1" want_rc="$2" verb="$3"; shift 3
+    kbc "$@"
+    eq "$label → rc $want_rc, not jq's rc 5"        "$want_rc" "$rc"
+    eq "$label → refuses in kbcard's words"         "true"     "$(has "kbcard: $verb" "$err")"
+    eq "$label → leaks no raw jq parse error"       "false"    "$(has 'parse error' "$err")"
+    eq "$label → prints nothing on stdout"          ""         "$out"
+}
+
+echo "-- the usage block renders as prose, not as comment markup --"
+# A bare `#` is how this header separates paragraphs (a trailing space would not survive an
+# editor or a linter), and a strip that requires the space left every separator in the rendered
+# help as a literal `#` line. Asserted on the ABSENCE of such a line, with the control below:
+# the same run must actually produce the block, or an absence proves nothing.
+kbc
+eq "no arguments → the usage block at rc 0" "0" "$rc"
+eq "control: …and it IS the usage block"    "true" "$(has 'Usage:' "$out")"
+eq "no line of the rendered help is a bare comment marker" "0" \
+   "$(/usr/bin/grep -c '^#' <<<"$out" || true)"
+
+echo "-- create-card / move / patch: a write whose echo is unreadable --"
+KB_STUB_POST_BODY="$NONJSON" nonjson_leg "create-card" 1 "create-card" \
+    create-card --type fr --name probe
+kbc create-card --type fr --name probe
+eq "control: create-card on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and prints the created card"       "505" "$(jq -r '.id' <<<"$out")"
+
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "move" 1 "move" move --task 505 --column in_progress
+kbc move --task 505 --column in_progress
+eq "control: move on a well-formed echo → rc 0"  "0" "$rc"
+eq "control: …and prints the moved card"         "505" "$(jq -r '.id' <<<"$out")"
+
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 1 "patch" patch --task 505 --pr 12
+kbc patch --task 505 --pr 12
+eq "control: patch on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and prints the patched card"       "505" "$(jq -r '.id' <<<"$out")"
+
+echo "-- patch --triaged: an unreadable TAG READ must never write a tag list --"
+# The sharpest instance in the file. `tags` is replaced WHOLESALE by the API, so this verb
+# read-merge-writes it: a read that yields nothing and is then treated as "no tags" writes
+# ["triaged"] and DESTROYS every tag the card carried. The refusal is therefore about the
+# WRITE, and the load-bearing assertion is the absence of the PATCH — asserted against the
+# request log, which nothing under test can truncate.
+KB_STUB_GET_BODY="$NONJSON" nonjson_leg "patch --triaged (tag read)" 2 "patch" patch --task 505 --triaged
+KB_STUB_GET_BODY="$NONJSON" kbc patch --task 505 --triaged
+eq "…and issues NO PATCH at all (a tag wipe is worse than a refusal)" "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+kbc patch --task 505 --triaged
+eq "control: the same patch on a readable card DOES write" "1" "$(kb_stub_count PATCH '/tasks/505.json')"
+eq "control: …and the write keeps the card's existing tags" '["keep-me","triaged"]' \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+
+echo "-- link: the relation echo --"
+KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
+kbc link --from 505 --to 506 --relation blocks
+eq "control: link on a well-formed echo → rc 0"  "0" "$rc"
+eq "control: …and prints the created link"       "9" "$(jq -r '.id' <<<"$out")"
+
+echo "-- the external-id resolver: 'no task found' is a claim about the BOARD --"
+# An unreadable body is not an absent card. Routing it into the not-found arm would answer a
+# question this read never reached — the same silent-empty trap `comments`' no-comments line
+# sets. RED-when-reverted: fold the unreadable case into the not-found arm and the wording
+# assertion below flips while the rc stays 1.
+KB_STUB_SEARCH_BODY="$NONJSON" nonjson_leg "external-id lookup" 1 "external-id lookup" show --task EXT-9
+KB_STUB_SEARCH_BODY="$NONJSON" kbc show --task EXT-9
+eq "…and does NOT claim there is no such card"   "false" "$(has 'no task found' "$err")"
+eq "…states only what is true: nothing could be read out of the body" "true" \
+   "$(has 'could be read out of its body' "$err")"
+# The genuine not-found answer still reads as not-found: a well-formed search result with no
+# rows is the control that keeps the refusal above narrow.
+KB_STUB_SEARCH_BODY='{"data":[]}' kbc show --task EXT-9
+eq "control: a well-formed EMPTY result → the not-found arm" "1" "$rc"
+eq "control: …and says so"                       "true" "$(has 'no task found' "$err")"
+
+echo "-- field list / field set-options --"
+KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field list" 1 "field" field list
+kbc field list
+eq "control: field list on a well-formed body → rc 0" "0" "$rc"
+eq "control: …and projects the field"            "stage" "$(jq -r '.[0].key' <<<"$out")"
+KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field set-options (read)" 1 "field" \
+    field set-options --field stage --options a,b
+# The WRITE echo: the reconcile PATCH already landed (2xx), so this refusal is about the echo,
+# not the write — and it must still not print jq's rc 5.
+KB_STUB_CFW_BODY="$NONJSON" nonjson_leg "field set-options (write echo)" 1 "field" \
+    field set-options --field stage --options a,b
+kbc field set-options --field stage --options a,b
+eq "control: set-options on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and projects the reconciled option set" '["a","b"]' \
+   "$(jq -c '[.options[].value]' <<<"$out")"
+
+echo "-- archive: the safety gate must fail CLOSED, and quietly --"
+# The gate already refuses on an unreadable card (its `||` arm catches jq's death), so the rc
+# and the absent PATCH are green either way — what is NOT green is the raw jq parse error the
+# unguarded jq prints to stderr on its way there. That is the assertion this leg adds.
+KB_STUB_GET_BODY="$NONJSON" kbc archive --task 505
+eq "archive on an unreadable card → rc 1"        "1" "$rc"
+eq "…refuses in kbcard's words"                  "true" "$(has 'archive withheld' "$err")"
+eq "…leaks no raw jq parse error"                "false" "$(has 'parse error' "$err")"
+eq "…and issues NO archive PATCH"                "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+
+echo "-- comments: a .data.comments that is not an ARRAY --"
+# card#6426 (c), instance 1. `.data.comments // []` passes a non-array straight through to the
+# renderer, whose `.[]` then dies with jq's "Cannot iterate over …" at rc 5 — mid-render, after
+# the header work is done. It is not an empty comment list either, so it belongs in the verb's
+# existing "nothing was read" arm, not in the no-comments line.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":{"1":{"content":"x"}}}}' \
+    nonjson_leg "comments with an object where the array goes" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":"nope"}}' \
+    nonjson_leg "comments with a string where the array goes" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":{"1":{"content":"x"}}}}' kbc comments --task 505
+eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
+
+echo "-- comments: a row whose content is not a STRING --"
+# card#6426 (c), instance 2. `explode` on a number is a jq error, so a single bad row exits 5
+# PART WAY THROUGH the output — the caller gets some comments, no diagnostic it can attribute,
+# and an rc from a program it never ran. Refuse the read instead: a partial audit trail that
+# looks complete is the worst of the three outcomes.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":7}]}}' \
+    nonjson_leg "comments with a numeric content" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":{"a":1}}]}}' \
+    nonjson_leg "comments with an object content" 1 "comments" comments --task 505
+# A row that is not an object at all dies the same way one line earlier, on the header.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[7]}}' \
+    nonjson_leg "comments with a row that is not an object" 1 "comments" comments --task 505
+# The controls that keep all of the above narrow: content ABSENT and content NULL are ordinary
+# rows the renderer has always printed as empty, and must keep printing.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t"}]}}' \
+    kbc comments --task 505
+eq "control: a row with NO content still renders" "0" "$rc"
+# Header only: jq's `split` over the empty string yields NO elements, so an absent content
+# emits no indented line at all. Pinned as the measured shape rather than assumed.
+eq "control: …as a header with no content line"  "comment 1 · user 2 · t" "$out"
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":null}]}}' \
+    kbc comments --task 505
+eq "control: a row with NULL content still renders" "0" "$rc"
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":"hi"}]}}' \
+    kbc comments --task 505
+eq "control: an ordinary row is unaffected"      "0" "$rc"
+eq "control: …and renders verbatim"              "$(printf 'comment 1 · user 2 · t\n  hi')" "$out"
+
+unset -f kbc kb_stub_route nonjson_leg
+unset NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

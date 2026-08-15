@@ -594,6 +594,37 @@ finding with no owner is abandoned, not filed.
   `~/.kanban-*-board.env`), so adopting the primitive changes what a roster-less box renders at
   SessionStart — and the two emit different first fields (`<name>` vs `<envfile>`), so the call site
   changes too. Recorded at the function; this is the owning record.
+- **The tolerant response parse, in the fail-soft bins** (card#6426) — `kb_parse_resp` now owns
+  "apply a filter to a response body, yielding nothing rather than dying when the body is not
+  JSON", and the bins that run under `set -e` were migrated onto it (that migration is what the
+  card shipped). The three fail-soft bins were **deliberately left carrying their own inline
+  guards** — `board-card-start`'s `2>/dev/null` card reads, `board-snapshot`'s `fromjson? // null`
+  stage-name map, and `board-stats`'s `_bs_stage_map` and changelog-page parse — and the reason is
+  ground rule 5, not oversight: none of them runs under `set -e`, so a jq fault there is already
+  non-fatal, and each one's POLICY on an unreadable body is a **different non-empty default**
+  (`board-snapshot` degrades to `stage <id>` labels, `board-stats` to `_BS_EMPTY_MAP` or a named
+  `err` on the board's own ⚠ line, `board-card-start` to a silent `exit 0`). Adopting the
+  primitive there is mechanical, but it does not by itself remove a copy: each call site would
+  still need its own `[[ -n … ]] || default`, so what looks like one owner replacing four is one
+  owner plus four unchanged policies. **What makes it worth doing anyway, when someone decides
+  to:** those inline guards have already drifted once in the way that matters —
+  `dl-a1-register-field`'s copy suppressed jq's *message* with `2>/dev/null` while leaving its
+  *status* live, so under `set -e` it still killed the run, silently, which is the exact failure
+  the suppression was written to prevent. A guard that is four near-copies agreeing by habit is
+  one edit away from that again. Decision-gated on the same axis as the roster parser above: it
+  changes nothing a caller can see **only if** each default is preserved exactly, and that is a
+  per-site judgement rather than a sweep.
+- **`fetch_board_cards`'s five internal body parses** (card#6426) — the lib's own paginator reads
+  `meta.last_page`, `meta.total`, `.data`, and two lengths straight off each page with
+  `jq … 2>/dev/null`, i.e. the primitive's shape written inline in the file that now defines the
+  primitive. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message
+  but not the status, and whether that status is fatal depends on **how the caller invoked the
+  function** — bash suppresses `errexit` inside a command substitution that is part of an `||` or
+  `if` list, which is how every caller in this repo calls it (measured on bash 5.2), so the rc
+  never reaches `set -e`. That is a property of the CALLERS, not of this function, and it is not
+  asserted anywhere. Migrating the five is therefore not a cleanup but a hardening against a
+  future caller that assigns the result unconditionally — worth doing, and worth doing with a
+  test that pins the caller shape rather than the parse.
 - **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
   and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
   `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement

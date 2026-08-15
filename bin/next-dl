@@ -175,7 +175,7 @@ dl_sequence_call() (
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     case "$http" in
         2[0-9][0-9])
-            val="$(printf '%s' "$body" | jq -r "$field // empty" 2>/dev/null || true)"
+            val="$(kb_parse_resp "$body" -r "$field // empty")"
             kb_is_uint "$val" && [[ "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
             printf '%s' "$val" ;;
         404) exit 1 ;;   # endpoint not deployed — benign; fall back to the offline scan
