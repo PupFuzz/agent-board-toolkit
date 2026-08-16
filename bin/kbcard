@@ -1694,16 +1694,20 @@ _kbc_field_delete_call() {
 # _kbc_field_populated <key>: the board's cards that CARRY the payload key, as
 # `[{task_id, value}]` on stdout, with the denominator `N of M board cards carry
 # <key>` ALWAYS on stderr. The census is the whole point of both write verbs, so it
-# is FAIL-CLOSED on every incomplete-read shape fetch_board_cards reports (rc 1 page
-# one unreachable, 2 a later page failed, 3 page cap hit, 4 short read): each of
-# those emits or implies a PARTIAL board, and a partial board undercounts the cards
-# a delete would orphan. A truncated denominator is not a denominator, and the one
-# thing that must not happen is a "0 of M" that reads like a safe delete.
+# is FAIL-CLOSED on EVERY non-zero rc fetch_board_cards defines — 1, 2, 3 and 4, all
+# four measured reaching the arm below. The rc set is named and no CAUSE is, per the
+# wording rule at that function's header: an arm reached by four rcs shares no cause
+# with them (rc 1 alone has three, since card#6594). What they do share is the
+# outcome — the read is not a whole board — and a census over a partial board, or
+# over no board at all, undercounts the cards a delete would orphan. A truncated
+# denominator is not a denominator, and the one thing that must not happen is a
+# "0 of M" that reads like a safe delete. This bin sets KB_FETCH_LOUD, so the
+# paginator's own line — the only one that knows the cause — prints above this one.
 _kbc_field_populated() {
     local key="$1" cards rc=0 rows n m
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
-        echo "kbcard: board $KB_BOARD_ID could not be read COMPLETELY (fetch_board_cards rc=$rc) — refusing to act on a truncated denominator" >&2
+        echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$rc) — refusing to act on a truncated denominator" >&2
         return 1
     fi
     # `<<<`, never --argjson: a whole board is ~200KB and passing it in argv trips
