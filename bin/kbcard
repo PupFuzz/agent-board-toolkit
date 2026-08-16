@@ -2379,7 +2379,16 @@ _kbc_field_retype() {
     # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
     # must not go on to restamp, because it has not read which conversion happened.
     if [[ -z "$row" || -z "$to_t" ]]; then
-        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe and RUNS the --restamp-dl pass this run skipped. Whether that pass FINISHES is its own outcome, which it reports — a stored value that is not a DL number is canonicalized by no run of it." >&2
+        # The re-run sentence names the restamp pass ONLY where the flag was passed.
+        # Without it there is no pass to re-run — naming one asserts a thing that did
+        # not happen, which is the same defect one size down (see the rule stated in
+        # _kbc_field_rerun_note's header: invariant facts unconditionally, measured
+        # ones only where measured).
+        local rerun="a conversion that already landed answers as a server-side no-op, so re-running is safe."
+        if [[ -n "$restamp_dl" ]]; then
+            rerun="a conversion that already landed answers as a server-side no-op, so re-running is safe and RUNS the --restamp-dl pass this run skipped. Whether that pass FINISHES is its own outcome, which it reports — a stored value that is not a DL number is canonicalized by no run of it."
+        fi
+        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: $rerun" >&2
         return 1
     fi
     # The server answers a target type equal to the current one as an explicit no-op:

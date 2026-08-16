@@ -67,6 +67,11 @@
 #     rule one out — the no-op re-run scans nothing, and live-side growth cancels the
 #     count difference one for one — so every line that could read as "done" is asserted
 #     to carry its census scope, on the no-op path and the proven-clean path alike;
+#   - a message that names an OPTIONAL flag's pass is asserted on BOTH branches of that
+#     flag, never only the one that passed it: the unreadable-2xx-echo arm's re-run
+#     sentence is asserted to name the --restamp-dl pass WITH the flag and to name no
+#     pass at all without it — a run that skipped none cannot say a re-run runs one, and
+#     a leg taken only with the flag set is what let that claim ship;
 #   - the option rules the client still owns vs the server's own, told apart in the
 #     SUITE and not only in a comment: retype's --options passthrough has exactly one
 #     exception (a duplicate value, refused at rc 2 by kbcard, which the server would
@@ -1182,6 +1187,28 @@ eq "…and says the re-run RUNS the skipped pass"      "true"  "$(has 'RUNS the 
 eq "…never that it FINISHES it"                      "false" "$(has 'finishes any --restamp-dl pass' "$ERR")"
 eq "…naming the outcome no run of that pass repairs" "true"  \
    "$(has 'a stored value that is not a DL number is canonicalized by no run of it' "$ERR")"
+
+# THE SAME ARM WITHOUT THE FLAG — the branch every assertion above skips. All of them
+# are taken with --restamp-dl PASSED, so the case where the restamp half of that
+# sentence is FALSE had no leg at all: no pass was requested, so this run skipped none
+# and a re-run runs none either. Naming one here is the same over-claim one size down,
+# and the trailing non-DL-value clause is a fact about a pass that does not exist on
+# this branch. The rc is asserted too — the wording is conditional, the outcome is not.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_UNREADABLE=1
+rc=0; OUT="$(_kbc_field_retype --field dl_number --to string 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "the same arm without --restamp-dl → rc 1"        "1"     "$rc"
+eq "…still calls the conversion UNCONFIRMED"         "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "…still prints no field row on stdout"            ""      "$OUT"
+eq "…still names the re-run as safe"                 "true"  "$(has 'Re-run this exact command' "$ERR")"
+eq "…because the conversion half is a no-op"         "true"  "$(has 'answers as a server-side no-op' "$ERR")"
+eq "…but claims NO skipped --restamp-dl pass"        "false" "$(has 'RUNS the --restamp-dl pass this run skipped' "$ERR")"
+eq "…and does not name that pass at ALL"             "false" "$(has 'restamp' "$ERR")"
+eq "…nor the non-DL-value clause only that pass has" "false" \
+   "$(has 'canonicalized by no run of it' "$ERR")"
+eq "…and runs no restamp pass"                       "0"     "$(_calls PATCH)"
+eq "…nor reads the board for one"                    "0"     "$(_calls FETCH)"
 
 echo "-- retype --restamp-dl — the post-conversion canonicalization pass --"
 # The conversion alone leaves the bare int 1 as the STRING "1" (the cast matrix's text
