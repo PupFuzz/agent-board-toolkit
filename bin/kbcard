@@ -1653,7 +1653,7 @@ _kbc_field_create_call() {
     # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the
     # parse; that is the SAME "success with no confirmed id" state as a JSON body with
     # no id, so it falls into the arm below rather than dying at jq's raw parse error.
-    fid="$(_kbc_parse_resp "$resp" -r '.data.id // empty')"
+    fid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
     [[ -n "$fid" ]] || {
         echo "kbcard: field create '$key' returned success with no field id — the write is UNVERIFIED" >&2
         return 1
@@ -2057,7 +2057,7 @@ _kbc_field_retype() {
         case "$pf_set " in *" $tid "*) not_verified+=("$tid"); continue ;; esac
         resp="$(kb_api GET "/tasks/$tid.json")" || { unread+=("$tid"); not_verified+=("$tid"); continue; }
         # shellcheck disable=SC2016  # $k is a jq --arg, not a shell variable
-        got="$(_kbc_parse_resp "$resp" -c --arg k "$fkey" '.data.payload[$k]')"
+        got="$(kb_parse_resp "$resp" -c --arg k "$fkey" '.data.payload[$k]')"
         if [[ "$got" == "$newval" ]]; then
             verified=$((verified + 1))
         else
