@@ -31,8 +31,14 @@
 #       (so an in-flight DL on a worktree / held PR can't be reused), AND
 #   (2) the project's kanban board's stamped `dl_number`s, when reachable.
 # (2) closes the collision gap that caused the DL-154 reuse (board card #2643).
-# The board check is FAIL-SOFT — an unreachable board/token/API warns and falls
-# back to the header scan, never blocking allocation offline. NOTE: the offline
+# The board check is FAIL-SOFT ON ONE PAGINATOR rc ONLY — rc 1, "page 1 could not
+# be read", whose three causes are no response, a non-2xx status, and (card#6594) a
+# 2xx carrying no card array. All three warn and fall back to the header scan, never
+# blocking allocation offline — so a REACHABLE board answering 200 with a body this
+# tool cannot read also falls back, and the minted number can still miss that board's
+# floor; that residual is card#6631, named rather than closed. Paginator rc 2, 3 and
+# 4 — a read that was not WHOLE — do not fall back at all: they exit 1 rather than
+# mint from a partial scan (board_dl_max's own exit-code note below). NOTE: the offline
 # path is NOT atomic — safe for single-stream allocation; concurrent allocators
 # on a shared board need the claim endpoint (the default) to avoid duplicates —
 # and, per card#6232 above, it is a FLOOR rather than the truth: it cannot observe

@@ -600,6 +600,14 @@ kb_parse_resp() {
 #   - an arm reached by MORE THAN ONE rc names the rc — `(fetch rc=$rc)` — and names NO
 #     cause, because no cause set is true across the rcs it catches. A bare `|| …`
 #     catches 1, 2, 3 AND 4, which share nothing but "not a whole read".
+#   - THE SAME CONSTRAINT BINDS A CALLER-SIDE COMMENT that states which rcs reach an arm,
+#     or what an operator will see when it fires. Such a comment is a claim about this
+#     contract and goes stale exactly as a message does — and it is the half no test
+#     covers: the selftest below derives arms from EMITTING LINES, so prose beside them is
+#     checked only by reading. The rule is what makes that reading cheap. The first
+#     instance was minted by the commit that wrote this rule: board-card-start's arm
+#     comment said "nothing else is on stderr", which the unconditional rc 3 / rc 4 lines
+#     below falsify for two of the four rcs that arm catches.
 # A shared OUTCOME word is not a cause and is allowed on a multi-rc arm: "did not
 # return a complete card list" / "INCOMPLETE" holds for every non-zero rc, while
 # "unreachable", "a non-2xx status" or "over the page cap" each hold for only some.
@@ -608,10 +616,13 @@ kb_parse_resp() {
 # messages that had enumerated the old two, and they were then corrected one site per
 # round, for three rounds, each round finding another — because a cause enumeration at
 # a multi-rc arm is stale the day the contract gains an rc, and the rc never is.
-# tests/fetch-board-cards-caller-claims-selftest.sh pins this: it RE-DERIVES the call
-# sites from the tree rather than listing them, so a new consumer, a new call in an
-# existing consumer, or a reworded arm reds until it is ruled on. Its registry is the
-# per-consumer table (which rcs reach which arm, and what each arm may say); this
+# tests/fetch-board-cards-caller-claims-selftest.sh pins this: it RE-DERIVES both the
+# call sites and the ARMS from the tree rather than listing them, so a new consumer (in
+# any call spelling), a new call in an existing consumer, a new or deleted arm within the
+# derived window after a call, or a reworded arm reds until it is ruled on. Its bounds are
+# stated there and are real: an arm further than that window from its call, or one that
+# emits through a helper outside the derived emitter vocabulary, is not seen. Its registry
+# is the per-consumer table (which rcs reach which arm, and what each arm may say); this
 # header owns the rule, that test owns the dispositions, and neither restates the other.
 #
 # An operator who needs the CAUSE reads this function's own stderr line, the only one
