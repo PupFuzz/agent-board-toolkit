@@ -87,7 +87,32 @@ envF="$(mkenv)"
 board_report "$envF" "L" 3>/dev/null >/dev/null
 eq "board_report calls fetch_board_cards exactly once" "1" "$(wc -l < "$FETCH_LOG" | tr -d ' ')"
 
-rm -f "$tokf" "$envB" "$envC" "$envNoId" "$errf" "$envF" "$FETCH_LOG"
+# ---------------------------------------------------------------------------
+echo "== board_report — a failed board read names the RC and asserts no cause (card#6594) =="
+# This arm catches every paginator failure the snapshot does not render: rc 1 (page 1
+# failed — no response, a non-2xx status, or since card#6594 a 2xx carrying no card
+# array) AND rc 2 (a later page failed on a board that answered page 1). It said
+# "(board API unreachable)", which is a claim about the world that is false for three
+# of those four causes. board-snapshot does not set KB_FETCH_LOUD, so the paginator's
+# own precise line is suppressed and THIS line is the operator's only diagnostic —
+# which is why it must name the rc and name no cause.
+envR="$(mkenv)"
+_FRC=0
+fetch_board_cards() { return "$_FRC"; }
+for _FRC in 1 2; do
+    out="$(board_report "$envR" "L" 3>/dev/null 2>/dev/null)"
+    eq "fetch rc=$_FRC → the line names the rc"            "true"  "$(has "fetch rc=$_FRC" "$out")"
+    eq "fetch rc=$_FRC → it claims no cause (unreachable)" "false" "$(has 'unreachable' "$out")"
+done
+# Control on the same route: a rc 0 read still renders the snapshot, so the two legs
+# above are a refusal that discriminates rather than a board_report broken outright.
+_FRC=0
+fetch_board_cards() { printf '%s' '[{"id":11,"workflow_stage_id":84,"name":"y","tags":[]}]'; }
+out="$(board_report "$envR" "L" 3>/dev/null 2>/dev/null)"
+eq "CONTROL: rc 0 still renders the in-flight line" "true" "$(has 'in-flight' "$out")"
+eq "CONTROL: rc 0 prints no failure line"           "false" "$(has 'board read failed' "$out")"
+
+rm -f "$tokf" "$envB" "$envC" "$envNoId" "$errf" "$envF" "$envR" "$FETCH_LOG"
 
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"

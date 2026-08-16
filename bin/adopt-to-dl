@@ -151,9 +151,18 @@ main() {
     # fetch the card: confirm the board, read the existing dl_number
     local card cur_board existing_int
     card="$(kb_api GET "/tasks/$card_id.json")" || { echo "adopt-to-dl: card #$card_id not readable on the configured board" >&2; exit 1; }
-    cur_board="$(printf '%s' "$card" | jq -r '.data.board_id // empty')"
+    # kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML
+    # page or a truncated read arrives here as a success — where an unguarded jq exits 5 under
+    # `set -e`, with jq's parse error as this tool's whole diagnostic. kb_parse_resp (shared lib)
+    # hands that back as an EMPTY value instead, and an empty board id is refused on its own
+    # line: the board-mismatch message below would otherwise report the card as being "on board
+    # " — a specific claim about a card this read never got an answer about.
+    cur_board="$(kb_parse_resp "$card" -r '.data.board_id // empty')"
+    [[ -n "$cur_board" ]] || { echo "adopt-to-dl: card #$card_id returned success but no board id could be read out of its body — nothing was read, so this card's board is UNCONFIRMED; refusing to adopt" >&2; exit 1; }
     [[ "$cur_board" == "$KB_BOARD_ID" ]] || { echo "adopt-to-dl: card #$card_id is on board $cur_board, not the --board '$board_name' board ($KB_BOARD_ID) — refusing to adopt on the wrong board" >&2; exit 1; }
-    existing_int="$(kb_dl_int_lenient "$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty')")"
+    # Reached only once the body above WAS readable, so an empty dl_number here means the card
+    # carries none — the mint path, exactly as before.
+    existing_int="$(kb_dl_int_lenient "$(kb_parse_resp "$card" -r '.data.payload.dl_number // empty')")"
 
     # 2. already-adopted guard
     local decision; decision="$(_ata_adopt_decision "$existing_int" "$req_int")"

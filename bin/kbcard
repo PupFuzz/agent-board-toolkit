@@ -204,6 +204,20 @@
 #     a bare string cast, so a card holding the number 1 is restamped `DL-0001` — the
 #     one canonical stored form. It implies a string target (--to string).
 #
+# A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq: every single-card /
+# single-field read and every write echo takes the verb's own empty-value arm at the verb's own
+# rc, so an unreadable body is not reported as "no such card" / "no comments" / "no custom
+# fields" (one measured exception, on `comments` — README) and an unreadable write echo is
+# UNCONFIRMED rather than printed. Two caller-visible boundaries on that: `list` reaches the same
+# posture by a different route — it reads the board through the shared paginator, which refuses a
+# page-1 body carrying no card array at its own rc 1 and takes `list` to rc 1 with empty stdout
+# (card#6594) — and `patch --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at
+# all, when the tag read it must re-send WHOLESALE yields no usable list (a card genuinely carrying
+# no `tags` key, or a null or empty one, is unaffected).
+# README.md § Reliability posture states in full what this covers and what it does not, and why —
+# including what a `[]` from `list` does and does not establish. It is the ONE owner of that
+# statement: this block deliberately does not restate it.
+#
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
 
@@ -359,11 +373,28 @@ resolve_task() {
         [[ "$ref" -ge 1 ]] || { echo "kbcard: invalid task id '$ref'" >&2; exit 1; }
         echo "$ref"; return 0
     fi
-    local id q
+    local id q resp rows
     # URL-encode the whole query value so a ref with & # space % can't corrupt
     # the query string or inject params (e.g. ref='x&board_id=999' retargeting).
     q="$(jq -rn --arg b "$KB_BOARD_ID" --arg r "$ref" '"board_id=\($b) external_id:\($r)" | @uri')"
-    id="$(kb_api GET "/tasks/search.json?q=$q" | jq -r '.data[0].id // empty')"
+    resp="$(kb_api GET "/tasks/search.json?q=$q")" || return 1
+    # The RESULT LIST first, then the id out of it — two steps because the two empties mean
+    # opposite things and one filter cannot tell them apart. `.data[0].id // empty` is empty
+    # both for a search that ran and matched nothing AND for a body no search result could be
+    # read out of, so folding them together answers "no task found with external_id=…" — a
+    # claim about the BOARD — for a read that never reached one. A well-formed empty result is
+    # `[]`, which is truthy in jq, so it survives this test and still reaches the not-found arm.
+    rows="$(kb_parse_resp "$resp" -c '.data // empty')"
+    [[ -n "$rows" ]] || {
+        echo "kbcard: external-id lookup for '$ref' returned success but no result list could be read out of its body — nothing was read (this is NOT 'no such card')" >&2
+        return 1
+    }
+    # Through the primitive too: the guard above is a non-EMPTY test, which a `.data` that is a
+    # JSON object or scalar satisfies, so a bare jq here still printed its own "Cannot index …"
+    # ahead of the message below. Same rc, same stdout, same arm — this removes jq's stderr
+    # line only. The residual WRONG WORDING on that shape (it reads as the not-found arm) is
+    # left deliberately: refusing it would change what this READ verb accepts.
+    id="$(kb_parse_resp "$rows" -r '.[0].id // empty')"
     if [[ -z "$id" || "$id" == "null" ]]; then
         echo "kbcard: no task found with external_id='$ref' on board $KB_BOARD_ID" >&2; return 1
     fi
@@ -512,7 +543,53 @@ _kbc_patch_tags() {
     if [[ -n "$tags_csv" ]]; then
         base="$(jq -n --arg t "$tags_csv" '$t | split(",")')"
     else
-        base="$(kb_api GET "/tasks/$task.json" | jq '.data.tags // []')"
+        # THE READ IS PART OF THE WRITE here, so an unreadable one must abort it. `tags` is
+        # replaced wholesale by the API, so a read that yields nothing and is then treated as
+        # "the card has no tags" writes only what THIS call adds and DESTROYS every tag the
+        # card carried. Refuse instead — the caller turns this rc into its own rc 2, before any
+        # PATCH is issued.
+        #
+        # The `.data` OBJECT TEST is what makes that refusal reach the whole class. A tolerant
+        # parse only yields empty when jq FAULTS, and a body that parses perfectly well while
+        # carrying no card does not fault: on `{"ok":true}` or `{"data":null}`, `.data.tags //
+        # []` supplies the string `[]`, which is non-empty, so the arm below passes and the tag
+        # wipe happens THROUGH the guard. Requiring `.data` to be an object routes those into
+        # the same refusal, at the same rc, before the wire. It is deliberately scoped to this
+        # one read: audited across the toolkit, it is the only read whose OWN result becomes the
+        # body of a wholesale-replacement write. (`field set-options` also PATCHes a
+        # replace-wholesale array, but that array is built from the caller's --options, not from
+        # the read; an unreadable read there cannot produce a write built from nothing.) So this
+        # is a dedicated path for one named harm, not a widened guard — no read verb's
+        # acceptance changes with it.
+        #
+        # The CONTAINER test on `tags` closes the same refusal's second half. `.data` being an
+        # object says nothing about the value actually re-sent. A `tags` that is a SCALAR passes
+        # the wrapper test and then faults inside the merge below, so the caller's whole
+        # diagnostic is jq's, with no kbcard line at all — bad, but no tag is lost.
+        #
+        # AN OBJECT DOES NOT FAULT, which is why this is not a wording fix. jq's `map`
+        # iterates an OBJECT's values, so a `tags` object degrades into a plausible list: with
+        # --type (map-first), `{"tags":{"0":"keep-me"}}` merged cleanly and PATCHed
+        # `["keep-me","type:fr"]` at rc 0, replacing every tag the card actually held. That is the
+        # same wipe this guard exists to stop, reached one level deeper. --triaged alone never got
+        # there (object + array faults), which is what made it look diagnostic-only.
+        # Deliberately CONTAINER type only: what the list CONTAINS is a separate,
+        # acceptance-changing question and is not decided here.
+        #
+        # THE SHAPE TEST RUNS ON THE NEAR SIDE OF THE DEFAULT, and that ordering is the whole
+        # point. jq's `//` yields its right-hand side for `false` as well as for `null`, so
+        # `(.tags // []) | select(type == "array")` handed the container test the DEFAULT
+        # whenever `tags` was `false` — the test was on the far side of the very substitution it
+        # exists to police, and `{"tags":false}` + --triaged PATCHed `{"tags":["triaged"]}` at
+        # rc 0. `has("tags") and .tags != null` decides absent-or-null explicitly instead, so
+        # `false` reaches `select(type == "array")` as itself and refuses.
+        local resp
+        resp="$(kb_api GET "/tasks/$task.json")" || return 1
+        base="$(kb_parse_resp "$resp" '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")')"
+        [[ -n "$base" ]] || {
+            echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
+            return 1
+        }
     fi
     jq -n --argjson base "$base" \
         --arg type_alias "$type_alias" --arg type_id "$type_id" --arg triaged "$triaged" \
@@ -587,7 +664,10 @@ cmd_create_card() {
     # Surface swimlane_id in the echo only when --swimlane was passed — same rule as
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
     # of birthing the card on a lane) without changing every other create's echo shape.
-    kb_api POST "/tasks.json" "$body" | _kbc_write_echo "${swimlane:+swimlane_id: (.swimlane_id // null)}"
+    local resp
+    resp="$(kb_api POST "/tasks.json" "$body")" || return 1
+    _kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
+        "${swimlane:+swimlane_id: (.swimlane_id // null)}"
 }
 
 cmd_move() {
@@ -614,7 +694,17 @@ cmd_move() {
         body="$(jq -n --argjson stage "$stage" '{workflow_stage_id: $stage}')"
         [[ "$column" == "wont_do" ]] && echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
     fi
-    kb_api PATCH "/tasks/$task.json" "$body" | jq '.data | {id, name, workflow_stage_id}'
+    # move's echo is deliberately NOT _kbc_write_echo's: that projection also carries `payload`
+    # when the serializer sent it, and this verb has never emitted it. Same refusal, its own
+    # field set — widening a verb's stdout is a change to what its consumers parse.
+    local resp echo_out
+    resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
+    echo_out="$(kb_parse_resp "$resp" '.data | {id, name, workflow_stage_id}')"
+    [[ -n "$echo_out" ]] || {
+        echo "kbcard: move on task $task: the write returned success but no card could be read out of its body — the move is UNCONFIRMED (nothing was read back)" >&2
+        return 1
+    }
+    printf '%s\n' "$echo_out"
 }
 
 cmd_patch() {
@@ -704,7 +794,9 @@ cmd_patch() {
     [[ -n "$tags_json" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
     [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
     [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
-    kb_api PATCH "/tasks/$task.json" "$body" | _kbc_write_echo "$echo_extra"
+    local resp
+    resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
+    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra"
 }
 
 # _kbc_list_project <stage_filter> <type_filter> <typetag> <swimlane_filter>:
@@ -800,11 +892,14 @@ cmd_list() {
 
     # Whole-board fetch (paginated, accumulate-via-STDIN, dedup) is the shared
     # fetch_board_cards primitive — reading only page 1 silently UNDERCOUNTS every
-    # column once a board exceeds one page. Any fetch failure (unreachable /
-    # incomplete / over BOARD_PAGE_CAP) → exit 1 rather than print a truncated list.
-    local cards
+    # column once a board exceeds one page. EVERY non-zero paginator rc — a bare `||`,
+    # so 1, 2, 3 and 4, all four measured reaching this arm — exits 1 rather than print
+    # a truncated list, and the message names the rc and no cause, per the wording rule
+    # at fetch_board_cards' header. This bin DOES set KB_FETCH_LOUD, so the paginator's
+    # own line (which is the one that knows the cause) prints directly above.
+    local cards frc
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
-        || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
+        || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)" >&2; exit 1; }
     local out
     out="$(printf '%s' "$cards" | _kbc_list_project \
         "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}")"
@@ -850,29 +945,45 @@ cmd_link() {
     f="$(resolve_task "$from")"
     t="$(resolve_task "$to")"
     body="$(jq -n --argjson from "$f" --argjson to "$t" --arg rel "$relation" '{from_task_id: $from, to_task_id: $to, relation_type: $rel}')"
-    kb_api POST "/task_links.json" "$body" | jq '.data'
+    local resp link
+    resp="$(kb_api POST "/task_links.json" "$body")" || return 1
+    link="$(kb_parse_resp "$resp" '.data')"
+    [[ -n "$link" ]] || {
+        echo "kbcard: link $from→$to: the write returned success but no link could be read out of its body — the link is UNCONFIRMED (nothing was read back)" >&2
+        return 1
+    }
+    printf '%s\n' "$link"
 }
 
-# _kbc_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
-# printing NOTHING when that body is not JSON at all instead of dying on jq's parse error.
+# The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
+# caller's diagnostic may never say "the body is not JSON") is documented there. It moved out of
+# this file in card#6426: the same 2xx reaches every tool that reads through kb_api, so one owner
+# serves them all. It is applied at the FIRST projection off a response body, not at every jq in
+# this file: a value that has already come through it (or through a guard that refuses on empty)
+# is parsed bare afterwards on purpose. Two places below are neither — `_kbc_archive_decision`'s
+# board array, which comes from the paginator rather than from kb_api, and the `field` verbs'
+# reads off `_kbc_fetch_fields`, whose non-empty guard admits a `.data` that is not a list. Both
+# are recorded in docs/CONSOLIDATION-PLAN.md with their blockers; neither is silence.
+
+# _kbc_write_echo <verb> <subject> <response> [extra-fields]: the create/patch echo projection —
+# payload rides ONLY when the serializer sent the key (fabricating `payload: null` asserts "no
+# payload" where the truth is "key absent", #4390); a server-sent null passes through unaltered.
+# <extra-fields> is extra jq object fields (e.g. description truncation), defaults to none.
 #
-# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
-# page or a truncated read arrives at every projection below as a success. An unguarded `jq`
-# there exits 5 under `set -e`, with jq's raw parse error as the caller's whole diagnostic — a
-# status this tool documents nowhere, from a program the caller never ran. Swallowing the parse
-# failure hands the refusal back to the caller's OWN empty-value arm, which says it in kbcard's
-# words at kbcard's rc. Empty is the only thing this can print on a parse failure, so it can
-# never turn an unreadable body into a plausible value.
-#
-# Suppressing jq's stderr means ANY jq fault lands in that same arm — a filter this file got
-# wrong, or a jq that is missing/unrunnable — and so does a body that parsed PERFECTLY WELL but
-# holds no such value (a 200 `[]` is valid JSON that `.data` cannot index). So a caller's
-# diagnostic states only what is true in EVERY one of those arms — "no <thing> could be read out
-# of the body" — never "the body is not JSON" and never "the body could not be parsed": both are
-# specific claims about the server that are wrong in the other arms.
-_kbc_parse_resp() {
-    local resp="$1"; shift
-    jq "$@" <<<"$resp" 2>/dev/null || true
+# IT OWNS ITS OWN REFUSAL, and that is why it takes the response rather than reading stdin. Both
+# write verbs project the echo through this one filter, so both meet an unreadable 2xx here —
+# and a refusal written at each call site would be the same four lines twice, i.e. the shape
+# card#6426 exists to stop. <verb> and <subject> are what a shared owner cannot know: the
+# diagnostic still names the verb the caller typed. Returns 1 with that diagnostic and no
+# stdout; the caller propagates it (rc 1 is what a failed write already returns there).
+_kbc_write_echo() {
+    local verb="$1" subject="$2" resp="$3" extra="${4:-}" out
+    out="$(kb_parse_resp "$resp" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if has(\"payload\") then {payload} else {} end)")"
+    [[ -n "$out" ]] || {
+        echo "kbcard: $verb $subject: the write returned success but no card could be read out of its body — the write is UNCONFIRMED (nothing was read back)" >&2
+        return 1
+    }
+    printf '%s\n' "$out"
 }
 
 # _kbc_annotate_card <task-json>: the task with `stage` populated from
@@ -881,14 +992,6 @@ _kbc_parse_resp() {
 # tool cannot populate is OMITTED, never null — an emitted `"stage": null` on a
 # card that IS in a stage reads as "no stage" and caused a false "auto-move is
 # broken" escalation (card #4387). Deleting also scrubs a serializer-provided
-# _kbc_write_echo: the create/patch echo projection — payload rides ONLY when the
-# serializer sent the key (fabricating `payload: null` asserts "no payload" where
-# the truth is "key absent", #4390); a server-sent null passes through unaltered.
-# $1 = extra jq object fields (e.g. description truncation), defaults to none.
-_kbc_write_echo() {
-    jq ".data | {id, name, workflow_stage_id${1:+, $1}} + (if has(\"payload\") then {payload} else {} end)"
-}
-
 # null stage/column, so the rule holds regardless of the API's response shape.
 _kbc_annotate_card() {
     local data="$1" sid col=""
@@ -912,7 +1015,7 @@ cmd_show() {
     local task resp data
     task="$(resolve_task "$task_ref")"
     resp="$(kb_api GET "/tasks/$task.json")" || return 1
-    data="$(_kbc_parse_resp "$resp" '.data')"
+    data="$(kb_parse_resp "$resp" '.data')"
     [[ -n "$data" ]] || {
         echo "kbcard: show on task $task: the read returned success but no card could be read out of its body — nothing was read" >&2
         return 1
@@ -1025,8 +1128,8 @@ cmd_comment() {
     # unconfirmed — say so, rather than print a `null` that reads exactly like an id.
     # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the parse;
     # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
-    # _kbc_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
-    cid="$(_kbc_parse_resp "$resp" -r '.data.id // empty')"
+    # kb_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
+    cid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
     [[ -n "$cid" ]] || {
         echo "kbcard: comment on task $task returned success with no comment id — the write is UNVERIFIED (a comment does not bump the card's updated_at, so that id is the only confirmation)" >&2
         return 1
@@ -1089,7 +1192,32 @@ cmd_comments() {
     # `no comments` line below is a statement about the card, and printing it here would answer a
     # question this read never reached — the same silent-empty trap the 404's parseable body sets
     # one layer up.
-    comments="$(_kbc_parse_resp "$resp" -c '.data.comments // []')"
+    # THE SHAPE THE RENDERER NEEDS, tested here rather than discovered mid-render. `.data.comments`
+    # is whatever the body carried, and the renderer dies at jq's rc 5 on two of those shapes —
+    # a non-ARRAY (`.[]` is "Cannot iterate over …") and a row whose content is not a string
+    # (`explode` is "explode input must be a string"), the second of them PART WAY THROUGH the
+    # output, so the caller gets a truncated audit trail, no attributable diagnostic, and an rc
+    # from a program it never ran. Neither is an empty comment list, so both belong in the arm
+    # below. The row test also requires each row to be an OBJECT: the header line indexes .id /
+    # .user_id / .created_at, which is the same jq error one line earlier.
+    # SCOPE, deliberately: this tests the COMMENTS value, not `.data` itself — a 2xx that is
+    # valid JSON but carries no `.data` still yields `[]` here and still reads as "no comments"
+    # (card#6426 §b, an accepted-input question that is not this change's to answer).
+    #
+    # AND THE `select(type == "array")` BELOW SITS ON THE FAR SIDE OF `//`, so it never sees a
+    # `comments` of `false`. jq's `//` yields its right-hand side for `false` exactly as it does
+    # for `null`, so `(.data.comments // [])` substitutes `[]` before the container test runs and
+    # `{"data":{"id":505,"comments":false}}` prints "card 505 has no comments" at rc 0 — measured
+    # — which is precisely the claim the paragraph above forbids. KNOWN AND DELIBERATELY OPEN:
+    # the remedy is the one `_kbc_patch_tags` already carries (decide absent-or-null explicitly
+    # with `has("comments") and .comments != null`, so `false` reaches the container test as
+    # itself), but applying it moves a READ verb from rc 0 to rc 1, which changes what this verb
+    # ACCEPTS and was not granted. Filed as the class in docs/CONSOLIDATION-PLAN.md — "a shape
+    # test applied downstream of `//` does not see `false`" — instance 2 of 2.
+    comments="$(kb_parse_resp "$resp" -c '
+        (.data.comments // [])
+        | select(type == "array")
+        | select(all(.[]; type == "object" and ((.content // "") | type == "string")))')"
     [[ -n "$comments" ]] || {
         echo "kbcard: comments on task $task: the read returned success but no comment list could be read out of its body — nothing was read (this is NOT an empty comment list)" >&2
         return 1
@@ -1129,18 +1257,29 @@ _kbc_archive_decision() {
     local task="$1" shim card board repo
     shim="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kbc-may-archive.py"
     [[ -r "$shim" ]] || { printf 'noprimitive\tarchive-gate shim _kbc-may-archive.py not found next to kbcard'; return 0; }
-    card="$(kb_api GET "/tasks/$task.json" | jq -c '.data')" \
+    local resp
+    resp="$(kb_api GET "/tasks/$task.json")" \
         || { printf 'noprimitive\tcould not fetch card %s to verify archive safety' "$task"; return 0; }
+    # Read the card out of the body TOLERANTLY. The unguarded jq that used to be piped here
+    # already fell into the fail-closed arm below (its own `||` caught jq's rc 5), so the SAFETY
+    # posture is unchanged — this is about the diagnostic only: it printed jq's raw parse error
+    # to the operator's stderr above a refusal ("could not fetch card N") that names a fetch
+    # failure, which is not what happened. Empty lands in the same arm, quietly.
+    card="$(kb_parse_resp "$resp" -c '.data')"
     # A 2xx with .data null/absent (trashed / permission-limited / edge card) yields
     # the literal "null" (or "") at rc 0 — non-empty, so the `||` above never fires.
     # For the CARD input the degenerate default is UNSAFE (no card ⇒ no sources ⇒ a
     # false `ok` that archives a live-and-untwinned card), the mirror of the board
     # input's safe `[]` default above — so fail closed here, never reach the shim.
     [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
-    # Capture the board array regardless of the paginator's completeness rc — a
-    # partial set only removes twins (more conservative), never invents one. The
-    # `|| true` keeps a non-zero paginator rc (partial/short read) from aborting
-    # this function under `set -e`.
+    # Capture the board array regardless of the paginator's rc — a partial or EMPTY
+    # census only removes twins (more conservative), never invents one. The `|| true`
+    # keeps EVERY non-zero paginator rc — 1, 2, 3 and 4 — from aborting this function
+    # under `set -e`: rc 3 and rc 4 emit a partial array, rc 1 and rc 2 emit none at all
+    # and land on the `[]` below. No cause is enumerated here, for the reason the
+    # wording rule at fetch_board_cards' header gives: this site sees all four rcs, and
+    # they share none. Fewer twins is the fail-closed direction, per this function's
+    # header — and this site makes no operator-facing claim at all, by design.
     board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true
@@ -1335,9 +1474,21 @@ _KBC_FIELD_ROW='{id, key, label, type,
 
 # _kbc_fetch_fields: the board's custom fields as a JSON array (.data). One read
 # surface for both sub-verbs. A non-2xx propagates loudly (kb_api prints the error
-# body — KB_API_ERRBODY=1 — and returns non-zero, aborting under set -e/pipefail).
+# body — KB_API_ERRBODY=1 — and returns non-zero).
+#
+# A 2xx no field set can be read out of refuses HERE rather than downstream, because both
+# sub-verbs would otherwise turn an unreadable body into a claim about the BOARD: `field list`
+# projects it (an unreadable body is not an empty field set) and set-options resolves --field
+# against it (an unreadable body is not "that field is not defined"). One owner, one refusal.
 _kbc_fetch_fields() {
-    kb_api GET "/boards/$KB_BOARD_ID/custom_fields.json" | jq '.data'
+    local resp fields
+    resp="$(kb_api GET "/boards/$KB_BOARD_ID/custom_fields.json")" || return 1
+    fields="$(kb_parse_resp "$resp" '.data')"
+    [[ -n "$fields" ]] || {
+        echo "kbcard: field read on board $KB_BOARD_ID: the read returned success but no custom-field set could be read out of its body — nothing was read (this is NOT a board with no custom fields)" >&2
+        return 1
+    }
+    printf '%s\n' "$fields"
 }
 
 # _kbc_field_enumerate <fields-json>: the board's defined fields as `id=key [type]`,
@@ -1422,8 +1573,12 @@ _kbc_field_set_options() {
     # a read failure EXPLICITLY (kb_api already surfaced the error body) rather than
     # leaning on set -e — errexit is suppressed when this fn runs in a `||`/`if`
     # context, and a swallowed empty read would mis-surface as "field not defined".
+    # The `||` arm carries no message of its own: _kbc_fetch_fields already speaks on both of
+    # its failing paths (kb_api's error body on a non-2xx, its own refusal on a 2xx nothing
+    # could be read out of), so a second line here named no cause the first did not. `field
+    # list` is the shape — one message, rc 1.
     local fields fld
-    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    fields="$(_kbc_fetch_fields)" || return 1
     fld="$(_kbc_field_resolve "$field" "$fields")" || return 2
 
     local fid ftype fkey
@@ -1457,7 +1612,15 @@ _kbc_field_set_options() {
         return 1
     fi
     echo "kbcard: field '$fkey' options reconciled: [$(jq -r 'join(", ")' <<<"$current")] -> [$(jq -r 'join(", ")' <<<"$desired")]" >&2
-    jq ".data | $_KBC_FIELD_ROW" <<<"$result"
+    # The reconcile PATCH already landed (kb_api said 2xx), so this refusal is about the ECHO,
+    # not the write — and the reconciled line above has already been printed. Say which it is.
+    local row
+    row="$(kb_parse_resp "$result" ".data | $_KBC_FIELD_ROW")"
+    [[ -n "$row" ]] || {
+        echo "kbcard: field '$fkey': the options write returned success but no field could be read out of its body — the reconcile is UNCONFIRMED (nothing was read back)" >&2
+        return 1
+    }
+    printf '%s\n' "$row"
 }
 
 # --- field lifecycle: the two HTTP primitives -------------------------------
@@ -1962,7 +2125,10 @@ main() {
     # requested output); the refusal is diagnostic, so stderr + rc 2, matching this file's own
     # unknown-command arm below.
     if [[ $# -eq 0 ]]; then
-        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# //'
+        # `# \{0,1\}` and not `# `: a paragraph SEPARATOR in this header is a bare `#` with no
+        # trailing space (trailing whitespace does not survive an editor or a linter), which a
+        # space-requiring strip leaves in the rendered output as a literal `#` between paragraphs.
+        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
     fi
     local cmd="$1"

@@ -381,7 +381,17 @@ if [ -n "$dl" ]; then
     # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
     # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
     # "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves.
-    cards="$(fetch_board_cards "$api" "$token" "$board")" || bcs_skip "board $board fetch failed (unreachable or auth rejected)"
+    # A bare `||`, so this arm catches paginator rc 1, 2, 3 AND 4 — all four measured
+    # reaching it. It therefore names the rc and no cause, per the wording rule at
+    # fetch_board_cards' header. Where the cause is instead: this bin does not set
+    # KB_FETCH_LOUD, so the paginator's own line is suppressed for rc 1 and rc 2 — it
+    # still prints unconditionally for rc 3 and rc 4 — and on the installed hook path
+    # (`board-card-start >/dev/null 2>&1 || true`, hooks/post-checkout) ALL of it is
+    # discarded anyway. What survives there is kb_bcs_log's durable log FILE, which
+    # carries this line and nothing from the lib, so a cause named here would be the
+    # operator's only lead and wrong on three rcs out of four.
+    cards="$(fetch_board_cards "$api" "$token" "$board")" \
+        || bcs_skip "board $board did not return a complete card list (fetch rc=$?)"
     cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" '
         [ .[]
           | (.payload.dl_number // empty) as $raw

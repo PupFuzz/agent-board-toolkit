@@ -21,9 +21,12 @@
 # change here as having consumer blast radius, because it does.
 #
 # It is sourced, never executed. It collapses the config-resolution, kanban-API curl
-# wrapper, whole-board pagination, and DL-canonicalization logic that was
-# copy-pasted across kbcard / next-dl / dl-a0-backfill-triaged /
-# dl-a1-register-field / board-snapshot / board-card-start into one definition.
+# wrapper, tolerant response parse, whole-board pagination, and DL-canonicalization
+# logic that was copy-pasted across THE LIB-SOURCING BINS LISTED AT THE TOP OF THIS
+# HEADER into one definition. That list is deliberately not re-spelled here: this copy
+# had already drifted from it, omitting adopt-to-dl and board-stats — and adopt-to-dl is
+# a kb_parse_resp caller, so the omission was load-bearing, not cosmetic. One prose copy
+# per file; agent-board-toolkit-drift-check DERIVES the real set from the files.
 #
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
@@ -530,24 +533,102 @@ kb_api_status() {
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
 }
 
+# kb_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
+# printing NOTHING when that body is not JSON at all instead of dying on jq's parse error.
+#
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read arrives at every projection in every one of these tools as a success.
+# An unguarded `jq` there exits 5 under `set -e`, with jq's raw parse error as the caller's whole
+# diagnostic — a status these tools document nowhere, from a program the caller never ran.
+# Swallowing the parse failure hands the refusal back to the caller's OWN empty-value arm, which
+# says it in that tool's words at that tool's rc. Empty is the only thing this can print on a
+# parse failure, so it can never turn an unreadable body into a plausible value.
+#
+# Suppressing jq's stderr means ANY jq fault lands in that same arm — a filter the caller got
+# wrong, or a jq that is missing/unrunnable — and so does a body that parsed PERFECTLY WELL but
+# holds no such value (a 200 `[]` is valid JSON that `.data` cannot index). So a caller's
+# diagnostic states only what is true in EVERY one of those arms — "no <thing> could be read out
+# of the body" — never "the body is not JSON" and never "the body could not be parsed": both are
+# specific claims about the server that are wrong in the other arms.
+#
+# IT LIVES HERE, not in one bin, because the shape it fixes is not one bin's. Every tool that
+# reads through kb_api / kb_api_status meets the same 2xx, and the alternative to one owner is
+# what the tree already grew: several inline near-copies of `jq … 2>/dev/null`, agreeing by
+# habit, one of them (dl-a1's) silencing the MESSAGE while still letting the rc kill the script
+# — which is the failure the suppression was written to prevent (card#6426, canon #5).
+#
+# THE CALLER STILL OWNS THE POLICY. This decides only what the value is; whether an empty value
+# is fatal, fail-soft, or a fall-back default stays at each call site (the same mechanism/policy
+# split kb_ere_match documents above). A caller with no empty-value arm must add one — an empty
+# value silently accepted is the silent-empty trap, not a fix for it.
+kb_parse_resp() {
+    local resp="$1"; shift
+    jq "$@" <<<"$resp" 2>/dev/null || true
+}
+
 # --- whole-board pagination -------------------------------------------------
 # fetch_board_cards <api> <token> <board_id> [page_cap]: read the WHOLE board via
-# (rc contract: 0 complete · 1 page-1 failed · 2 later-page failed · 3 page-cap hit,
-# partial data emitted · 4 SHORT READ detected — server total exceeds delivered rows,
-# partial data emitted; refuse-policy callers must treat 4 like 2/3)
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
 # stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
-# Returns:
-#   0  full read (array on stdout)
-#   1  page 1 unreachable (nothing usable) — a fail-soft caller skips the board
-#   2  incomplete: a page > 1 failed mid-pagination — a correctness-sensitive
-#      caller (the DL minter) MUST refuse rather than risk a truncated scan
+#
+# Returns — THE rc contract, stated once. A compact second copy used to sit two lines
+# above this block and had already drifted (it was the only one naming rc 4), so it is
+# deleted rather than re-synced: one list, here.
+#   0  full read (array on stdout) — INCLUDING a genuinely empty board, which is a
+#      legitimate state and answers `[]` at rc 0 like any other complete read
+#   1  page 1 failed, nothing emitted — a fail-soft caller skips the board. Three
+#      causes, one rc: curl could not complete the request, the status was not 2xx,
+#      or the 2xx body carried no readable card array (see the parse site below)
+#   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
+#      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
+#      truncated scan
 #   3  page cap hit: the partial array is still emitted (so a display caller can
 #      show what it has) but the read is flagged INCOMPLETE on stderr
-# A short-read backstop (meta.total vs cards read) also warns on stderr.
+#   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
+#      The partial array is still emitted and flagged INCOMPLETE on stderr; a
+#      refuse-policy caller must treat 4 like 2/3
+#
+# HOW A CALLER WORDS ITS FAILURE MESSAGE — a rule about the MESSAGE, not about policy.
+# What a caller DOES with each rc stays entirely its own (fail-soft skip, refuse,
+# render the partial); what it may CLAIM is fixed here, because only this function
+# knows why the read failed:
+#   - an arm reached by EXACTLY ONE rc may name that rc's causes — the contract above
+#     closes them (rc 1's three are the only closed cause set in it);
+#   - an arm reached by MORE THAN ONE rc names the rc — `(fetch rc=$rc)` — and names NO
+#     cause, because no cause set is true across the rcs it catches. A bare `|| …`
+#     catches 1, 2, 3 AND 4, which share nothing but "not a whole read".
+#   - THE SAME CONSTRAINT BINDS A CALLER-SIDE COMMENT that states which rcs reach an arm,
+#     or what an operator will see when it fires. Such a comment is a claim about this
+#     contract and goes stale exactly as a message does — and it is the half no test
+#     covers: the selftest below derives arms from EMITTING LINES, so prose beside them is
+#     checked only by reading. The rule is what makes that reading cheap. The first
+#     instance was minted by the commit that wrote this rule: board-card-start's arm
+#     comment said "nothing else is on stderr", which the unconditional rc 3 / rc 4 lines
+#     below falsify for two of the four rcs that arm catches.
+# A shared OUTCOME word is not a cause and is allowed on a multi-rc arm: "did not
+# return a complete card list" / "INCOMPLETE" holds for every non-zero rc, while
+# "unreachable", "a non-2xx status" or "over the page cap" each hold for only some.
+#
+# This is not style. Giving rc 1 a third cause (card#6594) falsified five caller
+# messages that had enumerated the old two, and they were then corrected one site per
+# round, for three rounds, each round finding another — because a cause enumeration at
+# a multi-rc arm is stale the day the contract gains an rc, and the rc never is.
+# tests/fetch-board-cards-caller-claims-selftest.sh pins this: it RE-DERIVES both the
+# call sites and the ARMS from the tree rather than listing them, so a new consumer (in
+# any call spelling), a new call in an existing consumer, a new or deleted arm within the
+# derived window after a call, or a reworded arm reds until it is ruled on. Its bounds are
+# stated there and are real: an arm further than that window from its call, or one that
+# emits through a helper outside the derived emitter vocabulary, is not seen. Its registry
+# is the per-consumer table (which rcs reach which arm, and what each arm may say); this
+# header owns the rule, that test owns the dispositions, and neither restates the other.
+#
+# An operator who needs the CAUSE reads this function's own stderr line, the only one
+# that knows it — printed unconditionally for rc 3 and rc 4, and only under
+# KB_FETCH_LOUD for rc 1 and rc 2 (two of the six consumer bins set it). A caller that
+# wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}"
     local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0
@@ -607,7 +688,57 @@ fetch_board_cards() {
             [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
             total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         fi
-        data="$(printf '%s' "$resp" | jq -c '.data // []' 2>/dev/null)"
+        # A 2xx whose body carries no card ARRAY is a page that FAILED to read, not a
+        # page that was empty — and `.data // []` could not tell the two apart. An HTML
+        # 502 interstitial from a proxy, a truncated body, or a JSON error object all
+        # became `[]`: byte-identical (rc 0, `[]`, silent) to the answer a genuinely
+        # empty board gives, so no caller could refuse it. next-dl then read no
+        # dl_number out of that `[]`, dropped the board's DL floor and minted from the
+        # local header scan alone — how a DL gets re-minted on a shared board, which is the
+        # failure board_dl_max's own exit-code comment in bin/next-dl names ("an undercount
+        # could re-mint a used DL"). card#6594. NB this refusal makes that re-mint AUDIBLE,
+        # not impossible: next-dl's rc-1 policy is fail-soft, so it still mints from the
+        # local scan — that residual is card#6631 and is not closed here.
+        #
+        # The tell is the ENVELOPE, not the row count. Measured against the live API: an
+        # empty result is `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200 —
+        # `.data` is present and an array. So "`.data` exists AND is an array" separates
+        # a read that returned nothing from a read that returned no answer, and keeps the
+        # empty board a rc-0 success. `empty`, not `// []`: on any jq fault the ONE thing
+        # this can print is nothing, which is the one value that cannot be mistaken for
+        # data (the kb_parse_resp rule above, applied to the whole-board read).
+        #
+        # The refusal is PAGE 1 only, matching the ruled scope and this function's rc-1
+        # contract. A later page's unreadable body still falls back to `[]` and ends the
+        # scan; that leaves the pre-dedup meta.total census below to catch it at rc 4,
+        # which it does on any server that DECLARES meta.total — observed on every probe
+        # taken for card#6594, which is an observation and not a guarantee.
+        # The uncovered half — a server that omits meta.total — is card#6630, which owns
+        # the same shape in both copies of this loop.
+        #
+        # This is the fail-closed posture the co-vendored port at
+        # bin/promote-released-cards:302-304 carries. It is deliberately NOT the same predicate: that tool dies
+        # on zero CARDS, which it can afford because a board with nothing to promote is
+        # never a working state for it. A board read verb cannot — `kbcard list` on an
+        # empty board must still succeed — so the lib refuses on an unreadable ENVELOPE
+        # instead. Residual, accepted: this API answers a board the token cannot see with
+        # the same well-formed empty envelope as a board with no cards, so that case still
+        # reads as an empty board HERE. The API behaviour is shared with the mirror; the
+        # residual is not — the mirror's zero-CARDS die catches it, and this function must
+        # not adopt that predicate, for the reason just given. Closing it needs a membership
+        # signal the envelope does not carry, not a stricter row count.
+        data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
+        if [[ -z "$data" ]]; then
+            if [[ "$page" -eq 1 ]]; then
+                if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
+                    echo "fetch_board_cards: page 1 for board $board returned HTTP $http with no readable card array — refusing rather than report it as an empty board: $resp" >&2
+                fi
+                [[ -n "${KB_LOG_FILE:-}" ]] && \
+                    echo "$(date -u +%FT%TZ) GET $url HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+                return 1
+            fi
+            data='[]'
+        fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
