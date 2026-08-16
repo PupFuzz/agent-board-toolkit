@@ -1873,7 +1873,7 @@ _kbc_field_create() {
     # naming the verb that IS the re-type. The board index is the read surface (there
     # is no per-key GET), so this costs the read every sub-verb already makes.
     local fields
-    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    fields="$(_kbc_fetch_fields)" || return 1
     if jq -e --arg k "$key" 'any(.[]?; .key == $k)' <<<"$fields" >/dev/null 2>&1; then
         echo "kbcard: board $KB_BOARD_ID already defines a custom field with key '$key' — a key is unique per board and its TYPE is immutable, so this is not a re-type; use 'field retype --field $key --to <type>' (or 'field delete' first)" >&2
         _kbc_field_enumerate "$fields"
@@ -1898,7 +1898,7 @@ _kbc_field_delete() {
     [[ -z "$field" ]] && { echo "kbcard: field delete requires --field <name|id>" >&2; return 2; }
 
     local fields fld fid fkey
-    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    fields="$(_kbc_fetch_fields)" || return 1
     fld="$(_kbc_field_resolve "$field" "$fields")" || return 2
     fid="$(jq -r '.id' <<<"$fld")"
     fkey="$(jq -r '.key' <<<"$fld")"
@@ -1943,7 +1943,7 @@ _kbc_field_retype() {
 
     # (a) READ the definition.
     local fields fld fid fkey flabel ftype fopts fopts_had
-    fields="$(_kbc_fetch_fields)" || { echo "kbcard: failed to read custom fields for board $KB_BOARD_ID" >&2; return 1; }
+    fields="$(_kbc_fetch_fields)" || return 1
     fld="$(_kbc_field_resolve "$field" "$fields")" || return 2
     fid="$(jq -r '.id' <<<"$fld")"
     fkey="$(jq -r '.key' <<<"$fld")"

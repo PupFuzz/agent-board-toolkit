@@ -208,6 +208,7 @@ _PATCH_FAIL=""     # space-separated task ids whose PATCH returns non-2xx
 _PATCH_NOOP=""     # ids whose PATCH 200s but silently does NOT land the write
 _DELETE_NOOP=""    # the DELETE 2xxs but the definition is STILL there on the re-read
 _FIELDS_FAIL_AFTER_DELETE=""   # the field-index GET fails once the DELETE has landed
+_FIELDS_UNREADABLE=""          # the field-index GET 2xxs with a body nothing reads out of
 _GET_TASK_FAIL=""  # ids whose task-detail GET (the verification read) fails
 _DELETED="$TMP/deleted.marker"
 
@@ -216,7 +217,7 @@ _seed() {
     : > "$_CALLS"; : > "$_POST_BODY"
     rm -f "$_DELETED" "$TMP"/task-patch-*.json
     _FETCH_RC=0; _POST_FAIL=""; _POST_NOID=""; _PATCH_FAIL=""; _PATCH_NOOP=""
-    _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""
+    _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""; _FIELDS_UNREADABLE=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -244,6 +245,10 @@ kb_api() {
                 echo "kbcard: HTTP 503 on GET $path" >&2
                 return 1
             fi
+            # A 2xx nothing can be read out of — a proxy's HTML, a truncated read. kb_api
+            # decides success on the status class, so this arrives at the projection as a
+            # SUCCESS and only _kbc_fetch_fields' own empty-value guard refuses it.
+            [[ -z "$_FIELDS_UNREADABLE" ]] || { printf '<html>502 Bad Gateway</html>'; return 0; }
             jq -c '{data: .}' "$_FIELDS" ;;
         "POST /boards/"*"/custom_fields.json")
             printf '%s' "$body" > "$_POST_BODY"
@@ -378,6 +383,28 @@ rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
 eq "delete on an UNPOPULATED field → rc 0"           "0"    "$rc"
 eq "…prints 0 of M rather than nothing"              "true" "$(has '0 of 1 board cards carry dl_number' "$ERR")"
 eq "…and no orphan warning is printed"               "false" "$(has 'ORPHANS' "$ERR")"
+
+echo "-- an unreadable field index refuses ONCE, in the READ's own words --"
+# card#6426 ruled this shape at `set-options`: _kbc_fetch_fields speaks on BOTH of its
+# failing paths (kb_api's error body on a non-2xx, its own refusal on a 2xx nothing can
+# be read out of), so a second line at the call site names no cause the first did not.
+# All three lifecycle verbs read the same index, so all three are bound by that ruling.
+# The rc-only assertion cannot carry it: rc 1 is what the doubled version returned too.
+for _verb in create delete retype; do
+    _seed "$_F_DL_STR" "$_B_MIXED"
+    _FIELDS_UNREADABLE=1
+    rc=0
+    case "$_verb" in
+        create) ERR="$(_kbc_field_create --key k2 --label L --type string 2>&1 >/dev/null)" || rc=$? ;;
+        delete) ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$? ;;
+        retype) ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$? ;;
+    esac
+    eq "field $_verb on an unreadable field index → rc 1"    "1"    "$rc"
+    eq "…in the READ's words ($_verb)"                       "true" \
+       "$(has 'no custom-field set could be read out of its body' "$ERR")"
+    eq "…exactly ONE kbcard: line, not two ($_verb)"         "1"    "$(grep -c '^kbcard:' <<<"$ERR")"
+    eq "…and NO write is issued ($_verb)"                    "0"    "$(($(_calls POST) + $(_calls DELETE) + $(_calls PATCH)))"
+done
 
 echo "-- delete — a truncated board read is not a denominator --"
 # The dangerous shape is a truncated read whose VISIBLE cards carry nothing: it looks
