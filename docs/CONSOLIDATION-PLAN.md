@@ -598,8 +598,9 @@ finding with no owner is abandoned, not filed.
   SessionStart — and the two emit different first fields (`<name>` vs `<envfile>`), so the call site
   changes too. Recorded at the function; this is the owning record.
 - **The custom-field CREATE call, in two implementations** (card #6525) — `kbcard`'s
-  `_kbc_field_create_call` is now the one POST site the `field create` verb and the `field retype`
-  sequence share, and `dl-a1-register-field` carries a second, inline
+  `_kbc_field_create_call` is the `field create` verb's one POST site (it was shared with `field
+  retype` until that verb became a thin call on the server's atomic conversion route, which creates
+  nothing), and `dl-a1-register-field` carries a second, inline
   `kb_api_status POST /boards/<id>/custom_fields.json` with its own body literal. Recorded at the
   moment the second copy was *created*, per the ground rules — but migrating it is **decision-gated,
   not a cleanup**, and the reason is the shape rule this document already states (*mechanism belongs
@@ -910,14 +911,17 @@ finding with no owner is abandoned, not filed.
     `meta.total` lets a truncated list through at rc 0.
   - **`bin/kbcard` `_kbc_field_populated`** (card#6525, re-derived when that branch was
     integrated onto this work) — the populated-card census behind `field delete` and `field
-    retype`. **Re-running the producer derivation above on the integrated tree gives 30
+    retype --restamp-dl` (the conversion itself needs no census: the server scans the board). **Re-running the producer derivation above on the integrated tree gives 30
     functions, not the 26 of the pass that wrote it** (the count is a re-derivation, never a
     quote — that is what this bullet is): the four new ones are `_kbc_field_create_call`,
     `_kbc_field_delete_call`, `_kbc_field_populated` and `_kbc_field_retype`. Three fall out at
     the filter — the create call's stdout is a field **id** nothing re-parses (its own first
     projection off the response goes through `kb_parse_resp`), the delete call emits no stdout
-    at all and carries its state in its rc, and `_kbc_field_retype`'s stdout is the jq-BUILT
-    capture of a locally computed plan. The fourth is `_kbc_field_populated`, and it takes
+    at all and carries its state in its rc, and `_kbc_field_retype`'s stdout is the converted
+    field row, whose own first projection off the conversion response goes through
+    `kb_parse_resp` (it was the jq-built capture of a locally computed plan until that verb
+    became a thin call on the server's conversion route; the disposition is unchanged, its
+    reason is not). The fourth is `_kbc_field_populated`, and it takes
     `_kbc_list_project`'s disposition directly above for `_kbc_list_project`'s reason: its jq
     reads `$cards` from `fetch_board_cards`, not a `kb_api` body, so guarding it here could
     never have seen the information — card#6594 closed that one level up, at page 1. It is

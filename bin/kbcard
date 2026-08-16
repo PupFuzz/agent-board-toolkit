@@ -146,8 +146,8 @@
 #     multi_select REQUIRE --options; every other type REFUSES it (the API would store
 #     the array and never interpret it — a silent no-effect, the same reason
 #     set-options refuses a non-enum field). A key already defined on the board is
-#     rc 2 before the POST — a key is unique per board, and its TYPE is immutable, so
-#     "create over the top" is not a re-type; `field retype` is.
+#     rc 2 before the POST — a key is unique per board, so "create over the top" is
+#     not a re-type; `field retype` is (the server converts a type in place).
 #   kbcard field delete --field <name|id> [--orphan-values]
 #     WRITE: drop a custom-field DEFINITION. FAIL-CLOSED on populated fields. The
 #     board is enumerated first (the shared whole-board fetch) and the denominator
@@ -156,53 +156,60 @@
 #     With N > 0 this REFUSES (rc 2) unless --orphan-values, because two MEASURED
 #     server behaviours make a silent delete a data-integrity event:
 #       (A) resident tasks.payload values SURVIVE the definition's deletion and are
-#           never revalidated — after a recreate they still hold their OLD JSON type.
+#           never revalidated — a later create over the key does not touch them.
 #       (B) the delete PURGES the search-index side table for the key and a later
 #           create does NOT rebuild it — DSL filters on that key match ZERO cards
 #           until each card's key is REWRITTEN (any payload write re-indexes it).
 #     So a delete-then-create "migration" looks migrated and silently filters to
-#     zero. `field retype` owns that sequence end to end; --orphan-values is the
-#     explicit opt-in to both consequences and still prints a loud warning.
+#     zero. To CHANGE A TYPE, never do that at all: `field retype` calls the server's
+#     atomic conversion, which deletes nothing. --orphan-values is the explicit opt-in
+#     to both consequences of a real delete and still prints a loud warning.
 #     A board read that failed or came back INCOMPLETE (page cap / short read)
 #     refuses (rc 1): a truncated denominator is not a denominator.
-#   kbcard field retype --field <name|id> --to <type> [--restamp-dl]
-#     WRITE: change a custom field's TYPE. The server's CF `type` is IMMUTABLE via
-#     PATCH by design, so re-typing IS delete-and-recreate — and because of (A) and
-#     (B) above, a re-type that stops at the recreate leaves every card holding the
-#     old JSON type with the key unindexed. This one command owns the whole ordered
-#     sequence so that half-migrated state is not reachable through this tooling:
-#       (a) read the definition (key/label/type/options); ALREADY the target type is
-#           an rc 0 no-op that says so and writes nothing;
-#       (b) enumerate the populated cards, same fail-closed fetch rules as delete;
-#       (c) CAPTURE — every {task_id, from, to} printed to STDOUT before anything is
-#           mutated (the caller's belt: after (d) the definition is gone and the
-#           index purged, so these lines are the only record of what the values were);
-#       (d) DELETE the definition;  (e) RECREATE it with the same key and label,
-#           carrying the option set across VERBATIM in the server's own shape —
-#           explicit option LABELS included, since the server never re-derives one
-#           (a SCALAR target takes no options at all, the same body `field create`
-#           refuses);  (f) RESTAMP every captured card — rewrite the payload key
-#           with the value CAST to the target type;  (g) VERIFY by re-reading each
-#           card (authoritative GET, .data envelope) and comparing the stored
-#           value's `jq -c` ENCODING against the plan's target — the JSON type
-#           rides in that encoding, so an un-restamped `1` never matches a target
-#           of `"1"`. A card whose restamp PATCH was WATCHED TO FAIL is never
-#           counted as verified: on an identity cast (string->url/date,
-#           enum->string) the stored value already equals the target, so a
-#           read-back-only verdict would pass a card that was never written — and
-#           that write is what rebuilds the purged index row. `restamped and
-#           verified N/N` is printed only when every card verified.
-#     A value that cannot be cast to the target type refuses at rc 2 BEFORE the
-#     delete, naming the task ids — the board is left completely untouched. If the
-#     sequence does break after (d), the failure names EXACTLY what state the board
-#     is in and what to run to finish; it never exits silently mid-sequence. The
-#     DELETE's own three outcomes are three DIFFERENT boards and are reported as
-#     such: refused (definition stands), 2xx-then-unreadable (assume DELETED —
-#     values orphaned, index purged), and 2xx-but-still-defined (board intact, and
-#     the recreate is NOT attempted, since a POST on a live key 422s).
-#     --restamp-dl canonicalizes each value through the shared DL renderer instead of
-#     a bare string cast, so a card holding the number 1 is restamped `DL-0001` — the
-#     one canonical stored form. It implies a string target (--to string).
+#   kbcard field retype --field <name|id> --to <type> [--options a,b,c]
+#                       [--accept-ref-impact] [--restamp-dl]
+#     WRITE: change a custom field's TYPE, as ONE call on the server's atomic
+#     conversion route (POST /custom_fields/<id>/change-type.json). The server
+#     converts the DEFINITION and every stored tasks.payload value keyed by it in one
+#     transaction, rebuilds the search index for the key inside it, and touches no
+#     other attribute — placeholder, mask, multiline, is_filterable and position all
+#     survive, which the client-side delete-and-recreate this replaces could not do.
+#     This verb issues NO delete, no recreate and no per-card cast: there is nothing
+#     left here for a crash to leave half-migrated.
+#     THERE IS NO DRY RUN, and none is simulated. `--check` exists only on the
+#     server's own `php artisan kanban:change-custom-field-type`; the HTTP route does
+#     not take it. PREVIEW-BY-REFUSAL is what the API offers instead: the whole board
+#     is scanned BEFORE anything is written, so a conversion any card value blocks
+#     answers 422 naming EVERY offending card (with a category and the validator's own
+#     reason) and leaves the board byte-identical. The refusal IS the preflight.
+#     from_type is ALWAYS sent: resolving --field already reads the current type, so
+#     the compare-and-swap is free — and a definition whose type moved under this run
+#     is its OWN outcome (412, "changed under you", nothing written), never folded in
+#     with a 422.
+#     --options is a PASSTHROUGH (a comma list, as `field create` takes one). Every
+#     rule about it is the SERVER's and is surfaced verbatim rather than re-derived
+#     here: options are REQUIRED converting into enum/multi_select from a non-option
+#     source and are NEVER inherited from the stored column, OPTIONAL between enum and
+#     multi_select (omitted = carried over verbatim), and PROHIBITED otherwise.
+#     --accept-ref-impact opts into the ONE refusal that can be opted into: a
+#     conversion that would MOVE a card's external-reference correlation. It never
+#     skips the first call — the un-acknowledged POST is always made, its 422 reports
+#     the exact card id set, and only then is a second POST sent acknowledging exactly
+#     THAT set (the server re-derives the set under the row lock and refuses one that
+#     changed). Without the flag the ids and the server's message are printed, nothing
+#     is written, and the rc is non-zero.
+#     --restamp-dl is a SEPARATE pass AFTER a successful conversion, not part of it.
+#     The server's text rule for a `number` source is json_encode, so the stored
+#     number 1 converts to the string "1" — not "DL-0001". Correlation is not at risk
+#     (the server canonicalizes DL-028 / 28 / #28 to one key), but a custom-field DSL
+#     filter written as `DL-0001` string-MISSES a card storing "1", so the conversion
+#     alone leaves the DL migration half-done. Each populated card's value is rewritten
+#     through the ONE canonical DL renderer and VERIFIED by re-reading the card; a card
+#     already holding the canonical form is left unwritten, so a re-run costs no writes.
+#     Six outcomes are reported as the six different boards they are — canonicalized ·
+#     already canonical · PATCH failed (never written, so never counted as verified) ·
+#     read back different · verification read could not observe it (UNKNOWN state) ·
+#     not a DL number at all. Requires --to string.
 #
 # A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq: every single-card /
 # single-field read and every write echo takes the verb's own empty-value arm at the verb's own
@@ -1424,33 +1431,35 @@ cmd_delete() {
 # GET /custom_fields/<id>.json (that route is PATCH/DELETE only), so EVERY sub-verb
 # reads the whole board's field set and selects by id/key.
 #
-# THE FOUR ROUTES, read out of the server's own routes/api.php:
-#   GET    /boards/<id>/custom_fields.json   index   (any board member)
-#   POST   /boards/<id>/custom_fields.json   store   (custom_field.manage — admin)
-#   PATCH  /custom_fields/<id>.json          update  (key and type are IMMUTABLE)
-#   DELETE /custom_fields/<id>.json          destroy (204, empty body)
+# THE FIVE ROUTES, read out of the server's own routes/api.php:
+#   GET    /boards/<id>/custom_fields.json        index   (any board member)
+#   POST   /boards/<id>/custom_fields.json        store   (custom_field.manage — admin)
+#   PATCH  /custom_fields/<id>.json               update  (key is IMMUTABLE; a genuine
+#                                                          type change 422s and the
+#                                                          message points at the route
+#                                                          below)
+#   POST   /custom_fields/<id>/change-type.json   changeType — the ATOMIC conversion
+#   DELETE /custom_fields/<id>.json               destroy (204, empty body)
 #
-# WHY THE LIFECYCLE VERBS EXIST AT ALL, and why `retype` is one command and not a
-# recipe. Three server behaviours compose into a silent data-integrity trap:
-#   * `type` is IMMUTABLE via PATCH by design (the controller 422s a genuine change
-#     before any other validation), so re-typing is delete-and-recreate. There is
-#     no other path.
+# WHY `delete` IS FAIL-CLOSED, and why `retype` is NOT built out of it. Two measured
+# server behaviours compose into a silent data-integrity trap on the DELETE route:
 #   * Deleting a definition does NOT cascade to tasks.payload — the values survive,
-#     orphaned, and are NEVER revalidated. After a recreate-as-string they are still
-#     whatever JSON type they were written as.
+#     orphaned, and are NEVER revalidated. A later create over the same key leaves
+#     them holding whatever JSON type they were written as.
 #   * Deleting PURGES the search-index side table for the key, and creating does NOT
 #     rebuild it. Only a payload WRITE touching the key re-indexes it.
-# So the obvious hand-rolled migration — delete, create, done — leaves a board that
-# READS migrated (the definition says `string`) while every DSL filter on the key
+# So the obvious hand-rolled type migration — delete, create, done — leaves a board
+# that READS migrated (the definition says `string`) while every DSL filter on the key
 # matches zero cards and every resident value still has the old JSON type. Nothing
-# about that state is visible without asking each card. `retype` therefore owns the
-# whole ordered sequence including the restamp and a per-card re-read verification,
-# and `delete` refuses a populated field outright rather than being the sharp half
-# of a two-step nobody finishes.
+# about that state is visible without asking each card, which is why `delete` refuses
+# a populated field outright rather than being the sharp half of a two-step nobody
+# finishes. `retype` does not compose those two routes at all: the conversion route
+# converts the definition and every stored value in ONE transaction and rebuilds the
+# index inside it, so this trap is not on its path (see its own section below).
 
 # _KBC_FIELD_TYPES: the server's CustomField::TYPES, in its declared order. A type
-# outside this set is refused BEFORE any request — the POST would 422 anyway, but
-# the retype sequence must never reach its DELETE on an input its recreate cannot use.
+# outside this set is refused BEFORE any request — the server would 422 anyway, but a
+# typo costs no round trip and the refusal names the whole set.
 _KBC_FIELD_TYPES=(string number date enum multi_select boolean url)
 
 # _kbc_field_type_takes_options <type>: 0 for the two types whose `options` the
@@ -1637,9 +1646,9 @@ _kbc_field_set_options() {
 # printed as a plausible-looking `null` — same contract as `comment`.
 # `options` is the server's OWN wire shape — an array of objects `[{value, label?}]`
 # — and goes on the wire verbatim. It is deliberately NOT a value list this
-# flattens: `retype` carries a definition's existing options across, and an explicit
-# label is data the server will not re-derive, so a `map({value: .})` here would
-# silently destroy it. A caller whose input IS a value list (the `create` verb, whose
+# flattens: an explicit label is data the server will not re-derive, so a
+# `map({value: .})` here would silently destroy one on any caller that has real
+# labels to send. A caller whose input IS a value list (the `create` verb, whose
 # --options is a comma list) builds the objects at its own call site, where omitting
 # the label is a deliberate choice the server answers by defaulting label to value.
 _kbc_field_create_call() {
@@ -1666,8 +1675,9 @@ _kbc_field_create_call() {
 # _kbc_field_delete_call <id> <key>: DELETE the definition and VERIFY it is gone.
 # The 204 carries no body, so the response can verify nothing at all — the board
 # index (the only field read surface) is re-read and the id asserted absent. A
-# delete reported as done but still defined would send retype straight into a
-# duplicate-key 422 on its recreate, with the values already deemed migrated.
+# delete reported as done but still defined is a board the caller would otherwise act
+# on as empty — including a `field create` over the same key, which 422s on the
+# duplicate.
 #
 # THE RC IS THE BOARD STATE, and the three failure arms are three DIFFERENT boards,
 # so they cannot share one:
@@ -1678,7 +1688,7 @@ _kbc_field_create_call() {
 #       a caller that reports this as "nothing happened" is describing a board that
 #       does not exist and hiding the one state that needs finishing.
 #   4 — the DELETE returned 2xx and the field is STILL defined. Board intact, but a
-#       recreate on that live key would 422 on the duplicate.
+#       create on that live key would 422 on the duplicate.
 _kbc_field_delete_call() {
     local fid="$1" fkey="$2" fields
     kb_api DELETE "/custom_fields/$fid.json" >/dev/null || return 1
@@ -1728,115 +1738,6 @@ _kbc_field_populated() {
     printf '%s' "$rows"
 }
 
-# _KBC_FIELD_CAST: per-row cast of a captured value to the target type, as
-# `{task_id, from, to, ok}`. A value the target cannot represent is `ok:false` —
-# NEVER a jq `error`, because the caller must be able to name EVERY failing task id
-# at once, before the sequence starts, rather than die on the first one.
-# `number` accepts a JSON number or a numeric string; `boolean` accepts a JSON
-# boolean or the four spellings the server itself round-trips; `multi_select` is the
-# one array-shaped target, so a scalar becomes a one-element list; every remaining
-# type (string / date / enum / url) is the server's string column and takes tostring.
-# A container value going to a scalar target is refused — flattening it would be a
-# silent, unrecoverable rewrite of data this command has just deleted the schema for.
-# shellcheck disable=SC2016  # $t/$r/$v are jq variables, not shell — single quotes are required
-_KBC_FIELD_CAST='
-  map(. as $r | $r.value as $v
-    | (if $t == "number" then
-          (if ($v|type) == "number" then {ok:true, to:$v}
-           elif ($v|type) == "string" and ($v|test("^-?[0-9]+(\\.[0-9]+)?$")) then {ok:true, to:($v|tonumber)}
-           else {ok:false, to:null} end)
-        elif $t == "boolean" then
-          (if ($v|type) == "boolean" then {ok:true, to:$v}
-           elif $v == "true"  or $v == 1 then {ok:true, to:true}
-           elif $v == "false" or $v == 0 then {ok:true, to:false}
-           else {ok:false, to:null} end)
-        elif $t == "multi_select" then
-          (if ($v|type) == "array" then {ok:true, to:($v|map(tostring))}
-           elif ($v|type) == "object" then {ok:false, to:null}
-           else {ok:true, to:[($v|tostring)]} end)
-        else
-          (if ($v|type) == "array" or ($v|type) == "object" then {ok:false, to:null}
-           else {ok:true, to:($v|tostring)} end)
-        end) as $c
-    | {task_id: $r.task_id, from: $v, to: $c.to, ok: $c.ok})'
-
-# _kbc_field_cast_plan <rows-json> <target-type> <restamp-dl>: the restamp plan,
-# computed BEFORE anything is mutated so an uncastable value refuses while the board
-# is still whole. A value that could only fail AFTER the definition is deleted would
-# strand the board for a reason that was knowable before the sequence started.
-_kbc_field_cast_plan() {
-    local rows="$1" to="$2" dl="$3" plan
-    plan="$(jq -c --arg t "$to" "$_KBC_FIELD_CAST" <<<"$rows")" || return 2
-    [[ -n "$dl" ]] || { printf '%s' "$plan"; return 0; }
-    # --restamp-dl replaces the generic string cast with kb_dl_canon, the ONE
-    # canonical DL renderer (next-dl and adopt-to-dl both stamp through it). A second
-    # spelling of DL-%04d here would be exactly the divergent implementation that
-    # makes two stored forms of one key — the defect this restamp exists to repair.
-    # EVERY failing task id at once, exactly as the cast plan above promises: dying on
-    # the first one makes the caller re-run to discover the second, each re-run being
-    # another full board read — and the whole point of computing the plan before the
-    # delete is that the refusal is complete while the board is still whole.
-    local jsonl="" tid raw canon bad=""
-    while IFS=$'\t' read -r tid raw; do
-        [[ -n "$tid" ]] || continue
-        if canon="$(kb_dl_canon "$raw")"; then
-            jsonl+="$(jq -nc --argjson id "$tid" --arg c "$canon" '{task_id: $id, to: $c}')"$'\n'
-        else
-            bad+="${bad:+, }$tid ('$raw')"
-        fi
-    done < <(jq -r '.[] | [(.task_id|tostring), (.from | if type == "string" then . else tostring end)] | @tsv' <<<"$plan")
-    if [[ -n "$bad" ]]; then
-        echo "kbcard: these cards hold a value --restamp-dl cannot canonicalize to a DL number: $bad — refusing BEFORE any mutation (the board is untouched)" >&2
-        return 2
-    fi
-    printf '%s' "$jsonl" | jq -c -s --argjson p "$plan" \
-        '. as $canon | $p | map(. as $r | $r + {to: (first($canon[] | select(.task_id == $r.task_id)) | .to), ok: true})'
-}
-
-# _kbc_shq <word>: <word> as ONE shell word, single-quoted with embedded quotes
-# escaped, so a remediation command this file PRINTS is runnable exactly as printed.
-# A field label holding an apostrophe (`Owner's team`) otherwise ends the quote and
-# leaves the shell parsing the rest as syntax, and an option value holding a space
-# re-parses into two arguments — a remediation string is a doc surface, and one that
-# dies at the shell is a wrong one.
-_kbc_shq() {
-    printf "'%s'" "${1//\'/\'\\\'\'}"
-}
-
-# _kbc_field_finish_cmd <key> <label> <to-type> <options-json|"">: the `field create`
-# that re-creates a definition the sequence deleted, on stderr, RUNNABLE AS PRINTED.
-# Two things this CLI cannot express are stated instead of being silently wrong:
-# --options is a comma list, so an option value CONTAINING a comma cannot round-trip
-# through it at all, and no verb here writes an option LABEL (create and set-options
-# both default it to the value), so explicit labels are named as lost-unless-manual.
-_kbc_field_finish_cmd() {
-    local fkey="$1" flabel="$2" to="$3" fopts="$4" csv=""
-    if [[ -n "$fopts" ]]; then
-        if [[ "$(jq '[.[] | select(.value | test(","))] | length' <<<"$fopts")" -gt 0 ]]; then
-            echo "kbcard:   To finish, re-create it BY HAND — an option value contains a comma, which --options (a comma list) cannot express: key $(_kbc_shq "$fkey"), label $(_kbc_shq "$flabel"), type '$to', options $fopts" >&2
-            return 0
-        fi
-        csv="$(jq -r 'map(.value) | join(",")' <<<"$fopts")"
-    fi
-    echo "kbcard:   To finish, first re-create it: kbcard --board <board> field create --key $(_kbc_shq "$fkey") --label $(_kbc_shq "$flabel") --type $to${csv:+ --options $(_kbc_shq "$csv")}" >&2
-    if [[ -n "$fopts" && "$(jq '[.[] | select((.label // .value) != .value)] | length' <<<"$fopts")" -gt 0 ]]; then
-        echo "kbcard:   ⚠ that restores the option VALUES only — no verb here writes an option LABEL, so re-apply these by hand: $fopts" >&2
-    fi
-}
-
-# _kbc_field_stranded <lead> <key> <label> <to-type> <options-json|""> <n> <from-type>:
-# the post-delete stranded-board report. BOTH arms that can reach that state — a
-# delete whose verification re-read failed, and a recreate that failed — print it
-# through here, so the state description and the finishing command cannot drift into
-# two spellings of one board.
-_kbc_field_stranded() {
-    local lead="$1" fkey="$2" flabel="$3" to="$4" fopts="$5" n="$6" ftype="$7"
-    echo "kbcard: $lead" >&2
-    echo "kbcard:   Board $KB_BOARD_ID state: no '$fkey' definition; $n card payload value(s) survive (orphaned, still $ftype-shaped); the search index for '$fkey' is PURGED." >&2
-    _kbc_field_finish_cmd "$fkey" "$flabel" "$to" "$fopts"
-    echo "kbcard:   Then rewrite '$fkey' on each captured task id — the capture lines on stdout above hold every task_id with its target value. Until each is rewritten, (A) its value keeps the OLD JSON type and (B) DSL filters on '$fkey' match ZERO cards." >&2
-}
-
 _kbc_field_create() {
     local key="" label="" type="" options="" have_options=""
     while [[ $# -gt 0 ]]; do
@@ -1877,7 +1778,7 @@ _kbc_field_create() {
     local fields
     fields="$(_kbc_fetch_fields)" || return 1
     if jq -e --arg k "$key" 'any(.[]?; .key == $k)' <<<"$fields" >/dev/null 2>&1; then
-        echo "kbcard: board $KB_BOARD_ID already defines a custom field with key '$key' — a key is unique per board and its TYPE is immutable, so this is not a re-type; use 'field retype --field $key --to <type>' (or 'field delete' first)" >&2
+        echo "kbcard: board $KB_BOARD_ID already defines a custom field with key '$key' — a key is unique per board, so this is not a re-type; use 'field retype --field $key --to <type>', which converts the type in place (or 'field delete' first)" >&2
         _kbc_field_enumerate "$fields"
         return 2
     fi
@@ -1913,7 +1814,7 @@ _kbc_field_delete() {
         echo "kbcard: refusing to delete field '$fkey' — $n board card(s) still carry it." >&2
         echo "kbcard:   (A) the definition's deletion does NOT touch tasks.payload: those $n values survive, keep their current JSON type, and are never revalidated." >&2
         echo "kbcard:   (B) the deletion PURGES the search index for '$fkey' and a later create does NOT rebuild it — DSL filters on '$fkey' then match ZERO cards until each card's key is rewritten." >&2
-        echo "kbcard:   To CHANGE THE TYPE, run 'kbcard --board <board> field retype --field $fkey --to <type>' — it owns the delete / recreate / restamp / verify sequence, so neither (A) nor (B) can be skipped." >&2
+        echo "kbcard:   To CHANGE THE TYPE, run 'kbcard --board <board> field retype --field $fkey --to <type>' — it calls the server's ATOMIC conversion, which deletes nothing, so neither (A) nor (B) is on its path at all." >&2
         echo "kbcard:   To delete anyway and accept both, pass --orphan-values." >&2
         return 2
     fi
@@ -1925,13 +1826,207 @@ _kbc_field_delete() {
     echo "kbcard: field '$fkey' (id $fid) deleted from board $KB_BOARD_ID" >&2
 }
 
+# --- field retype: the server's atomic conversion, called once ---------------
+# `type` was immutable via PATCH until the API grew a conversion route, which made
+# re-typing a CLIENT-SIDE delete -> recreate -> restamp -> verify sequence: it could
+# not be atomic, so every step between the DELETE and the last restamp was a
+# half-migrated board a crash could leave behind, and this file carried a whole
+# apparatus (a cast matrix, a pre-flight plan, a stranded-board report and the
+# finishing command to print) whose entire job was to make that window survivable.
+# The server now owns the conversion — one transaction over the definition AND every
+# stored payload value keyed by it, with the search index rebuilt inside it and no
+# delete, so `placeholder` / `mask` / `multiline` / `is_filterable` / `position`
+# survive, which delete-and-recreate could never do. The apparatus is therefore
+# DELETED rather than kept in step: this verb holds no opinion the server holds.
+#
+# _kbc_field_change_type_call <field-id> <body>: the ONE POST site for the
+# conversion route, emitting "<http>\n<body>".
+#
+# kb_api_status, not kb_api, for two reasons that are both load-bearing:
+#   * FIVE statuses are five different boards — 200 converted · 412 the type moved
+#     under us (CAS), nothing written · 413 the board is over the server's scan rail,
+#     nothing written · 422 refused (a type PAIR that has no conversion, or named
+#     offending cards) · 404 the definition was deleted while this call held its row
+#     lock. kb_api collapses all of them to rc 1.
+#   * the ref-impact handshake must READ a 422's body (it carries the id set the
+#     second call has to acknowledge), and kb_api sends an error body to stderr,
+#     where no caller can capture it.
+_kbc_field_change_type_call() {
+    kb_api_status POST "/custom_fields/$1/change-type.json" "$2"
+}
+
+# _kbc_field_change_type_report <field-id> <http> <body> <key> <from> <to>: one
+# non-2xx outcome, in this tool's words AND the server's own. Both calls of the
+# ref-impact handshake fail through here, so the refusal vocabulary cannot drift
+# into two spellings.
+#
+# The status line + the raw body mirror what kb_api prints on a non-2xx under
+# KB_API_ERRBODY=1, and the failure-log append mirrors its log line: kb_api_status is
+# silent by design, and this is the one call in this file whose refusal IS the
+# preflight — every offending card is named in that body, so dropping it would throw
+# away the only report of what blocks the conversion.
+_kbc_field_change_type_report() {
+    local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6"
+    local path="/custom_fields/$fid/change-type.json"
+    echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
+    echo "$resp" >&2
+    [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp" >> "$KB_LOG_FILE"
+    # Empty unless the body is a JSON OBJECT, which is the shape every arm below
+    # INDEXES — an "is it JSON" test hands a scalar or a list straight to `has(…)`,
+    # where the read yields nothing and the arm it lands in makes claims about a
+    # refusal nobody read. Every arm below states only what a body it actually read
+    # supports.
+    local readable; readable="$(kb_parse_resp "$resp" -r 'select(type == "object") | type')"
+    case "$http" in
+        412) echo "kbcard: the field's type CHANGED UNDER YOU — the board says '$(kb_parse_resp "$resp" -r '.actual // empty')' where this call was sent against '$(kb_parse_resp "$resp" -r '.expected // empty')'. NOTHING was written. Re-read the definition ('field list') and re-run: the conversion you asked for may no longer be the one you want." >&2 ;;
+        413) echo "kbcard: the board is over the server's card-scan rail for a type change — NOTHING was written. That is a RESOURCE rail (the scan holds row locks for its whole duration), not a refusal of the conversion; the server's message above names the operator-supervised command to run instead." >&2 ;;
+        404) echo "kbcard: custom field id $fid is GONE — it was deleted concurrently, and the conversion caught that under the row lock. Nothing was written." >&2 ;;
+        000) echo "kbcard: the conversion request never reached the server (curl transport failure) — nothing was written." >&2 ;;
+        422)
+            # THREE 422 SHAPES, not two, and the third is why this is a three-way and not
+            # the server's own two-way. The conversion's own refusals both carry `meta`
+            # (the pair refusal and the offender refusal, told apart by the PRESENCE of
+            # `meta.offenders` — the server's documented discriminator). The option RULES
+            # throw a plain Laravel ValidationException, which renders `{message, errors}`
+            # and NO `meta` at all — MEASURED on the sandbox: an omitted `--options` on a
+            # `string -> enum` answered exactly that. Discriminating on `meta.offenders`
+            # alone therefore reported the whole third class as a pair refusal, i.e. told
+            # the operator that a conversion the server defines does not exist, and sent
+            # them to fix the wrong thing. `meta` present is what says the refusal came
+            # from the conversion at all.
+            if [[ -z "$readable" ]]; then
+                echo "kbcard: the conversion was REFUSED and no refusal could be read out of the body — nothing was written, and this run cannot say which rule or which cards refused it." >&2
+            elif [[ "$(kb_parse_resp "$resp" -r 'has("meta")')" != "true" ]]; then
+                echo "kbcard: the server REFUSED this request as invalid — nothing was written, and no card value was examined. The message above is the rule that refused it (the option rules — required into enum/multi_select from a non-option source, never inherited, prohibited on a scalar target — are all the server's, and all answer here)." >&2
+            elif [[ "$(kb_parse_resp "$resp" -r '.meta | has("offenders")')" != "true" ]]; then
+                # The PAIR refusal: the conversion does not exist between these two types
+                # at all, decided before a single task row was read — no card is at fault.
+                echo "kbcard: the server defines NO conversion from '$from' to '$to' — this is refused on the TYPE PAIR, before any card value is read, so nothing on the board is at fault and nothing was written." >&2
+            else
+                local oc shown
+                oc="$(kb_parse_resp "$resp" -r '.meta.offender_count // 0')"
+                shown="$(kb_parse_resp "$resp" -r '.meta.offenders | length')"
+                echo "kbcard: $oc card value(s) block this conversion — NOTHING was written. The whole board is scanned BEFORE anything is written, so this refusal IS the preflight: there is no separate check mode over HTTP." >&2
+                kb_parse_resp "$resp" -r '.meta.offenders[]? | "kbcard:   card \(.task_id) [\(.category)] \(.reason) — value: \(.value)"' >&2
+                if [[ "$(kb_parse_resp "$resp" -r '.meta.offenders_truncated // false')" == "true" ]]; then
+                    echo "kbcard:   ⚠ the server caps the list: $shown of $oc offender(s) are named above. Fix these and re-run to see the rest." >&2
+                fi
+                local ref_ids
+                ref_ids="$(kb_parse_resp "$resp" -c '.meta.ref_impact_task_ids // empty')"
+                if [[ -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
+                    echo "kbcard:   the cards whose external-reference correlation this conversion would MOVE: $(jq -r 'map(tostring) | join(", ")' <<<"$ref_ids")" >&2
+                fi
+            fi ;;
+        *) echo "kbcard: the conversion was refused (HTTP $http) — nothing was written." >&2 ;;
+    esac
+    return 0
+}
+
+# _kbc_field_restamp_dl <key>: --restamp-dl's pass, AFTER a conversion the server
+# has already committed. It is not part of the conversion and cannot be: the cast
+# matrix's text rule for a `number` source is json_encode, so the stored number 1
+# converts to the string "1" — never "DL-0001". Correlation itself is not at risk
+# (the server canonicalizes DL-028 / 28 / #28 to one key), but a custom-field DSL
+# filter written as `DL-0001` string-MISSES a card storing "1", so a conversion
+# alone leaves the DL migration half-done.
+#
+# Every value is rendered through kb_dl_canon — the ONE canonical DL renderer that
+# next-dl and adopt-to-dl also stamp through. A second spelling of DL-%04d here is
+# exactly the divergent implementation that makes two stored forms of one key, i.e.
+# the defect this pass exists to repair.
+#
+# SIX OUTCOMES, reported as the six different boards they are, because "verified" is
+# a claim about a card that only some of them support:
+#   canonicalized      — written, then RE-READ and confirmed on the authoritative GET.
+#   already canonical  — the census (an authoritative board read) already shows the
+#                        canonical form, so no write is issued at all. This is what
+#                        makes re-running the whole command cost zero writes.
+#   PATCH failed       — never written, therefore NOT verifiable: counting it as
+#                        verified is the pass-1 defect this must never re-mint.
+#   read back different— written, and the re-read disagrees: an observed state.
+#   unverifiable read  — the verification GET failed, or 2xx'd with a body no value
+#                        could be read out of. This run observed NOTHING about the
+#                        card; "still holds its old value" would be a claim about a
+#                        board nothing read.
+#   not a DL number    — the stored value cannot be canonicalized at all. Skipped,
+#                        never written, and never counted as done.
+_kbc_field_restamp_dl() {
+    local fkey="$1" rows len i tid stored canon want body resp got
+    local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
+    rows="$(_kbc_field_populated "$fkey")" || {
+        echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did NOT run: the board read above did not return a complete card list, and a canonicalization pass over a partial board leaves an unknown remainder. No card was rewritten. Re-run this exact command once the board reads whole — the conversion half is then a server-side no-op." >&2
+        return 1
+    }
+    len="$(jq 'length' <<<"$rows")"
+    if [[ "$len" -eq 0 ]]; then
+        echo "kbcard: --restamp-dl: no card carries '$fkey' — nothing to canonicalize" >&2
+        return 0
+    fi
+    for ((i = 0; i < len; i++)); do
+        tid="$(jq -r --argjson i "$i" '.[$i].task_id' <<<"$rows")"
+        # The stored value as TEXT — a non-string is rendered with tojson so a value
+        # the conversion left as a container (or a number) reaches kb_dl_canon as
+        # something it can refuse by name, rather than as an empty string.
+        stored="$(jq -r --argjson i "$i" '.[$i].value | if type == "string" then . else tojson end' <<<"$rows")"
+        # kb_dl_canon speaks for itself on a non-DL value (it names the value); this
+        # collects the ids so the run's own summary can name every one of them at once.
+        if ! canon="$(kb_dl_canon "$stored")"; then
+            notdl+=("$tid ('$stored')")
+            continue
+        fi
+        if [[ "$stored" == "$canon" ]]; then
+            already+=("$tid")
+            continue
+        fi
+        body="$(jq -nc --arg k "$fkey" --arg v "$canon" '{payload: {($k): $v}}')"
+        # The v3 payload PATCH merges per-key, so writing this one key leaves every
+        # other payload key on the card alone.
+        kb_api PATCH "/tasks/$tid.json" "$body" >/dev/null || { patch_failed+=("$tid"); continue; }
+        # VERIFY on the authoritative GET, never on the PATCH's own echo. Both sides
+        # are jq -c ENCODINGS, so the JSON type rides in the compare.
+        resp="$(kb_api GET "/tasks/$tid.json")" || { unread+=("$tid"); continue; }
+        # shellcheck disable=SC2016  # $k is a jq --arg, not a shell variable
+        got="$(kb_parse_resp "$resp" -c --arg k "$fkey" '.data.payload[$k]')"
+        want="$(jq -nc --arg v "$canon" '$v')"
+        if [[ -z "$got" ]]; then
+            unread+=("$tid")
+        elif [[ "$got" == "$want" ]]; then
+            done_ids+=("$tid")
+        else
+            mismatch+=("$tid")
+        fi
+    done
+
+    if [[ ${#patch_failed[@]} -eq 0 && ${#mismatch[@]} -eq 0 && ${#unread[@]} -eq 0 && ${#notdl[@]} -eq 0 ]]; then
+        echo "kbcard: --restamp-dl: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical (left unwritten)" >&2
+        return 0
+    fi
+    echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did not finish: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical." >&2
+    if [[ ${#patch_failed[@]} -gt 0 ]]; then
+        echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — this run never wrote them, so each still holds the value the conversion left it with." >&2
+    fi
+    if [[ ${#mismatch[@]} -gt 0 ]]; then
+        echo "kbcard:   read back a DIFFERENT value on ${#mismatch[@]} card(s): ${mismatch[*]} — they do not hold the canonical form (the write did not land, or something rewrote them between it and this read), so a DSL filter spelled DL-NNNN will silently skip each of them." >&2
+    fi
+    if [[ ${#unread[@]} -gt 0 ]]; then
+        echo "kbcard:   the verification read could not observe ${#unread[@]} card(s): ${unread[*]} — their state is UNKNOWN (the GET failed, or returned a body no value could be read out of); the restamp may well have landed. Re-running is idempotent: re-run and re-read them." >&2
+    fi
+    if [[ ${#notdl[@]} -gt 0 ]]; then
+        echo "kbcard:   NOT a DL number, so nothing was written: ${notdl[*]} — the conversion still landed on these cards; only their canonicalization was skipped, and a DSL filter spelled DL-NNNN will not match them." >&2
+    fi
+    echo "kbcard:   Re-running this exact command finishes the rest: the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten." >&2
+    return 1
+}
+
 _kbc_field_retype() {
-    local field="" to="" restamp_dl=""
+    local field="" to="" options="" have_options="" accept_ref="" restamp_dl=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --field)       kb_require_value "$1" "${2:-}" || return 2; field="$2"; shift 2 ;;
-            --to)          kb_require_value "$1" "${2:-}" || return 2; to="$2"; shift 2 ;;
-            --restamp-dl)  restamp_dl=1; shift ;;
+            --field)              kb_require_value "$1" "${2:-}" || return 2; field="$2"; shift 2 ;;
+            --to)                 kb_require_value "$1" "${2:-}" || return 2; to="$2"; shift 2 ;;
+            --options)            kb_require_value "$1" "${2:-}" || return 2; options="$2"; have_options=1; shift 2 ;;
+            --accept-ref-impact)  accept_ref=1; shift ;;
+            --restamp-dl)         restamp_dl=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -1943,155 +2038,100 @@ _kbc_field_retype() {
         return 2
     fi
 
-    # (a) READ the definition.
-    local fields fld fid fkey flabel ftype fopts fopts_had
+    # Resolve the definition. This read is what makes the compare-and-swap FREE, so
+    # it is not an optional cost: --field has to be resolved against the board's
+    # field index anyway (there is no per-field GET), and the index carries the type.
+    local fields fld fid fkey ftype
     fields="$(_kbc_fetch_fields)" || return 1
     fld="$(_kbc_field_resolve "$field" "$fields")" || return 2
     fid="$(jq -r '.id' <<<"$fld")"
     fkey="$(jq -r '.key' <<<"$fld")"
-    flabel="$(jq -r '.label' <<<"$fld")"
     ftype="$(jq -r '.type' <<<"$fld")"
-    # The options in the server's OWN shape, explicit labels included. Flattening to
-    # values here would silently DESTROY every explicit label the definition carries
-    # (the server re-derives a missing one as the value, so the loss is invisible in
-    # the recreate's own 2xx) — and this command's contract is that the key, the
-    # label and the options survive the type change. An option that carries no label
-    # is passed through label-less rather than sent an explicit null.
-    fopts_had="$(jq -c 'if (.options // null) == null then empty
-                        else (.options | map(if has("label") and .label != null then {value, label} else {value} end)) end' <<<"$fld")"
-    fopts="$fopts_had"
 
-    if [[ "$ftype" == "$to" ]]; then
-        echo "kbcard: field '$fkey' is already type '$to' on board $KB_BOARD_ID — nothing to do" >&2
-        jq "$_KBC_FIELD_ROW" <<<"$fld"
-        return 0
-    fi
-    # Emptiness here is a LENGTH question, not a string one: a definition whose
-    # server-returned `options` is `[]` yields a non-empty string that sails past a
-    # -z test, and the recreate would then POST `options: []` — which the server
-    # 422s AFTER the delete, i.e. exactly the stranded board this guard exists to
-    # make unreachable.
-    if _kbc_field_type_takes_options "$to" && [[ "$(jq 'length' <<<"${fopts:-[]}")" -eq 0 ]]; then
-        echo "kbcard: retyping '$fkey' to '$to' needs an option set, and the current '$ftype' definition carries none — this command only CARRIES options across, it never invents them; use 'field delete --field $fkey --orphan-values' then 'field create … --options a,b,c' and accept both consequences explicitly" >&2
-        return 2
-    fi
-    # A SCALAR target takes no options at all: the server stores the array and never
-    # reads it, and `field create` refuses that exact body. Reaching the same POST
-    # through the shared create primitive must not be the way around its own refusal.
-    _kbc_field_type_takes_options "$to" || fopts=""
-
-    # (b) ENUMERATE the populated cards — same fail-closed census `delete` uses.
-    local rows n
-    rows="$(_kbc_field_populated "$fkey")" || return 1
-    n="$(jq 'length' <<<"$rows")"
-
-    # (b2) CAST PLAN, before any mutation. Every uncastable value is named at once.
-    local plan bad
-    plan="$(_kbc_field_cast_plan "$rows" "$to" "$restamp_dl")" || return 2
-    bad="$(jq -r '[.[] | select(.ok != true) | .task_id | tostring] | join(", ")' <<<"$plan")"
-    if [[ -n "$bad" ]]; then
-        echo "kbcard: refusing to retype '$fkey' to '$to' — these cards hold a value that cannot be cast to '$to': $bad" >&2
-        echo "kbcard:   Nothing has been mutated: the definition and every payload value are untouched." >&2
-        return 2
+    # --options is a PASSTHROUGH. Every rule about when options are required,
+    # permitted or prohibited belongs to the server (they are required converting
+    # INTO enum/multi_select from a non-option source and never inherited from the
+    # stored column, optional between the two option types, prohibited otherwise) —
+    # and it re-derives all of them under the row lock, against the definition it is
+    # about to persist. A client-side copy of those rules could only ever be a
+    # SECOND ruling to drift: it would refuse bodies the server accepts, or accept
+    # ones it refuses, and either way the operator would be arguing with a rule this
+    # tool invented. So the only thing done here is the shape: _kbc_field_option_values
+    # is the shared CSV -> value-list owner (trim, no empties, no duplicates), and the
+    # server's wire shape is [{value, label?}], with an omitted label defaulting to
+    # the value — the same choice `field create`'s --options makes.
+    local opts=""
+    if [[ -n "$have_options" ]]; then
+        opts="$(_kbc_field_option_values "$options")" || return 2
+        opts="$(jq -c 'map({value: .})' <<<"$opts")"
     fi
 
-    # (c) CAPTURE to STDOUT before the point of no return. After (d) the definition
-    # is gone and the index purged, so these lines are the only record of what each
-    # value WAS — the caller's belt, independent of anything below succeeding.
-    echo "kbcard: field retype '$fkey': $ftype -> $to on board $KB_BOARD_ID; capturing $n populated card(s) BEFORE any mutation" >&2
-    # The DEFINITION is captured too, in the server's own option shape: after (d) it
-    # is gone, and an explicit option LABEL is the one part of it nothing else on
-    # this run records — no verb here can write one back, so an operator finishing by
-    # hand needs the text.
-    echo "kbcard:   definition captured: key '$fkey', label '$flabel', type '$ftype', options ${fopts_had:-none}" >&2
-    jq -c '.[] | {task_id, from, to}' <<<"$plan"
+    # from_type is ALWAYS sent. The read above already holds the current type, so the
+    # optimistic-concurrency guard costs nothing — and without it a conversion racing
+    # another one converts a definition this run never saw, silently. With it, that
+    # race is a 412 that writes nothing.
+    local body
+    body="$(jq -nc --arg t "$to" --arg f "$ftype" '{type: $t, from_type: $f}')"
+    [[ -n "$opts" ]] && body="$(jq -c --argjson o "$opts" '. + {options: $o}' <<<"$body")"
 
-    # (d) DELETE — the point of no return (type is immutable via PATCH by design).
-    # The three failure rcs are three different boards (see _kbc_field_delete_call):
-    # only rc 1 and rc 4 leave the definition standing. Reporting rc 3 as "the board
-    # is UNCHANGED" would be the worst line this command could print — the definition
-    # is gone, the index is purged and the values are orphaned, and the only
-    # actionable output would say nothing happened.
-    local drc=0
-    _kbc_field_delete_call "$fid" "$fkey" || drc=$?
-    case "$drc" in
-        0) ;;
-        3) _kbc_field_stranded \
-               "⚠ retype INCOMPLETE — field '$fkey' is DELETED and was NOT recreated (the DELETE returned success and its confirming re-read FAILED, so the delete is UNVERIFIED — this report assumes it LANDED; if the field IS still defined, the create below will 422 and nothing is lost)." \
-               "$fkey" "$flabel" "$to" "$fopts" "$n" "$ftype"
-           return 1 ;;
-        4) echo "kbcard: retype ABORTED after the delete — field '$fkey' (id $fid) is STILL defined on board $KB_BOARD_ID, so the board is UNCHANGED (still type '$ftype', every value intact); the recreate is NOT attempted, because a POST on a live key answers 422 on the duplicate." >&2
-           return 1 ;;
-        *) echo "kbcard: retype ABORTED at the delete — board $KB_BOARD_ID is UNCHANGED (field '$fkey' is still type '$ftype', every value intact)." >&2
-           return 1 ;;
-    esac
+    local out http resp ref_ids=""
+    out="$(_kbc_field_change_type_call "$fid" "$body")"
+    http="${out%%$'\n'*}"; resp="${out#*$'\n'}"
 
-    # (e) RECREATE with the same key/label, the options carried across verbatim
-    # (labels included; empty for a scalar target), and the new type.
-    local newid
-    if ! newid="$(_kbc_field_create_call "$fkey" "$flabel" "$to" "$fopts")"; then
-        _kbc_field_stranded \
-            "⚠ retype INCOMPLETE — field '$fkey' is DELETED and was NOT recreated." \
-            "$fkey" "$flabel" "$to" "$fopts" "$n" "$ftype"
+    # Read on the FIRST response only: this is the set the handshake may acknowledge,
+    # and the second call's own refusal (if any) reports its own, freshly derived set.
+    if [[ "$http" == "422" ]]; then
+        ref_ids="$(kb_parse_resp "$resp" -c '.meta.ref_impact_task_ids // empty')"
+    fi
+
+    # THE REF-IMPACT HANDSHAKE IS TWO CALLS, and the first one is never skipped —
+    # not even with the flag. The set of cards whose external-reference correlation a
+    # conversion moves is DERIVED BY THE SERVER under the row lock, and it refuses an
+    # acknowledgement that no longer matches what it derived. Sending a set this
+    # client guessed, or one carried over from an earlier run, would either be refused
+    # or — worse, if it happened to match — would launder the one gate that makes a
+    # correlation move a deliberate act into a flag somebody types out of habit. So
+    # the flag acknowledges EXACTLY the ids THIS run was just shown, and nothing else.
+    if [[ -n "$accept_ref" && -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
+        echo "kbcard: --accept-ref-impact: the server's refusal names $(jq 'length' <<<"$ref_ids") card(s) whose external-reference correlation this conversion MOVES — re-sending with exactly that set acknowledged." >&2
+        kb_parse_resp "$resp" -r '.meta.offenders[]? | select(.category == "ref_impact") | "kbcard:   card \(.task_id): \((.refs_before // []) | join(" "))  ->  \((.refs_after // []) | join(" "))"' >&2
+        body="$(jq -c --argjson ids "$ref_ids" '. + {acknowledge_ref_impact: $ids}' <<<"$body")"
+        out="$(_kbc_field_change_type_call "$fid" "$body")"
+        http="${out%%$'\n'*}"; resp="${out#*$'\n'}"
+    fi
+
+    if [[ ! "$http" =~ ^2 ]]; then
+        _kbc_field_change_type_report "$fid" "$http" "$resp" "$fkey" "$ftype" "$to"
+        if [[ -z "$accept_ref" && -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
+            echo "kbcard:   To accept exactly those moves, re-run with --accept-ref-impact: it makes this same un-acknowledged call FIRST and acknowledges the set the server reports on THAT run — never a set carried over from this one." >&2
+        fi
         return 1
     fi
 
-    # (f) RESTAMP. The v3 payload PATCH merges per-key, so writing this one key
-    # leaves every other payload key on the card alone.
-    local i len tid newval body pf_set=""
-    local -a patch_failed=() mismatch=() unread=() not_verified=()
-    len="$(jq 'length' <<<"$plan")"
-    for ((i = 0; i < len; i++)); do
-        tid="$(jq -r --argjson i "$i" '.[$i].task_id' <<<"$plan")"
-        newval="$(jq -c --argjson i "$i" '.[$i].to' <<<"$plan")"
-        body="$(jq -nc --arg k "$fkey" --argjson v "$newval" '{payload: {($k): $v}}')"
-        kb_api PATCH "/tasks/$tid.json" "$body" >/dev/null || { patch_failed+=("$tid"); pf_set+=" $tid"; }
-    done
+    local row from_t to_t n_conv
+    row="$(kb_parse_resp "$resp" ".data | $_KBC_FIELD_ROW")"
+    from_t="$(kb_parse_resp "$resp" -r '.meta.from_type // empty')"
+    to_t="$(kb_parse_resp "$resp" -r '.meta.to_type // empty')"
+    n_conv="$(kb_parse_resp "$resp" -r '.meta.converted_task_count // empty')"
+    # A 2xx nothing can be read out of. The conversion LANDED (the server does not
+    # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
+    # must not go on to restamp, because it has not read which conversion happened.
+    if [[ -z "$row" || -z "$to_t" ]]; then
+        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe and finishes any --restamp-dl pass." >&2
+        return 1
+    fi
+    # The server answers a target type equal to the current one as an explicit no-op:
+    # 200, no scan, no write, no changelog row. Reporting it as a conversion would
+    # claim a write that did not happen — and this is the shape a re-run takes.
+    if [[ "$from_t" == "$to_t" ]]; then
+        echo "kbcard: field '$fkey' is already type '$to_t' on board $KB_BOARD_ID — the server converted nothing (no scan, no write)" >&2
+    else
+        echo "kbcard: field '$fkey' (id $fid) converted $from_t -> $to_t on board $KB_BOARD_ID; the server converted $n_conv card value(s) in the SAME transaction, and rebuilt the search index for '$fkey'" >&2
+    fi
+    printf '%s\n' "$row"
 
-    # (g) VERIFY on the authoritative GET — never on the PATCH's own 2xx echo. Both
-    # sides of the compare are `jq -c` encodings, so the JSON TYPE rides in the value:
-    # a card that was never restamped holds `1` where the plan says `"DL-0001"`, and
-    # those are different strings. A card whose PATCH FAILED is not verifiable at all
-    # and is never counted: on an IDENTITY cast (string→url, string→date, enum→string)
-    # the stored value already equals the plan's target, so the GET would pass on a
-    # card that was never written — and the write is the whole point there, since it
-    # is what rebuilds the purged search-index row.
-    local got resp verified=0
-    for ((i = 0; i < len; i++)); do
-        tid="$(jq -r --argjson i "$i" '.[$i].task_id' <<<"$plan")"
-        newval="$(jq -c --argjson i "$i" '.[$i].to' <<<"$plan")"
-        case "$pf_set " in *" $tid "*) not_verified+=("$tid"); continue ;; esac
-        resp="$(kb_api GET "/tasks/$tid.json")" || { unread+=("$tid"); not_verified+=("$tid"); continue; }
-        # shellcheck disable=SC2016  # $k is a jq --arg, not a shell variable
-        got="$(kb_parse_resp "$resp" -c --arg k "$fkey" '.data.payload[$k]')"
-        if [[ "$got" == "$newval" ]]; then
-            verified=$((verified + 1))
-        else
-            mismatch+=("$tid"); not_verified+=("$tid")
-        fi
-    done
-
-    if [[ ${#not_verified[@]} -eq 0 ]]; then
-        echo "kbcard: field '$fkey' retyped $ftype -> $to (id $fid -> $newid); restamped and verified $verified/$len" >&2
-        return 0
-    fi
-    echo "kbcard: ⚠ retype INCOMPLETE — field '$fkey' IS recreated as '$to' (id $newid), but only $verified of $len card(s) verified." >&2
-    echo "kbcard:   NOT verified: ${not_verified[*]}" >&2
-    # Three lists, because they are three different boards and only two of them are
-    # observed: a failed PATCH and a wrong read-back are states this run SAW, while a
-    # failed verification GET is a state it could not see at all — printing one
-    # "still holds its OLD value" claim over all three asserts a board nothing read.
-    if [[ ${#patch_failed[@]} -gt 0 ]]; then
-        echo "kbcard:   ⚠ the restamp PATCH failed on ${#patch_failed[@]} card(s): ${patch_failed[*]} — those cards were never written, so each still holds its OLD value/JSON type and carries NO search-index row for '$fkey'." >&2
-    fi
-    if [[ ${#mismatch[@]} -gt 0 ]]; then
-        echo "kbcard:   read back a DIFFERENT value on ${#mismatch[@]} card(s): ${mismatch[*]} — each still holds its OLD value/JSON type and carries NO search-index row for '$fkey', so a DSL filter on that key will silently skip it." >&2
-    fi
-    if [[ ${#unread[@]} -gt 0 ]]; then
-        echo "kbcard:   the verification GET FAILED on ${#unread[@]} card(s): ${unread[*]} — their state is UNKNOWN: the restamp may well have landed, and this run cannot say either way. The remediation below is idempotent, so re-run it on these and then re-read them." >&2
-    fi
-    echo "kbcard:   To finish, rewrite '$fkey' on each of those task ids to the value shown on its capture line above — any payload write touching the key re-indexes it. Re-running 'field retype' will NOT do it: the definition is already '$to', so it no-ops." >&2
-    return 1
+    [[ -n "$restamp_dl" ]] || return 0
+    _kbc_field_restamp_dl "$fkey"
 }
 
 cmd_field() {

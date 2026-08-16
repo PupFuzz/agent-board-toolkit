@@ -213,14 +213,29 @@ _POST_UNREADABLE=""            # the create POST 2xxs with a body nothing reads 
 _GET_TASK_UNREADABLE=""        # ids whose verification GET 2xxs with such a body
 _GET_TASK_FAIL=""  # ids whose task-detail GET (the verification read) fails
 _DELETED="$TMP/deleted.marker"
+# --- change-type knobs (the conversion route) ------------------------------
+# The fake below MODELS the conversion rather than replaying canned bodies, because
+# what `retype` must be judged on is that it stopped holding opinions the server
+# holds: the option rules, the pair matrix, the CAS and the offender scan are all
+# re-implemented here from the server's own source, so a client-side re-derivation
+# creeping back in reds against the SERVER's wording, not against a fixture. The
+# three knobs below are for the outcomes a fake board genuinely cannot produce.
+_CT_FORCE_HTTP=""      # answer every change-type call with this status …
+_CT_FORCE_BODY=""      # … and this body (the 413 rail, a 404 race, a capped list)
+_CT_UNREADABLE=""      # the conversion 2xxs with a body nothing can be read out of
+_CT_REFIMPACT=""       # task ids whose external-reference correlation the conversion MOVES
+_CT_REFIMPACT_SHIFT="" # the acknowledged set no longer matches (it moved under the lock)
+_CT_TYPE_MOVED=""      # a concurrent conversion committed between the read and this write
 
 # _seed <fields-json> <board-json>: fresh board state + a fresh call log.
 _seed() {
     : > "$_CALLS"; : > "$_POST_BODY"
-    rm -f "$_DELETED" "$TMP"/task-patch-*.json
+    rm -f "$_DELETED" "$TMP"/task-patch-*.json "$TMP"/ct-body-*.json
     _FETCH_RC=0; _POST_FAIL=""; _POST_NOID=""; _PATCH_FAIL=""; _PATCH_NOOP=""
     _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""; _FIELDS_UNREADABLE=""
     _POST_UNREADABLE=""; _GET_TASK_UNREADABLE=""
+    _CT_FORCE_HTTP=""; _CT_FORCE_BODY=""; _CT_UNREADABLE=""; _CT_REFIMPACT=""
+    _CT_REFIMPACT_SHIFT=""; _CT_TYPE_MOVED=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -297,6 +312,160 @@ kb_api() {
             jq -c --argjson id "$id" '{data: (map(select(.id == $id)) | .[0])}' "$_BOARD" ;;
         *) printf '{"data":null}' ;;
     esac
+}
+
+
+# The conversion route lives on kb_api_status (status + body, always rc 0), so it needs
+# its own stub — and it is MODELLED, not canned: the option rules, the pair matrix, the
+# compare-and-swap and the offender scan below are transcribed from the server's own
+# CustomFieldMutator, so an assertion here fails against the SERVER's rule rather than
+# against a fixture somebody wrote to match the client. That is the whole point of this
+# rewrite: the client is supposed to have stopped re-deriving these.
+kb_api_status() {
+    local method="$1" path="$2" body="${3:-}" n id key from to opts ft ack ids carriers
+    echo "$method $path" >> "$_CALLS"
+    case "$method $path" in
+        "POST /custom_fields/"*"/change-type.json")
+            # The call log IS the counter: a $()-subshell increment cannot survive back
+            # to this shell, which is why every side effect in this file is a file.
+            n="$(_calls 'POST /custom_fields')"
+            printf '%s' "$body" > "$TMP/ct-body-$n.json"
+            id="${path#/custom_fields/}"; id="${id%/change-type.json}"
+            [[ -z "$_CT_FORCE_HTTP" ]] || { printf '%s\n%s' "$_CT_FORCE_HTTP" "$_CT_FORCE_BODY"; return 0; }
+            # A concurrent conversion that committed between the caller's field read and
+            # this write — the exact race from_type exists to catch.
+            if [[ -n "$_CT_TYPE_MOVED" ]]; then
+                jq -c --arg t "$_CT_TYPE_MOVED" 'map(.type = $t)' "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+            fi
+            key="$(jq -r --argjson id "$id" 'map(select(.id == $id)) | .[0].key' "$_FIELDS")"
+            from="$(jq -r --argjson id "$id" 'map(select(.id == $id)) | .[0].type' "$_FIELDS")"
+            to="$(jq -r '.type' <<<"$body")"
+            opts="$(jq -c '.options // empty' <<<"$body")"
+
+            # assertOptionsMatchTarget, verbatim in its three refusals.
+            if [[ -n "$opts" && "$from" == "$to" ]]; then
+                _ct_422 "$id" "$key" "$from" "$to" options \
+                    "This request does not change the type, so it is an options edit — send it to PATCH /api/v3/custom_fields/{customField}.json."
+                return 0
+            fi
+            if [[ -n "$opts" && "$to" != "enum" && "$to" != "multi_select" ]]; then
+                _ct_422 "$id" "$key" "$from" "$to" options \
+                    "Options are not accepted when converting to $to; the stored options column is left exactly as it is."
+                return 0
+            fi
+            if [[ -z "$opts" && ( "$to" == "enum" || "$to" == "multi_select" ) \
+                  && "$from" != "enum" && "$from" != "multi_select" ]]; then
+                _ct_422 "$id" "$key" "$from" "$to" options \
+                    "Options are required when converting to $to, and are never inherited from the stored column — create permits an uninterpreted options array on any type, so inheriting one would silently decide which values become offenders."
+                return 0
+            fi
+
+            # The CAS, before the rails and before any scan.
+            ft="$(jq -r '.from_type // empty' <<<"$body")"
+            if [[ -n "$ft" && "$ft" != "$from" ]]; then
+                printf '412\n%s' "$(jq -nc --arg a "$from" --arg e "$ft" \
+                    '{message:"Custom field type has changed since you read it.", actual:$a, expected:$e}')"
+                return 0
+            fi
+
+            # The no-op: same type, no scan, no write.
+            if [[ "$from" == "$to" ]]; then
+                _ct_200 "$id" "$from" "$to" 0
+                return 0
+            fi
+
+            # P1: boolean is terminal in both directions — a PAIR refusal, decided
+            # before a single task row is read, so it carries NO meta.offenders.
+            if [[ "$to" == "boolean" || "$from" == "boolean" ]]; then
+                printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" \
+                    '("Cannot convert a \($f) custom field to \($t): deciding which values mean true needs a truth table the server does not define. Edit the values, or create a new field.") as $m
+                     | {message:$m, errors:{type:[$m]}, meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t}}')"
+                return 0
+            fi
+
+            # Phase 1's ref-impact step (step 4): the ids are declared by the knob, but
+            # the RULE is the server's — refuse unless the caller enumerated exactly the
+            # set this scan derived, and refuse again if that set moved.
+            if [[ -n "$_CT_REFIMPACT" ]]; then
+                ids="$(printf '%s' "$_CT_REFIMPACT" | jq -Rc 'split(" ") | map(tonumber)')"
+                ack="$(jq -c '.acknowledge_ref_impact // empty' <<<"$body")"
+                if [[ -z "$ack" ]]; then
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" \
+                        '("\($ids|length) card(s) would have their external-reference correlation moved by this conversion. Nothing was changed. To proceed, re-send with `acknowledge_ref_impact` listing exactly these card ids.") as $m
+                         | {message:$m, errors:{type:[$m]},
+                            meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
+                                  offender_count:($ids|length), offenders_truncated:false,
+                                  offenders:($ids | map({task_id:., value:"1", category:"ref_impact",
+                                                         reason:"This conversion changes the card external-reference correlation.",
+                                                         refs_before:["1|github_pr|acme/widgets|15"],
+                                                         refs_after:["1|github_pr|acme/widgets|1"]})),
+                                  ref_impact_task_ids:$ids}}')"
+                    return 0
+                fi
+                if [[ -n "$_CT_REFIMPACT_SHIFT" || "$ack" != "$ids" ]]; then
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" --argjson ack "$ack" \
+                        '("The acknowledged cards no longer match the cards whose correlation this conversion would move — the set grew or changed since the preview. Nothing was changed. Re-run the preview and confirm the set it reports.") as $m
+                         | {message:$m, errors:{acknowledge_ref_impact:[$m]},
+                            meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
+                                  offender_count:0, offenders_truncated:false, offenders:[],
+                                  acknowledged:$ack, ref_impact_task_ids:$ids}}')"
+                    return 0
+                fi
+            fi
+
+            # Phase 1's cast-acceptance step (step 3), for the one target these fixtures
+            # exercise: a `number` target refuses a value that is not canonical numeric
+            # text. Every offender is named at once — the refusal IS the preflight.
+            if [[ "$to" == "number" ]]; then
+                local bad
+                bad="$(jq -c --arg k "$key" '[ .[] | select((.payload // {}) | has($k))
+                        | select((.payload[$k] | tostring | test("^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$")) | not)
+                        | {task_id: .id, value: (.payload[$k] | tostring),
+                           category: "target_rejects", reason: "Must be a number."} ]' "$_BOARD")"
+                if [[ "$(jq 'length' <<<"$bad")" -gt 0 ]]; then
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson off "$bad" \
+                        '("\($off|length) card values block this conversion. Nothing was changed.") as $m
+                         | {message:$m, errors:{type:[$m]},
+                            meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
+                                  offender_count:($off|length), offenders_truncated:false, offenders:$off}}')"
+                    return 0
+                fi
+            fi
+
+            [[ -z "$_CT_UNREADABLE" ]] || { printf '200\n<html>502 Bad Gateway</html>'; return 0; }
+
+            # ---- phase 2: the definition AND every carrier, in one step ------------
+            carriers="$(jq --arg k "$key" '[ .[] | select((.payload // {}) | has($k)) ] | length' "$_BOARD")"
+            jq -c --arg k "$key" --arg t "$to" '
+                map(if ((.payload // {}) | has($k)) then
+                        .payload[$k] = (.payload[$k] as $v
+                            | if $t == "multi_select" then (if ($v|type) == "array" then $v else [($v|tostring)] end)
+                              elif ($v|type) == "array" then (if ($v|length) == 1 then $v[0] else $v end)
+                              elif $t == "number" then (if ($v|type) == "number" then $v else ($v|tonumber) end)
+                              else ($v|tostring) end)
+                    else . end)' "$_BOARD" > "$TMP/b.tmp" && mv "$TMP/b.tmp" "$_BOARD"
+            jq -c --argjson id "$id" --arg t "$to" --argjson o "${opts:-null}" \
+                'map(if .id == $id then .type = $t | (if $o == null then . else .options = $o end) else . end)' \
+                "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+            _ct_200 "$id" "$from" "$to" "$carriers" ;;
+        *) printf '000\nkb_api_status: the stub was called on an unmodelled route: %s %s' "$method" "$path" ;;
+    esac
+}
+# _ct_200 <field-id> <from> <to> <converted>: the CustomFieldResource + its meta.
+_ct_200() {
+    printf '200\n%s' "$(jq -c --argjson id "$1" --arg f "$2" --arg t "$3" --argjson n "$4" \
+        'map(select(.id == $id)) | .[0] | {data: ., meta: {from_type: $f, to_type: $t, converted_task_count: $n}}' "$_FIELDS")"
+}
+# _ct_422 <field-id> <key> <from> <to> <error-key> <message>: the option-rule refusal.
+# MEASURED on the sandbox instance: `assertOptionsMatchTarget` throws a PLAIN Laravel
+# ValidationException, which renders `{message, errors}` and **no `meta` key at all** —
+# unlike the two refusals CustomFieldTypeConversionException renders, which both carry
+# meta. So there are THREE 422 shapes, not two, and the field ids handed in here are
+# deliberately unused: a fixture that invented a meta the server does not send is what
+# let the client report this refusal as something it is not.
+# shellcheck disable=SC2317  # positional 1-4 are kept for call-site symmetry with the meta-carrying arms
+_ct_422() {
+    printf '422\n%s' "$(jq -nc --arg ek "$5" --arg m "$6" '{message:$m, errors:{($ek):[$m]}}')"
 }
 
 _F_DL_STR='[{"id":91,"board_id":1,"key":"dl_number","label":"DL Number","type":"string","options":null}]'
@@ -444,310 +613,373 @@ rc=0; _kbc_field_delete --field dl_number >/dev/null 2>&1 || rc=$?
 eq "control: complete read, same zero numerator → rc 0"       "0"    "$rc"
 eq "control: …and the DELETE IS issued"                       "1"    "$(_calls DELETE)"
 
-echo "-- retype — no-op when already the target type --"
+echo "-- retype — ONE atomic call on the server's conversion route --"
+# The whole client-side sequence (capture → DELETE → recreate → restamp → verify) is
+# GONE, and its absence is what the four call-count assertions below pin: a re-grown
+# delete-and-recreate would still convert the fake's board and still report success,
+# so only the calls it makes can witness which design is running.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+rc=0; OUT="$(_kbc_field_retype --field dl_number --to string 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "retype number -> string → rc 0"                   "0"    "$rc"
+eq "…issues exactly ONE change-type POST"             "1"    "$(_calls 'POST /custom_fields')"
+eq "…and NO DELETE — nothing is deleted any more"     "0"    "$(_calls DELETE)"
+eq "…no create POST either"                           "0"    "$(_calls 'POST /boards')"
+eq "…and no per-card PATCH: the server converted them" "0"   "$(_calls PATCH)"
+eq "…nor any board read (there is no client census)"  "0"    "$(_calls FETCH)"
+eq "…the body carries the target type"                '"string"' "$(jq -c '.type' "$TMP/ct-body-1.json")"
+eq "…and ALWAYS from_type — the CAS is free here"     '"number"' "$(jq -c '.from_type' "$TMP/ct-body-1.json")"
+eq "…with no options key (none was asked for)"        "false" "$(jq -c 'has("options")' "$TMP/ct-body-1.json")"
+eq "…and nothing acknowledged"                        "false" "$(jq -c 'has("acknowledge_ref_impact")' "$TMP/ct-body-1.json")"
+eq "…the definition IS the target type"               '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+eq "…key and label survive the conversion"            '["dl_number","DL Number"]' "$(jq -c '[.[0].key,.[0].label]' "$_FIELDS")"
+eq "…card 7's value is converted, as a JSON string"   '"1"'  "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+eq "…and its sibling payload key is untouched"        "5"    "$(jq -c '.[0].payload.other' "$_BOARD")"
+eq "…the success line reports the SERVER's count"     "true" "$(has 'converted 2 card value(s) in the SAME transaction' "$ERR")"
+eq "…and stdout echoes the converted field row"       '"string"' "$(jq -c '.type' <<<"$OUT")"
+
+echo "-- retype — the same-type no-op is the SERVER's, not a client short-circuit --"
 _seed "$_F_DL_STR" "$_B_MIXED"
 rc=0; OUT="$(_kbc_field_retype --field dl_number --to string 2>"$TMP/e")" || rc=$?
 ERR="$(cat "$TMP/e")"
-eq "retype to the CURRENT type → rc 0"               "0"    "$rc"
-eq "…says it is already that type"                   "true" "$(has "already type 'string'" "$ERR")"
-eq "…echoes the field row on stdout"                 '"dl_number"' "$(jq -c '.key' <<<"$OUT")"
-eq "…issues no DELETE"                               "0"    "$(_calls DELETE)"
-eq "…and does not even read the board"               "0"    "$(_calls FETCH)"
+eq "retype to the CURRENT type → rc 0"                "0"    "$rc"
+# The call is the point: a client-side "already that type" arm would answer rc 0 with
+# an identical message and no request — and would then be WRONG the moment --options
+# rides along, which the server answers as an options edit sent to the wrong route.
+eq "…still makes the call"                            "1"    "$(_calls 'POST /custom_fields')"
+eq "…reports that the server converted nothing"       "true" "$(has 'the server converted nothing (no scan, no write)' "$ERR")"
+eq "…never claims a conversion happened"              "false" "$(has 'in the SAME transaction' "$ERR")"
+eq "…echoes the field row on stdout"                  '"dl_number"' "$(jq -c '.key' <<<"$OUT")"
+eq "…and writes no card"                              "0"    "$(_calls PATCH)"
 
-echo "-- retype — the full ordered sequence, with --restamp-dl --"
+echo "-- retype — --options is a PASSTHROUGH; every option rule is the server's --"
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; _kbc_field_retype --field severity --to multi_select --options low,high >/dev/null 2>&1 || rc=$?
+eq "enum -> multi_select with --options → rc 0"       "0"    "$rc"
+eq "…the CSV reaches the wire as the server's [{value}] objects" '[{"value":"low"},{"value":"high"}]' \
+   "$(jq -c '.options' "$TMP/ct-body-1.json")"
+eq "…and the definition carries them"                 '[{"value":"low"},{"value":"high"}]' "$(jq -c '.[0].options' "$_FIELDS")"
+
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; _kbc_field_retype --field severity --to multi_select >/dev/null 2>&1 || rc=$?
+eq "enum -> multi_select WITHOUT --options → rc 0 (server carries them over)" "0" "$rc"
+eq "…and the client sends no options key at all"      "false" "$(jq -c 'has("options")' "$TMP/ct-body-1.json")"
+eq "…the labels the definition carried are still there" '"Low"' "$(jq -c '.[0].options[0].label' "$_FIELDS")"
+
+# THE TWO REFUSALS THE CLIENT USED TO OWN. Both were client-side guards (a
+# takes-options gate and a []-blind emptiness test); both are now the server's, and
+# the assertion that carries the change is that the request REACHES THE WIRE and the
+# caller reads the SERVER's wording. An rc-only check cannot: the old refusals were
+# rc 2 and these are rc 1, but a re-grown client guard would simply move the rc back.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to string --options a,b 2>&1 >/dev/null)" || rc=$?
+eq "a SCALAR target carrying --options → rc 1"        "1"    "$rc"
+eq "…the request WAS made (no client re-derivation)"  "1"    "$(_calls 'POST /custom_fields')"
+eq "…and the server's own message is what is read"    "true" \
+   "$(has 'Options are not accepted when converting to string' "$ERR")"
+eq "…never the client's old 'silent no-effect' line"  "false" "$(has 'never interprets it' "$ERR")"
+# The option rules throw a PLAIN ValidationException — `{message, errors}` with NO meta —
+# so a client that discriminates on `meta.offenders` alone falls into its PAIR-refusal arm
+# and tells the operator that string -> string carries no conversion, which is a wrong claim
+# about the server AND sends them to fix the wrong thing. Measured live on the sandbox.
+eq "…and is NOT mis-reported as a type-pair refusal"  "false" "$(has 'refused on the TYPE PAIR' "$ERR")"
+eq "…it is named as a request the server rejected as invalid" "true" \
+   "$(has 'REFUSED this request as invalid' "$ERR")"
+
+_seed "$_F_NOTE_EMPTYOPTS" '[{"id":7,"payload":{"note":"x"}}]'
+rc=0; ERR="$(_kbc_field_retype --field note --to enum 2>&1 >/dev/null)" || rc=$?
+eq "an option target from a NON-option source, no --options → rc 1" "1" "$rc"
+eq "…the request WAS made"                            "1"    "$(_calls 'POST /custom_fields')"
+eq "…and the server says options are never inherited" "true" \
+   "$(has 'never inherited from the stored column' "$ERR")"
+eq "…never the client's old 'never invents them' line" "false" "$(has 'never invents them' "$ERR")"
+eq "…and is NOT mis-reported as a type-pair refusal"  "false" "$(has 'refused on the TYPE PAIR' "$ERR")"
+eq "…and the definition is untouched"                 '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+echo "-- retype — 412: the field's type moved under the run (the free CAS) --"
+# from_type is what makes this observable at all: the fake converts the definition
+# out from under the caller between its field read and this write, exactly as a
+# racing conversion would. With from_type dropped from the body the same race is a
+# SILENT conversion of a definition this run never saw.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_TYPE_MOVED="date"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "a type that moved under the run → rc 1"           "1"    "$rc"
+eq "…reported as its OWN outcome"                     "true" "$(has 'CHANGED UNDER YOU' "$ERR")"
+eq "…naming both sides of the compare-and-swap"       "true" \
+   "$(has "the board says 'date' where this call was sent against 'number'" "$ERR")"
+eq "…never as a card-value refusal"                   "false" "$(has 'block this conversion' "$ERR")"
+eq "…and the definition is left as the racer set it"  '"date"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+echo "-- retype — 413: the board is over the server's scan rail --"
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_FORCE_HTTP=413
+_CT_FORCE_BODY='{"message":"This board has 41000 cards, over the 20000-card scan rail for a type change (a resource rail, not a business limit - the scan holds row locks for its whole duration). Run it operator-supervised and uncapped: php artisan kanban:change-custom-field-type 91 --to=string --actor=<user id>."}'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "over the scan rail → rc 1"                        "1"    "$rc"
+eq "…named as a RESOURCE rail, not a refusal of the conversion" "true" "$(has 'RESOURCE rail' "$ERR")"
+# The escape hatch rides in the server's message, so the raw body has to reach the
+# caller: paraphrasing the refusal would drop the only command that finishes the job.
+eq "…and the artisan escape hatch reaches the caller" "true" \
+   "$(has 'php artisan kanban:change-custom-field-type 91 --to=string' "$ERR")"
+eq "…nothing was written"                             '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+echo "-- retype — 404: the definition was deleted concurrently --"
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_FORCE_HTTP=404
+_CT_FORCE_BODY='{"message":"Not Found"}'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "a concurrent DELETE → rc 1"                       "1"    "$rc"
+eq "…says the field is GONE, caught under the row lock" "true" "$(has 'is GONE' "$ERR")"
+eq "…and never reports it as a card-value refusal"    "false" "$(has 'block this conversion' "$ERR")"
+
+echo "-- retype — the two 422s are told apart by meta.offenders --"
+# A PAIR refusal: no conversion exists between these types at all (boolean needs a
+# truth table the server does not define), decided before a single task row is read.
+_seed "$_F_DL_STR" "$_B_MIXED"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to boolean 2>&1 >/dev/null)" || rc=$?
+eq "a pair with no conversion → rc 1"                 "1"    "$rc"
+eq "…is reported as a TYPE PAIR refusal"              "true" "$(has 'refused on the TYPE PAIR' "$ERR")"
+eq "…stating no card is at fault"                     "true" "$(has 'nothing on the board is at fault' "$ERR")"
+eq "…never as N cards blocking it"                    "false" "$(has 'block this conversion' "$ERR")"
+eq "…and the server's own reason is surfaced"         "true" "$(has 'needs a truth table the server does not define' "$ERR")"
+
+# An OFFENDER refusal: the pair exists, named cards block it, and the whole board was
+# scanned to say so — which is why there is no separate check mode.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-number"}},{"id":9,"payload":{"dl_number":"also bad"}},{"id":8,"payload":{"dl_number":"12"}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "card values blocking the conversion → rc 1"       "1"    "$rc"
+eq "…names EVERY offender, with category and reason"  "true" \
+   "$(has 'card 7 [target_rejects] Must be a number. — value: not-a-number' "$ERR")"
+eq "…including the second, in the SAME refusal"       "true" \
+   "$(has 'card 9 [target_rejects] Must be a number. — value: also bad' "$ERR")"
+eq "…and calls that refusal the preflight"            "true" "$(has 'refusal IS the preflight' "$ERR")"
+eq "…nothing was written: the definition stands"      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+eq "…and the castable card is untouched too"          '"12"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
+
+# The server CAPS the list, so a truncated report must say so — otherwise "2 cards
+# block this" reads as the whole population when it is a sample of 60.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_FORCE_HTTP=422
+_CT_FORCE_BODY='{"message":"60 card values block this conversion. Nothing was changed.","errors":{"type":["60 card values block this conversion. Nothing was changed."]},"meta":{"custom_field_id":91,"key":"dl_number","from_type":"string","to_type":"number","offender_count":60,"offenders_truncated":true,"offenders":[{"task_id":42,"value":"x","category":"target_rejects","reason":"Must be a number."},{"task_id":43,"value":"y","category":"source_nonconformant","reason":"Must be a string."}]}}'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "a capped offender list → rc 1"                    "1"    "$rc"
+eq "…says how many of how many are named"             "true" "$(has 'the server caps the list: 2 of 60 offender(s) are named above' "$ERR")"
+eq "…and still reports the true count"                "true" "$(has '60 card value(s) block this conversion' "$ERR")"
+
+# A 422 whose body is valid JSON but NOT an object. Every arm below the readability
+# test indexes the body, so a shape test that only asks "is this JSON" hands a scalar
+# to `has("meta")` and lands in an arm that CLAIMS things — "no card value was
+# examined" — about a refusal it never read. The same assumption about body shape is
+# what the live probe caught in the meta discriminator, so it is tested here rather
+# than assumed away.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_FORCE_HTTP=422
+_CT_FORCE_BODY='"just a string"'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "a 422 body that is JSON but not an object → rc 1"  "1"     "$rc"
+eq "…claims nothing about which rule refused it"       "true"  "$(has 'no refusal could be read out of the body' "$ERR")"
+eq "…and never claims no card value was examined"      "false" "$(has 'no card value was examined' "$ERR")"
+eq "…leaks no raw jq parse error"                      "false" "$(has 'parse error' "$ERR")"
+
+echo "-- retype — the ref-impact handshake is TWO calls, and the first is never skipped --"
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "a ref-impact refusal without the flag → rc 1"     "1"    "$rc"
+eq "…exactly ONE call"                                "1"    "$(_calls 'POST /custom_fields')"
+eq "…the ids the server derived are printed"          "true" "$(has 'would MOVE: 7, 9' "$ERR")"
+eq "…the opt-in is NAMED, not performed"              "true" "$(has 're-run with --accept-ref-impact' "$ERR")"
+eq "…and nothing was written"                         '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --accept-ref-impact 2>&1 >/dev/null)" || rc=$?
+eq "--accept-ref-impact → rc 0"                       "0"    "$rc"
+eq "…makes TWO calls: the flag never skips the preview" "2"  "$(_calls 'POST /custom_fields')"
+# The load-bearing pair. The server re-derives the set under the row lock and refuses
+# one that changed, so acknowledging a set this client GUESSED would either be refused
+# or — if it happened to match — would launder the one gate that makes a correlation
+# move deliberate. The first body must acknowledge nothing; the second must carry
+# exactly what the FIRST call reported.
+eq "…the FIRST body acknowledges nothing"             "false" "$(jq -c 'has("acknowledge_ref_impact")' "$TMP/ct-body-1.json")"
+eq "…the SECOND carries exactly the ids that call reported" '[7,9]' \
+   "$(jq -c '.acknowledge_ref_impact' "$TMP/ct-body-2.json")"
+eq "…and still carries the same type + CAS"           '["number","string"]' \
+   "$(jq -c '[.type,.from_type]' "$TMP/ct-body-2.json")"
+eq "…the run names the cards whose correlation moved" "true" "$(has 'card 7: 1|github_pr' "$ERR")"
+eq "…and the conversion landed"                       '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+# The set moved between the preview and the acknowledgement: the server refuses, and
+# that refusal must reach the caller unlaundered — re-sending the NEW set from inside
+# this run would make the flag mean "accept whatever moves", which is the whole thing
+# the handshake exists to prevent.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+_CT_REFIMPACT_SHIFT=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --accept-ref-impact 2>&1 >/dev/null)" || rc=$?
+eq "an acknowledged set that no longer matches → rc 1" "1"   "$rc"
+eq "…stops at TWO calls (no third, self-answering, try)" "2" "$(_calls 'POST /custom_fields')"
+eq "…and the server's refusal is what is read"        "true" "$(has 'the set grew or changed since the preview' "$ERR")"
+eq "…nothing was written"                             '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+# The flag is inert where there is nothing to acknowledge — it can never ADD a call.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+rc=0; _kbc_field_retype --field dl_number --to string --accept-ref-impact >/dev/null 2>&1 || rc=$?
+eq "--accept-ref-impact on a clean conversion → rc 0" "0"    "$rc"
+eq "…and makes exactly ONE call"                      "1"    "$(_calls 'POST /custom_fields')"
+
+echo "-- retype — a conversion 2xx whose body nothing can be read out of --"
+# kb_api decides success on the status class, so this arrives as a SUCCESS: the
+# conversion LANDED and this run cannot say what it landed as. A bare jq here would
+# exit 5 with jq's own parse error; through kb_parse_resp it is the verb's own arm.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_UNREADABLE=1
+rc=0; OUT="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "an unreadable conversion echo → rc 1, not jq's 5" "1"     "$rc"
+eq "…calls the conversion UNCONFIRMED"                "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "…leaks no raw jq parse error"                     "false" "$(has 'parse error' "$ERR")"
+eq "…prints no field row on stdout"                   ""      "$OUT"
+# It must not restamp: the pass is scoped to a conversion this run never read.
+eq "…and does NOT run the --restamp-dl pass"          "0"     "$(_calls PATCH)"
+eq "…nor even read the board for it"                  "0"     "$(_calls FETCH)"
+eq "…while saying a re-run is safe and finishes it"   "true"  "$(has 'Re-run this exact command' "$ERR")"
+
+echo "-- retype --restamp-dl — the post-conversion canonicalization pass --"
+# The conversion alone leaves the bare int 1 as the STRING "1" (the cast matrix's text
+# rule for a number source is json_encode), not "DL-0001". Correlation survives that,
+# but a custom-field DSL filter spelled DL-0001 string-misses it — so this pass runs
+# AFTER the conversion, through the one canonical DL renderer.
 _seed "$_F_DL_NUM" "$_B_MIXED"
 rc=0; OUT="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>"$TMP/e")" || rc=$?
 ERR="$(cat "$TMP/e")"
-eq "retype number -> string → rc 0"                  "0"    "$rc"
-eq "…CAPTURES one line per populated card on stdout" "2"    "$(jq -s 'length' <<<"$OUT")"
-eq "…each capture carries the pre-mutation value"    "1"    "$(jq -s -r '.[0].from' <<<"$OUT")"
-eq "--restamp-dl canonicalizes the bare int 1"       '"DL-0001"' "$(jq -s -c '.[0].to' <<<"$OUT")"
-eq "…and the bare int 42"                            '"DL-0042"' "$(jq -s -c '.[1].to' <<<"$OUT")"
-eq "…reports restamped and verified N/N"             "true" "$(has 'restamped and verified 2/2' "$ERR")"
-eq "…the DELETE precedes the recreate"               "DELETE POST " \
-   "$(grep -E '^(DELETE|POST) ' "$_CALLS" | awk '{print $1}' | tr '\n' ' ')"
-eq "…exactly ONE definition survives"                "1"    "$(jq 'length' "$_FIELDS")"
-eq "…and it is the target type"                      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
-eq "…carrying the SAME key"                          '"dl_number"' "$(jq -c '.[0].key' "$_FIELDS")"
-eq "…and the SAME label"                             '"DL Number"' "$(jq -c '.[0].label' "$_FIELDS")"
-eq "…card 7's value is RESTAMPED canonical"          '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
-eq "…as a JSON string, not a number (caveat A)"      '"string"'  "$(jq -c '.[0].payload.dl_number | type' "$_BOARD")"
-eq "…card 9 likewise"                                '"DL-0042"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
-# The per-key write contract, asserted on the BODY. The fake merges per-key exactly
-# as the v3 route does, so a body that carried the whole payload — or dropped the
-# sibling key — would leave the merged board reading identical; only the request can
-# witness it. Card 7 is the one carrying both keys.
-eq "…the restamp PATCH body is FLAT, one key deep"   '{"payload":{"dl_number":"DL-0001"}}' \
+eq "number -> string --restamp-dl → rc 0"             "0"    "$rc"
+eq "…card 7's value is canonical"                     '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+eq "…as a JSON string"                                '"string"'  "$(jq -c '.[0].payload.dl_number | type' "$_BOARD")"
+eq "…card 9 likewise"                                 '"DL-0042"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
+# The per-key write contract, asserted on the BODY: the fake merges per-key exactly as
+# the v3 route does, so a body that carried the whole payload would leave the merged
+# board reading identical. Only the request can witness it.
+eq "…the restamp PATCH body is FLAT, one key deep"    '{"payload":{"dl_number":"DL-0001"}}' \
    "$(jq -c . "$TMP/task-patch-7.json")"
-eq "…so card 7's SIBLING payload key survives"       "5"    "$(jq -c '.[0].payload.other' "$_BOARD")"
-eq "…and card 8, never restamped, is not written at all" "false" \
+eq "…so card 7's sibling payload key survives"        "5"    "$(jq -c '.[0].payload.other' "$_BOARD")"
+eq "…and card 8, carrying no dl_number, is never written" "false" \
    "$( [[ -f "$TMP/task-patch-8.json" ]] && echo true || echo false )"
+eq "…the pass reports both counts"                    "true" \
+   "$(has '2 of 2 card value(s) canonicalized and verified, 0 already canonical' "$ERR")"
+eq "…and the conversion is still reported separately" "true" "$(has 'in the SAME transaction' "$ERR")"
 
-# An UNPOPULATED retype still runs the whole sequence — the empty-plan path, which
-# --restamp-dl's per-row loop and the verify loop both have to survive at length 0.
-_seed "$_F_DL_NUM" '[{"id":8,"payload":{"other":5}}]'
-rc=0; OUT="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>"$TMP/e")" || rc=$?
-ERR="$(cat "$TMP/e")"
-eq "retype of an UNPOPULATED field → rc 0"           "0"    "$rc"
-eq "…captures nothing on stdout"                     ""     "$OUT"
-eq "…and reports 0/0 rather than staying silent"     "true" "$(has 'restamped and verified 0/0' "$ERR")"
-eq "…the definition IS retyped"                      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+# Idempotence: a re-run canonicalizes nothing and WRITES nothing. The census read is
+# an authoritative board read, so an already-canonical card is measured, not assumed.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"DL-0001"}},{"id":9,"payload":{"dl_number":"DL-0042"}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "a re-run over canonical values → rc 0"            "0"    "$rc"
+eq "…issues NO task PATCH at all"                     "0"    "$(_calls PATCH)"
+eq "…and says so as its own outcome"                  "true" \
+   "$(has '0 of 2 card value(s) canonicalized and verified, 2 already canonical' "$ERR")"
 
-echo "-- retype — a restamp that does not land is caught by the VERIFY --"
-# The whole defect in one case: the PATCH 200s and the value silently does NOT land, so
-# the definition reads migrated while the card still holds a JSON number. Only the
-# re-read (value AND type) can tell those apart.
+# A restamp PATCH that FAILED leaves a card that was never written — never verifiable,
+# and never counted as done (the pass-1 defect that must not come back).
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_PATCH_FAIL="9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "a FAILING restamp PATCH → rc 1"                   "1"    "$rc"
+eq "…names it as a PATCH failure"                     "true" "$(has 'the restamp PATCH FAILED on 1 card(s): 9' "$ERR")"
+eq "…counts only the card that was written"           "true" "$(has '1 of 2 card value(s) canonicalized and verified' "$ERR")"
+eq "…and the conversion itself is still reported as landed" "true" "$(has 'the conversion LANDED' "$ERR")"
+
+# A PATCH that 200s and silently does not land: only the re-read separates "migrated"
+# from "looks migrated".
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _PATCH_NOOP="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "a silently-lost restamp → rc 1"                  "1"    "$rc"
-eq "…names the failing task id"                      "true" "$(has 'NOT verified: 9' "$ERR")"
-eq "…reports the partial count"                      "true" "$(has 'only 1 of 2' "$ERR")"
-eq "…states the definition IS recreated"             "true" "$(has 'IS recreated' "$ERR")"
-eq "…states what the board's state now IS"           "true" "$(has 'carries NO search-index row' "$ERR")"
-eq "…and that re-running retype will NOT finish it"  "true" "$(has 'will NOT do it' "$ERR")"
+eq "a silently-lost restamp → rc 1"                   "1"    "$rc"
+eq "…is reported as read back DIFFERENT"              "true" "$(has 'read back a DIFFERENT value on 1 card(s): 9' "$ERR")"
+eq "…and named as a DSL-filter miss"                  "true" "$(has 'DSL filter spelled DL-NNNN will silently skip' "$ERR")"
 
-# The verify compares two `jq -c` ENCODINGS, and that is what carries the JSON type
-# through it: an un-restamped `1` against a target of `"1"` is exactly the shape
-# where a stringifying compare passes on the card the restamp missed (caveat A). No
-# --restamp-dl here on purpose — the plain tostring cast is what makes the two
-# sides stringify identically while remaining different JSON.
-_seed "$_F_DL_NUM" '[{"id":7,"payload":{"dl_number":1}}]'
-_PATCH_NOOP="7"
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
-eq "an un-restamped value that STRINGIFIES equal → rc 1" "1" "$rc"
-eq "…is reported as read back DIFFERENT"             "true" "$(has 'read back a DIFFERENT value on 1 card(s): 7' "$ERR")"
-eq "…and is never counted as verified"               "true" "$(has 'only 0 of 1' "$ERR")"
-
-_seed "$_F_DL_NUM" "$_B_MIXED"
-_PATCH_FAIL="9"
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "a FAILING restamp PATCH → rc 1"                  "1"    "$rc"
-eq "…names the failing PATCH separately"             "true" "$(has 'restamp PATCH failed on 1 card(s): 9' "$ERR")"
-eq "…and still lists it as unverified"               "true" "$(has 'NOT verified: 9' "$ERR")"
-
-echo "-- retype — enum/multi_select: the option set AND its labels cross the retype --"
-# Every option-bearing retype path was uncovered. Two things ride on it: an explicit
-# option LABEL is data the server never re-derives (a recreate that flattens options
-# to values destroys it and still 2xxs), and a SCALAR target must be sent no options
-# at all — `field create` refuses that exact body, and reaching the same POST through
-# the shared primitive must not be the way around its own refusal.
-_seed "$_F_SEV_ENUM" "$_B_SEV"
-rc=0; OUT="$(_kbc_field_retype --field severity --to multi_select 2>"$TMP/e")" || rc=$?
-ERR="$(cat "$TMP/e")"
-eq "retype enum -> multi_select → rc 0"              "0"    "$rc"
-eq "…the recreate POST carries the options BYTE-EXACT, labels included" \
-   '[{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$(jq -c '.options' "$_POST_BODY")"
-eq "…so the surviving definition still has label 'Low'" '"Low"' "$(jq -c '.[0].options[0].label' "$_FIELDS")"
-eq "…and it is the target type"                      '"multi_select"' "$(jq -c '.[0].type' "$_FIELDS")"
-eq "…each scalar value restamps to a ONE-element array" '["low"]' "$(jq -c '.[0].payload.severity' "$_BOARD")"
-eq "…reporting verified 2/2"                         "true" "$(has 'restamped and verified 2/2' "$ERR")"
-# The pre-delete capture is the only record of the labels if the sequence breaks —
-# and no verb here can write one back, so it has to be in the output, not inferred.
-eq "…and the pre-delete CAPTURE records the definition" "true" "$(has 'definition captured: key' "$ERR")"
-eq "…with the option labels verbatim"                "true" \
-   "$(has 'options [{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$ERR")"
-
-_seed "$_F_SEV_ENUM" "$_B_SEV"
-rc=0; ERR="$(_kbc_field_retype --field severity --to string 2>&1 >/dev/null)" || rc=$?
-eq "retype enum -> string → rc 0"                    "0"    "$rc"
-eq "…the recreate POST carries NO options at all"    "false" "$(jq -c 'has("options")' "$_POST_BODY")"
-eq "…the definition is the scalar type"              '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
-eq "…and each value restamps to a plain string"      '"low"' "$(jq -c '.[0].payload.severity' "$_BOARD")"
-
-# A server-returned `options: []` is a NON-EMPTY string, so a string-emptiness test
-# sails past it and the recreate POSTs `options: []` — which the server 422s AFTER
-# the delete, the one genuinely stranded state. The test has to be on LENGTH.
-_seed "$_F_NOTE_EMPTYOPTS" '[{"id":7,"payload":{"note":"x"}}]'
-rc=0; ERR="$(_kbc_field_retype --field note --to enum 2>&1 >/dev/null)" || rc=$?
-eq "string carrying options:[] -> enum → rc 2"       "2"    "$rc"
-eq "…says it never invents an option set"            "true" "$(has 'never invents them' "$ERR")"
-eq "…and mutates NOTHING: no DELETE"                 "0"    "$(_calls DELETE)"
-eq "…and no POST"                                    "0"    "$(_calls POST)"
-
-echo "-- retype — the delete's three failure boards are three different reports --"
-# rc 3 — the DELETE 2xx'd and the confirming re-read failed. The definition is GONE,
-# the index purged, the values orphaned; reporting that as "board UNCHANGED" makes
-# the tool's only actionable line say that nothing happened.
-_seed "$_F_DL_NUM" "$_B_MIXED"
-_FIELDS_FAIL_AFTER_DELETE=1
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
-eq "DELETE 2xx + field-set re-read FAILED → rc 1"    "1"    "$rc"
-eq "…reports the DELETED-and-not-recreated state"    "true" "$(has 'is DELETED and was NOT recreated' "$ERR")"
-eq "…calling the delete UNVERIFIED, not failed"      "true" "$(has 'the delete is UNVERIFIED' "$ERR")"
-eq "…and NEVER claims the board is unchanged"        "false" "$(has 'is UNCHANGED' "$ERR")"
-eq "…names the orphaned value count"                 "true" "$(has '2 card payload value(s) survive' "$ERR")"
-eq "…and prints the same finishing create command"   "true" \
-   "$(has "field create --key 'dl_number' --label 'DL Number' --type string" "$ERR")"
-eq "…with no recreate attempted"                     "0"    "$(_calls POST)"
-
-# rc 4 — the DELETE 2xx'd and the field is STILL defined. THIS board is the intact
-# one, and the recreate must not be attempted (a POST on a live key 422s on the
-# duplicate). It is also what pins the delete-verification re-read itself: mutated to
-# `if false`, the run proceeds to the POST and both assertions below red.
-_seed "$_F_DL_NUM" "$_B_MIXED"
-_DELETE_NOOP=1
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
-eq "DELETE 2xx but the field is STILL defined → rc 1" "1"   "$rc"
-eq "…says exactly that, naming the field id"          "true" "$(has "field 'dl_number' (id 91) is STILL defined" "$ERR")"
-eq "…reports the board as UNCHANGED"                  "true" "$(has 'the board is UNCHANGED' "$ERR")"
-eq "…never reports the field as deleted"              "false" "$(has 'is DELETED' "$ERR")"
-eq "…and does NOT attempt the recreate"               "0"    "$(_calls POST)"
-eq "…the definition stands, still its old type"       '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
-
-echo "-- retype — a card whose restamp PATCH failed is never 'verified' --"
-# The lethal shape is an IDENTITY cast (string->url/date, enum->string): the stored
-# value ALREADY equals the plan's target, so a read-back-only verify passes on a card
-# that was never written — and on an identity cast that write is the only thing the
-# retype does for it (it is what rebuilds the purged index row). Measured on the
-# pre-fix code: rc 0 and "restamped and verified 2/2" on a run with a failed PATCH.
-_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"DL-0001"}},{"id":9,"payload":{"dl_number":"DL-0042"}}]'
-_PATCH_FAIL="9"
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to url 2>&1 >/dev/null)" || rc=$?
-eq "identity cast + a FAILED restamp PATCH → rc 1"   "1"    "$rc"
-eq "…never reports the run as fully verified"        "false" "$(has 'restamped and verified' "$ERR")"
-eq "…counts only the card that was written"          "true" "$(has 'only 1 of 2' "$ERR")"
-eq "…names the unwritten card under the PATCH failure" "true" "$(has 'restamp PATCH failed on 1 card(s): 9' "$ERR")"
-eq "…and lists it as NOT verified"                   "true" "$(has 'NOT verified: 9' "$ERR")"
-eq "…while the card that WAS written kept its value" '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
-
-echo "-- retype — an unreadable verification GET is UNKNOWN state, not a wrong value --"
-# A GET that failed observed NOTHING. Folding it in with the read-back-wrong ids
-# makes the report assert a board state this run never saw ("still holds its OLD
-# value, no index row") about a card that may well be fully migrated.
+# A verification read that could not observe the card is UNKNOWN state — not a wrong
+# value. Folding the two together asserts a board this run never read.
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _GET_TASK_FAIL="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "a failed verification GET → rc 1"                "1"    "$rc"
-eq "…is reported as a FAILED verification read"      "true" "$(has 'the verification GET FAILED on 1 card(s): 9' "$ERR")"
-eq "…whose state is called UNKNOWN"                  "true" "$(has 'state is UNKNOWN' "$ERR")"
-eq "…never claimed to have read back a wrong value"  "false" "$(has 'read back a DIFFERENT value' "$ERR")"
-eq "…with the remediation named idempotent"          "true" "$(has 'idempotent' "$ERR")"
-eq "…and still listed as NOT verified"               "true" "$(has 'NOT verified: 9' "$ERR")"
+eq "a FAILED verification GET → rc 1"                 "1"    "$rc"
+eq "…is reported as an unobserved card"               "true" "$(has 'the verification read could not observe 1 card(s): 9' "$ERR")"
+eq "…whose state is called UNKNOWN"                   "true" "$(has 'their state is UNKNOWN' "$ERR")"
+eq "…never claimed to have read back a wrong value"   "false" "$(has 'read back a DIFFERENT value' "$ERR")"
 
-echo "-- retype — a verification GET that 2xxs with an unreadable body --"
-# The second of the two sites whose tolerant parse nothing else exercises (see the create
-# leg above). This body is a SUCCESS as far as kb_api is concerned — the status class is
-# 2xx — so it reaches the projection, where a bare jq would exit 5 and kill the run AFTER
-# the delete and the restamp, i.e. at the worst possible moment. Through kb_parse_resp it
-# yields empty, which cannot equal the plan's target, so the card is simply not verified.
+# The same arm, reached the other way: a 2xx whose body carries no value. The old
+# code folded this into "read back a DIFFERENT value", which claimed the card still
+# held its old value — a statement about a board nothing had read.
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _GET_TASK_UNREADABLE="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "an unreadable verification GET → rc 1, not jq's 5"  "1"     "$rc"
-eq "…counts only the card it could read back"           "true"  "$(has 'only 1 of 2' "$ERR")"
-eq "…and lists the other as NOT verified"               "true"  "$(has 'NOT verified: 9' "$ERR")"
-eq "…leaks no raw jq parse error"                       "false" "$(has 'parse error' "$ERR")"
-# Control: the run still WROTE both cards — the refusal above is about the read-back only,
-# so a green here is a verification that discriminates, not a retype that stopped working.
-eq "control: …the restamp itself landed on that card"   '"DL-0042"' \
-   "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
+eq "an unreadable verification body → rc 1, not jq's 5" "1"   "$rc"
+eq "…lands in the same UNOBSERVED arm"                "true"  "$(has 'the verification read could not observe 1 card(s): 9' "$ERR")"
+eq "…and claims nothing about that card's value"      "false" "$(has 'read back a DIFFERENT value' "$ERR")"
+eq "…leaks no raw jq parse error"                     "false" "$(has 'parse error' "$ERR")"
+# Control: the write itself DID land, so the refusal above is about the read-back only.
+eq "control: …the restamp landed on that card"        '"DL-0042"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
 
-echo "-- retype — the failure modes that must not strand the board --"
-# An uncastable value is decided BEFORE the delete, so the board is left whole.
-_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-dl"}}]'
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
-eq "an uncastable value → rc 2"                      "2"    "$rc"
-# The id must be named BY THE REFUSAL. A bare `has ": 7"` would also match the capture
-# line and the unverified-list of a run that went ahead — i.e. it stays green with the
-# refusal deleted (measured), so the needle carries the refusal's own wording.
-eq "…names the task id holding it, in the refusal"   "true" \
-   "$(has "cannot be cast to 'number': 7" "$ERR")"
-eq "…says nothing has been mutated"                  "true" "$(has 'Nothing has been mutated' "$ERR")"
-eq "…and no DELETE was issued"                       "0"    "$(_calls DELETE)"
-# Likewise the definition: a COUNT of 1 survives a delete-then-recreate unchanged, so
-# the assertion has to be on the TYPE, which is the thing the refusal protects.
-eq "…and the definition still has its old type"      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
-
-# Seeded from the STRING definition on purpose: against the number definition `--to
-# number` would hit the already-target no-op first, so the zero-DELETE assertion would
-# be carried by that no-op and stay green with this guard deleted (measured).
-_seed "$_F_DL_STR" "$_B_MIXED"
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "--restamp-dl with a non-string target → rc 2"    "2"    "$rc"
-eq "…and issues no request at all"                   "0"    "$(_calls DELETE)"
-
-# EVERY failing id at once. The plan is computed before the delete precisely so the
-# refusal can be COMPLETE while the board is still whole; naming only the first
-# makes the caller re-run — a full board read each time — to discover the second.
-_seed "$_F_DL_NUM" '[{"id":7,"payload":{"dl_number":"nope"}},{"id":9,"payload":{"dl_number":"also-bad"}}]'
+# A value that is not a DL at all cannot be canonicalized — and the conversion has
+# already committed, so this can only be reported, never refused in advance.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-dl"}},{"id":9,"payload":{"dl_number":"42"}}]'
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
-eq "--restamp-dl with TWO uncanonicalizable values → rc 2" "2" "$rc"
-eq "…names the first failing task id, with its value" "true" "$(has "7 ('nope')" "$ERR")"
-eq "…and the second, in the SAME refusal"             "true" "$(has "9 ('also-bad')" "$ERR")"
-eq "…says the board is untouched"                     "true" "$(has 'the board is untouched' "$ERR")"
-eq "…and issues no DELETE"                            "0"    "$(_calls DELETE)"
+eq "a value that is not a DL number → rc 1"           "1"    "$rc"
+eq "…is named with its value, as its own outcome"     "true" "$(has "NOT a DL number, so nothing was written: 7 ('not-a-dl')" "$ERR")"
+eq "…is never counted as canonicalized"               "true" "$(has '1 of 2 card value(s) canonicalized and verified' "$ERR")"
+eq "…that card is left exactly as it was"             '"not-a-dl"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+eq "…and it is never PATCHed"                         "false" "$( [[ -f "$TMP/task-patch-7.json" ]] && echo true || echo false )"
+eq "…while the DL-shaped sibling IS canonicalized"    '"DL-0042"' "$(jq -c '.[1].payload.dl_number' "$_BOARD")"
 
-# The recreate failing after the delete is the one genuinely stranded state. It must
-# name the state AND the exact command that finishes it — the remediation string is a
-# doc surface, and here it is the only record of the label/options to restore.
-_seed "$_F_DL_NUM" "$_B_MIXED"
-_POST_FAIL=1
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
-eq "delete OK + recreate failed → rc 1"              "1"    "$rc"
-eq "…says the field is DELETED and NOT recreated"    "true" "$(has 'is DELETED and was NOT recreated' "$ERR")"
-eq "…names the surviving orphaned value count"       "true" "$(has '2 card payload value(s) survive' "$ERR")"
-eq "…and prints the exact create that finishes it"   "true" \
-   "$(has "field create --key 'dl_number' --label 'DL Number' --type string" "$ERR")"
-eq "…the board really is left without the field"     "0"    "$(jq 'length' "$_FIELDS")"
+_seed "$_F_DL_NUM" '[{"id":8,"payload":{"other":5}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "--restamp-dl with nothing populated → rc 0"       "0"    "$rc"
+eq "…says so rather than staying silent"              "true" "$(has 'no card carries' "$ERR")"
+eq "…and writes no card"                              "0"    "$(_calls PATCH)"
+eq "…the conversion still landed"                     '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
 
-# That command is a doc surface, so the assertion RUNS it rather than reading it: a
-# label holding an apostrophe and option values holding spaces re-parse into
-# different arguments — or die at the shell — unless every word is quoted.
-_seed "$_F_ODD" '[{"id":7,"payload":{"weird":"in progress"}}]'
-_POST_FAIL=1
-rc=0; ERR="$(_kbc_field_retype --field weird --to multi_select 2>&1 >/dev/null)" || rc=$?
-eq "recreate failed on an awkwardly-named field → rc 1" "1" "$rc"
-# `grep -m1`, never `grep | head -1`: under `pipefail` a reader that closes early
-# can leave the writer's SIGPIPE as the pipeline's status, so the assignment would
-# fail under `set -e` for a reason that has nothing to do with the assertion.
-CMD="$(grep -m1 -o 'kbcard --board .*' <<<"$ERR")"
-_ARGV="$TMP/argv"
-kbcard() { printf '%s\n' "$@" > "$_ARGV"; }
-eval "${CMD/--board <board>/--board test}"   # the ONE placeholder an operator fills in
-unset -f kbcard
-eq "…and the printed command PARSES into the intended argv" \
-   "--board|test|field|create|--key|weird|--label|Owner's team|--type|multi_select|--options|in progress,done" \
-   "$(paste -sd'|' "$_ARGV")"
-
-# Option LABELS are not restorable through this CLI at all (create and set-options
-# both default a label to its value), so they are named as a manual step and carried
-# verbatim — silently printing a command that drops them would be the wrong record.
-_seed "$_F_SEV_ENUM" "$_B_SEV"
-_POST_FAIL=1
-rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select 2>&1 >/dev/null)" || rc=$?
-eq "a stranded enum names the labels no verb can restore" "true" \
-   "$(has 'no verb here writes an option LABEL' "$ERR")"
-eq "…carrying them verbatim for the manual step"     "true" \
-   "$(has '[{"value":"low","label":"Low"},{"value":"high","label":"High"}]' "$ERR")"
-
-# An option value holding a comma cannot round-trip through --options (a comma
-# list) at ALL: a printed command carrying it would create a DIFFERENT option set.
-_seed "$_F_COMMA" '[{"id":7,"payload":{"csvish":"a,b"}}]'
-_POST_FAIL=1
-rc=0; ERR="$(_kbc_field_retype --field csvish --to multi_select 2>&1 >/dev/null)" || rc=$?
-eq "an option value holding a comma → no create command is printed" "false" \
-   "$(has 'first re-create it: kbcard' "$ERR")"
-eq "…it says --options cannot express that set"      "true" \
-   "$(has 'which --options (a comma list) cannot express' "$ERR")"
-eq "…and prints the definition as JSON instead"      "true" \
-   "$(has 'options [{"value":"a,b"},{"value":"c"}]' "$ERR")"
-
+# An incomplete board read AFTER the conversion: the pass cannot run over a partial
+# board, and the report must not read as "nothing happened" — the conversion HAS
+# committed at that point, which is the one thing this ordering makes true.
 _seed "$_F_DL_NUM" "$_B_MIXED"
 _FETCH_RC=4
-rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
-eq "retype on an incomplete board read → rc 1"       "1"    "$rc"
-eq "…and issues NO DELETE"                           "0"    "$(_calls DELETE)"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "an incomplete board read under --restamp-dl → rc 1" "1"  "$rc"
+eq "…says the conversion LANDED but the pass did not run" "true" \
+   "$(has 'the conversion LANDED, but --restamp-dl did NOT run' "$ERR")"
+eq "…and no card was rewritten"                       "0"    "$(_calls PATCH)"
+eq "…the definition really IS converted"              '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+
+echo "-- retype — input guards --"
+# --restamp-dl renders the DL-NNNN string form, so a non-string target is refused
+# BEFORE the wire: seeded from the STRING definition on purpose, since against the
+# number definition `--to number` would be the server's no-op and the zero-call
+# assertion would be carried by that instead of by this guard.
+_seed "$_F_DL_STR" "$_B_MIXED"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "--restamp-dl with a non-string target → rc 2"     "2"    "$rc"
+eq "…and issues no request at all"                    "0"    "$(_calls 'POST /custom_fields')"
+eq "…naming the flag's own constraint"                "true" "$(has 'requires --to string' "$ERR")"
 
 _seed "$_F_DL_STR" "$_B_MIXED"
 rc=0; ERR="$(_kbc_field_retype --field nope --to number 2>&1 >/dev/null)" || rc=$?
-eq "retype on an unresolved --field → rc 2"          "2"    "$rc"
-eq "…enumerates the board's defined fields"          "true" "$(has 'defined fields' "$ERR")"
+eq "retype on an unresolved --field → rc 2"           "2"    "$rc"
+eq "…enumerates the board's defined fields"           "true" "$(has 'defined fields' "$ERR")"
+eq "…and issues no request"                           "0"    "$(_calls 'POST /custom_fields')"
+_seed "$_F_DL_STR" "$_B_MIXED"
 rc=0; _kbc_field_retype --field dl_number --to bogus >/dev/null 2>&1 || rc=$?
-eq "retype to an unknown type → rc 2"                "2"    "$rc"
+eq "retype to an unknown type → rc 2"                 "2"    "$rc"
+eq "…before any request"                              "0"    "$(_calls 'POST /custom_fields')"
 rc=0; _kbc_field_retype --to string >/dev/null 2>&1 || rc=$?
-eq "retype with no --field → rc 2"                   "2"    "$rc"
+eq "retype with no --field → rc 2"                    "2"    "$rc"
+rc=0; _kbc_field_retype --field dl_number >/dev/null 2>&1 || rc=$?
+eq "retype with no --to → rc 2"                       "2"    "$rc"
+rc=0; _kbc_field_retype --field dl_number --to string --bogus >/dev/null 2>&1 || rc=$?
+eq "retype with an unknown arg → rc 2"                "2"    "$rc"
+rc=0; _kbc_field_retype --field dl_number --to string --options '' >/dev/null 2>&1 || rc=$?
+eq "retype with an explicitly-empty --options → rc 2" "2"    "$rc"
 rc=0; _kbc_field_delete >/dev/null 2>&1 || rc=$?
-eq "delete with no --field → rc 2"                   "2"    "$rc"
+eq "delete with no --field → rc 2"                    "2"    "$rc"
 
 _summary "kbcard-field-selftest"
