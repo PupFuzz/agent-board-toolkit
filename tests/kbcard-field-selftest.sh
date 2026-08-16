@@ -1173,7 +1173,15 @@ eq "…prints no field row on stdout"                   ""      "$OUT"
 # It must not restamp: the pass is scoped to a conversion this run never read.
 eq "…and does NOT run the --restamp-dl pass"          "0"     "$(_calls PATCH)"
 eq "…nor even read the board for it"                  "0"     "$(_calls FETCH)"
-eq "…while saying a re-run is safe and finishes it"   "true"  "$(has 'Re-run this exact command' "$ERR")"
+# The label used to read "…and finishes it", which was both wider than the assertion
+# under it and wider than the truth: this run has no census at all, so it knows nothing
+# about whether the pass it skipped would finish. What a re-run does is RUN that pass.
+eq "…while naming the re-run as safe"                "true"  "$(has 'Re-run this exact command' "$ERR")"
+eq "…because the conversion half is a no-op"         "true"  "$(has 'answers as a server-side no-op' "$ERR")"
+eq "…and says the re-run RUNS the skipped pass"      "true"  "$(has 'RUNS the --restamp-dl pass this run skipped' "$ERR")"
+eq "…never that it FINISHES it"                      "false" "$(has 'finishes any --restamp-dl pass' "$ERR")"
+eq "…naming the outcome no run of that pass repairs" "true"  \
+   "$(has 'a stored value that is not a DL number is canonicalized by no run of it' "$ERR")"
 
 echo "-- retype --restamp-dl — the post-conversion canonicalization pass --"
 # The conversion alone leaves the bare int 1 as the STRING "1" (the cast matrix's text
@@ -1218,10 +1226,33 @@ eq "…naming both populations"                         "true"  \
    "$(has 'converted 5 card value(s), 3 more than the 2 this board read returns' "$ERR")"
 eq "…and what those cards are"                        "true"  "$(has 'archived and soft-deleted' "$ERR")"
 eq "…and that no re-run reaches them"                 "true"  "$(has 'no re-run reaches the 3 carrier(s)' "$ERR")"
+# This arm already carved out the archived carriers and nothing else. Every visible card
+# here canonicalized, so there is nothing a re-run repairs at all — and the line must not
+# imply otherwise. The notdl carve-out is absent because no card here is one: same
+# conditionality as the sibling control on the PATCH-failure leg.
+eq "…and promises no repair it cannot make"          "true"  \
+   "$(has 'would change NOTHING: nothing reported above is something a re-run acts on' "$ERR")"
+eq "control: …with no non-DL exception, there being none" "false" \
+   "$(has 'NOT-a-DL-number value(s) are not among them' "$ERR")"
+
 # The remainder is REPORTED, not chased: the visible carriers are still canonicalized,
 # and no card outside the census is written (this pass never PATCHes a card it did not read).
 eq "control: the visible carriers were canonicalized" '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
 eq "control: …and only they were written"             "2"     "$(_calls PATCH)"
+
+# BOTH carve-outs at once, which is the only shape that shows they are independent: an
+# out-of-census remainder AND a value no pass canonicalizes. Before this, the line read
+# "finishes the VISIBLE rest" — and the non-DL card is squarely inside the visible set.
+_seed "$_F_DL_NUM" '[{"id":7,"payload":{"dl_number":"not-a-dl"}},{"id":9,"payload":{"dl_number":42}}]'
+_CT_UNSEEN_CARRIERS=3
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "an unseen remainder AND a non-DL value → rc 1"   "1"     "$rc"
+eq "control: both are really reported"               "true"  "$(has 'OUTSIDE THIS PASS ENTIRELY' "$ERR")"
+eq "control: …and the non-DL card by value"          "true"  "$(has "NOT a DL number, so nothing was written: 7 ('not-a-dl')" "$ERR")"
+eq "…the VISIBLE rest is no longer promised"         "false" "$(has 'finishes the VISIBLE rest' "$ERR")"
+eq "…the archived carriers are carved out"           "true"  "$(has 'no re-run reaches the 3 carrier(s) above at all' "$ERR")"
+eq "…and so is the visible card no re-run repairs"   "true"  \
+   "$(has 'The 1 NOT-a-DL-number value(s) are not among them' "$ERR")"
 
 # The same defect at the other end of the census: NOTHING visible carries the key, so the
 # run's line was "no card carries <key> — nothing to canonicalize" at rc 0 — a completeness
@@ -1341,6 +1372,15 @@ eq "…claims UNCERTAINTY, not safety, about the write" "true"  "$(has 'CANNOT s
 eq "…never claims the card was left untouched"        "false" "$(has 'never wrote them' "$ERR")"
 eq "…counts only the card that was written"           "true" "$(has '1 of 2 card value(s) canonicalized and verified' "$ERR")"
 eq "…and the conversion itself is still reported as landed" "true" "$(has 'the conversion LANDED' "$ERR")"
+# THE CARVE-OUT IS CONDITIONAL, and this is what proves it. No card here is a non-DL
+# value, so naming that exception would be describing something that did not happen —
+# the same defect one size down, and the one the offender-cap notice was fixed for.
+# (Contrast the census-scope note, which IS unconditional: that fact holds on every run
+# of this pass on every board, while this one is measured per run.)
+eq "…and names NO non-DL exception, because there is none" "false" \
+   "$(has 'NOT-a-DL-number value(s) are not among them' "$ERR")"
+eq "control: …while still promising the finishable card" "true" \
+   "$(has 'finishes the 1 card(s) above that a re-run can finish' "$ERR")"
 
 # A PATCH that 200s and silently does not land: only the re-read separates "migrated"
 # from "looks migrated".
@@ -1384,6 +1424,34 @@ eq "…is never counted as canonicalized"               "true" "$(has '1 of 2 ca
 eq "…that card is left exactly as it was"             '"not-a-dl"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
 eq "…and it is never PATCHed"                         "false" "$( [[ -f "$TMP/task-patch-7.json" ]] && echo true || echo false )"
 eq "…while the DL-shaped sibling IS canonicalized"    '"DL-0042"' "$(jq -c '.[1].payload.dl_number' "$_BOARD")"
+# THE RE-RUN LINE, ON THE RUN THAT MOTIVATES IT. notdl is the ONLY non-empty bucket
+# here (card 9 canonicalized, nothing failed, nothing unseen), so a re-run repairs
+# NOTHING — kb_dl_canon refuses 'not-a-dl' identically on every pass. The old line said
+# "Re-running this exact command finishes the rest", i.e. told the operator to run a
+# command that provably does nothing, at the one moment they most need to be told the
+# VALUE is what has to change.
+eq "…and the run does NOT promise a re-run finishes it" "false" "$(has 'finishes the' "$ERR")"
+eq "…it says a re-run would change nothing"           "true"  \
+   "$(has 'would change NOTHING: nothing reported above is something a re-run acts on' "$ERR")"
+eq "…and names the non-DL value as the reason"        "true"  \
+   "$(has 'The 1 NOT-a-DL-number value(s) are not among them' "$ERR")"
+eq "…naming what would actually fix it"               "true"  \
+   "$(has 'those need the VALUE corrected, never another run' "$ERR")"
+eq "control: the rc is unchanged by any of that"      "1"     "$rc"
+
+# The same bucket ALONGSIDE one a re-run does repair: the promise must survive, scoped
+# to the count it is true of, and carry the carve-out beside it rather than instead of it.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-dl"}},{"id":9,"payload":{"dl_number":"42"}}]'
+_PATCH_FAIL="9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "a notdl card beside a FAILED PATCH → rc 1"        "1"     "$rc"
+eq "…the promise is scoped to the finishable count"   "true"  \
+   "$(has 'finishes the 1 card(s) above that a re-run can finish' "$ERR")"
+eq "…and never to an unqualified 'the rest'"          "false" "$(has 'finishes the rest' "$ERR")"
+eq "…with the non-DL card carved OUT of that count"   "true"  \
+   "$(has 'The 1 NOT-a-DL-number value(s) are not among them' "$ERR")"
+eq "control: both buckets really were reported"       "true"  \
+   "$(has 'the restamp PATCH FAILED on 1 card(s): 9' "$ERR")"
 
 _seed "$_F_DL_NUM" '[{"id":8,"payload":{"other":5}}]'
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?

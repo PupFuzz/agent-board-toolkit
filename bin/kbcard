@@ -2063,6 +2063,36 @@ _kbc_field_census_scope_note() {
     printf '%s' "⚠ SCOPE: this is a statement about the cards this pass can SEE, not about '$fkey'. The census reads LIVE, NON-ARCHIVED cards only, while the conversion's population is EVERY carrier of the key including archived and soft-deleted ones; those were never read here, and $why. A remainder can be PROVEN by this pass and never ruled out by it."
 }
 
+# _kbc_field_rerun_note <finishable-count> <notdl-count>: the ONE sentence about what
+# re-running actually does, shared by the two arms that print one.
+#
+# "Re-running this exact command finishes the rest" was false in two directions at once.
+# A value that is not a DL number is refused by kb_dl_canon IDENTICALLY on every pass —
+# no re-run has ever written one, and none ever will; it needs the VALUE corrected, not
+# another run — so "the rest" always over-promised whenever that bucket was non-empty.
+# And when it is the ONLY bucket left (reachable: the clean arm above requires all four
+# empty, so one non-empty notdl with nothing else lands here), the line was telling the
+# operator to run a command that provably does nothing.
+#
+# THE CARVE-OUT IS CONDITIONAL, and deliberately not the unconditional treatment
+# _kbc_field_census_scope_note gets two functions up. The difference is what kind of
+# fact each one states: the census scope holds on EVERY run of this pass on every board
+# (it never reads an archived carrier, ever), while a non-DL remainder is a property of
+# THIS board measured on THIS run. Naming an exception that did not occur is the same
+# defect one size down — it is exactly what made the offender-cap notice's "fix these
+# and re-run" wrong for the class it fires on. Invariant facts unconditionally; measured
+# ones only where measured. Do not "harmonize" the two.
+_kbc_field_rerun_note() {
+    local finishable="$1" n_notdl="$2" note
+    if [[ "$finishable" -gt 0 ]]; then
+        note="Re-running this exact command finishes the $finishable card(s) above that a re-run can finish: the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten."
+    else
+        note="Re-running this exact command would change NOTHING: nothing reported above is something a re-run acts on."
+    fi
+    [[ "$n_notdl" -gt 0 ]] && note="$note The $n_notdl NOT-a-DL-number value(s) are not among them: kb_dl_canon refuses the same stored value identically on every pass, so those need the VALUE corrected, never another run."
+    printf '%s' "$note"
+}
+
 # _kbc_field_restamp_dl <key>: --restamp-dl's pass, AFTER a conversion the server
 # has already committed. It is not part of the conversion and cannot be: the cast
 # matrix's text rule for a `number` source is json_encode, so the stored number 1
@@ -2196,6 +2226,10 @@ _kbc_field_restamp_dl() {
         echo "kbcard: --restamp-dl: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical (left unwritten). $(_kbc_field_census_scope_note "$fkey" "$scanned" "$n_conv")" >&2
         return 0
     fi
+    # The buckets a re-run ACTS on. notdl is deliberately not in it (kb_dl_canon refuses
+    # the same value every pass) and neither is unseen (never read), which is what makes
+    # the re-run sentence below able to be true.
+    local finishable=$(( ${#patch_failed[@]} + ${#mismatch[@]} + ${#unread[@]} ))
     echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did not finish: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical." >&2
     if [[ ${#patch_failed[@]} -gt 0 ]]; then
         echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — $(_kbc_unfinished_write_note "a card already holding the canonical form is left unwritten, and one that does not is rewritten and re-read.")" >&2
@@ -2211,10 +2245,10 @@ _kbc_field_restamp_dl() {
     fi
     if [[ "$unseen" -gt 0 ]]; then
         echo "kbcard:   OUTSIDE THIS PASS ENTIRELY: the conversion converted $n_conv card value(s), $unseen more than the $len this board read returns. The server converts every carrier keyed by '$fkey' INCLUDING archived and soft-deleted cards; this census reads neither, so those $unseen value(s) were never read and never written, and this run makes no claim about them. Each still holds what the conversion left it with, and un-archiving or restoring one puts a non-canonical value back into the live set — canonicalize it by making the card visible to a board read and re-running, or server-side." >&2
-        echo "kbcard:   Re-running this exact command finishes the VISIBLE rest — the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten — but no re-run reaches the $unseen carrier(s) above." >&2
+        echo "kbcard:   $(_kbc_field_rerun_note "$finishable" "${#notdl[@]}") And no re-run reaches the $unseen carrier(s) above at all." >&2
         return 1
     fi
-    echo "kbcard:   Re-running this exact command finishes the rest: the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten." >&2
+    echo "kbcard:   $(_kbc_field_rerun_note "$finishable" "${#notdl[@]}")" >&2
     return 1
 }
 
@@ -2345,7 +2379,7 @@ _kbc_field_retype() {
     # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
     # must not go on to restamp, because it has not read which conversion happened.
     if [[ -z "$row" || -z "$to_t" ]]; then
-        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe and finishes any --restamp-dl pass." >&2
+        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe and RUNS the --restamp-dl pass this run skipped. Whether that pass FINISHES is its own outcome, which it reports — a stored value that is not a DL number is canonicalized by no run of it." >&2
         return 1
     fi
     # The server answers a target type equal to the current one as an explicit no-op:
