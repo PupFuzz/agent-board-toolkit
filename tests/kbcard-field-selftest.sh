@@ -209,6 +209,8 @@ _PATCH_NOOP=""     # ids whose PATCH 200s but silently does NOT land the write
 _DELETE_NOOP=""    # the DELETE 2xxs but the definition is STILL there on the re-read
 _FIELDS_FAIL_AFTER_DELETE=""   # the field-index GET fails once the DELETE has landed
 _FIELDS_UNREADABLE=""          # the field-index GET 2xxs with a body nothing reads out of
+_POST_UNREADABLE=""            # the create POST 2xxs with a body nothing reads out of
+_GET_TASK_UNREADABLE=""        # ids whose verification GET 2xxs with such a body
 _GET_TASK_FAIL=""  # ids whose task-detail GET (the verification read) fails
 _DELETED="$TMP/deleted.marker"
 
@@ -218,6 +220,7 @@ _seed() {
     rm -f "$_DELETED" "$TMP"/task-patch-*.json
     _FETCH_RC=0; _POST_FAIL=""; _POST_NOID=""; _PATCH_FAIL=""; _PATCH_NOOP=""
     _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""; _FIELDS_UNREADABLE=""
+    _POST_UNREADABLE=""; _GET_TASK_UNREADABLE=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -254,6 +257,7 @@ kb_api() {
             printf '%s' "$body" > "$_POST_BODY"
             [[ -z "$_POST_FAIL" ]] || { echo "kbcard: HTTP 500 on POST $path" >&2; return 1; }
             [[ -z "$_POST_NOID" ]] || { printf '{"data":{}}'; return 0; }
+            [[ -z "$_POST_UNREADABLE" ]] || { printf '<html>502 Bad Gateway</html>'; return 0; }
             key="$(jq -r '.key' <<<"$body")"
             if jq -e --arg k "$key" 'any(.[]; .key == $k)' "$_FIELDS" >/dev/null; then
                 echo "kbcard: HTTP 422 on POST $path" >&2
@@ -289,6 +293,7 @@ kb_api() {
         "GET /tasks/"*)
             id="${path#/tasks/}"; id="${id%.json}"
             case " $_GET_TASK_FAIL " in *" $id "*) echo "kbcard: HTTP 503 on GET $path" >&2; return 1 ;; esac
+            case " $_GET_TASK_UNREADABLE " in *" $id "*) printf '<html>502 Bad Gateway</html>'; return 0 ;; esac
             jq -c --argjson id "$id" '{data: (map(select(.id == $id)) | .[0])}' "$_BOARD" ;;
         *) printf '{"data":null}' ;;
     esac
@@ -334,6 +339,21 @@ _POST_NOID=1
 rc=0; ERR="$(_kbc_field_create --key severity --label S --type string 2>&1 >/dev/null)" || rc=$?
 eq "create whose 2xx carries no id → rc 1"           "1"    "$rc"
 eq "…and says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$ERR")"
+
+# A 2xx NOTHING CAN BE READ OUT OF, at the two response reads these verbs own. THE
+# ADOPTION of the shared tolerant parse (kb_parse_resp, card#6426) is what these two legs
+# pin, not the arm it lands in: with a bare `jq` at either site the whole suite stayed
+# GREEN — measured, both sites, one at a time — because every other fixture answers
+# well-formed JSON, so nothing exercised the parse at all. A bare jq here exits 5 under
+# `set -e` with jq's own parse error, and the verb's arm is never reached.
+_seed "$_F_DL_STR" '[]'
+_POST_UNREADABLE=1
+rc=0; OUT="$(_kbc_field_create --key severity --label S --type string 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "create on a 2xx nothing reads out of → rc 1, not jq's 5"  "1"     "$rc"
+eq "…the SAME UNVERIFIED-write arm an id-less 2xx takes"      "true"  "$(has 'UNVERIFIED' "$ERR")"
+eq "…leaks no raw jq parse error"                             "false" "$(has 'parse error' "$ERR")"
+eq "…and prints no id on stdout"                              ""      "$OUT"
 
 # An existing key is refused BEFORE the POST — a key is unique per board and its type
 # is immutable, so "create over the top" is not a re-type. rc-only would stay green
@@ -604,6 +624,24 @@ eq "…whose state is called UNKNOWN"                  "true" "$(has 'state is U
 eq "…never claimed to have read back a wrong value"  "false" "$(has 'read back a DIFFERENT value' "$ERR")"
 eq "…with the remediation named idempotent"          "true" "$(has 'idempotent' "$ERR")"
 eq "…and still listed as NOT verified"               "true" "$(has 'NOT verified: 9' "$ERR")"
+
+echo "-- retype — a verification GET that 2xxs with an unreadable body --"
+# The second of the two sites whose tolerant parse nothing else exercises (see the create
+# leg above). This body is a SUCCESS as far as kb_api is concerned — the status class is
+# 2xx — so it reaches the projection, where a bare jq would exit 5 and kill the run AFTER
+# the delete and the restamp, i.e. at the worst possible moment. Through kb_parse_resp it
+# yields empty, which cannot equal the plan's target, so the card is simply not verified.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_GET_TASK_UNREADABLE="9"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "an unreadable verification GET → rc 1, not jq's 5"  "1"     "$rc"
+eq "…counts only the card it could read back"           "true"  "$(has 'only 1 of 2' "$ERR")"
+eq "…and lists the other as NOT verified"               "true"  "$(has 'NOT verified: 9' "$ERR")"
+eq "…leaks no raw jq parse error"                       "false" "$(has 'parse error' "$ERR")"
+# Control: the run still WROTE both cards — the refusal above is about the read-back only,
+# so a green here is a verification that discriminates, not a retype that stopped working.
+eq "control: …the restamp itself landed on that card"   '"DL-0042"' \
+   "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
 
 echo "-- retype — the failure modes that must not strand the board --"
 # An uncastable value is decided BEFORE the delete, so the board is left whole.
