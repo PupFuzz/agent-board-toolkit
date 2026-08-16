@@ -190,7 +190,19 @@
 #     rule about it is the SERVER's and is surfaced verbatim rather than re-derived
 #     here: options are REQUIRED converting into enum/multi_select from a non-option
 #     source and are NEVER inherited from the stored column, OPTIONAL between enum and
-#     multi_select (omitted = carried over verbatim), and PROHIBITED otherwise.
+#     multi_select (omitted = carried over verbatim), and PROHIBITED otherwise. The
+#     comma list is split and trimmed, and an empty value / an empty list are refused —
+#     those two ARE the server's own rules (options => array|min:1, options.*.value =>
+#     required), so they refuse nothing the wire would have accepted.
+#     ⚠ ONE DOCUMENTED EXCEPTION to the passthrough: a DUPLICATE value is refused at
+#     rc 2 by this tool, and the SERVER has no uniqueness rule on an option set. The
+#     rule is `set-options`' (a converge-to-set target must be distinct), shared by
+#     `create`, and it applies here too — so `--options a,a` never reaches the wire.
+#     The refusal says whose rule it is.
+#     ⚠ --options REPLACES the whole option set. Between enum and multi_select, sending
+#     it therefore DESTROYS every explicit label the definition carried (a comma list
+#     carries no labels, and each value's label then defaults to the value); the run
+#     names each label it dropped. Omit --options to carry the set over verbatim.
 #     --accept-ref-impact opts into the ONE refusal that can be opted into: a
 #     conversion that would MOVE a card's external-reference correlation. It never
 #     skips the first call — the un-acknowledged POST is always made, its 422 reports
@@ -206,13 +218,17 @@
 #     alone leaves the DL migration half-done. Each populated card's value is rewritten
 #     through the ONE canonical DL renderer and VERIFIED by re-reading the card; a card
 #     already holding the canonical form is left unwritten, so a re-run costs no writes.
-#     ⚠ THE PASS SEES A SMALLER POPULATION THAN THE CONVERSION DID. The server converts
-#     every carrier including ARCHIVED and SOFT-DELETED cards; the board read this pass
-#     runs on returns neither. So the run compares the server's own converted count
-#     against its census and, whenever the conversion touched more, reports that
-#     remainder as its own outcome and makes NO completeness claim — those cards are
-#     never read and never written here, and un-archiving one puts a non-canonical
-#     value back into the live set.
+#     ⚠ THE PASS SEES A SMALLER POPULATION THAN THE CONVERSION DID, and NO run of it can
+#     tell you the field is done. The server converts every carrier including ARCHIVED
+#     and SOFT-DELETED cards; the board read this pass runs on returns neither. Where the
+#     server's own converted count EXCEEDS the census, the remainder is proven: it is
+#     counted and reported as its own outcome, at rc 1. Where it does not, nothing is
+#     proven either way — the compare is of two counts taken at two moments (live-side
+#     growth masks an archived carrier one for one), and on a same-type re-run the
+#     server scans nothing at all and reports 0 — so EVERY line this pass emits that
+#     could read as "done" carries the census scope with it, unconditionally. Those
+#     cards are never read and never written here, and un-archiving one puts a
+#     non-canonical value back into the live set.
 #     Seven outcomes are reported as the seven different boards they are —
 #     canonicalized · already canonical · PATCH failed (the write did not complete, so
 #     never counted as verified AND never claimed unwritten) · read back different ·
@@ -1552,18 +1568,41 @@ _kbc_field_resolve() {
 
 # _kbc_field_option_values <csv>: the desired option VALUE list as a JSON array of
 # strings, trimmed per value (internal spaces preserved so "In Progress" is one
-# value). A set has no empty and no duplicate members — either is refused loudly
-# (rc 2) rather than reconciled, because the whole point is a deterministic end
-# state. Shared by set-options (its converge target) and create (its initial set).
+# value). Three refusals, and WHOSE RULE EACH ONE IS is the load-bearing part, because
+# `retype` calls this under a stated PASSTHROUGH claim:
+#   * at least one value  — the server's own (assertOptionsMatchTarget validates
+#                           `options => array|min:1`), reached by derivation, so a
+#                           caller refused here would have been refused on the wire.
+#   * no empty value      — likewise the server's (`options.*.value => required`).
+#   * no duplicate value  — ⚠ THIS TOOL'S, and the server has NO uniqueness rule at all:
+#                           assertOptionsMatchTarget validates the array, the value's
+#                           presence/type/length and an optional label, and nothing more
+#                           (read at CustomFieldMutator, not recalled). The rationale is
+#                           `set-options`' — a converge-to-set target must be distinct —
+#                           and `create` shares it (it mints the set). `retype` does NOT
+#                           own that rationale: its --options is a body element whose
+#                           rules are the server's, so this refusal is the ONE documented
+#                           exception to the passthrough claim rather than part of it,
+#                           and it is named as an exception in this file's usage
+#                           header, README and the changelog, instead of being quietly
+#                           counted as one of the server's.
+# Shared by every verb that takes an --options comma list.
+#
+# ⚠ REMOVING IT FROM `retype`'S PATH WOULD CHANGE WHAT THAT VERB ACCEPTS — `--options a,a`
+# is rc 2 today and would become a request — which is an rc-contract change this file's
+# callers own, not a cleanup. It is recorded as a recommendation rather than made here.
 _kbc_field_option_values() {
     local options="$1" desired n_total n_empty n_uniq
     desired="$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$";""))' <<<"$options")"
     n_total="$(jq 'length' <<<"$desired")"
     n_empty="$(jq '[.[] | select(. == "")] | length' <<<"$desired")"
-    n_uniq="$(jq '[.[]] | unique | length' <<<"$desired")"
+    n_uniq="$(jq 'unique | length' <<<"$desired")"
     [[ "$n_total" -eq 0 ]] && { echo "kbcard: --options needs at least one value" >&2; return 2; }
     [[ "$n_empty" -gt 0 ]] && { echo "kbcard: --options has an empty value (check for a stray/leading/trailing comma)" >&2; return 2; }
-    [[ "$n_total" -ne "$n_uniq" ]] && { echo "kbcard: --options has duplicate values; a converge-to-set target must be distinct" >&2; return 2; }
+    # Says whose rule it is, because the operator cannot otherwise tell it from the two
+    # above — and being sent to argue with the server about a rule the server does not
+    # have is the worst version of this refusal.
+    [[ "$n_total" -ne "$n_uniq" ]] && { echo "kbcard: --options has duplicate values; a set must be distinct. This is kbcard's own rule, not the server's — the API has no uniqueness rule on an option set" >&2; return 2; }
     printf '%s' "$desired"
 }
 
@@ -1643,9 +1682,11 @@ _kbc_field_set_options() {
 }
 
 # --- field lifecycle: the two HTTP primitives -------------------------------
-# create and delete are the primitives; retype COMPOSES them (canon #5). There is
-# exactly one POST site and one DELETE site in this file, so retype cannot drift
-# from the verbs an operator runs by hand — and a fix to either lands once.
+# The create POST and the delete DELETE, one owner each, so a fix to either lands
+# once. `retype` is built out of NEITHER of them and composes nothing — it is one
+# call on the server's conversion route, which creates and deletes nothing. The
+# `field retype` section below owns that statement in full; this header points at it
+# rather than restating it, and the conversion route's own POST site lives there.
 
 # _kbc_field_create_call <key> <label> <type> <options-json|"">: POST the board's
 # custom_fields route and print the CREATED FIELD ID. That id is the write
@@ -1687,8 +1728,14 @@ _kbc_field_create_call() {
 # on as empty — including a `field create` over the same key, which 422s on the
 # duplicate.
 #
-# THE RC IS THE BOARD STATE, and the three failure arms are three DIFFERENT boards,
-# so they cannot share one:
+# THE RC IS THE BOARD STATE: the three failure arms are three DIFFERENT boards, and
+# each one SAYS which it is in its own words. The rc is what a caller that wants to
+# branch on them reads; the one caller in this file does not branch — `_kbc_field_delete`
+# collapses all three to rc 1, because every one of them is "the delete did not verify"
+# at the verb's boundary and the operator's discriminator there is the message, not the
+# status. Distinguishing them is the primitive's contract regardless: a caller that
+# folded them together before printing would be describing a board it never read.
+#
 #   1 — the DELETE itself was refused. The definition stands; the board is INTACT.
 #   3 — the DELETE returned 2xx and the confirming re-read failed. The definition is
 #       gone as far as anything can tell (a 2xx is the server saying it acted), the
@@ -1771,16 +1818,16 @@ _kbc_field_create() {
         opts="$(_kbc_field_option_values "$options")" || return 2
         # --options is a VALUE list, so the wire objects are built here rather than in
         # the POST primitive: omitting the label is this verb's own choice (the server
-        # then defaults each label to its value), not a shape the primitive imposes on
-        # `retype`, which has real labels to carry across.
+        # then defaults each label to its value), and it is not baked into the primitive,
+        # which stays able to send a caller's EXPLICIT labels unflattened.
         opts="$(jq -c 'map({value: .})' <<<"$opts")"
     elif _kbc_field_type_takes_options "$type"; then
         echo "kbcard: type '$type' requires --options <a,b,c> (the server rejects an enum / multi_select carrying no options)" >&2
         return 2
     fi
 
-    # A key is UNIQUE PER BOARD and its type is IMMUTABLE, so a create over an
-    # existing key is not a re-type — it is a 422. Refuse it here, before the POST,
+    # A key is UNIQUE PER BOARD, so a create over an existing key is not a re-type —
+    # it is a 422. Refuse it here, before the POST,
     # naming the verb that IS the re-type. The board index is the read surface (there
     # is no per-key GET), so this costs the read every sub-verb already makes.
     local fields
@@ -1957,11 +2004,25 @@ _kbc_field_change_type_report() {
                     echo "kbcard: $oc card value(s) block this conversion — NOTHING was written. The whole board is scanned BEFORE anything is written, so this refusal IS the preflight: there is no separate check mode over HTTP." >&2
                 fi
                 kb_parse_resp "$resp" -r '.meta.offenders[]? | "kbcard:   card \(.task_id) [\(.category)] \(.reason) — value: \(.value)"' >&2
-                if [[ "$(kb_parse_resp "$resp" -r '.meta.offenders_truncated // false')" == "true" ]]; then
-                    echo "kbcard:   ⚠ the server caps the list: $shown of $oc offender(s) are named above. Fix these and re-run to see the rest." >&2
-                fi
+                # Read BEFORE the truncation notice, because it is what the notice's advice
+                # branches on — not merely what the line below prints.
                 local ref_ids
                 ref_ids="$(kb_parse_resp "$resp" -c '.meta.ref_impact_task_ids // empty')"
+                if [[ "$(kb_parse_resp "$resp" -r '.meta.offenders_truncated // false')" == "true" ]]; then
+                    # "Fix these and re-run to see the rest" is FALSE for the class this
+                    # notice most often fires on. meta.ref_impact_task_ids is present only on
+                    # a ref-impact refusal, and reaching one means every BLOCKING offender is
+                    # a ref-impact one (assertOffendersClearOrAcknowledged throws the value
+                    # refusal first whenever blocking > |ref_impact_ids|) — so there is
+                    # nothing to fix, and the uncapped id set is printed below anyway. The
+                    # one thing true of BOTH classes is the rule the --accept-ref-impact path
+                    # already states: the cap applies to the refusal itself.
+                    if [[ -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
+                        echo "kbcard:   ⚠ the server caps the list it names: $shown of $oc offender(s) are named above, and the cap applies to the refusal itself, so re-running does not widen it. There is nothing to FIX here — a ref-impact refusal is acknowledged, not repaired, and the full uncapped card-id set is named below." >&2
+                    else
+                        echo "kbcard:   ⚠ the server caps the list: $shown of $oc offender(s) are named above, and the cap applies to the refusal itself, so re-running unchanged does not widen it. Fix the named ones and re-run: the next refusal names the next batch." >&2
+                    fi
+                fi
                 if [[ -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
                     echo "kbcard:   the cards whose external-reference correlation this conversion would MOVE: $(jq -r 'map(tostring) | join(", ")' <<<"$ref_ids")" >&2
                 fi
@@ -1969,6 +2030,37 @@ _kbc_field_change_type_report() {
         *) echo "kbcard: the conversion was refused (HTTP $http) — nothing was written." >&2 ;;
     esac
     return 0
+}
+
+# _kbc_field_census_scope_note <key> <server-scanned> <converted-count>: the ONE
+# wording for what this pass's census IS, printed as the tail of every line that could
+# otherwise be read as "the field is done".
+#
+# It exists because "nothing left to canonicalize" is a claim about a population this
+# pass never reads. The conversion's population is CustomFieldMutator::candidateQuery —
+# withTrashed()->where(board_id)->whereNotNull(payload->key), no archive filter and no
+# soft-delete filter — while the census is GET /tasks/search.json, which applies the
+# default SoftDeletes scope AND whereNull(archived_at). The count compare below can
+# PROVE a remainder (n_conv > len) and can never rule one out, for two independent
+# reasons: it compares COUNTS taken at two different moments, not sets, so live-side
+# growth between the conversion and the census masks an archived carrier one-for-one;
+# and on the server's no-op path nothing is scanned at all, so the count it reports is
+# not a measurement of anything. Hence this note is UNCONDITIONAL on those lines.
+#
+# It is deliberately NOT folded into _kbc_unfinished_write_note. That owner says one
+# specific thing — a WRITE whose transport never completed cannot be reported as landed
+# or as not-landed — and its two call sites are transport failures. This says something
+# about a POPULATION, on runs where every write this pass made completed and was
+# verified. One owner per claim; sharing them would put census prose on the conversion's
+# 000 arm, which never runs a census.
+_kbc_field_census_scope_note() {
+    local fkey="$1" scanned="$2" n_conv="$3" why
+    if [[ -n "$scanned" ]]; then
+        why="the server's own converted count ($n_conv) is not more than this census returned — a FLOOR, not a proof, because the two are counts taken at different moments rather than sets: a carrier entering the live set between the conversion and this read masks an archived one, one for one"
+    else
+        why="the server converted NOTHING on this run (it answered the same-type no-op, so no scan ran and its converted count measures no population at all) — this run had nothing to compare its census against"
+    fi
+    printf '%s' "⚠ SCOPE: this is a statement about the cards this pass can SEE, not about '$fkey'. The census reads LIVE, NON-ARCHIVED cards only, while the conversion's population is EVERY carrier of the key including archived and soft-deleted ones; those were never read here, and $why. A remainder can be PROVEN by this pass and never ruled out by it."
 }
 
 # _kbc_field_restamp_dl <key>: --restamp-dl's pass, AFTER a conversion the server
@@ -2002,14 +2094,24 @@ _kbc_field_change_type_report() {
 #   not a DL number    — the stored value cannot be canonicalized at all. Skipped,
 #                        never written, and never counted as done.
 #   outside the census — the conversion converted MORE carriers than this pass can see.
-#                        Never written, never seen, and the reason no run that meets it
-#                        may claim completeness (see the population note below).
+#                        Never written, never seen, and PROVEN to exist. Its absence
+#                        proves nothing in return: no run of this pass may claim
+#                        completeness, whether or not it meets this outcome — see the
+#                        population note below and _kbc_field_census_scope_note.
 #
 # <converted-count> is the server's OWN meta.converted_task_count from the conversion
 # that just landed, and it is passed in for one reason: it is the only number in this
 # run derived from the population the conversion actually touched.
+#
+# <server-scanned> is non-empty exactly when the server actually SCANNED — i.e. the
+# conversion was a real one and not the same-type no-op. It is carried in EXPLICITLY
+# rather than re-inferred from `n_conv == 0`, because "a real conversion that touched
+# zero carriers" and "a no-op that scanned nothing" are two different boards and only
+# the first makes converted_task_count a measurement. Without it, the no-op re-run this
+# tool's own remediation lines tell the operator to make — the one run in the sequence
+# that emits the clean line — computes a remainder of 0 by construction.
 _kbc_field_restamp_dl() {
-    local fkey="$1" n_conv="${2:-}" rows len i tid stored canon want body resp got unseen=0
+    local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored canon want body resp got unseen=0
     local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
     rows="$(_kbc_field_populated "$fkey")" || {
         echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did NOT run: the board read above did not return a complete card list, and a canonicalization pass over a partial board leaves an unknown remainder. No card was rewritten. Re-run this exact command once the board reads whole — the conversion half is then a server-side no-op." >&2
@@ -2039,7 +2141,9 @@ _kbc_field_restamp_dl() {
             echo "kbcard: ⚠ --restamp-dl canonicalized NOTHING and cannot say the field is done: no card this pass can SEE carries '$fkey', yet the conversion converted $n_conv card value(s). All $unseen of them are archived or soft-deleted carriers no board read this tool makes returns; each still holds what the conversion left it with, and un-archiving one puts a non-canonical value into the live set." >&2
             return 1
         fi
-        echo "kbcard: --restamp-dl: no card carries '$fkey' — nothing to canonicalize" >&2
+        # NOT "no card carries '$fkey'" — that is a statement about the board, and every
+        # carrier of the key can be archived while this reads zero.
+        echo "kbcard: --restamp-dl: no card this pass can SEE carries '$fkey' — nothing here to canonicalize. $(_kbc_field_census_scope_note "$fkey" "$scanned" "$n_conv")" >&2
         return 0
     fi
     for ((i = 0; i < len; i++)); do
@@ -2077,11 +2181,19 @@ _kbc_field_restamp_dl() {
         fi
     done
 
-    # The completeness claim is emitted ONLY on a run with no remainder of any kind —
-    # $unseen included, because a claim that N of N were canonicalized is a claim about
-    # the field, and this pass's N is not the field's.
+    # NO ARM BELOW MAY CLAIM THE FIELD IS DONE — this one included. $unseen is a
+    # one-directional instrument: it PROVES a remainder and can never rule one out.
+    # (i) it is a difference of two COUNTS taken at two different moments, not of two
+    # sets, so 2 converted live carriers + 3 archived ones, with 3 new live carriers
+    # appearing before this census, reads len=5 / n_conv=5 / unseen=0 with the archived
+    # remainder fully intact; and (ii) on the server's same-type no-op nothing is
+    # scanned and converted_task_count is 0, so `n_conv > len` is structurally false no
+    # matter what the board holds — which is precisely the run the remediation lines
+    # below tell the operator to make. So the census-scope note rides this line
+    # UNCONDITIONALLY, and the explicit `$unseen > 0` report below stays exactly what it
+    # was: the stronger, counted statement, made only where the pass can prove it.
     if [[ ${#patch_failed[@]} -eq 0 && ${#mismatch[@]} -eq 0 && ${#unread[@]} -eq 0 && ${#notdl[@]} -eq 0 && "$unseen" -eq 0 ]]; then
-        echo "kbcard: --restamp-dl: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical (left unwritten)" >&2
+        echo "kbcard: --restamp-dl: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical (left unwritten). $(_kbc_field_census_scope_note "$fkey" "$scanned" "$n_conv")" >&2
         return 0
     fi
     echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did not finish: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical." >&2
@@ -2145,9 +2257,22 @@ _kbc_field_retype() {
     # SECOND ruling to drift: it would refuse bodies the server accepts, or accept
     # ones it refuses, and either way the operator would be arguing with a rule this
     # tool invented. So the only thing done here is the shape: _kbc_field_option_values
-    # is the shared CSV -> value-list owner (trim, no empties, no duplicates), and the
-    # server's wire shape is [{value, label?}], with an omitted label defaulting to
-    # the value — the same choice `field create`'s --options makes.
+    # is the shared CSV -> value-list owner. Two of its three refusals — an empty list,
+    # an empty value — ARE the server's own (options => array|min:1, options.*.value =>
+    # required), so they are not a second ruling at all.
+    #
+    # THE THIRD IS, and it is named rather than counted as one of them: a DUPLICATE value
+    # is refused at rc 2 by this tool, and the server has no uniqueness rule on an option
+    # set. That is the ONE exception to the passthrough claim above — carried over from
+    # `set-options`, whose converge-to-set target genuinely must be distinct — and it is
+    # documented as an exception in the usage header, README and the changelog. Dropping
+    # it from this path would change what this verb ACCEPTS (rc 2 today, a request),
+    # which is a decision this file's callers own; it is recorded as a recommendation.
+    #
+    # The server's wire shape is [{value, label?}], with an omitted label defaulting to
+    # the value — the same choice `field create`'s --options makes, and the reason
+    # sending --options at all is lossy between the two option types (the disclosure for
+    # that rides the 2xx, below).
     local opts=""
     if [[ -n "$have_options" ]]; then
         opts="$(_kbc_field_option_values "$options")" || return 2
@@ -2226,15 +2351,35 @@ _kbc_field_retype() {
     # The server answers a target type equal to the current one as an explicit no-op:
     # 200, no scan, no write, no changelog row. Reporting it as a conversion would
     # claim a write that did not happen — and this is the shape a re-run takes.
+    #
+    # $scanned is that same fact, kept rather than thrown away: the restamp pass needs
+    # to know whether ANY population was examined, and `converted_task_count: 0` cannot
+    # tell it (the no-op factory hardcodes it, so it is indistinguishable from a real
+    # conversion of zero carriers).
+    local scanned=""
     if [[ "$from_t" == "$to_t" ]]; then
         echo "kbcard: field '$fkey' is already type '$to_t' on board $KB_BOARD_ID — the server converted nothing (no scan, no write)" >&2
     else
+        scanned=1
         echo "kbcard: field '$fkey' (id $fid) converted $from_t -> $to_t on board $KB_BOARD_ID; the server converted $n_conv card value(s) in the SAME transaction, and rebuilt the search index for '$fkey'" >&2
+    fi
+
+    # --options REPLACES the whole options column ($locked->options = $options), and a
+    # comma list carries no labels — so between the two option types, sending --options
+    # destroys every explicit label the definition carried, behind a 2xx. The
+    # definition this run already read is still in hand, so naming the lost labels
+    # costs no request. Reported AFTER the 2xx and in the past tense on purpose: on a
+    # refusal nothing was written and the labels are still there, and a warning about a
+    # loss that did not happen is its own false claim.
+    if [[ -n "$have_options" ]] && _kbc_field_type_takes_options "$from_t" && _kbc_field_type_takes_options "$to_t"; then
+        local lost
+        lost="$(jq -r '[(.options // [])[] | select(.label != null and .label != .value) | "\(.value)=\(.label)"] | join(", ")' <<<"$fld")"
+        [[ -z "$lost" ]] || echo "kbcard: ⚠ --options REPLACES the whole option set and a comma list carries no labels, so the label(s) '$fkey' carried are GONE: $lost — every value now has label = value, the server's default for an omitted label. Between two option types, OMITTING --options carries the existing set over verbatim, labels included." >&2
     fi
     printf '%s\n' "$row"
 
     [[ -n "$restamp_dl" ]] || return 0
-    _kbc_field_restamp_dl "$fkey" "$n_conv"
+    _kbc_field_restamp_dl "$fkey" "$n_conv" "$scanned"
 }
 
 cmd_field() {

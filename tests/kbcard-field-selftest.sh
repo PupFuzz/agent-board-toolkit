@@ -55,12 +55,26 @@
 #     different board it is — including the two a green suite once let claim safety it
 #     could not observe (a 000 transport failure, whose write may already have
 #     committed, and a 413 whose rail the client used to name for the server);
+#   - create's REFUSED POST, and the delete's two UNVERIFIED boards (a 2xx that removed
+#     nothing vs a 2xx whose confirming re-read failed) — three arms whose fake knobs
+#     existed with no leg assigning them, so they could never fire. The verb collapses
+#     the delete's two to one rc, so the MESSAGE is what tells them apart here;
 #   - the --restamp-dl pass's outcomes, each asserted on the resulting board rather than
 #     on a call: a PATCH that 200s and silently does not land separates "migrated" from
 #     "looks migrated", a verification read that observed nothing is not a wrong value,
 #     and the conversion's population is LARGER than this census (it includes archived
-#     and soft-deleted carriers), so a run with a remainder reports it and claims no
-#     completeness.
+#     and soft-deleted carriers). The remainder compare PROVES a remainder and can never
+#     rule one out — the no-op re-run scans nothing, and live-side growth cancels the
+#     count difference one for one — so every line that could read as "done" is asserted
+#     to carry its census scope, on the no-op path and the proven-clean path alike;
+#   - the option rules the client still owns vs the server's own, told apart in the
+#     SUITE and not only in a comment: retype's --options passthrough has exactly one
+#     exception (a duplicate value, refused at rc 2 by kbcard, which the server would
+#     accept), and the refusal is asserted to say whose rule it is — while the empty-value
+#     refusal beside it is asserted NOT to, because that one is the server's;
+#   - --options between two option types DESTROYS the definition's explicit labels (the
+#     server replaces the whole options column), which the run now names, with controls
+#     for the three shapes that must stay silent.
 #
 # The mutation battery behind these assertions — how many mutations, which assertions
 # each redded, and the ones no mutation could red (named, never counted as covered) —
@@ -255,7 +269,22 @@ _CT_TYPE_MOVED=""      # a concurrent conversion committed between the read and 
 # while the census reads /tasks/search.json, which excludes both. A fake board cannot
 # hold a card its own fetch does not return, so the difference is declared here: it
 # shows up exactly where the real one does, in meta.converted_task_count.
+#
+# ⚠ IT IS DELIBERATELY NOT CONSULTED ON THE NO-OP ARM, because the server does not
+# consult its own scan there either: CustomFieldTypeChangeResult::noop() hardcodes
+# convertedTaskCount 0 and typeGates returns it BEFORE any scan runs. A fake that let
+# this knob leak into that arm would be inventing a number the server cannot send, and
+# every assertion built on it would measure the fixture. The way a no-op meets an
+# out-of-census carrier is the way it does in production — the TWO-RUN sequence: a real
+# conversion first, then the re-run.
 _CT_UNSEEN_CARRIERS=0
+# Cards that appear in the LIVE set between the conversion and the census that follows
+# it — an ordinary concurrent create, not a fixture convenience. It is a JSON array of
+# cards appended to $_BOARD after the conversion has computed its count, which is
+# exactly when the real ones appear, and it is what makes the count compare's blind
+# spot expressible: converted_task_count is a measurement of ONE moment and the census
+# of a LATER one, so live-side growth masks an archived carrier one for one.
+_CT_LIVE_GROWTH=""
 
 # _seed <fields-json> <board-json>: fresh board state + a fresh call log.
 _seed() {
@@ -266,7 +295,7 @@ _seed() {
     _POST_UNREADABLE=""; _GET_TASK_UNREADABLE=""
     _CT_FORCE_HTTP=""; _CT_FORCE_BODY=""; _CT_UNREADABLE=""; _CT_REFIMPACT=""
     _CT_REFIMPACT_SHIFT=""; _CT_TYPE_MOVED=""; _CT_REFIMPACT_GONE=""
-    _CT_REFIMPACT_CAP=""; _CT_UNSEEN_CARRIERS=0
+    _CT_REFIMPACT_CAP=""; _CT_UNSEEN_CARRIERS=0; _CT_LIVE_GROWTH=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -507,10 +536,15 @@ kb_api_status() {
             jq -c --argjson id "$id" --arg t "$to" --argjson o "${opts:-null}" \
                 'map(if .id == $id then .type = $t | (if $o == null then . else .options = $o end) else . end)' \
                 "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+            # The conversion's count is fixed HERE, at the moment the transaction commits.
+            # Anything the knob below adds to the live set lands after it, which is what
+            # makes the client's later census a read of a different moment.
+            n="$(( carriers + _CT_UNSEEN_CARRIERS ))"
+            [[ -z "$_CT_LIVE_GROWTH" ]] || { jq -c --argjson g "$_CT_LIVE_GROWTH" '. + $g' "$_BOARD" > "$TMP/b.tmp" && mv "$TMP/b.tmp" "$_BOARD"; }
             # meta.converted_task_count is the SERVER's population, not this board read's:
             # the archived and soft-deleted carriers it also converted are declared by the
             # knob, since a fake board cannot hold a card its own fetch never returns.
-            _ct_200 "$id" "$from" "$to" "$(( carriers + _CT_UNSEEN_CARRIERS ))" ;;
+            _ct_200 "$id" "$from" "$to" "$n" ;;
         *) printf '000\nkb_api_status: the stub was called on an unmodelled route: %s %s' "$method" "$path" ;;
     esac
 }
@@ -610,6 +644,18 @@ eq "…names the silent no-effect, not just 'invalid'" "true" "$(has 'never inte
 rc=0; _kbc_field_create --key n --label N --type bogus >/dev/null 2>&1 || rc=$?
 eq "create with an unknown --type → rc 2"            "2"    "$rc"
 
+# The POST itself refused. The knob for this arm existed in the fake and no leg ever set
+# it, so the arm could never fire — a fixture that is scaffolding, not coverage.
+_seed "$_F_DL_STR" '[]'
+_POST_FAIL=1
+rc=0; OUT="$(_kbc_field_create --key severity --label S --type string 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "create whose POST is REFUSED → rc 1"             "1"    "$rc"
+eq "…the server's own error line is what is read"    "true" "$(has 'HTTP 500 on POST' "$ERR")"
+eq "…no created-field line is printed"               "false" "$(has 'created on board' "$ERR")"
+eq "…nothing is echoed on stdout"                    ""     "$OUT"
+eq "…and the board still has one field"              "1"    "$(jq 'length' "$_FIELDS")"
+
 echo "-- delete — fail-closed on a populated field --"
 _seed "$_F_DL_STR" "$_B_MIXED"
 rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
@@ -637,6 +683,36 @@ rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
 eq "delete on an UNPOPULATED field → rc 0"           "0"    "$rc"
 eq "…prints 0 of M rather than nothing"              "true" "$(has '0 of 1 board cards carry dl_number' "$ERR")"
 eq "…and no orphan warning is printed"               "false" "$(has 'ORPHANS' "$ERR")"
+
+# THE DELETE'S TWO UNVERIFIED BOARDS. _kbc_field_delete_call answers 3 and 4 for two
+# genuinely different boards, and both were live production behaviour with no leg at all
+# — their fake arms were reachable only by a knob nothing assigned. The verb collapses
+# both to rc 1 (a delete that did not verify is one outcome at ITS boundary), so the rc
+# cannot be what tells them apart here: the MESSAGE is, which is exactly what the
+# operator reads, and asserting the rc alone would leave the two arms swappable.
+_seed "$_F_DL_STR" '[{"id":8,"payload":{"other":5}}]'
+_DELETE_NOOP=1
+rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
+eq "a DELETE that 2xx'd and removed nothing → rc 1"  "1"    "$rc"
+eq "…the DELETE was really issued"                   "1"    "$(_calls DELETE)"
+eq "…and the field really is still defined"          "1"    "$(jq 'length' "$_FIELDS")"
+eq "…named as STILL DEFINED after a successful DELETE" "true" \
+   "$(has 'is STILL defined on board' "$ERR")"
+eq "…never as landed-but-unconfirmed (the other board)" "false" "$(has 'treat it as LANDED' "$ERR")"
+eq "…and no success line is printed"                 "false" "$(has 'deleted from board' "$ERR")"
+
+_seed "$_F_DL_STR" '[{"id":8,"payload":{"other":5}}]'
+_FIELDS_FAIL_AFTER_DELETE=1
+rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
+eq "a DELETE whose CONFIRMING re-read fails → rc 1"  "1"    "$rc"
+eq "…the DELETE was really issued"                   "1"    "$(_calls DELETE)"
+eq "…and it really landed (the definition is gone)"  "0"    "$(jq 'length' "$_FIELDS")"
+# The load-bearing half: a 2xx is the server saying it acted, so this board must be
+# treated as LANDED-unverified. Reporting it as "nothing happened" describes a board that
+# does not exist and hides the one state that still needs finishing.
+eq "…is reported as UNVERIFIED but LANDED"           "true" "$(has 'treat it as LANDED' "$ERR")"
+eq "…never as the field still being defined"         "false" "$(has 'is STILL defined on board' "$ERR")"
+eq "…and no success line is printed"                 "false" "$(has 'deleted from board' "$ERR")"
 
 echo "-- an unreadable field index refuses ONCE, in the READ's own words --"
 # card#6426 ruled this shape at `set-options`: _kbc_fetch_fields speaks on BOTH of its
@@ -719,11 +795,55 @@ eq "…and writes no card"                              "0"    "$(_calls PATCH)"
 
 echo "-- retype — --options is a PASSTHROUGH; every option rule is the server's --"
 _seed "$_F_SEV_ENUM" "$_B_SEV"
-rc=0; _kbc_field_retype --field severity --to multi_select --options low,high >/dev/null 2>&1 || rc=$?
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
 eq "enum -> multi_select with --options → rc 0"       "0"    "$rc"
 eq "…the CSV reaches the wire as the server's [{value}] objects" '[{"value":"low"},{"value":"high"}]' \
    "$(jq -c '.options' "$TMP/ct-body-1.json")"
 eq "…and the definition carries them"                 '[{"value":"low"},{"value":"high"}]' "$(jq -c '.[0].options' "$_FIELDS")"
+# THE END STATE ABOVE IS LOSSY, and asserting it without asserting the disclosure is
+# what pinned it: `severity` carried the labels Low/High, the server REPLACES the whole
+# options column ($locked->options = $options), and a comma list carries no labels — so
+# both are gone behind a 2xx. The deleted finish-command printer used to warn about
+# exactly this; nothing in the thin-call path did.
+eq "…and the run says the labels were DESTROYED"      "true" \
+   "$(has "the label(s) 'severity' carried are GONE: low=Low, high=High" "$ERR")"
+eq "…naming the way to keep them"                     "true" "$(has 'OMITTING --options carries the existing set over verbatim' "$ERR")"
+# It costs no extra request: the definition read that resolves --field already carried
+# the labels, so the disclosure rides a read the verb makes either way.
+eq "…off exactly ONE field-index read, with no second one" "1" "$(_calls 'GET /boards')"
+
+# The same conversion with no labels to lose says nothing — a warning that fires on
+# every --options is noise, and would not distinguish the state it exists to report.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low"},{"value":"high"}]}]' "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "control: no explicit labels → rc 0"               "0"     "$rc"
+eq "control: …and NO label-loss warning"              "false" "$(has 'are GONE' "$ERR")"
+
+# A label EQUAL to its value is not a label the operator loses — the server writes
+# label=value for an omitted label, so the end state is identical.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"low"},{"value":"high","label":"high"}]}]' "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "control: label == value → no warning"             "false" "$(has 'are GONE' "$ERR")"
+
+# A SCALAR target never reaches the warning: the server refuses --options there, and the
+# options column is left exactly as it is, so nothing is destroyed to report.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to string --options a,b 2>&1 >/dev/null)" || rc=$?
+eq "control: a scalar target warns about no loss"     "false" "$(has 'are GONE' "$ERR")"
+eq "control: …and the labels really are still there"  '"Low"' "$(jq -c '.[0].options[0].label' "$_FIELDS")"
+
+# THE CONTROL THAT PINS *WHEN* IT IS SAID, not just whether. The same option→option
+# request with the same --options and the same labels at stake, REFUSED: nothing was
+# written, the labels are still on the definition, and a run claiming they are GONE
+# would be describing a board that does not exist. A pre-flight warning cannot tell
+# this apart from the leg above — which is why the disclosure is emitted after the 2xx.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+_CT_FORCE_HTTP=413
+_CT_FORCE_BODY='{"message":"This board has 9000 cards, over the 5000-card scan rail for a type change."}'
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "control: a REFUSED option→option retype → rc 1"   "1"     "$rc"
+eq "control: …claims no label was destroyed"          "false" "$(has 'are GONE' "$ERR")"
+eq "control: …because none was — they are still there" '"Low"' "$(jq -c '.[0].options[0].label' "$_FIELDS")"
 
 _seed "$_F_SEV_ENUM" "$_B_SEV"
 rc=0; _kbc_field_retype --field severity --to multi_select >/dev/null 2>&1 || rc=$?
@@ -750,6 +870,41 @@ eq "…never the client's old 'silent no-effect' line"  "false" "$(has 'never in
 eq "…and is NOT mis-reported as a type-pair refusal"  "false" "$(has 'refused on the TYPE PAIR' "$ERR")"
 eq "…it is named as a request the server rejected as invalid" "true" \
    "$(has 'REFUSED this request as invalid' "$ERR")"
+
+# THE PASSTHROUGH CLAIM HAS EXACTLY ONE EXCEPTION, and this pins it as an exception
+# rather than letting it read as a server rule. assertOptionsMatchTarget validates
+# `options => array|min:1`, `options.*.value => required|string|max:128` and an optional
+# label — and NO uniqueness — so a duplicate value would be accepted on the wire, and the
+# rc 2 below is kbcard's own ruling carried over from `set-options`. Changing it would
+# change what this verb ACCEPTS, which is not this suite's to decide; what IS asserted is
+# that the refusal SAYS whose rule it is, so nobody is sent to argue with the server about
+# a rule the server does not have.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,low 2>&1 >/dev/null)" || rc=$?
+eq "a DUPLICATE --options value on retype → rc 2"     "2"    "$rc"
+eq "…before any request"                              "0"    "$(_calls 'POST /custom_fields')"
+eq "…and the refusal names it as kbcard's own rule"   "true" \
+   "$(has "This is kbcard's own rule, not the server's" "$ERR")"
+eq "…naming what the API actually validates"          "true" \
+   "$(has 'the API has no uniqueness rule on an option set' "$ERR")"
+# The two refusals that are NOT exceptions, asserted alongside so the distinction is
+# visible in the suite and not only in a comment: an empty value and an empty list are
+# the server's own rules, so refusing them early refuses nothing the wire would take.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options 'low,,high' 2>&1 >/dev/null)" || rc=$?
+eq "an EMPTY --options value on retype → rc 2"        "2"    "$rc"
+eq "…before any request"                              "0"    "$(_calls 'POST /custom_fields')"
+eq "…and it does NOT claim to be kbcard's own rule"   "false" \
+   "$(has "kbcard's own rule" "$ERR")"
+# The same rule, same owner, at the two verbs it was written for — a control that the
+# refusal is shared rather than three copies.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_set_options --field severity --options low,low 2>&1 >/dev/null)" || rc=$?
+eq "control: set-options refuses a duplicate → rc 2"  "2"    "$rc"
+eq "control: …in the same shared wording"             "true" "$(has "This is kbcard's own rule" "$ERR")"
+rc=0; ERR="$(_kbc_field_create --key sev2 --label Sev --type enum --options low,low 2>&1 >/dev/null)" || rc=$?
+eq "control: create refuses a duplicate → rc 2"       "2"    "$rc"
+eq "control: …in the same shared wording"             "true" "$(has "This is kbcard's own rule" "$ERR")"
 
 _seed "$_F_NOTE_EMPTYOPTS" '[{"id":7,"payload":{"note":"x"}}]'
 rc=0; ERR="$(_kbc_field_retype --field note --to enum 2>&1 >/dev/null)" || rc=$?
@@ -873,6 +1028,31 @@ rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" |
 eq "a capped offender list → rc 1"                    "1"    "$rc"
 eq "…says how many of how many are named"             "true" "$(has 'the server caps the list: 2 of 60 offender(s) are named above' "$ERR")"
 eq "…and still reports the true count"                "true" "$(has '60 card value(s) block this conversion' "$ERR")"
+# These offenders ARE fixable card values (no meta.ref_impact_task_ids on this body), so
+# "fix the named ones and re-run" is advice that works — but only alongside the rule it
+# used to contradict: the cap is a property of the refusal, so a bare re-run shows the
+# same 2 again.
+eq "…the advice is fix-then-re-run"                   "true" "$(has 'Fix the named ones and re-run: the next refusal names the next batch' "$ERR")"
+eq "…qualified by what re-running alone does NOT do"  "true" "$(has 'so re-running unchanged does not widen it' "$ERR")"
+
+# THE CLASS THIS NOTICE MOST OFTEN FIRES ON, and the one its old tail was false for. A
+# ref-impact refusal has nothing to FIX — the offender is not a bad value, it is a
+# correlation the operator either accepts or does not — and re-running names the same 50
+# forever. Reaching the ref-impact branch also means every BLOCKING offender is one
+# (assertOffendersClearOrAcknowledged throws the value refusal first whenever
+# blocking > |ref_impact_ids|), so the branch is exact and not a guess.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+_CT_REFIMPACT_CAP=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "a CAPPED ref-impact refusal (no flag) → rc 1"     "1"    "$rc"
+eq "…discloses the cap"                               "true" "$(has 'the server caps the list it names: 1 of 2 offender(s) are named above' "$ERR")"
+eq "…never tells the operator to FIX them"            "false" "$(has 'Fix the named ones' "$ERR")"
+eq "…says a ref-impact refusal is acknowledged, not repaired" "true" \
+   "$(has 'nothing to FIX here' "$ERR")"
+eq "…and points at the uncapped id set it prints"     "true" "$(has 'full uncapped card-id set is named below' "$ERR")"
+# The claim above is only honest because that set really is printed, uncapped, below it.
+eq "control: …which is both ids, not the capped one"  "true" "$(has 'would MOVE: 7, 9' "$ERR")"
 
 # A 422 whose body is valid JSON but NOT an object. Every arm below the readability
 # test indexes the body, so a shape test that only asks "is this JSON" hands a scalar
@@ -1057,12 +1237,94 @@ eq "…while writing no card"                           "0"     "$(_calls PATCH)
 
 # Idempotence: a re-run canonicalizes nothing and WRITES nothing. The census read is
 # an authoritative board read, so an already-canonical card is measured, not assumed.
+#
+# ⚠ THIS LEG'S OUTCOME ASSERTION IS TIGHTENED, and the tightening is the point. The
+# field is ALREADY `string`, so this run is the server's same-type NO-OP: nothing is
+# scanned, converted_task_count is hardcoded 0, `n_conv > len` is structurally false and
+# the pass's remainder instrument reads 0 whatever the board holds. The leg's intent —
+# a re-run canonicalizes nothing and writes nothing — is legitimate and survives
+# verbatim (rc 0, zero PATCHes, the same counted line). What it may no longer do is let
+# that line stand ALONE, because on this exact path the run measured no population at
+# all. This is not an assertion weakened to go green; it is an assertion that pinned a
+# bug being made to require what the run can actually support.
 _seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"DL-0001"}},{"id":9,"payload":{"dl_number":"DL-0042"}}]'
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "a re-run over canonical values → rc 0"            "0"    "$rc"
 eq "…issues NO task PATCH at all"                     "0"    "$(_calls PATCH)"
 eq "…and says so as its own outcome"                  "true" \
    "$(has '0 of 2 card value(s) canonicalized and verified, 2 already canonical' "$ERR")"
+eq "…which is scoped to the cards it can SEE"         "true" \
+   "$(has 'this is a statement about the cards this pass can SEE' "$ERR")"
+eq "…naming what the census does not read"            "true" \
+   "$(has 'census reads LIVE, NON-ARCHIVED cards only' "$ERR")"
+# The no-op branch of the note, which the SCANNED branch must never be able to satisfy:
+# a converted count of 0 that came from the no-op factory is not a measurement, and
+# saying "0 is not more than 2" here would be arithmetic dressed as evidence.
+eq "…and saying the server scanned NOTHING on this run" "true" \
+   "$(has 'the server converted NOTHING on this run' "$ERR")"
+eq "…never the scanned wording"                       "false" \
+   "$(has 'is not more than this census returned' "$ERR")"
+
+# INSTANCE (a) — the two-run sequence the tool's OWN remediation lines prescribe, which
+# is the only way a no-op meets an out-of-census carrier without the fake lying. Run 1
+# is a real conversion whose population exceeds the census: it proves 3 archived
+# carriers exist and refuses to claim completeness. Run 2 is the prescribed re-run —
+# same board, same archived carriers, still out there — and it is the run that gets to
+# speak last. No re-seed between them, and _CT_UNSEEN_CARRIERS stays set: the no-op arm
+# ignores it exactly as the server's noop() factory ignores its own scan.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_UNSEEN_CARRIERS=3
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "run 1 (a real conversion) proves the remainder → rc 1" "1" "$rc"
+eq "…and names it"                                    "true" "$(has 'OUTSIDE THIS PASS ENTIRELY' "$ERR")"
+# The call log is cumulative across both runs (there is no re-seed, deliberately), so
+# run 2's write count is a DELTA, not a total.
+_patches_after_run1="$(_calls PATCH)"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "run 2 (the prescribed re-run) is the server's no-op → rc 0" "0" "$rc"
+eq "…the server reports converting nothing"           "true" "$(has 'the server converted nothing (no scan, no write)' "$ERR")"
+eq "…and the counted line is emitted"                 "true" \
+   "$(has '2 card value(s) canonicalized and verified' "$ERR")"
+# The defect: run 2's remainder instrument reads 0 because nothing was scanned, not
+# because nothing is left — the 3 carriers run 1 proved are still there, unwritten.
+eq "…but it does NOT read as a clean field"           "true" \
+   "$(has 'A remainder can be PROVEN by this pass and never ruled out by it' "$ERR")"
+eq "…and it says the server scanned nothing"          "true" \
+   "$(has 'the server converted NOTHING on this run' "$ERR")"
+eq "…while still writing no card"                     "$_patches_after_run1" "$(_calls PATCH)"
+
+# INSTANCE (b) — the empty census on that same no-op path: every carrier of the key is
+# archived, so the census returns zero and the old line said "no card carries 'dl_number'".
+_seed "$_F_DL_STR" '[{"id":8,"payload":{"other":5}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "an empty census on the no-op path → rc 0"         "0"    "$rc"
+eq "…never claims the BOARD carries nothing"          "false" "$(has "no card carries 'dl_number'" "$ERR")"
+eq "…says only what it read"                          "true"  "$(has 'no card this pass can SEE carries' "$ERR")"
+eq "…carries the census scope"                        "true"  "$(has 'census reads LIVE, NON-ARCHIVED cards only' "$ERR")"
+eq "…and the no-op clause, not the scanned one"       "true"  "$(has 'the server converted NOTHING on this run' "$ERR")"
+eq "…writing no card"                                 "0"     "$(_calls PATCH)"
+
+# INSTANCE (c) — the count compare is blind by CONSTRUCTION, not only on the no-op path.
+# converted_task_count is measured when the transaction commits; the census is a read of
+# a later moment. Two live carriers converted plus THREE archived ones, then three new
+# live carriers appear before the census: len 5, n_conv 5, unseen 0 — and the archived
+# three are untouched. This is why the scope note is unconditional rather than printed
+# only where the pass cannot prove a zero remainder: on this run it "proved" one that
+# does not exist.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_UNSEEN_CARRIERS=3
+_CT_LIVE_GROWTH='[{"id":21,"payload":{"dl_number":"DL-0021"}},{"id":22,"payload":{"dl_number":"DL-0022"}},{"id":23,"payload":{"dl_number":"DL-0023"}}]'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "live-side growth masking an archived remainder → rc 0" "0" "$rc"
+# The control that makes this leg mean something: the arithmetic really did cancel, so
+# the run reaches the completeness arm and NOT the proven-remainder one.
+eq "control: the counts cancel, so no remainder is proven" "false" "$(has 'OUTSIDE THIS PASS' "$ERR")"
+eq "control: …and the completeness arm is what fired"  "true" \
+   "$(has '2 of 5 card value(s) canonicalized and verified, 3 already canonical' "$ERR")"
+eq "…yet the claim is scoped to what was read"         "true" \
+   "$(has 'this is a statement about the cards this pass can SEE' "$ERR")"
+eq "…and the count compare is called a floor, not a proof" "true" \
+   "$(has 'a FLOOR, not a proof' "$ERR")"
 
 # A restamp PATCH that FAILED leaves a card that was never written — never verifiable,
 # and never counted as done (the pass-1 defect that must not come back).
@@ -1126,7 +1388,16 @@ eq "…while the DL-shaped sibling IS canonicalized"    '"DL-0042"' "$(jq -c '.[
 _seed "$_F_DL_NUM" '[{"id":8,"payload":{"other":5}}]'
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "--restamp-dl with nothing populated → rc 0"       "0"    "$rc"
-eq "…says so rather than staying silent"              "true" "$(has 'no card carries' "$ERR")"
+eq "…says so rather than staying silent"              "true" "$(has 'no card this pass can SEE carries' "$ERR")"
+# TIGHTENED, not weakened. "no card carries 'dl_number'" is a statement about the BOARD,
+# and this pass reads a strict subset of it — every carrier of the key can be archived
+# while this census returns zero. The rc, the write count and the fact that the line is
+# emitted at all are unchanged; what is now also required is that the line does not
+# claim more than the read supports.
+eq "…and never claims that of the BOARD"             "false" "$(has "no card carries 'dl_number'" "$ERR")"
+eq "…the census scope rides the line"                "true" "$(has 'census reads LIVE, NON-ARCHIVED cards only' "$ERR")"
+eq "…this run DID scan, so it says the count is a floor" "true" \
+   "$(has 'is not more than this census returned' "$ERR")"
 eq "…and writes no card"                              "0"    "$(_calls PATCH)"
 eq "…the conversion still landed"                     '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
 
