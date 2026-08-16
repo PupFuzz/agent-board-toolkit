@@ -27,9 +27,20 @@
 # THE LIFECYCLE SECTION (card#6525) runs against a STATEFUL board fake — a mutable
 # field index and card set in $TMP — rather than a per-call stub, because what those
 # verbs must be judged on is an END STATE, not a call. Its DELETE arm deliberately
-# does not cascade into the card payloads: that IS the measured server behaviour that
-# makes the restamp load-bearing, and a fake that cascaded it would let the restamp be
-# deleted with every assertion still green. What it guards:
+# does not cascade into the card payloads: that IS measured server behaviour (A), the
+# reason `delete` is fail-closed, and a fake that cascaded it would let that refusal be
+# deleted with every assertion still green.
+#
+# `retype` OWNS NO SEQUENCE: it is one call on the server's atomic conversion route, so
+# there is no delete, no recreate, no per-card cast and no stranded-board state to
+# report. The conversion route is MODELLED here rather than canned — the option rules,
+# the pair matrix, the compare-and-swap, the no-op short-circuit and the offender scan
+# are transcribed from CustomFieldMutator — so a client-side re-derivation creeping back
+# in reds against the SERVER's rule and not against a fixture written to match the
+# client. Only the outcomes a fake board cannot produce are canned bodies (the two 413
+# rails, a concurrent 404, a transport 000, a server-capped offender list), and the
+# archived/soft-deleted carriers the conversion also converts are DECLARED, since a fake
+# board cannot hold a card its own fetch never returns. What it guards:
 #   - create ECHOES the created field id (the write verification), sends the server's
 #     [{value}] option shape, and refuses a duplicate key at rc 2 with ZERO POSTs —
 #     the rc alone does not carry that guard, since the server's own 422 also fails;
@@ -38,19 +49,24 @@
 #     --orphan-values, and refuses at rc 1 on EVERY incomplete-read rc
 #     fetch_board_cards defines (1/2/3/4) — carried by a positive control that deletes
 #     at rc 0 off the SAME board and the SAME zero numerator with a complete read;
-#   - retype's whole ordered sequence, asserted on the resulting board: the capture
-#     precedes any mutation, the DELETE precedes the recreate, key/label survive, and
-#     each card's value is re-read and asserted on VALUE AND JSON TYPE — the case
-#     where a restamp PATCH 200s and silently does not land is the one that separates
-#     "migrated" from "looks migrated", and it is exercised directly;
-#   - the three states that must not strand the board: an uncastable value refuses
-#     BEFORE the delete, a failed recreate names the state and the exact command that
-#     finishes it, and a partial verify lists the ids and says re-running retype will
-#     not finish them.
-# All 16 mutations run over this file redded the assertions they target and nothing
-# else; two assertions were found BLIND by that pass and rewritten (a bare `": 7"`
-# needle that a proceeding run also satisfied, and a `--to number` case whose fixture
-# hit the already-target no-op before the guard under test).
+#   - retype's REQUEST and its reading of the answer: from_type always sent, --options
+#     passed through untouched, the ref-impact handshake's two calls with the second
+#     acknowledging exactly what the first reported, and every status reported as the
+#     different board it is — including the two a green suite once let claim safety it
+#     could not observe (a 000 transport failure, whose write may already have
+#     committed, and a 413 whose rail the client used to name for the server);
+#   - the --restamp-dl pass's outcomes, each asserted on the resulting board rather than
+#     on a call: a PATCH that 200s and silently does not land separates "migrated" from
+#     "looks migrated", a verification read that observed nothing is not a wrong value,
+#     and the conversion's population is LARGER than this census (it includes archived
+#     and soft-deleted carriers), so a run with a remainder reports it and claims no
+#     completeness.
+#
+# The mutation battery behind these assertions — how many mutations, which assertions
+# each redded, and the ones no mutation could red (named, never counted as covered) —
+# is recorded in docs/CHANGELOG.md under card#6525 and is deliberately NOT restated
+# here: this header carried the previous cut's figure long after that cut's sequence was
+# deleted, and a second copy of one number is exactly what let it go stale.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -184,17 +200,16 @@ eq "error body reaches stderr (not swallowed)"    "true" "$(has 'given data was 
 
 # ---------------------------------------------------------------------------
 echo "== field lifecycle (create / delete / retype) — a STATEFUL board fake =="
-# The lifecycle verbs are not independently checkable against a per-call stub: the
-# whole point of `retype` is the ORDER of a delete, a recreate and a per-card restamp,
-# and the defect it exists to prevent (a board that READS migrated while every value
-# still carries the old JSON type and the search index is purged) is only observable
-# in the END STATE. So the fake below holds real mutable state — the board's field
-# index in $_FIELDS, its cards in $_BOARD — and every assertion below reads that state
-# back, never the stub's own echo.
+# The lifecycle verbs are not independently checkable against a per-call stub: what
+# `delete` refuses and what `retype --restamp-dl` leaves behind are properties of the
+# END STATE (a board that READS migrated while every value still carries the old JSON
+# type and the search index is purged is invisible in any single call). So the fake
+# below holds real mutable state — the board's field index in $_FIELDS, its cards in
+# $_BOARD — and every assertion below reads that state back, never the stub's own echo.
 #
 # The DELETE arm deliberately does NOT touch $_BOARD: that IS measured caveat (A), the
-# server behaviour that makes the restamp load-bearing. If this fake cascaded the
-# delete into the payloads, the restamp assertions would pass with the restamp deleted.
+# server behaviour `delete`'s fail-closed refusal exists for. If this fake cascaded the
+# delete into the payloads, that refusal could be deleted with the suite still green.
 export KB_API="https://api.example/v3"
 export KB_TOKEN="tok"
 _FIELDS="$TMP/fields.json"
@@ -221,11 +236,26 @@ _DELETED="$TMP/deleted.marker"
 # creeping back in reds against the SERVER's wording, not against a fixture. The
 # three knobs below are for the outcomes a fake board genuinely cannot produce.
 _CT_FORCE_HTTP=""      # answer every change-type call with this status …
-_CT_FORCE_BODY=""      # … and this body (the 413 rail, a 404 race, a capped list)
+_CT_FORCE_BODY=""      # … and this body (the 413 rails, a 404 race, a capped list)
 _CT_UNREADABLE=""      # the conversion 2xxs with a body nothing can be read out of
 _CT_REFIMPACT=""       # task ids whose external-reference correlation the conversion MOVES
 _CT_REFIMPACT_SHIFT="" # the acknowledged set no longer matches (it moved under the lock)
+_CT_REFIMPACT_GONE=""  # the ref impact DISAPPEARED under the row lock: the ack is refused
+                       # against a scan that derived NONE, so the refusal carries
+                       # offender_count 0 with an EMPTY offenders list (the server's
+                       # `$expected === []` branch) — a real body, not a degenerate one
+_CT_REFIMPACT_CAP=""   # name only this many offenders in the ref-impact refusal, while
+                       # ref_impact_task_ids stays WHOLE: MAX_REPORTED_OFFENDERS caps the
+                       # first key and not the second, which is the asymmetry the
+                       # --accept-ref-impact path has to disclose
 _CT_TYPE_MOVED=""      # a concurrent conversion committed between the read and this write
+# Carriers the conversion converted that NO board read this client makes returns —
+# archived and soft-deleted cards. The server's candidateQuery is
+# `withTrashed()->where(board_id)->whereNotNull(payload->key)` with no archive filter,
+# while the census reads /tasks/search.json, which excludes both. A fake board cannot
+# hold a card its own fetch does not return, so the difference is declared here: it
+# shows up exactly where the real one does, in meta.converted_task_count.
+_CT_UNSEEN_CARRIERS=0
 
 # _seed <fields-json> <board-json>: fresh board state + a fresh call log.
 _seed() {
@@ -235,7 +265,8 @@ _seed() {
     _DELETE_NOOP=""; _FIELDS_FAIL_AFTER_DELETE=""; _GET_TASK_FAIL=""; _FIELDS_UNREADABLE=""
     _POST_UNREADABLE=""; _GET_TASK_UNREADABLE=""
     _CT_FORCE_HTTP=""; _CT_FORCE_BODY=""; _CT_UNREADABLE=""; _CT_REFIMPACT=""
-    _CT_REFIMPACT_SHIFT=""; _CT_TYPE_MOVED=""
+    _CT_REFIMPACT_SHIFT=""; _CT_TYPE_MOVED=""; _CT_REFIMPACT_GONE=""
+    _CT_REFIMPACT_CAP=""; _CT_UNSEEN_CARRIERS=0
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -322,7 +353,7 @@ kb_api() {
 # against a fixture somebody wrote to match the client. That is the whole point of this
 # rewrite: the client is supposed to have stopped re-deriving these.
 kb_api_status() {
-    local method="$1" path="$2" body="${3:-}" n id key from to opts ft ack ids carriers
+    local method="$1" path="$2" body="${3:-}" n id key from to opts ft ack ids carriers cap offenders
     echo "$method $path" >> "$_CALLS"
     case "$method $path" in
         "POST /custom_fields/"*"/change-type.json")
@@ -389,25 +420,54 @@ kb_api_status() {
             if [[ -n "$_CT_REFIMPACT" ]]; then
                 ids="$(printf '%s' "$_CT_REFIMPACT" | jq -Rc 'split(" ") | map(tonumber)')"
                 ack="$(jq -c '.acknowledge_ref_impact // empty' <<<"$body")"
+                # MAX_REPORTED_OFFENDERS caps `offenders`; `ref_impact_task_ids` is
+                # uncapped. Both refusals below build their offender list through this
+                # one expression, so the cap cannot apply to one of them and not the
+                # other — which is exactly the shape the client has to disclose.
+                cap="${_CT_REFIMPACT_CAP:-$(jq 'length' <<<"$ids")}"
+                offenders="$(jq -c --argjson n "$cap" \
+                    'map({task_id:., value:"1", category:"ref_impact",
+                          reason:"This conversion changes the card external-reference correlation.",
+                          refs_before:["1|github_pr|acme/widgets|15"],
+                          refs_after:["1|github_pr|acme/widgets|1"]}) | .[0:$n]' <<<"$ids")"
                 if [[ -z "$ack" ]]; then
-                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" \
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" --argjson off "$offenders" \
                         '("\($ids|length) card(s) would have their external-reference correlation moved by this conversion. Nothing was changed. To proceed, re-send with `acknowledge_ref_impact` listing exactly these card ids.") as $m
                          | {message:$m, errors:{type:[$m]},
                             meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
-                                  offender_count:($ids|length), offenders_truncated:false,
-                                  offenders:($ids | map({task_id:., value:"1", category:"ref_impact",
-                                                         reason:"This conversion changes the card external-reference correlation.",
-                                                         refs_before:["1|github_pr|acme/widgets|15"],
-                                                         refs_after:["1|github_pr|acme/widgets|1"]})),
+                                  offender_count:($ids|length),
+                                  offenders_truncated:(($off|length) < ($ids|length)),
+                                  offenders:$off,
                                   ref_impact_task_ids:$ids}}')"
                     return 0
                 fi
-                if [[ -n "$_CT_REFIMPACT_SHIFT" || "$ack" != "$ids" ]]; then
-                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" --argjson ack "$ack" \
-                        '("The acknowledged cards no longer match the cards whose correlation this conversion would move — the set grew or changed since the preview. Nothing was changed. Re-run the preview and confirm the set it reports.") as $m
+                # The ref impact VANISHED between the two calls: the scan under the lock
+                # derives an EMPTY expected set, so the acknowledgement is refused with
+                # the scan's own (empty) offender list and offender_count 0 — the
+                # server's `$expected === []` branch, verbatim in its shape.
+                if [[ -n "$_CT_REFIMPACT_GONE" ]]; then
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ack "$ack" \
+                        '("The acknowledged cards do not match the cards this conversion would affect — no card'"'"'s correlation would move. Re-run the preview and confirm the set it reports.") as $m
                          | {message:$m, errors:{acknowledge_ref_impact:[$m]},
                             meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
                                   offender_count:0, offenders_truncated:false, offenders:[],
+                                  acknowledged:$ack, ref_impact_task_ids:[]}}')"
+                    return 0
+                fi
+                # The set MOVED. The server hands this refusal the SAME scan offenders
+                # and the SAME count as any other — `assertOffendersClearOrAcknowledged`
+                # passes `$scan['offenders']` / `$scan['offender_count']` through on every
+                # throw — so a fixture answering `offender_count:0, offenders:[]` here
+                # encodes a body the server does not send, and every assertion built on it
+                # measures the fixture rather than the client.
+                if [[ -n "$_CT_REFIMPACT_SHIFT" || "$ack" != "$ids" ]]; then
+                    printf '422\n%s' "$(jq -nc --argjson id "$id" --arg k "$key" --arg f "$from" --arg t "$to" --argjson ids "$ids" --argjson ack "$ack" --argjson off "$offenders" \
+                        '("The acknowledged cards no longer match the cards whose correlation this conversion would move — the set grew or changed since the preview. Nothing was changed. Re-run the preview and confirm the set it reports.") as $m
+                         | {message:$m, errors:{acknowledge_ref_impact:[$m]},
+                            meta:{custom_field_id:$id, key:$k, from_type:$f, to_type:$t,
+                                  offender_count:($ids|length),
+                                  offenders_truncated:(($off|length) < ($ids|length)),
+                                  offenders:$off,
                                   acknowledged:$ack, ref_impact_task_ids:$ids}}')"
                     return 0
                 fi
@@ -447,7 +507,10 @@ kb_api_status() {
             jq -c --argjson id "$id" --arg t "$to" --argjson o "${opts:-null}" \
                 'map(if .id == $id then .type = $t | (if $o == null then . else .options = $o end) else . end)' \
                 "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
-            _ct_200 "$id" "$from" "$to" "$carriers" ;;
+            # meta.converted_task_count is the SERVER's population, not this board read's:
+            # the archived and soft-deleted carriers it also converted are declared by the
+            # knob, since a fake board cannot hold a card its own fetch never returns.
+            _ct_200 "$id" "$from" "$to" "$(( carriers + _CT_UNSEEN_CARRIERS ))" ;;
         *) printf '000\nkb_api_status: the stub was called on an unmodelled route: %s %s' "$method" "$path" ;;
     esac
 }
@@ -476,7 +539,9 @@ _F_DL_NUM='[{"id":91,"board_id":1,"key":"dl_number","label":"DL Number","type":"
 # observable on a card that is BOTH restamped and carrying something else to lose.
 _B_MIXED='[{"id":7,"payload":{"dl_number":1,"other":5}},{"id":8,"payload":{"other":5}},{"id":9,"payload":{"dl_number":42}}]'
 # The enum/multi_select fixtures. `severity` carries EXPLICIT labels that differ from
-# their values — the only shape in which a label-destroying recreate is observable.
+# their values — the only shape in which a label the client never sends is observable:
+# omitting --options between enum and multi_select must carry them over verbatim, and a
+# client that flattened the option set to values would destroy them behind a 2xx.
 _F_SEV_ENUM='[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"Low"},{"value":"high","label":"High"}]}]'
 _B_SEV='[{"id":7,"payload":{"severity":"low"}},{"id":9,"payload":{"severity":"high"}}]'
 # A string field whose server-returned options are an EMPTY ARRAY — a non-empty
@@ -524,8 +589,8 @@ eq "…the SAME UNVERIFIED-write arm an id-less 2xx takes"      "true"  "$(has '
 eq "…leaks no raw jq parse error"                             "false" "$(has 'parse error' "$ERR")"
 eq "…and prints no id on stdout"                              ""      "$OUT"
 
-# An existing key is refused BEFORE the POST — a key is unique per board and its type
-# is immutable, so "create over the top" is not a re-type. rc-only would stay green
+# An existing key is refused BEFORE the POST — a key is unique per board, so "create
+# over the top" is not a re-type (`field retype` is). rc-only would stay green
 # with the guard deleted (the server's own 422 also fails the call), so the assertions
 # that carry the guard are the ZERO POSTs and the rc 2 vs the server path's rc 1.
 _seed "$_F_DL_STR" '[]'
@@ -723,6 +788,28 @@ eq "…named as a RESOURCE rail, not a refusal of the conversion" "true" "$(has 
 eq "…and the artisan escape hatch reaches the caller" "true" \
    "$(has 'php artisan kanban:change-custom-field-type 91 --to=string' "$ERR")"
 eq "…nothing was written"                             '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
+# THE CLIENT NAMES NO RAIL. There are two, and they measure different populations —
+# this one is the board's card count, the next leg's is the cards holding a value for
+# the field — so any client sentence naming one of them is a false claim on the other.
+eq "…and the CLIENT attributes no particular rail"    "false" "$(has 'card-scan rail' "$ERR")"
+
+# THE SECOND RAIL, which nothing covered: max_examined_carriers, counted over the cards
+# CARRYING THE KEY, not over the board. A 6000-card board is nowhere near the 20000-card
+# board rail and can still be refused here — which is exactly the run on which a client
+# line saying "the board is over the card-scan rail" is a wrong statement about the board.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_FORCE_HTTP=413
+_CT_FORCE_BODY='{"message":"This conversion examines more than the 5000 cards holding a value for this field allowed per request (a resource rail, not a business limit - one transaction holds the write locks for every card it examines, whether or not its value converts). Run it operator-supervised and uncapped: php artisan kanban:change-custom-field-type 91 --to=string --actor=<user id>."}'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "over the EXAMINED-CARRIERS rail → rc 1"           "1"    "$rc"
+eq "…is framed as a RESOURCE rail too"                "true" "$(has 'RESOURCE rail' "$ERR")"
+eq "…and is NOT reported as the board-scan rail"      "false" "$(has 'card-scan rail' "$ERR")"
+# The client says the server's message names which rail; that has to be true of BOTH.
+eq "…the server's message names WHICH rail"           "true" \
+   "$(has 'cards holding a value for this field' "$ERR")"
+eq "…the escape hatch still reaches the caller"       "true" \
+   "$(has 'php artisan kanban:change-custom-field-type 91' "$ERR")"
+eq "…and nothing was written"                         '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
 
 echo "-- retype — 404: the definition was deleted concurrently --"
 _seed "$_F_DL_NUM" "$_B_MIXED"
@@ -730,8 +817,28 @@ _CT_FORCE_HTTP=404
 _CT_FORCE_BODY='{"message":"Not Found"}'
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
 eq "a concurrent DELETE → rc 1"                       "1"    "$rc"
-eq "…says the field is GONE, caught under the row lock" "true" "$(has 'is GONE' "$ERR")"
+eq "…says the field is GONE"                          "true" "$(has 'is GONE' "$ERR")"
 eq "…and never reports it as a card-value refusal"    "false" "$(has 'block this conversion' "$ERR")"
+# Implicit route-model binding answers 404 BEFORE changeType is entered, so the lock is
+# not reached on that path — while the mutator's own re-read under the lock throws the
+# same 404 from inside the transaction. The client cannot tell them apart and must not
+# pick one: "nothing was written" is true either way, "caught under the row lock" is not.
+eq "…and claims no mechanism it cannot observe"       "false" "$(has 'under the row lock' "$ERR")"
+
+echo "-- retype — 000: the request never completed, so its outcome is UNKNOWN --"
+# kb_api_status maps EVERY non-zero curl exit to 000 — a refused connection, a --max-time
+# 28 and a reset mid-response alike — and the last two are states in which the server may
+# already have COMMITTED. "Nothing was written" is therefore a claim about a request whose
+# answer nobody read, told to an operator deciding whether to re-run.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_FORCE_HTTP=000
+_CT_FORCE_BODY='curl: (28) Operation timed out after 30001 milliseconds with 0 bytes received'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "a transport failure → rc 1"                       "1"     "$rc"
+eq "…claims UNCERTAINTY about the write"              "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
+eq "…and never claims the board is untouched"         "false" "$(has 'was written' "$ERR")"
+eq "…names the idempotent re-run as the resolution"   "true"  "$(has 'Re-run this exact command' "$ERR")"
+eq "…which is why a landed conversion is safe to re-send" "true" "$(has 'server-side no-op' "$ERR")"
 
 echo "-- retype — the two 422s are told apart by meta.offenders --"
 # A PAIR refusal: no conversion exists between these types at all (boolean needs a
@@ -809,6 +916,25 @@ eq "…and still carries the same type + CAS"           '["number","string"]' \
    "$(jq -c '[.type,.from_type]' "$TMP/ct-body-2.json")"
 eq "…the run names the cards whose correlation moved" "true" "$(has 'card 7: 1|github_pr' "$ERR")"
 eq "…and the conversion landed"                       '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
+# Control for the truncation leg below: nothing was capped here, so nothing is disclosed.
+eq "…with no truncation notice, since nothing was capped" "false" \
+   "$(has 'moves being acknowledged are shown above' "$ERR")"
+
+# meta.offenders is capped at MAX_REPORTED_OFFENDERS; meta.ref_impact_task_ids is NOT.
+# This path prints from the capped key and acknowledges the uncapped one, and it never
+# calls _kbc_field_change_type_report, so that arm's truncation notice cannot fire here:
+# without one of its own the operator is shown 1 move and agrees to 2 — at scale, 50 and
+# 200 — against the one property the flag claims for itself.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+_CT_REFIMPACT_CAP=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --accept-ref-impact 2>&1 >/dev/null)" || rc=$?
+eq "a CAPPED ref-impact list under --accept-ref-impact → rc 0" "0" "$rc"
+eq "…discloses that it acknowledges more than it showed" "true" \
+   "$(has '1 of the 2 moves being acknowledged are shown above' "$ERR")"
+eq "…and still acknowledges the WHOLE uncapped set"   '[7,9]' \
+   "$(jq -c '.acknowledge_ref_impact' "$TMP/ct-body-2.json")"
+eq "…the conversion landed"                           '"number"' "$(jq -c '.[0].type' "$_FIELDS")"
 
 # The set moved between the preview and the acknowledgement: the server refuses, and
 # that refusal must reach the caller unlaundered — re-sending the NEW set from inside
@@ -822,6 +948,29 @@ eq "an acknowledged set that no longer matches → rc 1" "1"   "$rc"
 eq "…stops at TWO calls (no third, self-answering, try)" "2" "$(_calls 'POST /custom_fields')"
 eq "…and the server's refusal is what is read"        "true" "$(has 'the set grew or changed since the preview' "$ERR")"
 eq "…nothing was written"                             '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
+# The scan's OWN offenders ride every one of these refusals (the server passes
+# $scan['offenders'] / $scan['offender_count'] through on each throw), so this body names
+# the moves it re-derived — the fixture that answered offender_count 0 / offenders [] here
+# encoded a body the server does not send.
+eq "…naming the moves the re-derived scan found"      "true" \
+   "$(has '2 card value(s) block this conversion' "$ERR")"
+
+# THE OTHER acknowledgement refusal, and the one that makes offender_count 0 a REAL body:
+# the ref impact DISAPPEARED between the two calls, so the scan under the lock derives an
+# empty expected set and refuses the acknowledgement with no offender at all. The offender
+# arm then reported "0 card value(s) block this conversion" — sending the operator to look
+# for cards that do not exist, on a run whose fault is the request.
+_seed "$_F_DL_STR" "$_B_MIXED"
+_CT_REFIMPACT="7 9"
+_CT_REFIMPACT_GONE=1
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to number --accept-ref-impact 2>&1 >/dev/null)" || rc=$?
+eq "an acknowledgement whose ref impact VANISHED → rc 1" "1"  "$rc"
+eq "…is never reported as N cards blocking it"        "false" "$(has 'block this conversion' "$ERR")"
+eq "…it says NO offending card was named"             "true"  "$(has 'naming NO offending card' "$ERR")"
+eq "…and points at the plain re-run"                  "true"  "$(has 're-run PLAIN' "$ERR")"
+eq "…the server's own refusal still reaches the caller" "true" \
+   "$(has "no card's correlation would move" "$ERR")"
+eq "…and nothing was written"                         '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
 
 # The flag is inert where there is nothing to acknowledge — it can never ADD a call.
 _seed "$_F_DL_NUM" "$_B_MIXED"
@@ -869,6 +1018,42 @@ eq "…and card 8, carrying no dl_number, is never written" "false" \
 eq "…the pass reports both counts"                    "true" \
    "$(has '2 of 2 card value(s) canonicalized and verified, 0 already canonical' "$ERR")"
 eq "…and the conversion is still reported separately" "true" "$(has 'in the SAME transaction' "$ERR")"
+# The control for the two legs below: the completeness claim above is emitted only
+# because the server's own converted count EQUALS this census. Nothing is outside it.
+eq "…and reports no out-of-census remainder"          "false" "$(has 'OUTSIDE THIS PASS' "$ERR")"
+
+# THE CONVERSION'S POPULATION IS LARGER THAN THIS PASS'S, and only the server's own
+# converted_task_count can see it. candidateQuery is withTrashed() with no archive
+# filter, so every archived and every trashed carrier was converted; the census reads
+# /tasks/search.json, which returns neither. Un-noticed, the run reports "N of N
+# canonicalized and verified" and exits 0 while an arbitrary number of cards keep "1".
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_UNSEEN_CARRIERS=3
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "a conversion that touched cards this pass cannot see → rc 1" "1" "$rc"
+eq "…emits NO completeness claim on that run"         "false" \
+   "$(has 'canonicalized and verified, 0 already canonical (left unwritten)' "$ERR")"
+eq "…reports the remainder as its OWN outcome"        "true"  "$(has 'OUTSIDE THIS PASS ENTIRELY' "$ERR")"
+eq "…naming both populations"                         "true"  \
+   "$(has 'converted 5 card value(s), 3 more than the 2 this board read returns' "$ERR")"
+eq "…and what those cards are"                        "true"  "$(has 'archived and soft-deleted' "$ERR")"
+eq "…and that no re-run reaches them"                 "true"  "$(has 'no re-run reaches the 3 carrier(s)' "$ERR")"
+# The remainder is REPORTED, not chased: the visible carriers are still canonicalized,
+# and no card outside the census is written (this pass never PATCHes a card it did not read).
+eq "control: the visible carriers were canonicalized" '"DL-0001"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+eq "control: …and only they were written"             "2"     "$(_calls PATCH)"
+
+# The same defect at the other end of the census: NOTHING visible carries the key, so the
+# run's line was "no card carries <key> — nothing to canonicalize" at rc 0 — a completeness
+# claim over an empty denominator while the conversion had just rewritten N archived cards.
+_seed "$_F_DL_NUM" '[{"id":8,"payload":{"other":5}}]'
+_CT_UNSEEN_CARRIERS=2
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "an EMPTY census over a conversion that converted 2 → rc 1" "1" "$rc"
+eq "…never reads as nothing-to-do"                    "false" "$(has 'nothing to canonicalize' "$ERR")"
+eq "…says it canonicalized NOTHING"                   "true"  "$(has 'canonicalized NOTHING' "$ERR")"
+eq "…and names the carriers it could not see"         "true"  "$(has 'All 2 of them are archived or soft-deleted' "$ERR")"
+eq "…while writing no card"                           "0"     "$(_calls PATCH)"
 
 # Idempotence: a re-run canonicalizes nothing and WRITES nothing. The census read is
 # an authoritative board read, so an already-canonical card is measured, not assumed.
@@ -886,6 +1071,12 @@ _PATCH_FAIL="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "a FAILING restamp PATCH → rc 1"                   "1"    "$rc"
 eq "…names it as a PATCH failure"                     "true" "$(has 'the restamp PATCH FAILED on 1 card(s): 9' "$ERR")"
+# kb_api returns 1 for a TIMED-OUT PATCH exactly as it does for a refused one, and a
+# timed-out write may already be committed — so "this run never wrote them, so each still
+# holds the value the conversion left it with" is a claim about a board nothing read. Same
+# transport, same owner, same wording as the conversion's own 000 arm.
+eq "…claims UNCERTAINTY, not safety, about the write" "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
+eq "…never claims the card was left untouched"        "false" "$(has 'never wrote them' "$ERR")"
 eq "…counts only the card that was written"           "true" "$(has '1 of 2 card value(s) canonicalized and verified' "$ERR")"
 eq "…and the conversion itself is still reported as landed" "true" "$(has 'the conversion LANDED' "$ERR")"
 

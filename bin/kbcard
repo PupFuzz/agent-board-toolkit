@@ -206,10 +206,18 @@
 #     alone leaves the DL migration half-done. Each populated card's value is rewritten
 #     through the ONE canonical DL renderer and VERIFIED by re-reading the card; a card
 #     already holding the canonical form is left unwritten, so a re-run costs no writes.
-#     Six outcomes are reported as the six different boards they are — canonicalized ·
-#     already canonical · PATCH failed (never written, so never counted as verified) ·
-#     read back different · verification read could not observe it (UNKNOWN state) ·
-#     not a DL number at all. Requires --to string.
+#     ⚠ THE PASS SEES A SMALLER POPULATION THAN THE CONVERSION DID. The server converts
+#     every carrier including ARCHIVED and SOFT-DELETED cards; the board read this pass
+#     runs on returns neither. So the run compares the server's own converted count
+#     against its census and, whenever the conversion touched more, reports that
+#     remainder as its own outcome and makes NO completeness claim — those cards are
+#     never read and never written here, and un-archiving one puts a non-canonical
+#     value back into the live set.
+#     Seven outcomes are reported as the seven different boards they are —
+#     canonicalized · already canonical · PATCH failed (the write did not complete, so
+#     never counted as verified AND never claimed unwritten) · read back different ·
+#     verification read could not observe it (UNKNOWN state) · not a DL number at all ·
+#     outside this pass's census (the remainder above). Requires --to string.
 #
 # A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq: every single-card /
 # single-field read and every write echo takes the verb's own empty-value arm at the verb's own
@@ -1844,15 +1852,33 @@ _kbc_field_delete() {
 #
 # kb_api_status, not kb_api, for two reasons that are both load-bearing:
 #   * FIVE statuses are five different boards — 200 converted · 412 the type moved
-#     under us (CAS), nothing written · 413 the board is over the server's scan rail,
-#     nothing written · 422 refused (a type PAIR that has no conversion, or named
-#     offending cards) · 404 the definition was deleted while this call held its row
-#     lock. kb_api collapses all of them to rc 1.
+#     under us (CAS), nothing written · 413 over one of the server's two resource
+#     rails, nothing written · 422 refused (a type PAIR that has no conversion, or
+#     named offending cards) · 404 the definition is gone. kb_api collapses all of
+#     them to rc 1.
 #   * the ref-impact handshake must READ a 422's body (it carries the id set the
 #     second call has to acknowledge), and kb_api sends an error body to stderr,
 #     where no caller can capture it.
 _kbc_field_change_type_call() {
     kb_api_status POST "/custom_fields/$1/change-type.json" "$2"
+}
+
+# _kbc_unfinished_write_note <re-run-clause>: the ONE wording for a write whose
+# TRANSPORT never completed, printed as the tail of the caller's own sentence.
+#
+# It exists because "nothing was written" is not a readable outcome here. kb_api_status
+# maps EVERY non-zero curl exit to "000" and kb_api returns 1 for all of them alike —
+# including exit 28 (--max-time, which KB_CURL_MAX_TIME turns on for every request this
+# lib makes) and a connection reset mid-response, where the server may already have
+# COMMITTED the transaction. The lib's own header states exactly that and names this bin
+# as one of the writers it applies to. So a run that meets this state has read no answer
+# at all, and the two sentences it can honestly say are: this is UNKNOWN, and the re-run
+# that resolves it is idempotent. Both call sites — the conversion's 000 arm and the
+# restamp pass's failed PATCH — make the same claim about the same transport, so they
+# make it in one place: a second spelling would drift into "nothing was written" again on
+# whichever side was edited last.
+_kbc_unfinished_write_note() {
+    printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. Re-run this exact command: $1"
 }
 
 # _kbc_field_change_type_report <field-id> <http> <body> <key> <from> <to>: one
@@ -1879,9 +1905,21 @@ _kbc_field_change_type_report() {
     local readable; readable="$(kb_parse_resp "$resp" -r 'select(type == "object") | type')"
     case "$http" in
         412) echo "kbcard: the field's type CHANGED UNDER YOU — the board says '$(kb_parse_resp "$resp" -r '.actual // empty')' where this call was sent against '$(kb_parse_resp "$resp" -r '.expected // empty')'. NOTHING was written. Re-read the definition ('field list') and re-run: the conversion you asked for may no longer be the one you want." >&2 ;;
-        413) echo "kbcard: the board is over the server's card-scan rail for a type change — NOTHING was written. That is a RESOURCE rail (the scan holds row locks for its whole duration), not a refusal of the conversion; the server's message above names the operator-supervised command to run instead." >&2 ;;
-        404) echo "kbcard: custom field id $fid is GONE — it was deleted concurrently, and the conversion caught that under the row lock. Nothing was written." >&2 ;;
-        000) echo "kbcard: the conversion request never reached the server (curl transport failure) — nothing was written." >&2 ;;
+        # TWO rails answer 413, and they are not the same measurement: the board-scan
+        # rail counts the BOARD's cards, the examined-carriers rail counts the cards
+        # holding a value for THIS field. A client sentence naming either one is a false
+        # claim on the other — a 6000-card board is nowhere near the board rail and can
+        # still be over the carrier rail. Which rail it was is in the server's message,
+        # which is echoed above, and that message is also the only place the
+        # operator-supervised escape hatch exists; so this line frames the CLASS and
+        # names nothing the server has not said.
+        413) echo "kbcard: the conversion is over one of the server's RESOURCE rails for a type change — NOTHING was written. A rail bounds what one request may hold locks over; it is not a refusal of the conversion, and the server's message above names WHICH rail and the operator-supervised command to run instead." >&2 ;;
+        # The mechanism is deliberately NOT named: implicit route-model binding answers
+        # 404 before changeType is entered at all, and the mutator's own re-read under the
+        # row lock throws the same 404 from inside the transaction. This run cannot tell
+        # those apart, and it does not need to — neither writes anything.
+        404) echo "kbcard: custom field id $fid is GONE — it was deleted since this run read the field index. Nothing was written." >&2 ;;
+        000) echo "kbcard: the conversion request FAILED in transport (curl) — $(_kbc_unfinished_write_note "a conversion that already landed answers as a server-side no-op.")" >&2 ;;
         422)
             # THREE 422 SHAPES, not two, and the third is why this is a three-way and not
             # the server's own two-way. The conversion's own refusals both carry `meta`
@@ -1906,7 +1944,18 @@ _kbc_field_change_type_report() {
                 local oc shown
                 oc="$(kb_parse_resp "$resp" -r '.meta.offender_count // 0')"
                 shown="$(kb_parse_resp "$resp" -r '.meta.offenders | length')"
-                echo "kbcard: $oc card value(s) block this conversion — NOTHING was written. The whole board is scanned BEFORE anything is written, so this refusal IS the preflight: there is no separate check mode over HTTP." >&2
+                # ZERO offenders is a REAL body, not a degenerate one: the server sends
+                # the scan's own offender list with every conversion refusal, and the
+                # acknowledgement check refuses an acknowledged set against a scan that
+                # derived NONE — reachable from --accept-ref-impact when the ref impact
+                # disappears between this run's two calls. "0 card value(s) block this
+                # conversion" then sends the operator looking for cards that do not
+                # exist, on a run whose actual fault is the request.
+                if [[ "$oc" == "0" ]]; then
+                    echo "kbcard: the server REFUSED the conversion while naming NO offending card — NOTHING was written. The board WAS scanned and no card value blocks the conversion, so what was refused is the REQUEST: the server's message above is the rule that refused it. The shape this run can reach is an acknowledgement the scan no longer agrees with (the correlation move --accept-ref-impact acknowledged is gone from the set re-derived under the row lock) — re-run PLAIN, without the flag, and the conversion may simply carry." >&2
+                else
+                    echo "kbcard: $oc card value(s) block this conversion — NOTHING was written. The whole board is scanned BEFORE anything is written, so this refusal IS the preflight: there is no separate check mode over HTTP." >&2
+                fi
                 kb_parse_resp "$resp" -r '.meta.offenders[]? | "kbcard:   card \(.task_id) [\(.category)] \(.reason) — value: \(.value)"' >&2
                 if [[ "$(kb_parse_resp "$resp" -r '.meta.offenders_truncated // false')" == "true" ]]; then
                     echo "kbcard:   ⚠ the server caps the list: $shown of $oc offender(s) are named above. Fix these and re-run to see the rest." >&2
@@ -1935,14 +1984,16 @@ _kbc_field_change_type_report() {
 # exactly the divergent implementation that makes two stored forms of one key, i.e.
 # the defect this pass exists to repair.
 #
-# SIX OUTCOMES, reported as the six different boards they are, because "verified" is
-# a claim about a card that only some of them support:
+# SEVEN OUTCOMES, reported as the seven different boards they are, because "verified"
+# is a claim about a card that only some of them support:
 #   canonicalized      — written, then RE-READ and confirmed on the authoritative GET.
 #   already canonical  — the census (an authoritative board read) already shows the
 #                        canonical form, so no write is issued at all. This is what
 #                        makes re-running the whole command cost zero writes.
-#   PATCH failed       — never written, therefore NOT verifiable: counting it as
-#                        verified is the pass-1 defect this must never re-mint.
+#   PATCH failed       — the write did not complete, so the card is NOT verifiable and
+#                        is never counted as verified (the pass-1 defect this must never
+#                        re-mint) — and equally not reportable as untouched: see
+#                        _kbc_unfinished_write_note, whose transport this shares.
 #   read back different— written, and the re-read disagrees: an observed state.
 #   unverifiable read  — the verification GET failed, or 2xx'd with a body no value
 #                        could be read out of. This run observed NOTHING about the
@@ -1950,15 +2001,44 @@ _kbc_field_change_type_report() {
 #                        board nothing read.
 #   not a DL number    — the stored value cannot be canonicalized at all. Skipped,
 #                        never written, and never counted as done.
+#   outside the census — the conversion converted MORE carriers than this pass can see.
+#                        Never written, never seen, and the reason no run that meets it
+#                        may claim completeness (see the population note below).
+#
+# <converted-count> is the server's OWN meta.converted_task_count from the conversion
+# that just landed, and it is passed in for one reason: it is the only number in this
+# run derived from the population the conversion actually touched.
 _kbc_field_restamp_dl() {
-    local fkey="$1" rows len i tid stored canon want body resp got
+    local fkey="$1" n_conv="${2:-}" rows len i tid stored canon want body resp got unseen=0
     local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
     rows="$(_kbc_field_populated "$fkey")" || {
         echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did NOT run: the board read above did not return a complete card list, and a canonicalization pass over a partial board leaves an unknown remainder. No card was rewritten. Re-run this exact command once the board reads whole — the conversion half is then a server-side no-op." >&2
         return 1
     }
     len="$(jq 'length' <<<"$rows")"
+    # THE TWO POPULATIONS ARE NOT THE SAME ONE, and only this compare can see it.
+    # The conversion's population is CustomFieldMutator::candidateQuery —
+    # withTrashed()->where(board_id)->whereNotNull(payload->key) — with no archive
+    # filter and no soft-delete filter, so EVERY archived and EVERY trashed carrier was
+    # converted. This census reads GET /tasks/search.json, which applies the default
+    # SoftDeletes scope AND whereNull(archived_at) unless asked otherwise: those same
+    # carriers are invisible to it. Without the compare the run reports "N of N
+    # canonicalized and verified" over a denominator that is not the population, exits
+    # 0, and an arbitrary number of cards permanently hold "1" instead of "DL-0001" —
+    # un-archiving any one of them puts a non-canonical value back into the live set.
+    # The remainder is REPORTED, never chased: extending the census to archived/trashed
+    # cards would start PATCHing soft-deleted rows, which is a different decision than
+    # this pass is entitled to make. Shape-guarded through kb_is_uint — the ASCII-digit
+    # owner, never a bare bracket range, which is a COLLATION range under a UTF-8 locale
+    # (card#5409) — because the value is echoed text off the wire, not a local integer.
+    if kb_is_uint "$n_conv" && [[ "$n_conv" -gt "$len" ]]; then
+        unseen=$(( n_conv - len ))
+    fi
     if [[ "$len" -eq 0 ]]; then
+        if [[ "$unseen" -gt 0 ]]; then
+            echo "kbcard: ⚠ --restamp-dl canonicalized NOTHING and cannot say the field is done: no card this pass can SEE carries '$fkey', yet the conversion converted $n_conv card value(s). All $unseen of them are archived or soft-deleted carriers no board read this tool makes returns; each still holds what the conversion left it with, and un-archiving one puts a non-canonical value into the live set." >&2
+            return 1
+        fi
         echo "kbcard: --restamp-dl: no card carries '$fkey' — nothing to canonicalize" >&2
         return 0
     fi
@@ -1997,13 +2077,16 @@ _kbc_field_restamp_dl() {
         fi
     done
 
-    if [[ ${#patch_failed[@]} -eq 0 && ${#mismatch[@]} -eq 0 && ${#unread[@]} -eq 0 && ${#notdl[@]} -eq 0 ]]; then
+    # The completeness claim is emitted ONLY on a run with no remainder of any kind —
+    # $unseen included, because a claim that N of N were canonicalized is a claim about
+    # the field, and this pass's N is not the field's.
+    if [[ ${#patch_failed[@]} -eq 0 && ${#mismatch[@]} -eq 0 && ${#unread[@]} -eq 0 && ${#notdl[@]} -eq 0 && "$unseen" -eq 0 ]]; then
         echo "kbcard: --restamp-dl: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical (left unwritten)" >&2
         return 0
     fi
     echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did not finish: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical." >&2
     if [[ ${#patch_failed[@]} -gt 0 ]]; then
-        echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — this run never wrote them, so each still holds the value the conversion left it with." >&2
+        echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — $(_kbc_unfinished_write_note "a card already holding the canonical form is left unwritten, and one that does not is rewritten and re-read.")" >&2
     fi
     if [[ ${#mismatch[@]} -gt 0 ]]; then
         echo "kbcard:   read back a DIFFERENT value on ${#mismatch[@]} card(s): ${mismatch[*]} — they do not hold the canonical form (the write did not land, or something rewrote them between it and this read), so a DSL filter spelled DL-NNNN will silently skip each of them." >&2
@@ -2013,6 +2096,11 @@ _kbc_field_restamp_dl() {
     fi
     if [[ ${#notdl[@]} -gt 0 ]]; then
         echo "kbcard:   NOT a DL number, so nothing was written: ${notdl[*]} — the conversion still landed on these cards; only their canonicalization was skipped, and a DSL filter spelled DL-NNNN will not match them." >&2
+    fi
+    if [[ "$unseen" -gt 0 ]]; then
+        echo "kbcard:   OUTSIDE THIS PASS ENTIRELY: the conversion converted $n_conv card value(s), $unseen more than the $len this board read returns. The server converts every carrier keyed by '$fkey' INCLUDING archived and soft-deleted cards; this census reads neither, so those $unseen value(s) were never read and never written, and this run makes no claim about them. Each still holds what the conversion left it with, and un-archiving or restoring one puts a non-canonical value back into the live set — canonicalize it by making the card visible to a board read and re-running, or server-side." >&2
+        echo "kbcard:   Re-running this exact command finishes the VISIBLE rest — the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten — but no re-run reaches the $unseen carrier(s) above." >&2
+        return 1
     fi
     echo "kbcard:   Re-running this exact command finishes the rest: the conversion half is now a server-side no-op, and a card already holding the canonical form is left unwritten." >&2
     return 1
@@ -2095,6 +2183,21 @@ _kbc_field_retype() {
     if [[ -n "$accept_ref" && -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
         echo "kbcard: --accept-ref-impact: the server's refusal names $(jq 'length' <<<"$ref_ids") card(s) whose external-reference correlation this conversion MOVES — re-sending with exactly that set acknowledged." >&2
         kb_parse_resp "$resp" -r '.meta.offenders[]? | select(.category == "ref_impact") | "kbcard:   card \(.task_id): \((.refs_before // []) | join(" "))  ->  \((.refs_after // []) | join(" "))"' >&2
+        # THE TWO META KEYS ARE CAPPED DIFFERENTLY: meta.offenders is truncated at the
+        # server's MAX_REPORTED_OFFENDERS, meta.ref_impact_task_ids is not. This path
+        # acknowledges the UNCAPPED set and prints from the CAPPED one, and it does not
+        # go through _kbc_field_change_type_report, so the truncation notice that arm
+        # prints is never reached from here — the operator would see 50 moves and
+        # acknowledge 200, against the one property this flag claims (it acknowledges
+        # exactly the moves it was shown). Derived from the two counts rather than from
+        # meta.offenders_truncated: that flag is about the offender list as a whole,
+        # while what matters here is the ref-impact rows against the set being sent.
+        local shown_ref n_ref
+        shown_ref="$(kb_parse_resp "$resp" -r '[.meta.offenders[]? | select(.category == "ref_impact")] | length')"
+        n_ref="$(jq 'length' <<<"$ref_ids")"
+        if kb_is_uint "$shown_ref" && [[ "$shown_ref" -lt "$n_ref" ]]; then
+            echo "kbcard:   ⚠ the server CAPS the list it names: $shown_ref of the $n_ref moves being acknowledged are shown above, and the acknowledgement covers all $n_ref — including the ones no run has printed (the cap applies to the refusal itself, so re-running does not widen it)." >&2
+        fi
         body="$(jq -c --argjson ids "$ref_ids" '. + {acknowledge_ref_impact: $ids}' <<<"$body")"
         out="$(_kbc_field_change_type_call "$fid" "$body")"
         http="${out%%$'\n'*}"; resp="${out#*$'\n'}"
@@ -2131,7 +2234,7 @@ _kbc_field_retype() {
     printf '%s\n' "$row"
 
     [[ -n "$restamp_dl" ]] || return 0
-    _kbc_field_restamp_dl "$fkey"
+    _kbc_field_restamp_dl "$fkey" "$n_conv"
 }
 
 cmd_field() {
