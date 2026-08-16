@@ -1976,8 +1976,9 @@ _kbc_field_change_type_call() {
 # lib makes) and a connection reset mid-response, where the server may already have
 # COMMITTED the transaction. The lib's own header states exactly that and names this bin
 # as one of the writers it applies to. So a run that meets this state has read no answer
-# at all, and the two sentences it can honestly say are: this is UNKNOWN, and there is an
-# idempotent re-run that resolves it. Both call sites — the conversion's 000 arm and the
+# at all, and the two sentences it can honestly say are: this is UNKNOWN, and its caller
+# can name a way to resolve it — a re-run where one is idempotent, and otherwise the read
+# that says WHICH re-run resolves it (see the owner below). Both call sites — the conversion's 000 arm and the
 # restamp pass's failed PATCH — make the same claim about the same transport, so they
 # make it in one place: a second spelling would drift into "nothing was written" again on
 # whichever side was edited last.
@@ -2002,10 +2003,10 @@ _kbc_unfinished_write_note() {
     printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. $1"
 }
 
-# _kbc_field_conversion_rerun_note <have-options> <restamp-dl>: the ONE sentence naming
-# the re-run that resolves a conversion this run could not read the outcome of — the 000
-# transport arm and the 2xx whose body nothing could be read out of, which are the two
-# arms that tell the operator to run the command again.
+# _kbc_field_conversion_rerun_note <have-options> <restamp-dl> <landed-known> <from> <to>:
+# the ONE sentence naming the re-run that resolves a conversion this run could not read
+# the outcome of — the 000 transport arm and the 2xx whose body nothing could be read out
+# of, which are the two arms that tell the operator to run the command again.
 #
 # WHY IT IS CONDITIONAL ON --options. CustomFieldMutator::typeGates calls
 # assertOptionsMatchTarget BEFORE the `$from === $toType` no-op short-circuit, and that
@@ -2016,14 +2017,33 @@ _kbc_unfinished_write_note() {
 # only what the server said. "Re-running is safe" is true of the request WITHOUT them and
 # false with them, which makes it a claim about the command, not about the route.
 #
-# ONE OWNER, BOTH SITES, and the predicate carried in rather than re-decided at each: the
+# WHY <landed-known> DECIDES THE SHAPE OF THE --options BRANCH, not just its wording.
+# With options on the command there is no directive that is true on both sides of "did it
+# land?": dropping them is right once it HAS landed and wrong while it has NOT (the
+# conversion still has to happen, and the options are part of what is being asked), and
+# keeping them is the exact mirror. An arm that KNOWS it landed can name one, and the 2xx
+# arm does — the server does not answer 2xx for a refusal — so it prescribes the drop
+# outright. The 000 arm cannot: it read no answer at all, which is the entire reason it
+# exists. So it prescribes the READ first — 'field list', the same resolution the 412 arm
+# already sends the operator to — and branches on what the read shows. That first step is
+# correct whichever way the write went, so the sentence cannot be false on either branch;
+# a single unconditional directive here can only be right by predicting which branch the
+# operator is on, and three fix rounds on this sentence each picked one and were wrong on
+# the other. The type names are what the branches are READ against, so they are handed in
+# from the request rather than re-derived here (on a 000 there is no response to derive
+# them from at all).
+#
+# ONE OWNER, BOTH SITES, and the predicates carried in rather than re-decided at each: the
 # two sites spelling this claim separately is exactly how the 000 arm — whose whole job is
 # to resolve "did the write land?" — came to prescribe a resolution the server refuses,
 # while its sibling was corrected. _kbc_field_change_type_report cannot see the flag (it
-# reports a response, not a request), so `have_options` is a parameter of that report.
+# reports a response, not a request), so `have_options` is a parameter of that report, and
+# every site calls this owner with the same argument shape for the same reason.
 _kbc_field_conversion_rerun_note() {
     local note
-    if [[ -n "$1" ]]; then
+    if [[ -n "$1" && -z "$3" ]]; then
+        note="Re-read the definition FIRST ('field list'), because what to re-run depends on which way the write went: if it now reads '$5', the conversion LANDED, so re-run it WITHOUT --options — the server reads options on a request that changes no type as an OPTIONS EDIT and refuses it (422, sending it to the PATCH route, which is where an option-set change belongs); if it still reads '$4', it did NOT land, so re-run this exact command — the conversion has yet to happen and its options ride with it."
+    elif [[ -n "$1" ]]; then
         note="Re-run it WITHOUT --options: a conversion that already landed answers as a server-side no-op, but only on a request carrying no options — the server reads options on a request that does not change the type as an OPTIONS EDIT and refuses it (422, sending it to the PATCH route), so this exact command re-run unchanged answers that refusal instead of resolving anything, and an option-set change goes through that route."
     else
         note="Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe."
@@ -2083,10 +2103,12 @@ _kbc_field_change_type_report() {
         # those apart, and it does not need to — neither writes anything.
         404) echo "kbcard: custom field id $fid is GONE — it was deleted since this run read the field index. Nothing was written." >&2 ;;
         # The re-run this arm names is NOT always the command that was run: with --options
-        # on it, a conversion that landed refuses the identical request as an options edit.
-        # The restamp pass is not named here on either branch — this arm reports a response
-        # and holds no opinion about a pass that only a 2xx reaches.
-        000) echo "kbcard: the conversion request FAILED in transport (curl) — $(_kbc_unfinished_write_note "$(_kbc_field_conversion_rerun_note "$have_options" "")")" >&2 ;;
+        # on it, a conversion that landed refuses the identical request as an options edit,
+        # and this arm is the one that cannot say whether it landed. So it hands the owner
+        # an EMPTY <landed-known> and gets the read-then-branch sentence, against the types
+        # this request was made with. The restamp pass is not named here on either branch —
+        # this arm reports a response and holds no opinion about a pass only a 2xx reaches.
+        000) echo "kbcard: the conversion request FAILED in transport (curl) — $(_kbc_unfinished_write_note "$(_kbc_field_conversion_rerun_note "$have_options" "" "" "$from" "$to")")" >&2 ;;
         422)
             # THREE 422 SHAPES, not two, and the third is why this is a three-way and not
             # the server's own two-way. The conversion's own refusals both carry `meta`
@@ -2521,19 +2543,25 @@ _kbc_field_retype() {
     # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
     # must not go on to restamp, because it has not read which conversion happened.
     if [[ -z "$row" || -z "$to_t" ]]; then
-        # The re-run sentence is the shared owner's, fed BOTH predicates: it names the
-        # restamp pass only where the flag was passed (without it there is no pass to
+        # The re-run sentence is the shared owner's, fed all three predicates: it names
+        # the restamp pass only where the flag was passed (without it there is no pass to
         # re-run, and naming one asserts a thing that did not happen — see the rule in
         # _kbc_field_rerun_note's header: invariant facts unconditionally, measured ones
         # only where measured), and it names a re-run WITHOUT --options where the command
         # carried them, because the identical command is refused once the conversion has
         # landed. Both are properties of the request this run made, so both are read off
-        # the flags rather than spelled out here. The 000 arm calls the same owner but
-        # hands it an EMPTY restamp predicate, so the owner's sentence is the same on
-        # both arms only WITHOUT --restamp-dl: with it, this arm names the pass and that
-        # one does not — deliberately, since it reports a response and holds no opinion
-        # about a pass only a 2xx reaches.
-        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl")" >&2
+        # the flags rather than spelled out here.
+        #
+        # THIS ARM PASSES <landed-known>, and that is what keeps its directive
+        # unconditional. The 2xx IS the guarantee — the server does not answer 2xx for a
+        # refusal — so the conversion landed as asked, and "drop --options" is simply the
+        # right command; sending the operator to 'field list' first would offer to resolve
+        # a question this arm has already answered. The 000 arm hands the same owner an
+        # EMPTY one and gets the read-then-branch sentence instead, because it read no
+        # answer at all. It also hands an EMPTY restamp predicate, so with --restamp-dl
+        # this arm names the pass and that one does not — deliberately, since it reports a
+        # response and holds no opinion about a pass only a 2xx reaches.
+        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl" 1 "$ftype" "$to")" >&2
         return 1
     fi
     # The server answers a target type equal to the current one as an explicit no-op:

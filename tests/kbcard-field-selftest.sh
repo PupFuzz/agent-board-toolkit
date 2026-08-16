@@ -52,11 +52,16 @@
 #     ways as the control that those rc assertions can fail at all;
 #   - the re-run a run prescribes when it could not read its own outcome is asserted on
 #     BOTH branches of --options and at BOTH arms that print one (the 000 transport
-#     failure and the unreadable 2xx echo): with options the identical command is refused
-#     as an options edit once the conversion has landed, which is driven end to end — a
-#     landed --options conversion, then the same command again — rather than asserted off
-#     a fixture, and the arm that refuses it is asserted to enumerate no client-side copy
-#     of the server's option rules (the copy that omitted this very rule);
+#     failure and the unreadable 2xx echo), which do NOT say the same thing: with options
+#     the identical command is refused as an options edit once the conversion has landed,
+#     which is driven end to end — a landed --options conversion, then the same command
+#     again — rather than asserted off a fixture, and the arm that refuses it is asserted
+#     to enumerate no client-side copy of the server's option rules (the copy that omitted
+#     this very rule). The 2xx arm KNOWS it landed (the server does not answer 2xx for a
+#     refusal) and names one directive, asserted as an absence of the other's shape; the
+#     000 arm cannot, so it prescribes the 'field list' READ first and branches on it —
+#     one assertion per branch, the read pinned as the FIRST thing the sentence says, and
+#     a second type pair as the control that the branches name THIS request's types;
 #   - delete ALWAYS prints the `N of M board cards carry <key>` denominator, refuses a
 #     populated field at rc 2 naming both consequences, warns loudly under
 #     --orphan-values, and refuses at rc 1 on EVERY incomplete-read rc
@@ -1282,21 +1287,66 @@ eq "…never tells the operator to re-run it as typed" "false" "$(has 'Re-run th
 eq "…nor calls re-running it safe"                   "false" "$(has 'so re-running is safe' "$ERR")"
 eq "…naming the refusal that re-run would meet"      "true"  "$(has 'OPTIONS EDIT' "$ERR")"
 eq "…and the route an option-set change belongs to"  "true"  "$(has 'the PATCH route' "$ERR")"
+# THE RULING FOR THIS ARM, asserted as an ABSENCE. A 2xx is the server's landed-ness
+# guarantee (it does not answer 2xx for a refusal), so this arm KNOWS the conversion
+# landed and names one directive. The 000 arm's read-then-branch shape does not belong
+# here: prescribing a 'field list' read would offer to resolve a question this arm has
+# already answered, and its second branch — "if it still reads <from>, it did NOT land" —
+# is a state this arm's own 2xx says cannot be the one it is in.
+eq "…prescribes NO definition read, having a 2xx"    "false" "$(has 'Re-read the definition' "$ERR")"
+eq "…and branches on no landing its 2xx settles"     "false" "$(has 'it did NOT land' "$ERR")"
 
-# THE SAME CLAIM AT THE OTHER SITE, which is where it survived two fix rounds: the 000
+# THE SAME CLAIM AT THE OTHER SITE, which is where it survived three fix rounds: the 000
 # transport arm, whose whole job is to resolve "did the write land?" and which prescribed
 # a resolution the server refuses. _kbc_field_change_type_report reports a RESPONSE and
-# cannot see the request's flags, so this leg is what pins the predicate being plumbed to
+# cannot see the request's flags, so this leg is what pins the predicates being plumbed to
 # it — the sibling 000 leg above (no --options, same arm) is its control.
+#
+# AND THE SHAPE IS DIFFERENT HERE, which is the point of the leg. Every earlier round gave
+# this arm ONE directive, and with --options on the command there is none that is true
+# whichever way the write went: drop them and it is right only if the conversion landed,
+# keep them and it is right only if it did not — and this arm exists precisely because it
+# cannot tell. So it prescribes the READ first and branches on what the read shows, which
+# is why each branch gets its own assertion below rather than one substring for the line.
 _seed "$_F_SEV_ENUM" "$_B_SEV"
 _CT_FORCE_HTTP=000
 _CT_FORCE_BODY='curl: (28) Operation timed out after 30001 milliseconds with 0 bytes received'
 rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
 eq "a transport failure on a command carrying --options → rc 1" "1" "$rc"
 eq "…still claims UNCERTAINTY about the write"       "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
-eq "…names the re-run WITHOUT --options"             "true"  "$(has 'Re-run it WITHOUT --options' "$ERR")"
-eq "…never tells the operator to re-run it as typed" "false" "$(has 'Re-run this exact command' "$ERR")"
+# THE READ IS THE FIRST THING THE RE-RUN SENTENCE SAYS, asserted against the tail of the
+# uncertainty note it follows — not merely present somewhere in the line. A read named
+# after the directives is decoration; a read named before them is what makes the
+# directives conditional on something the operator has actually established.
+eq "…and prescribes the definition READ first"       "true"  \
+   "$(has "never arrived does. Re-read the definition FIRST ('field list')" "$ERR")"
+eq "…the LANDED branch, named by the TARGET type"    "true"  \
+   "$(has "if it now reads 'multi_select', the conversion LANDED, so re-run it WITHOUT --options" "$ERR")"
+eq "…the NOT-LANDED branch, named by the SOURCE type" "true" \
+   "$(has "if it still reads 'enum', it did NOT land, so re-run this exact command" "$ERR")"
+eq "…naming the refusal the first branch avoids"     "true"  "$(has 'OPTIONS EDIT' "$ERR")"
+# The three shapes the previous rounds shipped, each an UNCONDITIONAL directive on an arm
+# that cannot know which branch the operator is on. All three are absences here.
+eq "…never the unconditional 'drop the options'"     "false" \
+   "$(has 'Re-run it WITHOUT --options:' "$ERR")"
+eq "…never the unconditional 'run it as typed'"      "false" "$(has 'Re-run this exact command:' "$ERR")"
 eq "…nor calls re-running it safe"                   "false" "$(has 'so re-running is safe' "$ERR")"
+eq "…nor promises a server-side no-op either way"    "false" "$(has 'answers as a server-side no-op' "$ERR")"
+
+# THE SAME ARM ON A DIFFERENT TYPE PAIR — the control that the two branches name the types
+# THIS request was made with rather than a pair spelled into the sentence. Every --options
+# leg above converts enum -> multi_select, so a hardcoded pair would be green across all of
+# them; number -> enum shares neither end.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_FORCE_HTTP=000
+_CT_FORCE_BODY='curl: (7) Failed to connect to localhost port 8080: Connection refused'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to enum --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "the same arm on a number -> enum request → rc 1" "1"     "$rc"
+eq "…reads the LANDED branch against 'enum'"         "true"  \
+   "$(has "if it now reads 'enum', the conversion LANDED" "$ERR")"
+eq "…and the NOT-LANDED branch against 'number'"     "true"  \
+   "$(has "if it still reads 'number', it did NOT land" "$ERR")"
+eq "…naming the other request's types nowhere"       "false" "$(has 'multi_select' "$ERR")"
 
 # THE RULE ITSELF, DRIVEN END TO END rather than asserted off a fixture: a landed
 # --options conversion, then the EXACT same command again. Run 2 is a same-type request
