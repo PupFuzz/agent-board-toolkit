@@ -149,10 +149,16 @@
 #     rc 2 before the POST — a key is unique per board, so "create over the top" is
 #     not a re-type; `field retype` is (the server converts a type in place).
 #   kbcard field delete --field <name|id> [--orphan-values]
-#     WRITE: drop a custom-field DEFINITION. FAIL-CLOSED on populated fields. The
-#     board is enumerated first (the shared whole-board fetch) and the denominator
-#     `N of M board cards carry <key>` ALWAYS goes to stderr — an unpopulated delete
-#     is then distinguishable from a delete whose census never ran.
+#     WRITE: drop a custom-field DEFINITION. FAIL-CLOSED on the carriers it can SEE.
+#     The board is enumerated first (the shared whole-board fetch) and the denominator
+#     `N of M board cards carry <key>` ALWAYS goes to stderr — a census that RAN and
+#     returned zero is then distinguishable from one that never ran.
+#     ⚠ THE CENSUS IS A LIVE, NON-ARCHIVED BOARD READ, and the denominator line says so
+#     on every run: an archived or soft-deleted carrier is in neither of its numbers,
+#     while the index purge this delete performs is board-wide and filters out neither.
+#     So a zero numerator is a measurement of what this tool can see, NOT a statement
+#     that the key is unused, and the refusal below — gated on that count — does not
+#     fire for a carrier the read cannot return.
 #     With N > 0 this REFUSES (rc 2) unless --orphan-values, because two MEASURED
 #     server behaviours make a silent delete a data-integrity event:
 #       (A) resident tasks.payload values SURVIVE the definition's deletion and are
@@ -165,7 +171,10 @@
 #     atomic conversion, which deletes nothing. --orphan-values is the explicit opt-in
 #     to both consequences of a real delete and still prints a loud warning.
 #     A board read that failed or came back INCOMPLETE (page cap / short read)
-#     refuses (rc 1): a truncated denominator is not a denominator.
+#     refuses (rc 1): a truncated denominator is not a denominator. That refusal covers
+#     the incompleteness the READ can detect; the archived/trashed blind spot above is
+#     not one of them (a complete read returns none of those cards and reports no rc),
+#     so it is DISCLOSED on the denominator line rather than refused.
 #   kbcard field retype --field <name|id> --to <type> [--options a,b,c]
 #                       [--accept-ref-impact] [--restamp-dl]
 #     WRITE: change a custom field's TYPE, as ONE call on the server's atomic
@@ -1472,6 +1481,17 @@ cmd_delete() {
 #     them holding whatever JSON type they were written as.
 #   * Deleting PURGES the search-index side table for the key, and creating does NOT
 #     rebuild it. Only a payload WRITE touching the key re-indexes it.
+# ⚠ WHAT "FAIL-CLOSED" IS QUANTIFIED OVER, stated because the refusal is easy to read as
+# wider than it is: both behaviours above are BOARD-WIDE — CustomFieldMutator::delete
+# leaves tasks.payload untouched for every carrier and TaskCustomFieldIndexer::purgeField
+# is `where board_id … where field_key … delete()`, with no archive and no trash filter —
+# while the census that GATES the refusal is a live, non-archived board read. So a board
+# whose only carriers are archived reports "0 of M", does not refuse, and purges the
+# index for all of them; un-archiving one puts an undefined payload key back into the
+# live set. The gate is what this file can see, and the denominator line says so on every
+# run (see _kbc_field_census_population_note). Widening the gate to the carriers it
+# cannot see would change what this verb REFUSES, which is the caller's decision, not
+# this file's; it is recorded as a request.
 # So the obvious hand-rolled type migration — delete, create, done — leaves a board
 # that READS migrated (the definition says `string`) while every DSL filter on the key
 # matches zero cards and every resident value still has the old JSON type. Nothing
@@ -1758,6 +1778,27 @@ _kbc_field_delete_call() {
     return 0
 }
 
+# _kbc_field_census_population_note <key>: the ONE statement of WHAT a census this file
+# takes can see, embedded by every line that reports one.
+#
+# The census is fetch_board_cards -> GET /tasks/search.json, and TasksController::search
+# applies the default SoftDeletes scope AND whereNull('archived_at') unless asked
+# otherwise (it is asked otherwise nowhere in this file). An archived or soft-deleted
+# carrier of the key is therefore counted by neither the numerator nor the denominator —
+# while the two server routes these counts are read against are both wider than that:
+# CustomFieldMutator::candidateQuery is withTrashed() with no archive filter, and
+# TaskCustomFieldIndexer::purgeField is `where board_id … where field_key … delete()`,
+# board-wide with no filter of either kind.
+#
+# One owner because two callers state it: the denominator line below, on every run of
+# both write verbs, and _kbc_field_census_scope_note, which adds the conversion's own
+# population compare on top of it. They are two claims sharing one fact, and the fact is
+# invariant — it holds on every run of this file against every board — so it is stated
+# unconditionally and spelled once.
+_kbc_field_census_population_note() {
+    printf '%s' "The census reads LIVE, NON-ARCHIVED cards only (GET /tasks/search.json applies the soft-delete scope and archived_at IS NULL), so an archived or trashed card carrying '$1' is in neither the numerator nor the denominator"
+}
+
 # _kbc_field_populated <key>: the board's cards that CARRY the payload key, as
 # `[{task_id, value}]` on stdout, with the denominator `N of M board cards carry
 # <key>` ALWAYS on stderr. The census is the whole point of both write verbs, so it
@@ -1770,6 +1811,15 @@ _kbc_field_delete_call() {
 # denominator is not a denominator, and the one thing that must not happen is a
 # "0 of M" that reads like a safe delete. This bin sets KB_FETCH_LOUD, so the
 # paginator's own line — the only one that knows the cause — prints above this one.
+#
+# THE OTHER WAY THIS DENOMINATOR IS NOT THE POPULATION is not an rc at all, so no
+# refusal can carry it: a COMPLETE read of the whole board still returns no archived and
+# no soft-deleted card, and both write verbs are read against server routes that touch
+# them (see _kbc_field_census_population_note). A "0 of M" is therefore a measurement of
+# what this tool can see and never a statement that the key is unused, so the scope rides
+# the count itself, on the line that prints it, for every consumer of this census at
+# once — the previous two fixes of this shape hoisted a note and then wired it to ONE
+# consumer, leaving the other stating the same unqualified number.
 _kbc_field_populated() {
     local key="$1" cards rc=0 rows n m
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || rc=$?
@@ -1789,7 +1839,7 @@ _kbc_field_populated() {
     }
     n="$(jq 'length' <<<"$rows")"
     m="$(jq '(. // []) | length' <<<"$cards")"
-    echo "kbcard: $n of $m board cards carry $key" >&2
+    echo "kbcard: $n of $m board cards carry $key — ⚠ SCOPE: $(_kbc_field_census_population_note "$key"). A zero numerator is therefore not evidence that the key is unused, and an N is a FLOOR: whatever is gated on this count — a refusal, a compare — is blind to exactly the carriers this read cannot return." >&2
     printf '%s' "$rows"
 }
 
@@ -1910,7 +1960,7 @@ _kbc_field_change_type_call() {
     kb_api_status POST "/custom_fields/$1/change-type.json" "$2"
 }
 
-# _kbc_unfinished_write_note <re-run-clause>: the ONE wording for a write whose
+# _kbc_unfinished_write_note <re-run-sentence>: the ONE wording for a write whose
 # TRANSPORT never completed, printed as the tail of the caller's own sentence.
 #
 # It exists because "nothing was written" is not a readable outcome here. kb_api_status
@@ -1919,19 +1969,63 @@ _kbc_field_change_type_call() {
 # lib makes) and a connection reset mid-response, where the server may already have
 # COMMITTED the transaction. The lib's own header states exactly that and names this bin
 # as one of the writers it applies to. So a run that meets this state has read no answer
-# at all, and the two sentences it can honestly say are: this is UNKNOWN, and the re-run
-# that resolves it is idempotent. Both call sites — the conversion's 000 arm and the
+# at all, and the two sentences it can honestly say are: this is UNKNOWN, and there is an
+# idempotent re-run that resolves it. Both call sites — the conversion's 000 arm and the
 # restamp pass's failed PATCH — make the same claim about the same transport, so they
 # make it in one place: a second spelling would drift into "nothing was written" again on
 # whichever side was edited last.
+#
+# WHAT IT NO LONGER OWNS, and why. It used to print `Re-run this exact command:` itself
+# and take only the clause after it. That directive is NOT invariant across its callers:
+# on the conversion path a command carrying --options is refused (422) once the
+# conversion has landed, so "this exact command" is the wrong command to name — see
+# _kbc_field_conversion_rerun_note, which owns that whole sentence for both arms that
+# print it. This owner states the UNKNOWN half, which every caller shares, and the
+# caller hands in the re-run sentence its own path can honestly make.
 _kbc_unfinished_write_note() {
-    printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. Re-run this exact command: $1"
+    printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. $1"
 }
 
-# _kbc_field_change_type_report <field-id> <http> <body> <key> <from> <to>: one
-# non-2xx outcome, in this tool's words AND the server's own. Both calls of the
+# _kbc_field_conversion_rerun_note <have-options> <restamp-dl>: the ONE sentence naming
+# the re-run that resolves a conversion this run could not read the outcome of — the 000
+# transport arm and the 2xx whose body nothing could be read out of, which are the two
+# arms that tell the operator to run the command again.
+#
+# WHY IT IS CONDITIONAL ON --options. CustomFieldMutator::typeGates calls
+# assertOptionsMatchTarget BEFORE the `$from === $toType` no-op short-circuit, and that
+# helper throws a plain ValidationException for same-type + non-null options ("This
+# request does not change the type, so it is an options edit — send it to PATCH …"). So
+# once the conversion has landed, the SAME command with --options still on it does not
+# answer as a server-side no-op: it answers 422, and the arm reporting that 422 names
+# only what the server said. "Re-running is safe" is true of the request WITHOUT them and
+# false with them, which makes it a claim about the command, not about the route.
+#
+# ONE OWNER, BOTH SITES, and the predicate carried in rather than re-decided at each: the
+# two sites spelling this claim separately is exactly how the 000 arm — whose whole job is
+# to resolve "did the write land?" — came to prescribe a resolution the server refuses,
+# while its sibling was corrected. _kbc_field_change_type_report cannot see the flag (it
+# reports a response, not a request), so `have_options` is a parameter of that report.
+_kbc_field_conversion_rerun_note() {
+    local note
+    if [[ -n "$1" ]]; then
+        note="Re-run it WITHOUT --options: a conversion that already landed answers as a server-side no-op, but only on a request carrying no options — the server reads options on a request that does not change the type as an OPTIONS EDIT and refuses it (422, sending it to the PATCH route), so this exact command re-run unchanged answers that refusal instead of resolving anything, and an option-set change goes through that route."
+    else
+        note="Re-run this exact command: a conversion that already landed answers as a server-side no-op, so re-running is safe."
+    fi
+    [[ -n "$2" ]] && note="$note That re-run RUNS the --restamp-dl pass this run skipped. Whether that pass FINISHES is its own outcome, which it reports — a stored value that is not a DL number is canonicalized by no run of it."
+    printf '%s' "$note"
+}
+
+# _kbc_field_change_type_report <field-id> <http> <body> <key> <from> <to> <have-options>:
+# one non-2xx outcome, in this tool's words AND the server's own. Both calls of the
 # ref-impact handshake fail through here, so the refusal vocabulary cannot drift
 # into two spellings.
+#
+# <have-options> is the REQUEST's predicate, not the response's, and it is here for one
+# arm: 000 is the only outcome this function reports that prescribes a re-run, and what
+# a re-run does depends on whether --options rode along (see
+# _kbc_field_conversion_rerun_note). It is plumbed rather than re-derived from the body,
+# which on a 000 does not exist.
 #
 # The status line + the raw body mirror what kb_api prints on a non-2xx under
 # KB_API_ERRBODY=1, and the failure-log append mirrors its log line: kb_api_status is
@@ -1939,7 +2033,7 @@ _kbc_unfinished_write_note() {
 # preflight — every offending card is named in that body, so dropping it would throw
 # away the only report of what blocks the conversion.
 _kbc_field_change_type_report() {
-    local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6"
+    local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6" have_options="$7"
     local path="/custom_fields/$fid/change-type.json"
     echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
     echo "$resp" >&2
@@ -1966,7 +2060,11 @@ _kbc_field_change_type_report() {
         # row lock throws the same 404 from inside the transaction. This run cannot tell
         # those apart, and it does not need to — neither writes anything.
         404) echo "kbcard: custom field id $fid is GONE — it was deleted since this run read the field index. Nothing was written." >&2 ;;
-        000) echo "kbcard: the conversion request FAILED in transport (curl) — $(_kbc_unfinished_write_note "a conversion that already landed answers as a server-side no-op.")" >&2 ;;
+        # The re-run this arm names is NOT always the command that was run: with --options
+        # on it, a conversion that landed refuses the identical request as an options edit.
+        # The restamp pass is not named here on either branch — this arm reports a response
+        # and holds no opinion about a pass that only a 2xx reaches.
+        000) echo "kbcard: the conversion request FAILED in transport (curl) — $(_kbc_unfinished_write_note "$(_kbc_field_conversion_rerun_note "$have_options" "")")" >&2 ;;
         422)
             # THREE 422 SHAPES, not two, and the third is why this is a three-way and not
             # the server's own two-way. The conversion's own refusals both carry `meta`
@@ -1982,7 +2080,14 @@ _kbc_field_change_type_report() {
             if [[ -z "$readable" ]]; then
                 echo "kbcard: the conversion was REFUSED and no refusal could be read out of the body — nothing was written, and this run cannot say which rule or which cards refused it." >&2
             elif [[ "$(kb_parse_resp "$resp" -r 'has("meta")')" != "true" ]]; then
-                echo "kbcard: the server REFUSED this request as invalid — nothing was written, and no card value was examined. The message above is the rule that refused it (the option rules — required into enum/multi_select from a non-option source, never inherited, prohibited on a scalar target — are all the server's, and all answer here)." >&2
+                # NO ENUMERATION OF THE RULES. This line used to list them, and the list
+                # was a client-side copy of assertOptionsMatchTarget that had already gone
+                # stale: it named three of four and omitted the one an operator most
+                # plausibly reaches — same-type + options, "this is an options edit" —
+                # which is precisely what a re-run of a landed --options conversion trips.
+                # A copy of the server's rule set can only ever drift out of step with it;
+                # the body echoed above names the rule that actually fired.
+                echo "kbcard: the server REFUSED this request as invalid — nothing was written, and no card value was examined. The message above IS the rule that refused it: every rule about --options is the server's, and they all answer here." >&2
             elif [[ "$(kb_parse_resp "$resp" -r '.meta | has("offenders")')" != "true" ]]; then
                 # The PAIR refusal: the conversion does not exist between these two types
                 # at all, decided before a single task row was read — no card is at fault.
@@ -2053,6 +2158,12 @@ _kbc_field_change_type_report() {
 # about a POPULATION, on runs where every write this pass made completed and was
 # verified. One owner per claim; sharing them would put census prose on the conversion's
 # 000 arm, which never runs a census.
+#
+# The population fact ITSELF is _kbc_field_census_population_note's, embedded above: it
+# is the same fact the census line prints on every run of both write verbs, and a second
+# spelling of it here is how one of them would end up qualified and the other not. What
+# is this note's own is the layer on top — the compare against the conversion's count,
+# which is a statement only the restamp pass is in a position to make.
 _kbc_field_census_scope_note() {
     local fkey="$1" scanned="$2" n_conv="$3" why
     if [[ -n "$scanned" ]]; then
@@ -2060,7 +2171,7 @@ _kbc_field_census_scope_note() {
     else
         why="the server converted NOTHING on this run (it answered the same-type no-op, so no scan ran and its converted count measures no population at all) — this run had nothing to compare its census against"
     fi
-    printf '%s' "⚠ SCOPE: this is a statement about the cards this pass can SEE, not about '$fkey'. The census reads LIVE, NON-ARCHIVED cards only, while the conversion's population is EVERY carrier of the key including archived and soft-deleted ones; those were never read here, and $why. A remainder can be PROVEN by this pass and never ruled out by it."
+    printf '%s' "⚠ SCOPE: this is a statement about the cards this pass can SEE, not about '$fkey'. $(_kbc_field_census_population_note "$fkey"), while the conversion's population is EVERY carrier of the key including archived and soft-deleted ones; those were never read here, and $why. A remainder can be PROVEN by this pass and never ruled out by it."
 }
 
 # _kbc_field_rerun_note <finishable-count> <notdl-count>: the ONE sentence about what
@@ -2093,10 +2204,10 @@ _kbc_field_rerun_note() {
     printf '%s' "$note"
 }
 
-# _kbc_field_restamp_dl <key>: --restamp-dl's pass, AFTER a conversion the server
-# has already committed. It is not part of the conversion and cannot be: the cast
-# matrix's text rule for a `number` source is json_encode, so the stored number 1
-# converts to the string "1" — never "DL-0001". Correlation itself is not at risk
+# _kbc_field_restamp_dl <key> <converted-count> <server-scanned>: --restamp-dl's pass,
+# AFTER a conversion the server has already committed. It is not part of the conversion
+# and cannot be: the cast matrix's text rule for a `number` source is json_encode, so the
+# stored number 1 converts to the string "1" — never "DL-0001". Correlation is not at risk
 # (the server canonicalizes DL-028 / 28 / #28 to one key), but a custom-field DSL
 # filter written as `DL-0001` string-MISSES a card storing "1", so a conversion
 # alone leaves the DL migration half-done.
@@ -2140,6 +2251,15 @@ _kbc_field_rerun_note() {
 # the first makes converted_task_count a measurement. Without it, the no-op re-run this
 # tool's own remediation lines tell the operator to make — the one run in the sequence
 # that emits the clean line — computes a remainder of 0 by construction.
+#
+# EVERY "re-run this exact command" BELOW IS HONEST, and it is honest by reachability
+# rather than by wording: this pass runs only after a 2xx, and --restamp-dl forces
+# --to string, on which the server refuses --options twice over (prohibited on a scalar
+# target; an options edit on a same-type request) — both 422, both before any 2xx. So no
+# run reaching these lines carried --options, and the identical re-run cannot meet the
+# options-edit refusal the CONVERSION's own arms have to name
+# (_kbc_field_conversion_rerun_note). Change either half of that — the flag's --to
+# string guard, or the server's option rules — and these lines need that owner too.
 _kbc_field_restamp_dl() {
     local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored canon want body resp got unseen=0
     local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
@@ -2232,7 +2352,7 @@ _kbc_field_restamp_dl() {
     local finishable=$(( ${#patch_failed[@]} + ${#mismatch[@]} + ${#unread[@]} ))
     echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did not finish: ${#done_ids[@]} of $len card value(s) canonicalized and verified, ${#already[@]} already canonical." >&2
     if [[ ${#patch_failed[@]} -gt 0 ]]; then
-        echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — $(_kbc_unfinished_write_note "a card already holding the canonical form is left unwritten, and one that does not is rewritten and re-read.")" >&2
+        echo "kbcard:   the restamp PATCH FAILED on ${#patch_failed[@]} card(s): ${patch_failed[*]} — $(_kbc_unfinished_write_note "Re-run this exact command: a card already holding the canonical form is left unwritten, and one that does not is rewritten and re-read.")" >&2
     fi
     if [[ ${#mismatch[@]} -gt 0 ]]; then
         echo "kbcard:   read back a DIFFERENT value on ${#mismatch[@]} card(s): ${mismatch[*]} — they do not hold the canonical form (the write did not land, or something rewrote them between it and this read), so a DSL filter spelled DL-NNNN will silently skip each of them." >&2
@@ -2363,7 +2483,7 @@ _kbc_field_retype() {
     fi
 
     if [[ ! "$http" =~ ^2 ]]; then
-        _kbc_field_change_type_report "$fid" "$http" "$resp" "$fkey" "$ftype" "$to"
+        _kbc_field_change_type_report "$fid" "$http" "$resp" "$fkey" "$ftype" "$to" "$have_options"
         if [[ -z "$accept_ref" && -n "$ref_ids" && "$ref_ids" != "[]" ]]; then
             echo "kbcard:   To accept exactly those moves, re-run with --accept-ref-impact: it makes this same un-acknowledged call FIRST and acknowledges the set the server reports on THAT run — never a set carried over from this one." >&2
         fi
@@ -2379,16 +2499,15 @@ _kbc_field_retype() {
     # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
     # must not go on to restamp, because it has not read which conversion happened.
     if [[ -z "$row" || -z "$to_t" ]]; then
-        # The re-run sentence names the restamp pass ONLY where the flag was passed.
-        # Without it there is no pass to re-run — naming one asserts a thing that did
-        # not happen, which is the same defect one size down (see the rule stated in
-        # _kbc_field_rerun_note's header: invariant facts unconditionally, measured
-        # ones only where measured).
-        local rerun="a conversion that already landed answers as a server-side no-op, so re-running is safe."
-        if [[ -n "$restamp_dl" ]]; then
-            rerun="a conversion that already landed answers as a server-side no-op, so re-running is safe and RUNS the --restamp-dl pass this run skipped. Whether that pass FINISHES is its own outcome, which it reports — a stored value that is not a DL number is canonicalized by no run of it."
-        fi
-        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). Re-run this exact command: $rerun" >&2
+        # The re-run sentence is the shared owner's, fed BOTH predicates: it names the
+        # restamp pass only where the flag was passed (without it there is no pass to
+        # re-run, and naming one asserts a thing that did not happen — see the rule in
+        # _kbc_field_rerun_note's header: invariant facts unconditionally, measured ones
+        # only where measured), and it names a re-run WITHOUT --options where the command
+        # carried them, because the identical command is refused once the conversion has
+        # landed. Both are properties of the request this run made, so both are read off
+        # the flags rather than spelled out here — the 000 arm makes the same claim.
+        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl")" >&2
         return 1
     fi
     # The server answers a target type equal to the current one as an explicit no-op:

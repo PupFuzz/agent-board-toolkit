@@ -44,6 +44,19 @@
 #   - create ECHOES the created field id (the write verification), sends the server's
 #     [{value}] option shape, and refuses a duplicate key at rc 2 with ZERO POSTs —
 #     the rc alone does not carry that guard, since the server's own 422 also fails;
+#   - the census denominator states what it can SEE, at BOTH consumers of the one census
+#     primitive rather than at whichever verb the fix was written for: the read is live +
+#     non-archived while the routes its count is read against are not, so the scope rides
+#     the denominator LINE (asserted as such, not as a substring of stderr at large) and
+#     the delete gate is asserted UNCHANGED either side of it, with the gate moved both
+#     ways as the control that those rc assertions can fail at all;
+#   - the re-run a run prescribes when it could not read its own outcome is asserted on
+#     BOTH branches of --options and at BOTH arms that print one (the 000 transport
+#     failure and the unreadable 2xx echo): with options the identical command is refused
+#     as an options edit once the conversion has landed, which is driven end to end — a
+#     landed --options conversion, then the same command again — rather than asserted off
+#     a fixture, and the arm that refuses it is asserted to enumerate no client-side copy
+#     of the server's option rules (the copy that omitted this very rule);
 #   - delete ALWAYS prints the `N of M board cards carry <key>` denominator, refuses a
 #     populated field at rc 2 naming both consequences, warns loudly under
 #     --orphan-values, and refuses at rc 1 on EVERY incomplete-read rc
@@ -741,6 +754,48 @@ for _verb in create delete retype; do
     eq "…and NO write is issued ($_verb)"                    "0"    "$(($(_calls POST) + $(_calls DELETE) + $(_calls PATCH)))"
 done
 
+echo "-- the census denominator states what it can SEE, at BOTH its consumers --"
+# The census is GET /tasks/search.json, which applies the default SoftDeletes scope AND
+# whereNull(archived_at); the routes its counts are read against are wider than that in
+# both directions — candidateQuery is withTrashed() with no archive filter, and
+# purgeField is board_id + field_key with no filter of either kind. So a zero numerator
+# is what this tool can SEE and never "the key is unused", and a board whose only
+# carriers are archived reaches delete's rc-0 path with nothing to warn about.
+# THE GATE IS NOT TOUCHED — rc 0 here, exactly as before; what changed is the disclosure.
+_seed "$_F_DL_STR" '[{"id":8,"payload":{"other":5}}]'
+rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
+eq "delete on a zero census → rc 0, the gate unchanged" "0"  "$rc"
+eq "control: …and the DELETE really was issued"      "1"     "$(_calls DELETE)"
+# Pinned to the DENOMINATOR LINE, not to stderr at large: that is what makes both
+# consumers inherit it, and it is what the two previous fixes of this shape missed by
+# hoisting a note and then wiring it to one consumer.
+eq "…the scope rides the denominator line itself"    "true"  \
+   "$(has '0 of 1 board cards carry dl_number — ⚠ SCOPE:' "$ERR")"
+eq "…naming what that census reads"                  "true"  \
+   "$(has 'census reads LIVE, NON-ARCHIVED cards only' "$ERR")"
+eq "…and which carriers are in neither of its numbers" "true" \
+   "$(has "an archived or trashed card carrying 'dl_number' is in neither the numerator nor the denominator" "$ERR")"
+eq "…so a zero is not read as the key being unused"  "true"  \
+   "$(has 'A zero numerator is therefore not evidence that the key is unused' "$ERR")"
+
+# The populated REFUSAL carries it too — that refusal is gated on this same count, so
+# "2 of 3" is a floor and the operator reading it is entitled to know which cards it omits.
+_seed "$_F_DL_STR" "$_B_MIXED"
+rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
+eq "the populated refusal is unchanged → rc 2"       "2"     "$rc"
+eq "…and its denominator carries the same scope"     "true"  \
+   "$(has '2 of 3 board cards carry dl_number — ⚠ SCOPE:' "$ERR")"
+
+# THE OTHER CONSUMER OF THE SAME PRIMITIVE, asserted here rather than assumed from the
+# hoist: --restamp-dl's census is the same call, so its denominator line carries the same
+# scope. (Its own per-outcome scope note is a different claim — the compare against the
+# conversion's count — and is asserted on its own lines further down.)
+_seed "$_F_DL_NUM" "$_B_MIXED"
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "the restamp pass's census says the same → rc 0"  "0"     "$rc"
+eq "…on its own denominator line"                    "true"  \
+   "$(has '2 of 3 board cards carry dl_number — ⚠ SCOPE:' "$ERR")"
+
 echo "-- delete — a truncated board read is not a denominator --"
 # The dangerous shape is a truncated read whose VISIBLE cards carry nothing: it looks
 # exactly like a safe delete. Every incomplete rc fetch_board_cards defines must refuse.
@@ -1210,6 +1265,62 @@ eq "…nor the non-DL-value clause only that pass has" "false" \
 eq "…and runs no restamp pass"                       "0"     "$(_calls PATCH)"
 eq "…nor reads the board for one"                    "0"     "$(_calls FETCH)"
 
+# THE SAME ARM ON A COMMAND CARRYING --options — the one board on which "re-run this
+# exact command" is advice the SERVER refuses. CustomFieldMutator::typeGates calls
+# assertOptionsMatchTarget BEFORE the $from === $toType no-op short-circuit, so once the
+# conversion has landed the identical command is a 422 options edit — and this arm is
+# reached precisely when the run cannot tell whether it landed. The two legs above are
+# the control: without --options the sentence is unchanged, so what these pin is the
+# predicate and not the wording.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+_CT_UNREADABLE=1
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "an unreadable echo on a command carrying --options → rc 1" "1" "$rc"
+eq "…still calls the conversion UNCONFIRMED"         "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "…names the re-run WITHOUT --options"             "true"  "$(has 'Re-run it WITHOUT --options' "$ERR")"
+eq "…never tells the operator to re-run it as typed" "false" "$(has 'Re-run this exact command' "$ERR")"
+eq "…nor calls re-running it safe"                   "false" "$(has 'so re-running is safe' "$ERR")"
+eq "…naming the refusal that re-run would meet"      "true"  "$(has 'OPTIONS EDIT' "$ERR")"
+eq "…and the route an option-set change belongs to"  "true"  "$(has 'the PATCH route' "$ERR")"
+
+# THE SAME CLAIM AT THE OTHER SITE, which is where it survived two fix rounds: the 000
+# transport arm, whose whole job is to resolve "did the write land?" and which prescribed
+# a resolution the server refuses. _kbc_field_change_type_report reports a RESPONSE and
+# cannot see the request's flags, so this leg is what pins the predicate being plumbed to
+# it — the sibling 000 leg above (no --options, same arm) is its control.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+_CT_FORCE_HTTP=000
+_CT_FORCE_BODY='curl: (28) Operation timed out after 30001 milliseconds with 0 bytes received'
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "a transport failure on a command carrying --options → rc 1" "1" "$rc"
+eq "…still claims UNCERTAINTY about the write"       "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
+eq "…names the re-run WITHOUT --options"             "true"  "$(has 'Re-run it WITHOUT --options' "$ERR")"
+eq "…never tells the operator to re-run it as typed" "false" "$(has 'Re-run this exact command' "$ERR")"
+eq "…nor calls re-running it safe"                   "false" "$(has 'so re-running is safe' "$ERR")"
+
+# THE RULE ITSELF, DRIVEN END TO END rather than asserted off a fixture: a landed
+# --options conversion, then the EXACT same command again. Run 2 is a same-type request
+# still carrying options, which assertOptionsMatchTarget refuses before the no-op
+# short-circuit — the arm of this fake that no invocation in the suite had ever reached
+# (every other --options leg targets a type the field is not). It is what makes the two
+# legs above a repair of a real failure rather than a wording preference.
+_seed "$_F_SEV_ENUM" "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "run 1: the --options conversion lands → rc 0"    "0"     "$rc"
+eq "control: …the definition really IS the target type" '"multi_select"' "$(jq -c '.[0].type' "$_FIELDS")"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "run 2: the IDENTICAL command is REFUSED → rc 1"  "1"     "$rc"
+eq "…as an options edit, in the server's own words"  "true"  \
+   "$(has 'This request does not change the type, so it is an options edit' "$ERR")"
+eq "…never as the no-op the re-run advice used to promise" "false" "$(has 'server-side no-op' "$ERR")"
+eq "…and not mis-reported as a type-pair refusal"    "false" "$(has 'refused on the TYPE PAIR' "$ERR")"
+# The client used to answer this refusal with its own three-item list of the server's
+# option rules — which omitted THIS one, the fourth, and so enumerated rules none of
+# which had fired. The echoed body names the rule that did.
+eq "…and the client enumerates no rule set of its own" "false" "$(has 'prohibited on a scalar target' "$ERR")"
+eq "…it points at the server's message instead"      "true"  \
+   "$(has 'The message above IS the rule that refused it' "$ERR")"
+
 echo "-- retype --restamp-dl — the post-conversion canonicalization pass --"
 # The conversion alone leaves the bare int 1 as the STRING "1" (the cast matrix's text
 # rule for a number source is json_encode), not "DL-0001". Correlation survives that,
@@ -1397,6 +1508,13 @@ eq "…names it as a PATCH failure"                     "true" "$(has 'the resta
 # transport, same owner, same wording as the conversion's own 000 arm.
 eq "…claims UNCERTAINTY, not safety, about the write" "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
 eq "…never claims the card was left untouched"        "false" "$(has 'never wrote them' "$ERR")"
+# The re-run SENTENCE is the caller's here, not the shared note's — on this pass "this
+# exact command" is honest (--restamp-dl forces --to string, on which the server refuses
+# --options twice over, so no run reaching this line carried them), and that is exactly
+# the condition the conversion's own arms cannot meet. Asserted so the sentence cannot be
+# dropped by an edit to the owner it is handed to.
+eq "…and names the idempotent re-run it CAN make"     "true"  \
+   "$(has 'Re-run this exact command: a card already holding the canonical form' "$ERR")"
 eq "…counts only the card that was written"           "true" "$(has '1 of 2 card value(s) canonicalized and verified' "$ERR")"
 eq "…and the conversion itself is still reported as landed" "true" "$(has 'the conversion LANDED' "$ERR")"
 # THE CARVE-OUT IS CONDITIONAL, and this is what proves it. No card here is a non-DL
