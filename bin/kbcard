@@ -960,10 +960,12 @@ cmd_link() {
 # this file in card#6426: the same 2xx reaches every tool that reads through kb_api, so one owner
 # serves them all. It is applied at the FIRST projection off a response body, not at every jq in
 # this file: a value that has already come through it (or through a guard that refuses on empty)
-# is parsed bare afterwards on purpose. Two places below are neither — `_kbc_archive_decision`'s
-# board array, which comes from the paginator rather than from kb_api, and the `field` verbs'
-# reads off `_kbc_fetch_fields`, whose non-empty guard admits a `.data` that is not a list. Both
-# are recorded in docs/CONSOLIDATION-PLAN.md with their blockers; neither is silence.
+# is parsed bare afterwards on purpose. Three places below are neither — `_kbc_archive_decision`'s
+# board array and `_kbc_field_populated`'s census, both of which read the PAGINATOR's output
+# rather than a kb_api body (so the unguarded read they descend from is one level up, where
+# card#6594 closed it at page 1), and the `field` verbs' reads off `_kbc_fetch_fields`, whose
+# non-empty guard admits a `.data` that is not a list. All three are recorded in
+# docs/CONSOLIDATION-PLAN.md with their blockers; none is silence.
 
 # _kbc_write_echo <verb> <subject> <response> [extra-fields]: the create/patch echo projection —
 # payload rides ONLY when the serializer sent the key (fabricating `payload: null` asserts "no

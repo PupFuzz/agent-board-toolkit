@@ -880,8 +880,9 @@ finding with no owner is abandoned, not filed.
   `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
   card's to make.
 
-  **Two in-population members no pass of the derivation named, recorded rather than migrated**
-  (card#6426, fix round 3). Both are raw `jq` reads of a value that IS a response body, and both
+  **In-population members no pass of the derivation named, recorded rather than migrated.** The
+  first two below are card#6426 fix round 3's; the third arrived with card#6525 and dates itself.
+  Round 3's two are raw `jq` reads of a value that IS a response body, and both
   are labelled **`L`** ("locally built input") by the instrument — wrongly, and for the same
   mechanical reason in each: the resolver picks up the wrong variable. It reads the jq invocation's
   *named* arguments rather than the value the filter is actually applied to, so a function whose
@@ -907,6 +908,23 @@ finding with no owner is abandoned, not filed.
     rc, so what reaches it is real cards or a genuinely empty board — with ONE exception, named
     rather than implied: the later-page hole card#6630 owns, where a server that omits
     `meta.total` lets a truncated list through at rc 0.
+  - **`bin/kbcard` `_kbc_field_populated`** (card#6525, re-derived when that branch was
+    integrated onto this work) — the populated-card census behind `field delete` and `field
+    retype`. **Re-running the producer derivation above on the integrated tree gives 30
+    functions, not the 26 of the pass that wrote it** (the count is a re-derivation, never a
+    quote — that is what this bullet is): the four new ones are `_kbc_field_create_call`,
+    `_kbc_field_delete_call`, `_kbc_field_populated` and `_kbc_field_retype`. Three fall out at
+    the filter — the create call's stdout is a field **id** nothing re-parses (its own first
+    projection off the response goes through `kb_parse_resp`), the delete call emits no stdout
+    at all and carries its state in its rc, and `_kbc_field_retype`'s stdout is the jq-BUILT
+    capture of a locally computed plan. The fourth is `_kbc_field_populated`, and it takes
+    `_kbc_list_project`'s disposition directly above for `_kbc_list_project`'s reason: its jq
+    reads `$cards` from `fetch_board_cards`, not a `kb_api` body, so guarding it here could
+    never have seen the information — card#6594 closed that one level up, at page 1. It is
+    STRICTER than `cmd_list` where it counts: it refuses on **every** non-zero paginator rc
+    (1, 2, 3 and 4, measured in `tests/kbcard-field-selftest.sh` against a complete-read
+    positive control), so a partial board never reaches its filter. Same single exception —
+    the later-page hole card#6630 owns.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
   **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it
