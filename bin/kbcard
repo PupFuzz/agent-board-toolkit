@@ -1783,18 +1783,25 @@ _kbc_field_delete_call() {
 #
 # The census is fetch_board_cards -> GET /tasks/search.json, and TasksController::search
 # applies the default SoftDeletes scope AND whereNull('archived_at') unless asked
-# otherwise (it is asked otherwise nowhere in this file). An archived or soft-deleted
-# carrier of the key is therefore counted by neither the numerator nor the denominator —
-# while the two server routes these counts are read against are both wider than that:
+# otherwise — and the census URL is not built in this file at all: it is built in
+# _kb-board-lib.sh's fetch_board_cards, which sends board_id, limit and page and no
+# archive or trash parameter of any kind. An archived or soft-deleted carrier of the key
+# is therefore counted by neither the numerator nor the denominator — while the two
+# server routes these counts are read against are both wider than that:
 # CustomFieldMutator::candidateQuery is withTrashed() with no archive filter, and
 # TaskCustomFieldIndexer::purgeField is `where board_id … where field_key … delete()`,
 # board-wide with no filter of either kind.
 #
-# One owner because two callers state it: the denominator line below, on every run of
-# both write verbs, and _kbc_field_census_scope_note, which adds the conversion's own
-# population compare on top of it. They are two claims sharing one fact, and the fact is
-# invariant — it holds on every run of this file against every board — so it is stated
-# unconditionally and spelled once.
+# One owner because two callers state it: the denominator line below, on every census
+# this file takes — which is NOT every run of both write verbs. _kbc_field_populated has
+# exactly two call sites: `field delete` censuses on every run that resolves its --field,
+# while on `field retype` the census belongs to the --restamp-dl pass alone, so a plain
+# retype takes no census at all and a --restamp-dl run whose conversion does not answer a
+# readable 2xx returns before the pass ever runs. The second caller is
+# _kbc_field_census_scope_note, which adds the conversion's own population compare on
+# top of it. They are two claims sharing one fact, and the fact is invariant — it holds
+# on every run of this file against every board — so it is stated unconditionally and
+# spelled once.
 _kbc_field_census_population_note() {
     printf '%s' "The census reads LIVE, NON-ARCHIVED cards only (GET /tasks/search.json applies the soft-delete scope and archived_at IS NULL), so an archived or trashed card carrying '$1' is in neither the numerator nor the denominator"
 }
@@ -1980,8 +1987,17 @@ _kbc_field_change_type_call() {
 # on the conversion path a command carrying --options is refused (422) once the
 # conversion has landed, so "this exact command" is the wrong command to name — see
 # _kbc_field_conversion_rerun_note, which owns that whole sentence for both arms that
-# print it. This owner states the UNKNOWN half, which every caller shares, and the
-# caller hands in the re-run sentence its own path can honestly make.
+# print it. This owner states the UNKNOWN half, and the caller hands in the re-run
+# sentence its own path can honestly make.
+#
+# ⚠ THE UNKNOWN HALF IS NOT TRUE OF EVERY CALLER. It holds on the conversion's 000 arm,
+# which read no answer at all. It does NOT hold on the restamp pass's failed-PATCH
+# bucket: that bucket is filled by `kb_api PATCH … || patch_failed+=(…)`, and kb_api
+# returns 1 for a COMPLETED non-2xx (403/404/422/500) exactly as it does for a transport
+# 000 — so a card whose PATCH the server REFUSED, with that status already on stderr from
+# kb_api itself (absent KB_API_QUIET), is told here that the request did not complete.
+# Telling the two apart is a change at kb_api's return contract, not a rewording of this
+# line, and is not made here.
 _kbc_unfinished_write_note() {
     printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. $1"
 }
@@ -2022,10 +2038,16 @@ _kbc_field_conversion_rerun_note() {
 # into two spellings.
 #
 # <have-options> is the REQUEST's predicate, not the response's, and it is here for one
-# arm: 000 is the only outcome this function reports that prescribes a re-run, and what
-# a re-run does depends on whether --options rode along (see
-# _kbc_field_conversion_rerun_note). It is plumbed rather than re-derived from the body,
-# which on a 000 does not exist.
+# arm. 000 is NOT the only outcome this function reports that prescribes a re-run — 412,
+# the zero-offender 422 and the offender-cap notice each name one too — but it is the
+# only one whose re-run can meet the conversion ALREADY LANDED AS ASKED, i.e. a same-type
+# request, which is the shape --options turns into a 422; so it is the only one where
+# what a re-run does depends on whether --options rode along (see
+# _kbc_field_conversion_rerun_note). The other three name a re-run of a conversion that
+# demonstrably did not happen: the two 422s wrote nothing and left the type where it was,
+# and 412 reports a type that MOVED and sends the operator back to 'field list' before
+# re-running rather than promising a no-op. It is plumbed rather than re-derived from the
+# body, which on a 000 does not exist.
 #
 # The status line + the raw body mirror what kb_api prints on a non-2xx under
 # KB_API_ERRBODY=1, and the failure-log append mirrors its log line: kb_api_status is
@@ -2506,7 +2528,11 @@ _kbc_field_retype() {
         # only where measured), and it names a re-run WITHOUT --options where the command
         # carried them, because the identical command is refused once the conversion has
         # landed. Both are properties of the request this run made, so both are read off
-        # the flags rather than spelled out here — the 000 arm makes the same claim.
+        # the flags rather than spelled out here. The 000 arm calls the same owner but
+        # hands it an EMPTY restamp predicate, so the owner's sentence is the same on
+        # both arms only WITHOUT --restamp-dl: with it, this arm names the pass and that
+        # one does not — deliberately, since it reports a response and holds no opinion
+        # about a pass only a 2xx reaches.
         echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl")" >&2
         return 1
     fi
