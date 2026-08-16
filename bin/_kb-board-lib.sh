@@ -568,25 +568,56 @@ kb_parse_resp() {
 
 # --- whole-board pagination -------------------------------------------------
 # fetch_board_cards <api> <token> <board_id> [page_cap]: read the WHOLE board via
-# (rc contract: 0 complete · 1 page-1 failed · 2 later-page failed · 3 page-cap hit,
-# partial data emitted · 4 SHORT READ detected — server total exceeds delivered rows,
-# partial data emitted; refuse-policy callers must treat 4 like 2/3)
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
 # stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
-# Returns:
+#
+# Returns — THE rc contract, stated once. A compact second copy used to sit two lines
+# above this block and had already drifted (it was the only one naming rc 4), so it is
+# deleted rather than re-synced: one list, here.
 #   0  full read (array on stdout) — INCLUDING a genuinely empty board, which is a
 #      legitimate state and answers `[]` at rc 0 like any other complete read
-#   1  page 1 failed (nothing usable) — a fail-soft caller skips the board. Three
+#   1  page 1 failed, nothing emitted — a fail-soft caller skips the board. Three
 #      causes, one rc: curl could not complete the request, the status was not 2xx,
 #      or the 2xx body carried no readable card array (see the parse site below)
-#   2  incomplete: a page > 1 failed mid-pagination — a correctness-sensitive
-#      caller (the DL minter) MUST refuse rather than risk a truncated scan
+#   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
+#      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
+#      truncated scan
 #   3  page cap hit: the partial array is still emitted (so a display caller can
 #      show what it has) but the read is flagged INCOMPLETE on stderr
-# A short-read backstop (meta.total vs cards read) also warns on stderr.
+#   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
+#      The partial array is still emitted and flagged INCOMPLETE on stderr; a
+#      refuse-policy caller must treat 4 like 2/3
+#
+# HOW A CALLER WORDS ITS FAILURE MESSAGE — a rule about the MESSAGE, not about policy.
+# What a caller DOES with each rc stays entirely its own (fail-soft skip, refuse,
+# render the partial); what it may CLAIM is fixed here, because only this function
+# knows why the read failed:
+#   - an arm reached by EXACTLY ONE rc may name that rc's causes — the contract above
+#     closes them (rc 1's three are the only closed cause set in it);
+#   - an arm reached by MORE THAN ONE rc names the rc — `(fetch rc=$rc)` — and names NO
+#     cause, because no cause set is true across the rcs it catches. A bare `|| …`
+#     catches 1, 2, 3 AND 4, which share nothing but "not a whole read".
+# A shared OUTCOME word is not a cause and is allowed on a multi-rc arm: "did not
+# return a complete card list" / "INCOMPLETE" holds for every non-zero rc, while
+# "unreachable", "a non-2xx status" or "over the page cap" each hold for only some.
+#
+# This is not style. Giving rc 1 a third cause (card#6594) falsified five caller
+# messages that had enumerated the old two, and they were then corrected one site per
+# round, for three rounds, each round finding another — because a cause enumeration at
+# a multi-rc arm is stale the day the contract gains an rc, and the rc never is.
+# tests/fetch-board-cards-caller-claims-selftest.sh pins this: it RE-DERIVES the call
+# sites from the tree rather than listing them, so a new consumer, a new call in an
+# existing consumer, or a reworded arm reds until it is ruled on. Its registry is the
+# per-consumer table (which rcs reach which arm, and what each arm may say); this
+# header owns the rule, that test owns the dispositions, and neither restates the other.
+#
+# An operator who needs the CAUSE reads this function's own stderr line, the only one
+# that knows it — printed unconditionally for rc 3 and rc 4, and only under
+# KB_FETCH_LOUD for rc 1 and rc 2 (two of the six consumer bins set it). A caller that
+# wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}"
     local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0

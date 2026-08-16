@@ -89,6 +89,7 @@ jobs:
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
+          - fetch-board-cards-caller-claims-selftest
           - help-output-selftest
           - install-board-hooks-capability-selftest
           - kb-board-lib-selftest

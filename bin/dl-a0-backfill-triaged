@@ -67,9 +67,10 @@ kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
 # a curl rc, an HTTP status with its body, or the unreadable body itself)
 # instead of swallowing it — this is a manually-run write tool, so an abort
 # should say why (matches kbcard's list contract). The subshell inherits the
-# shell var. The abort below names the rc and asserts no cause of its own: it
-# catches rc 1, 2, 3 and 4, which share no cause, and the lib's line above it
-# is the one that knows which occurred.
+# shell var. The abort below names the rc and asserts no cause of its own,
+# per the wording rule at fetch_board_cards' header: this is a bare `||`, so it
+# catches rc 1, 2, 3 and 4, and the lib's line above it is the one that knows
+# which occurred.
 KB_FETCH_LOUD=1
 cards_json="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
     fetch_rc=$?

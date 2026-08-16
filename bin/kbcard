@@ -826,11 +826,14 @@ cmd_list() {
 
     # Whole-board fetch (paginated, accumulate-via-STDIN, dedup) is the shared
     # fetch_board_cards primitive — reading only page 1 silently UNDERCOUNTS every
-    # column once a board exceeds one page. Any fetch failure (unreachable /
-    # incomplete / over BOARD_PAGE_CAP) → exit 1 rather than print a truncated list.
-    local cards
+    # column once a board exceeds one page. EVERY non-zero paginator rc — a bare `||`,
+    # so 1, 2, 3 and 4, all four measured reaching this arm — exits 1 rather than print
+    # a truncated list, and the message names the rc and no cause, per the wording rule
+    # at fetch_board_cards' header. This bin DOES set KB_FETCH_LOUD, so the paginator's
+    # own line (which is the one that knows the cause) prints directly above.
+    local cards frc
     cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
-        || { echo "kbcard: failed to read board $KB_BOARD_ID" >&2; exit 1; }
+        || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)" >&2; exit 1; }
     local out
     out="$(printf '%s' "$cards" | _kbc_list_project \
         "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "${swimlane_filter:-}")"
@@ -1205,10 +1208,12 @@ _kbc_archive_decision() {
     [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
     # Capture the board array regardless of the paginator's rc — a partial or EMPTY
     # census only removes twins (more conservative), never invents one. The `|| true`
-    # keeps ANY non-zero paginator rc from aborting this function under `set -e`: a
-    # partial/short read, and also a page-1 refusal (no response, a non-2xx status, or
-    # a 2xx carrying no card array) that yields no array at all and lands on the `[]`
-    # below. Fewer twins is the fail-closed direction, per this function's header.
+    # keeps EVERY non-zero paginator rc — 1, 2, 3 and 4 — from aborting this function
+    # under `set -e`: rc 3 and rc 4 emit a partial array, rc 1 and rc 2 emit none at all
+    # and land on the `[]` below. No cause is enumerated here, for the reason the
+    # wording rule at fetch_board_cards' header gives: this site sees all four rcs, and
+    # they share none. Fewer twins is the fail-closed direction, per this function's
+    # header — and this site makes no operator-facing claim at all, by design.
     board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true
