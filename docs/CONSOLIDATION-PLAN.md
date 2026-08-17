@@ -719,9 +719,27 @@ finding with no owner is abandoned, not filed.
   consumer.** Measured on the shipped bins against a `200` carrying `<html>502</html>`: `kbcard list`
   and `dl-a0-backfill-triaged` abort, `board-snapshot` prints `(board read failed — fetch rc=1)`,
   `board-stats` marks the stock section unavailable, `board-card-start` skips the move, `next-dl`
-  warns and keeps its documented rc-1 fail-soft, so it announces the dropped DL floor rather than
-  refusing — **that residual is card#6631** (board 12, Backlog, triaged), which carries the
-  measurement and three options with a recommendation, and is not a parenthetical here — and
+  warned and kept its documented rc-1 fail-soft, so it announced the dropped DL floor rather than
+  refusing — **that residual was card#6631** (board 12), and it is now CLOSED at the caller: on the
+  operator's ruling (*"I don't want next-dl to offer offline allocation as a contract"*) `next-dl`
+  refuses on rc 1 as it already did on rc 2/3/4, so no non-zero paginator rc fail-softs there any
+  more. It was closed WITHOUT separating rc 1's three causes — the expensive option,
+  since a new paginator rc reaches the six consumer bins and eight invocations this registry test
+  derives, plus the test itself: the ruling removed the requirement that separation existed to
+  serve, because refusing all three causes is no longer a cost to avoid. What survives
+  is a stated bound, not a residual with a card, and the line it draws is **resolve-failure vs
+  fetch-failure, not configured vs unconfigured**: a `resolve_board_cfg` failure (no request issued
+  at all) and a complete, successful read of a board carrying no `dl_number` stamp both still mint
+  from the local header scan, and a named, reachable board reaches either. `bin/next-dl`'s header
+  and its `board_dl_max` exit-code note own that enumeration; this doc does not restate it.
+  **One measured path recorded here rather than fixed, because fixing it changes what the tool
+  accepts:** a token file that is a DIRECTORY passes `kb_resolve_env`'s `-r` test, so the config
+  resolves, `cat` fails, and the board is read with an EMPTY bearer. The `cat` status is not fatal
+  for the reason this document already measures above — `board_dl_max` is called inside a command
+  substitution, and no such subshell inherits `errexit` without `inherit_errexit`. The outcome is then the server's: measured against the test stub, a `401` reaches
+  the rc-1 refusal and a readable `2xx` mints. It sits behind the same acceptance-change gate as
+  `cmd_comments`' `false` instance recorded further down this document, not behind card#6631's
+  ruling.
   `kbcard archive` substitutes `[]` for the twin census. That last one was recorded here as safe *by contract rather than by
   measurement*; it has since been measured — the same card with `surviving_cards: []` returns
   `blocked … no surviving twin — archive withheld (fail-closed)` where the populated census returns

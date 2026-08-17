@@ -579,9 +579,11 @@ kb_parse_resp() {
 # deleted rather than re-synced: one list, here.
 #   0  full read (array on stdout) — INCLUDING a genuinely empty board, which is a
 #      legitimate state and answers `[]` at rc 0 like any other complete read
-#   1  page 1 failed, nothing emitted — a fail-soft caller skips the board. Three
-#      causes, one rc: curl could not complete the request, the status was not 2xx,
-#      or the 2xx body carried no readable card array (see the parse site below)
+#   1  page 1 failed, nothing emitted — a fail-soft caller skips the board, and a
+#      correctness-sensitive one refuses here as it does on 2/3/4 (the DL minter does,
+#      as of card#6631: nothing of the board was read, so the undercount is total).
+#      Three causes, one rc: curl could not complete the request, the status was not
+#      2xx, or the 2xx body carried no readable card array (see the parse site below)
 #   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
 #      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
 #      truncated scan
@@ -702,9 +704,12 @@ fetch_board_cards() {
         # dl_number out of that `[]`, dropped the board's DL floor and minted from the
         # local header scan alone — how a DL gets re-minted on a shared board, which is the
         # failure board_dl_max's own exit-code comment in bin/next-dl names ("an undercount
-        # could re-mint a used DL"). card#6594. NB this refusal makes that re-mint AUDIBLE,
-        # not impossible: next-dl's rc-1 policy is fail-soft, so it still mints from the
-        # local scan — that residual is card#6631 and is not closed here.
+        # could re-mint a used DL"). card#6594. This refusal made that re-mint AUDIBLE rather
+        # than impossible, because next-dl's rc-1 policy was fail-soft and it still minted
+        # from the local scan; card#6631 has since closed that half at the CALLER — next-dl
+        # now refuses on rc 1 as it already did on rc 2/3/4. Policy is still the caller's:
+        # the other consumers' rc-1 dispositions are unchanged and are recorded in
+        # tests/fetch-board-cards-caller-claims-selftest.sh.
         #
         # The tell is the ENVELOPE, not the row count. Measured against the live API: an
         # empty result is `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200 —
