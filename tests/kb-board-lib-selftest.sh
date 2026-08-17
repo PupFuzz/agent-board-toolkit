@@ -572,19 +572,70 @@ eq "quiet mode (no KB_FETCH_LOUD) still refuses → rc 1" "1" "$rc"
 eq "quiet mode emits nothing on stdout"                 ""  "$out"
 [[ -s "$TMP/quiet.err" ]] && bad "quiet mode must stay silent on stderr (board-snapshot's contract)" || ok "quiet mode stays silent on stderr"
 
-# THE BOUNDARY, asserted because README now claims it: the refusal is page-1 only, and a LATER
-# page's unreadable body is caught by the pre-existing meta.total census at rc 4 — not silently
-# truncated — on any server that declares meta.total. Without that census leg the README sentence
-# would be unbacked.
+# THE SAME PREDICATE ON A LATER PAGE (card#6630) — the half card#6594 left open. An unreadable
+# body on page > 1 fell back to `[]`, and `[]` is a SHORT page, which ENDS the scan: the caller
+# got rc 0 and a board it had only partly read. It is now the paginator's existing rc 2, the rc
+# its contract already assigns to "a page > 1 failed mid-pagination" — the same rc the curl and
+# non-2xx arms return for the same page, because the difference between them is which layer
+# noticed, not what the caller can trust.
+#
+# The two servers are asserted separately because they used to give DIFFERENT wrong answers, and
+# only one of them was ever loud:
+#   DECLARES meta.total  → the census caught it at rc 4 WITH the partial data (loud, consumable)
+#   OMITS   meta.total   → rc 0, the partial data, and an EMPTY stderr (the silent truncation)
+# A leg written only against the first would have passed on this install and asserted nothing
+# about the case the card exists for.
 curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+UNREAD_LOG="$TMP/p2-unreadable.log"
+
+_fbc_p2() { # <label> <page-1 body> <page-2 body> <expect-rc>
+    local label="$1" exprc="$4" rc=0 out
+    _PAGES=( [1]="$2" [2]="$3" )
+    : > "$UNREAD_LOG"
+    out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$UNREAD_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2.err")" || rc=$?
+    eq "$label (rc)" "$exprc" "$rc"
+    _P2_OUT="$out"
+}
+
 fullp="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
-_PAGES=( [1]="$fullp" [2]='<html>502</html>' )
-rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2.err")" || rc=$?
-eq "an unreadable PAGE 2 is not rc 1 (the refusal is page-1 only)" "4" "$rc"
-eq "…and the 200 rows page 1 did deliver are still emitted"        "200" "$(printf '%s' "$out" | jq 'length')"
-eq "…and the short-read census calls the read INCOMPLETE"          "true" "$(has 'INCOMPLETE' "$(cat "$TMP/p2.err")")"
-unset -f _fbc_case
-unset UNREAD_LOG
+fullnm="$(jq -nc '{"data":[range(200)|{id:.}]}')"      # no meta at all — the silent-truncation server
+
+_fbc_p2 "a server DECLARING meta.total: unreadable page 2 → rc 2 (was rc 4 + partial)" \
+        "$fullp" '<html>502</html>' 2
+eq "…and nothing is emitted, so no caller can act on the 200 rows page 1 did deliver" "" "$_P2_OUT"
+eq "…and the refusal names the PAGE, not just the board"  "true" \
+   "$(has 'fetch_board_cards: page 2 for board 8 returned HTTP 200 with no readable card array' "$(cat "$TMP/p2.err")")"
+eq "…and says what it refused to do, which is NOT what page 1 refuses (an empty board)" "true" \
+   "$(has 'report a TRUNCATED board as a complete read' "$(cat "$TMP/p2.err")")"
+eq "…and the failure log carries the cause + the body" "true" \
+   "$(has 'UNREADABLE-BODY' "$(cat "$UNREAD_LOG")")"
+
+_fbc_p2 "a server OMITTING meta.total: unreadable page 2 → rc 2 (was rc 0, SILENT, truncated)" \
+        "$fullnm" '{"error":"upstream connect error"}' 2
+eq "…and nothing is emitted"                              "" "$_P2_OUT"
+eq "…and the census is not what caught it (there is no total to census against)" "false" \
+   "$(has 'board has ' "$(cat "$TMP/p2.err")")"
+
+# THE CONTROL for this arm, and the one that decides whether the predicate is the right one: a
+# legitimate SHORT final page is how a real multi-page read ENDS. If the page-2 refusal cannot
+# tell a legitimate `{"data":[…]}` — or a legitimately EMPTY one — from an unreadable body, it
+# refuses every board bigger than one page, and a block asserting only refusals would pass.
+_fbc_p2 "CONTROL: a legitimate short page 2 completes the read → rc 0" "$fullnm" '{"data":[{"id":200}]}' 0
+eq "…and every row from BOTH pages is emitted"            "201" "$(printf '%s' "$_P2_OUT" | jq 'length')"
+[[ -s "$TMP/p2.err" ]] && bad "a legitimate two-page read must be silent on stderr" || ok "a legitimate two-page read is silent"
+_fbc_p2 "CONTROL: an EMPTY page 2 is a complete read, not an unreadable one → rc 0" "$fullnm" '{"data":[],"meta":{"total":200}}' 0
+eq "…and page 1's 200 rows are the answer"                "200" "$(printf '%s' "$_P2_OUT" | jq 'length')"
+
+# Quiet mode on the LATER page too — board-snapshot reads the paginator without the knob, so a
+# page-2 refusal that started printing would break the same SessionStart contract page 1's does.
+_PAGES=( [1]="$fullnm" [2]='{"error":"upstream connect error"}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2quiet.err")" || rc=$?
+eq "quiet mode: unreadable page 2 still refuses → rc 2" "2" "$rc"
+eq "quiet mode: nothing on stdout"                      ""  "$out"
+[[ -s "$TMP/p2quiet.err" ]] && bad "quiet mode must stay silent on a page-2 refusal too" || ok "quiet mode stays silent on a page-2 refusal"
+
+unset -f _fbc_case _fbc_p2
+unset UNREAD_LOG _P2_OUT
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: a caller's regular-file stderr survives the fetch (card#6661) =="
