@@ -35,16 +35,29 @@
 # Every non-zero paginator rc — 1 as well as 2, 3 and 4 — exits 1 with the reason on
 # stderr instead of dropping that board's DL floor and minting from the header scan.
 # rc 1 ("page 1 could not be read": no response, a non-2xx status, or (card#6594) a 2xx
-# carrying no card array) used to fall back, and it was the worst rc to fail soft on —
-# rc 2/3/4 undercount from a read that at least partly happened, while rc 1 is the
-# branch on which NOTHING of the board was read, so its undercount is the maximal one.
-# That fallback existed to keep allocation working offline; the ruling on card#6631
-# withdrew offline allocation as a contract, so it is gone rather than narrowed.
-# WHAT STILL MINTS WITHOUT A BOARD, stated because it is the bound of that ruling: a
-# project with NO usable board config in this checkout — no curl/jq, no readable board
-# env, or a config kb_resolve_env refuses — still mints from the header scan alone,
-# because that is a resolve failure rather than a board that failed to answer
-# (resolve_board_cfg below, and board_dl_max's own exit-code note).
+# carrying no card array) was the last one that still fell back. That fallback existed to
+# keep allocation working offline; the ruling on card#6631 withdrew offline allocation as
+# a contract, so it is gone rather than narrowed. The policy is uniform across the four
+# rcs and no ranking among them is claimed: measured, rc 2 emits NOTHING exactly as rc 1
+# does (only rc 3 and rc 4 emit a partial array), so a fail-soft on either would have
+# undercounted just as totally.
+# WHAT STILL MINTS WITHOUT A BOARD'S FLOOR — the bound of that ruling, and it is NOT
+# "no board is configured": a named, reachable board holding a real floor reaches the
+# first of these, and a named, reachable board answering 200 reaches the second.
+#   (a) a RESOLVE failure, where no request is issued at all. Its members are
+#       resolve_board_cfg's own exit paths (below), derived from it and from
+#       kb_resolve_env's return contract: curl or jq missing; an unreadable/absent board
+#       env; no api_base for kb_resolve_env to publish, e.g. no ~/.kanban-host.env (rc 3);
+#       a board env that sets KBCARD_API (rc 4); a missing or unreadable token file
+#       (rc 5); a resolved config carrying no board id. kb_resolve_env's rc 2 is
+#       pre-empted by resolve_board_cfg's own readable-board-env test.
+#   (b) a SUCCESSFUL read out of which no dl_number came — the ordinary case being a
+#       complete read of a board that carries no stamp at all. max_int's grep then matches
+#       nothing, and under pipefail that exits board_dl_max 1, the same code (a) exits
+#       with. There is no floor to drop in that case; the point is that the exit code does
+#       not separate it from (a).
+# Both land on board_dl_max's exit 1 — see its own exit-code note, which also names the
+# further paths on which a mint proceeded past a board that ANSWERED.
 # NOTE: the offline path is NOT atomic — safe for single-stream allocation; concurrent
 # allocators on a shared board need the claim endpoint (the default) to avoid
 # duplicates — and, per card#6232 above, it is a FLOOR rather than the truth: it cannot
@@ -262,15 +275,17 @@ board_dl_max() (
     # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
     # truncated page 1 — via the shared fetch_board_cards. Exit-code policy: EVERY
     # non-zero paginator rc REFUSES (exit 2), because an undercount could re-mint a
-    # used DL. rc 1 was the one exception until card#6631, and it was the worst rc to
-    # fail soft on — rc 2, 3 and 4 undercount from a read that at least happened, while
-    # rc 1 is the branch where nothing of the board was read at all, so its undercount
-    # is the maximal one. The two arms stay SPLIT for their wording, not their policy,
-    # per the rule at fetch_board_cards' header: the rc-1 arm is gated to one rc so it
-    # may name that rc's three causes; the arm below catches three rcs, so it names the
-    # rc and no cause. NB: even a complete scan is NON-ATOMIC; the atomic claim endpoint
-    # is the real fix on a shared board (reached here only when that endpoint is absent,
-    # unreachable, or answered a 2xx carrying no usable value — dl_sequence_call's rc 1).
+    # used DL. rc 1 was the one exception until card#6631; the policy is uniform now and
+    # ranks the rcs against each other nowhere, because the ranking would be wrong —
+    # measured, rc 2 emits nothing just as rc 1 does. The two arms stay SPLIT for their
+    # wording, not their policy, per the rule at fetch_board_cards' header: the rc-1 arm
+    # is gated to one rc so it may name that rc's three causes; the arm below catches
+    # three rcs, so it names the rc and no cause. NB: even a complete scan is NON-ATOMIC;
+    # the atomic claim endpoint is the real fix on a shared board. WHICH endpoint this
+    # branch is downstream of depends on the mode — the claim by default, the inspect
+    # endpoint under --peek, which never calls the claim at all — and it is reached when
+    # the endpoint THAT MODE consulted returned dl_sequence_call's rc 1 (absent,
+    # unreachable, or a 2xx carrying no usable value).
     cards="$(fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
         rc=$?
         [[ "$rc" -eq 1 ]] && { echo "next-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board's DL floor and could re-mint a used DL)" >&2; exit 2; }
@@ -285,13 +300,30 @@ board_dl_max() (
 )
 # board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board did not
 # answer a whole read (EVERY non-zero paginator rc, 1 through 4) ⇒ fail loud, mint
-# nothing (an undercount could re-mint). 1 = no usable board config for this project
-# here — resolve_board_cfg found no curl/jq, no readable board env, or the config it
-# found was refused (a board-env KBCARD_API, no api_base, no board id, an unreadable
-# token file) ⇒ the fail-soft posture, empty bmax, mint from the local sources. This
-# branch is what card#6631's ruling did NOT scope: it is "no board is configured here",
-# not "a configured board failed to answer", and it is the only branch left on which a
-# mint proceeds without whatever floor a board holds.
+# nothing (an undercount could re-mint). 1 = no DL floor came back from a board ⇒ the
+# fail-soft posture, empty bmax, mint from the local sources. That code covers TWO
+# situations, and the boundary it draws is resolve-failure vs fetch-failure, not
+# configured vs unconfigured: either resolve_board_cfg failed and no request was ever
+# issued (its exit paths are enumerated in this file's header), or the read SUCCEEDED and
+# no dl_number came out of it, which max_int's grep turns into a rc 1 under pipefail. Both
+# are reachable with a named board in the config; only the first is what card#6631's ruling
+# declined to scope.
+# TWO KNOWN-OPEN CASES where a mint still proceeds past a board that ANSWERED 200, named
+# rather than implied. Both are the envelope-predicate class owned by card#6630, not this
+# arm's policy: this API answers a board the token cannot see with the same well-formed
+# empty envelope as an empty board (bin/_kb-board-lib.sh:735-740), and a 2xx whose .data
+# is an array of NON-cards faults the paginator's dedup jq into its own 2>/dev/null, so it
+# returns rc 0 with EMPTY stdout. Measured: each mints from the local floor at rc 0 with
+# nothing on stderr.
+# A THIRD path is neither, and is recorded because the (a)/(b) split above does not
+# describe it: a token file that is a DIRECTORY passes kb_resolve_env's -r test, so the
+# config RESOLVES; `cat` then fails and the board is read with an EMPTY bearer. set -e does
+# not catch that — this function runs inside the `$(board_dl_max)` substitution below, and a
+# command-substitution subshell does not inherit errexit (the mechanism is measured in
+# docs/CONSOLIDATION-PLAN.md; dl_sequence_call has the same shape). The outcome is then
+# whatever the server answers an unauthenticated read with — measured against the test stub:
+# a 401 reaches the rc-1 refusal, a readable 2xx mints. Refusing an unreadable token up front
+# would change what this tool accepts, so it is recorded there rather than fixed here.
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi

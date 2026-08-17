@@ -252,9 +252,10 @@ eq "claim 500 → never falls through to the scan"    "0" "$(kb_stub_count_any "
 # THE DEFECT, reproduced network-free: with the claim endpoint absent, next-dl fell through to the
 # offline max+1 scan, and a board read that returned NOTHING (paginator rc 1) was fail-soft — the
 # board's DL floor was dropped and the number was minted from the local CLAUDE_DECISIONS.md scan
-# alone. That is the maximal undercount of the four paginator failure rcs (rc 2/3/4 undercount
-# from a read that at least partly happened) and it is the one that fail-softed. The operator
-# ruling on card#6631 withdrew offline allocation as a contract, so rc 1 now refuses like 2/3/4.
+# alone. It was the one non-zero paginator rc that fail-softed; no ranking against the other three
+# is claimed, because rc 2 emits nothing as well (only rc 3 and rc 4 emit a partial array). The
+# operator ruling on card#6631 withdrew offline allocation as a contract, so rc 1 now refuses
+# like 2/3/4.
 #
 # WHY THESE LEGS CAN FAIL, which is the whole reason for the local-floor fixture below. With no
 # checkout glob the offline scan finds nothing, and next-dl exits 1 with empty stdout on the
