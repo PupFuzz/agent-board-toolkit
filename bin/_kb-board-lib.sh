@@ -642,11 +642,17 @@ fetch_board_cards() {
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && curl_opts+=(--max-time "$KB_CURL_MAX_TIME")
     # KB_FETCH_LOUD=1 makes a page-fetch failure observable (kbcard's list contract):
     # curl's own -S HTTP/transport error reaches stderr instead of the default quiet
-    # 2>/dev/null (which backs board-snapshot's fail-soft SessionStart display), and
+    # /dev/null (which backs board-snapshot's fail-soft SessionStart display), and
     # when KB_LOG_FILE is set a failure line is appended to it. Default = silent
     # (return-code only), so board-snapshot's behavior is unchanged.
-    local errsink=/dev/null
-    [[ -n "${KB_FETCH_LOUD:-}" ]] && errsink=/dev/stderr
+    #
+    # The target is a DESCRIPTOR: redirecting to the PATH /dev/stderr RE-OPENS the file
+    # behind the caller's stderr, and a regular-file stderr is re-opened O_TRUNC —
+    # destroying everything the caller logged before the first page fetch. fd 9 is the
+    # quiet sink, opened on the loop below; bash saves and restores a caller's own fd 9
+    # around that redirect, so the number cannot collide with one.
+    local errfd=9
+    [[ -n "${KB_FETCH_LOUD:-}" ]] && errfd=2
     while :; do
         local url="$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}"
         local rc
@@ -654,7 +660,7 @@ fetch_board_cards() {
         # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
         resp="$(curl "${curl_opts[@]}" -H @- -H "Accept: application/json" \
                 -w $'\n__HTTP__%{http_code}' \
-                "$url" 2>"$errsink" <<<"$(kb_auth_header "$token")")" || {
+                "$url" 2>&"$errfd" <<<"$(kb_auth_header "$token")")" || {
             rc=$?
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 echo "fetch_board_cards: page $page read failed for board $board (curl rc=$rc)" >&2
@@ -750,7 +756,7 @@ fetch_board_cards() {
             printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null
             return 3
         fi
-    done
+    done 9>/dev/null
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"
     if kb_is_uint "${total:-}" && kb_is_uint "${read_n:-}" && [[ "$total" -gt "$read_n" ]]; then
