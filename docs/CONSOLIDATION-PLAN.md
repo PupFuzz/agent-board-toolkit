@@ -597,6 +597,25 @@ finding with no owner is abandoned, not filed.
   `~/.kanban-*-board.env`), so adopting the primitive changes what a roster-less box renders at
   SessionStart — and the two emit different first fields (`<name>` vs `<envfile>`), so the call site
   changes too. Recorded at the function; this is the owning record.
+- **The custom-field CREATE call, in two implementations** (card #6525) — `kbcard`'s
+  `_kbc_field_create_call` is the `field create` verb's one POST site (it was shared with `field
+  retype` until that verb became a thin call on the server's atomic conversion route, which creates
+  nothing), and `dl-a1-register-field` carries a second, inline
+  `kb_api_status POST /boards/<id>/custom_fields.json` with its own body literal. Recorded at the
+  moment the second copy was *created*, per the ground rules — but migrating it is **decision-gated,
+  not a cleanup**, and the reason is the shape rule this document already states (*mechanism belongs
+  in the primitive; policy belongs at the caller*): the two disagree on **what a non-2xx means**.
+  `dl-a1-register-field` is idempotent by contract — its headline re-run guarantee is that a
+  **409/422 is success** (already registered) — and it reads the exact status through `kb_api_status`
+  to get that; `_kbc_field_create_call` reports rc only, treats an id-less 2xx as an **unverified
+  write**, and its caller `_kbc_field_create` refuses a duplicate key at rc 2 *before* the POST, off
+  a board field-index read the one-shot bin does not perform. Adopting the primitive would therefore
+  either change the bin's idempotency contract or push a status-exposing variant into the primitive
+  for its single second caller — extraction belongs at the second *real* caller, and this is a second
+  caller with a different invariant. What must not happen is the **wire contract** drifting between
+  them (the flat `{key,label,type[,options]}` body and the server's `[{value,label}]` option shape,
+  both read out of `CustomFieldsController` / `CustomField::TYPES` rather than recalled): that is the
+  part a fix has to land in both, and this bullet is the record that there are two.
 - **The tolerant response parse, in the fail-soft bins** (card#6426) — `kb_parse_resp` now owns
   "apply a filter to a response body, yielding nothing rather than dying when the body is not
   JSON", and the bins that run under `set -e` were migrated onto it (that migration is what the
@@ -862,8 +881,9 @@ finding with no owner is abandoned, not filed.
   `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
   card's to make.
 
-  **Two in-population members no pass of the derivation named, recorded rather than migrated**
-  (card#6426, fix round 3). Both are raw `jq` reads of a value that IS a response body, and both
+  **In-population members no pass of the derivation named, recorded rather than migrated.** The
+  first two below are card#6426 fix round 3's; the third arrived with card#6525 and dates itself.
+  Round 3's two are raw `jq` reads of a value that IS a response body, and both
   are labelled **`L`** ("locally built input") by the instrument — wrongly, and for the same
   mechanical reason in each: the resolver picks up the wrong variable. It reads the jq invocation's
   *named* arguments rather than the value the filter is actually applied to, so a function whose
@@ -889,6 +909,44 @@ finding with no owner is abandoned, not filed.
     rc, so what reaches it is real cards or a genuinely empty board — with ONE exception, named
     rather than implied: the later-page hole card#6630 owns, where a server that omits
     `meta.total` lets a truncated list through at rc 0.
+  - **`bin/kbcard` `_kbc_field_populated`** (card#6525, re-derived on every pass that touches
+    that branch) — the populated-card census behind `field delete` and `field retype
+    --restamp-dl` (the conversion itself needs no census: the server scans the board).
+    **Re-running the producer derivation above on this tree returns 31 functions, not the 26
+    of the pass that wrote it** — and not the 30 or the 32 two earlier passes of this same
+    branch recorded. The count is a **re-derivation, never a quote**; that is what this bullet
+    is, and the movement is the point:
+    - **Five members the 26-function pass did not have:** `_kbc_field_create_call`,
+      `_kbc_field_delete_call`, `_kbc_field_populated`, `_kbc_field_change_type_call` and
+      `_kbc_field_restamp_dl`.
+    - **`_kbc_field_retype` is NOT one of them, though a pass of this branch disposed of it as
+      one.** It was a member while it made the delete/create calls itself; it now calls the two
+      field primitives and `kb_parse_resp` and names no producer at all, so the derivation
+      stopped returning it — a disposition written against a membership that no longer holds is
+      the thing re-derivation exists to catch.
+    - **`_kbc_field_change_type_report` was a member for exactly one commit, on a PROSE match.**
+      Its body calls no producer; it matched because the predicate is textual and its `000`
+      message contained the words *"curl transport failure"*. Rewording that message dropped it
+      out. Recorded rather than smoothed over: this is the same instrument artefact the control
+      above already names in the other direction (`grep -l` reaching `promote-released-cards`
+      through a header comment) — **a predicate that greps a token answers about the token**,
+      so a count that moves without a structural change is expected and must be explained, not
+      reconciled away.
+    Four of the five fall out at the filter — the create call's stdout is a field **id** nothing
+    re-parses (its own first projection off the response goes through `kb_parse_resp`), the
+    delete call emits no stdout at all and carries its state in its rc, `_kbc_field_restamp_dl`
+    likewise emits no stdout and reports through its rc and stderr, and
+    `_kbc_field_change_type_call`'s stdout **is** a response-derived value that two other sites
+    read — but the status line is split off with shell parameter expansion and **every** read of
+    the body, at both sites, goes through `kb_parse_resp`, so it is in-population and guarded,
+    with nothing to migrate. The fifth is `_kbc_field_populated`, and it takes
+    `_kbc_list_project`'s disposition directly above for `_kbc_list_project`'s reason: its jq
+    reads `$cards` from `fetch_board_cards`, not a `kb_api` body, so guarding it here could
+    never have seen the information — card#6594 closed that one level up, at page 1. It is
+    STRICTER than `cmd_list` where it counts: it refuses on **every** non-zero paginator rc
+    (1, 2, 3 and 4, measured in `tests/kbcard-field-selftest.sh` against a complete-read
+    positive control), so a partial board never reaches its filter. Same single exception —
+    the later-page hole card#6630 owns.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
   **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it

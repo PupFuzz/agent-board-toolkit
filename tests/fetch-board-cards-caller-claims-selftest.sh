@@ -125,6 +125,10 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 #
 #   bin/kbcard             list          rc 1,2,3,4  (bare `||`)
 #   bin/kbcard             archive twin  rc 1,2,3,4  — `|| true`, NO arm and no claim
+#   bin/kbcard             field census  rc 1,2,3,4  (`rc=$?` + `-ne 0`; measured by
+#                                        tests/kbcard-field-selftest.sh, which drives all
+#                                        four rcs through the census and asserts rc 1 on
+#                                        each, against a complete-read positive control)
 #   bin/board-snapshot                   rc 1,2      (`rc=$?`; 0/3/4 render instead)
 #   bin/board-stats        case 3|4      rc 3,4
 #   bin/board-stats        case *        rc 1,2
@@ -133,6 +137,7 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 #   bin/dl-a0-backfill…                  rc 1,2,3,4  (bare `||`)
 #   bin/board-card-start                 rc 1,2,3,4  (bare `||`)
 REGISTRY=$'bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)
+bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$rc) — refusing to act on a truncated denominator
 bin/board-snapshot\tmany\t• ${label}: (board read failed — fetch rc=$rc)
 bin/board-stats\tmany\tcard snapshot INCOMPLETE (fetch rc=$rc) — every stock count below is a floor, not a total
 bin/board-stats\tmany\tcard snapshot unavailable (fetch rc=$rc) — this board\'s stock section is missing
@@ -147,14 +152,18 @@ bin/board-card-start\tmany\tboard $board did not return a complete card list (fe
 REGISTERED_FILES=$'bin/board-card-start\nbin/board-snapshot\nbin/board-stats\nbin/dl-a0-backfill-triaged\nbin/kbcard\nbin/next-dl'
 # Invocations per consumer file — so a NEW call added inside an already-registered bin
 # (the way kbcard grew its second one) cannot slip in behind a satisfied file set.
-REGISTERED_CALLS=$'bin/board-card-start\t1\nbin/board-snapshot\t1\nbin/board-stats\t1\nbin/dl-a0-backfill-triaged\t1\nbin/kbcard\t2\nbin/next-dl\t1'
+REGISTERED_CALLS=$'bin/board-card-start\t1\nbin/board-snapshot\t1\nbin/board-stats\t1\nbin/dl-a0-backfill-triaged\t1\nbin/kbcard\t3\nbin/next-dl\t1'
 # EMITTING lines the derivation finds in an arm window that are NOT paginator arms, each
 # ruled on here rather than filtered out by a cleverer predicate — the exemption is the
 # ruling, and a new one cannot appear without reding this file first. Tab-separated
 # <file> <line text, leading whitespace stripped>.
 #   bin/kbcard — `list`'s own stdout render of the projected board, three code lines
 #   past the arm it shares a window with. Not a failure arm and makes no claim.
-EXEMPT_EMITS=$'bin/kbcard\tprintf \'%s\\n\' "$out"'
+#   bin/kbcard — the field census's own jq PROJECTION failure, in the window after the
+#   same call. It fires on a read the paginator returned rc 0 for, so it is not a
+#   paginator arm at all and names no rc and no cause of one; what it claims is what
+#   happened — this bin's own filter over a complete board did not produce a census.
+EXEMPT_EMITS=$'bin/kbcard\tprintf \'%s\\n\' "$out"\nbin/kbcard\techo "kbcard: board $KB_BOARD_ID read could not be projected for key \'$key\'" >&2'
 
 # ---------------------------------------------------------------------------
 # THE DERIVATION — one primitive answering both questions, re-run here, never recalled.
