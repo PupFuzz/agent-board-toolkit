@@ -1646,4 +1646,188 @@ unset -f kb_stub_route nonjson_leg
 unset NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
 
 # ---------------------------------------------------------------------------
+echo "== --name-file / --description-file — text that never meets a shell (card#6648) =="
+# THE DEFECT THESE CLOSE. `--description "$TEXT"` forces externally-authored text through the
+# CALLER's shell, which expands it before kbcard is started: a `$(…)` or a backtick sitting in a
+# report someone else wrote RUNS as a command on this box, and argv already holds its output by
+# the time any code here could look at it. No in-tool validator can see the unsafe case — the
+# expansion happened in another process — so the fix is a source that never passes through a
+# shell at all. That is why the load-bearing assertion below is on the REQUEST BODY and not on an
+# exit code: what is being proven is that the bytes in the file are the bytes on the wire.
+#
+# BOTH NEW PAIRS RESOLVE THROUGH THE SAME `_kbc_text_arg` the shipped `comment` verb now uses, so
+# the comment block above is ALSO this consolidation's regression suite: it runs unchanged against
+# the hoisted resolver, and any drift in the mutual-exclusion, readability, CRLF, trailing-newline
+# or blank-text semantics reds there before it reds here.
+#
+# WHAT IS DELIBERATELY NOT ASSERTED, because it is deliberately not built: the new flags do NOT
+# require an absolute path, and neither does `--content-file`. What makes the file form safe is
+# that the text never passes through a shell, which a relative path delivers exactly as well;
+# absolute-required is ergonomics, and retrofitting it onto the shipped flag would change what an
+# existing caller may pass. Nor is there a `$(`-sniffing check on the inline flags — see above.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+TA_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+export TA_CARD
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "POST "*/tasks.json)        printf '201\n%s' "$TA_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$TA_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$TA_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# The injection fixture. SINGLE-quoted, so the only shell that could ever expand it is the one
+# under test — and the assertion is that none does. `$(id -u)` is the shape that made this a
+# security question rather than an ergonomics one; the backtick and `${…}` forms ride along
+# because they are the same hole with different syntax.
+TA_INJ='pre-$(id -u)-post `date` ${HOME} $((6*7))'
+TA_INJ_JSON="$(jq -cn --arg s "$TA_INJ" '$s')"
+printf '%s\n' "$TA_INJ" > "$TMP/inj.txt"
+printf 'plain text\n'   > "$TMP/plain.txt"
+printf 'trail\n\n\n'    > "$TMP/trail.txt"
+printf 'c1\r\nc2\r\n'   > "$TMP/crlf.txt"
+printf ' \t\n \n'       > "$TMP/blank.txt"
+: >                       "$TMP/empty.txt"
+mkdir -p "$TMP/adir"
+
+# ta <verb> <field> <args…> — drive create-card or patch with the arguments that verb REQUIRES
+# plus the text flags under test, on a fresh request log, recording where that verb's write lands.
+# The (method, path) pair is the only thing that differs between the two verbs' assertions; the
+# `name` column must not supply `--name` itself, since that flag is what is under test there.
+ta() {
+    local verb="$1" field="$2"; shift 2
+    case "$verb" in
+        create-card)
+            TA_METHOD=POST; TA_PATH='/tasks.json'
+            if [[ "$field" == name ]]; then kbc create-card --type fr "$@"
+            else kbc create-card --type fr --name probe "$@"; fi ;;
+        patch)
+            TA_METHOD=PATCH; TA_PATH='/tasks/505.json'
+            kbc patch --task 505 "$@" ;;
+    esac
+}
+# ta_wire <field> — the value the last `ta` run's write put on the wire, as JSON.
+ta_wire() { kb_stub_bodies "$TA_METHOD" "$TA_PATH" | jq -c ".$1"; }
+
+for _verb in create-card patch; do
+  for _field in name description; do
+    _f="--$_field"; _ff="--$_field-file"
+    _L="$_verb $_ff"
+
+    # THE CARD'S WHOLE POINT, asserted on the wire and not on an rc.
+    ta "$_verb" "$_field" "$_ff" "$TMP/inj.txt"
+    eq "$_L: rc 0"                                    "0" "$rc"
+    eq "$_L: the file's text is BYTE-EXACT on the wire" "$TA_INJ_JSON" "$(ta_wire "$_field")"
+    # The independent witness that the equality above is measuring what it claims: the command
+    # substitution is present AS TEXT. An expansion anywhere on the path would have consumed it,
+    # so this cannot pass on a body that was expanded — and it needs no knowledge of what the
+    # expansion would have produced on this particular box.
+    eq "$_L: …the command substitution rides as TEXT, unexpanded" "true" \
+       "$(has '$(id -u)' "$(ta_wire "$_field")")"
+    eq "$_L: …in exactly one write"                   "1" "$(kb_stub_count "$TA_METHOD" "$TA_PATH")"
+    eq "$_L: …and no other request at all"            "1" "$(kb_stub_total)"
+
+    # The refusals. Every one is decided offline, so each carries its own "no traffic" assertion;
+    # the write above is the positive control that makes those zeros a measurement.
+    ta "$_verb" "$_field" "$_f" inline "$_ff" "$TMP/plain.txt"
+    eq "$_L + $_f → rc 2"                             "2" "$rc"
+    eq "$_L + $_f → names them mutually exclusive"    "true" "$(has 'mutually exclusive' "$err")"
+    eq "$_L + $_f → issues no request"                "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/nope.txt"
+    eq "$_L missing → rc 2"                           "2" "$rc"
+    eq "$_L missing → via the readability guard"      "true" "$(has 'is not readable' "$err")"
+    eq "$_L missing → names the path"                 "true" "$(has "$TMP/nope.txt" "$err")"
+    eq "$_L missing → issues no request"              "0" "$(kb_stub_total)"
+
+    # UNREADABLE-BUT-PRESENT, exercising the `cat` fallback the readability guard cannot catch: a
+    # directory is `-r` yet uncattable. Deliberately NOT a chmod-000 file — CI may run as root,
+    # where `-r` is true regardless, and a check that cannot fail on the runner is a decoration.
+    ta "$_verb" "$_field" "$_ff" "$TMP/adir"
+    eq "$_L unreadable → rc 2"                        "2" "$rc"
+    eq "$_L unreadable → via the cat fallback"        "true" "$(has 'could not be read' "$err")"
+    eq "$_L unreadable → issues no request"           "0" "$(kb_stub_total)"
+
+    # `-` is refused BY NAME rather than falling into "not readable": `-` is not a stdin token
+    # here. The assertion is on the TOKEN claim, deliberately not on "never reads stdin" — that
+    # would be a false absolute, since `--…-file /dev/stdin` is a readable path and does work.
+    # here, and the old message named the wrong problem. Acceptance is unchanged — `-` never
+    # worked — so this is the diagnostic, asserted by its own wording.
+    ta "$_verb" "$_field" "$_ff" -
+    eq "$_L - → rc 2"                                 "2" "$rc"
+    eq "$_L - → names the token, not a stdin ban"     "true" "$(has "'-' is not a stdin token" "$err")"
+    eq "$_L - → issues no request"                    "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/blank.txt"
+    eq "$_L whitespace-only → rc 2"                   "2" "$rc"
+    eq "$_L whitespace-only → names the field's text" "true" "$(has "holds no $_field text" "$err")"
+    eq "$_L whitespace-only → issues no request"      "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/empty.txt"
+    eq "$_L empty file → rc 2"                        "2" "$rc"
+    eq "$_L empty file → names the field's text"      "true" "$(has "holds no $_field text" "$err")"
+    eq "$_L empty file → issues no request"           "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" ""
+    eq "$_L \"\" → rc 2 (the empty-value class)"      "2" "$rc"
+    eq "$_L \"\" → names the flag"                    "true" \
+       "$(has "$_ff requires a non-empty value" "$err")"
+
+    # The two normalizations, inherited verbatim from the comment resolver.
+    ta "$_verb" "$_field" "$_ff" "$TMP/trail.txt"
+    eq "$_L → ALL trailing newlines are trimmed"      '"trail"' "$(ta_wire "$_field")"
+    ta "$_verb" "$_field" "$_ff" "$TMP/crlf.txt"
+    eq "$_L → CRLF is normalized to LF, no \\r on the wire" '"c1\nc2"' "$(ta_wire "$_field")"
+
+    # THE INLINE FLAG'S SHIPPED BEHAVIOUR IS UNCHANGED — the control that keeps this an ADDITION.
+    # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
+    # blank-checked (a whitespace value has always been accepted and written) and not rewritten
+    # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
+    # these two legs red on a later "harmonization" that makes one silently.
+    ta "$_verb" "$_field" "$_f" '   '
+    eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
+    eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
+    ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
+    eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
+       "$(ta_wire "$_field")"
+  done
+done
+unset _verb _field _f _ff _L
+
+# NEITHER SOURCE GIVEN is the ordinary case for an optional setter and must stay silent — the
+# half of the requiredness parameter that `comment` (where neither is rc 2) cannot exercise.
+ta create-card description
+eq "create-card with no description flag → rc 0"     "0" "$rc"
+eq "…and no description key on the wire at all"      "false" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -c 'has("description")')"
+kbc patch --task 505 --pr 12
+eq "patch with neither text flag → rc 0"             "0" "$rc"
+eq "…and neither key on the wire"                    "false,false" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '[has("name"),has("description")] | join(",")')"
+# …while create-card's NAME requirement is now a question about the resolved name, not about
+# which of the two flags carried it, and says so.
+kbc create-card --type fr
+eq "create-card with neither --name nor --name-file → rc 2" "2" "$rc"
+eq "…and names both spellings"                       "true" "$(has '--name or --name-file required' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+# The third member of the pair set gets the `-` refusal too — it is one resolver, so a flag left
+# out of it would be a divergence, and this is the leg that would see it.
+kbc comment --task 505 --content-file -
+eq "comment --content-file - → rc 2"                 "2" "$rc"
+eq "…names the token, not a stdin ban"               "true" "$(has "'-' is not a stdin token" "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+unset -f kb_stub_route ta ta_wire
+unset TA_CARD TA_INJ TA_INJ_JSON TA_METHOD TA_PATH
+
+# ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

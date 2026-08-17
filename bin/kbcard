@@ -4,13 +4,30 @@
 # ~/.kanban-dev-token and ~/.kanban-dev-board.env so the script is portable.
 #
 # Usage:
-#   kbcard create-card --type <alias> --name "title" \
+#   THE THREE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the
+#   caller may have written it: --name/--name-file, --description/--description-file and
+#   --content/--content-file. Pass exactly one of a pair — both is rc 2.
+#   USE THE FILE FORM FOR ANY TEXT YOU DID NOT WRITE YOURSELF — a description authored by someone
+#   else, a report, a pasted log, a review comment. The inline form is expanded by YOUR shell
+#   before kbcard is even started, so a $(...) or a backtick anywhere in that text RUNS as a
+#   command on this box, and argv already holds its output by the time kbcard looks. Nothing here
+#   can detect that, which is why this is a convention with a safe route and not a validator: a
+#   file is read by kbcard itself and never meets a shell.
+#   A --…-file takes a PATH. `-` is refused by name (it is not a stdin token here), and a missing, unreadable
+#   or text-free (empty / whitespace-only) file is rc 2 BEFORE any request, so a bad invocation
+#   costs no traffic. What a file puts on the wire: interior newlines and leading whitespace
+#   verbatim, TRAILING newlines trimmed, CRLF normalized to LF (a file written on Windows/Git-Bash
+#   would otherwise send a literal \r, which a reader renders as `?` at the end of every line);
+#   a LONE \r is not a line ending and is left alone. --content applies all of that to its INLINE
+#   value too; --name/--description send an inline value verbatim, exactly as they always have.
+#
+#   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
 #     <alias> is config-driven: any KB_TYPE_<ALIAS> in the board env writes that
 #     native card_type_id; an unset/`000` alias (or KB_TYPING_MODE=tags) instead
 #     omits card_type_id and tags the card `type:<alias>` — so create-card/list work
 #     on native, all-tag, and mixed boards alike.
-#                      [--swimlane NAME-OR-ID] [--description "..."] [--tags "tag1,tag2"] [--external-id 12345] \
+#                      [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--tags "tag1,tag2"] [--external-id 12345] \
 #                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
@@ -25,8 +42,8 @@
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."] [--dl DL-NNN] [--triaged] [--keep-refs] \
-#                [--name "title"] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>]
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--dl DL-NNN] [--triaged] [--keep-refs] \
+#                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -76,15 +93,11 @@
 #     updated_at (measured on the sandbox instance, board 1162), so the echoed id is the only
 #     cheap signal that the write landed, and a success carrying no id is reported as an
 #     UNVERIFIED write (rc 1) rather than printed as a plausible-looking `null`.
-#     Exactly one of --content / --content-file is required — both, or neither, is rc 2.
-#     --content-file sends the file's text, multi-line included; a missing or unreadable file
-#     — and, from EITHER source, text that is empty or whitespace-only — is rc 2 BEFORE any
-#     request, so a bad invocation costs no traffic.
-#     What goes on the wire, from either source: TRAILING NEWLINES ARE TRIMMED, while interior
-#     newlines and leading whitespace are preserved (a comment's own indentation is content),
-#     and CRLF line endings are normalized to LF — a --content-file written on Windows/Git-Bash
-#     would otherwise put a literal \r on the wire, which the reader below renders as `?` at the
-#     end of every line. A LONE \r is NOT a line ending and is left to that same sanitizer.
+#     Text sourcing is the shared free-text contract at the top of this block, with the one
+#     difference that block states: this pair is REQUIRED (neither source is rc 2, not a no-op,
+#     because the text IS the request) and BOTH its sources are normalized and blank-checked,
+#     so `--content "  "` is rc 2 exactly as an all-whitespace --content-file is. A comment's
+#     own indentation is content and survives; only trailing newlines are trimmed.
 #   kbcard comments --task ID-OR-EXT
 #     READ the card's comments, one block each: `comment <id> · user <user_id> · <created_at>`
 #     followed by the content indented. The author is a bare user id because that is the only
@@ -521,6 +534,96 @@ _kbc_require_ext_id() {
     return 2
 }
 
+# _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file>: resolve a free-TEXT argument from
+# its two mutually-exclusive sources — the inline `--<flag>` and its `--<flag>-file` twin — into
+# <outvar>. Returns 2, with a diagnostic naming the flag the CALLER passed, when both sources were
+# given, when a required pair got neither, when the file is `-`, missing or unreadable, or when
+# the file's text is blank. Every one of those is decided with no network at all, so a bad
+# invocation can never half-write.
+#
+# WHY THE FILE FORM IS THE CONVENTION FOR TEXT THIS AGENT DID NOT AUTHOR. An inline value is
+# expanded by the CALLER's shell before kbcard is even started, so a `$(…)` or a backtick inside
+# externally-authored text runs as a command on this box, and argv already holds its output by the
+# time anything here can look. No validator can see the unsafe case — that is why this is a
+# documented convention plus a safe route, and not a check. `--<flag>-file` is the safe route: the
+# bytes are read by this process and never meet a shell. `-` is refused rather than silently
+# treated as stdin: `-` is not a stdin token here, and "not readable: -" named the wrong problem.
+# The claim is about the TOKEN, not about the descriptor — a caller who genuinely wants stdin passes
+# the path `/dev/stdin`, which is a readable path like any other and works.
+#
+# <require-verb> IS THE POLICY KNOB (ground rule 5 of docs/CONSOLIDATION-PLAN.md — mechanism in
+# the primitive, policy at the caller), and it decides two things at once:
+#   * NON-EMPTY — the verb's own name, e.g. `comment`: this text IS the request. Neither source
+#     given is rc 2 naming that verb, and the INLINE value is normalized and blank-checked exactly
+#     as the file's is. That is `comment`'s shipped contract, carried over byte for byte.
+#   * EMPTY — the pair is an OPTIONAL FIELD SETTER (`--name`, `--description`). Neither source
+#     given is the ordinary case and stays silent, and the inline value — a flag that predates its
+#     file twin — is passed through VERBATIM. Blank-checking it, or rewriting its bytes, would
+#     change what an already-shipped flag accepts and what it puts on the wire; that is an
+#     acceptance change, ask-gated, and not this consolidation's to make.
+#
+# What a NORMALIZED value loses and keeps: interior newlines and leading whitespace ride verbatim
+# (a comment's own indentation is content), TRAILING newlines are trimmed, and CRLF is folded to
+# LF. That is the documented contract — the Usage block at the top of this file states it, and so
+# does README — and it is applied here rather than left to the caller's command substitution, so
+# the contract lives in the code that owns it.
+_kbc_text_arg() {
+    local _ta_out="$1" _ta_flag="$2" _ta_verb="$3" _ta_val="$4" _ta_file="$5"
+    # The noun the "holds no … text" refusals read with: the verb where there is one (so
+    # `comment` keeps saying "no comment text"), the field name otherwise.
+    local _ta_noun="${_ta_verb:-$_ta_flag}"
+    if [[ -n "$_ta_val" && -n "$_ta_file" ]]; then
+        echo "kbcard: --$_ta_flag and --$_ta_flag-file are mutually exclusive — pass exactly one" >&2
+        return 2
+    fi
+    if [[ -z "$_ta_val" && -z "$_ta_file" ]]; then
+        [[ -z "$_ta_verb" ]] || {
+            echo "kbcard: $_ta_verb requires --$_ta_flag \"text\" or --$_ta_flag-file PATH" >&2
+            return 2
+        }
+        printf -v "$_ta_out" '%s' ""
+        return 0
+    fi
+    if [[ -n "$_ta_file" ]]; then
+        [[ "$_ta_file" != "-" ]] || {
+            echo "kbcard: --$_ta_flag-file takes a PATH and '-' is not a stdin token here — pass a path (/dev/stdin if you mean stdin)" >&2
+            return 2
+        }
+        [[ -r "$_ta_file" ]] || { echo "kbcard: --$_ta_flag-file is not readable: $_ta_file" >&2; return 2; }
+        # The `x` sentinel keeps the file's own trailing newline INSIDE this substitution, which
+        # would otherwise strip it here — before the CRLF normalization below could see it, so a
+        # CRLF file's last line would keep a lone \r that nothing then owns. `&&` so a failed
+        # read is still a failed read (with `;` the substitution would carry printf's rc 0).
+        _ta_val="$(cat -- "$_ta_file" && printf x)" || { echo "kbcard: --$_ta_flag-file could not be read: $_ta_file" >&2; return 2; }
+        _ta_val="${_ta_val%x}"
+    elif [[ -z "$_ta_verb" ]]; then
+        # An optional setter's inline value: verbatim, see the knob above.
+        printf -v "$_ta_out" '%s' "$_ta_val"
+        return 0
+    fi
+    # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
+    # install target, so a --…-file written there arrives CRLF-terminated and an unnormalized
+    # \r goes on the wire verbatim — where a reader, correctly, renders every C0 control as `?`,
+    # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
+    # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
+    # for that sanitizer rather than silently rewriting content here.
+    _ta_val="${_ta_val//$'\r'$'\n'/$'\n'}"
+    while [[ "$_ta_val" == *$'\n' ]]; do _ta_val="${_ta_val%$'\n'}"; done
+    # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the comment server trims
+    # before it validates, so a whitespace-only body is a 422 there — a refusal that costs a round
+    # trip and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes
+    # on the wire keeps its leading whitespace and its interior newlines.
+    if [[ -z "${_ta_val//[[:space:]]/}" ]]; then
+        if [[ -n "$_ta_file" ]]; then
+            echo "kbcard: --$_ta_flag-file holds no $_ta_noun text: $_ta_file" >&2
+        else
+            echo "kbcard: --$_ta_flag holds no $_ta_noun text" >&2
+        fi
+        return 2
+    fi
+    printf -v "$_ta_out" '%s' "$_ta_val"
+}
+
 # _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json>:
 # assemble the OPTIONAL top-level task-object fields shared by create-card and patch, as a JSON
 # object carrying ONLY the keys whose argument was supplied. Each caller then adds the keys IT
@@ -641,14 +744,16 @@ _kbc_patch_tags() {
 }
 
 cmd_create_card() {
-    local type="" name="" column="backlog" desc="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged="" swimlane=""
+    local type="" name="" name_file="" column="backlog" desc="" desc_file="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged="" swimlane=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
+            --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
+            --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
             --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
@@ -662,7 +767,12 @@ cmd_create_card() {
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    [[ -z "$name" ]] && { echo "kbcard: --name required" >&2; return 2; }
+    # Both text pairs resolve BEFORE any other check, and long before the POST: a `-`, an absent
+    # or an unreadable file must cost no request at all, and --name's requirement below is a
+    # question about the RESOLVED name, not about which of the two flags carried it.
+    _kbc_text_arg name name "" "$name" "$name_file" || return 2
+    _kbc_text_arg desc description "" "$desc" "$desc_file" || return 2
+    [[ -z "$name" ]] && { echo "kbcard: --name or --name-file required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
@@ -748,8 +858,8 @@ cmd_move() {
 }
 
 cmd_patch() {
-    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" dl="" triaged="" swimlane="" keep_refs=""
-    local name="" tags="" type="" ext_id="" origin=""
+    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" dl="" triaged="" swimlane="" keep_refs=""
+    local name="" name_file="" tags="" type="" ext_id="" origin=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -761,8 +871,10 @@ cmd_patch() {
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
+            --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
             --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
+            --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
             --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
@@ -776,7 +888,11 @@ cmd_patch() {
 
     # Everything resolvable WITHOUT the network is resolved first, so a typo'd --type /
     # --external-id / --column / --swimlane fails rc 2 having issued no request at all —
-    # not even the tag read below, and never a half-applied PATCH.
+    # not even the tag read below, and never a half-applied PATCH. The two text pairs belong
+    # in that set for the same reason: a `-`, an absent or an unreadable file is a bad
+    # invocation, and a bad invocation must cost no traffic.
+    _kbc_text_arg name name "" "$name" "$name_file" || return 2
+    _kbc_text_arg desc description "" "$desc" "$desc_file" || return 2
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
@@ -1094,57 +1210,6 @@ cmd_show() {
 # silent empty-id success rather than a crash. Success is therefore decided by kb_api on the
 # HTTP STATUS CLASS alone; nothing below infers it from the response body's shape.
 
-# _kbc_comment_content <content> <content-file>: the comment text on stdout, resolving the two
-# mutually-exclusive sources. Returns 2 (diagnostic naming the flag) when both or neither was
-# given, when the file is missing or unreadable, or when the resolved text is blank. Every one
-# of those is decided with no network at all, so a bad invocation can never half-write.
-#
-# TRAILING NEWLINES ARE TRIMMED from either source — the caller reads this through a command
-# substitution, which strips them — while interior newlines and leading whitespace ride verbatim.
-# That is the documented contract (the Usage block at the top of this file states it, and so
-# does README's comment section), not an accident of the plumbing.
-_kbc_comment_content() {
-    local content="$1" file="$2"
-    if [[ -n "$content" && -n "$file" ]]; then
-        echo "kbcard: --content and --content-file are mutually exclusive — pass exactly one" >&2
-        return 2
-    fi
-    if [[ -z "$content" && -z "$file" ]]; then
-        echo "kbcard: comment requires --content \"text\" or --content-file PATH" >&2
-        return 2
-    fi
-    if [[ -n "$file" ]]; then
-        [[ -r "$file" ]] || { echo "kbcard: --content-file is not readable: $file" >&2; return 2; }
-        # The `x` sentinel keeps the file's own trailing newline INSIDE this substitution, which
-        # would otherwise strip it here — before the CRLF normalization below could see it, so a
-        # CRLF file's last line would keep a lone \r that nothing then owns. `&&` so a failed
-        # read is still a failed read (with `;` the substitution would carry printf's rc 0).
-        content="$(cat -- "$file" && printf x)" || { echo "kbcard: --content-file could not be read: $file" >&2; return 2; }
-        content="${content%x}"
-    fi
-    # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
-    # install target, so a --content-file written there arrives CRLF-terminated and an unnormalized
-    # \r goes on the wire verbatim — where the reader, correctly, renders every C0 control as `?`,
-    # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
-    # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
-    # for that sanitizer rather than silently rewriting content here.
-    content="${content//$'\r'$'\n'/$'\n'}"
-    # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the server trims before
-    # it validates, so a whitespace-only body is a 422 there — a refusal that costs a round trip
-    # and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes on
-    # the wire keeps its leading whitespace and its interior newlines (a comment's own
-    # indentation is content), and loses only the trailing newlines described above.
-    if [[ -z "${content//[[:space:]]/}" ]]; then
-        if [[ -n "$file" ]]; then
-            echo "kbcard: --content-file holds no comment text: $file" >&2
-        else
-            echo "kbcard: --content holds no comment text" >&2
-        fi
-        return 2
-    fi
-    printf '%s' "$content"
-}
-
 cmd_comment() {
     local task_ref="" content="" content_file=""
     while [[ $# -gt 0 ]]; do
@@ -1158,7 +1223,8 @@ cmd_comment() {
     [[ -z "$task_ref" ]] && { echo "kbcard: --task required" >&2; return 2; }
     # Text FIRST, before resolve_task: an ambiguous, absent or unreadable source must cost no
     # request at all — the same offline-first rule cmd_patch follows for its typo'd flags.
-    local text; text="$(_kbc_comment_content "$content" "$content_file")" || return 2
+    local text=""
+    _kbc_text_arg text content comment "$content" "$content_file" || return 2
 
     local task body resp cid
     task="$(resolve_task "$task_ref")" || return 1
