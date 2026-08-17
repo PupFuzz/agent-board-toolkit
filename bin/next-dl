@@ -309,12 +309,13 @@ board_dl_max() (
 # are reachable with a named board in the config; only the first is what card#6631's ruling
 # declined to scope.
 # TWO KNOWN-OPEN CASES where a mint still proceeds past a board that ANSWERED 200, named
-# rather than implied. Both are the envelope-predicate class owned by card#6630, not this
-# arm's policy: this API answers a board the token cannot see with the same well-formed
-# empty envelope as an empty board (bin/_kb-board-lib.sh:735-740), and a 2xx whose .data
-# is an array of NON-cards faults the paginator's dedup jq into its own 2>/dev/null, so it
-# returns rc 0 with EMPTY stdout. Measured: each mints from the local floor at rc 0 with
-# nothing on stderr.
+# rather than implied. Both are the envelope-predicate class owned by card#6630 — which stays
+# OPEN, so both stay owned — not this arm's policy: this API answers a board the token cannot
+# see with the same well-formed empty envelope as an empty board (cited by ANCHOR, not by line:
+# fetch_board_cards's parse-site comment in bin/_kb-board-lib.sh, the paragraph beginning
+# "Residual, accepted:"), and a 2xx whose .data is an array of NON-cards faults the paginator's
+# dedup jq into its own 2>/dev/null, so it returns rc 0 with EMPTY stdout. Measured: each mints
+# from the local floor at rc 0 with nothing on stderr.
 # A THIRD path is neither, and is recorded because the (a)/(b) split above does not
 # describe it: a token file that is a DIRECTORY passes kb_resolve_env's -r test, so the
 # config RESOLVES; `cat` then fails and the board is read with an EMPTY bearer. set -e does

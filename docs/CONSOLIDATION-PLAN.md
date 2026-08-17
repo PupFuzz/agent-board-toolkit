@@ -746,17 +746,41 @@ finding with no owner is abandoned, not filed.
   `ok`, so an empty census can only withhold more archives, never permit one. Two sources and now a
   run.
 
-  **⚠ THE SAME SHAPE SURVIVES ON LATER PAGES, IN BOTH COPIES — 2 instances of one shape, measured,
-  and left open here rather than fixed under card#6594's page-1 ruling.** Both `fetch_board_cards`
-  and `fetch_whole_board` still read a page > 1 through `.data // []`, so an unreadable later body
-  is taken for a short page and ends the scan. The `meta.total` census is what covers it, and only
+  **⏳ OPEN (card#6630) — THE SAME SHAPE ON LATER PAGES. 3 instances, 2 fixed here, 1 LIVE.**
+  This entry previously said *2 instances* and was CLOSED on that count. The count was asserted,
+  never derived, and it was wrong: there is a third paginator in this tree carrying the same shape,
+  and it is still live. The card stays OPEN as the ONE class item for all three (canon #18 — the
+  audit finds instances, the class gets the item); the two fixed instances are recorded below as
+  members that are done, not as the whole class.
+
+  **The denominator, derived rather than recalled** (canon #19 — the method, so a later pass can
+  re-run it): the population is *every loop in this tree that issues repeated API requests to
+  accumulate one result set*. Derived by taking every HTTP-issuing call site (`curl`, `kb_api`,
+  `promote-released-cards`'s `api`, `gh api`, and the Python subprocess calls) and keeping those
+  lexically inside a `while`/`for` whose request URL carries a page/cursor parameter the loop
+  itself advances. That yields **4**, and the discriminating control is that it independently
+  re-finds the two instances this change fixes:
+
+  | paging loop | key | instance of this shape? |
+  | --- | --- | --- |
+  | `bin/_kb-board-lib.sh` `fetch_board_cards` | `page=N` | **yes — FIXED here** |
+  | `bin/promote-released-cards` `fetch_whole_board` | `page=N` | **yes — FIXED here** |
+  | `bin/board-stats` `_bs_window_rows` | `before=<cursor>` | **yes — OPEN, see below** |
+  | `bin/_dependabot-reconcile.py` `gh_alerts` | `gh api --paginate` | **no** — paging is delegated to `gh`, and a body that is not a JSON array raises `InstrumentError` rather than reading as an exhausted population. Disposed by checking, not by absence of symptoms. |
+
+  `bin/install-board-hooks`'s `_ibh_symlink_probe` uses a `while :`/`break` block and issues no
+  request at all; it is not in this population.
+
+  Until this change `fetch_board_cards` and `fetch_whole_board`
+  read a page > 1 through `.data // []`, so an unreadable later body was taken for a short page and
+  ended the scan. The `meta.total` census is what covers it, and only
   where the server declares `meta.total` — which is the whole exposure, because both copies default
   an absent `meta.total` to UNKNOWN and then skip the census. Measured at page 1 = 200 rows with
   page 2 answering `200` + `<html>502</html>`:
 
   | copy | `meta.total` declared | outcome |
   | --- | --- | --- |
-  | `fetch_board_cards` | yes | **rc 4** + `INCOMPLETE` on stderr — covered |
+  | `fetch_board_cards` | yes | **rc 4** + `INCOMPLETE` on stderr — ~~covered~~ **NOT covered; see the correction below** — rc 4 EMITS its partial array and the rendering consumers rendered it |
   | `fetch_board_cards` | **no** | **rc 0, 200 cards, EMPTY STDERR** — a silent truncated read |
   | `fetch_whole_board` | yes | **rc 2** (`die`, refuses to promote) — covered |
   | `fetch_whole_board` | **no** | **rc 0, 200 cards, promotes** — the only tell is a raw `jq: parse error` on stderr, i.e. jq's voice, not the tool's |
@@ -766,13 +790,108 @@ finding with no owner is abandoned, not filed.
   probe made for this entry — a populated page, an empty result, and a past-the-end page — which is
   what makes these latent rather than live, and is the same reasoning (and the same unproven
   "always") that card #4623 recorded for the `last_page` default. A vendoring consumer pointed at
-  a different server is where the assumption is not even that strong. **The fix is one line in each** — apply the
-  page-1 predicate to every page and return the already-documented rc 2 — and it is deliberately
-  NOT taken here: card#6594's ruling scoped the refusal to page 1, and extending it changes what
-  callers receive on a path the ruling did not cover. **The tracked owner is card#6630** (board 12,
-  Backlog, triaged) — ONE class item carrying both instances, not two (canon #18); do not fix one
-  copy without the other, and do not discharge it by making the two predicates identical (see the
-  page-1 divergence above). This entry is the doc surface; the card is the queue position.
+  a different server is where the assumption is not even that strong. **The fix was one predicate in
+  each of the two CARD paginators** — the envelope test applied to every page, returning the
+  already-documented **rc 2**
+  in the lib and `die`ing in the mirror — taken under card#6630 (ONE class item carrying
+  every instance, canon #18) on the operator's ruling, which is the gate card#6594's
+  page-1 scoping had left in the way. **The two page-1 predicates were NOT converged**, and must
+  not be: the mirror still dies on zero CARDS and the lib still admits an empty board (see the
+  page-1 divergence above).
+
+  **⚠ THE MIRROR'S PAGE-1 ACCEPTANCE MOVED. That is a behaviour change, not a change of voice, and
+  this entry previously said the opposite.** The retracted claim was that for the two shapes
+  `.data // []` passed through as a non-array (`{"data":{"id":9}}`, `{"data":"str"}`) the tool
+  already died *"in jq's voice at jq's status"*, so *"the verdict was refuse either way"*. Measured
+  against `git show HEAD:bin/promote-released-cards`, lifting the real `fetch_whole_board` onto the
+  selftest's page-serving stub: **it returned rc 0 with EMPTY stdout on both shapes.** The
+  accumulator's `jq -s 'add'` did fault (status **5**, `array ([]) and object ({"id":9}) cannot be
+  added`) — and that fault is **non-fatal**, because `errexit` is not inherited by a
+  command-substitution subshell and no file in this repo sets `inherit_errexit`; the same mechanism
+  this document already records for `board_dl_max` above. The caller `CARDS="$(fetch_whole_board)"`
+  therefore took an empty card list at rc 0 and continued: `PLAN`, `MATCHED_DLS` and `MATCHED_CARDS`
+  all evaluated cleanly over the empty input, and the run aborted at the **fourth** assignment,
+  `MISSING="$(jq -n --argjson md "$MATCHED_DLS" …)"`, with `jq: invalid JSON text passed to
+  --argjson` — a different jq, at a different site, at status **2**, and a message about an internal
+  argument rather than about the board.
+  **So the page-1 disposition for those two shapes moved from *rc 0 out of the fetch, proceed with
+  an empty list* to *die at the fetch*.** What is true of the *process* exit — 2 either way, and no
+  card PATCHed either way, because both aborts land before the move loop — is what made the wrong
+  claim comfortable; it is not what the tool accepted. The page-1 PREDICATE (zero CARDS) did not
+  move, and no other page-1 shape changed disposition. That is a measurement, not an inference —
+  the same lift run against `HEAD` and against the worktree over six page-1 bodies:
+
+  | page-1 body | pre-fix | post-fix |
+  | --- | --- | --- |
+  | `{"error":"upstream connect error"}` | rc 2, zero-cards die | rc 2, zero-cards die |
+  | `{"data":null}` | rc 2, zero-cards die | rc 2, zero-cards die |
+  | `<html>502</html>` | rc 2, zero-cards die (behind a raw `jq: parse error`) | unchanged, same raw `jq: parse error` |
+  | `{"data":[]}` | rc 2, zero-cards die | rc 2, zero-cards die |
+  | `{"data":{"id":9}}` | **rc 0, EMPTY stdout** | **rc 2, zero-cards die** |
+  | `{"data":"str"}` | **rc 0, EMPTY stdout** | **rc 2, zero-cards die** |
+
+  Two rows moved; four did not. (The `<html>` row also records a pre-existing wart neither this
+  change nor its predecessor touched: the mirror's extraction carries no `2>/dev/null`, so an
+  unparseable page 1 still puts jq's parse error on stderr ahead of the tool's own refusal, where
+  the lib's identical parse suppresses it. Not fixed here — it is a stderr-content change on a
+  refusal path — and filed on this entry so it is not re-found as new.)
+
+  **The acceptance the page-1 message now carries, recorded rather than fixed (MINOR 6).** With the
+  new extraction, `data=''` means *unreadable envelope* and `data='[]'` means *genuinely zero rows*
+  — two states the code can now tell apart and then deliberately collapses again at
+  `bin/promote-released-cards`'s `data='[]'` page-1 arm, so both land on the die that names board
+  membership as the likely cause. That message pre-dates this change and is already wrong for
+  `{"error":…}` and `{"data":null}`; **this change adds exactly two more shapes to it**
+  (`{"data":{"id":9}}`, `{"data":"str"}`) — the two rows that moved in the table above, which is
+  where that count comes from. Not fixed here on purpose: rewording an operator-facing refusal is
+  a change to how errors are reported, which is ask-gated, and distinguishing the two causes is a
+  message decision the operator should make rather than one this fix should smuggle in. It is
+  recorded as an open member of this entry so it has an owner and a queue position (canon #18).
+
+  **One row of the table above was wrong about the consequence, and the correction is the reason
+  the "latent" framing did not hold:** `meta.total`-declared was recorded as *covered*, but rc 4
+  EMITS its partial array, and the two consumers that render on 3|4 rendered it. Re-measured
+  through the shipped bins on that same fixture, `board-snapshot` printed a board line derived from
+  the truncated read (`• Board 5 (kanban-board): in-flight 0`) with `INCOMPLETE` on a stderr its
+  SessionStart display does not show. *Covered* was true of the refuse-policy callers only; for the
+  rendering ones the census turned a silent truncation into a **quietly rendered** one. Both are
+  now rc 2, refused before the census.
+
+  **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, LIVE, and the reason this entry is
+  not closed.** The changelog window is read by paging BACKWARD on a `before=<cursor>` id until the
+  rows precede the cutoff, and the loop's end-of-data signal is a **short page**: `_BS_PAGE_JQ`
+  opens with `(.data // []) as $d`, so a `2xx` carrying no `.data` yields `n: 0`, `n < _BS_CL_LIMIT`
+  reads as *the log is exhausted*, and the loop `break`s with `truncated=false` and `err=""`. That
+  is the same shape as the two fixed above, on the same `KB_API`, the same host, reachable by the
+  same proxy/gateway error body. **Measured against the real function** (the shipped
+  `_bs_window_rows`, sourced from `bin/board-stats`, page 1 = 200 rows, `_BS_CL_LIMIT` = 200):
+
+  | page-2 body | `_bs_window_rows` result |
+  | --- | --- |
+  | `{"error":"upstream connect error"}` | `pages: 2, truncated: false, error: null` — **silent**, 200 rows |
+  | `{"data":null}` | `pages: 2, truncated: false, error: null` — **silent**, 200 rows |
+  | `{"data":"str"}` / `{"data":{"id":9}}` / `[{"error":…}]` | `error: "changelog page 2 is not the shape this tool reads"` — caught |
+  | `<html>502</html>` | same — caught |
+
+  So the live half is narrower than a `.data`-shape test would suggest, and stating it precisely
+  matters: of the shapes measured, the silent set is a JSON **object** whose `.data` is **absent,
+  `null` or `false`** — the three `//` substitutes for. The mechanism that catches the rest is
+  `$d[-1]`: `// []` yields the substitute only for `null`/`false`, so any other non-array `.data`
+  reaches `$d[-1]` as itself and faults the page jq, which the `[[ -n "$page" ]]` guard reports as
+  a wrong-shape error. Measured on that boundary: `{"data":false}` is **silent**, `{"data":{}}` is
+  **caught**. An absent/null `.data` is exactly the shape a
+  proxy or gateway error document takes, which is what keeps this reachable rather than academic.
+  On the silent path `_bs_one_board` sets `flow_ok=true` with no `fails+=` entry, so the report
+  renders flow counts off a truncated window with **no `⚠` line and no `(WINDOW TRUNCATED)`
+  marker** — which falsifies `bin/board-stats`'s own header claim that *"a number that is a floor
+  rather than a total (a capped card read, a truncated changelog window) says so where it is
+  printed."* **That header line is a live false claim and is filed here rather than edited**, because
+  correcting it either way pre-judges the `err`/`truncated` policy decision this instance needs.
+  **Deliberately NOT fixed under card#6630's current scope:** unlike the two card paginators, this
+  loop's failure policy is a real fork — `_bs_window_rows` has three stop conditions and two of them
+  already set `truncated` while emitting rows, so "refuse" is not simply the existing rc, and
+  `board-stats` is a fail-soft report whose contract is that one bad board never kills the run.
+  That is a policy decision, not a predicate edit, and it is the open work on this card.
 - **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
   enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
   (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
@@ -924,9 +1043,11 @@ finding with no owner is abandoned, not filed.
     **`card#6594` fixed it at the paginator, at page 1, at the existing rc 1**, and `list` now
     aborts instead of printing a `[]` it could not read. Fixing it here would have been #2's
     symptom patch. This site stays unmigrated: `cmd_list` aborts on every non-zero paginator
-    rc, so what reaches it is real cards or a genuinely empty board — with ONE exception, named
-    rather than implied: the later-page hole card#6630 owns, where a server that omits
-    `meta.total` lets a truncated list through at rc 0.
+    rc, so what reaches it is real cards or a genuinely empty board. The one exception this
+    bullet used to name — the later-page hole, where a server that omitted `meta.total` let a
+    truncated list through at rc 0 — is closed under card#6630 (the card itself stays open for
+    its third instance, `bin/board-stats`): an unreadable page > 1 is now rc 2,
+    which `cmd_list` already aborts on.
   - **`bin/kbcard` `_kbc_field_populated`** (card#6525, re-derived on every pass that touches
     that branch) — the populated-card census behind `field delete` and `field retype
     --restamp-dl` (the conversion itself needs no census: the server scans the board).
@@ -960,11 +1081,12 @@ finding with no owner is abandoned, not filed.
     with nothing to migrate. The fifth is `_kbc_field_populated`, and it takes
     `_kbc_list_project`'s disposition directly above for `_kbc_list_project`'s reason: its jq
     reads `$cards` from `fetch_board_cards`, not a `kb_api` body, so guarding it here could
-    never have seen the information — card#6594 closed that one level up, at page 1. It is
-    STRICTER than `cmd_list` where it counts: it refuses on **every** non-zero paginator rc
-    (1, 2, 3 and 4, measured in `tests/kbcard-field-selftest.sh` against a complete-read
-    positive control), so a partial board never reaches its filter. Same single exception —
-    the later-page hole card#6630 owns.
+    never have seen the information — card#6594 closed that one level up at page 1, and
+    card#6630's fix closed the later pages at the same site. It is STRICTER than `cmd_list` where it
+    counts: it refuses on **every** non-zero paginator rc (1, 2, 3 and 4, measured in
+    `tests/kbcard-field-selftest.sh` against a complete-read positive control), so a partial
+    board never reaches its filter — and with the later-page exception closed, the rc it refuses
+    on now covers an unreadable page 2 as well.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
   **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it

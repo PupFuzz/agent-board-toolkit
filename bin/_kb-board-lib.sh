@@ -4,14 +4,18 @@
 # CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
 # board-snapshot, board-stats, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
 # dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
-# MUST copy it too. Cited by line, not by section number — ADOPTION.md has no
-# numbered sections and its "§8" means the Task-tracking standard's §8:
-#   ADOPTION.md:13 ("Where this fits") — a PM project may vendor these tools; the
+# MUST copy it too. Cited by ANCHOR TEXT, never by line — these four were line
+# numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the
+# CHANGELOG quote by ~390 (the reason is at fetch_board_cards's parse site below).
+# ADOPTION.md has no numbered sections and its "§8" means the Task-tracking
+# standard's §8:
+#   ADOPTION.md § "Where this fits" — a PM project may vendor these tools; the
 #     lib-sourcing bins require _kb-board-lib.sh copied beside them.
-#   docs/INSTALL.md:141 (§6b) — same requirement, with the failure mode.
-#   bin/agent-board-toolkit-drift-check:39 — MISSING-LIB probe flags a lib-sourcing
-#     bin vendored without the lib.
-#   docs/CHANGELOG.md:11 (v0.15.0) — "Consumers who vendor: re-vendor
+#   docs/INSTALL.md § "6b. Non-Actions consumer — vendor + drift-check" — same
+#     requirement, with the failure mode.
+#   bin/agent-board-toolkit-drift-check, the "MISSING-LIB" probe — flags a
+#     lib-sourcing bin vendored without the lib.
+#   docs/CHANGELOG.md, the v0.15.0 entry — "Consumers who vendor: re-vendor
 #     `promote-released-cards` (#110, diagnostic-only) and `_kb-board-lib.sh`
 #     (#103/#106)." (No "[vendor]" tag on it: the only two in that file are
 #     v0.14.0's, both for promote-released-cards. v0.11.2/#74 established the
@@ -586,7 +590,10 @@ kb_parse_resp() {
 #      2xx, or the 2xx body carried no readable card array (see the parse site below)
 #   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
 #      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
-#      truncated scan
+#      truncated scan. The SAME three causes as rc 1, on a later page (card#6630); the
+#      page is what selects between the two rcs, not the cause. Still not a closed cause
+#      enumeration a caller may quote: rc 1's is closed because next-dl's rc-1-only arm
+#      quotes it, and nothing has asked that of rc 2
 #   3  page cap hit: the partial array is still emitted (so a display caller can
 #      show what it has) but the read is flagged INCOMPLETE on stderr
 #   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
@@ -719,16 +726,27 @@ fetch_board_cards() {
         # this can print is nothing, which is the one value that cannot be mistaken for
         # data (the kb_parse_resp rule above, applied to the whole-board read).
         #
-        # The refusal is PAGE 1 only, matching the ruled scope and this function's rc-1
-        # contract. A later page's unreadable body still falls back to `[]` and ends the
-        # scan; that leaves the pre-dedup meta.total census below to catch it at rc 4,
-        # which it does on any server that DECLARES meta.total — observed on every probe
-        # taken for card#6594, which is an observation and not a guarantee.
-        # The uncovered half — a server that omits meta.total — is card#6630, which owns
-        # the same shape in both copies of this loop.
+        # The predicate applies to EVERY page; only the rc differs, because only the rc
+        # the contract above already assigns differs. Page 1 unreadable = nothing of the
+        # board was read = rc 1; a later page unreadable = a page > 1 failed
+        # mid-pagination = rc 2, the same rc the curl and non-2xx arms above return for
+        # that page, and for the same reason — the difference is which layer noticed.
+        # card#6630. Until it, the refusal was page-1 only and a later page's unreadable
+        # body fell back to `[]`, which is a SHORT page, which ENDS the scan: the caller
+        # got rc 0 and a truncated board. The meta.total census below caught that at rc 4
+        # on any server that DECLARES meta.total — observed on every probe taken for
+        # card#6594, which was an observation and not a guarantee, so the silent case was
+        # a server that omits it. The census is unchanged and still runs; it is now a
+        # backstop for a different failure (rows missing from readable pages) rather than
+        # the only thing standing between an unreadable page 2 and a truncated answer.
         #
-        # This is the fail-closed posture the co-vendored port at
-        # bin/promote-released-cards:302-304 carries. It is deliberately NOT the same predicate: that tool dies
+        # This is the fail-closed posture the co-vendored port in
+        # bin/promote-released-cards (fetch_whole_board) carries — cited by FUNCTION, not by
+        # line: the `:302-304` this comment used to name was correct until card#6630 edited
+        # that function, which is the whole life expectancy of a line citation across a file
+        # nobody edits in lockstep with this one. On a page > 1 the two now agree in effect
+        # (both refuse an unreadable envelope, at each tool's own policy — an rc here, a die
+        # there); on PAGE 1 it is deliberately NOT the same predicate: that tool dies
         # on zero CARDS, which it can afford because a board with nothing to promote is
         # never a working state for it. A board read verb cannot — `kbcard list` on an
         # empty board must still succeed — so the lib refuses on an unreadable ENVELOPE
@@ -740,15 +758,19 @@ fetch_board_cards() {
         # signal the envelope does not carry, not a stricter row count.
         data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
         if [[ -z "$data" ]]; then
-            if [[ "$page" -eq 1 ]]; then
-                if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
-                    echo "fetch_board_cards: page 1 for board $board returned HTTP $http with no readable card array — refusing rather than report it as an empty board: $resp" >&2
-                fi
-                [[ -n "${KB_LOG_FILE:-}" ]] && \
-                    echo "$(date -u +%FT%TZ) GET $url HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
-                return 1
+            if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
+                # What the refusal SAVED the caller from differs by page, and saying the
+                # wrong one is a false claim about the board: an unreadable page 1 would
+                # have read as an EMPTY board, an unreadable later page as a SHORT page,
+                # which ends the scan and reads as a complete but truncated one.
+                local refused="report it as an empty board"
+                [[ "$page" -eq 1 ]] || refused="end the scan on a short page and report a TRUNCATED board as a complete read"
+                echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp" >&2
             fi
-            data='[]'
+            [[ -n "${KB_LOG_FILE:-}" ]] && \
+                echo "$(date -u +%FT%TZ) GET $url HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+            [[ "$page" -eq 1 ]] && return 1
+            return 2
         fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
         pages+="$data"$'\n'
