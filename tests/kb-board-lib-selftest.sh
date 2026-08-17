@@ -586,6 +586,69 @@ eq "…and the short-read census calls the read INCOMPLETE"          "true" "$(h
 unset -f _fbc_case
 unset UNREAD_LOG
 
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: a caller's regular-file stderr survives the fetch (card#6661) =="
+# The redirect target for curl's stderr must be a DESCRIPTOR. It was the PATH /dev/stderr,
+# which RE-OPENS the file behind the caller's stderr — and a regular-file stderr
+# (`kbcard list 2>run.log`, how an agent logs) is re-opened O_TRUNC, so everything written
+# before the FIRST page fetch was destroyed. Clean on a pipe and on a tty, which is why no
+# other case here sees it: every one of them redirects to a fresh file.
+#
+# Asserted on CONTENT and on the NUL COUNT, never on rc — the run stays rc 0 either way.
+# The failure is NUL-fill, not absence: the caller's next write lands at its OWN unchanged
+# offset in the now-truncated file, so the gap between what curl re-wrote and that offset
+# reads back as NUL bytes — a log of plausible length whose head is gone. A command
+# substitution silently drops NULs, so a string compare cannot see them and the count is
+# asserted separately.
+#
+# THE FIXTURE'S PROPORTIONS ARE LOAD-BEARING, and the NUL leg is a decoration without them:
+# the caller must write MORE before the fetch (28 bytes) than curl writes into the truncated
+# file (18), or the caller's post-fetch write lands inside what curl re-wrote and overwrites
+# it in place, leaving no hole and a NUL count of 0 in the presence of the bug. Measured both
+# ways against the reverted fix: 28-over-18 gives 10 NULs; a longer curl note gave 0.
+_bytes()  { wc -c < "$1" | tr -d ' '; }
+_nuls()   { tr -dc '\000' < "$1" | wc -c | tr -d ' '; }
+# A stub that also WRITES to stderr, so the same block asserts the other half of the knob's
+# contract: under KB_FETCH_LOUD curl's own diagnostic must actually reach the caller.
+_stub_loud_curl() { printf 'curl: (7) refused\n' >&2; _stub_curl_respond "$1" 200; }
+ERRLOG="$TMP/caller-stderr.log"
+
+# LOUD: the caller opens run.log ONCE (as a shell does for `2>run.log`) and writes before
+# and after the fetch — the shape a logging agent actually runs.
+curl() { _STUB_ARGS=("$@"); _stub_loud_curl '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}'; }
+{
+    echo "LINE-BEFORE-1" >&2
+    echo "LINE-BEFORE-2" >&2
+    KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 >/dev/null
+    echo "LINE-AFTER" >&2
+} 2>"$ERRLOG"
+loud_exp=$'LINE-BEFORE-1\nLINE-BEFORE-2\ncurl: (7) refused\nLINE-AFTER\n'
+eq "loud: the lines written BEFORE the fetch are still there" "true" \
+   "$(has $'LINE-BEFORE-1\nLINE-BEFORE-2' "$(cat "$ERRLOG")")"
+eq "loud: curl's own stderr reached the caller (the knob's contract)" "true" \
+   "$(has 'curl: (7) refused' "$(cat "$ERRLOG")")"
+eq "loud: the log is exactly those four lines, in order" "${loud_exp}." "$(cat "$ERRLOG"; printf '.')"
+eq "loud: byte count matches that content"  "$(printf '%s' "$loud_exp" | wc -c | tr -d ' ')" "$(_bytes "$ERRLOG")"
+eq "loud: no NUL fill (a truncated-then-re-extended log)" "0" "$(_nuls "$ERRLOG")"
+
+# QUIET (the default, board-snapshot's contract): the caller's lines are equally intact AND
+# curl's stderr is still swallowed. This is the control — a "fix" that simply passed curl's
+# stderr through unconditionally would satisfy the loud legs above and red here.
+: > "$ERRLOG"
+{
+    echo "LINE-BEFORE-1" >&2
+    echo "LINE-BEFORE-2" >&2
+    fetch_board_cards "https://api.example" tok 8 >/dev/null
+    echo "LINE-AFTER" >&2
+} 2>"$ERRLOG"
+quiet_exp=$'LINE-BEFORE-1\nLINE-BEFORE-2\nLINE-AFTER\n'
+eq "quiet: the log is exactly the caller's own three lines" "${quiet_exp}." "$(cat "$ERRLOG"; printf '.')"
+eq "quiet: byte count matches that content" "$(printf '%s' "$quiet_exp" | wc -c | tr -d ' ')" "$(_bytes "$ERRLOG")"
+eq "quiet: no NUL fill"                     "0" "$(_nuls "$ERRLOG")"
+
+unset -f _stub_loud_curl _bytes _nuls
+unset ERRLOG loud_exp quiet_exp
+
 unset -f curl _stub_page_curl
 
 # --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---
