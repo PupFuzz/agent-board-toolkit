@@ -591,8 +591,11 @@ echo "== fetch_board_cards: a caller's regular-file stderr survives the fetch (c
 # The redirect target for curl's stderr must be a DESCRIPTOR. It was the PATH /dev/stderr,
 # which RE-OPENS the file behind the caller's stderr — and a regular-file stderr
 # (`kbcard list 2>run.log`, how an agent logs) is re-opened O_TRUNC, so everything written
-# before the FIRST page fetch was destroyed. Clean on a pipe and on a tty, which is why no
-# other case here sees it: every one of them redirects to a fresh file.
+# before the FIRST page fetch was destroyed. Clean on a pipe and on a tty, where O_TRUNC is a
+# no-op — but that is NOT why no other case here sees it. Every one of them redirects to a
+# REGULAR file and was truncated on every call under the old code; they lost nothing only
+# because none of them WRITES to its stderr file before the first fetch. A new case that does
+# will need this same shape.
 #
 # Asserted on CONTENT and on the NUL COUNT, never on rc — the run stays rc 0 either way.
 # The failure is NUL-fill, not absence: the caller's next write lands at its OWN unchanged
