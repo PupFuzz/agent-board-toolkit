@@ -29,20 +29,26 @@
 # The offline max+1 scan — the FALLBACK for both modes — takes the max over BOTH:
 #   (1) `## DL-NNN` headers in CLAUDE_DECISIONS.md across every local checkout
 #       (so an in-flight DL on a worktree / held PR can't be reused), AND
-#   (2) the project's kanban board's stamped `dl_number`s, when reachable.
+#   (2) the project's kanban board's stamped `dl_number`s.
 # (2) closes the collision gap that caused the DL-154 reuse (board card #2643).
-# The board check is FAIL-SOFT ON ONE PAGINATOR rc ONLY — rc 1, "page 1 could not
-# be read", whose three causes are no response, a non-2xx status, and (card#6594) a
-# 2xx carrying no card array. All three warn and fall back to the header scan, never
-# blocking allocation offline — so a REACHABLE board answering 200 with a body this
-# tool cannot read also falls back, and the minted number can still miss that board's
-# floor; that residual is card#6631, named rather than closed. Paginator rc 2, 3 and
-# 4 — a read that was not WHOLE — do not fall back at all: they exit 1 rather than
-# mint from a partial scan (board_dl_max's own exit-code note below). NOTE: the offline
-# path is NOT atomic — safe for single-stream allocation; concurrent allocators
-# on a shared board need the claim endpoint (the default) to avoid duplicates —
-# and, per card#6232 above, it is a FLOOR rather than the truth: it cannot observe
-# a claimed-but-unstamped number, so it can only ever under-report.
+# A CONFIGURED BOARD THAT DOES NOT ANSWER A WHOLE READ REFUSES THE MINT (card#6631).
+# Every non-zero paginator rc — 1 as well as 2, 3 and 4 — exits 1 with the reason on
+# stderr instead of dropping that board's DL floor and minting from the header scan.
+# rc 1 ("page 1 could not be read": no response, a non-2xx status, or (card#6594) a 2xx
+# carrying no card array) used to fall back, and it was the worst rc to fail soft on —
+# rc 2/3/4 undercount from a read that at least partly happened, while rc 1 is the
+# branch on which NOTHING of the board was read, so its undercount is the maximal one.
+# That fallback existed to keep allocation working offline; the ruling on card#6631
+# withdrew offline allocation as a contract, so it is gone rather than narrowed.
+# WHAT STILL MINTS WITHOUT A BOARD, stated because it is the bound of that ruling: a
+# project with NO usable board config in this checkout — no curl/jq, no readable board
+# env, or a config kb_resolve_env refuses — still mints from the header scan alone,
+# because that is a resolve failure rather than a board that failed to answer
+# (resolve_board_cfg below, and board_dl_max's own exit-code note).
+# NOTE: the offline path is NOT atomic — safe for single-stream allocation; concurrent
+# allocators on a shared board need the claim endpoint (the default) to avoid
+# duplicates — and, per card#6232 above, it is a FLOOR rather than the truth: it cannot
+# observe a claimed-but-unstamped number, so it can only ever under-report.
 #
 # Minting numbers in the wrong (far-too-high) range? The board's DL counter is
 # stranded — recover it over the API: see docs/DL-COUNTER-RECOVERY.md.
@@ -247,24 +253,27 @@ for d in "${globs[@]}"; do
     [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
 done
 
-# (2) board-stamped dl_numbers (fail-soft).
+# (2) board-stamped dl_numbers — fail-soft only where no board is CONFIGURED; a
+# configured board that does not answer a whole read refuses the mint (card#6631).
 board_dl_max() (
     cfg="$(resolve_board_cfg)" || exit 1
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     tok="$(cat "$token_file")"
     # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
-    # truncated page 1 — via the shared fetch_board_cards. Exit-code policy
-    # (unchanged): a page-1 read failure (rc 1) is fail-soft (skip the board check);
-    # EVERY other non-zero rc — 2, 3 and 4, all three measured reaching the arm below —
-    # REFUSES (exit 2), because an undercount could re-mint a used DL. The two arms are
-    # worded per the rule at fetch_board_cards' header: the rc-1 arm is gated to one rc
-    # so it may name that rc's three causes; the arm below catches three rcs, so it
-    # names the rc and no cause. NB: even a complete scan is NON-ATOMIC;
-    # the atomic claim endpoint is the real fix on a shared board (reached here
-    # only when that endpoint is absent).
+    # truncated page 1 — via the shared fetch_board_cards. Exit-code policy: EVERY
+    # non-zero paginator rc REFUSES (exit 2), because an undercount could re-mint a
+    # used DL. rc 1 was the one exception until card#6631, and it was the worst rc to
+    # fail soft on — rc 2, 3 and 4 undercount from a read that at least happened, while
+    # rc 1 is the branch where nothing of the board was read at all, so its undercount
+    # is the maximal one. The two arms stay SPLIT for their wording, not their policy,
+    # per the rule at fetch_board_cards' header: the rc-1 arm is gated to one rc so it
+    # may name that rc's three causes; the arm below catches three rcs, so it names the
+    # rc and no cause. NB: even a complete scan is NON-ATOMIC; the atomic claim endpoint
+    # is the real fix on a shared board (reached here only when that endpoint is absent,
+    # unreachable, or answered a 2xx carrying no usable value — dl_sequence_call's rc 1).
     cards="$(fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
         rc=$?
-        [[ "$rc" -eq 1 ]] && { echo "next-dl: board $board could not be read (no response, a non-2xx status, or a 2xx carrying no card array) — skipping board check" >&2; exit 1; }
+        [[ "$rc" -eq 1 ]] && { echo "next-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board's DL floor and could re-mint a used DL)" >&2; exit 2; }
         echo "next-dl: board $board did not return a complete card list (fetch rc=$rc) — refusing to mint from a partial scan (could re-mint a used DL)" >&2
         exit 2
     }
@@ -274,12 +283,15 @@ board_dl_max() (
     # would reject a leaked >6-digit sentinel mid-stream).
     printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | max_int
 )
-# board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board read was
-# not whole (paginator rc 2, 3 or 4 — a later page failed, the page cap was hit, or the
-# server's meta.total exceeded the delivered rows) ⇒ fail loud, do not stamp (an
-# undercount could re-mint). 1 = page 1 could not be read (paginator rc 1 — no response,
-# a non-2xx status, or a 2xx carrying no card array) / no board configured ⇒
-# keep the original fail-soft posture (empty bmax ⇒ mint from the local sources below).
+# board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board did not
+# answer a whole read (EVERY non-zero paginator rc, 1 through 4) ⇒ fail loud, mint
+# nothing (an undercount could re-mint). 1 = no usable board config for this project
+# here — resolve_board_cfg found no curl/jq, no readable board env, or the config it
+# found was refused (a board-env KBCARD_API, no api_base, no board id, an unreadable
+# token file) ⇒ the fail-soft posture, empty bmax, mint from the local sources. This
+# branch is what card#6631's ruling did NOT scope: it is "no board is configured here",
+# not "a configured board failed to answer", and it is the only branch left on which a
+# mint proceeds without whatever floor a board holds.
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi

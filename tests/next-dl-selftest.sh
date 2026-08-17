@@ -248,4 +248,88 @@ eq "claim 500 → carries the claim's own consequence clause"    "true" "$(has '
 eq "claim 500 → does NOT borrow the peek's reasoning"          "false" "$(has 'claimed-but-unstamped' "$err")"
 eq "claim 500 → never falls through to the scan"    "0" "$(kb_stub_count_any "$SEARCH")"
 
+# --- a CONFIGURED board that cannot be read REFUSES the mint (card#6631) -----------------------
+# THE DEFECT, reproduced network-free: with the claim endpoint absent, next-dl fell through to the
+# offline max+1 scan, and a board read that returned NOTHING (paginator rc 1) was fail-soft — the
+# board's DL floor was dropped and the number was minted from the local CLAUDE_DECISIONS.md scan
+# alone. That is the maximal undercount of the four paginator failure rcs (rc 2/3/4 undercount
+# from a read that at least partly happened) and it is the one that fail-softed. The operator
+# ruling on card#6631 withdrew offline allocation as a contract, so rc 1 now refuses like 2/3/4.
+#
+# WHY THESE LEGS CAN FAIL, which is the whole reason for the local-floor fixture below. With no
+# checkout glob the offline scan finds nothing, and next-dl exits 1 with empty stdout on the
+# "no DL headers found" refusal — MEASURED identical to the fix on rc and on stdout (both rc 1,
+# both empty), differing only in the stderr line. Every rc/stdout assertion here would therefore
+# have passed against the unfixed binary, leaving the policy asserted by its message alone. A
+# local floor of DL-0300 makes the unfixed behaviour an observable MINT (DL-0301, since 300 >
+# the board's 219). Measured both ways before this block was trusted: reverting the arm to
+# `exit 1` reds 6 of these assertions, and restoring it byte-identically greens them.
+_ndl_checkout="$TMP/pm-checkout"
+mkdir -p "$_ndl_checkout"
+printf '## DL-0300 — a local header the offline scan will find\n' > "$_ndl_checkout/CLAUDE_DECISIONS.md"
+export KB_DL_CHECKOUT_GLOBS="$_ndl_checkout"
+
+# The claim endpoint is ABSENT throughout this block (404 ⇒ the benign fallback), so every run
+# below reaches the offline scan — which is the only path on which the board read is consulted.
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/dl-sequence/claim.json) printf '%s\n%s' 404 '{"message":"not found"}' ;;
+        "GET "*page=2*) printf '%s\n%s' "${NDL_PAGE2_HTTP:-200}" "${NDL_PAGE2_BODY:-{\"data\":[]\}}" ;;
+        "GET "*/tasks/search.json*) printf '%s\n%s' "${NDL_SEARCH_HTTP:-200}" "${NDL_SEARCH_BODY:-$NDL_BOARD_CARDS}" ;;
+    esac
+}
+export -f kb_stub_route
+
+echo "== CONTROL: the same fixture with a READABLE board still mints the offline floor =="
+# Pairs with every refusal below: it shows the fallback path is reachable, that the local floor
+# is live (301 = 300 + 1, a value only the header scan can supply), and that the change did not
+# turn a legitimate offline mint into a refusal.
+NDL_SEARCH_HTTP=200 NDL_SEARCH_BODY="$NDL_BOARD_CARDS" run_ndl --board dev
+eq "readable board → rc 0"                          "0" "$rc"
+eq "readable board → mints local-floor + 1"         "DL-0301" "$out"
+eq "readable board → the scan WAS consulted"        "1" "$(kb_stub_count_any "$SEARCH")"
+
+echo "== page 1 non-2xx (paginator rc 1) → REFUSE, do not mint from the local floor =="
+NDL_SEARCH_HTTP=500 NDL_SEARCH_BODY='{"message":"boom"}' run_ndl --board dev
+eq "page-1 500 → rc 1"                              "1" "$rc"
+eq "page-1 500 → mints NOTHING"                     ""  "$out"
+eq "page-1 500 → does not answer from the local floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "page-1 500 → says the board could not be read at all" "true" "$(has 'could not be read at all' "$err")"
+eq "page-1 500 → says it is refusing"               "true" "$(has 'refusing to mint from the local scan alone' "$err")"
+eq "page-1 500 → does NOT claim it skipped the board check" "false" "$(has 'skipping board check' "$err")"
+
+echo "== page 1 is a 2xx carrying no card array (card#6594's cause, same rc 1) → REFUSE =="
+# The cause that made this residual worth closing: a REACHABLE board answering 200 with a proxy's
+# HTML error page. Distinct input, same arm — asserted separately because a fix keyed on the
+# status alone would pass the 500 leg above and still mint here.
+NDL_SEARCH_HTTP=200 NDL_SEARCH_BODY='<html><head><title>502 Bad Gateway</title></head><body>502</body></html>' run_ndl --board dev
+eq "200 + <html>502</html> → rc 1"                  "1" "$rc"
+eq "200 + <html>502</html> → mints NOTHING"         ""  "$out"
+eq "200 + <html>502</html> → does not answer from the local floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "200 + <html>502</html> → names the rc-1 causes"  "true" "$(has 'a 2xx carrying no card array' "$err")"
+
+echo "== a LATER page failing (paginator rc 2) still refuses, in its OWN words =="
+# Unchanged behaviour, asserted here because the two arms now share one policy and differ only in
+# wording: collapsing them would lose the cause set rc 1 alone is entitled to name, and the
+# fetch-board-cards-caller-claims registry would no longer describe the tree.
+NDL_SEARCH_BODY="$(jq -nc '{"data":[range(200)|{id:.,payload:{dl_number:219}}],"meta":{"total":400}}')" \
+NDL_PAGE2_HTTP=500 NDL_PAGE2_BODY='{"message":"boom"}' run_ndl --board dev
+eq "page-2 500 → rc 1"                              "1" "$rc"
+eq "page-2 500 → mints NOTHING"                     ""  "$out"
+eq "page-2 500 → names the rc, not a cause"         "true" "$(has 'did not return a complete card list (fetch rc=2)' "$err")"
+eq "page-2 500 → keeps the partial-scan wording"    "true" "$(has 'refusing to mint from a partial scan' "$err")"
+eq "page-2 500 → does not borrow the rc-1 arm's causes" "false" "$(has 'could not be read at all' "$err")"
+
+echo "== an UNCONFIGURED board is NOT a board that failed to answer — it still mints =="
+# The stated bound of card#6631's ruling. With no resolvable board env, resolve_board_cfg fails
+# and board_dl_max exits 1 (not 2), so the local floor still mints. If this ever reds, the
+# refusal has widened past the ruling and every board-less checkout has lost its allocator.
+run_ndl --board nosuchboard
+eq "no board env → rc 0"                            "0" "$rc"
+eq "no board env → mints local-floor + 1"           "DL-0301" "$out"
+eq "no board env → says it is skipping the board check" "true" "$(has 'skipping board check' "$err")"
+eq "no board env → never reached the API"           "0" "$(kb_stub_total)"
+
+unset KB_DL_CHECKOUT_GLOBS
+
 _summary "next-dl-selftest"

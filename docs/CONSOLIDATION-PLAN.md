@@ -719,9 +719,16 @@ finding with no owner is abandoned, not filed.
   consumer.** Measured on the shipped bins against a `200` carrying `<html>502</html>`: `kbcard list`
   and `dl-a0-backfill-triaged` abort, `board-snapshot` prints `(board read failed — fetch rc=1)`,
   `board-stats` marks the stock section unavailable, `board-card-start` skips the move, `next-dl`
-  warns and keeps its documented rc-1 fail-soft, so it announces the dropped DL floor rather than
-  refusing — **that residual is card#6631** (board 12, Backlog, triaged), which carries the
-  measurement and three options with a recommendation, and is not a parenthetical here — and
+  warned and kept its documented rc-1 fail-soft, so it announced the dropped DL floor rather than
+  refusing — **that residual was card#6631** (board 12), and it is now CLOSED at the caller: on the
+  operator's ruling (*"I don't want next-dl to offer offline allocation as a contract"*) `next-dl`
+  refuses on rc 1 as it already did on rc 2/3/4, so the maximal-undercount branch is no longer the
+  one that fail-softs. It was closed WITHOUT separating rc 1's three causes — the expensive option,
+  since a new paginator rc reaches the six consumer bins and eight invocations this registry test
+  derives, plus the test itself: the ruling removed the requirement that separation existed to
+  serve, because refusing all three causes is no longer a cost to avoid. What survives
+  is a stated bound, not a residual with a card — a checkout with NO board configured (a
+  `resolve_board_cfg` failure, not a paginator rc) still mints from the local header scan.
   `kbcard archive` substitutes `[]` for the twin census. That last one was recorded here as safe *by contract rather than by
   measurement*; it has since been measured — the same card with `surviving_cards: []` returns
   `blocked … no surviving twin — archive withheld (fail-closed)` where the populated census returns

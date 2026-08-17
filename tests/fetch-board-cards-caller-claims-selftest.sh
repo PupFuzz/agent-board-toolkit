@@ -141,7 +141,7 @@ bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list
 bin/board-snapshot\tmany\t• ${label}: (board read failed — fetch rc=$rc)
 bin/board-stats\tmany\tcard snapshot INCOMPLETE (fetch rc=$rc) — every stock count below is a floor, not a total
 bin/board-stats\tmany\tcard snapshot unavailable (fetch rc=$rc) — this board\'s stock section is missing
-bin/next-dl\tone\tnext-dl: board $board could not be read (no response, a non-2xx status, or a 2xx carrying no card array) — skipping board check
+bin/next-dl\tone\tnext-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board\'s DL floor and could re-mint a used DL)
 bin/next-dl\tmany\tnext-dl: board $board did not return a complete card list (fetch rc=$rc) — refusing to mint from a partial scan (could re-mint a used DL)
 bin/dl-a0-backfill-triaged\tmany\t$KB_PROG: board $KB_BOARD_ID did not return a complete card list (fetch rc=$fetch_rc) — aborting (no partial backfill)
 bin/board-card-start\tmany\tboard $board did not return a complete card list (fetch rc=$?)'
