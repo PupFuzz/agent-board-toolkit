@@ -1756,12 +1756,14 @@ for _verb in create-card patch; do
     eq "$_L unreadable → via the cat fallback"        "true" "$(has 'could not be read' "$err")"
     eq "$_L unreadable → issues no request"           "0" "$(kb_stub_total)"
 
-    # `-` is refused by name rather than falling into "not readable": there is no stdin route
+    # `-` is refused BY NAME rather than falling into "not readable": `-` is not a stdin token
+    # here. The assertion is on the TOKEN claim, deliberately not on "never reads stdin" — that
+    # would be a false absolute, since `--…-file /dev/stdin` is a readable path and does work.
     # here, and the old message named the wrong problem. Acceptance is unchanged — `-` never
     # worked — so this is the diagnostic, asserted by its own wording.
     ta "$_verb" "$_field" "$_ff" -
     eq "$_L - → rc 2"                                 "2" "$rc"
-    eq "$_L - → says there is no stdin route"         "true" "$(has 'never reads stdin' "$err")"
+    eq "$_L - → names the token, not a stdin ban"     "true" "$(has "'-' is not a stdin token" "$err")"
     eq "$_L - → issues no request"                    "0" "$(kb_stub_total)"
 
     ta "$_verb" "$_field" "$_ff" "$TMP/blank.txt"
@@ -1821,7 +1823,7 @@ eq "…and issues no request"                          "0" "$(kb_stub_total)"
 # out of it would be a divergence, and this is the leg that would see it.
 kbc comment --task 505 --content-file -
 eq "comment --content-file - → rc 2"                 "2" "$rc"
-eq "…says there is no stdin route"                   "true" "$(has 'never reads stdin' "$err")"
+eq "…names the token, not a stdin ban"               "true" "$(has "'-' is not a stdin token" "$err")"
 eq "…and issues no request"                          "0" "$(kb_stub_total)"
 
 unset -f kb_stub_route ta ta_wire

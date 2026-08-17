@@ -13,7 +13,7 @@
 #   command on this box, and argv already holds its output by the time kbcard looks. Nothing here
 #   can detect that, which is why this is a convention with a safe route and not a validator: a
 #   file is read by kbcard itself and never meets a shell.
-#   A --…-file takes a PATH. `-` is refused (there is no stdin route), and a missing, unreadable
+#   A --…-file takes a PATH. `-` is refused by name (it is not a stdin token here), and a missing, unreadable
 #   or text-free (empty / whitespace-only) file is rc 2 BEFORE any request, so a bad invocation
 #   costs no traffic. What a file puts on the wire: interior newlines and leading whitespace
 #   verbatim, TRAILING newlines trimmed, CRLF normalized to LF (a file written on Windows/Git-Bash
@@ -547,7 +547,9 @@ _kbc_require_ext_id() {
 # time anything here can look. No validator can see the unsafe case — that is why this is a
 # documented convention plus a safe route, and not a check. `--<flag>-file` is the safe route: the
 # bytes are read by this process and never meet a shell. `-` is refused rather than silently
-# treated as stdin: there is no stdin route here, and "not readable: -" named the wrong problem.
+# treated as stdin: `-` is not a stdin token here, and "not readable: -" named the wrong problem.
+# The claim is about the TOKEN, not about the descriptor — a caller who genuinely wants stdin passes
+# the path `/dev/stdin`, which is a readable path like any other and works.
 #
 # <require-verb> IS THE POLICY KNOB (ground rule 5 of docs/CONSOLIDATION-PLAN.md — mechanism in
 # the primitive, policy at the caller), and it decides two things at once:
@@ -584,7 +586,7 @@ _kbc_text_arg() {
     fi
     if [[ -n "$_ta_file" ]]; then
         [[ "$_ta_file" != "-" ]] || {
-            echo "kbcard: --$_ta_flag-file takes a PATH and never reads stdin — pass a file, not '-'" >&2
+            echo "kbcard: --$_ta_flag-file takes a PATH and '-' is not a stdin token here — pass a path (/dev/stdin if you mean stdin)" >&2
             return 2
         }
         [[ -r "$_ta_file" ]] || { echo "kbcard: --$_ta_flag-file is not readable: $_ta_file" >&2; return 2; }
