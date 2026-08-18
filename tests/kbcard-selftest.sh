@@ -1830,4 +1830,223 @@ unset -f kb_stub_route ta ta_wire
 unset TA_CARD TA_INJ TA_INJ_JSON TA_METHOD TA_PATH
 
 # ---------------------------------------------------------------------------
+echo "== search — the free-text verb, and the DESCRIPTION it exists to print (card#6771) =="
+# THE GAP: the board's search endpoint has always matched name + description and returned the
+# whole card, but no verb surfaced it — so the only board-wide read was `list`, whose nine-field
+# projection drops `description`. A grep for a phrase in a card BODY through `list` therefore
+# answered 0 no matter what the board held. The load-bearing property of this verb is that the
+# field it MATCHED ON is the field it PRINTS; a result that hid it would move the same miss one
+# layer over rather than close it.
+#
+# The server-side semantics asserted here are only the ones the CLIENT owes: that the query
+# reaches the wire as one encoded term inside this board's `q=`. WHICH cards match is the
+# server's rule (MATCH-in-boolean-mode vs a substring LIKE, decided there by driver and token
+# length) and a stub cannot witness it — a test that faked it would be asserting on its own
+# fixture. Read the parser, not this file, for that half.
+
+# The renderer is pure, so it is asserted on synthetic cards first.
+SR_MULTI='[{"id":7,"workflow_stage_id":48,"name":"probe card","description":"line one\nline two"}]'
+eq "render: a hit is a header line + its description, EVERY line indented" \
+   "$(printf 'card 7 · stage 48 · probe card\n  line one\n  line two')" \
+   "$(printf '%s' "$SR_MULTI" | _kbc_search_render)"
+# The whole point, asserted as an equality on the description text rather than on a line count:
+# a renderer that printed only the first line, or a truncation of it, still prints A block.
+eq "render: the description arrives WHOLE, not a first line or a summary" "true" \
+   "$(has 'line two' "$(printf '%s' "$SR_MULTI" | _kbc_search_render)")"
+eq "render: two hits are two blocks" "2" \
+   "$(printf '%s' '[{"id":1,"name":"a","description":"x"},{"id":2,"name":"b","description":"y"}]' \
+      | _kbc_search_render | /usr/bin/grep -c '^card ')"
+# A card that matched on its NAME and has no body says so in words: an empty indented block
+# reads as a rendering fault, i.e. exactly like the dropped field this verb exists to restore.
+eq "render: a card with no description SAYS so rather than printing an empty block" \
+   "$(printf 'card 3 · stage 48 · titled only\n  (no description)')" \
+   "$(printf '%s' '[{"id":3,"workflow_stage_id":48,"name":"titled only"}]' | _kbc_search_render)"
+eq "render: an explicitly null description is the same answer" \
+   "$(printf 'card 4 · stage ? · n\n  (no description)')" \
+   "$(printf '%s' '[{"id":4,"name":"n","description":null}]' | _kbc_search_render)"
+# A description is UNTRUSTED text printed to a terminal, and it reaches the same shared C0
+# sanitizer the comment renderer uses: `ESC[2K ESC[1A` in a card body would otherwise erase the
+# `card <id>` line above it — the line that says which card the text came from.
+eq "render: an ESC in the DESCRIPTION is neutralized" \
+   "$(printf 'card 5 · stage ? · n\n  ?[2K?[1Abody')" \
+   "$(jq -nc --arg e "$(printf '\033')" '[{id:5,name:"n",description:($e + "[2K" + $e + "[1Abody")}]' \
+      | _kbc_search_render)"
+# …and the header line's own fields come from the same untrusted body, under the STRICTER
+# filter: a newline in a card NAME would forge a second `card N · …` block, which indented
+# content can never do.
+eq "render: a NEWLINE in the card NAME cannot forge a second block" "1" \
+   "$(jq -nc '[{id:6,name:"n\ncard 99 · stage 1 · impostor",description:"b"}]' \
+      | _kbc_search_render | /usr/bin/grep -c '^card ')"
+eq "render: a TAB in the description survives (it cannot move the cursor backward)" \
+   "$(printf 'card 8 · stage ? · n\n  col1\tcol2')" \
+   "$(jq -nc '[{id:8,name:"n",description:"col1\tcol2"}]' | _kbc_search_render)"
+# TOTAL, not gated: a description that is not a string renders as its JSON text instead of
+# dying at jq's rc 5 PART WAY THROUGH the blocks and handing back a truncated result.
+rc=0; out="$(printf '%s' '[{"id":9,"name":"n","description":{"oops":1}},{"id":10,"name":"m","description":"after"}]' \
+             | _kbc_search_render 2>/dev/null)" || rc=$?
+eq "render: a non-string description does not kill the render"        "0" "$rc"
+eq "render: …and the block AFTER it is still printed"                 "true" "$(has 'card 10' "$out")"
+
+# --- process-level: the real paginator + kb_api, over a faked kanban ---------
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49' 'export KB_TYPE_FR=7'
+# Resolved BEFORE the stub PATH exists, so it names the real jq and not a stand-in.
+KB_JQ_REAL="$(command -v jq)"; export KB_JQ_REAL
+kb_stub_install
+
+# One page of 200 rows is what makes the paginator ask for a second page — the only way to
+# reach the mid-pagination rc from outside.
+KBS_FULL_PAGE="$(jq -nc '{data:[range(200)|{id:(.+1000),workflow_stage_id:48,name:"bulk",description:"bulk body"}],meta:{last_page:2,total:400}}')"
+KBS_HITS_BODY='{"data":[{"id":501,"workflow_stage_id":48,"card_type_id":7,"name":"deploy hook card","description":"first line\nsecond line"},{"id":502,"workflow_stage_id":49,"card_type_id":null,"name":"other","description":"other body"}],"links":{},"meta":{"last_page":1,"total":2}}'
+export KBS_FULL_PAGE KBS_HITS_BODY
+kb_stub_route() {
+    local method="$1" url="$2" page
+    page="${url##*page=}"; page="${page%%&*}"
+    case "$method $url" in
+        "GET "*/tasks/search.json*)
+            case "${KBS_SCENARIO:-hits}" in
+                hits)      printf '200\n%s' "$KBS_HITS_BODY" ;;
+                empty)     printf '200\n{"data":[],"links":{},"meta":{"last_page":1,"total":0}}' ;;
+                page1fail) printf '403\n{"message":"token lacks board scope"}' ;;
+                page2fail) if [[ "$page" == "1" ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
+                           else printf '500\n{"message":"upstream exploded"}'; fi ;;
+                pagecap)   printf '200\n%s' "$KBS_FULL_PAGE" ;;
+                shortread) printf '200\n{"data":[{"id":1,"name":"a","description":"x"}],"meta":{"last_page":1,"total":3}}' ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+# The URL field of the one search request, for the wire assertions.
+sq_url() { kb_stub_lines GET '/tasks/search.json' | cut -f2; }
+
+echo "-- search: the query reaches the wire as ONE encoded term inside this board's q= --"
+kbc search 'deploy hook'
+eq "search → rc 0"                                   "0" "$rc"
+eq "search → exactly one request"                    "1" "$(kb_stub_total)"
+# board_id FIRST and the term after it: the board scope is this tool's, not the caller's, and a
+# caller's own board_id token is ANDed with it rather than replacing it.
+eq "search → q carries board_id then the term, space-encoded" "true" \
+   "$(has 'q=board_id=42%20deploy%20hook&' "$(sq_url)")"
+eq "search → still the whole-board page size and page 1"      "true" \
+   "$(has 'limit=200&page=1' "$(sq_url)")"
+# A term carrying an `&` must not become a second query parameter — the encode is what stops a
+# search string from retargeting the read.
+kbc search 'a&b c'
+eq "search → an & in the term is encoded, not a new parameter" "true" \
+   "$(has 'q=board_id=42%20a%26b%20c&' "$(sq_url)")"
+eq "search → …so the request still carries exactly one q"      "1" \
+   "$(sq_url | /usr/bin/grep -o 'q=' | /usr/bin/grep -c 'q=')"
+
+echo "-- search: THE LOAD-BEARING LEG — the hit prints the FULL description --"
+kbc search 'deploy hook'
+eq "a hit prints its card header"                    "true" "$(has 'card 501 · stage 48 · deploy hook card' "$out")"
+eq "a hit prints the description's FIRST line"       "true" "$(has '  first line' "$out")"
+# The second line is the assertion a first-line-only or truncating render cannot pass, and the
+# one that reds when `list`'s projection (which drops description entirely) is substituted.
+eq "a hit prints the description's SECOND line too"  "true" "$(has '  second line' "$out")"
+eq "…one block per matched card"                     "2" "$(/usr/bin/grep -c '^card ' <<<"$out")"
+eq "…and nothing about it goes to stderr"            ""  "$err"
+
+echo "-- search: a multi-word query is ONE term, both words on the wire --"
+kbc search 'deploy hook'
+eq "both words ride in the same q term"              "true" "$(has 'deploy%20hook' "$(sq_url)")"
+eq "…and neither becomes its own parameter"          "1" "$(kb_stub_total)"
+
+echo "-- search: zero hits exits cleanly and SAYS so --"
+KBS_SCENARIO=empty kbc search 'nothing matches this'
+eq "no hits → rc 0"                                  "0" "$rc"
+eq "no hits → an explicit line, not a silent empty stdout" "true" \
+   "$(has 'no card on board 42 matched this search' "$out")"
+eq "no hits → no card block is printed"              "0" "$(/usr/bin/grep -c '^card ' <<<"$out" || true)"
+
+echo "-- search: the refusals decided offline, each costing no traffic --"
+kbc search
+eq "no query → rc 2"                                 "2" "$rc"
+eq "…names what the verb takes"                      "true" "$(has 'search requires a query' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search ""
+eq "an EMPTY query → rc 2 (the unexpanded-variable class)" "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+# A whitespace-only term is not a narrow search: the server trims the q value, finds no token,
+# and answers the WHOLE BOARD — which this verb would print as matches, every description
+# included. That is the widest wrong answer available here, so it is refused before the wire.
+kbc search '   '
+eq "a whitespace-only query → rc 2"                  "2" "$rc"
+eq "…says why (it would match every card)"           "true" "$(has 'matches every card' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search one two
+eq "a second positional → rc 2"                      "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search x --column no-such-column
+eq "an unknown --column → rc 2 through the shared resolver" "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+echo "-- search: --column / --type filter the match set and name their denominator --"
+kbc search 'deploy hook' --column backlog
+eq "--column → rc 0"                                 "0" "$rc"
+eq "--column keeps the matching card"                "true" "$(has 'card 501' "$out")"
+eq "--column drops the other one"                    "false" "$(has 'card 502' "$out")"
+eq "--column names the denominator on stderr"        "true" "$(has 'search --column backlog: 1 of 2 cards matched by the query' "$err")"
+kbc search 'deploy hook' --type fr
+eq "--type resolves through the board's native id"   "true" "$(has 'card 501' "$out")"
+eq "--type drops the untyped card"                   "false" "$(has 'card 502' "$out")"
+# A filter that removes every match is a DIFFERENT answer from a query that matched nothing,
+# and saying the first for the second sends a caller hunting the wrong thing.
+kbc search 'deploy hook' --column in_progress --type fr
+eq "filtered to nothing → rc 0"                      "0" "$rc"
+eq "…says the query DID match, and the flags removed them" "true" \
+   "$(has 'the query matched 2 card(s) on board 42, none of which passed the filter flags' "$out")"
+eq "…and does not claim the board holds no match"    "false" "$(has 'no card on board 42 matched' "$out")"
+
+echo "-- search: an INCOMPLETE read is a refusal, never a partial answer presented as whole --"
+# THE mid-pagination case (card#6630): page 1 delivers a full 200 rows, page 2 fails. The
+# paginator returns rc 2 and emits nothing; the verb must not print the 200 cards it does have.
+KBS_SCENARIO=page2fail kbc search 'bulk'
+eq "page 2 unreadable → rc 1"                        "1" "$rc"
+eq "…NOT ONE card block reaches stdout"              "0" "$(/usr/bin/grep -c '^card ' <<<"$out" || true)"
+eq "…stdout is empty entirely"                       ""  "$out"
+eq "…the refusal names the paginator's rc"           "true" "$(has 'did not return a complete card list for this search (fetch rc=2)' "$err")"
+eq "…and says it is refusing a partial answer"       "true" "$(has 'refusing to present a partial match set as a whole one' "$err")"
+eq "…both pages really were attempted"               "2" "$(kb_stub_count_any '/tasks/search.json')"
+# The other four paginator outcomes reach the same arm — this is the measurement behind the
+# `rc 1,2,3,4,5` arity registered in tests/fetch-board-cards-caller-claims-selftest.sh.
+KBS_SCENARIO=page1fail kbc search 'bulk'
+eq "page 1 unreadable → rc 1"                        "1" "$rc"
+eq "…naming fetch rc=1"                              "true" "$(has '(fetch rc=1)' "$err")"
+eq "…with empty stdout"                              ""  "$out"
+KBS_SCENARIO=pagecap BOARD_PAGE_CAP=1 kbc search 'bulk'
+eq "the page cap → rc 1"                             "1" "$rc"
+eq "…naming fetch rc=3"                              "true" "$(has '(fetch rc=3)' "$err")"
+eq "…with empty stdout, though the paginator emitted its partial array" "" "$out"
+KBS_SCENARIO=shortread kbc search 'bulk'
+eq "a short read → rc 1"                             "1" "$rc"
+eq "…naming fetch rc=4"                              "true" "$(has '(fetch rc=4)' "$err")"
+eq "…with empty stdout"                              ""  "$out"
+
+echo "-- search: an unencodable term is refused BEFORE any request (fetch rc 5) --"
+# The one paginator rc only a search can reach. It is unreachable from any query string (a
+# non-empty term always has a non-empty @uri), so the seam is a jq that fails exactly the
+# `@uri` call and passes everything else through — see tests/_kb-jq-uri-fail-stub.sh.
+cp "$HERE/_kb-jq-uri-fail-stub.sh" "$TMP/bin/jq"
+chmod +x "$TMP/bin/jq"
+kbc search 'deploy hook'
+eq "an unencodable term → rc 1"                      "1" "$rc"
+eq "…naming fetch rc=5"                              "true" "$(has '(fetch rc=5)' "$err")"
+# The property that makes rc 5 worth its own rc: NOTHING was asked of the server. A dropped
+# encode would instead have sent the bare board_id read — the whole board, answered as the
+# match set.
+eq "…and NO request was issued at all"               "0" "$(kb_stub_total)"
+eq "…the paginator says why on stderr"               "true" "$(has 'could not be encoded' "$err")"
+rm -f "$TMP/bin/jq"
+# The control that says the stub, not the code, is what those three assertions measured.
+kbc search 'deploy hook'
+eq "control: with the real jq back, the same call is rc 0 again" "0" "$rc"
+eq "control: …and issues its request"                "1" "$(kb_stub_total)"
+
+unset -f kb_stub_route sq_url
+unset KBS_SCENARIO KBS_FULL_PAGE KBS_HITS_BODY SR_MULTI KB_JQ_REAL
+
+# ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

@@ -72,7 +72,9 @@
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
 #     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
 #     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
-#     no matter what the board holds. `show` returns a card whole; use it for the rest.
+#     no matter what the board holds. `show` returns a card whole; use it for the rest —
+#     and use `search` to hunt a card BY its body, which is the question a grep over this
+#     projection cannot answer at all.
 #     `type` is the NATIVE card_type_id — null on every row of an all-tag board (and on
 #     a mixed board's tag-typed cards), where the type rides `tags` as `type:<alias>`.
 #     So select on `tags` there, not on `type`: `--type <alias>` matches those cards but
@@ -85,6 +87,37 @@
 #     board cards matched` — the denominator a filtered result otherwise hides, so an
 #     empty answer is distinguishable from an empty board. stdout is unchanged (still
 #     just the array). Unfiltered, nothing is printed: the array's length IS N.
+#   kbcard search <query> [--column COL] [--type TYPE]
+#     READ: the server's own free-text search over this board, printed as one BLOCK per hit —
+#     a `card <id> · stage <sid> · <name>` header line, then the card's FULL description
+#     indented two spaces on every line (a card with no description says so in words).
+#     THIS IS THE VERB FOR FINDING A CARD BY WHAT ITS BODY SAYS. `list` projects a fixed
+#     field set that excludes `description`, so grepping a card body through it answers 0
+#     whatever the board holds; this prints the field the search matched on.
+#     <query> is the endpoint's own `q=` token stream, sent AFTER this board's `board_id=`
+#     term — which it cannot override, since a second board_id token is ANDed with the first,
+#     not swapped for it. So: bare words are free text over `name` + `description`, the
+#     field-scoped `name:<needle>` / `description:<needle>` narrow to one column, and the
+#     rest of the DSL rides through unchanged (`tags:"x"`, `comments_count>=1`,
+#     `updated_at>:2026-08-01`, `custom_field_<key>:v`). A token the server does not
+#     recognise is not refused — it falls through and is searched as free text.
+#     HOW A FREE-TEXT WORD MATCHES IS THE SERVER'S RULE, not this tool's, and it is not one
+#     rule: on the MariaDB instance each word is required and matched as a PREFIX through the
+#     FULLTEXT index (so `cat` reaches `category`, not `concatenate`), while a query carrying
+#     any word shorter than the index's minimum token length (the server pins that at 3, which is
+#     MariaDB's default) falls back to a literal substring match of the WHOLE term — which is a
+#     PHRASE, not an AND of words. If a multi-word query surprises you, suspect that fallback
+#     first (measured live: `pagination` matched 5 cards on a real board, `a pagination` matched 0).
+#     COMMENT TEXT IS NOT SEARCHED: this endpoint's free text is name + description only, and
+#     `comments_count<op>N` filters on the COUNT, never the content.
+#     --column / --type filter the matched set client-side exactly as on `list`, and add the
+#     same `<M> of <N>` stderr denominator. A search that matched nothing prints one explicit
+#     line at rc 0 — never a silent empty stdout — and says separately when the query DID
+#     match cards that the filter flags then removed. A blank/whitespace-only query is rc 2
+#     before any request: it matches every card on the board, which is not a search.
+#     An incomplete board read is rc 1 with no blocks printed: a match set missing whatever
+#     was on the page that failed reads as "not on the board", which is a wrong answer, not a
+#     short one.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
@@ -955,18 +988,18 @@ cmd_patch() {
     _kbc_write_echo patch "on task $task" "$resp" "$echo_extra"
 }
 
-# _kbc_list_project <stage_filter> <type_filter> <typetag> <swimlane_filter>:
-# the pure jq projection+filter for `list`, reading the whole-board card array on
-# STDIN. Each filter arg is "" for absent. Extracted from cmd_list so it is unit-
-# testable on synthetic cards (board 12 has no swimlanes to exercise live).
+# _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure
+# client-side SELECT over a card array on STDIN — the cards that pass, WHOLE and
+# unprojected. Each filter arg is "" for absent, and an all-absent call passes every card through.
+# Extracted at the SECOND caller (canon #5): `list` projects its ten fields off it and
+# `search` renders the description off it, and a divergence between two copies of these
+# clauses would be a card matching one verb's --type and not the other's.
 #   --type resolves per alias by board capability: a NATIVE id ($type != null)
 #   matches card_type_id; otherwise ($type == null — all-tag/mixed/KB_TYPING_MODE)
 #   the `type:<alias>` tag. The two clauses are MUTUALLY EXCLUSIVE — gating the tag
 #   clause on $type == null avoids (a) an all-tag board matching every null-typed
 #   card and (b) a native board surfacing a card carrying a stray type:<alias> tag.
-#   swimlane_id / swimlane are surfaced on every row; the name resolves through the
-#   env map (null when the card has no lane or the board doesn't map that id). The
-#   swimlane FILTER keys on the STRINGIFIED id — unlike the numeric stage/type
+#   The swimlane FILTER keys on the STRINGIFIED id — unlike the numeric stage/type
 #   filters, whose id types are verified by the working --column path — because no
 #   board reachable here populates swimlanes, so the API's swimlane_id JSON type
 #   (number vs string) is unverifiable; stringifying both sides matches either and
@@ -979,34 +1012,49 @@ cmd_patch() {
 #   from "filter on laneless" ("null") — collapsing those two is the trap this filter
 #   exists to avoid, since a laneless filter that reads as absent returns the WHOLE
 #   BOARD while looking correct (see _kbc_swimlane_is_laneless_ref's callers).
-#   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
-#   a downstream `grep`/`jq select` over a field this projection drops gets a confident
-#   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
-#   dependabot cards" while `show` returned the very tag it was looking for). `tags` and
-#   `external_id` therefore ride every row — tags carry the whole `id:<sid>` provenance
-#   namespace and the `type:*` fallback this same function already filters on, and
-#   external_id is the per-board sync id, i.e. the two identity surfaces a card is
-#   actually hunted by. `description` is deliberately NOT projected: it is unbounded
-#   free text on every row of a whole-board read, and the bound matters more here than
-#   on `show`, which returns one card. Absent tags project as [] (not null) — the same
-#   normalization the type filter above applies, so the filter and the emitted value can
-#   never disagree about what a card is tagged.
-_kbc_list_project() {
+_kbc_card_filter() {
     local stage_filter="$1" type_filter="$2" typetag="$3" swimlane_filter="$4"
-    local swmap; swmap="$(_kbc_swimlane_map)"
     jq \
         --argjson stage "${stage_filter:-null}" \
         --argjson type "${type_filter:-null}" \
         --arg typetag "$typetag" \
         --arg swim "${swimlane_filter:-}" \
-        --argjson swmap "$swmap" \
         '(. // [])
          | map(select(($stage == null or .workflow_stage_id == $stage)
                 and ($typetag == ""
                      or ($type != null and .card_type_id == $type)
                      or ($type == null and ((.tags // []) | index($typetag)) != null))
-                and ($swim == "" or ((.swimlane_id // null) | tostring) == $swim)))
-         | map(.payload = (if (.payload | type) == "object" then .payload else {} end))
+                and ($swim == "" or ((.swimlane_id // null) | tostring) == $swim)))'
+}
+
+# _kbc_list_project <stage_filter> <type_filter> <typetag> <swimlane_filter>: `list`'s
+# fixed row projection, over the cards _kbc_card_filter above selected from STDIN. Same
+# argument list, passed straight through — the filter half is that function's, and this
+# one owns only what a row LOOKS like. Extracted from cmd_list so it is unit-testable on
+# synthetic cards (board 12 has no swimlanes to exercise live).
+#   swimlane_id / swimlane are surfaced on every row; the name resolves through the
+#   env map (null when the card has no lane or the board doesn't map that id).
+#   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
+#   a downstream `grep`/`jq select` over a field this projection drops gets a confident
+#   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
+#   dependabot cards" while `show` returned the very tag it was looking for). `tags` and
+#   `external_id` therefore ride every row — tags carry the whole `id:<sid>` provenance
+#   namespace and the `type:*` fallback the filter above already keys on, and
+#   external_id is the per-board sync id, i.e. the two identity surfaces a card is
+#   actually hunted by. `description` is deliberately NOT projected: it is unbounded
+#   free text on every row of a whole-board read, and the bound matters more here than
+#   on `show`, which returns one card. That bound is why hunting a card BY ITS BODY is
+#   the `search` verb's job and not a wider projection here — search's population is the
+#   server's match set, so it prints each hit's description in full without ever putting
+#   a whole board's free text on stdout. Absent tags project as [] (not null) — the same
+#   normalization the type filter applies, so the filter and the emitted value can
+#   never disagree about what a card is tagged.
+_kbc_list_project() {
+    local swmap; swmap="$(_kbc_swimlane_map)"
+    _kbc_card_filter "$1" "$2" "$3" "$4" \
+      | jq \
+        --argjson swmap "$swmap" \
+        'map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
                 swimlane_id: (.swimlane_id // null),
                 swimlane: ($swmap[((.swimlane_id // null) | tostring)] // null),
@@ -1245,6 +1293,30 @@ cmd_comment() {
     printf '%s\n' "$cid"
 }
 
+# The C0 sanitizer the untrusted-text renderers share, as a jq prelude concatenated onto each
+# program. TWO filters, because a renderer's two halves are not equally forgeable:
+#   c0_safe   — every C0 control but LF and TAB becomes `?`. For CONTENT that a renderer prints
+#               INDENTED: the newline is exempt because it is the structure the renderer reads
+#               (it drives the indent-every-line split), and the tab because it cannot move the
+#               cursor BACKWARD — it only advances to the next tab stop — while replacing it
+#               damages every pasted diff, log line or indented block the text carries.
+#   c0_header — every C0 control becomes `?`, LF and TAB included. For a HEADER line assembled
+#               from response fields: nothing there is structure, so an unindented newline mints
+#               a whole extra block, i.e. a FORGED attribution, which is what indented content
+#               can never do. Applied to the ASSEMBLED line rather than per field, because ids
+#               arrive as numbers and `explode` on a number is a jq error.
+# The hazard both exist for: an embedded ESC is a terminal command, and `ESC[2K ESC[1A` erases
+# the line above the text — i.e. the rendered text can rewrite the part of the output that says
+# which card or comment it came from.
+# Done by CODEPOINT rather than a `gsub` character class, because the obvious spelling of that
+# class is silently wrong here: jq hands the pattern to Oniguruma, which does NOT read `\uXXXX`
+# (jq-1.7 measured), so `gsub("[\\u0000-\\u001f]"; …)` degenerates into a class over the
+# literal characters and replaces ordinary printable text while leaving the ESC untouched —
+# a sanitizer that damages the safe input and passes the dangerous one.
+_KBC_C0_DEFS='
+      def c0_safe: explode | map(if . < 32 and . != 10 and . != 9 then 63 else . end) | implode;
+      def c0_header: explode | map(if . < 32 then 63 else . end) | implode;'
+
 # _kbc_comments_render: the projection for a comments ARRAY on STDIN — one block per comment,
 # a header line then the content indented two spaces on EVERY line (content is stored
 # verbatim, multi-line included, and an unindented second line would read as a new comment).
@@ -1269,15 +1341,8 @@ cmd_comment() {
 # every C0 control, newline and tab included. Applied to the ASSEMBLED line rather than per
 # field because id/user_id arrive as numbers and `explode` on a number is a jq error.
 #
-# Done by CODEPOINT rather than a `gsub` character class, because the obvious spelling of that
-# class is silently wrong here: jq hands the pattern to Oniguruma, which does NOT read `\uXXXX`
-# (jq-1.7 measured), so `gsub("[\\u0000-\\u001f]"; …)` degenerates into a class over the
-# literal characters and replaces ordinary printable text while leaving the ESC untouched —
-# a sanitizer that damages the safe input and passes the dangerous one.
 _kbc_comments_render() {
-    jq -r '
-      def c0_safe: explode | map(if . < 32 and . != 10 and . != 9 then 63 else . end) | implode;
-      def c0_header: explode | map(if . < 32 then 63 else . end) | implode;
+    jq -r "$_KBC_C0_DEFS"'
       .[] | (("comment \(.id // "?") · user \(.user_id // "?") · \(.created_at // "?")" | c0_header),
              (((.content // "") | c0_safe | split("\n"))[] | "  " + .))'
 }
@@ -1338,6 +1403,101 @@ cmd_comments() {
         return 0
     fi
     printf '%s' "$comments" | _kbc_comments_render
+}
+
+# _kbc_search_render: the projection for a matched-card ARRAY on STDIN — one block per hit, a
+# header line then the card's FULL description indented two spaces on EVERY line. Extracted
+# from cmd_search so it is unit-testable on synthetic cards.
+#
+# PRINTING THE DESCRIPTION IS THE POINT OF THE VERB (card#6771). `list`'s row projection drops
+# it, so a grep for a phrase in a card BODY through that projection answers 0 whatever the board
+# holds — and a search result that hid the field it had matched ON would reproduce that same miss
+# one layer over. The indent-every-line rule is the comment renderer's, applied to the field this
+# verb exists to show: without it a multi-line description reads as several hits.
+# A card whose description is empty or absent SAYS SO IN WORDS, because an empty indented block
+# reads as a rendering fault — "matched on the name, the body is empty" and "the description got
+# dropped again" must not look the same. (A card whose body is literally the text `(no
+# description)` is indistinguishable from one with no body here. Accepted: the alternative is a
+# sentinel no card body could contain, and there is none.)
+# TOTAL BY CONSTRUCTION rather than gated by a shape test ahead of it: every value printed goes
+# through `(… // "") | tostring`, so a name or description that is not a string renders as its
+# JSON text instead of dying at jq's rc 5 PART WAY THROUGH the blocks — the shape that hands a
+# caller a truncated result at an exit status from a program it never ran.
+_kbc_search_render() {
+    jq -r "$_KBC_C0_DEFS"'
+      .[] | ((.description // "" | tostring) as $d
+             | ("card \(.id // "?") · stage \(.workflow_stage_id // "?") · \(.name // "" | tostring)" | c0_header),
+               (if $d == "" then "  (no description)"
+                else (($d | c0_safe | split("\n"))[] | "  " + .) end))'
+}
+
+cmd_search() {
+    local query="" column="" type=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
+            -*) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+            *) kb_require_positional "$query" "$1" "<query>" || return 2; query="$1"; shift ;;
+        esac
+    done
+    [[ -n "$query" ]] || {
+        echo "kbcard: search requires a query — kbcard search \"text\" [--column COL] [--type ALIAS]" >&2
+        return 2
+    }
+    # A term with no non-space character does not narrow anything: the server trims the q value,
+    # finds no token in it, and answers the WHOLE BOARD — which this verb would then print as
+    # matches, every description included. Refused here and not in the paginator, which cannot
+    # know whether its caller meant to read a board or to search one. Costs no request.
+    [[ -n "${query//[[:space:]]/}" ]] || {
+        echo "kbcard: search query holds no text — a blank query matches every card on the board, which is not a search" >&2
+        return 2
+    }
+    # The same two client-side filters `list` offers, resolved by the same owners (a bad
+    # --column/--type exits 2 loudly under set -e). They narrow the SERVER's match set; the
+    # query itself is the server's job and is passed through untouched.
+    local stage_filter type_filter
+    if [[ -n "$column" ]]; then stage_filter="$(stage_id "$column")"; fi
+    if [[ -n "$type" ]];   then type_filter="$(native_type_id "$type")"; fi
+
+    # The match set, read through the SAME paginator `list` uses — with the query as its search
+    # term, which is the only difference between the two reads. EVERY non-zero rc it defines is
+    # a refusal (a bare `||`), because a search answer that is missing whatever was on the page
+    # that failed is indistinguishable from one where those cards do not exist: the reader would
+    # take "not in the output" as "not on the board". The message names the rc and no cause, per
+    # the wording rule at fetch_board_cards' header; this bin sets KB_FETCH_LOUD, so the
+    # paginator's own line — the one that knows the cause — prints directly above it.
+    local cards frc
+    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}" "$query")" \
+        || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list for this search (fetch rc=$frc) — refusing to present a partial match set as a whole one" >&2; exit 1; }
+    local hits matched total
+    hits="$(printf '%s' "$cards" | _kbc_card_filter "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "")"
+    matched="$(jq 'length' <<<"$hits")"
+    # `<<<`, never --argjson: a match set can be a whole board, and passing it in argv trips
+    # "Argument list too long" over MAX_ARG_STRLEN. Same stdin rule as the reads above.
+    total="$(jq '(. // []) | length' <<<"$cards")"
+    if [[ "$matched" -eq 0 ]]; then
+        # Explicit, never a bare empty stdout: "nothing matched" and "the read failed" must not
+        # look the same at the call site. The two zero cases are DIFFERENT answers — a query
+        # that matched nothing, and a query that matched cards the filter flags then removed —
+        # and reporting the first for the second would send a caller hunting the wrong thing.
+        if [[ "$total" -eq 0 ]]; then
+            echo "kbcard: no card on board $KB_BOARD_ID matched this search"
+        else
+            echo "kbcard: the query matched $total card(s) on board $KB_BOARD_ID, none of which passed the filter flags"
+        fi
+    else
+        printf '%s' "$hits" | _kbc_search_render
+    fi
+    # The denominator, on stderr, on the same rule `list` follows: a filtered result hides the
+    # population it came out of. Unfiltered there is nothing to add — the query's match count IS
+    # what was printed, one block each.
+    if [[ -n "$column" || -n "$type" ]]; then
+        local flags=""
+        [[ -n "$column" ]] && flags="$flags --column $column"
+        [[ -n "$type" ]]   && flags="$flags --type $type"
+        echo "kbcard: search$flags: $matched of $total cards matched by the query" >&2
+    fi
 }
 
 # _kbc_board_repo: the board's canonical GitHub repo (owner/name), read from the
@@ -2719,6 +2879,7 @@ main() {
         show)        cmd_show "$@" ;;
         comment)     cmd_comment "$@" ;;
         comments)    cmd_comments "$@" ;;
+        search)      cmd_search "$@" ;;
         archive)     cmd_archive "$@" ;;
         delete)      cmd_delete "$@" ;;
         field)       cmd_field "$@" ;;
