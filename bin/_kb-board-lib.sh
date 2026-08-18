@@ -571,12 +571,28 @@ kb_parse_resp() {
 }
 
 # --- whole-board pagination -------------------------------------------------
-# fetch_board_cards <api> <token> <board_id> [page_cap]: read the WHOLE board via
+# fetch_board_cards <api> <token> <board_id> [page_cap] [query]: read the WHOLE board via
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
 # stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
+#
+# [query] IS THE OPTIONAL SEARCH TERM (card#6771) — the same `q=` token stream this endpoint
+# already takes, appended after the `board_id=<id>` term this function has always sent, so the
+# read is over the board's MATCHING cards rather than all of them. Nothing else changes: same
+# paging, same dedup, same rcs, same census. Omitted or empty rebuilds the historic URL byte
+# for byte, which is what leaves the whole-board calls — eight of the nine in bin/ — untouched.
+#   * The term is percent-encoded as ONE value (jq's @uri — the spelling kbcard's external-id
+#     lookup already uses), so a space, `&` or `#` in it adds no query parameter and retargets
+#     nothing. A caller's own `board_id=` token does not REPLACE this function's: each
+#     structured token adds its own constraint, so the two are ANDed (read at the server's
+#     QueryParser::applyStructuredFilter, 2026-08-18).
+#   * WHAT THE TERM MEANS IS THE SERVER'S RULE, not this function's — it neither parses nor
+#     validates it, and does not know which tokens were understood.
+#   * AN EMPTY OR WHITESPACE-ONLY TERM IS THE CALLER'S TO REFUSE. It is not narrowing: the
+#     server trims, finds no token, and answers the WHOLE BOARD — at rc 0, indistinguishable
+#     here from a search that legitimately matched everything.
 #
 # Returns — THE rc contract, stated once. A compact second copy used to sit two lines
 # above this block and had already drifted (it was the only one naming rc 4), so it is
@@ -599,6 +615,11 @@ kb_parse_resp() {
 #   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
 #      The partial array is still emitted and flagged INCOMPLETE on stderr; a
 #      refuse-policy caller must treat 4 like 2/3
+#   5  the [query] could not be encoded: NO request was issued and nothing was read.
+#      Reachable ONLY when a query was passed — it is decided above the loop, before the
+#      first page — so a whole-board caller cannot see it. Fail-closed on purpose: an
+#      unencodable term dropped silently would send the bare board_id read, i.e. answer the
+#      WHOLE BOARD as though it were the match set
 #
 # HOW A CALLER WORDS ITS FAILURE MESSAGE — a rule about the MESSAGE, not about policy.
 # What a caller DOES with each rc stays entirely its own (fail-soft skip, refuse,
@@ -639,8 +660,20 @@ kb_parse_resp() {
 # KB_FETCH_LOUD for rc 1 and rc 2 (two of the six consumer bins set it). A caller that
 # wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
-    local api="$1" token="$2" board="$3" page_cap="${4:-50}"
-    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0
+    local api="$1" token="$2" board="$3" page_cap="${4:-50}" query="${5:-}"
+    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0 qextra=""
+    # The optional search term, encoded ONCE (it is the same on every page). Refused rather
+    # than dropped when the encode yields nothing: an empty qextra is not a narrower read,
+    # it is the whole board answered as the match set — the widest wrong answer available
+    # here. `%20` is the token separator the q stream already uses between its terms.
+    if [[ -n "$query" ]]; then
+        qextra="$(jq -rn --arg q "$query" '$q | @uri' 2>/dev/null)"
+        [[ -n "$qextra" ]] || {
+            echo "fetch_board_cards: the search term for board $board could not be encoded — no request was issued, nothing was read" >&2
+            return 5
+        }
+        qextra="%20$qextra"
+    fi
     # Order-preserving dedup-by-id over the slurped per-page arrays.
     local dedup='def _kb_dedup: (add // []) | reduce .[] as $c ([]; if any(.[]; .id == $c.id) then . else . + [$c] end); _kb_dedup'
     # -sS WITHOUT -f (card #4337): -f discards the 4xx/5xx body and collapses every
@@ -663,7 +696,7 @@ fetch_board_cards() {
     local errfd=9
     [[ -n "${KB_FETCH_LOUD:-}" ]] && errfd=2
     while :; do
-        local url="$api/tasks/search.json?q=board_id=${board}&limit=200&page=${page}"
+        local url="$api/tasks/search.json?q=board_id=${board}${qextra}&limit=200&page=${page}"
         local rc
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
         # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
@@ -763,8 +796,13 @@ fetch_board_cards() {
                 # wrong one is a false claim about the board: an unreadable page 1 would
                 # have read as an EMPTY board, an unreadable later page as a SHORT page,
                 # which ends the scan and reads as a complete but truncated one.
-                local refused="report it as an empty board"
-                [[ "$page" -eq 1 ]] || refused="end the scan on a short page and report a TRUNCATED board as a complete read"
+                # … and by WHAT THE READ IS OF: under a [query] the same body would have
+                # read as a search that matched nothing / a truncated MATCH SET, and calling
+                # either one "the board" is a claim about a population this read never had.
+                local empty_claim="an empty board" trunc_claim="a TRUNCATED board"
+                [[ -z "$query" ]] || { empty_claim="a search that matched nothing"; trunc_claim="a TRUNCATED result set"; }
+                local refused="report it as $empty_claim"
+                [[ "$page" -eq 1 ]] || refused="end the scan on a short page and report $trunc_claim as a complete read"
                 echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
@@ -800,7 +838,11 @@ fetch_board_cards() {
         # read as an artifact — that is a server fault this client-side census
         # cannot distinguish, and the warn still surfaces the count mismatch.
         if [[ "$sum_n" -lt "$total" ]]; then
-            echo "fetch_board_cards: ⚠ board has $total cards but pages delivered only $sum_n ($read_n after dedup) — list INCOMPLETE" >&2
+            # meta.total is the total of what was ASKED FOR, so under a [query] it is the
+            # match count and "board has $total cards" would be a false claim about the board.
+            local census_subject="board has $total cards"
+            [[ -z "$query" ]] || census_subject="the search over board $board matched $total cards"
+            echo "fetch_board_cards: ⚠ $census_subject but pages delivered only $sum_n ($read_n after dedup) — list INCOMPLETE" >&2
             printf '%s' "$out"
             return 4
         fi

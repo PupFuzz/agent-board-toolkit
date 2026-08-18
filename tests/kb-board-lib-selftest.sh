@@ -638,6 +638,112 @@ unset -f _fbc_case _fbc_p2
 unset UNREAD_LOG _P2_OUT
 
 # ---------------------------------------------------------------------------
+echo "== fetch_board_cards: the optional [query] — one encoded term inside the same q= (card#6771) =="
+# The paginator gained a fifth argument so a caller can read the board's MATCHING cards through
+# the same paging/dedup/rc machinery, rather than a second copy of it growing beside this one.
+# What must hold: the term reaches the wire ENCODED as one value, the no-query URL does not move
+# at all (eight of the nine calls in bin/ send no query), and the two messages that claim a POPULATION
+# say something true when the read was of a match set instead.
+# argv goes to a FILE, for the reason the KB_CURL_MAX_TIME block below states in full: curl runs
+# inside a "$(…)", so a stub-assigned array dies with that subshell and would assert nothing.
+_QC_ARGV="$TMP/qc-curl-argv.txt"
+_QC_CALLS="$TMP/qc-curl.calls"
+_QC_URL() { /usr/bin/grep -m1 '^http' "$_QC_ARGV"; }
+: > "$_QC_CALLS"
+curl() { printf '%s\n' "$@" > "$_QC_ARGV"; printf 'x' >> "$_QC_CALLS"; _stub_curl_respond '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 200; }
+
+# THE CONTROL FIRST — the historic URL, byte for byte. Every existing consumer passes no query,
+# so this is the assertion that says they are untouched; the legs below only mean anything
+# beside it.
+fetch_board_cards "https://api.example" tok 8 >/dev/null
+eq "no query → the URL is the historic whole-board spelling, unchanged" \
+   "https://api.example/tasks/search.json?q=board_id=8&limit=200&page=1" "$(_QC_URL)"
+
+fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null
+eq "a query rides INSIDE the same q value, after board_id, space-encoded" \
+   "https://api.example/tasks/search.json?q=board_id=8%20deploy%20hook&limit=200&page=1" "$(_QC_URL)"
+
+# The encode is the whole defence against a search term rewriting the request: `&` would
+# otherwise start a new parameter, `#` would truncate the URL at a fragment.
+fetch_board_cards "https://api.example" tok 8 50 'a&b #c' >/dev/null
+eq "an & or # in the term is encoded, never a new parameter or a fragment" \
+   "https://api.example/tasks/search.json?q=board_id=8%20a%26b%20%23c&limit=200&page=1" "$(_QC_URL)"
+
+# WHY jq's @uri AND NOT A HAND-ROLLED ENCODER: bash's `${s:i:1}` yields a CHARACTER, and
+# `printf %02X` on it yields the CODE POINT, so the obvious 8-line encoder emits `%E9` for `é`
+# where the wire needs its UTF-8 bytes `%C3%A9`. Card bodies carry non-ASCII routinely (every
+# `·` and `—` in this repo's own card bodies), so that is a live case, not a curiosity.
+fetch_board_cards "https://api.example" tok 8 50 'café' >/dev/null
+eq "a non-ASCII term is encoded as UTF-8 BYTES, not as a code point" \
+   "https://api.example/tasks/search.json?q=board_id=8%20caf%C3%A9&limit=200&page=1" "$(_QC_URL)"
+
+# rc 5 — the encode refusal. Fail-CLOSED is the point: a dropped term would send the bare
+# board_id read, i.e. the WHOLE BOARD answered as though it were the match set. Unreachable from
+# any input (a non-empty string always has a non-empty @uri), so the seam is a jq that fails
+# exactly that call.
+jq() {
+    local a
+    for a in "$@"; do
+        if [[ "$a" == *"@uri"* ]]; then echo "jq stub: refusing the @uri encode" >&2; return 5; fi
+    done
+    command jq "$@"
+}
+: > "$_QC_CALLS"
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook' 2>"$TMP/qc.err")" || rc=$?
+eq "an unencodable term → rc 5"                        "5" "$rc"
+eq "…nothing on stdout"                                ""  "$out"
+eq "…and NO request was issued at all"                 ""  "$(cat "$_QC_CALLS")"
+eq "…the refusal says the term could not be encoded"   "true" "$(has 'could not be encoded' "$(cat "$TMP/qc.err")")"
+# It must not depend on KB_FETCH_LOUD: there is no request for a quiet caller to have logged,
+# so this is the only place the cause can appear.
+rc=0; fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qc-quiet.err" || rc=$?
+eq "…and says so even without KB_FETCH_LOUD"           "true" "$(has 'could not be encoded' "$(cat "$TMP/qc-quiet.err")")"
+unset -f jq
+# CONTROL: with the real jq back, the same call succeeds — so the four assertions above measured
+# the stub's effect on the arm, not a call that was broken anyway.
+: > "$_QC_CALLS"
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook')" || rc=$?
+eq "CONTROL: the same call with the real jq → rc 0"    "0" "$rc"
+eq "CONTROL: …and it did issue its request"            "x" "$(cat "$_QC_CALLS")"
+
+echo "== fetch_board_cards: what the refusals CLAIM when the read was a search =="
+# meta.total and "an empty board" are claims about a POPULATION. Under a query the population is
+# the match set, so the same sentences would be false about the board — the two messages that
+# name one are scoped, and the no-query wording (asserted verbatim earlier in this file) is what
+# they must not disturb.
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '<html>502</html>' 200; }
+rc=0; KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qs1.err" || rc=$?
+eq "an unreadable page 1 under a query → still rc 1"   "1" "$rc"
+eq "…and it refuses to report A SEARCH THAT MATCHED NOTHING, not an empty board" "true" \
+   "$(has 'refusing rather than report it as a search that matched nothing' "$(cat "$TMP/qs1.err")")"
+eq "…so it makes no claim about the board being empty" "false" \
+   "$(has 'report it as an empty board' "$(cat "$TMP/qs1.err")")"
+
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+_PAGES=( [1]="$(jq -nc '{"data":[range(200)|{id:.}]}')" [2]='<html>502</html>' )
+rc=0; KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qs2.err" || rc=$?
+eq "an unreadable page 2 under a query → still rc 2"   "2" "$rc"
+eq "…and what it refuses is a TRUNCATED RESULT SET"    "true" \
+   "$(has 'report a TRUNCATED result set as a complete read' "$(cat "$TMP/qs2.err")")"
+
+_PAGES=( [1]='{"data":[{"id":1},{"id":2}],"meta":{"last_page":1,"total":3}}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook' 2>"$TMP/qs4.err")" || rc=$?
+eq "a short read under a query → still rc 4"           "4" "$rc"
+eq "…and the census counts MATCHES, not the board's cards" "true" \
+   "$(has 'the search over board 8 matched 3 cards but pages delivered only 2' "$(cat "$TMP/qs4.err")")"
+eq "…so it never says the board holds 3 cards"         "false" \
+   "$(has 'board has 3 cards' "$(cat "$TMP/qs4.err")")"
+# CONTROL, on the same fixture with no query: the ORIGINAL wording, which the scoping must not
+# have moved for the whole-board calls, which never pass one.
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/qs4c.err")" || rc=$?
+eq "CONTROL: the same short read with no query → rc 4" "4" "$rc"
+eq "CONTROL: …and the board wording is untouched"      "true" \
+   "$(has 'board has 3 cards but pages delivered only 2' "$(cat "$TMP/qs4c.err")")"
+unset -f curl _QC_URL
+unset _QC_CALLS _QC_ARGV
+
+
+# ---------------------------------------------------------------------------
 echo "== fetch_board_cards: a caller's regular-file stderr survives the fetch (card#6661) =="
 # The redirect target for curl's stderr must be a DESCRIPTOR. It was the PATH /dev/stderr,
 # which RE-OPENS the file behind the caller's stderr — and a regular-file stderr
