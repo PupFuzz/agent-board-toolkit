@@ -180,8 +180,17 @@
 #     OBSERVED option-removal semantic (empirically pinned on the sandbox instance,
 #     board 1162): removing an option is a DEFINITION-ONLY change — a card still
 #     holding a removed value KEEPS it verbatim in tasks.payload (orphaned: no longer
-#     a defined option, but preserved, not cleared and not cascaded), and the removal
-#     PATCH is NOT rejected (HTTP 200) even while a card references the dropped value.
+#     a defined option, but preserved, not cleared and not cascaded).
+#     WHETHER THE REMOVAL PATCH IS REFUSED IS A PROPERTY OF YOUR SERVER. Without
+#     kanban's DL-242 (in no kanban release through v0.41.0) it is NOT rejected (HTTP
+#     200) even while a card references the dropped value, and that card is stranded
+#     silently; with it, the same PATCH is refused 422 naming the offenders when the
+#     removal would strand a value the CURRENT definition still accepts. That check is
+#     a DELTA — a carrier whose value the current definition ALREADY rejects is skipped
+#     by design, since refusing on it would leave the field uneditable, including the
+#     widening that would re-admit the value — and the board-IMPORT route still narrows
+#     unchecked, so it is NOT the case that all narrowing is now checked. This verb
+#     propagates either answer: a non-2xx fails loud with the server's error body.
 #     add-option / rename-option are intentionally not provided (deferred to v2).
 #   kbcard field create --key <k> --label <l> --type <t> [--options a,b,c]
 #     WRITE: define a new custom field on the board (POST the board's custom_fields
