@@ -117,9 +117,32 @@ _BS_JQ_EP='def ep($s): (if ($s|type) != "string" then null
 # is dropped here rather than accumulated. `n`/`last_id`/`oldest` are what the pagination loop
 # stops on. A row also carries `source` (ui|api|system), deliberately NOT projected: nothing
 # splits on it, and a field carried for a future reader is one nobody notices is stale.
+#
+# `.data` must be PRESENT and an ARRAY, and this program emits NOTHING when it is not — the
+# same envelope predicate the two card paginators carry (`fetch_board_cards` in
+# _kb-board-lib.sh, `fetch_whole_board` in bin/promote-released-cards), applied here as the
+# third instance of that shape — the last of the three in a pager population derived rather
+# than recalled and recorded in docs/CONSOLIDATION-PLAN.md (card#6594, card#6630). Until this
+# fix the opening read was `(.data // []) as $d`, and `//` substitutes its right-hand side
+# for `false` and `null` as
+# well as for absent, so a 2xx carrying a proxy's error object arrived as `n: 0` — which is
+# the loop's LOG-IS-EXHAUSTED stop, so the window ended there with `truncated=false` and no
+# error and the flow counts rendered off a truncated window with no ⚠ line and no
+# `(WINDOW TRUNCATED)` marker, at rc 0. Measured with page 1 = 200 rows: `{"error":…}`,
+# `{"data":null}` and `{"data":false}` were silent; every other unreadable shape already
+# faulted this program at `$d[-1]` and was caught. So this is not a new stop — it routes the
+# three shapes `//` was hiding into the one the others already took.
+#
+# EMITTING `empty` RATHER THAN AN ERROR VALUE IS WHAT MAKES THIS AN EXISTING CHANNEL. No
+# output is already what a jq fault produces at the call site (its `2>/dev/null`), and
+# `_bs_window_rows`'s `[[ -n "$page" ]]` guard already reports that as a page this tool could
+# not read. A body with no row array and a body that is not JSON are ONE operator fact — this
+# page delivered no readable events — and they keep one message. The distinction that must
+# not collapse is against a SHORT page, which is the loop's end-of-log signal; that is the one
+# that did collapse, and separating it is the whole fix.
 _BS_PAGE_JQ="$_BS_JQ_EP"'
 def pget($k): ((.payload // {}) | if type == "object" then (.[$k] // null) else null end);
-(.data // []) as $d
+(if (.data|type) == "array" then .data else empty end) as $d
 | { n: ($d | length),
     last_id: ($d[-1].id // null),
     oldest: ep($d[-1].created_at),
@@ -368,7 +391,14 @@ _bs_classify() {
 
 # _bs_window_rows <board-id> <cutoff-epoch> <rows-file>: page the board changelog BACKWARDS,
 # appending one JSON array of in-window rows per page to <rows-file>; prints
-# {pages, truncated, error} on stdout. The rows never pass through a shell variable or argv.
+# {pages, truncated, error} on stdout. The accumulated window never passes through a shell
+# variable or argv: each page's in-window rows are appended to <rows-file> and reach the
+# aggregation as a FILE (`_bs_board_json`'s --slurpfile), so the thing that grows with the
+# window is never a value the shell or an argument list has to carry. Stated that way rather
+# than as "the rows never pass through a shell variable", which this loop has never satisfied
+# — one page's body is `$resp` and one page's filtered rows are `$page` — and which would read
+# as a guarantee against exactly the MAX_ARG_STRLEN bound the jq-programs note near the top of
+# this file is about.
 #
 # WHY THE LOOP STOPS WHERE IT DOES. The endpoint has NO date filter — it is a cursor log,
 # newest-first under order=desc, paged by `before=<row id>` — so a window is read by paging
@@ -387,6 +417,21 @@ _bs_classify() {
 # flagged truncated, and reported on the board's own ⚠ line. Without it a `--since 90d` over a
 # 44-day-old log renders as a complete 90-day report at rc 0. An EMPTY log has no oldest row
 # and asserts nothing about retention, so it is not flagged: zero events is what it holds.
+#
+# A SHORT PAGE MEANS THE LOG IS EXHAUSTED ONLY BECAUSE THE PAGE WAS READ AT ALL. `_BS_PAGE_JQ`
+# emits nothing for a body carrying no `.data` ARRAY, so such a page reaches the `[[ -n
+# "$page" ]]` guard below and is reported as a page this tool could not read — it never
+# arrives at the `n < _BS_CL_LIMIT` arm as `n: 0`. Before card#6630 it did, and that is the
+# whole defect: a gateway error body ended the window as if the log had run out, with
+# `truncated=false` and no error. A genuinely empty page is `{"data":[]}` — an array — and
+# still stops the loop here, silently and correctly, which is the distinction the predicate
+# exists to keep. The two outcomes are then unambiguous both ways: the log ran out (`n` short,
+# and `data_available_from` set if it ran out INSIDE the window), or the body was unreadable
+# (an `error`, naming the page). The unreadable half does NOT set `truncated`, matching the
+# other two error breaks below — `truncated` is a property of the three STOPS, while an
+# aborted read is reported through `error`, which `_bs_one_board` renders as its own ⚠ line
+# saying the flow counts below are a floor. That is the surface the header's floor-vs-total
+# promise is kept on for this failure.
 _bs_window_rows() {
     local board_id="$1" cut="$2" out="$3"
     local cursor="" pages=0 truncated=false err="" avail="" url resp page n oldest oldest_at last
