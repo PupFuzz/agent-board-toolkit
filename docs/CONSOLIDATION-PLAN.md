@@ -746,12 +746,16 @@ finding with no owner is abandoned, not filed.
   `ok`, so an empty census can only withhold more archives, never permit one. Two sources and now a
   run.
 
-  **⏳ OPEN (card#6630) — THE SAME SHAPE ON LATER PAGES. 3 instances, 2 fixed here, 1 LIVE.**
-  This entry previously said *2 instances* and was CLOSED on that count. The count was asserted,
-  never derived, and it was wrong: there is a third paginator in this tree carrying the same shape,
-  and it is still live. The card stays OPEN as the ONE class item for all three (canon #18 — the
-  audit finds instances, the class gets the item); the two fixed instances are recorded below as
-  members that are done, not as the whole class.
+  **✅ CLOSED (card#6630) — THE SAME SHAPE ON LATER PAGES. 3 instances, all 3 fixed.**
+  This entry previously said *2 instances* and was CLOSED once already on that count. The count was
+  asserted, never derived, and it was wrong: a third paginator in this tree carried the same shape.
+  The card was the ONE class item for all three (canon #18 — the audit finds instances, the class
+  gets the item), and it is closed only now that the third is fixed. **What the first false close
+  cost, recorded so the shape of the mistake survives the fix:** re-closing on a re-derived
+  denominator is cheap, and closing on a recalled one hid a live silent-truncation path in a
+  shipped tool for the whole interval. The two card paginators are recorded below as members that
+  landed first; the changelog window landed second, in its own change, because its failure policy
+  was a decision and not a predicate edit.
 
   **The denominator, derived rather than recalled** (canon #19 — the method, so a later pass can
   re-run it): the population is *every loop in this tree that issues repeated API requests to
@@ -765,7 +769,7 @@ finding with no owner is abandoned, not filed.
   | --- | --- | --- |
   | `bin/_kb-board-lib.sh` `fetch_board_cards` | `page=N` | **yes — FIXED here** |
   | `bin/promote-released-cards` `fetch_whole_board` | `page=N` | **yes — FIXED here** |
-  | `bin/board-stats` `_bs_window_rows` | `before=<cursor>` | **yes — OPEN, see below** |
+  | `bin/board-stats` `_bs_window_rows` | `before=<cursor>` | **yes — FIXED, see below** |
   | `bin/_dependabot-reconcile.py` `gh_alerts` | `gh api --paginate` | **no** — paging is delegated to `gh`, and a body that is not a JSON array raises `InstrumentError` rather than reading as an exhausted population. Disposed by checking, not by absence of symptoms. |
 
   `bin/install-board-hooks`'s `_ibh_symlink_probe` uses a `while :`/`break` block and issues no
@@ -857,14 +861,17 @@ finding with no owner is abandoned, not filed.
   rendering ones the census turned a silent truncation into a **quietly rendered** one. Both are
   now rc 2, refused before the census.
 
-  **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, LIVE, and the reason this entry is
-  not closed.** The changelog window is read by paging BACKWARD on a `before=<cursor>` id until the
-  rows precede the cutoff, and the loop's end-of-data signal is a **short page**: `_BS_PAGE_JQ`
-  opens with `(.data // []) as $d`, so a `2xx` carrying no `.data` yields `n: 0`, `n < _BS_CL_LIMIT`
-  reads as *the log is exhausted*, and the loop `break`s with `truncated=false` and `err=""`. That
+  **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, now FIXED, and the reason this entry
+  was not closed with the other two.** The changelog window is read by paging BACKWARD on a
+  `before=<cursor>` id until the rows precede the cutoff, and the loop's end-of-data signal is a
+  **short page**: `_BS_PAGE_JQ` opened with `(.data // []) as $d`, so a `2xx` carrying no `.data`
+  yielded `n: 0`, `n < _BS_CL_LIMIT`
+  read as *the log is exhausted*, and the loop `break`ed with `truncated=false` and `err=""`. That
   is the same shape as the two fixed above, on the same `KB_API`, the same host, reachable by the
   same proxy/gateway error body. **Measured against the real function** (the shipped
-  `_bs_window_rows`, sourced from `bin/board-stats`, page 1 = 200 rows, `_BS_CL_LIMIT` = 200):
+  `_bs_window_rows`, sourced from `bin/board-stats`, page 1 = 200 rows, `_BS_CL_LIMIT` = 200, and
+  re-measured on this tree before the predicate was touched — the table below is that re-run, not
+  a relayed one):
 
   | page-2 body | `_bs_window_rows` result |
   | --- | --- |
@@ -873,25 +880,64 @@ finding with no owner is abandoned, not filed.
   | `{"data":"str"}` / `{"data":{"id":9}}` / `[{"error":…}]` | `error: "changelog page 2 is not the shape this tool reads"` — caught |
   | `<html>502</html>` | same — caught |
 
-  So the live half is narrower than a `.data`-shape test would suggest, and stating it precisely
+  So the live half was narrower than a `.data`-shape test would suggest, and stating it precisely
   matters: of the shapes measured, the silent set is a JSON **object** whose `.data` is **absent,
   `null` or `false`** — the three `//` substitutes for. The mechanism that catches the rest is
   `$d[-1]`: `// []` yields the substitute only for `null`/`false`, so any other non-array `.data`
   reaches `$d[-1]` as itself and faults the page jq, which the `[[ -n "$page" ]]` guard reports as
-  a wrong-shape error. Measured on that boundary: `{"data":false}` is **silent**, `{"data":{}}` is
+  a wrong-shape error. Measured on that boundary: `{"data":false}` was **silent**, `{"data":{}}`
   **caught**. An absent/null `.data` is exactly the shape a
   proxy or gateway error document takes, which is what keeps this reachable rather than academic.
-  On the silent path `_bs_one_board` sets `flow_ok=true` with no `fails+=` entry, so the report
-  renders flow counts off a truncated window with **no `⚠` line and no `(WINDOW TRUNCATED)`
-  marker** — which falsifies `bin/board-stats`'s own header claim that *"a number that is a floor
+  On the silent path `_bs_one_board` set `flow_ok=true` with no `fails+=` entry, so the report
+  rendered flow counts off a truncated window with **no `⚠` line and no `(WINDOW TRUNCATED)`
+  marker** — which falsified `bin/board-stats`'s own header claim that *"a number that is a floor
   rather than a total (a capped card read, a truncated changelog window) says so where it is
-  printed."* **That header line is a live false claim and is filed here rather than edited**, because
-  correcting it either way pre-judges the `err`/`truncated` policy decision this instance needs.
-  **Deliberately NOT fixed under card#6630's current scope:** unlike the two card paginators, this
-  loop's failure policy is a real fork — `_bs_window_rows` has three stop conditions and two of them
-  already set `truncated` while emitting rows, so "refuse" is not simply the existing rc, and
-  `board-stats` is a fail-soft report whose contract is that one bad board never kills the run.
-  That is a policy decision, not a predicate edit, and it is the open work on this card.
+  printed."*
+
+  **THE POLICY DECISION, TAKEN — and it needed no new mechanism, which is why the fork narrowed
+  once the question was asked precisely.** The fork was recorded here as real: `_bs_window_rows` has
+  three stop conditions, two of them already set `truncated` while emitting rows, and `board-stats`
+  is a fail-soft report whose contract is that one bad board never kills the run — so "refuse" is
+  not simply an rc. What resolved it is that the loop **already has** a second, separate channel for
+  an aborted read: `err`, which three arms below the stops already use (a curl/HTTP failure, a page
+  the parse could not read, a page carrying no cursor id), and which `_bs_one_board` renders on the
+  board's own ⚠ line as `changelog window INCOMPLETE … the flow counts below are a floor, not a
+  total` whenever `pages > 0`. An unreadable envelope is an aborted read, not a stop, so it belongs
+  on that channel and it went there:
+
+  - **The predicate** is the siblings' — `(.data|type) == "array"` — and a body carrying no row
+    array makes `_BS_PAGE_JQ` emit **nothing**, which is *already* what a jq fault produces at that
+    call site (its `2>/dev/null`). It therefore lands on the pre-existing `[[ -n "$page" ]]` guard
+    and reuses its message verbatim. **No new rc, no new field, no new message** — the mirror's
+    disposition style, where an operator-facing refusal is not reworded as a side effect of a
+    predicate fix.
+  - **`truncated` is deliberately NOT set**, and that is the fork's actual answer. It stays a
+    property of the three STOPS (cutoff reached, page cap, a log that ends inside the window), which
+    is what the function's header already says and what the `(WINDOW TRUNCATED)` marker means. The
+    two channels stay distinct: *the log ran out* vs *the body was unreadable*. Collapsing those two
+    was the defect; making the second one also set the first would have re-blurred it from the
+    other side.
+  - **No page split**, unlike the two card paginators. Those split by page because each has two
+    documented rcs to select between; this function has one `error` channel and `_bs_one_board`
+    already branches identically for any `pages > 0`. Page 1 moves by the same predicate with the
+    same message — measured before and after: `{"error":…}`, `{"data":null}` and `{"data":false}`
+    as PAGE 1 produced a flow section of zeros reading as a quiet board, and now carry the ⚠.
+  - **`{"data":[]}` is untouched at every page number.** A genuinely exhausted log answers with an
+    array; it is a short page, it stops the loop, and it stays silent. That is why the predicate is
+    a TYPE test and not a truthiness one, and it is a selftest control rather than an argument — a
+    truthiness mutant reds it while leaving every refusal leg green.
+
+  **The header claim at `bin/board-stats:61` is repaired by the CODE, not reworded.** It was filed
+  here rather than edited precisely because correcting it either way would have pre-judged this
+  decision; with the decision taken, the sentence is true — every floor this tool prints now carries
+  its own line where it is printed — so the line stands and the selftest asserts it on the
+  **rendered text**, not on the JSON field a human never sees. **One imprecision found in the same
+  header while making that true, and corrected with it:** `_bs_window_rows`'s own line claimed *"the
+  rows never pass through a shell variable or argv"*, which this loop has never satisfied — one
+  page's body is `$resp` and one page's filtered rows are `$page`. The guarantee the design actually
+  makes, and the one the argv bound is about, is that the **accumulated window** never does: rows
+  are appended to the rows-file and reach the aggregation through `--slurpfile`. The line now says
+  that instead. No code moved for it.
 - **The eight rows the card#6426 derivation left undisposed** (card#6426) — the instrument that
   enumerated "a raw `jq` over a value derived from a kanban response" ended its run printing `?
   (unresolved — dispose in prose, never silently): 8`, and the change shipped without disposing one
@@ -1045,8 +1091,7 @@ finding with no owner is abandoned, not filed.
     symptom patch. This site stays unmigrated: `cmd_list` aborts on every non-zero paginator
     rc, so what reaches it is real cards or a genuinely empty board. The one exception this
     bullet used to name — the later-page hole, where a server that omitted `meta.total` let a
-    truncated list through at rc 0 — is closed under card#6630 (the card itself stays open for
-    its third instance, `bin/board-stats`): an unreadable page > 1 is now rc 2,
+    truncated list through at rc 0 — is closed under card#6630: an unreadable page > 1 is now rc 2,
     which `cmd_list` already aborts on.
   - **`bin/kbcard` `_kbc_field_populated`** (card#6525, re-derived on every pass that touches
     that branch) — the populated-card census behind `field delete` and `field retype

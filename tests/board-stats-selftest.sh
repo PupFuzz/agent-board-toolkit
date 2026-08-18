@@ -272,6 +272,91 @@ eq "a non-JSON body is an error"         "true"  \
    "$(has 'not the shape this tool reads' "$(printf '%s' "$meta5" | jq -r '.error')")"
 eq "…and no rows are claimed"            "0"     "$(jq -s 'add // [] | length' "$rowsf5")"
 
+echo "== _bs_window_rows — a page carrying no ROW ARRAY is UNREADABLE, never an exhausted log =="
+# The defect this closes (card#6630 — the third instance of the envelope shape the two card
+# paginators already fixed, and the last one in the pager population docs/CONSOLIDATION-PLAN.md
+# derives): the page parse opened with `(.data // []) as $d`, and jq's
+# `//` substitutes for `false` and `null` as well as for absent — so a 2xx carrying a proxy's
+# error object arrived as `n: 0`, which IS the loop's log-is-exhausted stop. The window ended
+# there with truncated=false and no error, and the flow counts rendered off a truncated window
+# with no ⚠ and no (WINDOW TRUNCATED) marker, at rc 0 — a plausible wrong answer.
+#
+# The fixtures are the MEASURED silent set, not a guessed one: every other unreadable shape
+# already faulted the page parse at `$d[-1]` and was caught by the same `[[ -n "$page" ]]`
+# guard the non-JSON leg above exercises, so a `.data`-shape test would over-claim what moved. `{"data":false}` is the discriminating member — it
+# is silent under `//` and caught under a type test — and its control is `{"data":{}}` below.
+_bs_page2_body=""
+kb_api() {
+    local url="$2"
+    printf '%s\n' "$url" >> "$CALLS"
+    if [[ "$url" == *before=* ]]; then printf '%s' "$_bs_page2_body"
+    else cat "$TMP/page.first.json"; fi
+}
+# A cutoff far older than the whole fixture log, so nothing but the page-2 body can stop the
+# loop — if it were the cutoff, this would pass with the predicate reverted.
+CUT6=$((T0 - 999999))
+for _bs_page2_body in '{"error":"upstream connect error"}' '{"data":null}' '{"data":false}'; do
+    : > "$CALLS"; rowsf6="$TMP/rows6.jsonl"; : > "$rowsf6"
+    meta6="$(_bs_window_rows 1 "$CUT6" "$rowsf6")"
+    eq "page 2 = $_bs_page2_body is reported unreadable, not exhausted" "true" \
+       "$(has 'changelog page 2 is not the shape this tool reads' \
+              "$(printf '%s' "$meta6" | jq -r '.error // ""')")"
+    eq "…and the rows page 1 DID deliver are kept (a floor, not a loss)" "200" \
+       "$(jq -s 'add // [] | length' "$rowsf6")"
+    eq "…and the loop stops there rather than paging on" "2" \
+       "$(wc -l < "$CALLS" | tr -d ' ')"
+done
+
+# CONTROL 1 — the other half of the discriminating pair. `{"data":{}}` was ALREADY caught (it
+# reaches `$d[-1]` as an object and faults the parse), so a fix that simply reported every
+# page-2 body as unreadable would look identical on the three cases above. This one must keep
+# answering exactly as it did before the predicate existed.
+: > "$CALLS"; rowsf6c="$TMP/rows6c.jsonl"; : > "$rowsf6c"
+_bs_page2_body='{"data":{}}'
+meta6c="$(_bs_window_rows 1 "$CUT6" "$rowsf6c")"
+eq "control: {\"data\":{}} is still caught, by the same message" "true" \
+   "$(has 'changelog page 2 is not the shape this tool reads' \
+          "$(printf '%s' "$meta6c" | jq -r '.error // ""')")"
+
+# CONTROL 2 — the case the predicate must NOT touch, and the reason it is a TYPE test rather
+# than a truthiness one: a genuinely exhausted log answers `{"data":[]}`, which is an array. It
+# is a short page, it stops the loop, and it is SILENT — a board younger than its first event
+# is not a failure. Without this leg, refusing every falsy `.data` would pass every assertion
+# above while breaking every empty board in the roster.
+: > "$CALLS"; rowsf6d="$TMP/rows6d.jsonl"; : > "$rowsf6d"
+_bs_page2_body='{"data":[]}'
+meta6d="$(_bs_window_rows 1 "$CUT6" "$rowsf6d")"
+eq "control: an EMPTY page-2 array ends the log with no error" "null" \
+   "$(printf '%s' "$meta6d" | jq -r '.error | tostring')"
+eq "control: …and is not flagged truncated"        "false" \
+   "$(printf '%s' "$meta6d" | jq -r '.truncated')"
+eq "control: …while still keeping page 1's rows"   "200" \
+   "$(jq -s 'add // [] | length' "$rowsf6d")"
+
+# PAGE 1 IS THE SAME PREDICATE AND THE SAME MESSAGE — there is no page-dependent arm here, and
+# this leg is what says so. (The two card paginators DO split by page, because each has two
+# documented rcs to split between; this function has one channel, `error`, and `_bs_one_board`
+# already renders pages>0 identically either way.) Pre-fix, a page-1 gateway error body
+# produced a flow section of zeros that read as a quiet board.
+: > "$CALLS"; rowsf6e="$TMP/rows6e.jsonl"; : > "$rowsf6e"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; printf '%s' '{"data":null}'; }
+meta6e="$(_bs_window_rows 1 "$CUT6" "$rowsf6e")"
+eq "an unreadable PAGE 1 is unreadable too, naming page 1" "true" \
+   "$(has 'changelog page 1 is not the shape this tool reads' \
+          "$(printf '%s' "$meta6e" | jq -r '.error // ""')")"
+# `pages` must still count the request: it is what _bs_one_board branches on to decide between
+# a flagged flow section and a dropped one, so an unreadable page 1 that reported 0 pages would
+# turn this ⚠ into "flow: UNAVAILABLE" and lose the zeros it qualifies.
+eq "…and the request is still counted as one page"  "1" \
+   "$(printf '%s' "$meta6e" | jq -r '.pages')"
+# CONTROL for the leg above: the SAME page 1, the only change being an array `.data`. An empty
+# first page is a board with no events, which must stay silent at every page number.
+: > "$CALLS"; rowsf6f="$TMP/rows6f.jsonl"; : > "$rowsf6f"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; printf '%s' '{"data":[]}'; }
+meta6f="$(_bs_window_rows 1 "$CUT6" "$rowsf6f")"
+eq "control: an empty PAGE 1 is a quiet board, not a failure" "null" \
+   "$(printf '%s' "$meta6f" | jq -r '.error | tostring')"
+
 # ---------------------------------------------------------------------------
 echo "== _bs_board_json — the human/service split, per transition =="
 # One fixture page carrying every shape the aggregation must keep apart: a multi-actor
@@ -554,6 +639,43 @@ eq "the zeros it warns about are really there"       "0" \
 # the failure lines cannot be an artifact of the stub, the env file, or the fixture log.
 eq "control: the healthy board carries neither line"  "false" \
    "$(has 'could be classified' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
+
+echo "== _bs_one_board — an unreadable changelog page reaches the report as a FLOOR line =="
+# This is the surface bin/board-stats' header promise is kept on: "a number that is a floor
+# rather than a total (a capped card read, a truncated changelog window) says so where it is
+# printed." The silent-envelope path falsified it — the counts rendered with nothing beside
+# them — so the leg asserts the ⚠ line, not just the `error` field _bs_window_rows returns.
+# Same env, same preload, same cards as the healthy board above; ONLY the changelog body moves.
+kb_api() {
+    case "$2" in
+        */preload.json) cat "$TMP/fx-preload.json" ;;
+        */changelog.json*) printf '%s' '{"data":null}' ;;
+        *) return 1 ;;
+    esac
+}
+mkdir -p "$TMP/b3"
+onb3="$(_bs_one_board fx "Fixture board" "$CUT4" "$NOW4" "$TMP/b3")"
+eq "the unreadable window is named on the board's own failure list" "true" \
+   "$(has 'changelog window INCOMPLETE' "$(printf '%s' "$onb3" | jq -r '.failures[]')")"
+eq "…saying the flow counts are a floor rather than a total" "true" \
+   "$(has 'a floor, not a total' "$(printf '%s' "$onb3" | jq -r '.failures[]')")"
+eq "…and the flow section is still rendered, not dropped" "false" \
+   "$(printf '%s' "$onb3" | jq '.flow == null')"
+eq "…carrying the page count that kept it renderable" "1" \
+   "$(printf '%s' "$onb3" | jq '.flow.pages')"
+# The ⚠ must reach the TEXT a human reads, above the counts it qualifies — the JSON field
+# alone is not where this report is consumed.
+printf '%s' "$onb3" | jq -s --argjson now "$NOW4" '
+    { generated_at: ($now | todate),
+      since: {spec: "24h", cutoff: (($now - 86400) | todate), epoch: ($now - 86400)},
+      partial: true, failed_boards: 1, readable_boards: 1, boards: . }' > "$TMP/doc-flowfail.json"
+txtff="$(_bs_render_text "$TMP/doc-flowfail.json")"
+eq "the floor line is printed above the flow counts" "true" \
+   "$(has '⚠ changelog window INCOMPLETE' "$txtff")"
+# THE CONTROL: the healthy board, same fixtures apart from a readable changelog, carries no
+# such line — otherwise the ⚠ would be a decoration that fires on every run.
+eq "control: a readable window carries no INCOMPLETE line" "false" \
+   "$(has 'changelog window INCOMPLETE' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
 
 # ---------------------------------------------------------------------------
 echo "== _bs_render_text — the text renders what the JSON carries =="
