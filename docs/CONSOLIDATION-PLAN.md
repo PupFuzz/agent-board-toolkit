@@ -1181,7 +1181,9 @@ finding with no owner is abandoned, not filed.
   reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
   **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
 - **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
-  THIRD attempt.** *(This line read "on the second attempt" until a third review pass measured that
+  THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
+  not in conflict: it counts attempts at the LIST itself, of which the first two closures here were
+  two). *(This line read "on the second attempt" until a third review pass measured that
   the gate the second attempt shipped had the class's own defect inside it — see the second ⛔ below.
   The correction is left visible rather than smoothed, because "shipped on the second attempt" is
   precisely the kind of claim this bullet exists to distrust.)* The lib header, `ADOPTION.md`,
@@ -1222,7 +1224,8 @@ finding with no owner is abandoned, not filed.
   whole paragraph in the markdown a consumer follows and a wrapped fragment in a shell comment —
   stated in the check, because it means a historical aside wrapped across comment lines is out of
   its reach by construction, not by luck. Version-specific history
-  (`UPGRADE.md` §6, `docs/CHANGELOG.md`, `CLAUDE.md`'s release-snapshot table) is deliberately out
+  (`UPGRADE.md`'s version-specific section, `docs/CHANGELOG.md`'s RELEASED entries, `CLAUDE.md`'s
+  release-snapshot table) is deliberately out
   of its population and the check says
   why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
 
@@ -1238,8 +1241,9 @@ finding with no owner is abandoned, not filed.
   green now certifies the narrower question.
   **Leg 3's population is now DERIVED on every run** — every readable non-binary file in the tree,
   `.git` excluded, the same population leg 1 uses — minus two carve-outs of deliberately different
-  shape: version-specific frozen history, carved out **whole-file** (a per-line disposition there
-  would need a new entry every release, i.e. the hand-kept list again), and a small set of
+  shape: version-specific frozen history, carved out at the HEADING where it begins (a per-line
+  disposition there would need a new entry every release, i.e. the hand-kept list again — it was
+  carved **whole-file** until the fourth pass below), and a small set of
   **per-line** dispositions for prose that names the same nouns without instructing anyone to copy
   anything, each keyed `<path>::<substring>` and each **asserted to still match a live line**, so a
   disposition cannot outlive the line it disposed. Line scope is load-bearing on `README.md`
@@ -1250,6 +1254,27 @@ finding with no owner is abandoned, not filed.
   **Leg 2 keeps its four-path list, and that is not the same defect**: "this surface OWES the reader
   a derivation" is an editorial obligation no property of the tree can derive, the list is a FLOOR
   rather than a population, and leg 3 no longer reads it.
+
+  ⛔ **A FOURTH PASS THEN MEASURED THE THIRD CLOSURE'S CARVE-OUTS WRONG IN TWO PLACES — same shape
+  again: a stated scope wider than the predicate under it.** *(a)* The `UPGRADE.md` split was cut on
+  `^## 6\.` while three sentences beside it called it *"derived, not a line number"*: only the
+  OFFSET was derived — the **6** was a hand-kept fact, this bullet's own subject inside this
+  bullet's own gate. Measured: a new LIVE `## 6.` section carrying an enumeration line, with the
+  history renumbered to `## 7.`, left the run **rc 0 all-green** while the live region silently
+  SHRANK, because the only premise beside the cut asserted what the live region LACKS — a direction
+  that catches a too-WIDE cut and never a too-narrow one. Both splits are now located by the
+  heading's TEXT with the number left free, and each asserts how many headings matched and that the
+  matched one lands in the frozen complement. *(b)* `docs/CHANGELOG.md` was carved **whole-file** on
+  a reason — *a frozen at-a-version list cannot rot* — that is simply false of `[Unreleased]`, the
+  section the release in flight is written INTO: a regrown enumeration line under it passed at rc 0
+  (measured). It is now split at its first versioned heading, live head IN. *(c)* Stated rather than
+  widened, per the ratified rule: leg 3's per-file predicate is three literal spellings of the lib,
+  so a vendoring instruction spelled *"the toolkit library file"* is invisible to it — the leg is
+  fail-closed over the FILE population and **not** over the spellings, and that bound now sits
+  beside the predicate rather than in a claim about the leg.
+  **This is a correction to the gate, not a fourth closure of the class, and the count above is
+  deliberately left at three:** the third attempt's finding — derive the population, never list it —
+  held; what measured wrong was two of the carve-outs subtracted from that population.
 
 ---
 

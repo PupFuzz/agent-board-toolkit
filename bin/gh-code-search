@@ -59,8 +59,9 @@
 #   UNANSWERED total_count=17 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
 #   ERROR      total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
 #
-#   ⛔ "IN EVERY STATE" MEANS EVERY STATE THIS TOOL DECIDES, and there is one reachable path
-#      that reaches none of them: `TMPERR="$(mktemp)"` below is unguarded, so an unwritable
+#   ⛔ "IN EVERY STATE" MEANS EVERY STATE THIS TOOL DECIDES, and there is one VERDICT path that
+#      reaches none of them — plus the rc-2 usage refusals, which write only to stderr and are
+#      not verdicts about a search at all: `TMPERR="$(mktemp)"` below is unguarded, so an unwritable
 #      `$TMPDIR` kills the run under `set -e` before any verdict exists. Measured with
 #      `TMPDIR=/nonexistent`: rc 1, ZERO bytes of stdout, and the only stderr is mktemp's own
 #      `failed to create file via template` — this tool says nothing at all. rc 1 is the right
@@ -209,14 +210,29 @@ KB_PROG="gh-code-search"
 # writes in this file" while there were four, because a hand-kept census is a copy of the code
 # that drifts from it. Derive the population for the version in your hand:
 #     grep -nE '^[[:space:]]*(echo|printf)|(echo|printf).*>&2|^_put' bin/gh-code-search
-# and dispose of every hit into one of FIVE buckets — a `_put`/`_put_err` DEFINITION, a CALL to
+# and dispose of every hit into one of SIX buckets — a `_put`/`_put_err` DEFINITION, a CALL to
 # one of them at line start, the pre-lib refusal, this comment (which quotes BOTH the command
-# above and the narrower pattern it replaced, so it accounts for two hits), or an
-# `echo`/`printf` inside a `$( { … } )` builder, which is assembling a STRING for one of those
-# calls and reaches no stream. Anything left over is a NEW direct writer and must be routed
+# above and the narrower pattern it replaced, so it accounts for two hits), an `echo`/`printf`
+# inside a `$( { … } )` builder, which is assembling a STRING for one of those calls and reaches
+# no stream, or an `echo`/`printf` inside a HELPER FUNCTION — and that last bucket carries an
+# OBLIGATION the other five do not. Anything left over is a NEW direct writer and must be routed
 # through `_put`/`_put_err`. The builders are IN the census and disposed of by reading which
 # construct encloses them, rather than filtered out by the pattern: filtering them out is what
 # made the first spelling of this rule unable to see the thing it was written to catch.
+#   ⛔ THE SIXTH BUCKET IS NOT DISCHARGED BY NAMING THE FUNCTION. A function body is not a
+#      construct the census can read a stream off — where its bytes go is a property of its CALL
+#      SITES, which are somewhere else in the file. So an `echo`/`printf` inside a helper is
+#      disposable ONLY by ENUMERATING that helper's call sites and showing that every one of them
+#      CAPTURES its output; the enumeration is part of the disposition, not a step before it, and
+#      a disposition that names the function without listing its call sites has disposed of
+#      nothing. Discharged here for the file's one helper: `_fallback_lines` (8 hits) is called at
+#      exactly THREE sites — the ERROR, UNANSWERED and PARTIAL refusals — and all three are
+#      `_put_err "$( { … _fallback_lines; } )"`, so every byte it writes is captured by the
+#      command substitution and reaches `_put_err`'s tolerated write, never a stream. Re-derive
+#      them with `grep -n '_fallback_lines' bin/gh-code-search` before trusting this paragraph —
+#      it is a claim about the version in your hand — and read the hits: that grep also returns
+#      the DEFINITION and this comment's own mentions, and only the ones enclosed in a
+#      `$( { … } )` are call sites that capture.
 #   ⛔ THAT FIRST SPELLING COULD NOT SEE fd 1 AT ALL, and it is recorded because the rule read
 #      as if it could. It was `grep -nE '(echo|printf).*>&2|^_put'`: `>&2` is REQUIRED in the
 #      first alternative and `^_put` matches only the two names, so no fd-1 write could ever
@@ -227,14 +243,25 @@ KB_PROG="gh-code-search"
 #      over) while collapsing EVERY state to rc 1 through `… | head -n 0` — COMPLETE 0→1,
 #      PARTIAL 3→1, UNANSWERED 4→1 — which is verbatim the defect this rule exists to prevent,
 #      arriving through the one fd the census could not look at. The leading
-#      `^[[:space:]]*(echo|printf)` alternative is what closed it; the fifth bucket is the price
-#      of the coverage, and it is the cheaper half of the trade.
+#      `^[[:space:]]*(echo|printf)` alternative is what closed it; the builder and helper-function
+#      buckets are the price of that coverage — the wider pattern sees writes that never reach a
+#      stream, and disposing of them by reading their enclosing construct (or their call sites) is
+#      the cheaper half of the trade.
 #   ⛔ WHAT THE CENSUS IS STILL BOUNDED TO, stated rather than implied: it sees `echo`/`printf`
 #      and nothing else — either at the start of a line, or anywhere on a line that also carries
 #      `>&2`. Outside it are a write spelled with another command (`cat file >&2`, `tee`), and an
 #      `echo`/`printf` that is neither line-initial nor redirected to fd 2 (`… || printf 'x'`,
-#      which reaches fd 1). None of those spellings appear in this file and none may be added
-#      — but that is an instruction, not a measurement, and no grep over this file can be
+#      which reaches fd 1). Outside it too, and this is the bound the sixth bucket adds rather
+#      than removes: a helper function that acquires a NEW UNCAPTURED CALL SITE. The census
+#      reports the helper's `echo`s at the same 8 lines it always did, the disposition beside them
+#      still reads true of the three captured sites, and the new bare `_fallback_lines` — which is
+#      not an `echo`/`printf` and matches no alternative in the pattern — is INVISIBLE to it.
+#      Measured: a bare `_fallback_lines` planted at top level kept the census at 31 hits with
+#      nothing left over — no hit anywhere in it even names the function — while taking a COMPLETE
+#      run with stdout on `/dev/full` from rc 0 to rc 1 and reddening 71 assertions of the
+#      selftest. That split is the point: the test saw it, the census could not.
+#      None of those spellings appear in this file and none may be added — but that is an
+#      instruction, not a measurement, and no grep over this file can be
 #      trusted past it. What actually HOLDS the property is `tests/gh-code-search-selftest.sh`,
 #      which drives this tool through a truncating reader in every state (the planted writer
 #      above reds 70+ of its assertions); the census is the rule a reader applies, and that test
