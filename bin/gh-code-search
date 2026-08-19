@@ -208,13 +208,38 @@ KB_PROG="gh-code-search"
 # ⛔ DO NOT MAINTAIN A COUNT OF THE WRITERS HERE. The line this replaced said "the only two
 # writes in this file" while there were four, because a hand-kept census is a copy of the code
 # that drifts from it. Derive the population for the version in your hand:
-#     grep -nE '(echo|printf).*>&2|^_put' bin/gh-code-search
-# and dispose of every hit into one of FOUR buckets — a `_put`/`_put_err` DEFINITION, a CALL to
-# one of them at line start, the pre-lib refusal, or this comment quoting the command. Anything
-# left over is a NEW direct writer and must be routed through `_put`/`_put_err`. `echo`/`printf`
-# inside a `$( { … } )` are building a STRING for one of those calls and reach no stream — the
-# grep leaves them out because it anchors on `>&2` and on the two names, which is exactly the
-# boundary that matters: what reaches fd 1 or fd 2 directly.
+#     grep -nE '^[[:space:]]*(echo|printf)|(echo|printf).*>&2|^_put' bin/gh-code-search
+# and dispose of every hit into one of FIVE buckets — a `_put`/`_put_err` DEFINITION, a CALL to
+# one of them at line start, the pre-lib refusal, this comment (which quotes BOTH the command
+# above and the narrower pattern it replaced, so it accounts for two hits), or an
+# `echo`/`printf` inside a `$( { … } )` builder, which is assembling a STRING for one of those
+# calls and reaches no stream. Anything left over is a NEW direct writer and must be routed
+# through `_put`/`_put_err`. The builders are IN the census and disposed of by reading which
+# construct encloses them, rather than filtered out by the pattern: filtering them out is what
+# made the first spelling of this rule unable to see the thing it was written to catch.
+#   ⛔ THAT FIRST SPELLING COULD NOT SEE fd 1 AT ALL, and it is recorded because the rule read
+#      as if it could. It was `grep -nE '(echo|printf).*>&2|^_put'`: `>&2` is REQUIRED in the
+#      first alternative and `^_put` matches only the two names, so no fd-1 write could ever
+#      appear in it — while the sentence beside it claimed the anchors were "exactly the
+#      boundary that matters: what reaches fd 1 or fd 2 directly". Measured: a
+#      `printf '%s\n' "gh-code-search: searching..."` planted at top level between the flag
+#      parsing and the request produced ZERO census hits (five hits, four buckets, nothing left
+#      over) while collapsing EVERY state to rc 1 through `… | head -n 0` — COMPLETE 0→1,
+#      PARTIAL 3→1, UNANSWERED 4→1 — which is verbatim the defect this rule exists to prevent,
+#      arriving through the one fd the census could not look at. The leading
+#      `^[[:space:]]*(echo|printf)` alternative is what closed it; the fifth bucket is the price
+#      of the coverage, and it is the cheaper half of the trade.
+#   ⛔ WHAT THE CENSUS IS STILL BOUNDED TO, stated rather than implied: it sees `echo`/`printf`
+#      and nothing else — either at the start of a line, or anywhere on a line that also carries
+#      `>&2`. Outside it are a write spelled with another command (`cat file >&2`, `tee`), and an
+#      `echo`/`printf` that is neither line-initial nor redirected to fd 2 (`… || printf 'x'`,
+#      which reaches fd 1). None of those spellings appear in this file and none may be added
+#      — but that is an instruction, not a measurement, and no grep over this file can be
+#      trusted past it. What actually HOLDS the property is `tests/gh-code-search-selftest.sh`,
+#      which drives this tool through a truncating reader in every state (the planted writer
+#      above reds 70+ of its assertions); the census is the rule a reader applies, and that test
+#      also runs the command quoted above against a fixture carrying a planted top-level fd-1
+#      writer, so a future narrowing of this pattern reds rather than silently un-covering fd 1.
 #
 # stderr is also emitted BEFORE stdout in every state, and that is a PRESENTATION choice, not a
 # third safety property — it is stated as such because it cannot be watched to fail: with (1) and

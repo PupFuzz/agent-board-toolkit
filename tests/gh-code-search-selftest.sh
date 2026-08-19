@@ -689,6 +689,56 @@ eq "control: --bogus, stderr full: rc 2"           "2" "$(_rc_stderr full --bogu
 eq "a rc-0 answer whose stderr warning cannot be written stays 0" "0" "$(_rc_stderr full --per-page 2 "$Q")"
 
 # ---------------------------------------------------------------------------
+echo "== the writer census the bin's header publishes can actually see fd 1 =="
+# THE HEADER TELLS A MAINTAINER TO RUN A COMMAND; this is the leg that keeps that command honest,
+# and it exists because the first spelling of it was NOT. It was
+# `grep -nE '(echo|printf).*>&2|^_put'` — `>&2` required in the first alternative, the two names
+# in the second — so NO fd-1 write could appear in it, while the prose beside it claimed the
+# anchors were "exactly the boundary that matters: what reaches fd 1 or fd 2 directly". A
+# top-level `printf` planted between the flag parsing and the request produced ZERO census hits
+# and collapsed every state to rc 1 through `| head -n 0`. The assertions above catch that
+# mutation (70+ of them red); the rule a maintainer is told to APPLY did not, and that is the
+# gap this leg closes.
+#
+# The command is EXTRACTED from the header rather than restated here, for the same reason
+# `tests/lib-set-derivation-selftest.sh` extracts the lib-set derivation from its surfaces: a
+# copy of it in this file is a second thing that can drift, and it would then be this file
+# asserting about itself.
+CENSUS_CMD="$(sed -n "s|^#[[:space:]]*\(grep -nE '.*' bin/gh-code-search\)$|\1|p" "$BIN")"
+eq "the header publishes exactly one census command" "1" \
+   "$(printf '%s' "$CENSUS_CMD" | grep -c . || true)"
+CENSUS_PAT="$(printf '%s' "$CENSUS_CMD" | sed -E "s/^grep -nE '//; s/' bin\/gh-code-search\$//")"
+eq "…and a pattern was extracted from it" "true" \
+   "$([ -n "$CENSUS_PAT" ] && echo true || echo false)"
+
+# The fixture is the planted writer in its two load-bearing spellings — at top level (fd 1, the
+# spelling the old pattern was blind to) and via an explicit fd-2 redirect — beside two lines
+# that must NOT be reported as new writers by a pattern that has merely been widened to match
+# everything: an ordinary command, and an indented `_put_err` CALL.
+cat > "$TMP/census-fixture.sh" <<'FIXTURE'
+printf '%s\n' "planted: a top-level fd-1 writer"
+echo "planted: an fd-2 writer" >&2
+gh_out="$(gh api --method GET search/code -f "q=$QUERY")"
+    _put_err "$msg"
+FIXTURE
+CENSUS_HITS="$(grep -nE "$CENSUS_PAT" "$TMP/census-fixture.sh" || true)"
+eq "the published census REPORTS a planted fd-1 writer"  "true" "$(has 'planted: a top-level fd-1 writer' "$CENSUS_HITS")"
+eq "…and a planted fd-2 writer"                          "true" "$(has 'planted: an fd-2 writer' "$CENSUS_HITS")"
+# The other half of the pair, so the leg cannot pass by reporting everything.
+eq "…and does NOT report an ordinary command"            "false" "$(has 'search/code' "$CENSUS_HITS")"
+eq "…nor an indented call to the tolerated writer"       "false" "$(has '_put_err "$msg"' "$CENSUS_HITS")"
+
+# THE CONTROL, pinned to the failure it guards rather than to "can this loop fail": the exact
+# pattern that shipped. It parses, it runs, it exits 0 — and it reports NOTHING of fd 1, so a
+# maintainer applying it concludes the file has no new direct writer when it has one.
+OLD_PAT='(echo|printf).*>&2|^_put'
+OLD_HITS="$(grep -nE "$OLD_PAT" "$TMP/census-fixture.sh" || true)"
+eq "control: the shipped pattern MISSES the fd-1 writer" "false" "$(has 'planted: a top-level fd-1 writer' "$OLD_HITS")"
+eq "control: …while still seeing the fd-2 one"           "true"  "$(has 'planted: an fd-2 writer' "$OLD_HITS")"
+eq "control: …so it is not the pattern the header now publishes" "false" \
+   "$([ "$CENSUS_PAT" == "$OLD_PAT" ] && echo true || echo false)"
+
+# ---------------------------------------------------------------------------
 echo "== usage refusals (rc 2) — and the ONE that is rc 1 =="
 case_body complete-2
 _usage_rc() { run "$@"; printf '%s' "$RC"; }

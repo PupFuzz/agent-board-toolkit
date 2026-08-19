@@ -24,13 +24,17 @@
 # tests/lib-set-derivation-selftest.sh runs every published spelling of the derivation
 # above against the tree and reds when one answers a different set — or nothing, which is
 # how the release note for that pass shipped it, unescaped, matching 0 files — and reds
-# when a consumer-facing instruction line names members of the set instead of deriving
-# them. A list that
-# must be re-synced by hand at every added bin IS the defect; a fifth copy would have
-# minted it again, and a hand audit had already proved it can miss one.
+# when an instruction line ANYWHERE IN THE TREE names members of the set instead of
+# deriving them. A list that must be re-synced by hand at every added bin IS the defect;
+# a fifth copy would have minted it again, and a hand audit had already proved it can
+# miss one. That gate itself shipped scoped to four hand-listed paths in its first
+# attempt — the same defect one layer up, since a fifth surface then joined in silence —
+# and its population is now derived from the tree on every run, minus a named
+# version-history carve-out and a per-line disposition set the check asserts is still
+# live. The reversal is recorded in docs/CONSOLIDATION-PLAN.md.
 #
-# Cited by ANCHOR TEXT, never by line — these four were line
-# numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the
+# Cited by ANCHOR TEXT, never by line — these four were line numbers and three had
+# rotted: INSTALL.md by 62 lines, the drift check by 17, the
 # CHANGELOG quote by ~390 (the reason is at fetch_board_cards's parse site below).
 # ADOPTION.md has no numbered sections and its "§8" means the Task-tracking
 # standard's §8:
