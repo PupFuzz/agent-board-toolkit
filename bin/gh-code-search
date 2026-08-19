@@ -59,9 +59,13 @@
 #   UNANSWERED total_count=17 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
 #   ERROR      total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
 #
-#   ⛔ "IN EVERY STATE" MEANS EVERY STATE THIS TOOL DECIDES, and there is one VERDICT path that
-#      reaches none of them — plus the rc-2 usage refusals, which write only to stderr and are
-#      not verdicts about a search at all: `TMPERR="$(mktemp)"` below is unguarded, so an unwritable
+#   ⛔ "IN EVERY STATE" MEANS EVERY STATE THIS TOOL DECIDES ABOUT A SEARCH. That is the
+#      CRITERION, not an enumeration — a path that issues no search is outside it without
+#      needing to be counted (`--help`, rc 0 with usage on stdout; the rc-2 usage refusals,
+#      stderr only). Two earlier cuts of this sentence tried to enumerate the exceptions and
+#      were off by one each time, which is why it now states the property instead. WITHIN the
+#      criterion, one VERDICT path reaches none of them: `TMPERR="$(mktemp)"` below is
+#      unguarded, so an unwritable
 #      `$TMPDIR` kills the run under `set -e` before any verdict exists. Measured with
 #      `TMPDIR=/nonexistent`: rc 1, ZERO bytes of stdout, and the only stderr is mktemp's own
 #      `failed to create file via template` — this tool says nothing at all. rc 1 is the right
@@ -225,7 +229,10 @@ KB_PROG="gh-code-search"
 #      disposable ONLY by ENUMERATING that helper's call sites and showing that every one of them
 #      CAPTURES its output; the enumeration is part of the disposition, not a step before it, and
 #      a disposition that names the function without listing its call sites has disposed of
-#      nothing. Discharged here for the file's one helper: `_fallback_lines` (8 hits) is called at
+#      nothing. Discharged here for the file's one helper CARRYING CENSUS HITS: `_fallback_lines`
+#      (8 hits). The file defines five functions — `_put`, `_put_err`, `die`,
+#      `_fallback_lines`, `_emit_withheld`; the other four carry no hit, so the
+#      obligation is discharged by this one. It is called at
 #      exactly THREE sites — the ERROR, UNANSWERED and PARTIAL refusals — and all three are
 #      `_put_err "$( { … _fallback_lines; } )"`, so every byte it writes is captured by the
 #      command substitution and reaches `_put_err`'s tolerated write, never a stream. Re-derive
@@ -260,7 +267,10 @@ KB_PROG="gh-code-search"
 #      nothing left over — no hit anywhere in it even names the function — while taking a COMPLETE
 #      run with stdout on `/dev/full` from rc 0 to rc 1 and reddening 71 assertions of the
 #      selftest. That split is the point: the test saw it, the census could not.
-#      None of those spellings appear in this file and none may be added — but that is an
+#      No spelling that REACHES A STREAM appears in this file that way, and none may be
+#      added — the two `printf`s inside `$( … )` at `_emit_withheld` and the COMPLETE/PARTIAL
+#      builder are string BUILDERS, which is the idiom this file requires, not writes. But
+#      that is an
 #      instruction, not a measurement, and no grep over this file can be
 #      trusted past it. What actually HOLDS the property is `tests/gh-code-search-selftest.sh`,
 #      which drives this tool through a truncating reader in every state (the planted writer

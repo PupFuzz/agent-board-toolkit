@@ -114,7 +114,8 @@ _headings() { grep -nE "$2" "$1" || true; }
 # heading the caller says it did.
 #
 # ⛔ THE CUT IS BY HEADING TEXT, NEVER BY A SECTION NUMBER. `docs/UPGRADE.md` was split on `^## 6\.`
-# while three sentences beside it called the split "derived, not a line number": only the OFFSET was
+# while one sentence beside it called the split "derived, not a line number" (the file mentioned
+# the split three times; only that one made the claim): only the OFFSET was
 # derived — the 6 was a hand-kept fact, i.e. this file's own subject, inside this file. Measured:
 # inserting a new LIVE `## 6.` section carrying an enumeration line and renumbering the history to
 # `## 7.` left the whole run rc 0 all-green while the live region silently SHRANK, because the only

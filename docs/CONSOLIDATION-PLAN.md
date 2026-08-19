@@ -1224,8 +1224,10 @@ finding with no owner is abandoned, not filed.
   whole paragraph in the markdown a consumer follows and a wrapped fragment in a shell comment —
   stated in the check, because it means a historical aside wrapped across comment lines is out of
   its reach by construction, not by luck. Version-specific history
-  (`UPGRADE.md`'s version-specific section, `docs/CHANGELOG.md`'s RELEASED entries, `CLAUDE.md`'s
-  release-snapshot table) is deliberately out
+  (`UPGRADE.md`'s version-specific section and `docs/CHANGELOG.md`'s RELEASED entries, each split
+  at its heading; plus `CLAUDE.md`, carved WHOLE-FILE for a second and independent reason — it is
+  agent orientation and reaches no vendoring consumer, so `LEG3_HISTORY=("CLAUDE.md")` skips the
+  file, not its release-snapshot table) is deliberately out
   of its population and the check says
   why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
 
@@ -1241,7 +1243,8 @@ finding with no owner is abandoned, not filed.
   green now certifies the narrower question.
   **Leg 3's population is now DERIVED on every run** — every readable non-binary file in the tree,
   `.git` excluded, the same population leg 1 uses — minus two carve-outs of deliberately different
-  shape: version-specific frozen history, carved out at the HEADING where it begins (a per-line
+  shape: version-specific frozen history, carved out at the HEADING where it begins for two of its
+  three members — `CLAUDE.md` stays whole-file, for the independent reason named above (a per-line
   disposition there would need a new entry every release, i.e. the hand-kept list again — it was
   carved **whole-file** until the fourth pass below), and a small set of
   **per-line** dispositions for prose that names the same nouns without instructing anyone to copy
@@ -1257,7 +1260,8 @@ finding with no owner is abandoned, not filed.
 
   ⛔ **A FOURTH PASS THEN MEASURED THE THIRD CLOSURE'S CARVE-OUTS WRONG IN TWO PLACES — same shape
   again: a stated scope wider than the predicate under it.** *(a)* The `UPGRADE.md` split was cut on
-  `^## 6\.` while three sentences beside it called it *"derived, not a line number"*: only the
+  `^## 6\.` while one sentence beside it called it *"derived, not a line number"* (three
+  mentions of the split, one making the claim): only the
   OFFSET was derived — the **6** was a hand-kept fact, this bullet's own subject inside this
   bullet's own gate. Measured: a new LIVE `## 6.` section carrying an enumeration line, with the
   history renumbered to `## 7.`, left the run **rc 0 all-green** while the live region silently
