@@ -72,6 +72,25 @@
 #     and sent it to GitHub as a search term. The arm is now `-*` and the case below is what
 #     holds it there.
 #
+# TEN MORE, for the defects an adversarial review returned before merge. Same discipline —
+# applied, run, restored by COPY and verified with `cmp` against a pre-mutation snapshot. Red
+# counts as measured; a harness control (an identity mutation ⇒ 0 red, `PARTIAL exits 0` ⇒ 5 red)
+# ran first, because a mutation harness that cannot see red certifies every mutation below:
+#   11  the readability gate loses its integer-RENDERING clause, so `0.0` and `1e2` are envelopes
+#       again (the flagged-float-zero case is what turns that from cosmetic into this tool's own
+#       subject: it went to PARTIAL rc 3 WITH its item line)
+#    8  the `--` terminator arm removed — no query beginning with `-` is expressible at all
+#    8  `--per-page` loses its base-10 normalisation: `010` compares equal to 8, so a genuinely
+#       FULL page reads as a short one at rc 0 with no warning, and `08` leaks a raw
+#       `[[: 08: value too great for base` before refusing
+#    6  `trap '' PIPE` removed — every state answers rc 141 with an empty stderr to a reader that
+#       stops reading · 6  the item lines go back down a `… | jq` stdout pipeline
+#    5  `_put` loses its tolerated write — the kill becomes a `set -e` death at rc 1, i.e. a
+#       WRONG VERDICT rather than a crash, which is why both properties are asserted separately
+#    5  the gate's "exactly one document" clause weakened to `>= 1`
+#    2  the withheld object's `reason` blanked · 2  its `total_count_is_estimate` dropped
+#    1  `--help` writes to stdout directly again
+#
 # THE LIVE LEG WAS ALSO SEEN TO FAIL, on the real endpoint against a real private repository:
 # with the first mutation above in place the tool answered
 # `PARTIAL total_count=0 … incomplete_results=true items_returned=0` at rc 3 and the leg went
@@ -80,9 +99,12 @@
 #
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property the assertions support: that
 # the tool maps a given `gh` (rc, stdout, stderr) triple to the documented (rc, stdout, stderr)
-# triple, and that its one request carries the query and per_page it was given. It proves
-# nothing about what the real `search/code` returns for any query, and nothing about the
-# accuracy of the prose in either file's header.
+# triple, that its one request carries the query and per_page it was given, and that a CONSUMER
+# which stops reading stdout cannot change any of that. It proves nothing about what the real
+# `search/code` returns for any query, and nothing about the accuracy of the prose in either
+# file's header. The truncating-reader legs prove it for the two readers they use (`head -n 1`
+# and `head -n 0`) and for one payload past the pipe buffer — not for every way a consumer can
+# go away (an fd closed outright, a reader killed mid-read, a full disk on stdout).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -133,6 +155,16 @@ _body partial-2    17   true  "$(_item acme/app src/A.php)" "$(_item acme/app sr
 # items on that branch reddened NOTHING. It is a fixture, not a handled case: the tool grows no
 # code for it, the branch already withholds everything, and this is what makes that observable.
 _body unanswered-with-item 0 true "$(_item acme/app src/A.php)"
+# A page that comes back FULL at exactly ten items — the fixture the `--per-page 010` case needs,
+# because the base-8 defect was only observable where `items_returned == --per-page` decides.
+_full10=(); for _i in 1 2 3 4 5 6 7 8 9 10; do _full10+=("$(_item acme/app "src/F$_i.php")"); done
+_body full-10 9999 false "${_full10[@]}"
+# A payload larger than the 64 KiB pipe buffer (~92 KB rendered). Nothing about the padding is
+# realistic; the SIZE is the whole point — see the truncating-reader section for why a fixture
+# that fits the buffer cannot exercise a write that is cut mid-flight.
+_pad="$(printf 'x%.0s' $(seq 1 900))"
+_big=(); for _i in $(seq 1 100); do _big+=("$(_item acme/app "src/$_pad/$_i.php")"); done
+_body big-100 9999 false "${_big[@]}"
 
 # Unreadable-at-200 shapes. Every one of these must be ERROR, never a zero.
 printf '{"message":"You have exceeded a secondary rate limit","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}' > "$BODIES/ratelimit.json"
@@ -148,6 +180,18 @@ printf '{"total_count":1,"incomplete_results":false,"items":[{"path":"src/A.php"
 printf '{"total_count":1,"incomplete_results":false,'                     > "$BODIES/truncated.json"
 printf '[]'                                                               > "$BODIES/array.json"
 : > "$BODIES/empty.json"
+# A count that is a NUMBER to jq but not an integer to bash. `type == "number"` is true for both,
+# which is how they reached an arithmetic test.
+printf '{"total_count":0.0,"incomplete_results":false,"items":[]}'        > "$BODIES/total-float.json"
+printf '{"total_count":1e2,"incomplete_results":false,"items":[]}'        > "$BODIES/total-exponent.json"
+# TWO concatenated documents. `jq` reads a document STREAM, so the gate emitted two lines and the
+# `read -r` below consumed only the first — the flagged zero in the second was discarded and the
+# run reported COMPLETE rc 0. Not producible by a non-`--paginate` `gh api` call: a hole in the
+# gate, closed as one, not a live defect.
+printf '{"total_count":5,"incomplete_results":false,"items":[]}\n{"total_count":0,"incomplete_results":true,"items":[]}' > "$BODIES/two-docs.json"
+# THE FLAGGED FLOAT ZERO — the shape that made the non-integer count a correctness defect and not
+# a cosmetic one: it carried `incomplete_results: true`, i.e. this tool's own subject.
+printf '{"total_count":0.0,"incomplete_results":true,"items":[%s]}' "$(_item acme/app src/A.php)" > "$BODIES/float-zero-flagged.json"
 
 # ---------------------------------------------------------------------------
 # Harness. Every case names the (rc, stdout, stderr) the fake `gh` presents; the tool's own
@@ -162,6 +206,28 @@ run() {
     env PATH="$STUB:$UB" GCS_BODY="$BODY" GCS_RC="$GRC" GCS_STDERR="$GERR" GCS_ARGV="$ARGV" \
         "$BIN" "$@" >"$OUTF" 2>"$ERRF" || RC=$?
     OUT="$(cat "$OUTF")"; ERR="$(cat "$ERRF")"
+}
+
+# run_piped <reader…> -- <tool-args…> — drive the bin with its stdout attached to a reader that
+# STOPS READING, and recover the TOOL's own exit status.
+#
+# THE STATUS HAS TO COME OUT OF A FILE. `$?` after `tool | head` is HEAD's status, which is 0 in
+# every case below and would certify nothing at all — the assertions would pass against a tool
+# killed by SIGPIPE. It is captured inside the pipeline's left subshell by a `|| irc=$?`, which
+# also stops `set -e` from ending that subshell before the capture runs; the write that records
+# it goes to a FILE, so it cannot itself be lost to the closed pipe.
+RCF="$TMP/piped-rc"
+run_piped() {
+    local reader=()
+    while [[ "${1:-}" != "--" ]]; do reader+=("$1"); shift; done
+    shift
+    : > "$ARGV"; : > "$RCF"
+    { local irc=0
+      env PATH="$STUB:$UB" GCS_BODY="$BODY" GCS_RC="$GRC" GCS_STDERR="$GERR" GCS_ARGV="$ARGV" \
+          "$BIN" "$@" 2>"$ERRF" || irc=$?
+      printf '%s' "$irc" > "$RCF"
+    } | "${reader[@]}" >"$OUTF" 2>/dev/null || true
+    RC="$(cat "$RCF")"; OUT="$(cat "$OUTF")"; ERR="$(cat "$ERRF")"
 }
 
 # case_body <name> — select a 200-with-this-body fixture.
@@ -302,7 +368,8 @@ eq "stderr names the fallback"                "true"  "$(has 'git/trees/<ref>?re
 # object and an HTML error page) that motivated the gate in the first place.
 echo "-- 200 bodies that must be ERROR, never a zero --"
 for shape in ratelimit html no-total no-flag total-string flag-string no-items items-object \
-             item-no-path item-no-repo truncated array empty; do
+             item-no-path item-no-repo truncated array empty \
+             total-float total-exponent two-docs; do
     case_body "$shape"
     run "$Q"
     eq "200 + $shape → rc 1"                   "1"     "$RC"
@@ -310,6 +377,27 @@ for shape in ratelimit html no-total no-flag total-string flag-string no-items i
     eq "200 + $shape → no item line"           "1"     "$(_lines "$OUT")"
     eq "200 + $shape → not read as zero"       "true"  "$(has 'unreadable response is not an empty one' "$ERR")"
 done
+
+# The two shapes above that are NOT merely unreadable — each was a wrong ANSWER, not a fault.
+#
+# A count that is a number to jq and not an integer to bash. `0.0` carrying
+# `incomplete_results: true` is this tool's own subject wearing a float: the gate admitted it,
+# `[[ 0.0 -eq 0 ]]` faulted with a raw `line 265: [[: 0.0: syntax error` on stderr, and the
+# FLAGGED ZERO fell through to PARTIAL rc 3 with its item line emitted.
+case_body float-zero-flagged
+run "$Q"
+eq "a FLAGGED 0.0 is never reported as PARTIAL"   "false" "$(has 'PARTIAL' "$OUT")"
+eq "…it is ERROR, at rc 1"                        "1"     "$RC"
+eq "…no item line is emitted"                     "1"     "$(_lines "$OUT")"
+eq "…nor its path"                                "false" "$(has 'src/A.php' "$OUT")"
+eq "…and no raw bash arithmetic fault leaks out"  "false" "$(has 'syntax error' "$ERR")"
+
+# Two concatenated documents: the SECOND carried the flagged zero and was silently dropped,
+# leaving a confident `COMPLETE … total_count=5` at rc 0 off a body this tool cannot read.
+case_body two-docs
+run "$Q"
+eq "a two-document body is never COMPLETE"        "false" "$(has 'COMPLETE' "$OUT")"
+eq "…and the first document's count is not claimed" "false" "$(has 'total_count=5' "$OUT")"
 
 # ---------------------------------------------------------------------------
 echo "== --format json — the same four states, and the same withholding =="
@@ -334,6 +422,11 @@ eq "…nor an items_returned"                   "false"       "$(printf '%s' "$O
 eq "…it says results are WITHHELD"            "WITHHELD"    "$(printf '%s' "$OUT" | jq -r .results)"
 eq "…the zero is still shown"                 "0"           "$(printf '%s' "$OUT" | jq -r .total_count)"
 eq "…beside its flag, in the same object"     "true"        "$(printf '%s' "$OUT" | jq -r .incomplete_results)"
+# The two fields the withheld object emits that nothing asserted on. Blanking `reason` and
+# dropping `total_count_is_estimate` were both mutated and both reddened NOTHING, so the stated
+# "every printed count is tagged ESTIMATE" invariant rested on nothing at all in this format.
+eq "…and it says WHY it withheld"             "true"        "$(printf '%s' "$OUT" | jq -r '.reason | test("flagged this search incomplete and returned a count of zero")')"
+eq "…and the count carries its ESTIMATE tag"  "true"        "$(printf '%s' "$OUT" | jq -r .total_count_is_estimate)"
 
 case_body partial-2
 run --format json "$Q"
@@ -349,6 +442,8 @@ eq "…state"                                   "ERROR"       "$(printf '%s' "$O
 eq "…count is null, never 0"                  "null"        "$(printf '%s' "$OUT" | jq -r .total_count)"
 eq "…flag is null, never false"               "null"        "$(printf '%s' "$OUT" | jq -r .incomplete_results)"
 eq "…no items key"                            "false"       "$(printf '%s' "$OUT" | jq -r 'has("items")')"
+eq "…the reason names the unreadable body"    "true"        "$(printf '%s' "$OUT" | jq -r '.reason | test("not a readable code-search envelope")')"
+eq "…and the ESTIMATE tag rides here too"     "true"        "$(printf '%s' "$OUT" | jq -r .total_count_is_estimate)"
 
 # ---------------------------------------------------------------------------
 echo "== the wire — what was actually sent =="
@@ -369,6 +464,55 @@ eq "…and says so on stderr as well"           "true" "$(has 'came back FULL' "
 run --per-page 3 "$Q"
 eq "a page short of --per-page is not"        "true" "$(has 'items_truncated=false' "$OUT")"
 eq "…and stays quiet on stderr"               "0"    "$(_lines "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== a reader that stops reading must not be able to destroy the verdict =="
+# `gh-code-search … | head -1` is the invocation this tool's OWN header invites ("One verdict
+# line on stdout in every state, then one line per matched file"), and it used to kill the tool
+# mid-emit. Measured on the pre-fix bin against this same stub, flagged 30-item page:
+#     direct      rc=3   31 stdout lines, 679 bytes of stderr
+#     | head -1   rc=141 0 bytes of stderr
+# Both halves of the contract — the exit code AND the loud refusal — destroyed by the CONSUMER,
+# with nothing anywhere saying so. That is worse than having no guard, because it looks like it
+# worked; `set -euo pipefail` plus a stdout write standing in front of the verdict-carrying
+# `exit` is all it took.
+case_body partial-2
+run_piped head -n 1 -- "$Q"
+eq "PARTIAL through \`head -1\`: rc is 3, not 141"   "3"    "$RC"
+eq "…and the refusal still reached stderr"           "true" "$(has 'COUNT is not authoritative' "$ERR")"
+eq "…and the reader did receive the verdict line"    "true" "$(has 'PARTIAL' "$OUT")"
+
+# A reader that reads NOTHING AT ALL is the harder case and the one that reds EVERY state: the
+# tool must fork `gh` and `jq` before its first write, while `head -n 0` exits before its first
+# read, so the reader is provably gone by the time the write happens. Pre-fix this was rc 141
+# with an empty stderr in every state below, `--help` included.
+run_piped head -n 0 -- "$Q"
+eq "PARTIAL through a reader that never reads: rc 3" "3"    "$RC"
+eq "…stderr intact"                                  "true" "$(has 'COUNT is not authoritative' "$ERR")"
+run_piped head -n 0 -- --format json "$Q"
+eq "…and the same under --format json"               "3"    "$RC"
+
+case_body unanswered
+run_piped head -n 0 -- "$Q"
+eq "UNANSWERED through such a reader: rc 4"          "4"    "$RC"
+eq "…and the zero is still refused in words"         "true" "$(has 'That zero is NOT "no matches"' "$ERR")"
+
+BODY="$BODIES/ratelimit.json"; GRC=0; GERR=""
+run_piped head -n 0 -- "$Q"
+eq "ERROR through such a reader: rc 1"               "1"    "$RC"
+eq "…and the no-matches reading is still forbidden"  "true" "$(has 'Do NOT read this as "no matches"' "$ERR")"
+
+# The cases above cannot show the WRITE surviving being cut mid-flight: their whole payload fits
+# the 64 KiB pipe buffer, so it completes before the reader is ever missed. This page renders to
+# ~92 KB, so the writer MUST block, and therefore MUST meet the closed pipe.
+case_body big-100
+run_piped head -n 1 -- "$Q"
+eq "a payload past the pipe buffer, cut mid-write: rc 0" "0"    "$RC"
+eq "…and the FULL-page warning still reached stderr"     "true" "$(has 'came back FULL' "$ERR")"
+
+# --help is on the same rule: a terminal exit path with a stdout write standing in front of it.
+run_piped head -n 0 -- --help
+eq "--help through a reader that never reads: rc 0"      "0"    "$RC"
 
 # ---------------------------------------------------------------------------
 echo "== usage refusals (rc 2) — and the ONE that is rc 1 =="
@@ -400,6 +544,60 @@ eq "--per-page with an Arabic-Indic digit" "2" "$(LC_ALL=en_US.UTF-8 _usage_rc -
 run --bogus "$Q"
 eq "an unknown flag prints usage on stderr"  "true" "$(has 'usage: gh-code-search' "$ERR")"
 eq "…and nothing on stdout"                  "0"    "$(_lines "$OUT")"
+
+# ---------------------------------------------------------------------------
+echo "== \`--\` — the end-of-options terminator =="
+# Without it NO query beginning with `-` was expressible AT ALL: the `--` itself matched the
+# `-*` arm and came back rc 2 naming the wrong thing. The comment justifying that arm asserted
+# such a query could not exist ("code search needs at least one non-negated term"). It can, and
+# it answers — measured on the live endpoint, one call:
+#     gh api --method GET search/code -f 'q=-path:tests repo:laravel/framework class' -f per_page=1
+#     → {"incomplete_results":false,"total_count":1536}
+# so the arm was refusing real queries and the comment was a false claim about the world.
+case_body complete-2
+DASHQ='-path:tests repo:acme/app class'
+run -- "$DASHQ"
+eq "a query beginning with '-' runs, after '--'"     "0"    "$RC"
+eq "…and reaches the wire VERBATIM"                  "1"    "$(grep -c "^q=$DASHQ\$" "$ARGV")"
+eq "…and is echoed as the query, not as a flag"      "true" "$(has "query=$DASHQ" "$OUT")"
+# Everything after `--` is the query, flag-shaped or not.
+run -- --per-page
+eq "'-- --per-page' takes it as the QUERY"           "0"    "$RC"
+eq "…so per_page keeps its default"                  "1"    "$(grep -c '^per_page=100$' "$ARGV")"
+eq "…and the wire carries the literal query"         "1"    "$(grep -c '^q=--per-page$' "$ARGV")"
+# A flag BEFORE the terminator is still a flag — the terminator ends options, it does not
+# retroactively demote them.
+run --per-page 5 -- "$DASHQ"
+eq "--per-page before '--' still takes effect"       "1"    "$(grep -c '^per_page=5$' "$ARGV")"
+eq "…and the dash-leading query still rode through"  "1"    "$(grep -c "^q=$DASHQ\$" "$ARGV")"
+eq "'--' with no query after it"                     "2"    "$(_usage_rc --)"
+eq "a second positional after '--'"                  "2"    "$(_usage_rc -- "$Q" 'extra')"
+run -v
+eq "the single-dash refusal now names the way through" "true" "$(has "goes after '--'" "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== leading zeros are read as BASE 10, at every arithmetic site =="
+# ⛔ ONE class, three sites. `kb_is_uint` admits a leading zero (it tests the SHAPE) and bash
+# reads one as OCTAL, which is not a formatting nit here — it inverted the direction of error
+# the header commits to ("it errs toward 'there is more', never toward a short set reading as
+# the whole set"). Measured pre-fix: `--per-page 010` over a genuinely FULL ten-item page gave
+# `items_truncated=false`, rc 0 and NO warning, because `[[ 10 -eq 010 ]]` is `10 -eq 8`.
+case_body full-10
+run --per-page 010 "$Q"
+eq "--per-page 010 is TEN: the page is accepted"      "0"    "$RC"
+eq "…and a genuinely FULL page reads as truncated"    "true" "$(has 'items_truncated=true' "$OUT")"
+eq "…and says so on stderr"                           "true" "$(has 'came back FULL' "$ERR")"
+eq "…and the wire carries the decimal form"           "1"    "$(grep -c '^per_page=10$' "$ARGV")"
+# `08` is not a legal octal literal at all: the raw `[[: 08: value too great for base` leaked to
+# stderr before the refusal — verbatim the failure the guard above it was written to prevent.
+run --per-page 08 "$Q"
+eq "--per-page 08 is EIGHT, not an illegal literal"   "0"    "$RC"
+eq "…and no raw bash arithmetic fault leaks out"      "false" "$(has 'value too great for base' "$ERR")"
+eq "…and the wire carries the decimal form"           "1"    "$(grep -c '^per_page=8$' "$ARGV")"
+# Out of range is still out of range, and the refusal quotes what the CALLER typed.
+run --per-page 0101 "$Q"
+eq "--per-page 0101 is 101 and is refused"            "2"    "$RC"
+eq "…in the caller's own spelling"                    "true" "$(has "got '0101'" "$ERR")"
 
 # `gh` missing is rc 2 (the run cannot be SET UP), matching release-artifacts-check's
 # `jq is required` refusal — deliberately NOT rc 1, which means "the search ran and could not

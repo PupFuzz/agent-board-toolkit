@@ -53,16 +53,24 @@
 # rather than either shipped unchecked (a null where a string was promised) or added to the gate,
 # which would refuse a whole real answer over a cosmetic field:
 #
-#   COMPLETE    total_count=4472 (ESTIMATE) incomplete_results=false items_returned=100 items_truncated=true query=…
-#   PARTIAL     total_count=17 (ESTIMATE) incomplete_results=true items_returned=17 items_truncated=false query=…
-#   UNANSWERED  total_count=0 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
-#   ERROR       total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
+#   COMPLETE   total_count=4472 (ESTIMATE) incomplete_results=false items_returned=100 items_truncated=true query=…
+#   PARTIAL    total_count=17 (ESTIMATE) incomplete_results=true items_returned=17 items_truncated=false query=…
+#   UNANSWERED total_count=0 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
+#   ERROR      total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
 #
 # `results=WITHHELD` is the point, not a formatting choice: on the two states that carry no
 # answer this tool emits NO item line and NO `items_returned=0`, because an empty result set
 # IS the defect being guarded — a zero that reads as an answer. `--format json` obeys the same
 # rule: the withheld states carry `"results":"WITHHELD"` and no `items` key at all, and every
 # object that carries `total_count` carries `incomplete_results` beside it.
+#
+# THE VERDICT SURVIVES A READER THAT STOPS READING. `gh-code-search … | head -1` is exactly the
+# shape the two lines above invite, and it used to kill this tool mid-emit: measured rc 141 with
+# an EMPTY stderr where a direct run gave rc 3 and 679 bytes of refusal. Both halves of the
+# contract were destroyed by the consumer, silently — a guard that loses its own signal is worse
+# than no guard, because it looks like it worked. SIGPIPE is now neutralised and stdout is ONE
+# write of an already-complete string whose failure is tolerated, so the exit code documented
+# below, and the stderr text beside it, are what a truncating consumer actually receives.
 #
 # ONE PAGE, STATED. It issues exactly one request and does not paginate. `items_truncated` is
 # `true` whenever the page came back FULL (`items_returned == --per-page`), because at that
@@ -88,12 +96,22 @@
 # an UNANSWERED has none and re-running will not produce any. 1 and 4 are separate for the same
 # reason — an ERROR may clear on retry, an UNANSWERED against a private repo will not.
 #
-# Usage: gh-code-search [--per-page N] [--format text|json] <query>
+# Usage: gh-code-search [--per-page N] [--format text|json] [--] <query>
 #
 #   <query>      the GitHub code-search query, as ONE argument, in the endpoint's own syntax
 #                (`repo:owner/name needle`, `org:acme path:*.php needle`, …). Quote it.
+#   --           end of options — everything after it is the query, `-` or not. A query that
+#                BEGINS with a negated qualifier is legal and answers:
+#                `-path:tests repo:laravel/framework class` returned `total_count: 1536` with
+#                `incomplete_results: false` on the live endpoint. Any argument starting with
+#                `-` is a flag to this tool, so `--` is the ONLY way to spell such a query:
+#                    gh-code-search -- '-path:tests repo:owner/name class'
 #   --per-page   items to request, 1-100 (default 100 — the endpoint's maximum, so that the
 #                exact-and-verifiable half of the answer is as large as one request allows).
+#                READ AS BASE 10 ALWAYS: `--per-page 010` means 10, and `08` means 8. Bash
+#                arithmetic reads a leading zero as OCTAL, which made `010` compare equal to 8
+#                and made `08` an illegal literal; the value is normalised to decimal once,
+#                where it is accepted, rather than at each place it is later compared.
 #   --format     `text` (default) or `json` — one object on stdout, same states, same rcs.
 #
 # WHEN IT REFUSES, IT NAMES THE WAY THROUGH: `repos/<owner>/<repo>/git/trees/<ref>?recursive=1`
@@ -114,22 +132,63 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 KB_PROG="gh-code-search"
 
-USAGE='usage: gh-code-search [--per-page N] [--format text|json] <query>'
-die() { echo "$KB_PROG: $*" >&2; exit 2; }
+# --- the only two writes in this file ---------------------------------------
+# ⛔ SIGPIPE IS NEUTRALISED HERE, AND EVERY BYTE THIS TOOL EMITS GOES THROUGH ONE OF THESE TWO
+# FUNCTIONS, AS A STRING THAT IS ALREADY COMPLETE. The contract is carried by the EXIT CODE and
+# by the stderr refusal — never by the shape of stdout — and this file's own header invites the
+# invocation that used to destroy both. Measured on a flagged 30-item page before this change:
+#     direct        rc=3    31 stdout lines, 679 bytes of stderr
+#     | head -1     rc=141  0 bytes of stderr
+#     | head -n 0   rc=141  0 bytes of stderr — in EVERY state, `--help` included
+# `set -euo pipefail` plus a stdout write that ran BEFORE the verdict-carrying `exit` meant the
+# CONSUMER killed the script mid-emit: the tool whose whole job is to refuse a zero that reads
+# as an answer handed back a signal death that reads as nothing at all. A guard that loses its
+# own signal is worse than no guard, because it looks like it worked.
+#
+# TWO properties carry it, and BOTH are needed — each is watched to fail on its own in
+# tests/gh-code-search-selftest.sh:
+#   1. `trap '' PIPE` — a closed reader makes a write RETURN EPIPE instead of killing the
+#      process. Set before the argument loop, so `--help | head -1` is covered too.
+#   2. ONE write per stream, of an ALREADY-BUILT string, whose failure is tolerated — there is
+#      nothing left to lose by the time it is attempted. Building first is what removes the
+#      `… | jq` stdout pipelines whose SIGPIPE was the actual killer; without the tolerance,
+#      ignoring the signal only converts the kill into a `set -e` death at rc 1, which is worse
+#      (rc 1 is a VERDICT here — it would report ERROR for a search that ran fine).
+# Nothing else in this file may write to stdout or stderr directly. A second writer is a second
+# place for the verdict to be lost, which is how the first one got there.
+#
+# stderr is also emitted BEFORE stdout in every state, and that is a PRESENTATION choice, not a
+# third safety property — it is stated as such because it cannot be watched to fail: with (1) and
+# (2) in place the order no longer affects survival. The qualifier reading before the data it
+# qualifies is the whole of its value ("the item(s) below…").
+trap '' PIPE
+_put()     { printf '%s\n' "$1" 2>/dev/null || true; }
+_put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
+
+USAGE='usage: gh-code-search [--per-page N] [--format text|json] [--] <query>'
+die() { _put_err "$KB_PROG: $*"; exit 2; }
 
 PER_PAGE=100
 FORMAT=text
 QUERY=""
+end_of_flags=0
 while [[ $# -gt 0 ]]; do
+    if [[ "$end_of_flags" -eq 1 ]]; then
+        kb_require_positional "$QUERY" "$1" '<query>' || exit 2
+        QUERY="$1"; shift; continue
+    fi
     case "$1" in
         --per-page) kb_require_value "$1" "${2:-}" || exit 2; shift; PER_PAGE="$1" ;;
         --format)   kb_require_value "$1" "${2:-}" || exit 2; shift; FORMAT="$1" ;;
         # Contiguous leading comment block, not a fixed range — see the release movers.
-        -h|--help)  awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0 ;;
+        -h|--help)  _put "$(awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0")"; exit 0 ;;
+        # The end-of-options terminator, ahead of the `-*` arm it exists to escape.
+        --)         end_of_flags=1 ;;
         # `-*`, not `--*`: a single-dash typo (`-v`) otherwise became the QUERY and was sent
-        # to GitHub as a search term. A query cannot begin with `-` anyway — code search needs at
-        # least one non-negated term — so nothing legitimate is refused here.
-        -*)         echo "$USAGE" >&2; die "unknown flag '$1'" ;;
+        # to GitHub as a search term. A query that BEGINS with `-` is legal and answers —
+        # `-path:tests repo:laravel/framework class` returned total_count 1536 on the live
+        # endpoint — so it is reachable, through `--` and only through `--`.
+        -*)         _put_err "$USAGE"; die "unknown flag '$1' — a query beginning with '-' goes after '--'" ;;
         *)          kb_require_positional "$QUERY" "$1" '<query>' || exit 2; QUERY="$1" ;;
     esac
     shift
@@ -140,10 +199,33 @@ done
 # which would be reported as ERROR — a true statement about a call that never needed making,
 # and one that spends a search-API request out of a 10/minute budget to learn nothing.
 [[ -n "${QUERY//[[:space:]]/}" ]] || die '<query> is only whitespace'
+# ⛔ ONE RULE, STATED ONCE AND APPLIED AT BOTH ENTRY POINTS: a value that will reach a bash
+# ARITHMETIC context must be a plain decimal-integer STRING before it gets there. Bash reads a
+# leading zero as base 8, which is not a formatting quirk here — it inverted this tool's stated
+# guarantee. Measured on the pre-fix tool:
+#     --per-page 010 over a genuinely FULL 10-item page → `[[ 10 -eq 010 ]]` is `10 -eq 8`, so
+#       items_truncated=false, rc 0, and NO warning: a short set read as the whole set, which is
+#       the exact direction the ONE PAGE section above promises never to err in.
+#     --per-page 08  → `bin/gh-code-search: line 146: [[: 08: value too great for base` leaked
+#       raw to stderr before the refusal — verbatim the failure the guard below was written for.
+#     total_count 0.0 (or 1e2) with incomplete_results:true → `[[: 0.0: syntax error` and the
+#       flagged ZERO routed to PARTIAL rc 3 with its item lines emitted, instead of UNANSWERED
+#       rc 4. The envelope gate admitted it because jq's `type` is "number" for a float.
+# The fix is at the two WRITE sites, not at the three comparisons: `--per-page` is normalised to
+# decimal the moment it is accepted, and the envelope gate below refuses any `total_count` whose
+# own rendering is not a run of digits. Every later `-eq`/`-ge`/`-le` in this file is then over
+# values that cannot be read as anything but base 10.
+#
 # `kb_is_uint` before the range test: `[ "$PER_PAGE" -ge 1 ]` on a non-numeric string is a
-# bash error, not a refusal, and under `set -e` it kills the script with no diagnostic.
+# bash error, not a refusal, and under `set -e` it kills the script with no diagnostic. It
+# admits a leading zero (its job is the SHAPE), which is why the normalisation follows it and
+# does not replace it.
 kb_is_uint "$PER_PAGE" || die "--per-page must be a whole number 1-100, got '$PER_PAGE'"
-[[ "$PER_PAGE" -ge 1 && "$PER_PAGE" -le 100 ]] || die "--per-page must be 1-100, got '$PER_PAGE' (100 is the endpoint's maximum)"
+PER_PAGE_RAW="$PER_PAGE"
+PER_PAGE=$((10#$PER_PAGE))
+# The refusal quotes what the CALLER typed, not the normalised value — the caller can only act
+# on the spelling they wrote.
+[[ "$PER_PAGE" -ge 1 && "$PER_PAGE" -le 100 ]] || die "--per-page must be 1-100, got '$PER_PAGE_RAW' (100 is the endpoint's maximum)"
 case "$FORMAT" in text|json) ;; *) die "--format must be 'text' or 'json', got '$FORMAT'" ;; esac
 
 command -v gh >/dev/null || die "gh is required (this tool is a guarded wrapper around \`gh api search/code\`)"
@@ -190,20 +272,38 @@ gh_out="$(gh api --method GET search/code -f "q=$QUERY" -f "per_page=$PER_PAGE" 
 # genuinely empty COMPLETE result passes this gate; an item missing `path` or
 # `repository.full_name` does not, because a renderer that filled those in from a default
 # would be inventing the answer.
+#
+# `-s` AND `length == 1`: the body must be exactly ONE document. Two concatenated objects parsed
+# as a two-line stream and `read -r` below consumed only the first, so
+# `{…total_count:5,incomplete:false}` followed by `{…total_count:0,incomplete:true}` reported
+# COMPLETE rc 0 and DISCARDED the flagged zero — this tool's own subject, arriving through its
+# own gate. Not reachable through a non-`--paginate` `gh api` call, so it is closed as a hole in
+# the gate rather than as a live defect.
+#
+# `(.total_count|tostring) | test("^[0-9]+$")` gates the STRING, which is what is consumed: the
+# count crosses into a bash arithmetic test below, and `type == "number"` is true for `0.0` and
+# for `1e2`. A float made that test a syntax error and routed a FLAGGED ZERO into PARTIAL rc 3
+# with its items emitted. Testing the rendering rather than `floor == .` also covers jq's
+# exponent form, which is integral and still not a number bash can read.
+#
+# The body is read through a here-string, not `printf … | jq`: this file must contain no
+# pipeline whose writer can be handed a SIGPIPE (see the two writes above).
 envelope=""
 if [[ "$gh_rc" -eq 0 ]]; then
-    envelope="$(printf '%s' "$gh_out" | jq -r '
-        if (type == "object")
-           and ((.total_count | type) == "number")
-           and ((.incomplete_results | type) == "boolean")
-           and ((.items | type) == "array")
-           and (all(.items[];
-                    (type == "object")
-                    and ((.path | type) == "string")
-                    and ((.repository.full_name | type) == "string")))
-        then "\(.total_count)\t\(.incomplete_results)\t\(.items | length)"
+    envelope="$(jq -s -r '
+        if (length == 1)
+           and (.[0] | (type == "object")
+                and ((.total_count | type) == "number")
+                and ((.total_count | tostring) | test("^[0-9]+$"))
+                and ((.incomplete_results | type) == "boolean")
+                and ((.items | type) == "array")
+                and (all(.items[];
+                         (type == "object")
+                         and ((.path | type) == "string")
+                         and ((.repository.full_name | type) == "string"))))
+        then (.[0] | "\(.total_count)\t\(.incomplete_results)\t\(.items | length)")
         else empty
-        end' 2>/dev/null)" || envelope=""
+        end' <<<"$gh_out" 2>/dev/null)" || envelope=""
 fi
 
 # _emit_withheld <state> <total-json> <flag-json> <reason> — the ONE emitter for the two states
@@ -215,17 +315,18 @@ fi
 # and the text form derives from them: `null` prints UNKNOWN, a number prints with the ESTIMATE
 # tag it always carries.
 _emit_withheld() {
-    local state="$1" total="$2" flag="$3" reason="$4" total_txt flag_txt
+    local state="$1" total="$2" flag="$3" reason="$4" total_txt flag_txt out
     if [[ "$total" == null ]]; then total_txt="total_count=UNKNOWN"; else total_txt="total_count=$total (ESTIMATE)"; fi
     if [[ "$flag" == null ]]; then flag_txt="incomplete_results=UNKNOWN"; else flag_txt="incomplete_results=$flag"; fi
     if [[ "$FORMAT" == json ]]; then
-        jq -cn --arg state "$state" --arg query "$QUERY" --arg reason "$reason" \
+        out="$(jq -cn --arg state "$state" --arg query "$QUERY" --arg reason "$reason" \
            --argjson total "$total" --argjson flag "$flag" \
            '{state: $state, query: $query, total_count: $total, total_count_is_estimate: true,
-             incomplete_results: $flag, results: "WITHHELD", reason: $reason}'
+             incomplete_results: $flag, results: "WITHHELD", reason: $reason}')"
     else
-        printf '%-10s %s %s results=WITHHELD query=%s\n' "$state" "$total_txt" "$flag_txt" "$QUERY"
+        out="$(printf '%-10s %s %s results=WITHHELD query=%s' "$state" "$total_txt" "$flag_txt" "$QUERY")"
     fi
+    _put "$out"
 }
 
 # `-z "$envelope"` ALONE is the gate, and that is the strong form rather than a shortcut: the
@@ -240,8 +341,8 @@ if [[ -z "$envelope" ]]; then
     else
         reason="gh api exited 0 but the body is not a readable code-search envelope — an unreadable response is not an empty one"
     fi
-    _emit_withheld ERROR null null "$reason"
-    {
+    # stderr FIRST, then stdout — see the two writes at the top of this file.
+    _put_err "$( {
         echo "$KB_PROG: ERROR — $reason."
         if [[ -s "$TMPERR" ]]; then
             echo "  gh said:"
@@ -253,7 +354,8 @@ if [[ -z "$envelope" ]]; then
         fi
         echo "  ⛔ Do NOT read this as \"no matches\". Nothing was measured."
         _fallback_lines
-    } >&2
+    } )"
+    _emit_withheld ERROR null null "$reason"
     exit 1
 fi
 
@@ -263,8 +365,7 @@ truncated=false
 
 # --- UNANSWERED: the defect this tool exists for ----------------------------
 if [[ "$flag" == true && "$total" -eq 0 ]]; then
-    _emit_withheld UNANSWERED 0 true "GitHub flagged this search incomplete and returned a count of zero — the two are indistinguishable from a real no-match, so no result set is emitted"
-    {
+    _put_err "$( {
         echo "$KB_PROG: UNANSWERED — GitHub returned total_count=0 WITH incomplete_results=true."
         echo "  ⛔ That zero is NOT \"no matches\". This endpoint returns the same body for \"the answer"
         echo "  is none\" and for \"I could not answer\", and a private repository is the known live"
@@ -273,7 +374,8 @@ if [[ "$flag" == true && "$total" -eq 0 ]]; then
         echo "  Re-running will not help — the flag varies between calls, so a later \`false\` would be"
         echo "  that call's answer about that call and not evidence about this one."
         _fallback_lines
-    } >&2
+    } )"
+    _emit_withheld UNANSWERED 0 true "GitHub flagged this search incomplete and returned a count of zero — the two are indistinguishable from a real no-match, so no result set is emitted"
     exit 4
 fi
 
@@ -281,31 +383,38 @@ fi
 state=COMPLETE
 [[ "$flag" == true ]] && state=PARTIAL
 
+# The whole payload is BUILT before anything is written, so that the write below is the last
+# thing this tool does and has no verdict left to lose (see the two writes at the top).
 if [[ "$FORMAT" == json ]]; then
-    printf '%s' "$gh_out" | jq -c --arg state "$state" --arg query "$QUERY" --argjson trunc "$truncated" '
+    out="$(jq -c --arg state "$state" --arg query "$QUERY" --argjson trunc "$truncated" '
         {state: $state, query: $query,
          total_count: .total_count, total_count_is_estimate: true,
          incomplete_results: .incomplete_results,
          items_returned: (.items | length), items_truncated: $trunc,
-         items: [.items[] | {repository: .repository.full_name, path: .path}]}'
+         items: [.items[] | {repository: .repository.full_name, path: .path}]}' <<<"$gh_out")"
 else
-    printf '%-10s total_count=%s (ESTIMATE) incomplete_results=%s items_returned=%s items_truncated=%s query=%s\n' \
-        "$state" "$total" "$flag" "$n_items" "$truncated" "$QUERY"
-    printf '%s' "$gh_out" | jq -r '.items[] | "\(.repository.full_name)\t\(.path)"'
+    out="$(printf '%-10s total_count=%s (ESTIMATE) incomplete_results=%s items_returned=%s items_truncated=%s query=%s' \
+        "$state" "$total" "$flag" "$n_items" "$truncated" "$QUERY")"
+    items_txt="$(jq -r '.items[] | "\(.repository.full_name)\t\(.path)"' <<<"$gh_out")"
+    # An `[[ … ]] && out+=…` tail would leak its own false status past `set -e` on an empty
+    # page — the shape that once reported a correct release body as a failure (card#5874).
+    if [[ -n "$items_txt" ]]; then out+=$'\n'"$items_txt"; fi
 fi
 
 if [[ "$state" == PARTIAL ]]; then
-    {
+    _put_err "$( {
         echo "$KB_PROG: PARTIAL — GitHub flagged this search incomplete (incomplete_results=true) and"
-        echo "  returned total_count=$total. The $n_items item(s) above are real matches, so they are"
+        echo "  returned total_count=$total. The $n_items item(s) below are real matches, so they are"
         echo "  usable; the COUNT is not authoritative and the match set may be short. Exiting 3 so"
         echo "  that consuming a flagged count is a decision your code states, not one it defaults to."
         _fallback_lines
-    } >&2
+    } )"
+    _put "$out"
     exit 3
 fi
 
 if [[ "$truncated" == true ]]; then
-    echo "$KB_PROG: the item page came back FULL ($n_items = --per-page), so there are almost certainly more matches than the lines above — this tool issues ONE request and does not paginate. Raise --per-page (max 100) or paginate \`search/code\` yourself; total_count is an ESTIMATE and is not the missing figure." >&2
+    _put_err "$KB_PROG: the item page came back FULL ($n_items = --per-page), so there are almost certainly more matches than the lines below — this tool issues ONE request and does not paginate. Raise --per-page (max 100) or paginate \`search/code\` yourself; total_count is an ESTIMATE and is not the missing figure."
 fi
+_put "$out"
 exit 0

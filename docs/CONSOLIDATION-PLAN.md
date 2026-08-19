@@ -1180,12 +1180,20 @@ finding with no owner is abandoned, not filed.
   no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
   reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
   **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
-- **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
-  and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
-  `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement
-  shape Stage B closed elsewhere by deleting the copy and pointing at the owner; the same fix applies
-  here, and the same caution does — the three copies are consumer-facing prose with different
-  audiences, so the replacement has to leave each audience an answer, not just a pointer.
+- **The lib-sourcing-bins list, in three prose copies** (card #5981) — **SHIPPED, card#6884.** The
+  lib header, `ADOPTION.md` and `INSTALL.md` §6b each enumerated the bins that `source`
+  `_kb-board-lib.sh`, while `agent-board-toolkit-drift-check` **derives** the real set from the
+  files. The prediction this bullet carried is what came true: `gh-code-search` joined the set and
+  reached **one** of the three copies, leaving two docs telling a vendoring consumer to copy a bin
+  set that omitted it — an rc-1 "shared lib not found" refusal on every invocation, from following
+  the instructions. All three enumerations are now **deleted**, each replaced by the derivation
+  itself — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` — which is the answer this bullet
+  required each audience to be left with (a command they can run against the version in their hand),
+  not a bare pointer. No fourth copy and no new gate: the pattern is the same one
+  `agent-board-toolkit-drift-check`'s `MISSING-LIB` probe triggers on, and
+  `tests/drift-check-fixture-selftest.sh` already asserts as a **premise** that it still matches a
+  real sourcer and still misses a real standalone — so the derivation cannot rot silently while the
+  checks keep passing, which is the property a hand-kept list never had.
 
 ---
 

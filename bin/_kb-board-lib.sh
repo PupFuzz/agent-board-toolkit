@@ -1,10 +1,24 @@
 # shellcheck shell=bash
 # _kb-board-lib.sh — shared helpers for the agent-board-toolkit's OWN scripts.
 #
-# CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
-# board-snapshot, board-stats, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
-# dl-a1-register-field, gh-code-search) `source`s this as a sibling, so a vendor-by-copy consumer
-# MUST copy it too. Cited by ANCHOR TEXT, never by line — these four were line
+# CO-VENDORED, not toolkit-only. Every lib-sourcing bin `source`s this as a sibling,
+# so a vendor-by-copy consumer MUST copy it too.
+#
+# ⛔ THE SET IS DERIVED, NEVER LISTED — here or anywhere else. Name it for the version in
+# your hand with:
+#     grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*
+# That is the same anchored pattern agent-board-toolkit-drift-check's MISSING-LIB probe
+# uses, and tests/drift-check-fixture-selftest.sh asserts the pattern still matches a
+# real sourcer and still misses a real standalone — so the derivation cannot rot silently
+# while the checks keep passing. The three prose lists it replaced (here, ADOPTION.md and
+# INSTALL.md section 6b) are gone for cause, twice demonstrated: this copy once omitted
+# adopt-to-dl and board-stats — and adopt-to-dl is a kb_parse_resp caller, so the omission
+# was load-bearing — and the newest bin to join the set, gh-code-search, reached only one
+# of the three, leaving two docs telling a vendoring consumer to copy a set without it. A
+# list that must be re-synced by hand at every added bin IS the defect; a fourth copy
+# would have minted it again.
+#
+# Cited by ANCHOR TEXT, never by line — these four were line
 # numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the
 # CHANGELOG quote by ~390 (the reason is at fetch_board_cards's parse site below).
 # ADOPTION.md has no numbered sections and its "§8" means the Task-tracking
@@ -26,11 +40,7 @@
 #
 # It is sourced, never executed. It collapses the config-resolution, kanban-API curl
 # wrapper, tolerant response parse, whole-board pagination, and DL-canonicalization
-# logic that was copy-pasted across THE LIB-SOURCING BINS LISTED AT THE TOP OF THIS
-# HEADER into one definition. That list is deliberately not re-spelled here: this copy
-# had already drifted from it, omitting adopt-to-dl and board-stats — and adopt-to-dl is
-# a kb_parse_resp caller, so the omission was load-bearing, not cosmetic. One prose copy
-# per file; agent-board-toolkit-drift-check DERIVES the real set from the files.
+# logic that was copy-pasted across the lib-sourcing bins into one definition.
 #
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
