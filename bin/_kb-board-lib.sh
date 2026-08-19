@@ -1,11 +1,40 @@
 # shellcheck shell=bash
 # _kb-board-lib.sh — shared helpers for the agent-board-toolkit's OWN scripts.
 #
-# CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
-# board-snapshot, board-stats, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
-# dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
-# MUST copy it too. Cited by ANCHOR TEXT, never by line — these four were line
-# numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the
+# CO-VENDORED, not toolkit-only. Every lib-sourcing bin `source`s this as a sibling,
+# so a vendor-by-copy consumer MUST copy it too.
+#
+# ⛔ THE SET IS DERIVED, NEVER LISTED — here or anywhere else. Name it for the version in
+# your hand with:
+#     grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*
+# That is the same anchored pattern agent-board-toolkit-drift-check's MISSING-LIB probe
+# uses, and tests/drift-check-fixture-selftest.sh asserts the pattern still matches a
+# real sourcer and still misses a real standalone — so the derivation cannot rot silently
+# while the checks keep passing. The FOUR prose lists it replaced (here, ADOPTION.md,
+# INSTALL.md section 6b and UPGRADE.md section 3) are gone for cause, three times
+# demonstrated: this copy once omitted adopt-to-dl and board-stats — and adopt-to-dl is a
+# kb_parse_resp caller, so the omission was load-bearing; the newest bin to join the set,
+# gh-code-search, reached only one of them, leaving the rest telling a vendoring consumer
+# to copy a set without it; and the pass that deleted three of the four declared the class
+# closed against a denominator it had inherited rather than re-derived, so UPGRADE.md
+# section 3 — the standing re-vendor recipe INSTALL.md section 6b points at — survived,
+# naming six bins while the derivation answered nine.
+#
+# THAT THIRD DEMONSTRATION IS WHY THIS NOW CARRIES A GATE and not a fifth careful edit:
+# tests/lib-set-derivation-selftest.sh runs every published spelling of the derivation
+# above against the tree and reds when one answers a different set — or nothing, which is
+# how the release note for that pass shipped it, unescaped, matching 0 files — and reds
+# when an instruction line ANYWHERE IN THE TREE names members of the set instead of
+# deriving them. A list that must be re-synced by hand at every added bin IS the defect;
+# a fifth copy would have minted it again, and a hand audit had already proved it can
+# miss one. That gate itself shipped scoped to four hand-listed paths in its first
+# attempt — the same defect one layer up, since a fifth surface then joined in silence —
+# and its population is now derived from the tree on every run, minus a named
+# version-history carve-out and a per-line disposition set the check asserts is still
+# live. The reversal is recorded in docs/CONSOLIDATION-PLAN.md.
+#
+# Cited by ANCHOR TEXT, never by line — these four were line numbers and three had
+# rotted: INSTALL.md by 62 lines, the drift check by 17, the
 # CHANGELOG quote by ~390 (the reason is at fetch_board_cards's parse site below).
 # ADOPTION.md has no numbered sections and its "§8" means the Task-tracking
 # standard's §8:
@@ -26,11 +55,7 @@
 #
 # It is sourced, never executed. It collapses the config-resolution, kanban-API curl
 # wrapper, tolerant response parse, whole-board pagination, and DL-canonicalization
-# logic that was copy-pasted across THE LIB-SOURCING BINS LISTED AT THE TOP OF THIS
-# HEADER into one definition. That list is deliberately not re-spelled here: this copy
-# had already drifted from it, omitting adopt-to-dl and board-stats — and adopt-to-dl is
-# a kb_parse_resp caller, so the omission was load-bearing, not cosmetic. One prose copy
-# per file; agent-board-toolkit-drift-check DERIVES the real set from the files.
+# logic that was copy-pasted across the lib-sourcing bins into one definition.
 #
 # Source it from a sibling toolkit script with:
 #   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"

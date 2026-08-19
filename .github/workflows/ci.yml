@@ -90,6 +90,7 @@ jobs:
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
           - fetch-board-cards-caller-claims-selftest
+          - gh-code-search-selftest
           - help-output-selftest
           - install-board-hooks-capability-selftest
           - kb-board-lib-selftest
@@ -99,6 +100,7 @@ jobs:
           - kbc-may-archive-selftest
           - kbcard-field-selftest
           - kbcard-selftest
+          - lib-set-derivation-selftest
           - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest

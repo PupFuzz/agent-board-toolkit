@@ -1180,12 +1180,105 @@ finding with no owner is abandoned, not filed.
   no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
   reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
   **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
-- **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
-  and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
-  `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement
-  shape Stage B closed elsewhere by deleting the copy and pointing at the owner; the same fix applies
-  here, and the same caution does — the three copies are consumer-facing prose with different
-  audiences, so the replacement has to leave each audience an answer, not just a pointer.
+- **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
+  THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
+  not in conflict: it counts attempts at the LIST itself, of which the first two closures here were
+  two). *(This line read "on the second attempt" until a third review pass measured that
+  the gate the second attempt shipped had the class's own defect inside it — see the second ⛔ below.
+  The correction is left visible rather than smoothed, because "shipped on the second attempt" is
+  precisely the kind of claim this bullet exists to distrust.)* The lib header, `ADOPTION.md`,
+  `INSTALL.md` §6b and `UPGRADE.md` §3 each
+  enumerated the bins that `source` `_kb-board-lib.sh`, while `agent-board-toolkit-drift-check`
+  **derives** the real set from the files. The prediction this bullet carried is what came true:
+  `gh-code-search` joined the set and reached **one** copy, leaving the others telling a vendoring
+  consumer to copy a bin set that omitted it — an rc-1 "shared lib not found" refusal on every
+  invocation, from following the instructions. Every enumeration is now **deleted**, each replaced
+  by the derivation itself — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` — which is the
+  answer this bullet required each audience to be left with (a command they can run against the
+  version in their hand), not a bare pointer.
+
+  ⛔ **THE FIRST CLOSURE OF THIS BULLET WAS FALSE, and how it was false is the reason the ruling
+  below reversed.** It fixed three copies, wrote *"no fourth copy and no new gate"*, and marked the
+  class SHIPPED — against a denominator taken from **this bullet's own prose** rather than
+  re-derived from the tree. `UPGRADE.md` §3 was never in that three, and it is the copy a
+  re-vendoring consumer actually follows (`INSTALL.md` §6b points at it): it named **six** bins
+  where the derivation answers **nine**, omitting `adopt-to-dl`, `board-stats` and `gh-code-search`.
+  The re-derivation is the one the fix now publishes, run against the tree in hand rather than
+  quoted — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` (9), controlled against the wider
+  `grep -ln _kb-board-lib bin/*` (16), whose seven extra hits are each a documented standalone that
+  mirrors a helper rather than sourcing it. A pass that had re-derived instead of quoting would have
+  moved its own denominator, which is exactly the signal that a class audit has not converged.
+
+  **The "no new gate" ruling is REVERSED, and the reversal is the finding, not a preference.** The
+  argument for it was sound — `drift-check`'s `MISSING-LIB` probe and
+  `tests/drift-check-fixture-selftest.sh` do keep the *pattern* honest — but it answers a different
+  question: those two prove the derivation still discriminates a sourcer from a standalone; neither
+  can see a prose list that has stopped agreeing with it, and a prose list is what the consumer
+  reads. A four-copy class that survived a three-copy audit **is** the argument for a gate, and it
+  now has one: **`tests/lib-set-derivation-selftest.sh`**, which (1) extracts every published
+  spelling of the derivation from the tree, runs each against `bin/`, and reds when one answers a
+  different set — or nothing, which is how the release note shipped it, with `$KB_LIB` unescaped
+  inside single quotes so the ERE anchor matched **0** files — and (2) reds when a line **anywhere
+  in the tree** both names the lib and enumerates two or more members of the derived set, with
+  fixture controls so the leg is watched to fire. Its unit is the LINE, which is a
+  whole paragraph in the markdown a consumer follows and a wrapped fragment in a shell comment —
+  stated in the check, because it means a historical aside wrapped across comment lines is out of
+  its reach by construction, not by luck. Version-specific history
+  (`UPGRADE.md`'s version-specific section and `docs/CHANGELOG.md`'s RELEASED entries, each split
+  at its heading; plus `CLAUDE.md`, carved WHOLE-FILE for a second and independent reason — it is
+  agent orientation and reaches no vendoring consumer, so `LEG3_HISTORY=("CLAUDE.md")` skips the
+  file, not its release-snapshot table) is deliberately out
+  of its population and the check says
+  why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
+
+  ⛔ **THE SECOND CLOSURE WAS ALSO WEAKER THAN ITS WORDING, and by the same mechanism — which is
+  why this bullet now names three attempts.** The gate above shipped with leg 3 stated as *"**No**
+  consumer-facing surface enumerates the set in prose again"* while it ran over **four hard-coded
+  paths**. A class audit's own instrument had a hand-kept denominator: a fifth surface joined
+  silently, measured by appending a re-vendor sentence naming four bins to `README.md` and watching
+  `lib-set-derivation-selftest` stay at **rc 0** — the file was outside its four paths entirely —
+  with `readme-bin-coverage-selftest` at rc 0 beside it, because that gate owns a *different*
+  inventory and compares names only, which it says. That is the same shape as the first closure (an instrument answering about
+  its list rather than about the repo) with a check in front of it, which is worse, not better: the
+  green now certifies the narrower question.
+  **Leg 3's population is now DERIVED on every run** — every readable non-binary file in the tree,
+  `.git` excluded, the same population leg 1 uses — minus two carve-outs of deliberately different
+  shape: version-specific frozen history, carved out at the HEADING where it begins for two of its
+  three members — `CLAUDE.md` stays whole-file, for the independent reason named above (a per-line
+  disposition there would need a new entry every release, i.e. the hand-kept list again — it was
+  carved **whole-file** until the fourth pass below), and a small set of
+  **per-line** dispositions for prose that names the same nouns without instructing anyone to copy
+  anything, each keyed `<path>::<substring>` and each **asserted to still match a live line**, so a
+  disposition cannot outlive the line it disposed. Line scope is load-bearing on `README.md`
+  specifically: it carries one disposed paragraph and is the most consumer-facing file in the repo,
+  so a whole-file carve-out would have hidden a regrown list exactly where it does the most damage.
+  Three mutations were watched red and restored by copy + `cmp`: the reviewer's `README.md` line
+  (1 red), a brand-new `docs/` file nobody named (1 red), and a disposition made stale (2 red).
+  **Leg 2 keeps its four-path list, and that is not the same defect**: "this surface OWES the reader
+  a derivation" is an editorial obligation no property of the tree can derive, the list is a FLOOR
+  rather than a population, and leg 3 no longer reads it.
+
+  ⛔ **A FOURTH PASS THEN MEASURED THE THIRD CLOSURE'S CARVE-OUTS WRONG IN TWO PLACES — same shape
+  again: a stated scope wider than the predicate under it.** *(a)* The `UPGRADE.md` split was cut on
+  `^## 6\.` while one sentence beside it called it *"derived, not a line number"* (three
+  mentions of the split, one making the claim): only the
+  OFFSET was derived — the **6** was a hand-kept fact, this bullet's own subject inside this
+  bullet's own gate. Measured: a new LIVE `## 6.` section carrying an enumeration line, with the
+  history renumbered to `## 7.`, left the run **rc 0 all-green** while the live region silently
+  SHRANK, because the only premise beside the cut asserted what the live region LACKS — a direction
+  that catches a too-WIDE cut and never a too-narrow one. Both splits are now located by the
+  heading's TEXT with the number left free, and each asserts how many headings matched and that the
+  matched one lands in the frozen complement. *(b)* `docs/CHANGELOG.md` was carved **whole-file** on
+  a reason — *a frozen at-a-version list cannot rot* — that is simply false of `[Unreleased]`, the
+  section the release in flight is written INTO: a regrown enumeration line under it passed at rc 0
+  (measured). It is now split at its first versioned heading, live head IN. *(c)* Stated rather than
+  widened, per the ratified rule: leg 3's per-file predicate is three literal spellings of the lib,
+  so a vendoring instruction spelled *"the toolkit library file"* is invisible to it — the leg is
+  fail-closed over the FILE population and **not** over the spellings, and that bound now sits
+  beside the predicate rather than in a claim about the leg.
+  **This is a correction to the gate, not a fourth closure of the class, and the count above is
+  deliberately left at three:** the third attempt's finding — derive the population, never list it —
+  held; what measured wrong was two of the carve-outs subtracted from that population.
 
 ---
 
@@ -1196,6 +1289,24 @@ teaches the next reader nothing.
 
 - **"The drift gate cannot fail"** — true only for the content-drift axis; its `MISSING-LIB` leg is
   live. Revision 1 said *replace*; that would have deleted it. → **add, never replace.**
+- **"The lib-sourcing-bins list lives in three prose copies"** and **"no fourth copy and no new
+  gate"** — both false, and the second followed from the first. The count came from this document's
+  own prose instead of from the tree, so `UPGRADE.md` §3 — the standing re-vendor recipe — was
+  never in the population and shipped naming six bins against a derived nine. → **a class audit
+  re-derives its denominator every pass; a pass that moves the denominator has not converged, and
+  a copy that survives an audit of its own class is the argument FOR the gate that audit declined.**
+- **"The class is closed, it now carries a gate"** — false as first written, and false the same way
+  twice: the gate's own leg 3 was stated over the repo and ran over four hard-coded paths, so the
+  lesson directly above it was discharged by an instrument that fixed *its* denominator at four. →
+  **the rule binds the INSTRUMENT too: a check written to close a hand-kept-list class must derive
+  its own population, or state the bound it actually runs over where the maintainer reads it.** The
+  gate's leg 3 now derives; leg 2's four-path list stays and is stated as a floor, not a population.
+- **"A stated scope and a measured predicate can be left to agree by inspection"** — false across
+  three findings in one pass (this one, the writer census in `bin/gh-code-search`, and the rc
+  contract in `README.md` / `docs/CHANGELOG.md`). Each read broader than what it actually tested or
+  described, and each was written by the same hand that had just named the defect. → **the claim and
+  the predicate are one artifact: widen the predicate to the claim, or narrow the claim to the
+  predicate and say so where it is read — never ship them apart.**
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
 - **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured
