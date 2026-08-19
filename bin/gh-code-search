@@ -47,16 +47,28 @@
 # a readable code-search envelope, are both ERROR here. An unreadable response is not an empty
 # one.
 #
-# WHAT IT PRINTS. One verdict line on stdout in every state, then (COMPLETE / PARTIAL only)
-# one line per matched file, `<owner>/<repo>\t<path>`. Those two fields are emitted because they
-# are the two the readability gate below CHECKS — `html_url` was dropped from `--format json`
-# rather than either shipped unchecked (a null where a string was promised) or added to the gate,
-# which would refuse a whole real answer over a cosmetic field:
+# WHAT IT PRINTS. One verdict line on stdout in every state it REACHES, then (COMPLETE /
+# PARTIAL only) one line per matched file, `<owner>/<repo>\t<path>`. Those two fields are emitted
+# because they are the two the readability gate below CHECKS — `html_url` was dropped from
+# `--format json` rather than either shipped unchecked (a null where a string was promised) or
+# added to the gate, which would refuse a whole real answer over a cosmetic field:
 #
 #   COMPLETE   total_count=4472 (ESTIMATE) incomplete_results=false items_returned=100 items_truncated=true query=…
 #   PARTIAL    total_count=17 (ESTIMATE) incomplete_results=true items_returned=17 items_truncated=false query=…
 #   UNANSWERED total_count=0 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
+#   UNANSWERED total_count=17 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
 #   ERROR      total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
+#
+#   ⛔ "IN EVERY STATE" MEANS EVERY STATE THIS TOOL DECIDES, and there is one reachable path
+#      that reaches none of them: `TMPERR="$(mktemp)"` below is unguarded, so an unwritable
+#      `$TMPDIR` kills the run under `set -e` before any verdict exists. Measured with
+#      `TMPDIR=/nonexistent`: rc 1, ZERO bytes of stdout, and the only stderr is mktemp's own
+#      `failed to create file via template` — this tool says nothing at all. rc 1 is the right
+#      code (the search did not run, so nothing here is a statement about the repository, which
+#      is exactly what ERROR means), but a caller parsing stdout gets nothing to parse. Stated
+#      rather than guarded: a guard would have to write its own refusal, and an environment
+#      where `mktemp` fails is not one this tool can reason about further. GATE ON THE rc
+#      (below), never on stdout looking empty — which is this tool's own advice about GitHub.
 #
 # `results=WITHHELD` is the point, not a formatting choice: on the two states that carry no
 # answer this tool emits NO item line and NO `items_returned=0`, because an empty result set
@@ -80,14 +92,18 @@
 # Exit codes — GATE ON THESE, never on whether stdout looked empty:
 #   0  COMPLETE    GitHub did not flag the search. Verdict line + item lines on stdout. The
 #                  count is still an ESTIMATE.
-#   3  PARTIAL     `incomplete_results: true` with a NON-ZERO count — loud, but usable. The
-#                  item lines ARE on stdout and the warning is on stderr. Non-zero on purpose:
-#                  a flagged count must not be consumed as authoritative by a caller that
-#                  never said it would accept one. A blanket fatal was rejected for the
-#                  opposite reason — collapsing "could not answer" into "answered partially"
-#                  reproduces this tool's own subject one layer up, and produces a guard people
-#                  route around.
-#   4  UNANSWERED  `incomplete_results: true` with a count of ZERO. This is the defect itself.
+#   3  PARTIAL     `incomplete_results: true` with a non-zero count AND at least one item —
+#                  loud, but usable. The item lines ARE on stdout and the warning is on stderr.
+#                  Non-zero on purpose: a flagged count must not be consumed as authoritative
+#                  by a caller that never said it would accept one. A blanket fatal was
+#                  rejected for the opposite reason — collapsing "could not answer" into
+#                  "answered partially" reproduces this tool's own subject one layer up, and
+#                  produces a guard people route around.
+#   4  UNANSWERED  `incomplete_results: true` and NOTHING to stand on — a count of ZERO, an
+#                  EMPTY item set, or both. This is the defect itself. Either half reading
+#                  empty is enough: the count is an ESTIMATE (so it is not evidence that
+#                  results exist) and the item set is what was actually measured (so an empty
+#                  one is not evidence that they do not).
 #   1  ERROR       the query did not run, or its answer could not be read: `gh` exited non-zero
 #                  (4xx, secondary rate limit, no network, no auth), or the 200 body is not a
 #                  readable code-search envelope.
@@ -122,21 +138,36 @@
 #
 # It reads only. No git command, no board API, no writes, one `gh api` call.
 set -euo pipefail
+# ⛔ FIRST STATEMENT AFTER `set`, AND THAT POSITION IS LOAD-BEARING. It needs nothing from the
+# lib, and every write in this file is below it — including the lib-missing refusal on the very
+# next lines, which a reader that has stopped reading turns into a signal death if the trap is
+# not yet in force. Measured on a lib-less vendored copy with the trap in its old position
+# (after the source):
+#     --help 2>&1 | head -n 0   rc 141, EMPTY stderr   (direct: rc 1, 178 bytes)
+# — verbatim the pre-fix failure, in the one state where the naming message matters most.
+trap '' PIPE
 
 # --- shared lib -------------------------------------------------------------
 # Sourced BEFORE the arg loop, matching every other lib-sourcing bin: a lib-less install then
 # reports the missing lib at rc 1 on EVERY invocation rather than answering the arg loop first.
+#
+# THE REFUSAL BELOW IS THE ONE WRITE THAT DOES NOT GO THROUGH `_put_err` (see the write rule
+# further down): it runs BEFORE that function exists, so it cannot, and it carries the tolerance
+# inline for exactly the reason `_put_err` does — with SIGPIPE neutralised an unwritable stderr
+# makes `printf` RETURN non-zero, and under `set -e` a bare write standing in front of `exit 1`
+# takes the rc with it.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
-[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
+[ -r "$KB_LIB" ] || { printf '%s\n' "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2 2>/dev/null || true; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
 source "$KB_LIB"
 KB_PROG="gh-code-search"
 
-# --- the only two writes in this file ---------------------------------------
-# ⛔ SIGPIPE IS NEUTRALISED HERE, AND EVERY BYTE THIS TOOL EMITS GOES THROUGH ONE OF THESE TWO
-# FUNCTIONS, AS A STRING THAT IS ALREADY COMPLETE. The contract is carried by the EXIT CODE and
-# by the stderr refusal — never by the shape of stdout — and this file's own header invites the
-# invocation that used to destroy both. Measured on a flagged 30-item page before this change:
+# --- the write rule ---------------------------------------------------------
+# ⛔ SIGPIPE IS NEUTRALISED (at the top of the file), AND EVERY BYTE THIS TOOL EMITS GOES THROUGH
+# ONE OF THESE TWO FUNCTIONS, AS A STRING THAT IS ALREADY COMPLETE. The contract is carried by
+# the EXIT CODE and by the stderr refusal — never by the shape of stdout — and this file's own
+# header invites the invocation that used to destroy both. Measured on a flagged 30-item page
+# before this change:
 #     direct        rc=3    31 stdout lines, 679 bytes of stderr
 #     | head -1     rc=141  0 bytes of stderr
 #     | head -n 0   rc=141  0 bytes of stderr — in EVERY state, `--help` included
@@ -148,20 +179,47 @@ KB_PROG="gh-code-search"
 # TWO properties carry it, and BOTH are needed — each is watched to fail on its own in
 # tests/gh-code-search-selftest.sh:
 #   1. `trap '' PIPE` — a closed reader makes a write RETURN EPIPE instead of killing the
-#      process. Set before the argument loop, so `--help | head -1` is covered too.
+#      process. Set as the FIRST statement after `set -euo pipefail`, so every write in the
+#      file is behind it — the lib-missing refusal and `--help | head -1` included. It was
+#      once set here instead, which left the lib-missing refusal in front of it: on a lib-less
+#      vendored copy `--help 2>&1 | head -n 0` answered rc 141 with an empty stderr.
 #   2. ONE write per stream, of an ALREADY-BUILT string, whose failure is tolerated — there is
 #      nothing left to lose by the time it is attempted. Building first is what removes the
 #      `… | jq` stdout pipelines whose SIGPIPE was the actual killer; without the tolerance,
 #      ignoring the signal only converts the kill into a `set -e` death at rc 1, which is worse
 #      (rc 1 is a VERDICT here — it would report ERROR for a search that ran fine).
-# Nothing else in this file may write to stdout or stderr directly. A second writer is a second
-# place for the verdict to be lost, which is how the first one got there.
+#      ⚠ THE TOLERANCE IS UNTARGETED, AND THAT BOUNDS WHAT (2) SAVES. `2>/dev/null || true`
+#      swallows EVERY write error, not just EPIPE, because bash cannot tell them apart at
+#      `printf`'s return — and the narrower alternatives (checking the return, letting the
+#      write fail) each reopen the hole above. "There is nothing left to lose" is therefore
+#      true of the VERDICT, which rides the exit code and cannot be lost to a write at all,
+#      and FALSE of the COMPLETE/PARTIAL payload, which is only on stdout: with stdout on a
+#      full filesystem this tool exits 0 having emitted nothing and said nothing (measured —
+#      `> /dev/full` in COMPLETE state gives rc 0, empty stdout, empty stderr). A caller that
+#      needs the payload must check the payload; the rc answers only whether the SEARCH could
+#      be stood behind. Accepted on the record, not overlooked: the failing-write state is
+#      strictly rarer than the truncating-reader state this file exists for, and the fix for
+#      it would reinstate that one.
+# Nothing else in this file may write to stdout or stderr directly, with ONE exception that
+# cannot be otherwise — the lib-missing refusal above, which runs before these functions are
+# defined and carries the same tolerance inline. A second writer is a second place for the
+# verdict to be lost, which is how the first one got there.
+#
+# ⛔ DO NOT MAINTAIN A COUNT OF THE WRITERS HERE. The line this replaced said "the only two
+# writes in this file" while there were four, because a hand-kept census is a copy of the code
+# that drifts from it. Derive the population for the version in your hand:
+#     grep -nE '(echo|printf).*>&2|^_put' bin/gh-code-search
+# and dispose of every hit into one of FOUR buckets — a `_put`/`_put_err` DEFINITION, a CALL to
+# one of them at line start, the pre-lib refusal, or this comment quoting the command. Anything
+# left over is a NEW direct writer and must be routed through `_put`/`_put_err`. `echo`/`printf`
+# inside a `$( { … } )` are building a STRING for one of those calls and reach no stream — the
+# grep leaves them out because it anchors on `>&2` and on the two names, which is exactly the
+# boundary that matters: what reaches fd 1 or fd 2 directly.
 #
 # stderr is also emitted BEFORE stdout in every state, and that is a PRESENTATION choice, not a
 # third safety property — it is stated as such because it cannot be watched to fail: with (1) and
 # (2) in place the order no longer affects survival. The qualifier reading before the data it
 # qualifies is the whole of its value ("the item(s) below…").
-trap '' PIPE
 _put()     { printf '%s\n' "$1" 2>/dev/null || true; }
 _put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
 
@@ -194,7 +252,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-[[ -n "$QUERY" ]] || { echo "$USAGE" >&2; die '<query> is required'; }
+[[ -n "$QUERY" ]] || { _put_err "$USAGE"; die '<query> is required'; }
 # A whitespace-only query is refused BEFORE any request: the endpoint answers a 422 for it,
 # which would be reported as ERROR — a true statement about a call that never needed making,
 # and one that spends a search-API request out of a 10/minute budget to learn nothing.
@@ -364,18 +422,37 @@ truncated=false
 [[ "$n_items" -eq "$PER_PAGE" ]] && truncated=true
 
 # --- UNANSWERED: the defect this tool exists for ----------------------------
-if [[ "$flag" == true && "$total" -eq 0 ]]; then
+# ⛔ ONCE THE FLAG IS SET, BOTH HALVES OF THE ANSWER ARE SUSPECT, so the withholding fires when
+# EITHER of them reads empty. `total_count` alone was the discriminator and cannot be: this
+# file's own header forbids it as an equality input (it is an ESTIMATE, coarsened with
+# magnitude), and a flagged `{"total_count":17,"incomplete_results":true,"items":[]}` therefore
+# reached PARTIAL at rc 3 and printed `items_returned=0` — the empty result set the withholding
+# doctrine above exists never to emit, wearing a non-zero count. The count is a coarse estimate
+# and the item set is what was actually measured, so the item set gets a vote.
+# The UNION, not a swap: `n_items == 0` alone would let a flagged ZERO that happens to carry an
+# item through, and the flagged zero is the measured live defect this tool was built for.
+if [[ "$flag" == true ]] && [[ "$total" -eq 0 || "$n_items" -eq 0 ]]; then
+    if [[ "$total" -eq 0 ]]; then
+        headline="GitHub returned total_count=0 WITH incomplete_results=true."
+        refusal="  ⛔ That zero is NOT \"no matches\"."
+        reason="GitHub flagged this search incomplete and returned a count of zero — the two are indistinguishable from a real no-match, so no result set is emitted"
+    else
+        headline="GitHub returned an EMPTY item set WITH incomplete_results=true."
+        refusal="  ⛔ That empty item set is NOT \"no matches\", and total_count=$total is an ESTIMATE, not a result set."
+        reason="GitHub flagged this search incomplete and returned no items — the count beside them is an ESTIMATE and not a result set, so nothing is emitted"
+    fi
     _put_err "$( {
-        echo "$KB_PROG: UNANSWERED — GitHub returned total_count=0 WITH incomplete_results=true."
-        echo "  ⛔ That zero is NOT \"no matches\". This endpoint returns the same body for \"the answer"
-        echo "  is none\" and for \"I could not answer\", and a private repository is the known live"
-        echo "  case: a term that certainly exists and a term that cannot exist both answer 0 here."
+        echo "$KB_PROG: UNANSWERED — $headline"
+        echo "$refusal"
+        echo "  This endpoint returns the same body for \"the answer is none\" and for \"I could not"
+        echo "  answer\", and a private repository is the known live case: a term that certainly exists"
+        echo "  and a term that cannot exist both answer 0 here."
         echo "  No result set is emitted, because an empty result set is exactly the wrong answer."
         echo "  Re-running will not help — the flag varies between calls, so a later \`false\` would be"
         echo "  that call's answer about that call and not evidence about this one."
         _fallback_lines
     } )"
-    _emit_withheld UNANSWERED 0 true "GitHub flagged this search incomplete and returned a count of zero — the two are indistinguishable from a real no-match, so no result set is emitted"
+    _emit_withheld UNANSWERED "$total" true "$reason"
     exit 4
 fi
 

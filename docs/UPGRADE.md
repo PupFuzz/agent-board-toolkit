@@ -37,13 +37,19 @@ A vendored copy does **not** update with the host pull — re-vendor it delibera
 ```bash
 cd <repo> && git checkout -b chore/bump-agent-board-toolkit
 cp ~/agent-board-toolkit/bin/promote-released-cards bin/promote-released-cards   # re-copy each vendored tool
-cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/                              # + the shared lib IF you vendored a lib-sourcing bin (kbcard/next-dl/board-snapshot/board-card-start/dl-a0/dl-a1)
+cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/                              # + the shared lib IF you vendored a lib-sourcing bin — WHICH bins those are is derived, not listed: see the box below
 cat ~/agent-board-toolkit/VERSION > .agent-board-toolkit-version                       # record the new version
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit .            # -> "drift-check: OK"
 git add bin/promote-released-cards .agent-board-toolkit-version
 git commit -m "chore: bump vendored agent-board-toolkit to $(cat ~/agent-board-toolkit/VERSION)"
 # open a PR per the repo's normal flow; CI re-runs the drift-check as a guard.
 ```
+
+> **Which bins need `_kb-board-lib.sh` beside them is DERIVED, never listed here.** Name the set for the version you are actually vendoring:
+> ```bash
+> grep -lE '^[[:space:]]*source "\$KB_LIB"' ~/agent-board-toolkit/bin/*
+> ```
+> That is the same anchored pattern `agent-board-toolkit-drift-check`'s `MISSING-LIB` probe triggers on, and `tests/drift-check-fixture-selftest.sh` asserts as a premise that it still matches a real sourcer and still misses a real standalone — so it cannot rot silently while the checks keep passing. The list that stood here could and did: it named **six** bins while the tree answered **nine** — three short, and the ones it missed are the newest, which is the direction a hand-kept list always fails in. A consumer following it vendored a bin without the lib and got an rc-1 `shared lib not found` refusal on **every** invocation of that bin, `--help` included. The complement is derived the same way: anything `bin/` holds that the command above does not list is standalone and needs no lib. `tests/lib-set-derivation-selftest.sh` is what keeps a list from growing back here — it reds if this box stops publishing a derivation that runs, or starts naming members instead.
 
 > **⚠ Re-vendoring `promote-released-cards` from a host-guarded version? You must also add `KANBAN_EXPECTED_HOST`.** The guarded script — the version that validates `.release-pr.json`'s `api_base` against `$KANBAN_EXPECTED_HOST` before sending the writeback token (see [`INSTALL.md`](INSTALL.md) §6b + [`README.md`](../README.md)) — **requires** `KANBAN_EXPECTED_HOST` in the promote-CI env and has **no baked default**. A re-vendor that copies the new script but does **not** add the variable makes the **next promote run fail closed**: the token is never sent and tracking-card promotion is skipped (with a loud CI error). The **`drift-check` will NOT catch this** — it verifies the script matches the toolkit, not that your consuming workflow supplies the env. So in the SAME re-vendor PR, add it to the promote step's env, alongside `KANBAN_WRITEBACK_TOKEN`:
 > ```yaml
@@ -132,8 +138,8 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 
 ### v0.8.2
 
-- **[vendor] NEW file dependency: `bin/_kb-board-lib.sh`.** The shared config/API/pagination/DL-canon library was extracted, and these six tools now `source` it: **`kbcard`, `board-snapshot`, `next-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, `board-card-start`**. Consequences:
-  - **[vendor] critical:** a product repo that vendored **any of those six** must now **also vendor `bin/_kb-board-lib.sh` alongside it**. A vendored tool is a plain file copy; it resolves the lib next to itself, so a re-vendor that copies only the single old tool file will **break at runtime** (`_kb-board-lib.sh: No such file or directory`). In the same re-vendor PR (§3), `cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/_kb-board-lib.sh`, add it to the commit, and record it — the drift-check verifies each file against the toolkit but will **not** add the missing lib for you.
+- **[vendor] NEW file dependency: `bin/_kb-board-lib.sh`.** The shared config/API/pagination/DL-canon library was extracted, and **at v0.8.2** six tools `source`d it: **`kbcard`, `board-snapshot`, `next-dl`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, `board-card-start`**. ⚠ **That six is a fact about v0.8.2 and nothing later** — it is recorded here because this is a version-specific entry, and the set has grown since. **Never read it as the current set:** §3 above carries the derivation that answers for the version in your hand. Consequences:
+  - **[vendor] critical:** a product repo that vendored **any lib-sourcing tool** must now **also vendor `bin/_kb-board-lib.sh` alongside it**. A vendored tool is a plain file copy; it resolves the lib next to itself, so a re-vendor that copies only the single old tool file will **break at runtime** (`_kb-board-lib.sh: No such file or directory`). In the same re-vendor PR (§3), `cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/_kb-board-lib.sh`, add it to the commit, and record it — the drift-check verifies each file against the toolkit but will **not** add the missing lib for you.
   - **Exception — `promote-released-cards` is deliberately standalone** and does **not** source the lib (it intentionally duplicates the host-guard so it can be vendored as one self-contained file). If the only tool you vendor is `promote-released-cards`, you do **not** need `_kb-board-lib.sh`.
   - **[host] symlink installs are unaffected.** Each tool resolves the lib via `readlink -f` back to the toolkit's real `bin/`, so a symlinked tool finds `_kb-board-lib.sh` in the source checkout automatically — no separate action (re-running the §2 loop is harmless but not required for the lib).
 - **[host] board reads now paginate via `fetch_board_cards` — no silent truncation** (#47, DL-A0). Awareness only — a full large board is returned where a page could previously be dropped.

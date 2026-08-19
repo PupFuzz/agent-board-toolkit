@@ -10,13 +10,24 @@
 # That is the same anchored pattern agent-board-toolkit-drift-check's MISSING-LIB probe
 # uses, and tests/drift-check-fixture-selftest.sh asserts the pattern still matches a
 # real sourcer and still misses a real standalone — so the derivation cannot rot silently
-# while the checks keep passing. The three prose lists it replaced (here, ADOPTION.md and
-# INSTALL.md section 6b) are gone for cause, twice demonstrated: this copy once omitted
-# adopt-to-dl and board-stats — and adopt-to-dl is a kb_parse_resp caller, so the omission
-# was load-bearing — and the newest bin to join the set, gh-code-search, reached only one
-# of the three, leaving two docs telling a vendoring consumer to copy a set without it. A
-# list that must be re-synced by hand at every added bin IS the defect; a fourth copy
-# would have minted it again.
+# while the checks keep passing. The FOUR prose lists it replaced (here, ADOPTION.md,
+# INSTALL.md section 6b and UPGRADE.md section 3) are gone for cause, three times
+# demonstrated: this copy once omitted adopt-to-dl and board-stats — and adopt-to-dl is a
+# kb_parse_resp caller, so the omission was load-bearing; the newest bin to join the set,
+# gh-code-search, reached only one of them, leaving the rest telling a vendoring consumer
+# to copy a set without it; and the pass that deleted three of the four declared the class
+# closed against a denominator it had inherited rather than re-derived, so UPGRADE.md
+# section 3 — the standing re-vendor recipe INSTALL.md section 6b points at — survived,
+# naming six bins while the derivation answered nine.
+#
+# THAT THIRD DEMONSTRATION IS WHY THIS NOW CARRIES A GATE and not a fifth careful edit:
+# tests/lib-set-derivation-selftest.sh runs every published spelling of the derivation
+# above against the tree and reds when one answers a different set — or nothing, which is
+# how the release note for that pass shipped it, unescaped, matching 0 files — and reds
+# when a consumer-facing instruction line names members of the set instead of deriving
+# them. A list that
+# must be re-synced by hand at every added bin IS the defect; a fifth copy would have
+# minted it again, and a hand audit had already proved it can miss one.
 #
 # Cited by ANCHOR TEXT, never by line — these four were line
 # numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the

@@ -1180,20 +1180,46 @@ finding with no owner is abandoned, not filed.
   no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
   reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
   **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
-- **The lib-sourcing-bins list, in three prose copies** (card #5981) — **SHIPPED, card#6884.** The
-  lib header, `ADOPTION.md` and `INSTALL.md` §6b each enumerated the bins that `source`
-  `_kb-board-lib.sh`, while `agent-board-toolkit-drift-check` **derives** the real set from the
-  files. The prediction this bullet carried is what came true: `gh-code-search` joined the set and
-  reached **one** of the three copies, leaving two docs telling a vendoring consumer to copy a bin
-  set that omitted it — an rc-1 "shared lib not found" refusal on every invocation, from following
-  the instructions. All three enumerations are now **deleted**, each replaced by the derivation
-  itself — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` — which is the answer this bullet
-  required each audience to be left with (a command they can run against the version in their hand),
-  not a bare pointer. No fourth copy and no new gate: the pattern is the same one
-  `agent-board-toolkit-drift-check`'s `MISSING-LIB` probe triggers on, and
-  `tests/drift-check-fixture-selftest.sh` already asserts as a **premise** that it still matches a
-  real sourcer and still misses a real standalone — so the derivation cannot rot silently while the
-  checks keep passing, which is the property a hand-kept list never had.
+- **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
+  second attempt.** The lib header, `ADOPTION.md`, `INSTALL.md` §6b and `UPGRADE.md` §3 each
+  enumerated the bins that `source` `_kb-board-lib.sh`, while `agent-board-toolkit-drift-check`
+  **derives** the real set from the files. The prediction this bullet carried is what came true:
+  `gh-code-search` joined the set and reached **one** copy, leaving the others telling a vendoring
+  consumer to copy a bin set that omitted it — an rc-1 "shared lib not found" refusal on every
+  invocation, from following the instructions. Every enumeration is now **deleted**, each replaced
+  by the derivation itself — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` — which is the
+  answer this bullet required each audience to be left with (a command they can run against the
+  version in their hand), not a bare pointer.
+
+  ⛔ **THE FIRST CLOSURE OF THIS BULLET WAS FALSE, and how it was false is the reason the ruling
+  below reversed.** It fixed three copies, wrote *"no fourth copy and no new gate"*, and marked the
+  class SHIPPED — against a denominator taken from **this bullet's own prose** rather than
+  re-derived from the tree. `UPGRADE.md` §3 was never in that three, and it is the copy a
+  re-vendoring consumer actually follows (`INSTALL.md` §6b points at it): it named **six** bins
+  where the derivation answers **nine**, omitting `adopt-to-dl`, `board-stats` and `gh-code-search`.
+  The re-derivation is the one the fix now publishes, run against the tree in hand rather than
+  quoted — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` (9), controlled against the wider
+  `grep -ln _kb-board-lib bin/*` (16), whose seven extra hits are each a documented standalone that
+  mirrors a helper rather than sourcing it. A pass that had re-derived instead of quoting would have
+  moved its own denominator, which is exactly the signal that a class audit has not converged.
+
+  **The "no new gate" ruling is REVERSED, and the reversal is the finding, not a preference.** The
+  argument for it was sound — `drift-check`'s `MISSING-LIB` probe and
+  `tests/drift-check-fixture-selftest.sh` do keep the *pattern* honest — but it answers a different
+  question: those two prove the derivation still discriminates a sourcer from a standalone; neither
+  can see a prose list that has stopped agreeing with it, and a prose list is what the consumer
+  reads. A four-copy class that survived a three-copy audit **is** the argument for a gate, and it
+  now has one: **`tests/lib-set-derivation-selftest.sh`**, which (1) extracts every published
+  spelling of the derivation from the tree, runs each against `bin/`, and reds when one answers a
+  different set — or nothing, which is how the release note shipped it, with `$KB_LIB` unescaped
+  inside single quotes so the ERE anchor matched **0** files — and (2) reds when a consumer-facing
+  surface grows a line that both names the lib and enumerates two or more members of the derived
+  set, with a fixture control so the leg is watched to fire. Its unit is the LINE, which is a
+  whole paragraph in the markdown a consumer follows and a wrapped fragment in a shell comment —
+  stated in the check, because it means a historical aside wrapped across comment lines is out of
+  its reach by construction, not by luck. Version-specific history
+  (`UPGRADE.md` §6, `docs/CHANGELOG.md`) is deliberately out of its population and the check says
+  why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
 
 ---
 
@@ -1204,6 +1230,12 @@ teaches the next reader nothing.
 
 - **"The drift gate cannot fail"** — true only for the content-drift axis; its `MISSING-LIB` leg is
   live. Revision 1 said *replace*; that would have deleted it. → **add, never replace.**
+- **"The lib-sourcing-bins list lives in three prose copies"** and **"no fourth copy and no new
+  gate"** — both false, and the second followed from the first. The count came from this document's
+  own prose instead of from the tree, so `UPGRADE.md` §3 — the standing re-vendor recipe — was
+  never in the population and shipped naming six bins against a derived nine. → **a class audit
+  re-derives its denominator every pass; a pass that moves the denominator has not converged, and
+  a copy that survives an audit of its own class is the argument FOR the gate that audit declined.**
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
 - **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured

@@ -91,6 +91,31 @@
 #    2  the withheld object's `reason` blanked · 2  its `total_count_is_estimate` dropped
 #    1  `--help` writes to stdout directly again
 #
+# EIGHT MORE, for a SECOND adversarial pass — whose first finding was that the pass above had
+# closed the SIGPIPE class while leaving two un-audited direct writers behind it. Same
+# discipline, same harness controls re-run first (identity ⇒ 0 red, `PARTIAL exits 0` ⇒ 8 red):
+#   18  `trap '' PIPE` removed outright
+#   12  UNANSWERED discriminates on `total_count` ALONE again, so a flagged NON-ZERO count with
+#       an EMPTY item set answers `PARTIAL … items_returned=0` at rc 3 — the empty result set
+#       this tool exists to withhold, wearing a count that reads as an answer
+#   11  `_put_err` loses its tolerated write · 10  `_put` loses its tolerated write
+#    5  the `<query> is required` refusal goes back to a raw `echo "$USAGE" >&2`, which under
+#       `trap '' PIPE` RETURNS 1 on an unwritable stderr and hands that to `set -e` before `die`
+#       runs: rc 1 — the RETRYABLE ERROR in this tool's own table — for a wrong command line
+#    4  the flagged-zero leg dropped from the withholding union, so a flagged zero that carries
+#       an item emits it again
+#    2  the withheld emitter hardcodes `total_count=0` instead of the count it was handed
+#    1  `trap '' PIPE` moved back below the lib source, which leaves the lib-missing refusal in
+#       FRONT of it: `--help 2>&1 | head -n 0` on a lib-less copy answers rc 141 with an empty
+#       stderr, in the one state where that message is the whole product
+#
+# A NINTH STARTED AT ZERO RED, and it is recorded here rather than fixed by
+# adding an assertion, because the assertion could not fail: dropping the inline
+# `2>/dev/null || true` from the lib-missing refusal changes no rc. `set -e` is live inside the
+# `{ }` following the final `||`, so the failed write exits with status 1 — the same 1 the
+# refusal intends. The tolerance stays (see its own note at the lib-less case below); what does
+# not stay is a check that would have certified it.
+#
 # THE LIVE LEG WAS ALSO SEEN TO FAIL, on the real endpoint against a real private repository:
 # with the first mutation above in place the tool answered
 # `PARTIAL total_count=0 … incomplete_results=true items_returned=0` at rc 3 and the leg went
@@ -103,8 +128,18 @@
 # which stops reading stdout cannot change any of that. It proves nothing about what the real
 # `search/code` returns for any query, and nothing about the accuracy of the prose in either
 # file's header. The truncating-reader legs prove it for the two readers they use (`head -n 1`
-# and `head -n 0`) and for one payload past the pipe buffer — not for every way a consumer can
-# go away (an fd closed outright, a reader killed mid-read, a full disk on stdout).
+# and `head -n 0`), for one payload past the pipe buffer, and — since the second review pass —
+# for the MERGED stream (`2>&1 | head`) and for an unwritable stderr reached without any pipe at
+# all (`2>/dev/full`, `2>&-`). The merged stream was listed here as a way a consumer can go away
+# that these legs did not cover; it is covered now, and covering it is what found the two
+# un-audited direct writers, so the disclosure earned its keep.
+#
+# WHAT IS STILL NOT COVERED, named rather than implied: a reader killed MID-read (as opposed to
+# one that never reads or stops after N lines), and a full filesystem on STDOUT. The second is
+# not merely untested but deliberately unguarded — `_put`'s tolerance is untargeted, so a
+# COMPLETE payload that cannot be written is lost at rc 0 with no diagnostic (measured;
+# `bin/gh-code-search`'s own write-rule section states the boundary). The rc still answers
+# whether the SEARCH could be stood behind, which is the property this tool sells.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -155,6 +190,15 @@ _body partial-2    17   true  "$(_item acme/app src/A.php)" "$(_item acme/app sr
 # items on that branch reddened NOTHING. It is a fixture, not a handled case: the tool grows no
 # code for it, the branch already withholds everything, and this is what makes that observable.
 _body unanswered-with-item 0 true "$(_item acme/app src/A.php)"
+# THE OTHER EMPTY: a flagged NON-ZERO count with an EMPTY item set. `total -eq 0` was the sole
+# discriminator, so this reached PARTIAL at rc 3 and printed `items_returned=0` — the empty
+# result set the withholding doctrine forbids, wearing a count that merely looks like an answer.
+# The count is an ESTIMATE the tool's own header bars from equality tests; the item set is what
+# was measured. Standing: NOT observed live — same as `unanswered-with-item` — but `items` and
+# `total_count` are independent axes of the envelope and the flag says this call did not finish,
+# so nothing rules it out; and unlike that fixture this one changed the TOOL, because the branch
+# it lands in decided whether an empty result set is printed.
+_body flagged-empty-items 17 true
 # A page that comes back FULL at exactly ten items — the fixture the `--per-page 010` case needs,
 # because the base-8 defect was only observable where `items_returned == --per-page` decides.
 _full10=(); for _i in 1 2 3 4 5 6 7 8 9 10; do _full10+=("$(_item acme/app "src/F$_i.php")"); done
@@ -228,6 +272,29 @@ run_piped() {
       printf '%s' "$irc" > "$RCF"
     } | "${reader[@]}" >"$OUTF" 2>/dev/null || true
     RC="$(cat "$RCF")"; OUT="$(cat "$OUTF")"; ERR="$(cat "$ERRF")"
+}
+
+# run_merged <reader…> -- <tool-args…> — the same, with stderr MERGED into the pipe (`2>&1 |`)
+# instead of captured to a file.
+#
+# WHY IT IS A SECOND HARNESS AND NOT A FLAG ON THE FIRST. `run_piped` sends stderr to a FILE, so
+# only the STDOUT writer ever meets the closed pipe; the refusal is written to a file that always
+# accepts it, and a writer that cannot fail cannot be shown to survive failing.
+# `2>&1 | head` is the invocation a caller reaches for precisely when they want the refusal and
+# the verdict line together — this file's own header advertises both — and it puts EVERY write
+# in the tool behind the dead reader, including the ones that run before `_put_err` exists. No
+# ERR is set: there is nowhere for it to go, which is the point of the shape.
+run_merged() {
+    local reader=()
+    while [[ "${1:-}" != "--" ]]; do reader+=("$1"); shift; done
+    shift
+    : > "$ARGV"; : > "$RCF"
+    { local irc=0
+      env PATH="$STUB:$UB" GCS_BODY="$BODY" GCS_RC="$GRC" GCS_STDERR="$GERR" GCS_ARGV="$ARGV" \
+          "$BIN" "$@" 2>&1 || irc=$?
+      printf '%s' "$irc" > "$RCF"
+    } | "${reader[@]}" >"$OUTF" 2>/dev/null || true
+    RC="$(cat "$RCF")"; OUT="$(cat "$OUTF")"; ERR=""
 }
 
 # case_body <name> — select a 200-with-this-body fixture.
@@ -324,8 +391,43 @@ eq "…nor its path"                                   "false" "$(has 'src/A.php
 run --format json "$Q"
 eq "…nor through --format json"                      "false" "$(printf '%s' "$OUT" | jq -r 'has("items")')"
 
+# THE OTHER HALF OF "NOTHING TO STAND ON": a flagged NON-ZERO count with an EMPTY item set. The
+# count was the sole discriminator, so this answered `PARTIAL … items_returned=0` at rc 3 —
+# the empty result set the withholding doctrine forbids, printed under a count that reads as an
+# answer. The count is an ESTIMATE this tool's header bars from equality tests, so it cannot be
+# the thing that certifies results exist; the item set is what was measured.
+case_body flagged-empty-items
+run "$Q"
+eq "a flagged NON-ZERO count with NO items is fatal"  "4"     "$RC"
+eq "…UNANSWERED, never PARTIAL"                       "false" "$(has 'PARTIAL' "$OUT")"
+eq "…and it says UNANSWERED"                          "true"  "$(has 'UNANSWERED' "$OUT")"
+eq "…the count still rides beside its flag"           "true"  "$(has 'total_count=17 (ESTIMATE) incomplete_results=true' "$OUT")"
+eq "…results are WITHHELD"                            "true"  "$(has 'results=WITHHELD' "$OUT")"
+# The invariant this state broke: an empty result set, in any spelling.
+eq "…and NO items_returned=0 is emitted"              "false" "$(has 'items_returned' "$OUT")"
+eq "…stdout is the verdict line and nothing else"     "1"     "$(_lines "$OUT")"
+eq "stderr refuses the empty set in words"            "true"  "$(has 'That empty item set is NOT "no matches"' "$ERR")"
+eq "…and says the count is an estimate, not a result" "true"  "$(has 'total_count=17 is an ESTIMATE, not a result set' "$ERR")"
+eq "…and names the fallback here too"                 "true"  "$(has 'git/trees/<ref>?recursive=1' "$ERR")"
+run --format json "$Q"
+eq "…json rc 4"                                       "4"          "$RC"
+eq "…json state"                                      "UNANSWERED" "$(printf '%s' "$OUT" | jq -r .state)"
+eq "…json carries no items key"                       "false"      "$(printf '%s' "$OUT" | jq -r 'has("items")')"
+eq "…nor an items_returned"                           "false"      "$(printf '%s' "$OUT" | jq -r 'has("items_returned")')"
+eq "…and keeps the non-zero count, not a fabricated 0" "17"        "$(printf '%s' "$OUT" | jq -r .total_count)"
+eq "…with a reason naming the empty item set"         "true"       "$(printf '%s' "$OUT" | jq -r '.reason | test("returned no items")')"
+# THE CONTROL FOR THE UNION: widening the withholding must not have swallowed PARTIAL, which is
+# the state that exists so a flagged answer with real matches stays usable. Same flag, same
+# count, two items — still rc 3, still emitting them.
+case_body partial-2
+run "$Q"
+eq "a flagged count WITH items is still PARTIAL rc 3" "3"     "$RC"
+eq "…and its items are still emitted"                 "3"     "$(_lines "$OUT")"
+
 # A query with no `repo:` qualifier still gets a recipe, with placeholders and a note saying so
-# — never a silent omission of the way through.
+# — never a silent omission of the way through. Back on the flagged-zero body: the two cases
+# above moved the selection, and this case's whole point is the rc-4 refusal.
+case_body unanswered
 run 'org:acme HTTP 409'
 eq "an org-wide query still refuses at rc 4"       "4"     "$RC"
 eq "…and still names the fallback"                 "true"  "$(has 'git/trees/<ref>?recursive=1' "$ERR")"
@@ -515,6 +617,78 @@ run_piped head -n 0 -- --help
 eq "--help through a reader that never reads: rc 0"      "0"    "$RC"
 
 # ---------------------------------------------------------------------------
+# THE MERGED STREAM — `2>&1 | head`, where the refusal meets the closed pipe TOO.
+#
+# The legs above route stderr to a file, so they exercise one writer. This section is the other
+# half of the population, and it is not a theoretical reader: `gh-code-search $QUERY 2>&1 | head`
+# with `QUERY` unset is the unexpanded-variable shape the usage refusals exist for. Measured
+# before this section existed, on this same stub:
+#     no query   2>&1 | head -n 0   rc 1   (direct: 2)
+#     bare --    2>&1 | head -n 0   rc 1   (direct: 2)
+# rc 1 is ERROR in this tool's own table — the RETRYABLE one — for a command line that is wrong
+# and will never clear on retry. Cause: a raw `echo "$USAGE" >&2` as the last command of an `||`
+# list. With `trap '' PIPE` in force an unwritable stderr makes it RETURN 1 instead of dying, and
+# `set -e` took that status before `die` could set the real one. Every state is covered here
+# because the fix is one shared writer and a mutation to it must red more than one case.
+case_body partial-2
+run_merged head -n 0 -- "$Q"
+eq "PARTIAL, stderr merged into a dead reader: rc 3"     "3"    "$RC"
+run_merged head -n 1 -- "$Q"
+eq "…and through \`2>&1 | head -1\`"                     "3"    "$RC"
+case_body unanswered
+run_merged head -n 0 -- "$Q"
+eq "UNANSWERED, merged: rc 4"                            "4"    "$RC"
+BODY="$BODIES/ratelimit.json"; GRC=0; GERR=""
+run_merged head -n 0 -- "$Q"
+eq "ERROR, merged: rc 1"                                 "1"    "$RC"
+case_body complete-2
+run_merged head -n 0 -- "$Q"
+eq "COMPLETE, merged: rc 0"                              "0"    "$RC"
+run_merged head -n 0 -- --help
+eq "--help, merged: rc 0"                                "0"    "$RC"
+# The usage refusals, which is where the merged stream actually bit. rc 2, never the retryable 1.
+run_merged head -n 0 --
+eq "no query at all, merged: rc 2 — not the retryable 1" "2"    "$RC"
+run_merged head -n 0 -- --
+eq "a bare '--', merged: rc 2"                           "2"    "$RC"
+run_merged head -n 0 -- --bogus "$Q"
+eq "an unknown flag, merged: rc 2"                       "2"    "$RC"
+run_merged head -n 0 -- --per-page 0 "$Q"
+eq "an out-of-range --per-page, merged: rc 2"            "2"    "$RC"
+# Past the pipe buffer, so the write is cut mid-flight on the merged stream too.
+case_body big-100
+run_merged head -n 1 -- "$Q"
+eq "a payload past the pipe buffer, merged: rc 0"        "0"    "$RC"
+
+# STDERR UNWRITABLE WITHOUT A PIPE AT ALL — the same failing-write shape reached by a full
+# filesystem or a closed fd rather than by a dead reader, which is what shows the defect was in
+# the WRITE, not in SIGPIPE. `--bogus` is the control: it already routed through the tolerated
+# writer and answered 2 throughout, so a green here is not "both are broken the same way".
+eq "premise: /dev/full exists"                     "true" "$([ -c /dev/full ] && echo true || echo false)"
+eq "premise: a write to /dev/full really fails"    "1"    "$( (printf x >/dev/full) 2>/dev/null; echo $?)"
+_rc_stderr() {
+    local redir="$1"; shift
+    local rc=0
+    if [[ "$redir" == full ]]; then
+        env PATH="$STUB:$UB" GCS_BODY="$BODY" GCS_RC="$GRC" GCS_STDERR="$GERR" GCS_ARGV="$ARGV" \
+            "$BIN" "$@" >/dev/null 2>/dev/full || rc=$?
+    else
+        env PATH="$STUB:$UB" GCS_BODY="$BODY" GCS_RC="$GRC" GCS_STDERR="$GERR" GCS_ARGV="$ARGV" \
+            "$BIN" "$@" >/dev/null 2>&- || rc=$?
+    fi
+    printf '%s' "$rc"
+}
+case_body complete-2
+eq "no query, stderr on a full filesystem: rc 2"   "2" "$(_rc_stderr full)"
+eq "no query, stderr CLOSED outright: rc 2"        "2" "$(_rc_stderr closed)"
+eq "a bare '--', stderr full: rc 2"                "2" "$(_rc_stderr full --)"
+eq "control: --bogus, stderr full: rc 2"           "2" "$(_rc_stderr full --bogus "$Q")"
+# A SUCCESSFUL run that also writes to stderr — `--per-page 2` over a 2-item body is the FULL-page
+# warning, i.e. the one rc-0 state with a stderr write in front of the final `exit`. An
+# unwritable stderr must not convert a search that ran fine into this tool's ERROR code.
+eq "a rc-0 answer whose stderr warning cannot be written stays 0" "0" "$(_rc_stderr full --per-page 2 "$Q")"
+
+# ---------------------------------------------------------------------------
 echo "== usage refusals (rc 2) — and the ONE that is rc 1 =="
 case_body complete-2
 _usage_rc() { run "$@"; printf '%s' "$RC"; }
@@ -627,6 +801,24 @@ mkdir -p "$TMP/lonely/bin"; cp "$BIN" "$TMP/lonely/bin/gh-code-search"
 RC=0; env PATH="$STUB:$UB" "$TMP/lonely/bin/gh-code-search" --help >"$OUTF" 2>"$ERRF" || RC=$?
 eq "vendored without _kb-board-lib.sh: rc 1"  "1"    "$RC"
 eq "…naming the lib and the fix"              "true" "$(has '_kb-board-lib.sh not found' "$(cat "$ERRF")")"
+# THE REFUSAL IS ITSELF A WRITE, and it is the one write that cannot route through `_put_err`:
+# it runs before the lib is sourced, so before those functions exist. With `trap '' PIPE` set
+# after the source instead of at the top of the file, this refusal stood IN FRONT of the trap
+# and a merged stream into a dead reader killed it — measured on this same copy: rc 141 with an
+# EMPTY stderr, verbatim the pre-fix failure, in the one state (a mis-vendored install) where
+# the naming message is the whole product.
+RC=0
+{ env PATH="$STUB:$UB" "$TMP/lonely/bin/gh-code-search" --help 2>&1 || RC=$?
+  printf '%s' "$RC" > "$RCF"; } | head -n 0 >/dev/null 2>&1 || true
+eq "…and through \`2>&1 | head\`: rc 1, not 141" "1" "$(cat "$RCF")"
+# ⛔ NO `2>/dev/full` CASE HERE, DELIBERATELY, AND THE ABSENCE IS THE FINDING. The refusal
+# carries its own inline `2>/dev/null || true` (it cannot call `_put_err`, which does not exist
+# yet), and that tolerance is NOT observable through the rc: `set -e` is live inside the `{ }`
+# following the final `||`, so a failed write there exits with status 1 — the same 1 the
+# refusal intends. Both spellings answer rc 1 and an assertion on it would pass either way.
+# Recorded rather than written: a check that cannot fail is a decoration. The tolerance stays
+# because it makes the documented rc a decision instead of a coincidence, and because a second
+# statement added after that write would make the coincidence load-bearing.
 
 # ---------------------------------------------------------------------------
 echo "== --help =="
