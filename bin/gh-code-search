@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# gh-code-search — run a GitHub code search and REFUSE to report a count GitHub has told you
+# it could not stand behind.
+#
+# WHY THIS EXISTS. `GET /search/code` answers **HTTP 200** with **`total_count: 0`** on a
+# private repository — for a term that certainly EXISTS and for a term that cannot exist
+# alike. Measured on two seats, two orgs, two tokens: `repo:<private> class` and
+# `repo:<private> zzqqxxnotarealtoken` returned byte-identical bodies, while a public control
+# returned a real count. **The endpoint returns the same answer for "the answer is none" and
+# for "I could not answer."** The discriminator, `incomplete_results: true`, is already in
+# that body; the ordinary spelling of the query — `gh api search/code --jq '.total_count'` —
+# throws it away and hands the caller a `0` that reads as a finding. That is how a
+# cross-repository claim ("this codebase never emits X") gets made from a search that never
+# ran. Nothing in this toolkit called `search/code` when this was written; the thing that
+# failed was an agent hand-rolling the query because there was no primitive to reach for.
+#
+# THE CONTRACT IS **error / partial / complete — never a count.** Three states, not two, and
+# the state is carried by the EXIT CODE. `total_count` never appears on stdout without
+# `incomplete_results` on the same line, in every branch, so the two cannot be separated by a
+# `cut`, a `--jq`, or a copy-paste.
+#
+# `total_count` IS AN ESTIMATE, and that is independent of `incomplete_results`. Code search
+# coarsens it with magnitude (measured: `org:laravel use` → 12,864; `language:php array` →
+# 80,740,352), and the drift is not confined to code search — `search/commits?q=laravel`
+# returned 3,245,387 then 5,510,222 then 5,564,684 then 5,552,600 on one token in one session,
+# non-monotonically, which rules out real growth. So every printed count is tagged ESTIMATE:
+# it is never an equality input and never a threshold input. A caller who needs an exact
+# figure must paginate `items` and count them.
+#   ⛔ NO MODULUS IS ENCODED HERE, deliberately. The "every total_count is divisible by 8"
+#      rule that came with the original report is REFUTED by a stable counterexample
+#      (`repo:laravel/framework class` → 2460, repeated across spaced runs in a window that
+#      also returned 4472). The coarsening is real; the quantifier was the defect.
+#   ⛔ NO STABILITY HEURISTIC IS ENCODED HERE either. "A `false` flag comes with a stable
+#      count" is confounded: on both seats every `false` sample was a consecutive repeat of an
+#      identical request, so ordinary response caching predicts it exactly. That belongs to a
+#      probe, not to this tool.
+#
+# `incomplete_results` VARIES BETWEEN CALLS ON ONE SEAT — both values observed on one token
+# for one query. It is neither a seat property nor an endpoint property, so **its absence
+# certifies nothing**: a `false` is this call's answer about this call, and re-running is not
+# a way to talk GitHub out of a `true`.
+#
+# THE THREE STATES ARE GATED ON THE COMMAND'S rc, NEVER ON THE OUTPUT'S SHAPE. Roughly 2 of 9
+# probe attempts came back a secondary-rate-limit object carrying no `total_count` at all, and
+# `--jq '.total_count'` over that prints EMPTY — a caller doing arithmetic gets zero or a parse
+# error, and either reads as "no matches". So a non-zero `gh` exit, and a 200 whose body is not
+# a readable code-search envelope, are both ERROR here. An unreadable response is not an empty
+# one.
+#
+# WHAT IT PRINTS. One verdict line on stdout in every state, then (COMPLETE / PARTIAL only)
+# one line per matched file, `<owner>/<repo>\t<path>`. Those two fields are emitted because they
+# are the two the readability gate below CHECKS — `html_url` was dropped from `--format json`
+# rather than either shipped unchecked (a null where a string was promised) or added to the gate,
+# which would refuse a whole real answer over a cosmetic field:
+#
+#   COMPLETE    total_count=4472 (ESTIMATE) incomplete_results=false items_returned=100 items_truncated=true query=…
+#   PARTIAL     total_count=17 (ESTIMATE) incomplete_results=true items_returned=17 items_truncated=false query=…
+#   UNANSWERED  total_count=0 (ESTIMATE) incomplete_results=true results=WITHHELD query=…
+#   ERROR       total_count=UNKNOWN incomplete_results=UNKNOWN results=WITHHELD query=…
+#
+# `results=WITHHELD` is the point, not a formatting choice: on the two states that carry no
+# answer this tool emits NO item line and NO `items_returned=0`, because an empty result set
+# IS the defect being guarded — a zero that reads as an answer. `--format json` obeys the same
+# rule: the withheld states carry `"results":"WITHHELD"` and no `items` key at all, and every
+# object that carries `total_count` carries `incomplete_results` beside it.
+#
+# ONE PAGE, STATED. It issues exactly one request and does not paginate. `items_truncated` is
+# `true` whenever the page came back FULL (`items_returned == --per-page`), because at that
+# point this tool cannot know whether more exist — it errs toward "there is more", never
+# toward a short set reading as the whole set.
+#
+# Exit codes — GATE ON THESE, never on whether stdout looked empty:
+#   0  COMPLETE    GitHub did not flag the search. Verdict line + item lines on stdout. The
+#                  count is still an ESTIMATE.
+#   3  PARTIAL     `incomplete_results: true` with a NON-ZERO count — loud, but usable. The
+#                  item lines ARE on stdout and the warning is on stderr. Non-zero on purpose:
+#                  a flagged count must not be consumed as authoritative by a caller that
+#                  never said it would accept one. A blanket fatal was rejected for the
+#                  opposite reason — collapsing "could not answer" into "answered partially"
+#                  reproduces this tool's own subject one layer up, and produces a guard people
+#                  route around.
+#   4  UNANSWERED  `incomplete_results: true` with a count of ZERO. This is the defect itself.
+#   1  ERROR       the query did not run, or its answer could not be read: `gh` exited non-zero
+#                  (4xx, secondary rate limit, no network, no auth), or the 200 body is not a
+#                  readable code-search envelope.
+#   2  usage       bad arguments, or `gh` / `jq` missing.
+# 3 and 4 are separate because the operator action differs: a PARTIAL has results to look at,
+# an UNANSWERED has none and re-running will not produce any. 1 and 4 are separate for the same
+# reason — an ERROR may clear on retry, an UNANSWERED against a private repo will not.
+#
+# Usage: gh-code-search [--per-page N] [--format text|json] <query>
+#
+#   <query>      the GitHub code-search query, as ONE argument, in the endpoint's own syntax
+#                (`repo:owner/name needle`, `org:acme path:*.php needle`, …). Quote it.
+#   --per-page   items to request, 1-100 (default 100 — the endpoint's maximum, so that the
+#                exact-and-verifiable half of the answer is as large as one request allows).
+#   --format     `text` (default) or `json` — one object on stdout, same states, same rcs.
+#
+# WHEN IT REFUSES, IT NAMES THE WAY THROUGH: `repos/<owner>/<repo>/git/trees/<ref>?recursive=1`
+# to enumerate paths, then `repos/<owner>/<repo>/contents/<path>` to read them. That route is
+# measured working on the same private repo and the same token that code search cannot answer
+# for (607 `.php` paths where search returned 0). `search/commits` also answers on that repo,
+# which isolates the failure to code search — it is not repo access and not the token.
+#
+# It reads only. No git command, no board API, no writes, one `gh api` call.
+set -euo pipefail
+
+# --- shared lib -------------------------------------------------------------
+# Sourced BEFORE the arg loop, matching every other lib-sourcing bin: a lib-less install then
+# reports the missing lib at rc 1 on EVERY invocation rather than answering the arg loop first.
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
+# shellcheck source=bin/_kb-board-lib.sh
+source "$KB_LIB"
+KB_PROG="gh-code-search"
+
+USAGE='usage: gh-code-search [--per-page N] [--format text|json] <query>'
+die() { echo "$KB_PROG: $*" >&2; exit 2; }
+
+PER_PAGE=100
+FORMAT=text
+QUERY=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --per-page) kb_require_value "$1" "${2:-}" || exit 2; shift; PER_PAGE="$1" ;;
+        --format)   kb_require_value "$1" "${2:-}" || exit 2; shift; FORMAT="$1" ;;
+        # Contiguous leading comment block, not a fixed range — see the release movers.
+        -h|--help)  awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0 ;;
+        # `-*`, not `--*`: a single-dash typo (`-v`) otherwise became the QUERY and was sent
+        # to GitHub as a search term. A query cannot begin with `-` anyway — code search needs at
+        # least one non-negated term — so nothing legitimate is refused here.
+        -*)         echo "$USAGE" >&2; die "unknown flag '$1'" ;;
+        *)          kb_require_positional "$QUERY" "$1" '<query>' || exit 2; QUERY="$1" ;;
+    esac
+    shift
+done
+
+[[ -n "$QUERY" ]] || { echo "$USAGE" >&2; die '<query> is required'; }
+# A whitespace-only query is refused BEFORE any request: the endpoint answers a 422 for it,
+# which would be reported as ERROR — a true statement about a call that never needed making,
+# and one that spends a search-API request out of a 10/minute budget to learn nothing.
+[[ -n "${QUERY//[[:space:]]/}" ]] || die '<query> is only whitespace'
+# `kb_is_uint` before the range test: `[ "$PER_PAGE" -ge 1 ]` on a non-numeric string is a
+# bash error, not a refusal, and under `set -e` it kills the script with no diagnostic.
+kb_is_uint "$PER_PAGE" || die "--per-page must be a whole number 1-100, got '$PER_PAGE'"
+[[ "$PER_PAGE" -ge 1 && "$PER_PAGE" -le 100 ]] || die "--per-page must be 1-100, got '$PER_PAGE' (100 is the endpoint's maximum)"
+case "$FORMAT" in text|json) ;; *) die "--format must be 'text' or 'json', got '$FORMAT'" ;; esac
+
+command -v gh >/dev/null || die "gh is required (this tool is a guarded wrapper around \`gh api search/code\`)"
+command -v jq >/dev/null || die "jq is required"
+
+# --- the fallback recipe ----------------------------------------------------
+# Concrete whenever the query names one repository, generic otherwise. The `repo:` qualifier
+# is read out of the QUERY rather than taken as a separate flag on purpose: two ways to name
+# the repository is two things that can disagree, and the one the request actually carries is
+# the query's.
+#
+# BASH_REMATCH survives kb_ere_match (which localizes only LC_ALL) — that is contracted in the
+# lib's header, and it is what makes the ASCII-safe matcher usable for a capture here.
+_fallback_lines() {
+    local owner_repo=""
+    if kb_ere_match "$QUERY" '(^|[[:space:]])repo:([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)'; then
+        owner_repo="${BASH_REMATCH[2]}"
+    fi
+    echo "  FALLBACK — enumerate the tree and read the files; this route is measured working on a"
+    echo "  private repo whose code search answers 0, with the same token:"
+    if [[ -n "$owner_repo" ]]; then
+        echo "    gh api 'repos/$owner_repo/git/trees/<ref>?recursive=1' --jq '.tree[] | select(.type==\"blob\") | .path'"
+        echo "    gh api 'repos/$owner_repo/contents/<path>' --jq '.content' | base64 -d"
+    else
+        echo "    gh api 'repos/<owner>/<repo>/git/trees/<ref>?recursive=1' --jq '.tree[] | select(.type==\"blob\") | .path'"
+        echo "    gh api 'repos/<owner>/<repo>/contents/<path>' --jq '.content' | base64 -d"
+        echo "  (this query names no single \`repo:\`, so the commands above carry placeholders — run"
+        echo "  them once per repository in the intended population.)"
+    fi
+}
+
+# --- the one request --------------------------------------------------------
+# stderr is captured to a file rather than folded into stdout: the body and gh's own
+# diagnostic have to stay separable, because on a 4xx gh prints BOTH — the body on stdout and
+# the message on stderr — and a fold would feed the diagnostic to jq.
+TMPERR="$(mktemp)"; trap 'rm -f "$TMPERR"' EXIT
+gh_rc=0
+gh_out="$(gh api --method GET search/code -f "q=$QUERY" -f "per_page=$PER_PAGE" 2>"$TMPERR")" || gh_rc=$?
+
+# --- the readability gate ---------------------------------------------------
+# A 200 is not an answer until the envelope is READ. This is the third state: a
+# secondary-rate-limit object, an HTML error page, or any body missing either half of the
+# count/flag pair must be ERROR, never a zero. `all(...)` over an empty array is true, so a
+# genuinely empty COMPLETE result passes this gate; an item missing `path` or
+# `repository.full_name` does not, because a renderer that filled those in from a default
+# would be inventing the answer.
+envelope=""
+if [[ "$gh_rc" -eq 0 ]]; then
+    envelope="$(printf '%s' "$gh_out" | jq -r '
+        if (type == "object")
+           and ((.total_count | type) == "number")
+           and ((.incomplete_results | type) == "boolean")
+           and ((.items | type) == "array")
+           and (all(.items[];
+                    (type == "object")
+                    and ((.path | type) == "string")
+                    and ((.repository.full_name | type) == "string")))
+        then "\(.total_count)\t\(.incomplete_results)\t\(.items | length)"
+        else empty
+        end' 2>/dev/null)" || envelope=""
+fi
+
+# _emit_withheld <state> <total-json> <flag-json> <reason> — the ONE emitter for the two states
+# that carry no answer. Both were written out longhand at first and had already drifted apart on
+# two axes (the verdict-line padding, and which keys the JSON object carried), which is the whole
+# argument for one owner: the withholding invariant — no `items` key, no `items_returned`, an
+# explicit `results: "WITHHELD"` — must hold identically in both, and a second copy is a second
+# place for it to stop holding. <total-json>/<flag-json> are JSON literals (`null`, `0`, `true`),
+# and the text form derives from them: `null` prints UNKNOWN, a number prints with the ESTIMATE
+# tag it always carries.
+_emit_withheld() {
+    local state="$1" total="$2" flag="$3" reason="$4" total_txt flag_txt
+    if [[ "$total" == null ]]; then total_txt="total_count=UNKNOWN"; else total_txt="total_count=$total (ESTIMATE)"; fi
+    if [[ "$flag" == null ]]; then flag_txt="incomplete_results=UNKNOWN"; else flag_txt="incomplete_results=$flag"; fi
+    if [[ "$FORMAT" == json ]]; then
+        jq -cn --arg state "$state" --arg query "$QUERY" --arg reason "$reason" \
+           --argjson total "$total" --argjson flag "$flag" \
+           '{state: $state, query: $query, total_count: $total, total_count_is_estimate: true,
+             incomplete_results: $flag, results: "WITHHELD", reason: $reason}'
+    else
+        printf '%-10s %s %s results=WITHHELD query=%s\n' "$state" "$total_txt" "$flag_txt" "$QUERY"
+    fi
+}
+
+# `-z "$envelope"` ALONE is the gate, and that is the strong form rather than a shortcut: the
+# parse above runs only when `gh` exited 0, so a non-zero exit reaches here by construction and
+# cannot be talked out of it by anything in the body. An `|| "$gh_rc" -ne 0` here would read as
+# the belt-and-braces version and is in fact unfalsifiable — mutating it away changed no
+# behaviour and reddened no assertion, which is what identified it as a defence against a state
+# that cannot happen. The rc still SELECTS the wording below, where it is observable.
+if [[ -z "$envelope" ]]; then
+    if [[ "$gh_rc" -ne 0 ]]; then
+        reason="gh api exited $gh_rc — the search did not run, so nothing here is a statement about the repository"
+    else
+        reason="gh api exited 0 but the body is not a readable code-search envelope — an unreadable response is not an empty one"
+    fi
+    _emit_withheld ERROR null null "$reason"
+    {
+        echo "$KB_PROG: ERROR — $reason."
+        if [[ -s "$TMPERR" ]]; then
+            echo "  gh said:"
+            sed 's/^/    /' "$TMPERR"
+        fi
+        if [[ "$gh_rc" -eq 0 && -n "$gh_out" ]]; then
+            echo "  body (first 400 bytes):"
+            printf '    %.400s\n' "$gh_out"
+        fi
+        echo "  ⛔ Do NOT read this as \"no matches\". Nothing was measured."
+        _fallback_lines
+    } >&2
+    exit 1
+fi
+
+IFS=$'\t' read -r total flag n_items <<<"$envelope"
+truncated=false
+[[ "$n_items" -eq "$PER_PAGE" ]] && truncated=true
+
+# --- UNANSWERED: the defect this tool exists for ----------------------------
+if [[ "$flag" == true && "$total" -eq 0 ]]; then
+    _emit_withheld UNANSWERED 0 true "GitHub flagged this search incomplete and returned a count of zero — the two are indistinguishable from a real no-match, so no result set is emitted"
+    {
+        echo "$KB_PROG: UNANSWERED — GitHub returned total_count=0 WITH incomplete_results=true."
+        echo "  ⛔ That zero is NOT \"no matches\". This endpoint returns the same body for \"the answer"
+        echo "  is none\" and for \"I could not answer\", and a private repository is the known live"
+        echo "  case: a term that certainly exists and a term that cannot exist both answer 0 here."
+        echo "  No result set is emitted, because an empty result set is exactly the wrong answer."
+        echo "  Re-running will not help — the flag varies between calls, so a later \`false\` would be"
+        echo "  that call's answer about that call and not evidence about this one."
+        _fallback_lines
+    } >&2
+    exit 4
+fi
+
+# --- COMPLETE / PARTIAL: an answer, with its qualifier attached -------------
+state=COMPLETE
+[[ "$flag" == true ]] && state=PARTIAL
+
+if [[ "$FORMAT" == json ]]; then
+    printf '%s' "$gh_out" | jq -c --arg state "$state" --arg query "$QUERY" --argjson trunc "$truncated" '
+        {state: $state, query: $query,
+         total_count: .total_count, total_count_is_estimate: true,
+         incomplete_results: .incomplete_results,
+         items_returned: (.items | length), items_truncated: $trunc,
+         items: [.items[] | {repository: .repository.full_name, path: .path}]}'
+else
+    printf '%-10s total_count=%s (ESTIMATE) incomplete_results=%s items_returned=%s items_truncated=%s query=%s\n' \
+        "$state" "$total" "$flag" "$n_items" "$truncated" "$QUERY"
+    printf '%s' "$gh_out" | jq -r '.items[] | "\(.repository.full_name)\t\(.path)"'
+fi
+
+if [[ "$state" == PARTIAL ]]; then
+    {
+        echo "$KB_PROG: PARTIAL — GitHub flagged this search incomplete (incomplete_results=true) and"
+        echo "  returned total_count=$total. The $n_items item(s) above are real matches, so they are"
+        echo "  usable; the COUNT is not authoritative and the match set may be short. Exiting 3 so"
+        echo "  that consuming a flagged count is a decision your code states, not one it defaults to."
+        _fallback_lines
+    } >&2
+    exit 3
+fi
+
+if [[ "$truncated" == true ]]; then
+    echo "$KB_PROG: the item page came back FULL ($n_items = --per-page), so there are almost certainly more matches than the lines above — this tool issues ONE request and does not paginate. Raise --per-page (max 100) or paginate \`search/code\` yourself; total_count is an ESTIMATE and is not the missing figure." >&2
+fi
+exit 0

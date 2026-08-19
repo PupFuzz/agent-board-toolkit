@@ -3,7 +3,7 @@
 #
 # CO-VENDORED, not toolkit-only. Every lib-sourcing bin (kbcard, next-dl,
 # board-snapshot, board-stats, board-card-start, adopt-to-dl, dl-a0-backfill-triaged,
-# dl-a1-register-field) `source`s this as a sibling, so a vendor-by-copy consumer
+# dl-a1-register-field, gh-code-search) `source`s this as a sibling, so a vendor-by-copy consumer
 # MUST copy it too. Cited by ANCHOR TEXT, never by line — these four were line
 # numbers and three had rotted: INSTALL.md by 62 lines, the drift check by 17, the
 # CHANGELOG quote by ~390 (the reason is at fetch_board_cards's parse site below).
