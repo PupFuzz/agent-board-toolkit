@@ -23,6 +23,11 @@ source "$BIN"   # main-guarded — defines stage_name / _kbc_annotate_card witho
 # annot <task-json> <jq-expr>: run the annotator and project one value out.
 annot() { _kbc_annotate_card "$1" | jq -c "$2"; }
 
+# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
+# One definition serves every process-driving section below — the runner is identical for
+# all of them, so only the per-section `kb_stub_route` is torn down between them.
+kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+
 # The operator's shell may have a real board env sourced (they `export` their
 # keys) — scrub every KB_STAGE_* so no live board id can fake a pass or a fail.
 # shellcheck disable=SC2086
@@ -82,14 +87,27 @@ eq "other fields pass through" '"card"' "$(annot '{"id":1,"workflow_stage_id":48
 unset KB_STAGE_BACKLOG KB_STAGE_SHIPPED_TO_DEV
 
 echo "== _kbc_write_echo: payload rides only when the serializer sent the key (card #4390) =="
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5}}' | _kbc_write_echo)"
+# It takes the RESPONSE as an argument (card#6426) rather than reading stdin, because it now
+# owns the refusal for a 2xx body no card can be read out of — and a refusal needs the verb and
+# the subject the caller typed, which stdin cannot carry.
+we() { _kbc_write_echo patch "on task 1" "$@"; }
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5}}')"
 eq "absent payload key → omitted"  "false" "$(jq 'has("payload")' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":{"dl_number":"DL-0001"}}}' | _kbc_write_echo)"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":{"dl_number":"DL-0001"}}}')"
 eq "real payload → included"       '{"dl_number":"DL-0001"}' "$(jq -c '.payload' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":null}}' | _kbc_write_echo)"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"payload":null}}')"
 eq "server-sent null → passed through (the server SAID null)" "true" "$(jq 'has("payload")' <<<"$r")"
-r="$(echo '{"data":{"id":1,"name":"x","workflow_stage_id":5,"description":"abcdef"}}' | _kbc_write_echo 'description: (.description // "" | .[0:3])')"
+r="$(we '{"data":{"id":1,"name":"x","workflow_stage_id":5,"description":"abcdef"}}' 'description: (.description // "" | .[0:3])')"
 eq "extra-fields arg composes (patch echo)" '"abc"' "$(jq -c '.description' <<<"$r")"
+# The refusal it now owns, at the unit level: a body no card can be read out of prints nothing
+# and returns 1 — never a plausible-looking projection of nothing.
+rc=0; r="$(we '<html>502</html>' 2>/dev/null)" || rc=$?
+e="$(we '<html>502</html>' 2>&1 >/dev/null || true)"
+eq "a body that is not JSON → rc 1"          "1" "$rc"
+eq "…and nothing on stdout"                  ""  "$r"
+eq "…refuses in kbcard's words, naming the verb" "true" "$(has 'kbcard: patch on task 1' "$e")"
+eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$e")"
+unset -f we; unset e
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +308,7 @@ echo "== cmd_create_card --triaged — born-triaged tag (card #4617) =="
 # Capture the real projection first — the echo-parity pair near the end restores it.
 eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
 
 # has_tag <body-json> <tag> → membership of the created card's flat .tags array.
@@ -590,7 +608,7 @@ eq "malformed --dl → no payload" ""  "$out"
 # byte-identical payload — the whole point of sharing one assembler. Stub the
 # API to echo the request body; assert the flat .payload objects match.
 kb_api() { printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21 KB_CF_VERSION_TARGET=99
 unset KB_TYPING_MODE 2>/dev/null || true
 cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
@@ -657,7 +675,7 @@ echo "== cmd_create_card --swimlane — birth a card ON a lane (card#5671, round
 # below is about a POST that must never happen, which a body assertion alone cannot show.
 _CC_POSTED="$(mktemp)"; trap 'rm -f "$_CC_POSTED"' EXIT
 kb_api() { printf 'yes' > "$_CC_POSTED"; printf '%s' "$3"; }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
 cc() { : > "$_CC_POSTED"; cmd_create_card --type task --name x "$@" 2>/dev/null | jq -c '.'; }
 
@@ -736,7 +754,7 @@ kb_api() {
         *)   printf '%s' "$3" ;;
     esac
 }
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_STAGE_IN_REVIEW=50
 # pb <args…> — run cmd_patch on a fresh request log, return the PATCH request body.
 pb() { : > "$_REQ_LOG"; cmd_patch --task 99 "$@" 2>/dev/null; }
@@ -850,7 +868,7 @@ echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # Echo the request body back and pass the write echo through (the block above restored the
 # REAL _kbc_write_echo, which expects a server {data:…} envelope this stub does not send).
 kb_api() { printf '%s' "$3"; }   # $3 is the request body
-_kbc_write_echo() { cat; }
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 
 rc=0; err="$(cmd_patch --task 99 --dl "" 2>&1 >/dev/null)" || rc=$?
 eq "patch --dl \"\" → rc 2"                        "2"    "$rc"
@@ -998,8 +1016,6 @@ kb_stub_route() {
 }
 export -f kb_stub_route
 
-# kbc <args…> — run the REAL bin as a process on a fresh request log; sets rc/out/err.
-kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
 CPATH="/tasks/505/comments.json"
 
 echo "-- comment: path, method, and the MEASURED flat body key --"
@@ -1299,8 +1315,738 @@ eq "control: show on a well-formed body → rc 0"  "0" "$rc"
 eq "control: …and returns the card"              "505" "$(jq -r '.id' <<<"$out")"
 unset NONJSON_BODY
 
-unset -f kbc kb_stub_route
+unset -f kb_stub_route
 unset NOT_FOUND_BODY KB_STUB_CREATED
+
+# ---------------------------------------------------------------------------
+echo "== every projection refuses a 2xx it cannot read, in kbcard's words =="
+# THE CLASS (card#6426). kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx
+# carrying a proxy's HTML error page or a truncated read arrives at EVERY projection in this
+# file as a success. An unguarded jq there exits 5 under `set -e`, with jq's raw parse error as
+# the caller's whole diagnostic — a status this tool documents nowhere, from a program the
+# caller never ran. card#6051 closed three of those sites; this block is the rest of the
+# population, one leg per verb, each asserting the same four things: the verb's OWN documented
+# rc (never jq's 5), a refusal in kbcard's words naming the verb, no raw jq parse error on
+# stderr, and nothing on stdout that could be mistaken for a value. Every leg is paired with a
+# control on the SAME route with a well-formed body, so a green here is a refusal that
+# discriminates and not a verb that is broken outright.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_install
+
+NONJSON='<html><body>502 Bad Gateway</body></html>'
+SEARCH_BODY='{"data":[{"id":505}]}'
+CARD_BODY='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep-me"]}}'
+LINK_BODY='{"data":{"id":9,"relation_type":"blocks"}}'
+FIELDS_BODY='{"data":[{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"}]}]}'
+# The custom-field WRITE echoes ONE field object, not the board's array — two distinct shapes
+# behind two distinct routes, so the read arm's fixture cannot stand in for the write arm's.
+FIELD_ROW_BODY='{"data":{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"},{"value":"b","label":"b"}]}}'
+export NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
+# One knob per ROUTE, so exactly one leg is failed at a time and every other request in the
+# same run still answers normally — a run that fails every route cannot tell which projection
+# refused.
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "GET "*/tasks/search.json*)  printf '%s\n%s' "${KB_STUB_SEARCH_HTTP:-200}" \
+                                        "${KB_STUB_SEARCH_BODY:-$SEARCH_BODY}" ;;
+        "POST "*/tasks.json)         printf '%s\n%s' "${KB_STUB_POST_HTTP:-201}" "${KB_STUB_POST_BODY:-$CARD_BODY}" ;;
+        "POST "*/task_links.json)    printf '%s\n%s' "${KB_STUB_LINK_HTTP:-201}" "${KB_STUB_LINK_BODY:-$LINK_BODY}" ;;
+        "PATCH "*/tasks/*.json)      printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" "${KB_STUB_PATCH_BODY:-$CARD_BODY}" ;;
+        "GET "*/tasks/*.json)        printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_BODY:-$CARD_BODY}" ;;
+        "GET "*/custom_fields.json)  printf '%s\n%s' "${KB_STUB_CF_HTTP:-200}" "${KB_STUB_CF_BODY:-$FIELDS_BODY}" ;;
+        "PATCH "*/custom_fields/*)   printf '%s\n%s' "${KB_STUB_CFW_HTTP:-200}" "${KB_STUB_CFW_BODY:-$FIELD_ROW_BODY}" ;;
+    esac
+}
+export -f kb_stub_route
+
+# nonjson_leg <label> <expected-rc> <verb-word> <args…> — the four assertions this class needs,
+# stated once. `parse error` is jq's own wording; `jq:` catches its prefix if the text changes.
+nonjson_leg() {
+    local label="$1" want_rc="$2" verb="$3"; shift 3
+    kbc "$@"
+    eq "$label → rc $want_rc, not jq's rc 5"        "$want_rc" "$rc"
+    eq "$label → refuses in kbcard's words"         "true"     "$(has "kbcard: $verb" "$err")"
+    eq "$label → leaks no raw jq parse error"       "false"    "$(has 'parse error' "$err")"
+    eq "$label → prints nothing on stdout"          ""         "$out"
+}
+
+echo "-- the usage block renders as prose, not as comment markup --"
+# A bare `#` is how this header separates paragraphs (a trailing space would not survive an
+# editor or a linter), and a strip that requires the space left every separator in the rendered
+# help as a literal `#` line. Asserted on the ABSENCE of such a line, with the control below:
+# the same run must actually produce the block, or an absence proves nothing.
+kbc
+eq "no arguments → the usage block at rc 0" "0" "$rc"
+eq "control: …and it IS the usage block"    "true" "$(has 'Usage:' "$out")"
+eq "no line of the rendered help is a bare comment marker" "0" \
+   "$(/usr/bin/grep -c '^#' <<<"$out" || true)"
+
+echo "-- create-card / move / patch: a write whose echo is unreadable --"
+KB_STUB_POST_BODY="$NONJSON" nonjson_leg "create-card" 1 "create-card" \
+    create-card --type fr --name probe
+kbc create-card --type fr --name probe
+eq "control: create-card on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and prints the created card"       "505" "$(jq -r '.id' <<<"$out")"
+
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "move" 1 "move" move --task 505 --column in_progress
+kbc move --task 505 --column in_progress
+eq "control: move on a well-formed echo → rc 0"  "0" "$rc"
+eq "control: …and prints the moved card"         "505" "$(jq -r '.id' <<<"$out")"
+
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 1 "patch" patch --task 505 --pr 12
+kbc patch --task 505 --pr 12
+eq "control: patch on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and prints the patched card"       "505" "$(jq -r '.id' <<<"$out")"
+
+echo "-- patch --triaged: an unreadable TAG READ must never write a tag list --"
+# The sharpest instance in the file. `tags` is replaced WHOLESALE by the API, so this verb
+# read-merge-writes it: a read that yields nothing and is then treated as "no tags" writes
+# ["triaged"] and DESTROYS every tag the card carried. The refusal is therefore about the
+# WRITE, and the load-bearing assertion is the absence of the PATCH — asserted against the
+# request log, which nothing under test can truncate.
+KB_STUB_GET_BODY="$NONJSON" nonjson_leg "patch --triaged (tag read)" 2 "patch" patch --task 505 --triaged
+KB_STUB_GET_BODY="$NONJSON" kbc patch --task 505 --triaged
+eq "…and issues NO PATCH at all (a tag wipe is worse than a refusal)" "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+kbc patch --task 505 --triaged
+eq "control: the same patch on a readable card DOES write" "1" "$(kb_stub_count PATCH '/tasks/505.json')"
+eq "control: …and the write keeps the card's existing tags" '["keep-me","triaged"]' \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+
+echo "-- patch --triaged: a 2xx that PARSES but carries no card is the same refusal --"
+# The half of the tag-wipe class a tolerant parse alone does NOT close. `.data.tags // []`
+# only yields empty when jq FAULTS; on a body that parses perfectly well and simply has no
+# `.data` object, `//` supplies the string `[]` — non-empty, so the `[[ -n … ]]` arm passes and
+# the PATCH goes out carrying only what THIS call adds. `tags` is replaced WHOLESALE, so that
+# is the tag wipe the refusal exists to prevent, reached through the guard rather than around
+# it. Measured on the pre-fix bin: `{"ok":true}` → rc 0, 2 requests, PATCH body `{"tags":
+# ["triaged"]}`. Closed by a shape test on the READ that feeds this destructive write — the
+# write path only; a read verb's acceptance is not changed by it.
+#
+# Each leg carries its OWN well-formed control on the same route, so a green is a refusal that
+# discriminates rather than a verb that stopped writing.
+shape_leg() {
+    local label="$1" body="$2"
+    KB_STUB_GET_BODY="$body" nonjson_leg "$label" 2 "patch" patch --task 505 --triaged
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+    eq "$label → issues NO PATCH at all"  "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+    kbc patch --task 505 --triaged
+    eq "$label control: a well-formed card on the same route DOES write" "1" \
+       "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label control: …keeping the tags it already had" '["keep-me","triaged"]' \
+       "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+}
+# No `.data` key at all — a 2xx from something that is not this API, or a truncated envelope.
+shape_leg "patch --triaged (2xx with no .data key)" '{"ok":true,"note":"a 2xx with no data key"}'
+# `.data` present and JSON null — the trashed / permission-limited card shape.
+shape_leg "patch --triaged (.data is null)"         '{"data":null}'
+# `.data` a scalar. Already refused pre-fix (jq faults indexing a string, and the fault lands in
+# the same empty arm), so this leg is a REGRESSION GUARD, not evidence of the defect: it pins
+# that the shape test does not move a case the tolerant parse already covered.
+shape_leg "patch --triaged (.data is a string)"     '{"data":"str"}'
+unset -f shape_leg
+
+echo "-- patch --triaged: a .data object whose tags is not a LIST is the same refusal --"
+# The `.data`-object test above is a test on the WRAPPER, and the value that actually gets
+# re-sent is `.data.tags`. A `.data` object carrying a non-array `tags` passes the wrapper test
+# and then faults one line later inside the merge (`jq: error … string ("abc") and array
+# (["triaged"]) cannot be added`) — already rc 2 with no PATCH, so no tag is destroyed, but the
+# caller's whole diagnostic is jq's, with no `kbcard:` line at all. Same harm class, same
+# refusal, same rc: CONTAINER type only. What `tags` CONTAINS is deliberately not tested here —
+# `{"data":{"tags":[1,2]}}` still patches `[1,2,"triaged"]`, which is a change to what this verb
+# ACCEPTS and is filed as its own ask-gated question.
+tags_leg() {
+    local label="$1" body="$2"
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 --triaged
+    eq "$label → rc 2, this verb's own refusal rc"  "2"    "$rc"
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+    eq "$label → leaks no raw jq diagnostic"        "false" "$(has 'jq: ' "$err")"
+    eq "$label → prints nothing on stdout"          ""     "$out"
+    eq "$label → issues NO PATCH at all"            "0"    "$(kb_stub_count PATCH '/tasks/505.json')"
+}
+tags_leg "patch --triaged (.data.tags is a string)" '{"data":{"id":505,"tags":"abc"}}'
+tags_leg "patch --triaged (.data.tags is an object)" '{"data":{"id":505,"tags":{"a":1}}}'
+tags_leg "patch --triaged (.data.tags is a number)" '{"data":{"id":505,"tags":5}}'
+unset -f tags_leg
+
+echo "-- patch --type: a tags OBJECT was a silent TAG WIPE, not just a bad diagnostic --"
+# The sharpest leg in this block, and the reason the container test is not cosmetic. `--type`'s
+# merge opens with `map(…)`, and jq's `map` over an OBJECT iterates its VALUES — so a `tags`
+# object whose values are all strings does not fault at all: it degrades into a plausible list,
+# the merge succeeds, and the PATCH replaces the card's real tags with that object's values.
+# MEASURED on the bin before the container test: `{"tags":{"0":"keep-me"}}` + `--type fr` wrote
+# `{"tags":["keep-me","type:fr"]}` at rc 0 — a card carrying other tags loses every one of them.
+# `--triaged` alone never reached this (object + array faults); it takes a `map`-first flag.
+wipe_leg() {
+    local label="$1" body="$2"; shift 2
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 "$@"
+    eq "$label → rc 2, this verb's own refusal rc" "2"    "$rc"
+    eq "$label → issues NO PATCH (no tag wipe)"    "0"    "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label → the tag-read refusal, in kbcard's words" "true" \
+       "$(has 'refusing to replace this card' "$err")"
+}
+wipe_leg "patch --type (tags object of strings)"  '{"data":{"id":505,"tags":{"0":"keep-me"}}}' --type fr
+wipe_leg "patch --type (tags empty object)"       '{"data":{"id":505,"tags":{}}}'              --type fr
+wipe_leg "patch --type --triaged (tags object)"   '{"data":{"id":505,"tags":{"a":"x"}}}'       --type fr --triaged
+# `tags:false` — the shape the container test could not see, because `//` was ABOVE it. jq's
+# `//` treats `false` exactly as it treats `null`, so `.data.tags // []` substituted `[]` and
+# `select(type == "array")` was then handed the DEFAULT rather than the value it was written to
+# police. MEASURED on the bin before this leg landed: `{"data":{"id":505,"tags":false}}` +
+# `--triaged` → rc 0, PATCH body `{"tags":["triaged"]}` — every real tag on the card gone, with
+# no diagnostic anywhere. `--type` reaches it identically. The fix moves the shape test to the
+# near side of the default; these legs red on any bin that reinstates the old ordering.
+wipe_leg "patch --triaged (tags is false)"        '{"data":{"id":505,"tags":false}}'           --triaged
+wipe_leg "patch --type (tags is false)"           '{"data":{"id":505,"tags":false}}'           --type fr
+unset -f wipe_leg
+
+# THE ACCEPTED SET IS UNCHANGED — asserted, not assumed. These three bodies wrote before the
+# container test and must still write: a card whose `tags` key is absent, one whose `tags` is a
+# server-sent JSON null (both reach `// []`), and one whose list is genuinely empty. Without
+# these the container test could tighten acceptance and every leg above would still be green.
+tags_accept_leg() {
+    local label="$1" body="$2" want="$3"
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 --triaged
+    eq "$label → still writes at rc 0"     "0"     "$rc"
+    eq "$label → issues exactly one PATCH" "1"     "$(kb_stub_count PATCH '/tasks/505.json')"
+    eq "$label → with the merged tag list" "$want" "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+}
+tags_accept_leg "patch --triaged (no tags key)"      '{"data":{"id":505}}'              '["triaged"]'
+tags_accept_leg "patch --triaged (tags is null)"     '{"data":{"id":505,"tags":null}}'  '["triaged"]'
+tags_accept_leg "patch --triaged (tags is [])"       '{"data":{"id":505,"tags":[]}}'    '["triaged"]'
+tags_accept_leg "patch --triaged (tags is a list)"   '{"data":{"id":505,"tags":["a"]}}' '["a","triaged"]'
+unset -f tags_accept_leg
+
+# `--tags` BYPASSES the read entirely, so the narrowing above must not reach it — asserted
+# against the sharpest input there is: the same `tags:false` body that now refuses on the read
+# path. A caller supplying the list explicitly never consults the card, so this writes.
+kb_stub_reset
+KB_STUB_GET_BODY='{"data":{"id":505,"tags":false}}' kbc patch --task 505 --tags a,b
+eq "patch --tags over a tags:false card → still writes at rc 0" "0" "$rc"
+eq "…issues exactly one PATCH"        "1"           "$(kb_stub_count PATCH '/tasks/505.json')"
+eq "…with the caller's own list"      '["a","b"]'   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+eq "…and never GETs the card at all"  "0"           "$(kb_stub_count GET '/tasks/505.json')"
+
+echo "-- link: the relation echo --"
+KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
+kbc link --from 505 --to 506 --relation blocks
+eq "control: link on a well-formed echo → rc 0"  "0" "$rc"
+eq "control: …and prints the created link"       "9" "$(jq -r '.id' <<<"$out")"
+
+echo "-- the external-id resolver: 'no task found' is a claim about the BOARD --"
+# An unreadable body is not an absent card. Routing it into the not-found arm would answer a
+# question this read never reached — the same silent-empty trap `comments`' no-comments line
+# sets. RED-when-reverted: fold the unreadable case into the not-found arm and the wording
+# assertion below flips while the rc stays 1.
+KB_STUB_SEARCH_BODY="$NONJSON" nonjson_leg "external-id lookup" 1 "external-id lookup" show --task EXT-9
+KB_STUB_SEARCH_BODY="$NONJSON" kbc show --task EXT-9
+eq "…and does NOT claim there is no such card"   "false" "$(has 'no task found' "$err")"
+eq "…states only what is true: nothing could be read out of the body" "true" \
+   "$(has 'could be read out of its body' "$err")"
+# The genuine not-found answer still reads as not-found: a well-formed search result with no
+# rows is the control that keeps the refusal above narrow.
+KB_STUB_SEARCH_BODY='{"data":[]}' kbc show --task EXT-9
+eq "control: a well-formed EMPTY result → the not-found arm" "1" "$rc"
+eq "control: …and says so"                       "true" "$(has 'no task found' "$err")"
+# A `.data` that is present and non-empty but NOT a list. The guard above is `[[ -n "$rows" ]]`,
+# which a JSON object satisfies, so the row projection right after it used to run unguarded and
+# print jq's own "Cannot index object with number" before the verb's message. THIS LEG ASSERTS
+# ONLY THE PART THAT IS FIXED — no raw jq text on stderr. The verb's rc and its wording are
+# DELIBERATELY unchanged and asserted as such: refusing here would change what a READ verb
+# accepts, which is a separate, filed decision and not this change's to make.
+KB_STUB_SEARCH_BODY='{"data":{"id":9}}' kbc show --task EXT-9
+eq "a non-list .data → leaks no raw jq error"    "false" "$(has 'jq:' "$err")"
+eq "…rc is UNCHANGED at 1"                       "1"     "$rc"
+eq "…and so is the (residual, filed) wording"    "true"  "$(has 'no task found' "$err")"
+
+echo "-- field list / field set-options --"
+KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field list" 1 "field" field list
+kbc field list
+eq "control: field list on a well-formed body → rc 0" "0" "$rc"
+eq "control: …and projects the field"            "stage" "$(jq -r '.[0].key' <<<"$out")"
+KB_STUB_CF_BODY="$NONJSON" nonjson_leg "field set-options (read)" 1 "field" \
+    field set-options --field stage --options a,b
+# _kbc_fetch_fields owns this refusal for BOTH sub-verbs, so set-options adding one of its own
+# on top prints a second line that names no cause the first did not. `field list` above is the
+# shape to match: one message, rc 1. Counted, not substring-matched — a second line is exactly
+# what a `has` assertion cannot see.
+KB_STUB_CF_BODY="$NONJSON" kbc field set-options --field stage --options a,b
+eq "field set-options (read) → ONE kbcard line, as field list emits" "1" \
+   "$(/usr/bin/grep -c '^kbcard: ' <<<"$err" || true)"
+KB_STUB_CF_BODY="$NONJSON" kbc field list
+eq "control: field list emits that same single line"                 "1" \
+   "$(/usr/bin/grep -c '^kbcard: ' <<<"$err" || true)"
+# The WRITE echo: the reconcile PATCH already landed (2xx), so this refusal is about the echo,
+# not the write — and it must still not print jq's rc 5.
+KB_STUB_CFW_BODY="$NONJSON" nonjson_leg "field set-options (write echo)" 1 "field" \
+    field set-options --field stage --options a,b
+kbc field set-options --field stage --options a,b
+eq "control: set-options on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and projects the reconciled option set" '["a","b"]' \
+   "$(jq -c '[.options[].value]' <<<"$out")"
+
+echo "-- archive: the safety gate must fail CLOSED, and quietly --"
+# The gate already refuses on an unreadable card (its `||` arm catches jq's death), so the rc
+# and the absent PATCH are green either way — what is NOT green is the raw jq parse error the
+# unguarded jq prints to stderr on its way there. That is the assertion this leg adds.
+KB_STUB_GET_BODY="$NONJSON" kbc archive --task 505
+eq "archive on an unreadable card → rc 1"        "1" "$rc"
+eq "…refuses in kbcard's words"                  "true" "$(has 'archive withheld' "$err")"
+eq "…leaks no raw jq parse error"                "false" "$(has 'parse error' "$err")"
+eq "…and issues NO archive PATCH"                "0" "$(kb_stub_count PATCH '/tasks/505.json')"
+
+echo "-- comments: a .data.comments that is not an ARRAY --"
+# card#6426 (c), instance 1. `.data.comments // []` passes a non-array straight through to the
+# renderer, whose `.[]` then dies with jq's "Cannot iterate over …" at rc 5 — mid-render, after
+# the header work is done. It is not an empty comment list either, so it belongs in the verb's
+# existing "nothing was read" arm, not in the no-comments line.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":{"1":{"content":"x"}}}}' \
+    nonjson_leg "comments with an object where the array goes" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":"nope"}}' \
+    nonjson_leg "comments with a string where the array goes" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":{"1":{"content":"x"}}}}' kbc comments --task 505
+eq "…and never claims the card has no comments"  "false" "$(has 'no comments' "$out")"
+
+echo "-- comments: a row whose content is not a STRING --"
+# card#6426 (c), instance 2. `explode` on a number is a jq error, so a single bad row exits 5
+# PART WAY THROUGH the output — the caller gets some comments, no diagnostic it can attribute,
+# and an rc from a program it never ran. Refuse the read instead: a partial audit trail that
+# looks complete is the worst of the three outcomes.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":7}]}}' \
+    nonjson_leg "comments with a numeric content" 1 "comments" comments --task 505
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":{"a":1}}]}}' \
+    nonjson_leg "comments with an object content" 1 "comments" comments --task 505
+# A row that is not an object at all dies the same way one line earlier, on the header.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[7]}}' \
+    nonjson_leg "comments with a row that is not an object" 1 "comments" comments --task 505
+# The controls that keep all of the above narrow: content ABSENT and content NULL are ordinary
+# rows the renderer has always printed as empty, and must keep printing.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t"}]}}' \
+    kbc comments --task 505
+eq "control: a row with NO content still renders" "0" "$rc"
+# Header only: jq's `split` over the empty string yields NO elements, so an absent content
+# emits no indented line at all. Pinned as the measured shape rather than assumed.
+eq "control: …as a header with no content line"  "comment 1 · user 2 · t" "$out"
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":null}]}}' \
+    kbc comments --task 505
+eq "control: a row with NULL content still renders" "0" "$rc"
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[{"id":1,"user_id":2,"created_at":"t","content":"hi"}]}}' \
+    kbc comments --task 505
+eq "control: an ordinary row is unaffected"      "0" "$rc"
+eq "control: …and renders verbatim"              "$(printf 'comment 1 · user 2 · t\n  hi')" "$out"
+
+unset -f kb_stub_route nonjson_leg
+unset NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
+
+# ---------------------------------------------------------------------------
+echo "== --name-file / --description-file — text that never meets a shell (card#6648) =="
+# THE DEFECT THESE CLOSE. `--description "$TEXT"` forces externally-authored text through the
+# CALLER's shell, which expands it before kbcard is started: a `$(…)` or a backtick sitting in a
+# report someone else wrote RUNS as a command on this box, and argv already holds its output by
+# the time any code here could look at it. No in-tool validator can see the unsafe case — the
+# expansion happened in another process — so the fix is a source that never passes through a
+# shell at all. That is why the load-bearing assertion below is on the REQUEST BODY and not on an
+# exit code: what is being proven is that the bytes in the file are the bytes on the wire.
+#
+# BOTH NEW PAIRS RESOLVE THROUGH THE SAME `_kbc_text_arg` the shipped `comment` verb now uses, so
+# the comment block above is ALSO this consolidation's regression suite: it runs unchanged against
+# the hoisted resolver, and any drift in the mutual-exclusion, readability, CRLF, trailing-newline
+# or blank-text semantics reds there before it reds here.
+#
+# WHAT IS DELIBERATELY NOT ASSERTED, because it is deliberately not built: the new flags do NOT
+# require an absolute path, and neither does `--content-file`. What makes the file form safe is
+# that the text never passes through a shell, which a relative path delivers exactly as well;
+# absolute-required is ergonomics, and retrofitting it onto the shipped flag would change what an
+# existing caller may pass. Nor is there a `$(`-sniffing check on the inline flags — see above.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+TA_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+export TA_CARD
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "POST "*/tasks.json)        printf '201\n%s' "$TA_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$TA_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$TA_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# The injection fixture. SINGLE-quoted, so the only shell that could ever expand it is the one
+# under test — and the assertion is that none does. `$(id -u)` is the shape that made this a
+# security question rather than an ergonomics one; the backtick and `${…}` forms ride along
+# because they are the same hole with different syntax.
+TA_INJ='pre-$(id -u)-post `date` ${HOME} $((6*7))'
+TA_INJ_JSON="$(jq -cn --arg s "$TA_INJ" '$s')"
+printf '%s\n' "$TA_INJ" > "$TMP/inj.txt"
+printf 'plain text\n'   > "$TMP/plain.txt"
+printf 'trail\n\n\n'    > "$TMP/trail.txt"
+printf 'c1\r\nc2\r\n'   > "$TMP/crlf.txt"
+printf ' \t\n \n'       > "$TMP/blank.txt"
+: >                       "$TMP/empty.txt"
+mkdir -p "$TMP/adir"
+
+# ta <verb> <field> <args…> — drive create-card or patch with the arguments that verb REQUIRES
+# plus the text flags under test, on a fresh request log, recording where that verb's write lands.
+# The (method, path) pair is the only thing that differs between the two verbs' assertions; the
+# `name` column must not supply `--name` itself, since that flag is what is under test there.
+ta() {
+    local verb="$1" field="$2"; shift 2
+    case "$verb" in
+        create-card)
+            TA_METHOD=POST; TA_PATH='/tasks.json'
+            if [[ "$field" == name ]]; then kbc create-card --type fr "$@"
+            else kbc create-card --type fr --name probe "$@"; fi ;;
+        patch)
+            TA_METHOD=PATCH; TA_PATH='/tasks/505.json'
+            kbc patch --task 505 "$@" ;;
+    esac
+}
+# ta_wire <field> — the value the last `ta` run's write put on the wire, as JSON.
+ta_wire() { kb_stub_bodies "$TA_METHOD" "$TA_PATH" | jq -c ".$1"; }
+
+for _verb in create-card patch; do
+  for _field in name description; do
+    _f="--$_field"; _ff="--$_field-file"
+    _L="$_verb $_ff"
+
+    # THE CARD'S WHOLE POINT, asserted on the wire and not on an rc.
+    ta "$_verb" "$_field" "$_ff" "$TMP/inj.txt"
+    eq "$_L: rc 0"                                    "0" "$rc"
+    eq "$_L: the file's text is BYTE-EXACT on the wire" "$TA_INJ_JSON" "$(ta_wire "$_field")"
+    # The independent witness that the equality above is measuring what it claims: the command
+    # substitution is present AS TEXT. An expansion anywhere on the path would have consumed it,
+    # so this cannot pass on a body that was expanded — and it needs no knowledge of what the
+    # expansion would have produced on this particular box.
+    eq "$_L: …the command substitution rides as TEXT, unexpanded" "true" \
+       "$(has '$(id -u)' "$(ta_wire "$_field")")"
+    eq "$_L: …in exactly one write"                   "1" "$(kb_stub_count "$TA_METHOD" "$TA_PATH")"
+    eq "$_L: …and no other request at all"            "1" "$(kb_stub_total)"
+
+    # The refusals. Every one is decided offline, so each carries its own "no traffic" assertion;
+    # the write above is the positive control that makes those zeros a measurement.
+    ta "$_verb" "$_field" "$_f" inline "$_ff" "$TMP/plain.txt"
+    eq "$_L + $_f → rc 2"                             "2" "$rc"
+    eq "$_L + $_f → names them mutually exclusive"    "true" "$(has 'mutually exclusive' "$err")"
+    eq "$_L + $_f → issues no request"                "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/nope.txt"
+    eq "$_L missing → rc 2"                           "2" "$rc"
+    eq "$_L missing → via the readability guard"      "true" "$(has 'is not readable' "$err")"
+    eq "$_L missing → names the path"                 "true" "$(has "$TMP/nope.txt" "$err")"
+    eq "$_L missing → issues no request"              "0" "$(kb_stub_total)"
+
+    # UNREADABLE-BUT-PRESENT, exercising the `cat` fallback the readability guard cannot catch: a
+    # directory is `-r` yet uncattable. Deliberately NOT a chmod-000 file — CI may run as root,
+    # where `-r` is true regardless, and a check that cannot fail on the runner is a decoration.
+    ta "$_verb" "$_field" "$_ff" "$TMP/adir"
+    eq "$_L unreadable → rc 2"                        "2" "$rc"
+    eq "$_L unreadable → via the cat fallback"        "true" "$(has 'could not be read' "$err")"
+    eq "$_L unreadable → issues no request"           "0" "$(kb_stub_total)"
+
+    # `-` is refused BY NAME rather than falling into "not readable": `-` is not a stdin token
+    # here. The assertion is on the TOKEN claim, deliberately not on "never reads stdin" — that
+    # would be a false absolute, since `--…-file /dev/stdin` is a readable path and does work.
+    # here, and the old message named the wrong problem. Acceptance is unchanged — `-` never
+    # worked — so this is the diagnostic, asserted by its own wording.
+    ta "$_verb" "$_field" "$_ff" -
+    eq "$_L - → rc 2"                                 "2" "$rc"
+    eq "$_L - → names the token, not a stdin ban"     "true" "$(has "'-' is not a stdin token" "$err")"
+    eq "$_L - → issues no request"                    "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/blank.txt"
+    eq "$_L whitespace-only → rc 2"                   "2" "$rc"
+    eq "$_L whitespace-only → names the field's text" "true" "$(has "holds no $_field text" "$err")"
+    eq "$_L whitespace-only → issues no request"      "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" "$TMP/empty.txt"
+    eq "$_L empty file → rc 2"                        "2" "$rc"
+    eq "$_L empty file → names the field's text"      "true" "$(has "holds no $_field text" "$err")"
+    eq "$_L empty file → issues no request"           "0" "$(kb_stub_total)"
+
+    ta "$_verb" "$_field" "$_ff" ""
+    eq "$_L \"\" → rc 2 (the empty-value class)"      "2" "$rc"
+    eq "$_L \"\" → names the flag"                    "true" \
+       "$(has "$_ff requires a non-empty value" "$err")"
+
+    # The two normalizations, inherited verbatim from the comment resolver.
+    ta "$_verb" "$_field" "$_ff" "$TMP/trail.txt"
+    eq "$_L → ALL trailing newlines are trimmed"      '"trail"' "$(ta_wire "$_field")"
+    ta "$_verb" "$_field" "$_ff" "$TMP/crlf.txt"
+    eq "$_L → CRLF is normalized to LF, no \\r on the wire" '"c1\nc2"' "$(ta_wire "$_field")"
+
+    # THE INLINE FLAG'S SHIPPED BEHAVIOUR IS UNCHANGED — the control that keeps this an ADDITION.
+    # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
+    # blank-checked (a whitespace value has always been accepted and written) and not rewritten
+    # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
+    # these two legs red on a later "harmonization" that makes one silently.
+    ta "$_verb" "$_field" "$_f" '   '
+    eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
+    eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
+    ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
+    eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
+       "$(ta_wire "$_field")"
+  done
+done
+unset _verb _field _f _ff _L
+
+# NEITHER SOURCE GIVEN is the ordinary case for an optional setter and must stay silent — the
+# half of the requiredness parameter that `comment` (where neither is rc 2) cannot exercise.
+ta create-card description
+eq "create-card with no description flag → rc 0"     "0" "$rc"
+eq "…and no description key on the wire at all"      "false" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -c 'has("description")')"
+kbc patch --task 505 --pr 12
+eq "patch with neither text flag → rc 0"             "0" "$rc"
+eq "…and neither key on the wire"                    "false,false" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '[has("name"),has("description")] | join(",")')"
+# …while create-card's NAME requirement is now a question about the resolved name, not about
+# which of the two flags carried it, and says so.
+kbc create-card --type fr
+eq "create-card with neither --name nor --name-file → rc 2" "2" "$rc"
+eq "…and names both spellings"                       "true" "$(has '--name or --name-file required' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+# The third member of the pair set gets the `-` refusal too — it is one resolver, so a flag left
+# out of it would be a divergence, and this is the leg that would see it.
+kbc comment --task 505 --content-file -
+eq "comment --content-file - → rc 2"                 "2" "$rc"
+eq "…names the token, not a stdin ban"               "true" "$(has "'-' is not a stdin token" "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+unset -f kb_stub_route ta ta_wire
+unset TA_CARD TA_INJ TA_INJ_JSON TA_METHOD TA_PATH
+
+# ---------------------------------------------------------------------------
+echo "== search — the free-text verb, and the DESCRIPTION it exists to print (card#6771) =="
+# THE GAP: the board's search endpoint has always matched name + description and returned the
+# whole card, but no verb surfaced it — so the only board-wide read was `list`, whose nine-field
+# projection drops `description`. A grep for a phrase in a card BODY through `list` therefore
+# answered 0 no matter what the board held. The load-bearing property of this verb is that the
+# field it MATCHED ON is the field it PRINTS; a result that hid it would move the same miss one
+# layer over rather than close it.
+#
+# The server-side semantics asserted here are only the ones the CLIENT owes: that the query
+# reaches the wire as one encoded term inside this board's `q=`. WHICH cards match is the
+# server's rule (MATCH-in-boolean-mode vs a substring LIKE, decided there by driver and token
+# length) and a stub cannot witness it — a test that faked it would be asserting on its own
+# fixture. Read the parser, not this file, for that half.
+
+# The renderer is pure, so it is asserted on synthetic cards first.
+SR_MULTI='[{"id":7,"workflow_stage_id":48,"name":"probe card","description":"line one\nline two"}]'
+eq "render: a hit is a header line + its description, EVERY line indented" \
+   "$(printf 'card 7 · stage 48 · probe card\n  line one\n  line two')" \
+   "$(printf '%s' "$SR_MULTI" | _kbc_search_render)"
+# The whole point, asserted as an equality on the description text rather than on a line count:
+# a renderer that printed only the first line, or a truncation of it, still prints A block.
+eq "render: the description arrives WHOLE, not a first line or a summary" "true" \
+   "$(has 'line two' "$(printf '%s' "$SR_MULTI" | _kbc_search_render)")"
+eq "render: two hits are two blocks" "2" \
+   "$(printf '%s' '[{"id":1,"name":"a","description":"x"},{"id":2,"name":"b","description":"y"}]' \
+      | _kbc_search_render | /usr/bin/grep -c '^card ')"
+# A card that matched on its NAME and has no body says so in words: an empty indented block
+# reads as a rendering fault, i.e. exactly like the dropped field this verb exists to restore.
+eq "render: a card with no description SAYS so rather than printing an empty block" \
+   "$(printf 'card 3 · stage 48 · titled only\n  (no description)')" \
+   "$(printf '%s' '[{"id":3,"workflow_stage_id":48,"name":"titled only"}]' | _kbc_search_render)"
+eq "render: an explicitly null description is the same answer" \
+   "$(printf 'card 4 · stage ? · n\n  (no description)')" \
+   "$(printf '%s' '[{"id":4,"name":"n","description":null}]' | _kbc_search_render)"
+# A description is UNTRUSTED text printed to a terminal, and it reaches the same shared C0
+# sanitizer the comment renderer uses: `ESC[2K ESC[1A` in a card body would otherwise erase the
+# `card <id>` line above it — the line that says which card the text came from.
+eq "render: an ESC in the DESCRIPTION is neutralized" \
+   "$(printf 'card 5 · stage ? · n\n  ?[2K?[1Abody')" \
+   "$(jq -nc --arg e "$(printf '\033')" '[{id:5,name:"n",description:($e + "[2K" + $e + "[1Abody")}]' \
+      | _kbc_search_render)"
+# …and the header line's own fields come from the same untrusted body, under the STRICTER
+# filter: a newline in a card NAME would forge a second `card N · …` block, which indented
+# content can never do.
+eq "render: a NEWLINE in the card NAME cannot forge a second block" "1" \
+   "$(jq -nc '[{id:6,name:"n\ncard 99 · stage 1 · impostor",description:"b"}]' \
+      | _kbc_search_render | /usr/bin/grep -c '^card ')"
+eq "render: a TAB in the description survives (it cannot move the cursor backward)" \
+   "$(printf 'card 8 · stage ? · n\n  col1\tcol2')" \
+   "$(jq -nc '[{id:8,name:"n",description:"col1\tcol2"}]' | _kbc_search_render)"
+# TOTAL, not gated: a description that is not a string renders as its JSON text instead of
+# dying at jq's rc 5 PART WAY THROUGH the blocks and handing back a truncated result.
+rc=0; out="$(printf '%s' '[{"id":9,"name":"n","description":{"oops":1}},{"id":10,"name":"m","description":"after"}]' \
+             | _kbc_search_render 2>/dev/null)" || rc=$?
+eq "render: a non-string description does not kill the render"        "0" "$rc"
+eq "render: …and the block AFTER it is still printed"                 "true" "$(has 'card 10' "$out")"
+
+# --- process-level: the real paginator + kb_api, over a faked kanban ---------
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49' 'export KB_TYPE_FR=7'
+# Resolved BEFORE the stub PATH exists, so it names the real jq and not a stand-in.
+KB_JQ_REAL="$(command -v jq)"; export KB_JQ_REAL
+kb_stub_install
+
+# One page of 200 rows is what makes the paginator ask for a second page — the only way to
+# reach the mid-pagination rc from outside.
+KBS_FULL_PAGE="$(jq -nc '{data:[range(200)|{id:(.+1000),workflow_stage_id:48,name:"bulk",description:"bulk body"}],meta:{last_page:2,total:400}}')"
+KBS_HITS_BODY='{"data":[{"id":501,"workflow_stage_id":48,"card_type_id":7,"name":"deploy hook card","description":"first line\nsecond line"},{"id":502,"workflow_stage_id":49,"card_type_id":null,"name":"other","description":"other body"}],"links":{},"meta":{"last_page":1,"total":2}}'
+export KBS_FULL_PAGE KBS_HITS_BODY
+kb_stub_route() {
+    local method="$1" url="$2" page
+    page="${url##*page=}"; page="${page%%&*}"
+    case "$method $url" in
+        "GET "*/tasks/search.json*)
+            case "${KBS_SCENARIO:-hits}" in
+                hits)      printf '200\n%s' "$KBS_HITS_BODY" ;;
+                empty)     printf '200\n{"data":[],"links":{},"meta":{"last_page":1,"total":0}}' ;;
+                page1fail) printf '403\n{"message":"token lacks board scope"}' ;;
+                page2fail) if [[ "$page" == "1" ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
+                           else printf '500\n{"message":"upstream exploded"}'; fi ;;
+                pagecap)   printf '200\n%s' "$KBS_FULL_PAGE" ;;
+                shortread) printf '200\n{"data":[{"id":1,"name":"a","description":"x"}],"meta":{"last_page":1,"total":3}}' ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+# The URL field of the one search request, for the wire assertions.
+sq_url() { kb_stub_lines GET '/tasks/search.json' | cut -f2; }
+
+echo "-- search: the query reaches the wire as ONE encoded term inside this board's q= --"
+kbc search 'deploy hook'
+eq "search → rc 0"                                   "0" "$rc"
+eq "search → exactly one request"                    "1" "$(kb_stub_total)"
+# board_id FIRST and the term after it: the board scope is this tool's, not the caller's, and a
+# caller's own board_id token is ANDed with it rather than replacing it.
+eq "search → q carries board_id then the term, space-encoded" "true" \
+   "$(has 'q=board_id=42%20deploy%20hook&' "$(sq_url)")"
+eq "search → still the whole-board page size and page 1"      "true" \
+   "$(has 'limit=200&page=1' "$(sq_url)")"
+# A term carrying an `&` must not become a second query parameter — the encode is what stops a
+# search string from retargeting the read.
+kbc search 'a&b c'
+eq "search → an & in the term is encoded, not a new parameter" "true" \
+   "$(has 'q=board_id=42%20a%26b%20c&' "$(sq_url)")"
+eq "search → …so the request still carries exactly one q"      "1" \
+   "$(sq_url | /usr/bin/grep -o 'q=' | /usr/bin/grep -c 'q=')"
+
+echo "-- search: THE LOAD-BEARING LEG — the hit prints the FULL description --"
+kbc search 'deploy hook'
+eq "a hit prints its card header"                    "true" "$(has 'card 501 · stage 48 · deploy hook card' "$out")"
+eq "a hit prints the description's FIRST line"       "true" "$(has '  first line' "$out")"
+# The second line is the assertion a first-line-only or truncating render cannot pass, and the
+# one that reds when `list`'s projection (which drops description entirely) is substituted.
+eq "a hit prints the description's SECOND line too"  "true" "$(has '  second line' "$out")"
+eq "…one block per matched card"                     "2" "$(/usr/bin/grep -c '^card ' <<<"$out")"
+eq "…and nothing about it goes to stderr"            ""  "$err"
+
+echo "-- search: a multi-word query is ONE term, both words on the wire --"
+kbc search 'deploy hook'
+eq "both words ride in the same q term"              "true" "$(has 'deploy%20hook' "$(sq_url)")"
+eq "…and neither becomes its own parameter"          "1" "$(kb_stub_total)"
+
+echo "-- search: zero hits exits cleanly and SAYS so --"
+KBS_SCENARIO=empty kbc search 'nothing matches this'
+eq "no hits → rc 0"                                  "0" "$rc"
+eq "no hits → an explicit line, not a silent empty stdout" "true" \
+   "$(has 'no card on board 42 matched this search' "$out")"
+eq "no hits → no card block is printed"              "0" "$(/usr/bin/grep -c '^card ' <<<"$out" || true)"
+
+echo "-- search: the refusals decided offline, each costing no traffic --"
+kbc search
+eq "no query → rc 2"                                 "2" "$rc"
+eq "…names what the verb takes"                      "true" "$(has 'search requires a query' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search ""
+eq "an EMPTY query → rc 2 (the unexpanded-variable class)" "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+# A whitespace-only term is not a narrow search: the server trims the q value, finds no token,
+# and answers the WHOLE BOARD — which this verb would print as matches, every description
+# included. That is the widest wrong answer available here, so it is refused before the wire.
+kbc search '   '
+eq "a whitespace-only query → rc 2"                  "2" "$rc"
+eq "…says why (it would match every card)"           "true" "$(has 'matches every card' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search one two
+eq "a second positional → rc 2"                      "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search x --column no-such-column
+eq "an unknown --column → rc 2 through the shared resolver" "2" "$rc"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+
+echo "-- search: --column / --type filter the match set and name their denominator --"
+kbc search 'deploy hook' --column backlog
+eq "--column → rc 0"                                 "0" "$rc"
+eq "--column keeps the matching card"                "true" "$(has 'card 501' "$out")"
+eq "--column drops the other one"                    "false" "$(has 'card 502' "$out")"
+eq "--column names the denominator on stderr"        "true" "$(has 'search --column backlog: 1 of 2 cards matched by the query' "$err")"
+kbc search 'deploy hook' --type fr
+eq "--type resolves through the board's native id"   "true" "$(has 'card 501' "$out")"
+eq "--type drops the untyped card"                   "false" "$(has 'card 502' "$out")"
+# A filter that removes every match is a DIFFERENT answer from a query that matched nothing,
+# and saying the first for the second sends a caller hunting the wrong thing.
+kbc search 'deploy hook' --column in_progress --type fr
+eq "filtered to nothing → rc 0"                      "0" "$rc"
+eq "…says the query DID match, and the flags removed them" "true" \
+   "$(has 'the query matched 2 card(s) on board 42, none of which passed the filter flags' "$out")"
+eq "…and does not claim the board holds no match"    "false" "$(has 'no card on board 42 matched' "$out")"
+
+echo "-- search: an INCOMPLETE read is a refusal, never a partial answer presented as whole --"
+# THE mid-pagination case (card#6630): page 1 delivers a full 200 rows, page 2 fails. The
+# paginator returns rc 2 and emits nothing; the verb must not print the 200 cards it does have.
+KBS_SCENARIO=page2fail kbc search 'bulk'
+eq "page 2 unreadable → rc 1"                        "1" "$rc"
+eq "…NOT ONE card block reaches stdout"              "0" "$(/usr/bin/grep -c '^card ' <<<"$out" || true)"
+eq "…stdout is empty entirely"                       ""  "$out"
+eq "…the refusal names the paginator's rc"           "true" "$(has 'did not return a complete card list for this search (fetch rc=2)' "$err")"
+eq "…and says it is refusing a partial answer"       "true" "$(has 'refusing to present a partial match set as a whole one' "$err")"
+eq "…both pages really were attempted"               "2" "$(kb_stub_count_any '/tasks/search.json')"
+# The other four paginator outcomes reach the same arm — this is the measurement behind the
+# `rc 1,2,3,4,5` arity registered in tests/fetch-board-cards-caller-claims-selftest.sh.
+KBS_SCENARIO=page1fail kbc search 'bulk'
+eq "page 1 unreadable → rc 1"                        "1" "$rc"
+eq "…naming fetch rc=1"                              "true" "$(has '(fetch rc=1)' "$err")"
+eq "…with empty stdout"                              ""  "$out"
+KBS_SCENARIO=pagecap BOARD_PAGE_CAP=1 kbc search 'bulk'
+eq "the page cap → rc 1"                             "1" "$rc"
+eq "…naming fetch rc=3"                              "true" "$(has '(fetch rc=3)' "$err")"
+eq "…with empty stdout, though the paginator emitted its partial array" "" "$out"
+KBS_SCENARIO=shortread kbc search 'bulk'
+eq "a short read → rc 1"                             "1" "$rc"
+eq "…naming fetch rc=4"                              "true" "$(has '(fetch rc=4)' "$err")"
+eq "…with empty stdout"                              ""  "$out"
+
+echo "-- search: an unencodable term is refused BEFORE any request (fetch rc 5) --"
+# The one paginator rc only a search can reach. It is unreachable from any query string (a
+# non-empty term always has a non-empty @uri), so the seam is a jq that fails exactly the
+# `@uri` call and passes everything else through — see tests/_kb-jq-uri-fail-stub.sh.
+cp "$HERE/_kb-jq-uri-fail-stub.sh" "$TMP/bin/jq"
+chmod +x "$TMP/bin/jq"
+kbc search 'deploy hook'
+eq "an unencodable term → rc 1"                      "1" "$rc"
+eq "…naming fetch rc=5"                              "true" "$(has '(fetch rc=5)' "$err")"
+# The property that makes rc 5 worth its own rc: NOTHING was asked of the server. A dropped
+# encode would instead have sent the bare board_id read — the whole board, answered as the
+# match set.
+eq "…and NO request was issued at all"               "0" "$(kb_stub_total)"
+eq "…the paginator says why on stderr"               "true" "$(has 'could not be encoded' "$err")"
+rm -f "$TMP/bin/jq"
+# The control that says the stub, not the code, is what those three assertions measured.
+kbc search 'deploy hook'
+eq "control: with the real jq back, the same call is rc 0 again" "0" "$rc"
+eq "control: …and issues its request"                "1" "$(kb_stub_total)"
+
+unset -f kb_stub_route sq_url
+unset KBS_SCENARIO KBS_FULL_PAGE KBS_HITS_BODY SR_MULTI KB_JQ_REAL
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

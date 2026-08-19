@@ -34,6 +34,9 @@
 # Robustness (these states are silent-but-wrong, so they're made loud):
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
 #   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
+#   - A 2xx page carrying no card ARRAY => FAIL, on ANY page (card#6630): `.data // []` turned
+#     an unreadable later page into `[]`, which is a short page, which ENDED the scan — so the
+#     tool promoted from a board it had only partly read, at rc 0.
 #   - A server SHORT READ (pages deliver fewer rows than the board's own meta.total) => FAIL:
 #     promoting from an incomplete scan would silently leave a shipped card un-promoted.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
@@ -297,7 +300,31 @@ fetch_whole_board() {
       [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
       total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
     fi
-    data="$(printf '%s' "$resp" | jq -c '.data // []')"
+    # `.data` must be PRESENT and an ARRAY, on every page. `.data // []` could not tell a
+    # page that returned nothing from a page that returned no ANSWER: a 2xx carrying a
+    # proxy's JSON error object became `[]`, which is a short page, which ends the loop —
+    # so a page-2 fault promoted from a truncated board at rc 0 with nothing on stderr
+    # (card#6630; measured here before the fix — page 1 full + page 2 `{"error":…}` gave
+    # 200 cards and rc 0). Only page 1 is left to the zero-CARDS die below, which is this
+    # tool's own page-1 predicate and DELIBERATELY not the lib's: a mover can treat an
+    # empty board as never a working state, a read verb cannot (see fetch_board_cards's
+    # parse-site comment in bin/_kb-board-lib.sh). `empty`, not `// []`, for the same
+    # reason it is in the lib: the one thing a jq fault can then print is nothing.
+    #
+    # The `data='[]'` on page 1 is an ACCEPTED collapse, not an oversight: the extraction
+    # can now tell an unreadable envelope ('') from a genuinely empty one ('[]'), and this
+    # arm deliberately re-merges them so both land on the zero-cards die, whose message
+    # names board membership — wrong for a proxy error body, and already wrong for one
+    # before this change. Distinguishing them reworks an operator-facing refusal, which is
+    # a gated decision; it is tracked on card#6630 in docs/CONSOLIDATION-PLAN.md.
+    data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end')"
+    if [ -z "$data" ]; then
+      if [ "$page" -eq 1 ]; then
+        data='[]'
+      else
+        die "board $BOARD page $page returned no readable card array (HTTP 2xx) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry."
+      fi
+    fi
     n="$(printf '%s' "$data" | jq 'length')"
     if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
       die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."

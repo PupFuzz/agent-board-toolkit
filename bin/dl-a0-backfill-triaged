@@ -58,15 +58,23 @@ kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
 # past one page would otherwise silently truncate, backfilling only a subset —
 # the exact "looks complete but isn't" failure this tool's fail-closed posture
 # exists to prevent. fetch_board_cards returns a flat card array and a non-zero
-# rc on ANY incompleteness (a page-fetch failure OR the page cap); for a WRITE
-# tool that must abort — a partial read must never drive a partial backfill.
+# rc on anything short of a WHOLE read — a page-fetch failure, the page cap, a
+# short read against the server's own meta.total, or a page-1 body carrying no
+# readable card array (card#6594) — and for a WRITE tool every one of those must
+# abort: a partial read must never drive a partial backfill.
 #
-# KB_FETCH_LOUD makes a fetch failure diagnosable (curl rc + which page) instead
-# of swallowing it — this is a manually-run write tool, so an abort should say
-# why (matches kbcard's list contract). The subshell inherits the shell var.
+# KB_FETCH_LOUD makes that failure diagnosable (which page, and why it failed:
+# a curl rc, an HTTP status with its body, or the unreadable body itself)
+# instead of swallowing it — this is a manually-run write tool, so an abort
+# should say why (matches kbcard's list contract). The subshell inherits the
+# shell var. The abort below names the rc and asserts no cause of its own,
+# per the wording rule at fetch_board_cards' header: this is a bare `||`, so it
+# catches rc 1, 2, 3 and 4, and the lib's line above it is the one that knows
+# which occurred.
 KB_FETCH_LOUD=1
 cards_json="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
-    echo "$KB_PROG: board $KB_BOARD_ID read was incomplete or unreachable — aborting (no partial backfill)" >&2
+    fetch_rc=$?
+    echo "$KB_PROG: board $KB_BOARD_ID did not return a complete card list (fetch rc=$fetch_rc) — aborting (no partial backfill)" >&2
     exit 1
 }
 

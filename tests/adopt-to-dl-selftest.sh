@@ -85,4 +85,54 @@ else bad "trailing --dl expected rc=2, got $_rc"; fi
 if [[ -n "$out" ]]; then ok "…and says why (it used to print nothing at all)"
 else bad "trailing --dl produced no output"; fi
 
+# ---------------------------------------------------------------------------
+echo "== the card fetch: a 2xx whose body is not JSON at all (card#6426) =="
+# kb_api decides success on the HTTP STATUS CLASS alone, so a 2xx carrying a proxy's HTML error
+# page or a truncated read arrives at the board-confirm read as a success. An unguarded jq there
+# exits 5 under `set -e` with jq's parse error as this tool's whole diagnostic — and the very
+# next line is the guard that keeps an adoption ON THE RIGHT BOARD, so its input must never be
+# a value nobody could read. Driven as a PROCESS (tests/_kb-api-stub.sh) so the real kb_api,
+# kb_load_config and exit status are what the assertions see.
+# shellcheck source=/dev/null
+source "$HERE/_kb-api-stub.sh"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42
+kb_stub_install
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/*.json) printf '%s\n%s' "${KB_STUB_CARD_HTTP:-200}" \
+                                     "${KB_STUB_CARD_BODY:-$CARD_OK_BODY}" ;;
+    esac
+}
+CARD_OK_BODY='{"data":{"id":4242,"board_id":42,"payload":{}}}'
+export CARD_OK_BODY
+export -f kb_stub_route
+
+_rc=0
+_err="$(KB_STUB_CARD_BODY='<html><body>502 Bad Gateway</body></html>' \
+        bash "$BIN" 4242 --repo owner/name --board dev 2>&1 >/dev/null)" || _rc=$?
+if [[ "$_rc" -eq 1 ]]; then ok "an unreadable card body → rc 1, not jq's rc 5"
+else bad "unreadable card body expected rc=1, got $_rc"; fi
+case "$_err" in *"no board id could be read out of its body"*)
+        ok "…refuses in adopt-to-dl's words, naming what was not read" ;;
+    *)  bad "expected the unreadable-body refusal, got: $_err" ;; esac
+case "$_err" in *"is on board ,"*)
+        bad "the board-mismatch arm reported a card as being on board '' — a claim about a card this read never got an answer about" ;;
+    *)  ok "…and does NOT report the card as being on an empty board" ;; esac
+case "$_err" in *"parse error"*) bad "leaked jq's raw parse error: $_err" ;;
+                              *) ok "…and leaks no raw jq parse error" ;; esac
+if [[ "$(kb_stub_total)" -eq 1 ]]; then ok "…having issued exactly the one read, and no write"
+else bad "expected exactly 1 request, got $(kb_stub_total)"; fi
+# The control that makes all of the above a measurement: the SAME invocation against a
+# well-formed body gets past the board guard (and fails later, at the mint, for want of a real
+# next-dl) — so the refusal above is the unreadable body and not this bin being broken outright.
+kb_stub_reset
+_err="$(bash "$BIN" 4242 --repo owner/name --board dev 2>&1 >/dev/null)" || true
+case "$_err" in *"no board id could be read out of its body"*|*"refusing to adopt on the wrong board"*)
+        bad "a well-formed body still failed the board guard: $_err" ;;
+    *)  ok "control: a well-formed body passes the board guard" ;; esac
+unset -f kb_stub_route
+unset CARD_OK_BODY
+
 _summary "adopt-to-dl-selftest"

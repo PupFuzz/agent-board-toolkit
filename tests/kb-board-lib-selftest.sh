@@ -506,6 +506,309 @@ _PAGES=( [1]="$lp0" [2]='{"data":[{"id":200}]}' )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
 eq "last_page=0 → rc 0"                        "0"   "$rc"
 eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) =="
+# The defect: `.data // []` answered a 200 carrying an HTML 502 with `[]` at rc 0 — byte-identical
+# to a genuinely EMPTY board — so next-dl dropped the board's DL floor and minted from the local
+# scan alone. The predicate is the ENVELOPE, not the row count: `.data` present AND an array.
+# The refusal legs below are bracketed by TWO controls on the same route — a genuinely empty
+# board and a one-card board — because the whole point is that a refusal and a legitimate read
+# are now distinguishable; a block that passed by refusing everything would have broken a
+# legitimate board read, not fixed anything.
+UNREAD_LOG="$TMP/unreadable.log"
+_fbc_case() { # <label> <body> <expect-rc> <expect-stdout>
+    local label="$1" body="$2" exprc="$3" expout="$4" rc=0 out
+    curl() { _STUB_ARGS=("$@"); _stub_curl_respond "$body" 200; }
+    : > "$UNREAD_LOG"
+    out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$UNREAD_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/unread.err")" || rc=$?
+    eq "$label (rc)"     "$exprc"  "$rc"
+    eq "$label (stdout)" "$expout" "$out"
+}
+
+# The measured defect input: HTTP 200 whose body is a proxy's HTML error page.
+_fbc_case "200 + <html>502</html> → rc 1" '<html><head><title>502 Bad Gateway</title></head><body>502</body></html>' 1 ""
+eq "…and the refusal is in the lib's own voice, naming the status" "true" \
+   "$(has 'fetch_board_cards: page 1 for board 8 returned HTTP 200 with no readable card array' "$(cat "$TMP/unread.err")")"
+eq "…and says what it refused to do, so the diagnostic is not just 'failed'" "true" \
+   "$(has 'refusing rather than report it as an empty board' "$(cat "$TMP/unread.err")")"
+eq "…and the failure log distinguishes this cause from a non-2xx" "true" \
+   "$(has 'UNREADABLE-BODY' "$(cat "$UNREAD_LOG")")"
+eq "…and the log carries the body, so the cause is diagnosable after the fact" "true" \
+   "$(has '502 Bad Gateway' "$(cat "$UNREAD_LOG")")"
+
+# THE CONTROL, and the one that matters most: a genuinely empty board is a legitimate state and
+# must still SUCCEED. This is the real API's empty-result envelope, probed live before the fix was
+# written. A predicate that cannot separate this from the case above is the wrong predicate.
+_fbc_case "CONTROL: a genuinely EMPTY board still succeeds → rc 0" \
+    '{"data":[],"links":{"first":"x","last":"x","prev":null,"next":null},"meta":{"current_page":1,"from":null,"last_page":1,"per_page":200,"to":null,"total":0}}' 0 "[]"
+[[ -s "$TMP/unread.err" ]] && bad "an empty board must be silent on stderr" || ok "an empty board is silent on stderr"
+[[ -s "$UNREAD_LOG" ]] && bad "an empty board must not write a failure-log line" || ok "an empty board writes no failure-log line"
+
+# The other shapes that carried no readable card array. What each USED to produce differs, and
+# the difference is the point — rounding them all to `[]` is what made the class look smaller
+# than it was (measured at dev 0b2ea6b, HTTP 200 in every case):
+#   no .data / .data null → `[]` at rc 0        — the plausible empty board
+#   .data a STRING        → rc 0, EMPTY stdout  — the dedup's `reduce .[]` cannot iterate a
+#                                                 string, so jq faulted into its own 2>/dev/null
+#   .data an OBJECT       → rc 0, `[9]`         — a FABRICATED array: that same `reduce .[]`
+#                                                 iterates an object's VALUES. This one, not the
+#                                                 string, is the "garbage value" half of README's
+#                                                 "never … emit a garbage value".
+_fbc_case "200 + valid JSON with no .data at all → rc 1"      '{"error":"upstream connect error"}' 1 ""
+_fbc_case "200 + .data null → rc 1"                           '{"data":null,"meta":{"total":0}}'   1 ""
+_fbc_case "200 + .data a string → rc 1"                       '{"data":"not-an-array"}'            1 ""
+_fbc_case "200 + .data an object (was a fabricated [9]) → rc 1" '{"data":{"id":9}}'                1 ""
+# …and the second control, after the last of them, so the block cannot pass by refusing
+# everything: a one-card board is a complete read at rc 0.
+_fbc_case "CONTROL: one real card → rc 0 with the card"       '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 0 '[{"id":7}]'
+
+# The refusal must not break board-snapshot's SessionStart contract: WITHOUT KB_FETCH_LOUD the
+# paginator is return-code-only, and that is what keeps a fail-soft display quiet. Asserted
+# separately from _fbc_case, which always sets the knob.
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '<html>502</html>' 200; }
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/quiet.err")" || rc=$?
+eq "quiet mode (no KB_FETCH_LOUD) still refuses → rc 1" "1" "$rc"
+eq "quiet mode emits nothing on stdout"                 ""  "$out"
+[[ -s "$TMP/quiet.err" ]] && bad "quiet mode must stay silent on stderr (board-snapshot's contract)" || ok "quiet mode stays silent on stderr"
+
+# THE SAME PREDICATE ON A LATER PAGE (card#6630) — the half card#6594 left open. An unreadable
+# body on page > 1 fell back to `[]`, and `[]` is a SHORT page, which ENDS the scan: the caller
+# got rc 0 and a board it had only partly read. It is now the paginator's existing rc 2, the rc
+# its contract already assigns to "a page > 1 failed mid-pagination" — the same rc the curl and
+# non-2xx arms return for the same page, because the difference between them is which layer
+# noticed, not what the caller can trust.
+#
+# The two servers are asserted separately because they used to give DIFFERENT wrong answers, and
+# only one of them was ever loud:
+#   DECLARES meta.total  → the census caught it at rc 4 WITH the partial data (loud, consumable)
+#   OMITS   meta.total   → rc 0, the partial data, and an EMPTY stderr (the silent truncation)
+# A leg written only against the first would have passed on this install and asserted nothing
+# about the case the card exists for.
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+UNREAD_LOG="$TMP/p2-unreadable.log"
+
+_fbc_p2() { # <label> <page-1 body> <page-2 body> <expect-rc>
+    local label="$1" exprc="$4" rc=0 out
+    _PAGES=( [1]="$2" [2]="$3" )
+    : > "$UNREAD_LOG"
+    out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$UNREAD_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2.err")" || rc=$?
+    eq "$label (rc)" "$exprc" "$rc"
+    _P2_OUT="$out"
+}
+
+fullp="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
+fullnm="$(jq -nc '{"data":[range(200)|{id:.}]}')"      # no meta at all — the silent-truncation server
+
+_fbc_p2 "a server DECLARING meta.total: unreadable page 2 → rc 2 (was rc 4 + partial)" \
+        "$fullp" '<html>502</html>' 2
+eq "…and nothing is emitted, so no caller can act on the 200 rows page 1 did deliver" "" "$_P2_OUT"
+eq "…and the refusal names the PAGE, not just the board"  "true" \
+   "$(has 'fetch_board_cards: page 2 for board 8 returned HTTP 200 with no readable card array' "$(cat "$TMP/p2.err")")"
+eq "…and says what it refused to do, which is NOT what page 1 refuses (an empty board)" "true" \
+   "$(has 'report a TRUNCATED board as a complete read' "$(cat "$TMP/p2.err")")"
+eq "…and the failure log carries the cause + the body" "true" \
+   "$(has 'UNREADABLE-BODY' "$(cat "$UNREAD_LOG")")"
+
+_fbc_p2 "a server OMITTING meta.total: unreadable page 2 → rc 2 (was rc 0, SILENT, truncated)" \
+        "$fullnm" '{"error":"upstream connect error"}' 2
+eq "…and nothing is emitted"                              "" "$_P2_OUT"
+eq "…and the census is not what caught it (there is no total to census against)" "false" \
+   "$(has 'board has ' "$(cat "$TMP/p2.err")")"
+
+# THE CONTROL for this arm, and the one that decides whether the predicate is the right one: a
+# legitimate SHORT final page is how a real multi-page read ENDS. If the page-2 refusal cannot
+# tell a legitimate `{"data":[…]}` — or a legitimately EMPTY one — from an unreadable body, it
+# refuses every board bigger than one page, and a block asserting only refusals would pass.
+_fbc_p2 "CONTROL: a legitimate short page 2 completes the read → rc 0" "$fullnm" '{"data":[{"id":200}]}' 0
+eq "…and every row from BOTH pages is emitted"            "201" "$(printf '%s' "$_P2_OUT" | jq 'length')"
+[[ -s "$TMP/p2.err" ]] && bad "a legitimate two-page read must be silent on stderr" || ok "a legitimate two-page read is silent"
+_fbc_p2 "CONTROL: an EMPTY page 2 is a complete read, not an unreadable one → rc 0" "$fullnm" '{"data":[],"meta":{"total":200}}' 0
+eq "…and page 1's 200 rows are the answer"                "200" "$(printf '%s' "$_P2_OUT" | jq 'length')"
+
+# Quiet mode on the LATER page too — board-snapshot reads the paginator without the knob, so a
+# page-2 refusal that started printing would break the same SessionStart contract page 1's does.
+_PAGES=( [1]="$fullnm" [2]='{"error":"upstream connect error"}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/p2quiet.err")" || rc=$?
+eq "quiet mode: unreadable page 2 still refuses → rc 2" "2" "$rc"
+eq "quiet mode: nothing on stdout"                      ""  "$out"
+[[ -s "$TMP/p2quiet.err" ]] && bad "quiet mode must stay silent on a page-2 refusal too" || ok "quiet mode stays silent on a page-2 refusal"
+
+unset -f _fbc_case _fbc_p2
+unset UNREAD_LOG _P2_OUT
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: the optional [query] — one encoded term inside the same q= (card#6771) =="
+# The paginator gained a fifth argument so a caller can read the board's MATCHING cards through
+# the same paging/dedup/rc machinery, rather than a second copy of it growing beside this one.
+# What must hold: the term reaches the wire ENCODED as one value, the no-query URL does not move
+# at all (eight of the nine calls in bin/ send no query), and the two messages that claim a POPULATION
+# say something true when the read was of a match set instead.
+# argv goes to a FILE, for the reason the KB_CURL_MAX_TIME block below states in full: curl runs
+# inside a "$(…)", so a stub-assigned array dies with that subshell and would assert nothing.
+_QC_ARGV="$TMP/qc-curl-argv.txt"
+_QC_CALLS="$TMP/qc-curl.calls"
+_QC_URL() { /usr/bin/grep -m1 '^http' "$_QC_ARGV"; }
+: > "$_QC_CALLS"
+curl() { printf '%s\n' "$@" > "$_QC_ARGV"; printf 'x' >> "$_QC_CALLS"; _stub_curl_respond '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}' 200; }
+
+# THE CONTROL FIRST — the historic URL, byte for byte. Every existing consumer passes no query,
+# so this is the assertion that says they are untouched; the legs below only mean anything
+# beside it.
+fetch_board_cards "https://api.example" tok 8 >/dev/null
+eq "no query → the URL is the historic whole-board spelling, unchanged" \
+   "https://api.example/tasks/search.json?q=board_id=8&limit=200&page=1" "$(_QC_URL)"
+
+fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null
+eq "a query rides INSIDE the same q value, after board_id, space-encoded" \
+   "https://api.example/tasks/search.json?q=board_id=8%20deploy%20hook&limit=200&page=1" "$(_QC_URL)"
+
+# The encode is the whole defence against a search term rewriting the request: `&` would
+# otherwise start a new parameter, `#` would truncate the URL at a fragment.
+fetch_board_cards "https://api.example" tok 8 50 'a&b #c' >/dev/null
+eq "an & or # in the term is encoded, never a new parameter or a fragment" \
+   "https://api.example/tasks/search.json?q=board_id=8%20a%26b%20%23c&limit=200&page=1" "$(_QC_URL)"
+
+# WHY jq's @uri AND NOT A HAND-ROLLED ENCODER: bash's `${s:i:1}` yields a CHARACTER, and
+# `printf %02X` on it yields the CODE POINT, so the obvious 8-line encoder emits `%E9` for `é`
+# where the wire needs its UTF-8 bytes `%C3%A9`. Card bodies carry non-ASCII routinely (every
+# `·` and `—` in this repo's own card bodies), so that is a live case, not a curiosity.
+fetch_board_cards "https://api.example" tok 8 50 'café' >/dev/null
+eq "a non-ASCII term is encoded as UTF-8 BYTES, not as a code point" \
+   "https://api.example/tasks/search.json?q=board_id=8%20caf%C3%A9&limit=200&page=1" "$(_QC_URL)"
+
+# rc 5 — the encode refusal. Fail-CLOSED is the point: a dropped term would send the bare
+# board_id read, i.e. the WHOLE BOARD answered as though it were the match set. Unreachable from
+# any input (a non-empty string always has a non-empty @uri), so the seam is a jq that fails
+# exactly that call.
+jq() {
+    local a
+    for a in "$@"; do
+        if [[ "$a" == *"@uri"* ]]; then echo "jq stub: refusing the @uri encode" >&2; return 5; fi
+    done
+    command jq "$@"
+}
+: > "$_QC_CALLS"
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook' 2>"$TMP/qc.err")" || rc=$?
+eq "an unencodable term → rc 5"                        "5" "$rc"
+eq "…nothing on stdout"                                ""  "$out"
+eq "…and NO request was issued at all"                 ""  "$(cat "$_QC_CALLS")"
+eq "…the refusal says the term could not be encoded"   "true" "$(has 'could not be encoded' "$(cat "$TMP/qc.err")")"
+# It must not depend on KB_FETCH_LOUD: there is no request for a quiet caller to have logged,
+# so this is the only place the cause can appear.
+rc=0; fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qc-quiet.err" || rc=$?
+eq "…and says so even without KB_FETCH_LOUD"           "true" "$(has 'could not be encoded' "$(cat "$TMP/qc-quiet.err")")"
+unset -f jq
+# CONTROL: with the real jq back, the same call succeeds — so the four assertions above measured
+# the stub's effect on the arm, not a call that was broken anyway.
+: > "$_QC_CALLS"
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook')" || rc=$?
+eq "CONTROL: the same call with the real jq → rc 0"    "0" "$rc"
+eq "CONTROL: …and it did issue its request"            "x" "$(cat "$_QC_CALLS")"
+
+echo "== fetch_board_cards: what the refusals CLAIM when the read was a search =="
+# meta.total and "an empty board" are claims about a POPULATION. Under a query the population is
+# the match set, so the same sentences would be false about the board — the two messages that
+# name one are scoped, and the no-query wording (asserted verbatim earlier in this file) is what
+# they must not disturb.
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '<html>502</html>' 200; }
+rc=0; KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qs1.err" || rc=$?
+eq "an unreadable page 1 under a query → still rc 1"   "1" "$rc"
+eq "…and it refuses to report A SEARCH THAT MATCHED NOTHING, not an empty board" "true" \
+   "$(has 'refusing rather than report it as a search that matched nothing' "$(cat "$TMP/qs1.err")")"
+eq "…so it makes no claim about the board being empty" "false" \
+   "$(has 'report it as an empty board' "$(cat "$TMP/qs1.err")")"
+
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+_PAGES=( [1]="$(jq -nc '{"data":[range(200)|{id:.}]}')" [2]='<html>502</html>' )
+rc=0; KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qs2.err" || rc=$?
+eq "an unreadable page 2 under a query → still rc 2"   "2" "$rc"
+eq "…and what it refuses is a TRUNCATED RESULT SET"    "true" \
+   "$(has 'report a TRUNCATED result set as a complete read' "$(cat "$TMP/qs2.err")")"
+
+_PAGES=( [1]='{"data":[{"id":1},{"id":2}],"meta":{"last_page":1,"total":3}}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 50 'deploy hook' 2>"$TMP/qs4.err")" || rc=$?
+eq "a short read under a query → still rc 4"           "4" "$rc"
+eq "…and the census counts MATCHES, not the board's cards" "true" \
+   "$(has 'the search over board 8 matched 3 cards but pages delivered only 2' "$(cat "$TMP/qs4.err")")"
+eq "…so it never says the board holds 3 cards"         "false" \
+   "$(has 'board has 3 cards' "$(cat "$TMP/qs4.err")")"
+# CONTROL, on the same fixture with no query: the ORIGINAL wording, which the scoping must not
+# have moved for the whole-board calls, which never pass one.
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/qs4c.err")" || rc=$?
+eq "CONTROL: the same short read with no query → rc 4" "4" "$rc"
+eq "CONTROL: …and the board wording is untouched"      "true" \
+   "$(has 'board has 3 cards but pages delivered only 2' "$(cat "$TMP/qs4c.err")")"
+unset -f curl _QC_URL
+unset _QC_CALLS _QC_ARGV
+
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: a caller's regular-file stderr survives the fetch (card#6661) =="
+# The redirect target for curl's stderr must be a DESCRIPTOR. It was the PATH /dev/stderr,
+# which RE-OPENS the file behind the caller's stderr — and a regular-file stderr
+# (`kbcard list 2>run.log`, how an agent logs) is re-opened O_TRUNC, so everything written
+# before the FIRST page fetch was destroyed. Clean on a pipe and on a tty, where O_TRUNC is a
+# no-op — but that is NOT why no other case here sees it. Every one of them redirects to a
+# REGULAR file and was truncated on every call under the old code; they lost nothing only
+# because none of them WRITES to its stderr file before the first fetch. A new case that does
+# will need this same shape.
+#
+# Asserted on CONTENT and on the NUL COUNT, never on rc — the run stays rc 0 either way.
+# The failure is NUL-fill, not absence: the caller's next write lands at its OWN unchanged
+# offset in the now-truncated file, so the gap between what curl re-wrote and that offset
+# reads back as NUL bytes — a log of plausible length whose head is gone. A command
+# substitution silently drops NULs, so a string compare cannot see them and the count is
+# asserted separately.
+#
+# THE FIXTURE'S PROPORTIONS ARE LOAD-BEARING, and the NUL leg is a decoration without them:
+# the caller must write MORE before the fetch (28 bytes) than curl writes into the truncated
+# file (18), or the caller's post-fetch write lands inside what curl re-wrote and overwrites
+# it in place, leaving no hole and a NUL count of 0 in the presence of the bug. Measured both
+# ways against the reverted fix: 28-over-18 gives 10 NULs; a longer curl note gave 0.
+_bytes()  { wc -c < "$1" | tr -d ' '; }
+_nuls()   { tr -dc '\000' < "$1" | wc -c | tr -d ' '; }
+# A stub that also WRITES to stderr, so the same block asserts the other half of the knob's
+# contract: under KB_FETCH_LOUD curl's own diagnostic must actually reach the caller.
+_stub_loud_curl() { printf 'curl: (7) refused\n' >&2; _stub_curl_respond "$1" 200; }
+ERRLOG="$TMP/caller-stderr.log"
+
+# LOUD: the caller opens run.log ONCE (as a shell does for `2>run.log`) and writes before
+# and after the fetch — the shape a logging agent actually runs.
+curl() { _STUB_ARGS=("$@"); _stub_loud_curl '{"data":[{"id":7}],"meta":{"last_page":1,"total":1}}'; }
+{
+    echo "LINE-BEFORE-1" >&2
+    echo "LINE-BEFORE-2" >&2
+    KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 >/dev/null
+    echo "LINE-AFTER" >&2
+} 2>"$ERRLOG"
+loud_exp=$'LINE-BEFORE-1\nLINE-BEFORE-2\ncurl: (7) refused\nLINE-AFTER\n'
+eq "loud: the lines written BEFORE the fetch are still there" "true" \
+   "$(has $'LINE-BEFORE-1\nLINE-BEFORE-2' "$(cat "$ERRLOG")")"
+eq "loud: curl's own stderr reached the caller (the knob's contract)" "true" \
+   "$(has 'curl: (7) refused' "$(cat "$ERRLOG")")"
+eq "loud: the log is exactly those four lines, in order" "${loud_exp}." "$(cat "$ERRLOG"; printf '.')"
+eq "loud: byte count matches that content"  "$(printf '%s' "$loud_exp" | wc -c | tr -d ' ')" "$(_bytes "$ERRLOG")"
+eq "loud: no NUL fill (a truncated-then-re-extended log)" "0" "$(_nuls "$ERRLOG")"
+
+# QUIET (the default, board-snapshot's contract): the caller's lines are equally intact AND
+# curl's stderr is still swallowed. This is the control — a "fix" that simply passed curl's
+# stderr through unconditionally would satisfy the loud legs above and red here.
+: > "$ERRLOG"
+{
+    echo "LINE-BEFORE-1" >&2
+    echo "LINE-BEFORE-2" >&2
+    fetch_board_cards "https://api.example" tok 8 >/dev/null
+    echo "LINE-AFTER" >&2
+} 2>"$ERRLOG"
+quiet_exp=$'LINE-BEFORE-1\nLINE-BEFORE-2\nLINE-AFTER\n'
+eq "quiet: the log is exactly the caller's own three lines" "${quiet_exp}." "$(cat "$ERRLOG"; printf '.')"
+eq "quiet: byte count matches that content" "$(printf '%s' "$quiet_exp" | wc -c | tr -d ' ')" "$(_bytes "$ERRLOG")"
+eq "quiet: no NUL fill"                     "0" "$(_nuls "$ERRLOG")"
+
+unset -f _stub_loud_curl _bytes _nuls
+unset ERRLOG loud_exp quiet_exp
+
 unset -f curl _stub_page_curl
 
 # --- KB_CURL_MAX_TIME parity: kb_api and fetch_board_cards honor the SAME knob ---
