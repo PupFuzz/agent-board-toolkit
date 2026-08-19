@@ -133,7 +133,14 @@ eq "no card was PATCHed (died before any move)"     ""      "$patched"
 eq "no summary line was printed"                    "false" "$(has 'moved,' "$out")"
 
 echo "== every value-taking flag rejects an empty value (the whole class, not one instance) =="
-for f in --dls --base --head --shipped-stages --config; do
+# "The whole class" is now an assertion rather than a claim. The list below was hand-typed and
+# said five while the bin guarded six: `--cards` arrived in v0.26.0 and nothing here could go
+# red about it, so this block asserted totality over 5/6 for two minor versions (card#6645).
+# expect_value_flags derives the population from the bin's own guard call sites and reds in both
+# directions, so the seventh flag cannot join in silence.
+VALUE_FLAGS=(--dls --cards --base --head --shipped-stages --config)
+expect_value_flags "$PRC" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
   rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" "$f" "" 2>&1)" || rc=$?
   eq "$f \"\" → dies rc 2"                          "2"     "$rc"
   eq "$f \"\" die names the flag"                   "true"  "$(has "$f requires a non-empty value" "$err")"
