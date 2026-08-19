@@ -336,11 +336,16 @@ done
 # own rendering is not a run of digits. Every later `-eq`/`-ge`/`-le` in this file is then over
 # values that cannot be read as anything but base 10.
 #
-# `kb_is_uint` before the range test: `[ "$PER_PAGE" -ge 1 ]` on a non-numeric string is a
-# bash error, not a refusal, and under `set -e` it kills the script with no diagnostic. It
-# admits a leading zero (its job is the SHAPE), which is why the normalisation follows it and
-# does not replace it.
-kb_is_uint "$PER_PAGE" || die "--per-page must be a whole number 1-100, got '$PER_PAGE'"
+# A RAW shape test before the range test: `[ "$PER_PAGE" -ge 1 ]` on a non-numeric string is a
+# bash error, not a refusal, and under `set -e` it kills the script with no diagnostic.
+#
+# ⛔ Deliberately `kb_ere_match '^[0-9]+$'` and NOT `kb_is_uint`, which card#6912 tightened to
+# REFUSE leading zeros. This flag accepts `010` as a spelling of 10 and always has; that is a
+# shipped CLI accept-set, and narrowing it is an accept/reject change this file does not own.
+# So the shape test stays permissive HERE and the normalisation below is what makes the value
+# safe — the pattern card#6884 established, kept working rather than deleted. Everywhere the
+# strict predicate is wanted, `kb_is_uint` is still the right call.
+kb_ere_match "$PER_PAGE" '^[0-9]+$' || die "--per-page must be a whole number 1-100, got '$PER_PAGE'"
 PER_PAGE_RAW="$PER_PAGE"
 PER_PAGE=$((10#$PER_PAGE))
 # The refusal quotes what the CALLER typed, not the normalised value — the caller can only act
