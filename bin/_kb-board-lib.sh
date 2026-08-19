@@ -100,9 +100,28 @@ _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
 # return; BASH_REMATCH is deliberately NOT local, so a caller's captures survive.
 kb_ere_match() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }
 
-# kb_is_uint <string>: true iff the string is a non-empty run of ASCII digits.
-# The shape behind most `^[0-9]+$` guards in these tools.
-kb_is_uint() { kb_ere_match "${1-}" '^[0-9]+$'; }
+# kb_is_uint <string>: true iff the string is the CANONICAL decimal spelling of a
+# non-negative integer — `0`, or a run of ASCII digits that does not start with one.
+# A leading zero is REFUSED: `0`, `1`, `42` accept; `00`, `08`, `010`, `007` refuse.
+#
+# WHY A LEADING ZERO IS REFUSED RATHER THAN NORMALISED. Every caller feeds the value it
+# accepts straight to bash arithmetic (`[[ x -gt 0 ]]`, `[[ a -eq b ]]`, `$(( ))`), and
+# bash reads a leading-zero literal as BASE 8 — measured: `[[ 010 -eq 10 ]]` is FALSE
+# (010 is 8), and `08` is not a legal octal literal at all, so it dies mid-guard with
+# `[[: 08: value too great for base` instead of refusing. That made this predicate answer
+# "yes, that is a uint" about a string whose VALUE the next line then got wrong or faulted
+# on. This is a PREDICATE: its job is to answer truthfully about the shape it is asked
+# about, not to silently reinterpret the caller's spelling — a `010` that means ten and a
+# `010` that is a typo are indistinguishable here, and the caller is the only layer that
+# knows which. Normalisation therefore stays at the WRITE site (`$((10#$x))` the moment a
+# value is accepted), where the tool that owns the input can also say what it did.
+#
+# `0` itself is still a uint — it is the one spelling of zero. NON-NEGATIVE is the whole
+# claim: a caller that needs POSITIVE re-tests with its own `-gt 0` / `-ge 1`, which is the
+# policy half and stays at the caller (see the mechanism-vs-policy note above). Multi-zero
+# `00` is refused for the same reason as `08`: it is a second spelling of a value that
+# already has one, and this predicate vouches for exactly one spelling per value.
+kb_is_uint() { kb_ere_match "${1-}" '^(0|[1-9][0-9]*)$'; }
 
 # --- config resolution ------------------------------------------------------
 #
