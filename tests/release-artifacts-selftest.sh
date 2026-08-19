@@ -1384,7 +1384,15 @@ eq "rc 2"                    "2"    "$RC"
 eq "…and names what is missing" "true" "$(has 'no version_file' "$OUT")"
 
 echo "== value-taking flags reject an EMPTY value, and both refs are required =="
-for f in --base --head --config; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--base --head --config)
+expect_value_flags "$BIN" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
   rc=0; err="$("$BIN" "$f" "" 2>&1)" || rc=$?
   eq "$f \"\" → rc 2"         "2"    "$rc"
   eq "$f \"\" names the flag" "true" "$(has "$f requires a non-empty value" "$err")"

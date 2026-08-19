@@ -753,6 +753,11 @@ eq "an unknown flag"                    "2" "$(_usage_rc --bogus "$Q")"
 # assertion passed under BOTH arms and reddened nothing when the arm was mutated back to `--*`.
 # Alone, `-v` under a `--*` arm becomes the QUERY and is sent to GitHub as a search term at rc 0.
 eq "a single-dash typo alone is a flag, not a query" "2" "$(_usage_rc -v)"
+# Sibling of the card#6645 class, closed by the same shared gate: the value-taking flags this
+# block refuses below are a HAND LIST, so a third would join with nothing here able to notice.
+# `expect_value_flags` derives the population from the bin's own guard call sites and reds in
+# both directions.
+expect_value_flags "$BIN" --per-page --format
 eq "--per-page with no value"           "2" "$(_usage_rc "$Q" --per-page)"
 eq "--per-page empty"                   "2" "$(_usage_rc --per-page '' "$Q")"
 eq "--per-page non-numeric"             "2" "$(_usage_rc --per-page abc "$Q")"

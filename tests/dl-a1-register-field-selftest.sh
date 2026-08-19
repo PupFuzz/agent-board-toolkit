@@ -291,7 +291,15 @@ eq "-h prints the same usage"             "$USAGE" "$out"
 # and each refusal must name ITS OWN flag: this tool takes four, so the usage line alone told the
 # operator only that one of them was short. The expected string is built per flag, so a guard
 # that named a hardcoded flag for all four reds on three of them.
-for f in --board --stage --swimlane --sentinel; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--board --stage --swimlane --sentinel)
+expect_value_flags "$A1" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
     NO_VALUE="dl-a1-register-field: $f requires a non-empty value"
     run_a1 "$f" ""
     eq "$f with an empty value → rc 2"    "2" "$rc"

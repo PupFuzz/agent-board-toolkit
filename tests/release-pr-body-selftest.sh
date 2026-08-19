@@ -351,7 +351,15 @@ echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact
 # reading this tool takes pains to make explicit, silently substituted for the one the caller
 # named. Every value-taking flag now dies by name instead.
-for f in --version --base --head --config; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--version --base --head --config)
+expect_value_flags "$BIN" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
     rc=0; err="$("$BIN" "$f" "" 2>&1)" || rc=$?
     eq "$f \"\" → rc 2"           "2"    "$rc"
     eq "$f \"\" names the flag"   "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
