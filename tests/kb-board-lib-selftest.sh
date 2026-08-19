@@ -856,6 +856,34 @@ unset -f curl _maxtime_arg
 unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
+echo "== kb_is_uint — the CANONICAL decimal spelling, leading zero refused (card#6912) =="
+# WHY THE LEADING-ZERO CASES ARE THE POINT. Every adopter hands the value it accepts to bash
+# arithmetic, and bash reads a leading-zero literal as BASE 8. Measured against the old
+# `^[0-9]+$`: `kb_is_uint 010` said yes and `[[ 010 -eq 10 ]]` was then FALSE (010 is 8), and
+# `kb_is_uint 08` said yes and the next `[[ 08 -gt 0 ]]` died with
+# `[[: 08: value too great for base (error token is "08")` — a raw bash fault leaking out of a
+# guard whose whole job was to prevent one. So these are not spelling nits: each is a value the
+# predicate vouched for and the next line then got wrong or crashed on.
+expect_rc "0 is a uint (posctl — the one spelling of zero)"  0 kb_is_uint "0"
+expect_rc "1 is a uint (posctl)"                             0 kb_is_uint "1"
+expect_rc "42 is a uint (posctl)"                            0 kb_is_uint "42"
+expect_rc "100 is a uint (posctl — an interior zero is fine)" 0 kb_is_uint "100"
+expect_rc "010 refused (bash reads it as 8, not 10)"         1 kb_is_uint "010"
+expect_rc "08 refused (not even a legal octal literal)"      1 kb_is_uint "08"
+expect_rc "007 refused"                                      1 kb_is_uint "007"
+expect_rc "00 refused (a second spelling of zero)"           1 kb_is_uint "00"
+expect_rc "0101 refused"                                     1 kb_is_uint "0101"
+# The pre-existing contract, unchanged by the tightening — asserted HERE so a future widening
+# of the pattern cannot quietly re-admit these while the leading-zero cases stay green.
+expect_rc "empty refused"                                    1 kb_is_uint ""
+expect_rc "no argument at all refused"                       1 kb_is_uint
+expect_rc "non-numeric refused"                              1 kb_is_uint "abc"
+expect_rc "a signed value is not a uint"                     1 kb_is_uint "+5"
+expect_rc "a negative value is not a uint"                   1 kb_is_uint "-5"
+expect_rc "a decimal is not a uint"                          1 kb_is_uint "1.0"
+expect_rc "leading whitespace refused"                       1 kb_is_uint " 5"
+expect_rc "trailing whitespace refused"                      1 kb_is_uint "5 "
+
 echo "== kb_dl_num — strict (rejects non-DL loudly) =="
 expect_out "bare int"                   "42"  kb_dl_num "42"
 expect_out "DL-093 -> 93"               "93"  kb_dl_num "DL-093"
