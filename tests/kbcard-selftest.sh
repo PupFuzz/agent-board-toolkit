@@ -877,7 +877,25 @@ eq "patch --dl \"\" names the flag"                "true" "$(case "$err" in *'--
 eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
    "$(cmd_patch --task 99 --dl DL-7 2>/dev/null | jq -r '.payload.dl_number')"
 
-# The whole class, not the one reported instance.
+# The whole class, not the one reported instance — and "the whole class" is now DERIVED from
+# the bin rather than typed here (card#6645). A hand list cannot red when kbcard grows a flag,
+# so this block's totality claim narrowed silently with every release; `expect_value_flags`
+# compares the guard call sites in `bin/kbcard` against the two lists below and reds in both
+# directions. The split is the claim, stated honestly: DRIVEN_HERE is what this block actually
+# exercises with an empty value, GUARDED_NOT_DRIVEN is the rest of the guarded population —
+# they share ONE owner (`kb_require_value`), so driving all 27 through their several verbs
+# would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
+# either list without an explicit edit here, which is the review moment a hand list never got.
+DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
+             --name --tags --type --external-id --origin --task)
+GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
+                                       # kb-positional-guard-selftest.sh, the only file with a
+                                       # resolvable kbcard config
+                    --content          # driven with an empty value at the comment verb, below
+                    --options          # driven empty in kbcard-field-selftest.sh
+                    --content-file --description-file --name-file
+                    --field --from --to --relation --key --label)
+expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
          --name --tags --type --external-id --origin; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?

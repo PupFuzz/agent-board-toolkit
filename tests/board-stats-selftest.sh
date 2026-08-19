@@ -61,6 +61,12 @@ expect_rc "--format xml is rc 2"                     2 "$BIN" --format xml
 expect_rc "--board with an empty value is rc 2"      2 "$BIN" --board ""
 expect_rc "--since with an empty value is rc 2"      2 "$BIN" --since ""
 expect_rc "--format with an empty value is rc 2"     2 "$BIN" --format ""
+# Sibling of the card#6645 class, closed by the same shared gate: the three empty-value lines
+# above are a HAND LIST of this bin's value-taking flags, so a fourth flag would join with
+# nothing here able to notice. `expect_value_flags` derives the population from the bin's own
+# guard call sites and reds in BOTH directions — a flag the bin grew that this block does not
+# name, and a flag named here that the bin no longer guards.
+expect_value_flags "$BIN" --board --since --format
 expect_rc "--all and --board together are rc 2"      2 "$BIN" --all --board dev
 expect_rc "--board given twice is rc 2"              2 "$BIN" --board a --board b
 expect_rc "--since with an unreadable window is rc 2" 2 "$BIN" --since 24x

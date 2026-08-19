@@ -96,6 +96,11 @@ run_ndl() {
 CLAIM=(POST /boards/42/dl-sequence/claim.json)
 
 echo "== --board's VALUE guard names the flag, missing and empty alike =="
+# Sibling of the card#6645 class, closed by the same shared gate. `--board` is this bin's whole
+# value-taking population today, so the two assertions below cover it — and nothing here could
+# notice a second flag arriving. `expect_value_flags` derives the population from the bin's own
+# guard call sites and reds in both directions.
+expect_value_flags "$NDL" --board
 # Both forms are asserted because they are different inputs: `--board` trailing leaves $1 unset,
 # `--board ""` sets it empty. The old compound condition answered both with the bare usage line,
 # which named none of the three ways to spell a project.

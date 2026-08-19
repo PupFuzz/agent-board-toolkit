@@ -75,3 +75,126 @@ _summary() {
     fi
     echo "$1: all checks passed"
 }
+
+# ── value-taking-flag parity (card#6645) ────────────────────────────────────────────────────
+#
+# WHY THIS LIVES HERE. Six selftest blocks asserted "every value-taking flag rejects an empty
+# value" over a HAND-TYPED list of flags, and four more carried the same hand list without
+# making the claim out loud. A hand list cannot go red when the bin grows a flag, so a claim
+# made over one narrows silently and nothing fails: measured on this tree,
+# promote-stage-guard-selftest listed FIVE of promote-released-cards' SIX guarded flags —
+# `--cards` (v0.26.0) was never driven and the block still said "the whole class, not one
+# instance", and kbcard-selftest drove TWO of bin/kbcard's 27. The fix is not ten repaired
+# lists, which re-mint the defect at the eleventh; it is ONE derivation of the population FROM
+# THE BIN, two-way-compared against what each block names — the same shape
+# `help-output-selftest.sh` uses to hold its `--help` registry level with `bin/`.
+#
+# THE PREDICATE, STATED. A "value-taking flag" here means exactly one thing: a flag whose parse
+# arm calls `require_value` or `kb_require_value`. BOTH spellings, deliberately — the three
+# release movers are vendored standalone and MUST NOT source the lib, so each carries its own
+# copy of the guard, while everything else uses `_kb-board-lib.sh`'s. A derivation covering one
+# spelling would answer the empty set for half the toolkit.
+#
+# Each call site is resolved back to a flag by, in this order:
+#   1. a literal flag as the call's own first argument (`require_value "--dl" …`);
+#   2. the `case` pattern opening the SAME line (`--dls) require_value "$1" …`), with alias arms
+#      (`-b|--board)`) split on `|` so both spellings are members;
+#   3. the nearest preceding NON-COMMENT line that is either such a `case` pattern or an
+#      `if [[ "${1:-}" == "--flag" ]]` test. That third rule is not padding: it is the only way
+#      board-stats' and next-dl's multi-line arms are seen at all, and kbcard's global `--board`
+#      — the highest-stakes flag in the toolkit — sits in an `if`, not in the `case`.
+# A call site that none of the three resolves is NOT dropped. It is emitted as
+# `UNRESOLVED:<line>`, a member no hand list can contain, so an arm shape this predicate does
+# not recognise reds the gate instead of silently shrinking the population it reports.
+#
+# ⛔ WHAT IT STRUCTURALLY CANNOT SEE — stated so the gate is not over-cited:
+#   * A value-taking flag with NO guard at all, or one guarded some other way. The predicate
+#     keys on the GUARD, so it answers "is every GUARDED flag accounted for", never "is every
+#     value-taking flag guarded". `agent-board-toolkit-runtime-check`'s `--reference` is the live
+#     instance — it guards with `"${2:?…}"` and is invisible here. That one is a DELIBERATE
+#     exclusion with its own reasoning (`docs/CONSOLIDATION-PLAN.md` § Stage C: that bin validates
+#     `_kb-board-lib.sh`, so it must not source it, and its rc 1 is fixed in place by that), not a
+#     gap this gate is failing to report. What is invisible is the SHAPE, whatever its reason.
+#   * Whether a listed flag is actually DRIVEN by the block. The list is the block's own claim
+#     about what it covers; this only holds that claim level with the bin.
+#   * Anything about behaviour. It compares NAMES.
+#
+# awk rather than grep: resolving rule 3 needs a backward walk over the file, which a
+# line-oriented match cannot do, and that walk has to skip comment lines — a header narrating
+# `--dls) require_value "$1"` is prose, not an arm.
+
+# _value_flags <bin-path> — the flags <bin> guards, derived from the file, C-collated, deduped.
+_value_flags() {
+    awk '
+    function add_pattern(pat,   k, i, t, tok) {
+        k = split(pat, tok, /\|/)
+        for (i = 1; i <= k; i++) {
+            t = tok[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", t)
+            if (t ~ /^--?[A-Za-z0-9][A-Za-z0-9-]*$/) { out[t] = 1; got = 1 }
+        }
+    }
+    # arm_pattern <line> — the case-arm pattern this line opens, or "" if it opens none.
+    function arm_pattern(L,   p) {
+        if (L !~ /\)/) return ""
+        p = L; sub(/\).*$/, "", p)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", p)
+        return (p ~ /^--?[A-Za-z0-9][A-Za-z0-9|_-]*$/) ? p : ""
+    }
+    { lines[NR] = $0 }
+    END {
+        for (i = 1; i <= NR; i++) {
+            L = lines[i]
+            if (L ~ /^[[:space:]]*#/) continue
+            if (L !~ /(^|[^A-Za-z0-9_])(kb_)?require_value[[:space:]]/) continue
+            got = 0
+            if (match(L, /(kb_)?require_value[[:space:]]+"--[A-Za-z0-9][A-Za-z0-9-]*"/)) {
+                # `^[^"]*"`, never `^.*"`: a greedy prefix eats through BOTH quotes and
+                # leaves the empty string, which reads as "this call site resolved to nothing".
+                s = substr(L, RSTART, RLENGTH); sub(/^[^"]*"/, "", s); sub(/"$/, "", s)
+                out[s] = 1; continue
+            }
+            p = arm_pattern(L)
+            if (p != "") { add_pattern(p); if (got) continue }
+            for (j = i - 1; j >= 1 && j >= i - 40; j--) {
+                P = lines[j]
+                if (P ~ /^[[:space:]]*#/) continue
+                p = arm_pattern(P)
+                if (p != "") { add_pattern(p); break }
+                if (match(P, /==[[:space:]]*"?--[A-Za-z0-9][A-Za-z0-9-]*"?/)) {
+                    s = substr(P, RSTART, RLENGTH); sub(/^[^-]*--/, "--", s); gsub(/["[:space:]]/, "", s)
+                    out[s] = 1; got = 1; break
+                }
+                # the arm above ended, or the construct did: this call site is in neither, so
+                # stop walking rather than attribute it to an unrelated flag further up.
+                if (P ~ /;;[[:space:]]*$/ || P ~ /^[[:space:]]*(esac|fi|done)[[:space:]]*$/) break
+            }
+            if (!got) out["UNRESOLVED:" i] = 1
+        }
+        for (k in out) print k
+    }' "$1" | LC_ALL=C sort -u
+}
+
+# expect_value_flags <bin-path> <flag>... — two-way parity between the flags <bin> GUARDS and
+# the flags the calling block names. Reds in BOTH directions, which is the whole point: a flag
+# the bin grew and this test never heard of, and a flag this test still names after the bin
+# dropped it. `comm` validates its inputs' order in the AMBIENT locale, so both sides are
+# pinned to C alongside their producers — en_US.UTF-8 ignores punctuation in its primary pass
+# and orders `-`-bearing tokens differently from codepoint order.
+expect_value_flags() {
+    local bin="$1"; shift
+    local name derived listed
+    _need -r "$bin"
+    name="$(basename "$bin")"
+    derived="$(_value_flags "$bin")"
+    listed="$(printf '%s\n' "$@" | awk 'NF' | LC_ALL=C sort -u)"
+    # Positive control FIRST: the two legs below are assertions of ABSENCE, and an empty
+    # derivation — a moved bin, a renamed guard, an awk that matched nothing — satisfies both
+    # while measuring nothing at all.
+    eq "$name: the require_value derivation carries real data (positive control)" "false" \
+       "$([[ -z "$derived" ]] && echo true || echo false)"
+    eq "$name: guarded flag the bin has and this block does not name (add + drive it here)" "" \
+       "$(LC_ALL=C comm -23 <(printf '%s\n' "$derived" | awk 'NF') <(printf '%s\n' "$listed" | awk 'NF'))"
+    eq "$name: flag named here that the bin no longer guards (drop it)" "" \
+       "$(LC_ALL=C comm -13 <(printf '%s\n' "$derived" | awk 'NF') <(printf '%s\n' "$listed" | awk 'NF'))"
+}

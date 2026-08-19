@@ -1280,6 +1280,26 @@ finding with no owner is abandoned, not filed.
   deliberately left at three:** the third attempt's finding — derive the population, never list it —
   held; what measured wrong was two of the carve-outs subtracted from that population.
 
+- **The value-taking flag population, in ten hand-typed lists** (card#6645) — **SHIPPED.** Stage C
+  gave the flag axis one guard (`kb_require_value`, plus the vendored mirrors that cannot source
+  the lib). What it did not give the *tests* was one statement of **which flags the guard covers**:
+  ten selftest blocks each typed that population out, six of them under an explicit totality claim
+  (*"every value-taking flag … the whole class, not one instance"*). A typed list cannot go red
+  when the bin grows a flag, so each claim narrowed with every release that added one — and two had
+  already lost members when this was measured: `promote-stage-guard-selftest` named **five** of
+  `promote-released-cards`' **six** (`--cards`, shipped in v0.26.0, was never driven) and
+  `kbcard-selftest` drove **two** of `bin/kbcard`'s **27**. This is Stage B's card#5740 shape one
+  axis over: that one deleted the duplicated *helper*, this one deletes the duplicated
+  **population**. Closed the same way — `_value_flags` / `expect_value_flags` in
+  `tests/_selftest-prelude.sh` derive the population from each bin's own `require_value` /
+  `kb_require_value` call sites (both spellings, because the standalone movers carry their own
+  copy) and two-way-compare it against what the block names, so neither direction can drift in
+  silence; `tests/value-flag-derivation-selftest.sh` is the control on the derivation itself.
+  **Weakest property, stated so it is not over-cited:** the predicate keys on the **guard**, so it
+  answers *"is every guarded flag accounted for"*, never *"is every value-taking flag guarded"* —
+  `agent-board-toolkit-runtime-check`'s `--reference` guards with `"${2:?…}"` and is invisible to
+  it, which is the exclusion Stage C already reasons and keeps by design, not a new gap.
+
 ---
 
 ## Corrections carried forward

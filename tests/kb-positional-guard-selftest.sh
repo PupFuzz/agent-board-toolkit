@@ -146,6 +146,13 @@ echo 'KB_BOARD_ID=42' > "$HOME/.kanban-dev-board.env"
 echo "== kbcard — an ordinary CLI: refuses at rc 2 =="
 pin "kbcard ''"                 2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" ""
 pin "kbcard --board dev ''"     2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" --board dev ""
+# The GLOBAL --board's own empty-value guard, driven here because this is the only file that
+# runs kbcard as a PROCESS with a resolvable config — and it was the one guarded flag in the
+# toolkit that nothing drove (card#6645, found by deriving kbcard's guarded set instead of
+# reading the list of flags the tests happened to name). The bin's own header calls it the
+# highest-stakes instance of the class: an empty --board falls through to the DEFAULT board, so
+# `--board "$KEY"` with KEY unset is a wrong-board WRITE, not a no-op.
+pin "kbcard --board '' list"    2 "kbcard: --board requires a non-empty value" "$KBC" --board "" list
 # The discrimination the guard exists to make: NO arguments is a help request and stays rc 0 on
 # stdout, while an EMPTY first argument is a failed expansion and is refused. Asserting only the
 # refusal would pass just as well for a kbcard that refused its own help.

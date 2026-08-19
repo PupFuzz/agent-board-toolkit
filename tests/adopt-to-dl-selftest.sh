@@ -71,7 +71,15 @@ case "$out" in *"<card-id> is required"*) ok "no positional at all still reports
 # meant "re-stamp DL-N" would mint a SECOND DL, orphaning DL-N and stranding any branch or PR
 # named for it. kbcard already rejected the identical input; this bin did not.
 echo "== value-taking flags reject an empty value (kb_require_value) =="
-for f in --dl --issue --repo --board; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--dl --issue --repo --board)
+expect_value_flags "$BIN" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
     _rc=0; out="$(bash "$BIN" 4242 "$f" "" 2>&1)" || _rc=$?
     if [[ "$_rc" -eq 2 ]]; then ok "$f '' is rejected (rc 2), not read as absent"
     else bad "$f '' expected rc=2, got $_rc"; fi
