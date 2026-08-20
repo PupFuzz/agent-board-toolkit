@@ -2,6 +2,7 @@
 # Templates live in examples/*.example (kept).
 *-token
 *.env
+.env*
 .kanban-*
 # Python bytecode from the bin/*.py shims + their CI py_compile step.
 __pycache__/
@@ -10,3 +11,18 @@ __pycache__/
 # base + artifact list) — same as agent-webhook-bridge and kanban-board. It drives
 # bin/release-pr-body + bin/promote-released-cards and must be in-repo for the
 # release tooling to run reproducibly (incl. CI).
+
+# Editor and backup siblings of ANY file, secret-bearing ones included. A backup
+# carries the same secret as the file it copies, and a per-file enumeration is
+# permanently one editor behind: `.env` was ignored here while `.env~`, `auth.json~`
+# and `storage/*.key~` were all stageable (roundtable #316, found live on a peer
+# install as a 4,339-byte `.env~`). The rules above name WHICH files are secret;
+# these cover HOW an editor spells a copy of one, so a new secret file added above
+# inherits the coverage instead of needing its own siblings enumerated.
+*~
+*.bak
+*.orig
+*.save
+*.swp
+*.swo
+*.tmp
