@@ -28,9 +28,8 @@
 #     `retired_artifacts` array — PR-declared, read at head, and printed as a `RETIRED:`
 #     line in the CI log. A member in BOTH arrays is a config error (rc 2), so a tombstone
 #     cannot be pre-planted against a member that is still declared.
-# Everything else in the config (`promote.*`, `ref_token_regex`, `title_prefix`,
-# `card_token_regex`, branch names) stays head-read and unguarded: none of it decides a
-# verdict.
+# Everything else in the config (`promote.*`, `ref_token_regex`, `card_token_regex`,
+# branch names) stays head-read and unguarded: none of it decides a verdict.
 #
 # COMPARISON IS ON EXPANDED, VERSION-AGNOSTIC MEMBERS, not on entry strings: `{{version}}`
 # is replaced by a sentinel (never by a concrete version — otherwise every templated member

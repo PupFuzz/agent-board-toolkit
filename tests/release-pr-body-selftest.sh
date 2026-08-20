@@ -71,8 +71,7 @@ cat > "$W/.release-pr.json" <<'EOF'
 {
   "main_branch": "main",
   "dev_branch": "dev",
-  "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release"
+  "ref_token_regex": "DL-[0-9]+"
 }
 EOF
 
@@ -124,7 +123,6 @@ cat > "$W/.release-pr.json" <<'EOF'
   "main_branch": "main",
   "dev_branch": "dev",
   "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release",
   "version_file": "VERSION.txt",
   "version_regex": "[0-9]+(\\.[0-9]+){1,3}"
 }
@@ -147,7 +145,6 @@ cat > "$W/.release-pr.json" <<'EOF'
   "main_branch": "main",
   "dev_branch": "dev",
   "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release",
   "tag_format": "release-{{version}}"
 }
 EOF
@@ -190,7 +187,6 @@ tokencfg() { # <ref_token_regex> — everything else held constant
   "main_branch": "main",
   "dev_branch": "dev",
   "ref_token_regex": "$1",
-  "title_prefix": "Release",
   "tag_format": "release-{{version}}"
 }
 EOF
@@ -216,7 +212,8 @@ echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) ==
 # repo's commit subjects had migrated to `card#NNNN` while that key still said `DL-`, so the
 # manifest was unconditionally empty and the section rendered clean WITHOUT CHECKING — the
 # canon-#9 shape, a check that cannot fail. Nothing here exercised it: every case above runs
-# without a board token, so they all take the "_Not checked here_" branch.
+# without a board token, so before card#7038 they all rendered the "_Not checked here_"
+# placeholder branch — and now render no coverage section at all (see the block below).
 #
 # WHY NOT JUST RE-SPELL ref_token_regex. Measured, not argued: promote-released-cards reads the
 # SAME key and matches the token's NUMERIC part against `payload.dl_number`, so a `card#`
@@ -249,7 +246,6 @@ cat > "$CR/.release-pr.json" <<'EOF'
   "dev_branch": "dev",
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
-  "title_prefix": "Release",
   "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
 }
 EOF
@@ -269,7 +265,11 @@ cat > "$BOARD_FILE" <<'EOF'
 EOF
 covmiss="$(coverage_body)"
 eq "an uncarded card# ref is REPORTED"                "true"  "$(has '**Shipped refs with no tracking card:** card#9999' "$covmiss")"
-eq "…and the section is not the never-checked branch" "false" "$(has 'Not checked here' "$covmiss")"
+# The presence of the heading is now itself the claim that a measurement ran (card#7038), so
+# that is what this arm asserts. It replaces a `has 'Not checked here'` == false line: that
+# string no longer exists anywhere in the tool, and this arm supplies a board token, so it
+# could not have failed in either direction — a decoration, not a check.
+eq "…and the section is there because it MEASURED"    "true"  "$(has '## Card coverage' "$covmiss")"
 eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipped refs in range' "$covmiss")"
 # The id-space confusion the second key exists to prevent, asserted rather than described: the
 # board's only card carries DL-42, and 42 is NOT what card#9999 asks about.
@@ -284,6 +284,79 @@ EOF
 covok="$(coverage_body)"
 eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
 eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+
+echo "== the coverage section is EMITTED ONLY when it carries a measurement (card#7038) =="
+# WHAT CHANGED. The section used to render unconditionally, and when it could not check
+# anything it SAID so — a heading whose entire content was "not checked here, go run another
+# tool". That is a placeholder, not a measurement: it tells the merger nothing about what the
+# merge contains, and it was struck BY HAND from a real release PR body — which does not hold,
+# because the next release re-emits it. The section is now emitted only when the check ran, so
+# its PRESENCE is itself the signal that coverage was measured. The obligation it used to
+# narrate is stated in the release docs instead (`VERSIONING.md` § Release flow, and
+# `docs/INSTALL.md` §4 for consumers), where a reader looks for release process.
+#
+# Each arm removes exactly ONE leg of the can-we-measure guard and holds the range, the commit
+# subjects and the token keys constant. `$covok` above — same fixture, every leg present — is
+# the positive control: it DOES emit the section, carrying a verdict.
+eq "control: every leg present ⇒ the section IS emitted" "true" "$(has '## Card coverage' "$covok")"
+eq "control: …carrying a verdict, not a placeholder"     "true" "$(has 'All shipped refs have a tracking card' "$covok")"
+
+# LEG 1 — no board token. This is the historical case, not a hypothetical: every other block in
+# this file runs without one, which is why they all used to render the placeholder branch.
+rc=0; notoken="$( cd "$CR" \
+  && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_EXPECTED_HOST=kanban.test \
+     "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no board token → still rc 0"                  "0"     "$rc"
+eq "…body is still complete (no token)"           "true"  "$(has '## Bundled' "$notoken")"
+eq "…and NO coverage section is emitted (no token)"       "false" "$(has '## Card coverage' "$notoken")"
+eq "…nor the placeholder it used to carry"        "false" "$(has 'Not checked here' "$notoken")"
+
+# LEG 2 — the promote tool is unreachable. The bin is run from a directory of its own, so
+# neither `command -v` nor the `dirname "$0"` sibling lookup finds a promoter; the board token
+# and the `.promote` config are both present, so this leg alone decides the outcome.
+#
+# The PATH is DERIVED, not inherited: a developer host commonly has the toolkit installed on
+# `~/.local/bin`, so `PATH="$COV/bin:$PATH"` still resolves a promoter and this arm passes for
+# the wrong reason locally while discriminating on a bare CI runner (observed, on this arm's
+# first run). Drop exactly the directories that carry the property under test, and assert the
+# precondition rather than assuming it.
+promoterless_path() {  # $PATH minus every directory that holds a promote-released-cards
+  local out="" d; local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    # a plain `if`, not `[ -e … ] && continue`: this file already rules against the
+    # trailing-test form (card#5874, in bin/release-pr-body's own comment).
+    if [ -e "$d/promote-released-cards" ]; then continue; fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
+NOPROM_PATH="$COV/bin:$(promoterless_path)"
+eq "precondition: no promoter on the derived PATH" "" \
+   "$(PATH="$NOPROM_PATH" command -v promote-released-cards 2>/dev/null || true)"
+mkdir -p "$COV/lonebin"; cp "$BIN" "$COV/lonebin/release-pr-body"
+rc=0; nopromote="$( cd "$CR" \
+  && PATH="$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no promote tool → still rc 0"                 "0"     "$rc"
+eq "…body is still complete (no promoter)"        "true"  "$(has '## Bundled' "$nopromote")"
+eq "…and NO coverage section is emitted (no promoter)"    "false" "$(has '## Card coverage' "$nopromote")"
+# CONTROL for this leg: the SAME lone copy with the promoter back on PATH does emit — so the
+# absence above is the missing promoter, not "a copy outside bin/ cannot check anything".
+withpromote="$( cd "$CR" \
+  && PATH="$HERE/../bin:$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )"
+eq "control: the same copy WITH a promoter emits" "true"  "$(has '## Card coverage' "$withpromote")"
+
+# LEG 3 — no `.promote` config. Handed over as a sibling --config so the fixture repo's own
+# config, which every later block reads, is left exactly as it is.
+jq 'del(.promote)' "$CR/.release-pr.json" > "$COV/nopromote.json"
+rc=0; nocfg="$( cd "$CR" \
+  && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$BIN" --config "$COV/nopromote.json" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no .promote config → still rc 0"              "0"     "$rc"
+eq "…body is still complete (no .promote)"        "true"  "$(has '## Bundled' "$nocfg")"
+eq "…and NO coverage section is emitted (no .promote)"    "false" "$(has '## Card coverage' "$nocfg")"
 
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
@@ -338,7 +411,7 @@ eq "control: --card-manifest alone still answers" "9999" \
 
 echo "== a repo that sets NEITHER token key still renders (no new required config) =="
 cat > "$CR/.release-pr.json" <<'EOF'
-{ "main_branch": "main", "dev_branch": "dev", "title_prefix": "Release",
+{ "main_branch": "main", "dev_branch": "dev",
   "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
 EOF
 rc=0; notok="$(coverage_body)" || rc=$?
