@@ -88,7 +88,6 @@ VERSION_FILE="$(cfg_opt '.version_file')"
 VERSION_REGEX="$(cfg_opt '.version_regex')"
 REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"    # e.g. "DL-[0-9]+"; optional — numeric part is a DL number
 CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optional — numeric part is a CARD ID
-TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release}"
 # How a version maps to its git tag name, with {{version}} as the placeholder
 # (symmetric with the `artifacts` template expansion below). Drives both the
 # baseline own-tag exclude AND the body's display header, so a non-v scheme names
@@ -219,8 +218,20 @@ bundle_lines() {
 # board tracking card — so the gap is caught at release-prep (cheap to fix) instead of
 # only on the post-merge promote run (a red check needing manual board surgery). Reuses
 # `promote-released-cards --dls/--cards <manifest> --dry-run` (an explicit ref set → no
-# squash/parent-count branch, just the cardless report). Best-effort: needs the promote
-# tool + a board token + a `.promote` config; otherwise a static reminder.
+# squash/parent-count branch, just the cardless report).
+#
+# The section is emitted ONLY when the check could actually run — it needs the promote tool
+# + a board token + a `.promote` config, and where any of those is missing the body carries
+# NO section at all. It used to emit the heading unconditionally and, in that case, a
+# placeholder saying "not checked here, run `promote-released-cards --dry-run` before
+# merge": a section whose entire content is "this was not measured" tells the merger nothing
+# about what the merge contains, and it was struck by hand from a real release PR body —
+# which does not hold, because the next release re-emits it. Making the presence conditional
+# is what holds. The `--dry-run`-before-merge obligation did not go away; it is stated in the
+# release doc a reader consults for release process (this repo's `VERSIONING.md` § Release
+# flow; `docs/INSTALL.md` §4 for a consumer setting the keys up), not narrated per release.
+# So: the heading now MEANS coverage was measured. A run that was attempted and failed still
+# says so — that is a fact about this release, not a placeholder.
 #
 # The two legs are passed SEPARATELY because they correlate against different card
 # fields (see the header): DL tokens against `payload.dl_number`, card ids against the
@@ -231,7 +242,6 @@ bundle_lines() {
 # unrelated card.
 card_coverage_section() {
   [ -n "$REF_TOKEN_REGEX" ] || [ -n "$CARD_TOKEN_REGEX" ] || return 0
-  echo ""; echo "## Card coverage"
   local board promote
   board="$(cfg_opt '.promote.board_id')"
   promote="$(command -v promote-released-cards 2>/dev/null || true)"
@@ -239,10 +249,12 @@ card_coverage_section() {
     local d; d="$(dirname "$0")"
     [ -x "$d/promote-released-cards" ] && promote="$d/promote-released-cards"
   fi
+  # Nothing to measure with ⇒ nothing to say. The return is BEFORE the heading is printed, so
+  # the body gains no empty section either.
   if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:-}" ] || [ -z "$promote" ]; then
-    echo "_Not checked here (needs a board token + a \`.promote\` config + the promote tool). Run \`promote-released-cards --dry-run\` before merge._"
     return 0
   fi
+  echo ""; echo "## Card coverage"
   local dl_manifest card_manifest
   dl_manifest="$(emit_manifest | paste -sd, -)"
   card_manifest="$(emit_card_ids | paste -sd, -)"

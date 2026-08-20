@@ -1,6 +1,5 @@
 {
   "_comment": "agent-board-toolkit per-repo release config. Copy to <your-repo>/.release-pr.json and edit. Consumed by bin/release-pr-body (scaffolds the release PR body), bin/release-artifacts-check (fails a release PR whose declared artifacts did not all move, and any PR that drops a declared entry without acknowledging it in retired_artifacts) and bin/promote-released-cards (moves shipped cards to the released stage). JSON has no comments; each field is documented in agent-board-toolkit/docs/INSTALL.md §4 — read the 'artifacts is a must-move-together SET' note there before editing that array, since it is now asserted rather than merely printed. Replace every placeholder.",
-  "title_prefix": "Release",
   "dev_branch": "dev",
   "main_branch": "main",
   "version_file": "config/app.php",
