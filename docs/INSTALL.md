@@ -101,6 +101,9 @@ cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-p
 # edit: set promote.{board_id, released_stage_id, api_base}, ref_token_regex (e.g. "DL-[0-9]+"),
 # card_token_regex (e.g. "card#[0-9]+"), version_file/version_regex, dev/main branch names,
 # and the artifacts set.
+# main_branch/dev_branch (optional, defaults "main"/"dev"): the branch the release
+# baseline tag is resolved from, and the branch whose commits are bundled — omit both
+# if your repo already uses those names.
 # tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
 # set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
 # accepts 2-4 numeric segments (SemVer and .NET Major.Minor.Build.Revision alike).

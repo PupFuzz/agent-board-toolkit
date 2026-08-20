@@ -229,7 +229,7 @@ echo "== promote-released-cards — the standalone's glob guards (uint_ok / uint
 # --shipped-stages guard runs before the config file is even read. The ASCII positive
 # control is the NEXT refusal in each sequence, which is what proves the guard passed.
 PBOARD='D="$(mktemp -d)"; cd "$D"
-        jq -n --arg b "$IN" "{main_branch:\"main\",dev_branch:\"dev\",version_file:\"VERSION\",
+        jq -n --arg b "$IN" "{version_file:\"VERSION\",
           promote:{board_id:\$b,released_stage_id:1,api_base:\"https://h/api/v3\"}}" > .release-pr.json
         unset KANBAN_WRITEBACK_TOKEN
         out="$(bash "$ROOT/bin/promote-released-cards" --dry-run 2>&1 || true)"

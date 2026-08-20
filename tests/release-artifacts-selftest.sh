@@ -130,8 +130,6 @@ cfg_commit_only() { printf '%s\n' "$2" > "$R/$1"; }
 # FILENAME carries the version (so the "path contains V ⇒ agrees" arm is exercised). Five
 # comparison units from four entries.
 CFG_BASE='{
-  "main_branch": "main",
-  "dev_branch": "dev",
   "version_file": "VERSION",
   "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
   "artifacts": [
