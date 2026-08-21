@@ -46,8 +46,11 @@ has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 #
 # ⛔ WHY IT EXISTS — a pipeline answers this question WRONG, and only sometimes. `grep -q`
 # exits the moment it matches, closing the pipe while its writer is still writing. The writer
-# takes SIGPIPE, `set -o pipefail` promotes that rc 141 to the whole pipeline's status, and the
-# `&& echo true || echo false` tail then reports a MATCH as `false`. It cost a CI red on
+# then fails on that closed pipe, `set -o pipefail` promotes ITS non-zero status to the whole
+# pipeline's, and the `&& echo true || echo false` tail reports a MATCH as `false`. (The status
+# is 141 where SIGPIPE is at its default and 1 — an EPIPE write error — where an ancestor has
+# ignored it, as the GitHub Actions runner does. Both are non-zero and both are promoted.) It
+# cost a CI red on
 # `lib-set-derivation-selftest.sh`, which was green on five consecutive local runs and red in CI
 # on the same commit once a second multi-KB `[Unreleased]` entry pushed the payload past the pipe
 # buffer.
@@ -61,6 +64,8 @@ has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 #     needle first, 60009 bytes → rc 0    PIPESTATUS 0 0    (payload fits the buffer)
 #     needle first, 65009 bytes → rc 141  PIPESTATUS 141 0  (the builtin's subshell DIED)
 #     needle last,  5 MB        → rc 0    PIPESTATUS 0 0    (grep never left early)
+# — taken with SIGPIPE at its DEFAULT. Under an inherited SIG_IGN the middle row reads rc 1 /
+# PIPESTATUS `1 0` instead: the writer is not killed, it takes EPIPE and exits 1. Same defect.
 # So a `printf`/`echo` upstream is not a safe form, only an untested one — which is the same
 # "green until it is not" this helper exists to remove. `tests/pipeline-free-match-selftest.sh`
 # pins every cell of that matrix, on both writer classes, asserting PIPESTATUS.

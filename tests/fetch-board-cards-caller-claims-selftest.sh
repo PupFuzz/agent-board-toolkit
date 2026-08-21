@@ -98,6 +98,14 @@ NAMES_OUTCOME='did not return a complete card list|INCOMPLETE|unavailable|read f
 #     match at END,   5 MB      → rc 0    PIPESTATUS 0 0
 #     match at START, 5 MB      → rc 141  PIPESTATUS 141 0   ← the builtin DIED
 #     match at START, 1 KB      → rc 0    PIPESTATUS 0 0     (whole body fits the buffer)
+#
+# ⚑ The 141 is the DEFAULT-disposition rendering, and it is NOT what CI sees. Where an ancestor
+# has ignored SIGPIPE — which the GitHub Actions runner does, its bash being started by the
+# runner's Node process, and SIG_IGN survives execve — the writer is not killed at all: `write()`
+# returns EPIPE, it prints `<prog>: write error: Broken pipe` and exits 1, which `pipefail`
+# promotes identically. That is the case CI runs, and it is what the original
+# `lib-set-derivation-selftest.sh` red actually recorded (its evidence was a printed
+# `grep: write error: Broken pipe`, i.e. the EPIPE path, not a kill).
 # A fixture that cannot trigger the condition it tests reports clean and teaches the wrong rule.
 # `tests/pipeline-free-match-selftest.sh` now pins all three cells, on both writer classes, and
 # asserts PIPESTATUS rather than the pipeline's rc alone. The prelude's `has_line` is the

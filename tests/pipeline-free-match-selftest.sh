@@ -7,9 +7,9 @@
 #     <producer> | grep -qx "$needle" && echo true || echo false
 #
 # `grep -q` exits the instant it matches. Its upstream is usually still writing, so the writer
-# gets SIGPIPE, `pipefail` promotes that rc 141 to the PIPELINE's status, and the `&& echo true`
-# tail reports a MATCH as `false`. The verdict is inverted — not an error, a wrong answer, at a
-# call site whose reader has no way to tell. It cost a CI red this cycle:
+# fails on the closed pipe, `pipefail` promotes ITS non-zero status to the PIPELINE's status, and
+# the `&& echo true` tail reports a MATCH as `false`. The verdict is inverted — not an error, a
+# wrong answer, at a call site whose reader has no way to tell. It cost a CI red this cycle:
 # `lib-set-derivation-selftest.sh` leg 3 was green on five consecutive local runs and red in CI
 # on the same commit, once a second multi-KB `[Unreleased]` entry pushed the payload over the
 # pipe buffer.
@@ -26,6 +26,21 @@
 #       and exited after the writer did: no closed pipe, no signal, rc 0.
 #   (b) the writer still has MORE THAN THE PIPE BUFFER (64 KiB) left to write when that happens.
 #       Under the buffer the whole payload is absorbed and the writer exits 0 regardless.
+#
+# ⚑ AND THE WRITER'S NON-ZERO STATUS IS NOT ALWAYS 141 — it depends on the SIGPIPE DISPOSITION
+# this process tree INHERITED, which is why this file measures that disposition instead of
+# hardcoding a number:
+#   * SIGPIPE at its DEFAULT → the kernel KILLS the writer, and bash renders that as 128+13 = 141.
+#   * SIGPIPE IGNORED by some ancestor → the writer is not killed; its `write()` returns EPIPE, it
+#     prints `<prog>: write error: Broken pipe` and exits with its own error status, 1.
+# The GitHub Actions runner is the second case (the step's bash is started by the runner's Node
+# process, which sets SIGPIPE to SIG_IGN, and SIG_IGN survives execve into every child) — which
+# is why the FIRST cut of this file passed locally at `141 0` and red in CI at `1 0`. Either way
+# the status is non-zero and `pipefail` promotes it, so the DEFECT is identical and every verdict
+# assertion below is disposition-independent; only the rendering moves. Note this also identifies
+# the original `lib-set-derivation-selftest.sh` CI red as the EPIPE case: the evidence recorded
+# for it was a printed `grep: write error: Broken pipe`, which is the ignored-disposition path,
+# not a kill. "rc 141" was only ever the local rendering of it.
 #
 # ⛔ AND THAT IS EXACTLY HOW THE FALSE CLAIM SURVIVED — the original "rc 0 over a 5MB body"
 # measurement is reproducible, with the needle at the END of the body. It is a real measurement
@@ -92,13 +107,34 @@ eq "the LATE fixtures really do carry it on the LAST line"   "true" \
    "$([[ "$(tail -1 "$BIG_LATE")" == "$NEEDLE" && "$(tail -1 "$SMALL_LATE")" == "$NEEDLE" ]] && echo true || echo false)"
 
 # _piped <file> — the construct being retired, EXTERNAL writer, spelled as the call sites did.
-_piped() { ( set -o pipefail; cat "$1" | grep -qx "$NEEDLE" && echo true || echo false ); }
+_piped() { ( set -o pipefail; cat "$1" | grep -qx "$NEEDLE" && echo true || echo false ) 2>/dev/null; }
 # _piped_builtin <text> — the same construct with a bash BUILTIN as the writer.
-_piped_builtin() { ( set -o pipefail; printf '%s\n' "$1" | grep -qx "$NEEDLE" && echo true || echo false ); }
+_piped_builtin() { ( set -o pipefail; printf '%s\n' "$1" | grep -qx "$NEEDLE" && echo true || echo false ) 2>/dev/null; }
 # _stat <file> / _stat_builtin <text> — PIPESTATUS, so a case names WHICH stage died. `grep -q`
 # is stage 2 and answers 0 (it matched) in every cell below; stage 1 is the whole story.
 _stat()         { ( set -o pipefail; cat "$1" | grep -qx "$NEEDLE"; echo "${PIPESTATUS[*]}" ) 2>/dev/null; }
 _stat_builtin() { ( set -o pipefail; printf '%s\n' "$1" | grep -qx "$NEEDLE"; echo "${PIPESTATUS[*]}" ) 2>/dev/null; }
+# _stat_ignored <file> — the same measurement with SIGPIPE explicitly IGNORED. A shell can always
+# ADD an ignore (and `cat` inherits it across execve); it cannot REMOVE one it inherited, which is
+# why the ambient cells are asserted against the MEASURED disposition and this one — the EPIPE
+# path, the one CI actually runs — is pinned exactly on every host.
+_stat_ignored() { ( trap '' PIPE; set -o pipefail; cat "$1" | grep -qx "$NEEDLE"; echo "${PIPESTATUS[*]}" ) 2>/dev/null; }
+_piped_ignored() { ( trap '' PIPE; set -o pipefail; cat "$1" | grep -qx "$NEEDLE" && echo true || echo false ) 2>/dev/null; }
+
+# The inherited SIGPIPE disposition, measured rather than assumed: bash reports a signal that was
+# already SIG_IGN when it started as an empty trap.
+_disposition() { case "$(trap -p SIGPIPE)" in *"trap -- '' SIGPIPE"*) echo ignored ;; *) echo default ;; esac; }
+DISP="$(_disposition)"
+# What a dead writer's stage status renders as HERE. Exact on both branches — this selects the
+# expected value, it does not relax the assertion.
+case "$DISP" in
+    ignored) WRITER_DIED="1 0" ;;
+    *)       WRITER_DIED="141 0" ;;
+esac
+echo "== the inherited SIGPIPE disposition (it decides the RENDERING, never the defect) =="
+eq "the disposition is one of the two this file knows how to predict" "true" \
+   "$([[ "$DISP" == ignored || "$DISP" == default ]] && echo true || echo false)"
+printf '  note  ambient SIGPIPE disposition: %s — a dead writer renders as %s\n' "$DISP" "${WRITER_DIED% 0}"
 
 # ---------------------------------------------------------------------------
 echo "== CONTROL 1 (positive) — the retired construct reports a MATCH as a NON-MATCH =="
@@ -107,8 +143,14 @@ echo "== CONTROL 1 (positive) — the retired construct reports a MATCH as a NON
 # being able to fail and this file says so here rather than passing quietly.
 eq "early match in a large body: the pipeline says NO to a text that DOES contain the line" \
    "false" "$(_piped "$BIG_EARLY")"
-eq "…and PIPESTATUS names the WRITER as the one that died — grep matched fine" "141 0" \
+eq "…and PIPESTATUS names the WRITER as the one that died — grep matched fine" "$WRITER_DIED" \
    "$(_stat "$BIG_EARLY")"
+# The EPIPE branch pinned exactly, on every host, whatever the ambient disposition: this is the
+# cell CI runs, and the first cut of this file could not see it.
+eq "with SIGPIPE IGNORED the writer is not killed — it takes EPIPE and exits 1, and pipefail promotes THAT" \
+   "1 0"   "$(_stat_ignored "$BIG_EARLY")"
+eq "…and the verdict is inverted just the same, which is the point: the defect is disposition-independent" \
+   "false" "$(_piped_ignored "$BIG_EARLY")"
 eq "has_line answers the SAME question correctly on the SAME text" "true" \
    "$(has_line "$NEEDLE" "$BIG_EARLY_TEXT")"
 
@@ -158,7 +200,7 @@ eq "BUILTIN writer, SMALL body, EARLY match: correct (this is why the shape surv
    "true"  "$(_piped_builtin "$SMALL_EARLY_TEXT")"
 eq "BUILTIN writer, LARGE body, EARLY match: WRONG — a printf upstream is not safe, only untested" \
    "false" "$(_piped_builtin "$BIG_EARLY_TEXT")"
-eq "…and PIPESTATUS shows the BUILTIN's own subshell took the signal, exactly as cat did" "141 0" \
+eq "…and PIPESTATUS shows the BUILTIN's own subshell died too, exactly as cat did" "$WRITER_DIED" \
    "$(_stat_builtin "$BIG_EARLY_TEXT")"
 eq "BUILTIN writer, LARGE body, LATE match: correct — position, not writer class, decided it" \
    "true"  "$(_piped_builtin "$BIG_LATE_TEXT")"

@@ -331,10 +331,12 @@ _bsc_runnable() {
 #
 # It takes the TEXT, never a pipe, and that is the whole point (card#7175). The chained-hook site
 # below used to ask it as `sed … | grep -q`: `grep -q` exits on the first match, closing the pipe
-# while `sed` is still writing, `sed` takes SIGPIPE, and `pipefail` promotes that rc 141 to the
-# pipeline's status — so a hook that DOES reach board-card-start read as one that does not, as
-# soon as the hook grew past the 64 KiB pipe buffer. Capturing first and matching second removes
-# the window rather than narrowing it.
+# while `sed` is still writing, `sed` then fails on the closed pipe, and `pipefail` promotes ITS
+# non-zero status to the pipeline's — so a hook that DOES reach board-card-start read as one that
+# does not, as soon as the hook grew past the 64 KiB pipe buffer. Capturing first and matching
+# second removes the window rather than narrowing it. (The writer's status is 141 where SIGPIPE
+# is at its default and 1 where an ancestor has ignored it — both non-zero, both promoted;
+# `tests/pipeline-free-match-selftest.sh` owns that detail.)
 _bsc_names_start() { grep -q 'board-card-start' <<< "$1"; }
 
 _bsc_hook_reaches() {
