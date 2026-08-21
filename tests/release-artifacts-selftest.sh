@@ -1381,6 +1381,42 @@ run base-0.1.0 head-good --config no-version-file.json
 eq "rc 2"                    "2"    "$RC"
 eq "…and names what is missing" "true" "$(has 'no version_file' "$OUT")"
 
+echo "== --classify-only: the release rule, EXPOSED — one implementation, not two (card#6579) =="
+# WHY THIS BLOCK EXISTS. `release-tag-check` must know whether a post-merge push is a release
+# before it asserts a tag, and re-deriving that there would have been a SECOND rule free to
+# drift from this one. The mode exposes THIS rule instead, so these cases pin the contract its
+# caller depends on: one machine-readable line, rc 0 for BOTH answers, and the artifact legs
+# not merely ignored but SKIPPED.
+run base-0.1.0 head-good --classify-only
+eq "a release range → rc 0"                 "0"              "$RC"
+eq "…and reports the release verdict"       "release 0.2.0"  "$OUT"
+run base-0.1.0 head-nonrelease --classify-only
+eq "a non-release range → rc 0"             "0"              "$RC"
+eq "…and reports the non-release verdict"   "not-release 0.1.0" "$OUT"
+
+# THE ARTIFACT LEGS ARE SKIPPED, NOT RUN-AND-IGNORED. Each fixture below is one this tool
+# REFUSES in its normal mode — that is asserted above, so these are not vacuous — and each must
+# still classify cleanly for a caller asking only "is this a release?".
+run base-0.1.0 head-not-moved --classify-only
+eq "a member that did not move still classifies" "0"         "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+eq "…and reports no member failure"         "false"          "$(has '::error::' "$OUT")"
+run base-0.1.0 head-e1 --classify-only
+eq "an unacknowledged LOST member still classifies" "0"      "$RC"
+eq "…and reports no narrowing"              "false"          "$(has 'NARROWED' "$OUT")"
+run base-0.1.0 head-wholesale --classify-only
+eq "a repo declaring NO artifacts still classifies" "0"      "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+
+# EVERY rc-2 REFUSAL SURVIVES THE MODE. A range this tool cannot classify must never read as
+# "not a release" — that misclassification is a silent non-run of the caller's whole check.
+run unrelated head-good --classify-only
+eq "no common ancestor still refuses"       "2"              "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
+run base-0.1.0 head-noversion --classify-only
+eq "an unreadable version_file still refuses" "2"            "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
+
 echo "== value-taking flags reject an EMPTY value, and both refs are required =="
 # The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
 # when the bin grows a flag, so a totality claim made over one narrows silently with every

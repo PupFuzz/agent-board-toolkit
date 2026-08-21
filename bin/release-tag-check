@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# release-tag-check — post-merge, assert that the release this push represents is ACTUALLY
+# TAGGED before anything downstream reports the release as shipped. Waits for the tag, then
+# refuses if it never arrives.
+#
+# WHY THIS EXISTS (card#6579). `auto-tag-version.yml` and `release-promote-cards.yml` both fire
+# on `push: main`, as INDEPENDENT runs with no `needs:` between them. Promote therefore reports
+# board cards "Released to main" without ever checking that the tag exists — and on the v0.28.0
+# release it did exactly that: auto-tag's push was refused with a 403 at 01:59:46Z, promote
+# reported "2 moved" and concluded SUCCESS at 01:59:49Z, and the tag did not exist until a
+# human re-ran the job at 02:17:06Z. The board asserted a shipped release for 17m27s while the
+# tag was absent, and had the re-run never happened it would have asserted it forever.
+#
+# THE RACE IS NOT THE FAILURE MODE — IT IS THE NORMAL PATH. Because the two runs start
+# together, promote wins on EVERY release, not just when tagging breaks; v0.28.0 was merely the
+# run where the tag never arrived to settle it. So this check WAITS rather than refusing
+# immediately: an immediate hard-refuse would red every release in the repo.
+#
+# WHAT THE 403 WAS, AND WHAT THIS DOES NOT CLAIM. The tag push was refused while the job log
+# showed `Contents: write` granted, the same token had just fetched successfully, no ruleset or
+# tag protection existed, and the identical push succeeded unchanged 17 minutes later. Every
+# repo-side cause is excluded by measurement; the refusal came from GitHub's authorization
+# service. THIS TOOL DOES NOT FIX THAT AND CANNOT. It closes the SILENCE — the part that
+# actually bit — by making an untagged release loud on the surface an operator watches instead
+# of leaving a false "Released" stamp behind. A recurrence is still a recurrence; it is just no
+# longer quiet.
+#
+# Usage:
+#   release-tag-check --before <ref> --after <ref> [--config PATH] [--remote NAME]
+#                     [--timeout SECS] [--interval SECS]
+#
+#   --before   the ref the branch pointed at BEFORE this push (github.event.before)
+#   --after    the pushed commit (github.sha) — the tag must point HERE
+#   --config   per-repo release config (default `.release-pr.json`), inside this repository
+#   --remote   remote to poll (default `origin`)
+#   --timeout  seconds to wait for the tag before refusing (default 300)
+#   --interval seconds between polls (default 10)
+#
+# THE RELEASE CLASSIFICATION IS NOT RE-DERIVED HERE. It is delegated to
+# `release-artifacts-check --classify-only`, which owns the repo's one definition of "this
+# range is a release" (merge-base version != head version, by VALUE). A second rule here would
+# be free to drift from the gate that guards release PRs. The naive predicate this replaced —
+# "a tag must point at every merge on the release branch" — was measured against this repo's
+# real history and false-alarmed on all six non-release merges, so classification is load-
+# bearing, not ceremony.
+#
+# THE POLL IS AGAINST THE REMOTE, NEVER LOCAL REFS, and that is the whole point: the tag is
+# created by a DIFFERENT workflow run after this job's checkout was taken, so a local ref set
+# is frozen at a moment that by construction predates the tag. `git ls-remote` re-asks the
+# server each round. An annotated tag is dereferenced (`^{}`) so it is compared as a commit;
+# `auto-tag-version.yml` currently creates a lightweight tag, and this must not depend on that.
+#
+# THE TIMEOUT IS A COST DECISION, STATED, NOT A CONVERGENCE CLAIM. Default 300s. The automated
+# path is fast — auto-tag's entire job, runner pickup through push, measured ~8s on the very
+# run that failed — so 300s is roughly 35x observed latency and absorbs runner-queue variance
+# with room to spare. It is deliberately NOT sized to the incident's 17m27s: that gap was a
+# HUMAN noticing and re-running, and sizing an automated wait to human reaction time would make
+# every genuinely-broken release hang for 17 minutes before saying so. AT THE BOUND THIS
+# REFUSES AND FAILS LOUDLY rather than waiting longer or passing — stamping "Released" late is
+# recoverable, stamping it wrongly is not.
+#
+# A NON-RELEASE PUSH ASSERTS NOTHING and exits 0 saying so. A push whose range cannot be
+# classified at all is rc 2 from the classifier and is propagated unchanged — never softened
+# into "not a release", because that misclassification is a silent non-run of this whole check,
+# which is the exact defect class this tool exists to end.
+#
+# Exit status: 0 = tag present at the pushed commit, or not a release push. 1 = the release is
+# untagged past the bound, or the tag exists at a DIFFERENT commit. 2 = usage error, or the
+# range could not be classified.
+set -euo pipefail
+# A bracket range is a COLLATION range and en_US.UTF-8 widens `[0-9]` to non-ASCII digits
+# (card#5409); exported so the greps below inherit it, not just this shell.
+export LC_ALL=C
+
+die() { echo "release-tag-check: $*" >&2; exit 2; }
+command -v git >/dev/null || die "git is required"
+
+# Mirrors kb_require_value in _kb-board-lib.sh. Like its release siblings this script is
+# deliberately self-contained and does not source that lib; keep them in sync.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+require_uint()  { case "${2:-}" in ''|*[!0-9]*) die "$1 requires a non-negative integer";; esac; }
+
+CONFIG=".release-pr.json"; BEFORE=""; AFTER=""; REMOTE="origin"; TIMEOUT=300; INTERVAL=10
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --before)   require_value "$1" "${2:-}"; BEFORE="$2"; shift 2;;
+    --after)    require_value "$1" "${2:-}"; AFTER="$2"; shift 2;;
+    --config)   require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    --remote)   require_value "$1" "${2:-}"; REMOTE="$2"; shift 2;;
+    --timeout)  require_uint  "$1" "${2:-}"; TIMEOUT="$2"; shift 2;;
+    --interval) require_uint  "$1" "${2:-}"; INTERVAL="$2"; shift 2;;
+    # Contiguous leading comment block, not a fixed range — a fixed `sed -n` range is silently
+    # wrong in both directions as the header grows or shrinks (card#5145).
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+[ -n "$BEFORE" ] || die "--before <ref> is required"
+[ -n "$AFTER" ]  || die "--after <ref> is required"
+
+AFTER_SHA="$(git rev-parse --verify "${AFTER}^{commit}" 2>/dev/null)" \
+  || die "cannot resolve --after '$AFTER' to a commit in this clone — the caller must check out with fetch-depth: 0"
+
+# The classifier is the sibling in this same bin/, not whatever a PATH lookup finds: a vendored
+# consumer may carry a different toolkit version on PATH, and the two must agree on the rule.
+SELF_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLASSIFIER="$SELF_DIR/release-artifacts-check"
+[ -x "$CLASSIFIER" ] || die "$CLASSIFIER is missing or not executable — it owns the release classification this check delegates to"
+
+set +e
+CLASS_OUT="$("$CLASSIFIER" --classify-only --base "$BEFORE" --head "$AFTER" --config "$CONFIG" 2>&1)"
+CLASS_RC=$?
+set -e
+if [ "$CLASS_RC" -ne 0 ]; then
+  # Propagated, never softened. The classifier is fail-closed by design and its rc 2 means "I
+  # could not tell" — reading that as "not a release" would silently skip the assertion.
+  echo "$CLASS_OUT" >&2
+  die "could not classify ${BEFORE}..${AFTER} (release-artifacts-check rc $CLASS_RC) — refusing rather than assuming this is not a release"
+fi
+
+VERDICT="$(printf '%s\n' "$CLASS_OUT" | tail -1)"
+case "$VERDICT" in
+  "not-release "*)
+    echo "release-tag-check: not a release push (version unchanged across ${BEFORE}..${AFTER}) — no tag asserted"
+    exit 0;;
+  "release "*) ;;
+  *) die "unrecognised classifier verdict '$VERDICT' — refusing rather than guessing";;
+esac
+VERSION="${VERDICT#release }"
+TAG="v${VERSION}"
+
+# _remote_tag_sha — the commit $TAG points at ON THE REMOTE, empty if absent. An annotated tag
+# yields both `refs/tags/X` (the tag object) and `refs/tags/X^{}` (the commit); the dereferenced
+# line is authoritative, so it is preferred whenever present.
+_remote_tag_sha() {
+  local out deref plain
+  out="$(git ls-remote --tags "$REMOTE" "refs/tags/${TAG}" "refs/tags/${TAG}^{}" 2>/dev/null)" || return 1
+  deref="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}^{}" '$2 == t { print $1; exit }')"
+  plain="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}"    '$2 == t { print $1; exit }')"
+  [ -n "$deref" ] && { printf '%s\n' "$deref"; return 0; }
+  printf '%s\n' "$plain"
+}
+
+echo "release-tag-check: release push — ${TAG} must exist at ${AFTER_SHA} (waiting up to ${TIMEOUT}s, polling ${REMOTE} every ${INTERVAL}s)"
+
+WAITED=0
+while :; do
+  FOUND="$(_remote_tag_sha || true)"
+  if [ -n "$FOUND" ]; then
+    if [ "$FOUND" = "$AFTER_SHA" ]; then
+      # `${WAITED:+…}` would be WRONG here: WAITED=0 is a non-empty string, so it would report
+      # "after 0s" on a tag that was already there — making a waited-for result and an
+      # immediate one indistinguishable in the log, and any assertion on "after" vacuous.
+      if [ "$WAITED" -gt 0 ]; then
+        echo "release-tag-check: ok — ${TAG} present at ${AFTER_SHA} (after ${WAITED}s)"
+      else
+        echo "release-tag-check: ok — ${TAG} present at ${AFTER_SHA}"
+      fi
+      exit 0
+    fi
+    # Present but elsewhere: auto-tag's own case 3 (two merges claimed one version). Waiting
+    # cannot resolve it — a tag does not move on its own — so this refuses immediately.
+    echo "::error::release-tag-check: ${TAG} exists on ${REMOTE} at ${FOUND}, but this push is ${AFTER_SHA}. Two merges have claimed the same version, or the release PR did not bump the version file. REFUSING to report this release as shipped." >&2
+    exit 1
+  fi
+  [ "$WAITED" -lt "$TIMEOUT" ] || break
+  sleep "$INTERVAL"
+  WAITED=$((WAITED + INTERVAL))
+done
+
+echo "::error::release-tag-check: ${TAG} does not exist on ${REMOTE} after ${TIMEOUT}s, but ${AFTER_SHA} is a release push (version ${VERSION}). The release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579). REFUSING to report this release as shipped." >&2
+exit 1
