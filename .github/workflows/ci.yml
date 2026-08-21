@@ -48,6 +48,12 @@ jobs:
     # the `changelog-card-entry` job into its own workflow (for a trigger this file cannot
     # give it), and a scan of ci.yml alone would report that test as unrun.
     #
+    # It also holds the TRIGGER CONTRACT over that directory (card#6099): no workflow narrows
+    # its `pull_request` with a paths/branches filter, and every workflow whose text reads a
+    # `github.event.pull_request.*` field subscribes `edited`. Neither rule has an instance on
+    # this tree — the reasoning, and the fixtures that keep both from being decorations, are in
+    # the selftest's own header rather than restated here.
+    #
     # Deliberately its OWN job, not a `selftest` matrix entry: a matrix entry would be
     # self-referential, so deleting that one line would disable the guard silently — the exact
     # hole it closes. Being named in this `run:` block is also how it satisfies the rule it
@@ -55,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: every selftest on disk is run by a PR-triggered workflow
+      - name: every selftest is run by a PR-triggered workflow, and the triggers hold their contract
         run: bash tests/ci-matrix-parity-selftest.sh
 
   selftest:
