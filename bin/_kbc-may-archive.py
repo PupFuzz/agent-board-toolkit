@@ -35,6 +35,10 @@ import json
 import os
 import sys
 
+# `bin/` is PATH-linked entry by entry, so no `.pyc` may be minted in it — and only an ENTRY
+# POINT can suppress one (`_kbc-archive-lib.py`'s header owns the contract). card#6871.
+sys.dont_write_bytecode = True
+
 _LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_kbc-archive-lib.py")
 
 
