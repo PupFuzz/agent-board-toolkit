@@ -38,7 +38,17 @@
 # time; gating the whole done backlog here would be a slow network storm). It only
 # surfaces (never archives); a missing sibling is a warning, not a hard failure.
 #
-# A fourth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
+# A fourth READ-ONLY leg — "Stale blocker citations" — is DELEGATED to the sibling
+# `_kbc-stale-blocker.py`: which OPEN card's own text still says it is blocked behind a
+# card that has since become terminal? The claim was TRUE when written and nothing
+# re-reads the card when its blocker ships, so the next reader meets a stale hold and
+# treats pullable work as blocked — a defect no other leg here can see, because the card
+# and the board agree with each other and only the CITED card has moved. Advisory on the
+# SAME contract as the archive leg, with the same asymmetry the reconciler leg states: a
+# stale citation is a FINDING and rides the report at rc 0, so a non-zero from that tool
+# means the instrument could not read a board, not that the boards are clean.
+#
+# A fifth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
 # fix a CLOSED Dependabot alert claims actually exist in what is deployed and RUNNING? An
 # alert closes when its fix reaches the default branch, while production serves something
 # cut by a separate process — so a repo reading 0-open can be serving the vulnerable
@@ -909,6 +919,15 @@ main() {
   echo "   (read-only surfacing via _kbc-archive-eligible.py over the shipped may_archive gate)"
   _bsc_advisory_leg _kbc-archive-eligible.py -f \
     "archive-eligible surfacing" "config/API error above" "" python3
+
+  echo
+  echo "── Stale blocker citations — open cards still citing a blocker that has since become terminal ──"
+  echo "   (read-only surfacing via _kbc-stale-blocker.py; every run prints its own denominator)"
+  _bsc_advisory_leg _kbc-stale-blocker.py -f \
+    "stale-blocker-citation scan" \
+    "a board could not be read, so the population scanned is smaller than the report claims — see above" \
+    "A flagged card is NOT this: findings ride the report at rc 0, so a non-zero here means the instrument." \
+    python3
 
   echo
   echo "── Dependabot fixed-alert vs deployed-tree reconciliation ──"

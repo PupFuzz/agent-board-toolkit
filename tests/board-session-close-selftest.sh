@@ -23,11 +23,14 @@
 #      checkout gets one line under its own name in list order, that the dirty suffix tracks the
 #      porcelain output in both directions, that an unresolvable branch renders `?` whether git
 #      answered empty or refused, and that a checkout-less entry is skipped rather than queried.
-#   6. the archive-eligible DELEGATION (card#5371) — the sibling `_kbc-archive-eligible.py` leg,
-#      whose rc contract INVERTS surface 2's: a missing sibling and a non-zero helper each WARN on
-#      stderr and leave the ritual's exit code alone, where the reconcile hook propagates. Run
-#      against a COPY of the bin with a FAKE sibling, since the helper is resolved by path beside
-#      the bin with no env override.
+#   6. the ADVISORY SIBLING DELEGATIONS — one block per leg: `_kbc-archive-eligible.py`
+#      (card#5371), `dependabot-deploy-reconcile` (card#6277) and `_kbc-stale-blocker.py`
+#      (card#7113). Their shared rc contract INVERTS surface 2's: a missing sibling and a
+#      non-zero helper each WARN on stderr and leave the ritual's exit code alone, where the
+#      reconcile hook propagates. Each is run against a COPY of the bin with FAKE siblings —
+#      the real ones are resolved by path beside the bin with no env override — and each block
+#      plants a QUIET fixture for the OTHER legs, so a broad `sibling not found` absence needle
+#      still discriminates instead of being satisfied by a neighbour's warning.
 #
 # The bin is main-guarded, so sourcing it defines the functions and renders nothing.
 # resolve_reconcile_hook is probed in a fresh `bash -c` per case (hermetic HOME/PATH/
@@ -1310,6 +1313,7 @@ AEHELPER="$AEDIR/_kbc-archive-eligible.py"
 # warning. With both siblings present-and-quiet the broad needle discriminates again.
 printf '%s\n' '#!/bin/sh' 'echo "dr fixture: quiet"' > "$AEDIR/dependabot-deploy-reconcile"
 chmod +x "$AEDIR/dependabot-deploy-reconcile"
+printf '%s\n' '#!/usr/bin/env python3' 'print("sb fixture: quiet")' > "$AEDIR/_kbc-stale-blocker.py"
 
 # run_ae <fake-reconcile-hook> — run the COPIED bin; echo rc, leave out/err in $OUTF/$ERRF.
 run_ae() {
@@ -1412,6 +1416,7 @@ DRTOOL="$DRDIR/dependabot-deploy-reconcile"
 # The archive sibling must exist and be quiet here, or its own warnings would be the reason
 # any absence assertion below passes.
 printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: quiet")' > "$DRDIR/_kbc-archive-eligible.py"
+printf '%s\n' '#!/usr/bin/env python3' 'print("sb fixture: quiet")' > "$DRDIR/_kbc-stale-blocker.py"
 
 run_dr_leg() {
     HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
@@ -1540,6 +1545,86 @@ rc="$(run_dr_leg "$goodhook")"
 eq "control: with timeout present the close is still 0" "0" "$rc"
 eq "…and no missing-timeout warning appears" "false" \
    "$(has 'no `timeout` on PATH' "$(cat "$ERRF")")"
+
+
+# ---------------------------------------------------------------------------
+# The '── Stale blocker citations ──' leg (card#7113) — main's FOURTH delegation, to the
+# `_kbc-stale-blocker.py` sibling. Its rc contract is the archive leg's: a failing helper
+# WARNS and leaves the ritual's exit code alone. Asserted rather than inherited, because
+# that tool has an exit contract of its own — a FLAGGED stale citation rides the report at
+# rc 0, and only an unreadable board makes it non-zero — so folding its rc into the close
+# would block a session on the very finding the operator is meant to read and fix.
+#
+# Same fixture shape as the two blocks above, and for the same reason: the sibling is
+# resolved beside the BIN, so a copied bin with a fake sibling is the only way to make the
+# delegate's rc/stdout an input. Both other siblings are planted quiet here.
+# ---------------------------------------------------------------------------
+echo "== Stale-blocker leg — fixture =="
+SBDIR="$TMP/sb/bin"; mkdir -p "$SBDIR"
+cp "$BIN" "$SBDIR/board-session-close"
+SBBIN="$SBDIR/board-session-close"
+SBHELPER="$SBDIR/_kbc-stale-blocker.py"
+printf '%s\n' '#!/usr/bin/env python3' 'print("ae fixture: quiet")' > "$SBDIR/_kbc-archive-eligible.py"
+printf '%s\n' '#!/bin/sh' 'echo "dr fixture: quiet"' > "$SBDIR/dependabot-deploy-reconcile"
+chmod +x "$SBDIR/dependabot-deploy-reconcile"
+
+run_sb_leg() {
+    HOME="$SCRATCH" PATH="$SHIM:$UB" KANBAN_RECONCILE_HOOK="$1" \
+        bash "$SBBIN" >"$OUTF" 2>"$ERRF"; echo $?
+}
+
+echo "== Stale-blocker leg — the fixture's rc channel is LIVE (witness) =="
+printf '%s\n' '#!/usr/bin/env python3' 'print("sb fixture: ran")' > "$SBHELPER"
+rc="$(run_sb_leg "$badhook")"
+eq "a failing reconcile hook still exits 2 THROUGH the copied bin (rc channel is live)" "2" "$rc"
+
+echo "== Stale-blocker leg — a MISSING sibling warns and does NOT block the close =="
+rm -f "$SBHELPER"
+rc="$(run_sb_leg "$goodhook")"
+eq "missing sibling: the ritual still exits 0 (advisory, not blocking)" "0" "$rc"
+eq "…stderr names the missing sibling" \
+   "true" "$(has '_kbc-stale-blocker.py sibling not found' "$(cat "$ERRF")")"
+eq "…and says the scan DID NOT RUN, so an absent leg is never read as 'no stale citations'" \
+   "true" "$(has 'stale-blocker-citation scan DID NOT RUN' "$(cat "$ERRF")")"
+eq "…naming the path it looked for, so the fix is actionable" \
+   "true" "$(has "$SBHELPER" "$(cat "$ERRF")")"
+
+echo "== Stale-blocker leg — a non-zero helper WARNS but does not fail the ritual =="
+printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
+              'print("stale-blocker: boom", file=sys.stderr)' 'sys.exit(2)' > "$SBHELPER"
+rc="$(run_sb_leg "$goodhook")"
+eq "helper rc 2 does NOT become the ritual's exit code" "0" "$rc"
+eq "…stderr names the helper AND its exit status" \
+   "true" "$(has '_kbc-stale-blocker.py exited 2' "$(cat "$ERRF")")"
+eq "…flags the scan as INCOMPLETE rather than clean" \
+   "true" "$(has 'stale-blocker-citation scan may be' "$(cat "$ERRF")")"
+# The distinction the leg turns on, same shape as the reconciler's: a non-zero is the
+# INSTRUMENT (a board it could not read), never the finding it exists to report.
+eq "…and says a flagged card is not what a non-zero means" \
+   "true" "$(has 'A flagged card is NOT this' "$(cat "$ERRF")")"
+
+echo "== Stale-blocker leg — the helper's output is INDENTED into the report =="
+printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
+              'print("SYNTHETIC card#1 cites card#2 as a blocker")' \
+              'print("SYNTHETIC sb note on stderr", file=sys.stderr)' > "$SBHELPER"
+rc="$(run_sb_leg "$goodhook")"
+eq "a clean helper leaves the ritual at 0" "0" "$rc"
+eq "the section header renders" "true" \
+   "$(has '── Stale blocker citations' "$(cat "$OUTF")")"
+eq "the helper's stdout is indented by exactly two spaces (line-exact)" "true" \
+   "$(grep -qxF '  SYNTHETIC card#1 cites card#2 as a blocker' "$OUTF" && echo true || echo false)"
+eq "…and the UN-indented form does not appear (the indent is what is asserted)" "false" \
+   "$(grep -qxF 'SYNTHETIC card#1 cites card#2 as a blocker' "$OUTF" && echo true || echo false)"
+eq "the helper's STDERR is folded into the report, indented the same way" "true" \
+   "$(grep -qxF '  SYNTHETIC sb note on stderr' "$OUTF" && echo true || echo false)"
+eq "…and does NOT leak to the ritual's own stderr" \
+   "false" "$(has 'SYNTHETIC sb note on stderr' "$(cat "$ERRF")")"
+# A FINDING at rc 0 must leave the ritual silent on stderr. Both needles below were observed
+# PRESENT two cases up, so these are claims about this run and not about an unusable needle.
+eq "a rc-0 run carrying a FINDING emits no exit-status ⚠" \
+   "false" "$(has '_kbc-stale-blocker.py exited' "$(cat "$ERRF")")"
+eq "…and no missing-sibling ⚠ from ANY leg" \
+   "false" "$(has 'sibling not found' "$(cat "$ERRF")")"
 
 # ---------------------------------------------------------------------------
 _summary "board-session-close-selftest"
