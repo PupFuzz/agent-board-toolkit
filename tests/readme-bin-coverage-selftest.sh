@@ -30,7 +30,8 @@
 # TWO EXCLUSIONS, BOTH DELIBERATE AND BOTH STATED — neither is a side effect of a regex:
 #   1. `_`-prefixed entries in bin/ are not tools: the private lib + the python helpers
 #      (`_kb-board-lib.sh`, `_kbc-archive-lib.py`, `_kbc-archive-eligible.py`,
-#      `_kbc-may-archive.py`) are implementation, deliberately undocumented as tools. The
+#      `_kbc-may-archive.py`, `_kbc-stale-blocker.py`, `_dependabot-reconcile.py`) are
+#      implementation, deliberately undocumented as tools. The
 #      rule is the NAME, applied to every directory entry — `__pycache__` is `_`-prefixed and
 #      is a DIRECTORY, so this must not assume an entry is a file. The rule itself lives in
 #      `_bin-set-lib.sh` (`_public_bin_names`) because runtime-check's TOOLS gate needs the

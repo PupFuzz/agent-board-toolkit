@@ -98,6 +98,7 @@ jobs:
           - kb-positional-guard-selftest
           - kbc-archive-eligible-selftest
           - kbc-may-archive-selftest
+          - kbc-stale-blocker-selftest
           - kbcard-field-selftest
           - kbcard-selftest
           - lib-set-derivation-selftest
