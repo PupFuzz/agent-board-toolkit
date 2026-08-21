@@ -23,7 +23,8 @@
 # and a read that SUCCEEDED and found nothing are the two states the probe must never confuse
 # (card#6572): a `cat` that EXITS NON-ZERO on the probed entry, a `cat` that exits 0 having
 # printed NOTHING, and an `ln -s` that makes a real but DANGLING link — the one case needing no
-# stubbed reader at all, since neither reader can open an entry whose target does not exist. Two further stubs force paths a verdict cannot reach: an `ln` that is
+# stubbed reader at all, since neither reader can open an entry whose target does not exist.
+# Two further stubs force paths a verdict cannot reach: an `ln` that is
 # capable for the probe's destination and copies only for one named `post-checkout` (the sole way
 # to red the installer's per-entry post-`ln` assertion, which by construction runs after a
 # CAPABLE probe), and an `rm` that terminates the shell that ran it (the probe's signal path,
@@ -500,6 +501,30 @@ eq "leaves no residue" "0" "$(_residue "$sf")"
 _probe "$sf"
 eq "…while the same directory with a working 'cat' is CAPABLE" "CAPABLE" "$(_verdict "$_out")"
 
+echo "== the probe — the OTHER row the acceptance change moves: git measured 'no', cat FAILED =="
+# `no:unmeasured`. This is the second of the two rows whose exit status this change moves, and
+# it is the one that reads as an OVER-refusal, so it is pinned deliberately rather than left to
+# look accidental. The native reader — the authoritative one, the binary that dispatches hooks —
+# has MEASURED that the entry does not track, and `no:no` and `no:yes` both map to NOT_CAPABLE,
+# so the reader that failed could not have changed the verdict. The probe refuses INDETERMINATE
+# anyway: a verdict is not assembled out of a measurement that did not happen, and the operator
+# loses the copies escape hatch on this seat until the local fault is fixed. That is exactly the
+# precedent card#6527 set in the mirror image — a failed NATIVE read short-circuited to
+# `git-read-failed` even when the shell had already answered `no` — and the symmetry is the
+# point: one rule, both readers, including where the rule costs something.
+#   PRE-FIX on this same pair: rc 1, REASON=link-does-not-track-source-across-replacement, i.e.
+#   the seat was told it cannot symlink on the strength of one measurement and one silence.
+nu="$TMP/native-no-shell-fail"; mkdir -p "$nu"
+PATH="$CAT_FAIL:$LN_SNAPSHOT:$REAL_PATH"; hash -r
+_probe "$nu"; _use_real
+eq "verdict" "INDETERMINATE"                         "$(_verdict "$_out")"
+eq "rc"      "2"                                     "$_rc"
+eq "reason"  "shell-read-failed"                     "$(_reason "$_out")"
+eq "…and NOT the both-readers-agree token it used to carry" "false" \
+   "$(has "link-does-not-track-source-across-replacement" "$_out")"
+eq "…nor NOT_CAPABLE on the strength of one reader" "false" "$(has "NOT_CAPABLE" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$nu")"
+
 echo "== the probe — an EMPTY shell read is still a MEASURED absence, not a failed read =="
 # The other half of the same rule, and the half a careless fix breaks: `cat` exited 0 and read
 # nothing, which IS the seat answering — the entry does not deliver the replaced source. That is
@@ -885,6 +910,38 @@ eq "its NOT_CAPABLE arm runs clean under a forced incapable seat" "0" "$wcn_rc"
 eq "…reporting that verdict"       "true" "$(has "SEAT VERDICT: VERDICT=NOT_CAPABLE" "$wcn_out")"
 eq "…and the arbiter measures a FROZEN dispatch, agreeing with the probe" "true" \
    "$(has "SEAT DISPATCH: frozen — probe says tracking=no, real git dispatch says tracking=no" "$wcn_out")"
+# AND ITS INDETERMINATE ARM, which had never executed: the seven paths this file drives the
+# check down all land on CAPABLE or NOT_CAPABLE, so its rc-4 disposition and the NOTE that tells
+# the operator what to fix were both shipping unrun. The NOTE is also a THIRD restatement of the
+# installer's own rc-4 remediation (the installer's text, this file's text, docs/HOOKS.md's
+# INDETERMINATE row), and a restatement with neither a delete nor a guard is the defect — so the
+# shared fault phrase is asserted in BOTH files here: reword the installer and the count reds;
+# let the NOTE drift and the substring reds.
+IBH_FAULT_PHRASE="a reader — git or the shell — that cannot read"
+wci_rc=0
+wci_out="$(PATH="$CAT_FAIL:$REAL_PATH" bash "$HERE/install-board-hooks-capability-windows-check.sh" 2>&1)" || wci_rc=$?
+eq "its INDETERMINATE arm runs clean under a seat whose shell cannot read the entry" "0" "$wci_rc"
+eq "…reporting that verdict, with the reader-specific token"  "true" \
+   "$(has $'SEAT VERDICT: VERDICT=INDETERMINATE DIR=' "$wci_out")"
+eq "…naming the reader that failed"                           "true" \
+   "$(has $'REASON=shell-read-failed\n' "$wci_out")"
+eq "…and asserting the rc-4 disposition on that seat"         "true" \
+   "$(has "INDETERMINATE ⇒ the default run fails closed with rc 4" "$wci_out")"
+eq "…while claiming NOTHING about what dispatch delivers"     "false" \
+   "$(has "THIS IS THE FINDING" "$wci_out")"
+eq "the installer's rc-4 remediation spells the shared fault phrase exactly once" "1" \
+   "$(grep -c -- "$IBH_FAULT_PHRASE" "$IBH" || true)"
+eq "…and this check's source spells the SAME one, exactly once"  "1" \
+   "$(grep -c -- "$IBH_FAULT_PHRASE" "$HERE/install-board-hooks-capability-windows-check.sh" || true)"
+# ON THE NOTE BLOCK, NOT ON THE WHOLE RUN. The check echoes the installer's own stderr, which
+# carries this phrase — so a `has` over `$wci_out` is satisfied by the installer's copy and can
+# never red on a drifted NOTE. Watched: with the NOTE reworded and the installer untouched, the
+# whole-output form passed. The block is cut from the NOTE marker so the assertion is about the
+# text this file prints.
+wci_note="$(printf '%s\n' "$wci_out" | sed -n '/NOTE: an INDETERMINATE seat/,+2p')"
+eq "…and the NOTE that actually PRINTS carries it"  "true" "$(has "$IBH_FAULT_PHRASE" "$wci_note")"
+eq "…the block was really cut (an empty haystack passes a 'false' test for free)" "true" \
+   "$(has "LOCAL FAULT the reason names" "$wci_note")"
 # AND THE ARBITER IS HELD TO THE OPERATION IT ARBITRATES. It is authorised to overrule the probe,
 # so it must test the same property: the hook source is REPLACED (unlink + create — what `git
 # pull` does), never truncated in place. A hard link follows a truncate and never sees a
