@@ -147,7 +147,7 @@ Re-run after `git pull`-ing a new toolkit version only if the hook set changed: 
 | --- | --- | --- |
 | **CAPABLE** | 0 | symlinks are installed — the unchanged path |
 | **NOT_CAPABLE** | 1 | **refused**, nothing installed, with the reason and the opt-in named |
-| **INDETERMINATE** | 4 | **refused**, nothing installed — reported *separately* from NOT_CAPABLE, because "we could not determine" is not "we know you cannot". The reason names a local fault to fix (an unwritable or unreadable directory, a probe-name collision, an unlink that did not take, a `git` that cannot read the probe's own entries); `--allow-copies` deliberately does **not** apply, since it opts into a *known* degradation, not an unknown one |
+| **INDETERMINATE** | 4 | **refused**, nothing installed — reported *separately* from NOT_CAPABLE, because "we could not determine" is not "we know you cannot". The reason names a local fault to fix (an unwritable or unreadable directory, a probe-name collision, an unlink that did not take, a reader — `git` or the shell — that cannot read the probe's own entries); `--allow-copies` deliberately does **not** apply, since it opts into a *known* degradation, not an unknown one |
 
 **Any other probe status is refused the same way, at the same exit 4.** Only `0` selects the install and only `1` selects the not-capable refusal; anything else is a status the installer cannot read as a measurement, so it takes the INDETERMINATE arm above rather than falling through to the install. That is not hypothetical — the probe's own signal handling exits `130`/`143`, and a signal it does not catch reads back as `129`/`137` — and a fall-through there would install symlinks on the strength of a probe that never said CAPABLE.
 
@@ -155,13 +155,15 @@ Re-run after `git pull`-ing a new toolkit version only if the hook set changed: 
 
 | git tracks | shell tracks | Verdict | `REASON` |
 | --- | --- | --- | --- |
-| the read failed on either path | | INDETERMINATE | `git-read-failed` |
 | yes | yes | CAPABLE | `ok` |
 | no | no | NOT_CAPABLE | `link-does-not-track-source-across-replacement` |
 | no | yes | NOT_CAPABLE | `readers-disagree-native-git-does-not-track` — the `winsymlinks:lnk` signature |
 | yes | no | NOT_CAPABLE | `readers-disagree-shell-does-not-track` (hooks execute under that shell) |
+| unmeasured | yes / no | INDETERMINATE | `git-read-failed` |
+| yes / no | unmeasured | INDETERMINATE | `shell-read-failed` |
+| unmeasured | unmeasured | INDETERMINATE | `both-reads-failed` |
 
-Both disagreements fail closed, and the token records *which* reader failed: a refusal nobody can attribute is not much better than no refusal. A failed *read* is never scored as "does not track" — that would report a fact about the seat that was never established, and would route you to `--allow-copies` over a local `git` fault.
+Both disagreements fail closed, and the token records *which* reader failed: a refusal nobody can attribute is not much better than no refusal. **A failed *read* is never scored as "does not track", and that is one rule over both readers, not the native one's rule** — either reader is `unmeasured` until its own read succeeds, and `unmeasured` is INDETERMINATE. Scoring it otherwise would report a fact about the seat that was never established and route you to `--allow-copies` — a degradation — over a local fault that has nothing to do with symlinks. The distinction is the read's *status*, not its output: a read that succeeds and finds **nothing** is the seat answering, and stays a measured absence (`readers-disagree-shell-does-not-track`, NOT_CAPABLE) exactly as any other non-matching content. Where **both** readers fail — an entry neither can open — the token says so rather than naming one of them, so fixing the named one does not just earn you a second refusal.
 
 **If your seat genuinely cannot symlink, `--allow-copies` installs copies deliberately:**
 
