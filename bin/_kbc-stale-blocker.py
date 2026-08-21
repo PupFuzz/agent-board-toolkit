@@ -41,24 +41,37 @@ not a default:
 1. CITATION — `card#N` / `card #N` / `cards #N`, case-insensitive, with any repo
    qualifier in front of it (`bridge card#5300`) simply ignored, since ids are global
    on this install and the qualifier adds nothing the id does not already say.
-   ⛔ A BARE `#N` IS NOT A CITATION. Measured over the live corpus: keying on bare `#N`
-   flags 20 of the open cards, because `#N` is also a PR number, a roundtable issue
-   number and an engineering-canon rule number throughout this corpus. The `card` token
-   is what makes the reference a card reference.
+   ⛔ A BARE `#N` IS NOT A CITATION, and the figures below carry their denominator
+   because it is the population (48 open cards, measured 2026-08-21) that makes them
+   mean anything. A predicate keyed on `#N` — which necessarily also matches the `#N`
+   inside `card#N` — sees 304 references and flags 27 OF THE 48; restricted to `#N`
+   references that are NOT part of a `card#N` (151 of them), it still flags 8 of the 48,
+   and not one of those references is a card citation at all: `#N` is also a PR number,
+   a roundtable issue number and an engineering-canon rule number throughout this
+   corpus. The `card` token is what makes the reference a card reference.
 
 2. BLOCKING CONTEXT — a blocking marker must PRECEDE the citation ON THE SAME LINE,
-   within `_MARKER_WINDOW` characters, with NO SENTENCE BOUNDARY between the marker and
-   the citation. Markers: blocked / blocker / blocks / depends on / dependent on /
+   with at most `_MARKER_WINDOW` characters of intervening text — the window is measured
+   from the MARKER'S END to the CITATION'S START, so it bounds what sits BETWEEN them and
+   a longer marker does not buy a shorter reach — and with NO SENTENCE BOUNDARY in that
+   intervening text. Markers: blocked / blocker / blocks / depends on / dependent on /
    gated on / gates on / waiting on / queued behind / queue behind / sequenced after /
-   sequenced behind — matched on WORD BOUNDARIES, which is load-bearing: without them
-   "docblocks" contains "blocks" and one live card is flagged by its own prose about
-   documentation.
+   sequenced behind — matched on WORD BOUNDARIES over the WHOLE LINE (see the note at the
+   scan itself: matching them over a truncated prefix makes the truncation point a word
+   boundary, which is a false positive at exactly one alignment, and shortens the window
+   by the marker's own length, which is a silent under-report).
    ⛔ BARE `behind` AND BARE `after` ARE NOT MARKERS. `Filed by the canon #7 sibling
    audit behind card#5410` is PROVENANCE, not a blocker, and provenance is how most
-   `card#N` references in this corpus are written — that is why `card#N` alone flags 20
-   of the open cards and `card#N` in blocking context flags a handful.
-   The window is a bound, not a tuned figure: 40, 60, 80 and 120 all return the SAME
-   citation set on the live corpus, so nothing here is fitted to it.
+   `card#N` references in this corpus are written — that is why `card#N` anywhere flags
+   27 of the 48 open cards while `card#N` in blocking context leaves ONE citation
+   standing on the same corpus.
+   The window is a bound, not a tuned figure — 40, 60, 80, 120 and 200 all return the
+   IDENTICAL candidate set live (re-measured 2026-08-21 after the whole-line fix above,
+   because the earlier sweep ran against the defective slice and could not have detected
+   it). ⚑ Read that for what it is: evidence the figure is not fitted to this corpus, NOT
+   evidence the bound is idle — this corpus simply carries no marker/citation pair at a
+   middling distance, and the bound is what stops one appearing at the far end of a long
+   table row from governing an unrelated citation.
 
 3. EXCLUSIONS — `_EXCLUSIONS` below, applied only to citations that ALREADY have
    blocking context (so each exclusion count in the report is exactly "citations that
@@ -67,6 +80,14 @@ not a default:
      a. INLINE-CODE — the citation sits inside a backtick span. A quoted specimen is
         prose ABOUT the shape, not an assertion of it; this card (#7113) quotes the
         historical positive in a table cell and would otherwise flag itself.
+        ⚑ ITS FALSE NEGATIVE, STATED WITH THE OTHER TWO RATHER THAN LEFT TO BE FOUND:
+        back-ticking a card reference INSIDE a genuine blocking sentence — ``Blocked
+        behind `card#6570` until it ships`` — is ordinary style in this corpus, and this
+        exclusion drops it. The exclusion keys on the citation's own position, and
+        "quoted specimen" versus "quoted reference in an assertion" is a distinction
+        about the sentence, not about the span; drawing it is the half-B guesswork this
+        leg refuses. So it is an accepted under-report, on the same side as (c) and as
+        the `waiting` bound in (4), and it is named in the report's own footer.
      b. STRIKETHROUGH — the citation sits inside `~~…~~`. Retracted text is text the
         author has already withdrawn; asserting it back is reading the edit backwards.
      c. DISCHARGE-LINE — the line carries `UNBLOCKED` / `RESOLVED` / `DISCHARGED` / `✅`.
@@ -110,8 +131,20 @@ not a default:
    per-board scan would answer "absent" for a referent the next board's read supplies. An
    id that index does not carry gets ONE `GET /tasks/{id}.json`, bounded by
    `_MAX_REFERENT_GETS` per run and CACHED per id, and its `board_id` is then CHECKED
-   AGAINST THE ROSTER SET. Four outcomes, four distinct report states, never collapsed:
-     * a ROSTER board (an archived card, typically) — resolved normally;
+   AGAINST THE ROSTER SET.
+   ⛔ THE ROSTER SET IS DECLARED FROM THE CONFIG, BEFORE ANY BOARD IS READ, and the ids
+   are coerced to int because a configured `board_id` is a STRING here while every card's
+   is an integer. Building it from boards that READ SUCCESSFULLY is the same sentence
+   with a different meaning and it is wrong: one unreachable board then turns every
+   citation of its cards into an OUT-OF-TENANT finding, and this report's remediation for
+   that state is "fix the citation" — told to a reader whose citation was correct. Who a
+   card BELONGS to is a fact about the config; whether this run can DECIDE anything about
+   it is a fact about the read. They are tracked separately (`roster_boards` vs
+   `boards_read`) for exactly that reason. Five outcomes, five distinct report states,
+   never collapsed:
+     * a ROSTER board that WAS read (an archived card, typically) — resolved normally;
+     * a ROSTER board that could NOT be read this run — UNRESOLVED, saying so in those
+       words. Never out-of-tenant (it is ours), never a flag (nothing was decided);
      * a NON-ROSTER board — reported OUT-OF-TENANT, naming BOTH boards, and it can never
        become a flag. Per the report above, an out-of-tenant resolution is ALWAYS a
        mis-citation, so it is surfaced as a finding in its own right rather than quietly
@@ -206,6 +239,24 @@ _CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)*\1")
 _STRIKE_SPAN_RE = re.compile(r"~~(?:(?!~~).)*~~")
 
 
+def config_board_id(bc: dict) -> "tuple[int | None, str | None]":
+    """(board id, refusal reason) for one `kanban.boards[]` entry.
+
+    The id is COERCED TO INT because the two sides of every lookup in this file are the
+    two sides of this coercion: a configured `board_id` is a STRING on this install
+    (`"5"`), while a card row's and a board body's `id` are INTEGERS. An uncoerced roster
+    would be a set no card can ever be a member of — which, in the tenancy gate below,
+    would read as "every referent is another tenant's"."""
+    raw = str(bc.get("board_id") or "").strip()
+    if not raw or raw == "REPLACE_ME":
+        return None, "board_id not configured"
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, (f"board_id {raw!r} is not an integer, so no card's board_id can "
+                      f"ever match it")
+
+
 def _load_lib():
     spec = importlib.util.spec_from_file_location("kbc_archive_lib", _LIB)
     m = importlib.util.module_from_spec(spec)
@@ -251,13 +302,28 @@ def blocking_citations(text: str):
     Pure — no I/O, no config, no clock — so the whole predicate is decidable from a
     string, and the network half of this leg decides nothing about it."""
     for line in (text or "").split("\n"):
+        # ⛔ THE MARKERS ARE MATCHED OVER THE WHOLE LINE, NEVER OVER A SLICE OF IT, and
+        # that is a correctness requirement rather than an optimisation. `\b` is evaluated
+        # against the string the regex is handed, so matching into `line[start-60:start]`
+        # made the cut position itself a word boundary: a word whose SUFFIX is a marker
+        # (`docblocks`, `roadblocks`, `unblocks`, `subblocker`) matched at exactly the one
+        # alignment where the cut fell mid-word — the false positive the boundary exists to
+        # prevent, reachable at one gap per marker. The same slice also shortened the
+        # window by the marker's own length (a real `sequenced behind … card#N` reached
+        # only 44 characters, not 60), silently under-reporting, which is the direction
+        # that matters here. One list per line, reused by every citation on it.
+        markers = list(_MARKER_RE.finditer(line))
         for m in _CITATION_RE.finditer(line):
             rid = int(m.group(1))
-            before = line[max(0, m.start() - _MARKER_WINDOW):m.start()]
+            # THE WINDOW IS MEASURED FROM THE MARKER'S END TO THE CITATION'S START — the
+            # intervening text, not the marker's own length. The NEAREST qualifying marker
+            # governs; an earlier one is not consulted, so a marker with a sentence
+            # boundary after it does not hand the citation to the marker before it.
             marker = None
-            for mm in _MARKER_RE.finditer(before):
-                marker = mm            # the NEAREST marker governs
-            if marker is None or _SENTENCE_RE.search(before[marker.end():]):
+            for mm in markers:
+                if mm.end() <= m.start() and m.start() - mm.end() <= _MARKER_WINDOW:
+                    marker = mm
+            if marker is None or _SENTENCE_RE.search(line[marker.end():m.start()]):
                 yield line, rid, "no-blocking-context"
                 continue
             hit = None
@@ -276,7 +342,9 @@ class _Corpus:
         self._client = client
         self.cards: dict = {}                  # id -> card row (live, roster boards)
         self.board_key: dict = {}              # board_id -> config key
-        self.roster_boards: set = set()        # the ONLY boards this run may resolve into
+        self.roster_boards: set = set()        # DECLARED in kanban.boards[] — the ONLY
+                                               # boards this run may resolve into
+        self.boards_read: set = set()          # of those, the ones actually READ
         self.lane: dict = {}                   # (board_id, stage_id) -> lane_type
         self.stage_name: dict = {}             # (board_id, stage_id) -> stage name
         self.gets = 0
@@ -284,17 +352,36 @@ class _Corpus:
         self.read_errors = 0
         self._resolved: dict = {}              # id -> verdict tuple (cache)
 
+    def declare_roster(self, board_id: int, key: str) -> None:
+        """Register a CONFIGURED board — before any read, and whatever the read does.
+
+        ⛔ THIS IS SEPARATE FROM `add_board` ON PURPOSE. The tenancy gate asks "is this
+        referent one of OURS", which is a question about the CONFIG. Populating the set
+        from successful reads instead answered "is this referent on a board that happened
+        to respond", so one unreachable board turned every citation of its cards into an
+        OUT-OF-TENANT finding — the report telling the reader to fix a citation that was
+        correct. A board's READABILITY belongs in `boards_read` and changes what this run
+        can DECIDE, never who the card belongs to."""
+        self.roster_boards.add(board_id)
+        self.board_key.setdefault(board_id, key)
+
     def add_board(self, lib, board_id: int, key: str, board: dict) -> list:
         lane, name = lib.stage_field_maps(board)
         for sid, lt in lane.items():
             self.lane[(board_id, sid)] = lt
             self.stage_name[(board_id, sid)] = name.get(sid)
         self.board_key[board_id] = key
-        self.roster_boards.add(board_id)
+        self.boards_read.add(board_id)
         live = lib.live_cards(board)
         for card in live:
             self.cards[card.get("id")] = card
         return live
+
+    def card_board(self, card: dict, default=None):
+        """The board a card row belongs to — ONE accessor, so the lane lookup, the
+        tenancy gate and the citer's own column label cannot key on different fields."""
+        bid = card.get("board_id")
+        return default if bid is None else bid
 
     def _classify(self, card: dict) -> "tuple[str, str]":
         """(verdict, detail) for a card row this corpus can see."""
@@ -302,8 +389,17 @@ class _Corpus:
             return "terminal", "archived"
         if card.get("deleted_at"):
             return "terminal", "deleted"
-        bid = card.get("board_id")
+        bid = self.card_board(card)
         sid = card.get("workflow_stage_id")
+        if bid in self.roster_boards and bid not in self.boards_read:
+            # OURS, but this run could not read its board, so its lane map is absent.
+            # Distinct from out-of-tenant (whose board is not ours at all) and from a
+            # 404 (whose card does not exist): the only thing missing here is THIS RUN's
+            # knowledge, and saying so is what stops a partial read reading as a verdict.
+            return ("unresolved",
+                    f"referent is on board {self.board_key.get(bid) or bid}, which is in "
+                    f"the roster but could NOT BE READ this run — its lane type is "
+                    f"unknown here, not terminal and not open")
         lt = self.lane.get((bid, sid))
         if lt is None:
             # A roster board's own stages are all in the map, so this is the board
@@ -342,9 +438,9 @@ class _Corpus:
                 # successful read is NOT evidence the card is ours. Checked BEFORE any
                 # classification, including the archived one: "archived" would otherwise
                 # be reported as a terminal blocker about another tenant's card.
-                if row.get("board_id") not in self.roster_boards:
+                if self.card_board(row) not in self.roster_boards:
                     out = ("out-of-tenant",
-                           f"the id resolves to a card on board {row.get('board_id')}, "
+                           f"the id resolves to a card on board {self.card_board(row)}, "
                            f"which is NOT one of this roster's boards "
                            f"({sorted(self.roster_boards)}) — a citation of an id outside "
                            f"this tenant is a MIS-CITATION, not a blocker; fix the "
@@ -400,17 +496,36 @@ def main() -> int:
                              verify=kc.kanban_tls_verify())
     corpus = _Corpus(client)
     errors = 0
-    scanned: list = []          # (board_id, key, open cards)
-    boards_read = 0
+    scanned: list = []          # (board_id, key, live cards, open cards)
 
+    # ── PASS 1: DECLARE the roster, before a single read ────────────────────────
+    # The tenancy gate is a question about the CONFIG, so the set it consults is built
+    # here — where no answer depends on whether a board responds. An entry this pass
+    # cannot turn into an id is reported and is a member of nothing.
+    entries: list = []
+    declared = 0
     for bc in boards:
         key = bc.get("key") or "?"
-        bid_raw = str(bc.get("board_id") or "").strip()
-        if not bid_raw or bid_raw == "REPLACE_ME":
-            print(f"[STALE-BLOCKER] board ({key}): board_id not configured — skipped")
+        bid, refusal = config_board_id(bc)
+        if bid is None:
+            print(f"[STALE-BLOCKER] board ({key}): {refusal} — skipped, and it is in "
+                  f"NO population this run: not scanned, and not a board a citation can "
+                  f"resolve into")
             continue
+        if bid in corpus.roster_boards:
+            print(f"[STALE-BLOCKER] board {bid} ({key}): a SECOND kanban.boards[] entry "
+                  f"for a board already declared — skipped, so its cards are counted "
+                  f"once (a duplicate entry is a config defect worth fixing, not a "
+                  f"reason to scan the board twice)")
+            continue
+        corpus.declare_roster(bid, key)
+        entries.append((key, bid))
+        declared += 1
+
+    # ── PASS 2: READ each declared board ────────────────────────────────────────
+    for key, bid in entries:
         try:
-            board = client.fetch_board(bc["board_id"])
+            board = client.fetch_board(bid)
         except SystemExit as e:
             # fetch_board is LOUD-FATAL by contract (card#4889) and SystemExit derives
             # from BaseException, so the `except Exception` arm below would miss it. One
@@ -418,40 +533,51 @@ def main() -> int:
             # error count drive the run's exit, the contract the archive-eligible leg and
             # kanban-inbox-check already keep. It DOES shrink the referent corpus, which
             # is why the report says how many boards it actually read.
-            print(f"⚠ kbc-stale-blocker: board {bc.get('board_id')} ({key}): board "
-                  f"read FATAL (exit {e.code}) — skipping this board; its cards are "
-                  f"neither scanned NOR available as referents", file=sys.stderr)
+            print(f"⚠ kbc-stale-blocker: board {bid} ({key}): board read FATAL (exit "
+                  f"{e.code}) — this board is NOT scanned, and a citation of one of its "
+                  f"cards can only be reported UNRESOLVED (it stays in the roster, so it "
+                  f"is never mistaken for another tenant's)", file=sys.stderr)
             errors += 1
             continue
         except Exception as e:  # noqa: BLE001
-            print(f"⚠ kbc-stale-blocker: board {bc.get('board_id')} ({key}): board "
-                  f"read FAILED — {e}", file=sys.stderr)
+            print(f"⚠ kbc-stale-blocker: board {bid} ({key}): board read FAILED — {e}; "
+                  f"not scanned, and its cards resolve only as UNRESOLVED",
+                  file=sys.stderr)
             errors += 1
             continue
-        # The board's OWN id, not the config's spelling of it: the cards and the stage
-        # rows are both keyed by the server's integer, and a config carrying "12" would
-        # otherwise index the lane map under a key no card row can ever match — which
-        # reads as "every stage is unknown", i.e. every card open and every referent
-        # unresolved, at rc 0. A body with no id at all is refused rather than fallen
-        # back from, for the same reason: the fallback's answer is wrong-but-plausible.
-        bid = board.get("id")
-        if bid is None:
-            print(f"⚠ kbc-stale-blocker: board {bc.get('board_id')} ({key}): the board "
-                  f"body carries no id, so its stages cannot be keyed to its cards — "
-                  f"skipping this board rather than scanning it against an index nothing "
-                  f"matches", file=sys.stderr)
+        # The body must BE the board that was asked for. Its cards and stage rows are
+        # keyed by the server's integer id, so indexing a body that answers with a
+        # different id would file another board's stages under this board's key — and on
+        # a shared instance "the id I asked for" and "the id I got" are exactly the pair
+        # a tenancy decision must not conflate. An id-less body is refused for the same
+        # reason: the fallback's answer would be wrong-but-plausible.
+        body_id = board.get("id")
+        if body_id != bid:
+            print(f"⚠ kbc-stale-blocker: board {bid} ({key}): the board body identifies "
+                  f"itself as {body_id!r}, not {bid} — refusing to index it, because its "
+                  f"stages would be filed under a board they do not belong to",
+                  file=sys.stderr)
             errors += 1
             continue
         live = corpus.add_board(lib, bid, key, board)
-        boards_read += 1
         open_cards = [c for c in live
-                      if corpus.lane.get((c.get("board_id", bid),
+                      if corpus.lane.get((corpus.card_board(c, bid),
                                           c.get("workflow_stage_id"))) != "done"]
         scanned.append((bid, key, live, open_cards))
 
-    if not boards_read:
-        print("⚠ kbc-stale-blocker: no board could be read — nothing was scanned and "
-              "no referent could be resolved.", file=sys.stderr)
+    if not corpus.boards_read:
+        # The two causes are different operator actions, so they are two messages: a
+        # roster that declared nothing readable is a CONFIG state, an unreadable roster
+        # is an ACCESS state, and reporting both as "no board could be read" sends the
+        # reader to look at the wrong one.
+        if not declared:
+            print("⚠ kbc-stale-blocker: no kanban.boards[] entry carries a usable "
+                  "board_id — every entry was skipped above, so nothing was scanned and "
+                  "no citation could resolve into any board.", file=sys.stderr)
+        else:
+            print(f"⚠ kbc-stale-blocker: all {declared} declared board(s) failed to read "
+                  f"— nothing was scanned, and every citation would be UNRESOLVED.",
+                  file=sys.stderr)
         return 2
 
     # Every board is in the corpus BEFORE any citation is resolved: ids are global here
@@ -476,7 +602,7 @@ def main() -> int:
                     continue
                 candidates += 1
                 verdict, detail = corpus.resolve(rid)
-                where = (corpus.stage_name.get((card.get("board_id", bid),
+                where = (corpus.stage_name.get((corpus.card_board(card, bid),
                                                 card.get("workflow_stage_id")))
                          or f"stage {card.get('workflow_stage_id')}")
                 row = (card.get("id"), key, where, rid, detail, _quote(line))
@@ -487,14 +613,17 @@ def main() -> int:
                 elif verdict == "unresolved":
                     unresolved.append(row)
 
-    total_live = sum(len(live) for _b, _k, live, _o in scanned)
+    # From the INDEX, not from a parallel sum over the per-board lists: the sentence says
+    # "cards indexed as referents", and the index is `corpus.cards`.
+    total_live = len(corpus.cards)
     total_open = sum(len(o) for _b, _k, _l, o in scanned)
 
     print("")
     for bid, key, live, open_cards in scanned:
         print(f"[STALE-BLOCKER] board {bid} ({key}): {len(live)} live card(s), "
               f"{len(open_cards)} open (scanned)")
-    print(f"[STALE-BLOCKER] corpus: {boards_read} board(s) read, {total_live} live "
+    print(f"[STALE-BLOCKER] corpus: {len(corpus.boards_read)} of "
+          f"{len(corpus.roster_boards)} declared board(s) read, {total_live} live "
           f"card(s) indexed as referents, {total_open} open card(s) scanned "
           f"(name + description), {examined} citation(s) examined")
     print(f"    no blocking marker before it: {counts['no-blocking-context']}")
@@ -531,11 +660,13 @@ def main() -> int:
               f"at least one citation above is unresolved because this run stopped "
               f"reading, not because the board could not answer.")
     print("  scope: card ids are GLOBAL on this multi-tenant instance, and resolution is "
-          "deliberately confined to the roster boards — an id resolving elsewhere is "
-          "reported OUT-OF-TENANT, never as a blocker. `waiting`-lane (Shipped to dev) "
-          "referents are NOT counted terminal here, so a card blocked behind something "
-          "already shipped-not-released is a deliberate under-report; comment threads are "
-          "not scanned at all.")
+          "deliberately confined to the DECLARED roster boards — an id resolving "
+          "elsewhere is reported OUT-OF-TENANT and never as a blocker, and an id on a "
+          "roster board this run could not read is UNRESOLVED, never either. Three "
+          "deliberate under-reports, all stated: `waiting`-lane (Shipped to dev) "
+          "referents are NOT counted terminal, a citation inside `backticks` is dropped "
+          "even inside a genuine blocking sentence, and a line announcing a discharge is "
+          "dropped whatever else it says. Comment threads are not scanned at all.")
 
     errors += corpus.read_errors
     return 2 if errors else 0

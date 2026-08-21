@@ -1548,7 +1548,9 @@ eq "…and no missing-timeout warning appears" "false" \
 
 
 # ---------------------------------------------------------------------------
-# The '── Stale blocker citations ──' leg (card#7113) — main's FOURTH delegation, to the
+# The '── Stale blocker citations ──' leg (card#7113) — the THIRD `_bsc_advisory_leg`
+# call in main (the fourth delegation overall, counting the inverse-drift hook, which is
+# not an advisory leg and does not share their rc contract), to the
 # `_kbc-stale-blocker.py` sibling. Its rc contract is the archive leg's: a failing helper
 # WARNS and leaves the ritual's exit code alone. Asserted rather than inherited, because
 # that tool has an exit contract of its own — a FLAGGED stale citation rides the report at
