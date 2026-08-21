@@ -19,7 +19,11 @@
 # express that on Linux: a `cat` that resolves what the native reader cannot (paired with the
 # snapshot `ln`, this is the `MSYS=winsymlinks:lnk` signature), a `cat` that fails to resolve
 # what the native reader does, a `git` whose `hash-object` fatals, and a PATH on which `git` is
-# genuinely absent. Two further stubs force paths a verdict cannot reach: an `ln` that is
+# genuinely absent. THE FAILED-READ cases need one more of each kind, because a read that FAILED
+# and a read that SUCCEEDED and found nothing are the two states the probe must never confuse
+# (card#6572): a `cat` that EXITS NON-ZERO on the probed entry, a `cat` that exits 0 having
+# printed NOTHING, and an `ln -s` that makes a real but DANGLING link — the one case needing no
+# stubbed reader at all, since neither reader can open an entry whose target does not exist. Two further stubs force paths a verdict cannot reach: an `ln` that is
 # capable for the probe's destination and copies only for one named `post-checkout` (the sole way
 # to red the installer's per-entry post-`ln` assertion, which by construction runs after a
 # CAPABLE probe), and an `rm` that terminates the shell that ran it (the probe's signal path,
@@ -140,6 +144,31 @@ CAT_STALE="$(_stub_dir cat-stale cat \
     'p="${args[0]:-}"' \
     'case "$p" in *.d) printf "STALE\n"; exit 0 ;; esac' \
     'exec /usr/bin/cat "$@"')"
+# A `cat` that FAILS on the probed entry — the shell's read not happening at all (an entry the
+# process cannot open: permissions, a filesystem error, an emulation layer refusing the object).
+# It is the reader-1 peer of GIT_FAIL below, and the pair is the point: a failed read is the
+# measurement missing, and scoring it as content-that-did-not-match refuses a seat over a local
+# fault. Its stdout is empty AND its status is 1 — only the status separates it from CAT_EMPTY.
+CAT_FAIL="$(_stub_dir cat-fail cat \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'p="${args[0]:-}"' \
+    'case "$p" in *.d) echo "cat: $p: Permission denied" >&2; exit 1 ;; esac' \
+    'exec /usr/bin/cat "$@"')"
+# A `cat` that SUCCEEDS and reads nothing — a genuine empty answer, and the negative control for
+# the one above: an empty read is content that does not match, i.e. the seat's own answer, and a
+# fix reading every empty result as a fault would turn a real NOT_CAPABLE into an INDETERMINATE
+# the operator cannot act on.
+CAT_EMPTY="$(_stub_dir cat-empty cat \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'p="${args[0]:-}"' \
+    'case "$p" in *.d) exit 0 ;; esac' \
+    'exec /usr/bin/cat "$@"')"
+# An `ln -s` that makes a REAL symlink to a target that does not exist. Both readers then fail on
+# the same real condition with neither of them stubbed — one broken entry, not a contrivance of
+# two stubs.
+LN_DANGLING="$(_stub_dir ln-dangling ln \
+    'args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done' \
+    'exec /bin/ln -s -- "${args[0]}.no-such-target" "${args[1]}"')"
 # A `git` whose `hash-object` fatals — the read the native clause depends on, failing. A failed
 # READ is not a measurement of the seat, so it must land on INDETERMINATE and never on
 # NOT_CAPABLE. Every other git subcommand is the real one. (`$sub` — the subcommand read past a
@@ -250,8 +279,35 @@ eq "…and is the real 'cat' for every other path"                    "live" "$(
 _use_stub "$CAT_STALE"
 eq "the stale-stub's 'cat' answers a .d path with neither file's bytes" "STALE" "$(cat -- "$catctl/x.d")"
 eq "…and is the real 'cat' for every other path"                       "live" "$(cat -- "$catctl/x.s")"
+_use_stub "$CAT_FAIL"
+catfail_rc=0
+cat -- "$catctl/x.d" >"$TMP/ctl-cat-fail.out" 2>"$TMP/ctl-cat-fail.err" || catfail_rc=$?
+eq "the fail-stub's 'cat' exits non-zero on a .d path" "1" "$catfail_rc"
+eq "…printing nothing on stdout (only the STATUS separates it from an empty read)" "" \
+   "$(cat "$TMP/ctl-cat-fail.out")"
+eq "…with its own words on stderr" "true" "$(has "Permission denied" "$(cat "$TMP/ctl-cat-fail.err")")"
+eq "…and is the real 'cat' for every other path" "live" "$(cat -- "$catctl/x.s")"
+_use_stub "$CAT_EMPTY"
+catempty_rc=0
+catempty_out="$(cat -- "$catctl/x.d" 2>/dev/null)" || catempty_rc=$?
+eq "the empty-stub's 'cat' SUCCEEDS on a .d path" "0" "$catempty_rc"
+eq "…having read nothing"                        ""  "$catempty_out"
+eq "…and is the real 'cat' for every other path" "live" "$(cat -- "$catctl/x.s")"
 _use_real
 eq "…and OFF the stub PATH, 'cat' reads the file it is given" "stale" "$(cat -- "$catctl/x.d")"
+# The dangling-link stub, and the two reads it breaks — witnessed here so the probe leg below is
+# not the first place either failure is observed.
+dngctl="$TMP/ctl-dangling"; mkdir -p "$dngctl"; printf 'one\n' > "$dngctl/src"
+_use_stub "$LN_DANGLING"; ln -s -- "$dngctl/src" "$dngctl/dng-dst"; _use_real
+eq "the dangling-stub's 'ln -s' DOES yield a symlink" "true" \
+   "$([ -L "$dngctl/dng-dst" ] && echo true || echo false)"
+eq "…whose target does not exist" "false" \
+   "$([ -e "$dngctl/dng-dst" ] && echo true || echo false)"
+dng_cat_rc=0; cat -- "$dngctl/dng-dst" >/dev/null 2>&1 || dng_cat_rc=$?
+eq "…so the shell's reader fails on it" "1" "$dng_cat_rc"
+dng_git_rc=0
+git -C "$dngctl" hash-object --no-filters -- "$dngctl/dng-dst" >/dev/null 2>&1 || dng_git_rc=$?
+eq "…and git's reader fails on it too (rc 128)" "128" "$dng_git_rc"
 gitctl_rc=0
 _use_stub "$GIT_FAIL"
 git hash-object --no-filters -- "$catctl/x.s" >/dev/null 2>"$TMP/ctl-git.err" || gitctl_rc=$?
@@ -421,6 +477,65 @@ eq "git absent from PATH: verdict" "INDETERMINATE"   "$(_verdict "$_out")"
 eq "git absent from PATH: rc"      "2"               "$_rc"
 eq "git absent from PATH: reason"  "git-read-failed" "$(_reason "$_out")"
 eq "leaves no residue" "0" "$(_residue "$ga")"
+
+echo "== the probe — a FAILED SHELL read is INDETERMINATE too: ONE rule, BOTH readers =="
+# The rule above is not the native reader's rule, it is the probe's. `cat` swallowing its status
+# made an entry the shell cannot OPEN indistinguishable from one it read and found other content
+# in — so the pair read `yes:no`, the seat was refused NOT_CAPABLE with a token naming a mechanism
+# nobody measured (`the shell does not track`), and the operator was routed into --allow-copies
+# over a local fault. The TOKEN asserted here is what says the diagnosis changed, not the verdict.
+sf="$TMP/shell-fail"; mkdir -p "$sf"
+_use_stub "$CAT_FAIL"; _probe "$sf"; _use_real
+eq "cat fails: verdict" "INDETERMINATE"      "$(_verdict "$_out")"
+eq "cat fails: rc"      "2"                  "$_rc"
+eq "cat fails: reason"  "shell-read-failed"  "$(_reason "$_out")"
+eq "…spelled on the one-line contract, not merely in the probed path" "true" \
+   "$(has "REASON=shell-read-failed" "$_out")"
+eq "…and it is not reported as a measured absence" "false" "$(has "NOT_CAPABLE" "$_out")"
+eq "…nor with a reader-disagreement token, which asserts a measurement nobody made" "false" \
+   "$(has "readers-disagree" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$sf")"
+# The baseline on the SAME directory: off the stub it is CAPABLE, so the refusal above is the
+# stub's doing and not this tree's.
+_probe "$sf"
+eq "…while the same directory with a working 'cat' is CAPABLE" "CAPABLE" "$(_verdict "$_out")"
+
+echo "== the probe — an EMPTY shell read is still a MEASURED absence, not a failed read =="
+# The other half of the same rule, and the half a careless fix breaks: `cat` exited 0 and read
+# nothing, which IS the seat answering — the entry does not deliver the replaced source. That is
+# NOT_CAPABLE with the disagreement token, exactly as any other non-matching content; making it
+# INDETERMINATE would replace a verdict the operator can act on with one they cannot.
+se="$TMP/shell-empty"; mkdir -p "$se"
+_use_stub "$CAT_EMPTY"; _probe "$se"; _use_real
+eq "cat reads nothing: verdict" "NOT_CAPABLE"                            "$(_verdict "$_out")"
+eq "cat reads nothing: rc"      "1"                                      "$_rc"
+eq "cat reads nothing: reason"  "readers-disagree-shell-does-not-track"  "$(_reason "$_out")"
+eq "…and NOT the failed-read token" "false" "$(has "REASON=shell-read-failed" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$se")"
+
+echo "== the probe — when BOTH reads fail, the token names both =="
+# One broken entry and no stubbed reader: a real symlink whose target does not exist. Answering
+# it `git-read-failed` would be true and incomplete — the operator fixes git, re-runs, and is
+# refused again by the reader nobody named.
+bf="$TMP/both-fail"; mkdir -p "$bf"
+_use_stub "$LN_DANGLING"; _probe "$bf"; _use_real
+eq "both reads fail: verdict" "INDETERMINATE"     "$(_verdict "$_out")"
+eq "both reads fail: rc"      "2"                 "$_rc"
+eq "both reads fail: reason"  "both-reads-failed" "$(_reason "$_out")"
+eq "…not the reader that happens to be named first" "false" "$(has "REASON=git-read-failed" "$_out")"
+eq "…and not a measured absence" "false" "$(has "NOT_CAPABLE" "$_out")"
+eq "leaves no residue" "0" "$(_residue "$bf")"
+
+echo "== the probe — a read that SUCCEEDS with the replaced content is untouched by all of this =="
+# The happy path is what must not have moved: a real `ln`, a real `cat`, a real `git`.
+hp="$TMP/happy"; mkdir -p "$hp"
+_probe "$hp"
+eq "verdict"                  "CAPABLE" "$(_verdict "$_out")"
+eq "rc"                       "0"       "$_rc"
+eq "reason"                   "ok"      "$(_reason "$_out")"
+eq "no INDETERMINATE anywhere in the line" "false" "$(has "INDETERMINATE" "$_out")"
+eq "writes nothing to stderr" ""        "$_err"
+eq "leaves no residue"        "0"       "$(_residue "$hp")"
 
 echo "== the probe — INDETERMINATE is its own verdict, never folded into NOT_CAPABLE =="
 _probe ""
@@ -616,6 +731,30 @@ _run "$RM_NOOP" --allow-copies "$r"
 eq "rc is still 4"        "4" "$_rc"
 eq "still nothing installed" "0" "$(_installed "$r")"
 eq "and it says why the flag does not apply" "true" "$(has "--allow-copies does not apply" "$_err")"
+
+echo "== installer — a FAILED SHELL read refuses at rc 4 and is NOT offered --allow-copies =="
+# The disposition is what the defect actually cost: the NOT_CAPABLE refusal prints the flag as
+# the remedy, so a shell read that merely FAILED handed the operator a permanent pin to stale
+# hook copies as the fix for a local fault. Asserted on the words, not on the status alone.
+# The fixture's name is deliberately NOT the token: the NOT_CAPABLE refusal quotes the repo
+# PATH, so a repo named `shell-read-failed` satisfies the reason assertion below on every
+# verdict — watched, on the unfixed installer, to pass while everything around it failed.
+r="$(_fresh_repo catfail)"
+_run "$CAT_FAIL" "$r"
+eq "rc"                                      "4"     "$_rc"
+eq "nothing installed"                       "0"     "$(_installed "$r")"
+eq "the verdict is quoted"                   "true"  "$(has "VERDICT=INDETERMINATE" "$_err")"
+eq "…with the reader-specific reason"        "true"  "$(has "REASON=shell-read-failed" "$_err")"
+eq "says it could not DETERMINE"             "true"  "$(has "could not DETERMINE" "$_err")"
+eq "does NOT claim symlinks are unavailable" "false" "$(has "cannot create tracking symlinks" "$_err")"
+eq "…and never offers the copies opt-in as the remedy" "false" \
+   "$(has "install-board-hooks --allow-copies $r" "$_err")"
+eq "…it says the flag does not apply instead" "true" "$(has "--allow-copies does not apply" "$_err")"
+eq "…and the remediation names a READER, not git alone" "true" \
+   "$(has "a reader — git or the shell — that cannot read" "$_err")"
+_run "$CAT_FAIL" --allow-copies "$r"
+eq "carrying the flag does not unblock it"   "4" "$_rc"
+eq "…and still installs nothing"             "0" "$(_installed "$r")"
 
 echo "== installer — a probe KILLED before it reports is refused without inventing a reason =="
 # The rc-4 message quotes the probe's one-line verdict, and on this path there is none: the
