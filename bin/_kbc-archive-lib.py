@@ -27,6 +27,22 @@ scope would cost every consumer a re-vendor to buy nothing.
 It is NOT importable by name (its filename carries hyphens, matching its sibling
 scripts); a consumer path-loads it via `importlib.util.spec_from_file_location`,
 the same by-path load the reconcile hook uses for `kanban_common`.
+
+THE PATH-LOAD CONTRACT, both halves (card#6871). A by-path load compiles the target and
+CACHES the bytecode beside it — `<dir>/__pycache__/<name>.cpython-NN.pyc` — so a load
+writes into whatever directory the target lives in. That is two directories neither of
+which is a build tree: this file's own `bin/`, which a consumer symlinks onto PATH entry
+by entry (`docs/INSTALL.md` §2), and the *framework plugin's* directory that
+`load_kanban_common` reaches into. Both were measured accumulating a `__pycache__` from a
+single read-only invocation. So **every `bin/*.py` ENTRY POINT sets
+`sys.dont_write_bytecode = True` in its own module body**, whether or not it path-loads today
+— these are one-shot CLI invocations, so the cache buys nothing to trade against that.
+
+It has to be the ENTRY POINT that sets it, and that is why THIS file does not: the loader
+writes the cache file while it COMPILES, ahead of executing the module body, so a module
+setting the flag on itself is already too late for its own `.pyc`. The entry point's setting
+covers this file's own load AND every load this file goes on to make.
+`tests/bin-artifact-hygiene-selftest.sh` holds that rule over every `bin/*.py`.
 """
 from __future__ import annotations
 

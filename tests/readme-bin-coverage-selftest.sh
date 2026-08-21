@@ -168,9 +168,11 @@ eq "the omission leg stays clean on that fixture (the two legs are independent)"
    "$(undocumented "$TMP/README-phantom.md" "$BINDIR")"
 
 echo "== prove-it-can-fail: exclusion 1 covers a DIRECTORY, and only by its name =="
-# `__pycache__` is gitignored, so it is absent from a fresh CI checkout and present on a
-# maintainer's host — asserting against the live tree would prove different things in the two
-# places. A fixture makes the directory case deterministic in both.
+# `__pycache__` is gitignored and, since card#6871, is not minted by running the helpers either
+# — so it is absent from a fresh CI checkout and present only on a host where something ran
+# `py_compile`. Asserting against the live tree would prove different things in the two places,
+# and today would usually assert nothing at all. A fixture makes the directory case
+# deterministic in both.
 mkdir -p "$TMP/bin-dir/__pycache__" "$TMP/bin-dir/realdir"
 touch "$TMP/bin-dir/kbcard"
 eq "witness: the fixture's _-prefixed entry is a directory, and is present" "true" \
