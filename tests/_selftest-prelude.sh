@@ -40,6 +40,46 @@ eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
 # that true — re-declaring any helper defined here reds it.
 has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
+# has_line <line> <text> → true/false on WHOLE-LINE membership: is <line> one of <text>'s
+# lines? The line-anchored twin of `has`, and the replacement for every
+# `<producer> | grep -qx <line>` in this suite (card#7175).
+#
+# ⛔ WHY IT EXISTS — a pipeline answers this question WRONG, and only sometimes. `grep -q`
+# exits the moment it matches, closing the pipe while its writer is still writing. The writer
+# takes SIGPIPE, `set -o pipefail` promotes that rc 141 to the whole pipeline's status, and the
+# `&& echo true || echo false` tail then reports a MATCH as `false`. It cost a CI red on
+# `lib-set-derivation-selftest.sh`, which was green on five consecutive local runs and red in CI
+# on the same commit once a second multi-KB `[Unreleased]` entry pushed the payload past the pipe
+# buffer.
+#
+# ⚑ THE DISCRIMINATOR IS NOT builtin-vs-external. Two conditions decide it, and both must hold:
+# (a) `grep -q` leaves EARLY — the match is near the START of the stream, so the reader is gone
+# while the writer still has bytes to push (a match at the END means grep read everything and
+# exited after the writer did: no closed pipe, no signal); and (b) the writer has more than the
+# 64 KiB PIPE BUFFER left to write at that moment. Measured on this host (bash 5.2.21),
+# `printf '%s\n' "$big" | grep -qx MATCH-ME` — a BUILTIN writer:
+#     needle first, 60009 bytes → rc 0    PIPESTATUS 0 0    (payload fits the buffer)
+#     needle first, 65009 bytes → rc 141  PIPESTATUS 141 0  (the builtin's subshell DIED)
+#     needle last,  5 MB        → rc 0    PIPESTATUS 0 0    (grep never left early)
+# So a `printf`/`echo` upstream is not a safe form, only an untested one — which is the same
+# "green until it is not" this helper exists to remove. `tests/pipeline-free-match-selftest.sh`
+# pins every cell of that matrix, on both writer classes, asserting PIPESTATUS.
+#
+# NEEDLE FIRST, matching `has` — same contract, same reason (card#5740).
+# No pipeline, no subprocess, not even a `grep`: a `case` glob over the text with the newline
+# sentinels made explicit, so the SIGPIPE window structurally cannot exist. `"$1"` is quoted
+# inside the pattern, so a needle carrying glob metacharacters is matched literally.
+#
+# ⛔ ONE divergence from `grep -qx`, and it is command substitution's, not this helper's: `$(…)`
+# strips trailing newlines, so a producer that emitted one empty line and one that emitted
+# nothing both arrive here as "". Both answer `true` for an EMPTY needle where `grep -qx ''`
+# distinguishes them. No caller passes an empty needle; if one ever needs to, it must not
+# capture through `$(…)` first.
+has_line() {
+    local nl=$'\n'
+    case "$nl$2$nl" in *"$nl$1$nl"*) echo true ;; *) echo false ;; esac
+}
+
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
 expect_rc() {
     local label="$1" exp="$2"; shift 2

@@ -325,15 +325,28 @@ _bsc_runnable() {
 # Both were reproduced against this implementation. The general case of the second, and the
 # first, are why these stay open; anything a pure READ can decide is fixed instead of disclosed
 # (see _bsc_runnable), so that rationale is never stretched to cover what reading can catch.
+#
+# _bsc_names_start <comment-stripped-source> — does this source name board-card-start? ONE owner
+# for the two files the reach test asks it about (the dispatch hook, and the hook it chains to).
+#
+# It takes the TEXT, never a pipe, and that is the whole point (card#7175). The chained-hook site
+# below used to ask it as `sed … | grep -q`: `grep -q` exits on the first match, closing the pipe
+# while `sed` is still writing, `sed` takes SIGPIPE, and `pipefail` promotes that rc 141 to the
+# pipeline's status — so a hook that DOES reach board-card-start read as one that does not, as
+# soon as the hook grew past the 64 KiB pipe buffer. Capturing first and matching second removes
+# the window rather than narrowing it.
+_bsc_names_start() { grep -q 'board-card-start' <<< "$1"; }
+
 _bsc_hook_reaches() {
-  local f="$1" hook="$2" p refs code broken=""
+  local f="$1" hook="$2" p refs code chained broken=""
   code="$(sed 's/#.*//' "$f" 2>/dev/null)" || return 1
-  grep -q 'board-card-start' <<< "$code" && return 0
+  _bsc_names_start "$code" && return 0
   refs="$(grep -o "/[^\"'[:space:]]*/hooks/$hook" <<< "$code" | sort -u)"
   [[ -n "$refs" ]] || return 1
   while IFS= read -r p; do
     [[ -n "$p" && -r "$p" ]] || continue
-    if sed 's/#.*//' "$p" 2>/dev/null | grep -q 'board-card-start'; then
+    chained="$(sed 's/#.*//' "$p" 2>/dev/null)" || continue
+    if _bsc_names_start "$chained"; then
       # The chained hook must be runnable too — the SAME question, so the same owner. This
       # call is why a fact added to _bsc_runnable can no longer land on one path only.
       if _bsc_runnable "$p" >/dev/null; then return 0; fi
