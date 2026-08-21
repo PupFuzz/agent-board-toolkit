@@ -861,6 +861,16 @@ finding with no owner is abandoned, not filed.
   rendering ones the census turned a silent truncation into a **quietly rendered** one. Both are
   now rc 2, refused before the census.
 
+  **The "quietly rendered" half is closed at the RENDERER too, and no longer only for this
+  fixture (card#6365).** Moving that fixture to rc 2 removed *this* route to a quiet render; it
+  left the property itself standing, because rc 3 (page cap) and rc 4 (a genuine short read on a
+  reachable board) still reach the rendering consumers with a partial array by design — that is
+  what those rcs are for. `bin/board-snapshot` now marks it **on stdout**, the channel its
+  SessionStart consumer surfaces: every count that pass prints carries a `≥` and each of its two
+  sections carries a `card list INCOMPLETE (fetch rc=$rc)` note. `bin/board-stats`, the other
+  rendering consumer, already did (`every stock count below is a floor, not a total`), so the
+  class is two members and was one instance.
+
   **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, now FIXED, and the reason this entry
   was not closed with the other two.** The changelog window is read by paging BACKWARD on a
   `before=<cursor>` id until the rows precede the cutoff, and the loop's end-of-data signal is a

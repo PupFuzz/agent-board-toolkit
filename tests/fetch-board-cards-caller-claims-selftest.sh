@@ -134,7 +134,17 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 #                                        tests/kbcard-field-selftest.sh, which drives all
 #                                        four rcs through the census and asserts rc 1 on
 #                                        each, against a complete-read positive control)
-#   bin/board-snapshot                   rc 1,2      (`rc=$?`; 0/3/4 render instead)
+#   bin/board-snapshot     read guard    rc 1,2      (`rc=$?`; 0/3/4 render instead)
+#   bin/board-snapshot     floor notes   rc 3,4      — the two rcs that RENDER a partial
+#                                        array. Both arms are markers on the render, not
+#                                        refusals, and there are two because the function
+#                                        writes two sections on two channels (stdout, fd 3)
+#                                        that are printed under different headers. Measured
+#                                        by tests/board-snapshot-selftest.sh, which drives
+#                                        the page cap and the short read through the REAL
+#                                        paginator against a stubbed curl and asserts on the
+#                                        process's STDOUT — the channel its SessionStart
+#                                        consumer actually surfaces (card#6365)
 #   bin/board-stats        case 3|4      rc 3,4
 #   bin/board-stats        case *        rc 1,2
 #   bin/next-dl            `-eq 1` arm   rc 1 ONLY   — the one arm allowed to name causes
@@ -145,6 +155,8 @@ REGISTRY=$'bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complet
 bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list for this search (fetch rc=$frc) — refusing to present a partial match set as a whole one
 bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$rc) — refusing to act on a truncated denominator
 bin/board-snapshot\tmany\t• ${label}: (board read failed — fetch rc=$rc)
+bin/board-snapshot\tmany\t• ${label}: card list INCOMPLETE (fetch rc=$rc) — the in-flight count below is a FLOOR, not a total
+bin/board-snapshot\tmany\t⚠ ${label}: card list INCOMPLETE (fetch rc=$rc) — untriaged cards may be MISSING from the list below
 bin/board-stats\tmany\tcard snapshot INCOMPLETE (fetch rc=$rc) — every stock count below is a floor, not a total
 bin/board-stats\tmany\tcard snapshot unavailable (fetch rc=$rc) — this board\'s stock section is missing
 bin/next-dl\tone\tnext-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board\'s DL floor and could re-mint a used DL)

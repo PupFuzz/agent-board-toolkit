@@ -38,7 +38,8 @@ KB_CURL_MAX_TIME=5
 # only the server's default page silently shortened the in-flight + untriaged
 # lists once a board grew past it (board 5 is already ~98 cards). A page-cap hit
 # (rc 3) still yields the partial array, so this fail-soft SessionStart display
-# shows what it has rather than going dark.
+# shows what it has rather than going dark — and, since card#6365, says ON STDOUT
+# that that is what it is showing. See board_report's own note at the rc guard.
 
 # Clean slate before sourcing a board env: board envs EXPORT their keys, so an
 # operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /
@@ -87,6 +88,36 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
         || { echo "• ${label}: (board read failed — fetch rc=$rc)"; return 0; }
+    # A PARTIAL read is rendered — and now SAYS SO ON THE CHANNEL THE READER SEES.
+    # The two rcs admitted above besides 0 emit their partial array precisely so a
+    # fail-soft display can show what it has, and the paginator flags both
+    # INCOMPLETE on STDERR — which this script's consumer discards (the same
+    # channel trap the "2>&1 IS LOAD-BEARING" note at the bottom of this file
+    # describes for the staleness guard). So the count an operator acts on was
+    # rendered from a partial row set with the only contradicting signal on a
+    # stream nobody reads: `in-flight 12` off a board that holds more. card#6365.
+    #
+    # The state is derived ONCE, here, and HANDED to the render path rather than
+    # re-derived at each render from $rc — there are two renders, on two channels,
+    # and a third would inherit it for free. Two carriers, because they answer
+    # different questions:
+    #   $floor prefixes every count this pass prints ("in-flight ≥12"), so the
+    #     NUMBER cannot be read as a total even quoted out of its line;
+    #   the notes SAY it, once per section, because the two sections are printed
+    #     under different headers (fd 3 is buffered and rendered far below), so a
+    #     bare ≥ arriving there would have no explanation beside it. The fd-3 note
+    #     also covers the silent shape: a truncated read whose surviving cards are
+    #     all triaged prints NO untriaged block at all, and "nothing to triage" is
+    #     exactly the claim a partial read may not make.
+    # Predicate is `-ne 0`, not `3|4`: it is derived from the guard above — anything
+    # that reaches here non-zero is a read this tool renders WITHOUT it being whole —
+    # so widening that guard cannot leave a new rc rendering as complete.
+    local floor=""
+    if [[ $rc -ne 0 ]]; then
+        floor="≥"
+        echo "• ${label}: card list INCOMPLETE (fetch rc=$rc) — the in-flight count below is a FLOOR, not a total"
+        echo "⚠ ${label}: card list INCOMPLETE (fetch rc=$rc) — untriaged cards may be MISSING from the list below" >&3
+    fi
     # in-flight = the board's In Progress + In Review + Held stages, selected by the
     # env stage ids (the env is the contract for WHICH stages are in-flight; a board
     # omitting one simply drops it from the map).
@@ -148,10 +179,10 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
          | map(select(. != ""))
          | map({(.): ($bn[.] // ("stage " + .))})
          | add // {}')"
-    printf '%s' "$data" | jq -r --arg label "$label" --argjson names "$names" '
+    printf '%s' "$data" | jq -r --arg label "$label" --arg floor "$floor" --argjson names "$names" '
         (. // []) as $t
         | ($names | keys | map(tonumber)) as $infl
-        | "• \($label): in-flight \([$t[]|select(.workflow_stage_id as $s|$infl|index($s))]|length)",
+        | "• \($label): in-flight \($floor)\([$t[]|select(.workflow_stage_id as $s|$infl|index($s))]|length)",
           ([$t[] | select(.workflow_stage_id as $s | $infl | index($s))
             | "    #\(.id) [\($names[(.workflow_stage_id|tostring)])] \(.name[0:68])"] | .[])
       ' 2>/dev/null || echo "• ${label}: (parse error)"
@@ -163,7 +194,7 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # so it is terminal here too. Reuses the SAME $data as the snapshot above —
     # that reuse IS the card-4447 dedup. The parent buffers fd 3 and prints it under
     # the untriaged header, after every board's snapshot. /triage-cards clears them.
-    printf '%s' "$data" | jq -r --arg label "$label" \
+    printf '%s' "$data" | jq -r --arg label "$label" --arg floor "$floor" \
         --arg shipped "${KB_STAGE_SHIPPED_TO_DEV:-}" \
         --arg released "${KB_STAGE_RELEASED_TO_MAIN:-}" \
         --arg wontdo "${KB_STAGE_WONT_DO:-}" '
@@ -173,7 +204,7 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
                         and (((.tags // []) | index("triaged")) | not)))
            | sort_by(.id) | reverse) as $u
         | if ($u | length) > 0 then
-            "⚠ \($label): \($u | length) UNTRIAGED — run the /triage-cards skill (newest first):",
+            "⚠ \($label): \($floor)\($u | length) UNTRIAGED — run the /triage-cards skill (newest first):",
             ($u[0:6][] | "    #\(.id) [stage \(.workflow_stage_id)] \(.name[0:60])"),
             (if ($u | length) > 6 then "    … +\(($u | length) - 6) more" else empty end)
           else empty end

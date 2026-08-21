@@ -114,5 +114,114 @@ eq "CONTROL: rc 0 prints no failure line"           "false" "$(has 'board read f
 
 rm -f "$tokf" "$envB" "$envC" "$envNoId" "$errf" "$envF" "$envR" "$FETCH_LOG"
 
+# ===========================================================================
+# card#6365 — a PARTIAL read must not render as a complete one, ON STDOUT.
+#
+# WHY THIS BLOCK RUNS THE BIN AS A PROCESS against a stubbed `curl`, when the
+# blocks above stub `fetch_board_cards` as a shell function: the defect is about
+# WHICH CHANNEL the incompleteness reaches, and the consumer is a SessionStart
+# hook that surfaces STDOUT and discards STDERR. A stubbed shell function can
+# return 3 or 4, but it cannot produce them the way the real paginator does (a
+# page cap actually hit; a `meta.total` the delivered rows fall short of), and it
+# leaves the render path — where the count is printed — reached by a fake. So the
+# rcs are driven through the REAL fetch_board_cards over a faked API, and EVERY
+# assertion below reads the process's STDOUT with STDERR discarded, which is
+# exactly what the hook sees. An assertion on the exit code would pass on the
+# defect: the exit code was already 0 and always must be.
+# ===========================================================================
+echo "== board-snapshot(1) — an INCOMPLETE read is marked on STDOUT (card#6365) =="
+_mktmp_scratch --home
+# shellcheck source=/dev/null
+source "$HERE/_kb-api-stub.sh"
+kb_stub_scrub_env
+kb_stub_board_config bstest 42 \
+    'export KB_STAGE_IN_PROGRESS=84' \
+    'export KB_STAGE_SHIPPED_TO_DEV=90'
+kb_stub_install
+printf 'bstest:T\n' > "$HOME/.kanban-snapshot-boards"
+export KANBAN_SNAPSHOT_BOARDS="$HOME/.kanban-snapshot-boards"
+# The staleness guard the bin folds into its output is not under test here and its
+# line depends on the HOST. Shadow it with a silent no-op so the byte-identity
+# control below compares the SNAPSHOT, not this machine.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agent-board-toolkit-runtime-check"
+chmod +x "$TMP/bin/agent-board-toolkit-runtime-check"
+
+# One in-progress, untriaged card; a 200-row page for the cap scenario.
+export KB_STUB_PRELOAD='{"data":{"workflows":[{"stages":[{"id":84,"name":"In Progress"}]}]}}'
+KB_STUB_ONE="$(jq -cn '{data:[{id:101,workflow_stage_id:84,name:"card one",tags:[]}],meta:{total:1,last_page:1}}')"
+KB_STUB_FULLPAGE="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:84,name:"card \(.)",tags:[]}],meta:{total:400,last_page:2}}')"
+KB_STUB_SHORT="$(jq -cn '{data:[range(101;103)|{id:.,workflow_stage_id:84,name:"card \(.)",tags:[]}],meta:{total:5,last_page:1}}')"
+export KB_STUB_ONE KB_STUB_FULLPAGE KB_STUB_SHORT
+# Scenario switching is by exported variable — the stub is a fresh process per request.
+kb_stub_route() {
+    local url="$2"
+    case "$url" in
+        */preload.json*) printf '200\n%s\n' "$KB_STUB_PRELOAD" ;;
+        *tasks/search.json*)
+            case "$KB_STUB_SCENARIO" in
+                complete) printf '200\n%s\n' "$KB_STUB_ONE" ;;
+                cap)      printf '200\n%s\n' "$KB_STUB_FULLPAGE" ;;
+                short)    printf '200\n%s\n' "$KB_STUB_SHORT" ;;
+                dead)     printf '500\n%s\n' '{"error":"boom"}' ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+
+# snap <scenario> [page-cap] — the bin's STDOUT only, stderr discarded exactly as the
+# SessionStart hook discards it. Its exit status lands in $SNAP_RC.
+SNAP_RC=0
+snap() {
+    export KB_STUB_SCENARIO="$1" SNAPSHOT_PAGE_CAP="${2:-25}"
+    kb_stub_reset
+    local out; out="$(bash "$BIN" 2>/dev/null)"; SNAP_RC=$?
+    printf '%s' "$out"
+}
+# untriaged_section <output> — the part below the untriaged header. The two sections are
+# rendered from the SAME partial read but printed under different headers, so a marker in
+# one says nothing about the other.
+untriaged_section() { printf '%s' "$1" | awk '/^── Untriaged cards/{f=1;next} f'; }
+
+# --- control 3 FIRST: a COMPLETE read renders exactly as it always did ------
+# Byte equality, not a substring: a fix that marked every snapshot incomplete would
+# be worse than the defect, and only an exact comparison can see that.
+out="$(snap complete)"
+expected="── Dev board snapshot — boards are the source of truth (memory is a cache) ──
+• T: in-flight 1
+    #101 [In Progress] card one
+── Untriaged cards — triage is my responsibility; none may be silently missed ──
+⚠ T: 1 UNTRIAGED — run the /triage-cards skill (newest first):
+    #101 [stage 84] card one"
+eq "CONTROL rc 0: the complete-read render is byte-identical" "$expected" "$out"
+eq "CONTROL rc 0: exits 0"                                    "0" "$SNAP_RC"
+
+# --- positive 1: the page cap (rc 3) ---------------------------------------
+out="$(snap cap 1)"
+eq "rc 3: the in-flight COUNT itself is marked as a floor" "true" "$(has 'in-flight ≥200' "$out")"
+eq "rc 3: STDOUT names the read INCOMPLETE and the rc"     "true" "$(has 'card list INCOMPLETE (fetch rc=3)' "$out")"
+eq "rc 3: the count is never printed unqualified"          "false" "$(has 'in-flight 200' "$out")"
+eq "rc 3: the UNTRIAGED section carries its own marker"    "true" \
+   "$(has 'INCOMPLETE (fetch rc=3)' "$(untriaged_section "$out")")"
+eq "rc 3: the untriaged COUNT is marked too"               "true" "$(has '≥200 UNTRIAGED' "$out")"
+eq "rc 3: fail-soft — still exits 0"                       "0" "$SNAP_RC"
+
+# --- positive 2: the short read (rc 4) -------------------------------------
+out="$(snap short)"
+eq "rc 4: the in-flight COUNT itself is marked as a floor" "true" "$(has 'in-flight ≥2' "$out")"
+eq "rc 4: STDOUT names the read INCOMPLETE and the rc"     "true" "$(has 'card list INCOMPLETE (fetch rc=4)' "$out")"
+eq "rc 4: the count is never printed unqualified"          "false" "$(has 'in-flight 2' "$out")"
+eq "rc 4: the UNTRIAGED section carries its own marker"    "true" \
+   "$(has 'INCOMPLETE (fetch rc=4)' "$(untriaged_section "$out")")"
+eq "rc 4: fail-soft — still exits 0"                       "0" "$SNAP_RC"
+
+# --- control 4: a hard read failure is still fail-soft ----------------------
+# The contract in this file's header: a slow/down API prints a notice and exits 0,
+# never blocking startup. Asserted on the RENDER, not on the status alone.
+out="$(snap dead)"
+eq "CONTROL rc 1: exits 0 (SessionStart is never blocked)"  "0" "$SNAP_RC"
+eq "CONTROL rc 1: still prints the snapshot header"         "true" "$(has 'Dev board snapshot' "$out")"
+eq "CONTROL rc 1: reports the board, naming the rc"         "true" "$(has '• T: (board read failed — fetch rc=1)' "$out")"
+eq "CONTROL rc 1: claims no completeness it does not have"  "false" "$(has 'in-flight' "$out")"
+
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"
