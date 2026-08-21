@@ -48,11 +48,12 @@ jobs:
     # the `changelog-card-entry` job into its own workflow (for a trigger this file cannot
     # give it), and a scan of ci.yml alone would report that test as unrun.
     #
-    # It also holds the TRIGGER CONTRACT over that directory (card#6099): no workflow narrows
-    # its `pull_request` with a paths/branches filter, and every workflow whose text reads a
-    # `github.event.pull_request.*` field subscribes `edited`. Neither rule has an instance on
-    # this tree — the reasoning, and the fixtures that keep both from being decorations, are in
-    # the selftest's own header rather than restated here.
+    # It also holds the TRIGGER CONTRACT over that directory (card#6099): no workflow observes
+    # fewer than all pull requests (a `paths:`/`branches:` filter, or a `types:` list missing
+    # `opened`/`synchronize`), and every workflow that reads a `github.event.pull_request.*`
+    # field subscribes `edited` on every PR trigger it has. Neither rule has an instance on
+    # this tree — the reasoning, the bounds, and the fixtures that keep both from being
+    # decorations are in the selftest's own header rather than restated here.
     #
     # Deliberately its OWN job, not a `selftest` matrix entry: a matrix entry would be
     # self-referential, so deleting that one line would disable the guard silently — the exact

@@ -58,20 +58,31 @@
 # "" for structural reasons indistinguishable from a clean repo, and a check that cannot fail
 # is a decoration.
 #
-#   (a) A `pull_request` mapping carrying `paths:`, `paths-ignore:`, `branches:` or
-#       `branches-ignore:` is REJECTED — the workflow qualifies for nothing, so the tests it
-#       names read as unrun. This was an ACCEPTED, DOCUMENTED gap in this very paragraph until
-#       card#6099: a filtered workflow's tests counted as "run on pull requests" for the PRs
-#       its own filter excludes, which errs GREEN — the one direction this file exists to
-#       refuse. Rejecting forces an explicit decision (drop the filter, or move the test) in
-#       place of a silent under-run. The four keys are ONE tuple in the parser, exported as the
-#       `filter-keys` projection so the fixture loop drives whatever that tuple holds instead
-#       of a hand-typed echo of it (card#6645's shape). `types:` is NOT a narrowing key — it
-#       selects which PR EVENTS re-run a workflow, not which PRs it observes — and that
-#       boundary is pinned by a fixture rather than by this sentence.
+#   (a) A `pull_request` trigger that observes FEWER THAN ALL PULL REQUESTS is REJECTED — the
+#       workflow qualifies for nothing, so the tests it names read as unrun. This was an
+#       ACCEPTED, DOCUMENTED gap in this very paragraph until card#6099: a narrowed workflow's
+#       tests counted as "run on pull requests" for the PRs it does not observe, which errs
+#       GREEN — the one direction this file exists to refuse. Rejecting forces an explicit
+#       decision (drop the narrowing, or move the test) in place of a silent under-run.
 #
-#   (b) A workflow whose TEXT reads `github.event.pull_request` must list `edited` in its
-#       `pull_request` `types:`. A verdict that is a function of a PR field goes STALE the
+#       TWO SHAPES NARROW A TRIGGER, and the rule reads both from the parse:
+#         * any of `paths:`, `paths-ignore:`, `branches:`, `branches-ignore:` — the FILTER_KEYS
+#           tuple, which selects which pull requests fire the workflow at all;
+#         * a `types:` list omitting `opened` or `synchronize` — the REQUIRED_TYPES tuple.
+#           `types:` selects which PR EVENTS re-run a workflow, and that is NOT a separate
+#           question from coverage, which is what an earlier cut of this rule got wrong: a
+#           workflow on `types: [closed]` never runs on an OPEN pull request at all, and one
+#           omitting `synchronize` never re-runs on a push to the branch, so the head commit
+#           that actually merges was never tested. Both are the same silent under-run.
+#       A SUPERSET is admitted (both live gates carry `[opened, edited, reopened,
+#       synchronize]`), and an ABSENT `types:` is GitHub's default — opened, synchronize,
+#       reopened — which satisfies the rule. Each tuple is ONE declaration in the parser,
+#       exported as the `filter-keys` and `required-types` projections so the fixture loops
+#       drive whatever the tuples hold rather than a hand-typed echo of them (card#6645's
+#       shape): a member added to either gets fixtures with no other edit.
+#
+#   (b) A workflow that reads `github.event.pull_request` must subscribe `edited` on EVERY
+#       PR trigger it has. A verdict that is a function of a PR field goes STALE the
 #       moment the field is edited after opening, because the default event set (opened,
 #       synchronize, reopened) never re-runs it: card#6054 shipped that defect on the BASE
 #       field (`release-artifacts-gate.yml`) and card#6062 on the TITLE
@@ -79,37 +90,69 @@
 #       instances of one class were fixed in place and nothing stopped a third from being
 #       minted; this leg is the class fix.
 #
-#       THE POPULATION IS RE-DERIVED FROM THE FILE TEXT ON EVERY RUN, never enumerated: the
-#       workflows containing the literal `github.event.pull_request`. Text rather than parsed
-#       structure, because the reference can sit in an `env:`, a `with:`, an `if:` or a `run:`
-#       block, and a structural walk would have to enumerate those places to find it. The
-#       population is exposed as its own projection and asserted non-empty with a named member,
-#       so an absence verdict measured over an empty set cannot read as clean.
+#       THE POPULATION IS RE-DERIVED ON EVERY RUN, never enumerated: the workflows one of
+#       whose PARSED SCALARS contains the literal `github.event.pull_request`. It is every
+#       scalar in the document, walked recursively, because the reference has no single
+#       structural home — an `env:` value, a `with:` input, an `if:`, a `run:` script — and
+#       enumerating those places is what would go stale. The population is exposed as its own
+#       projection and asserted non-empty with named members, so an absence verdict measured
+#       over an empty set cannot read as clean.
 #
-#       COMMENT LINES ARE OUTSIDE THE POPULATION, and that is a precision fix, not a
-#       loosening: a comment cannot make a verdict stale, and this rule gets DESCRIBED in
-#       workflow comments. Counting them named ci.yml — whose own verdict reads no PR field —
-#       as a stale reader on the very change that added this guard. A fixture whose only
-#       mention is a comment pins it, and asserts that the file really does carry the literal,
-#       so the clean answer is the predicate's and not a broken fixture's.
+#       WALKING SCALARS, NOT RAW TEXT, is what makes the two boundaries right at once, and
+#       both were measured. A YAML COMMENT naming the field is not a read — pyyaml has already
+#       discarded it — which matters because this rule gets DESCRIBED in workflow comments:
+#       matching raw text named ci.yml, whose own verdict reads no PR field, as a stale reader
+#       on the very change that added this guard. And a `#` line INSIDE A BLOCK SCALAR *is* a
+#       read: Actions expands `${{ }}` textually into a `run:` script before any shell sees
+#       it, so `# ${{ github.event.pull_request.title }}` in a heredoc is a live reference
+#       whose verdict goes stale on a title edit. A `#`-prefix line filter over raw text got
+#       the comment right and that one WRONG — err-green, in the leg's own defect class.
+#       Fixtures pin both directions, each asserting the file really carries the literal, so a
+#       clean answer is the predicate's verdict and not a fixture that planted nothing.
 #
-#       IT ERRS RED where a workflow reads a PR field while subscribing NO `pull_request`
-#       event — push-only, or `pull_request_target`, which this predicate does not read. It has
-#       no `types` that could satisfy the rule and is REPORTED; on a push that field is empty,
-#       so it is a defect of a different shape rather than a false alarm. That costs an
-#       explicit decision, the same trade the `if:` rule below already makes.
+#       BOTH PR TRIGGERS ARE READ — `pull_request` AND `pull_request_target`. The latter fires
+#       on the same activity types, has the same default set, and populates the same
+#       `github.event.pull_request` object, so a stale verdict is available through it on
+#       exactly the same terms. Reading only the former reported such a workflow as stale
+#       under a message no edit to it could ever clear — unsatisfiable, and untrue of a
+#       workflow that already carries `edited`. Every subscribed PR trigger must carry it: the
+#       one that fires the run is the one that decides whether the verdict is fresh.
 #
-# ⛔ WHAT (b) STRUCTURALLY CANNOT SEE: the `pull_request` recipe published in docs/INSTALL.md
-# §6c, which consumers paste into THEIR repos. The population here is .github/workflows/, so
-# this holds THIS repository's workflows level and says nothing about a copy living in a fenced
-# block in a markdown file.
+#       IT ERRS RED where a PR field is read by a workflow subscribing NEITHER PR trigger
+#       (push-only, `workflow_dispatch`-only). Nothing there could satisfy the rule, and on
+#       those events the field is empty, so it is REPORTED under its own message — a defect of
+#       a different shape, not a false alarm. That costs an explicit decision, the same trade
+#       the `if:` rule below already makes.
 #
-# THE STRUCTURE IS PARSED, NEVER GREPPED: the matrix and the trigger are structured data, and
-# a grep for `- foo` would match a `- foo` under any other key. Rule (b)'s population is the
-# one deliberate exception and is a different question — "does this file REFER to a PR field",
-# which has no single structural home (an `env:`, a `with:`, an `if:`, a `run:` block) — so it
-# is read from the file's non-comment text, and every VERDICT about a matched file is then
-# taken from the parse.
+# ⛔ THE BOUNDS OF BOTH RULES, stated rather than left to be inferred — this file's own
+# standard is to name every one:
+#   * The population of BOTH rules is `.github/workflows/`. The `pull_request` recipe published
+#     in docs/INSTALL.md §6c, which consumers paste into THEIR repos, is a fenced block in a
+#     markdown file and is not parsed here.
+#   * Neither rule follows a local composite action a workflow `uses:` (`./release-artifacts`,
+#     `./promote`). An `action.yml`'s own steps can read `github.event.pull_request` and would
+#     be invisible to rule (b). Verified clean at this change — both local actions name that
+#     field only in `description:` prose — so this is a bound, not a live gap.
+#   * A STEP-level `if:` is not read by either rule — only a JOB-level one demotes a
+#     reference. A conditional step inside an unconditional job still counts as running the
+#     test it names, which errs GREEN in the job-level rule's own direction. The weakest
+#     property below is worded for exactly that ("referenced by an unconditional JOB"), and no
+#     step in these workflows carries an `if:` today; closing it is a decision, not a typo.
+#   * A reusable workflow (`on: workflow_call`) reading a PR field would land in rule (b)'s
+#     no-PR-trigger arm, where the honest answer depends on the CALLER's trigger rather than on
+#     the file. None exists here; the day one does, the right answer is an explicit decision,
+#     not a silent pass — the same trade the `if:` rule makes.
+#   * Rule (a) admits `pull_request` only. A workflow triggered SOLELY by
+#     `pull_request_target` qualifies for nothing here, so the tests it names read as unrun —
+#     err-RED, and left that way deliberately: no workflow in this repo uses that trigger, and
+#     admitting it would mean deciding what "runs on every pull request" means for an event
+#     that runs in the BASE ref's context. Rule (b) reads it, because a stale verdict is
+#     available through it today.
+#
+# THE STRUCTURE IS PARSED, NEVER GREPPED — all of it, both rules. The matrix and the trigger
+# are structured data, and a grep for `- foo` would match a `- foo` under any other key; rule
+# (b)'s "does this file refer to a PR field" is answered over the document's parsed scalars for
+# the same reason, not over the file's bytes.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -124,15 +167,18 @@ _mktmp_scratch
 #   `workflows`              — basenames of the workflow files that subscribe `pull_request`
 #                              and are not narrowed by a filter key.
 #   `runs`                   — every selftest basename those workflows run.
-#   `filtered`               — `<file>: <key>[,<key>...]` for each workflow REJECTED by rule
-#                              (a); it names the key that rejected it, because "your selftest
-#                              is unrun" alone would not tell an author what they just did.
-#   `pr-field-readers`       — rule (b)'s population: the workflows whose text reads
-#                              `github.event.pull_request`. Printed so the absence assertion
-#                              over it can be shown to have measured something.
-#   `stale-pr-field-readers` — those of them that do not list `edited`.
+#   `filtered`               — `<file>: <reason>[,<reason>...]` for each workflow REJECTED by
+#                              rule (a); it names the key, or the missing types, that rejected
+#                              it, because "your selftest is unrun" alone would not tell an
+#                              author what they just did.
+#   `pr-field-readers`       — rule (b)'s population: the workflows one of whose parsed scalars
+#                              reads `github.event.pull_request`. Printed so the absence
+#                              assertion over it can be shown to have measured something.
+#   `stale-pr-field-readers` — `<file>: <reason>` for each of them that does not subscribe
+#                              `edited` — per PR trigger, since a file can carry both.
 #   `filter-keys`            — the FILTER_KEYS tuple itself (the directory argument is ignored),
-#                              so the fixtures below are driven by the parser's own set.
+#   `required-types`         — and the REQUIRED_TYPES tuple, so the fixture loops below are
+#                              driven by the parser's own sets rather than by a copy of them.
 # The trigger predicate is written once and every projection reads it, so asserting one
 # projection asserts the same code path the others filter on.
 #
@@ -153,67 +199,105 @@ _wf_scan() {
     python3 - "$1" "$2" <<'PY'
 import glob, os, re, sys, yaml
 
-# The `pull_request` sub-keys that NARROW which pull requests a workflow observes — one
-# declaration, exported as the `filter-keys` projection so nothing re-types the set.
+# The `pull_request` sub-keys that NARROW which pull requests a workflow observes, and the
+# activity types it must keep to observe all of them — one declaration each, exported as the
+# `filter-keys` / `required-types` projections so nothing re-types either set.
 FILTER_KEYS = ('branches', 'branches-ignore', 'paths', 'paths-ignore')
+REQUIRED_TYPES = ('opened', 'synchronize')
+
+# Both events populate `github.event.pull_request` and both take the same activity types.
+PR_EVENTS = ('pull_request', 'pull_request_target')
 
 # `pull_request:` with an empty value is a real, common spelling (ci.yml uses it) and means
-# "every event type, unnarrowed". A sentinel keeps it distinguishable from a workflow that
-# subscribes no pull_request at all — `None` would conflate the two.
+# "the default event types, unnarrowed". A sentinel keeps it distinguishable from a workflow
+# that subscribes the event not at all — `None` would conflate the two.
 ABSENT = object()
 
-def pr_trigger(doc):
+def trigger(doc, event):
     # YAML 1.1 — which is what pyyaml implements — resolves a bare `on` key to the BOOLEAN
     # True, not the string 'on'. A `doc.get('on')` alone reads None for every workflow in this
     # repo and would silently admit nothing (or, read the other way round, everything); both
     # keys are consulted so the answer does not depend on how the author quoted the key.
     spec = doc.get('on', doc.get(True))
     if isinstance(spec, dict):
-        return spec['pull_request'] if 'pull_request' in spec else ABSENT
+        return spec[event] if event in spec else ABSENT
     if isinstance(spec, list):
-        return None if 'pull_request' in spec else ABSENT
-    return None if spec == 'pull_request' else ABSENT
+        return None if event in spec else ABSENT
+    return None if spec == event else ABSENT
 
-def pr_filters(trig):
-    return [k for k in FILTER_KEYS if isinstance(trig, dict) and k in trig]
-
-def pr_types(trig):
-    t = trig.get('types') if isinstance(trig, dict) else None
+def types_of(trig):
+    # None means NO `types:` key — GitHub's default set, which is a real and different answer
+    # from an empty or unusable list. A bare string is read as the one-element list it means;
+    # anything else present but unusable reads as the empty list, which errs RED under both
+    # rules rather than being silently skipped.
+    if not isinstance(trig, dict) or 'types' not in trig:
+        return None
+    t = trig['types']
+    if isinstance(t, str):
+        return [t]
     return [str(x) for x in t] if isinstance(t, list) else []
+
+def narrowing(trig):
+    # Why this workflow observes fewer than ALL pull requests — empty means it observes them
+    # all. The two shapes are one answer because they are one question.
+    out = [k for k in FILTER_KEYS if isinstance(trig, dict) and k in trig]
+    types = types_of(trig)
+    if types is not None:
+        missing = [t for t in REQUIRED_TYPES if t not in types]
+        if missing:
+            out.append('types(%s)' % ','.join('-' + m for m in missing))
+    return out
+
+def scalars(node):
+    # Every string in the parsed document, wherever it sits. pyyaml has already dropped the
+    # comments, and a block scalar arrives as one string INCLUDING its `#` lines — which is
+    # exactly the distinction a line filter over raw text cannot make.
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from scalars(k)
+            yield from scalars(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from scalars(v)
+    elif isinstance(node, str):
+        yield node
 
 mode = sys.argv[2]
 if mode == 'filter-keys':
     print('\n'.join(FILTER_KEYS))
+    sys.exit(0)
+if mode == 'required-types':
+    print('\n'.join(REQUIRED_TYPES))
     sys.exit(0)
 
 names, files, filtered, readers, stale = set(), [], [], [], []
 for path in sorted(glob.glob(os.path.join(sys.argv[1], '*.yml'))
                    + glob.glob(os.path.join(sys.argv[1], '*.yaml'))):
     with open(path) as fh:
-        text = fh.read()
-    doc = yaml.safe_load(text) or {}
+        doc = yaml.safe_load(fh) or {}
     if not isinstance(doc, dict):
         continue
     base = os.path.basename(path)
-    trig = pr_trigger(doc)
-    # Rule (b). The population is the TEXT — re-derived here, on every run, from every file in
-    # the directory; there is no list of PR-field-reading workflows anywhere in this file.
-    # COMMENT LINES ARE EXCLUDED. A comment cannot make a verdict stale, and the rule gets
-    # DESCRIBED in workflow comments — ci.yml's `ci-matrix-parity` job describes exactly this
-    # rule, and counting its text named ci.yml a stale reader on the very change that added the
-    # guard (measured, not hypothetical). A whole-text match would answer about the prose.
-    active = '\n'.join(ln for ln in text.splitlines() if not ln.lstrip().startswith('#'))
-    if 'github.event.pull_request' in active:
+    # Rule (b). The population is re-derived here, on every run, from every file in the
+    # directory; there is no list of PR-field-reading workflows anywhere in this file.
+    if any('github.event.pull_request' in sc for sc in scalars(doc)):
         readers.append(base)
-        if 'edited' not in pr_types(trig):
-            stale.append(base)
+        subscribed = [e for e in PR_EVENTS if trigger(doc, e) is not ABSENT]
+        if not subscribed:
+            stale.append('%s: reads a PR field but subscribes no %s event'
+                         % (base, '/'.join(PR_EVENTS)))
+        for event in subscribed:
+            types = types_of(trigger(doc, event))
+            if types is None or 'edited' not in types:
+                stale.append('%s: %s does not subscribe edited' % (base, event))
     # Rule (a). A narrowed pull_request qualifies for NOTHING — the tests it names read as
-    # unrun rather than as covered on pull requests its own filter excludes.
-    narrowed = pr_filters(trig)
+    # unrun rather than as covered on pull requests it does not observe.
+    trig = trigger(doc, 'pull_request')
+    if trig is ABSENT:
+        continue
+    narrowed = narrowing(trig)
     if narrowed:
         filtered.append('%s: %s' % (base, ','.join(narrowed)))
-        continue
-    if trig is ABSENT:
         continue
     files.append(base)
     for job in (doc.get('jobs') or {}).values():
@@ -238,6 +322,7 @@ _filtered_pr()      { _wf_scan "$1" filtered; }
 _pr_field_readers() { _wf_scan "$1" pr-field-readers; }
 _stale_pr_fields()  { _wf_scan "$1" stale-pr-field-readers; }
 _filter_keys()      { _wf_scan "$1" filter-keys; }
+_required_types()   { _wf_scan "$1" required-types; }
 
 # _disk_tests <tests-dir> — every *-selftest.sh basename in the dir, C-collated.
 _disk_tests() {
@@ -310,10 +395,10 @@ eq "no selftest on disk is left unrun" "" "$(unrun "$WORKFLOWS" "$HERE")"
 eq "the workflows name no selftest that is absent from tests/" "" "$(dangling "$WORKFLOWS" "$HERE")"
 
 echo "== the trigger contract: no narrowed pull_request, no PR-field read without 'edited' =="
-eq "no workflow narrows its pull_request with a paths/branches filter" "" \
-   "$(_filtered_pr "$WORKFLOWS")"
-eq "no workflow reading github.event.pull_request omits 'edited' from its types" "" \
-   "$(_stale_pr_fields "$WORKFLOWS")"
+eq "no workflow observes fewer than all pull requests (filter key, or a deficient types list)" \
+   "" "$(_filtered_pr "$WORKFLOWS")"
+eq "every workflow reading github.event.pull_request subscribes edited on every PR trigger" \
+   "" "$(_stale_pr_fields "$WORKFLOWS")"
 
 # ---------------------------------------------------------------------------
 # PROVE IT CAN FAIL. Both legs are pointed at fixtures carrying the exact defect they claim to
@@ -370,8 +455,12 @@ EOF
 }
 _wf_fixture "$TMP/wf-push" "  push:
     branches: [main]"
+# The PR twin carries the SUPERSET both live gates carry. An earlier cut used
+# `[opened, edited]`, which is narrowed under rule (a) — it never re-runs on a push to the
+# branch, so the head commit that merges is never tested — and asserting that it qualifies
+# would have pinned the err-GREEN case as correct.
 _wf_fixture "$TMP/wf-pr" "  pull_request:
-    types: [opened, edited]"
+    types: [opened, edited, reopened, synchronize]"
 eq "a push-only workflow qualifies for nothing" "" "$(_pr_workflows "$TMP/wf-push")"
 eq "the pull_request twin qualifies" "probe.yml" "$(_pr_workflows "$TMP/wf-pr")"
 eq "a test named ONLY by a push-only workflow reads as unrun" "true" \
@@ -402,13 +491,42 @@ while read -r key; do
           && echo true || echo false)"
 done <<< "$keys"
 
-# The pinned NEGATIVES for rule (a). 'types:' selects which EVENTS re-run a workflow, not which
-# pull requests it observes, so the twin above must stay admitted; and a bare 'pull_request:'
-# with no sub-keys — ci.yml's own spelling — must not become collateral.
-eq "the types-carrying twin is not reported as narrowed" "" "$(_filtered_pr "$TMP/wf-pr")"
+# The pinned NEGATIVES for rule (a) — the half that keeps it from being a rule that rejects
+# everything. A types SUPERSET of the required set is admitted (the twin above, and what both
+# live gates carry), and so is a bare 'pull_request:' with no sub-keys at all — ci.yml's own
+# spelling, whose absent types: means GitHub's default set.
+eq "a types superset is not reported as narrowed" "" "$(_filtered_pr "$TMP/wf-pr")"
 _wf_fixture "$TMP/wf-pr-bare" "  pull_request:"
 eq "a bare pull_request: carries no filter" "" "$(_filtered_pr "$TMP/wf-pr-bare")"
 eq "a bare pull_request: still qualifies" "probe.yml" "$(_pr_workflows "$TMP/wf-pr-bare")"
+
+# The types half of rule (a), driven the same derived way: one fixture per REQUIRED_TYPES
+# member, each omitting exactly that member so the loop cannot pass by covering some other
+# gap. `[closed]` is the shape that made this rule necessary — a workflow running only when a
+# PR closes runs on no OPEN pull request at all, while an earlier cut of the parser counted it
+# as running on every one of them.
+req="$(_required_types "$WORKFLOWS")"
+eq "the required-types population is non-empty (the loop below has members)" "false" \
+   "$([ -z "$req" ] && echo true || echo false)"
+while read -r t; do
+    [[ -n "$t" ]] || continue
+    keep="$(printf '%s\n' "$req" | grep -vx "$t" | paste -sd, -)"
+    _wf_fixture "$TMP/wf-types-no-$t" "  pull_request:
+    types: [$keep, closed]"
+    eq "a types list omitting $t is reported, naming what is missing" "probe.yml: types(-$t)" \
+       "$(_filtered_pr "$TMP/wf-types-no-$t")"
+    eq "a types list omitting $t qualifies as PR-triggered for nothing" "" \
+       "$(_pr_workflows "$TMP/wf-types-no-$t")"
+    eq "a types list omitting $t leaves the test it names unrun" "true" \
+       "$(unrun "$TMP/wf-types-no-$t" "$HERE" | grep -qx 'kb-board-lib-selftest' \
+          && echo true || echo false)"
+done <<< "$req"
+
+_wf_fixture "$TMP/wf-types-closed" "  pull_request:
+    types: [closed]"
+eq "types: [closed] is reported, naming BOTH missing members" \
+   "probe.yml: types(-opened,-synchronize)" "$(_filtered_pr "$TMP/wf-types-closed")"
+eq "types: [closed] qualifies for nothing" "" "$(_pr_workflows "$TMP/wf-types-closed")"
 
 # The same defect PLANTED IN THE REAL DIRECTORY, because the live assertion above runs against
 # THAT and a synthetic one-file dir does not prove it can fail there. Injected as literal text
@@ -437,7 +555,8 @@ _wf_fixture "$TMP/wf-field-edited" "  pull_request:
 eq "the fixture really does read a PR field (without which both legs are vacuous)" "true" \
    "$(grep -q 'github.event.pull_request.title' "$TMP/wf-field-stale/probe.yml" \
       && echo true || echo false)"
-eq "a PR-field reader whose types omit edited is reported" "probe.yml" \
+eq "a PR-field reader whose types omit edited is reported, naming the trigger" \
+   "probe.yml: pull_request does not subscribe edited" \
    "$(_stale_pr_fields "$TMP/wf-field-stale")"
 eq "the same workflow with edited added is not reported" "" \
    "$(_stale_pr_fields "$TMP/wf-field-edited")"
@@ -452,9 +571,11 @@ eq "types without edited is NOT reported where no PR field is read" "" \
    "$(_stale_pr_fields "$TMP/wf-no-field")"
 eq "that workflow is outside the population entirely" "" "$(_pr_field_readers "$TMP/wf-no-field")"
 
-# NEGATIVE: a mention in a COMMENT is not a read. The third assertion is the load-bearing one —
-# it shows the fixture really does carry the literal, so the two clean answers above it are the
-# predicate's verdict and not a fixture that failed to plant anything.
+# NEGATIVE: a mention in a real YAML COMMENT is not a read — pyyaml drops it before the walk
+# ever sees the document. The third assertion is the load-bearing one: it shows the fixture
+# really does carry the literal on disk, so the two clean answers above it are the predicate's
+# verdict and not a fixture that failed to plant anything. Read with the heredoc fixture above,
+# this pair is what distinguishes "comment" from "`#` character".
 _wf_fixture "$TMP/wf-field-comment" "  pull_request:
     types: [opened, synchronize]" '        # this step no longer reads ${{ github.event.pull_request.title }}'
 eq "a mention in a comment is not reported" "" "$(_stale_pr_fields "$TMP/wf-field-comment")"
@@ -469,8 +590,41 @@ eq "the comment fixture does carry the literal (witness: those two answers mean 
 # event has no types that could satisfy the rule, and is reported rather than skipped.
 _wf_fixture "$TMP/wf-field-push" "  push:
     branches: [main]" "$PR_FIELD_STEP"
-eq "a PR-field reader subscribing no pull_request event at all is reported" "probe.yml" \
+eq "a PR-field reader subscribing neither PR trigger is reported under its OWN message" \
+   "probe.yml: reads a PR field but subscribes no pull_request/pull_request_target event" \
    "$(_stale_pr_fields "$TMP/wf-field-push")"
+
+# pull_request_target fires on the same activity types and populates the same object, so it
+# carries the same obligation and the same discharge. An earlier cut read only `pull_request`
+# and reported the compliant twin below under a message no edit to it could ever clear.
+_wf_fixture "$TMP/wf-target-stale" "  pull_request_target:
+    types: [opened, synchronize]" "$PR_FIELD_STEP"
+_wf_fixture "$TMP/wf-target-edited" "  pull_request_target:
+    types: [opened, synchronize, edited]" "$PR_FIELD_STEP"
+eq "a pull_request_target reader omitting edited is reported, naming THAT trigger" \
+   "probe.yml: pull_request_target does not subscribe edited" \
+   "$(_stale_pr_fields "$TMP/wf-target-stale")"
+eq "the same workflow WITH edited is clean (the rule is satisfiable there)" "" \
+   "$(_stale_pr_fields "$TMP/wf-target-edited")"
+eq "and it was in the measured population (witness: that clean answer means something)" \
+   "probe.yml" "$(_pr_field_readers "$TMP/wf-target-edited")"
+
+# A `#` line inside a BLOCK SCALAR is a real read: Actions expands ${{ }} textually into the
+# run: script before any shell sees it. Walking the parsed scalars sees it; a `#`-prefix line
+# filter over raw text dropped it — err-green, in this leg's own defect class.
+_wf_fixture "$TMP/wf-field-heredoc" "  pull_request:
+    types: [opened, synchronize]" '      - run: |
+          cat > body.md <<'"'"'MD'"'"'
+          # ${{ github.event.pull_request.title }}
+          MD'
+eq "a PR field read from a heredoc COMMENT line inside run: is a read" \
+   "probe.yml: pull_request does not subscribe edited" \
+   "$(_stale_pr_fields "$TMP/wf-field-heredoc")"
+eq "and that workflow is in the population" "probe.yml" \
+   "$(_pr_field_readers "$TMP/wf-field-heredoc")"
+eq "the heredoc fixture really does put the literal on a #-prefixed line" "true" \
+   "$(grep -qE '^[[:space:]]*# \$\{\{ github\.event\.pull_request\.title' \
+      "$TMP/wf-field-heredoc/probe.yml" && echo true || echo false)"
 
 # And rule (b)'s defect planted in the REAL directory — card#6054's exact regression, put back:
 # release-artifacts-gate.yml reads github.event.pull_request.base.sha, and its verdict is a
@@ -484,7 +638,8 @@ sed 's/\[opened, edited, reopened/[opened, reopened/' "$WORKFLOWS/release-artifa
 eq "the fixture actually rewrote the real gate's types line" \
    "    types: [opened, reopened, synchronize]" \
    "$(grep -E '^[[:space:]]*types:' "$TMP/wf-unedited/release-artifacts-gate.yml")"
-eq "the real gate stripped of edited is reported" "release-artifacts-gate.yml" \
+eq "the real gate stripped of edited is reported" \
+   "release-artifacts-gate.yml: pull_request does not subscribe edited" \
    "$(_stale_pr_fields "$TMP/wf-unedited")"
 eq "its sibling PR-field reader, untouched, is not (the report names ONE file)" "true" \
    "$(printf '%s\n' "$(_pr_field_readers "$TMP/wf-unedited")" | grep -qx 'changelog-card-entry.yml' \
