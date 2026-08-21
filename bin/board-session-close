@@ -886,7 +886,13 @@ main() {
     } >&2
     return 1
   fi
-  out="$(python3 "$hook" --detect 2>&1)"; rc=$?
+  # PYTHONDONTWRITEBYTECODE=1: the hook `sys.path.insert`s its own directory and imports a
+  # sibling BY NAME, so the load caches a `.pyc` in the plugin's directory — a tree this repo
+  # does not own and must not leave build artifacts in. The file is foreign and cannot be
+  # edited from here, but this repo owns the INVOCATION and the environment it passes
+  # (card#6871; `tests/bin-artifact-hygiene-selftest.sh` holds this over every foreign-python
+  # invocation in bin/, not just this one).
+  out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$hook" --detect 2>&1)"; rc=$?
   printf '%s\n' "$out" | sed 's/^/  /'
   # The hook's inverse leg is config-gated: a board without inverse_check_columns
   # runs the FORWARD leg only and reports 'inverse check OFF' at rc 0 — a PASS that
