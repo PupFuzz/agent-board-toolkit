@@ -354,6 +354,16 @@ LEG3_DISPOSED=(
     # assertion above turns the disposition red and forces the next author to dispose theirs
     # deliberately rather than inherit this ruling.
     "docs/CHANGELOG.md::**card#6884** — **"
+    # The live `[Unreleased]` entry for card#6680, reported for the same reason and disposed on
+    # the same terms as card#6884's directly above: one markdown paragraph is ONE line, and this
+    # one narrates a change to `bin/_kb-board-lib.sh` while naming the bins whose CALLER SHAPES
+    # decided the design (`kbcard`'s `resp="$(kb_api …)"`, `dl-a1-register-field`'s bare
+    # assignment under `set -e`). It instructs nobody to copy a SET — its one vendoring sentence
+    # names a single bin, "re-vendor `bin/_kb-board-lib.sh`" — which is the (b) shape.
+    # ⛔ Same bound: the unit is the LINE, so a list regrown inside this entry is suppressed too,
+    # and at release time this moves below the version cut and the live-line assertion above
+    # turns it red for the next author to rule on rather than inherit.
+    "docs/CHANGELOG.md::**card#6680** — **"
 )
 
 # _leg3_scan <root> — every reported line in the tree under <root>, as `<relpath>: <line>`.
