@@ -918,13 +918,20 @@ eq "…and nothing on stderr"                        ""  "$(cat "$_api_err")"
 # --- the rc is the channel BECAUSE the global cannot cross a command substitution ---
 # `resp="$(kb_api …)" || …` is the caller shape this tree is built out of, and it runs
 # kb_api in a SUBSHELL: KB_HTTP set in there is gone when the parent tests it. This is
-# what makes "just read KB_HTTP" a non-answer for those callers, and it is asserted so a
-# future edit cannot quietly move the signal back onto the global.
+# what makes "just read KB_HTTP" a non-answer for those callers, and the rc is asserted
+# here so a future edit cannot quietly move the signal back onto the global.
+#
+# ⛔ THE OTHER HALF IS DELIBERATELY NOT ASSERTED. A companion
+# `eq "KB_HTTP does NOT survive the caller's \$( … )" "pre-existing" "$KB_HTTP"` stood here
+# and was a DECORATION: a command substitution is a subshell by the language's definition, so
+# no edit to this repo's code can make an assignment inside one reach the parent — that check
+# passes against kb_api, against a kb_api that never touches KB_HTTP, and against no kb_api at
+# all. What this repo DOES own — that kb_api sets the global to the 000 sentinel on this path —
+# can fail, and is already asserted at the top of this block off a call that is not wrapped in
+# `$( … )`; restating it here would be a second copy of one assertion, not a second assertion.
 curl() { cat >/dev/null; return 7; }
-KB_HTTP=pre-existing
 rc_sub=0; _ignored="$(kb_api GET /tasks/9.json 2>/dev/null)" || rc_sub=$?
-eq "KB_HTTP does NOT survive the caller's \$( … )"  "pre-existing" "$KB_HTTP"
-eq "…while the rc does — the signal has to ride it" "$KB_API_RC_TRANSPORT" "$rc_sub"
+eq "the rc crosses the caller's \$( … ) — the signal has to ride it" "$KB_API_RC_TRANSPORT" "$rc_sub"
 # A property of the constant, not its value: 0 would read as success and 2 as a usage
 # error in every CLI here, and 1 is the state it exists to be told apart from.
 eq "the transport rc is none of 0, 1, 2"           "true" \
