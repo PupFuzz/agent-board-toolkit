@@ -900,10 +900,13 @@ finding with no owner is abandoned, not filed.
   It already emits an INCOMPLETE note at its `3|4` arm (`every stock count below is a floor, not a
   total`), which is why the first cut of this paragraph recorded the class as *"two members and was
   one instance"*. That was true of the NOTE and silent about the MARKER: every stock number
-  `board-stats` prints is bare — roughly nine per board, each quotable out of the one `⚠` line that
-  qualifies them — and `--format json` is worse, because `stock_ok` is `true` on rc 3 and rc 4, so
-  a JSON consumer sees populated counts and must string-match prose in `failures[]` to learn they
-  are floors. Either the `≥` carrier is load-bearing, in which case `board-stats` needs it (and its
+  `board-stats` prints is bare — measured at NINE per board on all three boards here (eight columns
+  plus the total), each quotable out of the one `⚠` line that qualifies them — and `--format json`
+  is worse. Its rc-3/rc-4 arm leaves the internal `stock_ok` **true**, so `.stock` is emitted as a
+  fully populated object with **no field that distinguishes it from a whole read** (the emitted keys
+  are `board`, `board_id`, `failures`, `flow`, `label`, `stock` — there is no completeness field at
+  all); the only signal is a prose string inside `failures[]`, which a JSON consumer has to
+  string-match to learn the counts are floors. Either the `≥` carrier is load-bearing, in which case `board-stats` needs it (and its
   JSON needs a machine-readable completeness field, not prose), or it is deliberately
   board-snapshot-specific. It is the former: the carrier exists because a number survives being
   quoted out of its line, and a JSON field survives being read by a program that never sees prose
