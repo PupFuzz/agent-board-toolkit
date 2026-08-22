@@ -21,10 +21,7 @@ kbcard list --column backlog | jq 'length'  # smoke test -> a number on stdout, 
                                             # `… <M> of <N> board cards matched` (the filter's denominator,
                                             # printed on every filtered read — not an error)
 ```
-If any **new** tool was added, re-run the symlink loop from INSTALL §2 to pick it up:
-```bash
-for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done; hash -r
-```
+If any **new** tool was added, re-run the symlink loop from [`INSTALL.md`](INSTALL.md) §2 to pick it up, then `hash -r`. **The loop is not repeated here on purpose** — INSTALL §2 is its one owner. The copy that stood in this spot was one of **four** in this repository, and all four carried the same defect: they linked *every* `bin/` entry, including a directory, which `ln -sf` follows into rather than replaces. Four copies is how a correction reaches one of them. Run §2's block as written; do not retype it from memory.
 
 > **`pull --ff-only` upgrades this checkout only while its HEAD is on a branch.** That is the INSTALL §1 **Option A** clone topology — the recommended one, and the one this section assumes. If the checkout has been **detached at a tag** — by a §5 rollback, by a deliberately pinned second checkout, or by a `checkout v<version>` line copied out of a release note — the command above answers `You are not currently on a branch.` and exits **1** instead of upgrading. Return it to the tracking branch first (`git -C ~/agent-board-toolkit checkout main`), then pull. The pin's real cost is quieter than that error, though: an install nobody pulls simply never sees the next release. `agent-board-toolkit-runtime-check` is the guard for exactly that (`board-snapshot` runs it at SessionStart), and its remediation line **branches on your topology** — it names `pull --ff-only` for a checkout on a branch and the pin-advancing `checkout <tag>` only for one that is already detached.
 
@@ -109,7 +106,7 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 
 ### v0.5.0
 
-- **[host] two new tools — re-run the symlink loop.** `dl-a1-register-field` and `dl-a0-backfill-triaged` were added to `bin/`. A symlink install won't pick up a *new* tool automatically, so **re-run the INSTALL §2 link loop** (also shown in §2 above) after pulling.
+- **[host] two new tools — re-run the symlink loop.** `dl-a1-register-field` and `dl-a0-backfill-triaged` were added to `bin/`. A symlink install won't pick up a *new* tool automatically, so **re-run the INSTALL §2 link loop** after pulling (§2 above points at it; it is not repeated there).
 - **[host] `dl-a1-register-field` needs a one-time board setup.** It registers the `dl_number` custom field on a DL board and real-surface-verifies the server's `system=dl` by-ref index. **Run it once per board that mints DLs** (`dl-a1-register-field --board <name>`); it is idempotent (a re-run is a clean no-op). `next-dl`'s atomic-claim path depends on that field existing. `dl-a0-backfill-triaged` is a one-shot sweep that backfills the `triaged` tag onto pre-existing adapter-owned cards — run it once per board if you rely on the untriaged-discovery check over a legacy card corpus.
 - **[host] loud-on-cap / fail-closed posture (FR-2/FR-3).** A board read that hits the pagination cap now **errors loudly** instead of silently returning a truncated set, and ambiguous states fail closed. This is the intended hardening, **but** any wrapper that previously consumed a silently-capped partial result will now see a **non-zero exit** — update wrappers that swallowed the old (wrong) success.
 
@@ -168,7 +165,7 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 
 ### v0.12.0
 
-- **[host] new tool `bin/adopt-to-dl` — re-run the symlink loop** (INSTALL §2, shown in §2 above) to pick it up; a symlink install never picks up a *new* tool automatically. The tool itself is opt-in (the pull-into-build adoption seam for card-first boards — stamps an existing plain card with a freshly minted `payload.dl_number`); a board whose `dl_number` is bridge-derived doesn't need it. **[vendor]** it sources `_kb-board-lib.sh` — co-vendor the lib if you vendor it (v0.8.2 rule).
+- **[host] new tool `bin/adopt-to-dl` — re-run the symlink loop** (INSTALL §2) to pick it up; a symlink install never picks up a *new* tool automatically. The tool itself is opt-in (the pull-into-build adoption seam for card-first boards — stamps an existing plain card with a freshly minted `payload.dl_number`); a board whose `dl_number` is bridge-derived doesn't need it. **[vendor]** it sources `_kb-board-lib.sh` — co-vendor the lib if you vendor it (v0.8.2 rule).
 
 ### v0.12.1 — v0.12.2
 
@@ -198,7 +195,7 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 
 ### v0.15.0
 
-- **[host] new tool `bin/agent-board-toolkit-runtime-check` — re-run the symlink loop.** It judges what actually **executes** rather than the checkout, catching the two live-observed topologies a "patch the checkout, then grep the checkout" verification certifies wrongly: real-file **copies** (native mingw64 `ln`, a manual `cp`) and a **pinned runtime** (`PATH` resolving into a checkout detached at a tag that never advances). It also warns on a mixed runtime — a partial upgrade where the on-`PATH` tools disagree about the lib they source — and reports an unverifiable topology as UNKNOWN rather than passing it silently. A symlink install never picks up a *new* tool by itself, so **re-run the INSTALL §2 link loop** (also shown in §2 above) after pulling.
+- **[host] new tool `bin/agent-board-toolkit-runtime-check` — re-run the symlink loop.** It judges what actually **executes** rather than the checkout, catching the two live-observed topologies a "patch the checkout, then grep the checkout" verification certifies wrongly: real-file **copies** (native mingw64 `ln`, a manual `cp`) and a **pinned runtime** (`PATH` resolving into a checkout detached at a tag that never advances). It also warns on a mixed runtime — a partial upgrade where the on-`PATH` tools disagree about the lib they source — and reports an unverifiable topology as UNKNOWN rather than passing it silently. A symlink install never picks up a *new* tool by itself, so **re-run the INSTALL §2 link loop** after pulling (§2 above points at it; it is not repeated there).
 - **[host] a short board read now exits 4 — it used to exit 0, so check anything that wraps these tools.** `fetch_board_cards` detected `total > read_n`, warned INCOMPLETE, and then returned **0**, so a caller could act on a read the lib had just declared incomplete (`next-dl` minted a DL from one). It now exits **4** with the partial data still emitted, and `next-dl` / `dl-a0-backfill-triaged` refuse it. **Update any wrapper that ignored the exit code of a board read, or that treats every non-zero as fatal** — rc 4 means "partial, and it says so".
 - **[vendor] re-vendor `bin/_kb-board-lib.sh` — and `bin/promote-released-cards` if you copied it.** The lib carries the rc-4 backstop above and the restored API error body (a 403 token-scope failure and a 422 validation failure were indistinguishable in the failure log after the v0.8.2 extraction). The `promote-released-cards` change is diagnostic-only: a *local* dry-run derives its baseline from local tags and can over-report the shipped range, so it now says so on stderr (suppressed under `GITHUB_ACTIONS`, where the invocation is remote-truth by construction).
 

@@ -122,6 +122,7 @@ jobs:
           - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
+          - path-link-recipe-selftest
           - piped-match-gate-selftest
           - pipeline-free-match-selftest
           - prelude-shadow-selftest

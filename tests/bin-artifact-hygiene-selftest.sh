@@ -3,17 +3,28 @@
 # a tool out of it must not leave anything new inside it.
 #
 # WHAT IT GUARDS (card#6871). `docs/INSTALL.md` §2 installs the toolkit by globbing `bin/*` and
-# symlinking every entry onto PATH one by one, and the framework's install arm does the same.
-# Every entry of `bin/` is therefore a PATH entry, so an entry that is not a tool is a defect the
-# moment it exists. The `bin/*.py` helpers were minting one: three of them path-load a sibling
-# with `importlib.util.spec_from_file_location`, and a by-path load CACHES the compiled bytecode
+# symlinking each entry onto PATH one by one, and the framework's install arm does the same.
+# Every entry of `bin/` is therefore a candidate PATH entry, so an entry that is not a tool is a
+# defect the moment it exists. The `bin/*.py` helpers were minting one: three of them path-load a
+# sibling with `importlib.util.spec_from_file_location`, and a by-path load CACHES the bytecode
 # beside its TARGET, so one read-only `_kbc-may-archive.py` invocation created
 # `bin/__pycache__/_kbc-archive-lib.cpython-312.pyc` — measured, rc 0, on a clean tree. Downstream
-# of that: the framework's link arm symlinked `__pycache__` onto PATH and then REFUSED the whole
-# directory on the next run, and `tests/lib-set-derivation-selftest.sh` had already had to grow a
+# of that: the framework's link arm symlinked `__pycache__` onto PATH (rc 0, `RESULT=INSTALLED`)
+# and then refused the whole INSTALL on the next run — its source glob has no `[ -f ]` filter, so
+# run 1 plants the destination its own destination guard then fires on (card#7234, owned by the
+# coord plugin) — and `tests/lib-set-derivation-selftest.sh` had already had to grow a
 # `grep -d skip` so its verdict would not depend on whether the maintainer had run a python
 # helper. `__pycache__/` is gitignored, which is correct and is also what let this sit — an
 # ignored artifact is invisible to `git status` while still being globbed by every consumer.
+#
+# ⛔ THIS FILE IS NOT THE RECIPE'S GUARD, and the recipe does not rely on it (card#7170). Keeping
+# `bin/` clean and keeping the documented install loop correct are two independent obligations:
+# the loop ran `ln -sf` over every glob member, and `ln -sf` FOLLOWS a symlink-to-directory rather
+# than replacing it, so a second run planted `bin/__pycache__/__pycache__ -> bin/__pycache__` — a
+# cycle inside the consumer's checkout, at rc 0. That is closed at the recipe (`[ -f "$t" ]` plus
+# `-n`), guarded by `tests/path-link-recipe-selftest.sh`, and stated over ANY non-regular-file
+# entry rather than over `__pycache__`. Neither guard subsumes the other: this one keeps the
+# population empty, that one keeps the loop safe when it is not.
 #
 # THE RULE, and why it is stated over entry points rather than over load sites. A module cannot
 # suppress its own `.pyc`: the loader writes the cache file while it COMPILES, ahead of running
