@@ -11,14 +11,26 @@ set -uo pipefail
 # default. The TOKEN IS NOT READ HERE: each board may point KBCARD_TOKEN_FILE at its
 # own token, so it is read per-board inside board_report() below. Reading one
 # token up-front and exiting when it was missing meant a host that uses only
-# per-board tokens (no ~/.kanban-dev-token) rendered NOTHING at SessionStart.
+# per-board tokens rendered NOTHING at SessionStart. Since card#7245 a board whose
+# token file NOBODY declared is reported per-board rather than falling through to a
+# shared default, and the api base is preflighted against $KANBAN_EXPECTED_HOST
+# before any board is read.
 # Fail-soft throughout — a missing config never blocks SessionStart. See INSTALL.md.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 [ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
 source "$KB_LIB"
 kb_load_host_env   # cannot fail (reads no token)
-API="${KB_API:-https://YOUR-KANBAN-HOST/api/v3}"
+# NO BAKED FALLBACK. This used to default to `https://YOUR-KANBAN-HOST/api/v3`, and that
+# placeholder is the literal KBCARD_API in examples/kanban-host.env.example — so on a box with
+# no host env at all, the api base became a string that MATCHES the example's
+# KANBAN_EXPECTED_HOST="YOUR-KANBAN-HOST", and the card#7245 preflight PASSED on an install
+# nobody had configured (measured, both arms: with the example copied verbatim, and with
+# KBCARD_API absent entirely). A guard satisfied by a placeholder matching itself is a
+# decoration. Unset is now unset, and the emptiness is refused below with the other preflight
+# — not defended against here by inventing a value (canon: don't manufacture a state the
+# system can just report). bin/board-stats does the same with a bare non-empty test.
+API="${KB_API:-}"
 # Cap EACH request at 5s against a slow/down API. Honored by both fetchers THIS
 # script uses — fetch_board_cards (paginated read) and kb_api (the preload
 # stage-name read). The lib has three; kb_api_status honors it too.
@@ -130,10 +142,14 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # shellcheck disable=SC1090
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { board_unread "$label" "env $envf sets no KB_BOARD_ID"; return 0; }
-    # Explicit token ladder: this board's > the host's > the default. Per-board fail-soft —
-    # one board's unreadable token must not blank the others. Resolved once so the read and
-    # its failure message can't drift to different files.
-    local tokfile="${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}"
+    # Explicit token ladder: this board's > the host's. There is NO third, defaulted tier —
+    # card#7245 removed the baked ~/.kanban-dev-token, because a board falling through to it
+    # was using a credential nobody chose for it and shared with every other board. Per-board
+    # fail-soft — one board's undeclared or unreadable token must not blank the others.
+    # Resolved once so the read and its failure message can't drift to different files.
+    local tokfile
+    tokfile="$(kb_declared_token_file "$envf" "${KBCARD_TOKEN_FILE:-}" "${KB_HOST_TOKEN_FILE:-}")" \
+        || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env"; return 0; }
     kb_read_token "$tokfile" \
         || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
     local data rc
@@ -276,6 +292,29 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
 # can source this file for its pure functions (board_env_scrub / board_report)
 # without rendering a live snapshot. Mirrors the main-guard every other bin uses.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+
+# PREFLIGHT, before any board is read: the api base must name a host somebody declared
+# (card#7245). Fail-SOFT like everything else here — a SessionStart hook must never block —
+# but the notice goes out under no board's header, because it is not one board's problem:
+# every board on this box would send its bearer to the same unrecognised host.
+#
+# ⛔ THE REMEDIATION IS ON THIS LINE, not deferred to the guard's own stderr. The guard does
+# print which value and which file — but board-session-close runs `board-snapshot 2>/dev/null`
+# and the SessionStart hook surfaces stdout alone (README.md), so through both real consumers
+# a trailing "(see stderr)" pointed at a discarded stream: an operator told the snapshot was
+# skipped and given nothing to act on. Same channel rule card#6365 settled for the partial-read
+# notes above, and the same shape as the token arm in board_report, which names the variable
+# and the file inline. The rc STAYS 0 and is not the signal: board-session-close renders
+# `|| echo "(board-snapshot unavailable)"`, so a nonzero here would replace a specific
+# diagnosis with a wrong one.
+if [[ -z "$API" ]]; then
+    echo "── Dev board snapshot — SKIPPED: no KBCARD_API is set — create ~/.kanban-host.env from examples/kanban-host.env.example (docs/INSTALL.md §3) ──"
+    exit 0
+fi
+if ! kb_require_known_api_host "$API"; then
+    echo "── Dev board snapshot — SKIPPED: api host '$(kb_url_host "$API")' is not a declared one — set KANBAN_EXPECTED_HOST to it (or fix KBCARD_API) in ~/.kanban-host.env ──"
+    exit 0
+fi
 
 # Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
 # so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).

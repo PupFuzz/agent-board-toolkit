@@ -64,10 +64,13 @@
 #   - API base ($KBCARD_API) is board-INDEPENDENT: host-level only
 #     (~/.kanban-host.env, override $KANBAN_HOST_ENV). A board env that sets it is
 #     refused, not honored — see kb_resolve_env.
+#   - The resolved API base must be a host somebody DECLARED — $KANBAN_EXPECTED_HOST,
+#     the same variable the api_base trust guard reads. An undeclared or mismatched
+#     host is a refusal, never a fallback — see kb_require_known_api_host.
 #   - Board env is ~/.kanban-<name>-board.env; kanban|dev (and "no --board") map
 #     to the kanban-dev board.
-#   - Token file is $KBCARD_TOKEN_FILE (resolvable from inside a config file) or
-#     ~/.kanban-dev-token.
+#   - Token file is $KBCARD_TOKEN_FILE, DECLARED by a board env, a host env, or the
+#     invoking environment. There is NO baked default — see kb_declared_token_file.
 
 if [[ -n "${_KB_BOARD_LIB_LOADED:-}" ]]; then return 0; fi
 _KB_BOARD_LIB_LOADED=1
@@ -126,19 +129,86 @@ kb_is_uint() { kb_ere_match "${1-}" '^(0|[1-9][0-9]*)$'; }
 # --- config resolution ------------------------------------------------------
 #
 # ONE token-file precedence, uniform across every resolver below:
-#     a BOARD env's KBCARD_TOKEN_FILE > the HOST env's > an ambient one > ~/.kanban-dev-token
+#     a BOARD env's KBCARD_TOKEN_FILE > the HOST env's > an ambient one
 # It falls out of SOURCE ORDER (host first, board second) rather than a ladder of
 # explicit tests. KBCARD_API is the mirror image — board-independent, host env only.
+#
+# ⛔ THERE IS NO FOURTH TIER. `~/.kanban-dev-token` was the baked default under those three
+# until card#7245, and being a default is what made it dangerous: NOT ONE board env on the
+# reference host set KBCARD_TOKEN_FILE, so every board — three real ones and a test
+# harness's — resolved to the SAME file, and a single write to it took all of them out at
+# once. (The name is also a trap: `dev` there names the AGENT, not an environment; the file
+# held a prod-capable token.) Every surviving tier is something a human wrote down in a
+# named place; a board nobody wrote a token file for now gets a refusal that names the file
+# to add the line to, which is a state an operator can fix, unlike a shared secret they did
+# not know they were sharing. See kb_declared_token_file.
+
+# kb_declared_token_file <where> <candidate>…: the FIRST non-empty candidate, on stdout.
+# Prints nothing and returns 1 when every candidate is empty — i.e. when no config file and
+# no invoking environment named a token file for this board.
+#
+# WHY A REFUSAL AND NOT A DEFAULT (card#7245). The candidates are the declaration tiers of
+# whichever resolver called this; what it replaced at all four call sites was a trailing
+# `:-$HOME/.kanban-dev-token`, and that trailing default is the whole defect. A default is a
+# declaration by NOBODY: it makes one file the credential for every board that forgot to
+# name one, so its blast radius is the box rather than the board, and it does that silently
+# — a board using a token nobody chose for it looks exactly like a board using its own.
+#
+# <where> is the config surface the operator must edit — a board env path, or a label for a
+# resolver that has no single file. It is the whole value of the message: a refusal that
+# named only the missing variable would leave the reader hunting for which of four files to
+# put it in. The remediation is spelled as the literal line to add, because that is what the
+# reader has to type.
+#
+# MECHANISM, NOT POLICY — like every other guard in this lib. It answers "was one declared,
+# and which", never "what should happen now": kb_resolve_env turns a 1 into its rc 7,
+# board-snapshot into a per-board fail-soft notice, board-card-start into a hook skip.
+kb_declared_token_file() {
+    local where="$1"; shift
+    local c
+    for c in "$@"; do
+        [[ -n "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    echo "$(_kb_prog): no token file is declared for $where — there is no default (card#7245: one shared default made a single overwrite take out every board at once)" >&2
+    echo "$(_kb_prog):   → add   export KBCARD_TOKEN_FILE=\"\$HOME/.kanban-<board>-token\"   to $where, or a host-wide one to ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
+    return 1
+}
 
 # kb_resolve_env <board_env_path>: source the host env then the board env, and
 # publish KB_API / KB_BOARD_ID / KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the
 # token content and does NOT require KB_BOARD_ID — the caller decides those. Quiet
-# (return-code only) apart from the rc-4 refusal, so a fail-soft caller can craft its
-# own message. Returns:
+# (return-code only) apart from the rc-4, rc-6 and rc-7 refusals, which speak for
+# themselves, so a fail-soft caller can craft its own message for the rest. Returns:
 #   0 ok   2 env unreadable   3 KBCARD_API unset   4 board env sets KBCARD_API
-#   5 token file unreadable
+#   5 token file unreadable   6 API host refused   7 no token file declared
+#
+# THE THREE LOUD ARMS ARE LOUD FOR ONE REASON: each says the operator believes something
+# false about their config, and the fix is a specific line in a specific file. A bare rc
+# reaches the operator through a caller that can only say "config incomplete (rc=N)" —
+# next-dl's arm, verbatim — which is why rc 4's refusal was already written this way.
 kb_resolve_env() {
     local board_env="$1"
+    # CLEARED FIRST, not on the success path only. These are globals, and five of the seven
+    # rcs below return before assigning them — so after a FAILED resolve of board B they
+    # would still hold board A's values from an earlier call in the same shell, and a
+    # credential path left standing after a refusal is the exact cross-call leak the ambient
+    # snapshot further down exists to prevent.
+    #
+    # ⛔ THE SCOPE OF THAT CLAIM IS THESE TWO, NOT ALL FOUR PUBLISHED GLOBALS. It used to read
+    # "Nothing publishes what it did not resolve", which is false as written: KB_API and
+    # KB_BOARD_ID are also published by this function and are NOT cleared here, so an rc 2
+    # (unreadable board env) returns with board A's KB_API still standing. That is not a live
+    # bug — no in-tree caller reads either after a nonzero rc, they all branch on the rc first —
+    # and the two are treated differently on purpose rather than by omission:
+    #   * KB_TOKEN_FILE / KB_BOARD_ENV name a CREDENTIAL and the file that chose it. A stale one
+    #     survives as a path something might later read, which is the leak above.
+    #   * KB_BOARD_ID must NOT be cleared here. `KB_BOARD_ID="${KB_BOARD_ID:-}"` below reads its
+    #     own prior value on purpose — that is the documented AMBIENT tier, the one a caller sets
+    #     for a board whose env does not. Clearing it at the top would silently delete that tier,
+    #     which is precisely the mistake the ambient snapshot below is written to avoid.
+    # Widening the clear is therefore a behaviour change, not a tidy-up. If this comment and the
+    # line under it ever disagree again, the comment is the thing that drifted.
+    KB_TOKEN_FILE=""; KB_BOARD_ENV=""
     [[ -r "$board_env" ]] || return 2
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
     # Snapshot the AMBIENT values, then clear them so the two sources below reveal only what
@@ -174,9 +244,12 @@ kb_resolve_env() {
         return 4
     fi
     KB_API="$eff_api"
-    [[ -n "$KB_API" ]] || return 3
     KB_BOARD_ID="${KB_BOARD_ID:-}"
-    KB_TOKEN_FILE="${cfg_tok:-${amb_tok:-$HOME/.kanban-dev-token}}"   # board > host > ambient > default
+    [[ -n "$KB_API" ]] || return 3
+    # BEFORE the token file is even located, let alone read: a base nobody vouched for is
+    # not a base this process should go looking for credentials to send to (card#7245).
+    kb_require_known_api_host "$KB_API" || return 6
+    KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok")" || return 7   # board > host > ambient
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
     return 0
@@ -276,6 +349,7 @@ kb_load_config() {
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
         4) return 2 ;;   # kb_resolve_env already named the file and the fix
         5) echo "$(_kb_prog): token file not readable: $KB_TOKEN_FILE" >&2; return 2 ;;
+        6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
     KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
@@ -452,6 +526,101 @@ kb_require_positional() {
     return 0
 }
 
+# kb_url_host <url>: the AUTHORITY HOST of a URL, per RFC 3986 — with no opinion about
+# scheme, port or path. Empty when the string has no authority. A bracketed IPv6 literal
+# comes back WITH its brackets ("[::1]"), which is the RFC 3986 host and the spelling an
+# operator declares; a single trailing dot (the absolute/FQDN form) is stripped, because
+# it names the same host to DNS and to curl.
+#
+# IT DOES NOT CASE-FOLD, and both callers compare its result literally. DNS names are
+# case-insensitive, so `https://Kanban.Example/` against KANBAN_EXPECTED_HOST=kanban.example
+# is a FALSE REFUSAL. That is deliberate rather than overlooked, and the constraint is the
+# VENDORED MIRROR, not the two lib callers — those both read their host from this one
+# function, so they cannot disagree about a string whatever it does. `host_ok` in
+# bin/promote-released-cards is the copy that must not source this lib, so a fold here that
+# is not also made there splits one guard into two policies, and the case matrix in
+# tests/kb-host-guard-selftest.sh asserts the two copies AGREE on every row. Fold in BOTH
+# copies or in neither. Meanwhile the refusal prints both spellings side by side, so an
+# operator hitting the false refusal sees the cause.
+#
+# ⛔ THIS PARSER MUST AGREE WITH CURL ABOUT WHERE THE AUTHORITY ENDS, and the reason is in
+# tests/kb-host-guard-selftest.sh's header: it once terminated the authority at '/' ALONE,
+# so `https://evil.example#@good.host` left the fragment in the string, the userinfo strip
+# took everything after the LAST '@', and the guard read `good.host` and ACCEPTED while curl
+# discarded the fragment and sent the bearer token to evil.example. A guard that parses a
+# URL differently from the client that fetches it is an exfiltration primitive, not a guard.
+#
+# IT IS ONE FUNCTION BECAUSE THERE ARE TWO CALLERS AND THE MATRIX ABOVE IS THE COST OF
+# GETTING IT WRONG (canon #5). kb_require_https_host guards a PR-editable committed
+# api_base; kb_require_known_api_host guards the operator's own resolved KBCARD_API. Two
+# policies, two schemes admitted — but exactly ONE answer to "what host is this".
+#
+# The scheme is stripped only when the string actually starts with one: `${u#*://}` alone
+# would match the FIRST `://` anywhere, so a schemeless `host/p?x://y` would parse as `y`.
+kb_url_host() {
+    local u="$1"
+    kb_ere_match "$u" '^[A-Za-z][A-Za-z0-9+.-]*://' && u="${u#*://}"
+    u="${u%%[/?#]*}"   # authority ends at the FIRST of / ? # (RFC 3986) — not '/' alone
+    u="${u##*@}"       # strip userinfo — host is after the last '@' (RFC 3986)
+    # THE PORT STRIP CANNOT START AT THE FIRST ':' — an IPv6 IP-literal is nothing but
+    # colons, so `[::1]:8080` cut there yields `[`, and `[fe80::1]` yields `[fe80`. RFC 3986
+    # ends the IP-literal at ']' and curl agrees (measured: `https://[::1]:8080/api`
+    # connects to `::1` port 8080), so the host is everything through the FIRST ']'. An
+    # unclosed '[' has no host to find: it keeps the plain strip, and curl rejects such a
+    # URL outright (exit 3, "bad range specification"), so nothing is ever sent with it.
+    case "$u" in
+        \[*\]*) u="${u%%\]*}]" ;;
+        *)      u="${u%%:*}" ;;
+    esac
+    # ONE trailing dot, not a run: `kanban.example.com.` is the absolute spelling of the same
+    # name and resolves identically, while `kanban.example.com..` is not a name at all and
+    # must keep failing the comparison rather than be normalised into one.
+    printf '%s' "${u%.}"
+}
+
+# kb_require_known_api_host <api_base>: the PREFLIGHT (card#7245). Returns 0 only when the
+# resolved API base names a host somebody DECLARED in $KANBAN_EXPECTED_HOST — that host, or
+# a subdomain of it. Anything else, INCLUDING an unset/empty KANBAN_EXPECTED_HOST, is a
+# refusal at rc 1 with the remediation on stderr.
+#
+# ⛔ ITS PREDICATE IS THE HOST AND ONLY THE HOST — deliberately narrower than
+# kb_require_https_host's, which also requires https:// because the value it judges is
+# PR-editable and its caller is about to send a release-CI writeback token. This one judges
+# the operator's own ~/.kanban-host.env, where an http://127.0.0.1 board is a legitimate
+# install; adding a scheme rule here would refuse those with a message about a host.
+#
+# WHY IT REFUSES WHEN NOTHING IS DECLARED, rather than waving an undeclared host through.
+# With no expected host on record, EVERY host is unrecognised — "no opinion" and "any host
+# is fine" are the same behaviour, and the second is what took the reference host down: an
+# E2E harness replaced ~/.kanban-host.env wholesale, which both re-pointed KBCARD_API at a
+# name that does not resolve on that box AND deleted the KANBAN_EXPECTED_HOST line, so a
+# guard keyed on "set and mismatched" would have stayed silent through the one write it
+# existed to catch. The operator learned instead from `Could not resolve host` and then, for
+# twenty minutes, HTTP 401. That is the same fail-closed regime kb_require_https_host has
+# had since v0.9.0, on the same variable, so a host that already satisfies one satisfies
+# both and no second thing has to be configured.
+kb_require_known_api_host() {
+    local api="$1"
+    # The same one-trailing-dot normalisation kb_url_host applies to the parsed host, applied
+    # to the DECLARED one — an operator who copied the FQDN spelling out of their own
+    # KBCARD_API would otherwise be refused with `'h' is not 'h.'`. It runs BEFORE the
+    # empty test, so a declaration of "." alone normalises to empty and fails CLOSED rather
+    # than becoming a wildcard.
+    local expect="${KANBAN_EXPECTED_HOST:-}"; expect="${expect%.}"
+    if [[ -z "$expect" ]]; then
+        echo "$(_kb_prog): KANBAN_EXPECTED_HOST is not set, so no api host is recognised — refusing to use '$api'" >&2
+        echo "$(_kb_prog):   → add   export KANBAN_EXPECTED_HOST=\"<the host part of KBCARD_API>\"   to ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
+        return 1
+    fi
+    local host; host="$(kb_url_host "$api")"
+    if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
+        return 0
+    fi
+    echo "$(_kb_prog): api base host '$host' is not '$expect' (or a subdomain of it) — refusing to use '$api'" >&2
+    echo "$(_kb_prog):   → if '$host' IS your board host, set KANBAN_EXPECTED_HOST=\"$host\" in ~/.kanban-host.env; otherwise KBCARD_API in ~/.kanban-host.env (or \$KANBAN_HOST_ENV) is pointing somewhere you did not intend — check whether something rewrote it" >&2
+    return 1
+}
+
 # kb_require_https_host <api_base>: fail-closed guard for a CONFIG-supplied API base
 # (the .release-pr.json .promote.api_base, which a PR can edit). Asserts the base is
 # https:// AND its host is the expected host or a subdomain of it — so a malicious
@@ -459,22 +628,17 @@ kb_require_positional() {
 # expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this toolkit is
 # vendored by operators on their own kanban hosts, so there is no host to safely assume.
 # If it is unset/empty the guard fails CLOSED (returns 1) and the caller MUST NOT send the
-# token. Host is parsed per RFC 3986 — the authority ends at the FIRST of '/', '?' or '#',
-# then userinfo before the last '@' is stripped, then :port — so none of
+# token. The host comes from kb_url_host above — ONE parser, which owns the RFC 3986
+# reasoning and the hostile-URL history; it is not restated here. So none of
 # `https://good.host@evil/` (→ evil), `https://good.host.evil/`, or the delimiter splits
-# below slip through. Prints a diagnostic and returns 1 on violation.
+# slip through. Prints a diagnostic and returns 1 on violation.
 # (promote-released-cards carries an inline mirror of this — it is vendored standalone
 # and must not source this lib; keep the two in sync, INCLUDING this required-var check.)
-# The parser MUST agree with curl about where the authority ends. It once terminated the
-# authority at '/' ALONE, so `https://evil.example#@good.host` left the fragment in the
-# string, the userinfo strip took everything after the LAST '@', and the guard read the
-# host as `good.host` and ACCEPTED — while curl discarded the fragment and sent the bearer
-# token to evil.example. A '?' did the same via the query. Any future edit here must keep
-# the hostile-URL matrix in tests/kb-board-lib-selftest.sh green: a guard that parses a URL
-# differently from the client that fetches it is an exfiltration primitive, not a guard.
+# Any future edit here or to kb_url_host must keep the hostile-URL matrix in
+# tests/kb-host-guard-selftest.sh green — that file asserts every case against BOTH copies.
 kb_require_https_host() {
     local api="$1"
-    local expect="${KANBAN_EXPECTED_HOST:-}"
+    local expect="${KANBAN_EXPECTED_HOST:-}"; expect="${expect%.}"   # see kb_require_known_api_host
     if [[ -z "$expect" ]]; then
         echo "$(_kb_prog): KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send" >&2
         return 1
@@ -483,10 +647,7 @@ kb_require_https_host() {
         https://*) ;;
         *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api)" >&2; return 1 ;;
     esac
-    local host="${api#https://}"
-    host="${host%%[/?#]*}"   # authority ends at the FIRST of / ? # (RFC 3986) — not '/' alone
-    host="${host##*@}"       # strip userinfo — host is after the last '@' (RFC 3986)
-    host="${host%%:*}"       # strip :port
+    local host; host="$(kb_url_host "$api")"
     if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
         return 0
     fi

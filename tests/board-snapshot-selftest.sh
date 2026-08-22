@@ -268,6 +268,20 @@ out="$(unread "$envBadTok")"
 eq "arm: token unreadable → the untriaged channel names it"      "true" "$(has 'token file unreadable' "$out")"
 eq "arm: token unreadable → …and says the board was NOT read"    "true" "$(has 'NOT read' "$out")"
 
+# card#7245: a board that DECLARES no token file used to fall through to ~/.kanban-dev-token —
+# a credential nobody chose for it and every other board shared. It is now its own arm. The
+# host tier is unset in the subshell, because that is the tier this case is about; with a host
+# default present the board is legitimately covered and there is nothing to report.
+envNoTok="$(mktemp)"; printf 'export KB_BOARD_ID=88\n' > "$envNoTok"
+out="$(unset KB_HOST_TOKEN_FILE; unread "$envNoTok")"
+eq "arm: no token DECLARED → the untriaged channel names it"     "true" "$(has 'no KBCARD_TOKEN_FILE declared' "$out")"
+eq "arm: no token DECLARED → …and says the board was NOT read"   "true" "$(has 'NOT read' "$out")"
+eq "arm: no token DECLARED → …and does NOT name ~/.kanban-dev-token" "false" "$(has '.kanban-dev-token' "$out")"
+# WITNESS: the same env with the host tier supplied is read normally, so the arm above is
+# about a missing DECLARATION and not about this fixture being unreadable in general.
+out="$(KB_HOST_TOKEN_FILE="$tokf2" unread "$envNoTok")"
+eq "  …while a host-declared token file covers that same board (witness)" "false" "$(has 'NOT read' "$out")"
+
 _FRC2=0
 fetch_board_cards() { return "$_FRC2"; }
 for _FRC2 in 1 2; do
@@ -342,6 +356,77 @@ eq "CONTROL: the source predicate SELECTS a bare count line" "true" \
    "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep 'length' | command grep '\\(' || true)")"
 eq "CONTROL: …and REJECTS it for missing \$floor" "true" \
    "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep -v '\\(\$floor)' || true)")"
+
+# ===========================================================================
+echo "== board-snapshot(1) — the api-host preflight refuses BEFORE any board is read (card#7245) =="
+# Same stub, same roster; the ONLY thing that moves is which host the host env declares. The
+# request log is the observable: a "refusal" that still fetched would leave lines in it. And rc
+# stays 0 either way — this runs from SessionStart and must never block it, so the exit code is
+# not the discriminator and asserting on it alone would pass on the defect.
+kb_stub_reset
+_sp_ok="$(snap complete)"
+eq "control: the declared host renders a snapshot" "true"  "$(has '── Dev board snapshot' "$_sp_ok")"
+eq "  …and it issued requests"                     "false" "$([[ "$(kb_stub_total)" -eq 0 ]] && echo true || echo false)"
+eq "  …and did NOT print the skip line"            "false" "$(has 'SKIPPED' "$_sp_ok")"
+
+sed 's/^export KANBAN_EXPECTED_HOST=.*/export KANBAN_EXPECTED_HOST="somewhere.else.invalid"/' \
+    "$KANBAN_HOST_ENV" > "$TMP/host-mismatch.env"
+eq "the mismatch fixture really differs (control)" "false" \
+   "$(cmp -s "$KANBAN_HOST_ENV" "$TMP/host-mismatch.env" && echo true || echo false)"
+kb_stub_reset
+export KB_STUB_SCENARIO=complete
+_sp_rc=0
+_sp_out="$(KANBAN_HOST_ENV="$TMP/host-mismatch.env" bash "$BIN" 2>/dev/null)" || _sp_rc=$?
+eq "an undeclared api host still exits 0 (never blocks SessionStart)" "0" "$_sp_rc"
+eq "  and NOTHING was requested"                   "0"     "$(kb_stub_total)"
+eq "  and the reader is TOLD the section was skipped" "true" "$(has 'SKIPPED' "$_sp_out")"
+eq "  …rather than shown an empty board list"      "false" "$(has '── Untriaged cards' "$_sp_out")"
+# ⛔ THE REMEDIATION MUST BE ON THE LINE ITSELF, and $_sp_out is captured with 2>/dev/null
+# for exactly that reason — it is the channel pair board-session-close:825 uses
+# (`board-snapshot 2>/dev/null`), and README.md's own rule is that stdout is the only stream
+# the SessionStart hook surfaces. This line used to end in "(see stderr)" and say nothing
+# else: through the real consumer that is a pointer at a discarded stream, i.e. an operator
+# told a board was skipped and given no way to find out why. card#6365 already decided this
+# channel question for this tool; the rc-7 token arm above ("no KBCARD_TOKEN_FILE declared
+# in <file>") is the shape being matched.
+eq "  …and the SKIP LINE ITSELF names the variable to set" "true" \
+   "$(has 'KANBAN_EXPECTED_HOST' "$_sp_out")"
+eq "  …and the file to set it in"                          "true" \
+   "$(has '.kanban-host.env' "$_sp_out")"
+# The REFUSED host is the stub api's ($KB_STUB_HOST) — the fixture moved the DECLARED one to
+# somewhere.else.invalid, so naming that would assert the operator's own typo back at them.
+eq "  …and the host it actually refused"                   "true" \
+   "$(has "$KB_STUB_HOST" "$_sp_out")"
+eq "  …and NOT the declared host it was measured against"  "false" \
+   "$(has 'somewhere.else.invalid' "$_sp_out")"
+# CONTROL: the three assertions above are host/var/file strings, not words that appear in
+# any skip line — the discarded STDERR does carry all three, so a `has` run against the
+# stderr-inclusive capture must find them. If this control fails, the rows above are
+# measuring the wrong stream rather than the wrong content.
+_sp_both="$(KANBAN_HOST_ENV="$TMP/host-mismatch.env" bash "$BIN" 2>&1)" || true
+eq "CONTROL: stderr does carry the remediation"            "true" \
+   "$(has 'KANBAN_EXPECTED_HOST' "$_sp_both")"
+
+echo "== …and an UNCONFIGURED install is refused, not defaulted into looking configured =="
+# ⛔ THE PREFLIGHT USED TO PASS ON A BOX WITH NO HOST ENV. This bin defaulted API to
+# `https://YOUR-KANBAN-HOST/api/v3`, which is the literal KBCARD_API in
+# examples/kanban-host.env.example — whose KANBAN_EXPECTED_HOST is `YOUR-KANBAN-HOST`. So the
+# placeholder matched itself and the guard that exists to refuse an endpoint nobody declared
+# said yes to the one nobody had configured at all. The fallback is gone; unset is unset.
+sed 's/^export KBCARD_API=.*//' "$KANBAN_HOST_ENV" > "$TMP/host-noapi.env"
+eq "the no-API fixture really dropped it (control)" "false" \
+   "$(has 'KBCARD_API' "$(cat "$TMP/host-noapi.env")")"
+kb_stub_reset
+export KB_STUB_SCENARIO=complete
+_na_rc=0
+_na_out="$(KANBAN_HOST_ENV="$TMP/host-noapi.env" bash "$BIN" 2>/dev/null)" || _na_rc=$?
+eq "no KBCARD_API still exits 0 (never blocks SessionStart)" "0" "$_na_rc"
+eq "  and NOTHING was requested"                            "0" "$(kb_stub_total)"
+eq "  and it is NOT silently treated as configured"     "true" "$(has 'SKIPPED' "$_na_out")"
+eq "  …naming the variable that is missing"             "true" "$(has 'KBCARD_API' "$_na_out")"
+eq "  …and the file to create"                          "true" "$(has '.kanban-host.env' "$_na_out")"
+eq "  …and never the placeholder host it used to invent" "false" \
+   "$(has 'YOUR-KANBAN-HOST' "$_na_out")"
 
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"

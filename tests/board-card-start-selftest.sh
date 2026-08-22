@@ -288,6 +288,39 @@ if command -v git >/dev/null 2>&1; then
     else
         bad "hooks/pre-push not readable — the call site could not be exercised"
     fi
+
+    # ── the token DECLARATION gate (card#7245) ───────────────────────────────────────────
+    # Every case above stops at the board-id gate, so the token ladder is never reached there.
+    # This block gets past it — a host-local board id plus a matching board env — so the arm
+    # under test is the one that used to fall through to ~/.kanban-dev-token: a hook on a box
+    # with no per-board token would send the SHARED credential, and did so silently.
+    git -C "$_repo" config kanban.board-id 42
+    printf 'export KB_BOARD_ID=42\n' > "$_home/.kanban-t-board.env"
+    _bcs_run
+    [[ "$_rc" -eq 0 ]] && ok "no declared token: exits 0 (never blocks a checkout)" \
+        || bad "no declared token: expected rc=0 got $_rc"
+    grep -q "no token file is declared" <<< "$_out" \
+        && ok "no declared token: refuses loudly, naming the missing declaration" \
+        || bad "no declared token: did not name it: $_out"
+    grep -q "kanban-dev-token" <<< "$_out" \
+        && bad "no declared token: still names the removed shared default: $_out" \
+        || ok "no declared token: does NOT reach for the removed shared default"
+    # WITNESS for the absence assertion above: the SAME repo and board env, with one declaration
+    # added, gets PAST this gate — it stops at the NEXT one instead (no api_base: this fixture
+    # runs with KBCARD_API='' and a scratch HOME, so there is no host env to resolve one from).
+    # Without this, a board-card-start that had started refusing everything would satisfy all
+    # three assertions above.
+    : > "$_home/board.token"
+    printf 'export KB_BOARD_ID=42\nexport KBCARD_TOKEN_FILE=%s\n' "$_home/board.token" \
+        > "$_home/.kanban-t-board.env"
+    _bcs_run
+    grep -q "no token file is declared" <<< "$_out" \
+        && bad "declared token: still refused at the token gate: $_out" \
+        || ok "declared token: gets PAST the token gate (witness)"
+    grep -q "no usable kanban api_base" <<< "$_out" \
+        && ok "declared token: stops at the NEXT gate, naming it" \
+        || bad "declared token: did not reach the api_base gate: $_out"
+
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"

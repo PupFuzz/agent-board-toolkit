@@ -111,10 +111,17 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/kbcard"
 _need -r "$BIN"
+# ⛔ --home, AND BEFORE THE SOURCE — both halves are load-bearing (card#7245). bin/kbcard
+# resolves `KB_LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"` at SOURCE time, so a
+# scratch HOME established afterwards is too late: the path is already baked from the real one.
+# Without this, running this file appended its fabricated HTTP-422/413/500 bodies to the
+# operator's live ~/.kbcard-failures.log — measured, 20 records / 8746 bytes per run — which is
+# a triage surface, so the suite was manufacturing evidence in it. The property is that the
+# suite writes NOTHING outside its scratch, and a scratch HOME buys that for every $HOME-derived
+# path in the bin at once, rather than one override per path as they are noticed.
+_mktmp_scratch --home
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines the field fns without running main()
-
-_mktmp_scratch
 
 # The verb reads KB_BOARD_ID; kb_api is stubbed so KB_API/KB_TOKEN are never used.
 export KB_BOARD_ID=1

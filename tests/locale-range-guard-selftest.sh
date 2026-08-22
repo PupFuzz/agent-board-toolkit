@@ -40,6 +40,16 @@ BIN="$ROOT/bin"
 _need -r "$BIN/_kb-board-lib.sh"
 _need -r "$BIN/kbcard"
 _need -x "$ROOT/hooks/agent-dispatch-card-start"
+# ⛔ SCRATCH HOME, AND BEFORE THE PROBES BELOW (card#7245). The guard probes drive their
+# subject by `source "$BIN/kbcard"` in a child shell, and kbcard resolves
+# `KB_LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"` at source time — so with the
+# operator's HOME inherited, every probe whose guard REJECTS (which is most of this file, by
+# design) appended a fabricated record to their live triage log. Same defect as
+# tests/kbcard-field-selftest.sh; the population is "the suite writes nothing outside its
+# scratch", and tests/suite-home-containment-selftest.sh now measures it rather than trusting
+# this comment. Hoisted here rather than left at the positive control below, which is the only
+# other $TMP user and now reads the dir this call makes.
+_mktmp_scratch --home
 export BIN ROOT
 
 # Fixtures as explicit UTF-8 BYTE escapes, not \u escapes or literals: the bytes are what
@@ -253,9 +263,9 @@ echo "== dl-a1-register-field --sentinel + adopt-to-dl <card-id>/--issue =="
 # A scratch HOME with a stub board env; the sentinel guard runs after config load and
 # before any request, and the ASCII control's next stop is the (stubbed) create.
 SENT='T="$(mktemp -d)"; export HOME="$T"
-      printf "export KBCARD_API=\"https://kanban.test/api/v3\"\n" > "$T/.kanban-host.env"
+      printf "export KBCARD_API=\"https://kanban.test/api/v3\"\nexport KANBAN_EXPECTED_HOST=\"kanban.test\"\nexport KBCARD_TOKEN_FILE=\"$T/token\"\n" > "$T/.kanban-host.env"
       printf "export KB_BOARD_ID=1\nexport KB_STAGE_BACKLOG=48\n" > "$T/.kanban-t-board.env"
-      printf "stub-token\n" > "$T/.kanban-dev-token"
+      printf "stub-token\n" > "$T/token"
       mkdir -p "$T/bin"; printf "#!/usr/bin/env bash\nexit 7\n" > "$T/bin/curl"; chmod +x "$T/bin/curl"
       export PATH="$T/bin:$PATH"
       out="$(bash "$ROOT/bin/dl-a1-register-field" --board t --sentinel "$IN" 2>&1 || true)"
@@ -342,7 +352,6 @@ for d in "$BIN" "$ROOT/hooks"; do
 done
 
 echo "== positive control: the scanner FLAGS a re-introduced bare range =="
-_mktmp_scratch
 pos="$TMP/pos"; mkdir -p "$pos"
 printf '%s\n' '    [[ "$id" =~ ^[0-9]+$ ]] || die "not numeric"' > "$pos/reminted-digit"
 printf '%s\n' 'if [[ "$k" =~ ^[A-Za-z0-9_-]+$ ]]; then :; fi'   > "$pos/reminted-alnum"

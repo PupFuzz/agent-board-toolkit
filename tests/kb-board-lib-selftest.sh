@@ -6,8 +6,11 @@
 # selftest-CI convention (no bats/shunit2; a runnable script CI invokes).
 #
 # The token LADDER is the thing under test: a board env's KBCARD_TOKEN_FILE > the host env's >
-# an ambient one > ~/.kanban-dev-token. It regressed silently once (#4325) because it is a
-# property of source ORDER that nothing exercised.
+# an ambient one. It regressed silently once (#4325) because it is a property of source ORDER
+# that nothing exercised. There is no fourth rung: card#7245 removed the baked
+# ~/.kanban-dev-token, so "nobody declared one" is a REFUSAL, and that refusal is asserted
+# beside a witness that a declared path still resolves — an rc-only assertion here would be
+# satisfied by a resolver that had stopped resolving anything at all.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -49,10 +52,15 @@ reset_env() {
     unset KBCARD_API KBCARD_TOKEN_FILE KB_API KB_BOARD_ID KB_TOKEN KB_TOKEN_FILE \
           KB_BOARD_ENV KB_HOST_TOKEN_FILE KANBAN_EXPECTED_HOST
     : > "$KANBAN_HOST_ENV"
+    # Every case below resolves an api base on kanban.test, and the api-host preflight
+    # (card#7245) refuses a host nobody declared — so the baseline fixture declares it. The
+    # preflight's OWN section re-points and unsets it deliberately; nothing else here should
+    # be measuring that guard by accident.
+    export KANBAN_EXPECTED_HOST="kanban.test"
 }
 
 # ---------------------------------------------------------------------------
-echo "== kb_resolve_env — the token ladder (board > host > ambient > default) =="
+echo "== kb_resolve_env — the token ladder (board > host > ambient; no default) =="
 
 # 1. board env's KBCARD_TOKEN_FILE wins over the host's — the case v0.8.2 regressed.
 reset_env
@@ -87,12 +95,90 @@ export KBCARD_TOKEN_FILE="$TMP/ambient.token"
 kb_resolve_env "$TMP/.kanban-x-board.env"
 eq "host KBCARD_TOKEN_FILE beats an ambient one" "$TMP/host.token" "${KB_TOKEN_FILE:-}"
 
-# 5. the ~/.kanban-dev-token default when nothing sets one.
+# 5. NOTHING declares one ⇒ rc 7, and no token file is published. There is no ~/.kanban-dev-token
+# rung any more (card#7245) — and this box HAS that file (it is written at the top of this
+# script), so the assertion is about the resolver's behaviour, not about the file's absence.
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
 echo 'KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+# ⛔ THE SENTINEL IS WHAT MAKES THE NEXT ASSERTION A MEASUREMENT. reset_env above UNSETS
+# KB_TOKEN_FILE, so "it is empty afterwards" was true before kb_resolve_env was even called —
+# the line passed against a resolver that had never touched the variable, and mutation 11
+# redded the same claim at :160 and :234 while leaving this one green. Seeding a value that
+# only the function under test can remove turns it into the check it was written to be: the
+# "CLEARED FIRST" arm of kb_resolve_env is what has to run for this to pass.
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "no declared token file is rc 7, not a default"   "7" "$rc"
+eq "  and KB_TOKEN_FILE is not published"            ""  "${KB_TOKEN_FILE:-}"
+eq "  even though ~/.kanban-dev-token EXISTS (control)" "true" \
+   "$([[ -r "$TMP/.kanban-dev-token" ]] && echo true || echo false)"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  the refusal names the file to edit"            "true" "$(has "$TMP/.kanban-x-board.env" "$msg")"
+eq "  the refusal names the line to add"             "true" "$(has 'export KBCARD_TOKEN_FILE=' "$msg")"
+# WITNESS for the two absence assertions above: the very same fixture, with one declaration
+# added, resolves. Without this, a kb_resolve_env that had stopped working entirely would
+# satisfy every line in this block.
+echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\"" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" || rc=$?
+eq "  …and the SAME fixture resolves once one is declared (witness)" "0" "$rc"
+eq "  …to the declared path"                         "$TMP/board.token" "${KB_TOKEN_FILE:-}"
+
+# ---------------------------------------------------------------------------
+echo "== kb_resolve_env — the api-host preflight (card#7245) =="
+
+# The board and host envs are FINE in every case below; the only thing that moves is which
+# host has been declared. rc 6 is reached before the token file is even located.
+mk_ok_env() {
+    reset_env
+    { echo "export KBCARD_API=\"$1\""
+      echo "export KBCARD_TOKEN_FILE=\"$TMP/host.token\""; } > "$KANBAN_HOST_ENV"
+    echo 'KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+}
+
+mk_ok_env "https://kanban.test/api/v3"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" || rc=$?
+eq "the declared host resolves (positive control)"   "0" "$rc"
+
+mk_ok_env "https://board.kanban.test/api/v3"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" || rc=$?
+eq "a subdomain of the declared host resolves"       "0" "$rc"
+
+mk_ok_env "http://kanban.test/api/v3"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" || rc=$?
+eq "http on the declared host resolves — the predicate is the HOST, not the scheme" "0" "$rc"
+
+# The rc-6 arm returns BEFORE the token file is located, so this is the arm where a stale
+# global is possible at all: a resolve that succeeded earlier in this shell has left one.
+# Populated first, on purpose — without that the "no token file was even located" assertion
+# below is satisfied by a variable that was already empty and measures nothing.
+mk_ok_env "https://kanban.test/api/v3"
 kb_resolve_env "$TMP/.kanban-x-board.env"
-eq "falls back to ~/.kanban-dev-token" "$TMP/.kanban-dev-token" "${KB_TOKEN_FILE:-}"
+eq "  (a prior resolve populated the global — control)" "$TMP/host.token" "${KB_TOKEN_FILE:-}"
+export KANBAN_EXPECTED_HOST="kanban.test"
+# The successful resolve above RESTORED its api base into this shell, and an ambient
+# KBCARD_API beats the host env's — so it has to go, or the next resolve re-reads the host
+# this case is trying to move away from.
+unset KBCARD_API
+{ echo 'export KBCARD_API="https://kanban.example.invalid/api/v3"'
+  echo "export KBCARD_TOKEN_FILE=\"$TMP/host.token\""; } > "$KANBAN_HOST_ENV"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "an undeclared host is rc 6"                      "6" "$rc"
+eq "  and no token file was even located"            ""  "${KB_TOKEN_FILE:-}"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  the refusal names the host it refused"         "true" "$(has 'kanban.example.invalid' "$msg")"
+eq "  and names the file that points there"          "true" "$(has 'KBCARD_API' "$msg")"
+
+# THE ARM THAT WOULD HAVE CAUGHT THE INCIDENT: the 00:42 write replaced ~/.kanban-host.env
+# wholesale, which deleted KANBAN_EXPECTED_HOST along with everything else. A guard that only
+# fired on "declared AND mismatched" would have been silent through exactly that write.
+mk_ok_env "https://kanban.test/api/v3"
+unset KANBAN_EXPECTED_HOST
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "NOTHING declared is rc 6 too — no host is recognised" "6" "$rc"
+export KANBAN_EXPECTED_HOST=""
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "an EMPTY declaration is rc 6 as well"            "6" "$rc"
 
 # ---------------------------------------------------------------------------
 echo "== kb_resolve_env — KBCARD_API is host-only =="
@@ -115,10 +201,14 @@ case "$msg" in
 esac
 
 # An ambient KBCARD_API still beats the host's (and does NOT trip the board-env refusal).
+# The declared host is the AMBIENT one here, because that is the base this resolve ends up
+# using — the api-host preflight judges what was resolved, not what the host env said.
 reset_env
-echo 'export KBCARD_API="https://host.test/api/v3"' > "$KANBAN_HOST_ENV"
+{ echo 'export KBCARD_API="https://host.test/api/v3"'
+  echo "export KBCARD_TOKEN_FILE=\"$TMP/host.token\""; } > "$KANBAN_HOST_ENV"
 echo 'KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
 export KBCARD_API="https://ambient.test/api/v3"
+export KANBAN_EXPECTED_HOST="ambient.test"
 kb_resolve_env "$TMP/.kanban-x-board.env"
 eq "ambient KBCARD_API beats the host's" "https://ambient.test/api/v3" "${KB_API:-}"
 
@@ -128,17 +218,27 @@ eq "KBCARD_API restored in the caller's env after resolve" "https://ambient.test
 
 # ---------------------------------------------------------------------------
 echo "== kb_resolve_env — no cross-call leak (sourcing mutates the caller's shell) =="
-# Resolving board A then board B in ONE shell: B sets no token, so it must land on the
-# DEFAULT — not on A's token. kb_resolve_env sources into the caller, so without an explicit
-# restore A's value would still be sitting there as B's "ambient" tier.
+# Resolving board A then board B in ONE shell: B declares no token, so it must NOT come away
+# with A's. kb_resolve_env sources into the caller, so without an explicit restore A's value
+# would still be sitting there as B's "ambient" tier. Since card#7245 the outcome is a
+# refusal rather than a fall to a default — same property, one fewer place to land.
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
 { echo 'KB_BOARD_ID=1'; echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$TMP/.kanban-one-board.env"
 echo 'KB_BOARD_ID=2' > "$TMP/.kanban-two-board.env"   # sets NO token
 kb_resolve_env "$TMP/.kanban-one-board.env"
 eq "board A resolves to its own token"          "$TMP/board.token"       "${KB_TOKEN_FILE:-}"
-kb_resolve_env "$TMP/.kanban-two-board.env"
-eq "board B (sets none) does NOT inherit A's token" "$TMP/.kanban-dev-token" "${KB_TOKEN_FILE:-}"
+rc=0; kb_resolve_env "$TMP/.kanban-two-board.env" 2>/dev/null || rc=$?
+eq "board B (declares none) refuses"                "7" "$rc"
+eq "  and does NOT come away with A's token"        "" "${KB_TOKEN_FILE:-}"
+# The stronger form of the same property, and the one a stale GLOBAL would break: A's value
+# is in KB_TOKEN_FILE when B's resolve starts, so "empty" above is only meaningful because
+# a failed resolve CLEARS what it did not resolve. Asserted against A's actual path.
+kb_resolve_env "$TMP/.kanban-one-board.env"
+eq "  (A resolved again, so the global is populated — control)" "$TMP/board.token" "${KB_TOKEN_FILE:-}"
+rc=0; kb_resolve_env "$TMP/.kanban-two-board.env" 2>/dev/null || rc=$?
+eq "  a REFUSED resolve leaves no stale credential path behind" "" "${KB_TOKEN_FILE:-}"
+eq "  …and no stale board env either"                          "" "${KB_BOARD_ENV:-}"
 
 # ...and the ambient tier still works after a resolve has run.
 reset_env
@@ -235,6 +335,11 @@ eq "  and the host token default STILL loaded"             "$TMP/host.token" "${
 # No host env at all must not fail (it reads no token, so it has nothing to fail on).
 reset_env
 rm -f "$KANBAN_HOST_ENV"
+# Sentinel, same reason as the rc-7 block above: reset_env UNSETS KB_API, so "empty
+# afterwards" was already true before kb_load_host_env ran and the line passed against a
+# function that never assigned. A stale KB_API from a previous host env is the thing worth
+# catching, so seed one and require this call to have overwritten it.
+KB_API="$TMP/STALE-API-FROM-A-PREVIOUS-LOAD"
 rc=0; kb_load_host_env || rc=$?
 eq "no host env → still rc 0" "0" "$rc"
 eq "  KB_API empty"           ""  "${KB_API:-}"
@@ -333,9 +438,19 @@ eq "a leaked KBCARD_TOKEN_FILE is NOT reported as this board's" "" \
    "$(get1 "$TMP/.kanban-noheld-board.env" KBCARD_TOKEN_FILE)"
 
 # kb_board_env_get must not leak the board env into the caller.
+# ⛔ CALLED DIRECTLY, NOT THROUGH get1 — and that is the whole assertion. get1 runs
+# kb_board_env_get inside a `$( )` command substitution, which is itself a subshell, so a
+# leak could never have reached this shell no matter what the function did: routed through
+# get1 this line was incapable of failing, and stayed green under a mutation that replaced
+# the function's own `( )` isolation with a plain `{ }` group. Driving the function in THIS
+# shell is what puts its isolation, rather than get1's, under test. The sentinel is the
+# second half: the board env sets KB_BOARD_ID=42, so a leak OVERWRITES a value the caller
+# owns — asserting an empty string could not tell "did not leak" from "never ran".
 reset_env
-get1 "$TMP/.kanban-a-board.env" KBCARD_TOKEN_FILE >/dev/null
-eq "does not leak the board env's KB_BOARD_ID into the caller" "" "${KB_BOARD_ID:-}"
+KB_BOARD_ID="SENTINEL-OWNED-BY-THE-CALLER"
+kb_board_env_get "$TMP/.kanban-a-board.env" KBCARD_TOKEN_FILE >/dev/null
+eq "does not leak the board env's KB_BOARD_ID into the caller" \
+   "SENTINEL-OWNED-BY-THE-CALLER" "${KB_BOARD_ID:-}"
 
 # ---------------------------------------------------------------------------
 echo "== kb_board_roster — the roster file, then DISCOVERY as the fallback =="

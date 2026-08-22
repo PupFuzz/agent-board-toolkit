@@ -335,6 +335,26 @@ eq "no board env → rc 0"                            "0" "$rc"
 eq "no board env → mints local-floor + 1"           "DL-0301" "$out"
 eq "no board env → says it is skipping the board check" "true" "$(has 'skipping board check' "$err")"
 eq "no board env → never reached the API"           "0" "$(kb_stub_total)"
+# ⛔ AND THE "CAUSE" IT NAMES IS THE REAL ONE, not a list (card#7245). This line used to
+# enumerate kb_resolve_env's rcs 3/4/5 longhand — a copy of a contract that had since grown
+# rcs 6 (an api host nobody declared) and 7 (no token file declared), so the two newest causes
+# printed five reasons that were all false. Under --require-counter it is the ONLY thing the
+# operator gets: that mode refuses before the offline scan's unmuted board read, and its
+# refusal ends "Fix the cause above", which the enumeration made unactionable.
+eq "no board env → does NOT enumerate causes it did not check" "false" \
+   "$(has 'a board env that sets KBCARD_API' "$err")"
+run_ndl --board nosuchboard --require-counter
+eq "strict + no board env → refuses at rc 4"        "4" "$rc"
+eq "strict + no board env → mints NOTHING"          ""  "$out"
+eq "strict + no board env → still no enumeration"   "false" \
+   "$(has 'a board env that sets KBCARD_API' "$err")"
+# The relay itself: resolve_board_cfg's OWN reason reaches the operator in the mode where
+# nothing else will print it. Without the relay this is the arm that said "Fix the cause
+# above" with no cause above it.
+eq "strict + no board env → relays the actual reason" "true" \
+   "$(has 'skipping board check' "$err")"
+eq "strict + no board env → and still says what it refused" "true" \
+   "$(has 'refusing to mint' "$err")"
 
 # --- the fallback is ANNOUNCED, and --require-counter refuses it (card#7214) -------------------
 # THE DEFECT, reproduced network-free: with the counter endpoint unavailable, next-dl printed a

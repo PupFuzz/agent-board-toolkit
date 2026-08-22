@@ -67,11 +67,16 @@
 # "no board is configured": a named, reachable board holding a real floor reaches the
 # first of these, and a named, reachable board answering 200 reaches the second.
 #   (a) a RESOLVE failure, where no request is issued at all. Its members are
-#       resolve_board_cfg's own exit paths (below), derived from it and from
-#       kb_resolve_env's return contract: curl or jq missing; an unreadable/absent board
-#       env; no api_base for kb_resolve_env to publish, e.g. no ~/.kanban-host.env (rc 3);
-#       a board env that sets KBCARD_API (rc 4); a missing or unreadable token file
-#       (rc 5); a resolved config carrying no board id. kb_resolve_env's rc 2 is
+#       resolve_board_cfg's own exit paths (below) — curl or jq missing, an
+#       unreadable/absent board env, and a resolved config carrying no board id — plus
+#       EVERY nonzero rc of kb_resolve_env, whose return contract is stated in full on
+#       that function in bin/_kb-board-lib.sh and is deliberately NOT copied here. The
+#       copy that used to stand in this spot listed rcs 3/4/5 and was written before the
+#       contract grew rcs 6 (an api host nobody declared) and 7 (no token file declared),
+#       so it read as a complete enumeration while missing two members — and the runtime
+#       message below repeated it, telling operators five things that were not the cause.
+#       One owner, no restatement (card#7245). The one qualifier that IS local, because it
+#       is a fact about this caller and not about the contract: kb_resolve_env's rc 2 is
 #       pre-empted by resolve_board_cfg's own readable-board-env test.
 #   (b) a SUCCESSFUL read out of which no dl_number came — the ordinary case being a
 #       complete read of a board that carries no stamp at all. max_int's grep then matches
@@ -225,16 +230,29 @@ dl_sequence_call() (
     # The rc-1 cause channel. Written HERE and not by the caller because this is the only
     # scope that knows WHICH of the four happened; the caller sees one exit code.
     unusable() { echo "next-dl: NO AUTHORITATIVE NUMBER — the $label $1." >&2; }
-    # resolve_board_cfg's own stderr stays muted (the offline scan's board read below calls
-    # it again UNmuted, so the specific reason is printed once per run rather than twice);
-    # this line is what tells the reader the endpoint was never even called. It ENUMERATES
-    # the reasons rather than pointing at that one — under --require-counter the refusal
-    # exits before the board read, so a line promising "the reason follows" would be false
-    # in exactly the mode that needs it most.
-    cfg="$(resolve_board_cfg 2>/dev/null)" || {
-        unusable "was never called: this board's config could not be resolved (missing curl/jq, an unreadable/absent board env, a board env that sets KBCARD_API, a missing token file, or a config carrying no board id)"
+    # ⛔ THE CAUSE IS RELAYED, NEVER ENUMERATED. This line used to list the resolve failures
+    # longhand — a copy of kb_resolve_env's return contract, written before that contract grew
+    # rcs 6 and 7, so an undeclared api host (rc 6) or an undeclared token file (rc 7) printed
+    # a five-item list containing neither: measured, `next-dl kanban` against a host env whose
+    # KANBAN_EXPECTED_HOST did not match its KBCARD_API printed all five causes and then
+    # `board config incomplete (rc=6)` from a LATER call. A restatement of a contract owned
+    # elsewhere is what went stale; the fix is to have no copy, not a longer one.
+    # kb_resolve_env's own contract block in bin/_kb-board-lib.sh owns the rc list, and
+    # resolve_board_cfg already prints the specific reason — so capture that and relay it.
+    #
+    # Emitted HERE only under --require-counter: that mode refuses before the offline scan's
+    # board read, which is the UNmuted second call that prints this same reason in the normal
+    # path. So the reason reaches the operator exactly once in both modes — and the
+    # "Fix the cause above" the refusal prints now has a real cause above it, which under the
+    # old enumeration it did not.
+    cfgerr="$(mktemp)"
+    cfg="$(resolve_board_cfg 2>"$cfgerr")" || {
+        unusable "was never called: this board's config could not be resolved"
+        [[ "$require_counter" -eq 1 ]] && cat "$cfgerr" >&2
+        rm -f "$cfgerr"
         exit 1
     }
+    rm -f "$cfgerr"
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) + portable
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).

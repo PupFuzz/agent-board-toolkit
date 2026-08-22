@@ -135,11 +135,15 @@ pin "board-card-start a b" 0 "board-card-start: unexpected extra argument: b —
 # a MINIMAL WORKING config — nothing is faked about the guard itself, and the unknown-command arm
 # is the witness that config really resolved (a broken fixture says "board env file not readable"
 # there and reds). Still network-free: every arm exits inside main's dispatch, before any request.
-unset KBCARD_BOARD_ENV KBCARD_API KBCARD_TOKEN_FILE
+unset KBCARD_BOARD_ENV KBCARD_API KBCARD_TOKEN_FILE KANBAN_EXPECTED_HOST
 KBC="$HERE/../bin/kbcard"
 _need -x "$KBC"
 : > "$TMP/board.token"
+# KANBAN_EXPECTED_HOST is part of "a MINIMAL WORKING config" since card#7245: without it the
+# api-host preflight refuses before dispatch, and every arm below would report THAT instead of
+# the guard under test. It names the fixture's own host, so nothing real is reachable either way.
 { echo "export KBCARD_API=\"https://kbcard-guard.invalid/api/v3\""
+  echo "export KANBAN_EXPECTED_HOST=\"kbcard-guard.invalid\""
   echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$HOME/.kanban-host.env"
 echo 'KB_BOARD_ID=42' > "$HOME/.kanban-dev-board.env"
 

@@ -99,7 +99,15 @@ chmod 600 ~/.kanban-host.env
 # and set KANBAN_EXPECTED_HOST to that host (see below)
 ```
 
-**Also export `KANBAN_EXPECTED_HOST`** here (the host part of `KBCARD_API`, e.g. `kanban.example.com`). It is the anti-exfiltration guard's expected host — the local `board-card-start` post-checkout hook (and any locally-run `promote-released-cards`) **refuses to send the writeback token** unless the resolved `api_base` host matches it, and there is **no baked default**. Without it, `board-card-start` fail-softs (no card move). This is the local counterpart to the CI-side `KANBAN_EXPECTED_HOST` in §4/§5; one setting here activates card automation for every repo on the host. (CI jobs set it in their own env, not from this file.)
+**Also export `KANBAN_EXPECTED_HOST`** here (the host part of `KBCARD_API`, e.g. `kanban.example.com`). There is **no baked default**, and it is now load-bearing for the whole toolkit rather than for the two token-sending guards alone:
+
+- **Every tool preflights the api base it resolved.** Before a token file is even located, the host of the resolved `KBCARD_API` must equal `KANBAN_EXPECTED_HOST` or be a subdomain of it. Otherwise the run **refuses at setup**: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field` and `adopt-to-dl` exit `2`; `next-dl` warns and skips the board check; `board-stats` exits `1`; `board-snapshot` prints a `SKIPPED` line and stays non-blocking. **An unset or empty `KANBAN_EXPECTED_HOST` refuses too** — with nothing declared, no host is recognised. The predicate is the **host alone**, so an `http://127.0.0.1:8000/api/v3` install passes this preflight as long as it declares `KANBAN_EXPECTED_HOST=127.0.0.1`.
+  - **One tool is an exception, and it is the card-movement hook.** `board-card-start` guards the api base it is about to send the token to with the *second* guard below, which requires **`https://`** as well as the host — so on a plaintext `http://` board that hook **fail-softs and moves no card** (`api_base '…' failed the https-host trust guard`), while every other tool runs normally. A plaintext local board is therefore a supported install for reading and for `kbcard`, but card automation on checkout will not run on it. If you need the hook, terminate TLS in front of the board and point `KBCARD_API` at the `https://` URL.
+- **It is also the anti-exfiltration guard's expected host** — the local `board-card-start` post-checkout hook (and any locally-run `promote-released-cards`) **refuses to send the writeback token** unless the committed `.release-pr.json` `api_base` host matches it. Without it, `board-card-start` fail-softs (no card move).
+
+This is the local counterpart to the CI-side `KANBAN_EXPECTED_HOST` in §4/§5; one setting here activates card automation for every repo on the host. (CI jobs set it in their own env, not from this file.)
+
+> **If a tool suddenly refuses with `api base host '…' is not '…'`, read it as a question about `~/.kanban-host.env`, not about the tool.** Either the host you meant is not the one declared — fix whichever line is wrong — or something rewrote that file. The refusal names both ways out.
 
 ## 3b. Per-board config + token
 
@@ -121,9 +129,11 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 > `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. A board env that sets it is **refused** (as of v0.14.0) rather than silently honored, with a message naming the file. What "refused" means per tool: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, and `adopt-to-dl` **exit 2 and do nothing**; `next-dl` **warns and skips the board check**, then still mints from its offline scan (fail-soft by design — but that scan is non-atomic, so fix the board env rather than rely on it; since card#7214 the degrade also prints the cause, and `next-dl --require-counter` refuses at **rc 4** instead of minting from it). `board-snapshot` and `board-card-start` never read a board env's `KBCARD_API` at all, so they ignore one.
 
-> **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one > `~/.kanban-dev-token`.** So a per-board token set here wins over a host-level default — that is the point of setting it here. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
+> **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one.** So a per-board token set here wins over a host-level default — that is the point of setting it here. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
+>
+> ⛔ **There is no fourth tier. Step (c) above is REQUIRED unless the host env declares one.** A board for which none of the three tiers names a token file is **refused**, with a message naming the board env and the exact line to add. `~/.kanban-dev-token` was a baked default until card#7245, and being one file for every board that had not set its own is what made a single overwrite of it take every board down at once.
 
-> **The default board (no `--board` flag)** reads `~/.kanban-dev-board.env` + `~/.kanban-dev-token`. On a box whose primary board is **not** named `dev`, you have three ways to work flag-free — pick one:
+> **The default board (no `--board` flag)** reads `~/.kanban-dev-board.env`, and takes its token from whatever that file (or the host env) declares. On a box whose primary board is **not** named `dev`, you have three ways to work flag-free — pick one:
 > - name that board `dev` (env at `~/.kanban-dev-board.env`), **or**
 > - **set `KBCARD_BOARD_ENV`** to your primary board's env file — e.g. `echo 'export KBCARD_BOARD_ENV="$HOME/.kanban-<name>-board.env"' >> ~/.profile` (recommended on a single-board box), **or**
 > - always pass `--board <name>`.
@@ -331,9 +341,15 @@ git clone <agent-board-toolkit-remote-url> ~/agent-board-toolkit
 # owner, and the two guards in it are the difference between installing your tools and planting a
 # symlink cycle inside the clone above. Then:
 hash -r
+# §3 host config — BOTH lines, not just the api base: KANBAN_EXPECTED_HOST is what makes the
+# resolved KBCARD_API a host this box recognises, and with it unset every host is unrecognised.
+cp ~/agent-board-toolkit/examples/kanban-host.env.example ~/.kanban-host.env && chmod 600 ~/.kanban-host.env
+# ...edit KBCARD_API and KANBAN_EXPECTED_HOST in ~/.kanban-host.env...
 cp ~/agent-board-toolkit/examples/kanban-board.env.example ~/.kanban-dev-board.env && chmod 600 ~/.kanban-dev-board.env
 # ...fill in IDs in ~/.kanban-dev-board.env...
 printf '%s' 'TOKEN_HERE' > ~/.kanban-dev-token && chmod 600 ~/.kanban-dev-token
+# ...and DECLARE it: there is no default token path, so this line is not optional.
+echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-dev-token"' >> ~/.kanban-dev-board.env
 kbcard list --column backlog        # -> [ {...}, ... ] on stdout, `… <M> of <N> board cards matched`
                                     #    on stderr (the filter's denominator)   ✓ install verified
 ```

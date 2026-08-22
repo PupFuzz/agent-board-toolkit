@@ -313,11 +313,16 @@ _mktmp_scratch
 # usage path this drives never consults any of it — it just has to get PAST the resolver.
 KBHOME="$TMP/fakehome"; mkdir -p "$KBHOME"
 printf 'KB_BOARD_ID=1\n'                                                  >"$KBHOME/.kanban-dev-board.env"
-printf 'KBCARD_API=http://127.0.0.1:1/api\nKBCARD_TOKEN_FILE=%s\n' "$KBHOME/.kanban-dev-token" \
-                                                                          >"$KBHOME/.kanban-host.env"
+# KANBAN_EXPECTED_HOST is part of the planted config since card#7245: the resolver now refuses
+# an api host nobody declared, so without it the driver would again fail BEFORE the usage write
+# and this gate would read UNREACHED — the same wrong-box failure in a new coat. It names the
+# loopback address this fixture already points at, and the `http://` there is the live witness
+# that the preflight's predicate is the HOST alone and carries no scheme rule.
+printf 'KBCARD_API=http://127.0.0.1:1/api\nKANBAN_EXPECTED_HOST=127.0.0.1\nKBCARD_TOKEN_FILE=%s\n' \
+       "$KBHOME/.kanban-dev-token"                                        >"$KBHOME/.kanban-host.env"
 printf 'not-a-real-token\n'                                               >"$KBHOME/.kanban-dev-token"
 declare -A DRIVER_ENV=(
-  ["bin/kbcard"]="HOME=$KBHOME KBCARD_BOARD_ENV= KANBAN_HOST_ENV= KBCARD_API= KBCARD_TOKEN_FILE="
+  ["bin/kbcard"]="HOME=$KBHOME KBCARD_BOARD_ENV= KANBAN_HOST_ENV= KBCARD_API= KBCARD_TOKEN_FILE= KANBAN_EXPECTED_HOST="
 )
 
 # ── the one hard prerequisite ───────────────────────────────────────────────────────────────
