@@ -999,30 +999,167 @@ finding with no owner is abandoned, not filed.
   CHANGELOG entry POINT here; the false sentence was minted into three surfaces in one change, which
   is what made re-stating it three times the wrong correction.
 
-  **TWO members of this class stay OPEN on this tool, and neither is a residual of the fix above —
-  each is the same defect on a surface the approval did not cover:**
+  **DISPOSITION of the FLOW half — CLOSED (card#7235), and it is the same fix one section lower
+  rather than a second mechanism.** `_bs_one_board` sets `flow_ok=true` on a window it could only
+  partly read and appends *"changelog window INCOMPLETE: … — the flow counts below are a floor, not
+  a total"*, and then `created`, `moved`, `same-stage moves` and every per-transition,
+  per-resolution and per-wash count rendered unqualified under it. Every one of them now carries the
+  `≥` the stock section carries, through the SAME `fl($f)` carrier card#7228 built — the marker takes
+  a cell of the existing right-padded column, so alignment holds, proven by a strip control that
+  compares the floored render to the complete one as a byte equality rather than by eye.
 
-  - **`--format json` still carries no completeness field at all.** This was left alone on purpose:
-    it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to be
-    enumerated before a key consumers must honour is added. The document behind the renderer does
-    now carry a `stock_complete` (the text renderer computes nothing of its own and needed a field
-    to read), and the `json` arm STRIPS it — so the emitted object is the same six keys it always
-    was, asserted in `tests/board-stats-selftest.sh` on both a whole and a partial read, and the
-    second half of card#7228 is that `del` plus its doc entry. **The unmeasured bound is unchanged
-    and is the first step of that half, not a detail of it:** nothing in this repository consumes
-    `board-stats --format json` (grepped), which is a statement about this repository and not about
-    who runs the tool.
-  - **The FLOW counts under a truncated or unreadable changelog window still print bare**
-    (**card#7235**) — named here by sibling audit (canon #7) while shipping the stock fix, not by a
-    fresh report. It is the
-    identical shape one section lower in the same renderer: `_bs_one_board` sets `flow_ok=true` on a
-    window it could only partly read and appends *"changelog window INCOMPLETE: … — the flow counts
-    below are a floor, not a total"*, and then `created`, `moved`, `same-stage moves`, and every
-    per-transition / per-resolution / per-wash count renders unqualified under it. The `≥` carrier
-    is already in the render program (`fl($floor)`), so the fix is the same shape; it is an
-    operator-facing report change and therefore ask-gated exactly as the stock half was.
+  **The denominator is wider than the card named it, and the two additions are the reason it was
+  re-derived instead of copied.** The card listed `created` / `moved` / `same-stage moves` / every
+  transition, resolution and wash count. Two more classes of quantity print in that section and both
+  are floors for the same reason:
 
-  **So the class is OPEN.** Recording it closed over these would be the same failure this document
+  - **the human/service/unattributed numbers inside every split note** — they count the same rows
+    the line they hang off counts, so `split_note` now takes the marker as an argument rather than
+    reading none;
+  - **`transitions: none in window` / `resolutions: none in window`** — a ZERO is a quantity, and
+    `none in window` asserts a TOTAL of zero that survives being quoted out of the ⚠ line exactly as
+    a digit does. It is the one claim in the section the marker cannot reach, because there is no
+    number to prefix, so a floored render names the population instead — `none in the events read` —
+    which is the route `idq` already takes for the oldest-card id, not a new one. A complete window
+    still prints `none in window`, with its own control.
+
+  Two things in that section are deliberately NOT marked, and neither is a quantity: the stage
+  LABELS, and the `⤷ the changelog reaches back only to …` line, whose instant is the oldest row that
+  WAS read and is therefore exact rather than a floor.
+
+  **The two completeness states are SEPARATE, and that is a ruling, not an implementation detail.**
+  `flow_complete` is derived at the changelog guard and `stock_complete` at the card guard, from two
+  reads with two failure modes: a whole card read under a partly-read window floors the flow half
+  ALONE, and the reverse floors the stock half ALONE. One shared flag would floor a section that was
+  read whole, and a qualifier on every report is a worse defect than the one this closes — so both
+  directions are asserted against the same bin in the same run.
+
+  **The two flags are NOT fail-closed the same way, and the review that found it is why this says
+  so.** `flow_complete` is initialised false with exactly ONE arm — an empty `error`, the window
+  read to its cutoff — claiming otherwise, and that much reads like `stock_complete`. It is not the
+  same dispatch. `stock_complete` switches on an **enumerated rc**, so an rc nobody listed lands in
+  `*)` and floors by default. `flow_complete` switches on the **absence of a string** that
+  `_bs_window_rows`' own exits have to remember to set: the completeness claim is driven off
+  exactly the break sites that set `err`, and a `break` added to that loop which does not set `err`
+  reaches the same arm as a window read to its cutoff and claims the window is WHOLE. **That
+  direction is FAIL-OPEN**, and a future editor is entitled to know it: adding a break means adding
+  its `err=` in the same edit. **Which break sites those are is enumerated ONCE — in
+  `bin/board-stats`, in the comment above the `flow_complete` guard in `_bs_one_board` — and this
+  document deliberately carries no copy of the list.** The copy it used to carry was one short (it
+  named four, omitting the failed changelog READ, which is two messages on one break), which is
+  what a hand-synced enumeration in four places produces; the same reason the ask-gated decision
+  below is owned here and pointed at from there, in the other direction.
+
+  The nearest EXISTING instance of the shape is the short-page arm's `oldest == none` route, which
+  breaks with no `err`. `oldest` is `ep()` of the page's **last row**, so a last row whose
+  `created_at` this tool cannot read renders a truncated window as a complete one. **Measured
+  against the live board API on 2026-08-22, that read is not exposed there:** the changelog renders
+  `created_at` at second precision with a `+00:00` offset — `2026-08-22T18:57:21+00:00` on a fresh
+  row, and `2026-06-29T21:12:44+00:00` on the oldest row board 12's log still holds, i.e. at both
+  ends of a seven-page window — which `ep()` rewrites to `Z` and parses (1787425041), while the
+  fractional-second form (`2026-08-22T18:57:21.123456+00:00`) is the control and returns `null`,
+  re-run here rather than carried across. So the shape is real and
+  the live trigger is absent on the host measured — a statement about that host on that date, not
+  about every host, and not a claim that no host can produce one.
+
+  **The fix that would close the direction is ask-gated and is NOT in this branch.** Making the
+  flag affirmative — each stop declaring completeness rather than every stop declaring an error —
+  floors strictly more reports than this change does, which is an operator-facing render change and
+  therefore takes the same approval the two fixes above took. It was escalated to the operator on
+  2026-08-22 separately from this branch, as **card#7298**, which carries the recommendation and
+  the measurement; recorded here so the bin's own comment can point at one owner for the decision
+  rather than restate it.
+
+  **ONE member of this class stays OPEN on this tool, and it is not a residual of either fix —
+  it is the same defect on a surface neither approval covered:**
+
+  - **`--format json` still carries no completeness field for EITHER half.** This was left alone on
+    purpose: it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to
+    be enumerated before a key consumers must honour is added. The document behind the renderer does
+    now carry a `stock_complete` and a `flow_complete` (the text renderer computes nothing of its own
+    and needed fields to read), and the `json` arm STRIPS both — so the emitted object is the same six
+    keys it always was, asserted in `tests/board-stats-selftest.sh` on a whole read, a partial card
+    read and a partly-read window. **The unmeasured bound is unchanged and is the first step of that
+    half, not a detail of it:** nothing in this repository consumes `board-stats --format json`
+    (grepped), which is a statement about this repository and not about who runs the tool.
+
+  **TWO NEW members were found by the card#7235 sibling audit, on OTHER tools — found, not fixed,
+  because each is an operator-facing report change and therefore ask-gated exactly as these two
+  were.** **Filed 2026-08-22 as card#7291 and card#7292.**
+
+  - **card#7291 — `bin/board-session-close`'s `_bsc_advisory_leg` prints a KILLED leg's partial output on
+    STDOUT and says it is partial on STDERR, below it** (`bin/board-session-close` :797 for the
+    output, :804–:806 for the notice). A leg that hits the 60s wall clock is killed at `timeout`'s
+    rc 124; its output — which for `_kbc-archive-eligible.py` and `_kbc-stale-blocker.py` is a block
+    of counts — is printed first and unqualified, and the *"the … is INCOMPLETE, and what you see
+    above is a partial answer"* notice goes to fd 2. That is BOTH halves of card#6365 at once: the
+    qualification is on a different CHANNEL from the numbers (the exact half card#6365 closed for
+    `board-snapshot`, whose notice moved to stdout because that is the channel its consumer
+    surfaces) and it is on a LINE rather than on the values. **This route is why a scripted sweep
+    could not have found it:** the partiality does not come from a partial READ at all — this tool
+    reads no collection — it comes from a leg killed mid-run, so the "calls a paginator" predicate
+    the audit derived its population with does not select this file. The pass that found it MOVED
+    the denominator, which is exactly the shape of audit whose clean result means *a pass that moves
+    neither the numerator nor the denominator*, not *a grep came back empty*. The drift-check leg
+    at :911 splits the same two channels for the same reason — the delegate's output on stdout, the
+    degraded-coverage ⚠ on stderr — so a fix here has two sites in this file, not one.
+  - **card#7292 — `bin/_kbc-stale-blocker.py`'s summary block prints bare counts under a partial corpus**
+    (:627–:638). A declared board that fails to read is warned on stderr and the run continues, and
+    the summary then prints `{total_live}` live cards indexed, `{total_open}` open cards scanned,
+    `{examined}` citations examined, then `no blocking marker before it: N`, each `excluded, …: N`,
+    and `asserted as a blocker: N → M flagged, K out-of-tenant, U unresolved`. The `N of M declared
+    board(s) read` clause rides the SAME line as the first three and qualifies nothing below it.
+    ⚠ **Not every number there is a floor, and a fix must not assume it is:** `unresolved` moves the
+    other way — a citation naming a card on an unread board resolves as unresolved *because* the
+    board was unread — so a blanket `≥` would be a wrong claim on that one. It needs the same
+    per-value derivation this card did, not a copied prefix.
+
+  **The audit's denominator, so a later pass can re-derive it rather than inherit it.** Population:
+  every script in `bin/` + `hooks/` (**28**), narrowed by the property that makes a partial render
+  possible — the tool prints a QUANTITY on an operator-facing channel from an input it knows was
+  incomplete. **The outer population is scripted; the narrowing to 14 is NOT, and saying otherwise
+  was the defect the card#7235 review caught in this paragraph.** Both commands, so a later pass
+  re-runs them rather than quoting these figures:
+
+  ```sh
+  find bin hooks -maxdepth 1 -type f | wc -l                      # 28 — the population
+  command grep -rlE 'fetch_board_cards|fetch_whole_board|fetch_board\b|changelog\.json|search/code|os\.walk|\.rglob|\.iterdir' \
+      bin hooks --exclude-dir=__pycache__ | sort                   # 12 — the read-driven sweep
+  ```
+
+  Measured 2026-08-22: the sweep returns **12**, not the 14 below. It selects every tool that
+  accumulates a COLLECTION through a board read, and the two it cannot select —
+  `bin/install-board-hooks` and `bin/release-tag-check` — were added by READING: one iterates the
+  hook set it installs, the other polls a remote for a tag, and neither reaches this predicate
+  through any token. So the 14 is a hand-enumeration that a token sweep starts and a read finishes,
+  and the sweep is shipped here as the reproducible part rather than described as the whole
+  derivation. Each of those 14 was then READ at its own read site and classified REFUSE vs
+  RENDER-ANYWAY: `promote-released-cards` dies on every truncation path, `kbcard` refuses at three of its four `fetch_board_cards` sites and makes no
+  operator-facing claim at the fourth, and `next-dl` / `dl-a0-backfill-triaged` / `board-card-start`
+  all refuse, `bin/_kb-board-lib.sh` IS the paginator and renders nothing, and
+  `bin/install-board-hooks` / `bin/release-tag-check` print no quantity derived from a partial read
+  at all. Two RENDER-ANYWAY tools are non-members on their content rather than on their arm:
+  `bin/gh-code-search` puts `incomplete_results` on the SAME LINE as `total_count` in every branch by
+  explicit design, and `bin/_dependabot-reconcile.py` prints *"a population that was never measured"*
+  rather than a number it cannot stand behind. `bin/_kbc-archive-eligible.py` is ADJACENT and
+  deliberately not counted: a board it could not read is warned to stderr with no stdout row, which is
+  card#6365's channel half — but every number it prints belongs to a board it DID read, so no printed
+  quantity is a floor. **The arithmetic closes on 14:** 6 refuse or render nothing
+  (`promote-released-cards`, `kbcard`, `next-dl`, `dl-a0-backfill-triaged`, `board-card-start`,
+  `_kb-board-lib.sh`), 2 print no such quantity (`install-board-hooks`, `release-tag-check`), 2 are
+  non-members on content (`gh-code-search`, `_dependabot-reconcile.py`), 1 is adjacent
+  (`_kbc-archive-eligible.py`), and **3 are members** — `board-stats` (both halves now closed, the
+  json field open), `board-snapshot` (closed by card#6365, with the candidate below), and
+  `_kbc-stale-blocker.py` (new, above). `board-session-close` is the 15th, and it is the one this
+  population did not contain. **One candidate is recorded undecided rather than either way:**
+  `bin/board-snapshot`:177 says *"the in-flight count below is a FLOOR"* and an in-flight LIST follows
+  it, so the notice speaks about the count and is silent about the list — the same wording gap
+  card#7228's review found for `(#11)`. It is weaker than that one, because a list asserts no
+  superlative the way "the oldest is #11" does, and it is left as a question for whoever takes the
+  `board-snapshot` surface next rather than answered here.
+
+  **So the class is OPEN**, with three members outstanding: the `--format json` field on this tool,
+  and the two new ones above. Recording it closed over these would be the same failure this document
   records for the `has()` class — the first cut of that section said it had.
 
   **The SessionStart delivery bound, filed not fixed (card#6365 review).** `board-snapshot`'s
