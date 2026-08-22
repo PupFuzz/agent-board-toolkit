@@ -26,8 +26,11 @@ git clone https://github.com/PupFuzz/agent-board-toolkit.git ~/agent-board-toolk
 
 # 2. then follow docs/INSTALL.md top to bottom. You supply the three things the
 #    toolkit can't know — all live OUTSIDE the repo (no secrets/host in the code):
-#    a) your kanban host  -> ~/.kanban-host.env        (KBCARD_API)        [examples/kanban-host.env.example]
-#    b) an API token      -> ~/.kanban-<name>-token    (chmod 600)
+#    a) your kanban host  -> ~/.kanban-host.env        (KBCARD_API *and*   [examples/kanban-host.env.example]
+#                                                        KANBAN_EXPECTED_HOST — an api host
+#                                                        nobody declared is refused, not guessed)
+#    b) an API token      -> ~/.kanban-<name>-token    (chmod 600) — and DECLARE its path in
+#                                                        KBCARD_TOKEN_FILE; there is no default
 #    c) your board's IDs  -> ~/.kanban-<name>-board.env (stage/type/cf IDs) [examples/kanban-board.env.example]
 #       (the example file documents how to read the IDs from the
 #        workflows / card_types / custom_fields endpoints)

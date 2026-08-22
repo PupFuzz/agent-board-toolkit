@@ -11,7 +11,10 @@ set -uo pipefail
 # default. The TOKEN IS NOT READ HERE: each board may point KBCARD_TOKEN_FILE at its
 # own token, so it is read per-board inside board_report() below. Reading one
 # token up-front and exiting when it was missing meant a host that uses only
-# per-board tokens (no ~/.kanban-dev-token) rendered NOTHING at SessionStart.
+# per-board tokens rendered NOTHING at SessionStart. Since card#7245 a board whose
+# token file NOBODY declared is reported per-board rather than falling through to a
+# shared default, and the api base is preflighted against $KANBAN_EXPECTED_HOST
+# before any board is read.
 # Fail-soft throughout — a missing config never blocks SessionStart. See INSTALL.md.
 KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
 [ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
@@ -130,10 +133,14 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # shellcheck disable=SC1090
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { board_unread "$label" "env $envf sets no KB_BOARD_ID"; return 0; }
-    # Explicit token ladder: this board's > the host's > the default. Per-board fail-soft —
-    # one board's unreadable token must not blank the others. Resolved once so the read and
-    # its failure message can't drift to different files.
-    local tokfile="${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}"
+    # Explicit token ladder: this board's > the host's. There is NO third, defaulted tier —
+    # card#7245 removed the baked ~/.kanban-dev-token, because a board falling through to it
+    # was using a credential nobody chose for it and shared with every other board. Per-board
+    # fail-soft — one board's undeclared or unreadable token must not blank the others.
+    # Resolved once so the read and its failure message can't drift to different files.
+    local tokfile
+    tokfile="$(kb_declared_token_file "$envf" "${KBCARD_TOKEN_FILE:-}" "${KB_HOST_TOKEN_FILE:-}")" \
+        || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env"; return 0; }
     kb_read_token "$tokfile" \
         || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
     local data rc
@@ -276,6 +283,16 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
 # can source this file for its pure functions (board_env_scrub / board_report)
 # without rendering a live snapshot. Mirrors the main-guard every other bin uses.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+
+# PREFLIGHT, before any board is read: the api base must name a host somebody declared
+# (card#7245). Fail-SOFT like everything else here — a SessionStart hook must never block —
+# but the notice goes out under no board's header, because it is not one board's problem:
+# every board on this box would send its bearer to the same unrecognised host. The guard has
+# already said which value and which file on stderr.
+if ! kb_require_known_api_host "$API"; then
+    echo "── Dev board snapshot — SKIPPED: the resolved kanban api host is not a declared one (see stderr) ──"
+    exit 0
+fi
 
 # Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
 # so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).

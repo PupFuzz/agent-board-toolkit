@@ -573,10 +573,13 @@ _bs_one_board() {
         if [[ -z "$board_id" ]]; then
             fails+=("env $envf sets no KB_BOARD_ID — this board contributes nothing to the report")
         else
-            # This board's token > the host's > the default, resolved once so the read and any
-            # failure message cannot name different files.
-            tokfile="${tokfile:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}"
-            if ! kb_read_token "$tokfile"; then
+            # This board's token > the host's, resolved once so the read and any failure
+            # message cannot name different files. There is no defaulted third tier:
+            # card#7245 removed the baked ~/.kanban-dev-token, which was the credential every
+            # board that declared none silently shared.
+            if ! tokfile="$(kb_declared_token_file "$envf" "$tokfile" "${KB_HOST_TOKEN_FILE:-}")"; then
+                fails+=("no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env — this board contributes nothing to the report")
+            elif ! kb_read_token "$tokfile"; then
                 fails+=("token file unreadable: $tokfile — this board contributes nothing to the report")
             else
                 fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP" \
@@ -700,6 +703,11 @@ cut="$(_bs_since_epoch "$since" "$now")" || exit 2
 kb_load_host_env   # cannot fail (reads no token)
 API="${KB_API:-}"
 [[ -n "$API" ]] || { echo "$KB_PROG: KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; exit 1; }
+# PREFLIGHT before any board is read (card#7245): an api base whose host nobody declared is
+# refused here, once, rather than becoming N per-board 401s. This is a REPORT, so the policy
+# is a hard exit rather than the per-board fail-soft the read failures take — there is no
+# partial report to salvage when every row would come from the same unrecognised host.
+kb_require_known_api_host "$API" || exit 1
 
 # The roster is the lib's (the ~/.kanban-snapshot-boards file board-snapshot reads, else every
 # board env on the box). --board addresses a board whether or not the roster names it, taking

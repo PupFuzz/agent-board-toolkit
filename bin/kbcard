@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # kbcard — thin wrapper for the kanban-board production board API
-# Lives outside the kanbanboard repo. Token path + board state live in
-# ~/.kanban-dev-token and ~/.kanban-dev-board.env so the script is portable.
+# Lives outside the kanbanboard repo. Board state lives in ~/.kanban-<name>-board.env
+# and the token in whatever file that env (or ~/.kanban-host.env) DECLARES via
+# KBCARD_TOKEN_FILE, so the script is portable. There is no default token path:
+# ~/.kanban-dev-token was one until card#7245, and being one file for every board is
+# what let a single overwrite take them all out at once.
 #
 # Usage:
 #   THE THREE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the

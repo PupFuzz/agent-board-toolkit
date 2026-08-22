@@ -94,6 +94,71 @@ kb_require_https_host "https://kanban.victim.corp/api/v3" 2>/dev/null \
     || ok "empty KANBAN_EXPECTED_HOST fails closed (lib)"
 export KANBAN_EXPECTED_HOST="$saved"; EXPECT_HOST="$saved"
 
+# ---------------------------------------------------------------------------------------
+echo "== kb_url_host — ONE authority parser, asserted directly (card#7245) =="
+# Both guards now read the host from kb_url_host, so the exfiltration matrix above is a
+# statement about THIS function. Asserting it directly as well is not duplication: the guards
+# can only report accept/refuse, which cannot distinguish "parsed evil.example and refused it"
+# from "parsed nothing and refused everything" — and a parser that returns "" for every input
+# passes every refuse row above while being useless.
+uh() { eq "kb_url_host $1" "$2" "$(kb_url_host "$1")"; }
+uh "https://kanban.victim.corp/api/v3"           "kanban.victim.corp"
+uh "https://kanban.victim.corp:8443/api/v3"      "kanban.victim.corp"
+uh "https://u:pw@kanban.victim.corp/api/v3"      "kanban.victim.corp"
+uh "https://good.host@evil.example/"             "evil.example"
+uh "https://evil.example#@kanban.victim.corp"    "evil.example"
+uh "https://evil.example?@kanban.victim.corp"    "evil.example"
+uh "https://evil.example:443#@kanban.victim.corp" "evil.example"
+uh "http://127.0.0.1:1/api"                      "127.0.0.1"
+uh ""                                            ""
+# A SCHEMELESS string whose path carries a '://' must not be re-read as a scheme — the reason
+# the strip is gated on an anchored scheme match instead of a bare `${u#*://}`.
+uh "kanban.victim.corp/p?x://y"                  "kanban.victim.corp"
+
+# ---------------------------------------------------------------------------------------
+echo "== kb_require_known_api_host — the same hosts, a host-ONLY predicate (card#7245) =="
+# THE STATED SCOPE IS THE HOST AND NOTHING ELSE, so this block is the two-sided proof of that:
+# every host-based refusal above must still refuse here, and the two rows that differ from
+# kb_require_https_host — http:// and ftp:// on the DECLARED host — must ACCEPT, because this
+# guard judges the operator's own ~/.kanban-host.env, where an http://127.0.0.1 board is a
+# legitimate install. A copy of the https guard would silently refuse those with a message
+# about a host.
+kcheck() {
+    local want="$1" url="$2" label="$3" g
+    kb_require_known_api_host "$url" 2>/dev/null && g=accept || g=refuse
+    [[ "$g" == "$want" ]] && ok "$label ($want)" || bad "$label — $g, want $want   [$url]"
+}
+kcheck accept "https://kanban.victim.corp/api/v3"        "the declared host"
+kcheck accept "https://board.kanban.victim.corp/api/v3"  "a subdomain of the declared host"
+kcheck accept "https://kanban.victim.corp:8443/api/v3"   "declared host with a :port"
+kcheck accept "http://kanban.victim.corp/api/v3"         "http on the declared host — NOT this guard's call"
+kcheck accept "ftp://kanban.victim.corp/"                "a non-http scheme on the declared host — same"
+kcheck refuse "https://evil.example/api/v3"              "a plainly different host"
+kcheck refuse "https://kanban.victim.corp.evil.example/" "declared host as a PREFIX of an evil domain"
+kcheck refuse "https://xkanban.victim.corp/"             "declared host as a suffix without a label boundary"
+kcheck refuse "https://good.host@evil.example/"          "userinfo trick — host is after the LAST '@'"
+kcheck refuse "https://evil.example#@kanban.victim.corp" "FRAGMENT split — '#@'"
+kcheck refuse "https://evil.example?@kanban.victim.corp" "QUERY split — '?@'"
+kcheck refuse ""                                         "an empty api base"
+
+echo "== …and it fails CLOSED when nothing is declared — the arm that catches the 00:42 write =="
+ksaved="$KANBAN_EXPECTED_HOST"
+unset KANBAN_EXPECTED_HOST
+kb_require_known_api_host "https://kanban.victim.corp/api/v3" 2>/dev/null \
+    && bad "unset KANBAN_EXPECTED_HOST must refuse (no host is recognised)" \
+    || ok "unset KANBAN_EXPECTED_HOST refuses"
+kmsg="$(kb_require_known_api_host "https://kanban.victim.corp/api/v3" 2>&1 >/dev/null || true)"
+eq "  and the refusal names the variable to set" "true" "$(has 'export KANBAN_EXPECTED_HOST=' "$kmsg")"
+eq "  and names the file to set it in"           "true" "$(has '~/.kanban-host.env' "$kmsg")"
+export KANBAN_EXPECTED_HOST=""
+kb_require_known_api_host "https://kanban.victim.corp/api/v3" 2>/dev/null \
+    && bad "empty KANBAN_EXPECTED_HOST must refuse" \
+    || ok "empty KANBAN_EXPECTED_HOST refuses"
+export KANBAN_EXPECTED_HOST="$ksaved"
+kmsg="$(kb_require_known_api_host "https://evil.example/api/v3" 2>&1 >/dev/null || true)"
+eq "a MISMATCH names the host it refused"        "true" "$(has "evil.example" "$kmsg")"
+eq "  and tells the operator both ways out"      "true" "$(has 'KBCARD_API' "$kmsg")"
+
 echo "== the refusal must be loud (a silent rc is one an operator never sees) =="
 msg="$(kb_require_https_host "https://evil.example#@kanban.victim.corp" 2>&1 >/dev/null || true)"
 case "$msg" in

@@ -253,9 +253,9 @@ echo "== dl-a1-register-field --sentinel + adopt-to-dl <card-id>/--issue =="
 # A scratch HOME with a stub board env; the sentinel guard runs after config load and
 # before any request, and the ASCII control's next stop is the (stubbed) create.
 SENT='T="$(mktemp -d)"; export HOME="$T"
-      printf "export KBCARD_API=\"https://kanban.test/api/v3\"\n" > "$T/.kanban-host.env"
+      printf "export KBCARD_API=\"https://kanban.test/api/v3\"\nexport KANBAN_EXPECTED_HOST=\"kanban.test\"\nexport KBCARD_TOKEN_FILE=\"$T/token\"\n" > "$T/.kanban-host.env"
       printf "export KB_BOARD_ID=1\nexport KB_STAGE_BACKLOG=48\n" > "$T/.kanban-t-board.env"
-      printf "stub-token\n" > "$T/.kanban-dev-token"
+      printf "stub-token\n" > "$T/token"
       mkdir -p "$T/bin"; printf "#!/usr/bin/env bash\nexit 7\n" > "$T/bin/curl"; chmod +x "$T/bin/curl"
       export PATH="$T/bin:$PATH"
       out="$(bash "$ROOT/bin/dl-a1-register-field" --board t --sentinel "$IN" 2>&1 || true)"

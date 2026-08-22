@@ -678,6 +678,35 @@ eq "the zeros it warns about are really there"       "0" \
 eq "control: the healthy board carries neither line"  "false" \
    "$(has 'could be classified' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
 
+echo "== _bs_one_board — a board that DECLARES no token file is a failure line (card#7245) =="
+# It used to fall through to ~/.kanban-dev-token, i.e. report on a board using a credential
+# nobody chose for it. The host tier is unset for this case because that is the tier under
+# test; the witness below restores it and the SAME env reports normally.
+cat > "$HOME/.kanban-fx3-board.env" <<'ENVF'
+export KB_BOARD_ID=1
+ENVF
+kb_api() {
+    case "$2" in
+        */preload.json) cat "$TMP/fx-preload.json" ;;
+        */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        *) return 1 ;;
+    esac
+}
+mkdir -p "$TMP/b3a"
+onb3a="$(unset KB_HOST_TOKEN_FILE; _bs_one_board fx3 "Undeclared board" "$CUT4" "$NOW4" "$TMP/b3a" 2>/dev/null)"
+eq "the missing declaration is on the board's own failure list" "true" \
+   "$(has 'no KBCARD_TOKEN_FILE declared' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+eq "…naming the board env to add the line to"        "true" \
+   "$(has '.kanban-fx3-board.env' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+eq "…and it never names ~/.kanban-dev-token"         "false" \
+   "$(has '.kanban-dev-token' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+# WITNESS: the same env under a host-declared token file reports with no such line, so the
+# assertions above are about the DECLARATION and not about this fixture being broken.
+mkdir -p "$TMP/b3b"
+onb3b="$(KB_HOST_TOKEN_FILE="$TMP/fx-token" _bs_one_board fx3 "Undeclared board" "$CUT4" "$NOW4" "$TMP/b3b" 2>/dev/null)"
+eq "control: a host-declared token file covers that same board" "false" \
+   "$(has 'no KBCARD_TOKEN_FILE declared' "$(printf '%s' "$onb3b" | jq -r '.failures[]')")"
+
 echo "== _bs_one_board — an unreadable changelog page reaches the report as a FLOOR line =="
 # This is the surface bin/board-stats' header promise is kept on: "a number that is a floor
 # rather than a total (a capped card read, a truncated changelog window) says so where it is
@@ -996,6 +1025,30 @@ eq "…with .stock still a fully populated object"              "false" \
    "$(printf '%s' "$shortjs" | jq '.boards[0].stock == null')"
 eq "…so a JSON consumer still has only the PROSE in failures[] (half 2, OPEN)" "true" \
    "$(has 'card snapshot INCOMPLETE' "$(printf '%s' "$shortjs" | jq -r '.boards[0].failures[]')")"
+
+# ---------------------------------------------------------------------------
+echo "== board-stats(1) — the api-host preflight refuses BEFORE any board is read (card#7245) =="
+# Same stub, same board, same everything — the ONLY thing that moves is which host the host env
+# declares. The request log is the observable that makes "refused before it read anything" a
+# measurement rather than a claim about a message: a refusal that still issued the reads would
+# leave lines in it.
+kb_stub_reset
+export KB_STUB_SCENARIO=complete
+_pf_out="$(bash "$BIN" --board e2e 2>/dev/null)"; _pf_rc=$?
+eq "control: the declared host is read normally (rc)" "0" "$_pf_rc"
+eq "  …and it issued requests"                        "false" "$([[ "$(kb_stub_total)" -eq 0 ]] && echo true || echo false)"
+eq "  …and rendered a report"                         "true"  "$(has 'stock' "$_pf_out")"
+
+sed 's/^export KANBAN_EXPECTED_HOST=.*/export KANBAN_EXPECTED_HOST="somewhere.else.invalid"/' \
+    "$KANBAN_HOST_ENV" > "$TMP/host-mismatch.env"
+eq "the mismatch fixture really differs (control)" "false" \
+   "$(cmp -s "$KANBAN_HOST_ENV" "$TMP/host-mismatch.env" && echo true || echo false)"
+kb_stub_reset
+_pf_err="$(KANBAN_HOST_ENV="$TMP/host-mismatch.env" bash "$BIN" --board e2e 2>&1 >/dev/null)"; _pf_rc=$?
+eq "an undeclared api host is rc 1"                   "1" "$_pf_rc"
+eq "  and NOTHING was requested"                      "0" "$(kb_stub_total)"
+eq "  and the refusal names the host it refused"      "true" "$(has "$KB_STUB_HOST" "$_pf_err")"
+eq "  and names the variable to fix"                  "true" "$(has 'KANBAN_EXPECTED_HOST' "$_pf_err")"
 
 # ---------------------------------------------------------------------------
 _summary "board-stats-selftest"

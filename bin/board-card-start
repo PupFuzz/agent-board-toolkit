@@ -315,8 +315,15 @@ fi
 # `|| bcs_skip`: unguarded, an unreadable token leaves KB_TOKEN unset and `set -u` aborts the
 # next line — and the installed hook wrapper discards stderr, so that reads as a silent dead
 # hook with no durable log entry.
-kb_read_token "${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" \
-    || bcs_skip "kanban token file not readable: ${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}} (create ~/.kanban-host.env; see docs/INSTALL.md)"
+# The declaration tiers are this board's env and the host env — there is no default third
+# tier any more (card#7245: the baked ~/.kanban-dev-token made one file the credential for
+# every board on the box). kb_declared_token_file names the file to add the line to on its
+# own stderr; this arm only has to carry the hook's fail-soft policy.
+tok_where="${board_envf:-$HOME/.kanban-host.env}"
+tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FILE:-}")" \
+    || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
+kb_read_token "$tokfile" \
+    || bcs_skip "kanban token file not readable: $tokfile (see docs/INSTALL.md §3)"
 token="$KB_TOKEN"
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host

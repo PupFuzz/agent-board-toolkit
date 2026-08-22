@@ -268,6 +268,20 @@ out="$(unread "$envBadTok")"
 eq "arm: token unreadable → the untriaged channel names it"      "true" "$(has 'token file unreadable' "$out")"
 eq "arm: token unreadable → …and says the board was NOT read"    "true" "$(has 'NOT read' "$out")"
 
+# card#7245: a board that DECLARES no token file used to fall through to ~/.kanban-dev-token —
+# a credential nobody chose for it and every other board shared. It is now its own arm. The
+# host tier is unset in the subshell, because that is the tier this case is about; with a host
+# default present the board is legitimately covered and there is nothing to report.
+envNoTok="$(mktemp)"; printf 'export KB_BOARD_ID=88\n' > "$envNoTok"
+out="$(unset KB_HOST_TOKEN_FILE; unread "$envNoTok")"
+eq "arm: no token DECLARED → the untriaged channel names it"     "true" "$(has 'no KBCARD_TOKEN_FILE declared' "$out")"
+eq "arm: no token DECLARED → …and says the board was NOT read"   "true" "$(has 'NOT read' "$out")"
+eq "arm: no token DECLARED → …and does NOT name ~/.kanban-dev-token" "false" "$(has '.kanban-dev-token' "$out")"
+# WITNESS: the same env with the host tier supplied is read normally, so the arm above is
+# about a missing DECLARATION and not about this fixture being unreadable in general.
+out="$(KB_HOST_TOKEN_FILE="$tokf2" unread "$envNoTok")"
+eq "  …while a host-declared token file covers that same board (witness)" "false" "$(has 'NOT read' "$out")"
+
 _FRC2=0
 fetch_board_cards() { return "$_FRC2"; }
 for _FRC2 in 1 2; do
@@ -342,6 +356,31 @@ eq "CONTROL: the source predicate SELECTS a bare count line" "true" \
    "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep 'length' | command grep '\\(' || true)")"
 eq "CONTROL: …and REJECTS it for missing \$floor" "true" \
    "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep -v '\\(\$floor)' || true)")"
+
+# ===========================================================================
+echo "== board-snapshot(1) — the api-host preflight refuses BEFORE any board is read (card#7245) =="
+# Same stub, same roster; the ONLY thing that moves is which host the host env declares. The
+# request log is the observable: a "refusal" that still fetched would leave lines in it. And rc
+# stays 0 either way — this runs from SessionStart and must never block it, so the exit code is
+# not the discriminator and asserting on it alone would pass on the defect.
+kb_stub_reset
+_sp_ok="$(snap complete)"
+eq "control: the declared host renders a snapshot" "true"  "$(has '── Dev board snapshot' "$_sp_ok")"
+eq "  …and it issued requests"                     "false" "$([[ "$(kb_stub_total)" -eq 0 ]] && echo true || echo false)"
+eq "  …and did NOT print the skip line"            "false" "$(has 'SKIPPED' "$_sp_ok")"
+
+sed 's/^export KANBAN_EXPECTED_HOST=.*/export KANBAN_EXPECTED_HOST="somewhere.else.invalid"/' \
+    "$KANBAN_HOST_ENV" > "$TMP/host-mismatch.env"
+eq "the mismatch fixture really differs (control)" "false" \
+   "$(cmp -s "$KANBAN_HOST_ENV" "$TMP/host-mismatch.env" && echo true || echo false)"
+kb_stub_reset
+export KB_STUB_SCENARIO=complete
+_sp_rc=0
+_sp_out="$(KANBAN_HOST_ENV="$TMP/host-mismatch.env" bash "$BIN" 2>/dev/null)" || _sp_rc=$?
+eq "an undeclared api host still exits 0 (never blocks SessionStart)" "0" "$_sp_rc"
+eq "  and NOTHING was requested"                   "0"     "$(kb_stub_total)"
+eq "  and the reader is TOLD the section was skipped" "true" "$(has 'SKIPPED' "$_sp_out")"
+eq "  …rather than shown an empty board list"      "false" "$(has '── Untriaged cards' "$_sp_out")"
 
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"

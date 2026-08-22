@@ -106,6 +106,7 @@ jobs:
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
+          - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
           - gh-code-search-selftest
           - help-output-selftest
