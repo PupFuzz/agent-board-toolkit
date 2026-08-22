@@ -59,7 +59,13 @@
 # failure is named on its own line, the sections it could not fill are marked UNAVAILABLE
 # rather than omitted, and the report ends with a PARTIAL line. A number that is a floor
 # rather than a total (a capped card read, a truncated changelog window) says so where it is
-# printed.
+# printed — and, since card#7228, the STOCK numbers say it ON THEMSELVES: a partial card read
+# prefixes every count and every queue age in that section with `≥`, so a number cannot be
+# read as a total even quoted out of the ⚠ line that qualifies it. Two things that claim is
+# NOT, both open and both recorded in docs/CONSOLIDATION-PLAN.md rather than implied away:
+# the FLOW counts under a truncated changelog window still print bare under their own ⚠ line,
+# and `--format json` still carries no completeness field at all — the only machine-visible
+# signal there is a prose string inside `failures[]`.
 #
 # Usage: board-stats [--board <name> | --all] [--since 24h|7d|<ISO-8601>] [--format text|json]
 #
@@ -230,6 +236,13 @@ def round1: ((. * 10) | round) / 10;
                                 age_days: ((($meta.now - $o.e) / 86400) | round1) } end)
                  else null end) } ],
         total: ($live | length) } end),
+    # THREE STATES, and `stock` alone spells two of them. A null `stock` is "unavailable";
+    # a populated one was "complete" and "read, but short" INDISTINGUISHABLY, because the
+    # rc-3/rc-4 arm sets stock_ok true on purpose (those rcs emit their partial array so a
+    # report can show what it has). This is the third value, derived ONCE at the rc guard in
+    # _bs_one_board and handed here rather than re-derived per render — card#7228.
+    # It is INTERNAL: the `json` output arm strips it, see the note there.
+    stock_complete: (if $meta.stock_ok | not then null else $meta.stock_complete end),
     flow: (if $meta.flow_ok | not then null else
       { created: ($created | length),
         moved: ($moved | length),
@@ -258,19 +271,33 @@ def lpad($n): tostring | . as $s | ($n - ($s|length)) as $k
               | (if $k > 0 then (" " * $k) else "" end) + $s;
 def split_note: (if .actors.other > 0 then "   human \(.actors.human) · service \(.actors.service) · unattributed \(.actors.other)"
                  else "   human \(.actors.human) · service \(.actors.service)" end);
+# The floor marker, applied to the NUMBER and not to the line, so it survives the number
+# being quoted out of the ⚠ line above it (card#7228). Prefixed BEFORE the padding so the
+# columns still line up: `≥` is one display cell wide, and the pad helpers above measure in
+# CODEPOINTS, so the two agree.
+def fl($f): $f + tostring;
 "── Board stats ── stock from the card snapshot · flow from the changelog ──",
 "window: \(.since.spec) — flow counts events at or after \(.since.cutoff) · generated \(.generated_at)",
 ( .boards[]
+  # EVERY number the stock section prints is a floor when the card read came back short, so
+  # the marker is bound ONCE per board and applied at each of them rather than remembered
+  # per line. The population has a denominator: one count per column, the total, and the
+  # oldest-card AGE in each pullable column that holds one — the age for the same reason the
+  # counts are, since a card the read never delivered can only be OLDER than the oldest one
+  # it did. What is deliberately NOT marked is the card ID beside that age: an id is not a
+  # quantity, and the ⚠ line directly above the section already says the named card may not
+  # be the oldest one on the board.
+  | (if .stock_complete == false then "≥" else "" end) as $floor
   | "",
     "▸ \(.label)  [\(.board)\(if .board_id != null then " · board \(.board_id)" else "" end)]",
     ( .failures[] | "  ⚠ \(.)" ),
     ( if .stock == null then "  stock: UNAVAILABLE — see the ⚠ line(s) above"
       else "  stock — a state question, read from the card snapshot",
            ( .stock.columns[]
-             | "    \(.stage | pad(24))\(.cards | lpad(6))"
-               + (if .oldest_card != null then "   oldest \(.oldest_card.age_days)d (#\(.oldest_card.id))" else "" end)
+             | "    \(.stage | pad(24))\(.cards | fl($floor) | lpad(6))"
+               + (if .oldest_card != null then "   oldest \(.oldest_card.age_days | fl($floor))d (#\(.oldest_card.id))" else "" end)
                + (if .terminal then "   [terminal]" elif .pullable then "   [pullable]" else "" end) ),
-           "    \("total" | pad(24))\(.stock.total | lpad(6))"
+           "    \("total" | pad(24))\(.stock.total | fl($floor) | lpad(6))"
       end ),
     ( if .flow == null then "  flow: UNAVAILABLE — see the ⚠ line(s) above"
       else "  flow — a rate question, read from the changelog\(if .flow.truncated then " (WINDOW TRUNCATED)" else "" end)",
@@ -516,7 +543,7 @@ _bs_one_board() {
     local envf="$HOME/.kanban-${name}-board.env"
     local -a fails=() vals=()
     local board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
-    local stock_ok=false flow_ok=false rc pre map cls err termn pulln
+    local stock_ok=false stock_complete=false flow_ok=false rc pre map cls err termn pulln
     local cardfile="$tmp/cards.json" rowsfile="$tmp/rows.jsonl"
     local flowmeta='{"pages":0,"truncated":false,"data_available_from":null,"error":null}'
     map="$_BS_EMPTY_MAP"
@@ -548,8 +575,16 @@ _bs_one_board() {
                 fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP" \
                     > "$cardfile" 2>/dev/null
                 rc=$?
+                # `stock_complete` is FAIL-CLOSED: it is initialised false and exactly ONE arm
+                # — rc 0, the whole read — claims otherwise (card#7228). rc 3 (page cap) and
+                # rc 4 (short read) emit their partial array on purpose, and they carry the
+                # marker by DEFAULT rather than by being listed, so an rc added to that arm
+                # floors its numbers whether or not anyone remembers to say so, and only an
+                # explicit edit to the rc-0 arm can ever claim a read is whole. The ⚠ line and
+                # the marker cannot drift apart for the accepted-partial rcs, because the
+                # marker is not set there at all.
                 case "$rc" in
-                    0) stock_ok=true ;;
+                    0) stock_ok=true; stock_complete=true ;;
                     3|4) stock_ok=true
                          fails+=("card snapshot INCOMPLETE (fetch rc=$rc) — every stock count below is a floor, not a total") ;;
                     *) : > "$cardfile"
@@ -594,13 +629,14 @@ _bs_one_board() {
     meta="$(jq -n --arg name "$name" --arg label "$label" --arg bid "$board_id" \
         --argjson map "$map" --argjson flow "$flowmeta" --argjson failures "$failures_json" \
         --argjson now "$now" --argjson stock_ok "$stock_ok" --argjson flow_ok "$flow_ok" \
+        --argjson stock_complete "$stock_complete" \
         --argjson cls "$cls" '
         { name: $name, label: $label,
           board_id: (if $bid == "" then null else ($bid | tonumber? // $bid) end),
           names: $map.names, order: $map.order,
           term: $cls.term, pull: $cls.pull,
           now: $now, flow: $flow, failures: $failures,
-          stock_ok: $stock_ok, flow_ok: $flow_ok }')"
+          stock_ok: $stock_ok, stock_complete: $stock_complete, flow_ok: $flow_ok }')"
 
     # The aggregation itself is the last thing that can drop a board out of the report
     # entirely, which is the one failure mode this tool must not have: a board that produced
@@ -614,7 +650,7 @@ _bs_one_board() {
     else
         jq -c -n --argjson meta "$meta" \
             '{ board: $meta.name, label: $meta.label, board_id: $meta.board_id,
-               stock: null, flow: null,
+               stock: null, stock_complete: null, flow: null,
                failures: ($meta.failures + ["this board could not be summarized — the report aggregation failed on its data"]) }'
     fi
 }
@@ -699,7 +735,16 @@ jq -s --argjson now "$now" --arg spec "$since" --argjson cutep "$cut" '
     || { echo "$KB_PROG: could not assemble the report" >&2; exit 1; }
 
 case "$format" in
-    json) jq '.' "$docfile" ;;
+    # `stock_complete` is WITHHELD from the machine surface, deliberately and for now. The
+    # document carries it because the text renderer computes nothing of its own and needed a
+    # field to read; publishing it is a CONTRACT change — a key consumers must then honour —
+    # and this tool's JSON consumer set has not been enumerated (card#7228 records that as
+    # the unmeasured bound it is). So the emitted object is byte-identical to what it was
+    # before the marker landed, and the second half of that card is this `del` plus its
+    # doc/changelog entry. Stripping it here rather than assembling a second document keeps
+    # ONE derivation behind both formats — a sidecar joined back by board name is the drift
+    # this file's "one derivation feeds both output formats" note exists to prevent.
+    json) jq 'del(.boards[].stock_complete)' "$docfile" ;;
     text) _bs_render_text "$docfile" ;;
 esac
 
