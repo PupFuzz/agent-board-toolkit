@@ -1039,12 +1039,16 @@ finding with no owner is abandoned, not filed.
   read to its cutoff — claiming otherwise, and that much reads like `stock_complete`. It is not the
   same dispatch. `stock_complete` switches on an **enumerated rc**, so an rc nobody listed lands in
   `*)` and floors by default. `flow_complete` switches on the **absence of a string** that
-  `_bs_window_rows`' own stops have to remember to set: the completeness claim is driven off the
-  **four named stops** that set `err` — the page cap, a log that ends inside the window, an
-  unreadable page, and a page carrying no cursor id — and a `break` added to that loop which does
-  not set `err` reaches the same arm as a window read to its cutoff and claims the window is WHOLE.
-  **That direction is FAIL-OPEN**, and a future editor is entitled to know it: adding a stop means
-  adding its `err=` in the same edit.
+  `_bs_window_rows`' own exits have to remember to set: the completeness claim is driven off
+  exactly the break sites that set `err`, and a `break` added to that loop which does not set `err`
+  reaches the same arm as a window read to its cutoff and claims the window is WHOLE. **That
+  direction is FAIL-OPEN**, and a future editor is entitled to know it: adding a break means adding
+  its `err=` in the same edit. **Which break sites those are is enumerated ONCE — in
+  `bin/board-stats`, in the comment above the `flow_complete` guard in `_bs_one_board` — and this
+  document deliberately carries no copy of the list.** The copy it used to carry was one short (it
+  named four, omitting the failed changelog READ, which is two messages on one break), which is
+  what a hand-synced enumeration in four places produces; the same reason the ask-gated decision
+  below is owned here and pointed at from there, in the other direction.
 
   The nearest EXISTING instance of the shape is the short-page arm's `oldest == none` route, which
   breaks with no `err`. `oldest` is `ep()` of the page's **last row**, so a last row whose
@@ -1062,8 +1066,9 @@ finding with no owner is abandoned, not filed.
   flag affirmative — each stop declaring completeness rather than every stop declaring an error —
   floors strictly more reports than this change does, which is an operator-facing render change and
   therefore takes the same approval the two fixes above took. It was escalated to the operator on
-  2026-08-22 separately from this branch; recorded here so the bin's own comment can point at one
-  owner for the decision rather than restate it.
+  2026-08-22 separately from this branch, as **card#7298**, which carries the recommendation and
+  the measurement; recorded here so the bin's own comment can point at one owner for the decision
+  rather than restate it.
 
   **ONE member of this class stays OPEN on this tool, and it is not a residual of either fix —
   it is the same defect on a surface neither approval covered:**

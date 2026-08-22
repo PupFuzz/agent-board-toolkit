@@ -252,8 +252,11 @@ def round1: ((. * 10) | round) / 10;
     stock_complete: (if $meta.stock_ok | not then null else $meta.stock_complete end),
     # The third state for the FLOW half, and it is a SEPARATE one: the two sections are read
     # from two surfaces with two failure modes, so a whole card read says nothing about the
-    # changelog window and vice versa. Same shape as `stock_complete` above — derived once at
-    # the guard in _bs_one_board, INTERNAL, stripped by the `json` arm (card#7235).
+    # changelog window and vice versa. Same shape as `stock_complete` above in DERIVATION and
+    # INTERNALITY — derived once at the guard in _bs_one_board, stripped by the `json` arm.
+    # The DISPATCH DIRECTION is NOT the same: `stock_complete` floors by default on an rc
+    # nobody listed, while this one claims a WHOLE window on an unset string, which is
+    # fail-open. That difference is owned at the guard in _bs_one_board (card#7235).
     flow_complete: (if $meta.flow_ok | not then null else $meta.flow_complete end),
     flow: (if $meta.flow_ok | not then null else
       { created: ($created | length),
@@ -656,14 +659,27 @@ _bs_one_board() {
                 # FAILS IS THE OPPOSITE OF `stock_complete`'S, and an editor of
                 # _bs_window_rows is owed the difference. `stock_complete` dispatches on an
                 # ENUMERATED rc, so an rc nobody listed falls to `*)` and floors by default.
-                # This one dispatches on the ABSENCE OF A STRING that the loop's own stops
-                # have to remember to set. Four stops set it — the page cap, a log that ends
-                # inside the window, an unreadable page, and a page carrying no cursor id —
-                # and the completeness claim here is driven off exactly those four. A break
-                # added to that loop that does NOT set `err` reaches this arm indistinguishably
-                # from a window read to its cutoff and claims the window is WHOLE: this
-                # direction is FAIL-OPEN. Adding a stop means adding its `err=` in the same
-                # edit. The nearest existing instance of the shape is the short-page arm's
+                # This one dispatches on the ABSENCE OF A STRING that the loop's own exits
+                # have to remember to set. FIVE break sites set it, and THIS COMMENT IS THEIR
+                # ONE OWNER: `docs/CONSOLIDATION-PLAN.md` and the CHANGELOG entry both point
+                # here rather than carry a copy, because a list hand-synced across four
+                # surfaces is how one of them ends up short. Counted at the source in
+                # `_bs_window_rows`, in that function's own vocabulary: two of its three
+                # STOPS (the page cap, and a log that ends INSIDE the window) plus all
+                # three of its ERROR breaks (an unreadable page — the `[[ -n "$page" ]]`
+                # shape guard, which is what that phrase means here and nothing else — a
+                # page carrying no cursor id, and a request that FAILED, which is the
+                # server answering a non-2xx or the request never completing: two messages,
+                # ONE break). Six `err=` assignments in that loop, five break sites, and
+                # the completeness claim here is driven off exactly those five. The routes
+                # that reach this arm CORRECTLY are two and neither sets `err`: rows
+                # reaching back past the cutoff, and the short-page break taken with its
+                # oldest row ALREADY past it — the same break site as the ends-inside one,
+                # on its other condition. A break added to that loop that does NOT set
+                # `err` reaches this arm indistinguishably from those two and claims the
+                # window is WHOLE: this direction is FAIL-OPEN. Adding a break means adding
+                # its `err=` in the same edit. The nearest existing instance of the shape
+                # is the short-page arm's
                 # `oldest == none` route, which breaks with no `err`: `oldest` is `ep()` of the
                 # page's LAST row, so a last row whose `created_at` this tool cannot read
                 # renders a truncated window as a complete one. Measured against the live board
