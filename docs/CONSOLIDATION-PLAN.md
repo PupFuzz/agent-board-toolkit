@@ -590,6 +590,25 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
+  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+  (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
+  '*.sh'`), and by the time this was noticed the expression had been re-typed into
+  `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
+  `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
+  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
+  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  class found were inside the harness. So the lib exports **CI's two halves separately** and each
+  caller composes its own union — the population is a parameter, never a constant. Adoption is
+  behaviour-preserving by construction (byte-identical output to what each already computes), so
+  the other two can adopt in their own PRs; they were left untouched here because they were outside
+  that PR's file scope. The `ci.yml`↔lib restatement **cannot be deleted** (a workflow `run:` string
+  cannot source a bash lib), so it is **GUARDED** instead: `_ci_shellcheck_drift` reds when ci.yml
+  stops running either half, with planted positive/negative/no-file controls, all three watched to
+  fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
+  dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
+  prompted the extraction is not something this lib would have caught.
 - **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
   parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
   inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not
@@ -1434,6 +1453,22 @@ finding with no owner is abandoned, not filed.
   `piped-match-gate-selftest.sh` **re-derives it every run and prints it in its denominator as an
   explicitly ADVISORY, un-asserted figure**, so the remainder is a number that moves rather than a
   prose figure that rots.
+  - **A SECOND live member, found and fixed** (card#6911, appended here rather than filed anew —
+    the class already has this owner). `agent-board-toolkit-runtime-check` carried
+    `newest="$(git … tag --list 'v*' --sort=-version:refname | head -1)"`, and it is the member that
+    breaks the "most of it is legitimate (a short producer …)" reading above: the producer is short
+    *today* and is not bounded to stay so. Measured with a planted tag set — **0/40 runs died at 350
+    `v*` tags, 21/40 at 400, 16/20 at 5 900, 40/40 at 12 000** — so it is a **RACE at git's ~4 KiB
+    stdio buffer**, not a cliff at the 64 KiB pipe buffer, and it dies at rc 141 *before the
+    verdict*. Two corrections this instance forces on the class's own reasoning: **`trap '' PIPE`
+    does not cover it** (git restores SIGPIPE to `SIG_DFL` for itself, so the parent's ignore is not
+    inherited — the fix ratified for the EXTERNAL reader buys nothing against the INTERNAL one), and
+    the reachability is not ours to bound, because `$root` there is `git rev-parse --show-toplevel`
+    of the tool's own directory, which for a toolkit **vendored inside a consumer repo** is the
+    consumer's repo. Fixed in place by taking the first line with a parameter expansion — byte
+    identical output, no second process. **Still not gated**, and that cost decision stands
+    unchanged; what this member adds is that the advisory figure's "mostly legitimate" gloss is a
+    per-instance judgement nobody has made, not a property of the population.
 
 ---
 

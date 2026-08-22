@@ -55,11 +55,21 @@
 #
 # ────────────────────────────── THE PREDICATE, STATED ──────────────────────────────
 #
-# POPULATION — the SHIPPED shell: `find bin hooks -maxdepth 1 -type f ! -name '*.py'`, the
-# `bin`/`hooks` half of `.github/workflows/ci.yml`'s shellcheck expression, re-derived on every
-# invocation. No file list is stored here, so a new bin arrives as an unaccounted member the
-# day it lands. `tests/` is excluded for the same reason CI's expression splits them: a
-# selftest is not a shipped tool and has no caller to lose a verdict to.
+# POPULATION — the SHIPPED shell: `_shipped_shell_files` from `tests/_shipped-shell-lib.sh`,
+# which is the `bin`/`hooks` half of `.github/workflows/ci.yml`'s shellcheck expression,
+# re-derived on every invocation. No file list is stored here, so a new bin arrives as an
+# unaccounted member the day it lands. `tests/` is excluded for the same reason CI's expression
+# splits them: a selftest is not a shipped tool and has no caller to lose a verdict to — the
+# lib exports that half separately (`_selftest_shell_files`) precisely so the two gates that
+# DO want it can union it without this one inheriting it.
+#
+# ⚑ THE DERIVATION IS SOURCED, NOT SPELLED, and that is a card#6911 correction. The expression
+# had been hand-copied into three class gates plus their prose; this file was the third, which
+# is one past canon #5's threshold. `tests/_shipped-shell-lib.sh` now owns it, `ci.yml` remains
+# the authority, and `_ci_shellcheck_drift` (asserted below, with planted controls) is what
+# keeps the lib's copy honest — a workflow `run:` string cannot source a bash lib, so the
+# restatement can only be guarded, not deleted. The other two gates are unchanged and can adopt
+# the lib in their own PRs: its output is byte-identical to what each already computes.
 #
 # MEMBERSHIP IS MEASURED, NOT READ. A grep over the shape is NOT an audit of this class, and
 # the first sibling-audit instrument tried on it failed its own control (it reported the
@@ -76,8 +86,11 @@
 #   (no state) bytes == 0                              the driver never reached a write
 #
 # ⛔ BOTH DISPOSITIONS ARE MEASURED, AND THAT IS NOT BELT-AND-BRACES — THE ANSWER DIFFERS.
-# Measured on this tree: under SIG_DFL 11 of 14 driven members lose their verdict; under
-# SIG_IGN only 8 do. A bin with NO errexit (`board-card-start`, `board-snapshot`,
+# Measured on this tree: under SIG_DFL 12 of 15 driven members lose their verdict; under
+# SIG_IGN only 9 do. (⚠ THOSE ARE THE READING, NOT THE POPULATION — the run's own denominator
+# block re-derives both on every invocation and is the figure to quote. This pair moved from
+# 11-of-14 / 8 the day `release-tag-check` landed, and quoting a written count is exactly how
+# it went stale.) A bin with NO errexit (`board-card-start`, `board-snapshot`,
 # `board-session-close`) is killed outright by the signal but merely gets a non-zero `printf`
 # it never inspects when the signal is ignored — so it LOSES on a developer box and SURVIVES on
 # a GitHub Actions runner. Measuring one disposition and recording the result would therefore
@@ -111,13 +124,23 @@
 #
 # ⛔ WHAT THIS GATE STRUCTURALLY CANNOT SEE — stated so it is not over-cited:
 #   * Any code path the driver does not execute (above). This is the big one.
-#   * The UNDRIVEN members: three git hooks and a sourced lib have no argv surface at all, and
-#     one hook writes to a live board. They are UNMEASURED, not clean, and are listed as such.
+#   * The UNDRIVEN members: three git hooks and a sourced lib have no argv surface at all, one
+#     hook writes to a live board, and `_shellcheck-pinned` writes nothing to its own stdout on
+#     any path. They are UNMEASURED, not clean, and each is listed with its reason.
 #   * `bin/*.py`, and the bash embedded in `promote/action.yml` / `release-artifacts/action.yml`.
 #   * STDERR. The class as filed is about stdout; a bin can equally lose its verdict to a
 #     truncated stderr, and only the merged-stream case is sampled here.
 #   * Whether a dispositioned reason is TRUE. It is a recorded judgement, re-read by whoever
 #     next edits that site — not a proof.
+#   * A BIN THAT LANDS IN A CONCURRENT PR. The population is this tree, so a bin merging on
+#     another branch is invisible here and unaccounted the moment it arrives — which is the
+#     gate WORKING (card#6579's `release-tag-check` and card#6619's `_shellcheck-pinned` were
+#     each found exactly this way, by a merge-up), but it means neither PR's CI can see the
+#     pair. Whichever merges SECOND reds `dev` until it merges up and adds the entry. That is
+#     deliberate and must not be softened: an entry may only be added once the file is IN THE
+#     TREE, because the symmetric leg below — a listed member the population no longer carries
+#     — is what stops the roll accumulating fiction, and forward-declaring a file that is not
+#     there yet would cost that leg its only teeth.
 #
 # ⛔ `command grep`, never bare `grep`: in an interactive Claude Code shell `grep` is a function
 # execing `ugrep --ignore-files`, which honours `.gitignore` and still exits 0 — a truncated
@@ -127,6 +150,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_shipped-shell-lib.sh"
 ROOT="$(cd "$HERE/.." && pwd)"
 
 # ── the drivers ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +173,7 @@ DRIVERS=(
   "bin/promote-released-cards|--help"
   "bin/release-artifacts-check|--help"
   "bin/release-pr-body|--help"
+  "bin/release-tag-check|--help"
 )
 
 # ── the dispositions ────────────────────────────────────────────────────────────────────────
@@ -179,6 +205,7 @@ DISPOSITIONED=(
   "bin/promote-released-cards|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; it prints a summary and then \`die\`s, which is the filed shape exactly, and it MOVES CARDS."
   "bin/release-artifacts-check|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; it writes \`::error::\` annotations to STDOUT and then \`exit 1\`, so a truncating reader costs both the annotations and the gate's verdict."
   "bin/release-pr-body|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven."
+  "bin/release-tag-check|LOSES|card#6911 instance — help path measured (rc 0, 6783 B; 141 under BOTH dispositions, because \`awk\` renders the help as a CHILD under errexit — row 2 of the mechanism table). Verdict path NOT separately driven: it polls a remote. Its \`::error::\` refusals are on STDERR, but its STDOUT carries the not-a-release rc-0 line and the 'must exist at <sha>' banner it prints BEFORE the first poll — so a truncating reader kills it at that banner, before it ever looks for the tag, and \`release-promote-cards\` gets a signal death in place of both answers."
 )
 
 # ── the undriven remainder ──────────────────────────────────────────────────────────────────
@@ -187,6 +214,7 @@ DISPOSITIONED=(
 # population and named, because a silent remainder means the loop stopped rather than finished.
 UNDRIVEN=(
   "bin/_kb-board-lib.sh|A sourced library, not a tool: it has no argv surface (executing it is rc 126) and every byte it writes is written on behalf of a caller that is itself in this population."
+  "bin/_shellcheck-pinned|It writes NOTHING to its own stdout on any path it controls — measured, not read: its five \`printf\`/\`echo\` sites are a \`die\` to stderr, a capture into a variable, a fetch notice to stderr, a pipe into \`sha256sum\`, and the banner to stderr. Every stdout byte a caller sees belongs to the analyser it \`exec\`s, so a measurement here would be of shellcheck, not of this file. And there is no network-free driver for even that: reaching the \`exec\` needs the PINNED analyser already present, otherwise it DOWNLOADS (\$SHELLCHECK_PIN_FILE=/nonexistent → rc 9, 0 B stdout; /dev/null → rc 9, 0 B) — which this gate scores UNREACHED and reds, correctly. A driver that only reaches its condition on a box with a warm cache is defect 1 in the header."
   "bin/agent-board-toolkit-drift-check|Refuses at rc 2 with its usage on STDERR before writing any stdout; it carries no --help, so no argv reaches a stdout write without giving it two real checkouts to diff."
   "bin/install-board-hooks|Same shape: rc 2 with usage on stderr, no --help. Its stdout paths all INSTALL into a repo, which a selftest must not do to an arbitrary tree."
   "bin/next-dl|Same shape: rc 2 with usage on stderr, no --help. Its stdout paths CONSUME a DL number from a live board counter."
@@ -267,7 +295,9 @@ fi
 # fixtures FIRST and classified by the same code path that judges the tree. Each is a negative
 # control for the others: if the classifier answered LOSES for everything, rows 3 and 5 red; if
 # it answered SURVIVES for everything, rows 1, 2 and 4 red; if the presence witness were
-# dropped, row 6 would read SURVIVES instead of UNREACHED.
+# dropped, row 6 would read SURVIVES instead of UNREACHED. Rows 7/7b are not part of that
+# matrix — they measure the fix's COST (the buffer's EXIT-trap obligation) rather than its
+# benefit, and are asserted on stdout content rather than through `_classify`.
 FIX="$TMP/fixture"; mkdir -p "$FIX/bin"
 _plant() { printf '%s' "$2" >"$FIX/bin/$1"; chmod +x "$FIX/bin/$1"; }
 
@@ -315,6 +345,38 @@ set -euo pipefail
 echo "VERDICT" >&2
 exit 7
 '
+# 7 / 7b — THE COST OF THE FIX, PLANTED. Rows 1–6 measure the fix's benefit; this pair measures
+# what it takes away. The ratified shape emits ONE write per stream of an already-built string,
+# which means the report is BUFFERED, which means an unexpected `set -e` death anywhere before
+# the verdict prints NOTHING AT ALL and loses the diagnosis — a strictly worse failure than the
+# progressive output it replaced. `agent-board-toolkit-runtime-check` answers that with
+# `trap _flush EXIT`, and until now this file only ASSERTED that in prose: deleting the trap
+# left both this gate and the class gate green, because neither drives a mid-run death. The
+# pair below is the same claim as a measurement — 7 keeps the trap, 7b is 7 with the trap line
+# removed and nothing else. Their stdout must DIFFER.
+_plant planted-buffered-exit-trap '#!/usr/bin/env bash
+set -euo pipefail
+trap "" PIPE
+BUF=""
+_put()   { [ -z "$1" ] || printf "%s" "$1" 2>/dev/null || true; }
+_flush() { _put "$BUF"; BUF=""; }
+trap _flush EXIT
+BUF="DIAGNOSIS-SO-FAR"
+false
+_flush
+exit 7
+'
+_plant planted-buffered-no-trap '#!/usr/bin/env bash
+set -euo pipefail
+trap "" PIPE
+BUF=""
+_put()   { [ -z "$1" ] || printf "%s" "$1" 2>/dev/null || true; }
+_flush() { _put "$BUF"; BUF=""; }
+BUF="DIAGNOSIS-SO-FAR"
+false
+_flush
+exit 7
+'
 
 echo "== controls: the planted mechanism table classifies as measured =="
 eq "a BUILTIN write with no errexit loses the verdict"        "LOSES"     "$(_classify "$(_measure "$FIX" bin/planted-builtin-noerrexit)")"
@@ -323,6 +385,18 @@ eq "a CHILD write with no errexit KEEPS it (board-stats)"     "SURVIVES"  "$(_cl
 eq "\`trap '' PIPE\` ALONE still loses it (wrong verdict)"     "LOSES"     "$(_classify "$(_measure "$FIX" bin/planted-trap-only)")"
 eq "trap PLUS a tolerated write keeps it (the fix shape)"     "SURVIVES"  "$(_classify "$(_measure "$FIX" bin/planted-trap-and-tolerated)")"
 eq "a driver that wrote no stdout is UNREACHED, not SURVIVES" "UNREACHED" "$(_classify "$(_measure "$FIX" bin/planted-silent)")"
+
+echo "== control: buffering owes an EXIT trap, and the trap is what pays it =="
+# The ONE assertion in this file about a mid-run death rather than a truncating reader. It is
+# here because the fix shape CREATED this obligation: rows 4 and 5 above are why the report is
+# buffered at all. Asserted as a DIFFERENCE between two fixtures identical but for the trap
+# line — an absence assertion alone ("the trap is present") would certify whatever replaced it.
+_bt_out="$("$FIX/bin/planted-buffered-exit-trap" 2>/dev/null || true)"
+_nt_out="$("$FIX/bin/planted-buffered-no-trap"   2>/dev/null || true)"
+eq "with \`trap _flush EXIT\`, a mid-run death still delivers the buffer" "DIAGNOSIS-SO-FAR" "$_bt_out"
+eq "…and WITHOUT it the same death delivers nothing at all"              ""                 "$_nt_out"
+_btrc=0; "$FIX/bin/planted-buffered-exit-trap" >/dev/null 2>&1 || _btrc=$?
+eq "…and the EXIT trap does not disturb the rc it exits with"            "1"                "$_btrc"
 
 echo "== control: the fix shape preserves a NON-ZERO verdict, not merely 'some rc' =="
 # rc PRESERVATION is the assertion everywhere in this file; this pins that the preserved value
@@ -373,7 +447,7 @@ eq "assertion expecting a signal number (assert rc PRESERVATION instead)" "" \
 #
 # Printed on EVERY run, clean or not. A clean result over an unnamed population reports where
 # the searcher stopped, not the state of the tree.
-mapfile -t POP < <(cd "$ROOT" && find bin hooks -maxdepth 1 -type f ! -name '*.py' 2>/dev/null | LC_ALL=C sort)
+mapfile -t POP < <(_shipped_shell_files "$ROOT")
 
 _keys() { printf '%s\n' "$@" | awk -F'|' 'NF { print $1 }' | LC_ALL=C sort -u; }
 DRIVEN_KEYS="$(_keys "${DRIVERS[@]}")"
@@ -412,6 +486,29 @@ for rel in $(printf '%s\n' "${!STATE[@]}" | LC_ALL=C sort); do
 done
 
 # ── the assertions ──────────────────────────────────────────────────────────────────────────
+
+echo "== the shared derivation still answers CI's own question =="
+# `tests/_shipped-shell-lib.sh` restates `ci.yml`'s two find expressions, because a workflow
+# `run:` string cannot source a bash lib — a restatement that can only be GUARDED, never
+# deleted (canon #16). Without this leg, narrowing CI's expression would leave this gate (and
+# any other adopter) measuring a population CI no longer analyses, silently.
+#
+# Controls FIRST — this is an ABSENCE assertion over a file, and a drift check that can never
+# fire satisfies it perfectly. A tree with the expressions and one without are both planted.
+_wfpos="$TMP/wf-ok"; mkdir -p "$_wfpos/.github/workflows"
+printf '%s\n' "        run: shellcheck -S error \$($_SSL_FIND_SHIPPED; $_SSL_FIND_SELFTESTS)" \
+  >"$_wfpos/.github/workflows/ci.yml"
+_wfneg="$TMP/wf-drifted"; mkdir -p "$_wfneg/.github/workflows"
+printf '%s\n' "        run: shellcheck -S error \$(find bin -maxdepth 1 -type f)" \
+  >"$_wfneg/.github/workflows/ci.yml"
+eq "witness: the drift check PASSES a workflow carrying both expressions" "" "$(_ci_shellcheck_drift "$_wfpos")"
+eq "…and FIRES on a workflow that narrowed them"                          "2" \
+   "$(_ci_shellcheck_drift "$_wfneg" | wc -l | tr -d ' ')"
+eq "…and on a tree with no ci.yml at all (never silently clean)"          "1" \
+   "$(_ci_shellcheck_drift "$TMP" | wc -l | tr -d ' ')"
+
+eq "ci.yml no longer runs the expression this gate's population is derived from" "" \
+   "$(_ci_shellcheck_drift "$ROOT")"
 
 echo "== the population carries real data (control on the REAL tree) =="
 eq "the bin/+hooks/ scan is non-empty" "false" "$([[ "${#POP[@]}" -eq 0 ]] && echo true || echo false)"

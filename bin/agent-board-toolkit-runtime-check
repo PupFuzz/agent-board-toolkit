@@ -71,9 +71,15 @@ trap '' PIPE
 # Nothing else in this file may write to a stream directly. Derive the writer population for the
 # version in your hand rather than trusting a count here:
 #     grep -nE '(^|[^_[:alnum:]])(echo|printf)([^_[:alnum:]]|$)' bin/agent-board-toolkit-runtime-check
-# and dispose of every hit into one of three buckets — a `_put`/`_put_err` DEFINITION, a CALL to
-# one of them, or this comment. Anything left over is a NEW direct writer and must be routed
-# through `_put`/`_put_err`.
+# and dispose of every hit into one of FOUR buckets — a `_put`/`_put_err` DEFINITION, a CALL to
+# one of them, a write into a COMMAND SUBSTITUTION, or a comment. Anything left over is a NEW
+# direct writer and must be routed through `_put`/`_put_err`.
+#   ⚑ THE COMMAND-SUBSTITUTION BUCKET IS NOT A LOOPHOLE, IT IS THE PREDICATE BEING HONEST. The
+#     three-bucket version of this recipe called `ver="$(git … || echo '?')"` a new direct
+#     writer, which it is not: `$( )` captures the bytes into a variable, no stream is touched,
+#     and routing it through `_put` would EMIT the fallback marker to the operator instead of
+#     assigning it — a wrong fix demanded by a guard whose stated scope was wider than its
+#     actual predicate. Buffering does not apply to a write with no reader.
 _put()     { [ -z "$1" ] || printf '%s' "$1" 2>/dev/null || true; }
 _put_err() { [ -z "$1" ] || printf '%s' "$1" >&2 2>/dev/null || true; }
 OUT_BUF=""
@@ -186,7 +192,19 @@ for root in "${!roots[@]}"; do
     if ! timeout 10 git -C "$root" fetch --tags --quiet 2>/dev/null; then
         warn "could not fetch tags for $root — comparing LOCAL tags only (stale-blindness possible when offline)"
     fi
-    newest="$(git -C "$root" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1)"
+    # ⛔ NO `| head -1` HERE, AND THAT IS THE SAME CLASS ONE LEVEL IN. This tool was hardened
+    # against an EXTERNAL truncating reader (card#6911); `head` is itself one, and the reader it
+    # truncates is `git`. Measured with a planted tag set on this box: `git tag --list … |
+    # head -1` under `set -e` + `pipefail` dies at rc 141 BEFORE the verdict, non-deterministically
+    # from ~400 `v*` tags (0/40 runs at 350, 21/40 at 400, 40/40 at 12000) — the threshold is
+    # git's ~4 KiB stdio buffer, not the 64 KiB pipe buffer, so it is a RACE and not a size
+    # cliff. `trap '' PIPE` does NOT cover it: git restores SIGPIPE to SIG_DFL for itself, so
+    # the ignore is not inherited. Reachable because `$root` is `git rev-parse --show-toplevel`
+    # of the tool's own directory — for a toolkit VENDORED INSIDE a consumer repo that is the
+    # CONSUMER's repo, whose tag count is not ours to bound. The first line, taken with a
+    # parameter expansion, is byte-identical output with no second process to lose.
+    newest="$(git -C "$root" tag --list 'v*' --sort=-version:refname 2>/dev/null)"
+    newest="${newest%%$'\n'*}"
     if [ -z "$newest" ]; then
         warn "runtime at $root has no v* tags — cannot judge staleness (UNKNOWN, not ok)"
         continue
