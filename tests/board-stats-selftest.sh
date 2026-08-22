@@ -758,5 +758,244 @@ eq "the report ends with a PARTIAL line"    "true" "$(has 'PARTIAL REPORT' "$txt
 # would be a decoration that fires on every run.
 eq "control: a healthy report carries no PARTIAL line" "false" "$(has 'PARTIAL REPORT' "$txt")"
 
+# ===========================================================================
+# card#7228 — THE STOCK NUMBERS THEMSELVES carry the floor marker on a partial
+# read. The SECOND member of the class card#6365 closed for board-snapshot
+# (docs/CONSOLIDATION-PLAN.md § the read-outcome entry).
+#
+# board-stats accepts fetch_board_cards' rc 3 (page cap) and rc 4 (short read)
+# and RENDERS the partial array on purpose — that is what those two rcs are for.
+# It said so on one ⚠ line and then printed NINE bare numbers per board under it
+# (eight columns plus the total, measured on all three boards on this box). A
+# number survives being quoted out of its line and the ⚠ does not, which is the
+# whole argument card#6365 closed board-snapshot on.
+#
+# WHY THESE LEGS RUN THE BIN AS A PROCESS. The state they turn on is produced by
+# the real paginator's own census — not by anything this file could fake at the
+# function seam — and what it must change is the TEXT a human reads. Asserting on
+# the sourced functions would exercise neither end. The curl stand-in is the same
+# one board-snapshot-selftest drives.
+# ===========================================================================
+echo "== board-stats(1) — a partial card read floors every stock number (card#7228) =="
+# shellcheck source=tests/_kb-api-stub.sh
+source "$HERE/_kb-api-stub.sh"
+kb_stub_scrub_env
+kb_stub_board_config e2e 7 \
+    'export KB_STAGE_BACKLOG=83' \
+    'export KB_STAGE_SHIPPED_TO_DEV=89'
+kb_stub_install
+
+# One preload naming three stages, with the two lane_types the classification derives
+# from, so no "could not be classified" line joins the failure list and the only ⚠ under
+# test is the card read's.
+KB_STUB_PRELOAD="$(jq -cn '{data:{workflows:[{stages:[
+    {id:83,name:"Backlog",position:1,lane_type:"backlog_inventory"},
+    {id:84,name:"In Progress",position:2,lane_type:null},
+    {id:89,name:"Shipped to dev",position:3,lane_type:"done"}]}]}}')"
+# THE SAME three cards under two different `meta` blocks: `complete` declares the total it
+# delivered (rc 0), `short` declares five (rc 4 — the census sees sum_n < total). Same rows,
+# so the two renders differ ONLY by what this change adds, which is what makes the
+# strip-the-marker control below an equality rather than a resemblance.
+_E2E_ROWS='[{"id":11,"workflow_stage_id":83,"created_at":"2026-01-02T00:00:00+00:00","deleted_at":null},
+            {"id":12,"workflow_stage_id":84,"created_at":"2026-01-03T00:00:00+00:00","deleted_at":null},
+            {"id":13,"workflow_stage_id":89,"created_at":"2026-01-04T00:00:00+00:00","deleted_at":null}]'
+KB_STUB_CARDS_OK="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:3,last_page:1}}')"
+KB_STUB_CARDS_SHORT="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:5,last_page:1}}')"
+# A FULL page (the paginator's own limit=200) plus a page cap of 1 is the only way to reach
+# rc 3 — see fetch_board_cards' rc table. 200 rows in one column, so the cap scenario's own
+# numbers are distinct from the short one's.
+KB_STUB_CARDS_FULL="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:83,
+                                created_at:"2026-01-02T00:00:00+00:00",deleted_at:null}],
+                               meta:{total:400,last_page:2}}')"
+# One changelog page holding a row INSIDE the 24h window and a row that PRECEDES it. The
+# second row is what closes the window: the pager stops on a page whose oldest row is older
+# than the cutoff, so without it the log would read as ending inside the window and the flow
+# half would contribute a ⚠ of its own to the failure list under test.
+KB_STUB_CHANGELOG="$(jq -cn '{data:[
+  {id:9,board_id:7,subject_id:1,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:83,to_stage_id:89,from_stage_name:"Backlog",to_stage_name:"Shipped to dev"},
+   created_at:((now - 3600)|todate)},
+  {id:8,board_id:7,subject_id:2,action:"task.created",actor_type:"human",
+   payload:{},created_at:((now - 259200)|todate)}]}')"
+export KB_STUB_PRELOAD KB_STUB_CARDS_OK KB_STUB_CARDS_SHORT KB_STUB_CARDS_FULL KB_STUB_CHANGELOG
+kb_stub_route() {
+    local url="$2"
+    case "$url" in
+        */preload.json*)   printf '200\n%s\n' "$KB_STUB_PRELOAD" ;;
+        */changelog.json*) printf '200\n%s\n' "$KB_STUB_CHANGELOG" ;;
+        *tasks/search.json*)
+            case "$KB_STUB_SCENARIO" in
+                complete) printf '200\n%s\n' "$KB_STUB_CARDS_OK" ;;
+                short)    printf '200\n%s\n' "$KB_STUB_CARDS_SHORT" ;;
+                cap)      printf '200\n%s\n' "$KB_STUB_CARDS_FULL" ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+
+# stats <scenario> [format] [card-page-cap] — the bin's STDOUT, its rc in $STATS_RC.
+STATS_RC=0
+stats() {
+    export KB_STUB_SCENARIO="$1" BOARD_STATS_CARD_PAGE_CAP="${3:-25}"
+    kb_stub_reset
+    local out; out="$(bash "$BIN" --board e2e --format "${2:-text}" 2>/dev/null)"; STATS_RC=$?
+    printf '%s' "$out"
+}
+# The report stamps the wall clock twice (generated_at, the window cutoff) and ages the
+# oldest pullable card against it, so an EQUALITY over the render has to hold the clock
+# still. Each clock-derived field is replaced by a placeholder rather than deleted, so a
+# field that moved or vanished still reds — and the age's marker is kept OUTSIDE the
+# placeholder, because whether it carries one is exactly what is under test.
+_declock() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g;
+                     s/oldest (≥?)[0-9]+(\.[0-9]+)?d/oldest \1<AGE>d/g'; }
+# The stock section only: the ⚠ lines sit above it and the flow counts below, and a marker
+# in one says nothing about the other.
+_stock_section() { printf '%s\n' "$1" | awk '/^  stock/{f=1} /^  flow/{f=0} f'; }
+# _stock_count <render> <single-word column label> — that row's NUMBER, read as a field
+# rather than matched inside a spacing literal: the count is right-padded into a fixed
+# column, so a literal needle would encode the padding and red on the marker taking one of
+# its cells (which is the point — the marker occupies a cell instead of adding one).
+_stock_count() { _stock_section "$1" | awk -v k="$2" '$1 == k {print $2}'; }
+# _bare_digits <stock-section> <board-object> — the digits still standing in the stock
+# section after every FLOORED number and every identifier THE DOCUMENT ITSELF names is
+# removed. The identifier set is derived from the board object — the column labels (which
+# are a bare "stage <id>" on a column the preload never named) and the oldest-card ids — so
+# a NEW number added to this section is in the population the day it is written rather than
+# when someone remembers this rule. The id token is `#<id>` and NOT the `(#<id>)` the render
+# happens to wrap it in: this predicate asks whether a NUMBER is unaccounted for, so encoding
+# the render punctuation would make it red on any rewording of the text AROUND the id — which
+# it did, the day the id gained its own qualifier. Empty means every number carries its marker.
+_bare_digits() {
+    local sect="$1" doc="$2" tok
+    sect="$(printf '%s' "$sect" | sed -E 's/≥[0-9]+(\.[0-9]+)?//g')"
+    while IFS= read -r tok; do
+        [[ -n "$tok" ]] && sect="${sect//"$tok"/}"
+    done < <(printf '%s' "$doc" | jq -r '
+        ([ .stock.columns[].stage,
+           (.stock.columns[] | select(.oldest_card != null) | "#\(.oldest_card.id)") ] | .[])')
+    printf '%s' "$sect" | tr -cd '0-9'
+}
+
+# --- CONTROL FIRST: a COMPLETE read renders exactly as it always did --------
+# An equality over the whole report, not a substring: a fix that marked every report
+# incomplete would be worse than the defect this closes, and only an exact comparison can
+# see that. The three clock-derived fields are placeholders (see _declock).
+okout="$(stats complete)"
+okexpect="── Board stats ── stock from the card snapshot · flow from the changelog ──
+window: 24h — flow counts events at or after <TS> · generated <TS>
+
+▸ e2e  [e2e · board 7]
+  stock — a state question, read from the card snapshot
+    Backlog                      1   oldest <AGE>d (#11)   [pullable]
+    In Progress                  1
+    Shipped to dev               1   [terminal]
+    total                        3
+  flow — a rate question, read from the changelog
+    created                      0
+    moved                        1   human 0 · service 1
+    same-stage moves             0   swimlane-only; not transitions, not resolutions
+    transitions:
+      Backlog -> Shipped to dev                         1   human 0 · service 1   [resolution]
+    resolutions, per destination stage (never collapsed into one number):
+      Shipped to dev                                    1   human 0 · service 1"
+eq "CONTROL rc 0: the complete-read report is byte-identical" "$okexpect" "$(printf '%s' "$okout" | _declock)"
+eq "CONTROL rc 0: exits 0"                                    "0" "$STATS_RC"
+eq "CONTROL rc 0: no floor marker anywhere in the report"     "false" "$(has '≥' "$okout")"
+
+# --- positive 1: the short read (rc 4) --------------------------------------
+shortout="$(stats short)"
+# Read off THIS run, before the json one below moves $STATS_RC: a partial read is a finding
+# in the report, not a broken instrument, and the exit status is where that is stated.
+eq "rc 4: fail-soft — the report still exits 0"     "0" "$STATS_RC"
+shortjs="$(stats short json)"
+eq "rc 4: the ⚠ line still names the read INCOMPLETE and the rc" "true" \
+   "$(has 'card snapshot INCOMPLETE (fetch rc=4)' "$shortout")"
+eq "rc 4: a column count carries the marker"        "≥1" "$(_stock_count "$shortout" Backlog)"
+eq "rc 4: the TOTAL carries it too"                 "≥3" "$(_stock_count "$shortout" total)"
+eq "rc 4: the oldest-card AGE carries it"           "true" "$(has 'oldest ≥' "$shortout")"
+# The card ID beside that age is the section's one NON-number, and a bare `(#11)` is an
+# ATTRIBUTION — "the oldest Backlog card is #11" — asserted off a read this tool has just
+# declared incomplete: by the same premise that floors the age, the card that is actually
+# oldest can be one the read never delivered, and it has a DIFFERENT id. `≥` says nothing
+# about an identity, so the id names the population it is the oldest OF instead, and it does
+# so IN PLACE for the reason the markers exist at all — the ⚠ line does not survive the value
+# being quoted out of it.
+eq "rc 4: the oldest-card ID names the population it is the oldest OF" "true" \
+   "$(has '(#11 among the cards read)' "$shortout")"
+# The complete render of the SAME rows is the control for both: same fields, no markers.
+eq "CONTROL rc 0: the same two numbers are bare"    "1 3" \
+   "$(_stock_count "$okout" Backlog) $(_stock_count "$okout" total)"
+# …and the same control for the id qualifier: on a WHOLE read the attribution is true as
+# written, so the qualifier must be absent — a renderer that appended it unconditionally
+# would satisfy the positive above while telling every operator their complete read is not.
+eq "CONTROL rc 0: the id is bare on a complete read" "true"  "$(has '(#11)' "$okout")"
+eq "CONTROL rc 0: …and carries no qualifier at all"  "false" "$(has 'among the cards read' "$okout")"
+
+# The DENOMINATOR for "every stock number", re-derived from the document on every run
+# rather than written down: one per column, one total, and one age per pullable column
+# that holds a card.
+want="$(printf '%s' "$shortjs" | jq '(.boards[0].stock.columns | length) + 1
+        + ([.boards[0].stock.columns[] | select(.oldest_card != null)] | length)')"
+# Counted with grep -o, not `tr -cd`: tr works on BYTES, and `≥` is three of them — two of
+# which also occur inside the section's own em-dash, so a byte counter reads a marker that
+# is not there.
+got="$(_stock_section "$shortout" | command grep -o '≥' | command grep -c . || true)"
+eq "rc 4: the marker count equals the numbers the document says are printed" "$want" "$got"
+# …and the total statement the count alone cannot make: NOTHING numeric is left bare.
+eq "rc 4: no bare digit survives in the stock section" "" \
+   "$(_bare_digits "$(_stock_section "$shortout")" "$(printf '%s' "$shortjs" | jq -c '.boards[0]')")"
+# CONTROL for that predicate — it must be able to fail. The rc-0 render is the same section
+# with the same identifiers and no markers, i.e. exactly the pre-fix shape.
+eq "CONTROL: the same predicate FINDS the bare numbers in a complete render" "true" \
+   "$([[ -n "$(_bare_digits "$(_stock_section "$okout")" \
+        "$(stats complete json | jq -c '.boards[0]')")" ]] && echo true || echo false)"
+
+# CONTROL: the marker is the ONLY thing the partial render adds. Drop the two lines the tool
+# already printed before this change, undo the marker, and what is left must equal the
+# complete render BYTE FOR BYTE — same rows, same counts, same ages, same COLUMNS. A marker
+# that moved a number, or that pushed a padded column out of alignment, does not survive it.
+#
+# Undoing it takes the section's two number KINDS plus the id qualifier, which is the same
+# denominator _bare_digits derives: a count sits in a right-padded column, so its marker took
+# a cell that must be given back as a space; the queue age is inline, so its marker is simply
+# removed; and the id qualifier is inline text that is dropped whole.
+eq "CONTROL rc 4: stripped of its floor annotations, the partial render IS the complete one" \
+   "$(printf '%s' "$okout" | _declock)" \
+   "$(printf '%s' "$shortout" | _declock | command grep -v 'card snapshot INCOMPLETE' \
+      | command grep -v 'PARTIAL REPORT' \
+      | sed -E 's/ among the cards read//g; s/oldest ≥/oldest /g; s/≥/ /g')"
+
+# --- positive 2: the page cap (rc 3) ----------------------------------------
+capout="$(stats cap text 1)"
+eq "rc 3: fail-soft — the report still exits 0"     "0" "$STATS_RC"
+capjs="$(stats cap json 1)"
+eq "rc 3: the ⚠ line names the page cap's rc"       "true" \
+   "$(has 'card snapshot INCOMPLETE (fetch rc=3)' "$capout")"
+eq "rc 3: the column count carries the marker"      "≥200" "$(_stock_count "$capout" Backlog)"
+eq "rc 3: the TOTAL carries it too"                 "≥200" "$(_stock_count "$capout" total)"
+eq "rc 3: no bare digit survives in the stock section" "" \
+   "$(_bare_digits "$(_stock_section "$capout")" "$(printf '%s' "$capjs" | jq -c '.boards[0]')")"
+# The id qualifier is driven off the same single derived state as the markers, but this is the
+# OTHER arm that reaches it, and `_bare_digits` cannot see the difference (it removes the id
+# token either way) — so the qualifier is asserted here in its own right.
+eq "rc 3: the oldest-card ID is qualified on this arm too" "true" \
+   "$(has '(#101 among the cards read)' "$capout")"
+
+# --- the JSON surface is DELIBERATELY unchanged (card#7228 half 2, OPEN) ----
+# The machine-readable half of this card — a real completeness field instead of a prose
+# string inside failures[] — is a CONTRACT change whose consumer set has not been
+# enumerated, so it is not made here. That is a decision, not an oversight, and it is
+# asserted so the next change to this renderer cannot make it by accident: the per-board
+# key set is the same six keys on a partial read as on a whole one.
+_e2e_keys='["board","board_id","failures","flow","label","stock"]'
+eq "the per-board JSON keys are unchanged on a COMPLETE read" "$_e2e_keys" \
+   "$(printf '%s' "$(stats complete json)" | jq -c '.boards[0] | keys')"
+eq "…and unchanged on a PARTIAL one"                          "$_e2e_keys" \
+   "$(printf '%s' "$shortjs" | jq -c '.boards[0] | keys')"
+eq "…with .stock still a fully populated object"              "false" \
+   "$(printf '%s' "$shortjs" | jq '.boards[0].stock == null')"
+eq "…so a JSON consumer still has only the PROSE in failures[] (half 2, OPEN)" "true" \
+   "$(has 'card snapshot INCOMPLETE' "$(printf '%s' "$shortjs" | jq -r '.boards[0].failures[]')")"
+
 # ---------------------------------------------------------------------------
 _summary "board-stats-selftest"

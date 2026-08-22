@@ -928,7 +928,9 @@ finding with no owner is abandoned, not filed.
   asymmetry"* — it was inherited from the era when the two sections were two independent passes,
   not a ruling, and it is recorded here as ruled-on rather than left implicit.
 
-  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review).**
+  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review —
+  the RENDERING half has closed since; the disposition paragraph directly below this one owns the
+  current state, and this paragraph is the finding as it was written).**
   It already emits an INCOMPLETE note at its `3|4` arm (`every stock count below is a floor, not a
   total`), which is why the first cut of this paragraph recorded the class as *"two members and was
   one instance"*. That was true of the NOTE and silent about the MARKER: every stock number
@@ -946,6 +948,82 @@ finding with no owner is abandoned, not filed.
   (canon #18) — rather than fixed inside card#6365, whose scope is the SessionStart renderer.
   Changing what `board-stats` prints and what its JSON asserts is an operator-facing report change
   and is ask-gated.
+
+  **DISPOSITION of that second member — the STOCK RENDERING is closed, the CLASS IS NOT
+  (card#7228).** The operator approved the rendering half only, and only that half was built:
+  `board-stats` now derives the completeness state once at its own `fetch_board_cards` rc guard and
+  prefixes `≥` onto every number the stock section prints. The state is **fail-closed**: it is
+  initialised false and exactly one arm — rc 0, the whole read — claims otherwise, so an rc added
+  to the accepted-partial `3|4` arm floors its numbers whether or not anyone remembers to say so,
+  and only an explicit edit to the rc-0 arm can ever claim a read is whole. (A `rc -ne 0`
+  derivation over one merged `0|3|4` arm — `board-snapshot`'s shape — was the first cut and is not
+  what shipped. **The reason first recorded here for abandoning it was wrong and is corrected:** it
+  said that shape pushed the guard's own `*)` arm past the ten-code-line window
+  `tests/fetch-board-cards-caller-claims-selftest.sh` derives its arm population inside. Re-measured
+  on the shipped bin, a COMPACT spelling of exactly that derivation — the merged arm plus a
+  single-line `if [[ "$rc" -ne 0 ]]; then … else … fi` — runs that selftest at **rc 0**, while a
+  fully expanded `if … fi` of the SAME derivation reds it on `bin/board-stats: the registered arm is
+  INSIDE the derived window [card snapshot unavailable …]`. So `ARM_WINDOW=10` constrains how many
+  CODE LINES a spelling spends between the call and its last arm — it constrains LAYOUT, not the
+  derivation — and it forbids no shape. The fail-closed default-false spelling stands on its own
+  stated ground, which is the only ground it ever needed: it is the stronger invariant, because a
+  new rc added to the accepted-partial arm inherits the floor instead of inheriting a claim.) The
+  denominator is one count per column, the total, and the oldest-card AGE in each
+  pullable column that holds one; the age joins the counts because a card the read never delivered
+  can only be OLDER than the oldest one it did, so the printed age is a floor for the same reason
+  the counts are. Measured against the pre-change bin, side by side through the shared curl stub:
+  the two bins are byte-identical on FOUR of the six format × rc combinations — the text render at
+  rc 0, and `--format json` at rc 0, rc 3 and rc 4 — and the two that differ are the text render at
+  rc 3 and rc 4, which is exactly this change. (The first cut of this sentence read "a complete read
+  is byte-identical … on text AND `--format json`, at rc 0, rc 3 and rc 4", which asserts the
+  partial TEXT renders are unchanged. They are not, and could not be.)
+
+  **THE CARD ID beside that age — this paragraph is the single owner of the ruling, and the first
+  one was wrong.** The id is the only value in the stock section that is not a number, so the
+  marker cannot carry it: `≥` says nothing about an identity. The first cut therefore left it bare
+  and justified that by *"the ⚠ line directly above the section already says the named card may not
+  be the oldest one on the board"* — **a sentence that does not exist**. The rendered ⚠ line is
+  `card snapshot INCOMPLETE (fetch rc=4) — every stock count below is a floor, not a total`; it
+  speaks only about the counts, so the age was correctly floored while `(#11)` was left asserting
+  *the oldest Backlog card is #11* off a read this tool had just declared incomplete — and by this
+  entry's own premise, the card that is actually oldest can be one the read never delivered, under a
+  DIFFERENT id. An operator could act on the wrong card. Two routes were on the table and neither
+  shipped: **extending the ⚠ text** would put the qualification back onto the line this whole change
+  exists because a value survives being quoted out of it, and **dropping the id on a partial read**
+  discards a datum that is true and actionable (#11 really is that old and really is pullable — and
+  on a page-capped board the report would then name no card at all). What ships is the qualification
+  ON the value, for the same reason the marker is: a floored render prints `oldest ≥232.3d (#11
+  among the cards read)`, which is true as written and stays true quoted out of every line around
+  it. A complete read prints the id bare, asserted with its own control — a qualifier on every
+  report would be a worse defect than the one it closes. `bin/board-stats`' `idq` definition and the
+  CHANGELOG entry POINT here; the false sentence was minted into three surfaces in one change, which
+  is what made re-stating it three times the wrong correction.
+
+  **TWO members of this class stay OPEN on this tool, and neither is a residual of the fix above —
+  each is the same defect on a surface the approval did not cover:**
+
+  - **`--format json` still carries no completeness field at all.** This was left alone on purpose:
+    it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to be
+    enumerated before a key consumers must honour is added. The document behind the renderer does
+    now carry a `stock_complete` (the text renderer computes nothing of its own and needed a field
+    to read), and the `json` arm STRIPS it — so the emitted object is the same six keys it always
+    was, asserted in `tests/board-stats-selftest.sh` on both a whole and a partial read, and the
+    second half of card#7228 is that `del` plus its doc entry. **The unmeasured bound is unchanged
+    and is the first step of that half, not a detail of it:** nothing in this repository consumes
+    `board-stats --format json` (grepped), which is a statement about this repository and not about
+    who runs the tool.
+  - **The FLOW counts under a truncated or unreadable changelog window still print bare**
+    (**card#7235**) — named here by sibling audit (canon #7) while shipping the stock fix, not by a
+    fresh report. It is the
+    identical shape one section lower in the same renderer: `_bs_one_board` sets `flow_ok=true` on a
+    window it could only partly read and appends *"changelog window INCOMPLETE: … — the flow counts
+    below are a floor, not a total"*, and then `created`, `moved`, `same-stage moves`, and every
+    per-transition / per-resolution / per-wash count renders unqualified under it. The `≥` carrier
+    is already in the render program (`fl($floor)`), so the fix is the same shape; it is an
+    operator-facing report change and therefore ask-gated exactly as the stock half was.
+
+  **So the class is OPEN.** Recording it closed over these would be the same failure this document
+  records for the `has()` class — the first cut of that section said it had.
 
   **The SessionStart delivery bound, filed not fixed (card#6365 review).** `board-snapshot`'s
   in-flight list is UNCAPPED — one line per in-flight card — while the untriaged list caps at six.
