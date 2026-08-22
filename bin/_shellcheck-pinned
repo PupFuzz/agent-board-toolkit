@@ -77,7 +77,13 @@ if [ -z "$found" ]; then
 
     tarball="shellcheck-v$want.$asset.tar.xz"
     url="https://github.com/koalaman/shellcheck/releases/download/v$want/$tarball"
-    tmp="$(mktemp -d)"
+    # Stage INSIDE $CACHE, not $TMPDIR. The publish below is a rename, and a rename is only
+    # atomic within one filesystem — where /tmp is tmpfs (the default on several common distros)
+    # `mv` degrades to copy-then-unlink and a concurrent reader CAN observe a half-written binary
+    # at the cache path, which is exactly the two-agents-one-$HOME case the publish comment cites.
+    # Staging under $CACHE makes the atomicity unconditional instead of environment-dependent.
+    mkdir -p "$CACHE" || die "could not create $CACHE"
+    tmp="$(mktemp -d "$CACHE/.stage.XXXXXX")"
     trap 'rm -rf "$tmp"' EXIT
     printf '_shellcheck-pinned: no shellcheck %s on this box%s\n_shellcheck-pinned: fetching %s\n' "$want" "$rejected" "$url" >&2
     curl -fsSL --retry 3 -o "$tmp/$tarball" "$url" || die "could not download $url"

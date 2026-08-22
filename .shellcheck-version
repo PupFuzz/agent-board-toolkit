@@ -17,8 +17,13 @@
 # WHY 0.9.0. It is what the gate was ALREADY running: ubuntu-24.04 image `20260816.277` — the image
 # the last `dev` CI run used — ships `shellcheck 0.9.0-1`. Pinning it writes today's observed
 # behaviour down rather than changing it. Verified the same day over the gate's own file population
-# at `-S error`: 0.9.0 and 0.11.0 both report ZERO findings — on the tree as it stood (69 files) and
-# again on the tree this pin ships with (71). The pin moves no verdict here either.
+# at `-S error`: 0.9.0 and 0.11.0 both report ZERO findings, over the gate's population before and
+# after this change. The pin moves no verdict here either.
+#
+# NO FILE COUNT IS WRITTEN HERE, deliberately. An earlier revision carried one and it had already
+# been hand-re-synced once by the time this shipped — the population grows with every new bin or
+# selftest, so a number here is stale on arrival. Re-derive it from ci.yml's own expression if you
+# need it; do not restate it.
 #
 # TO MOVE THE PIN: run the gate under the new version FIRST and diff the findings against the old
 # one. A diff is a change to what CI accepts and needs the decision that goes with it — it is not a
