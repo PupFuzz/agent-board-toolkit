@@ -264,11 +264,43 @@ eq "…while still keeping the rows it read"  "200"  "$(jq -s 'add | length' "$r
 
 echo "== _bs_window_rows — an unreadable first page is an error, not an empty window =="
 : > "$CALLS"; rowsf4="$TMP/rows4.jsonl"; : > "$rowsf4"
-kb_api() { printf '%s\n' "$2" >> "$CALLS"; return 1; }
+# The stub sets KB_HTTP exactly as the real kb_api does when the server ANSWERED a non-2xx.
+# A stub that left the global alone would measure this arm against a state the lib cannot
+# produce, and the arm reads that global.
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; KB_HTTP="503"; return 1; }
 meta4="$(_bs_window_rows 1 "$CUT" "$rowsf4")"
 eq "no page is reported read"            "0"     "$(printf '%s' "$meta4" | jq -r '.pages')"
 eq "an error is reported"                "false" "$(printf '%s' "$meta4" | jq -r '.error == null')"
 eq "…and no rows are claimed"            "0"     "$(jq -s 'add // [] | length' "$rowsf4")"
+
+echo "== _bs_window_rows — a request that NEVER COMPLETED is not a status the server sent (card#6680) =="
+# THE DEFECT. The read was `resp="$(kb_api …)" || err="… (HTTP ${KB_HTTP:-000}) …"`, and a
+# command substitution is a SUBSHELL: the KB_HTTP kb_api set inside it never reached that line,
+# so the status came from the lib's own empty initialiser and EVERY failure rendered `HTTP 000`
+# — the sentinel for a request that never completed — including the 403/500 the server actually
+# answered. `KB_API_QUIET=1` also suppresses kb_api's own `HTTP 500 on GET …` line, so nothing
+# anywhere in the run contradicted it: an answered non-2xx was reported, silently, as a
+# transport failure. Measured before the fix: both stubs below produced the byte-identical
+# `changelog read failed (HTTP 000) after 0 page(s)`.
+#
+# ⛔ ASSERTED AS A DISTINCTION, NOT AS A STRING. "an error is reported" above was already true
+# of BOTH states, so it could not have failed on this defect. The two messages are compared
+# against each other, in the same run.
+: > "$CALLS"; rowsf4b="$TMP/rows4b.jsonl"; : > "$rowsf4b"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"; }
+meta4b="$(_bs_window_rows 1 "$CUT" "$rowsf4b")"
+err4="$(printf '%s' "$meta4" | jq -r '.error')"
+err4b="$(printf '%s' "$meta4b" | jq -r '.error')"
+eq "⭐ the two failures do NOT share one message" "differ" \
+   "$(if [[ "$err4" == "$err4b" ]]; then echo same; else echo differ; fi)"
+eq "the ANSWERED non-2xx names the status the server sent" "true"  "$(has 'HTTP 503' "$err4")"
+eq "…and never says the request failed to complete"        "false" "$(has 'DID NOT COMPLETE' "$err4")"
+eq "the never-completed request says exactly that"         "true"  "$(has 'DID NOT COMPLETE' "$err4b")"
+# `000` is this state's own sentinel, not something the server sent, so the line names no
+# status at all rather than dressing the sentinel up as one.
+eq "…and names NO status — none was read"                  "false" "$(has 'HTTP' "$err4b")"
+eq "…reports no page read"                                 "0"     "$(printf '%s' "$meta4b" | jq -r '.pages')"
+eq "…and claims no rows"                                   "0"     "$(jq -s 'add // [] | length' "$rowsf4b")"
 
 echo "== _bs_window_rows — a body of the wrong shape is refused, not half-read =="
 : > "$CALLS"; rowsf5="$TMP/rows5.jsonl"; : > "$rowsf5"

@@ -357,6 +357,16 @@ LEG3_DISPOSED=(
     # assertion above turns the disposition red and forces the next author to dispose theirs
     # deliberately rather than inherit this ruling.
     "docs/CHANGELOG.md::**card#6884** — **"
+    # The live `[Unreleased]` entry for card#6680, reported for the same reason and disposed on
+    # the same terms as card#6884's directly above: one markdown paragraph is ONE line, and this
+    # one narrates a change to `bin/_kb-board-lib.sh` while naming the bins whose CALLER SHAPES
+    # decided the design (`kbcard`'s `resp="$(kb_api …)"`, `dl-a1-register-field`'s bare
+    # assignment under `set -e`). It instructs nobody to copy a SET — its one vendoring sentence
+    # names a single bin, "re-vendor `bin/_kb-board-lib.sh`" — which is the (b) shape.
+    # ⛔ Same bound: the unit is the LINE, so a list regrown inside this entry is suppressed too,
+    # and at release time this moves below the version cut and the live-line assertion above
+    # turns it red for the next author to rule on rather than inherit.
+    "docs/CHANGELOG.md::**card#6680** — **"
 )
 
 # _leg3_scan <root> — every reported line in the tree under <root>, as `<relpath>: <line>`.
@@ -381,18 +391,47 @@ _leg3_scan() {
     done < <(grep -rIl '' "$root" --exclude-dir=.git 2>/dev/null | LC_ALL=C sort)
 }
 
+# _leg3_disposes <dpath> <dsub> <line> — THE disposition predicate, one owner. Both questions
+# in this leg ask it: _leg3_undisposed asks "does any disposition match this reported line?",
+# the liveness loop asks "does any reported line match this disposition?". They were two
+# spellings of one rule — this `case` glob, and a `grep -F | grep -qF` pipeline — and the
+# pipeline was also the SIGPIPE shape this repo has already ruled on (see the liveness loop).
+_leg3_disposes() { # <dpath> <dsub> <line>
+    case "$3" in "$1: "*) case "$3" in *"$2"*) return 0 ;; esac ;; esac
+    return 1
+}
+
 # _leg3_undisposed <raw> — the reported lines with every disposition applied.
 _leg3_undisposed() {
-    local raw="$1" d dpath dsub line keep
+    local raw="$1" d line keep
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         keep=true
         for d in "${LEG3_DISPOSED[@]}"; do
-            dpath="${d%%::*}"; dsub="${d#*::}"
-            case "$line" in "$dpath: "*) case "$line" in *"$dsub"*) keep=false ;; esac ;; esac
+            if _leg3_disposes "${d%%::*}" "${d#*::}" "$line"; then keep=false; fi
         done
         $keep && printf '%s\n' "$line"
     done <<<"$raw"
+}
+
+# _leg3_disposition_live <dpath> <dsub> — "true" when some line the scan reported is one this
+# disposition suppresses. NO PIPELINE, deliberately: the spelling this replaces was
+# `printf … | grep -F … | grep -qF …`, and under `pipefail` the matching `grep -q` exits while
+# its EXTERNAL upstream grep is still writing, so the writer's SIGPIPE becomes the pipeline's
+# status and a MATCH reads as a non-match. It is timing- and buffer-dependent — this file was
+# green on five consecutive local runs and RED in CI on the same commit, with
+# `grep: write error: Broken pipe` printed one line above the false verdict — and it became
+# reachable here only when a second multi-KB CHANGELOG entry was disposed, so the first `ok`
+# above kept passing while the second flipped. Same class, same prescription as
+# tests/fetch-board-cards-caller-claims-selftest.sh's `is_rc`/`is_cause`/`is_outcome`: do not
+# feed `grep -q` from a pipe.
+_leg3_disposition_live() { # <dpath> <dsub>
+    local line
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        if _leg3_disposes "$1" "$2" "$line"; then printf 'true\n'; return 0; fi
+    done <<<"$LEG3_RAW"
+    printf 'false\n'
 }
 
 LEG3_RAW="$(_leg3_scan "$ROOT")"
@@ -404,7 +443,7 @@ eq "premise: the scan reached files and reported something" "true" \
 for d in "${LEG3_DISPOSED[@]}"; do
     dpath="${d%%::*}"; dsub="${d#*::}"
     eq "disposition suppresses a live line: $dpath — $dsub" "true" \
-       "$(printf '%s\n' "$LEG3_RAW" | grep -F "$dpath: " | grep -qF "$dsub" && echo true || echo false)"
+       "$(_leg3_disposition_live "$dpath" "$dsub")"
 done
 eq "no undisposed enumeration anywhere in the repo" "" "$(_leg3_undisposed "$LEG3_RAW")"
 

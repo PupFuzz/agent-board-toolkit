@@ -2206,10 +2206,10 @@ _kbc_field_change_type_call() {
 # TRANSPORT never completed, printed as the tail of the caller's own sentence.
 #
 # It exists because "nothing was written" is not a readable outcome here. kb_api_status
-# maps EVERY non-zero curl exit to "000" and kb_api returns 1 for all of them alike —
-# including exit 28 (--max-time, which KB_CURL_MAX_TIME turns on for every request this
-# lib makes) and a connection reset mid-response, where the server may already have
-# COMMITTED the transaction. The lib's own header states exactly that and names this bin
+# maps EVERY non-zero curl exit to "000" and kb_api answers $KB_API_RC_TRANSPORT for all of
+# them alike — including exit 28 (--max-time, which KB_CURL_MAX_TIME turns on for every
+# request this lib makes) and a connection reset mid-response, where the server may already
+# have COMMITTED the transaction. The lib's own header states exactly that and names this bin
 # as one of the writers it applies to. So a run that meets this state has read no answer
 # at all, and the two sentences it can honestly say are: this is UNKNOWN, and its caller
 # can name a way to resolve it — a re-run where one is idempotent, and otherwise the read
@@ -2228,12 +2228,25 @@ _kbc_field_change_type_call() {
 #
 # ⚠ THE UNKNOWN HALF IS NOT TRUE OF EVERY CALLER. It holds on the conversion's 000 arm,
 # which read no answer at all. It does NOT hold on the restamp pass's failed-PATCH
-# bucket: that bucket is filled by `kb_api PATCH … || patch_failed+=(…)`, and kb_api
-# returns 1 for a COMPLETED non-2xx (403/404/422/500) exactly as it does for a transport
-# 000 — so a card whose PATCH the server REFUSED, with that status already on stderr from
-# kb_api itself (absent KB_API_QUIET), is told here that the request did not complete.
-# Telling the two apart is a change at kb_api's return contract, not a rewording of this
-# line, and is not made here.
+# bucket: that bucket is filled by `kb_api PATCH … || patch_failed+=(…)`, a BARE `||` that
+# catches every non-zero rc alike — so a card whose PATCH the server REFUSED (403/404/422/
+# 500, with that status already on stderr from kb_api itself absent KB_API_QUIET) is still
+# told here that the request did not complete.
+#
+# THE PRIMITIVE NO LONGER MERGES THE TWO — this caller does (card#6680). kb_api now answers
+# 1 when the server ANSWERED non-2xx and $KB_API_RC_TRANSPORT when the request did not
+# complete, so the bucket above CAN be split (capture the rc, and the answered-non-2xx side
+# gets a sentence naming the status instead of this one). That split changes what this pass
+# REPORTS to an operator about a WRITE it may or may not have landed, so it is not made in
+# the same change as the primitive; it is recorded on card#6680. What changed here is only
+# that the obstacle is no longer the lib's contract.
+#
+# THE ONE CALL SITE THAT DID MOVE with the primitive is board-stats' changelog window, and
+# the difference is why: that arm was already PRINTING a status, and printing a fabricated
+# one — `HTTP 000` read off the global across a `$( … )` on every failure, transport or not,
+# with kb_api's own status line suppressed. Its reads are all GETs, so no write-ambiguity
+# sentence had to be re-decided; it stopped stating a false fact rather than started stating
+# a new one.
 _kbc_unfinished_write_note() {
     printf '%s' "the request did not complete, so this run CANNOT say whether it landed — a write the server already committed answers a timed-out or reset connection exactly as one that never arrived does. $1"
 }
