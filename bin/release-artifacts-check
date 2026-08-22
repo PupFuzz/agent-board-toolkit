@@ -578,9 +578,23 @@ _extract_version() {
     | grep -oiE "$VERSION_REGEX" | head -1 || true)"
   [ -n "$EXTRACTED_VERSION" ] \
     || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
-  # The same extraction, every match rather than the first one — the loop body is now a dedupe
-  # and nothing else, because with the second numeric pull gone a match IS a value. No
-  # emptiness guard on $m: `grep -o` emits no line for a zero-length match, so an empty one
+  # The same extraction, every match rather than the first one. The loop body is a dedupe and
+  # nothing else — and THE KEY IS THE WHOLE MATCH `$m`, not a numeric run pulled back out of
+  # it, because with the second stage gone a match IS a value and every other identity this
+  # could dedupe on would re-declare the version shape that no file under bin/ now states.
+  #
+  # ⛔ THAT KEY DECIDES A VERDICT, not just the contents of a list: `${#NEW_AT_HEAD[@]}` below
+  # is release / ::warning:: / rc-2 refusal, so a `version_regex` admitting two spellings of one
+  # version (`v2.0.0` and `2.0.0` under `v?[0-9]+\.[0-9]+\.[0-9]+`) yields TWO values here
+  # where the pre-card#7208 numeric key folded them to one and classified. ⛔ DO NOT NARROW THE
+  # KEY BACK TO MAKE THAT CASE PASS: the same fold ran in the other direction too — two
+  # genuinely DIFFERENT five-segment versions (`2.0.0.0.5`, `2.0.0.0.9`) both keyed to the
+  # truncated `2.0.0.0`, so the gate silently dropped one and asserted every artifact member
+  # against a version string that appeared nowhere in the file (measured, both directions, on
+  # the pre-change bin). The refusal is this file's rule everywhere else: a version it cannot
+  # determine is rc 2, never a pass and never a silent non-run.
+  #
+  # No emptiness guard on $m: `grep -o` emits no line for a zero-length match, so an empty one
   # cannot arrive here (measured, GNU grep 3.11, against a `[0-9]*` pattern over a digit-free
   # line) — and the empty EXTRACTED_VERSION case already died two lines up.
   EXTRACTED_VALUES=()
