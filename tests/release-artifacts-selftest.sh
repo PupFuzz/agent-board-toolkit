@@ -564,6 +564,11 @@ cfg cfg-badentry-narrow.json '{ "version_file": "VERSION", "version_regex": "[0-
 cfg cfg-trailingjunk-base.json "$CFG_ONE_MEMBER"
 cfg cfg-trailingjunk.json      "$CFG_TRAILING_JUNK"
 cfg no-version-file.json '{ "artifacts": ["VERSION → {{version}}"] }'
+# A repo that declares NO artifacts and no classification keys — a vendored adopter that took
+# `bin/` but never opted into the release-artifact gate. Under the normal mode the empty-set
+# opt-out answers it before the keys are ever read; under --classify-only there is no opt-out
+# to reach, so this is the config that used to be told it "declares artifacts".
+cfg no-keys-no-artifacts.json '{ "artifacts": [] }'
 cfg bad-syntax.json      '{"artifacts": [,]}'
 cfg empty-cfg.json       ''
 cfg bad-obj-array.json   '[1,2]'
@@ -1471,6 +1476,90 @@ echo "== a declared set with no version_file is a CONFIG error, not a pass =="
 run base-0.1.0 head-good --config no-version-file.json
 eq "rc 2"                    "2"    "$RC"
 eq "…and names what is missing" "true" "$(has 'no version_file' "$OUT")"
+
+echo "== a repo that declares NO artifacts is told the TRUTH about which key it is missing =="
+# THE PREMISE OF A REFUSAL IS A CLAIM ABOUT THE WORLD. `--classify-only` skips the empty-set
+# opt-out (the artifact legs are not its question), so a config carrying `"artifacts": []`
+# reaches the classification-key check and used to die with "declares artifacts but no
+# version_file" — false about that config, and the entire diagnosis a vendored adopter gets
+# when their promote job reds rc 2 on a key they never set.
+run base-0.1.0 head-good --config no-keys-no-artifacts.json
+eq "no artifacts + no keys, normal mode → rc 0" "0"    "$RC"
+eq "…via the empty-set opt-out"                 "true" "$(has 'no artifacts declared' "$OUT")"
+run base-0.1.0 head-good --config no-keys-no-artifacts.json --classify-only
+eq "…and under --classify-only → rc 2"          "2"    "$RC"
+eq "…never softened into not-release"           "false" "$(has 'not-release' "$OUT")"
+eq "…naming the key that is missing"            "true" "$(has 'declares no version_file' "$OUT")"
+eq "…NOT claiming it declares artifacts"        "false" "$(has 'declares artifacts but no' "$OUT")"
+eq "…and saying the keys are the MODE's need"   "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+# THE PREMISE IS CONDITIONAL ON THE MODE, NOT ON THE DECLARATION, and deliberately so: under
+# --classify-only the artifact sets are never collected (that read carries its own refusals),
+# so the tool does not KNOW whether any member is declared and must not say. The mode's message
+# therefore claims nothing about artifacts either way — asserted here on the config that DOES
+# declare a set, which is the half a mode-blind reword would have got wrong.
+run base-0.1.0 head-good --config no-version-file.json --classify-only
+eq "control: a declared set with no keys → rc 2"   "2"    "$RC"
+eq "control: …gets the same mode-conditional text" "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares artifacts but no' "$OUT")"
+# …while the NORMAL mode, where the set IS collected and the empty-set opt-out has already been
+# passed, keeps the original premise — that arm is driven above ("a declared set with no
+# version_file is a CONFIG error"), so this fix narrows nothing.
+
+echo "== --classify-only: the release rule, EXPOSED — one implementation, not two (card#6579) =="
+# WHY THIS BLOCK EXISTS. `release-tag-check` must know whether a post-merge push is a release
+# before it asserts a tag, and re-deriving that there would have been a SECOND rule free to
+# drift from this one. The mode exposes THIS rule instead, so these cases pin the contract its
+# caller depends on: one machine-readable line, rc 0 for BOTH answers, and the artifact legs
+# not merely ignored but SKIPPED.
+run base-0.1.0 head-good --classify-only
+eq "a release range → rc 0"                 "0"              "$RC"
+eq "…and reports the release verdict"       "release 0.2.0"  "$OUT"
+run base-0.1.0 head-nonrelease --classify-only
+eq "a non-release range → rc 0"             "0"              "$RC"
+eq "…and reports the non-release verdict"   "not-release 0.1.0" "$OUT"
+
+# THE ARTIFACT LEGS ARE SKIPPED, NOT RUN-AND-IGNORED. Each fixture below is one this tool
+# REFUSES in its normal mode — that is asserted above, so these are not vacuous — and each must
+# still classify cleanly for a caller asking only "is this a release?".
+run base-0.1.0 head-not-moved --classify-only
+eq "a member that did not move still classifies" "0"         "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+eq "…and reports no member failure"         "false"          "$(has '::error::' "$OUT")"
+run base-0.1.0 head-e1 --classify-only
+eq "an unacknowledged LOST member still classifies" "0"      "$RC"
+eq "…and reports no narrowing"              "false"          "$(has 'NARROWED' "$OUT")"
+run base-0.1.0 head-wholesale --classify-only
+eq "a repo declaring NO artifacts still classifies" "0"      "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+
+# THE MODE ANSWERS WITH THE WHOLE RULE, NOT ITS FIRST CLAUSE. A range whose classifying match
+# is EQUAL at both ends while head introduces one new value is a release (card#6488), and a
+# `--classify-only` that short-circuited on `BASE_VERSION = HEAD_VERSION` would answer
+# `not-release` for exactly those ranges — the second rule this mode exists to prevent, and the
+# one that would leave `release-tag-check` asserting no tag on a real release. The E5 fixtures
+# above already pin the normal mode's verdict on the same ranges, so these are not vacuous.
+run base-0.1.0 head-e5-good --classify-only
+eq "a poisoned but real release still classifies" "0"     "$RC"
+eq "…as a release of the value head introduced"   "true"  "$(has 'release 0.2.0' "$OUT")"
+eq "…and the verdict is the LAST line, after the warning that says why" \
+                                                  "release 0.2.0" "$(printf '%s\n' "$OUT" | tail -1)"
+run base-0.1.0 head-e5-echo --classify-only
+eq "an echoed value is still NOT a release"       "0"     "$RC"
+eq "…and reports the non-release verdict"         "not-release 0.1.0" "$OUT"
+run base-0.1.0 head-e5-two --classify-only
+eq "an ambiguous shipped version still refuses"   "2"     "$RC"
+eq "…and does NOT answer not-release"             "false" "$(has 'not-release' "$OUT")"
+
+# EVERY rc-2 REFUSAL SURVIVES THE MODE. A range this tool cannot classify must never read as
+# "not a release" — that misclassification is a silent non-run of the caller's whole check.
+run unrelated head-good --classify-only
+eq "no common ancestor still refuses"       "2"              "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
+run base-0.1.0 head-noversion --classify-only
+eq "an unreadable version_file still refuses" "2"            "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
 
 echo "== value-taking flags reject an EMPTY value, and both refs are required =="
 # The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
