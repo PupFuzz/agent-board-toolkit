@@ -434,14 +434,41 @@ _bs_classify() {
 # promise is kept on for this failure.
 _bs_window_rows() {
     local board_id="$1" cut="$2" out="$3"
-    local cursor="" pages=0 truncated=false err="" avail="" url resp page n oldest oldest_at last
+    local cursor="" pages=0 truncated=false err="" avail="" url rc page n oldest oldest_at last
+    # THE PAGE BODY LANDS IN A FILE, NOT A `$( … )` (card#6680). kb_api sets KB_HTTP in the
+    # shell it runs in, and a command substitution is a subshell whose assignment the parent
+    # never sees — so the status this error line named was read from the lib's own empty
+    # initialiser and rendered `HTTP 000` on EVERY failure, including a 403/500 the server
+    # ANSWERED. 000 is the sentinel for a request that never completed, so the one state the
+    # line could not describe was the one it was reached by most, and KB_API_QUIET=1 (below)
+    # suppresses kb_api's own `HTTP 500 on GET …` line, leaving nothing in the run to
+    # contradict it. Read through this file, KB_HTTP is the status this call actually got.
+    local bodyf="$out.page"
+    # Declared, not prefixed onto the call: a `VAR=x func` assignment PERSISTS past a shell
+    # function in bash, and the call below is no longer wrapped in a subshell that would
+    # contain it. Quiet because this tool reports every read failure on the board's own ⚠
+    # line — kb_api's stderr would be a second voice for the same fact, and this function's
+    # stdout is the meta object, so its stderr is the only channel it does not own.
+    local KB_API_QUIET=1
     while :; do
         url="/boards/$board_id/changelog.json?limit=${_BS_CL_LIMIT}&order=desc"
         [[ -n "$cursor" ]] && url+="&before=$cursor"
-        resp="$(KB_API_QUIET=1 kb_api GET "$url")" || {
-            err="changelog read failed (HTTP ${KB_HTTP:-000}) after $pages page(s)"; break; }
+        rc=0; kb_api GET "$url" > "$bodyf" || rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            # TWO STATES, TWO SENTENCES. The server ANSWERED (rc 1) — the outcome is known and
+            # KB_HTTP names why — or the request DID NOT COMPLETE ($KB_API_RC_TRANSPORT), where
+            # no answer was read at all and there is no status to name. Every GET here is a
+            # read, so neither is a write-ambiguity; what differs is whether this run can say
+            # anything about the server's side of it.
+            if [[ "$rc" -eq "$KB_API_RC_TRANSPORT" ]]; then
+                err="changelog read DID NOT COMPLETE after $pages page(s) — no answer was read, so this run cannot say why"
+            else
+                err="changelog read failed — the server ANSWERED HTTP ${KB_HTTP:-?} after $pages page(s)"
+            fi
+            break
+        fi
         pages=$((pages + 1))
-        page="$(printf '%s' "$resp" | jq -c --argjson cut "$cut" "$_BS_PAGE_JQ" 2>/dev/null)"
+        page="$(jq -c --argjson cut "$cut" "$_BS_PAGE_JQ" "$bodyf" 2>/dev/null)"
         [[ -n "$page" ]] || { err="changelog page $pages is not the shape this tool reads"; break; }
         printf '%s' "$page" | jq -c '.rows' >> "$out"
         n="$(printf '%s' "$page" | jq -r '.n')"

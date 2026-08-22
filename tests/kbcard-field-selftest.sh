@@ -1552,10 +1552,12 @@ _PATCH_FAIL="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "a FAILING restamp PATCH → rc 1"                   "1"    "$rc"
 eq "…names it as a PATCH failure"                     "true" "$(has 'the restamp PATCH FAILED on 1 card(s): 9' "$ERR")"
-# kb_api returns 1 for a TIMED-OUT PATCH exactly as it does for a refused one, and a
-# timed-out write may already be committed — so "this run never wrote them, so each still
-# holds the value the conversion left it with" is a claim about a board nothing read. Same
-# transport, same owner, same wording as the conversion's own 000 arm.
+# kb_api answers a TIMED-OUT PATCH with the same $KB_API_RC_TRANSPORT as a connection it
+# never opened (both read no answer), and a timed-out write may already be committed — and
+# this bucket's bare `||` catches an ANSWERED non-2xx alike (card#6680, the caller-side half
+# left open there) — so "this run never wrote them, so each still holds the value the
+# conversion left it with" is a claim about a board nothing read. Same transport, same
+# owner, same wording as the conversion's own 000 arm.
 eq "…claims UNCERTAINTY, not safety, about the write" "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
 eq "…never claims the card was left untouched"        "false" "$(has 'never wrote them' "$ERR")"
 # The re-run SENTENCE is the caller's here, not the shared note's — on this pass "this

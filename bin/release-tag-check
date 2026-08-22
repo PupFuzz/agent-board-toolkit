@@ -38,7 +38,8 @@
 #
 # THE RELEASE CLASSIFICATION IS NOT RE-DERIVED HERE. It is delegated to
 # `release-artifacts-check --classify-only`, which owns the repo's one definition of "this
-# range is a release" (merge-base version != head version, by VALUE). A second rule here would
+# range is a release" (the fork-point version against head's, by VALUE, including the arm that
+# re-decides an equal classifying value). A second rule here would
 # be free to drift from the gate that guards release PRs. The naive predicate this replaced —
 # "a tag must point at every merge on the release branch" — was measured against this repo's
 # real history and false-alarmed on all six non-release merges, so classification is load-
