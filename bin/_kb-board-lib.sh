@@ -494,9 +494,58 @@ kb_require_https_host() {
     return 1
 }
 
-# kb_api <method> <path> [body]: fail-closed. Prints the response body on a 2xx
-# and returns 0; on a non-2xx or transport failure prints a diagnostic to stderr
-# and returns 1 (no body on stdout). Knobs (set by the caller):
+# KB_API_RC_TRANSPORT — the rc kb_api returns when the request DID NOT COMPLETE, as
+# distinct from rc 1, which means the server ANSWERED and the answer was not a 2xx
+# (card#6680). Callers branch on the NAME; the number itself is arbitrary and pinned here.
+# It is deliberately NOT 1 (the answered-non-2xx state — every existing caller's `|| …`
+# reading of that must not change), NOT 2 (every CLI in this repo exits 2 for a usage error,
+# so an rc propagated onward by a future `|| return $?` would read as one), and NOT 3–5
+# (fetch_board_cards' own rc vocabulary, which this must not be mistaken for — the two
+# fetchers have separate contracts). It is also NOT curl's exit status: curl's rc is LOGGED,
+# never returned.
+#
+# A plain assignment, not `readonly` and not `${…:=}`: the lib is sourced more than once in
+# some shells (a selftest sources it, then sources a bin that sources it again), where a
+# readonly re-assignment is fatal — and a `:=` default would let an ambient environment
+# variable redefine what "the request never completed" means, up to and including 0.
+KB_API_RC_TRANSPORT=7
+
+# kb_api <method> <path> [body]: fail-closed. Prints the response body on a 2xx and
+# returns 0; on any failure prints a diagnostic to stderr and returns non-zero with NO
+# body on stdout.
+#
+# Returns — THE rc contract. THE TWO NON-ZERO rcs ARE TWO DIFFERENT STATES, and a caller
+# that reports the outcome of a WRITE must not merge them (card#6680):
+#   rc 0                     2xx. The response body is on stdout.
+#   rc 1                     THE SERVER ANSWERED and the answer was not a 2xx (403 / 404 /
+#                            422 / 500 …). The outcome is KNOWN — for a write, it did not
+#                            land, and the status says why. KB_HTTP carries that status.
+#   rc $KB_API_RC_TRANSPORT  THE REQUEST DID NOT COMPLETE — curl exited non-zero, so this
+#                            call read no answer at all and KB_HTTP is "000". For a write
+#                            the outcome is UNKNOWN, NOT "nothing was written": a
+#                            --max-time 28 or a connection reset mid-response answers a
+#                            transaction the server may already have COMMITTED exactly as
+#                            one that never arrived does.
+# (The `rc N` spelling is deliberate. `^#   [0-4]  ` is fetch_board_cards' contract shape and
+# tests/fetch-board-cards-caller-claims-selftest.sh asserts that exactly five lines in this
+# file take it — one per rc — so that a second copy of THAT list cannot grow beside it. A
+# second function's contract wearing the same shape is what that assertion cannot tell from
+# the copy it exists to catch, so this one wears a different one.)
+#
+# WHY THE rc CARRIES IT, when KB_HTTP already holds the status. KB_HTTP is a global set
+# INSIDE this function, and the caller shape that dominates this tree is
+# `resp="$(kb_api …)" || …` — a command substitution, i.e. a subshell, whose assignment to
+# KB_HTTP the parent never sees. The rc is the only channel that crosses that boundary,
+# which is also why kb_api_status exists (see below for why the two spell one distinction
+# two ways). KB_HTTP is still set on both paths and is the right read for a caller that
+# does NOT capture stdout through `$(…)` — board-card-start's `_bcs_patch` is one.
+#
+# EXISTING CALLERS ARE UNAFFECTED: both failure rcs are non-zero, so every `|| …`, `if !`
+# and `if` bucket behaves exactly as it did, and rc 1 still means what it meant on the
+# non-2xx path it was reached by most. A caller that wants the distinction tests
+# `[[ $rc -eq $KB_API_RC_TRANSPORT ]]`.
+#
+# Knobs (set by the caller):
 #   KB_LOG_FILE   append a failure line to this file (kbcard's failure log).
 #   KB_API_ERRBODY=1  also echo the error response body to stderr (kbcard).
 #   KB_API_QUIET=1    suppress the non-2xx stderr line (dl-a1, which lets its
@@ -514,10 +563,13 @@ kb_require_https_host() {
 #                     the hang it exists to prevent came back via the sibling.
 #                     ⚠ It caps WRITES too, and the parity argument does NOT carry
 #                     there: a timed-out POST/PATCH is AMBIGUOUS (the server may
-#                     have committed it) yet kb_api returns 1, so a non-idempotent
-#                     retry can duplicate a card or burn a DL number. Set it around
-#                     a read; do NOT export it process-wide over the bins that WRITE
-#                     through this lib — enumerated, not recalled:
+#                     have committed it) and the most kb_api can say is that the
+#                     request did not complete ($KB_API_RC_TRANSPORT — which is
+#                     exactly that ambiguity, not a claim that nothing was
+#                     written), so a non-idempotent retry can duplicate a card or
+#                     burn a DL number. Set it around a read; do NOT export it
+#                     process-wide over the bins that WRITE through this lib —
+#                     enumerated, not recalled:
 #                       kbcard                 POST + PATCH
 #                       dl-a0-backfill-triaged PATCH
 #                       dl-a1-register-field   POST + PATCH, and the sole
@@ -546,7 +598,8 @@ kb_api() {
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || {
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
-        KB_HTTP="000"; return 1
+        # NOT rc 1 — nothing was read here, while rc 1 below means the server answered.
+        KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"
     }
     KB_HTTP="${out##*__HTTP__}"
     local resp="${out%__HTTP__*}"
@@ -554,6 +607,7 @@ kb_api() {
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
         [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp" >&2
+        # The server ANSWERED: rc 1, the outcome is known, and KB_HTTP names it.
         return 1
     fi
     printf '%s' "$resp"
@@ -564,6 +618,19 @@ kb_api() {
 # output via $() can branch on the EXACT status (e.g. dl-a1's idempotent
 # 409/422 = already-registered) — a status the kb_api global can't carry across
 # a command substitution. A transport failure yields http "000".
+#
+# ITS DISCRIMINATOR IS THE STATUS LINE, NOT AN rc — deliberately, and this is the sibling
+# half of card#6680. "000" is the ONE sentinel both functions use for "the request did not
+# complete" (kb_api puts it on KB_HTTP and answers $KB_API_RC_TRANSPORT; this one puts it
+# on the status line), so a caller here can already tell a transport failure from a 500 the
+# server answered without parsing any message — board-card-start's card read does exactly
+# that, and dl-a1's register call falls through to its FATAL arm on it.
+#
+# GIVING THIS FUNCTION A NON-ZERO rc TOO WOULD BREAK ITS CALLERS, which is why the one
+# distinction is spelled two ways here rather than one: they capture it with a BARE
+# assignment under `set -e` (`reg_out="$(kb_api_status …)"`, dl-a1-register-field), where
+# any non-zero rc kills the script before the status line is ever read. "ALWAYS returns 0"
+# is load-bearing, not incidental.
 kb_api_status() {
     local method="$1" path="$2" body="${3:-}"
     local args=(-sS -X "$method" -H "Accept: application/json")
@@ -576,7 +643,10 @@ kb_api_status() {
     local out
     # Auth via stdin herestring (-H @- <<<) — token stays out of argv (#3569) + portable
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
-    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { printf '000\n%s' "$out"; return 0; }
+    # KB_HTTP is set on THIS path too, so the global agrees with the status line the caller
+    # reads. Leaving it alone here left the PREVIOUS request's status standing while the
+    # status line said 000 — two answers to one question, from one call (card#6680).
+    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { KB_HTTP="000"; printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
 }
