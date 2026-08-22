@@ -44,6 +44,15 @@
 # re-decides an equal classifying value). A second rule here would
 # be free to drift from the gate that guards release PRs.
 #
+# NEITHER IS THE TAG NAME (card#7203). Which tag a version maps to is `.release-pr.json`'s
+# `tag_format`, and its one reader is `release-pr-body`, so this asks that sibling for the
+# answer (`--tag`) rather than carrying a second copy of the mapping. It carried one until
+# card#7203 — a hardcoded `TAG="v${VERSION}"` — which is correct only for the default scheme:
+# a consumer whose config says `{{version}}` or `release-{{version}}` (documented in
+# `docs/INSTALL.md` §4 for .NET and date tag schemes) had this tool polling for a tag that
+# CANNOT EXIST, so it waited out its whole bound and refused EVERY release — the
+# hard-refuse-every-release outcome the wait above exists to avoid, delivered by a detail.
+#
 # THE NAIVE ALTERNATIVE — "a tag must point at every merge on the release branch" — REFUSES ANY
 # PUSH WHOSE TIP IS UNTAGGED, so what it would cost is a question about `main`'s own history,
 # and that history moves. RE-DERIVE THE NUMBER, never quote one:
@@ -172,7 +181,34 @@ case "$VERDICT" in
   *) die "unrecognised classifier verdict '$VERDICT' — refusing rather than guessing";;
 esac
 VERSION="${VERDICT#release }"
-TAG="v${VERSION}"
+
+# THE SIBLING IS THE ONE READER OF `tag_format`, and this is the second delegation to a bin in
+# this same directory rather than to whatever a PATH lookup finds — same reason as the
+# classifier above. `--tag` returns before that tool touches the network, and the VERSION is
+# passed explicitly: the classifier may have re-decided which value this range ships (its
+# card#6488 arm), and re-reading the version file here would silently assert a different one.
+#
+# ONE ASYMMETRY, STATED: the classification is read at the FORK POINT (the config a PR cannot
+# edit), while `tag_format` is read from the CHECKOUT — which on the push this runs for IS the
+# merged commit. That is the right end for this question: the tag being waited for is the one
+# the tagging workflow will create from the config as merged, not the one the previous release
+# would have named.
+TAGGER="$SELF_DIR/release-pr-body"
+[ -x "$TAGGER" ] || die "$TAGGER is missing or not executable — it owns .release-pr.json's tag_format, which names the tag this check waits for"
+# Its stderr is NOT captured — it passes straight through to this tool's own, so the sibling's
+# message (`no .release-pr.json in this repo`, a jq failure) reaches the run log in its own
+# words. Folding it into the captured value would make it a candidate for the tag name, and
+# reading "the last line" back out of a merged stream is the truncating-reader shape this
+# repo has a class gate for.
+set +e
+TAG="$("$TAGGER" --tag --version "$VERSION" --config "$CONFIG")"
+TAG_RC=$?
+set -e
+# FAIL CLOSED, never fall back to `v${VERSION}`. A silent default here would be the hardcode
+# this delegation removes, re-minted at the one moment the real answer was unavailable.
+if [ "$TAG_RC" -ne 0 ] || [ -z "$TAG" ]; then
+  die "could not resolve the tag name for version ${VERSION} from ${CONFIG} (release-pr-body --tag rc ${TAG_RC}, output '${TAG}') — refusing rather than assuming a 'v' prefix this repo may not use"
+fi
 
 # EVERY POLL IS BOUNDED, so the tool's own --timeout is what fires first. `release-promote-cards.yml`
 # states that ordering — "the tool's own bound fires first and exits 1; a timeout-minutes kill

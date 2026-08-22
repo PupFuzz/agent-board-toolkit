@@ -28,6 +28,7 @@ source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/release-tag-check"
 _need -x "$BIN"
 _need -x "$HERE/../bin/release-artifacts-check"   # the classifier this tool delegates to
+_need -x "$HERE/../bin/release-pr-body"          # the tag_format reader this tool delegates to
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -165,6 +166,107 @@ eq "…asserting the version the classifier CHOSE"  "true" "$(has 'v0.29.0 prese
 eq "…and relaying the classifier's own warning"   "true" "$(has '::warning::release-artifacts-check' "$OUT")"
 eq "…which names the value it classified on"      "true" "$(has "carries 0.29.0 at $POISON_SHA" "$OUT")"
 g -C "$R" push -q --delete origin v0.29.0 && g -C "$R" tag -d v0.29.0 >/dev/null
+
+# ── THE TAG NAME COMES FROM `tag_format`, NOT A HARDCODED `v` PREFIX (card#7203) ──────────────
+# `.release-pr.json`'s `tag_format` maps a version to its git tag name, and `release-pr-body`
+# has read it since card#4761. This tool hardcoded `TAG="v${VERSION}"` — right for the default
+# scheme and wrong for every other one, which is worse here than a wrong string: it polled for a
+# tag that CANNOT EXIST, waited out the whole bound, and refused the release. A consumer on a
+# .NET or date scheme (the schemes docs/INSTALL.md §4 documents the key FOR) got a hard refusal
+# on every single release — the exact outcome the wait exists to prevent.
+#
+# ONE FIXTURE, FOUR SCHEMES, selected by --config: the configs are all COMMITTED at both ends of
+# the range because the classifier reads its copy out of git, while the tag name is resolved
+# from the checkout. Watched RED on the pre-card#7203 binary — every arm below except the two
+# controls, which is what makes the controls controls.
+echo "== the tag asserted is the one tag_format names, not v<version> =="
+R2="$T/tagfmt"; REMOTE2="$T/tagfmt-remote.git"
+g init --bare -q "$REMOTE2"; mkdir -p "$R2"; g init -q "$R2"
+_tf_cfg() { # _tf_cfg <path> [tag_format]
+  if [ $# -eq 2 ]; then
+    printf '{\n  "version_file": "VERSION",\n  "version_regex": "[0-9]+\\\\.[0-9]+\\\\.[0-9]+",\n  "tag_format": "%s",\n  "artifacts": ["VERSION → {{version}}"]\n}\n' "$2" > "$R2/$1"
+  else
+    printf '{\n  "version_file": "VERSION",\n  "version_regex": "[0-9]+\\\\.[0-9]+\\\\.[0-9]+",\n  "artifacts": ["VERSION → {{version}}"]\n}\n' > "$R2/$1"
+  fi
+}
+_tf_cfg .release-pr.json                       # no tag_format key at all — the historical default
+_tf_cfg tf-v.json        'v{{version}}'        # the default, stated explicitly
+_tf_cfg tf-release.json  'release-{{version}}' # a prefixed non-v scheme
+_tf_cfg tf-bare.json     '{{version}}'         # the version IS the tag (date schemes)
+printf '0.27.0\n' > "$R2/VERSION"
+g -C "$R2" add -A && g -C "$R2" commit -qm "v0.27.0 state"
+TF_BEFORE="$(g -C "$R2" rev-parse HEAD)"
+printf '0.28.0\n' > "$R2/VERSION"
+g -C "$R2" add -A && g -C "$R2" commit -qm "release: v0.28.0"
+TF_RELEASE="$(g -C "$R2" rev-parse HEAD)"
+g -C "$R2" remote add origin "$REMOTE2" && g -C "$R2" push -q origin main
+
+tf_run() { # tf_run <config> [args...]
+  local c="$1"; shift
+  RC=0
+  OUT="$( (cd "$R2" && "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" --remote "$REMOTE2" \
+            --config "$c" --timeout 0 "$@") 2>&1 )" || RC=$?
+}
+tf_tag() { g -C "$R2" tag "$1" "$TF_RELEASE" && g -C "$R2" push -q origin "$1"; }
+tf_untag() { g -C "$R2" push -q --delete origin "$1" && g -C "$R2" tag -d "$1" >/dev/null; }
+
+# CONTROL A — no key: the historical `v<version>` behaviour, byte-for-byte. If this arm ever
+# moves, the change was not additive.
+tf_tag v0.28.0
+tf_run .release-pr.json
+eq "control: no tag_format ⇒ still v0.28.0"       "0"    "$RC"
+eq "…named as such"                               "true" "$(has "v0.28.0 present at $TF_RELEASE" "$OUT")"
+# CONTROL B — the key set to its OWN default. A fixture that sets a key to its default value
+# cannot discriminate "the key was read" from "the default fired", so this is a control and NOT
+# coverage: the arms below are what prove the key is read.
+tf_run tf-v.json
+eq "control: tag_format v{{version}} ⇒ v0.28.0"   "0"    "$RC"
+
+# THE DISCRIMINATING NEGATIVE, RUN FIRST. `v0.28.0` — the tag a hardcoded prefix would find —
+# is on the remote and `release-0.28.0` is not. A tool reading tag_format must REFUSE here; the
+# pre-fix one passed, which is exactly the false "shipped" this card is about.
+tf_run tf-release.json
+eq "a v-tag does NOT satisfy a release- scheme"   "1"    "$RC"
+eq "…and the refusal names the tag_format tag"    "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
+eq "…not the v-prefixed one"                      "false" "$(has 'v0.28.0 does not exist' "$OUT")"
+tf_untag v0.28.0
+
+# …and with the tag the scheme actually produces, the same push passes.
+tf_tag release-0.28.0
+tf_run tf-release.json
+eq "a release-<version> tag satisfies it"         "0"    "$RC"
+eq "…naming the tag it waited for"                "true" "$(has "release-0.28.0 present at $TF_RELEASE" "$OUT")"
+tf_untag release-0.28.0
+
+# The unprefixed scheme: the version string IS the tag.
+tf_tag 0.28.0
+tf_run tf-bare.json
+eq "an unprefixed {{version}} scheme passes"      "0"    "$RC"
+eq "…naming the bare version as the tag"          "true" "$(has "0.28.0 present at $TF_RELEASE" "$OUT")"
+eq "…and never invents a v prefix"                "false" "$(has "v0.28.0" "$OUT")"
+tf_untag 0.28.0
+
+# ── the tag_format read is DELEGATED to its one owner, not re-implemented here ─────────────────
+echo "== the tag name is resolved by the sibling that owns tag_format =="
+eq "release-tag-check calls release-pr-body"      "true" \
+   "$(has 'release-pr-body' "$(cat "$BIN")")"
+# The tool reads NO config of its own — both config-derived facts come from a sibling. `jq` is
+# the witness: every config read in this repo goes through it, so its absence is the property.
+# Asserted over the CODE, with comment lines stripped: the first cut of this line greped the
+# whole file and read `true` off the word "jq" inside a comment explaining the delegation — an
+# instrument that greps a NAME answers about the NAME, not about what the program does.
+TAGCHECK_CODE="$(grep -v '^[[:space:]]*#' "$BIN")"
+eq "…and reads no config itself (no jq in its code)" "false" "$(has 'jq' "$TAGCHECK_CODE")"
+eq "witness: the stripper kept the code"          "true"  "$(has 'ls-remote' "$TAGCHECK_CODE")"
+# A MISSING sibling is refused by name, not defaulted. Driven for real: a bin/ directory holding
+# the tool and its classifier but NOT the tag reader.
+NOBIN="$T/nobin"; mkdir -p "$NOBIN"
+cp "$BIN" "$HERE/../bin/release-artifacts-check" "$NOBIN/"
+rc=0; err="$( (cd "$R2" && "$NOBIN/release-tag-check" --before "$TF_BEFORE" --after "$TF_RELEASE" \
+                --remote "$REMOTE2" --timeout 0) 2>&1 )" || rc=$?
+eq "a missing tag reader → rc 2"                  "2"    "$rc"
+eq "…named, with what it owns"                    "true" "$(has 'release-pr-body is missing or not executable' "$err")"
+eq "…and no tag was asserted from a guessed name" "false" "$(has 'must exist at' "$err")"
 
 # ── AN UNREADABLE REMOTE IS A THIRD STATE, NOT AN ABSENT TAG ──────────────────────────────────
 # A read has three outcomes and the earlier cut of this tool had two: `git ls-remote`'s status
