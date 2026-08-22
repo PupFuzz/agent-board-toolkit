@@ -971,8 +971,12 @@ finding with no owner is abandoned, not filed.
   denominator is one count per column, the total, and the oldest-card AGE in each
   pullable column that holds one; the age joins the counts because a card the read never delivered
   can only be OLDER than the oldest one it did, so the printed age is a floor for the same reason
-  the counts are. A complete read is byte-identical, measured against the pre-change bin
-  through the shared curl stub on text AND `--format json`, at rc 0, rc 3 and rc 4.
+  the counts are. Measured against the pre-change bin, side by side through the shared curl stub:
+  the two bins are byte-identical on FOUR of the six format × rc combinations — the text render at
+  rc 0, and `--format json` at rc 0, rc 3 and rc 4 — and the two that differ are the text render at
+  rc 3 and rc 4, which is exactly this change. (The first cut of this sentence read "a complete read
+  is byte-identical … on text AND `--format json`, at rc 0, rc 3 and rc 4", which asserts the
+  partial TEXT renders are unchanged. They are not, and could not be.)
 
   **THE CARD ID beside that age — this paragraph is the single owner of the ruling, and the first
   one was wrong.** The id is the only value in the stock section that is not a number, so the
