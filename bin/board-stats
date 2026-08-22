@@ -276,6 +276,14 @@ def split_note: (if .actors.other > 0 then "   human \(.actors.human) · service
 # columns still line up: `≥` is one display cell wide, and the pad helpers above measure in
 # CODEPOINTS, so the two agree.
 def fl($f): $f + tostring;
+# The oldest-card ID is the one thing in this section that is NOT a number, and on a floored
+# render it is not safe either: `≥` says nothing about an identity, and a read that came back
+# short can have left the actual oldest card on that board undelivered — so a bare `(#11)`
+# asserts "the oldest Backlog card is #11" off a read this tool has just declared incomplete.
+# The qualifier names the population the id IS the oldest of, and it rides the value for the
+# same reason the marker does. The RULING — including why the ⚠ line above the section cannot
+# be where this lives — is owned once, by the card#7228 disposition in docs/CONSOLIDATION-PLAN.md.
+def idq($f): if $f == "" then "" else " among the cards read" end;
 "── Board stats ── stock from the card snapshot · flow from the changelog ──",
 "window: \(.since.spec) — flow counts events at or after \(.since.cutoff) · generated \(.generated_at)",
 ( .boards[]
@@ -284,9 +292,8 @@ def fl($f): $f + tostring;
   # per line. The population has a denominator: one count per column, the total, and the
   # oldest-card AGE in each pullable column that holds one — the age for the same reason the
   # counts are, since a card the read never delivered can only be OLDER than the oldest one
-  # it did. What is deliberately NOT marked is the card ID beside that age: an id is not a
-  # quantity, and the ⚠ line directly above the section already says the named card may not
-  # be the oldest one on the board.
+  # it did. The card ID beside that age is not a quantity and takes `idq` rather than the
+  # marker — see that definition above.
   | (if .stock_complete == false then "≥" else "" end) as $floor
   | "",
     "▸ \(.label)  [\(.board)\(if .board_id != null then " · board \(.board_id)" else "" end)]",
@@ -295,7 +302,7 @@ def fl($f): $f + tostring;
       else "  stock — a state question, read from the card snapshot",
            ( .stock.columns[]
              | "    \(.stage | pad(24))\(.cards | fl($floor) | lpad(6))"
-               + (if .oldest_card != null then "   oldest \(.oldest_card.age_days | fl($floor))d (#\(.oldest_card.id))" else "" end)
+               + (if .oldest_card != null then "   oldest \(.oldest_card.age_days | fl($floor))d (#\(.oldest_card.id)\(idq($floor)))" else "" end)
                + (if .terminal then "   [terminal]" elif .pullable then "   [pullable]" else "" end) ),
            "    \("total" | pad(24))\(.stock.total | fl($floor) | lpad(6))"
       end ),

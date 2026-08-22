@@ -861,7 +861,10 @@ _stock_count() { _stock_section "$1" | awk -v k="$2" '$1 == k {print $2}'; }
 # removed. The identifier set is derived from the board object — the column labels (which
 # are a bare "stage <id>" on a column the preload never named) and the oldest-card ids — so
 # a NEW number added to this section is in the population the day it is written rather than
-# when someone remembers this rule. Empty means every number carries its marker.
+# when someone remembers this rule. The id token is `#<id>` and NOT the `(#<id>)` the render
+# happens to wrap it in: this predicate asks whether a NUMBER is unaccounted for, so encoding
+# the render punctuation would make it red on any rewording of the text AROUND the id — which
+# it did, the day the id gained its own qualifier. Empty means every number carries its marker.
 _bare_digits() {
     local sect="$1" doc="$2" tok
     sect="$(printf '%s' "$sect" | sed -E 's/≥[0-9]+(\.[0-9]+)?//g')"
@@ -869,7 +872,7 @@ _bare_digits() {
         [[ -n "$tok" ]] && sect="${sect//"$tok"/}"
     done < <(printf '%s' "$doc" | jq -r '
         ([ .stock.columns[].stage,
-           (.stock.columns[] | select(.oldest_card != null) | "(#\(.oldest_card.id))") ] | .[])')
+           (.stock.columns[] | select(.oldest_card != null) | "#\(.oldest_card.id)") ] | .[])')
     printf '%s' "$sect" | tr -cd '0-9'
 }
 
@@ -910,9 +913,23 @@ eq "rc 4: the ⚠ line still names the read INCOMPLETE and the rc" "true" \
 eq "rc 4: a column count carries the marker"        "≥1" "$(_stock_count "$shortout" Backlog)"
 eq "rc 4: the TOTAL carries it too"                 "≥3" "$(_stock_count "$shortout" total)"
 eq "rc 4: the oldest-card AGE carries it"           "true" "$(has 'oldest ≥' "$shortout")"
+# The card ID beside that age is the section's one NON-number, and a bare `(#11)` is an
+# ATTRIBUTION — "the oldest Backlog card is #11" — asserted off a read this tool has just
+# declared incomplete: by the same premise that floors the age, the card that is actually
+# oldest can be one the read never delivered, and it has a DIFFERENT id. `≥` says nothing
+# about an identity, so the id names the population it is the oldest OF instead, and it does
+# so IN PLACE for the reason the markers exist at all — the ⚠ line does not survive the value
+# being quoted out of it.
+eq "rc 4: the oldest-card ID names the population it is the oldest OF" "true" \
+   "$(has '(#11 among the cards read)' "$shortout")"
 # The complete render of the SAME rows is the control for both: same fields, no markers.
 eq "CONTROL rc 0: the same two numbers are bare"    "1 3" \
    "$(_stock_count "$okout" Backlog) $(_stock_count "$okout" total)"
+# …and the same control for the id qualifier: on a WHOLE read the attribution is true as
+# written, so the qualifier must be absent — a renderer that appended it unconditionally
+# would satisfy the positive above while telling every operator their complete read is not.
+eq "CONTROL rc 0: the id is bare on a complete read" "true"  "$(has '(#11)' "$okout")"
+eq "CONTROL rc 0: …and carries no qualifier at all"  "false" "$(has 'among the cards read' "$okout")"
 
 # The DENOMINATOR for "every stock number", re-derived from the document on every run
 # rather than written down: one per column, one total, and one age per pullable column
@@ -938,13 +955,15 @@ eq "CONTROL: the same predicate FINDS the bare numbers in a complete render" "tr
 # complete render BYTE FOR BYTE — same rows, same counts, same ages, same COLUMNS. A marker
 # that moved a number, or that pushed a padded column out of alignment, does not survive it.
 #
-# Undoing it takes the section's two number KINDS, which is the same denominator _bare_digits
-# derives: a count sits in a right-padded column, so its marker took a cell that must be given
-# back as a space; the queue age is inline, so its marker is simply removed.
-eq "CONTROL rc 4: stripped of its marker, the partial render IS the complete one" \
+# Undoing it takes the section's two number KINDS plus the id qualifier, which is the same
+# denominator _bare_digits derives: a count sits in a right-padded column, so its marker took
+# a cell that must be given back as a space; the queue age is inline, so its marker is simply
+# removed; and the id qualifier is inline text that is dropped whole.
+eq "CONTROL rc 4: stripped of its floor annotations, the partial render IS the complete one" \
    "$(printf '%s' "$okout" | _declock)" \
    "$(printf '%s' "$shortout" | _declock | command grep -v 'card snapshot INCOMPLETE' \
-      | command grep -v 'PARTIAL REPORT' | sed -E 's/oldest ≥/oldest /g; s/≥/ /g')"
+      | command grep -v 'PARTIAL REPORT' \
+      | sed -E 's/ among the cards read//g; s/oldest ≥/oldest /g; s/≥/ /g')"
 
 # --- positive 2: the page cap (rc 3) ----------------------------------------
 capout="$(stats cap text 1)"
@@ -956,6 +975,11 @@ eq "rc 3: the column count carries the marker"      "≥200" "$(_stock_count "$c
 eq "rc 3: the TOTAL carries it too"                 "≥200" "$(_stock_count "$capout" total)"
 eq "rc 3: no bare digit survives in the stock section" "" \
    "$(_bare_digits "$(_stock_section "$capout")" "$(printf '%s' "$capjs" | jq -c '.boards[0]')")"
+# The id qualifier is driven off the same single derived state as the markers, but this is the
+# OTHER arm that reaches it, and `_bare_digits` cannot see the difference (it removes the id
+# token either way) — so the qualifier is asserted here in its own right.
+eq "rc 3: the oldest-card ID is qualified on this arm too" "true" \
+   "$(has '(#101 among the cards read)' "$capout")"
 
 # --- the JSON surface is DELIBERATELY unchanged (card#7228 half 2, OPEN) ----
 # The machine-readable half of this card — a real completeness field instead of a prose

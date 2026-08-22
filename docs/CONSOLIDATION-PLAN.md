@@ -957,16 +957,43 @@ finding with no owner is abandoned, not filed.
   to the accepted-partial `3|4` arm floors its numbers whether or not anyone remembers to say so,
   and only an explicit edit to the rc-0 arm can ever claim a read is whole. (A `rc -ne 0`
   derivation over one merged `0|3|4` arm — `board-snapshot`'s shape — was the first cut and is not
-  what shipped: it pushed the guard's own `*)` arm past the ten-code-line window
-  `tests/fetch-board-cards-caller-claims-selftest.sh` derives its arm population inside, which red
-  and is exactly what that window exists to catch. The default-false spelling is the stronger
-  invariant anyway.) The denominator is one count per column, the total, and the oldest-card AGE in each
+  what shipped. **The reason first recorded here for abandoning it was wrong and is corrected:** it
+  said that shape pushed the guard's own `*)` arm past the ten-code-line window
+  `tests/fetch-board-cards-caller-claims-selftest.sh` derives its arm population inside. Re-measured
+  on the shipped bin, a COMPACT spelling of exactly that derivation — the merged arm plus a
+  single-line `if [[ "$rc" -ne 0 ]]; then … else … fi` — runs that selftest at **rc 0**, while a
+  fully expanded `if … fi` of the SAME derivation reds it on `bin/board-stats: the registered arm is
+  INSIDE the derived window [card snapshot unavailable …]`. So `ARM_WINDOW=10` constrains how many
+  CODE LINES a spelling spends between the call and its last arm — it constrains LAYOUT, not the
+  derivation — and it forbids no shape. The fail-closed default-false spelling stands on its own
+  stated ground, which is the only ground it ever needed: it is the stronger invariant, because a
+  new rc added to the accepted-partial arm inherits the floor instead of inheriting a claim.) The
+  denominator is one count per column, the total, and the oldest-card AGE in each
   pullable column that holds one; the age joins the counts because a card the read never delivered
   can only be OLDER than the oldest one it did, so the printed age is a floor for the same reason
-  the counts are. What is deliberately NOT marked is the card ID beside that age — an id is not a
-  quantity, and the ⚠ line directly above the section is what says the named card may not be the
-  oldest on the board. A complete read is byte-identical, measured against the pre-change bin
+  the counts are. A complete read is byte-identical, measured against the pre-change bin
   through the shared curl stub on text AND `--format json`, at rc 0, rc 3 and rc 4.
+
+  **THE CARD ID beside that age — this paragraph is the single owner of the ruling, and the first
+  one was wrong.** The id is the only value in the stock section that is not a number, so the
+  marker cannot carry it: `≥` says nothing about an identity. The first cut therefore left it bare
+  and justified that by *"the ⚠ line directly above the section already says the named card may not
+  be the oldest one on the board"* — **a sentence that does not exist**. The rendered ⚠ line is
+  `card snapshot INCOMPLETE (fetch rc=4) — every stock count below is a floor, not a total`; it
+  speaks only about the counts, so the age was correctly floored while `(#11)` was left asserting
+  *the oldest Backlog card is #11* off a read this tool had just declared incomplete — and by this
+  entry's own premise, the card that is actually oldest can be one the read never delivered, under a
+  DIFFERENT id. An operator could act on the wrong card. Two routes were on the table and neither
+  shipped: **extending the ⚠ text** would put the qualification back onto the line this whole change
+  exists because a value survives being quoted out of it, and **dropping the id on a partial read**
+  discards a datum that is true and actionable (#11 really is that old and really is pullable — and
+  on a page-capped board the report would then name no card at all). What ships is the qualification
+  ON the value, for the same reason the marker is: a floored render prints `oldest ≥232.3d (#11
+  among the cards read)`, which is true as written and stays true quoted out of every line around
+  it. A complete read prints the id bare, asserted with its own control — a qualifier on every
+  report would be a worse defect than the one it closes. `bin/board-stats`' `idq` definition and the
+  CHANGELOG entry POINT here; the false sentence was minted into three surfaces in one change, which
+  is what made re-stating it three times the wrong correction.
 
   **TWO members of this class stay OPEN on this tool, and neither is a residual of the fix above —
   each is the same defect on a surface the approval did not cover:**
@@ -981,8 +1008,9 @@ finding with no owner is abandoned, not filed.
     and is the first step of that half, not a detail of it:** nothing in this repository consumes
     `board-stats --format json` (grepped), which is a statement about this repository and not about
     who runs the tool.
-  - **The FLOW counts under a truncated or unreadable changelog window still print bare** — named
-    here by sibling audit (canon #7) while shipping the stock fix, not by a fresh report. It is the
+  - **The FLOW counts under a truncated or unreadable changelog window still print bare**
+    (**card#7235**) — named here by sibling audit (canon #7) while shipping the stock fix, not by a
+    fresh report. It is the
     identical shape one section lower in the same renderer: `_bs_one_board` sets `flow_ok=true` on a
     window it could only partly read and appends *"changelog window INCOMPLETE: … — the flow counts
     below are a floor, not a total"*, and then `created`, `moved`, `same-stage moves`, and every
