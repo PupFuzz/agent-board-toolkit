@@ -78,9 +78,16 @@ NAMES_OUTCOME='did not return a complete card list|INCOMPLETE|unavailable|read f
 # HERESTRING rather than `printf | grep -q`: under `pipefail` a `grep -q` that matches exits
 # before its writer finishes, and the writer's SIGPIPE can become the PIPELINE's status — so a
 # MATCH reads as a non-match. Measured honestly: bash's printf BUILTIN does not die on SIGPIPE
-# (rc 0 over a 5MB body), so the pipe form was not in fact leaking here — but the same shape
-# with an external writer does (rc 141, `yes | head -c 50M | grep -q x`), and a classifier
-# whose correctness rests on which writer bash happens to use is not one to leave standing.
+# (rc 0 with the match at byte 0 of a 5MB body, and of a 50MB one), so the pipe form was not in
+# fact leaking here — but the same shape with an EXTERNAL writer does:
+# `yes | head -c 50M | grep -q y` is rc 141, a match reported as a failure.
+# ⚠ The command this line cited until card#6680 was `grep -q x`, and it is rc 1, NOT 141 —
+# `yes` emits no `x`, so that grep never matches, never exits early, and drains all 50MB
+# instead, leaving its own rc 1 as the rightmost non-zero status. It could not demonstrate the
+# thing it was quoted for: the shape needs the reader to MATCH while the writer is still
+# writing, which is the defect itself. Corrected to the command that was actually measured.
+# A classifier whose correctness rests on which writer bash happens to use is not one to leave
+# standing.
 is_rc()      { grep -qE "$NAMES_RC"      <<<"$1"; }
 is_cause()   { grep -qE "$NAMES_CAUSE"   <<<"$1"; }
 is_outcome() { grep -qE "$NAMES_OUTCOME" <<<"$1"; }
