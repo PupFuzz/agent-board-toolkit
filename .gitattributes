@@ -1,0 +1,37 @@
+# ⛔ ONE LINE, AND ITS NARROWNESS IS THE POINT. Read this before adding a second path.
+#
+# WHY IT EXISTS. Every PR that ships a card appends its entry at the SAME anchor — the top of
+# `[Unreleased]` in docs/CHANGELOG.md (VERSIONING.md § The `[Unreleased]` entry rule, gated by
+# tests/changelog-card-entry-selftest.sh) — so every merge to `dev` leaves every open sibling PR
+# CONFLICTING. Measured at five hand-resolutions in one session, and the cost is superlinear in
+# parallelism: N open PRs mean each merge dirties N-1. A conflicted PR is worse than an annoying
+# one — GitHub schedules no `pull_request` workflow when it cannot compute the merge commit, so
+# its check set is `total_count: 0`, which is neither green nor red, and a naive "any failures?"
+# read answers *no* (card#7227).
+#
+# ⛔ DO NOT WIDEN THIS TO ANOTHER PATH BY SYMMETRY. `union` is a line-concatenating driver with
+# no idea what the lines mean, and two shapes this house's files actually have were measured to
+# be DESTROYED by it:
+#   * an append-only log whose entries carry a NUMERIC key (a decision log) — union interleaves
+#     by position, silently producing the wrong order.
+#   * one long table row edited on BOTH sides — union emits the row TWICE, and picking a side
+#     drops whichever change lost. That one needed both semantic additions spliced into one row
+#     by hand; no automatic rule could have produced it.
+# The changelog is the one file here whose merge rule really is "keep both, in either order".
+#
+# WHAT THIS DOES NOT CHANGE. Every other path merges exactly as it did before, and a conflict in
+# any of them still stops for a human. Nothing about the CHANGELOG's content rules moves either:
+# the entry is still per-PR and still gated.
+#
+# TWO RESIDUALS, both MEASURED on this file's real structure, neither gated:
+#   * UNION IS SILENT. A merged `[Unreleased]` is never presented for review, and it applies to
+#     every three-way merge git performs — `merge`, `rebase`, `cherry-pick`, `revert`. Measured:
+#     cherry-picking a commit that REWORDS an existing entry onto a branch that appended a new
+#     one leaves BOTH spellings of the reworded entry, stale copy included. Read the merge
+#     commit's diff of `[Unreleased]`; a clean merge is not a reviewed one.
+#   * ORDER FOLLOWS MERGE DIRECTION, and one direction files an entry in the wrong section. With
+#     a release rename (`[Unreleased]` → `[X.Y.Z]`) as OURS and a feature branch as THEIRS, the
+#     incoming entry lands UNDER the version heading — well-formed, clean, and wrong; the
+#     opposite direction is correct. So: merge `dev` INTO the feature branch, and never merge a
+#     feature branch into `release/v<version>` — re-cut the release branch instead.
+docs/CHANGELOG.md merge=union
