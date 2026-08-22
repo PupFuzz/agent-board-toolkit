@@ -357,19 +357,19 @@ eq "tests/ enumeration is non-empty"       "false" "$([ -z "$disk" ] && echo tru
 # Named members, not just counts: a count pins the check to a past value and goes stale as the
 # suite grows, whereas a member that must be present re-derives nothing and cannot rot silently.
 eq "workflow extraction contains a known matrix entry" "true" \
-   "$(printf '%s\n' "$runs" | grep -qx 'kb-board-lib-selftest' && echo true || echo false)"
+   "$(has_line 'kb-board-lib-selftest' "$runs")"
 eq "workflow extraction contains THIS test (run: channel, not matrix)" "true" \
-   "$(printf '%s\n' "$runs" | grep -qx 'ci-matrix-parity-selftest' && echo true || echo false)"
+   "$(has_line 'ci-matrix-parity-selftest' "$runs")"
 eq "tests/ enumeration contains a known file" "true" \
-   "$(printf '%s\n' "$disk" | grep -qx 'kb-board-lib-selftest' && echo true || echo false)"
+   "$(has_line 'kb-board-lib-selftest' "$disk")"
 
 # The trigger predicate, asserted in BOTH directions against the real directory. Only the
 # "admits" half is implied by the extraction above; without the "rejects" half, a predicate
 # that returned True unconditionally would satisfy every other assertion in this file.
 eq "the PR-trigger filter admits ci.yml" "true" \
-   "$(printf '%s\n' "$wfs" | grep -qx 'ci.yml' && echo true || echo false)"
+   "$(has_line 'ci.yml' "$wfs")"
 eq "the PR-trigger filter REJECTS a push-only workflow (release-promote-cards.yml)" "false" \
-   "$(printf '%s\n' "$wfs" | grep -qx 'release-promote-cards.yml' && echo true || echo false)"
+   "$(has_line 'release-promote-cards.yml' "$wfs")"
 
 # Rule (b)'s DENOMINATOR, printed and asserted before the absence check that reads it. The
 # population is derived from the file text every run; if it ever measures the empty set — a
@@ -379,13 +379,13 @@ readers="$(_pr_field_readers "$WORKFLOWS")"
 eq "the PR-field-reader population is non-empty" "false" \
    "$([ -z "$readers" ] && echo true || echo false)"
 eq "the PR-field-reader population contains a known member (release-artifacts-gate.yml)" "true" \
-   "$(printf '%s\n' "$readers" | grep -qx 'release-artifacts-gate.yml' && echo true || echo false)"
+   "$(has_line 'release-artifacts-gate.yml' "$readers")"
 eq "the PR-field-reader population contains a second known member (changelog-card-entry.yml)" "true" \
-   "$(printf '%s\n' "$readers" | grep -qx 'changelog-card-entry.yml' && echo true || echo false)"
+   "$(has_line 'changelog-card-entry.yml' "$readers")"
 # The discriminating half: a workflow that reads no PR field must be OUTSIDE the population.
 # Without it, a predicate matching every file would satisfy both assertions above.
 eq "a workflow that reads no PR field is outside it (ci.yml)" "false" \
-   "$(printf '%s\n' "$readers" | grep -qx 'ci.yml' && echo true || echo false)"
+   "$(has_line 'ci.yml' "$readers")"
 
 # ---------------------------------------------------------------------------
 # The live assertion.
@@ -464,10 +464,10 @@ _wf_fixture "$TMP/wf-pr" "  pull_request:
 eq "a push-only workflow qualifies for nothing" "" "$(_pr_workflows "$TMP/wf-push")"
 eq "the pull_request twin qualifies" "probe.yml" "$(_pr_workflows "$TMP/wf-pr")"
 eq "a test named ONLY by a push-only workflow reads as unrun" "true" \
-   "$(unrun "$TMP/wf-push" "$HERE" | grep -qx 'kb-board-lib-selftest' && echo true || echo false)"
+   "$(has_line 'kb-board-lib-selftest' "$(unrun "$TMP/wf-push" "$HERE")")"
 eq "the same naming under pull_request does NOT read as unrun (witness: it was extracted)" \
    "false" \
-   "$(unrun "$TMP/wf-pr" "$HERE" | grep -qx 'kb-board-lib-selftest' && echo true || echo false)"
+   "$(has_line 'kb-board-lib-selftest' "$(unrun "$TMP/wf-pr" "$HERE")")"
 
 echo "== prove-it-can-fail: a NARROWED pull_request is REJECTED, naming the key =="
 # The keys come from the parser's own FILTER_KEYS via the `filter-keys` projection — they are
@@ -487,8 +487,7 @@ while read -r key; do
        "$(_pr_workflows "$TMP/wf-filter-$key")"
     eq "a pull_request narrowed by $key leaves the test it names unrun (what the author sees)" \
        "true" \
-       "$(unrun "$TMP/wf-filter-$key" "$HERE" | grep -qx 'kb-board-lib-selftest' \
-          && echo true || echo false)"
+       "$(has_line 'kb-board-lib-selftest' "$(unrun "$TMP/wf-filter-$key" "$HERE")")"
 done <<< "$keys"
 
 # The pinned NEGATIVES for rule (a) — the half that keeps it from being a rule that rejects
@@ -518,8 +517,7 @@ while read -r t; do
     eq "a types list omitting $t qualifies as PR-triggered for nothing" "" \
        "$(_pr_workflows "$TMP/wf-types-no-$t")"
     eq "a types list omitting $t leaves the test it names unrun" "true" \
-       "$(unrun "$TMP/wf-types-no-$t" "$HERE" | grep -qx 'kb-board-lib-selftest' \
-          && echo true || echo false)"
+       "$(has_line 'kb-board-lib-selftest' "$(unrun "$TMP/wf-types-no-$t" "$HERE")")"
 done <<< "$req"
 
 _wf_fixture "$TMP/wf-types-closed" "  pull_request:
@@ -540,7 +538,7 @@ eq "the fixture actually injected the paths filter into ci.yml" "true" \
 eq "a paths filter on the REAL ci.yml is reported" "ci.yml: paths" \
    "$(_filtered_pr "$TMP/wf-narrowed")"
 eq "and the tests only ci.yml runs go unrun (the whole matrix, not one name)" "true" \
-   "$(unrun "$TMP/wf-narrowed" "$HERE" | grep -qx 'kb-board-lib-selftest' && echo true || echo false)"
+   "$(has_line 'kb-board-lib-selftest' "$(unrun "$TMP/wf-narrowed" "$HERE")")"
 
 echo "== prove-it-can-fail: a PR-field reader without 'edited' is REPORTED =="
 # The twin pair differs in ONE token — 'edited' in types — and both halves read the same PR
@@ -642,7 +640,6 @@ eq "the real gate stripped of edited is reported" \
    "release-artifacts-gate.yml: pull_request does not subscribe edited" \
    "$(_stale_pr_fields "$TMP/wf-unedited")"
 eq "its sibling PR-field reader, untouched, is not (the report names ONE file)" "true" \
-   "$(printf '%s\n' "$(_pr_field_readers "$TMP/wf-unedited")" | grep -qx 'changelog-card-entry.yml' \
-      && echo true || echo false)"
+   "$(has_line 'changelog-card-entry.yml' "$(_pr_field_readers "$TMP/wf-unedited")")"
 
 _summary "ci-matrix-parity-selftest"

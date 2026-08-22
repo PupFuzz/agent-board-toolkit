@@ -542,8 +542,16 @@ _need_class_key() {
 # The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
 # a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
 # `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
-# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
-# perfectly good extraction. Emptiness is what is tested, immediately below.
+# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as the PIPELINE's
+# status on a perfectly good extraction. Emptiness is what is tested, immediately below.
+#
+# ⛔ DO NOT PIN THAT STATUS TO A NUMBER — it is disposition-dependent, and this line said `141`
+# until card#7175. The dead writer's status is **non-zero — 141 at SIGPIPE's default, 1 on the
+# EPIPE path an inherited `SIG_IGN` produces — and `pipefail` promotes either**. The GitHub
+# Actions runner is the second case (its step shell is started by the runner's Node process,
+# which sets `SIG_IGN`, and that survives `execve` into every child), so an assertion written
+# against `141` here passes locally and REDS IN CI. `tests/pipeline-free-match-selftest.sh`
+# owns the measurement; the only property this `|| true` needs is that the status is non-zero.
 #
 # EXTRACTED_VALUES is EVERY value the regex matches at that ref — deduped, in first-appearance
 # order — and it exists because the CLASSIFYING value above is the FIRST match over content
@@ -655,9 +663,11 @@ if [ "$IS_RELEASE" -eq 0 ]; then
 fi
 
 # Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
-# match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
-# reading as a failure. Every membership test below is a shell `case`, so no subprocess and
-# no pipeline is involved in answering "did this path move".
+# match and SIGPIPEs the writer, whose status `pipefail` then promotes to the pipeline's — i.e.
+# a MATCH reading as a failure. That status is non-zero but NOT a fixed number: 141 at SIGPIPE's
+# default, 1 on the EPIPE path an inherited `SIG_IGN` produces, and `pipefail` promotes either
+# (card#7175 — see the note at `_extract_version`). Every membership test below is a shell
+# `case`, so no subprocess and no pipeline is involved in answering "did this path move".
 #
 # `core.quotePath=false` is load-bearing, not tidiness: by default git C-quotes any path
 # containing a non-ASCII byte (`"docs/caf\303\251.md"`), which matches no declared member, so
