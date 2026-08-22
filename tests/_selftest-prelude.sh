@@ -40,6 +40,32 @@ eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }
 # that true — re-declaring any helper defined here reds it.
 has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 
+# ⚑ WHEN A SELFTEST MAY STILL REACH FOR `grep -q` — stated here because this function is what
+# would otherwise be the unexplained second idiom (card#7175). `has` and `has_line` are the
+# owners for LITERAL substring / whole-line membership, and they answer with a STRING, which is
+# what `eq <label> true|false "$(has …)"` consumes. Two questions they do not answer:
+#   * a REGEX or an ANCHOR — `"board-branch-lint:.*card 4524"`, `"^usage: board-card-start"`, or
+#     a needle supplied by the caller of a local helper, which may be either.
+#   * an rc, where the site's shape is `<test> && ok … || bad "…: $out"` — `eq` prints
+#     `expected 'true' got 'false'` and CANNOT carry the captured output into the failure
+#     message, which at those sites is the whole diagnostic.
+# In both cases the sanctioned spelling is `grep -q <needle> <<< "$var"` — a HERESTRING, whose
+# producer is the shell itself writing an already-complete string, so the early-exit window this
+# helper exists to close does not exist there either.
+#
+# ⚑ COUNTED, NOT ASSERTED, so the claim above is checkable: of the nineteen herestring sites in
+# `board-card-start-selftest.sh`, six carry a REGEX or an anchor and four take a needle from
+# their caller (either shape) — ten `has` cannot answer at all. Of the remaining NINE literal
+# ones, seven interpolate the captured `$_out` into their `bad` text and one is rc-shaped inside
+# a helper's `||` chain. **That leaves exactly one — the `'OKMSG-emitted'` negative — for which
+# no counter-argument holds**, and it is left as a herestring on purpose: its mirror-image twin
+# two lines above DOES interpolate `$_out`, and splitting an adjacent assertion pair across two
+# idioms costs more to read than the single conversion buys. Recorded rather than done, so the
+# next author meets the decision instead of re-deriving it.
+# ⛔ WHAT IS FORBIDDEN IS THE PIPELINE — `<producer> | grep -q`, in any file under `bin/`,
+# `hooks/` or `tests/`. `tests/piped-match-gate-selftest.sh` derives that population every run
+# and reds on any occurrence it does not already disposition, so this is a gate, not advice.
+
 # has_line <line> <text> → true/false on WHOLE-LINE membership: is <line> one of <text>'s
 # lines? The line-anchored twin of `has`, and the replacement for every
 # `<producer> | grep -qx <line>` in this suite (card#7175).

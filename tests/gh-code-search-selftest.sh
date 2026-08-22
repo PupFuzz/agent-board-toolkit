@@ -72,6 +72,26 @@
 #     and sent it to GitHub as a search term. The arm is now `-*` and the case below is what
 #     holds it there.
 #
+# ⛔ EVERY `rc 141` BELOW IS A PRE-FIX MEASUREMENT AT SIGPIPE'S **DEFAULT** DISPOSITION, AND
+# NONE OF THEM IS A NUMBER TO ASSERT ON (card#7175). A writer whose reader has gone renders as
+# 128+13 = 141 only where SIGPIPE is at its default; where an ancestor set `SIG_IGN` — which the
+# GitHub Actions runner does, and `SIG_IGN` survives `execve` into every child — nothing is
+# killed: `write()` returns EPIPE and the failure surfaces as an ordinary non-zero status. So a
+# test written against `141` passes locally and REDS IN CI, which is the exact propagation this
+# card exists to stop. What generalises in each figure below is the EMPTY STDERR and the
+# destroyed verdict, never the rc.
+#
+# ⚑ THE ASSERTIONS IN THIS FILE ARE DISPOSITION-INDEPENDENT, and by construction rather than by
+# luck: they run the POST-fix bin, which sets `trap '' PIPE` as its first statement after `set`,
+# forcing the ignored case on every host — so the 3 / 4 / 1 they pin hold under either ambient
+# disposition. What that DOES cost is stated at the one leg where it bites: the lib-less
+# `2>&1 | head` case near the end of this file discriminates only at SIGPIPE's default, because
+# the pre-fix shape it guards ALSO answers rc 1 under `SIG_IGN` — measured, both shapes, both
+# dispositions, at that leg. Two assertion labels here used to read `…, not 141`; they now name
+# the property instead, because a label is a claim about the world and that one was true on only
+# one of the two hosts this suite runs on.
+# `tests/pipeline-free-match-selftest.sh` owns the two-rendering measurement and pins both cells.
+#
 # TEN MORE, for the defects an adversarial review returned before merge. Same discipline —
 # applied, run, restored by COPY and verified with `cmp` against a pre-mutation snapshot. Red
 # counts as measured; a harness control (an identity mutation ⇒ 0 red, `PARTIAL exits 0` ⇒ 5 red)
@@ -83,8 +103,9 @@
 #    8  `--per-page` loses its base-10 normalisation: `010` compares equal to 8, so a genuinely
 #       FULL page reads as a short one at rc 0 with no warning, and `08` leaks a raw
 #       `[[: 08: value too great for base` before refusing
-#    6  `trap '' PIPE` removed — every state answers rc 141 with an empty stderr to a reader that
-#       stops reading · 6  the item lines go back down a `… | jq` stdout pipeline
+#    6  `trap '' PIPE` removed — every state answers an EMPTY stderr to a reader that stops
+#       reading (rc 141 on the default-disposition host it was measured on; caveat above)
+#    6  the item lines go back down a `… | jq` stdout pipeline
 #    5  `_put` loses its tolerated write — the kill becomes a `set -e` death at rc 1, i.e. a
 #       WRONG VERDICT rather than a crash, which is why both properties are asserted separately
 #    5  the gate's "exactly one document" clause weakened to `>= 1`
@@ -106,8 +127,9 @@
 #       an item emits it again
 #    2  the withheld emitter hardcodes `total_count=0` instead of the count it was handed
 #    1  `trap '' PIPE` moved back below the lib source, which leaves the lib-missing refusal in
-#       FRONT of it: `--help 2>&1 | head -n 0` on a lib-less copy answers rc 141 with an empty
-#       stderr, in the one state where that message is the whole product
+#       FRONT of it: `--help 2>&1 | head -n 0` on a lib-less copy answers an empty stderr (rc 141
+#       as measured; the number is the host), in the one state where that message is the whole
+#       product
 #
 # A NINTH STARTED AT ZERO RED, and it is recorded here rather than fixed by
 # adding an assertion, because the assertion could not fail: dropping the inline
@@ -571,7 +593,8 @@ eq "…and stays quiet on stderr"               "0"    "$(_lines "$ERR")"
 echo "== a reader that stops reading must not be able to destroy the verdict =="
 # `gh-code-search … | head -1` is the invocation this tool's OWN header invites ("One verdict
 # line on stdout in every state, then one line per matched file"), and it used to kill the tool
-# mid-emit. Measured on the pre-fix bin against this same stub, flagged 30-item page:
+# mid-emit. Measured on the pre-fix bin against this same stub, flagged 30-item page, SIGPIPE at
+# its DEFAULT — the stderr column is the durable half, the rc is that host's rendering:
 #     direct      rc=3   31 stdout lines, 679 bytes of stderr
 #     | head -1   rc=141 0 bytes of stderr
 # Both halves of the contract — the exit code AND the loud refusal — destroyed by the CONSUMER,
@@ -580,14 +603,15 @@ echo "== a reader that stops reading must not be able to destroy the verdict =="
 # `exit` is all it took.
 case_body partial-2
 run_piped head -n 1 -- "$Q"
-eq "PARTIAL through \`head -1\`: rc is 3, not 141"   "3"    "$RC"
+eq "PARTIAL through \`head -1\`: rc is the VERDICT 3, not a destroyed one" "3" "$RC"
 eq "…and the refusal still reached stderr"           "true" "$(has 'COUNT is not authoritative' "$ERR")"
 eq "…and the reader did receive the verdict line"    "true" "$(has 'PARTIAL' "$OUT")"
 
 # A reader that reads NOTHING AT ALL is the harder case and the one that reds EVERY state: the
 # tool must fork `gh` and `jq` before its first write, while `head -n 0` exits before its first
-# read, so the reader is provably gone by the time the write happens. Pre-fix this was rc 141
-# with an empty stderr in every state below, `--help` included.
+# read, so the reader is provably gone by the time the write happens. Pre-fix this was an EMPTY
+# stderr in every state below, `--help` included (rc 141 on the default-disposition host it was
+# measured on).
 run_piped head -n 0 -- "$Q"
 eq "PARTIAL through a reader that never reads: rc 3" "3"    "$RC"
 eq "…stderr intact"                                  "true" "$(has 'COUNT is not authoritative' "$ERR")"
@@ -859,13 +883,26 @@ eq "…naming the lib and the fix"              "true" "$(has '_kb-board-lib.sh 
 # THE REFUSAL IS ITSELF A WRITE, and it is the one write that cannot route through `_put_err`:
 # it runs before the lib is sourced, so before those functions exist. With `trap '' PIPE` set
 # after the source instead of at the top of the file, this refusal stood IN FRONT of the trap
-# and a merged stream into a dead reader killed it — measured on this same copy: rc 141 with an
-# EMPTY stderr, verbatim the pre-fix failure, in the one state (a mis-vendored install) where
-# the naming message is the whole product.
+# and a merged stream into a dead reader killed it — measured on this same copy: an EMPTY stderr
+# (rc 141, that host's default-disposition rendering), verbatim the pre-fix failure, in the one
+# state (a mis-vendored install) where the naming message is the whole product.
 RC=0
 { env PATH="$STUB:$UB" "$TMP/lonely/bin/gh-code-search" --help 2>&1 || RC=$?
   printf '%s' "$RC" > "$RCF"; } | head -n 0 >/dev/null 2>&1 || true
-eq "…and through \`2>&1 | head\`: rc 1, not 141" "1" "$(cat "$RCF")"
+eq "…and through \`2>&1 | head\`: the refusal's own rc 1, not a destroyed one" "1" "$(cat "$RCF")"
+# ⛔ THAT ASSERTION ONLY DISCRIMINATES AT SIGPIPE'S **DEFAULT**, AND CI RUNS THE OTHER HALF
+# (card#7175). Measured on the pre-fix shape (the refusal in FRONT of the trap, no inline write
+# tolerance) and on the current one, at both dispositions:
+#     pre-fix, SIGPIPE default → rc 141   ← the defect, visible
+#     pre-fix, SIGPIPE ignored → rc 1     ← the defect, INVISIBLE: same rc the refusal intends
+#     current, either          → rc 1
+# So on a GitHub runner — which inherits `SIG_IGN` from the runner's Node process — this leg
+# passes against the broken shape too. It is kept because it is exact on a default-disposition
+# host, which is where a maintainer runs it, and because the STDERR half asserted two lines above
+# is what the defect actually destroyed; but it must not be cited as the CI-side guard for the
+# trap's POSITION. The label previously read "rc 1, not 141", which asserted that discrimination
+# in the one environment that cannot make it.
+#
 # ⛔ NO `2>/dev/full` CASE HERE, DELIBERATELY, AND THE ABSENCE IS THE FINDING. The refusal
 # carries its own inline `2>/dev/null || true` (it cannot call `_put_err`, which does not exist
 # yet), and that tolerance is NOT observable through the rc: `set -e` is live inside the `{ }`

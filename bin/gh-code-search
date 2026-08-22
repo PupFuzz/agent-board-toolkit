@@ -81,13 +81,27 @@
 # rule: the withheld states carry `"results":"WITHHELD"` and no `items` key at all, and every
 # object that carries `total_count` carries `incomplete_results` beside it.
 #
+# ⛔ EVERY `rc 141` IN THIS FILE IS A DEFAULT-DISPOSITION RENDERING, NOT A PORTABLE NUMBER, AND
+# NONE OF THEM MAY BE COPIED INTO AN ASSERTION (card#7175). A writer whose reader has gone is
+# killed by the kernel and rendered 128+13 = 141 only where SIGPIPE is at its DEFAULT; where an
+# ancestor has set `SIG_IGN` — which the GitHub Actions runner does, its step shell being started
+# by the runner's Node process, and `SIG_IGN` survives `execve` into every child — nothing is
+# killed at all: `write()` returns EPIPE and the failure surfaces as an ordinary non-zero status
+# instead. The pre-fix figures below were measured on a default-disposition host and are reported
+# as such; what is durable in each of them is that the verdict was destroyed, never the number.
+# THIS TOOL ITSELF IS DISPOSITION-INDEPENDENT BY CONSTRUCTION — `trap '' PIPE` on the first line
+# after `set` forces the ignored case on every host — so the post-fix rcs asserted in
+# `tests/gh-code-search-selftest.sh` (3, 4, 1) are the same everywhere.
+# `tests/pipeline-free-match-selftest.sh` owns the two-rendering measurement.
+#
 # THE VERDICT SURVIVES A READER THAT STOPS READING. `gh-code-search … | head -1` is exactly the
-# shape the two lines above invite, and it used to kill this tool mid-emit: measured rc 141 with
-# an EMPTY stderr where a direct run gave rc 3 and 679 bytes of refusal. Both halves of the
-# contract were destroyed by the consumer, silently — a guard that loses its own signal is worse
-# than no guard, because it looks like it worked. SIGPIPE is now neutralised and stdout is ONE
-# write of an already-complete string whose failure is tolerated, so the exit code documented
-# below, and the stderr text beside it, are what a truncating consumer actually receives.
+# shape the two lines above invite, and it used to kill this tool mid-emit: measured rc 141 (that
+# host's rendering; see above) with an EMPTY stderr, where a direct run gave rc 3 and 679 bytes
+# of refusal. Both halves of the contract were destroyed by the consumer, silently — a guard
+# that loses its own signal is worse than no guard, because it looks like it worked. SIGPIPE is
+# now neutralised and stdout is ONE write of an already-complete string whose failure is
+# tolerated, so the exit code documented below, and the stderr text beside it, are what a
+# truncating consumer actually receives.
 #
 # ONE PAGE, STATED. It issues exactly one request and does not paginate. `items_truncated` is
 # `true` whenever the page came back FULL (`items_returned == --per-page`), because at that
@@ -147,7 +161,8 @@ set -euo pipefail
 # lib, and every write in this file is below it — including the lib-missing refusal on the very
 # next lines, which a reader that has stopped reading turns into a signal death if the trap is
 # not yet in force. Measured on a lib-less vendored copy with the trap in its old position
-# (after the source):
+# (after the source), SIGPIPE at its DEFAULT — the rendering caveat at the top of this file
+# applies to the number, not to the finding:
 #     --help 2>&1 | head -n 0   rc 141, EMPTY stderr   (direct: rc 1, 178 bytes)
 # — verbatim the pre-fix failure, in the one state where the naming message matters most.
 trap '' PIPE
@@ -172,10 +187,12 @@ KB_PROG="gh-code-search"
 # ONE OF THESE TWO FUNCTIONS, AS A STRING THAT IS ALREADY COMPLETE. The contract is carried by
 # the EXIT CODE and by the stderr refusal — never by the shape of stdout — and this file's own
 # header invites the invocation that used to destroy both. Measured on a flagged 30-item page
-# before this change:
+# before this change, on a host with SIGPIPE at its DEFAULT — `141` is that host's rendering of
+# a killed writer and nothing here may be asserted against it (see the caveat at the top of this
+# file); the STDERR column is what generalises, and it is the half that carries the contract:
 #     direct        rc=3    31 stdout lines, 679 bytes of stderr
 #     | head -1     rc=141  0 bytes of stderr
-#     | head -n 0   rc=141  0 bytes of stderr — in EVERY state, `--help` included
+#     | head -n 0   rc=141  0 bytes of stderr — in EVERY verdict state, `--help` included
 # `set -euo pipefail` plus a stdout write that ran BEFORE the verdict-carrying `exit` meant the
 # CONSUMER killed the script mid-emit: the tool whose whole job is to refuse a zero that reads
 # as an answer handed back a signal death that reads as nothing at all. A guard that loses its
@@ -187,7 +204,8 @@ KB_PROG="gh-code-search"
 #      process. Set as the FIRST statement after `set -euo pipefail`, so every write in the
 #      file is behind it — the lib-missing refusal and `--help | head -1` included. It was
 #      once set here instead, which left the lib-missing refusal in front of it: on a lib-less
-#      vendored copy `--help 2>&1 | head -n 0` answered rc 141 with an empty stderr.
+#      vendored copy `--help 2>&1 | head -n 0` answered rc 141 (default-disposition rendering)
+#      with an empty stderr — the empty stderr is the finding, the number is the host.
 #   2. ONE write per stream, of an ALREADY-BUILT string, whose failure is tolerated — there is
 #      nothing left to lose by the time it is attempted. Building first is what removes the
 #      `… | jq` stdout pipelines whose SIGPIPE was the actual killer; without the tolerance,

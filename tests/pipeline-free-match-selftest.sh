@@ -57,9 +57,18 @@
 # forks a `grep`; the point of one owner is that the next author cannot re-open the window by
 # reaching for the idiom that reads most naturally.
 #
-# WHAT THIS FILE DOES NOT CLAIM. It is a control battery for one primitive, not a census: it
-# does not enumerate the suite's remaining `| grep -q` sites and it is not a gate on new ones.
-# The per-site migration and the remaining population are recorded on card#7175.
+# WHAT THIS FILE DOES NOT CLAIM — AND WHERE THE REST NOW LIVES. It is a control battery for one
+# primitive, not a census: it enumerates nothing and gates nothing. An earlier cut of this
+# paragraph stopped there, saying the file "is not a gate on new ones" and leaving it at that —
+# which this repo had already ruled against for the direct sibling of `has_line`
+# (`docs/CONSOLIDATION-PLAN.md`: *"fixing N copies without the guard that forbids the N+1th
+# leaves the cause in place"*, and *"a copy that survives an audit of its own class is the
+# argument FOR the gate that audit declined"*). Two copies survived — the `_piped*` / `_stat*`
+# fixtures BELOW, which is the argument in one file. The census and the gate are therefore
+# `tests/piped-match-gate-selftest.sh`, which derives the live population every run and reds on
+# any occurrence its disposition list does not carry; the fixtures in this file are its one
+# dispositioned entry, pinned at SIX, so adding a seventh here reds THERE. The per-site migration
+# is recorded on card#7175.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -132,8 +141,19 @@ case "$DISP" in
     *)       WRITER_DIED="141 0" ;;
 esac
 echo "== the inherited SIGPIPE disposition (it decides the RENDERING, never the defect) =="
-eq "the disposition is one of the two this file knows how to predict" "true" \
-   "$([[ "$DISP" == ignored || "$DISP" == default ]] && echo true || echo false)"
+# ⛔ THERE IS DELIBERATELY NO ASSERTION HERE, AND THE ABSENCE IS THE POINT — in the one file whose
+# whole thesis is that a fixture unable to reach its condition teaches the wrong rule (card#7175).
+# A cut of this line asserted `DISP` is one of `ignored`/`default`, which CANNOT FAIL twice over:
+# `_disposition` is a two-arm `case` with a catch-all, so those are the only two strings it can
+# emit; and only SIG_DFL and SIG_IGN survive `execve`, so a script started as `bash <this file>`
+# cannot inherit a third state to detect (a handler is reset to default across the exec). Adding
+# an `unknown` arm would move the tautology, not remove it.
+#
+# ⚑ THE FALSIFIABLE FORM OF THAT CLAIM IS ALREADY BELOW, on a MEASUREMENT rather than on a
+# restatement of this `case`: CONTROL 1 asserts the observed PIPESTATUS equals `$WRITER_DIED`. A
+# disposition this file predicted wrongly — for any reason, including one nobody enumerated —
+# makes the writer render as something that is neither `141 0` nor `1 0`, and reds THERE, naming
+# the stage and the value it actually got. So the note below is a note, not a check.
 printf '  note  ambient SIGPIPE disposition: %s — a dead writer renders as %s\n' "$DISP" "${WRITER_DIED% 0}"
 
 # ---------------------------------------------------------------------------
