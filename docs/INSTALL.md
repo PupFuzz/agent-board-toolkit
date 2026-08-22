@@ -28,12 +28,43 @@ cat ~/agent-board-toolkit/VERSION    # confirm you have it, e.g. -> 0.1.0
 
 Symlink each tool into a directory already on your `PATH` (e.g. `~/.local/bin`). Symlinks (not copies) keep the host on the single source — upgrades are then just step §1's `git pull`.
 
+> **This block is the ONE OWNER of the `PATH` symlink loop.** Every other place in this repository that tells you to run it — [`UPGRADE.md`](UPGRADE.md) §2 and §6, the *Worked example* at the end of this file, `agent-board-toolkit-runtime-check`'s remediation lines — points here instead of re-spelling it. The one deliberate exception is [`VERSIONING.md`](../VERSIONING.md) step 11, which links a **different** source checkout (a release-pinned one) and so cannot be a pointer; `tests/path-link-recipe-selftest.sh` executes both copies against a fixture and reds if a third appears, or if either stops refusing a non-regular-file entry.
+
 ```bash
 mkdir -p ~/.local/bin
-for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done
+for t in ~/agent-board-toolkit/bin/*; do [ -f "$t" ] || { echo "skipped (not a regular file): $t" >&2; continue; }; ln -sfn "$t" ~/.local/bin/"$(basename "$t")"; done
 hash -r
 command -v kbcard    # -> /home/<you>/.local/bin/kbcard  (a symlink into ~/agent-board-toolkit/bin)
 ```
+
+> **`[ -f "$t" ]` and `-n` are load-bearing — do not simplify them away.** `bin/` is globbed, so
+> whatever is in it becomes a `PATH` entry, and `ln -sf` **dereferences a symlink-to-directory
+> instead of replacing it**: it creates the new link *inside* the target and exits **0**. Both
+> guards close one end of that:
+> - **`[ -f "$t" ]` skips a source entry that is not a regular file.** Without it, a directory
+>   in `bin/` (a `__pycache__/` left by a python helper is the one that has really happened —
+>   and it is **gitignored**, so `git status` shows nothing) is linked onto `PATH` on the first
+>   run, and on the **second** run the loop links that `PATH` entry back through itself and
+>   plants `bin/__pycache__/__pycache__ -> bin/__pycache__` — a symlink cycle **inside your
+>   toolkit checkout** — at rc 0, silently. Measured: run 1 rc 0, run 2 rc 0 with the cycle
+>   present. The skip is announced on stderr rather than silent, so an entry that does not get
+>   linked is named; a clean `bin/` prints nothing.
+> - **`-n` on the `ln` closes the same shape at the *destination* end.** If `~/.local/bin/<tool>`
+>   is itself a symlink to a directory, plain `ln -sf` puts the link inside that directory and
+>   exits 0, so the tool never appears on `PATH` while the install reports success. `-n` replaces
+>   the link instead. It is a no-op on every ordinary destination, so re-running stays idempotent.
+>
+> **One residual, stated rather than implied:** a destination that is a **real** directory (not a
+> symlink to one) is still written into, by `ln -sfn` exactly as by `ln -sf` — `-n` is defined over
+> symlinks, and measured on GNU coreutils 9.4 that case is rc 0 with the link created inside. It is
+> left open deliberately: it needs a directory in your `PATH` dir named exactly after a toolkit
+> tool, and unlike the case above it is **loud at first use** (the `PATH` entry is a directory, so
+> the command does not run) rather than silent forever.
+>
+> The framework's own install arm (`install-linked-bin.sh`) refuses these same shapes; this recipe
+> is the hand-run counterpart and agrees with it deliberately. **Anything in `bin/` that is not a
+> regular file is not installed** — today that set is empty (every `bin/` entry is a regular file),
+> so on a clean checkout this loop installs exactly the same tools the unguarded one did.
 
 > **⚠ Windows / MSYS / Git-Bash: `ln -s` silently produces COPIES, not symlinks** (native
 > mingw64 has no default symlink capability), and any manual `cp` install has the same
@@ -287,7 +318,10 @@ You still pass `base-sha` — it is what the fork point is resolved *from*.
 
 ```bash
 git clone <agent-board-toolkit-remote-url> ~/agent-board-toolkit
-for t in ~/agent-board-toolkit/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done; hash -r
+# ...then run §2's PATH symlink loop against that clone. It is not repeated here: §2 is its one
+# owner, and the two guards in it are the difference between installing your tools and planting a
+# symlink cycle inside the clone above. Then:
+hash -r
 cp ~/agent-board-toolkit/examples/kanban-board.env.example ~/.kanban-dev-board.env && chmod 600 ~/.kanban-dev-board.env
 # ...fill in IDs in ~/.kanban-dev-board.env...
 printf '%s' 'TOKEN_HERE' > ~/.kanban-dev-token && chmod 600 ~/.kanban-dev-token

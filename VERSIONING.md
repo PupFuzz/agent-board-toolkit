@@ -67,9 +67,11 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted PRs on green
     # their self-advancing install into a pin. That topology upgrades with `git pull --ff-only`
     # (docs/UPGRADE.md §2), which lands the identical bits.
     git -C <pinned-runtime> fetch --tags && git -C <pinned-runtime> checkout "v<version>"
-    for t in <pinned-runtime>/bin/*; do ln -sf "$t" ~/.local/bin/"$(basename "$t")"; done   # REQUIRED
+    for t in <pinned-runtime>/bin/*; do [ -f "$t" ] || { echo "skipped (not a regular file): $t" >&2; continue; }; ln -sfn "$t" ~/.local/bin/"$(basename "$t")"; done   # REQUIRED
     hash -r && agent-board-toolkit-runtime-check                                            # must print `ok — … @ v<version>`
     ```
+    **This is the ONE sanctioned second copy of `docs/INSTALL.md` §2's `PATH` symlink loop** — it links a *different* source checkout (the release pin, not `~/agent-board-toolkit`), so it cannot be a pointer to §2 without a substitution the reader has to make by hand in a deploy step. The `[ -f "$t" ]` guard and the `-n` are not decoration: `ln -sf` **follows** a symlink-to-directory instead of replacing it, so an unguarded loop links a directory in `bin/` onto `PATH` and then, on the next run, plants a symlink cycle inside the pinned checkout — silently, at rc 0. §2 owns the reasoning; `tests/path-link-recipe-selftest.sh` executes both copies against a fixture, so the two cannot drift apart and a *third* copy reds. **Correcting this line means correcting §2 in the same change.**
+
     **Re-running the symlink loop is not optional even on a symlink install:** a symlink tracks its target's *content*, not the *set* of tools — a release that ADDS a bin (v0.12.0 `adopt-to-dl`, v0.15.0 `agent-board-toolkit-runtime-check`) never appears on `PATH` without it. Then **exercise one real command** (`kbcard show --task <id>`), because a green tag is not a working install.
     > **⚠ A release that adds a CHECK must force that check's first run by hand, here.** A guard shipped *in* the artifact it guards cannot bootstrap: v0.15.0's `agent-board-toolkit-runtime-check` exists to catch a stale pin, and a stale pin is exactly what stops it from existing on `PATH` — it was `command not found` on the maintainer's own host while the condition it detects was live. From the next release on, `board-snapshot` surfaces it at every SessionStart (folded to **stdout** — a stderr-only warning is discarded by the hook and the guard would be silently unread).
 
