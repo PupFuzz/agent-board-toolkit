@@ -62,32 +62,41 @@
 # population. Never report a green run as "the CHANGELOG is correct"; it means "no shipped card
 # is undocumented, and no PR left a stale copy of its own entry behind".
 #
-# WHY THE SECOND PROPERTY EXISTS (card#7227). docs/CHANGELOG.md carries `merge=union`, which
-# resolves the anchor collision every sibling PR creates by keeping both sides' lines. On a
+# WHY THE SECOND PROPERTY EXISTS (card#7227). A `merge=union` attribute on docs/CHANGELOG.md
+# resolves the anchor collision every sibling PR creates by keeping both sides' lines, and on a
 # REBASE that same rule re-adds a line the branch had already superseded, at rc 0 and in
 # silence, so a branch that reworded its own entry ships both wordings. Presence — the first
 # property — cannot see it: both copies are line-initial bullets for the card, so the
 # obligation is discharged twice over and the gate stays green over a file that now says two
-# different things about one change. `.gitattributes` carries the residual and the operating
-# rule that avoids it; this leg is the half of it that can be asserted.
+# different things about one change.
+#
+# THIS REPO DOES NOT CARRY THAT ATTRIBUTE, AND HAS NO `.gitattributes` AT ALL — 6cbf5e5 dropped
+# it in the same card, its benefit measured and absent (GitHub's server-side merge does not apply
+# a merge driver, so sibling PRs still go CONFLICTING). So a catch-up `git merge origin/dev` on
+# this repo DOES conflict on this file and IS hand-edited; nothing here should be read as saying
+# otherwise. The leg stays because the shape it catches — one PR leaving a superseded bullet
+# beside its replacement — is reachable without union (a bad conflict resolution, a stray
+# copy-paste), and because the attribute is one `.gitattributes` away from returning.
 #
 # THE SCAN IS SECTION-SCOPED AT BOTH ENDS, and each end is load-bearing in a different
-# direction. Entries are read from the file's FIRST `## [` section header down to the
+# direction. Entries are read from the `## [Unreleased]` header down to the
 # `## [<last release tag>]` header — i.e. `[Unreleased]` plus any version section cut after that
 # tag, and nothing else.
 #
 # The CEILING errs GREEN without it: scanning down past the stop header would let an entry under
 # `[0.20.0]` discharge a commit that landed after v0.23.1, a claim about the wrong release. It
-# also keeps the release PR green — step 4 of VERSIONING.md renames `[Unreleased]` to `[X.Y.Z]`
+# also keeps the release PR green — step 4 of VERSIONING.md retitles `[Unreleased]` as `[X.Y.Z]`
 # while the newest tag is still the PREVIOUS version, so the just-renamed section is still above
-# the stop header and every entry still counts. (Which is exactly why the FLOOR is keyed on "the
-# first section header" and not on the literal `## [Unreleased]`: that header does not always
-# exist.)
+# the stop header and every entry still counts.
 #
 # The FLOOR errs GREEN too, and did — for real, until card#7293. Without it the region began at
 # LINE 1, so the H1, the format blurb and the `begins at [0.8.2]` note were all inside it: a
 # bullet sitting in NO section discharged its card. The card#7227 entry landed at line 1, above
-# the `# Changelog` H1, and this gate reported it as documented.
+# the `# Changelog` H1, and this gate reported it as documented. The floor is the LITERAL
+# `## [Unreleased]` — step 4 opens a fresh one above the section it renames, so a correct release
+# PR still has it, and pinning to it is what makes a release PR that forgot the fresh header red
+# on that PR rather than on everyone else's afterwards (`_region` below carries the timing
+# argument in full).
 #
 # EMPTY IS A LEGITIMATE ANSWER HERE, AND THAT IS WHY THE MACHINERY IS FIXTURE-PROVEN. Right
 # after a release both streams are genuinely empty (no commits since the tag; `[Unreleased]`
@@ -98,22 +107,23 @@
 # trusted to answer "" honestly.
 #
 # THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, or a
-# file whose section structure the region cannot find, so the four preconditions below are
-# refused BEFORE any assertion runs. The workflow gives this job `fetch-depth: 0` for that
-# reason, which is also why it is its own job and not a `selftest` matrix entry in ci.yml (that
-# job checks out at the default depth 1).
+# file whose section structure the region cannot find, so the preconditions below are refused
+# BEFORE any assertion runs. The workflow gives this job `fetch-depth: 0` for that reason, which
+# is also why it is its own job and not a `selftest` matrix entry in ci.yml (that job checks out
+# at the default depth 1). Do not restate their number here — it was inherited wrong once
+# already; count the `exit 1`s in that block.
 #
 # The load-bearing one is the MISSING STOP HEADER: with no `## [<last tag>]` section the scan
-# runs from the first section header to EOF and an entry under any past version discharges a
-# commit that landed after the tag — that one errs GREEN, silently, and is the reason this block
-# exists.
+# runs from `[Unreleased]` to EOF and an entry under any past version discharges a commit that
+# landed after the tag — that one errs GREEN, silently, and is the reason this block exists.
 #
-# The MISSING FLOOR precondition — no `## [` header above the stop — is a DIAGNOSTIC, in the
+# The MISSING FLOOR precondition — no `## [Unreleased]` above the stop — is a DIAGNOSTIC, in the
 # shallow guard's sense rather than the stop header's. It cannot err green: an empty region
 # discharges nothing, so every obligation reds. But `_stale_dupes` asserts an ABSENCE over that
 # same region, and an empty region answers "" for a reason that has nothing to do with the file
 # being clean — which is precisely what this block exists to refuse. It also stops the run
-# blaming N innocent cards for one missing header.
+# blaming N innocent cards for one missing header. On a release PR it is the arm that fires: a
+# PR that renamed `[Unreleased]` without opening a fresh one reds HERE, on itself.
 #
 # The shallow guard is a DIAGNOSTIC, and saying so is the point — measured, not assumed. A
 # shallow clone does not actually produce a wrong answer: either no `v*` tag is reachable from
@@ -166,10 +176,10 @@ _obliged() {
     { grep -oE 'card#[0-9]+' "$1" || true; } | LC_ALL=C sort -u
 }
 
-# _region <changelog> <version> — the scanned region: the file from its FIRST `## [` section
-# header down to the `## [<version>]` header (exclusive), the floor line included. ONE owner for
-# the section scope now that three readers need it; a second copy of the stop rule would be a
-# second thing to get wrong.
+# _region <changelog> <version> — the scanned region: the file from its `## [Unreleased]` header
+# down to the `## [<version>]` header (exclusive), the floor line included. ONE owner for the
+# section scope now that three readers need it; a second copy of the stop rule would be a second
+# thing to get wrong.
 #
 # THE FLOOR IS THE POINT, and it was absent until card#7293. The region's PURPOSE has always
 # been "the sections recording unreleased work", but with no floor its PREDICATE was "anywhere
@@ -178,27 +188,43 @@ _obliged() {
 # discharged its card's obligation, and one was: the card#7227 entry landed at line 1, above
 # the `# Changelog` H1, and this gate reported 21 obligations / 21 discharged over it.
 #
-# THE FLOOR IS THE FIRST SECTION HEADER, NOT THE LITERAL `## [Unreleased]`, because step 4 of
-# VERSIONING.md RENAMES that header to `## [X.Y.Z]` while the newest tag is still the previous
-# version — the case the section-scope note in this file's header calls out. Keying the floor on
-# the literal string would red every release PR, on a file that is correct. Whether a section is
-# `[Unreleased]` or a just-renamed version section is not a distinction the region needs: being
-# above the stop header already means "not yet released".
+# THE FLOOR IS THE LITERAL `## [Unreleased]`, AND A RELEASE PR IS WHY — the opposite of what it
+# looks like. Step 4 of VERSIONING.md retitles the accumulated `## [Unreleased]` block as
+# `## [X.Y.Z]` *and opens a fresh, empty `## [Unreleased]` above it*, so on a correct release PR
+# the file reads `## [Unreleased]` → `## [X.Y.Z]` → `## [<prev>]` (the stop) and the renamed
+# section is INSIDE the region, discharging exactly as before. Measured over the tag history as
+# it stood at v0.29.0, not assumed: of the 42 `v*` tags, 31 carry a `docs/CHANGELOG.md` and 29 of
+# those have `## [Unreleased]` as their first section header; the two that do not (v0.23.0,
+# v0.23.1) predate the rule. Re-derive rather than trusting those figures — they were a reason,
+# not a constant.
 #
-# WHEN NO SECTION HEADER PRECEDES THE STOP the region is EMPTY, which discharges nothing and
-# therefore reds loudly rather than passing over an unscanned file. The live leg refuses on that
-# state outright (precondition below) so the message names the real cause instead of listing
+# The generous spelling — floor at "whatever the first `## [` header is" — is what would go
+# wrong, and it goes wrong at the worst moment. A release PR that forgets the fresh
+# `## [Unreleased]` passes that floor (the renamed `## [X.Y.Z]` becomes the floor), merges, and
+# is tagged — and from the tag onward that same renamed section IS the stop header, so the region
+# is empty and the precondition below reds EVERY subsequent PR on `dev`, blaming whoever pushed
+# next. The literal floor reds on the release PR itself, where the omission is, while the person
+# who made it is looking at the check.
+#
+# WHEN THERE IS NO `## [Unreleased]` ABOVE THE STOP the region is EMPTY, which discharges nothing
+# and therefore reds loudly rather than passing over an unscanned file. The live leg refuses on
+# that state outright (precondition below) so the message names the real cause instead of listing
 # every shipped card as undocumented.
 #
 # BOTH headers are matched as LITERAL prefixes, not regexes: the stop version is interpolated,
 # and `0.23.1` as a regex also matches `0x23y1`. `index()` takes no pattern at all, so there is
 # nothing to escape and no awk `-v` escape-processing to get wrong; the floor uses the same
 # technique for the same reason, plus one of its own — `[` is a regex metacharacter, so the
-# obvious `/^## \[/` spelling is one dropped backslash away from matching `## ` alone.
+# obvious `/^## \[Unreleased\]/` spelling is one dropped backslash away from a character class.
+#
+# ⛔ RESIDUAL, unchanged in kind by this card: neither end is fence-aware, so a line beginning
+# `## [Unreleased]` (or the stop header) at column 1 inside a fenced code block would be taken as
+# the real header — the ceiling has carried that exposure since it was written, and
+# `docs/CHANGELOG.md` carries no fenced block at all today.
 _region() {
     awk -v stop="## [$2]" '
         index($0, stop) == 1 { exit }
-        !in_region && index($0, "## [") != 1 { next }
+        !in_region && index($0, "## [Unreleased]") != 1 { next }
         { in_region = 1; print }
     ' "$1"
 }
@@ -241,15 +267,15 @@ _has_version_header() {
 # commit that has not been squashed yet — the branch you are on — carries none. Grouping by it
 # separates TWO PRs each documenting the same card, which is legitimate and is in this file
 # twice today (card#6645 via #261/#262, card#7038 via #265/#266), from ONE PR leaving two
-# bullets for one card, which is what `merge=union` mints. A whole-file "no id twice" rule — the
+# bullets for one card, which is what a union merge mints. A whole-file "no id twice" rule — the
 # obvious spelling, and the one to reach for first — reds this repo as it stands, on two entries
 # that are correct.
 #
 # MERGE COMMITS CONTRIBUTE NOTHING, by `git log -p`'s default of not diffing them, and that is
-# load-bearing rather than incidental: merging `dev` into a feature branch is the prescribed way
-# to take siblings' entries (`.gitattributes` says so), and attributing everything that arrived
-# through that merge to the branch's own group would red every branch that followed the
-# instruction.
+# load-bearing rather than incidental: a branch that catches up with `git merge origin/dev` takes
+# every sibling entry that landed meanwhile (by hand — this repo has no `.gitattributes`, so that
+# merge conflicts on this file), and attributing all of them to the branch's own group would red
+# a branch for entries it did not write.
 _added_bullets() {
     git -C "$1" log -p --no-color --format='@@COMMIT@@ %s' "$3" -- "$2" | awk '
         /^@@COMMIT@@ / {
@@ -405,10 +431,16 @@ eq "a complete CHANGELOG discharges every obligation" "" \
 
 # ---------------------------------------------------------------------------
 # The region's FLOOR (card#7293). The stop header is the ceiling; until this card there was no
-# floor, so the region began at line 1 and the preamble — everything above the first `## [`
-# header — was inside it. A bullet filed in NO section discharged its card, which is not a
-# hypothetical: the card#7227 entry landed above the `# Changelog` H1 on `dev` and this gate
-# reported 21 obligations / 21 discharged over it.
+# floor, so the region began at line 1 and the whole preamble — the H1, the format blurb, the
+# `begins at [0.8.2]` note — was inside it. A bullet filed in NO section discharged its card,
+# which is not a hypothetical: the card#7227 entry landed above the `# Changelog` H1 on `dev`
+# and this gate reported 21 obligations / 21 discharged over it.
+#
+# FOUR FIXTURES, and exactly ONE of them separates the literal `## [Unreleased]` floor from the
+# generous "first `## [` header" one: the release PR that renamed `[Unreleased]` without opening
+# a fresh one. Every other fixture here passes under both spellings. Its sibling — the CORRECT
+# step-4 shape, fresh header plus renamed section — is the control that says the literal floor
+# costs a correct release PR nothing, without which "reject everything" would satisfy it.
 # ---------------------------------------------------------------------------
 echo "== prove-it-can-fail: a bullet above the H1 is in NO section and discharges NOTHING =="
 # Same file as the complete fixture, with card#9003's entry moved out of `### Fixed` and parked
@@ -445,26 +477,55 @@ eq "the stray bullet is present in the file, just not in the region" "true" \
    "$(has_line '- **card#9003** — an entry parked above the H1, in no section at all.' \
       "$(cat "$FIX/changelog-preamble.md")")"
 
-echo "== the floor is the FIRST section header, not the literal [Unreleased] =="
-# Step 4 of VERSIONING.md renames `[Unreleased]` to `[X.Y.Z]` while the newest tag is still the
-# PREVIOUS version. A floor keyed on the literal `## [Unreleased]` would empty the region on
-# every release PR and red a file that is correct — so this fixture, which carries no
-# `[Unreleased]` header at all, must discharge exactly as the unrenamed one does.
+echo "== a CORRECT release PR keeps discharging: the renamed section is inside the region =="
+# The shape step 4 of VERSIONING.md actually prescribes — retitle the accumulated `[Unreleased]`
+# block as `[X.Y.Z]` AND open a fresh, empty `[Unreleased]` above it — while the newest tag is
+# still the PREVIOUS version. The region therefore runs `[Unreleased]` → `[0.24.0]` → stop, and
+# every bullet in the renamed section still counts. This is the leg that says the literal floor
+# costs a correct release PR nothing.
+awk '/^## \[Unreleased\]$/ { print; print ""; print "## [0.24.0] - 2026-08-01"; next } 1' \
+    "$FIX/changelog-complete.md" > "$FIX/changelog-release-correct.md"
+eq "the fixture is the step-4 shape: fresh [Unreleased], then the renamed section" \
+   "## [Unreleased]
+## [0.24.0] - 2026-08-01
+## [0.23.1] - 2026-07-27" \
+   "$({ grep '^## \[' "$FIX/changelog-release-correct.md" || true; })"
+eq "the region reaches into the renamed section (witness: the floor is not the stop)" "true" \
+   "$(has_line '## [0.24.0] - 2026-08-01' "$(_region "$FIX/changelog-release-correct.md" "0.23.1")")"
+eq "a correct release PR's renamed section still discharges every obligation" "" \
+   "$(_missing "$FIX/subjects" "$FIX/changelog-release-correct.md" "0.23.1")"
+
+echo "== a release PR that renamed [Unreleased] without opening a fresh one REDS, on itself =="
+# The step-4 VIOLATION, and the only shape on which the literal floor and a generous "first
+# `## [` header" floor disagree — so this assertion is what stands between the two designs.
+# It models the pre-rule v0.23.x file shape (v0.23.0/v0.23.1 are the only two of the 42 tags
+# whose CHANGELOG has no `## [Unreleased]`), which is also what a release PR that skipped half
+# of step 4 would ship.
+#
+# It MUST red here, at the PR that made the omission. Under the generous floor it would go
+# green, merge and be tagged — and the renamed section would then BE the stop header, emptying
+# the region and reddening every subsequent PR on `dev` instead, blaming someone who did
+# nothing wrong.
 sed 's/^## \[Unreleased\]$/## [0.24.0] - 2026-08-01/' "$FIX/changelog-complete.md" \
     > "$FIX/changelog-released-pr.md"
 eq "the fixture really has no [Unreleased] header left" "false" \
    "$(_has_version_header "$FIX/changelog-released-pr.md" "Unreleased" && echo true || echo false)"
-eq "a release PR's renamed section still discharges every obligation" "" \
-   "$(_missing "$FIX/subjects" "$FIX/changelog-released-pr.md" "0.23.1")"
+eq "its region is EMPTY — the renamed section is NOT accepted as the floor" "" \
+   "$(_region "$FIX/changelog-released-pr.md" "0.23.1")"
+eq "so every obligation reds — nothing in this file discharges anything" \
+   "card#9001
+card#9002
+card#9003" "$(_missing "$FIX/subjects" "$FIX/changelog-released-pr.md" "0.23.1")"
 
-echo "== no section header above the stop ⇒ an EMPTY region, not a silent whole-file scan =="
-# The floor's failure mode, pinned. It cannot err green — an empty region discharges nothing, so
-# every obligation reds — but `_stale_dupes` asserts an ABSENCE over this same region and would
-# answer "" for a reason unrelated to the file being clean, which is why the live leg refuses on
-# it (precondition below) rather than reporting alongside a pass.
+echo "== no [Unreleased] above the stop ⇒ an EMPTY region, not a silent whole-file scan =="
+# The floor's failure mode with nothing above the stop at all. It cannot err green — an empty
+# region discharges nothing, so every obligation reds — but `_stale_dupes` asserts an ABSENCE
+# over this same region and would answer "" for a reason unrelated to the file being clean,
+# which is why the live leg refuses on it (precondition below) rather than reporting alongside
+# a pass.
 printf '# Changelog\n\nA preamble and nothing else.\n\n## [0.23.1] - 2026-07-27\n\n- **card#9001** — released.\n' \
     > "$FIX/changelog-nofloor.md"
-eq "the region is empty when the stop header is the first section header" "" \
+eq "the region is empty when the stop header is the only section header" "" \
    "$(_region "$FIX/changelog-nofloor.md" "0.23.1")"
 eq "so nothing is discharged, and the released entry below the stop is NOT reached" "" \
    "$(_discharged "$FIX/changelog-nofloor.md" "0.23.1")"
@@ -478,12 +539,14 @@ eq "a card named only by the PR title is obliged" "true" \
    "$(has_line 'card#9004' "$(_missing "$FIX/subjects-pr" "$FIX/changelog-complete.md" "0.23.1")")"
 
 # ---------------------------------------------------------------------------
-# The uniqueness leg (card#7227). `merge=union` on docs/CHANGELOG.md buys conflict-free sibling
-# entries and pays for it with a silent both-sides-keep on the one shape that is not an append:
-# a branch that REWORDS its own `[Unreleased]` entry and is then REBASED keeps the superseded
-# wording too. Presence — everything above — cannot see that: both copies are line-initial
-# bullets for the card, so the obligation is discharged twice over and the gate stays green over
-# a file that now says two different things about one change.
+# The uniqueness leg (card#7227). A `merge=union` attribute buys conflict-free sibling entries
+# and pays for it with a silent both-sides-keep on the one shape that is not an append: a branch
+# that REWORDS its own `[Unreleased]` entry and is then REBASED keeps the superseded wording too.
+# Presence — everything above — cannot see that: both copies are line-initial bullets for the
+# card, so the obligation is discharged twice over and the gate stays green over a file that now
+# says two different things about one change. This repo has NO `.gitattributes` (6cbf5e5), so the
+# fixtures below create the attribute in a throwaway repo of their own to exercise the mechanism;
+# the leg guards the shape, which a hand-resolved conflict reaches without any attribute.
 # ---------------------------------------------------------------------------
 echo "== prove-it-can-fail: a superseded bullet ONE PR left behind is REPORTED =="
 # Six records over one unsquashed branch and two PRs. The branch's two are the corruption. #265
@@ -660,10 +723,11 @@ if ! _has_version_header "$CHANGELOG" "$LAST_VERSION"; then
     exit 1
 fi
 if [[ -z "$(_region "$CHANGELOG" "$LAST_VERSION")" ]]; then
-    echo "selftest: docs/CHANGELOG.md has no '## [' section header above '## [$LAST_VERSION]'," >&2
+    echo "selftest: docs/CHANGELOG.md has no '## [Unreleased]' header above '## [$LAST_VERSION]'," >&2
     echo "          so the scanned region is EMPTY. Every entry filed for an unreleased card is" >&2
-    echo "          currently outside it. Restore the '## [Unreleased]' header (or, on a release" >&2
-    echo "          PR, the '## [X.Y.Z]' it was renamed to) above that section." >&2
+    echo "          currently outside it. On a release PR this means step 4 of VERSIONING.md was" >&2
+    echo "          half-done: retitling '## [Unreleased]' as '## [X.Y.Z]' must also open a" >&2
+    echo "          fresh, empty '## [Unreleased]' above it. Add that header back." >&2
     exit 1
 fi
 
