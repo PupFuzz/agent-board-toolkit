@@ -99,12 +99,25 @@ CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optiona
 # the inline form works. The two-line form is kept as the clearer one.)
 TAG_FORMAT="$(cfg_opt '.tag_format')"; [ -n "$TAG_FORMAT" ] || TAG_FORMAT='v{{version}}'
 
-# Resolve the version: explicit flag, else extract from the version file. The
-# numeric extraction accepts 2-4 segments (SemVer 3-segment AND .NET 4-segment
-# Major.Minor.Build.Revision) — matching changelog-tag-coverage.py; a 3-segment-
-# only pattern here would silently truncate a 4-segment version (1.22.1.0→1.22.1).
+# Resolve the version: explicit flag, else the FIRST version_regex match in the
+# version file. That regex is the ONE declaration of what a version looks like:
+# `release-artifacts-check` classifies release PRs by it, and the toolkit's own
+# `auto-tag-version.yml` anchors it (^…$) against the whole VERSION at merge time.
+# How many segments a version has is therefore the CONFIG's to say, not this file's.
+#
+# ⛔ DO NOT RE-ADD A SECOND, WIDER PATTERN HERE. There was one until card#7208: a
+# hardcoded `[0-9]+(\.[0-9]+){1,3}` ran as a second stage over the FIRST stage's
+# output, and a stage that only ever sees what the config regex already matched can
+# narrow it but can never widen it. It read as "2-4 segments accepted" and was not:
+# with a 3-segment version_regex, `1.22.1.0` reached it already cut to `1.22.1`
+# (measured — the comment that stood here named that exact truncation as prevented).
+# What it did do was refuse a single-segment version_regex outright, cut a legal
+# 5-segment one to four, and drop any non-numeric text the config regex was written
+# to match. A repo that wants 4 segments declares them in version_regex.
 if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -f "$VERSION_FILE" ]; then
-  VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+  # `|| true` is the SIGPIPE guard, not a swallowed read: `head -1` closes the pipe on the
+  # first line and `pipefail` would promote the dead grep's status. Emptiness is tested below.
+  VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 || true)"
 fi
 [ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
 

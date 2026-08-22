@@ -340,6 +340,49 @@ g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the stray-va
 g -C "$R" branch base-multi
 printf '0.1.0\n' > "$R/MULTI"
 g -C "$R" add -A; g -C "$R" commit -qm "chore: drop the stray version-shaped line"
+# …and a version_regex that is NOT three segments. `version_regex` is the ONE declaration of
+# what a version looks like, and until card#7208 this file applied a hardcoded
+# `[0-9]+(\.[0-9]+){1,3}` AFTER it — a second stage that only ever saw what the config regex
+# had already matched, so it could narrow that match but never widen it. A single-segment
+# version_regex is legal and this tool REFUSED it outright (`no version matched version_regex`,
+# rc 2 — a message that was also false: it matched). SEG is its own version file with its own
+# config so the stock cases keep their three-segment one.
+g -C "$R" checkout -q -B head-seg base-0.1.0
+printf '7\n' > "$R/SEG"
+cfg cfg-seg.json '{ "version_file": "SEG", "version_regex": "[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the single-segment config case"
+g -C "$R" branch base-seg
+printf '8\n' > "$R/SEG"
+g -C "$R" add -A; g -C "$R" commit -qm "release: single-segment version 7 → 8"
+# …and the two shapes that pin WHICH KEY the candidate-set dedupe runs on. The set feeds
+# `${#NEW_AT_HEAD[@]}`, which is release / ::warning:: / rc-2 refusal, so the key is a verdict
+# input and not a list detail. Until card#7208 the key was a hardcoded `[0-9]+(\.[0-9]+){1,3}`
+# numeric run pulled back out of each match; it is the whole match now. KEYSPELL is a
+# `version_regex` admitting an optional `v`, so one version has two spellings the old key
+# folded into one candidate. KEYTRUNC is a legal FIVE-segment config, where that same fold ran
+# the other way: two genuinely DIFFERENT versions both keyed to the same truncated four
+# segments, so one was silently dropped and the survivor was asserted against a string the
+# file never carried. Both files carry their own config so the stock cases keep theirs.
+g -C "$R" checkout -q -B head-key-two base-0.1.0
+printf '0.1.0\n' > "$R/KEYSPELL"
+cfg cfg-keyspell.json '{ "version_file": "KEYSPELL", "version_regex": "v?[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+printf '1.2.3.4.5\n' > "$R/KEYTRUNC"
+cfg cfg-keytrunc.json '{ "version_file": "KEYTRUNC", "version_regex": "[0-9]+(\\.[0-9]+){4}",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the dedupe-key cases"
+g -C "$R" branch base-key
+printf '0.1.0\nnext: v2.0.0 == 2.0.0\n' > "$R/KEYSPELL"
+printf '1.2.3.4.5\nnext: 2.0.0.0.5\nalt:  2.0.0.0.9\n' > "$R/KEYTRUNC"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: two candidate spellings, and two truncation-colliding candidates"
+# CONTROL for both — the SAME configs, each with ONE new candidate written twice. If rc 2 above
+# came from anything other than the candidate COUNT (the regexes, the extra text, the files
+# themselves) this would refuse too, and it must not.
+g -C "$R" checkout -q -B head-key-one base-key
+printf '0.1.0\nnext: v2.0.0 and again v2.0.0\n' > "$R/KEYSPELL"
+printf '1.2.3.4.5\nnext: 2.0.0.0.5\nagain: 2.0.0.0.5\n' > "$R/KEYTRUNC"
+g -C "$R" add -A; g -C "$R" commit -qm "release: one candidate, written twice, in each file"
 # WIDENING — a third alternative added to the live brace set. Under a string-identity
 # comparison unit this reds (the old entry string is gone), which is exactly what the expanded
 # unit exists to prevent.
@@ -879,6 +922,50 @@ eq "witness: …and head does not"                                "false" \
 run base-multi head-drop-stray --config cfg-multi.json
 eq "a dropped value is NOT a release"       "0"    "$RC"
 eq "…and still reads as version unchanged"  "true" "$(has 'version unchanged (0.1.0)' "$OUT")"
+
+echo "== the version SHAPE comes from version_regex alone — no second pattern here (card#7208) =="
+# RED WHEN REVERTED. Re-adding the deleted `[0-9]+(\.[0-9]+){1,3}` numeric pull turns this
+# back into the rc-2 refusal described at the fixture: the pull needs two segments, so a
+# legal single-segment version_regex extracted nothing and the range could not be classified
+# at all — a refusal on a config this tool's own error text tells consumers to write.
+run base-seg head-seg --config cfg-seg.json --classify-only
+eq "a single-segment version_regex classifies" "0"          "$RC"
+eq "…as a release of the value head carries"   "release 8"  "$OUT"
+# CONTROL — the same config over an UNCHANGED single-segment version is not a release, so the
+# rc-0 above is the classifier running, not a mode that says "release" to everything.
+run base-seg base-seg --config cfg-seg.json --classify-only
+eq "…and an unchanged one is not a release"    "not-release 7" "$OUT"
+
+echo "== the candidate-set dedupe keys on the WHOLE match, and that decides a verdict (card#7208) =="
+# RED WHEN THE KEY IS NARROWED. Re-adding the deleted numeric pull as the dedupe key folds
+# `v2.0.0` and `2.0.0` onto one candidate, and this rc-2 refusal becomes an rc-0 `release`
+# that runs every artifact leg — an accept/reject move, not a message change.
+eq "witness: head carries both spellings" "true" \
+   "$(has 'v2.0.0 == 2.0.0' "$(g -C "$R" show head-key-two:KEYSPELL)")"
+run base-key head-key-two --config cfg-keyspell.json --classify-only
+eq "two spellings of one version are two candidates → rc 2" "2" "$RC"
+eq "…naming both, unnarrowed"               "true" "$(has 'v2.0.0 2.0.0' "$OUT")"
+eq "…and never answering 'not a release'"   "false" "$(has 'not-release' "$OUT")"
+# …and the same key in the other direction: two candidates that a four-segment fold would have
+# made ONE, shipping a version string the file never carried.
+run base-key head-key-two --config cfg-keytrunc.json --classify-only
+eq "two five-segment candidates that share four segments → rc 2" "2" "$RC"
+eq "…naming both at full length"            "true" "$(has '2.0.0.0.5 2.0.0.0.9' "$OUT")"
+# (No literal "not the truncation" assertion is written here: `has` is a SUBSTRING test and
+# `2.0.0.0` is a substring of `2.0.0.0.5`, so such a check could not fail — a decoration. What
+# discriminates is the rc and the full-length names above, plus the remedy this file points at
+# on every ambiguous refusal.)
+eq "…and pointing at the version_regex as the remedy" "true" "$(has 'Tighten the version_regex' "$OUT")"
+# CONTROL — one candidate written twice, both configs. Proves the refusals above are the
+# candidate COUNT and not the configs, the files, or the surrounding text.
+run base-key head-key-one --config cfg-keyspell.json --classify-only
+eq "control: one spelling written twice is one candidate" "0"             "$RC"
+eq "control: …classified whole, not narrowed"             "release v2.0.0" \
+   "$(printf '%s\n' "$OUT" | tail -1)"
+run base-key head-key-one --config cfg-keytrunc.json --classify-only
+eq "control: one five-segment candidate written twice"    "0"                 "$RC"
+eq "control: …classified at full length"                  "release 2.0.0.0.5" \
+   "$(printf '%s\n' "$OUT" | tail -1)"
 # AMBIGUOUS — the classifying match unchanged and TWO values new at head. The version being
 # shipped is unknowable, so this refuses; it is never read as "not a release PR", which is the
 # silent non-run this whole case exists about.
