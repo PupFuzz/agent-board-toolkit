@@ -331,7 +331,8 @@ fetch_whole_board() {
     fi
     # Concatenate via STDIN, not `--argjson` — a board page can exceed MAX_ARG_STRLEN
     # (~128KB), and passing $data/$cards as a CLI arg dies "Argument list too long"
-    # (the #3091 argv-overflow class; board 5 at ~98 cards crosses the cap).
+    # (the #3091 argv-overflow class; board 5 was measured crossing the cap at ~98
+    # cards, and every board here has grown well past that since).
     cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add')"
     sum_n=$((sum_n + ${n:-0}))
     [ "${n:-0}" -lt 200 ] && break
