@@ -129,15 +129,23 @@
 #   * The population of BOTH rules is `.github/workflows/`. The `pull_request` recipe published
 #     in docs/INSTALL.md §6c, which consumers paste into THEIR repos, is a fenced block in a
 #     markdown file and is not parsed here.
-#   * Neither rule follows a local composite action a workflow `uses:` (`./release-artifacts`,
-#     `./promote`). An `action.yml`'s own steps can read `github.event.pull_request` and would
-#     be invisible to rule (b). Verified clean at this change — both local actions name that
-#     field only in `description:` prose — so this is a bound, not a live gap.
+#   * Neither rule follows a local composite action a workflow `uses:`. WHICH actions those are
+#     is not enumerated here — an enumeration in a comment is a second inventory that rots the
+#     day a third one lands, which is exactly what happened to the `./release-artifacts`,
+#     `./promote` pair this line used to name (card#7203 added `./release-tag-check`).
+#     `find . -name action.yml -not -path '*/.git/*'` answers it for the tree in front of you,
+#     and `tests/composite-action-wiring-selftest.sh` holds the wiring contract over that same
+#     derived population. An `action.yml`'s own steps can read `github.event.pull_request` and
+#     would be invisible to rule (b): re-derived at card#7203 over all three, the field appears
+#     only in `description:` prose, so this is a bound, not a live gap.
 #   * A STEP-level `if:` is not read by either rule — only a JOB-level one demotes a
 #     reference. A conditional step inside an unconditional job still counts as running the
 #     test it names, which errs GREEN in the job-level rule's own direction. The weakest
-#     property below is worded for exactly that ("referenced by an unconditional JOB"), and no
-#     step in these workflows carries an `if:` today; closing it is a decision, not a typo.
+#     property below is worded for exactly that ("referenced by an unconditional JOB"). This
+#     line used to add "and no step in these workflows carries an `if:` today", which was false
+#     from the moment card#6579 landed `release-promote-cards.yml`'s
+#     `if: github.event_name == 'push'` tag gate — the claim is dropped rather than re-counted,
+#     because the bound does not depend on the count. Closing it is a decision, not a typo.
 #   * A reusable workflow (`on: workflow_call`) reading a PR field would land in rule (b)'s
 #     no-PR-trigger arm, where the honest answer depends on the CALLER's trigger rather than on
 #     the file. None exists here; the day one does, the right answer is an explicit decision,

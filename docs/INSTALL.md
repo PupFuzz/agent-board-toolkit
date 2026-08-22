@@ -333,6 +333,56 @@ You still pass `base-sha` — it is what the fork point is resolved *from*.
 5. **A version file whose *whole matched value set* head can make equal to the fork point's.** The set comparison above closes the prepended-line shape, and the remaining reach is narrow: head must ship a version the fork point already carries somewhere in that file. What is *not* closed is the regex itself — a `version_regex` matching more than the version declaration is a config the repo owns, and this check can only report on the values that regex selects.
 6. **An under-declared `artifacts` array is invisible.** No tool can assert a member you never named.
 
+### 6d. GitHub Actions consumer — the untagged-release gate
+
+Consume `release-tag-check` via the [`release-tag-check/`](../release-tag-check/action.yml) composite action, SHA-pinned on the same terms as §6a. It goes in the workflow that **reports a release as shipped** — the promote job, a deploy, a notification — and refuses to let that report happen while the release's tag does not exist:
+
+```yaml
+name: Promote released cards on merge to main
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read          # sufficient — the gate polls refs with `git ls-remote` and writes nothing
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          fetch-depth: 0     # REQUIRED — the release classification reads both ends of the range
+          fetch-tags: true
+
+      - name: Refuse to promote an untagged release
+        if: github.event_name == 'push'   # a workflow_dispatch run has no github.event.before
+        timeout-minutes: 10               # a BACKSTOP, sized above the tool's own bound — see below
+        uses: <owner>/agent-board-toolkit/release-tag-check@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          before-sha: ${{ github.event.before }}
+          after-sha: ${{ github.sha }}
+          # config: .release-pr.json   # optional; the default
+          # remote / timeout / interval / read-timeout — optional; blank = the tool's own
+          # defaults, which are where those numbers are argued. Leave them blank unless you
+          # have a reason, and state the reason where you set them.
+
+      - uses: <owner>/agent-board-toolkit/promote@<full-40-char-SHA>  # vX.Y.Z
+        with: { ... }        # §6a
+```
+
+**Order is the whole point.** The gate must run **before** the step that reports the release. A gate placed after it refuses a release that has already been reported — the board is already wrong, and the red run is now about a state you have to repair by hand.
+
+**Why this exists at all, in one line:** a tagging workflow and a promoting workflow that share the `push: <main>` trigger with no `needs:` between them are **two independent runs**, so the promoting one wins the race on *every* release and reports "shipped" before the tag exists — and on the release where the tag never arrives at all, that report is simply false and stays false. (This repo's own v0.28.0: the tag push took a 403, promote reported success three seconds later, and the board asserted a shipped release for 17m27s until a human re-ran the job.) The tool therefore **waits** rather than refusing on sight; an immediate hard-refuse would red every release. `release-tag-check --help` owns the bound, why it is what it is, and what happens when it is reached — it is not restated here.
+
+**Your `tag_format` is what names the tag it waits for** (§4). A repo on a non-`v` scheme (`{{version}}`, `release-{{version}}`, a date string) is asserted against the tag that scheme produces — the same key `release-pr-body` resolves the tag from. A repo that leaves the key unset gets `v<version>`, unchanged.
+
+**Size the `timeout-minutes` backstop above the tool's own bound** (`timeout` + `read-timeout` + the classification). That ordering is the difference between a job that reports `failure` — a refused release — and one that reports `cancelled`, which is not a verdict about the tag at all. The tool bounds each individual poll so its own wait is what ends first; on a host with no coreutils `timeout` on `PATH` it says so on a `::warning::` and the polls are unbounded (GitHub-hosted runners ship coreutils).
+
+**What a refusal is, and is not.** A red gate means *check whether the tag exists* — not *the board write failed*. Three refusals with three different messages: the tag is absent past the bound (the release merged untagged — check your tagging workflow's run), the tag exists at a **different** commit (two merges claimed one version, or the release PR forgot to bump the version file — refused immediately, since waiting cannot change it), or the remote could not be **read** on the final poll, in which case the tag is **UNMEASURED, not absent** and the message asserts nothing about it. All three exit 1: a release that cannot be confirmed must not be reported as shipped.
+
+> ⚠ **The refusal is loud in Actions and silent on your board.** When the gate refuses, the cards simply stay where they were — there is no "release refused" signal on the board itself. Watch the workflow run, not the column.
+
+> **Lockstep — one sanctioned copy.** [`release-tag-check/action.yml`](../release-tag-check/action.yml)'s `description:` restates the preconditions above (checkout depth, the `push`-only guard, the caller-owned backstop), because a SHA-pinned consumer reads the action itself and cannot follow a pointer into these docs. **Correcting either one here means correcting `release-tag-check/action.yml` in the same change.**
+
 ## Worked example (host install, primary board named `dev`)
 
 ```bash

@@ -102,6 +102,7 @@ jobs:
           - board-snapshot-selftest
           - board-stats-selftest
           - bsc-same-dir-selftest
+          - composite-action-wiring-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
@@ -328,3 +329,49 @@ jobs:
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           [ "$SMOKE_OUTCOME" = "success" ] || { echo "::error::release-artifacts action failed on a same-sha range — the wrapper does not reach the script"; exit 1; }
+
+  release-tag-check-action-selftest:
+    # The third action's runner leg. Its WIRING assertions are NOT inline here: they live in
+    # `tests/composite-action-wiring-selftest.sh`, which derives its population from every
+    # `action.yml` in the tree (so this action, the two above, and a fourth are all covered by
+    # one guard) and runs as a `selftest` matrix entry. What this job adds is the part no local
+    # test can stand in for — the RUNNER actually executing the composite, in both directions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0   # the action's own precondition; both smoke steps below need it
+      - run: test -x bin/release-tag-check
+
+      - name: Invoke the action (degenerate same-sha range ⇒ not a release ⇒ asserts no tag)
+        # Deterministic and network-free: base == head means the version is byte-identical at
+        # both ends, so the classifier returns not-release and the tool exits 0 BEFORE polling
+        # any remote. This asserts "the composite runs end-to-end into the script", not "the tag
+        # gate works" — the gate's own verdicts are covered by tests/release-tag-check-selftest.sh.
+        # Every optional input is left blank on purpose: that is the default consumer wiring, and
+        # it is the path where a blank-to-absent translation bug would surface as `--timeout ""`.
+        id: pass
+        continue-on-error: true
+        uses: ./release-tag-check
+        with:
+          before-sha: ${{ github.sha }}
+          after-sha: ${{ github.sha }}
+
+      - name: Invoke the action on a range it CANNOT classify (must fail the step)
+        # THE SECOND DIRECTION, and the one that matters for a gate: a wrapper that swallowed the
+        # script's non-zero status would look identical to a passing gate on the step above. An
+        # unresolvable --after is refused at rc 2 by the script with no network access.
+        id: refuse
+        continue-on-error: true
+        uses: ./release-tag-check
+        with:
+          before-sha: ${{ github.sha }}
+          after-sha: '0000000000000000000000000000000000000000'
+
+      - name: Assert both directions
+        env:
+          PASS_OUTCOME: ${{ steps.pass.outcome }}
+          REFUSE_OUTCOME: ${{ steps.refuse.outcome }}
+        run: |
+          [ "$PASS_OUTCOME" = "success" ] || { echo "::error::release-tag-check action failed on a non-release range — the wrapper does not reach the script"; exit 1; }
+          [ "$REFUSE_OUTCOME" = "failure" ] || { echo "::error::release-tag-check action reported '$REFUSE_OUTCOME' on an unclassifiable range — the wrapper is swallowing the script's refusal, which would make every release look tagged"; exit 1; }

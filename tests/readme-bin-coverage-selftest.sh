@@ -36,11 +36,13 @@
 #      is a DIRECTORY, so this must not assume an entry is a file. The rule itself lives in
 #      `_bin-set-lib.sh` (`_public_bin_names`) because runtime-check's TOOLS gate needs the
 #      identical set; WHY it is right *here* is this paragraph and stays here.
-#   2. Table rows not keyed by `bin/…` are out of scope — today exactly one,
-#      `promote/action.yml`, a real row for a real artifact that simply does not live in
-#      bin/. It is dropped by a NAMED partition step, not by a `^| \`bin/` pattern that would
-#      silently swallow it, and the live out-of-scope set is PRINTED on every run so the
-#      exclusion stays visible rather than becoming folklore.
+#   2. Table rows not keyed by `bin/…` are out of scope — the composite actions, real rows for
+#      real artifacts that simply do not live in bin/. They are dropped by a NAMED partition
+#      step, not by a `^| \`bin/` pattern that would silently swallow them, and the live
+#      out-of-scope set is PRINTED on every run so the exclusion stays visible rather than
+#      becoming folklore. That print is why this line does not enumerate them: it said "today
+#      exactly one, `promote/action.yml`" while the table already carried a second action row,
+#      and card#7203 added a third.
 #
 # The extraction is scoped to the ONE section, not the whole file: a `bin/…` row appearing
 # under some other heading would otherwise satisfy this check while the inventory table

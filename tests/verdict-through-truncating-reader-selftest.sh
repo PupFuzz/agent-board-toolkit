@@ -138,7 +138,8 @@
 #   * The UNDRIVEN members: three git hooks and a sourced lib have no argv surface at all, one
 #     hook writes to a live board, and `_shellcheck-pinned` writes nothing to its own stdout on
 #     any path. They are UNMEASURED, not clean, and each is listed with its reason.
-#   * `bin/*.py`, and the bash embedded in `promote/action.yml` / `release-artifacts/action.yml`.
+#   * `bin/*.py`, and the bash embedded in this repo's composite actions — every `action.yml`
+#     in the tree, not a list written here (one stood here naming two of what are now three).
 #   * STDERR. The class as filed is about stdout; a bin can equally lose its verdict to a
 #     truncated stderr, and only the merged-stream case is sampled here.
 #   * Whether a dispositioned reason is TRUE. It is a recorded judgement, re-read by whoever
