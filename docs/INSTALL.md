@@ -61,10 +61,17 @@ command -v kbcard    # -> /home/<you>/.local/bin/kbcard  (a symlink into ~/agent
 > tool, and unlike the case above it is **loud at first use** (the `PATH` entry is a directory, so
 > the command does not run) rather than silent forever.
 >
-> The framework's own install arm (`install-linked-bin.sh`) refuses these same shapes; this recipe
-> is the hand-run counterpart and agrees with it deliberately. **Anything in `bin/` that is not a
-> regular file is not installed** — today that set is empty (every `bin/` entry is a regular file),
-> so on a clean checkout this loop installs exactly the same tools the unguarded one did.
+> **The framework's own install arm (`install-linked-bin.sh`) closes only the DESTINATION end — do
+> not read this recipe as merely restating it.** Its destination guard refuses a `~/.local/bin/<tool>`
+> that is a directory or a symlink-to-directory, and it links with `ln -sfn`; but its source glob is
+> **unguarded** (`items=("$srcabs"/*)`, no `[ -f ]`), so a directory in `bin/` is **linked onto
+> `PATH` on run 1 at rc 0** and then, on run 2, that same destination guard sees the symlink-to-
+> directory it just created and **hard-fails the whole install** (`RESULT=NOT_INSTALLED …
+> #install-arm-failed rc=1`). Measured on GNU coreutils 9.4 with a `__pycache__/` in the source
+> `bin/`. This recipe therefore guards a shape the framework arm does not; the source-end gap is
+> filed against the coord plugin (card#7234), not worked around here. **Anything in `bin/` that is
+> not a regular file is not installed** — today that set is empty (every `bin/` entry is a regular
+> file), so on a clean checkout this loop installs exactly the same tools the unguarded one did.
 
 > **⚠ Windows / MSYS / Git-Bash: `ln -s` silently produces COPIES, not symlinks** (native
 > mingw64 has no default symlink capability), and any manual `cp` install has the same
@@ -137,7 +144,9 @@ cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-p
 # if your repo already uses those names.
 # tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
 # set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
-# accepts 2-4 numeric segments (SemVer and .NET Major.Minor.Build.Revision alike).
+# keeps exactly what YOUR version_regex matches, so a .NET Major.Minor.Build.Revision
+# version needs a 4-segment version_regex: measured, a 3-segment one reads 1.22.1.0 as
+# 1.22.1 and the release then tags and reports the truncated version, silently.
 jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove the "_comment" line if you like
 ```
 

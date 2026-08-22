@@ -78,6 +78,15 @@
 # the absences with a PRESENCE witness (the exact set of tools that DID get linked, and the skip
 # lines naming what did not), so "refuses the right thing" is distinguishable from "refuses
 # everything".
+#
+# THE REFUSAL'S CHANNEL IS ASSERTED, NOT ASSUMED. `docs/INSTALL.md` §2 and the changelog both claim
+# each refusal is NAMED ON STDERR. While `_probe` merged the two streams with `2>&1`, that claim was
+# the one property in this file still being read rather than executed — the three skip legs passed
+# identically with the notice on stdout. The streams are now captured separately and each skip is
+# asserted present on fd 2 and absent from fd 1. Seen to fail: changing the recipe's `>&2` to a
+# plain `echo` reds all three presence legs plus the stdout-empty leg, and reds ONLY the copy that
+# was mutated. The merged-stream shape is a CLASS, filed as card#7236 — a second live instance
+# stands in `tests/kbc-stale-blocker-selftest.sh`, so do not re-merge these two streams here.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -138,9 +147,15 @@ _runnable() {
 _probe() {
     local d="$1" text="$2" prog n
     prog="$(_runnable "$text")"
-    : > "$d/skips.log"
+    # THE TWO STREAMS ARE KEPT APART, deliberately. They used to be merged (`2>&1`) into one log,
+    # and under a merge the three skip legs below pass IDENTICALLY whether the refusal goes to
+    # stdout or to stderr — so "each refusal is NAMED on stderr", the property `docs/INSTALL.md`
+    # §2 and the changelog both assert, was the one thing here still being READ rather than run.
+    # Separate files make the CHANNEL assertable: presence on fd 2, absence on fd 1.
+    : > "$d/stderr.log"; : > "$d/stdout.log"
     for n in 1 2; do
-        ( export HOME="$d/home" SRCBIN="$d/src/bin"; cd "$d" && bash -c "$prog" ) >>"$d/skips.log" 2>&1
+        ( export HOME="$d/home" SRCBIN="$d/src/bin"; cd "$d" && bash -c "$prog" ) \
+            >>"$d/stdout.log" 2>>"$d/stderr.log"
     done
     # 1. anything the run planted INSIDE the source checkout, over the fixture's own two symlinks.
     printf 'PLANTED=%s\n' "$(cd "$d/src" && find . -type l -printf '%p\n' 2>/dev/null \
@@ -220,10 +235,20 @@ while IFS=$'\t' read -r f n text; do
     # everything would satisfy 3a and 3b perfectly.
     eq "$f:$n — every regular-file tool is linked, and nothing else" "_tool-lib.sh alias-tool tool-a " \
        "$(_field LINKED "$OUT")"
-    eq "$f:$n — the skip of __pycache__ is announced, not silent" "true" "$(has '__pycache__' "$(cat "$D/skips.log")")"
-    eq "$f:$n — an ordinarily-named directory is refused too (not narrowed to __pycache__)" "true" \
-       "$(has 'helpers' "$(cat "$D/skips.log")")"
-    eq "$f:$n — a dangling symlink is refused" "true" "$(has 'dangling' "$(cat "$D/skips.log")")"
+    # The refusals are asserted ON FD 2 — the channel is part of the claim, not incidental. A
+    # recipe that announced them on stdout would satisfy "not silent" and still break the stated
+    # contract (and pollute a caller that pipes the loop), so each presence on stderr is paired
+    # with the matching ABSENCE on stdout below.
+    eq "$f:$n — the skip of __pycache__ is announced on STDERR, not silent" "true" \
+       "$(has '__pycache__' "$(cat "$D/stderr.log")")"
+    eq "$f:$n — an ordinarily-named directory is refused too, on STDERR (not narrowed to __pycache__)" "true" \
+       "$(has 'helpers' "$(cat "$D/stderr.log")")"
+    eq "$f:$n — a dangling symlink is refused, on STDERR" "true" "$(has 'dangling' "$(cat "$D/stderr.log")")"
+    # The discriminating half: NOTHING the loop refuses may land on stdout. Asserted over the
+    # whole stream rather than per-name — the loop writes nothing at all to fd 1, so any content
+    # here is either a misrouted refusal or new output nobody declared.
+    eq "$f:$n — the loop writes NOTHING to stdout (every refusal is on fd 2)" "" \
+       "$(tr -d '[:space:]' < "$D/stdout.log")"
     # 3d — the destination end (`-n`): the pre-planted symlink-to-directory is REPLACED by the
     # tool, and nothing was written through it into the directory it pointed at.
     eq "$f:$n — a symlink-to-directory destination is replaced by the tool, not followed" \
