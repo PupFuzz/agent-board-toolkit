@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# release-tag-check — post-merge, assert that the release this push represents is ACTUALLY
+# TAGGED before anything downstream reports the release as shipped. Waits for the tag, then
+# refuses if it never arrives.
+#
+# WHY THIS EXISTS (card#6579). `auto-tag-version.yml` and `release-promote-cards.yml` both fire
+# on `push: main`, as INDEPENDENT runs with no `needs:` between them. Promote therefore reports
+# board cards "Released to main" without ever checking that the tag exists — and on the v0.28.0
+# release it did exactly that: auto-tag's push was refused with a 403 at 01:59:46Z, promote
+# reported "2 moved" and concluded SUCCESS at 01:59:49Z, and the tag did not exist until a
+# human re-ran the job at 02:17:06Z. The board asserted a shipped release for 17m27s while the
+# tag was absent, and had the re-run never happened it would have asserted it forever.
+#
+# THE RACE IS NOT THE FAILURE MODE — IT IS THE NORMAL PATH. Because the two runs start
+# together, promote wins on EVERY release, not just when tagging breaks; v0.28.0 was merely the
+# run where the tag never arrived to settle it. So this check WAITS rather than refusing
+# immediately: an immediate hard-refuse would red every release in the repo.
+#
+# WHAT THE 403 WAS, AND WHAT THIS DOES NOT CLAIM. The tag push was refused while the job log
+# showed `Contents: write` granted, the same token had just fetched successfully, no ruleset or
+# tag protection existed, and the identical push succeeded unchanged 17 minutes later. Every
+# repo-side cause is excluded by measurement; the refusal came from GitHub's authorization
+# service. THIS TOOL DOES NOT FIX THAT AND CANNOT. It closes the SILENCE — the part that
+# actually bit — by making an untagged release loud on the surface an operator watches instead
+# of leaving a false "Released" stamp behind. A recurrence is still a recurrence; it is just no
+# longer quiet.
+#
+# Usage:
+#   release-tag-check --before <ref> --after <ref> [--config PATH] [--remote NAME]
+#                     [--timeout SECS] [--interval SECS] [--read-timeout SECS]
+#
+#   --before   the ref the branch pointed at BEFORE this push (github.event.before)
+#   --after    the pushed commit (github.sha) — the tag must point HERE
+#   --config   per-repo release config (default `.release-pr.json`), inside this repository
+#   --remote   remote to poll (default `origin`)
+#   --timeout  seconds to wait for the tag before refusing (default 300; 0 = look once)
+#   --interval seconds between polls (default 10; must be >= 1)
+#   --read-timeout  seconds ONE `git ls-remote` may take before it is killed and scored as an
+#              unreadable remote (default 30; must be >= 1; ignored where `timeout` is absent)
+#
+# THE RELEASE CLASSIFICATION IS NOT RE-DERIVED HERE. It is delegated to
+# `release-artifacts-check --classify-only`, which owns the repo's one definition of "this
+# range is a release" (the fork-point version against head's, by VALUE, including the arm that
+# re-decides an equal classifying value). A second rule here would
+# be free to drift from the gate that guards release PRs.
+#
+# THE NAIVE ALTERNATIVE — "a tag must point at every merge on the release branch" — REFUSES ANY
+# PUSH WHOSE TIP IS UNTAGGED, so what it would cost is a question about `main`'s own history,
+# and that history moves. RE-DERIVE THE NUMBER, never quote one:
+#
+#     git tag -l 'v*' | while read -r t; do git rev-parse "$t^{commit}"; done | sort -u > /tmp/tagged
+#     comm -23 <(git rev-list --first-parent origin/main | sort) /tmp/tagged | wc -l
+#
+# Measured at `origin/main` 3cc2d7b (v0.29.0, 2026-08-18): 46 first-parent commits, 42 `v*`
+# tags, 4 untagged tips — the root commit and three direct pushes predating the release flow.
+# The naive predicate would have refused each of those four as an untagged release. It is
+# ALSO true that all 42 first-parent MERGES on `main` are tagged today, so on this history the
+# naive rule survives every merge and fails only on direct pushes: it is one docs commit pushed
+# to `main` away from redding a run that ships nothing. That is what classification buys, and
+# it is a narrower claim than an earlier draft of this header made — "false-alarmed on all six
+# non-release merges" reproduced under no denominator on this repo (4 of 46 first-parent
+# commits, 0 of 42 first-parent merges, 55 of 97 merges across full ancestry), so it is gone
+# rather than restated.
+#
+# THE POLL IS AGAINST THE REMOTE, NEVER LOCAL REFS, and that is the whole point: the tag is
+# created by a DIFFERENT workflow run after this job's checkout was taken, so a local ref set
+# is frozen at a moment that by construction predates the tag. `git ls-remote` re-asks the
+# server each round. An annotated tag is dereferenced (`^{}`) so it is compared as a commit;
+# `auto-tag-version.yml` currently creates a lightweight tag, and this must not depend on that.
+#
+# THE TIMEOUT IS A COST DECISION, STATED, NOT A CONVERGENCE CLAIM. Default 300s. The automated
+# path is fast — auto-tag's entire job, runner pickup through push, measured ~8s on the very
+# run that failed — so 300s is roughly 35x observed latency and absorbs runner-queue variance
+# with room to spare. It is deliberately NOT sized to the incident's 17m27s: that gap was a
+# HUMAN noticing and re-running, and sizing an automated wait to human reaction time would make
+# every genuinely-broken release hang for 17 minutes before saying so. AT THE BOUND THIS
+# REFUSES AND FAILS LOUDLY rather than waiting longer or passing — stamping "Released" late is
+# recoverable, stamping it wrongly is not.
+#
+# A NON-RELEASE PUSH ASSERTS NOTHING and exits 0 saying so. A push whose range cannot be
+# classified at all is rc 2 from the classifier and is propagated unchanged — never softened
+# into "not a release", because that misclassification is a silent non-run of this whole check,
+# which is the exact defect class this tool exists to end.
+#
+# A READ HAS THREE OUTCOMES. Present, absent, and UNREADABLE are three different facts, and
+# the poll below keeps them apart: `git ls-remote`'s status is the gate and its stderr is
+# kept, so a remote that cannot be reached is never scored as a tag that is not there. Both
+# still REFUSE at the bound — a release that cannot be confirmed must not be reported as
+# shipped, so the rc is 1 either way and no caller has to learn a new one — but the messages
+# make opposite claims, and only one of them is about the tag.
+#
+# Exit status: 0 = tag present at the pushed commit, or not a release push. 1 = the release is
+# untagged past the bound, the remote could not be READ past the bound (a distinct message
+# that asserts nothing about the tag), or the tag exists at a DIFFERENT commit. 2 = usage
+# error, or the range could not be classified.
+set -euo pipefail
+# A bracket range is a COLLATION range and en_US.UTF-8 widens `[0-9]` to non-ASCII digits
+# (card#5409); exported so the greps below inherit it, not just this shell.
+export LC_ALL=C
+
+die() { echo "release-tag-check: $*" >&2; exit 2; }
+command -v git >/dev/null || die "git is required"
+
+# Mirrors kb_require_value in _kb-board-lib.sh. Like its release siblings this script is
+# deliberately self-contained and does not source that lib; keep them in sync.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+require_uint()  { case "${2:-}" in ''|*[!0-9]*) die "$1 requires a non-negative integer";; esac; }
+# --interval takes this one, not require_uint: `--interval 0` is accepted by every
+# non-negative test and then polls with no pause at all. Against the ORIGINAL clock — a count
+# of intervals — it also never terminated, because WAITED never advanced; the real-elapsed
+# clock below ends the wait on time either way, so what is left is an unthrottled
+# `ls-remote` flood against the very host this check depends on, for the whole of --timeout.
+# Measured on the pre-fix binary: `--timeout 300 --interval 0` never advanced WAITED at all and
+# had to be killed from outside (rc 124 under an external 8s timeout, one line of output).
+# `--timeout 0` stays legal and means "look once".
+require_pint()  { require_uint "$1" "${2:-}"; [ "${2:-0}" -gt 0 ] || die "$1 requires a positive integer — 0 polls without pause"; }
+
+CONFIG=".release-pr.json"; BEFORE=""; AFTER=""; REMOTE="origin"; TIMEOUT=300; INTERVAL=10
+READ_BOUND=30
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --before)   require_value "$1" "${2:-}"; BEFORE="$2"; shift 2;;
+    --after)    require_value "$1" "${2:-}"; AFTER="$2"; shift 2;;
+    --config)   require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    --remote)   require_value "$1" "${2:-}"; REMOTE="$2"; shift 2;;
+    --timeout)  require_uint  "$1" "${2:-}"; TIMEOUT="$2"; shift 2;;
+    --interval) require_pint  "$1" "${2:-}"; INTERVAL="$2"; shift 2;;
+    --read-timeout) require_pint "$1" "${2:-}"; READ_BOUND="$2"; shift 2;;
+    # Contiguous leading comment block, not a fixed range — a fixed `sed -n` range is silently
+    # wrong in both directions as the header grows or shrinks (card#5145).
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+[ -n "$BEFORE" ] || die "--before <ref> is required"
+[ -n "$AFTER" ]  || die "--after <ref> is required"
+
+AFTER_SHA="$(git rev-parse --verify "${AFTER}^{commit}" 2>/dev/null)" \
+  || die "cannot resolve --after '$AFTER' to a commit in this clone — the caller must check out with fetch-depth: 0"
+
+# The classifier is the sibling in this same bin/, not whatever a PATH lookup finds: a vendored
+# consumer may carry a different toolkit version on PATH, and the two must agree on the rule.
+SELF_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLASSIFIER="$SELF_DIR/release-artifacts-check"
+[ -x "$CLASSIFIER" ] || die "$CLASSIFIER is missing or not executable — it owns the release classification this check delegates to"
+
+set +e
+CLASS_OUT="$("$CLASSIFIER" --classify-only --base "$BEFORE" --head "$AFTER" --config "$CONFIG" 2>&1)"
+CLASS_RC=$?
+set -e
+if [ "$CLASS_RC" -ne 0 ]; then
+  # Propagated, never softened. The classifier is fail-closed by design and its rc 2 means "I
+  # could not tell" — reading that as "not a release" would silently skip the assertion.
+  echo "$CLASS_OUT" >&2
+  die "could not classify ${BEFORE}..${AFTER} (release-artifacts-check rc $CLASS_RC) — refusing rather than assuming this is not a release"
+fi
+
+VERDICT="$(printf '%s\n' "$CLASS_OUT" | tail -1)"
+# THE CLASSIFIER MAY EXPLAIN ITSELF BEFORE ITS VERDICT, and that explanation is relayed rather
+# than swallowed: card#6488's arm emits a `::warning::` naming WHICH value it decided a range
+# ships when the first regex match is equal at both ends, and that value is the tag this check
+# is about to assert. Dropping it would leave the annotation on the PR gate only, never on the
+# push that acts on it. The verdict is the LAST line by construction, so the rest is the note.
+CLASS_NOTES="$(printf '%s\n' "$CLASS_OUT" | sed '$d')"
+[ -z "$CLASS_NOTES" ] || printf '%s\n' "$CLASS_NOTES"
+case "$VERDICT" in
+  "not-release "*)
+    echo "release-tag-check: not a release push (version unchanged across ${BEFORE}..${AFTER}) — no tag asserted"
+    exit 0;;
+  "release "*) ;;
+  *) die "unrecognised classifier verdict '$VERDICT' — refusing rather than guessing";;
+esac
+VERSION="${VERDICT#release }"
+TAG="v${VERSION}"
+
+# EVERY POLL IS BOUNDED, so the tool's own --timeout is what fires first. `release-promote-cards.yml`
+# states that ordering — "the tool's own bound fires first and exits 1; a timeout-minutes kill
+# reports as `cancelled`, not `failure`" — and nothing enforced it: one `git ls-remote` hanging
+# on an unreachable host consumed the whole job entitlement and produced exactly the `cancelled`
+# outcome that comment says it avoids. Bounding each read is also what gives the rc
+# classification above its input: `timeout` reports 124, which is a READ FAILURE and not an
+# absent tag.
+#
+# `timeout` is PROBED, not assumed (the precedent is `board-session-close`'s advisory runner):
+# a BSD/macOS host without coreutils has none, and making it a hard dependency would refuse a
+# host on which this check otherwise works. Where it is missing the poll is unbounded and the
+# run SAYS SO, because the ordering claim above is then not true on that host — a degraded
+# state stated, never a false guarantee kept quiet. GitHub-hosted runners ship coreutils.
+LS_REMOTE=(git ls-remote --tags "$REMOTE" "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
+BOUNDED=0
+if command -v timeout >/dev/null 2>&1; then
+  BOUNDED=1
+  LS_REMOTE=(timeout "$READ_BOUND" "${LS_REMOTE[@]}")
+else
+  echo "::warning::release-tag-check: no \`timeout\` on PATH (coreutils), so each poll of ${REMOTE} is UNBOUNDED. The ${TIMEOUT}s bound below still ends the WAIT, but a single hung read can outlast it on this host." >&2
+fi
+
+# git's stderr is kept, not discarded — it is the only thing that says WHY a read failed, and
+# a refusal that cannot name its own cause is what card#6579's review caught here.
+ERRF="$(mktemp "${TMPDIR:-/tmp}/release-tag-check.XXXXXX")" || die "cannot create a temporary file for the remote's error output"
+trap 'rm -f "$ERRF"' EXIT
+
+# A READ HAS THREE OUTCOMES, NOT TWO (the class `tests/read-outcome-collapse-selftest.sh`
+# guards). The first cut of this loop captured `git ls-remote`'s status and then threw it away
+# — `FOUND="$(_remote_tag_sha || true)"` — and tested the survivor for emptiness, so "the
+# server answered and carries no such tag" and "I could not look" became the same empty string.
+# Measured with the tag GENUINELY PRESENT and the remote made unreadable: this tool said
+# `v0.28.0 does not exist on <remote> after 4s … The release merged and was NOT tagged — check
+# the auto-tag-version workflow run`, and sent the operator to a workflow run that was green,
+# with git's own error text discarded by the `2>/dev/null`. REFUSING was right; naming that
+# cause was not. The rc is therefore the gate, git's stderr is kept, and an unreadable remote
+# gets its own refusal that claims nothing about whether the tag exists.
+#
+# _remote_tag_sha — sets REMOTE_TAG_SHA and REMOTE_READ_ERR, and returns which outcome it was:
+#   0  PRESENT    — REMOTE_TAG_SHA is the commit $TAG points at on the remote
+#   1  ABSENT     — the remote ANSWERED and carries no $TAG
+#   2  UNREADABLE — the read did not complete; REMOTE_READ_ERR carries git's own message
+# An annotated tag yields both `refs/tags/X` (the tag object) and `refs/tags/X^{}` (the commit);
+# the dereferenced line is authoritative, so it is preferred whenever present. The two awk
+# passes read $out, a string already in memory — they have no third outcome to lose.
+_remote_tag_sha() {
+  local out deref plain rc=0
+  REMOTE_TAG_SHA=""; REMOTE_READ_ERR=""
+  out="$("${LS_REMOTE[@]}" 2>"$ERRF")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # Collapsed to one line: this is quoted inside a `::error::` annotation, and a GitHub
+    # annotation keeps only the first line of a multi-line message.
+    REMOTE_READ_ERR="$(tr '\n' ' ' < "$ERRF" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+    if [ "$rc" -eq 124 ] && [ "$BOUNDED" -eq 1 ]; then
+      REMOTE_READ_ERR="the read was KILLED after ${READ_BOUND}s with no answer from ${REMOTE}${REMOTE_READ_ERR:+ (${REMOTE_READ_ERR})}"
+    elif [ -z "$REMOTE_READ_ERR" ]; then
+      REMOTE_READ_ERR="git ls-remote exited ${rc} and printed nothing"
+    fi
+    return 2
+  fi
+  deref="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}^{}" '$2 == t { print $1; exit }')"
+  plain="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}"    '$2 == t { print $1; exit }')"
+  REMOTE_TAG_SHA="${deref:-$plain}"
+  [ -n "$REMOTE_TAG_SHA" ] || return 1
+  return 0
+}
+
+echo "release-tag-check: release push — ${TAG} must exist at ${AFTER_SHA} (waiting up to ${TIMEOUT}s, polling ${REMOTE} every ${INTERVAL}s)"
+
+# WAITED IS REAL ELAPSED TIME, not a count of intervals. Counting `INTERVAL` per round measures
+# the sleeps and nothing else, so the reads themselves — up to READ_BOUND seconds each — fell
+# outside the "waiting up to ${TIMEOUT}s" the line above promises, and the promote job's
+# `timeout-minutes` backstop could be reached while WAITED still read well under the bound.
+# With the elapsed clock the stated bound is the bound: the loop ends within TIMEOUT plus at
+# most one final read.
+START=$SECONDS
+WAITED=0
+POLLS=0
+UNREADABLE=0
+LAST_RC=0
+LAST_ERR=""
+while :; do
+  POLLS=$((POLLS + 1))
+  set +e; _remote_tag_sha; LAST_RC=$?; set -e
+  WAITED=$((SECONDS - START))
+  case "$LAST_RC" in
+    0)
+      if [ "$REMOTE_TAG_SHA" = "$AFTER_SHA" ]; then
+        # THE PREDICATE IS "DID WE LOOK MORE THAN ONCE", not "is the clock above zero". Since
+        # WAITED became real elapsed time, a single round-trip that happens to cross a second
+        # boundary would otherwise report "(after 1s)" for a tag that was there when we first
+        # looked — making a waited-for result and an immediate one indistinguishable in the
+        # log, and any assertion on "after" vacuous. (`${WAITED:+…}` is wrong for the same
+        # reason twice over: WAITED=0 is a non-empty string.)
+        if [ "$POLLS" -gt 1 ]; then
+          echo "release-tag-check: ok — ${TAG} present at ${AFTER_SHA} (after ${WAITED}s, ${POLLS} polls)"
+        else
+          echo "release-tag-check: ok — ${TAG} present at ${AFTER_SHA}"
+        fi
+        exit 0
+      fi
+      # Present but elsewhere: auto-tag's own case 3 (two merges claimed one version). Waiting
+      # cannot resolve it — a tag does not move on its own — so this refuses immediately.
+      echo "::error::release-tag-check: ${TAG} exists on ${REMOTE} at ${REMOTE_TAG_SHA}, but this push is ${AFTER_SHA}. Two merges have claimed the same version, or the release PR did not bump the version file. REFUSING to report this release as shipped." >&2
+      exit 1;;
+    1) ;;   # ABSENT — the remote ANSWERED. This is the normal state for the first seconds of
+            # every release, and it is the outcome the wait exists for; keep waiting.
+    2)
+      # KEEP POLLING. An unreadable remote is the one outcome that is plausibly transient, and
+      # the tag being absent right now is the NORMAL state at this point in a release — so a
+      # read failure ends the wait no earlier than an absence does. What it must never do is
+      # be counted as one, which is why it is tallied and its message kept.
+      UNREADABLE=$((UNREADABLE + 1))
+      LAST_ERR="$REMOTE_READ_ERR"
+      echo "release-tag-check: could not read ${REMOTE} (poll ${POLLS}, ${WAITED}s in): ${LAST_ERR} — retrying; this is NOT evidence that ${TAG} is absent" >&2;;
+  esac
+  [ "$WAITED" -lt "$TIMEOUT" ] || break
+  sleep "$INTERVAL"
+done
+
+# THE BOUND IS REACHED IN TWO DIFFERENT WORLDS, AND THEY GET DIFFERENT REFUSALS. Both refuse —
+# the promote job must not report a release it cannot confirm — but only one of them knows
+# anything about the tag.
+if [ "$LAST_RC" -eq 2 ]; then
+  # The LAST poll never answered, so the verdict at the bound has measured nothing about ${TAG}.
+  # The wording is scoped to that poll deliberately: an EARLIER poll may well have answered
+  # (absence is the normal state early on), and "the remote was never reached" would then be
+  # its own false claim — the defect this branch exists to remove, re-minted one line lower.
+  # Naming the auto-tag workflow would be wrong-but-specific in the same way: it sends the
+  # operator to a run that is very likely green while the actual failure is the read.
+  echo "::error::release-tag-check: could NOT READ ${REMOTE} on the FINAL poll after ${TIMEOUT}s (${UNREADABLE} of ${POLLS} poll(s) failed, including the last). Last error: ${LAST_ERR}. This says NOTHING about whether ${TAG} exists: the last look never reached ${REMOTE}, so at the bound the tag is UNMEASURED, not absent. Check network/credentials for ${REMOTE} and re-run; do not read this as an untagged release. REFUSING to report this release as shipped." >&2
+  exit 1
+fi
+
+# The final poll ANSWERED, so the absence below is measured. Earlier failed reads are still
+# reported rather than dropped: they are why the wait had fewer real measurements than polls.
+MIXED=""
+[ "$UNREADABLE" -eq 0 ] || MIXED=" (${UNREADABLE} of ${POLLS} poll(s) could not read ${REMOTE} — last: ${LAST_ERR} — but the FINAL poll answered, so this absence is measured, not inferred)"
+echo "::error::release-tag-check: ${TAG} does not exist on ${REMOTE} after ${TIMEOUT}s, but ${AFTER_SHA} is a release push (version ${VERSION})${MIXED}. The release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579). REFUSING to report this release as shipped." >&2
+exit 1
