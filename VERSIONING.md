@@ -32,6 +32,8 @@ When a release mixes a feature with fixes, lean toward minor; a release that is 
 
 This is gated, not conventional: [`tests/changelog-card-entry-selftest.sh`](tests/changelog-card-entry-selftest.sh) (its own [`changelog-card-entry.yml`](.github/workflows/changelog-card-entry.yml) workflow, which subscribes `edited` so a **title edit** re-runs it) derives obligations from the commit subjects since the last release tag **plus the PR title** — under squash-merge the title *is* the coming subject, so the check fires before the merge rather than reddening `dev` after it. Until card#5767 the rule was enforced by nothing and written down nowhere, and 3 of the 24 cards merged since v0.23.1 had no entry.
 
+**The section is part of the rule, and is now part of the gate too (card#7293).** A discharging bullet must sit *inside* a section — the gate reads from the file's first `## [` header down to the last released version's header, so a bullet parked in the preamble above the `# Changelog` H1 discharges nothing and reds. Until card#7293 the region had no floor and one such bullet passed. On a release PR the renamed `## [X.Y.Z]` section is the floor, so step 4 below does not need a second pass.
+
 ## The §6 upgrade-action rule — every release, action or not
 
 **Every release adds an entry to [`docs/UPGRADE.md`](docs/UPGRADE.md) § 6 (Version-specific upgrade actions): either the actions the release requires of an upgrader, or the explicit `- **No upgrade action.**` line. A release PR that moves `VERSION` and does not move that section is incomplete.** The entry is a `### v<version>` heading in ascending order at the end of §6, in the voice of the entries already there, carrying §6's audience tags (`[host]` / `[vendor]` / `[release-CI]`).

@@ -71,13 +71,23 @@
 # different things about one change. `.gitattributes` carries the residual and the operating
 # rule that avoids it; this leg is the half of it that can be asserted.
 #
-# THE SCAN IS SECTION-SCOPED, and that is load-bearing in the err-GREEN direction. Entries are
-# read from the top of the file down to the `## [<last release tag>]` header — i.e. from
-# `[Unreleased]` plus any version section cut after that tag. Scanning the whole file would let
-# an entry under `[0.20.0]` discharge a commit that landed after v0.23.1, which is a claim
-# about the wrong release. Scoping also keeps the release PR green: step 4 of VERSIONING.md
-# renames `[Unreleased]` to `[X.Y.Z]` while the newest tag is still the PREVIOUS version, so
-# the just-renamed section is still above the stop header and every entry still counts.
+# THE SCAN IS SECTION-SCOPED AT BOTH ENDS, and each end is load-bearing in a different
+# direction. Entries are read from the file's FIRST `## [` section header down to the
+# `## [<last release tag>]` header — i.e. `[Unreleased]` plus any version section cut after that
+# tag, and nothing else.
+#
+# The CEILING errs GREEN without it: scanning down past the stop header would let an entry under
+# `[0.20.0]` discharge a commit that landed after v0.23.1, a claim about the wrong release. It
+# also keeps the release PR green — step 4 of VERSIONING.md renames `[Unreleased]` to `[X.Y.Z]`
+# while the newest tag is still the PREVIOUS version, so the just-renamed section is still above
+# the stop header and every entry still counts. (Which is exactly why the FLOOR is keyed on "the
+# first section header" and not on the literal `## [Unreleased]`: that header does not always
+# exist.)
+#
+# The FLOOR errs GREEN too, and did — for real, until card#7293. Without it the region began at
+# LINE 1, so the H1, the format blurb and the `begins at [0.8.2]` note were all inside it: a
+# bullet sitting in NO section discharged its card. The card#7227 entry landed at line 1, above
+# the `# Changelog` H1, and this gate reported it as documented.
 #
 # EMPTY IS A LEGITIMATE ANSWER HERE, AND THAT IS WHY THE MACHINERY IS FIXTURE-PROVEN. Right
 # after a release both streams are genuinely empty (no commits since the tag; `[Unreleased]`
@@ -87,14 +97,23 @@
 # "always reports something" would satisfy the can-fail legs vacuously. The live repo is then
 # trusted to answer "" honestly.
 #
-# THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, so
-# the three preconditions below are refused BEFORE any assertion runs. The workflow gives this
-# job `fetch-depth: 0` for that reason, which is also why it is its own job and not a
-# `selftest` matrix entry in ci.yml (that job checks out at the default depth 1).
+# THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, or a
+# file whose section structure the region cannot find, so the four preconditions below are
+# refused BEFORE any assertion runs. The workflow gives this job `fetch-depth: 0` for that
+# reason, which is also why it is its own job and not a `selftest` matrix entry in ci.yml (that
+# job checks out at the default depth 1).
 #
 # The load-bearing one is the MISSING STOP HEADER: with no `## [<last tag>]` section the scan
-# widens to the whole file and an entry under any past version discharges a commit that landed
-# after the tag — that one errs GREEN, silently, and is the reason this block exists.
+# runs from the first section header to EOF and an entry under any past version discharges a
+# commit that landed after the tag — that one errs GREEN, silently, and is the reason this block
+# exists.
+#
+# The MISSING FLOOR precondition — no `## [` header above the stop — is a DIAGNOSTIC, in the
+# shallow guard's sense rather than the stop header's. It cannot err green: an empty region
+# discharges nothing, so every obligation reds. But `_stale_dupes` asserts an ABSENCE over that
+# same region, and an empty region answers "" for a reason that has nothing to do with the file
+# being clean — which is precisely what this block exists to refuse. It also stops the run
+# blaming N innocent cards for one missing header.
 #
 # The shallow guard is a DIAGNOSTIC, and saying so is the point — measured, not assumed. A
 # shallow clone does not actually produce a wrong answer: either no `v*` tag is reachable from
@@ -147,15 +166,41 @@ _obliged() {
     { grep -oE 'card#[0-9]+' "$1" || true; } | LC_ALL=C sort -u
 }
 
-# _region <changelog> <version> — the scanned region: the file from the top down to the
-# `## [<version>]` header (exclusive). ONE owner for the section scope now that three readers
-# need it; a second copy of the stop rule would be a second thing to get wrong.
+# _region <changelog> <version> — the scanned region: the file from its FIRST `## [` section
+# header down to the `## [<version>]` header (exclusive), the floor line included. ONE owner for
+# the section scope now that three readers need it; a second copy of the stop rule would be a
+# second thing to get wrong.
 #
-# The stop header is matched as a LITERAL prefix, not a regex: the version is interpolated, and
-# `0.23.1` as a regex also matches `0x23y1`. `index()` takes no pattern at all, so there is
-# nothing to escape and no awk `-v` escape-processing to get wrong.
+# THE FLOOR IS THE POINT, and it was absent until card#7293. The region's PURPOSE has always
+# been "the sections recording unreleased work", but with no floor its PREDICATE was "anywhere
+# above the stop header" — which swallows the H1, the format blurb and the `begins at [0.8.2]`
+# note, i.e. every line of preamble. A `- **card#NNNN**` bullet parked in NO section therefore
+# discharged its card's obligation, and one was: the card#7227 entry landed at line 1, above
+# the `# Changelog` H1, and this gate reported 21 obligations / 21 discharged over it.
+#
+# THE FLOOR IS THE FIRST SECTION HEADER, NOT THE LITERAL `## [Unreleased]`, because step 4 of
+# VERSIONING.md RENAMES that header to `## [X.Y.Z]` while the newest tag is still the previous
+# version — the case the section-scope note in this file's header calls out. Keying the floor on
+# the literal string would red every release PR, on a file that is correct. Whether a section is
+# `[Unreleased]` or a just-renamed version section is not a distinction the region needs: being
+# above the stop header already means "not yet released".
+#
+# WHEN NO SECTION HEADER PRECEDES THE STOP the region is EMPTY, which discharges nothing and
+# therefore reds loudly rather than passing over an unscanned file. The live leg refuses on that
+# state outright (precondition below) so the message names the real cause instead of listing
+# every shipped card as undocumented.
+#
+# BOTH headers are matched as LITERAL prefixes, not regexes: the stop version is interpolated,
+# and `0.23.1` as a regex also matches `0x23y1`. `index()` takes no pattern at all, so there is
+# nothing to escape and no awk `-v` escape-processing to get wrong; the floor uses the same
+# technique for the same reason, plus one of its own — `[` is a regex metacharacter, so the
+# obvious `/^## \[/` spelling is one dropped backslash away from matching `## ` alone.
 _region() {
-    awk -v stop="## [$2]" 'index($0, stop) == 1 { exit } { print }' "$1"
+    awk -v stop="## [$2]" '
+        index($0, stop) == 1 { exit }
+        !in_region && index($0, "## [") != 1 { next }
+        { in_region = 1; print }
+    ' "$1"
 }
 
 # _bullets <changelog> <version> — the region's line-initial card bullets, VERBATIM and in file
@@ -358,6 +403,72 @@ EOF
 eq "a complete CHANGELOG discharges every obligation" "" \
    "$(_missing "$FIX/subjects" "$FIX/changelog-complete.md" "0.23.1")"
 
+# ---------------------------------------------------------------------------
+# The region's FLOOR (card#7293). The stop header is the ceiling; until this card there was no
+# floor, so the region began at line 1 and the preamble — everything above the first `## [`
+# header — was inside it. A bullet filed in NO section discharged its card, which is not a
+# hypothetical: the card#7227 entry landed above the `# Changelog` H1 on `dev` and this gate
+# reported 21 obligations / 21 discharged over it.
+# ---------------------------------------------------------------------------
+echo "== prove-it-can-fail: a bullet above the H1 is in NO section and discharges NOTHING =="
+# Same file as the complete fixture, with card#9003's entry moved out of `### Fixed` and parked
+# at line 1 — the exact shape that landed on `dev`. Its two siblings stay where they belong and
+# are the CONTROL: this must red on the stray bullet only, not flood.
+cat > "$FIX/changelog-preamble.md" <<'EOF'
+- **card#9003** — an entry parked above the H1, in no section at all.
+
+# Changelog
+
+All notable changes are documented here.
+
+## [Unreleased]
+
+### Added
+- **card#9001** — a real entry, and it also supersedes **card#9002** in passing.
+- **card#9002** — now documented in its own right.
+
+## [0.23.1] - 2026-07-27
+
+### Added
+- **card#8000** — an older entry that must not be read as a discharge for anything above.
+EOF
+eq "the preamble bullet is NOT a discharge — its card is reported missing" \
+   "card#9003" "$(_missing "$FIX/subjects" "$FIX/changelog-preamble.md" "0.23.1")"
+# CONTROL, in the same run and on the same file: the two correctly-filed bullets still
+# discharge. Without this the assertion above is satisfied by a `_region` that emits nothing.
+eq "the correctly-filed siblings still discharge (witness: the region is not empty)" \
+   "card#9001
+card#9002" "$(_discharged "$FIX/changelog-preamble.md" "0.23.1")"
+# And the stray line is genuinely IN the file — otherwise the fixture proves nothing about the
+# floor, only about a card with no entry anywhere.
+eq "the stray bullet is present in the file, just not in the region" "true" \
+   "$(has_line '- **card#9003** — an entry parked above the H1, in no section at all.' \
+      "$(cat "$FIX/changelog-preamble.md")")"
+
+echo "== the floor is the FIRST section header, not the literal [Unreleased] =="
+# Step 4 of VERSIONING.md renames `[Unreleased]` to `[X.Y.Z]` while the newest tag is still the
+# PREVIOUS version. A floor keyed on the literal `## [Unreleased]` would empty the region on
+# every release PR and red a file that is correct — so this fixture, which carries no
+# `[Unreleased]` header at all, must discharge exactly as the unrenamed one does.
+sed 's/^## \[Unreleased\]$/## [0.24.0] - 2026-08-01/' "$FIX/changelog-complete.md" \
+    > "$FIX/changelog-released-pr.md"
+eq "the fixture really has no [Unreleased] header left" "false" \
+   "$(_has_version_header "$FIX/changelog-released-pr.md" "Unreleased" && echo true || echo false)"
+eq "a release PR's renamed section still discharges every obligation" "" \
+   "$(_missing "$FIX/subjects" "$FIX/changelog-released-pr.md" "0.23.1")"
+
+echo "== no section header above the stop ⇒ an EMPTY region, not a silent whole-file scan =="
+# The floor's failure mode, pinned. It cannot err green — an empty region discharges nothing, so
+# every obligation reds — but `_stale_dupes` asserts an ABSENCE over this same region and would
+# answer "" for a reason unrelated to the file being clean, which is why the live leg refuses on
+# it (precondition below) rather than reporting alongside a pass.
+printf '# Changelog\n\nA preamble and nothing else.\n\n## [0.23.1] - 2026-07-27\n\n- **card#9001** — released.\n' \
+    > "$FIX/changelog-nofloor.md"
+eq "the region is empty when the stop header is the first section header" "" \
+   "$(_region "$FIX/changelog-nofloor.md" "0.23.1")"
+eq "so nothing is discharged, and the released entry below the stop is NOT reached" "" \
+   "$(_discharged "$FIX/changelog-nofloor.md" "0.23.1")"
+
 echo "== prove-it-can-fail: the PR-title obligation is real =="
 # The pre-merge half. A branch whose own commit subjects carry no token still owes an entry for
 # the card in the title it will be squashed under.
@@ -544,8 +655,15 @@ fi
 LAST_VERSION="${LAST_TAG#v}"
 if ! _has_version_header "$CHANGELOG" "$LAST_VERSION"; then
     echo "selftest: docs/CHANGELOG.md has no '## [$LAST_VERSION]' section for the newest tag" >&2
-    echo "          $LAST_TAG. Without it the scan silently covers the WHOLE file, and an entry" >&2
-    echo "          under any past version would discharge a commit that landed after the tag." >&2
+    echo "          $LAST_TAG. Without it the scan runs to EOF, and an entry under any past" >&2
+    echo "          version would discharge a commit that landed after the tag." >&2
+    exit 1
+fi
+if [[ -z "$(_region "$CHANGELOG" "$LAST_VERSION")" ]]; then
+    echo "selftest: docs/CHANGELOG.md has no '## [' section header above '## [$LAST_VERSION]'," >&2
+    echo "          so the scanned region is EMPTY. Every entry filed for an unreleased card is" >&2
+    echo "          currently outside it. Restore the '## [Unreleased]' header (or, on a release" >&2
+    echo "          PR, the '## [X.Y.Z]' it was renamed to) above that section." >&2
     exit 1
 fi
 
