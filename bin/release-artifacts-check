@@ -50,7 +50,11 @@
 #   --base   the PR's base commit/ref (e.g. github.event.pull_request.base.sha)
 #   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
 #   --config per-repo release config (default `.release-pr.json`), inside this repository
-#   --classify-only  answer ONLY "is this range a release?" and assert no artifact member
+#   --classify-only  answer ONLY "is this range a release?" and assert no artifact member.
+#                    version_file/version_regex are REQUIRED in this mode even by a repo that
+#                    declares no artifacts: they are what the answer is computed from, and the
+#                    empty-`artifacts` opt-out below is an opt-out of the artifact LEGS, not of
+#                    the classification. A config lacking them is rc 2 here, never "not-release".
 #
 # `--classify-only` EXISTS SO THE RULE HAS ONE IMPLEMENTATION, NOT TWO (card#6579). The
 # release-VALUE test below — the fork-point version against head's, INCLUDING the arm that
@@ -510,8 +514,20 @@ if [ -z "$VERSION_FILE" ] || [ -z "$VERSION_REGEX" ]; then
   VERSION_REGEX="$(_cfg '.version_regex // empty' "$HEAD_CFG")"
   KEY_SRC="head ($HEAD_REF)"
 fi
-[ -n "$VERSION_FILE" ]  || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_file — the release-PR classification cannot run"
-[ -n "$VERSION_REGEX" ] || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_regex — the release-PR classification cannot run"
+# THE PREMISE IS CONDITIONAL BECAUSE THE REACHABILITY IS. In the normal mode these lines are
+# reachable only with a non-empty declared set — the opt-out above exits 0 on an empty union —
+# so "declares artifacts but no version_file" is a true account of how the run got here.
+# `--classify-only` SKIPS that opt-out, because the question it answers has nothing to do with
+# artifacts, so a config carrying `"artifacts": []` reaches these lines and the same sentence
+# states something FALSE about it. That sentence is not cosmetic for an adopter: it is the
+# entire diagnosis they get when their promote job reds rc 2 on a key they never set.
+_need_class_key() {
+  [ "$CLASSIFY_ONLY" -eq 0 ] \
+    || die "$CONFIG_ROOTREL at $KEY_SRC declares no $1. --classify-only answers 'is this range a release', which is decided from version_file/version_regex ALONE, so both keys are required in this mode even when no artifact is declared — an empty or absent 'artifacts' array does not opt a repo out of the CLASSIFICATION. Declare them, or drop the caller's release-tag-check step: refusing rather than answering 'not a release', which would silently skip whatever the caller gates on this"
+  die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no $1 — the release-PR classification cannot run"
+}
+[ -n "$VERSION_FILE" ]  || _need_class_key version_file
+[ -n "$VERSION_REGEX" ] || _need_class_key version_regex
 
 # _extract_version <ref> <label> — sets EXTRACTED_VERSION and EXTRACTED_VALUES from
 # <ref>:<version_file>. <label>

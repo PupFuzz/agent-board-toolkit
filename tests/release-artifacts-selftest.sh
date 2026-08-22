@@ -564,6 +564,11 @@ cfg cfg-badentry-narrow.json '{ "version_file": "VERSION", "version_regex": "[0-
 cfg cfg-trailingjunk-base.json "$CFG_ONE_MEMBER"
 cfg cfg-trailingjunk.json      "$CFG_TRAILING_JUNK"
 cfg no-version-file.json '{ "artifacts": ["VERSION → {{version}}"] }'
+# A repo that declares NO artifacts and no classification keys — a vendored adopter that took
+# `bin/` but never opted into the release-artifact gate. Under the normal mode the empty-set
+# opt-out answers it before the keys are ever read; under --classify-only there is no opt-out
+# to reach, so this is the config that used to be told it "declares artifacts".
+cfg no-keys-no-artifacts.json '{ "artifacts": [] }'
 cfg bad-syntax.json      '{"artifacts": [,]}'
 cfg empty-cfg.json       ''
 cfg bad-obj-array.json   '[1,2]'
@@ -1471,6 +1476,36 @@ echo "== a declared set with no version_file is a CONFIG error, not a pass =="
 run base-0.1.0 head-good --config no-version-file.json
 eq "rc 2"                    "2"    "$RC"
 eq "…and names what is missing" "true" "$(has 'no version_file' "$OUT")"
+
+echo "== a repo that declares NO artifacts is told the TRUTH about which key it is missing =="
+# THE PREMISE OF A REFUSAL IS A CLAIM ABOUT THE WORLD. `--classify-only` skips the empty-set
+# opt-out (the artifact legs are not its question), so a config carrying `"artifacts": []`
+# reaches the classification-key check and used to die with "declares artifacts but no
+# version_file" — false about that config, and the entire diagnosis a vendored adopter gets
+# when their promote job reds rc 2 on a key they never set.
+run base-0.1.0 head-good --config no-keys-no-artifacts.json
+eq "no artifacts + no keys, normal mode → rc 0" "0"    "$RC"
+eq "…via the empty-set opt-out"                 "true" "$(has 'no artifacts declared' "$OUT")"
+run base-0.1.0 head-good --config no-keys-no-artifacts.json --classify-only
+eq "…and under --classify-only → rc 2"          "2"    "$RC"
+eq "…never softened into not-release"           "false" "$(has 'not-release' "$OUT")"
+eq "…naming the key that is missing"            "true" "$(has 'declares no version_file' "$OUT")"
+eq "…NOT claiming it declares artifacts"        "false" "$(has 'declares artifacts but no' "$OUT")"
+eq "…and saying the keys are the MODE's need"   "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+# THE PREMISE IS CONDITIONAL ON THE MODE, NOT ON THE DECLARATION, and deliberately so: under
+# --classify-only the artifact sets are never collected (that read carries its own refusals),
+# so the tool does not KNOW whether any member is declared and must not say. The mode's message
+# therefore claims nothing about artifacts either way — asserted here on the config that DOES
+# declare a set, which is the half a mode-blind reword would have got wrong.
+run base-0.1.0 head-good --config no-version-file.json --classify-only
+eq "control: a declared set with no keys → rc 2"   "2"    "$RC"
+eq "control: …gets the same mode-conditional text" "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares artifacts but no' "$OUT")"
+# …while the NORMAL mode, where the set IS collected and the empty-set opt-out has already been
+# passed, keeps the original premise — that arm is driven above ("a declared set with no
+# version_file is a CONFIG error"), so this fix narrows nothing.
 
 echo "== --classify-only: the release rule, EXPOSED — one implementation, not two (card#6579) =="
 # WHY THIS BLOCK EXISTS. `release-tag-check` must know whether a post-merge push is a release

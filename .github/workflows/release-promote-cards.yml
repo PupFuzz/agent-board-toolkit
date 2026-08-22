@@ -71,9 +71,16 @@ jobs:
       # is a deliberate operator-driven path (dry-run by default).
       - name: Refuse to promote an untagged release
         if: github.event_name == 'push'
-        # A backstop only. The tool's own 300s bound fires first and exits 1; this exists so a
-        # hung network poll cannot burn the job's full entitlement. It is deliberately NOT the
-        # failure mechanism — a timeout-minutes kill reports as `cancelled`, not `failure`.
+        # A backstop only, and the ordering it depends on is now ENFORCED rather than asserted.
+        # The tool bounds EACH `git ls-remote` (30s, via coreutils `timeout`) and measures its
+        # own 300s wait in REAL elapsed time, so this step ends within ~330s plus the
+        # classification — well inside these 10 minutes, and it exits 1. Nothing made that true
+        # before: no individual poll was bounded and the wait counted sleeps rather than the
+        # clock, so ONE hung read could consume the whole entitlement and produce exactly the
+        # outcome this comment claims to avoid — a timeout-minutes kill reports as `cancelled`,
+        # not `failure`, and a cancelled run is not a refused release. (On a host with no
+        # `timeout` on PATH the tool says so on a `::warning::` and the poll is unbounded;
+        # GitHub-hosted runners ship coreutils.)
         timeout-minutes: 10
         run: bin/release-tag-check --before "${{ github.event.before }}" --after "${{ github.sha }}"
 
