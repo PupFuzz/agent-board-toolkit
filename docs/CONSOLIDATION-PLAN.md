@@ -590,6 +590,19 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
+  recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
+  drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
+  with 0 B of stdout** on a bare one, because `kb_load_config` resolves `$HOME/.kanban-dev-board.env`
+  before the no-argument help arm. The gate therefore returned **different verdicts for the same
+  commit** depending on who ran it, and only CI could see it. Closed with a planted config plus a
+  control that drives both sides — but the control is a **CI-side guard only** (measured: deleting
+  the plant reds on a bare box, reds nothing on a configured one), which is the property that makes
+  this shape survive review. **The whole 42-selftest CI matrix was re-run under a bare `$HOME`
+  looking for siblings and found none**, so this is one instance, not a class — recorded so the next
+  gate author knows the axis exists and that `--help`-shaped is not the same as host-independent.
+  One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
+  box, though its classification does not.
 - **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
   two adoptions still owed.** `.github/workflows/ci.yml` names the population once
   (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name

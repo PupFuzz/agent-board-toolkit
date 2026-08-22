@@ -99,11 +99,22 @@
 #
 # Both legs are PINNED — with `env --default-signal` / `env --ignore-signal`, NOT with `trap`
 # (see `_measure`: a signal ignored on entry to a non-interactive shell cannot be reset from
-# inside it, so `trap - PIPE` is a silent no-op on a CI runner). This gate therefore returns the
-# same answer whatever started it — verified by running it under a parent that sets SIG_IGN, and
-# getting a byte-identical per-member table. SAFE means safe under both, which is exactly the
-# property the two-mechanism fix was built to have (`trap '' PIPE` neutralises the signal, the
-# tolerated write neutralises the EPIPE rc; either alone covers only one disposition).
+# inside it, so `trap - PIPE` is a silent no-op on a CI runner). SAFE means safe under both,
+# which is exactly the property the two-mechanism fix was built to have (`trap '' PIPE`
+# neutralises the signal, the tolerated write neutralises the EPIPE rc; either alone covers only
+# one disposition).
+#
+# ⛔ "THE SAME ANSWER WHATEVER STARTED IT" IS TRUE ON THE SIGNAL AXIS ONLY, AND SAYING IT
+# UNQUALIFIED WAS THIS FILE'S OWN DEFECT. The claim was verified by running the gate under a
+# parent that sets SIG_IGN and getting a byte-identical table — which measures the DISPOSITION
+# axis and nothing else. The second axis is HOST CONFIG, and it was live: `bin/kbcard`'s driver
+# read `$HOME`, so the gate answered LOSES on a developer box and UNREACHED (a hard red) on a
+# GitHub Actions runner, on the same commit — found by CI, not by this file. Closed for that
+# member with the planted config at `DRIVER_ENV` below, and a control drives BOTH sides of it.
+# ⚠ ONE KNOWN RESIDUAL ON THIS AXIS, named rather than swept: `board-session-close`'s direct rc
+# and byte count also differ between a configured box and a bare runner (rc 0 / ~20 KB vs
+# rc 1 / ~1.4 KB). Its CLASSIFICATION agrees in both, so no assertion here is host-dependent
+# today — but the measurement behind it is, and a future change to that bin could split them.
 #
 # THE bytes == 0 ROW IS A HARD RED, NEVER A PASS. A driver that produced no stdout measured nothing
 # — it is defect (1) above, exactly. It cannot be dispositioned as SURVIVES; the driver must be
@@ -244,7 +255,13 @@ UNDRIVEN=(
 _measure() {
     local dir="$1" rel="$2"; shift 2
     local drc=0 bytes trc_dfl trc_ign
-    "$dir/$rel" "$@" >"$TMP/m.out" 2>/dev/null || drc=$?
+    # ⛔ THE ENV PREFIX IS A HOST-INDEPENDENCE FIX, NOT A CONVENIENCE (see DRIVER_ENV below).
+    # `${DRIVER_ENV[$rel]}` is a deliberate word-split of a fixture's env assignments; empty for
+    # every member that needs none, so `pre` stays empty and the invocation is unchanged.
+    local -a pre=()
+    # shellcheck disable=SC2206  # deliberate word-split of a space-separated env spec
+    [[ -n "${DRIVER_ENV[$rel]:-}" ]] && pre=(env ${DRIVER_ENV[$rel]})
+    "${pre[@]}" "$dir/$rel" "$@" >"$TMP/m.out" 2>/dev/null || drc=$?
     bytes="$(wc -c <"$TMP/m.out" | tr -d ' ')"
     # ⛔ `env`, NOT `trap`, AND THAT IS A MEASURED CORRECTION. The first cut of this pinned the
     # two legs with `trap - PIPE` / `trap '' PIPE` in a subshell. `trap '' PIPE` works; **`trap -
@@ -256,8 +273,10 @@ _measure() {
     # exactly what that control is for. `env --default-signal` sets the disposition in the
     # CHILD, after fork and before exec, where the shell's inherited-ignore rule does not apply.
     set +e
-    trc_dfl="$( env --default-signal=PIPE "$dir/$rel" "$@" 2>/dev/null | head -n 0 >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
-    trc_ign="$( env --ignore-signal=PIPE  "$dir/$rel" "$@" 2>/dev/null | head -n 0 >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
+    # shellcheck disable=SC2086  # same deliberate word-split; one `env` carries both concerns
+    trc_dfl="$( env --default-signal=PIPE ${DRIVER_ENV[$rel]:-} "$dir/$rel" "$@" 2>/dev/null | head -n 0 >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
+    # shellcheck disable=SC2086
+    trc_ign="$( env --ignore-signal=PIPE  ${DRIVER_ENV[$rel]:-} "$dir/$rel" "$@" 2>/dev/null | head -n 0 >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
     set -e
     printf '%s %s %s %s' "$drc" "$bytes" "$trc_dfl" "$trc_ign"
 }
@@ -274,6 +293,32 @@ _classify() {
 }
 
 _mktmp_scratch
+
+# ── DRIVER_ENV: the host-independence fixture ───────────────────────────────────────────────
+#
+# ⛔ A DRIVER THAT READS THE INVOKING USER'S `$HOME` MEASURES THE BOX, NOT THE TOOL — and this
+# gate shipped one. `bin/kbcard` was driven with no arguments, which on a developer box prints
+# 25 394 B of usage at rc 0 and on a GitHub Actions runner exits **2 with 0 B of stdout**,
+# because `kb_load_config` resolves `$HOME/.kanban-dev-board.env` BEFORE the no-argument help
+# arm and refuses when it is absent. The gate therefore read LOSES locally and UNREACHED — a
+# hard red, correctly — in CI, on the same commit. That is defect 1 in this file's header
+# (a fixture that cannot reach the condition it tests) wearing a second skin: not the wrong
+# payload, the wrong BOX. `kbcard --help` is no escape; every argv goes through the same
+# resolver, measured.
+#
+# The fix is a PLANTED config, not a weaker assertion: three files no network is ever asked
+# about, and the ambient overrides cleared so a box that HAS a real config gets the planted one
+# too (an empty `KBCARD_BOARD_ENV`/`KANBAN_HOST_ENV` falls through to `$HOME`, which is the
+# point). The token is a literal non-secret string; nothing here can reach a board, and the
+# usage path this drives never consults any of it — it just has to get PAST the resolver.
+KBHOME="$TMP/fakehome"; mkdir -p "$KBHOME"
+printf 'KB_BOARD_ID=1\n'                                                  >"$KBHOME/.kanban-dev-board.env"
+printf 'KBCARD_API=http://127.0.0.1:1/api\nKBCARD_TOKEN_FILE=%s\n' "$KBHOME/.kanban-dev-token" \
+                                                                          >"$KBHOME/.kanban-host.env"
+printf 'not-a-real-token\n'                                               >"$KBHOME/.kanban-dev-token"
+declare -A DRIVER_ENV=(
+  ["bin/kbcard"]="HOME=$KBHOME KBCARD_BOARD_ENV= KANBAN_HOST_ENV= KBCARD_API= KBCARD_TOKEN_FILE="
+)
 
 # ── the one hard prerequisite ───────────────────────────────────────────────────────────────
 #
@@ -397,6 +442,29 @@ eq "with \`trap _flush EXIT\`, a mid-run death still delivers the buffer" "DIAGN
 eq "…and WITHOUT it the same death delivers nothing at all"              ""                 "$_nt_out"
 _btrc=0; "$FIX/bin/planted-buffered-exit-trap" >/dev/null 2>&1 || _btrc=$?
 eq "…and the EXIT trap does not disturb the rc it exits with"            "1"                "$_btrc"
+
+echo "== control: the kbcard driver measures the TOOL, not the box =="
+# The pair that would have caught the shipped defect. The plant above is only worth having if
+# its ABSENCE is visibly different, so both sides are driven here — with the ambient config
+# denied, and with the planted one.
+# ⚠ AND THIS CONTROL IS A CI-SIDE GUARD ONLY — measured, not assumed. Deleting `DRIVER_ENV`
+# reds the SECOND leg on a bare box (3 checks fail, the CI failure reproduced) and reds
+# NOTHING on a configured developer box, because the ambient config silently substitutes for
+# the plant. The first leg passes either way; it forces its own empty `HOME`. That asymmetry —
+# the box that runs the gate most often is the box that cannot see this regression — is
+# precisely how the original defect survived a full review cycle, and it is why the claim
+# above it is scoped to the signal axis rather than stated flat.
+mkdir -p "$TMP/emptyhome"
+# `:-` so that DELETING the plant reds this control as an ASSERTION rather than killing the run
+# on `set -u` — a crash reports "something broke", an assertion reports which claim stopped
+# holding, and this control's whole job is to name that claim.
+_kb_planted="${DRIVER_ENV["bin/kbcard"]:-}"
+DRIVER_ENV["bin/kbcard"]="HOME=$TMP/emptyhome KBCARD_BOARD_ENV= KANBAN_HOST_ENV= KBCARD_API= KBCARD_TOKEN_FILE="
+eq "with NO board config the driver reaches no stdout write (the CI failure, reproduced)" \
+   "UNREACHED" "$(_classify "$(_measure "$ROOT" bin/kbcard)")"
+DRIVER_ENV["bin/kbcard"]="$_kb_planted"
+eq "…and with the PLANTED one it reaches its usage write and is classifiable" \
+   "LOSES"     "$(_classify "$(_measure "$ROOT" bin/kbcard)")"
 
 echo "== control: the fix shape preserves a NON-ZERO verdict, not merely 'some rc' =="
 # rc PRESERVATION is the assertion everywhere in this file; this pins that the preserved value
