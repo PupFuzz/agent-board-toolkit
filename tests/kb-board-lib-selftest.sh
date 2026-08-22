@@ -856,6 +856,112 @@ unset -f curl _maxtime_arg
 unset KB_API KB_TOKEN _argv_file
 
 # ---------------------------------------------------------------------------
+echo "== kb_api: the request DID NOT COMPLETE vs the server ANSWERED non-2xx (card#6680) =="
+# THE DEFECT THESE PIN. kb_api returned 1 for BOTH a transport failure (curl exited
+# non-zero — the request may never have arrived, and a write it DID deliver may already be
+# committed) and any completed non-2xx (403/404/422/500 — the server answered, so the
+# outcome is KNOWN). One rc, two opposite epistemic states, and every caller buckets on
+# `|| …`. Measured consequence: kbcard's restamp pass printed `HTTP 500 on PATCH …` and
+# then, two lines later, `the request did not complete`.
+#
+# ⛔ ASSERT ON THE DISTINCTION, NOT ON "non-zero". Non-zero is what the two states already
+# SHARED, so an `expect_rc … 1`-shaped check here could not have failed on the defect. Each
+# case below compares its rc against the transport rc captured in the same run — which is
+# what reds when the two collapse back into one value.
+KB_API="https://api.example"
+KB_TOKEN=tok
+_api_err="$TMP/kb-api.err"
+
+# --- 1. TRANSPORT FAILURE: curl exits non-zero, so nothing was read ---
+# rc 7 is CURL's here, and is deliberately not what kb_api hands back: the contract says
+# curl's rc is logged, never returned. If the two ever coincide it is a coincidence, and
+# the assertion is on $KB_API_RC_TRANSPORT, never on a literal.
+curl() { cat >/dev/null; return 7; }
+rc_t=0; out_t="$(kb_api PATCH /tasks/9.json '{"a":1}' 2>"$_api_err")" || rc_t=$?
+eq "transport failure → rc \$KB_API_RC_TRANSPORT"  "$KB_API_RC_TRANSPORT" "$rc_t"
+eq "…and no body on stdout"                        ""    "$out_t"
+eq "…and the diagnostic says curl failed"          "true" "$(case "$(cat "$_api_err")" in *'curl failed on PATCH /tasks/9.json'*) echo true ;; *) echo false ;; esac)"
+# KB_HTTP is read from a call that is NOT inside a command substitution — see the
+# subshell case at the end of this block for why that distinction is the whole reason
+# the rc carries the signal at all.
+KB_HTTP=stale
+kb_api PATCH /tasks/9.json '{"a":1}' >/dev/null 2>&1 || true
+eq "…and KB_HTTP is the 000 sentinel"              "000" "$KB_HTTP"
+
+# --- 2. THE SERVER ANSWERED 500 ---
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"server exploded"}' 500; }
+rc_500=0; out_500="$(kb_api PATCH /tasks/9.json '{"a":1}' 2>"$_api_err")" || rc_500=$?
+eq "a completed 500 → rc 1 (unchanged for every existing caller)" "1" "$rc_500"
+eq "…and no body on stdout"                        ""     "$out_500"
+eq "…and the diagnostic names the status"          "true" "$(case "$(cat "$_api_err")" in *'HTTP 500 on PATCH /tasks/9.json'*) echo true ;; *) echo false ;; esac)"
+eq "⭐ 500 is DISTINGUISHABLE from the transport failure" "differ" \
+   "$(if [[ "$rc_500" == "$rc_t" ]]; then echo same; else echo differ; fi)"
+KB_HTTP=stale
+kb_api PATCH /tasks/9.json '{"a":1}' >/dev/null 2>&1 || true
+eq "…and KB_HTTP carries 500, not 000"             "500" "$KB_HTTP"
+
+# --- 3. THE SERVER ANSWERED 404 — the common case, and an ANSWER, not an absence of one ---
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"not found"}' 404; }
+rc_404=0; kb_api GET /tasks/9.json >/dev/null 2>"$_api_err" || rc_404=$?
+eq "a completed 404 → rc 1"                        "1" "$rc_404"
+eq "⭐ 404 is DISTINGUISHABLE from the transport failure" "differ" \
+   "$(if [[ "$rc_404" == "$rc_t" ]]; then echo same; else echo differ; fi)"
+eq "…and the diagnostic names the status"          "true" "$(case "$(cat "$_api_err")" in *'HTTP 404 on GET /tasks/9.json'*) echo true ;; *) echo false ;; esac)"
+
+# --- 4. A 2xx still succeeds, byte for byte ---
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"data":{"id":9}}' 200; }
+rc_200=0; out_200="$(kb_api GET /tasks/9.json 2>"$_api_err")" || rc_200=$?
+eq "a 2xx → rc 0"                                  "0" "$rc_200"
+eq "…with the response body on stdout"             '{"data":{"id":9}}' "$out_200"
+eq "…and nothing on stderr"                        ""  "$(cat "$_api_err")"
+
+# --- the rc is the channel BECAUSE the global cannot cross a command substitution ---
+# `resp="$(kb_api …)" || …` is the caller shape this tree is built out of, and it runs
+# kb_api in a SUBSHELL: KB_HTTP set in there is gone when the parent tests it. This is
+# what makes "just read KB_HTTP" a non-answer for those callers, and the rc is asserted
+# here so a future edit cannot quietly move the signal back onto the global.
+#
+# ⛔ THE OTHER HALF IS DELIBERATELY NOT ASSERTED. A companion
+# `eq "KB_HTTP does NOT survive the caller's \$( … )" "pre-existing" "$KB_HTTP"` stood here
+# and was a DECORATION: a command substitution is a subshell by the language's definition, so
+# no edit to this repo's code can make an assignment inside one reach the parent — that check
+# passes against kb_api, against a kb_api that never touches KB_HTTP, and against no kb_api at
+# all. What this repo DOES own — that kb_api sets the global to the 000 sentinel on this path —
+# can fail, and is already asserted at the top of this block off a call that is not wrapped in
+# `$( … )`; restating it here would be a second copy of one assertion, not a second assertion.
+curl() { cat >/dev/null; return 7; }
+rc_sub=0; _ignored="$(kb_api GET /tasks/9.json 2>/dev/null)" || rc_sub=$?
+eq "the rc crosses the caller's \$( … ) — the signal has to ride it" "$KB_API_RC_TRANSPORT" "$rc_sub"
+# A property of the constant, not its value: 0 would read as success and 2 as a usage
+# error in every CLI here, and 1 is the state it exists to be told apart from.
+eq "the transport rc is none of 0, 1, 2"           "true" \
+   "$(case "$KB_API_RC_TRANSPORT" in 0|1|2) echo false ;; *) echo true ;; esac)"
+
+echo "-- kb_api_status: the SAME distinction, on the status line, at rc 0 --"
+# The sibling. Its discriminator is the status line, so it needs no rc — and it must not
+# grow one: dl-a1-register-field captures it with a BARE assignment under `set -e`, where
+# any non-zero rc kills the script before the status is read. These two cases hold both
+# halves: the states stay distinguishable AND the rc stays 0.
+curl() { cat >/dev/null; return 7; }
+KB_HTTP=stale
+rc_st=0; st_out="$(kb_api_status GET /tasks/9.json)" || rc_st=$?
+eq "transport failure → status line 000"           "000" "${st_out%%$'\n'*}"
+eq "…at rc 0 (its callers' bare \$( … ) under set -e)" "0" "$rc_st"
+kb_api_status GET /tasks/9.json >/dev/null 2>&1 || true
+eq "…and KB_HTTP agrees with the status line"      "000" "$KB_HTTP"
+
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"server exploded"}' 500; }
+rc_st5=0; st_out5="$(kb_api_status GET /tasks/9.json)" || rc_st5=$?
+eq "a completed 500 → status line 500"             "500" "${st_out5%%$'\n'*}"
+eq "⭐ …distinguishable from 000 without parsing a message" "differ" \
+   "$(if [[ "${st_out5%%$'\n'*}" == "${st_out%%$'\n'*}" ]]; then echo same; else echo differ; fi)"
+eq "…still at rc 0"                                "0" "$rc_st5"
+
+unset -f curl
+unset KB_API KB_TOKEN KB_HTTP _api_err out_t out_500 out_200 st_out st_out5 _ignored \
+      rc_t rc_500 rc_404 rc_200 rc_sub rc_st rc_st5
+
+# ---------------------------------------------------------------------------
 echo "== kb_is_uint — the CANONICAL decimal spelling, leading zero refused (card#6912) =="
 # WHY THE LEADING-ZERO CASES ARE THE POINT. Every adopter hands the value it accepts to bash
 # arithmetic, and bash reads a leading-zero literal as BASE 8. Measured against the old
