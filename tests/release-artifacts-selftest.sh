@@ -340,6 +340,21 @@ g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the stray-va
 g -C "$R" branch base-multi
 printf '0.1.0\n' > "$R/MULTI"
 g -C "$R" add -A; g -C "$R" commit -qm "chore: drop the stray version-shaped line"
+# …and a version_regex that is NOT three segments. `version_regex` is the ONE declaration of
+# what a version looks like, and until card#7208 this file applied a hardcoded
+# `[0-9]+(\.[0-9]+){1,3}` AFTER it — a second stage that only ever saw what the config regex
+# had already matched, so it could narrow that match but never widen it. A single-segment
+# version_regex is legal and this tool REFUSED it outright (`no version matched version_regex`,
+# rc 2 — a message that was also false: it matched). SEG is its own version file with its own
+# config so the stock cases keep their three-segment one.
+g -C "$R" checkout -q -B head-seg base-0.1.0
+printf '7\n' > "$R/SEG"
+cfg cfg-seg.json '{ "version_file": "SEG", "version_regex": "[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the single-segment config case"
+g -C "$R" branch base-seg
+printf '8\n' > "$R/SEG"
+g -C "$R" add -A; g -C "$R" commit -qm "release: single-segment version 7 → 8"
 # WIDENING — a third alternative added to the live brace set. Under a string-identity
 # comparison unit this reds (the old entry string is gone), which is exactly what the expanded
 # unit exists to prevent.
@@ -879,6 +894,19 @@ eq "witness: …and head does not"                                "false" \
 run base-multi head-drop-stray --config cfg-multi.json
 eq "a dropped value is NOT a release"       "0"    "$RC"
 eq "…and still reads as version unchanged"  "true" "$(has 'version unchanged (0.1.0)' "$OUT")"
+
+echo "== the version SHAPE comes from version_regex alone — no second pattern here (card#7208) =="
+# RED WHEN REVERTED. Re-adding the deleted `[0-9]+(\.[0-9]+){1,3}` numeric pull turns this
+# back into the rc-2 refusal described at the fixture: the pull needs two segments, so a
+# legal single-segment version_regex extracted nothing and the range could not be classified
+# at all — a refusal on a config this tool's own error text tells consumers to write.
+run base-seg head-seg --config cfg-seg.json --classify-only
+eq "a single-segment version_regex classifies" "0"          "$RC"
+eq "…as a release of the value head carries"   "release 8"  "$OUT"
+# CONTROL — the same config over an UNCHANGED single-segment version is not a release, so the
+# rc-0 above is the classifier running, not a mode that says "release" to everything.
+run base-seg base-seg --config cfg-seg.json --classify-only
+eq "…and an unchanged one is not a release"    "not-release 7" "$OUT"
 # AMBIGUOUS — the classifying match unchanged and TWO values new at head. The version being
 # shipped is unknowable, so this refuses; it is never read as "not a release PR", which is the
 # silent non-run this whole case exists about.

@@ -539,8 +539,13 @@ _need_class_key() {
 # assignment's status to abort — an implicit path that a later `|| true` or an `if` context
 # would silently defeat. Here `die` runs in the script's own shell and the exit is explicit.
 #
-# The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
-# a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
+# The extraction is the same one `release-pr-body` uses, and it is ONE stage: the version
+# SHAPE is declared once, by `.release-pr.json`'s version_regex, and a match of it IS the
+# value. ⛔ DO NOT RE-ADD THE SECOND `[0-9]+(\.[0-9]+){1,3}` NUMERIC PULL that stood here
+# until card#7208 — running after the config regex, it could only narrow that regex's own
+# match, never widen it, so the 4-segment support it read as was never reachable through a
+# 3-segment version_regex; what it reached was a legal 1-segment config (refused outright)
+# and a legal 5-segment one (cut to four).
 # `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
 # first line, and under `pipefail` the upstream grep's SIGPIPE would surface as the PIPELINE's
 # status on a perfectly good extraction. Emptiness is what is tested, immediately below.
@@ -555,14 +560,13 @@ _need_class_key() {
 #
 # EXTRACTED_VALUES is EVERY value the regex matches at that ref — deduped, in first-appearance
 # order — and it exists because the CLASSIFYING value above is the FIRST match over content
-# HEAD OWNS (card#6488). Its first element is always EXTRACTED_VERSION: the same pattern over
-# the same content matched at least once, and a first match carrying no numeric run has
-# already died. The two therefore cannot disagree about which value classifies; the list only
-# adds the ones the `head -1` discards.
+# HEAD OWNS (card#6488). Its first element is always EXTRACTED_VERSION: one grep, one pattern,
+# one content, and an empty first match has already died. The two therefore cannot disagree
+# about which value classifies; the list only adds the ones the `head -1` discards.
 EXTRACTED_VERSION=""
 EXTRACTED_VALUES=()
 _extract_version() {
-  local ref="$1" label="$2" content m v
+  local ref="$1" label="$2" content m
   local -A seen=()
   # The remediation names WHERE THE PATH CAME FROM, not just the path: `version_file` is read
   # from the config at $KEY_SRC, so the commonest real cause is that head RELOCATED the file
@@ -571,19 +575,18 @@ _extract_version() {
   content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
     || die "cannot read '$VERSION_FILE' at $label ($ref) — that path is the version_file declared by $CONFIG_ROOTREL at $KEY_SRC, so this fails when head relocated the file the fork point still names, or when the path or ref is missing from this clone: the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
   EXTRACTED_VERSION="$(printf '%s\n' "$content" \
-    | grep -oiE "$VERSION_REGEX" | head -1 \
-    | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+    | grep -oiE "$VERSION_REGEX" | head -1 || true)"
   [ -n "$EXTRACTED_VERSION" ] \
     || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
-  # The same two-stage extraction, per match rather than on the first one. A match carrying no
-  # numeric run contributes nothing (it is not a value); the `|| true` is the SIGPIPE guard the
-  # note above describes, on the same shape of pipeline.
+  # The same extraction, every match rather than the first one — the loop body is now a dedupe
+  # and nothing else, because with the second numeric pull gone a match IS a value. No
+  # emptiness guard on $m: `grep -o` emits no line for a zero-length match, so an empty one
+  # cannot arrive here (measured, GNU grep 3.11, against a `[0-9]*` pattern over a digit-free
+  # line) — and the empty EXTRACTED_VERSION case already died two lines up.
   EXTRACTED_VALUES=()
   while IFS= read -r m; do
-    v="$(printf '%s\n' "$m" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
-    [ -n "$v" ] || continue
-    [ -z "${seen[$v]:-}" ] || continue
-    seen["$v"]=1; EXTRACTED_VALUES+=("$v")
+    [ -z "${seen[$m]:-}" ] || continue
+    seen["$m"]=1; EXTRACTED_VALUES+=("$m")
   done < <(printf '%s\n' "$content" | grep -oiE "$VERSION_REGEX")
 }
 
