@@ -141,7 +141,25 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 #                                        tests/kbcard-field-selftest.sh, which drives all
 #                                        four rcs through the census and asserts rc 1 on
 #                                        each, against a complete-read positive control)
-#   bin/board-snapshot                   rc 1,2      (`rc=$?`; 0/3/4 render instead)
+#   bin/board-snapshot     read guard    rc 1,2      (`rc=$?`; 0/3/4 render instead). Emits
+#                                        through `board_unread`, which writes the SAME reason
+#                                        to stdout AND to fd 3 — the untriaged channel — so a
+#                                        board this arm caught cannot render an empty untriaged
+#                                        section that reads as "nothing to triage" (card#6365
+#                                        review). The registered text is the helper CALL, since
+#                                        that is the line the derivation sees; the fd-3 wrapper
+#                                        adds no rc and no cause, so the multi-rc rule below
+#                                        still binds at the arm where the reason is written
+#   bin/board-snapshot     floor notes   rc 3,4      — the two rcs that RENDER a partial
+#                                        array. Both arms are markers on the render, not
+#                                        refusals, and there are two because the function
+#                                        writes two sections on two channels (stdout, fd 3)
+#                                        that are printed under different headers. Measured
+#                                        by tests/board-snapshot-selftest.sh, which drives
+#                                        the page cap and the short read through the REAL
+#                                        paginator against a stubbed curl and asserts on the
+#                                        process's STDOUT — the channel its SessionStart
+#                                        consumer actually surfaces (card#6365)
 #   bin/board-stats        case 3|4      rc 3,4
 #   bin/board-stats        case *        rc 1,2
 #   bin/next-dl            `-eq 1` arm   rc 1 ONLY   — the one arm allowed to name causes
@@ -151,7 +169,9 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 REGISTRY=$'bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)
 bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list for this search (fetch rc=$frc) — refusing to present a partial match set as a whole one
 bin/kbcard\tmany\tkbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$rc) — refusing to act on a truncated denominator
-bin/board-snapshot\tmany\t• ${label}: (board read failed — fetch rc=$rc)
+bin/board-snapshot\tmany\tboard_unread "$label" "board read failed — fetch rc=$rc"
+bin/board-snapshot\tmany\t• ${label}: card list INCOMPLETE (fetch rc=$rc) — the in-flight count below is a FLOOR, not a total
+bin/board-snapshot\tmany\t⚠ ${label}: card list INCOMPLETE (fetch rc=$rc) — untriaged cards may be MISSING from the list below
 bin/board-stats\tmany\tcard snapshot INCOMPLETE (fetch rc=$rc) — every stock count below is a floor, not a total
 bin/board-stats\tmany\tcard snapshot unavailable (fetch rc=$rc) — this board\'s stock section is missing
 bin/next-dl\tone\tnext-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board\'s DL floor and could re-mint a used DL)
@@ -203,8 +223,18 @@ ARM_WINDOW=10
 # The emitter vocabulary. `>&2` is in it so an arm using a helper this list does not name
 # is still seen whenever it redirects for itself; `<name>+=(` catches board-stats' shape,
 # which accumulates its messages into an array instead of printing them.
-EMIT_RE='(^|[^[:alnum:]_])(echo|printf|bcs_skip|kb_bcs_log)([^[:alnum:]_]|$)|[[:alnum:]_]+[+]=[(]|>&2'
-EMIT_RE_NOPRINTF='(^|[^[:alnum:]_])(echo|bcs_skip|kb_bcs_log)([^[:alnum:]_]|$)|[[:alnum:]_]+[+]=[(]|>&2'
+#
+# `board_unread` was added the same day it was written (card#6365 review), and the reason
+# is the one this file's header states as its own bound: an arm emitting through a helper
+# outside this vocabulary is NOT SEEN. board-snapshot's read guard moved from a bare `echo`
+# to that helper — which writes stdout AND fd 3, so it redirects for a channel this list
+# cannot infer — and the arm went invisible to the derivation while its registry entry kept
+# passing the "text is present in the file" leg. Measured: the window leg reds, the
+# unregistered-emit leg stays silent. That asymmetry is the tell — a NAMED helper is the
+# only spelling this derivation can follow, so a new one is a two-line edit here, not a
+# judgement call left to the next reader.
+EMIT_RE='(^|[^[:alnum:]_])(echo|printf|bcs_skip|kb_bcs_log|board_unread)([^[:alnum:]_]|$)|[[:alnum:]_]+[+]=[(]|>&2'
+EMIT_RE_NOPRINTF='(^|[^[:alnum:]_])(echo|bcs_skip|kb_bcs_log|board_unread)([^[:alnum:]_]|$)|[[:alnum:]_]+[+]=[(]|>&2'
 
 # _derive <file> — one TSV record per derived item, on stdout:
 #   CALL <line>

@@ -861,6 +861,72 @@ finding with no owner is abandoned, not filed.
   rendering ones the census turned a silent truncation into a **quietly rendered** one. Both are
   now rc 2, refused before the census.
 
+  **The "quietly rendered" half is closed at the RENDERER too, and no longer only for this
+  fixture (card#6365) — closed for THE PARTIAL READS THE PAGINATOR CAN DETECT, which is not the
+  same sentence as "the renderer cannot quietly render a partial read".** Moving that fixture to
+  rc 2 removed *this* route to a quiet render; it left the property itself standing, because rc 3
+  (page cap) and rc 4 (a genuine short read on a reachable board) still reach the rendering
+  consumers with a partial array by design — that is what those rcs are for. `bin/board-snapshot`
+  now marks it **on stdout**, the channel its SessionStart consumer surfaces: every count that
+  pass prints carries a `≥` and each of its two sections carries a `card list INCOMPLETE (fetch
+  rc=$rc)` note.
+
+  The scoping clause is load-bearing rather than a hedge: three shapes still reach the renderer at
+  **rc 0** and are rendered as confident totals — a server that omits `meta.total` (no census to
+  run), a page delivered twice and scored as a dedup artifact, and a board the token cannot see
+  answering the same well-formed empty envelope as an empty board. All three are named as accepted
+  residuals in `fetch_board_cards`' own body — two under the words *"Residual, accepted"* (the
+  token-visibility envelope at the parse refusal, the duplicate page at the census) and the third
+  stated in the card#6630 paragraph, which names an omitted `meta.total` as the case the census
+  cannot speak for. All three are upstream of every renderer, and none is closable by a stricter
+  row count — the token-visibility one needs a membership signal the envelope does not carry. A marker
+  driven off `$rc` cannot see any of them, so what the renderer now guarantees is *"a read the
+  paginator flagged is never rendered as whole"*, not *"a rendered count is whole"*.
+
+  **The marker covers the arms that RENDER and the arms that read NOTHING (card#6365 review).**
+  The first cut marked only rc 3 and rc 4 — the two arms that render a partial array. The other
+  five arms that reach the untriaged section (env file missing, env sets no `KB_BOARD_ID`, token
+  file unreadable, and the read guard's rc 1 / rc 2) reported once on stdout and wrote nothing to
+  fd 3, so the untriaged section rendered **empty** under a header that says *"triage is my
+  responsibility; none may be silently missed"* — for a board where zero rows were read. That is a
+  stronger version of the claim the rc-3/rc-4 note exists to forbid one line above it, and it was
+  reachable by a 500 from the API. All five now report through one `board_unread` helper that
+  writes the same reason to both channels; the two jq renders each gained a fallback on their own
+  channel for the same reason. The old behaviour was documented as a preserved *"fail-soft
+  asymmetry"* — it was inherited from the era when the two sections were two independent passes,
+  not a ruling, and it is recorded here as ruled-on rather than left implicit.
+
+  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review).**
+  It already emits an INCOMPLETE note at its `3|4` arm (`every stock count below is a floor, not a
+  total`), which is why the first cut of this paragraph recorded the class as *"two members and was
+  one instance"*. That was true of the NOTE and silent about the MARKER: every stock number
+  `board-stats` prints is bare — measured at NINE per board on all three boards here (eight columns
+  plus the total), each quotable out of the one `⚠` line that qualifies them — and `--format json`
+  is worse. Its rc-3/rc-4 arm leaves the internal `stock_ok` **true**, so `.stock` is emitted as a
+  fully populated object with **no field that distinguishes it from a whole read** (the emitted keys
+  are `board`, `board_id`, `failures`, `flow`, `label`, `stock` — there is no completeness field at
+  all); the only signal is a prose string inside `failures[]`, which a JSON consumer has to
+  string-match to learn the counts are floors. Either the `≥` carrier is load-bearing, in which case `board-stats` needs it (and its
+  JSON needs a machine-readable completeness field, not prose), or it is deliberately
+  board-snapshot-specific. It is the former: the carrier exists because a number survives being
+  quoted out of its line, and a JSON field survives being read by a program that never sees prose
+  at all. Recorded as an OPEN member of this entry — it has an owner and a queue position here
+  (canon #18) — rather than fixed inside card#6365, whose scope is the SessionStart renderer.
+  Changing what `board-stats` prints and what its JSON asserts is an operator-facing report change
+  and is ask-gated.
+
+  **The SessionStart delivery bound, filed not fixed (card#6365 review).** `board-snapshot`'s
+  in-flight list is UNCAPPED — one line per in-flight card — while the untriaged list caps at six.
+  Measured on the rc-3 page-cap fixture: **7,057 characters for ONE board** (212 lines), against a
+  SessionStart `additionalContext` cap measured at ~10 KiB PER OUTPUT, in characters, above which
+  the payload is spooled and only a ~2 KB preview injects while the hook still exits 0. The first
+  casualty of that truncation is the TAIL — the fd-3 note and the entire untriaged section, i.e.
+  exactly the lines this change added. Today's live three-board run is 1,400 characters, so the
+  bound is conditional and not firing; it is filed because the fix's premise is *"the notice
+  reaches the consumer"*, and writing to stdout is necessary, not sufficient. The remedy is to
+  **SPLIT the output, not shrink it** (the framework's own finding on this cap), which is a change
+  to the hook's delivery contract rather than to this renderer, and therefore not card#6365's.
+
   **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, now FIXED, and the reason this entry
   was not closed with the other two.** The changelog window is read by paging BACKWARD on a
   `before=<cursor>` id until the rows precede the cutoff, and the loop's end-of-data signal is a
