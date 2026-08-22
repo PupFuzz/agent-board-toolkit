@@ -253,8 +253,7 @@ echo "== prove-it-can-fail: the PR-title obligation is real =="
 cp "$FIX/subjects" "$FIX/subjects-pr"
 printf '%s\n' "refactor(z): a card that only the PR title names (card#9004)" >> "$FIX/subjects-pr"
 eq "a card named only by the PR title is obliged" "true" \
-   "$(_missing "$FIX/subjects-pr" "$FIX/changelog-complete.md" "0.23.1" |
-      grep -qx 'card#9004' && echo true || echo false)"
+   "$(has_line 'card#9004' "$(_missing "$FIX/subjects-pr" "$FIX/changelog-complete.md" "0.23.1")")"
 
 # ---------------------------------------------------------------------------
 # Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
