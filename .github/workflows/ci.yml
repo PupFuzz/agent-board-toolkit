@@ -125,9 +125,11 @@ jobs:
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
+          - read-outcome-collapse-selftest
           - readme-bin-coverage-selftest
           - release-artifacts-selftest
           - release-pr-body-selftest
+          - release-tag-check-selftest
           - runtime-check-selftest
           - shellcheck-pin-selftest
           - value-flag-derivation-selftest

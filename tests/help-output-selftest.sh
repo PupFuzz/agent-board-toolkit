@@ -71,8 +71,8 @@ BINDIR="$HERE/../bin"
 _mktmp_scratch
 
 # The CLIs whose --help prints a leading comment header.
-CLIS=(promote-released-cards release-pr-body release-artifacts-check agent-board-toolkit-runtime-check
-      dependabot-deploy-reconcile board-stats gh-code-search)
+CLIS=(promote-released-cards release-pr-body release-artifacts-check release-tag-check
+      agent-board-toolkit-runtime-check dependabot-deploy-reconcile board-stats gh-code-search)
 
 # Bins that carry `--help` and are deliberately NOT asserted above. Each entry states WHY, and
 # the reason is machine-checked below — an exclusion here is a claim, not a licence. A one-line
