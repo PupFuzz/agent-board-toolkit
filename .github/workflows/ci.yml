@@ -120,6 +120,7 @@ jobs:
           - readme-bin-coverage-selftest
           - release-artifacts-selftest
           - release-pr-body-selftest
+          - release-tag-check-selftest
           - runtime-check-selftest
           - value-flag-derivation-selftest
     steps:
