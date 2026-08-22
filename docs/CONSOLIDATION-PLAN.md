@@ -1032,12 +1032,38 @@ finding with no owner is abandoned, not filed.
   reads with two failure modes: a whole card read under a partly-read window floors the flow half
   ALONE, and the reverse floors the stock half ALONE. One shared flag would floor a section that was
   read whole, and a qualifier on every report is a worse defect than the one this closes — so both
-  directions are asserted against the same bin in the same run. `flow_complete` is FAIL-CLOSED the
-  same way `stock_complete` is: initialised false, with exactly ONE arm — an empty `error`, the
-  window read to its cutoff — claiming otherwise. `_bs_window_rows` reports every way a window can
-  end short through that one `error` channel (the page cap, a log that ends inside the window, an
-  unreadable page, a missing cursor), so a stop added to that loop inherits the floor instead of
-  inheriting a claim.
+  directions are asserted against the same bin in the same run.
+
+  **The two flags are NOT fail-closed the same way, and the review that found it is why this says
+  so.** `flow_complete` is initialised false with exactly ONE arm — an empty `error`, the window
+  read to its cutoff — claiming otherwise, and that much reads like `stock_complete`. It is not the
+  same dispatch. `stock_complete` switches on an **enumerated rc**, so an rc nobody listed lands in
+  `*)` and floors by default. `flow_complete` switches on the **absence of a string** that
+  `_bs_window_rows`' own stops have to remember to set: the completeness claim is driven off the
+  **four named stops** that set `err` — the page cap, a log that ends inside the window, an
+  unreadable page, and a page carrying no cursor id — and a `break` added to that loop which does
+  not set `err` reaches the same arm as a window read to its cutoff and claims the window is WHOLE.
+  **That direction is FAIL-OPEN**, and a future editor is entitled to know it: adding a stop means
+  adding its `err=` in the same edit.
+
+  The nearest EXISTING instance of the shape is the short-page arm's `oldest == none` route, which
+  breaks with no `err`. `oldest` is `ep()` of the page's **last row**, so a last row whose
+  `created_at` this tool cannot read renders a truncated window as a complete one. **Measured
+  against the live board API on 2026-08-22, that read is not exposed there:** the changelog renders
+  `created_at` at second precision with a `+00:00` offset — `2026-08-22T18:57:21+00:00` on a fresh
+  row, and `2026-06-29T21:12:44+00:00` on the oldest row board 12's log still holds, i.e. at both
+  ends of a seven-page window — which `ep()` rewrites to `Z` and parses (1787425041), while the
+  fractional-second form (`2026-08-22T18:57:21.123456+00:00`) is the control and returns `null`,
+  re-run here rather than carried across. So the shape is real and
+  the live trigger is absent on the host measured — a statement about that host on that date, not
+  about every host, and not a claim that no host can produce one.
+
+  **The fix that would close the direction is ask-gated and is NOT in this branch.** Making the
+  flag affirmative — each stop declaring completeness rather than every stop declaring an error —
+  floors strictly more reports than this change does, which is an operator-facing render change and
+  therefore takes the same approval the two fixes above took. It was escalated to the operator on
+  2026-08-22 separately from this branch; recorded here so the bin's own comment can point at one
+  owner for the decision rather than restate it.
 
   **ONE member of this class stays OPEN on this tool, and it is not a residual of either fix —
   it is the same defect on a surface neither approval covered:**
@@ -1054,7 +1080,7 @@ finding with no owner is abandoned, not filed.
 
   **TWO NEW members were found by the card#7235 sibling audit, on OTHER tools — found, not fixed,
   because each is an operator-facing report change and therefore ask-gated exactly as these two
-  were. **Filed 2026-08-22 as card#7291 and card#7292.**
+  were.** **Filed 2026-08-22 as card#7291 and card#7292.**
 
   - **card#7291 — `bin/board-session-close`'s `_bsc_advisory_leg` prints a KILLED leg's partial output on
     STDOUT and says it is partial on STDERR, below it** (`bin/board-session-close` :797 for the
@@ -1073,7 +1099,7 @@ finding with no owner is abandoned, not filed.
     at :911 splits the same two channels for the same reason — the delegate's output on stdout, the
     degraded-coverage ⚠ on stderr — so a fix here has two sites in this file, not one.
   - **card#7292 — `bin/_kbc-stale-blocker.py`'s summary block prints bare counts under a partial corpus**
-    (:627–:637). A declared board that fails to read is warned on stderr and the run continues, and
+    (:627–:638). A declared board that fails to read is warned on stderr and the run continues, and
     the summary then prints `{total_live}` live cards indexed, `{total_open}` open cards scanned,
     `{examined}` citations examined, then `no blocking marker before it: N`, each `excluded, …: N`,
     and `asserted as a blocker: N → M flagged, K out-of-tenant, U unresolved`. The `N of M declared
@@ -1086,10 +1112,24 @@ finding with no owner is abandoned, not filed.
   **The audit's denominator, so a later pass can re-derive it rather than inherit it.** Population:
   every script in `bin/` + `hooks/` (**28**), narrowed by the property that makes a partial render
   possible — the tool prints a QUANTITY on an operator-facing channel from an input it knows was
-  incomplete. The derivation is scripted for the read-driven route (14 files call a paginator, a
-  changelog walk, `fetch_board`, `search/code` or a directory walk) and each of those 14 was then
-  READ at its own read site and classified REFUSE vs RENDER-ANYWAY: `promote-released-cards` dies on
-  every truncation path, `kbcard` refuses at three of its four `fetch_board_cards` sites and makes no
+  incomplete. **The outer population is scripted; the narrowing to 14 is NOT, and saying otherwise
+  was the defect the card#7235 review caught in this paragraph.** Both commands, so a later pass
+  re-runs them rather than quoting these figures:
+
+  ```sh
+  find bin hooks -maxdepth 1 -type f | wc -l                      # 28 — the population
+  command grep -rlE 'fetch_board_cards|fetch_whole_board|fetch_board\b|changelog\.json|search/code|os\.walk|\.rglob|\.iterdir' \
+      bin hooks --exclude-dir=__pycache__ | sort                   # 12 — the read-driven sweep
+  ```
+
+  Measured 2026-08-22: the sweep returns **12**, not the 14 below. It selects every tool that
+  accumulates a COLLECTION through a board read, and the two it cannot select —
+  `bin/install-board-hooks` and `bin/release-tag-check` — were added by READING: one iterates the
+  hook set it installs, the other polls a remote for a tag, and neither reaches this predicate
+  through any token. So the 14 is a hand-enumeration that a token sweep starts and a read finishes,
+  and the sweep is shipped here as the reproducible part rather than described as the whole
+  derivation. Each of those 14 was then READ at its own read site and classified REFUSE vs
+  RENDER-ANYWAY: `promote-released-cards` dies on every truncation path, `kbcard` refuses at three of its four `fetch_board_cards` sites and makes no
   operator-facing claim at the fourth, and `next-dl` / `dl-a0-backfill-triaged` / `board-card-start`
   all refuse, `bin/_kb-board-lib.sh` IS the paginator and renders nothing, and
   `bin/install-board-hooks` / `bin/release-tag-check` print no quantity derived from a partial read

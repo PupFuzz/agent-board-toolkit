@@ -815,17 +815,23 @@ KB_STUB_CARDS_SHORT="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:5,l
 KB_STUB_CARDS_FULL="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:83,
                                 created_at:"2026-01-02T00:00:00+00:00",deleted_at:null}],
                                meta:{total:400,last_page:2}}')"
-# One changelog page holding a row INSIDE the 24h window and a row that PRECEDES it. The
-# second row is what closes the window: the pager stops on a page whose oldest row is older
-# than the cutoff, so without it the log would read as ending inside the window and the flow
-# half would contribute a ⚠ of its own to the failure list under test.
+# One changelog page holding two rows INSIDE the 24h window and one that PRECEDES it. The last
+# row is what closes the window: the pager stops on a page whose oldest row is older than the
+# cutoff, so without it the log would read as ending inside the window and the flow half would
+# contribute a ⚠ of its own to the failure list under test. The two in-window rows are a
+# resolution (83 -> 89, non-terminal -> terminal) and a WASH (89 -> 83, back out of a terminal
+# stage): the wash is here because `.flow.washes` was empty in every window fixture, so the
+# washes render arm never ran and the floor marker on it was a check that could not fail.
 KB_STUB_CHANGELOG="$(jq -cn '{data:[
+  {id:10,board_id:7,subject_id:3,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:89,to_stage_id:83,from_stage_name:"Shipped to dev",to_stage_name:"Backlog"},
+   created_at:((now - 1800)|todate)},
   {id:9,board_id:7,subject_id:1,action:"task.moved",actor_type:"service",
    payload:{from_stage_id:83,to_stage_id:89,from_stage_name:"Backlog",to_stage_name:"Shipped to dev"},
    created_at:((now - 3600)|todate)},
   {id:8,board_id:7,subject_id:2,action:"task.created",actor_type:"human",
    payload:{},created_at:((now - 259200)|todate)}]}')"
-# THE SAME two rows minus the one that PRECEDES the cutoff. That row is what closes the
+# THE SAME rows minus the one that PRECEDES the cutoff. That row is what closes the
 # window — the pager stops on a page whose oldest row is older than the cutoff — so without it
 # the page is short with its oldest row still INSIDE the window, which is `the log ran out
 # before the window did`: truncated, `data_available_from` set, and an `error` that makes
@@ -833,6 +839,9 @@ KB_STUB_CHANGELOG="$(jq -cn '{data:[
 # row before the cutoff is filtered out of the complete fixture too — which is what lets the
 # floored render be compared to the complete one as an EQUALITY below.
 KB_STUB_CHANGELOG_SHORT="$(jq -cn '{data:[
+  {id:10,board_id:7,subject_id:3,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:89,to_stage_id:83,from_stage_name:"Shipped to dev",to_stage_name:"Backlog"},
+   created_at:((now - 1800)|todate)},
   {id:9,board_id:7,subject_id:1,action:"task.moved",actor_type:"service",
    payload:{from_stage_id:83,to_stage_id:89,from_stage_name:"Backlog",to_stage_name:"Shipped to dev"},
    created_at:((now - 3600)|todate)}]}')"
@@ -849,15 +858,19 @@ KB_STUB_CHANGELOG_NOMOVE_SHORT="$(jq -cn '{data:[
    payload:{},created_at:((now - 3600)|todate)}]}')"
 export KB_STUB_PRELOAD KB_STUB_CARDS_OK KB_STUB_CARDS_SHORT KB_STUB_CARDS_FULL KB_STUB_CHANGELOG
 export KB_STUB_CHANGELOG_SHORT KB_STUB_CHANGELOG_NOMOVE KB_STUB_CHANGELOG_NOMOVE_SHORT
-# ONE route table for both e2e blocks. The changelog arm switches on KB_STUB_WINDOW, which is
-# UNSET for every card#7228 leg above and therefore takes the complete fixture those legs were
-# written against — the card#7235 block below is the only caller that sets it.
+# ONE route table for both e2e blocks. The changelog arm switches on KB_STUB_WINDOW, which
+# `stats` — the ONLY caller that reaches this table, since every other invocation of the bin in
+# this file is refused by the argument parser before a request is issued — exports on EVERY
+# call, defaulting to `complete`. So the card#7228 legs above select the complete fixture they
+# were written against by that default, not by leaving the variable unset, and the case below
+# reads the variable directly: a `:-` fallback here would be a second declaration of the same
+# default guarding a state no caller can produce.
 kb_stub_route() {
     local url="$2"
     case "$url" in
         */preload.json*)   printf '200\n%s\n' "$KB_STUB_PRELOAD" ;;
         */changelog.json*)
-            case "${KB_STUB_WINDOW:-complete}" in
+            case "$KB_STUB_WINDOW" in
                 short)        printf '200\n%s\n' "$KB_STUB_CHANGELOG_SHORT" ;;
                 nomove)       printf '200\n%s\n' "$KB_STUB_CHANGELOG_NOMOVE" ;;
                 nomove-short) printf '200\n%s\n' "$KB_STUB_CHANGELOG_NOMOVE_SHORT" ;;
@@ -934,12 +947,15 @@ window: 24h — flow counts events at or after <TS> · generated <TS>
     total                        3
   flow — a rate question, read from the changelog
     created                      0
-    moved                        1   human 0 · service 1
+    moved                        2   human 0 · service 2
     same-stage moves             0   swimlane-only; not transitions, not resolutions
     transitions:
       Backlog -> Shipped to dev                         1   human 0 · service 1   [resolution]
+      Shipped to dev -> Backlog                         1   human 0 · service 1   [WASH]
     resolutions, per destination stage (never collapsed into one number):
-      Shipped to dev                                    1   human 0 · service 1"
+      Shipped to dev                                    1   human 0 · service 1
+    washes (terminal -> non-terminal; reported, NOT netted against the resolutions above):
+      Shipped to dev -> Backlog                         1"
 eq "CONTROL rc 0: the complete-read report is byte-identical" "$okexpect" "$(printf '%s' "$okout" | _declock)"
 eq "CONTROL rc 0: exits 0"                                    "0" "$STATS_RC"
 eq "CONTROL rc 0: no floor marker anywhere in the report"     "false" "$(has '≥' "$okout")"
@@ -1078,6 +1094,24 @@ _flow_count() {
           for (i = 1; i <= n; i++) if ($i != w[i]) ok = 0
           if (ok) { print $(n + 1); exit } }'
 }
+# _flow_row <render> <subsection header> <row label> — one ROW's number, read INSIDE the named
+# subsection rather than off the first line of the section that carries the label. The three row
+# lists are three separate render arms, and one move prints in two of them: a terminal ->
+# non-terminal move is a transition row tagged [WASH] AND a row in the washes block below it. A
+# read that took the first match would assert the transition arm twice and the washes arm never
+# — which is how the marker on the washes arm stayed a check that COULD NOT FAIL: no window
+# fixture produced a wash at all, so dropping `fl($fflow)` from that arm left all 228 checks in
+# this file green (measured). The header is matched at its own indent (column 5) and the rows at
+# theirs, so a subsection ends where the next header begins.
+_flow_row() {
+    _flow_section "$1" | awk -v h="$2" -v k="$3" '
+        index($0, h) == 5 { f = 1; next }
+        /^    [^ ]/       { f = 0 }
+        f { n = split(k, w, " ")
+            ok = 1
+            for (i = 1; i <= n; i++) if ($i != w[i]) ok = 0
+            if (ok) { print $(n + 1); exit } }'
+}
 # _flow_bare_digits <flow-section> <board-object> — the digits still standing in the flow
 # section after every FLOORED number and every non-quantity THE DOCUMENT ITSELF names is
 # removed. The non-quantity set is derived from the board object rather than listed here — the
@@ -1104,8 +1138,15 @@ flowok="$(stats complete text 25 complete)"
 eq "CONTROL complete window: exits 0"                    "0" "$STATS_RC"
 eq "CONTROL complete window: no marker in the flow section" "false" \
    "$(has '≥' "$(_flow_section "$flowok")")"
-eq "CONTROL complete window: the counts are bare"        "1 0" \
+eq "CONTROL complete window: the counts are bare"        "2 0" \
    "$(_flow_count "$flowok" moved) $(_flow_count "$flowok" created)"
+# The wash row's count is the one flow quantity NO fixture reached before this leg was added:
+# `.flow.washes` was empty in every window fixture, so the washes line never rendered and the
+# marker on it was a check that could not fail — dropping `fl($fflow)` from that one render arm
+# left all 228 checks green (measured). It is a SEPARATE render arm from the transition row
+# that carries the same move with `[WASH]`, so neither asserts anything about the other.
+eq "CONTROL complete window: the WASH row's count is bare" "1" \
+   "$(_flow_row "$flowok" 'washes ' 'Shipped to dev -> Backlog')"
 
 # --- positive: the log ends INSIDE the window -------------------------------
 flowout="$(stats complete text 25 short)"
@@ -1114,13 +1155,17 @@ flowjs="$(stats complete json 25 short)"
 eq "partly-read window: the ⚠ line still names it INCOMPLETE and a floor" "true" \
    "$(has 'changelog window INCOMPLETE' "$flowout")"
 eq "partly-read window: created carries the marker"           "≥0" "$(_flow_count "$flowout" created)"
-eq "partly-read window: moved carries it"                     "≥1" "$(_flow_count "$flowout" moved)"
+eq "partly-read window: moved carries it"                     "≥2" "$(_flow_count "$flowout" moved)"
 eq "partly-read window: same-stage moves carries it"          "≥0" \
    "$(_flow_count "$flowout" 'same-stage moves')"
 eq "partly-read window: the per-transition count carries it"  "≥1" \
-   "$(_flow_count "$flowout" 'Backlog -> Shipped to dev')"
+   "$(_flow_row "$flowout" 'transitions:' 'Backlog -> Shipped to dev')"
 eq "partly-read window: the per-resolution count carries it"  "≥1" \
-   "$(_flow_count "$flowout" 'Shipped to dev')"
+   "$(_flow_row "$flowout" 'resolutions,' 'Shipped to dev')"
+# The washes line is its OWN render arm — the same move also prints as a transition row tagged
+# [WASH], and a marker on that row says nothing about this one.
+eq "partly-read window: the per-WASH count carries it"        "≥1" \
+   "$(_flow_row "$flowout" 'washes ' 'Shipped to dev -> Backlog')"
 # The actor split is three MORE counts of the same rows, on the same line — the shape a fix
 # that marked only the leading number of each row would leave bare.
 eq "partly-read window: the human/service split carries it too" "true" \

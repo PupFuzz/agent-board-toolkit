@@ -651,13 +651,31 @@ _bs_one_board() {
 
                 flowmeta="$(_bs_window_rows "$board_id" "$cut" "$rowsfile")"
                 err="$(printf '%s' "$flowmeta" | jq -r '.error // ""')"
-                # `flow_complete` is FAIL-CLOSED for the same reason `stock_complete` is
-                # (card#7235): initialised false, and exactly ONE arm — an empty `error`, the
-                # window read to its cutoff — claims otherwise. _bs_window_rows reports every
-                # way a window can end short through that one channel (the page cap, a log that
-                # ends inside the window, an unreadable page, a missing cursor), so a stop added
-                # to that loop floors the flow numbers whether or not anyone remembers to say
-                # so, and only an explicit edit to this arm can ever claim a window is whole.
+                # `flow_complete` is initialised false and exactly ONE arm claims otherwise:
+                # an EMPTY `error`, the window read to its cutoff (card#7235). WHICH WAY THAT
+                # FAILS IS THE OPPOSITE OF `stock_complete`'S, and an editor of
+                # _bs_window_rows is owed the difference. `stock_complete` dispatches on an
+                # ENUMERATED rc, so an rc nobody listed falls to `*)` and floors by default.
+                # This one dispatches on the ABSENCE OF A STRING that the loop's own stops
+                # have to remember to set. Four stops set it — the page cap, a log that ends
+                # inside the window, an unreadable page, and a page carrying no cursor id —
+                # and the completeness claim here is driven off exactly those four. A break
+                # added to that loop that does NOT set `err` reaches this arm indistinguishably
+                # from a window read to its cutoff and claims the window is WHOLE: this
+                # direction is FAIL-OPEN. Adding a stop means adding its `err=` in the same
+                # edit. The nearest existing instance of the shape is the short-page arm's
+                # `oldest == none` route, which breaks with no `err`: `oldest` is `ep()` of the
+                # page's LAST row, so a last row whose `created_at` this tool cannot read
+                # renders a truncated window as a complete one. Measured against the live board
+                # API on 2026-08-22, that read is not exposed there — the changelog renders
+                # `created_at` at second precision with a `+00:00` offset, which `ep()` rewrites
+                # to `Z` and parses (a fractional-second value does NOT parse, which is the
+                # control) — so the shape is real and the live trigger is absent on the hosts
+                # measured, which is a statement about those hosts and not about every host.
+                # Making the flag AFFIRMATIVE — each stop declaring completeness rather than
+                # every stop declaring an error — floors strictly more reports than this does,
+                # so it is an operator-facing render change, ask-gated, and not taken here;
+                # `docs/CONSOLIDATION-PLAN.md` carries the record of that decision.
                 if [[ -z "$err" ]]; then
                     flow_ok=true; flow_complete=true
                 elif [[ "$(printf '%s' "$flowmeta" | jq -r '.pages')" -gt 0 ]]; then
