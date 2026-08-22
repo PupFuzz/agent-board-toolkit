@@ -54,12 +54,38 @@ probe() {
     rm -rf "$h"
 }
 
+# sweep <script>... — THE ONE VERDICT PATH. Classifies each script and accumulates the two
+# findings into SWEEP_LEAKED / SWEEP_UNMEASURED. The population below and the controls above
+# both go through this function on purpose: a control that exercised a parallel copy of this
+# logic would certify the copy, not the check that actually runs.
+SWEEP_LEAKED=""; SWEEP_UNMEASURED=""
+sweep() {
+    local f
+    SWEEP_LEAKED=""; SWEEP_UNMEASURED=""
+    for f in "$@"; do
+        probe "$f"
+        if [[ -n "$PROBE_ESC" ]]; then
+            # A LEAK OUTRANKS AN ABORT, deliberately: a subject that wrote outside its scratch
+            # AND then died has already done the damage this file exists to catch, and
+            # reporting it as merely "not measured" would file the finding under the softer
+            # of the two headings.
+            SWEEP_LEAKED+="    ${f##*/} → ${PROBE_ESC}"$'\n'
+        elif [[ "$PROBE_RC" -ne 0 ]]; then
+            # Clean, but the run did not complete — so "clean" here reports where the subject
+            # stopped, not what it writes. An empty result is a measurement that never
+            # happened until shown otherwise, so this is a finding, never folded into the pass.
+            SWEEP_UNMEASURED+="    ${f##*/} (rc ${PROBE_RC})"$'\n'
+        fi
+    done
+}
+
 # ---------------------------------------------------------------------------
-echo "== CONTROLS: the instrument must be able to say both words =="
+echo "== CONTROLS: the instrument must be able to say all three words =="
 # ⛔ WITHOUT THESE, A GREEN RUN BELOW IS INDISTINGUISHABLE FROM AN INSTRUMENT THAT NEVER
-# LOOKED. The negative control is a script that writes exactly what the incident wrote; the
-# positive one is a script that writes only inside the scratch it was given. If the first is
-# not FLAGGED and the second not CLEAN, every verdict in this file is decoration.
+# LOOKED. Three fixtures, run through the SAME `sweep` the real population uses: a script that
+# writes exactly what the incident wrote, one that writes only inside the scratch it was given,
+# and one that aborts without writing anything. If the first is not FLAGGED, the second not
+# CLEAN, and the third not UNMEASURED, every verdict in this file is decoration.
 cat > "$TMP/ctl-leaks.sh" <<'LEAK'
 printf 'fabricated\n' >> "$HOME/.kbcard-failures.log"
 printf 'export KBCARD_API="https://kanban.test/api/v3"\n' > "$HOME/.kanban-host.env"
@@ -70,27 +96,49 @@ CLEAN
 cat > "$TMP/ctl-aborts.sh" <<'ABORT'
 exit 3
 ABORT
+cat > "$TMP/ctl-leaks-then-aborts.sh" <<'BOTH'
+printf 'fabricated\n' >> "$HOME/.kbcard-failures.log"
+exit 3
+BOTH
 
-probe "$TMP/ctl-leaks.sh"
-eq "CONTROL: a script writing \$HOME is FLAGGED"        "true" \
-   "$([[ -n "$PROBE_ESC" ]] && echo true || echo false)"
-eq "CONTROL: …and the escape is NAMED, not just counted" "true" \
-   "$(has '.kbcard-failures.log' "$PROBE_ESC")"
+sweep "$TMP/ctl-leaks.sh"
+eq "CONTROL: a script writing \$HOME is FLAGGED"            "true" \
+   "$([[ -n "$SWEEP_LEAKED" ]] && echo true || echo false)"
+eq "CONTROL: …and the escape is NAMED, not just counted"    "true" \
+   "$(has '.kbcard-failures.log' "$SWEEP_LEAKED")"
 eq "CONTROL: …including the host config the incident wrote" "true" \
-   "$(has '.kanban-host.env' "$PROBE_ESC")"
+   "$(has '.kanban-host.env' "$SWEEP_LEAKED")"
+eq "CONTROL: …and a leak is not ALSO filed as unmeasured"   "" "$SWEEP_UNMEASURED"
 
-probe "$TMP/ctl-clean.sh"
-eq "CONTROL: a script writing only its own scratch is CLEAN" "" "$PROBE_ESC"
+sweep "$TMP/ctl-clean.sh"
+eq "CONTROL: a script writing only its own scratch is CLEAN" "" "$SWEEP_LEAKED"
+eq "  …and is not filed as unmeasured either"                "" "$SWEEP_UNMEASURED"
 
-probe "$TMP/ctl-aborts.sh"
-eq "CONTROL: an aborting script is caught by its rc, not read as clean" "3" "$PROBE_RC"
-eq "  …and it did leave an empty HOME (which is why the rc is load-bearing)" "" "$PROBE_ESC"
+# ⛔ THIS IS THE CONTROL FOR THE LEG THAT FIRED IN CI (card#7245). The UNMEASURED leg is the
+# reason this instrument is worth having — a subject that aborts writes nothing and looks
+# perfectly contained — so it must be shown FIRING, on the same `sweep` the population uses,
+# and not merely reasoned about. If this pair ever goes quiet, the leg has been removed.
+sweep "$TMP/ctl-aborts.sh"
+eq "CONTROL: an aborting subject is UNMEASURED, not clean"   "true" \
+   "$([[ -n "$SWEEP_UNMEASURED" ]] && echo true || echo false)"
+eq "  …and the report names it and its rc"                   "true" \
+   "$(has 'ctl-aborts.sh (rc 3)' "$SWEEP_UNMEASURED")"
+eq "  …and an abort is never reported as a leak"             "" "$SWEEP_LEAKED"
+
+sweep "$TMP/ctl-leaks-then-aborts.sh"
+eq "CONTROL: a subject that leaks AND aborts is filed as a LEAK" "true" \
+   "$(has '.kbcard-failures.log' "$SWEEP_LEAKED")"
+eq "  …not softened into unmeasured"                             "" "$SWEEP_UNMEASURED"
 
 # ---------------------------------------------------------------------------
 echo "== the population, re-derived from the tree on every run =="
 # The glob IS the derivation — no list to fall out of date, and no written number for a later
-# pass to quote back instead of re-computing. This file excludes ITSELF: it runs the suite, so
-# including itself is unbounded recursion, and that exclusion is asserted rather than assumed.
+# pass to quote back instead of re-computing. THERE IS NO EXCLUSION LIST: every subject the
+# glob finds is run, and the one subject that could not run under CI's default depth-1
+# checkout (changelog-card-entry-selftest, which refuses when no release tag resolves) is
+# served by this job's own `fetch-depth: 0` rather than dropped from the population. The
+# single name this file does skip is ITSELF — it runs the suite, so including itself is
+# unbounded recursion — and that skip is asserted rather than assumed.
 subjects=()
 for f in "$HERE"/*selftest*.sh; do
     [[ "$(basename "$f")" == "$SELF" ]] && continue
@@ -100,21 +148,14 @@ eq "the derivation found selftests to run" "false" \
    "$([[ "${#subjects[@]}" -eq 0 ]] && echo true || echo false)"
 eq "  …and excluded itself (no recursion)" "false" \
    "$(has "$SELF" "$(printf '%s\n' "${subjects[@]##*/}")")"
+eq "  …and excluded NOTHING else (self is the only skip)" "1" \
+   "$(( $(ls "$HERE"/*selftest*.sh | wc -l) - ${#subjects[@]} ))"
 printf '  ..  population re-derived from %s/*selftest*.sh: %d subject(s)\n' \
     "${HERE##*/}" "${#subjects[@]}"
 
 echo "== every subject, under a HOME of its own =="
-leaked=""; unmeasured=""
-for f in "${subjects[@]}"; do
-    probe "$f"
-    if [[ -n "$PROBE_ESC" ]]; then
-        leaked+="    ${f##*/} → ${PROBE_ESC}"$'\n'
-    elif [[ "$PROBE_RC" -ne 0 ]]; then
-        # Clean, but the run did not complete — so "clean" here reports where the subject
-        # stopped, not what it writes. Reported separately rather than folded into the pass.
-        unmeasured+="    ${f##*/} (rc ${PROBE_RC})"$'\n'
-    fi
-done
+sweep "${subjects[@]}"
+leaked="$SWEEP_LEAKED"; unmeasured="$SWEEP_UNMEASURED"
 
 eq "no selftest writes outside its scratch" "" "$leaked"
 [[ -n "$leaked" ]] && printf '  escapes into the sacrificial HOME:\n%s' "$leaked" >&2
