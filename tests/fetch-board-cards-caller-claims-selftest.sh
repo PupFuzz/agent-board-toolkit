@@ -77,17 +77,39 @@ NAMES_OUTCOME='did not return a complete card list|INCOMPLETE|unavailable|read f
 
 # HERESTRING rather than `printf | grep -q`: under `pipefail` a `grep -q` that matches exits
 # before its writer finishes, and the writer's SIGPIPE can become the PIPELINE's status — so a
-# MATCH reads as a non-match. Measured honestly: bash's printf BUILTIN does not die on SIGPIPE
-# (rc 0 with the match at byte 0 of a 5MB body, and of a 50MB one), so the pipe form was not in
-# fact leaking here — but the same shape with an EXTERNAL writer does:
-# `yes | head -c 50M | grep -q y` is rc 141, a match reported as a failure.
-# ⚠ The command this line cited until card#6680 was `grep -q x`, and it is rc 1, NOT 141 —
-# `yes` emits no `x`, so that grep never matches, never exits early, and drains all 50MB
-# instead, leaving its own rc 1 as the rightmost non-zero status. It could not demonstrate the
-# thing it was quoted for: the shape needs the reader to MATCH while the writer is still
-# writing, which is the defect itself. Corrected to the command that was actually measured.
-# A classifier whose correctness rests on which writer bash happens to use is not one to leave
-# standing.
+# MATCH reads as a non-match.
+#
+# ⚑ CORRECTED (card#7175). This comment used to say bash's printf BUILTIN does not die on
+# SIGPIPE — "rc 0 over a 5MB body" — so the pipe form was "not in fact leaking here". That
+# conclusion is FALSE, and the correction matters well beyond this file: that sentence was the
+# stated reason ~28 sibling `printf | grep -q` sites across this suite and two in
+# `bin/board-card-start` were judged safe and left standing.
+#
+# Bash forks a subshell for a builtin in a pipeline, and that subshell takes SIGPIPE like any
+# other process. Two conditions decide it, and NEITHER is the writer's class:
+#   (a) `grep -q` leaves EARLY — the match is near the start, so the reader is gone while the
+#       writer still has bytes to push; and
+#   (b) the writer has more than the 64 KiB PIPE BUFFER left to write when that happens.
+#
+# ⛔ THE INTERESTING PART — the original measurement is REPRODUCIBLE, and that is why it fooled
+# everyone. It holds only with the match at the END of the body, where grep reads the whole
+# stream and exits after the writer does, so condition (a) never fires and no signal is ever
+# sent. Measured on this host (bash 5.2.21) with `printf '%s\n' "$big" | grep -qF MATCH-ME`:
+#     match at END,   5 MB      → rc 0    PIPESTATUS 0 0
+#     match at START, 5 MB      → rc 141  PIPESTATUS 141 0   ← the builtin DIED
+#     match at START, 1 KB      → rc 0    PIPESTATUS 0 0     (whole body fits the buffer)
+#
+# ⚑ The 141 is the DEFAULT-disposition rendering, and it is NOT what CI sees. Where an ancestor
+# has ignored SIGPIPE — which the GitHub Actions runner does, its bash being started by the
+# runner's Node process, and SIG_IGN survives execve — the writer is not killed at all: `write()`
+# returns EPIPE, it prints `<prog>: write error: Broken pipe` and exits 1, which `pipefail`
+# promotes identically. That is the case CI runs, and it is what the original
+# `lib-set-derivation-selftest.sh` red actually recorded (its evidence was a printed
+# `grep: write error: Broken pipe`, i.e. the EPIPE path, not a kill).
+# A fixture that cannot trigger the condition it tests reports clean and teaches the wrong rule.
+# `tests/pipeline-free-match-selftest.sh` now pins all three cells, on both writer classes, and
+# asserts PIPESTATUS rather than the pipeline's rc alone. The prelude's `has_line` is the
+# no-pipeline owner this suite asks whole-line membership through.
 is_rc()      { grep -qE "$NAMES_RC"      <<<"$1"; }
 is_cause()   { grep -qE "$NAMES_CAUSE"   <<<"$1"; }
 is_outcome() { grep -qE "$NAMES_OUTCOME" <<<"$1"; }

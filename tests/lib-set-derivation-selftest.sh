@@ -346,6 +346,19 @@ LEG3_DISPOSED=(
     "tests/kb-positional-guard-selftest.sh::kb_require_positional"
     # This file's own regrown-list control fixture, below. It MUST be reportable; that is its job.
     "tests/lib-set-derivation-selftest.sh::IF you vendored a lib-sourcing bin"
+    # The live `[Unreleased]` entry for card#7175, disposed on the same terms as card#6884's and
+    # card#6680's below. It reached the predicate only when the doc-sweep half of that card landed:
+    # the entry already named `bin/release-artifacts-check` and `bin/_kb-board-lib.sh`, and the
+    # sweep added `bin/gh-code-search`, which is the SECOND lib-sourcing bin on the line — the
+    # guard firing correctly, on a paragraph that instructs nobody to copy anything. What it
+    # narrates is a SIGPIPE class removed from `bin/` and `tests/` alike; its only sentence about
+    # the lib says that file was CHECKED and carries no instance, which is the (b) shape and the
+    # opposite of a vendoring list.
+    # ⛔ Same bound as its neighbours: the unit is the LINE and the entry is one line, so a list
+    # regrown inside it is suppressed too — and at release time this moves below the version cut,
+    # where the live-line assertion above turns this disposition red rather than letting the next
+    # author inherit the ruling.
+    "docs/CHANGELOG.md::**card#7175** — **"
     # The live `[Unreleased]` entry for card#6884 — reported the moment the CHANGELOG stopped being
     # carved out whole-file, and correctly so by the predicate: it is one markdown paragraph, i.e.
     # ONE line, that narrates a change across most of `bin/` and so names many members of the set.

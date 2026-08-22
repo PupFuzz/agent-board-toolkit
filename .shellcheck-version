@@ -1,0 +1,40 @@
+# The ShellCheck this repo's gate runs — in CI and in a local sweep alike. `bin/_shellcheck-pinned`
+# is the only reader; `.github/workflows/ci.yml` calls that wrapper instead of a bare `shellcheck`,
+# so this file is the ONE place the analyser version is written down.
+#
+# WHY A PIN AT ALL (card#6619). The gate used to run whatever `ubuntu-latest` had preinstalled and
+# never named it, so the verdict came from a program neither the log nor the repo identified, and
+# the runner image moves with no change here. The two analysers involved genuinely disagree at
+# ERROR severity — measured 2026-08-21 on this box, same file, same flags:
+#
+#     helper() { echo one; }; helper; unset -f helper; helper() { echo two; }; helper
+#     0.9.0  -> error: This function is only defined later. Move the definition up. [SC2218]
+#     0.11.0 -> clean
+#
+# So the drift runs in both directions: findings can appear that the current gate does not raise,
+# and findings the project gates on today can stop being reported with nothing announcing it.
+#
+# WHY 0.9.0. It is what the gate was ALREADY running: ubuntu-24.04 image `20260816.277` — the image
+# the last `dev` CI run used — ships `shellcheck 0.9.0-1`. Pinning it writes today's observed
+# behaviour down rather than changing it. Verified the same day over the gate's own file population
+# at `-S error`: 0.9.0 and 0.11.0 both report ZERO findings, over the gate's population before and
+# after this change. The pin moves no verdict here either.
+#
+# NO FILE COUNT IS WRITTEN HERE, deliberately. An earlier revision carried one and it had already
+# been hand-re-synced once by the time this shipped — the population grows with every new bin or
+# selftest, so a number here is stale on arrival. Re-derive it from ci.yml's own expression if you
+# need it; do not restate it.
+#
+# TO MOVE THE PIN: run the gate under the new version FIRST and diff the findings against the old
+# one. A diff is a change to what CI accepts and needs the decision that goes with it — it is not a
+# version bump. Nothing tracks this file automatically (Dependabot does not know it exists).
+#
+# The `asset` lines carry the sha256 of the upstream release tarball for one `<os>.<arch>`, used
+# only when the wrapper has to download the pinned build. A platform with no line here is REFUSED,
+# never guessed. PROVENANCE: recorded from the artifact fetched on 2026-08-21 from
+# https://github.com/koalaman/shellcheck/releases/download/v0.9.0/ — upstream publishes no checksum
+# file, so this pins the artifact AS FETCHED (it detects a later substitution); it is not an
+# upstream-attested digest, and it is not claimed to be one.
+
+version 0.9.0
+asset   linux.x86_64  700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f

@@ -258,7 +258,7 @@ probed="$(_probed_tools)"
 eq "probe readback is non-empty" "false" "$([ -z "$probed" ] && echo true || echo false)"
 # A named member, not a count: a count pins the check to a past value and rots as bin/ grows.
 eq "probe readback carries a known member" "true" \
-   "$(printf '%s\n' "$probed" | grep -qx 'kbcard' && echo true || echo false)"
+   "$(has_line 'kbcard' "$probed")"
 eq "witness: the bin/ side is non-empty too" "true" \
    "$([ -n "$(_public_bin_names "$HERE/../bin")" ] && echo true || echo false)"
 
