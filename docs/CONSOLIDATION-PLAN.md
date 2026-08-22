@@ -590,6 +590,38 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
+  recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
+  drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
+  with 0 B of stdout** on a bare one, because `kb_load_config` resolves `$HOME/.kanban-dev-board.env`
+  before the no-argument help arm. The gate therefore returned **different verdicts for the same
+  commit** depending on who ran it, and only CI could see it. Closed with a planted config plus a
+  control that drives both sides — but the control is a **CI-side guard only** (measured: deleting
+  the plant reds on a bare box, reds nothing on a configured one), which is the property that makes
+  this shape survive review. **The whole 42-selftest CI matrix was re-run under a bare `$HOME`
+  looking for siblings and found none**, so this is one instance, not a class — recorded so the next
+  gate author knows the axis exists and that `--help`-shaped is not the same as host-independent.
+  One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
+  box, though its classification does not.
+- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
+  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+  (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
+  '*.sh'`), and by the time this was noticed the expression had been re-typed into
+  `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
+  `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
+  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
+  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  class found were inside the harness. So the lib exports **CI's two halves separately** and each
+  caller composes its own union — the population is a parameter, never a constant. Adoption is
+  behaviour-preserving by construction (byte-identical output to what each already computes), so
+  the other two can adopt in their own PRs; they were left untouched here because they were outside
+  that PR's file scope. The `ci.yml`↔lib restatement **cannot be deleted** (a workflow `run:` string
+  cannot source a bash lib), so it is **GUARDED** instead: `_ci_shellcheck_drift` reds when ci.yml
+  stops running either half, with planted positive/negative/no-file controls, all three watched to
+  fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
+  dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
+  prompted the extraction is not something this lib would have caught.
 - **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
   parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
   inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not
@@ -1391,6 +1423,66 @@ finding with no owner is abandoned, not filed.
   function boundary, `bin/*.py`, or the bash embedded in the two composite actions — and a
   disposition is a recorded judgement, not a proof.
 
+- **`<producer> | grep -q <needle>` under `pipefail`** (card#7175) — `grep -q` exits the instant
+  it matches, so its producer fails on the closed pipe, `pipefail` promotes **that** status, and the
+  `&& echo true || echo false` tail every call site wore reported a **MATCH as `false`** — a wrong
+  answer at rc 0, not an error. **47 copies**, 44 of them in `tests/`; 46 migrated to the prelude's
+  new `has_line` (a `case` glob with the newline sentinels made explicit — no pipeline, no
+  subprocess, so the window structurally cannot exist), the 47th closed independently on `dev` by
+  card#6680. Two facts about it were relayed wrong before anyone re-measured, each costing a red:
+  the discriminator is **not** builtin-vs-external (bash forks a subshell for a builtin in a
+  pipeline and it takes SIGPIPE like anything else — the "a `printf` builtin survives, rc 0 over a
+  5 MB body" measurement is *reproducible*, and reproduces only with the match at the **END** of
+  the body, where `grep -q` never leaves early); and the dead producer's status is **not 141** —
+  that is the rendering where SIGPIPE is at its **default**, while an inherited `SIG_IGN`, which
+  the GitHub Actions runner installs, gives an EPIPE write error at **1**. `pipefail` promotes
+  either, so the defect is disposition-independent and only the number moves — **a test asserting
+  `rc == 141` passes locally and reds in CI**, which is how the correction cost its own cycle.
+  **The gate is `tests/piped-match-gate-selftest.sh`**, and it exists because the first cut of
+  `pipeline-free-match-selftest.sh` declined it in writing (*"it is not a gate on new ones"*)
+  while **two copies survived the audit** — this document's own § Corrections carried forward had
+  already ruled that *a copy that survives an audit of its own class is the argument FOR the gate
+  that audit declined*, and Stage B's card#5740 section had ruled it once before that. It derives
+  its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus
+  `tests/*.sh` — **`tests/` is IN**, unlike `read-outcome-collapse-selftest.sh`, because this class
+  minted its red inside the harness), keys members on `<file>` carrying an **occurrence count** so
+  that an N+1th copy inside an already-dispositioned file still reds, prints its denominator on
+  every run, and carries exactly one disposition: the `_piped*` / `_stat*` fixtures that ARE the
+  construct held still so `pipeline-free-match-selftest.sh` can watch it fail. All three red paths
+  were watched to fire. **Weakest properties, stated so it is not over-cited:** it cannot see a
+  pipeline built as a string and `eval`'d, one whose `grep -q` sits behind a function boundary,
+  `bin/*.py`, or the bash in the two composite actions.
+- **The wider EARLY-EXIT-READER class — `| head`, `| tail -N` — is NOT closed** (card#7175, filed
+  here rather than as its own item because this document owns the reasoning and the gate above is
+  where a future closure would land). `grep -q` is one early-exiting reader; `head -N` is another,
+  and it does the same thing to its producer under `pipefail`. `bin/release-artifacts-check`'s
+  two-stage version extraction (`… | grep -oiE "$VERSION_REGEX" | head -1 | grep -oE … | head -1`)
+  is a **live member**, held safe by an explicit `|| true` that is documented at the site as a
+  SIGPIPE guard rather than defensive tidying. It is not gated, and the reason is a cost decision
+  stated rather than a claim of safety: the population is large, and most of it is legitimate
+  (a short producer, or a captured value whose emptiness is then tested), so a disposition list
+  over it would be mostly noise on this pass. **The number is not written down here** — a written
+  count becomes a quoted authority that relays intact across the passes that falsify it; instead
+  `piped-match-gate-selftest.sh` **re-derives it every run and prints it in its denominator as an
+  explicitly ADVISORY, un-asserted figure**, so the remainder is a number that moves rather than a
+  prose figure that rots.
+  - **A SECOND live member, found and fixed** (card#6911, appended here rather than filed anew —
+    the class already has this owner). `agent-board-toolkit-runtime-check` carried
+    `newest="$(git … tag --list 'v*' --sort=-version:refname | head -1)"`, and it is the member that
+    breaks the "most of it is legitimate (a short producer …)" reading above: the producer is short
+    *today* and is not bounded to stay so. Measured with a planted tag set — **0/40 runs died at 350
+    `v*` tags, 21/40 at 400, 16/20 at 5 900, 40/40 at 12 000** — so it is a **RACE at git's ~4 KiB
+    stdio buffer**, not a cliff at the 64 KiB pipe buffer, and it dies at rc 141 *before the
+    verdict*. Two corrections this instance forces on the class's own reasoning: **`trap '' PIPE`
+    does not cover it** (git restores SIGPIPE to `SIG_DFL` for itself, so the parent's ignore is not
+    inherited — the fix ratified for the EXTERNAL reader buys nothing against the INTERNAL one), and
+    the reachability is not ours to bound, because `$root` there is `git rev-parse --show-toplevel`
+    of the tool's own directory, which for a toolkit **vendored inside a consumer repo** is the
+    consumer's repo. Fixed in place by taking the first line with a parameter expansion — byte
+    identical output, no second process. **Still not gated**, and that cost decision stands
+    unchanged; what this member adds is that the advisory figure's "mostly legitimate" gloss is a
+    per-instance judgement nobody has made, not a property of the population.
+
 ---
 
 ## Corrections carried forward
@@ -1418,6 +1510,31 @@ teaches the next reader nothing.
   described, and each was written by the same hand that had just named the defect. → **the claim and
   the predicate are one artifact: widen the predicate to the claim, or narrow the claim to the
   predicate and say so where it is read — never ship them apart.**
+- **"Every surface that said `rc 141` is corrected"** (card#7175's own commit message) — false, and
+  false in the direction that costs the most: the CODE sites were all migrated and the claim was
+  read off that. **Twelve prose copies survived**, two of them forward-looking *predictions* in the
+  shipped `bin/release-artifacts-check`, sitting directly above a live `head -1` pipeline held safe
+  by an `|| true`. A maintainer hardening that pipeline reads the line, writes an `rc 141`
+  assertion, and gets a green local run and a red CI — the identical propagation path this card
+  documents, on its third repetition, with the CHANGELOG shipping the correction and the bin
+  shipping the error at the same time. → **a doc-sweep is over the CLAIM, not over the files the
+  fix touched; "the file was checked" answers about code and must not be relayed as answering
+  about text.** (§ Ground rules → Review discipline already required this: *a corrected code-state
+  claim is swept across all docs in the same PR*. It was declared done, not performed.)
+- **"~28 sibling `printf | grep -q` sites"** — false; the derived figure is **36**. 19 + 9 is
+  exactly the two largest files, so a six-occurrence tail across five more files plus two in
+  `bin/board-card-start` were never added in. The counts that GATED the work in the same entry
+  (47 / 11 / 46 / 1) were *derived* and re-derive exactly; this one was *typed*, in the same
+  paragraph, and read as equally load-bearing. → **a figure a reader cannot tell apart from a
+  derived one must be derived, or dropped** — and the derivation, not the number, is what belongs
+  in the tree (`piped-match-gate-selftest.sh` re-computes its population every run and prints it).
+- **"`pipeline-free-match-selftest.sh` … is not a gate on new ones"** — a declined gate, stated in
+  the file, while **two copies of the class survived that same audit** inside that same file. The
+  ruling directly above ("a copy that survives an audit of its own class is the argument FOR the
+  gate that audit declined") and Stage B's card#5740 section had both already settled it. →
+  **a control battery and a census are different artifacts; writing "this is only a battery" is a
+  statement of scope, never a disposition of the census.** The gate is
+  `tests/piped-match-gate-selftest.sh`.
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
 - **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured

@@ -104,7 +104,7 @@ eq "no unsanctioned prelude-helper shadows" "" "${shadows%$'\n'}"
 echo "== every sanctioned shadow still exists =="
 for s in "${SANCTIONED[@]}"; do
     base="${s%%:*}" fn="${s##*:}"
-    if [[ -e "$HERE/${base}.sh" ]] && _defs_in "$HERE/${base}.sh" | grep -qx "$fn"; then
+    if [[ -e "$HERE/${base}.sh" && "$(has_line "$fn" "$(_defs_in "$HERE/${base}.sh")")" == true ]]; then
         ok "sanctioned $s is live"
     else
         bad "sanctioned $s no longer exists — remove the allow-list entry"
@@ -114,7 +114,7 @@ done
 # The helper set is derived, so a prelude that stopped defining `has` would silently stop
 # guarding the exact helper this class was minted on. Pin that one by name.
 echo "== the helper this class was minted on is still derived =="
-printf '%s\n' "${HELPERS[@]}" | grep -qx has \
+[[ "$(has_line has "$(printf '%s\n' "${HELPERS[@]}")")" == true ]] \
     && ok "has is in the derived helper set" \
     || bad "has is not in the derived helper set — the prelude no longer defines it"
 
