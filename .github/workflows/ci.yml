@@ -10,7 +10,16 @@ permissions:
 
 jobs:
   shellcheck:
-    runs-on: ubuntu-latest   # ships shellcheck preinstalled — no third-party action needed
+    # THE ANALYSER IS PINNED, NOT INHERITED (card#6619). Every shellcheck call in this file goes
+    # through `bin/_shellcheck-pinned`, which runs the version `.shellcheck-version` declares and
+    # prints on stderr which binary it actually ran — so a log says what produced its verdict, and a
+    # local sweep of these same commands is about the same program. A bare `shellcheck` here would
+    # take whatever the runner image ships this month; the two ends of that drift disagree at ERROR
+    # severity, measured, with the reproduction in `.shellcheck-version`. The image happens to ship
+    # the pinned version today, so the wrapper resolves it off PATH and downloads nothing;
+    # `tests/shellcheck-pin-selftest.sh` holds this rule over the whole workflow directory and
+    # drives the download arm that CI therefore never exercises.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: shellcheck bin/, hooks/ and tests/
@@ -18,7 +27,7 @@ jobs:
         # run confirms the existing scripts are warning-clean. Non-shell helpers
         # (e.g. bin/*.py shims) are filtered out — shellcheck cannot parse them
         # (SC1071); they are syntax-checked in the python-shims step below.
-        run: shellcheck -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
+        run: ./bin/_shellcheck-pinned -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
       - name: python shims compile clean
         run: python3 -m py_compile bin/*.py
 
@@ -113,6 +122,8 @@ jobs:
           - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
+          - piped-match-gate-selftest
+          - pipeline-free-match-selftest
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
@@ -122,7 +133,9 @@ jobs:
           - release-pr-body-selftest
           - release-tag-check-selftest
           - runtime-check-selftest
+          - shellcheck-pin-selftest
           - value-flag-derivation-selftest
+          - verdict-through-truncating-reader-selftest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: bash tests/${{ matrix.test }}.sh
@@ -130,7 +143,8 @@ jobs:
 
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
-    # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
+    # toolkit-side signal if the wrapper rots (the shellcheck job's population is bin/,
+    # hooks/ and tests/ — never promote/action.yml's embedded run: block).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -194,7 +208,7 @@ jobs:
           with open('/tmp/action-run.sh', 'w') as f:
               f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + run)
           PY
-          shellcheck -S error /tmp/action-run.sh
+          ./bin/_shellcheck-pinned -S error /tmp/action-run.sh
       - name: Invoke the action (expects fail-closed at the token guard)
         # Proves the runner can execute the composite end-to-end into the
         # script: with an empty token it must die at the KANBAN_WRITEBACK_TOKEN
@@ -215,7 +229,8 @@ jobs:
 
   release-artifacts-action-selftest:
     # The promote job's sibling, for the same reason: a SHA-pinned consumer gets no
-    # toolkit-side signal if the wrapper rots, and shellcheck only sees bin/.
+    # toolkit-side signal if the wrapper rots, and the shellcheck job's population does not
+    # reach this action's embedded run: block either.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -252,7 +267,7 @@ jobs:
           with open('/tmp/ra-action-run.sh', 'w') as f:
               f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + run)
           PY
-          shellcheck -S error /tmp/ra-action-run.sh
+          ./bin/_shellcheck-pinned -S error /tmp/ra-action-run.sh
       - name: Invoke the action (degenerate same-sha range ⇒ classifies as not-a-release-PR)
         # Proves the runner can execute the composite end-to-end into the script. base == head
         # means the version is byte-identical at both ends, which is the exit-0 arm — so this

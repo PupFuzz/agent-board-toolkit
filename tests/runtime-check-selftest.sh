@@ -90,6 +90,77 @@ run_check "$TMP/bin4"
 eq "stale copy → rc 1" "1" "$RC"
 grep -q "STALE COPIES" <<<"$ERR" && ok "names the stale copy" || bad "missing STALE COPIES message"
 
+# ── the verdict must survive a reader that stops reading (card#6911) ────────────────────────
+#
+# This is the SAME stale-copies topology one assertion above — a REAL rc-1 verdict with its ✗
+# line — driven through a consumer that stops consuming stdout. Measured before the fix:
+# `rc 141, 0 B of stderr`, i.e. the verdict AND the explanation both destroyed, while the
+# invocation looked like it had worked. The general gate for this class over every shipped bin
+# is tests/verdict-through-truncating-reader-selftest.sh; this block is the one thing that gate
+# structurally cannot reach — this tool's actual VERDICT path, which needs the fixture above.
+#
+# ⛔ ASSERTED ON rc PRESERVATION, NEVER ON A SIGNAL NUMBER. A GitHub Actions runner starts bash
+# from Node with SIGPIPE set to SIG_IGN, and that disposition survives execve — so in CI the
+# write returns EPIPE and the rc is 1, where a developer box gives 141. `expected == direct` is
+# the same sentence under both dispositions; `expected == 141` reds in CI only.
+# run_truncated <bindir> <reader...> -- <check args...> -> sets TRC_DFL, TRC_IGN, TERR_BYTES
+#
+# BOTH SIGPIPE DISPOSITIONS, PINNED. A GitHub Actions runner starts bash from Node with SIGPIPE
+# already SIG_IGN, and an ignored disposition is inherited across execve — so the runner sees a
+# write that RETURNS EPIPE where a developer terminal sees the process killed by the signal.
+# The two produce different rcs (1 vs 141) and, for a bin with no errexit, different OUTCOMES.
+# Neither is inherited here: each leg sets the disposition it names, so this assertion means the
+# same thing wherever it runs, and SAFE means safe under both — which is exactly what the
+# tool's two mechanisms are for (the trap answers the signal, the tolerated write answers the
+# EPIPE rc; either alone leaves one disposition uncovered).
+#
+# `set +e` is load-bearing: under `pipefail` the pipeline's status IS the writer's own verdict
+# (rc 1 here), so errexit would kill the suite on a PASSING assertion. `|| true` would not do —
+# `true` is itself a pipeline and resets PIPESTATUS before it can be read.
+run_truncated() {
+    local bindir="$1"; shift
+    local reader=(); while [ "$1" != "--" ]; do reader+=("$1"); shift; done; shift
+    # ⛔ `env`, NOT `trap`: a signal IGNORED on entry to a non-interactive shell cannot be
+    # reset from inside it, so `trap - PIPE` is a silent no-op on a CI runner and both legs
+    # would measure SIG_IGN. `env --default-signal` sets the disposition in the child, after
+    # fork and before exec. Measured: from an ignoring parent, `trap - PIPE` gave rc 1 where
+    # `env --default-signal=PIPE` gave 141 on the same command.
+    set +e
+    TRC_DFL="$( env --default-signal=PIPE env "PATH=$bindir:/usr/bin:/bin" "$CHECK" "$@" 2>"$TMP/trunc.err" \
+                | "${reader[@]}" >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
+    TERR_BYTES="$(wc -c <"$TMP/trunc.err" | tr -d ' ')"
+    TRC_IGN="$( env --ignore-signal=PIPE env "PATH=$bindir:/usr/bin:/bin" "$CHECK" "$@" 2>/dev/null \
+                | "${reader[@]}" >/dev/null 2>&1; printf '%s' "${PIPESTATUS[0]}" )"
+    set -e
+}
+
+echo "== the STALE-COPIES verdict survives a truncating reader =="
+run_check "$TMP/bin4"                       # re-establish DIRECT rc + stderr for comparison
+eq "witness: the direct run still carries the verdict" "1" "$RC"
+eq "…and real stderr with it" "true" "$([ "${#ERR}" -gt 100 ] && echo true || echo false)"
+
+# ⛔ `head -n 0` ONLY, AND THE OMISSIONS ARE MEASURED RATHER THAN ASSUMED. `head -1` and
+# `head -c 1` were both here and were both DROPPED: this fixture's stdout is a single short
+# line, so those readers consume the whole of it before exiting and the writer never meets a
+# closed pipe. Run against the defect with `trap '' PIPE` deleted, they PASSED while `head -n 0`
+# reported 141 — they cannot fail on this payload, which makes them decorations, not checks.
+# The wider reader set is exercised where the payload is big enough to make it mean something
+# (tests/gh-code-search-selftest.sh, on an 11 KB page).
+run_truncated "$TMP/bin4" head -n 0 --
+eq "through \`head -n 0\` at SIG_DFL: rc is the verdict, not a signal death" "$RC" "$TRC_DFL"
+eq "…and at SIG_IGN (the CI disposition) too"                               "$RC" "$TRC_IGN"
+eq "…and the ✗ explanation still reaches stderr" "true" \
+   "$([ "$TERR_BYTES" -gt 100 ] && echo true || echo false)"
+
+echo "== …and so does the rc-0 verdict on a PASSING tree =="
+# The card measured this half separately, and it is the one that hides: a truncated rc 141 in
+# place of a clean rc 0 says "this runtime is broken" about a runtime that is fine.
+run_check "$TMP/bin1"
+eq "witness: the passing topology is rc 0 directly" "0" "$RC"
+run_truncated "$TMP/bin1" head -n 0 --
+eq "through \`head -n 0\` at SIG_DFL: still rc 0" "0" "$TRC_DFL"
+eq "…and at SIG_IGN too"                          "0" "$TRC_IGN"
+
 rm -rf "$HOME/agent-board-toolkit"
 run_check "$TMP/bin4"
 eq "unverifiable copy → rc 0 (warn, honest UNKNOWN)" "0" "$RC"
@@ -187,7 +258,7 @@ probed="$(_probed_tools)"
 eq "probe readback is non-empty" "false" "$([ -z "$probed" ] && echo true || echo false)"
 # A named member, not a count: a count pins the check to a past value and rots as bin/ grows.
 eq "probe readback carries a known member" "true" \
-   "$(printf '%s\n' "$probed" | grep -qx 'kbcard' && echo true || echo false)"
+   "$(has_line 'kbcard' "$probed")"
 eq "witness: the bin/ side is non-empty too" "true" \
    "$([ -n "$(_public_bin_names "$HERE/../bin")" ] && echo true || echo false)"
 

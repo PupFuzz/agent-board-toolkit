@@ -77,7 +77,7 @@ echo "== board-card-start --lint — the wiring the pre-push hook invokes (subpr
 # --lint short-circuits before any board/network work; exercises the real arg path + exit code.
 _lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
 [[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
-printf '%s' "$_lout" | grep -q "board-branch-lint:.*card 4524" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
+grep -q "board-branch-lint:.*card 4524" <<< "$_lout" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
 _lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
 [[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
 
@@ -114,7 +114,7 @@ if command -v git >/dev/null 2>&1; then
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
-        [[ -s "$_log" ]] || printf '%s' "$_out" | grep -q "fix/card-4242-x"
+        [[ -s "$_log" ]] || grep -q "fix/card-4242-x" <<< "$_out"
     }
 
     # ZERO ARGS → the current branch. hooks/post-checkout passes NO arguments at all, so this is
@@ -131,7 +131,7 @@ if command -v git >/dev/null 2>&1; then
     # moves a card the caller never named (an unexpanded "$BRANCH" is the way in).
     _bcs_run ""
     [[ "$_rc" -eq 0 ]] && ok "empty branch: exits 0 (fail-soft)" || bad "empty branch: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "is empty" \
+    grep -q "is empty" <<< "$_out" \
         && ok "empty branch: refuses loudly" || bad "empty branch: no refusal on stderr: $_out"
     _bcs_attempted_move \
         && bad "empty branch: fell through to HEAD and attempted a move: $_out" \
@@ -146,7 +146,7 @@ if command -v git >/dev/null 2>&1; then
         || ok "<branch> --lint: no move attempted"
     # …and it is lint MODE, not merely an early exit: a warn-worthy branch must still warn.
     _bcs_run "fix/card_4524-x" --lint
-    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4524" \
+    grep -q "board-branch-lint:.*card 4524" <<< "$_out" \
         && ok "<branch> --lint: actually lints (the warning is emitted)" || bad "<branch> --lint: no lint warning: $_out"
 
     # LEADING --lint — hooks/pre-push's call form — keeps working: lint only, no move.
@@ -161,13 +161,13 @@ if command -v git >/dev/null 2>&1; then
     # here: with a token-free `--bogus` it would pass even when the flag is stored as the branch.
     _bcs_run --card-4242
     [[ "$_rc" -eq 0 ]] && ok "unknown option: exits 0" || bad "unknown option: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unknown option" \
+    grep -q "unknown option" <<< "$_out" \
         && ok "unknown option: refuses loudly" || bad "unknown option: not refused: $_out"
     _bcs_attempted_move \
         && bad "unknown option: attempted a move: $_out" || ok "unknown option: NO board work attempted"
     _bcs_run "fix/card-4242-x" "fix/card-9999-y"
     [[ "$_rc" -eq 0 ]] && ok "extra positional: exits 0" || bad "extra positional: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unexpected extra argument" \
+    grep -q "unexpected extra argument" <<< "$_out" \
         && ok "extra positional: refuses loudly" || bad "extra positional: not refused: $_out"
     _bcs_attempted_move \
         && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
@@ -182,7 +182,7 @@ if command -v git >/dev/null 2>&1; then
     }
     for _hflag in --help -h; do
         rm -f "$_log"; _bcs_help_stdout "$_hflag"
-        printf '%s' "$_hout" | grep -q "^usage: board-card-start" \
+        grep -q "^usage: board-card-start" <<< "$_hout" \
             && ok "$_hflag: prints the usage line on STDOUT" \
             || bad "$_hflag: no usage line on stdout: $_hout"
         [[ -s "$_log" ]] \
@@ -220,10 +220,10 @@ if command -v git >/dev/null 2>&1; then
     # while dropping the argument would pass an rc-0-and-no-refusal test).
     _bcs_run --lint -- "-card_4242-x"
     [[ "$_rc" -eq 0 ]] && ok "--lint -- <dash-name>: exits 0" || bad "--lint -- <dash-name>: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unknown option" \
+    grep -q "unknown option" <<< "$_out" \
         && bad "--lint -- <dash-name>: refused as an option — the terminator is decorative: $_out" \
         || ok "--lint -- <dash-name>: NOT refused as an unknown option"
-    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+    grep -q "board-branch-lint:.*card 4242" <<< "$_out" \
         && ok "--lint -- <dash-name>: the name reached the lint (it warns)" \
         || bad "--lint -- <dash-name>: no lint warning — the argument was dropped: $_out"
     # "no move attempted" is asserted on the CORRELATING dash-name, never on the warn-worthy one:
@@ -247,7 +247,7 @@ if command -v git >/dev/null 2>&1; then
     # of that arm is how the two sides would drift apart, so this is the assertion that pins it.
     _bcs_run -- ""
     [[ "$_rc" -eq 0 ]] && ok "-- \"\": exits 0" || bad "-- \"\": expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "is empty" \
+    grep -q "is empty" <<< "$_out" \
         && ok "-- \"\": still refuses an empty positional" || bad "-- \"\": empty not refused: $_out"
     _bcs_attempted_move \
         && bad "-- \"\": fell through to HEAD and attempted a move: $_out" \
@@ -282,7 +282,7 @@ if command -v git >/dev/null 2>&1; then
         [[ -z "$_out" ]] && ok "pre-push '-foo': SILENT — no 'no card moved' refusal on a valid branch" \
             || bad "pre-push '-foo': the hook printed a refusal for a branch git accepts: $_out"
         _pp_run "-card_4242-x"
-        printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+        grep -q "board-branch-lint:.*card 4242" <<< "$_out" \
             && ok "pre-push '-card_4242-x': still LINTS through the terminator" \
             || bad "pre-push '-card_4242-x': the advisory did not fire: $_out"
     else
@@ -336,7 +336,7 @@ if command -v git >/dev/null 2>&1; then
     git init -q "$_t/refuse"; git -C "$_t/refuse" config core.hooksPath .githooks
     _rc=0; _out="$(bash "$IBH" "$_t/refuse" 2>&1)" || _rc=$?
     [[ "$_rc" -ne 0 ]] && ok "in-tree hooksPath refused (rc=$_rc)" || bad "in-tree hooksPath must refuse (got rc=$_rc)"
-    printf '%s' "$_out" | grep -q "resolves inside the tracked work tree" \
+    grep -q "resolves inside the tracked work tree" <<< "$_out" \
         && ok "refuse prints operator guidance" || bad "refuse guidance missing (set -e dead-code): $_out"
     # default repo (no hooksPath) → installs a symlink for EACH hook into .git/hooks
     git init -q "$_t/ok"
@@ -383,9 +383,9 @@ if command -v git >/dev/null 2>&1; then
         local _rc=0 _o
         _o="$(bash "$IBH" --check "$2" 2>&1)" || _rc=$?
         [[ "$_rc" -ne 0 ]] && ok "$1: refused (rc=$_rc)" || bad "$1: must refuse (got rc=$_rc, out=$_o)"
-        printf '%s' "$_o" | grep -q "$3" \
+        grep -q "$3" <<< "$_o" \
             && ok "$1: message names its own topology ($3)" || bad "$1: wrong message: $_o"
-        printf '%s' "$_o" | grep -q "$4" \
+        grep -q "$4" <<< "$_o" \
             && bad "$1: message carries another topology's wording ($4): $_o" \
             || ok "$1: does NOT emit another topology's wording"
     }
@@ -418,10 +418,10 @@ if command -v git >/dev/null 2>&1; then
 
         # (c) the note is on STDERR, names this topology, and not another's.
         _err="$(bash "$IBH" --check "$_repo" 2>&1 >/dev/null)"
-        printf '%s' "$_err" | grep -q "$_want" \
+        grep -q "$_want" <<< "$_err" \
             && ok "$_label: stderr note names its own topology ($_want)" \
             || bad "$_label: wrong/absent stderr note: $_err"
-        printf '%s' "$_err" | grep -q "$_not" \
+        grep -q "$_not" <<< "$_err" \
             && bad "$_label: note carries another topology's wording ($_not): $_err" \
             || ok "$_label: does NOT emit another topology's wording"
 
@@ -485,7 +485,7 @@ if command -v git >/dev/null 2>&1; then
     # Captured, never piped: `set -o pipefail` is live here, so `<refusal> | grep -q` reports the
     # REFUSAL's rc 1 and a matching pattern reads as a failure.
     _out="$(bash "$IBH" --check "$_t/wt" 2>&1 || true)"
-    printf '%s' "$_out" | grep -q "install-board-hooks $_t/main\$" \
+    grep -q "install-board-hooks $_t/main\$" <<< "$_out" \
         && ok "worktree refusal names the MAIN checkout as the command to run" \
         || bad "worktree refusal did not name the main checkout: $_out"
 
@@ -528,7 +528,7 @@ echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the ca
 _tmpd="$(mktemp -d)"
 kb_api() { KB_HTTP=200; return 0; }   # success path
 _out="$(KB_BCS_LOG="$_tmpd/ok.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
-printf '%s' "$_out" | grep -q 'OKMSG-emitted' && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
+grep -q 'OKMSG-emitted' <<< "$_out" && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
 [[ ! -s "$_tmpd/ok.log" ]] && ok "2xx writes NO durable failure line" || bad "2xx wrote an unexpected failure line: $(cat "$_tmpd/ok.log")"
 kb_api() { KB_HTTP=422; return 1; }   # non-2xx: KB_HTTP carries the code kb_api captured
 _out="$(KB_BCS_LOG="$_tmpd/fail.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
@@ -537,7 +537,7 @@ if grep -q 'FAILMSG-reason' "$_tmpd/fail.log" 2>/dev/null && grep -q 'HTTP 422' 
 else
     bad "non-2xx did not log fail-reason+status: $(cat "$_tmpd/fail.log" 2>/dev/null)"
 fi
-printf '%s' "$_out" | grep -q 'OKMSG-emitted' && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
+grep -q 'OKMSG-emitted' <<< "$_out" && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
 kb_api() { KB_HTTP=500; return 1; }
 _rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' 'x' 'y' >/dev/null 2>&1 || _rc=$?
 [[ "$_rc" -eq 0 ]] && ok "returns 0 even on a failed write (fail-soft: never blocks a checkout)" || bad "returned rc=$_rc on failure (must be 0)"
