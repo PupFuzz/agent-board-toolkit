@@ -14,6 +14,14 @@
 # (board-snapshot omits -e on purpose). A selftest that needs a variant helper simply
 # defines its own after sourcing (kb-board-lib's expect_rc/expect_out delegate to eq).
 
+# The suite runs OUT OF the checkout whose `bin/` is symlinked onto a maintainer's PATH, and
+# several selftests path-load `bin/*.py` with `importlib.util.spec_from_file_location` — a load
+# that caches the compiled bytecode beside its target, i.e. inside `bin/`. The shipped helpers
+# suppress that for themselves (card#6871); this covers the TEST side once, for every python3 any
+# selftest spawns, rather than at each heredoc. `bin-artifact-hygiene-selftest.sh` deliberately
+# clears it again per probe — its mutants have to be able to write, or they measure nothing.
+export PYTHONDONTWRITEBYTECODE=1
+
 fails=0
 ok()  { printf '  ok   %s\n' "$1"; }
 bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }

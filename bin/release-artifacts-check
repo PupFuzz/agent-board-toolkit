@@ -67,6 +67,18 @@
 # Merge-base version == head version ⇒ not a release PR ⇒ no member is asserted — but a
 # narrowed declaration is still refused, because that check never reads the classification.
 #
+# AND THE CLASSIFYING VALUE IS THE FIRST REGEX MATCH OVER CONTENT HEAD OWNS, so "equal" is not
+# on its own an answer (card#6488). A version-shaped line above the version line makes both
+# ends extract the same value and a real release PR read as "version unchanged": one prepended
+# comment, no config edit, and every member leg silently does not run. The unsteerable half is
+# the fork point's SET of matched values, and a real release must introduce a value there that
+# head carries and the fork point does not. So on an equal classifying value the two sets are
+# compared: exactly one value new at head NAMES the version being shipped and the PR is a
+# release after all (`::warning::`, then every member asserted against that value); more than
+# one is rc 2, because which version is being shipped is then genuinely unknown; none is the
+# ordinary unchanged verdict. A value the fork point carries and head drops is a deletion, not
+# a release, and does not enter the test.
+#
 # NO FORK-POINT CONFIG (the adoption PR that CREATES it, a config renamed since, an
 # unparseable or key-less one) is a WARN, never a refusal: those keys can only enter the
 # fork point through a merged release, so refusing would deadlock a repo that cannot then
@@ -88,9 +100,10 @@
 # member failed, or a declared member was removed without acknowledgement (every failure is
 # reported, not just the first). 2 = usage/config error, an unresolvable merge base, a
 # config not committed at head, a member declared in both `artifacts` and
-# `retired_artifacts`, or a version that could not be read at either end — none of these is
-# EVER classified as "not a release PR", because that misclassification is a silent non-run
-# of the whole gate rather than a pass.
+# `retired_artifacts`, a version that could not be read at either end, or a version file whose
+# classifying match is unchanged while it carries SEVERAL values head introduced (the version
+# being shipped is then unknown) — none of these is EVER classified as "not a release PR",
+# because that misclassification is a silent non-run of the whole gate rather than a pass.
 set -euo pipefail
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
@@ -472,7 +485,8 @@ fi
 [ -n "$VERSION_FILE" ]  || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_file — the release-PR classification cannot run"
 [ -n "$VERSION_REGEX" ] || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_regex — the release-PR classification cannot run"
 
-# _extract_version <ref> <label> — sets EXTRACTED_VERSION from <ref>:<version_file>. <label>
+# _extract_version <ref> <label> — sets EXTRACTED_VERSION and EXTRACTED_VALUES from
+# <ref>:<version_file>. <label>
 # names which END of the range <ref> is, because <ref> is often a resolved merge-base SHA that
 # appears in none of the caller's inputs — an error naming only that SHA is not actionable.
 #
@@ -486,9 +500,18 @@ fi
 # `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
 # first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
 # perfectly good extraction. Emptiness is what is tested, immediately below.
+#
+# EXTRACTED_VALUES is EVERY value the regex matches at that ref — deduped, in first-appearance
+# order — and it exists because the CLASSIFYING value above is the FIRST match over content
+# HEAD OWNS (card#6488). Its first element is always EXTRACTED_VERSION: the same pattern over
+# the same content matched at least once, and a first match carrying no numeric run has
+# already died. The two therefore cannot disagree about which value classifies; the list only
+# adds the ones the `head -1` discards.
 EXTRACTED_VERSION=""
+EXTRACTED_VALUES=()
 _extract_version() {
-  local ref="$1" label="$2" content
+  local ref="$1" label="$2" content m v
+  local -A seen=()
   # The remediation names WHERE THE PATH CAME FROM, not just the path: `version_file` is read
   # from the config at $KEY_SRC, so the commonest real cause is that head RELOCATED the file
   # while the fork point still names the old path — a shallow-clone message alone would be
@@ -500,20 +523,69 @@ _extract_version() {
     | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
   [ -n "$EXTRACTED_VERSION" ] \
     || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
+  # The same two-stage extraction, per match rather than on the first one. A match carrying no
+  # numeric run contributes nothing (it is not a value); the `|| true` is the SIGPIPE guard the
+  # note above describes, on the same shape of pipeline.
+  EXTRACTED_VALUES=()
+  while IFS= read -r m; do
+    v="$(printf '%s\n' "$m" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+    [ -n "$v" ] || continue
+    [ -z "${seen[$v]:-}" ] || continue
+    seen["$v"]=1; EXTRACTED_VALUES+=("$v")
+  done < <(printf '%s\n' "$content" | grep -oiE "$VERSION_REGEX")
 }
 
-_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"
-_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"
+_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"; BASE_VALUES=("${EXTRACTED_VALUES[@]}")
+_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"; HEAD_VALUES=("${EXTRACTED_VALUES[@]}")
 
-if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
-  if [ "$LOST" -gt 0 ]; then
-    echo "release-artifacts-check: version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR, so no member was asserted — but $LOST declared artifact(s) were removed without acknowledgement, which is refused on every PR class" >&2
-    exit 1
-  fi
-  echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
-  exit 0
-fi
 V="$HEAD_VERSION"
+if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+  # EQUAL IS NOT YET AN ANSWER (card#6488; the header states the rule, this states why it is
+  # shaped the way it is). The unsteerable half is the FORK POINT's set of matched values — a merged commit no PR
+  # under review can edit. A release SHIPS a version, and the version file must carry it to be
+  # tagged and to satisfy its own artifact leg, so a real release ALWAYS introduces a value at
+  # head that the fork point does not carry. That is the test, and it needs no diff and no
+  # match positions: a value at head absent from the fork point, while the classifying match
+  # is unchanged, is a release the first-match selector was steered away from.
+  #
+  # ONE such value NAMES the version being shipped, so the gate runs — this classifies as a
+  # release PR and asserts every member against it, which is the verdict the poisoning existed
+  # to avoid. SEVERAL and the version being shipped is genuinely ambiguous: rc 2, never a pass,
+  # on the rule this file already holds everywhere else — a version that cannot be determined
+  # is a refusal, because reading it as "not a release PR" is a silent non-run of the gate.
+  #
+  # A value the fork point carries and head does NOT is not a release signal (a deletion or a
+  # reorder), so it does not enter the test: the pre-existing "unchanged" verdict stands, and
+  # a repo that removes a stray version-shaped line is not redded for it.
+  # Neither list can be empty here — both extractions refused above unless they produced a
+  # value — so no emptiness guard is written around either loop.
+  NEW_AT_HEAD=()
+  for v in "${HEAD_VALUES[@]}"; do
+    found=0
+    for b in "${BASE_VALUES[@]}"; do [ "$b" != "$v" ] || { found=1; break; }; done
+    [ "$found" -eq 1 ] || NEW_AT_HEAD+=("$v")
+  done
+  case "${#NEW_AT_HEAD[@]}" in
+    0)
+      if [ "$LOST" -gt 0 ]; then
+        echo "release-artifacts-check: version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR, so no member was asserted — but $LOST declared artifact(s) were removed without acknowledgement, which is refused on every PR class" >&2
+        exit 1
+      fi
+      echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
+      exit 0;;
+    1)
+      V="${NEW_AT_HEAD[0]}"
+      # A `::warning::`, not a silent switch: the classifying match says one thing and the file
+      # says another, and WHICH value the members are judged against is the first thing a
+      # maintainer needs when this fires on an honest PR that merely added a version-shaped
+      # string. The remedy is the regex, and it is named — `version_regex` is read from the
+      # fork point, so tightening it takes effect from the PR that MERGES the tightening, not
+      # from this one.
+      echo "::warning::release-artifacts-check: '$VERSION_FILE' carries $V at $HEAD_REF and not at the fork point ($BASEREF), while the FIRST version_regex match is unchanged ($HEAD_VERSION) at both ends — classifying this as a release PR of $V rather than as 'version unchanged', which would silently assert no member. If this is not a release, the version_regex declared by $CONFIG_ROOTREL at $KEY_SRC matches more than the version declaration; tighten it (in its own PR — it is read from the fork point) or drop the extra version-shaped text.";;
+    *)
+      die "cannot determine the version being shipped: '$VERSION_FILE' carries ${#NEW_AT_HEAD[@]} values at $HEAD_REF that the fork point ($BASEREF) does not (${NEW_AT_HEAD[*]}), while the FIRST version_regex match is unchanged ($HEAD_VERSION) at both ends — refusing rather than classifying this as 'not a release PR', which would silently assert no member. Tighten the version_regex declared by $CONFIG_ROOTREL at $KEY_SRC so it matches only the version declaration (in its own PR — it is read from the fork point), or drop the extra version-shaped text.";;
+  esac
+fi
 
 # Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
 # match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH

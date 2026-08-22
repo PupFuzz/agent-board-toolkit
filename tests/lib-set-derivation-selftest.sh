@@ -90,7 +90,10 @@ REF_PAT='^[[:space:]]*source "\$KB_LIB"'
 # _derive <pattern> — the basenames the pattern selects out of bin/, C-collated, one per line.
 # `-d skip` because `bin/` can hold a directory that is not a tool: a local `__pycache__` makes
 # plain `grep … bin/*` exit 2 under `pipefail` on the developer's host and 0 in CI, which would
-# make this file's verdict a property of whether someone had run the python helpers.
+# make this file's verdict a property of that host's history rather than of the tree. Running a
+# python helper was how that directory used to appear and no longer is (card#6871); a
+# `py_compile bin/*.py` still does it, so the flag stays — the hazard is a non-tool directory in
+# `bin/`, not one particular way of getting one.
 # The `|| true` is not decoration: a pattern that matches NOTHING is the state this file exists to
 # catch, and under `set -e` + `pipefail` grep's rc 1 would kill the run at `got="$(_derive …)"`
 # before the comparison it was about to fail. Found by mutating every published spelling at once.
