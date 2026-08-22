@@ -71,8 +71,8 @@ BINDIR="$HERE/../bin"
 _mktmp_scratch
 
 # The CLIs whose --help prints a leading comment header.
-CLIS=(promote-released-cards release-pr-body release-artifacts-check agent-board-toolkit-runtime-check
-      dependabot-deploy-reconcile board-stats gh-code-search)
+CLIS=(promote-released-cards release-pr-body release-artifacts-check release-tag-check
+      agent-board-toolkit-runtime-check dependabot-deploy-reconcile board-stats gh-code-search)
 
 # Bins that carry `--help` and are deliberately NOT asserted above. Each entry states WHY, and
 # the reason is machine-checked below — an exclusion here is a claim, not a licence. A one-line
@@ -139,7 +139,7 @@ eq "the bin/ --help scan is non-empty" "false" "$([ -z "$found" ] && echo true |
 # A named member, not a count: a count pins the check to a past value and goes stale as the
 # toolkit grows, whereas a member that must be present re-derives nothing and cannot rot.
 eq "…and contains a known member" "true" \
-   "$(printf '%s\n' "$found" | grep -qx 'promote-released-cards' && echo true || echo false)"
+   "$(has_line 'promote-released-cards' "$found")"
 
 echo "== every bin/ carrying --help is accounted for: CLIS ∪ EXCLUDED =="
 # `comm` validates its inputs' order in the AMBIENT locale, so it is pinned to C alongside both
@@ -233,7 +233,7 @@ echo "== prove-it-can-fail: a registry entry with no --help left is REPORTED =="
 mkdir -p "$TMP/bin-gone"
 printf '%s\n' '    -h|--help) usage; exit 0 ;;' > "$TMP/bin-gone/adopt-to-dl"
 eq "a registry name absent from the scan is reported" "true" \
-   "$(LC_ALL=C comm -13 <(_help_bins "$TMP/bin-gone") <(_registry) | grep -qx 'release-pr-body' && echo true || echo false)"
+   "$(has_line 'release-pr-body' "$(LC_ALL=C comm -13 <(_help_bins "$TMP/bin-gone") <(_registry))")"
 eq "the surviving entry is NOT reported (witness: the scan was read, not ignored)" "" \
    "$(LC_ALL=C comm -13 <(_help_bins "$TMP/bin-gone") <(_registry) | grep -x 'adopt-to-dl' || true)"
 

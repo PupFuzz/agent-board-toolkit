@@ -114,9 +114,9 @@ eq "bin/ enumeration is non-empty"        "false" "$([ -z "$bins" ] && echo true
 # A named member, not a count: a count pins the check to a past value and goes stale as the
 # toolkit grows, whereas a member that must be present re-derives nothing and cannot rot.
 eq "README table extraction contains a known row key" "true" \
-   "$(printf '%s\n' "$rows" | grep -qx 'bin/kbcard' && echo true || echo false)"
+   "$(has_line 'bin/kbcard' "$rows")"
 eq "bin/ enumeration contains a known tool" "true" \
-   "$(printf '%s\n' "$bins" | grep -qx 'kbcard' && echo true || echo false)"
+   "$(has_line 'kbcard' "$bins")"
 
 # Exclusion 1, asserted on the live tree: the absence claim is paired with its presence
 # witness, and the witness is OBSERVED present first — otherwise "not in the public set"
@@ -201,7 +201,7 @@ cat > "$TMP/README-nonbin.md" <<'MD'
 | `bin/out-of-section` | must not be seen — this table is under another heading |
 MD
 eq "witness: the extractor DOES see the non-bin/ row" "true" \
-   "$(_table_rows "$TMP/README-nonbin.md" | grep -qx 'promote/action.yml' && echo true || echo false)"
+   "$(has_line 'promote/action.yml' "$(_table_rows "$TMP/README-nonbin.md")")"
 eq "…and the compared set excludes it" "kbcard" "$(_bin_rows "$TMP/README-nonbin.md")"
 eq "the out-of-scope row is reported, not silently dropped" "promote/action.yml" \
    "$(_nonbin_rows "$TMP/README-nonbin.md")"

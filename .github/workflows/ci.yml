@@ -114,6 +114,8 @@ jobs:
           - next-dl-selftest
           - no-task-wrapper-selftest
           - path-link-recipe-selftest
+          - piped-match-gate-selftest
+          - pipeline-free-match-selftest
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
@@ -121,6 +123,7 @@ jobs:
           - readme-bin-coverage-selftest
           - release-artifacts-selftest
           - release-pr-body-selftest
+          - release-tag-check-selftest
           - runtime-check-selftest
           - value-flag-derivation-selftest
     steps:

@@ -1526,10 +1526,13 @@ py_execs() {
 }
 # Captured into a variable rather than piped straight into `grep -q`: under `set -o pipefail`
 # an early-exiting consumer can leave the producer's SIGPIPE as the pipeline's status, and the
-# `&& echo true || echo false` would then report a MATCH as false.
+# `&& echo true || echo false` would then report a MATCH as false. The membership test below is
+# the prelude's `has_line`, not a second `printf | grep -qx` — capturing the producer and then
+# re-piping the capture only moves the same window one stage over (card#7175: a builtin upstream
+# takes SIGPIPE too, once the payload crosses the 64 KiB pipe buffer).
 execs="$(py_execs)"
 eq "positive control: the executed-binary set is non-empty and carries a known member" "true" \
-   "$(printf '%s\n' "$execs" | grep -qx 'gh' && echo true || echo false)"
+   "$(has_line 'gh' "$execs")"
 eq "the implementation executes exactly gh and ps — no git, and no shell to hide one in" \
    "$(printf 'gh\nps')" "$execs"
 # The wrapper is bash, so the probe is a command-word match over comment-stripped source.
