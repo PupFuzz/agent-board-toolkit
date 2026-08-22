@@ -1299,6 +1299,31 @@ finding with no owner is abandoned, not filed.
   answers *"is every guarded flag accounted for"*, never *"is every value-taking flag guarded"* —
   `agent-board-toolkit-runtime-check`'s `--reference` guards with `"${2:?…}"` and is invisible to
   it, which is the exclusion Stage C already reasons and keeps by design, not a new gap.
+- **The three-outcome read, collapsed to two** (card#7210; the roll is #6572 #6594 #6630 #6631
+  #6680 #6884 #7174 #6365) — a read has three outcomes, *present* / *absent* / *unreadable*, and a
+  site that discards the read's status and then tests the survivor for emptiness has two. The
+  unreadable case is scored as a **measured negative** and the claim built on it is stated with the
+  confidence of a real one — `fetch_board_cards` answered an unreadable page-1 `2xx` with
+  `RC=0 STDOUT=[[]]`, byte-identical to an empty board. Every instance was found by **reading**,
+  never by a failure, which is the property that makes instance-fixing insufficient here: **PR #274
+  re-minted the shape one commit after its own parent (`b2071b9`) closed it at
+  `install-board-hooks`.** That is Stage B's card#5740 lesson a third time — *fixing N copies
+  without the guard that forbids the N+1th leaves the cause in place* — so the guard is
+  `tests/read-outcome-collapse-selftest.sh`, and it is deliberately **not** a rewrite of the sites
+  it lists. It derives its population from the tree on every run (`find bin hooks -maxdepth 1 -type
+  f ! -name '*.py'` — the `bin`/`hooks` half of `ci.yml`'s shellcheck expression; `tests/` is a
+  stated exclusion, since the harness discards a read's status on purpose), keys members on
+  `<file>:<var>` rather than a line number so a disposition does not rot on the next edit above it,
+  prints its **denominator** on every run — clean or not — and reds on a member its
+  **disposition list** does not carry, one line each with the reason it is permitted. The split
+  between the two halves is the point: (a) *the status is discarded* and (b) *the value is later
+  tested for emptiness* are both derivable, but **whether that collapse is a defect is not** — it
+  depends on what the branch does next, and `fetch_board_cards`' `-z "$data"` refusal and a
+  confident wrong count one file over match identically. So the scanner owns the population and the
+  list owns the verdict. **Weakest properties, stated so it is not over-cited:** it cannot see a
+  collapse that never touches a variable (`if [ -n "$(cmd 2>/dev/null)" ]`), one carried across a
+  function boundary, `bin/*.py`, or the bash embedded in the two composite actions — and a
+  disposition is a recorded judgement, not a proof.
 
 ---
 
