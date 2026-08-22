@@ -24,11 +24,16 @@
 # the entry is still per-PR and still gated.
 #
 # TWO RESIDUALS, both MEASURED on this file's real structure, neither gated:
-#   * UNION IS SILENT. A merged `[Unreleased]` is never presented for review, and it applies to
-#     every three-way merge git performs — `merge`, `rebase`, `cherry-pick`, `revert`. Measured:
-#     cherry-picking a commit that REWORDS an existing entry onto a branch that appended a new
-#     one leaves BOTH spellings of the reworded entry, stale copy included. Read the merge
-#     commit's diff of `[Unreleased]`; a clean merge is not a reviewed one.
+#   * UNION IS SILENT, and it applies to every three-way merge git performs — `merge`, `rebase`,
+#     `cherry-pick` and `revert` — not only to a PR merge. Two consequences, each measured with
+#     its no-attribute control: cherry-picking a commit that REWORDS an existing entry onto a
+#     branch that appended a new one leaves BOTH spellings, stale copy included (control: that
+#     one conflicts); and `git revert` of a commit whose entry sits beside a later one becomes a
+#     NO-OP — `nothing to commit, working tree clean`, rc 1, entry still in the file — because
+#     union re-adds exactly what the reverse patch removes (control: a conflict, ALSO rc 1, so
+#     the exit code does not distinguish them; read the message). A merged `[Unreleased]` is
+#     never presented for review, so read the merge commit's diff of it: a clean merge is not a
+#     reviewed one.
 #   * ORDER FOLLOWS MERGE DIRECTION, and one direction files an entry in the wrong section. With
 #     a release rename (`[Unreleased]` → `[X.Y.Z]`) as OURS and a feature branch as THEIRS, the
 #     incoming entry lands UNDER the version heading — well-formed, clean, and wrong; the
