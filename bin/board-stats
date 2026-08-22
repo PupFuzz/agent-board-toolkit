@@ -59,13 +59,20 @@
 # failure is named on its own line, the sections it could not fill are marked UNAVAILABLE
 # rather than omitted, and the report ends with a PARTIAL line. A number that is a floor
 # rather than a total (a capped card read, a truncated changelog window) says so where it is
-# printed — and, since card#7228, the STOCK numbers say it ON THEMSELVES: a partial card read
-# prefixes every count and every queue age in that section with `≥`, so a number cannot be
-# read as a total even quoted out of the ⚠ line that qualifies it. Two things that claim is
-# NOT, both open and both recorded in docs/CONSOLIDATION-PLAN.md rather than implied away:
-# the FLOW counts under a truncated changelog window still print bare under their own ⚠ line,
-# and `--format json` still carries no completeness field at all — the only machine-visible
-# signal there is a prose string inside `failures[]`.
+# printed — and, since card#7228 (stock) and card#7235 (flow), the NUMBERS say it ON
+# THEMSELVES: a partial card read prefixes every count and every queue age in the stock section
+# with `≥`, and a changelog window this tool could only partly read prefixes every count the
+# flow section prints — `created`, `moved`, `same-stage moves`, every per-transition,
+# per-resolution and per-wash count, and every human/service/unattributed number inside them —
+# so a number cannot be read as a total even quoted out of the ⚠ line that qualifies it. A ZERO
+# is a quantity too, so the arm that prints a word rather than a number — `transitions: none in
+# window` — names the population it is true of instead: `none in the events read`. The two
+# completeness states are DERIVED SEPARATELY from the two reads, and neither floors the other:
+# a whole card read under a partly-read window floors the flow half alone, and the reverse
+# floors the stock half alone. ONE thing that claim is still NOT, open and recorded in
+# docs/CONSOLIDATION-PLAN.md rather than implied away: `--format json` carries no completeness
+# field for EITHER half — the only machine-visible signal there is a prose string inside
+# `failures[]`.
 #
 # Usage: board-stats [--board <name> | --all] [--since 24h|7d|<ISO-8601>] [--format text|json]
 #
@@ -243,6 +250,11 @@ def round1: ((. * 10) | round) / 10;
     # _bs_one_board and handed here rather than re-derived per render — card#7228.
     # It is INTERNAL: the `json` output arm strips it, see the note there.
     stock_complete: (if $meta.stock_ok | not then null else $meta.stock_complete end),
+    # The third state for the FLOW half, and it is a SEPARATE one: the two sections are read
+    # from two surfaces with two failure modes, so a whole card read says nothing about the
+    # changelog window and vice versa. Same shape as `stock_complete` above — derived once at
+    # the guard in _bs_one_board, INTERNAL, stripped by the `json` arm (card#7235).
+    flow_complete: (if $meta.flow_ok | not then null else $meta.flow_complete end),
     flow: (if $meta.flow_ok | not then null else
       { created: ($created | length),
         moved: ($moved | length),
@@ -269,13 +281,18 @@ def pad($n): tostring | . as $s | ($n - ($s|length)) as $k
              | $s + (if $k > 0 then (" " * $k) else "" end);
 def lpad($n): tostring | . as $s | ($n - ($s|length)) as $k
               | (if $k > 0 then (" " * $k) else "" end) + $s;
-def split_note: (if .actors.other > 0 then "   human \(.actors.human) · service \(.actors.service) · unattributed \(.actors.other)"
-                 else "   human \(.actors.human) · service \(.actors.service)" end);
 # The floor marker, applied to the NUMBER and not to the line, so it survives the number
 # being quoted out of the ⚠ line above it (card#7228). Prefixed BEFORE the padding so the
 # columns still line up: `≥` is one display cell wide, and the pad helpers above measure in
 # CODEPOINTS, so the two agree.
 def fl($f): $f + tostring;
+# The human/service/unattributed numbers are counts of the same rows the line they hang off
+# counts, so they take the same marker from the same flag — passed in rather than read from a
+# global, because this one helper renders the `moved` line and the per-transition and
+# per-resolution rows under it.
+def split_note($f): (if .actors.other > 0
+                     then "   human \(.actors.human | fl($f)) · service \(.actors.service | fl($f)) · unattributed \(.actors.other | fl($f))"
+                     else "   human \(.actors.human | fl($f)) · service \(.actors.service | fl($f))" end);
 # The oldest-card ID is the one thing in this section that is NOT a number, and on a floored
 # render it is not safe either: `≥` says nothing about an identity, and a read that came back
 # short can have left the actual oldest card on that board undelivered — so a bare `(#11)`
@@ -284,6 +301,12 @@ def fl($f): $f + tostring;
 # same reason the marker does. The RULING — including why the ⚠ line above the section cannot
 # be where this lives — is owned once, by the card#7228 disposition in docs/CONSOLIDATION-PLAN.md.
 def idq($f): if $f == "" then "" else " among the cards read" end;
+# A ZERO IS A QUANTITY TOO. `transitions: none in window` asserts a TOTAL of zero and survives
+# being quoted out of the ⚠ line exactly as a digit does — and on a partly-read window it is
+# the one claim in the section the marker cannot reach, because there is no number to prefix.
+# So the population the `none` is true of is named in its place, which is the route idq takes
+# for the oldest-card id and for the same reason (card#7235).
+def nonepop($f): if $f == "" then "in window" else "in the events read" end;
 "── Board stats ── stock from the card snapshot · flow from the changelog ──",
 "window: \(.since.spec) — flow counts events at or after \(.since.cutoff) · generated \(.generated_at)",
 ( .boards[]
@@ -294,7 +317,20 @@ def idq($f): if $f == "" then "" else " among the cards read" end;
   # counts are, since a card the read never delivered can only be OLDER than the oldest one
   # it did. The card ID beside that age is not a quantity and takes `idq` rather than the
   # marker — see that definition above.
+  #
+  # The FLOW section has its own flag and its own denominator (card#7235): `created`, `moved`,
+  # `same-stage moves`, one count per transition, per resolution and per wash row, and the
+  # human/service/unattributed numbers inside every split note — every one of them counts rows
+  # from a window this tool could only partly read, so every one of them is a floor. The two
+  # things it does NOT mark are not quantities: the stage LABELS, and the `⤷` line naming where
+  # the changelog itself ends, which is the oldest row that WAS read and is exact. The empty
+  # transitions/resolutions arms print no number at all, so they take `nonepop` — see it above.
   | (if .stock_complete == false then "≥" else "" end) as $floor
+  # The flag for the FLOW section, driven off the completeness of the FLOW read alone. A card
+  # read and a changelog window fail independently, so one marker driven off either state would
+  # floor a section that was read whole (a qualifier on every report is a worse defect than the
+  # one this closes) or leave one bare that was not.
+  | (if .flow_complete == false then "≥" else "" end) as $fflow
   | "",
     "▸ \(.label)  [\(.board)\(if .board_id != null then " · board \(.board_id)" else "" end)]",
     ( .failures[] | "  ⚠ \(.)" ),
@@ -311,23 +347,23 @@ def idq($f): if $f == "" then "" else " among the cards read" end;
            ( if .flow.data_available_from != null
              then "    ⤷ the changelog reaches back only to \(.flow.data_available_from) — anything before that is UNREADABLE, not absent"
              else empty end ),
-           "    \("created" | pad(24))\(.flow.created | lpad(6))",
-           "    \("moved" | pad(24))\(.flow.moved | lpad(6))\(. | .flow | split_note)",
-           "    \("same-stage moves" | pad(24))\(.flow.same_stage_moves | lpad(6))   swimlane-only; not transitions, not resolutions",
-           ( if (.flow.transitions | length) == 0 then "    transitions: none in window"
+           "    \("created" | pad(24))\(.flow.created | fl($fflow) | lpad(6))",
+           "    \("moved" | pad(24))\(.flow.moved | fl($fflow) | lpad(6))\(.flow | split_note($fflow))",
+           "    \("same-stage moves" | pad(24))\(.flow.same_stage_moves | fl($fflow) | lpad(6))   swimlane-only; not transitions, not resolutions",
+           ( if (.flow.transitions | length) == 0 then "    transitions: none \(nonepop($fflow))"
              else "    transitions:",
                   ( .flow.transitions[]
-                    | "      \("\(.from_stage) -> \(.to_stage)" | pad(46))\(.count | lpad(5))"
-                      + split_note
+                    | "      \("\(.from_stage) -> \(.to_stage)" | pad(46))\(.count | fl($fflow) | lpad(5))"
+                      + split_note($fflow)
                       + (if .wash then "   [WASH]" elif .resolution then "   [resolution]" else "" end) )
              end ),
-           ( if (.flow.resolutions | length) == 0 then "    resolutions: none in window"
+           ( if (.flow.resolutions | length) == 0 then "    resolutions: none \(nonepop($fflow))"
              else "    resolutions, per destination stage (never collapsed into one number):",
-                  ( .flow.resolutions[] | "      \(.stage | pad(46))\(.count | lpad(5))" + split_note )
+                  ( .flow.resolutions[] | "      \(.stage | pad(46))\(.count | fl($fflow) | lpad(5))" + split_note($fflow) )
              end ),
            ( if (.flow.washes | length) == 0 then empty
              else "    washes (terminal -> non-terminal; reported, NOT netted against the resolutions above):",
-                  ( .flow.washes[] | "      \("\(.from_stage) -> \(.to_stage)" | pad(46))\(.count | lpad(5))" )
+                  ( .flow.washes[] | "      \("\(.from_stage) -> \(.to_stage)" | pad(46))\(.count | fl($fflow) | lpad(5))" )
              end )
       end ) ),
 ( if .partial then
@@ -550,7 +586,8 @@ _bs_one_board() {
     local envf="$HOME/.kanban-${name}-board.env"
     local -a fails=() vals=()
     local board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
-    local stock_ok=false stock_complete=false flow_ok=false rc pre map cls err termn pulln
+    local stock_ok=false stock_complete=false flow_ok=false flow_complete=false
+    local rc pre map cls err termn pulln
     local cardfile="$tmp/cards.json" rowsfile="$tmp/rows.jsonl"
     local flowmeta='{"pages":0,"truncated":false,"data_available_from":null,"error":null}'
     map="$_BS_EMPTY_MAP"
@@ -614,8 +651,15 @@ _bs_one_board() {
 
                 flowmeta="$(_bs_window_rows "$board_id" "$cut" "$rowsfile")"
                 err="$(printf '%s' "$flowmeta" | jq -r '.error // ""')"
+                # `flow_complete` is FAIL-CLOSED for the same reason `stock_complete` is
+                # (card#7235): initialised false, and exactly ONE arm — an empty `error`, the
+                # window read to its cutoff — claims otherwise. _bs_window_rows reports every
+                # way a window can end short through that one channel (the page cap, a log that
+                # ends inside the window, an unreadable page, a missing cursor), so a stop added
+                # to that loop floors the flow numbers whether or not anyone remembers to say
+                # so, and only an explicit edit to this arm can ever claim a window is whole.
                 if [[ -z "$err" ]]; then
-                    flow_ok=true
+                    flow_ok=true; flow_complete=true
                 elif [[ "$(printf '%s' "$flowmeta" | jq -r '.pages')" -gt 0 ]]; then
                     # Some of the window was read: report what there is, flagged, rather than
                     # dropping a section whose rows are in hand.
@@ -636,14 +680,15 @@ _bs_one_board() {
     meta="$(jq -n --arg name "$name" --arg label "$label" --arg bid "$board_id" \
         --argjson map "$map" --argjson flow "$flowmeta" --argjson failures "$failures_json" \
         --argjson now "$now" --argjson stock_ok "$stock_ok" --argjson flow_ok "$flow_ok" \
-        --argjson stock_complete "$stock_complete" \
+        --argjson stock_complete "$stock_complete" --argjson flow_complete "$flow_complete" \
         --argjson cls "$cls" '
         { name: $name, label: $label,
           board_id: (if $bid == "" then null else ($bid | tonumber? // $bid) end),
           names: $map.names, order: $map.order,
           term: $cls.term, pull: $cls.pull,
           now: $now, flow: $flow, failures: $failures,
-          stock_ok: $stock_ok, stock_complete: $stock_complete, flow_ok: $flow_ok }')"
+          stock_ok: $stock_ok, stock_complete: $stock_complete,
+          flow_ok: $flow_ok, flow_complete: $flow_complete }')"
 
     # The aggregation itself is the last thing that can drop a board out of the report
     # entirely, which is the one failure mode this tool must not have: a board that produced
@@ -657,7 +702,7 @@ _bs_one_board() {
     else
         jq -c -n --argjson meta "$meta" \
             '{ board: $meta.name, label: $meta.label, board_id: $meta.board_id,
-               stock: null, stock_complete: null, flow: null,
+               stock: null, stock_complete: null, flow: null, flow_complete: null,
                failures: ($meta.failures + ["this board could not be summarized — the report aggregation failed on its data"]) }'
     fi
 }
@@ -742,16 +787,17 @@ jq -s --argjson now "$now" --arg spec "$since" --argjson cutep "$cut" '
     || { echo "$KB_PROG: could not assemble the report" >&2; exit 1; }
 
 case "$format" in
-    # `stock_complete` is WITHHELD from the machine surface, deliberately and for now. The
-    # document carries it because the text renderer computes nothing of its own and needed a
-    # field to read; publishing it is a CONTRACT change — a key consumers must then honour —
-    # and this tool's JSON consumer set has not been enumerated (card#7228 records that as
-    # the unmeasured bound it is). So the emitted object is byte-identical to what it was
-    # before the marker landed, and the second half of that card is this `del` plus its
-    # doc/changelog entry. Stripping it here rather than assembling a second document keeps
-    # ONE derivation behind both formats — a sidecar joined back by board name is the drift
-    # this file's "one derivation feeds both output formats" note exists to prevent.
-    json) jq 'del(.boards[].stock_complete)' "$docfile" ;;
+    # `stock_complete` and `flow_complete` are WITHHELD from the machine surface, deliberately
+    # and for now. The document carries them because the text renderer computes nothing of its
+    # own and needed fields to read; publishing either is a CONTRACT change — a key consumers
+    # must then honour — and this tool's JSON consumer set has not been enumerated (card#7228
+    # records that as the unmeasured bound it is; card#7235 inherits it rather than deciding it
+    # a second time). So the emitted object is byte-identical to what it was before either
+    # marker landed, and the open half of both cards is this `del` plus its doc/changelog entry.
+    # Stripping them here rather than assembling a second document keeps ONE derivation behind
+    # both formats — a sidecar joined back by board name is the drift this file's "one
+    # derivation feeds both output formats" note exists to prevent.
+    json) jq 'del(.boards[].stock_complete, .boards[].flow_complete)' "$docfile" ;;
     text) _bs_render_text "$docfile" ;;
 esac
 
