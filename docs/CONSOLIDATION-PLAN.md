@@ -1054,9 +1054,9 @@ finding with no owner is abandoned, not filed.
 
   **TWO NEW members were found by the card#7235 sibling audit, on OTHER tools — found, not fixed,
   because each is an operator-facing report change and therefore ask-gated exactly as these two
-  were. Neither has a card id yet.**
+  were. **Filed 2026-08-22 as card#7291 and card#7292.**
 
-  - **`bin/board-session-close`'s `_bsc_advisory_leg` prints a KILLED leg's partial output on
+  - **card#7291 — `bin/board-session-close`'s `_bsc_advisory_leg` prints a KILLED leg's partial output on
     STDOUT and says it is partial on STDERR, below it** (`bin/board-session-close` :797 for the
     output, :804–:806 for the notice). A leg that hits the 60s wall clock is killed at `timeout`'s
     rc 124; its output — which for `_kbc-archive-eligible.py` and `_kbc-stale-blocker.py` is a block
@@ -1072,7 +1072,7 @@ finding with no owner is abandoned, not filed.
     neither the numerator nor the denominator*, not *a grep came back empty*. The drift-check leg
     at :911 splits the same two channels for the same reason — the delegate's output on stdout, the
     degraded-coverage ⚠ on stderr — so a fix here has two sites in this file, not one.
-  - **`bin/_kbc-stale-blocker.py`'s summary block prints bare counts under a partial corpus**
+  - **card#7292 — `bin/_kbc-stale-blocker.py`'s summary block prints bare counts under a partial corpus**
     (:627–:637). A declared board that fails to read is warned on stderr and the run continues, and
     the summary then prints `{total_live}` live cards indexed, `{total_open}` open cards scanned,
     `{examined}` citations examined, then `no blocking marker before it: N`, each `excluded, …: N`,
