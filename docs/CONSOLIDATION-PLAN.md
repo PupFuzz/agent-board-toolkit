@@ -590,6 +590,38 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
+  recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
+  drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
+  with 0 B of stdout** on a bare one, because `kb_load_config` resolves `$HOME/.kanban-dev-board.env`
+  before the no-argument help arm. The gate therefore returned **different verdicts for the same
+  commit** depending on who ran it, and only CI could see it. Closed with a planted config plus a
+  control that drives both sides — but the control is a **CI-side guard only** (measured: deleting
+  the plant reds on a bare box, reds nothing on a configured one), which is the property that makes
+  this shape survive review. **The whole 42-selftest CI matrix was re-run under a bare `$HOME`
+  looking for siblings and found none**, so this is one instance, not a class — recorded so the next
+  gate author knows the axis exists and that `--help`-shaped is not the same as host-independent.
+  One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
+  box, though its classification does not.
+- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
+  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+  (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
+  '*.sh'`), and by the time this was noticed the expression had been re-typed into
+  `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
+  `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
+  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
+  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  class found were inside the harness. So the lib exports **CI's two halves separately** and each
+  caller composes its own union — the population is a parameter, never a constant. Adoption is
+  behaviour-preserving by construction (byte-identical output to what each already computes), so
+  the other two can adopt in their own PRs; they were left untouched here because they were outside
+  that PR's file scope. The `ci.yml`↔lib restatement **cannot be deleted** (a workflow `run:` string
+  cannot source a bash lib), so it is **GUARDED** instead: `_ci_shellcheck_drift` reds when ci.yml
+  stops running either half, with planted positive/negative/no-file controls, all three watched to
+  fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
+  dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
+  prompted the extraction is not something this lib would have caught.
 - **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
   parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
   inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not
@@ -896,7 +928,9 @@ finding with no owner is abandoned, not filed.
   asymmetry"* — it was inherited from the era when the two sections were two independent passes,
   not a ruling, and it is recorded here as ruled-on rather than left implicit.
 
-  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review).**
+  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review —
+  the RENDERING half has closed since; the disposition paragraph directly below this one owns the
+  current state, and this paragraph is the finding as it was written).**
   It already emits an INCOMPLETE note at its `3|4` arm (`every stock count below is a floor, not a
   total`), which is why the first cut of this paragraph recorded the class as *"two members and was
   one instance"*. That was true of the NOTE and silent about the MARKER: every stock number
@@ -914,6 +948,82 @@ finding with no owner is abandoned, not filed.
   (canon #18) — rather than fixed inside card#6365, whose scope is the SessionStart renderer.
   Changing what `board-stats` prints and what its JSON asserts is an operator-facing report change
   and is ask-gated.
+
+  **DISPOSITION of that second member — the STOCK RENDERING is closed, the CLASS IS NOT
+  (card#7228).** The operator approved the rendering half only, and only that half was built:
+  `board-stats` now derives the completeness state once at its own `fetch_board_cards` rc guard and
+  prefixes `≥` onto every number the stock section prints. The state is **fail-closed**: it is
+  initialised false and exactly one arm — rc 0, the whole read — claims otherwise, so an rc added
+  to the accepted-partial `3|4` arm floors its numbers whether or not anyone remembers to say so,
+  and only an explicit edit to the rc-0 arm can ever claim a read is whole. (A `rc -ne 0`
+  derivation over one merged `0|3|4` arm — `board-snapshot`'s shape — was the first cut and is not
+  what shipped. **The reason first recorded here for abandoning it was wrong and is corrected:** it
+  said that shape pushed the guard's own `*)` arm past the ten-code-line window
+  `tests/fetch-board-cards-caller-claims-selftest.sh` derives its arm population inside. Re-measured
+  on the shipped bin, a COMPACT spelling of exactly that derivation — the merged arm plus a
+  single-line `if [[ "$rc" -ne 0 ]]; then … else … fi` — runs that selftest at **rc 0**, while a
+  fully expanded `if … fi` of the SAME derivation reds it on `bin/board-stats: the registered arm is
+  INSIDE the derived window [card snapshot unavailable …]`. So `ARM_WINDOW=10` constrains how many
+  CODE LINES a spelling spends between the call and its last arm — it constrains LAYOUT, not the
+  derivation — and it forbids no shape. The fail-closed default-false spelling stands on its own
+  stated ground, which is the only ground it ever needed: it is the stronger invariant, because a
+  new rc added to the accepted-partial arm inherits the floor instead of inheriting a claim.) The
+  denominator is one count per column, the total, and the oldest-card AGE in each
+  pullable column that holds one; the age joins the counts because a card the read never delivered
+  can only be OLDER than the oldest one it did, so the printed age is a floor for the same reason
+  the counts are. Measured against the pre-change bin, side by side through the shared curl stub:
+  the two bins are byte-identical on FOUR of the six format × rc combinations — the text render at
+  rc 0, and `--format json` at rc 0, rc 3 and rc 4 — and the two that differ are the text render at
+  rc 3 and rc 4, which is exactly this change. (The first cut of this sentence read "a complete read
+  is byte-identical … on text AND `--format json`, at rc 0, rc 3 and rc 4", which asserts the
+  partial TEXT renders are unchanged. They are not, and could not be.)
+
+  **THE CARD ID beside that age — this paragraph is the single owner of the ruling, and the first
+  one was wrong.** The id is the only value in the stock section that is not a number, so the
+  marker cannot carry it: `≥` says nothing about an identity. The first cut therefore left it bare
+  and justified that by *"the ⚠ line directly above the section already says the named card may not
+  be the oldest one on the board"* — **a sentence that does not exist**. The rendered ⚠ line is
+  `card snapshot INCOMPLETE (fetch rc=4) — every stock count below is a floor, not a total`; it
+  speaks only about the counts, so the age was correctly floored while `(#11)` was left asserting
+  *the oldest Backlog card is #11* off a read this tool had just declared incomplete — and by this
+  entry's own premise, the card that is actually oldest can be one the read never delivered, under a
+  DIFFERENT id. An operator could act on the wrong card. Two routes were on the table and neither
+  shipped: **extending the ⚠ text** would put the qualification back onto the line this whole change
+  exists because a value survives being quoted out of it, and **dropping the id on a partial read**
+  discards a datum that is true and actionable (#11 really is that old and really is pullable — and
+  on a page-capped board the report would then name no card at all). What ships is the qualification
+  ON the value, for the same reason the marker is: a floored render prints `oldest ≥232.3d (#11
+  among the cards read)`, which is true as written and stays true quoted out of every line around
+  it. A complete read prints the id bare, asserted with its own control — a qualifier on every
+  report would be a worse defect than the one it closes. `bin/board-stats`' `idq` definition and the
+  CHANGELOG entry POINT here; the false sentence was minted into three surfaces in one change, which
+  is what made re-stating it three times the wrong correction.
+
+  **TWO members of this class stay OPEN on this tool, and neither is a residual of the fix above —
+  each is the same defect on a surface the approval did not cover:**
+
+  - **`--format json` still carries no completeness field at all.** This was left alone on purpose:
+    it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to be
+    enumerated before a key consumers must honour is added. The document behind the renderer does
+    now carry a `stock_complete` (the text renderer computes nothing of its own and needed a field
+    to read), and the `json` arm STRIPS it — so the emitted object is the same six keys it always
+    was, asserted in `tests/board-stats-selftest.sh` on both a whole and a partial read, and the
+    second half of card#7228 is that `del` plus its doc entry. **The unmeasured bound is unchanged
+    and is the first step of that half, not a detail of it:** nothing in this repository consumes
+    `board-stats --format json` (grepped), which is a statement about this repository and not about
+    who runs the tool.
+  - **The FLOW counts under a truncated or unreadable changelog window still print bare**
+    (**card#7235**) — named here by sibling audit (canon #7) while shipping the stock fix, not by a
+    fresh report. It is the
+    identical shape one section lower in the same renderer: `_bs_one_board` sets `flow_ok=true` on a
+    window it could only partly read and appends *"changelog window INCOMPLETE: … — the flow counts
+    below are a floor, not a total"*, and then `created`, `moved`, `same-stage moves`, and every
+    per-transition / per-resolution / per-wash count renders unqualified under it. The `≥` carrier
+    is already in the render program (`fl($floor)`), so the fix is the same shape; it is an
+    operator-facing report change and therefore ask-gated exactly as the stock half was.
+
+  **So the class is OPEN.** Recording it closed over these would be the same failure this document
+  records for the `has()` class — the first cut of that section said it had.
 
   **The SessionStart delivery bound, filed not fixed (card#6365 review).** `board-snapshot`'s
   in-flight list is UNCAPPED — one line per in-flight card — while the untriaged list caps at six.
@@ -1434,6 +1544,22 @@ finding with no owner is abandoned, not filed.
   `piped-match-gate-selftest.sh` **re-derives it every run and prints it in its denominator as an
   explicitly ADVISORY, un-asserted figure**, so the remainder is a number that moves rather than a
   prose figure that rots.
+  - **A SECOND live member, found and fixed** (card#6911, appended here rather than filed anew —
+    the class already has this owner). `agent-board-toolkit-runtime-check` carried
+    `newest="$(git … tag --list 'v*' --sort=-version:refname | head -1)"`, and it is the member that
+    breaks the "most of it is legitimate (a short producer …)" reading above: the producer is short
+    *today* and is not bounded to stay so. Measured with a planted tag set — **0/40 runs died at 350
+    `v*` tags, 21/40 at 400, 16/20 at 5 900, 40/40 at 12 000** — so it is a **RACE at git's ~4 KiB
+    stdio buffer**, not a cliff at the 64 KiB pipe buffer, and it dies at rc 141 *before the
+    verdict*. Two corrections this instance forces on the class's own reasoning: **`trap '' PIPE`
+    does not cover it** (git restores SIGPIPE to `SIG_DFL` for itself, so the parent's ignore is not
+    inherited — the fix ratified for the EXTERNAL reader buys nothing against the INTERNAL one), and
+    the reachability is not ours to bound, because `$root` there is `git rev-parse --show-toplevel`
+    of the tool's own directory, which for a toolkit **vendored inside a consumer repo** is the
+    consumer's repo. Fixed in place by taking the first line with a parameter expansion — byte
+    identical output, no second process. **Still not gated**, and that cost decision stands
+    unchanged; what this member adds is that the advisory figure's "mostly legitimate" gloss is a
+    per-instance judgement nobody has made, not a property of the population.
 
 ---
 

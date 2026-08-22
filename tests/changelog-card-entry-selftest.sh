@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # changelog-card-entry-selftest.sh — assert that every card shipped since the last release tag
-# owns a line-initial `- **card#NNNN**` entry in docs/CHANGELOG.md.
+# owns a line-initial `- **card#NNNN**` entry in docs/CHANGELOG.md, and that no PR left a
+# SUPERSEDED entry standing beside its replacement.
 #
 # WHY THIS FILE EXISTS. `[Unreleased]` is where this repo records shipped work between
 # releases, and 21 of the 24 cards merged to `dev` since v0.23.1 had an entry there. Nothing
@@ -52,11 +53,23 @@
 # about the PRE-EDIT title — a token added by a title edit reached `dev` unchecked, exactly the
 # merged-omission case above. The workflow subscribes `edited` for that reason.
 #
-# WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest property the assertions support: that
+# WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest properties the assertions support. One:
 # every `card#NNNN` appearing in a commit subject since the last release tag also appears at
-# the head of some bullet in the sections ABOVE that tag's section. It proves nothing about
-# whether the bullet's prose is accurate, current, or describes what shipped. Never report a
-# green run as "the CHANGELOG is correct"; it means "no shipped card is undocumented".
+# the head of some bullet in the sections ABOVE that tag's section. Two: no card in that region
+# carries two line-initial bullets that a SINGLE PR put there and left standing. Neither says
+# anything about whether a bullet's prose is accurate, current, or describes what shipped, and
+# the second sees BULLETS only — a duplicated line inside a multi-line entry is outside its
+# population. Never report a green run as "the CHANGELOG is correct"; it means "no shipped card
+# is undocumented, and no PR left a stale copy of its own entry behind".
+#
+# WHY THE SECOND PROPERTY EXISTS (card#7227). docs/CHANGELOG.md carries `merge=union`, which
+# resolves the anchor collision every sibling PR creates by keeping both sides' lines. On a
+# REBASE that same rule re-adds a line the branch had already superseded, at rc 0 and in
+# silence, so a branch that reworded its own entry ships both wordings. Presence — the first
+# property — cannot see it: both copies are line-initial bullets for the card, so the
+# obligation is discharged twice over and the gate stays green over a file that now says two
+# different things about one change. `.gitattributes` carries the residual and the operating
+# rule that avoids it; this leg is the half of it that can be asserted.
 #
 # THE SCAN IS SECTION-SCOPED, and that is load-bearing in the err-GREEN direction. Entries are
 # read from the top of the file down to the `## [<last release tag>]` header — i.e. from
@@ -103,8 +116,12 @@
 # the obligation set would show as `0 obligation(s)` rather than pass quietly. Do not "consolidate"
 # the two; if the repo's subject spelling changes, change this literal in the same PR.
 #
-# KNOWN, ACCEPTED FRICTION: a commit subject that cites a card it is not about ("supersedes
-# card#1234") creates a real obligation for card#1234. This errs RED and is fixed by rewording
+# KNOWN, ACCEPTED FRICTION, and the second one belongs to the uniqueness leg. A commit subject
+# that cites a card it is not about ("supersedes card#1234") creates a real obligation for
+# card#1234; and the uniqueness leg's PR grouping reads the `(#NNN)` token that squash-merge
+# leaves in the subject, so two commits that reached `dev` WITHOUT one — a direct push, or a
+# branch merged with a merge commit — share the unsquashed group and would be read as one PR.
+# Neither errs green. The first is fixed by rewording
 # the subject — which the repo already requires for an unrelated reason: a foreign `card#` token
 # in a PR title hijacks the bridge's card correlation, so citing one is a defect on its own.
 set -euo pipefail
@@ -130,14 +147,29 @@ _obliged() {
     { grep -oE 'card#[0-9]+' "$1" || true; } | LC_ALL=C sort -u
 }
 
-# _discharged <changelog> <version> — the card tokens carrying a line-initial bullet, read from
-# the top of the file down to the `## [<version>]` header (exclusive).
+# _region <changelog> <version> — the scanned region: the file from the top down to the
+# `## [<version>]` header (exclusive). ONE owner for the section scope now that three readers
+# need it; a second copy of the stop rule would be a second thing to get wrong.
 #
 # The stop header is matched as a LITERAL prefix, not a regex: the version is interpolated, and
 # `0.23.1` as a regex also matches `0x23y1`. `index()` takes no pattern at all, so there is
 # nothing to escape and no awk `-v` escape-processing to get wrong.
+_region() {
+    awk -v stop="## [$2]" 'index($0, stop) == 1 { exit } { print }' "$1"
+}
+
+# _bullets <changelog> <version> — the region's line-initial card bullets, VERBATIM and in file
+# order. The uniqueness leg compares whole LINES, which is the one thing `_discharged` throws
+# away.
+_bullets() {
+    _region "$1" "$2" | { grep -E '^- \*\*card#[0-9]+\*\*' || true; }
+}
+
+# _discharged <changelog> <version> — the card tokens carrying a line-initial bullet in the
+# region. The head token is extracted BEFORE the id is, so a bullet whose prose cites a second
+# card does not discharge it (the card#5374 shape, fixtured below).
 _discharged() {
-    awk -v stop="## [$2]" 'index($0, stop) == 1 { exit } { print }' "$1" |
+    _bullets "$1" "$2" |
         { grep -oE '^- \*\*card#[0-9]+\*\*' || true; } |
         { grep -oE 'card#[0-9]+' || true; } | LC_ALL=C sort -u
 }
@@ -153,6 +185,85 @@ _missing() {
 # _has_version_header <changelog> <version> — is there a `## [<version>]` section at all?
 _has_version_header() {
     [[ -n "$(awk -v stop="## [$2]" 'index($0, stop) == 1 { print "y"; exit }' "$1")" ]]
+}
+
+# _added_bullets <repo> <path> <range> — one TAB-separated `<pr>\t<+|->\t<bullet line>` record
+# per line-initial card bullet a commit in <range> added to, or removed from, <path>. Both signs
+# are emitted; `_stale_dupes` owns what they mean.
+#
+# THE GROUP KEY IS THE PR NUMBER, and that is the whole trick. This repo squash-merges, so every
+# commit that reached `dev` carries its PR number in the subject (`… (card#7038) (#265)`), and a
+# commit that has not been squashed yet — the branch you are on — carries none. Grouping by it
+# separates TWO PRs each documenting the same card, which is legitimate and is in this file
+# twice today (card#6645 via #261/#262, card#7038 via #265/#266), from ONE PR leaving two
+# bullets for one card, which is what `merge=union` mints. A whole-file "no id twice" rule — the
+# obvious spelling, and the one to reach for first — reds this repo as it stands, on two entries
+# that are correct.
+#
+# MERGE COMMITS CONTRIBUTE NOTHING, by `git log -p`'s default of not diffing them, and that is
+# load-bearing rather than incidental: merging `dev` into a feature branch is the prescribed way
+# to take siblings' entries (`.gitattributes` says so), and attributing everything that arrived
+# through that merge to the branch's own group would red every branch that followed the
+# instruction.
+_added_bullets() {
+    git -C "$1" log -p --no-color --format='@@COMMIT@@ %s' "$3" -- "$2" | awk '
+        /^@@COMMIT@@ / {
+            pr = "(unsquashed)"; s = $0
+            while (match(s, /\(#[0-9]+\)/)) {
+                pr = substr(s, RSTART + 2, RLENGTH - 3)
+                s  = substr(s, RSTART + RLENGTH)
+            }
+            next
+        }
+        /^\+- \*\*card#[0-9]+\*\*/ { print pr "\t+\t" substr($0, 2); next }
+        /^-- \*\*card#[0-9]+\*\*/  { print pr "\t-\t" substr($0, 2); next }
+    '
+}
+
+# _stale_dupes <records> <changelog> <version> — the card ids for which ONE PR left two or more
+# bullets standing in the region.
+#
+# TWO CONDITIONS, AND EACH REJECTS A REAL SHAPE THE OTHER ACCEPTS.
+#
+#   NET ≥ 2 — the PR's arithmetic: bullets it added for the card, minus bullets it removed for
+#   the card. Editing somebody else's entry is a remove plus an add and nets to zero, which is
+#   the only reason this leg can run on the live history at all: #266 REWORDED #265's card#7038
+#   bullet and added its own, so two of the three surviving card#7038 lines are its doing. Net
+#   arithmetic reads that as one new entry. Counting raw additions reported it as a duplicate —
+#   a false red on merged, correct history, seen before this rule was written and fixtured below.
+#
+#   TWO STILL PRESENT — the file's state: both copies are in the region right now. A branch that
+#   corrects its own entry adds two wordings across two commits, which nets to two only when
+#   `union` re-adds the superseded one during a rebase; if the branch simply reworded, the first
+#   wording is gone and there is nothing for a reader to trip over.
+#
+# Requiring both means a red always corresponds to two lines a reader can see, which is what
+# makes the failure actionable — and neither leg alone is sound: net-only reds a PR that
+# legitimately split one card across two entries, presence-only reds #266.
+_stale_dupes() {
+    local present pr sign line id
+    present="$(_bullets "$2" "$3")"
+    while IFS=$'\t' read -r pr sign line; do
+        [[ -n "$line" ]] || continue
+        id="${line#- \*\*}"; id="${id%%\**}"
+        if [[ "$sign" == "-" ]]; then
+            printf '%s\t%s\tnet\t-1\n' "$pr" "$id"
+        else
+            printf '%s\t%s\tnet\t1\n' "$pr" "$id"
+            if [[ "$(has_line "$line" "$present")" == true ]]; then
+                printf '%s\t%s\tpresent\t%s\n' "$pr" "$id" "$line"
+            fi
+        fi
+    done < "$1" | awk -F'\t' '
+        $3 == "net" { net[$1 FS $2] += $4; next }
+        $3 == "present" {
+            if (!(($1 FS $2 FS $4) in seen)) { seen[$1 FS $2 FS $4] = 1; pres[$1 FS $2]++ }
+        }
+        END {
+            for (k in net)
+                if (net[k] >= 2 && pres[k] >= 2) { split(k, a, FS); print a[2] }
+        }
+    ' | LC_ALL=C sort -u
 }
 
 # ---------------------------------------------------------------------------
@@ -256,6 +367,158 @@ eq "a card named only by the PR title is obliged" "true" \
    "$(has_line 'card#9004' "$(_missing "$FIX/subjects-pr" "$FIX/changelog-complete.md" "0.23.1")")"
 
 # ---------------------------------------------------------------------------
+# The uniqueness leg (card#7227). `merge=union` on docs/CHANGELOG.md buys conflict-free sibling
+# entries and pays for it with a silent both-sides-keep on the one shape that is not an append:
+# a branch that REWORDS its own `[Unreleased]` entry and is then REBASED keeps the superseded
+# wording too. Presence — everything above — cannot see that: both copies are line-initial
+# bullets for the card, so the obligation is discharged twice over and the gate stays green over
+# a file that now says two different things about one change.
+# ---------------------------------------------------------------------------
+echo "== prove-it-can-fail: a superseded bullet ONE PR left behind is REPORTED =="
+# Six records over one unsquashed branch and two PRs. The branch's two are the corruption. #265
+# and #266 are the shape this file really carries today, #266's included: it REWORDED #265's
+# bullet and added its own, so it owns two of the surviving lines and must still not be named.
+printf '%s\t%s\t%s\n' \
+    '(unsquashed)' '+' '- **card#4000** — FIRST WORDING.' \
+    '(unsquashed)' '+' '- **card#4000** — CORRECTED WORDING.' \
+    '265'          '+' '- **card#7038** — one PR, one bullet.' \
+    '266'          '-' '- **card#7038** — one PR, one bullet.' \
+    '266'          '+' '- **card#7038** — one PR, one bullet, now cross-referenced.' \
+    '266'          '+' '- **card#7038** — a second PR on the same card, its own bullet.' \
+    > "$FIX/records"
+
+cat > "$FIX/changelog-dupe.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+- **card#9000** — a sibling entry that landed on dev while the branch was open.
+- **card#4000** — FIRST WORDING.
+- **card#4000** — CORRECTED WORDING.
+- **card#7038** — one PR, one bullet, now cross-referenced.
+- **card#7038** — a second PR on the same card, its own bullet.
+
+## [0.23.1] - 2026-07-27
+
+- **card#4000** — a released entry for the same card, below the stop header.
+EOF
+eq "the superseded copy is named, and ONLY it" \
+   "card#4000" "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1")"
+# THE PAIRED WITNESS, and the reason this is not the obvious whole-file uniqueness rule:
+# card#7038 has two bullets in the very same region, one of which #266 authored and the other of
+# which #266 reworded, and it MUST NOT be reported. A rule that reds it reds this repo today.
+eq "two PRs documenting one card are NOT reported (witness: the run saw both)" "" \
+   "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1" | grep -x 'card#7038' || true)"
+
+echo "== prove-it-can-PASS: an ordinary reword reports nothing =="
+# Same records — the branch still ADDED both wordings, one per commit, so its NET is still 2 —
+# but only the corrected line survives in the file. This is the leg that isolates the presence
+# condition: without it, every branch that ever fixed its own typo would red.
+cat > "$FIX/changelog-reworded.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+- **card#9000** — a sibling entry that landed on dev while the branch was open.
+- **card#4000** — CORRECTED WORDING.
+- **card#7038** — one PR, one bullet, now cross-referenced.
+- **card#7038** — a second PR on the same card, its own bullet.
+
+## [0.23.1] - 2026-07-27
+EOF
+eq "a reword whose superseded line is gone is not a duplicate" "" \
+   "$(_stale_dupes "$FIX/records" "$FIX/changelog-reworded.md" "0.23.1")"
+eq "the region scope holds: the released section's own card#4000 is not read as a survivor" \
+   "" "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1" | grep -x 'card#9000' || true)"
+
+echo "== the derivation against the REAL mechanism: a union rebase, with its no-attribute control =="
+# `_stale_dupes` above is proven over hand-written records. This proves the thing that mints
+# them — `_added_bullets` reading a real history — and reproduces the measured defect end to end
+# rather than restating it: two branch commits (add, then reword) rebased onto a `dev` that
+# gained a sibling entry at the same anchor.
+#
+# THE CONTROL IS THE SAME FIXTURE WITHOUT THE ATTRIBUTE, and it is what makes this a measurement
+# of `merge=union` rather than of git: without it the rebase STOPS for a human. If some future
+# git conflicts under union too, the control still passes and this arm reds — the right way
+# round.
+g() { git -c init.defaultBranch=dev -c user.name=t -c user.email=t@example.invalid \
+          -c commit.gpgsign=false -c gc.auto=0 "$@"; }
+
+# _prepend <changelog> <bullet> — put a bullet directly under `## [Unreleased]`, the one anchor
+# every entry in this repo is filed at and therefore the one every PR collides on.
+_prepend() {
+    awk -v b="$2" '/^## \[Unreleased\]/ { print; print ""; print b; next } 1' "$1" > "$1.t"
+    mv "$1.t" "$1"
+}
+# _newrepo <dir> [union] — an empty changelog on `dev`, with or without the attribute.
+_newrepo() {
+    mkdir -p "$1"
+    g init -q "$1"
+    printf '# Changelog\n\n## [Unreleased]\n\n## [0.23.1] - 2026-07-27\n' > "$1/CHANGELOG.md"
+    if [[ "${2:-}" == union ]]; then printf 'CHANGELOG.md merge=union\n' > "$1/.gitattributes"
+    else : > "$1/.gitattributes"; fi
+    g -C "$1" add -A && g -C "$1" commit -qm 'base'
+}
+# _mkrebase <dir> <union|plain> — build the branch/sibling collision, attempt the rebase, echo rc.
+_mkrebase() {
+    local d="$1"
+    _newrepo "$d" "$2"
+    g -C "$d" checkout -q -b feat
+    _prepend "$d/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
+    g -C "$d" commit -qam 'docs(changelog): the entry (card#4000)'
+    sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$d/CHANGELOG.md"
+    g -C "$d" commit -qam 'docs(changelog): reword the entry (card#4000)'
+    g -C "$d" checkout -q dev
+    _prepend "$d/CHANGELOG.md" '- **card#9000** — a sibling PR filed at the same anchor.'
+    g -C "$d" commit -qam 'fix(x): a sibling (card#9000) (#265)'
+    g -C "$d" checkout -q feat
+    local rc=0
+    g -C "$d" rebase dev >/dev/null 2>&1 || rc=$?
+    echo "$rc"
+}
+
+RB="$TMP/rebase-union"
+eq "with merge=union the rebase reports SUCCESS" "0" "$(_mkrebase "$RB" union)"
+eq "and it silently kept the superseded wording" "true" \
+   "$(has_line '- **card#4000** — FIRST WORDING.' "$(cat "$RB/CHANGELOG.md")")"
+# The rebased reword commit records NO removal — union swallowed it — which is why the branch's
+# NET is 2 rather than 1, and why net arithmetic can tell this apart from a plain reword at all.
+eq "the derivation attributes both to the one unsquashed branch, and the sibling to its PR" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — FIRST WORDING.
+265	+	- **card#9000** — a sibling PR filed at the same anchor." \
+   "$(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' | LC_ALL=C sort)"
+eq "END TO END: the union-rebase duplicate is reported by the live code path" "card#4000" \
+   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD') "$RB/CHANGELOG.md" "0.23.1")"
+eq "and the sibling that arrived from dev is not (witness: it was seen)" "" \
+   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD') "$RB/CHANGELOG.md" "0.23.1" \
+      | grep -x 'card#9000' || true)"
+
+RBC="$TMP/rebase-plain"
+eq "CONTROL — without the attribute the same rebase STOPS for a human" "1" "$(_mkrebase "$RBC" plain)"
+g -C "$RBC" rebase --abort >/dev/null 2>&1 || true
+
+echo "== a PR that reworks an earlier PR's entry AND adds its own is not a duplicate =="
+# The #266-over-#265 shape, on a real history rather than on records: it edits the standing
+# card#7038 bullet and files its own beneath it, leaving two card#7038 lines in the file that it
+# alone touched. This is the false red that net arithmetic removed — asserted, not argued.
+MV="$TMP/reflow"
+_newrepo "$MV"
+_prepend "$MV/CHANGELOG.md" '- **card#7038** — the first PR on this card.'
+g -C "$MV" commit -qam 'fix(a): first (card#7038) (#265)'
+sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\./- **card#7038** — the first PR on this card, now cross-referenced./' "$MV/CHANGELOG.md"
+_prepend "$MV/CHANGELOG.md" '- **card#7038** — the second PR on the same card.'
+g -C "$MV" commit -qam 'test(a): second (card#7038) (#266)'
+eq "the edit is recorded with its removal, so #266 nets ONE new entry" \
+   "265	+	- **card#7038** — the first PR on this card.
+266	+	- **card#7038** — the first PR on this card, now cross-referenced.
+266	+	- **card#7038** — the second PR on the same card.
+266	-	- **card#7038** — the first PR on this card." \
+   "$(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' | LC_ALL=C sort)"
+eq "so two surviving bullets from one PR are NOT reported when one replaced an existing entry" \
+   "" "$(_stale_dupes <(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD') "$MV/CHANGELOG.md" "0.23.1")"
+
+# ---------------------------------------------------------------------------
 # Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
 # ABSENCE, so anything that can make it answer "" for a reason unrelated to the repo being
 # clean has to stop the run rather than be reported alongside a pass.
@@ -303,5 +566,15 @@ printf '  ..   baseline %s · %s commit subject(s)%s · %s obligation(s) · %s d
     "$(_discharged "$CHANGELOG" "$LAST_VERSION" | grep -c . || true)"
 eq "no card shipped since $LAST_TAG is missing its entry" "" \
    "$(_missing "$SUBJECTS" "$CHANGELOG" "$LAST_VERSION")"
+
+echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
+RECORDS="$TMP/added-live"
+_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" > "$RECORDS"
+printf '  ..   %s bullet(s) added, %s removed, across %s contributor(s) since %s\n' \
+    "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
+    "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
+    "$(cut -f1 "$RECORDS" | LC_ALL=C sort -u | grep -c . || true)" "$LAST_TAG"
+eq "no card carries two surviving bullets from one PR" "" \
+   "$(_stale_dupes "$RECORDS" "$CHANGELOG" "$LAST_VERSION")"
 
 _summary "changelog-card-entry-selftest"

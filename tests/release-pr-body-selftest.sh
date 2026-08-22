@@ -170,20 +170,62 @@ not_contains "…not the default branch's tag"           "$altbody" "since v9.9.
 contains     "head defaults to the configured dev"     "$altbody" "integration work"
 not_contains "…not the default 'dev' branch"           "$altbody" "decoy on dev"
 
-echo "== version-file extraction keeps all 4 segments of a .NET-style version =="
-# A 3-segment-only extraction pattern silently truncates 1.22.1.0 → 1.22.1; the
-# body's version line makes that visible ('v1.22.1.0' never appears).
-echo "AssemblyVersion: 1.22.1.0" > "$W/VERSION.txt"
-cat > "$W/.release-pr.json" <<'EOF'
+echo "== the version SHAPE is version_regex's to declare, and bin/ holds no second pattern (card#7208) =="
+# WHAT THIS BLOCK USED TO BE, AND WHY IT PROVED NOTHING. One case: a 4-segment version file
+# read through a config whose version_regex was ITSELF 4-segment-capable. A pass could not tell
+# "the config governs" from "the hardcoded `[0-9]+(\.[0-9]+){1,3}` in the bin rescued it" — and
+# the bin's pattern could rescue nothing, because it ran SECOND, over a first stage that had
+# already applied the config regex. With a 3-segment version_regex, 1.22.1.0 reached it as
+# 1.22.1; the comment sitting above that line named exactly that truncation as prevented.
+#
+# The literal is gone. What these cases pin is that version_regex — the same key
+# `auto-tag-version.yml` anchors at merge time — is the ONLY thing that decides the shape:
+# a config that admits four segments gets four, one that admits three gets three (even over a
+# 4-segment file), and the two shapes the old literal quietly overrode (one segment, five)
+# now resolve as declared. Cases 4 and 5 are the red-when-reverted pair: re-adding the literal
+# turns 4 into an rc-2 refusal and cuts 5 to four segments.
+_verhdr() { # <version-file content> <version_regex, JSON-escaped> → the body's first line, or "rc=N"
+  local content="$1" re="$2" b rc=0
+  printf '%s\n' "$content" > "$W/VERSION.txt"
+  # Unquoted heredoc so $re expands; a parameter expansion's RESULT is not rescanned for
+  # backslash escapes, so the JSON's `\\.` arrives intact.
+  cat > "$W/.release-pr.json" <<EOF
 {
   "ref_token_regex": "DL-[0-9]+",
   "version_file": "VERSION.txt",
-  "version_regex": "[0-9]+(\\.[0-9]+){1,3}"
+  "version_regex": "$re"
 }
 EOF
-body4="$( (cd "$W" && "$BIN") 2>/dev/null )" && rc=0 || rc=$?
-if [[ "$rc" -eq 0 ]]; then ok "resolves the version from the file (rc=0)"; else bad "expected rc=0, got rc=$rc"; fi
-contains "4-segment version survives extraction" "$body4" "v1.22.1.0"
+  b="$( (cd "$W" && "$BIN") 2>/dev/null )" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then printf 'rc=%s\n' "$rc"; else printf '%s\n' "$b" | head -1; fi
+}
+# The needle carries the header's closing `.**`, so `v1.22.1.**` cannot match a body that
+# rendered `v1.22.1.0` — without it every truncation assertion would pass on both behaviours.
+
+# (1) PAIRED WITNESS — an ordinary 3-segment release, byte-identical before and after. Without
+#     it, "stopped truncating" is indistinguishable from "stopped extracting".
+contains "3-segment config + 3-segment file → the whole version" \
+  "$(_verhdr '0.29.0' '[0-9]+\\.[0-9]+\\.[0-9]+')" 'release PR — v0.29.0.**'
+
+# (2) a config that ADMITS four segments keeps all four (the case this block always had).
+contains "4-segment-capable config + .NET version → all four segments" \
+  "$(_verhdr 'AssemblyVersion: 1.22.1.0' '[0-9]+(\\.[0-9]+){1,3}')" 'release PR — v1.22.1.0.**'
+
+# (3) …and a 3-segment config over the SAME file yields three, honestly. This is the case the
+#     old comment claimed was prevented; it never was, and now nothing says it is.
+hdr3="$(_verhdr 'AssemblyVersion: 1.22.1.0' '[0-9]+\\.[0-9]+\\.[0-9]+')"
+contains     "3-segment config + .NET version → three segments, because the config says three" \
+  "$hdr3" 'release PR — v1.22.1.**'
+not_contains "…and no pattern inside the bin widens it back" "$hdr3" 'v1.22.1.0'
+
+# (4) RED WHEN REVERTED — the deleted literal needed two segments, so it turned a legal
+#     single-segment version_regex into `could not resolve version` (rc 2).
+contains "a single-segment version_regex resolves" \
+  "$(_verhdr '7' '[0-9]+')" 'release PR — v7.**'
+
+# (5) RED WHEN REVERTED — …and it cut a legal five-segment one down to four.
+contains "a five-segment version_regex is not cut to four" \
+  "$(_verhdr '1.2.3.4.5' '[0-9]+(\\.[0-9]+){1,4}')" 'release PR — v1.2.3.4.5.**'
 
 echo "== tag_format drives the own-tag exclude (re-run after tagging, non-v scheme) =="
 # Release cycle 2 lands on the remote under a release-{{version}} tag scheme; a
