@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# _shellcheck-pinned — run the ShellCheck version `.shellcheck-version` PINS, and say on stderr
+# which binary actually ran. Every argument is forwarded to shellcheck unchanged, so the call site
+# keeps owning the severity and the file population; this owns only WHICH ANALYSER sees them.
+#
+# WHY IT EXISTS (card#6619). `ci.yml` ran the bare `shellcheck` the runner image happened to ship
+# and printed no version, so a CI verdict named no program and a contributor's local sweep of "CI's
+# own command" could not certify the gate — the two sides were running different analysers that
+# disagree at ERROR severity (the SC2218 case recorded in `.shellcheck-version`). One wrapper rather
+# than an install snippet per job because ci.yml has THREE shellcheck call sites, in three jobs; the
+# two that analyse a generated file drift exactly as silently as the one that analyses the tree.
+#
+# NOT A PUBLIC TOOL — hence the `_`. It is the gate's analyser, not board tooling: deliberately
+# outside README's "What's here" inventory and outside `agent-board-toolkit-runtime-check`'s PATH
+# contract (the name rule in `tests/_bin-set-lib.sh`), because no consumer's RUNTIME needs it. A
+# consumer's CI may still call it, which is why it ships in `bin/` rather than under `.github/`.
+# A vendoring repo has to bring `.shellcheck-version` with it (or point $SHELLCHECK_PIN_FILE at its
+# own): without a pin file this refuses rather than falling back to whatever that box has.
+#
+# RESOLUTION — the first candidate whose OWN `--version` output says the pinned version wins:
+#   1. $SHELLCHECK_PIN_BIN   an explicitly supplied binary — VERIFIED, never trusted;
+#   2. the cache             $SHELLCHECK_PIN_CACHE/<version>/shellcheck, from an earlier download;
+#   3. shellcheck on PATH    the common case in CI today and on a box that already has the pin;
+#   4. download              the pinned release tarball, sha256-verified against the pin file.
+# Nothing else is ever executed: a candidate reporting some other version is REJECTED AND NAMED,
+# never fallen back to. That refusal is the point — a local run that silently used a different
+# analyser is exactly the false "shellcheck clean" this file exists to stop.
+#
+# Step 3 accepts a distro build whose self-reported version matches (Ubuntu's `0.9.0-1` package
+# reports `0.9.0`). The pin's granularity is therefore the VERSION STRING, not the exact bytes: a
+# distro patch that changed analysis behaviour without changing the version would not be caught
+# here. Stated rather than closed, because forcing the download on every run would put a network
+# dependency into a gate that has none today; it is a one-line change if that trade ever flips.
+#
+# EXIT 9 means "the pinned analyser could not be provided" — shellcheck itself already uses 0-4
+# (0 clean, 1 findings, 2 unreadable input, 3 parse, 4 usage), so the wrapper's own refusal has to
+# be distinguishable from every verdict it forwards.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PIN="${SHELLCHECK_PIN_FILE:-$ROOT/.shellcheck-version}"
+CACHE="${SHELLCHECK_PIN_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-board-toolkit/shellcheck}"
+
+die() { printf '_shellcheck-pinned: %s\n' "$*" >&2; exit 9; }
+
+[ -r "$PIN" ] || die "no pin file at $PIN — the analyser version is not declared, and this refuses to guess it"
+want="$(awk '$1 == "version" { print $2; exit }' "$PIN")"
+[ -n "$want" ] || die "$PIN declares no 'version <x.y.z>' line"
+
+# _reports <path> — the version <path> self-reports, or nothing if it is not runnable, not the
+# analyser, or broken. Read from the binary rather than from its name or its directory: a cache
+# entry, a $SHELLCHECK_PIN_BIN and a PATH hit are all claims about a file, and the file is what gets
+# asked. Every arm of it has to ANSWER, not abort: this runs under `pipefail`, so a candidate that
+# exits non-zero would take the wrapper down with it instead of being rejected — hence the `|| true`
+# — and the awk must not `exit` early, because a writer whose reader has already gone gets SIGPIPE
+# and the pipeline reports 141 at random (measured on this idiom: 6 in 20000 runs under load).
+_reports() {
+    [ -x "$1" ] || return 0
+    { "$1" --version 2>/dev/null || true; } | awk '$1 == "version:" && !seen { print $2; seen = 1 }'
+}
+
+found=""
+rejected=""
+for cand in "${SHELLCHECK_PIN_BIN:-}" "$CACHE/$want/shellcheck" "$(command -v shellcheck || true)"; do
+    [ -n "$cand" ] || continue
+    got="$(_reports "$cand")"
+    if [ "$got" = "$want" ]; then found="$cand"; break; fi
+    [ -n "$got" ] && rejected="$rejected$(printf '\n  rejected %s — reports %s, pinned is %s' "$cand" "$got" "$want")"
+done
+
+if [ -z "$found" ]; then
+    # `<os>.<arch>` as upstream names its release assets. An unpinned platform is refused with the
+    # way out, not silently served whatever is lying around.
+    asset="$(uname -s | tr '[:upper:]' '[:lower:]').$(uname -m)"
+    sha="$(awk -v a="$asset" '$1 == "asset" && $2 == a { print $3; exit }' "$PIN")"
+    [ -n "$sha" ] || die "shellcheck $want is not on this box and $PIN pins no sha256 for '$asset' — install shellcheck $want and point \$SHELLCHECK_PIN_BIN at it, or add an 'asset $asset <sha256>' line$rejected"
+
+    tarball="shellcheck-v$want.$asset.tar.xz"
+    url="https://github.com/koalaman/shellcheck/releases/download/v$want/$tarball"
+    # Stage INSIDE $CACHE, not $TMPDIR. The publish below is a rename, and a rename is only
+    # atomic within one filesystem — where /tmp is tmpfs (the default on several common distros)
+    # `mv` degrades to copy-then-unlink and a concurrent reader CAN observe a half-written binary
+    # at the cache path, which is exactly the two-agents-one-$HOME case the publish comment cites.
+    # Staging under $CACHE makes the atomicity unconditional instead of environment-dependent.
+    mkdir -p "$CACHE" || die "could not create $CACHE"
+    tmp="$(mktemp -d "$CACHE/.stage.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+    printf '_shellcheck-pinned: no shellcheck %s on this box%s\n_shellcheck-pinned: fetching %s\n' "$want" "$rejected" "$url" >&2
+    curl -fsSL --retry 3 -o "$tmp/$tarball" "$url" || die "could not download $url"
+    printf '%s  %s\n' "$sha" "$tmp/$tarball" | sha256sum -c --status \
+        || die "sha256 MISMATCH on $tarball — refusing to run it (pinned $sha, see $PIN)"
+    tar -xJf "$tmp/$tarball" -C "$tmp" --strip-components=1 "shellcheck-v$want/shellcheck" \
+        || die "could not unpack $tarball"
+    chmod +x "$tmp/shellcheck"
+    # The unpacked binary is asked the same question every other candidate was asked: a tarball
+    # whose sha256 matched still has to BE the pinned analyser. It is verified where it landed and
+    # only then RENAMED into the cache — nothing unverified is ever visible at the cache path, and
+    # the publish is a single atomic rename, which is what keeps two runs sharing one $HOME (two
+    # agents, two worktrees, one cache) from reading a half-written binary.
+    got="$(_reports "$tmp/shellcheck")"
+    [ "$got" = "$want" ] || die "the downloaded binary reports '${got:-nothing}', not $want"
+    mkdir -p "$CACHE/$want"
+    mv -f "$tmp/shellcheck" "$CACHE/$want/shellcheck" || die "could not publish into $CACHE/$want"
+    found="$CACHE/$want/shellcheck"
+    rm -rf "$tmp"
+    trap - EXIT
+fi
+
+# The banner rides EVERY invocation rather than living in a dedicated CI step, so that every job
+# that runs the analyser — including the two that shellcheck a generated file — states which one it
+# ran, and so a job added later cannot forget to print it. stderr, because shellcheck's findings are
+# the stdout a caller may be parsing.
+printf '_shellcheck-pinned: shellcheck %s [pinned by %s] — %s\n' "$want" "$PIN" "$found" >&2
+exec "$found" "$@"
