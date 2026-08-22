@@ -26,6 +26,16 @@
 # function `kb_stub_route` (defined in the selftest, so it is shellchecked there too) as
 #     kb_stub_route <method> <url> <body> <route_n> <call_n>
 # and reads its STDOUT: the HTTP status on line 1, the response body on every line after it.
+#
+# A TRANSPORT failure is a route answering `!curl <rc>` on line 1 (card#7214): the stub then
+# exits with THAT status having written no body, which is what real curl does when it cannot
+# connect (rc 7), resolve, or finish a transfer. It is spelled as a route answer, not an
+# env switch, because it is a property of one request like every other answer here. Without
+# it the stub could only ever produce an HTTP STATUS, so the `curl … || <fallback>` arm that
+# every caller in bin/ carries was unreachable from the suite — and a caller that treats
+# "could not connect" as "the endpoint is not deployed" is a real defect the tests could not
+# have seen. The rc must be a non-negative integer; anything else is the same fatal misparse
+# an unhandled option is, for the same reason.
 # Arguments in, one value out — neither side needs a shared global, and so neither side needs a
 # static-analysis suppression for one. A responder that prints nothing (no matching arm, or no
 # responder exported at all) answers HTTP 599, so an unexpected call fails loudly, not silently.
@@ -85,6 +95,14 @@ else
     # Named separately from "no arm matched": forgetting `export -f kb_stub_route` fails EVERY
     # request identically, and the two causes are otherwise indistinguishable from the assertions.
     UNROUTED='{"error":"kb-api-stub-curl: kb_stub_route is not defined here — is it exported with `export -f`?"}'
+fi
+if [[ "$ROUTED" == '!curl '* ]]; then
+    FAILRC="${ROUTED#'!curl '}"; FAILRC="${FAILRC%%$'\n'*}"
+    case "$FAILRC" in
+        ''|*[!0-9]*) echo "kb-api-stub-curl: '!curl <rc>' needs a non-negative integer, got '$FAILRC'" >&2; exit 2 ;;
+    esac
+    echo "kb-api-stub-curl: simulated transport failure (exit $FAILRC) for $METHOD $URL" >&2
+    exit "$FAILRC"
 fi
 if [[ "$ROUTED" == *$'\n'* ]]; then
     HTTP="${ROUTED%%$'\n'*}"
