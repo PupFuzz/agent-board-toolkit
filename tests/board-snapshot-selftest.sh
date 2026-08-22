@@ -68,12 +68,23 @@ out="$(untri "$envC")"
 eq "a card at B's OWN terminal stage is suppressed (control)" "false" "$(has '#8' "$out")"
 
 # ---------------------------------------------------------------------------
-echo "== board_report untriaged — missing KB_BOARD_ID ⇒ SILENT no-op, never a wrong-board fetch =="
+echo "== board_report untriaged — missing KB_BOARD_ID ⇒ no wrong-board CARD, and the channel SAYS SO =="
 envNoId="$(mktemp)"; printf 'export KBCARD_TOKEN_FILE=%s\n' "$tokf" > "$envNoId"   # no KB_BOARD_ID
 errf="$(mktemp)"
 STUB_DATA='[{"id":9,"workflow_stage_id":123,"name":"must never render","tags":[]}]'
 out="$(board_report "$envNoId" "L" 3>&1 1>/dev/null 2>"$errf")"; err="$(cat "$errf")"
-eq "no KB_BOARD_ID ⇒ empty untriaged channel (guard returns before render)" "" "$out"
+# The load-bearing half is that NO CARD from the un-selected board reaches the untriaged
+# channel — the card-4448 protection. It used to be asserted as "fd 3 is EMPTY", which is a
+# stronger claim than the protection needs and, until card#6365's second pass, was also the
+# defect: an empty untriaged section under a header that says "none may be silently missed"
+# is a completeness claim about a board whose cards were never read. An absence assertion
+# alone certifies whatever replaces it (including nothing), so it is paired with a presence
+# witness: the reason, on the same channel.
+eq "no KB_BOARD_ID ⇒ no card reaches the untriaged channel" "false" "$(has '#9' "$out")"
+eq "no KB_BOARD_ID ⇒ the untriaged channel says the board was NOT read" "true" \
+   "$(has 'sets no KB_BOARD_ID' "$out")"
+eq "no KB_BOARD_ID ⇒ …and says no untriaged card from it appears" "true" \
+   "$(has 'NOT read' "$out")"
 # Assert SILENCE on stderr too: without the guard, set -u aborts the subshell on the
 # unset KB_BOARD_ID with an 'unbound variable' line — empty fd 3 but NOISY stderr,
 # which a fail-soft SessionStart tool must not emit. This reds on a guard removal.
@@ -222,6 +233,115 @@ eq "CONTROL rc 1: exits 0 (SessionStart is never blocked)"  "0" "$SNAP_RC"
 eq "CONTROL rc 1: still prints the snapshot header"         "true" "$(has 'Dev board snapshot' "$out")"
 eq "CONTROL rc 1: reports the board, naming the rc"         "true" "$(has '• T: (board read failed — fetch rc=1)' "$out")"
 eq "CONTROL rc 1: claims no completeness it does not have"  "false" "$(has 'in-flight' "$out")"
+
+# ===========================================================================
+# card#6365 review — EVERY arm that ends a board's pass without a card list must
+# mark the UNTRIAGED channel, not just the two rcs that render a partial array.
+#
+# The rc-3/rc-4 note above exists because "nothing to triage" is a claim a partial
+# read may not make. The arms below make a STRONGER version of it: they read zero
+# rows and, before this block, contributed NOTHING to fd 3 — so the untriaged
+# section rendered empty, under a header asserting that none may be silently
+# missed, for a board nobody read. Same header, same channel, weaker evidence.
+#
+# The population is the arms that can end board_report without a card list. It is
+# DERIVED here rather than listed: every `return 0` guard in board_report plus the
+# two render fallbacks. The count is asserted below so a new arm reds this file.
+# ===========================================================================
+echo "== board_report — an UNREAD board marks the untriaged channel too (card#6365 review) =="
+
+# The four setup/read arms, each driven through the real function. `unread <envf>`
+# returns the fd-3 (untriaged) channel only, which is the channel under test.
+unread() { board_report "$1" "L" 3>&1 1>/dev/null 2>/dev/null; }
+
+tokf2="$(mktemp)"; printf 'test-token\n' > "$tokf2"
+envOK="$(mktemp)"; printf 'export KB_BOARD_ID=88\nexport KBCARD_TOKEN_FILE=%s\n' "$tokf2" > "$envOK"
+envBadTok="$(mktemp)"; printf 'export KB_BOARD_ID=88\nexport KBCARD_TOKEN_FILE=%s\n' "/nonexistent/token" > "$envBadTok"
+
+fetch_board_cards() { printf '%s' '[]'; }
+
+out="$(unread "/nonexistent/board.env")"
+eq "arm: env file missing → the untriaged channel names it"      "true" "$(has 'missing' "$out")"
+eq "arm: env file missing → …and says the board was NOT read"    "true" "$(has 'NOT read' "$out")"
+
+out="$(unread "$envBadTok")"
+eq "arm: token unreadable → the untriaged channel names it"      "true" "$(has 'token file unreadable' "$out")"
+eq "arm: token unreadable → …and says the board was NOT read"    "true" "$(has 'NOT read' "$out")"
+
+_FRC2=0
+fetch_board_cards() { return "$_FRC2"; }
+for _FRC2 in 1 2; do
+    out="$(unread "$envOK")"
+    eq "arm: fetch rc=$_FRC2 → the untriaged channel names the rc"  "true" "$(has "fetch rc=$_FRC2" "$out")"
+    eq "arm: fetch rc=$_FRC2 → …and says the board was NOT read"    "true" "$(has 'NOT read' "$out")"
+    # The message rule the paginator's contract puts on a MULTI-RC arm binds this
+    # channel exactly as it binds stdout: name the rc, name no cause.
+    eq "arm: fetch rc=$_FRC2 → claims no cause on fd 3"             "false" "$(has 'unreachable' "$out")"
+done
+
+# CONTROL — a COMPLETE read must not emit the unread note on either channel, or the
+# six assertions above would pass on a board_report that shouted on every pass.
+_FRC2=0
+fetch_board_cards() { printf '%s' '[{"id":12,"workflow_stage_id":84,"name":"z","tags":[]}]'; }
+out="$(unread "$envOK")"
+eq "CONTROL rc 0: the untriaged channel carries NO unread note" "false" "$(has 'NOT read' "$out")"
+eq "CONTROL rc 0: it still carries the untriaged card"          "true"  "$(has '#12' "$out")"
+
+# DENOMINATOR — the population this block covers, re-derived from the bin on every
+# run rather than recalled. Every `return 0` early exit inside board_report is an
+# arm that ends the pass without a card list; each one must report through
+# board_unread, and a new arm that echoes to stdout instead reds here. The two jq
+# render fallbacks are counted separately below because they exit through the
+# pipeline, not through a `return`.
+_bs_body() { sed -n '/^board_report() {/,/^}/p' "$BIN"; }
+early_exits="$(_bs_body | command grep -c 'return 0; }')"
+via_unread="$(_bs_body | command grep -c 'board_unread "\$label"')"
+eq "denominator: every early-exit arm in board_report reports through board_unread" \
+   "$early_exits" "$via_unread"
+[[ "$early_exits" -ge 4 ]] || bad "denominator: only $early_exits early-exit arms derived — the sed window stopped covering board_report"
+ok "denominator: $early_exits early-exit arms derived from the bin, all routed through board_unread"
+# The renders are the other half: each of the two jq programs owns a fallback on ITS
+# OWN channel, so a render that dies contributes a line to the section it failed to
+# fill instead of leaving it silently empty.
+eq "render fallback: the in-flight jq reports on stdout" "true" \
+   "$(has 'parse error' "$(_bs_body | command grep '|| echo "• ${label}: (parse error)"')")"
+eq "render fallback: the untriaged jq reports on fd 3"   "true" \
+   "$(has '>&3' "$(_bs_body | command grep 'untriaged list could not be rendered')")"
+
+rm -f "$tokf2" "$envOK" "$envBadTok"
+
+# ===========================================================================
+# card#6365 review — the `≥` claim has a DENOMINATOR: EVERY count this pass
+# prints, not the two that were easy to name.
+#
+# The changelog and the plan entry both say "a ≥ prefix on every count this pass
+# prints". The untriaged list's overflow tail ("… +194 more") shipped bare, which
+# made that sentence false — and the tail is a floor for exactly the same reason
+# the other two counts are. Two legs: the rendered OUTPUT on a partial read, and a
+# source-derived leg over the render programs so a FOURTH count added without
+# $floor reds without anyone remembering this rule.
+# ===========================================================================
+echo "== board-snapshot(1) — every printed count carries the floor marker (card#6365 review) =="
+out="$(snap cap 1)"
+eq "rc 3: the untriaged overflow tail is marked as a floor" "true" "$(has '… +≥194 more' "$out")"
+eq "rc 3: the overflow tail is never printed unqualified"   "false" "$(has '… +194 more' "$out")"
+
+# The source leg. Every jq render line that INTERPOLATES a `length` must interpolate
+# $floor too — the predicate is `\(` + `length` on one line, which selects the three
+# printed counts and excludes the bare `($u | length) > 0` predicates that print
+# nothing. Derived from the bin, so a new count is in the population the day it lands.
+count_lines="$(command grep -n 'length' "$BIN" | command grep '\\(')"
+eq "source: three count interpolations derived from the bin" "3" \
+   "$(printf '%s\n' "$count_lines" | command grep -c .)"
+bare="$(printf '%s\n' "$count_lines" | command grep -v '\\(\$floor)' || true)"
+eq "source: no count is interpolated without \$floor" "" "$bare"
+# CONTROL for the source leg — it must be able to fail. A synthetic render line with a
+# bare count must be selected by the predicate and rejected by it.
+_ctl='| "• \($label): in-flight \([$t[]]|length)",'
+eq "CONTROL: the source predicate SELECTS a bare count line" "true" \
+   "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep 'length' | command grep '\\(' || true)")"
+eq "CONTROL: …and REJECTS it for missing \$floor" "true" \
+   "$(has 'length' "$(printf '%s\n' "$_ctl" | command grep -v '\\(\$floor)' || true)")"
 
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"

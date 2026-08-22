@@ -36,10 +36,31 @@ KB_CURL_MAX_TIME=5
 
 # The whole-board paginated read is the shared fetch_board_cards (lib): reading
 # only the server's default page silently shortened the in-flight + untriaged
-# lists once a board grew past it (board 5 is already ~98 cards). A page-cap hit
-# (rc 3) still yields the partial array, so this fail-soft SessionStart display
-# shows what it has rather than going dark — and, since card#6365, says ON STDOUT
-# that that is what it is showing. See board_report's own note at the rc guard.
+# lists once a board grew past it. A page-cap hit (rc 3) or a short read (rc 4)
+# still yields the partial array, so this fail-soft SessionStart display shows
+# what it has rather than going dark — and, since card#6365, says ON STDOUT that
+# that is what it is showing. See board_report's own note at the rc guard.
+#
+# WHICH OF THE TWO PARTIAL RCS IS ACTUALLY REACHABLE HERE — a claim about the
+# world, so it is stated as a DERIVATION plus the measurement that fed it, not as
+# a board size that rots the week after it is written (an earlier version of this
+# comment asserted "board 5 is already ~98 cards"; it was 242 when re-measured):
+#   rc 3 (page cap) needs SNAPSHOT_PAGE_CAP (25) x the paginator's fixed limit=200
+#     = MORE THAN 5,000 cards on ONE board. No board here is near that, so rc 3 is
+#     a fixture-only rc for this tool today — but it is the cap that decides it, so
+#     lowering SNAPSHOT_PAGE_CAP is all it takes to reach it.
+#   rc 4 (short read) needs the read to span MORE THAN ONE PAGE, and then any row
+#     to leave the match set between the page-1 and page-2 requests: the census
+#     compares the pages' summed rows against the meta.total captured on PAGE 1
+#     ONLY, so one archive (board-session-close does exactly this) or one card
+#     moving out of the board mid-scan makes sum_n < total. It is REACHABLE, and it
+#     is reachable BENIGNLY — an ordinary concurrent write, not a broken server.
+# Re-derive it, do not quote it: ask the API how many pages a board is
+#   GET $API/tasks/search.json?q=board_id=<id>&limit=200&page=1 -> .meta.last_page
+# and compare against ceil(cards / 200) > SNAPSHOT_PAGE_CAP for rc 3. Measured
+# 2026-08-21: boards 5 and 8 answered last_page=2 (total 242 and 271), board 12
+# last_page=1 (189) — i.e. two of the three configured boards are already
+# multi-page reads, which is exactly the precondition rc 4 needs.
 
 # Clean slate before sourcing a board env: board envs EXPORT their keys, so an
 # operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /
@@ -57,6 +78,25 @@ board_env_scrub() {
     unset KBCARD_TOKEN_FILE KB_BOARD_ID ${!KB_STAGE_@}
 }
 
+# board_unread <label> <reason> — the ONE exit for a board this pass could not read.
+# It writes the SAME reason to both of board_report's channels because both sections
+# make a claim and neither can borrow the other's disclaimer: they are rendered under
+# separate headers, with every other board's output between them.
+#
+# Distinct from the rc-3/rc-4 notes further down, and deliberately so — those mark a
+# read that HAPPENED and came back short (rows are rendered, the counts are floors),
+# this one marks a board whose rows were never read at all (nothing is rendered, and
+# there is no count to floor). Same channel, different claim.
+#
+# The reason string is the CALLER's, unchanged from what it printed before, so the
+# rule the paginator's contract puts on caller messages (an arm reached by more than
+# one rc names the rc and names no cause) stays where it was — at the arm. This
+# function adds no cause of its own.
+board_unread() {  # $1 = label   $2 = reason ; reports on stdout AND fd 3
+    echo "• ${1}: (${2})"
+    echo "⚠ ${1}: (${2}) — this board's cards were NOT read, so NO untriaged card from it appears below" >&3
+}
+
 # board_report — ONE per-board pass: set up + fetch the board's cards ONCE, then
 # render both the in-flight snapshot (→ stdout) and the untriaged list (→ fd 3).
 # snap() and untriaged() were independent subshells that each sourced the env and
@@ -66,28 +106,40 @@ board_env_scrub() {
 # snapshot header and buffers fd 3 for the untriaged header, so the two-section
 # output order is unchanged.
 #
-# Fail-soft asymmetry preserved: every setup/fetch failure reports ONCE on stdout
-# (the snapshot line) and writes nothing to fd 3 — exactly what snap()+untriaged()
-# produced when untriaged stayed silent because snap had already reported. One fetch
-# means one failure to report, so the asymmetry is now structural, not a convention.
+# EVERY arm that ends a board's pass without a card list reports on BOTH channels,
+# through board_unread ABOVE. It used to report ONCE, on stdout, and write nothing to
+# fd 3 — inherited from the era when snap() and untriaged() were separate passes and
+# untriaged could stay quiet because snap had already spoken. That is a historical
+# shape, not a decision, and once the two sections were printed under DIFFERENT
+# headers it became a false claim: the untriaged header asserts "none may be silently
+# missed", and an EMPTY section under it, for a board whose rows were never read at
+# all, is a stronger version of the very claim card#6365's rc-3/rc-4 note exists to
+# forbid one line above. A section that read nothing must SAY it read nothing; the
+# alternative is silence that looks exactly like "there is nothing to triage".
+#
+# Which is why it is ONE function and not a convention repeated per arm: the sites that
+# can end a pass without a card list have grown before (the env file, the board id, the
+# token, the read guard, and the two renders) and the next one would otherwise inherit
+# the silence for free. board-snapshot-selftest.sh derives that population from this
+# file rather than listing it, so a new arm reds instead of going quiet.
 board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, untriaged → fd 3
   local envf="$1" label="$2"
-  [[ -r "$envf" ]] || { echo "• ${label}: (env $envf missing)"; return 0; }
+  [[ -r "$envf" ]] || { board_unread "$label" "env $envf missing"; return 0; }
   (
     board_env_scrub
     # shellcheck disable=SC1090
     source "$envf"
-    [[ -n "${KB_BOARD_ID:-}" ]] || { echo "• ${label}: (env $envf sets no KB_BOARD_ID)"; return 0; }
+    [[ -n "${KB_BOARD_ID:-}" ]] || { board_unread "$label" "env $envf sets no KB_BOARD_ID"; return 0; }
     # Explicit token ladder: this board's > the host's > the default. Per-board fail-soft —
     # one board's unreadable token must not blank the others. Resolved once so the read and
     # its failure message can't drift to different files.
     local tokfile="${KBCARD_TOKEN_FILE:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}"
     kb_read_token "$tokfile" \
-        || { echo "• ${label}: (token file unreadable: $tokfile)"; return 0; }
+        || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
     local data rc
     data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
-        || { echo "• ${label}: (board read failed — fetch rc=$rc)"; return 0; }
+        || { board_unread "$label" "board read failed — fetch rc=$rc"; return 0; }
     # A PARTIAL read is rendered — and now SAYS SO ON THE CHANNEL THE READER SEES.
     # The two rcs admitted above besides 0 emit their partial array precisely so a
     # fail-soft display can show what it has, and the paginator flags both
@@ -102,7 +154,14 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # and a third would inherit it for free. Two carriers, because they answer
     # different questions:
     #   $floor prefixes every count this pass prints ("in-flight ≥12"), so the
-    #     NUMBER cannot be read as a total even quoted out of its line;
+    #     NUMBER cannot be read as a total even quoted out of its line. EVERY is a
+    #     claim with a denominator: this pass prints exactly THREE counts — the
+    #     in-flight count, the untriaged count, and the untriaged list's overflow
+    #     tail ("… +N more"). The tail was the one that shipped bare, because it is
+    #     a count of what the SIX-line cap hid rather than a count of the board, and
+    #     it is a floor for the same reason the other two are. Adding a fourth count
+    #     to either jq without $floor is the way this claim goes false; the selftest
+    #     asserts no bare count survives on a partial read, over the whole render;
     #   the notes SAY it, once per section, because the two sections are printed
     #     under different headers (fd 3 is buffered and rendered far below), so a
     #     bare ≥ arriving there would have no explanation beside it. The fd-3 note
@@ -206,9 +265,10 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
         | if ($u | length) > 0 then
             "⚠ \($label): \($floor)\($u | length) UNTRIAGED — run the /triage-cards skill (newest first):",
             ($u[0:6][] | "    #\(.id) [stage \(.workflow_stage_id)] \(.name[0:60])"),
-            (if ($u | length) > 6 then "    … +\(($u | length) - 6) more" else empty end)
+            (if ($u | length) > 6 then "    … +\($floor)\(($u | length) - 6) more" else empty end)
           else empty end
-      ' 2>/dev/null >&3
+      ' 2>/dev/null >&3 \
+        || echo "⚠ ${label}: (untriaged list could not be rendered — parse error)" >&3
   )
 }
 
