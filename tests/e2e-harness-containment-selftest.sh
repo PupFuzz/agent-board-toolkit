@@ -17,6 +17,17 @@
 # a refusal when HOME is not the scratch dir, a write set that stays inside the scratch dir,
 # and a host env that DECLARES what the lib's preflight and token resolution now require.
 #
+# ⛔ THAT POPULATION IS A SUB-POPULATION OF THE PROPERTY THIS FILE IS TRUSTED FOR, and the gap
+# is named here rather than left for the next reader to discover. "The harness writes only
+# inside its scratch" is ONE member of "the suite writes nothing outside its scratch" — the
+# incident above was caused by this harness, but nothing makes it the only thing that can cause
+# it, and two other selftests were measured writing the operator's live ~/.kbcard-failures.log
+# while this file was green. The whole property is owned by
+# tests/suite-home-containment-selftest.sh, which re-derives its population from the tree every
+# run; this file keeps the harness-specific cases (the HOME refusal, the declared host env)
+# that a suite-wide sweep cannot make. Do not widen this file to cover the suite — extend that
+# one, or the two will disagree about which is the real denominator.
+#
 # EVERY ABSENCE ASSERTION HERE IS PAIRED WITH A PRESENCE WITNESS. "the decoy is unchanged" is
 # also true of a harness that has stopped writing anything at all, and of a driver that never
 # ran; each block therefore also asserts the file the harness IS supposed to have written.

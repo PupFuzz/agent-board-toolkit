@@ -192,7 +192,22 @@ kb_resolve_env() {
     # rcs below return before assigning them — so after a FAILED resolve of board B they
     # would still hold board A's values from an earlier call in the same shell, and a
     # credential path left standing after a refusal is the exact cross-call leak the ambient
-    # snapshot further down exists to prevent. Nothing publishes what it did not resolve.
+    # snapshot further down exists to prevent.
+    #
+    # ⛔ THE SCOPE OF THAT CLAIM IS THESE TWO, NOT ALL FOUR PUBLISHED GLOBALS. It used to read
+    # "Nothing publishes what it did not resolve", which is false as written: KB_API and
+    # KB_BOARD_ID are also published by this function and are NOT cleared here, so an rc 2
+    # (unreadable board env) returns with board A's KB_API still standing. That is not a live
+    # bug — no in-tree caller reads either after a nonzero rc, they all branch on the rc first —
+    # and the two are treated differently on purpose rather than by omission:
+    #   * KB_TOKEN_FILE / KB_BOARD_ENV name a CREDENTIAL and the file that chose it. A stale one
+    #     survives as a path something might later read, which is the leak above.
+    #   * KB_BOARD_ID must NOT be cleared here. `KB_BOARD_ID="${KB_BOARD_ID:-}"` below reads its
+    #     own prior value on purpose — that is the documented AMBIENT tier, the one a caller sets
+    #     for a board whose env does not. Clearing it at the top would silently delete that tier,
+    #     which is precisely the mistake the ambient snapshot below is written to avoid.
+    # Widening the clear is therefore a behaviour change, not a tidy-up. If this comment and the
+    # line under it ever disagree again, the comment is the thing that drifted.
     KB_TOKEN_FILE=""; KB_BOARD_ENV=""
     [[ -r "$board_env" ]] || return 2
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
@@ -512,14 +527,21 @@ kb_require_positional() {
 }
 
 # kb_url_host <url>: the AUTHORITY HOST of a URL, per RFC 3986 — with no opinion about
-# scheme, port or path. Empty when the string has no authority.
+# scheme, port or path. Empty when the string has no authority. A bracketed IPv6 literal
+# comes back WITH its brackets ("[::1]"), which is the RFC 3986 host and the spelling an
+# operator declares; a single trailing dot (the absolute/FQDN form) is stripped, because
+# it names the same host to DNS and to curl.
 #
 # IT DOES NOT CASE-FOLD, and both callers compare its result literally. DNS names are
 # case-insensitive, so `https://Kanban.Example/` against KANBAN_EXPECTED_HOST=kanban.example
-# is a FALSE REFUSAL. That is deliberate rather than overlooked: it is the behaviour
-# kb_require_https_host has always had, folding here would make the two guards disagree
-# about one string, and the refusal prints both spellings side by side, so the operator sees
-# the cause. Fold at BOTH call sites or at neither.
+# is a FALSE REFUSAL. That is deliberate rather than overlooked, and the constraint is the
+# VENDORED MIRROR, not the two lib callers — those both read their host from this one
+# function, so they cannot disagree about a string whatever it does. `host_ok` in
+# bin/promote-released-cards is the copy that must not source this lib, so a fold here that
+# is not also made there splits one guard into two policies, and the case matrix in
+# tests/kb-host-guard-selftest.sh asserts the two copies AGREE on every row. Fold in BOTH
+# copies or in neither. Meanwhile the refusal prints both spellings side by side, so an
+# operator hitting the false refusal sees the cause.
 #
 # ⛔ THIS PARSER MUST AGREE WITH CURL ABOUT WHERE THE AUTHORITY ENDS, and the reason is in
 # tests/kb-host-guard-selftest.sh's header: it once terminated the authority at '/' ALONE,
@@ -540,7 +562,20 @@ kb_url_host() {
     kb_ere_match "$u" '^[A-Za-z][A-Za-z0-9+.-]*://' && u="${u#*://}"
     u="${u%%[/?#]*}"   # authority ends at the FIRST of / ? # (RFC 3986) — not '/' alone
     u="${u##*@}"       # strip userinfo — host is after the last '@' (RFC 3986)
-    printf '%s' "${u%%:*}"   # strip :port
+    # THE PORT STRIP CANNOT START AT THE FIRST ':' — an IPv6 IP-literal is nothing but
+    # colons, so `[::1]:8080` cut there yields `[`, and `[fe80::1]` yields `[fe80`. RFC 3986
+    # ends the IP-literal at ']' and curl agrees (measured: `https://[::1]:8080/api`
+    # connects to `::1` port 8080), so the host is everything through the FIRST ']'. An
+    # unclosed '[' has no host to find: it keeps the plain strip, and curl rejects such a
+    # URL outright (exit 3, "bad range specification"), so nothing is ever sent with it.
+    case "$u" in
+        \[*\]*) u="${u%%\]*}]" ;;
+        *)      u="${u%%:*}" ;;
+    esac
+    # ONE trailing dot, not a run: `kanban.example.com.` is the absolute spelling of the same
+    # name and resolves identically, while `kanban.example.com..` is not a name at all and
+    # must keep failing the comparison rather than be normalised into one.
+    printf '%s' "${u%.}"
 }
 
 # kb_require_known_api_host <api_base>: the PREFLIGHT (card#7245). Returns 0 only when the
@@ -566,7 +601,12 @@ kb_url_host() {
 # both and no second thing has to be configured.
 kb_require_known_api_host() {
     local api="$1"
-    local expect="${KANBAN_EXPECTED_HOST:-}"
+    # The same one-trailing-dot normalisation kb_url_host applies to the parsed host, applied
+    # to the DECLARED one — an operator who copied the FQDN spelling out of their own
+    # KBCARD_API would otherwise be refused with `'h' is not 'h.'`. It runs BEFORE the
+    # empty test, so a declaration of "." alone normalises to empty and fails CLOSED rather
+    # than becoming a wildcard.
+    local expect="${KANBAN_EXPECTED_HOST:-}"; expect="${expect%.}"
     if [[ -z "$expect" ]]; then
         echo "$(_kb_prog): KANBAN_EXPECTED_HOST is not set, so no api host is recognised — refusing to use '$api'" >&2
         echo "$(_kb_prog):   → add   export KANBAN_EXPECTED_HOST=\"<the host part of KBCARD_API>\"   to ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
@@ -598,7 +638,7 @@ kb_require_known_api_host() {
 # tests/kb-host-guard-selftest.sh green — that file asserts every case against BOTH copies.
 kb_require_https_host() {
     local api="$1"
-    local expect="${KANBAN_EXPECTED_HOST:-}"
+    local expect="${KANBAN_EXPECTED_HOST:-}"; expect="${expect%.}"   # see kb_require_known_api_host
     if [[ -z "$expect" ]]; then
         echo "$(_kb_prog): KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send" >&2
         return 1

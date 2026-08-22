@@ -112,7 +112,8 @@ uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return
 # subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
 # calling — see the required-var check below). Host is parsed per RFC 3986 — the authority
 # ends at the FIRST of '/', '?' or '#', then userinfo before the last '@' is stripped, then
-# :port — so `https://good@evil/` (→ evil), `https://good.evil/`, and
+# :port (but see the IP-literal case below, which ends at ']' instead) — so
+# `https://good@evil/` (→ evil), `https://good.evil/`, and
 # `https://evil#@good.host` (which terminating at '/' alone let through, because the
 # userinfo strip then reached into the fragment while curl discarded it) are all rejected.
 # The parser MUST agree with curl about where the authority ends. Mirrors
@@ -121,10 +122,34 @@ uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return
 # sync, INCLUDING the required-var check. (#3570)
 host_ok() {
   case "$1" in https://*) ;; *) return 1 ;; esac
-  local h="${1#https://}"; h="${h%%[/?#]*}"; h="${h##*@}"; h="${h%%:*}"
+  local h="${1#https://}"; h="${h%%[/?#]*}"; h="${h##*@}"
+  # The port strip CANNOT start at the first ':' — a bracketed IPv6 literal is nothing but
+  # colons, so `[::1]:8080` cut there yields `[`, and the refusal then names `[` as the host
+  # to declare, which matches EVERY bracketed authority. RFC 3986 ends the IP-literal at ']'
+  # and curl agrees, so the host runs through the FIRST ']'. An unclosed '[' keeps the plain
+  # strip: curl rejects such a URL outright, so nothing is ever sent with it.
+  case "$h" in
+    \[*\]*) h="${h%%\]*}]" ;;
+    *)      h="${h%%:*}" ;;
+  esac
+  # ONE trailing dot on either side, not a run: `h.` is the absolute spelling of the same
+  # name and resolves identically, while `h..` is not a name at all and must keep failing.
+  h="${h%.}"
+  # Idempotent: the caller already strips the declared side, so this re-strip is a no-op
+  # there. It is here because tests/kb-host-guard-selftest.sh lifts this function OUT of
+  # the script and exercises it alone — the extracted unit must carry the whole policy.
+  local e="${EXPECT_HOST%.}"
   [ -n "$h" ] || return 1
-  [ "$h" = "$EXPECT_HOST" ] && return 0
-  case "$h" in *".$EXPECT_HOST") return 0 ;; *) return 1 ;; esac
+  # NOT dead code, and NOT a guard the caller already makes. The caller dies on an empty
+  # EXPECT_HOST, but it strips the dot BEFORE that test, so the empty case cannot reach here
+  # through the script — while the extracted unit has no caller at all. Without this, an
+  # EXPECT_HOST of "." leaves e empty and the subdomain arm below becomes `*"."`, which
+  # MATCHES any host that still ends in a dot (`h..` strips to `h.`): the unit ACCEPTS where
+  # kb_require_https_host REFUSES, and "the two copies agree on every row" is the one thing
+  # the selftest exists to assert. Fail closed on a declaration that normalised to nothing.
+  [ -n "$e" ] || return 1
+  [ "$h" = "$e" ] && return 0
+  case "$h" in *".$e") return 0 ;; *) return 1 ;; esac
 }
 
 # True iff <ref> is a MERGE commit (>=2 parents). `git rev-list --parents -n1`
@@ -207,7 +232,10 @@ API="${API%/}"
 # Pin it in the promote CI env (a repo/org variable — out-of-band from the PR-editable
 # .release-pr.json, so an attacker's api_base edit can't also change the constraint). If it
 # is unset/empty we refuse BEFORE any token is sent.
-EXPECT_HOST="${KANBAN_EXPECTED_HOST:-}"
+# The single trailing dot comes off the DECLARED host here, before the non-empty check, so
+# a declaration of "." alone normalises to empty and dies LOUD rather than becoming a
+# wildcard — the same order kb_require_known_api_host uses in _kb-board-lib.sh.
+EXPECT_HOST="${KANBAN_EXPECTED_HOST:-}"; EXPECT_HOST="${EXPECT_HOST%.}"
 [ -n "$EXPECT_HOST" ] \
   || die "KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send"
 host_ok "$API" \

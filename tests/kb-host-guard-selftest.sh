@@ -60,6 +60,8 @@ check accept "https://board.kanban.victim.corp/api/v3"    "a subdomain of the ex
 check accept "https://kanban.victim.corp:8443/api/v3"     "expected host with a :port"
 check accept "https://u:pw@kanban.victim.corp/api/v3"     "real userinfo before the expected host"
 check accept "https://kanban.victim.corp/api/v3?x=1"      "a query on the expected host"
+check accept "https://kanban.victim.corp./api/v3"         "the expected host, FQDN-spelled with a trailing dot"
+check refuse "https://kanban.victim.corp../api/v3"        "a DOUBLE trailing dot is not that name"
 
 echo "== the exfiltration matrix — every one must be REFUSED =="
 check refuse "https://evil.example/api/v3"                "a plainly different host"
@@ -115,6 +117,41 @@ uh ""                                            ""
 # the strip is gated on an anchored scheme match instead of a bare `${u#*://}`.
 uh "kanban.victim.corp/p?x://y"                  "kanban.victim.corp"
 
+# ── BRACKETED IPv6 LITERALS: the authority ends at ']', never at the first ':' ──────────
+# `${u%%:*}` strips from the FIRST colon, and an IP-literal is nothing but colons, so
+# `https://[::1]:8080/api` parsed as `[` and `https://[fe80::1]/api` as `[fe80`. Neither was
+# fail-OPEN by itself — both refuse — but the refusal then printed
+# `if '[' IS your board host, set KANBAN_EXPECTED_HOST="["`, and `[` matches EVERY bracketed
+# authority, so the guard's own remediation text was what minted the bypass. The install
+# shape is legitimate by this repo's own docs (docs/INSTALL.md §3 blesses a 127.0.0.1
+# board; `[::1]` is the same box). curl ends the authority at ']' — measured:
+# `https://[::1]:8080/api` connects to `::1` port 8080 — so the parser must too.
+uh "https://[::1]:8080/api/v3"           "[::1]"
+uh "https://[::1]/api/v3"                "[::1]"
+uh "https://[fe80::1]/api"               "[fe80::1]"
+uh "https://[::ffff:169.254.169.254]/"   "[::ffff:169.254.169.254]"
+uh "https://u:pw@[::1]:8080/api"         "[::1]"
+uh "https://[::1]"                       "[::1]"
+# The bracket must not become a way to smuggle one: a '[' in the PATH is already gone by
+# then, and an '@' after the literal still puts the host after the LAST '@'.
+uh "https://evil.example/[::1]"          "evil.example"
+uh "https://[::1]@evil.example/"         "evil.example"
+# An UNCLOSED bracket has no ']' to end at, so it keeps the old first-colon strip and lands
+# on '['. That is not a hole: curl rejects the URL outright — measured,
+# `curl 'https://[::1/api'` exits 3, `bad range specification in URL position 10` — so no
+# request is ever made with it, and '[' matches no declared host after this change.
+uh "https://[::1/api"                    "["
+
+# ── A TRAILING DOT is the same DNS name ────────────────────────────────────────────────
+# `kanban.victim.corp.` is the absolute (FQDN) spelling; curl resolves it to the same name.
+# Refusing it produced `'kanban.victim.corp.' is not 'kanban.victim.corp'`, which reads as a
+# tool malfunction. ONE dot is stripped, not a run: `..` is not a valid name and must stay
+# refused rather than be normalised into one.
+uh "https://kanban.victim.corp./api/v3"  "kanban.victim.corp"
+uh "https://kanban.victim.corp.:8443/"   "kanban.victim.corp"
+uh "https://kanban.victim.corp../api/v3" "kanban.victim.corp."
+uh "https://."                           ""
+
 # ---------------------------------------------------------------------------------------
 echo "== kb_require_known_api_host — the same hosts, a host-ONLY predicate (card#7245) =="
 # THE STATED SCOPE IS THE HOST AND NOTHING ELSE, so this block is the two-sided proof of that:
@@ -158,6 +195,55 @@ export KANBAN_EXPECTED_HOST="$ksaved"
 kmsg="$(kb_require_known_api_host "https://evil.example/api/v3" 2>&1 >/dev/null || true)"
 eq "a MISMATCH names the host it refused"        "true" "$(has "evil.example" "$kmsg")"
 eq "  and tells the operator both ways out"      "true" "$(has 'KBCARD_API' "$kmsg")"
+
+echo "== an IPv6-literal board host: BOTH copies, and the tool's own remediation (card#7245) =="
+# The install shape is legitimate, so the guard must be usable on it: a declared `[::1]`
+# accepts that board and NOTHING else. The rows are run against both copies, because the
+# vendored mirror splits the authority with the same two parameter expansions.
+ipsaved="$KANBAN_EXPECTED_HOST"
+export KANBAN_EXPECTED_HOST="[::1]"; EXPECT_HOST="[::1]"
+check accept "https://[::1]:8080/api/v3"            "the declared IPv6 literal with a :port"
+check accept "https://[::1]/api/v3"                 "the declared IPv6 literal, no port"
+check refuse "https://[::ffff:169.254.169.254]/api" "a DIFFERENT IPv6 literal (link-local metadata)"
+check refuse "https://[fe80::1]/api"                "another different IPv6 literal"
+check refuse "https://evil.example/api/v3"          "a name, against a declared IP-literal"
+
+# ⛔ THE DEFECT THIS BLOCK EXISTS FOR, asserted through the tool's OWN words rather than a
+# literal: the remediation line tells the operator what to set, so whatever it names must
+# admit the board it was printed for and nothing else. It used to name `[`, which admits
+# every bracketed authority — the guard's text producing the config that breaks the guard.
+export KANBAN_EXPECTED_HOST="kanban.victim.corp"
+ipmsg="$(kb_require_known_api_host "https://[::1]:8080/api/v3" 2>&1 >/dev/null || true)"
+suggested="$(printf '%s\n' "$ipmsg" | sed -n 's/.*set KANBAN_EXPECTED_HOST="\([^"]*\)".*/\1/p' | head -1)"
+eq "the refusal suggests a host to declare (control)" "false" \
+   "$([[ -z "$suggested" ]] && echo true || echo false)"
+export KANBAN_EXPECTED_HOST="$suggested"; EXPECT_HOST="$suggested"
+kcheck accept "https://[::1]:8080/api/v3"            "taking the tool's suggestion accepts the board it named"
+kcheck refuse "https://[::ffff:169.254.169.254]/api" "  …and STILL refuses every other IPv6 literal"
+kcheck refuse "https://[fe80::1]/api"                "  …and this one too"
+export KANBAN_EXPECTED_HOST="$ipsaved"; EXPECT_HOST="$ipsaved"
+
+# A trailing dot on the DECLARED side is the same name too — otherwise an operator who
+# copied the FQDN spelling out of their own KBCARD_API is refused with
+# `'kanban.victim.corp' is not 'kanban.victim.corp.'`, the mirror image of the case above.
+export KANBAN_EXPECTED_HOST="kanban.victim.corp."; EXPECT_HOST="kanban.victim.corp."
+check  accept "https://kanban.victim.corp/api/v3"       "a declared host spelled with a trailing dot"
+check  accept "https://board.kanban.victim.corp/api/v3" "  …and its subdomains still match"
+check  refuse "https://evil.example/api/v3"             "  …while a different host still refuses"
+kcheck accept "https://kanban.victim.corp/api/v3"       "same, through the host-only preflight"
+# A declared host that is NOTHING BUT a dot normalises to empty, which must fail CLOSED —
+# the strip must not turn a junk declaration into a wildcard.
+export KANBAN_EXPECTED_HOST="."; EXPECT_HOST="."
+check  refuse "https://kanban.victim.corp/api/v3"       "a declared host of '.' alone recognises nothing"
+kcheck refuse "https://kanban.victim.corp/api/v3"       "  …through the host-only preflight too"
+# ⛔ THE ROW THAT CAUGHT THE COPIES DIVERGING. A declared "." normalises to empty, and the
+# mirror's subdomain arm is built as *".$EXPECT_HOST" — with the declared side empty that
+# becomes *"." , which matches any host STILL ending in a dot after its own single-dot strip.
+# `kanban.victim.corp..` is exactly such a host, so the vendored copy ACCEPTED it while the
+# lib refused. Unreachable through promote-released-cards (its caller dies on an empty
+# EXPECT_HOST) but the extracted unit has no caller, and agreement is what this file asserts.
+check  refuse "https://kanban.victim.corp../api/v3"     "  …and a DOUBLE dot cannot ride the empty declaration"
+export KANBAN_EXPECTED_HOST="$ipsaved"; EXPECT_HOST="$ipsaved"
 
 echo "== the refusal must be loud (a silent rc is one an operator never sees) =="
 msg="$(kb_require_https_host "https://evil.example#@kanban.victim.corp" 2>&1 >/dev/null || true)"

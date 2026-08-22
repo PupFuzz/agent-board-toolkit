@@ -101,6 +101,13 @@ eq "host KBCARD_TOKEN_FILE beats an ambient one" "$TMP/host.token" "${KB_TOKEN_F
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
 echo 'KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+# ⛔ THE SENTINEL IS WHAT MAKES THE NEXT ASSERTION A MEASUREMENT. reset_env above UNSETS
+# KB_TOKEN_FILE, so "it is empty afterwards" was true before kb_resolve_env was even called —
+# the line passed against a resolver that had never touched the variable, and mutation 11
+# redded the same claim at :160 and :234 while leaving this one green. Seeding a value that
+# only the function under test can remove turns it into the check it was written to be: the
+# "CLEARED FIRST" arm of kb_resolve_env is what has to run for this to pass.
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
 rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "no declared token file is rc 7, not a default"   "7" "$rc"
 eq "  and KB_TOKEN_FILE is not published"            ""  "${KB_TOKEN_FILE:-}"
@@ -328,6 +335,11 @@ eq "  and the host token default STILL loaded"             "$TMP/host.token" "${
 # No host env at all must not fail (it reads no token, so it has nothing to fail on).
 reset_env
 rm -f "$KANBAN_HOST_ENV"
+# Sentinel, same reason as the rc-7 block above: reset_env UNSETS KB_API, so "empty
+# afterwards" was already true before kb_load_host_env ran and the line passed against a
+# function that never assigned. A stale KB_API from a previous host env is the thing worth
+# catching, so seed one and require this call to have overwritten it.
+KB_API="$TMP/STALE-API-FROM-A-PREVIOUS-LOAD"
 rc=0; kb_load_host_env || rc=$?
 eq "no host env → still rc 0" "0" "$rc"
 eq "  KB_API empty"           ""  "${KB_API:-}"
@@ -426,9 +438,19 @@ eq "a leaked KBCARD_TOKEN_FILE is NOT reported as this board's" "" \
    "$(get1 "$TMP/.kanban-noheld-board.env" KBCARD_TOKEN_FILE)"
 
 # kb_board_env_get must not leak the board env into the caller.
+# ⛔ CALLED DIRECTLY, NOT THROUGH get1 — and that is the whole assertion. get1 runs
+# kb_board_env_get inside a `$( )` command substitution, which is itself a subshell, so a
+# leak could never have reached this shell no matter what the function did: routed through
+# get1 this line was incapable of failing, and stayed green under a mutation that replaced
+# the function's own `( )` isolation with a plain `{ }` group. Driving the function in THIS
+# shell is what puts its isolation, rather than get1's, under test. The sentinel is the
+# second half: the board env sets KB_BOARD_ID=42, so a leak OVERWRITES a value the caller
+# owns — asserting an empty string could not tell "did not leak" from "never ran".
 reset_env
-get1 "$TMP/.kanban-a-board.env" KBCARD_TOKEN_FILE >/dev/null
-eq "does not leak the board env's KB_BOARD_ID into the caller" "" "${KB_BOARD_ID:-}"
+KB_BOARD_ID="SENTINEL-OWNED-BY-THE-CALLER"
+kb_board_env_get "$TMP/.kanban-a-board.env" KBCARD_TOKEN_FILE >/dev/null
+eq "does not leak the board env's KB_BOARD_ID into the caller" \
+   "SENTINEL-OWNED-BY-THE-CALLER" "${KB_BOARD_ID:-}"
 
 # ---------------------------------------------------------------------------
 echo "== kb_board_roster — the roster file, then DISCOVERY as the fallback =="
