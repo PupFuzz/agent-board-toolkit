@@ -1,39 +1,83 @@
 # ⛔ ONE LINE, AND ITS NARROWNESS IS THE POINT. Read this before adding a second path.
 #
-# WHY IT EXISTS. Every PR that ships a card appends its entry at the SAME anchor — the top of
+# WHAT IT BUYS. Every PR that ships a card appends its entry at the SAME anchor — the top of
 # `[Unreleased]` in docs/CHANGELOG.md (VERSIONING.md § The `[Unreleased]` entry rule, gated by
-# tests/changelog-card-entry-selftest.sh) — so every merge to `dev` leaves every open sibling PR
-# CONFLICTING. Measured at five hand-resolutions in one session, and the cost is superlinear in
-# parallelism: N open PRs mean each merge dirties N-1. A conflicted PR is worse than an annoying
-# one — GitHub schedules no `pull_request` workflow when it cannot compute the merge commit, so
-# its check set is `total_count: 0`, which is neither green nor red, and a naive "any failures?"
-# read answers *no* (card#7227).
+# tests/changelog-card-entry-selftest.sh) — so every merge to `dev` leaves every open sibling
+# branch colliding there. Measured at five hand-resolutions in one session, and superlinear in
+# parallelism: N open PRs mean each merge dirties N-1. With this line, the `git merge origin/dev`
+# a sibling branch runs to catch up resolves that collision by keeping both entries instead of
+# stopping for a hand-edit. That is the benefit, and it is LOCAL — it removes the hand-edit, not
+# the catch-up merge.
 #
-# ⛔ DO NOT WIDEN THIS TO ANOTHER PATH BY SYMMETRY. `union` is a line-concatenating driver with
-# no idea what the lines mean, and two shapes this house's files actually have were measured to
-# be DESTROYED by it:
-#   * an append-only log whose entries carry a NUMERIC key (a decision log) — union interleaves
-#     by position, silently producing the wrong order.
-#   * one long table row edited on BOTH sides — union emits the row TWICE, and picking a side
-#     drops whichever change lost. That one needed both semantic additions spliced into one row
-#     by hand; no automatic rule could have produced it.
-# The changelog is the one file here whose merge rule really is "keep both, in either order".
+# ⛔ IT DOES NOT UN-DIRTY A PULL REQUEST, AND THAT WAS MEASURED, NOT ASSUMED. GitHub's
+# server-side merge does not apply this driver. A throwaway branch pair colliding only on
+# `[Unreleased]`, both carrying this file and sharing a merge base that carries it, was refused
+# by `POST /repos/{owner}/{repo}/merges` with `409 Merge conflict` — the SAME answer as the
+# no-attribute control pair, while a pair touching different files answered `201` (so the
+# endpoint does discriminate) and a local `git merge-tree` on that very union pair answered rc 0.
+# Measured 2026-08-22 against this repo. So a sibling PR still goes `CONFLICTING`, and still gets
+# no `pull_request` workflow run — a check set of `total_count: 0`, which is neither green nor
+# red and which a naive "any failures?" read answers *no*. ⇒ Never cite this line as CI
+# protection; the only fix for a dirty PR is still to merge `dev` into the branch (card#7227).
+#
+# ⛔ DO NOT WIDEN THIS TO ANOTHER PATH BY SYMMETRY. `union` concatenates lines with no idea what
+# they mean, and two shapes were measured being DESTROYED by it. NEITHER FILE IS IN THIS REPO —
+# `git ls-files` carries neither — so a maintainer who comes here for the precedent before
+# widening must look where they live:
+#   * an append-only log whose entries carry a NUMERIC key — `CLAUDE_DECISIONS.md`, a file of the
+#     kanban-board and agent-webhook-bridge repos, not of this one. Union interleaves by
+#     position, silently producing the wrong order.
+#   * one long table row edited on BOTH sides — `docs/config-schema.md` in agent-webhook-bridge.
+#     Union emits the row TWICE, and picking a side drops whichever change lost. That one needed
+#     both semantic additions spliced into one row by hand; no automatic rule could have produced
+#     it.
+#
+# ⚠ AND THE GROUND FOR INCLUDING THE CHANGELOG IS NOT "IT IS ONLY EVER APPENDED TO". That was
+# the original argument and it is FALSE: entries here are reworded in place, including this
+# file's own entry and entries in the sibling repos that run the same rule. The distinction that
+# survives is
+# narrower and is a trade, not a clean separation. On the changelog the collision that RECURS is
+# two PRs appending at one anchor, where "keep both, in either order" is the right answer and
+# union produces it; the in-place edit is the rare case, and it is disclosed below with an
+# operating rule rather than gated. On a table row there is no append case at all — every
+# collision is an in-place edit of one line, so union is wrong every time, with nothing on the
+# other side of the trade. Union is right for the common case here and wrong for the rare one;
+# there it is wrong for the only case.
 #
 # WHAT THIS DOES NOT CHANGE. Every other path merges exactly as it did before, and a conflict in
 # any of them still stops for a human. Nothing about the CHANGELOG's content rules moves either:
 # the entry is still per-PR and still gated.
 #
-# TWO RESIDUALS, both MEASURED on this file's real structure, neither gated:
+# RESIDUALS, each measured on this file's real structure against its own no-attribute control.
+# One is gated; the rest are operating rules:
 #   * UNION IS SILENT, and it applies to every three-way merge git performs — `merge`, `rebase`,
-#     `cherry-pick` and `revert` — not only to a PR merge. Two consequences, each measured with
-#     its no-attribute control: cherry-picking a commit that REWORDS an existing entry onto a
-#     branch that appended a new one leaves BOTH spellings, stale copy included (control: that
-#     one conflicts); and `git revert` of a commit whose entry sits beside a later one becomes a
-#     NO-OP — `nothing to commit, working tree clean`, rc 1, entry still in the file — because
-#     union re-adds exactly what the reverse patch removes (control: a conflict, ALSO rc 1, so
-#     the exit code does not distinguish them; read the message). A merged `[Unreleased]` is
-#     never presented for review, so read the merge commit's diff of it: a clean merge is not a
-#     reviewed one.
+#     `cherry-pick` and `revert` — not only to a PR merge.
+#       - REBASE is the one that bites hardest. A branch that REWORDS its own entry and is then
+#         rebased onto a `dev` that gained a sibling entry at the same anchor keeps BOTH
+#         wordings: rc 0, "Successfully rebased and updated refs/heads/…", nothing printed
+#         (control: `CONFLICT (content)`, rc 1 — the rebase stops for a human). The rebased
+#         commit records no removal at all, so the branch's history reads as two entries added.
+#         ⇒ NEVER REBASE A BRANCH THAT HAS REWORDED ITS OWN `[Unreleased]` ENTRY. Merge `dev`
+#         into it instead. GATED, for line-initial bullets only:
+#         tests/changelog-card-entry-selftest.sh reds on any card for which ONE PR left two
+#         bullets standing. Its population is BULLETS, not entry bodies — a duplicated line
+#         inside a multi-line entry is invisible to it.
+#       - REWORD AGAINST REWORD, in an ordinary merge: two branches that each edit the SAME
+#         existing `[Unreleased]` line emit BOTH spellings at rc 0 — a changelog that
+#         contradicts itself, with no conflict and no prompt (control: `CONFLICT (content)`,
+#         rc 1). NOT gated, and not gateable from the merged tree: the surviving pair is
+#         indistinguishable from two PRs that each filed their own entry for one card, which
+#         this file legitimately contains twice (card#6645, card#7038). ⇒ A PR THAT EDITS AN
+#         EXISTING ENTRY RATHER THAN APPENDING ONE MUST READ THE MERGE COMMIT'S DIFF OF
+#         `[Unreleased]`.
+#       - CHERRY-PICK: picking a commit that rewords an existing entry onto a branch that
+#         appended a new one leaves both spellings, stale copy included (control: it conflicts).
+#       - REVERT of a commit whose entry sits beside a later one becomes a NO-OP — `nothing to
+#         commit, working tree clean`, rc 1, entry still in the file — because union re-adds
+#         exactly what the reverse patch removes (control: a conflict, ALSO rc 1, so the exit
+#         code does not distinguish them; read the message).
+#     A merged `[Unreleased]` is never presented for review, so read the merge commit's diff of
+#     it: a clean merge is not a reviewed one.
 #   * ORDER FOLLOWS MERGE DIRECTION, and one direction files an entry in the wrong section. With
 #     a release rename (`[Unreleased]` → `[X.Y.Z]`) as OURS and a feature branch as THEIRS, the
 #     incoming entry lands UNDER the version heading — well-formed, clean, and wrong; the
