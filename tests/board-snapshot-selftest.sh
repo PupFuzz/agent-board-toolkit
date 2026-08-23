@@ -428,5 +428,64 @@ eq "  …and the file to create"                          "true" "$(has '.kanban
 eq "  …and never the placeholder host it used to invent" "false" \
    "$(has 'YOUR-KANBAN-HOST' "$_na_out")"
 
+# ===========================================================================
+echo "== board-snapshot(1) — a runtime guard that DID NOT COMPLETE is not reported as clean (card#7305) =="
+# `agent-board-toolkit-runtime-check --quiet` prints nothing when the runtime is current, so
+# SILENCE IS THE CLEAN SIGNAL on this leg — and that guard buffers its whole report and writes
+# it once at the end (deliberately: progressive output is what let a truncating reader destroy
+# its verdict, card#6911). A run that dies before that single write therefore emits nothing at
+# all, byte-identical to a healthy one. The leg used to end `… 2>&1 || true`, discarding the
+# status the guard's own header calls the channel its verdict rides on, so both outcomes
+# reached the operator as the same clean silence.
+#
+# THE THREE ARMS ARE THE WHOLE PREDICATE — silent-and-current, silent-and-dead,
+# loud-and-failing. The middle one is the finding; the other two are what stop the fix being a
+# decoration (arm 1 would still pass if the new line were unconditional) or a new source of
+# noise on the case that was already working (arm 3). Every capture goes through `snap`, i.e.
+# the bin's STDOUT with stderr discarded — the stream the SessionStart hook actually surfaces.
+_rtc() {
+    printf '%s\n' "$1" > "$TMP/bin/agent-board-toolkit-runtime-check"
+    chmod +x "$TMP/bin/agent-board-toolkit-runtime-check"
+}
+_RTC_NEEDLE='runtime-staleness check DID NOT COMPLETE'
+
+# arm 1 — CONTROL: a current runtime. Silent, rc 0; must stay silent.
+_rtc '#!/usr/bin/env bash
+exit 0'
+_rtc_ok="$(snap complete)"
+eq "control: a CURRENT runtime adds no line"                 "false" "$(has "$_RTC_NEEDLE" "$_rtc_ok")"
+eq "  …and the snapshot exits 0"                             "0"     "$SNAP_RC"
+
+# arm 2 — THE FINDING. SIGKILL is untrappable, so the stub does not simulate the event, it IS
+# the event: the guard dies before its write and the caller sees 0 bytes at status 137.
+_rtc '#!/usr/bin/env bash
+kill -9 $$
+echo "runtime-check: ✗ STALE COPIES" >&2'
+_rtc_dead="$(snap complete)"
+eq "a KILLED runtime guard is reported, not swallowed"       "true"  "$(has "$_RTC_NEEDLE" "$_rtc_dead")"
+eq "  …and the line names the status it exited with"         "true"  "$(has 'exited 137' "$_rtc_dead")"
+eq "  …and names the command to re-run"                      "true"  "$(has 'Re-run it directly' "$_rtc_dead")"
+eq "  …and it STILL never blocks SessionStart"               "0"     "$SNAP_RC"
+# ⛔ THE DISCRIMINATOR ITSELF, as one assertion: these two renders used to be byte-identical,
+# which is the entire defect. Asserting only on the needle above would still pass if the line
+# were also being printed on the healthy run.
+eq "  …and no longer renders identically to the CURRENT run" "false" \
+   "$([[ "$_rtc_dead" == "$_rtc_ok" ]] && echo true || echo false)"
+
+# arm 3 — CONTROL: a guard that found something and said so. The fix must not make this case
+# quieter, and must not bolt a second line onto a report that already carried its finding.
+_rtc '#!/usr/bin/env bash
+echo "runtime-check: ✗ STALE COPIES vs /ref: kbcard" >&2
+exit 1'
+_rtc_loud="$(snap complete)"
+eq "control: a real STALE finding still reaches stdout"      "true"  \
+   "$(has 'STALE COPIES vs /ref: kbcard' "$_rtc_loud")"
+eq "  …and is NOT softened into 'did not complete'"          "false" "$(has "$_RTC_NEEDLE" "$_rtc_loud")"
+eq "  …and STILL never blocks SessionStart"                  "0"     "$SNAP_RC"
+
+# leave the silent stub in place for anything added after this block
+_rtc '#!/usr/bin/env bash
+exit 0'
+
 # ---------------------------------------------------------------------------
 _summary "board-snapshot-selftest"

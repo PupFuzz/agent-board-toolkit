@@ -375,9 +375,29 @@ echo "── Untriaged cards — triage is my responsibility; none may be silent
 # is the durable record"). A staleness warning nobody reads is the exposure, not the fix.
 # Folding to stdout puts it in the same stream as the board snapshot itself.
 #
-# Never blocks the snapshot (SessionStart is fail-soft): `|| true` swallows the guard's
-# non-zero exit — the MESSAGE is the signal here, not the status.
-command -v agent-board-toolkit-runtime-check >/dev/null 2>&1 \
-    && agent-board-toolkit-runtime-check --quiet 2>&1 || true
+# ⛔ THE STATUS IS READ, NOT SWALLOWED (card#7305). This leg used to end `… 2>&1 || true`
+# under the note "the MESSAGE is the signal here, not the status" — which is the one claim
+# the guard's own header says is false. That guard BUFFERS its whole report and writes it
+# once at the end, deliberately, because progressive output is what let a truncating reader
+# destroy its verdict (card#6911); its header's conclusion is "Gate on the exit code; it is
+# now what a truncating consumer actually receives", and it accepts on the record that "with
+# stdout on a full filesystem this tool exits with the right rc having printed nothing".
+# A run killed before that single write emits nothing at all, and `--quiet` means SILENCE IS
+# THE CLEAN SIGNAL here — so the two were indistinguishable: measured through this exact
+# compound, a current runtime and a SIGKILLed one both rendered 0 bytes at an identical
+# caller status of 0, while a real STALE finding was loud. An empty result is a measurement
+# that never happened until shown otherwise, and this leg was showing it as a clean one.
+#
+# Still never blocks the snapshot (SessionStart is fail-soft): the status is REPORTED, never
+# propagated — the `exit 0` below is unchanged. The extra line is emitted ONLY where the
+# guard said nothing, so a run that already carried its own ✗/⚠ is neither softened nor
+# given a redundant second line; the silent case is the only one that gains a word.
+if command -v agent-board-toolkit-runtime-check >/dev/null 2>&1; then
+    rtc_out="$(agent-board-toolkit-runtime-check --quiet 2>&1)"; rtc_rc=$?
+    [[ -z "$rtc_out" ]] || printf '%s\n' "$rtc_out"
+    if [[ "$rtc_rc" -ne 0 && -z "$rtc_out" ]]; then
+        printf '%s\n' "⚠ board-snapshot: agent-board-toolkit-runtime-check exited $rtc_rc and printed nothing — the runtime-staleness check DID NOT COMPLETE, so this section is UNMEASURED, not current. Re-run it directly: agent-board-toolkit-runtime-check"
+    fi
+fi
 exit 0
 fi
