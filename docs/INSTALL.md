@@ -129,9 +129,22 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 > `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. A board env that sets it is **refused** (as of v0.14.0) rather than silently honored, with a message naming the file. What "refused" means per tool: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, and `adopt-to-dl` **exit 2 and do nothing**; `next-dl` **warns and skips the board check**, then still mints from its offline scan (fail-soft by design — but that scan is non-atomic, so fix the board env rather than rely on it; since card#7214 the degrade also prints the cause, and `next-dl --require-counter` refuses at **rc 4** instead of minting from it). `board-snapshot` and `board-card-start` never read a board env's `KBCARD_API` at all, so they ignore one.
 
-> **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one.** So a per-board token set here wins over a host-level default — that is the point of setting it here. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
+> **Token-file precedence**, uniform across every tool: **this board env's `KBCARD_TOKEN_FILE` > `~/.kanban-host.env`'s > an ambient one > the coord credential store's `[kanban] api_token_file` pointer.** So a per-board token set here wins over a host-level default — that is the point of setting it here — and any of the three DECLARED tiers wins over the store, which is discovered rather than declared for this board. (One exception: `board-card-start` consults a board env's token only for a repo whose board id comes from a repo-local `git config kanban.board-id` — see [HOOKS.md](HOOKS.md).)
 >
-> ⛔ **There is no fourth tier. Step (c) above is REQUIRED unless the host env declares one.** A board for which none of the three tiers names a token file is **refused**, with a message naming the board env and the exact line to add. `~/.kanban-dev-token` was a baked default until card#7245, and being one file for every board that had not set its own is what made a single overwrite of it take every board down at once.
+> ⛔ **There is no baked default. Step (c) above is REQUIRED unless the host env declares one, or the coord credential store points at one.** A board for which no tier names a token file is **refused**, with a message naming the board env and the exact line to add. `~/.kanban-dev-token` was a baked default until card#7245, and being one file for every board that had not set its own is what made a single overwrite of it take every board down at once.
+>
+> **The fourth tier is a POINTER SOMEBODY WROTE, not a default (card#7316).** If `${COORD_CREDENTIALS:-~/.config/coord/credentials.ini}` declares
+>
+> ```ini
+> [kanban]
+> api_token_file = ~/.kanban-dev-token
+> ```
+>
+> then a board that declares nothing resolves through that pointer instead of being refused — so a host whose credential store already holds this secret does not have to keep a second copy of it for this toolkit to find. Three things to know before relying on it:
+>
+> - **It is POINTER-ONLY.** An *inline* `api_token =` value in that file is **refused**, with a message naming the pointer form, and its value is never read or echoed. That file is also the first thing anyone greps when auth breaks, so a value in it lands in transcripts; the toolkit will not become a second consumer of that form.
+> - **It is board-independent.** The store holds one `[kanban] api_token_file`, so every board that declares nothing resolves the same file. A board that must not share it declares its own `KBCARD_TOKEN_FILE` — which wins, because the discovery is last.
+> - **A host with no such store behaves exactly as before**: no message, no change, the same refusal. Point `COORD_CREDENTIALS` at a non-existent path to turn the tier off deliberately.
 
 > **The default board (no `--board` flag)** reads `~/.kanban-dev-board.env`, and takes its token from whatever that file (or the host env) declares. On a box whose primary board is **not** named `dev`, you have three ways to work flag-free — pick one:
 > - name that board `dev` (env at `~/.kanban-dev-board.env`), **or**

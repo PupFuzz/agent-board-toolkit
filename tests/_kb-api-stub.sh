@@ -71,9 +71,15 @@ kb_stub_contained() {
 # honors an AMBIENT KBCARD_API over the host env's, so a real host could otherwise end up in the
 # asserted URL. KANBAN_EXPECTED_HOST goes with them: an operator shell carrying the REAL host
 # would make the lib's api-host preflight pass for a reason no test declared.
+# COORD_CREDENTIALS joins them for the same reason one tier down (card#7316): the token ladder
+# now ends in a DISCOVERY of `[kanban] api_token_file` in the coord credential store, whose path
+# that variable overrides. The scratch HOME already makes the DEFAULT store path absent; without
+# this, an operator shell that exports the override would point a stub-driven test at a REAL
+# store — the same ambient-leak shape as the KANBAN_EXPECTED_HOST line above, on a credential
+# rather than a host.
 # Scrubbed here rather than per-selftest so neither can forget.
 kb_stub_scrub_env() {
-    unset KBCARD_API KBCARD_TOKEN_FILE KBCARD_BOARD_ENV KANBAN_HOST_ENV KANBAN_EXPECTED_HOST
+    unset KBCARD_API KBCARD_TOKEN_FILE KBCARD_BOARD_ENV KANBAN_HOST_ENV KANBAN_EXPECTED_HOST COORD_CREDENTIALS
     unset KB_API KB_BOARD_ID KB_TOKEN KB_TOKEN_FILE KB_BOARD_ENV KB_CURL_MAX_TIME
 }
 

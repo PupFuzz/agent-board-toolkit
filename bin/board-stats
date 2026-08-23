@@ -613,12 +613,14 @@ _bs_one_board() {
         if [[ -z "$board_id" ]]; then
             fails+=("env $envf sets no KB_BOARD_ID — this board contributes nothing to the report")
         else
-            # This board's token > the host's, resolved once so the read and any failure
-            # message cannot name different files. There is no defaulted third tier:
-            # card#7245 removed the baked ~/.kanban-dev-token, which was the credential every
-            # board that declared none silently shared.
+            # This board's token > the host's > the coord credential store's pointer
+            # (card#7316), resolved once so the read and any failure message cannot name
+            # different files. There is no defaulted tier: card#7245 removed the baked
+            # ~/.kanban-dev-token, which was the credential every board that declared none
+            # silently shared. The store rung is a DISCOVERY of a path an operator wrote in
+            # their own credential store, which is why it sits below every declaration.
             if ! tokfile="$(kb_declared_token_file "$envf" "$tokfile" "${KB_HOST_TOKEN_FILE:-}")"; then
-                fails+=("no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env — this board contributes nothing to the report")
+                fails+=("no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store — this board contributes nothing to the report")
             elif ! kb_read_token "$tokfile"; then
                 fails+=("token file unreadable: $tokfile — this board contributes nothing to the report")
             else
