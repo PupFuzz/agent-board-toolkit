@@ -178,8 +178,9 @@ _obliged() {
 
 # _region <changelog> <version> — the scanned region: the file from its `## [Unreleased]` header
 # down to the `## [<version>]` header (exclusive), the floor line included. ONE owner for the
-# section scope now that three readers need it; a second copy of the stop rule would be a second
-# thing to get wrong.
+# section scope; a second copy of the stop rule would be a second thing to get wrong. The reader
+# count is deliberately NOT restated here — it was stale within one card of being written, and
+# the callers are two screens away (card#7304 tracks consolidating what carves this concept).
 #
 # THE FLOOR IS THE POINT, and it was absent until card#7293. The region's PURPOSE has always
 # been "the sections recording unreleased work", but with no floor its PREDICATE was "anywhere
@@ -260,13 +261,27 @@ _has_version_header() {
 
 # _bullets_at <repo> <rev> <path> <version> — the line-initial card bullets standing in the
 # REGION of <path> as of <rev>, through the same `_region`/`_bullets` the live leg uses rather
-# than a second carve of the same concept. "" when the path does not exist at that revision, and
-# "" when the revision carries no `## [Unreleased]` above the stop header — both are "the region
-# says nothing here", and the caller below is the one that decides what silence buys.
+# than a second carve of the same concept. "" on any revision whose region cannot be CARVED —
+# the three arms are enumerated at `_added_bullets` below, which is the caller that decides what
+# silence buys.
+#
+# ⛔ THE STOP-HEADER GATE IS NOT BELT-AND-BRACES, it is the arm that errs GREEN. `_region`'s
+# ceiling is `index($0, "## [<version>]") == 1 { exit }` — a test that simply never fires on a
+# revision carrying no such header, so the carve runs `[Unreleased]` → EOF and reports every
+# frozen released section as in-region. The live leg refuses that state outright (the missing
+# stop header is the load-bearing hard exit in the preconditions block); this function is handed
+# ARBITRARY historical revisions and cannot refuse, so it gates on the same `_has_version_header`
+# the precondition uses and drops the revision instead.
+#
+# The blob goes to a FILE, not a `<(printf …)` process substitution: `_has_version_header` and
+# `_bullets` are two readers, and a builtin writer feeding an `awk` that `exit`s early is the
+# SIGPIPE shape `_selftest-prelude.sh`'s `has_line` header documents at length.
 _bullets_at() {
-    local blob
+    local blob at="$TMP/bullets-at"
     blob="$(git -C "$1" show "$2:$3" 2>/dev/null)" || return 0
-    _bullets <(printf '%s\n' "$blob") "$4"
+    printf '%s\n' "$blob" > "$at"
+    if _has_version_header "$at" "$4"; then _bullets "$at" "$4"; fi
+    rm -f "$at"
 }
 
 # _added_bullets <repo> <path> <range> <version> — one TAB-separated `<pr>\t<+|->\t<bullet line>`
@@ -290,9 +305,16 @@ _bullets_at() {
 # check; on that axis it is a decoration. Both shapes are fixtured below, as a pair.
 #
 # THE BURDEN OF PROOF SITS ON THE SIDE THAT COULD SUPPRESS. A removal LOWERS net, so it is
-# emitted only where the parent revision PROVES the line stood in the region; every unprovable
-# case — the path absent there, or a revision whose region cannot be carved because it carries no
-# `## [Unreleased]` — is dropped, which can only leave net HIGHER and therefore can only
+# emitted only where the parent revision PROVES the line stood in the region. THREE arms drop it,
+# and they are not equivalent — the third is the one that would have erred GREEN:
+#   * the path does not exist at that revision;
+#   * the revision carries no `## [Unreleased]`, so `_region` yields an empty region;
+#   * the revision carries `## [Unreleased]` but NOT the stop header `## [<version>]`, so
+#     `_region`'s ceiling never fires and a carve would run to EOF, reporting every frozen
+#     released section as in-region — which is card#7303's own defect, re-minted one layer down
+#     on a surface that has no precondition to refuse it. `_bullets_at` gates that arm on
+#     `_has_version_header` rather than trusting the carve, and the arm is fixtured below.
+# Given those three, a dropped removal can only leave net HIGHER — this side can only
 # over-report. Adds need no such branch: they are emitted unconditionally and gated on presence
 # downstream, so two surviving bullets always contribute net ≥ 2 by themselves.
 #
@@ -760,6 +782,36 @@ eq "the edit is recorded with its removal, so #266 nets ONE new entry" \
 eq "so two surviving bullets from one PR are NOT reported when one replaced an existing entry" \
    "" "$(_stale_dupes <(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1") "$MV/CHANGELOG.md" "0.23.1")"
 
+echo "== prove-it-can-fail: gating ADDS on presence closes the FALSE RED (card#7303) =="
+# The other direction of the same defect, and the half of the predicate change nothing else here
+# witnesses — `$MV` above stays green with adds gated or not, so it is the CONTROL, not the
+# evidence. With adds counted whether or not they stand, a PR that rewords a prior card's bullet
+# (+1/−1), files its own (+1) and backfills one UNDER the stop header (+1) reaches net 2 over two
+# survivors and reds the legitimate two-PRs-on-one-card shape this leg exists to let through.
+FRB="$TMP/false-red-backfill"
+_newrepo "$FRB"
+_prepend "$FRB/CHANGELOG.md" '- **card#7038** — the first PR on this card.'
+g -C "$FRB" commit -qam 'fix(a): the first PR on this card (card#7038) (#265)'
+sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
+    "$FRB/CHANGELOG.md"
+_prepend "$FRB/CHANGELOG.md" '- **card#7038** — the second PR on the same card.'
+printf -- '- **card#7038** — a backfilled note under the released version.\n' >> "$FRB/CHANGELOG.md"
+g -C "$FRB" commit -qam 'test(a): the second PR, plus a backfill under the released header (card#7038) (#266)'
+eq "#266 really files THREE adds (witness: ungated, its own net reaches the threshold)" "3" \
+   "$(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" |
+      awk -F'\t' '$1 == "266" && $2 == "+"' | { grep -c . || true; })"
+eq "and exactly ONE in-region removal, which is all the net has to pull it back down" "1" \
+   "$(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" |
+      awk -F'\t' '$1 == "266" && $2 == "-"' | { grep -c . || true; })"
+eq "the backfilled bullet stands in the FILE but not in the REGION (witness: both, in that order)" \
+   "true false" \
+   "$(has_line '- **card#7038** — a backfilled note under the released version.' \
+       "$(cat "$FRB/CHANGELOG.md")") $(has_line \
+       '- **card#7038** — a backfilled note under the released version.' \
+       "$(_bullets "$FRB/CHANGELOG.md" "0.23.1")")"
+eq "so a PR that reworded one entry and filed its own is NOT reported for backfilling a third" \
+   "" "$(_stale_dupes <(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1") "$FRB/CHANGELOG.md" "0.23.1")"
+
 # ---------------------------------------------------------------------------
 # BOTH ENDS OF THE NET ARITHMETIC ARE REGION-SCOPED (card#7303). `_added_bullets` is scoped to the
 # PATH, and until this card `_stale_dupes` consumed it whole while stating its own scope as "in
@@ -815,6 +867,52 @@ eq "the in-region removals ARE recorded (witness: the filter drops removals by s
 eq "so a PR that replaced two standing entries is NOT reported" "" \
    "$(_stale_dupes <(_added_bullets "$INR" CHANGELOG.md 'dev..feat' "0.23.1") "$INR/CHANGELOG.md" "0.23.1")"
 
+echo "== a PARENT REVISION CARRYING NO STOP HEADER proves nothing either =="
+# The third unprovable arm, and the one that errs GREEN if `_bullets_at` merely CARVES: with no
+# `## [0.23.1]` at the parent, `_region`'s ceiling test never fires, the carve runs
+# `[Unreleased]` → EOF, and bullets removed from a FROZEN released section read as in-region and
+# subtract — card#7303's own defect, intact, one layer down. Not a paper shape: a branch that
+# catches up across a release boundary has exactly this parent, and this repo creates those.
+NST="$TMP/parent-no-stop-header"
+_newrepo "$NST"
+cat > "$NST/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.22.0] - 2026-06-01
+
+- **card#4000** — a released wording, frozen.
+- **card#4000** — a second released wording.
+EOF
+g -C "$NST" commit -qam 'docs(changelog): the file as it stood before 0.23.1 was cut (#264)'
+g -C "$NST" checkout -q -b feat
+_prepend "$NST/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
+_prepend "$NST/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
+sed -i '/^- \*\*card#4000\*\* — a released wording, frozen\.$/d
+        /^- \*\*card#4000\*\* — a second released wording\.$/d' "$NST/CHANGELOG.md"
+awk '/^## \[0\.22\.0\]/ { print "## [0.23.1] - 2026-07-27"; print "" } 1' \
+    "$NST/CHANGELOG.md" > "$NST/CHANGELOG.md.t" && mv "$NST/CHANGELOG.md.t" "$NST/CHANGELOG.md"
+g -C "$NST" commit -qam 'docs(changelog): catch up across the release and tidy the released section (card#4000)'
+eq "the parent revision carries the FLOOR …" "true" \
+   "$(has_line '## [Unreleased]' "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
+eq "… and not the STOP HEADER, which is what makes this the third arm and not the second" "false" \
+   "$(has '## [0.23.1]' "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
+eq "so that revision proves nothing about where a removed line stood …" "" \
+   "$(_bullets_at "$NST" 'feat^' CHANGELOG.md "0.23.1")"
+eq "… while still carrying the released bullets an unbounded carve would have returned (witness)" \
+   "true" "$(has_line '- **card#4000** — a released wording, frozen.' \
+       "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
+eq "the branch commit really removes two card#4000 bullets (witness: the diff is not empty)" "2" \
+   "$(g -C "$NST" show HEAD -- CHANGELOG.md | { grep -c '^-- \*\*card#4000\*\*' || true; })"
+eq "the derivation keeps the in-region adds and drops both unprovable removals" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — FIRST WORDING." \
+   "$(_added_bullets "$NST" CHANGELOG.md 'dev..feat' "0.23.1" | LC_ALL=C sort)"
+eq "END TO END: the duplicate is REPORTED — a parent predating the stop header cannot suppress it" \
+   "card#4000" \
+   "$(_stale_dupes <(_added_bullets "$NST" CHANGELOG.md 'dev..feat' "0.23.1") "$NST/CHANGELOG.md" "0.23.1")"
+
 echo "== the removal side reads the PARENT revision, and says nothing when it cannot =="
 # `_bullets_at`'s own arms, unit-tested: a removal is counted only where the parent revision
 # PROVES the line stood in the region, so every way of failing to prove it has to answer "" —
@@ -831,6 +929,16 @@ eq "a revision whose region cannot be carved answers with nothing …" "" \
    "$(_bullets_at "$OOR" noheader CHANGELOG.md "0.23.1")"
 eq "… while that same revision still carries the bullets (witness: not an empty file)" "true" \
    "$(has_line '- **card#4000** — FIRST WORDING.' "$(g -C "$OOR" show noheader:CHANGELOG.md)")"
+g -C "$OOR" checkout -q -b nostop dev
+sed -i '/^## \[0\.23\.1\]/d' "$OOR/CHANGELOG.md"
+g -C "$OOR" commit -qam 'docs(changelog): a revision predating the stop header section'
+eq "a revision with the floor but NO stop header answers with nothing too …" "" \
+   "$(_bullets_at "$OOR" nostop CHANGELOG.md "0.23.1")"
+eq "… and its \"\" is the GATE, not an empty region: it carries the floor AND the frozen bullets" \
+   "true true" \
+   "$(has_line '## [Unreleased]' "$(g -C "$OOR" show nostop:CHANGELOG.md)") $(has_line \
+       '- **card#4000** — a released wording, frozen under the stop header.' \
+       "$(g -C "$OOR" show nostop:CHANGELOG.md)")"
 g -C "$OOR" checkout -q feat
 
 # ---------------------------------------------------------------------------
@@ -893,7 +1001,13 @@ eq "no card shipped since $LAST_TAG is missing its entry" "" \
 echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
 RECORDS="$TMP/added-live"
 _added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" > "$RECORDS"
-printf '  ..   %s bullet(s) added, %s removed, across %s contributor(s) since %s\n' \
+# ⚠ THE LABELS ARE NARROWER THAN THEY LOOK, AND SAY SO (card#7303). Removals are region-scoped
+# in `_added_bullets`, so the second figure counts removals FROM THE REGION, not from the file;
+# and the third counts PRs that left a surviving RECORD, so a PR whose only contribution to this
+# file was an out-of-region removal is not among them. A counter whose label is wider than its
+# predicate is the defect this card exists to fix — this one is cited as evidence, so it gets the
+# same rule.
+printf '  ..   %s bullet(s) added · %s removed from the region · %s PR(s) with a record, since %s\n' \
     "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
     "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
     "$(cut -f1 "$RECORDS" | LC_ALL=C sort -u | grep -c . || true)" "$LAST_TAG"
