@@ -4,7 +4,9 @@
 # and the token in whatever file that env (or ~/.kanban-host.env) DECLARES via
 # KBCARD_TOKEN_FILE, so the script is portable. There is no default token path:
 # ~/.kanban-dev-token was one until card#7245, and being one file for every board is
-# what let a single overwrite take them all out at once.
+# what let a single overwrite take them all out at once. Failing all three declaration
+# tiers, the coord credential store's `[kanban] api_token_file` POINTER is discovered
+# (card#7316) — a path an operator wrote in their own store, never one baked in here.
 #
 # Usage:
 #   THE THREE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the

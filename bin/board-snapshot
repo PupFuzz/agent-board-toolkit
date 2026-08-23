@@ -142,14 +142,16 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # shellcheck disable=SC1090
     source "$envf"
     [[ -n "${KB_BOARD_ID:-}" ]] || { board_unread "$label" "env $envf sets no KB_BOARD_ID"; return 0; }
-    # Explicit token ladder: this board's > the host's. There is NO third, defaulted tier —
-    # card#7245 removed the baked ~/.kanban-dev-token, because a board falling through to it
-    # was using a credential nobody chose for it and shared with every other board. Per-board
+    # Explicit token ladder: this board's > the host's, then the coord credential store's
+    # `[kanban] api_token_file` pointer if one is there (card#7316). There is NO defaulted tier
+    # — card#7245 removed the baked ~/.kanban-dev-token, because a board falling through to it
+    # was using a credential nobody chose for it and shared with every other board; the store
+    # rung is a path an operator wrote down, discovered, not one invented here. Per-board
     # fail-soft — one board's undeclared or unreadable token must not blank the others.
     # Resolved once so the read and its failure message can't drift to different files.
     local tokfile
     tokfile="$(kb_declared_token_file "$envf" "${KBCARD_TOKEN_FILE:-}" "${KB_HOST_TOKEN_FILE:-}")" \
-        || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env"; return 0; }
+        || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store"; return 0; }
     kb_read_token "$tokfile" \
         || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
     local data rc
