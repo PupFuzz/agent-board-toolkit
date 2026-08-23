@@ -262,6 +262,20 @@ both "promote --shipped-stages accepts 84,85 (posctl)" "PAST-GUARD" "84,85" "$PS
 echo "== dl-a1-register-field --sentinel + adopt-to-dl <card-id>/--issue =="
 # A scratch HOME with a stub board env; the sentinel guard runs after config load and
 # before any request, and the ASCII control's next stop is the (stubbed) create.
+#
+# PAST-GUARD IS RECOGNIZED AFFIRMATIVELY — by the stubbed curl's own failure — and is NOT the
+# `*)` catch-all it used to be. That catch-all made this arm the weak one in this file (its
+# promote/adopt siblings have always named their next-stop literal), and it failed in BOTH
+# directions at once when card#6517 reworded the refusal and moved its bound:
+#   * the U+0663 case was still refused at rc 2, but under a new message, so the catch-all
+#     classified a REJECT as PAST-GUARD — a red that named the wrong cause; and
+#   * the positive control `999000001` STARTED being refused too (the sentinel is now rendered
+#     through `kb_dl_canon`, which is bounded to 1..6 digits), and the catch-all classified
+#     that refusal as PAST-GUARD as well — so the control went on PASSING while proving the
+#     opposite of what it claims. A control that cannot fail is a decoration, and one that
+#     passes on the refusal it exists to rule out is worse.
+# The control value is therefore 999001, which this tool can actually render, and its evidence
+# is that it REACHED the stubbed request.
 SENT='T="$(mktemp -d)"; export HOME="$T"
       printf "export KBCARD_API=\"https://kanban.test/api/v3\"\nexport KANBAN_EXPECTED_HOST=\"kanban.test\"\nexport KBCARD_TOKEN_FILE=\"$T/token\"\n" > "$T/.kanban-host.env"
       printf "export KB_BOARD_ID=1\nexport KB_STAGE_BACKLOG=48\n" > "$T/.kanban-t-board.env"
@@ -269,10 +283,11 @@ SENT='T="$(mktemp -d)"; export HOME="$T"
       mkdir -p "$T/bin"; printf "#!/usr/bin/env bash\nexit 7\n" > "$T/bin/curl"; chmod +x "$T/bin/curl"
       export PATH="$T/bin:$PATH"
       out="$(bash "$ROOT/bin/dl-a1-register-field" --board t --sentinel "$IN" 2>&1 || true)"
-      case "$out" in *"--sentinel must be a positive integer"*) echo REJECT ;; *) echo PAST-GUARD ;; esac
+      case "$out" in *"--sentinel must be a DL number this toolkit can render"*) echo REJECT ;;
+                     *"FATAL register: HTTP 000"*) echo PAST-GUARD ;; *) echo OTHER ;; esac
       rm -rf "$T"'
 both "dl-a1 --sentinel rejects U+0663"              "REJECT"     "$AI3"       "$SENT"
-both "dl-a1 --sentinel accepts 999000001 (posctl)"  "PAST-GUARD" "999000001"  "$SENT"
+both "dl-a1 --sentinel accepts 999001 (posctl)"     "PAST-GUARD" "999001"     "$SENT"
 
 ADOPT='T="$(mktemp -d)"; export HOME="$T"
        out="$(bash "$ROOT/bin/adopt-to-dl" "$IN" --repo o/n 2>&1 || true)"
