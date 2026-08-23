@@ -36,7 +36,8 @@
 # Genericized (the reference hard-coded these):
 #   board id / API base / token file  — from config at runtime (next-dl model).
 #   --stage     throwaway's workflow_stage_id (default: KB_A1_STAGE or KB_STAGE_BACKLOG).
-#   --swimlane  throwaway's swimlane_id        (default: KB_A1_SWIMLANE or 1).
+#   --swimlane  throwaway's swimlane_id        (default: KB_A1_SWIMLANE, else the key is
+#               OMITTED from the create body entirely — see step 2).
 #   --sentinel  the throwaway's dl_number      (default: KB_A1_SENTINEL or 999001).
 #               Must be a value extremely unlikely to collide with a real DL, and it is
 #               validated by kb_dl_num — the SAME strict parser `kbcard --dl` uses — so
@@ -88,7 +89,7 @@ kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN 
 BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $KB_BOARD_ENV}"
 
 STAGE="${stage_arg:-${KB_A1_STAGE:-${KB_STAGE_BACKLOG:-}}}"
-SWIMLANE="${swimlane_arg:-${KB_A1_SWIMLANE:-1}}"
+SWIMLANE="${swimlane_arg:-${KB_A1_SWIMLANE:-}}"
 SENTINEL="${sentinel_arg:-${KB_A1_SENTINEL:-999001}}"
 if [[ -z "$STAGE" ]]; then
     echo "dl-a1-register-field: no throwaway stage — pass --stage or set KB_A1_STAGE/KB_STAGE_BACKLOG in $KB_BOARD_ENV" >&2
@@ -175,14 +176,26 @@ fi
 # writer stamps, which is the whole point of this step as an acceptance test. It used to be
 # `--argjson` over a bare integer, i.e. the one shape no toolkit writer produces — so on a
 # number-typed board this verification passed while every real `--dl` write 422'd.
+#
+# swimlane_id rides ONLY when the caller named a lane. The card is a throwaway the cleanup
+# trap deletes seconds later and its lane placement is irrelevant to the one thing this step
+# measures — that the server derives the by-ref index from payload.dl_number — so there is
+# nothing for a default to be derived FROM. The `1` that stood here was fabricated: on a board
+# that defines no swimlanes the create is refused
+# `422 {"message":"The selected swimlane is not on this board."}` and no id exists that the
+# caller could pass instead, which made the toolkit's own documented DL-board setup step
+# unrunnable on a fresh install. Omitted, not null: the key-absent form is what `kbcard
+# create-card` already sends when no --swimlane is given.
 body="$(jq -n \
     --argjson board "$BOARD" \
     --argjson stage "$STAGE" \
-    --argjson swimlane "$SWIMLANE" \
+    --arg swim_set "$SWIMLANE" \
+    --argjson swim "${SWIMLANE:-null}" \
     --arg sentinel "$SENTINEL_DL" \
-    '{board_id: $board, workflow_stage_id: $stage, swimlane_id: $swimlane,
+    '{board_id: $board, workflow_stage_id: $stage,
       name: "[A1-verify] dl_number throwaway — delete me",
-      payload: {dl_number: $sentinel}}')"
+      payload: {dl_number: $sentinel}}
+     + (if $swim_set != "" then {swimlane_id: $swim} else {} end)')"
 create="$(kb_api POST "/tasks.json" "$body")" || {
     # kb_api's KB_HTTP global doesn't cross this $(), so don't claim a code we can't see.
     echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
