@@ -159,6 +159,7 @@ jobs:
           - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
           - gh-code-search-selftest
+          - gitignore-secret-family-selftest
           - help-output-selftest
           - install-board-hooks-capability-selftest
           - kb-board-lib-selftest
