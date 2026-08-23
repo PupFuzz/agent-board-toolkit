@@ -163,7 +163,14 @@ eq "the registration body declares dl_number as a STRING field" \
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "the throwaway targets the configured board"    "42" "$(jq -r '.board_id' <<<"$CREATE_BODY")"
 eq "the throwaway lands in the configured stage"   "51" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
-eq "the throwaway swimlane defaults to 1"          "1"  "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
+# ABSENT, not null, and not a fabricated id. A board that defines no swimlanes refuses
+# `swimlane_id: 1` with
+# `422 The selected swimlane is not on this board.`, and there is no id the caller could pass
+# instead, so the tool's own documented setup step could not run at all (card#7464). `has()`
+# is the assertion because it is the ONE test that separates an omitted key from a null-valued
+# one; `jq -r '.swimlane_id'` prints `null` for both and would pass over either.
+eq "no --swimlane ⇒ the create body carries NO swimlane_id key at all" "false" \
+   "$(jq -c 'has("swimlane_id")' <<<"$CREATE_BODY")"
 eq "the throwaway carries payload.dl_number = the CANONICAL DL-NNNN sentinel" "$SENTINEL_DL_DEFAULT" \
    "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 # This step is the setup path's ONLY acceptance test, so the value shape it puts on the wire has
@@ -335,6 +342,11 @@ eq "explicit flags → rc 0"                "0" "$rc"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "--stage reaches the throwaway"        "88"     "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "--swimlane reaches the throwaway"     "5"      "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
+# The witness for the absence assertion above: the key DOES ride when a lane is named, so
+# "no key" cannot pass because the tool stopped emitting one entirely.
+eq "--swimlane puts the key ON the body"  "true"   "$(jq -c 'has("swimlane_id")' <<<"$CREATE_BODY")"
+eq "--swimlane rides as a JSON number, not a string" "number" \
+   "$(jq -r '.swimlane_id | type' <<<"$CREATE_BODY")"
 eq "--sentinel reaches the payload"       "DL-424242" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 eq "--sentinel reaches the by-ref query"  "3"      "$(kb_stub_count GET 'ref=424242')"
 
@@ -343,9 +355,12 @@ eq "the KB_A1_* env defaults → rc 0"      "0" "$rc"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "KB_A1_STAGE is honoured over KB_STAGE_BACKLOG" "61" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "KB_A1_SWIMLANE is honoured"           "7"         "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
+eq "KB_A1_SWIMLANE puts the key ON the body" "true"   "$(jq -c 'has("swimlane_id")' <<<"$CREATE_BODY")"
 eq "KB_A1_SENTINEL is honoured"           "DL-555001" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 KB_A1_STAGE=61 run_a1 --stage 88
 eq "an explicit --stage beats KB_A1_STAGE" "88" "$(jq -r '.workflow_stage_id' <<<"$(kb_stub_bodies "${CREATE[@]}")")"
+KB_A1_SWIMLANE=7 run_a1 --swimlane 5
+eq "an explicit --swimlane beats KB_A1_SWIMLANE" "5" "$(jq -r '.swimlane_id' <<<"$(kb_stub_bodies "${CREATE[@]}")")"
 
 run_a1 --board alt
 eq "--board alt → rc 0"                   "0" "$rc"
