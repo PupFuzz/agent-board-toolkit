@@ -1044,6 +1044,63 @@ unset -f _fbc_case _fbc_p2
 unset UNREAD_LOG _P2_OUT
 
 # ---------------------------------------------------------------------------
+echo "== fetch_board_cards: a userinfo-bearing api_base never reaches the DURABLE log (card#7500) =="
+# `https://user:password@host/api/v3` is a SUPPORTED api_base — kb_require_known_api_host and
+# kb_require_https_host both ACCEPT it (kb-host-guard-selftest pins the row), because they judge
+# the HOST. Every failure line in this loop is written to $KB_LOG_FILE, which is a FILE on disk:
+# stderr in CI is at least bounded by log retention, a password in a log file is not.
+#
+# ⛔ ASSERTED ON THE CREDENTIAL VALUE, NEVER ON THE PRESENCE OF A MASK. A tool that printed
+# `***` AND the password would satisfy a `has '***'` check and leak anyway. Paired with a HOST
+# leg every time: without it a later "simplification" that redacted the whole url would pass the
+# absence half while destroying the only fact these lines exist to carry.
+_UI_PW='not-a-real-password-card7500'
+_UI_USER='fakeuser'
+_UI_BASE="https://$_UI_USER:$_UI_PW@kanban.test/api/v3"
+_UI_LOG="$TMP/userinfo-fetch.log"
+
+_ui_case() { # <label> <expect-rc>; the caller has already installed the curl stub
+    local label="$1" exprc="$2" rc=0 logtext errtext
+    : > "$_UI_LOG"
+    KB_FETCH_LOUD=1 KB_LOG_FILE="$_UI_LOG" fetch_board_cards "$_UI_BASE" tok 8 \
+        >/dev/null 2>"$TMP/userinfo-fetch.err" || rc=$?
+    logtext="$(cat "$_UI_LOG")"; errtext="$(cat "$TMP/userinfo-fetch.err")"
+    eq "$label (rc)" "$exprc" "$rc"
+    # POSITIVE CONTROL FIRST: the legs below are assertions of ABSENCE, and an EMPTY log — a
+    # renamed knob, a route that never fired — satisfies every one of them while measuring
+    # nothing at all.
+    eq "$label — the durable log was actually written (positive control)" "true" \
+       "$(has 'GET https://' "$logtext")"
+    eq "$label — the password is NOT in the durable log" "false" "$(has "$_UI_PW"   "$logtext")"
+    eq "$label — the username is NOT in the durable log" "false" "$(has "$_UI_USER" "$logtext")"
+    eq "$label — the HOST still is"                      "true"  "$(has 'kanban.test' "$logtext")"
+    eq "$label — nor is the password on stderr"          "false" "$(has "$_UI_PW"   "$errtext")"
+}
+
+# One case per line in the loop that renders a url: the transport arm, the answered-non-2xx arm,
+# and the unreadable-2xx arm. All three are error paths, which is exactly when an operator is
+# most likely to paste the output somewhere.
+curl() { cat >/dev/null; return 7; }
+_ui_case "FAILED-FETCH (curl transport)" 1
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"forbidden"}' 403; }
+_ui_case "HTTP-403 (the server answered)" 1
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond '<html>502</html>' 200; }
+_ui_case "UNREADABLE-BODY (a 2xx with no card array)" 1
+
+# …and the CONTROL that keeps the mask from being a wholesale rewrite: a base with NO userinfo
+# is logged byte-identically to how it always was.
+: > "$_UI_LOG"
+curl() { cat >/dev/null; return 7; }
+KB_FETCH_LOUD=1 KB_LOG_FILE="$_UI_LOG" fetch_board_cards "https://kanban.test/api/v3" tok 8 >/dev/null 2>&1 || true
+eq "CONTROL: a userinfo-free base is logged verbatim, mask and all absent" "true" \
+   "$(has 'GET https://kanban.test/api/v3/tasks/search.json?q=board_id=8' "$(cat "$_UI_LOG")")"
+eq "CONTROL: …and no mask was inserted into it"                           "false" \
+   "$(has '***' "$(cat "$_UI_LOG")")"
+unset -f _ui_case
+unset _UI_PW _UI_USER _UI_BASE _UI_LOG
+unset -f curl
+
+# ---------------------------------------------------------------------------
 echo "== fetch_board_cards: the optional [query] — one encoded term inside the same q= (card#6771) =="
 # The paginator gained a fifth argument so a caller can read the board's MATCHING cards through
 # the same paging/dedup/rc machinery, rather than a second copy of it growing beside this one.

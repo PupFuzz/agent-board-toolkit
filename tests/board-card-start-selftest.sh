@@ -321,6 +321,86 @@ if command -v git >/dev/null 2>&1; then
         && ok "declared token: stops at the NEXT gate, naming it" \
         || bad "declared token: did not reach the api_base gate: $_out"
 
+    # ── a userinfo-bearing api_base never reaches the DURABLE log (card#7500) ────────────
+    # `https://user:password@host/api/v3` is a SUPPORTED api_base — kb_require_https_host
+    # ACCEPTS it, by design, because it judges the HOST (kb-host-guard-selftest pins the row).
+    # This hook's diagnostics are written to $KB_BCS_LOG, a FILE: stderr in a CI run is at least
+    # bounded by log retention, a password under ~/.cache/ is not. Both of this bin's sites that
+    # render the base are driven here, and both are past the token gate the block above just
+    # cleared, so the fixture is already in the right state.
+    #
+    # ⛔ ASSERTED ON THE CREDENTIAL VALUE, never on the presence of a mask — a run printing
+    # `***` AND the password would satisfy a mask check and leak anyway. Paired with a HOST leg
+    # each time: these messages exist to tell an operator which host was involved, and an edit
+    # that redacted the whole base would pass the absence half while destroying that.
+    #
+    # THE HOST IS 127.0.0.1 AND NOT AN RFC-2606 NAME, deliberately: `_bcs_is_placeholder_host`
+    # treats every reserved documentation host (.test / .invalid / example.*) as host-scrubbed
+    # and substitutes $KB_API for it, so a fixture using one would never reach these lines with
+    # the base it declared. A loopback literal is the RFC-2606-equivalent that survives the scrub
+    # check. Nothing is ever sent: the guard refuses in the first case, and the second runs
+    # against a `curl` stub that answers a transport failure without opening a socket.
+    _UI_PW='not-a-real-password-card7500'
+    _UI_USER='fakeuser'
+    printf '{"promote":{"board_id":"42","released_stage_id":"85","api_base":"https://%s:%s@127.0.0.1/api/v3"}}\n' \
+        "$_UI_USER" "$_UI_PW" > "$_repo/.release-pr.json"
+    # The stage ids the board env above deliberately lacked — the block that wrote it was
+    # asserting the token gate and stops before them. The SECOND site below is past that gate,
+    # so this fixture needs them; declared here rather than earlier so nothing above moves.
+    printf 'export KB_BOARD_ID=42\nexport KBCARD_TOKEN_FILE=%s\nexport KB_STAGE_IN_PROGRESS=84\nexport KB_STAGE_BACKLOG=81\nexport KB_STAGE_PRIORITIZED=82\nexport KB_STAGE_HELD=83\n' \
+        "$_home/board.token" > "$_home/.kanban-t-board.env"
+    mkdir -p "$_t/stubbin"
+    # A `curl` that can never reach anything: rc 7 is what real curl returns when it cannot
+    # connect, which is what makes kb_api_status yield HTTP 000 and reach the second site.
+    printf '#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 7\n' > "$_t/stubbin/curl"
+    chmod +x "$_t/stubbin/curl"
+
+    _ui_run() {  # <expected-host> [--stub-curl] — run the bin, leave the durable log in $_log
+        local _eh="$1" _p="$PATH"
+        [[ "${2:-}" == "--stub-curl" ]] && _p="$_t/stubbin:$PATH"
+        rm -f "$_log"; _rc=0
+        _out="$(cd "$_repo" && HOME="$_home" PATH="$_p" KBCARD_API='' KBCARD_TOKEN_FILE='' \
+                KANBAN_EXPECTED_HOST="$_eh" KB_BCS_LOG="$_log" bash "$BCS" 2>&1)" || _rc=$?
+        _ui_log="$(cat "$_log" 2>/dev/null || true)"
+    }
+    _ui_assert() {  # <label>
+        local _l="$1"
+        # POSITIVE CONTROL FIRST: every leg below is an ABSENCE, and an empty durable log — a
+        # run that never got here, a renamed knob — satisfies all of them while measuring nothing.
+        eq "$_l — the durable log was written (positive control)" "true" \
+           "$(has 'board-card-start:' "$_ui_log")"
+        eq "$_l — the password is NOT in the durable log" "false" "$(has "$_UI_PW"   "$_ui_log")"
+        eq "$_l — the username is NOT in the durable log" "false" "$(has "$_UI_USER" "$_ui_log")"
+        eq "$_l — the HOST is still named"                "true"  "$(has '127.0.0.1' "$_ui_log")"
+        eq "$_l — nor is the password on the merged stream" "false" "$(has "$_UI_PW" "$_out")"
+        eq "$_l — the hook still exits 0 (never blocks a checkout)" "0" "$_rc"
+    }
+
+    # SITE 1 — the https-host trust guard refuses (the expected host is not this base's host).
+    _ui_run "board.invalid"
+    eq "userinfo base, guard refuses — it IS the guard line" "true" \
+       "$(has 'failed the https-host trust guard' "$_ui_log")"
+    _ui_assert "userinfo base, guard refuses"
+
+    # SITE 2 — the guard PASSES (the base is on the expected host) and the card read cannot
+    # complete, which is the HTTP 000 arm. This is the one that only fires once a credential
+    # has been accepted as legitimate, i.e. on a real operator's real base.
+    _ui_run "127.0.0.1" --stub-curl
+    eq "userinfo base, unreachable API — it IS the 000 arm" "true" \
+       "$(has 'is unreachable' "$_ui_log")"
+    _ui_assert "userinfo base, unreachable API"
+
+    # CONTROL — a userinfo-FREE base is still rendered verbatim, so the mask is not a rewrite of
+    # every message. Without this, redacting the base wholesale would pass everything above.
+    printf '{"promote":{"board_id":"42","released_stage_id":"85","api_base":"https://127.0.0.1/api/v3"}}\n' \
+        > "$_repo/.release-pr.json"
+    _ui_run "board.invalid"
+    eq "CONTROL: a userinfo-free base is quoted verbatim" "true" \
+       "$(has "api_base 'https://127.0.0.1/api/v3' failed" "$_ui_log")"
+    eq "CONTROL: …and no mask is inserted into it"        "false" "$(has '***' "$_ui_log")"
+    unset -f _ui_run _ui_assert
+    unset _UI_PW _UI_USER _ui_log
+
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"
