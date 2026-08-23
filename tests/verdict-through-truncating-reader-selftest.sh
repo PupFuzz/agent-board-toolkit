@@ -181,6 +181,7 @@ DRIVERS=(
   "bin/dl-a0-backfill-triaged|--help"
   "bin/dl-a1-register-field|--help"
   "bin/gh-code-search|--help"
+  "bin/gitignore-secret-family-check|--help"
   "bin/kbcard|"
   "bin/promote-released-cards|--help"
   "bin/release-artifacts-check|--help"
@@ -198,6 +199,7 @@ DRIVERS=(
 DISPOSITIONED=(
   "bin/gh-code-search|SURVIVES|FIXED (card#6884) — \`trap '' PIPE\` as the first statement after \`set\`, plus one tolerated write per stream of an already-built string. Its VERDICT path is measured too, in tests/gh-code-search-selftest.sh: rc 3 with 671 B of stderr through both \`head -1\` and \`head -n 0\`."
   "bin/agent-board-toolkit-runtime-check|SURVIVES|FIXED (card#6911) — the same two mechanisms. Its VERDICT path is measured: driven to a real STALE-COPIES verdict it answers rc 1 with 259 B of stderr through \`head -n 0\`, where it answered rc 141 with 0 B before."
+  "bin/gitignore-secret-family-check|SURVIVES|BUILT THIS WAY (card#7036) — the same two mechanisms as the two fixed members above: \`trap '' PIPE\` as the first statement after \`set\`, and one tolerated write per stream of an already-built string. It ships correct rather than joining the roll below, deliberately: this is a SECURITY gate whose entire product is the rc plus a FINDINGS block on STDOUT, so a lost verdict is the gate reporting nothing while the invocation looks like it worked. Its VERDICT path is measured, not just \`--help\`: driven to a real UNCOVERED verdict it answers rc 1 through \`head -n 0\` AND \`head -1\`, under the default SIGPIPE disposition and under an inherited SIG_IGN, and its rc-2 refusal keeps its stderr through a truncating reader."
   "bin/board-stats|SURVIVES|NOT AT RISK — no errexit AND the report renders through child processes, so a killed child neither kills the shell nor is promoted into one. BOTH halves are load-bearing (see defect 2 in the header); adding \`set -e\` alone would move this to LOSES. Its verdict path was measured directly under card#6911: rc 1 and 150 B of stderr survive \`head -n 0\`, \`head -c 1\` and \`head -n 1\`."
 
   # ── KNOWN DEFECTS. Each is a live instance of card#6911 awaiting the two-mechanism fix. They
