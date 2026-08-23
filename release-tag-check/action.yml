@@ -1,0 +1,123 @@
+name: 'release-tag-check'
+description: >-
+  Post-merge, refuse to report a release as shipped until its tag ACTUALLY
+  EXISTS on the remote. Thin composite wrapper around bin/release-tag-check —
+  all logic stays in the script (host installs and vendoring consumers run it
+  directly). Consume this action SHA-pinned
+  (uses: <owner>/agent-board-toolkit/release-tag-check@<full-SHA>  # vX.Y.Z)
+  so dependabot's github-actions ecosystem tracks and bumps it.
+  WHERE IT GOES: as a step BEFORE whatever reports the release — the promote
+  step, a deploy, a notification. It waits for the tag and exits non-zero if it
+  never arrives, so putting it after the thing it guards guards nothing.
+  WHY A WAIT AND NOT A CHECK: a tagging workflow and a promoting workflow that
+  share the `push: <main>` trigger with no `needs:` between them start together,
+  so the tag is legitimately absent for the first seconds of EVERY release —
+  an immediate hard-refuse would red them all. The bound, why it is what it is,
+  and what happens when it is reached are stated in the script's own header
+  (`release-tag-check --help`), not restated here.
+  PRECONDITIONS in the calling job:
+  (1) the consumer repo must already be checked out with fetch-depth: 0 — the
+  release classification is delegated to `release-artifacts-check
+  --classify-only`, which resolves a merge base and reads the config and the
+  version file at BOTH ends via `git show`, and refuses on a shallow clone
+  rather than reading an unresolvable range as "not a release";
+  (2) a .release-pr.json (or whatever `config` names) must exist at the
+  workspace root, carrying version_file/version_regex — and `tag_format` if
+  your tags are not `v<version>`, since that key is what names the tag this
+  action waits for. SET `tag_format` AND YOUR TAGGING WORKFLOW TOGETHER: the
+  key tells this gate what to EXPECT and does not change what your tagging
+  workflow CREATES — nothing in the toolkit constrains that workflow — so if
+  the two disagree this gate waits for a tag nobody creates and refuses every
+  release (the refusal takes a second look and names the tag that IS at the
+  commit, but naming a mismatch is not fixing it);
+  (3) the step needs a `before-sha`, so guard it with
+  `if: github.event_name == 'push'` on any workflow that also has a
+  workflow_dispatch/schedule trigger — those events carry no
+  `github.event.before` to classify against;
+  (4) `contents: read` is sufficient — this polls refs with `git ls-remote` and
+  writes nothing;
+  (5) the caller owns the job/step `timeout-minutes` backstop. Size it above the
+  script's worst-case runtime, which `bin/release-tag-check`'s own header states
+  and this description deliberately does not repeat, so the SCRIPT's bound fires
+  first and the job reports `failure` — a timeout-minutes kill reports as
+  `cancelled`, and a cancelled run is not a refused release.
+  NOTE: composite-action `required:` is not runner-enforced — the script's own
+  fail-closed guards (missing --before/--after, an unresolvable --after, an
+  unclassifiable range) are the real gate and die with actionable messages.
+
+inputs:
+  before-sha:
+    description: >-
+      The ref the branch pointed at BEFORE this push (pass github.event.before).
+      With after-sha it forms the range the release classification is derived
+      from — this action asserts nothing on a range whose version did not move.
+    required: true
+  after-sha:
+    description: >-
+      The pushed commit (pass github.sha). The tag must point HERE: a tag that
+      exists at a DIFFERENT commit is refused immediately, not waited out.
+    required: true
+  config:
+    description: 'Per-repo release config, relative to the workspace root.'
+    required: false
+    default: '.release-pr.json'
+  remote:
+    description: >-
+      Remote to poll. Blank = the script's default (origin). The poll is against
+      the REMOTE by design: the tag is created by a different workflow run after
+      this job's checkout was taken, so a local ref set cannot carry it.
+    required: false
+    default: ''
+  timeout:
+    description: >-
+      Seconds to wait for the tag before refusing (0 = look once). Blank = the
+      script's default, which is where that cost decision is stated and argued —
+      a number repeated here would be a second copy free to drift from it.
+    required: false
+    default: ''
+  interval:
+    description: >-
+      Seconds between polls (must be positive — 0 polls with no pause at all and
+      is refused). Blank = the script's default.
+    required: false
+    default: ''
+  read-timeout:
+    description: >-
+      Seconds ONE `git ls-remote` may take before it is killed and scored as an
+      UNREADABLE remote (never as an absent tag). Blank = the script's default.
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Refuse to report an untagged release as shipped
+      shell: bash
+      # Passed through the environment, never interpolated into the run: body — a
+      # `${{ }}` expansion inside a run: script is textual substitution into the shell
+      # source, i.e. the Actions script-injection class.
+      env:
+        BEFORE: ${{ inputs.before-sha }}
+        AFTER: ${{ inputs.after-sha }}
+        CONFIG: ${{ inputs.config }}
+        REMOTE: ${{ inputs.remote }}
+        TIMEOUT: ${{ inputs.timeout }}
+        INTERVAL: ${{ inputs.interval }}
+        READ_TIMEOUT: ${{ inputs.read-timeout }}
+      run: |
+        # Each OPTIONAL input is translated to an ABSENT flag when blank — never to a flag
+        # carrying an empty value, which the script REJECTS (`--remote ""` and
+        # `--timeout ""` both die at require_value/require_uint). Blank therefore means
+        # "use the script's default", and the default VALUE exists in exactly one place:
+        # bin/release-tag-check, where it is argued. Restating 300/10/30 here would mint a
+        # second copy that a change to the script could not move. --config is the deliberate
+        # exception, on the same terms as the release-artifacts wrapper: it has a meaningful
+        # default declared above, so a blank one is a wiring error (an unset repo variable),
+        # not "use the default" — passing it unconditionally makes the script fail closed on it.
+        args=()
+        [ -n "$REMOTE" ] && args+=(--remote "$REMOTE")
+        [ -n "$TIMEOUT" ] && args+=(--timeout "$TIMEOUT")
+        [ -n "$INTERVAL" ] && args+=(--interval "$INTERVAL")
+        [ -n "$READ_TIMEOUT" ] && args+=(--read-timeout "$READ_TIMEOUT")
+        "$GITHUB_ACTION_PATH/../bin/release-tag-check" \
+          --before "$BEFORE" --after "$AFTER" --config "$CONFIG" "${args[@]}"
