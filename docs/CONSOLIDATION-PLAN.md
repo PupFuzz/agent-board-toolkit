@@ -469,6 +469,15 @@ That test is the **security** test in the CI matrix, and it **exits 1** if it ca
 `host_ok` — so any rename or removal of that mirror fails the build by design rather than
 silently reducing coverage.
 
+It now carries a **second** sed-extracted mirror on the same terms: `redact_userinfo`, the
+standalone copy of the lib's `kb_redact_url_userinfo` (card#7500). The guards *accept* an
+api_base carrying userinfo — that is one of the 6 accept rows above — so every message that
+renders a base masks it, and the masking primitive is duplicated for exactly the reason
+`host_ok` is. Same discipline, same failure mode if it is renamed: the extraction exits 1.
+The *class* — that no shipped tool renders a URL a credential can ride in — is held by
+`tests/url-userinfo-render-selftest.sh`, which re-derives the population from the tree rather
+than enumerating the ten sites the fix touched.
+
 **If it is ever revived:** use the literal `source "$KB_LIB"` — `agent-board-toolkit-drift-check`
 matches that exact string (anchored, with leading whitespace allowed), and `. "$KB_LIB"` evades it.
 Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already split the tools into

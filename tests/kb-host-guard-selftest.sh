@@ -252,4 +252,115 @@ case "$msg" in
     *) bad "refusal was silent or unhelpful: '$msg'" ;;
 esac
 
+# ---------------------------------------------------------------------------------------
+echo "== kb_redact_url_userinfo — the SECOND sync-paired copy, same two-copy discipline (card#7500) =="
+# WHY IT IS ASSERTED HERE. The guards ACCEPT an api_base carrying userinfo — the pinned
+# `https://u:pw@kanban.victim.corp/api/v3` row at the top of this file — so every message that
+# renders the base must mask it, and the masking primitive is duplicated for exactly the reason
+# host_ok is: bin/promote-released-cards is vendored standalone and must not source the lib.
+# Two copies sync-paired by comment is the shape that was already wrong once in this very file,
+# so the mirror is lifted out and the two are asserted to AGREE on every row, byte for byte.
+#
+# ⛔ IT READS THE SAME AUTHORITY BOUNDARY AS kb_url_host, AND THE MATRIX BELOW IS WHY. The
+# `#@` / `?@` rows have NO userinfo — the '@' sits in a fragment/query that curl discards —
+# and a redactor cutting at the last '@' anywhere would rewrite those refusals to name
+# `kanban.victim.corp` as the base being contacted, i.e. print the protected host as the
+# destination in the exact message that exists to say it is not.
+prc_red_src="$(sed -n '/^redact_userinfo() {/,/^}/p' "$PRC")"
+[[ -n "$prc_red_src" ]] || { echo "selftest: could not extract redact_userinfo from $PRC — did it get renamed?" >&2; exit 1; }
+eval "${prc_red_src/redact_userinfo() \{/redact_userinfo_prc() \{}"
+
+# red <url> <expected> <label> — assert BOTH copies produce <expected>, spelled as a literal.
+# The expectation is never computed by calling either copy: that would assert only self-equality.
+red() {
+    local url="$1" want="$2" label="$3" g p
+    g="$(kb_redact_url_userinfo "$url")"
+    p="$(redact_userinfo_prc  "$url")"
+    if [[ "$g" != "$want" ]]; then
+        bad "$label — lib gave '$g', want '$want'   [$url]"
+    elif [[ "$p" != "$want" ]]; then
+        bad "$label — the two copies DISAGREE: lib='$g' promote='$p'   [$url]"
+    else
+        ok "$label (both copies)"
+    fi
+}
+
+echo "-- a base carrying userinfo loses it and KEEPS the host --"
+red "https://u:pw@kanban.victim.corp/api/v3"  "https://***@kanban.victim.corp/api/v3"  "the pinned accepted-userinfo row"
+red "https://u:pw@kanban.victim.corp:8443/x"  "https://***@kanban.victim.corp:8443/x"  "userinfo with a :port"
+red "http://u:pw@127.0.0.1:8080/a?x=1#f"      "http://***@127.0.0.1:8080/a?x=1#f"      "scheme, port, query and fragment all survive"
+red "https://u:pw@[::1]:8443/api"             "https://***@[::1]:8443/api"             "an IPv6 IP-literal host survives"
+red "https://user-only@kanban.victim.corp/"   "https://***@kanban.victim.corp/"        "a username with no password is still userinfo"
+red "https://a@b@c.victim.corp/x"             "https://***@c.victim.corp/x"            "the mask spans to the LAST '@' in the authority"
+red "u:pw@kanban.victim.corp/api"             "***@kanban.victim.corp/api"             "a schemeless authority is still redacted"
+
+echo "-- a base with NO userinfo comes back BYTE-IDENTICAL (no message churn) --"
+red "https://kanban.victim.corp/api/v3"       "https://kanban.victim.corp/api/v3"      "the ordinary base"
+red "https://kanban.victim.corp./api/v3"      "https://kanban.victim.corp./api/v3"     "the FQDN trailing-dot spelling"
+red ""                                        ""                                        "an empty api_base"
+red "https://"                                "https://"                                "a scheme and nothing else"
+red "host/p?x://y"                            "host/p?x://y"                            "a schemeless string whose PATH contains '://'"
+
+echo "-- ⛔ the #4346 hostile rows have NO userinfo and must come back UNTOUCHED --"
+red "https://evil.example#@kanban.victim.corp"        "https://evil.example#@kanban.victim.corp"        "FRAGMENT split — the '@' is not in the authority"
+red "https://evil.example?@kanban.victim.corp"        "https://evil.example?@kanban.victim.corp"        "QUERY split — likewise"
+red "https://evil.example#@kanban.victim.corp/api/v3" "https://evil.example#@kanban.victim.corp/api/v3" "'#@' with a trailing path"
+red "https://evil.example:443#@kanban.victim.corp"    "https://evil.example:443#@kanban.victim.corp"    "'#@' after a :port"
+# The userinfo TRICK is the mirror image: here the '@' IS in the authority, the host is
+# evil.example, and `good.host` is a decoy the mask must remove — it is indistinguishable from
+# a real credential and reads as the trusted host to a human scanning the refusal.
+red "https://good.host@evil.example/"                 "https://***@evil.example/"                       "the userinfo TRICK — the decoy is masked, evil.example survives"
+
+echo "== …and the guards' REFUSAL MESSAGES carry the mask, not the credential (card#7500) =="
+# The primitive above is only half the fix; the other half is that every message rendering a base
+# actually goes through it. These three are the guards' own stderr — driven for real, asserted on
+# the credential VALUE (a message printing `***` AND the password would satisfy a mask check),
+# and paired with a HOST leg so a later edit that redacted everything cannot pass.
+_UI_PW='not-a-real-password-card7500'
+_UI_USER='fakeuser'
+_UI_BASE="https://$_UI_USER:$_UI_PW@kanban.victim.corp/api/v3"
+
+_guard_msg() { # <label> <captured-stderr>
+    local label="$1" text="$2"
+    # POSITIVE CONTROL FIRST: every leg below is an absence, and empty stderr satisfies them all.
+    eq "$label — the guard actually spoke (positive control)" "false" \
+       "$([[ -z "$text" ]] && echo true || echo false)"
+    eq "$label — the password is absent"  "false" "$(has "$_UI_PW"   "$text")"
+    eq "$label — the username is absent"  "false" "$(has "$_UI_USER" "$text")"
+    eq "$label — the HOST is still named" "true"  "$(has 'kanban.victim.corp' "$text")"
+}
+
+_ui_saved="$KANBAN_EXPECTED_HOST"
+unset KANBAN_EXPECTED_HOST
+_guard_msg "kb_require_known_api_host, nothing declared" \
+    "$(kb_require_known_api_host "$_UI_BASE" 2>&1 >/dev/null || true)"
+export KANBAN_EXPECTED_HOST="other.example"
+_guard_msg "kb_require_known_api_host, host mismatch" \
+    "$(kb_require_known_api_host "$_UI_BASE" 2>&1 >/dev/null || true)"
+export KANBAN_EXPECTED_HOST="$_ui_saved"; EXPECT_HOST="$_ui_saved"
+_guard_msg "kb_require_https_host, scheme downgrade" \
+    "$(kb_require_https_host "http://$_UI_USER:$_UI_PW@kanban.victim.corp/api/v3" 2>&1 >/dev/null || true)"
+
+# CONTROL — a userinfo-free base is still printed verbatim, so the mask is not a rewrite of every
+# message. `refusing to use '<base>'` is the historic spelling and must be byte-identical.
+_ctl="$(KANBAN_EXPECTED_HOST="other.example" kb_require_known_api_host "https://kanban.victim.corp/api/v3" 2>&1 >/dev/null || true)"
+eq "CONTROL: a userinfo-free base is quoted verbatim" "true" \
+   "$(has "refusing to use 'https://kanban.victim.corp/api/v3'" "$_ctl")"
+eq "CONTROL: …and no mask is inserted into it"        "false" "$(has '***' "$_ctl")"
+unset -f _guard_msg
+unset _UI_PW _UI_USER _UI_BASE _ui_saved _ctl
+
+echo "-- the mask agrees with kb_url_host on WHICH host survives, on every row above --"
+# The property that makes the mask safe: redacting must never change the parsed host. Asserted
+# over the same hostile matrix the guards are asserted over, so a future edit to either the
+# parser or the redactor that splits them reds here rather than in production.
+for _u in \
+    "https://u:pw@kanban.victim.corp/api/v3" "https://good.host@evil.example/" \
+    "https://evil.example#@kanban.victim.corp" "https://evil.example?@kanban.victim.corp" \
+    "https://u:pw@[::1]:8443/api" "https://a@b@c.victim.corp/x" \
+    "u:pw@kanban.victim.corp/api" "https://kanban.victim.corp./api/v3" "" ; do
+    eq "host is preserved through the mask [$_u]" \
+       "$(kb_url_host "$_u")" "$(kb_url_host "$(kb_redact_url_userinfo "$_u")")"
+done
+
 _summary "kb-host-guard-selftest"

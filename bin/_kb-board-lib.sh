@@ -761,6 +761,8 @@ kb_require_positional() {
 # GETTING IT WRONG (canon #5). kb_require_https_host guards a PR-editable committed
 # api_base; kb_require_known_api_host guards the operator's own resolved KBCARD_API. Two
 # policies, two schemes admitted — but exactly ONE answer to "what host is this".
+# kb_redact_url_userinfo below is the third reader of that boundary and takes it from the
+# same prose, for the same reason — see its own ⛔ note.
 #
 # The scheme is stripped only when the string actually starts with one: `${u#*://}` alone
 # would match the FIRST `://` anywhere, so a schemeless `host/p?x://y` would parse as `y`.
@@ -783,6 +785,62 @@ kb_url_host() {
     # name and resolves identically, while `kanban.example.com..` is not a name at all and
     # must keep failing the comparison rather than be normalised into one.
     printf '%s' "${u%.}"
+}
+
+# KB_URL_USERINFO_MASK — what a redacted userinfo component reads as. A constant so the two
+# copies of the redactor (here and the promote-released-cards mirror) cannot disagree about
+# the spelling, and so an assertion can name it once. Same plain-assignment reasoning as
+# KB_API_RC_TRANSPORT below: the lib is sourced more than once in some shells, where a
+# `readonly` re-assignment is fatal.
+KB_URL_USERINFO_MASK='***'
+
+# kb_redact_url_userinfo <url>: the url with any RFC 3986 USERINFO component replaced by
+# $KB_URL_USERINFO_MASK — scheme, host, port, path, query and fragment byte-identical. A url
+# carrying NO userinfo comes back UNCHANGED, so every message about an ordinary api_base
+# reads exactly as it did before this function existed.
+#
+# WHY IT EXISTS (card#7500). `https://user:password@host/api/v3` is a SUPPORTED api_base and
+# the host guards ACCEPT it — correctly: they judge the HOST and nothing else, and
+# tests/kb-host-guard-selftest.sh pins that acceptance as a row. The defect was never the
+# guard, it was the RENDER. Ten error paths printed the resolved base verbatim, four of them
+# into a durable on-disk log ($KB_LOG_FILE here, $KB_BCS_LOG in board-card-start), so a
+# password reached stderr — hence any CI log — and outlived the run on disk. Canon #20: a
+# resolved secret must never reach an output stream, and "already emitted" means leaked.
+#
+# ⛔ IT REDACTS A URL, NEVER A FINISHED MESSAGE. A caller redacts at the point the base is
+# RESOLVED — once, into a `*_shown` / `*_SHOWN` variable that every message in that scope
+# then prints — so a message added later inherits the redaction instead of having to
+# remember a regex. tests/url-userinfo-render-selftest.sh is the gate that keeps that true:
+# it re-derives the renderable-URL population from the shipped tree every run and reds on a
+# render of a raw one.
+#
+# ⛔ IT USES kb_url_host's AUTHORITY BOUNDARY, AND IT MUST. `https://evil.example#@good.host`
+# has no userinfo at all: the '@' is in the FRAGMENT, curl discards the fragment, and the
+# authority is evil.example — which is why the guard refuses it (the #4346 row). A redactor
+# that cut at the last '@' anywhere in the string would rewrite that exact hostile input into
+# `***@good.host`, printing a refusal that names the host the guard was protecting as though
+# it were the one being contacted. The authority ends at the FIRST of / ? # and the userinfo
+# is what precedes the LAST '@' INSIDE it.
+#
+# THE WHOLE USERINFO GOES, not just the password half. A username is a credential component
+# in its own right (and is routinely an email address), and splitting at ':' to preserve it
+# is a second parse bought for nothing. The '@' SURVIVES the mask, so `***@host` still tells
+# an operator that the base carried userinfo — a fact they may need and cannot recover from
+# the host alone.
+kb_redact_url_userinfo() {
+    local u="$1" scheme="" auth rest
+    # Scheme stripped only when the string actually STARTS with one — the same reasoning as
+    # kb_url_host: a bare `${u#*://}` matches the FIRST `://` anywhere, so a schemeless
+    # `host/p?x://y` would lose everything up to it.
+    if kb_ere_match "$u" '^[A-Za-z][A-Za-z0-9+.-]*://'; then
+        scheme="${u%%://*}://"; u="${u#*://}"
+    fi
+    auth="${u%%[/?#]*}"        # authority ends at the FIRST of / ? # (RFC 3986)
+    rest="${u:${#auth}}"       # …and everything from there on is returned untouched
+    case "$auth" in
+        *@*) auth="$KB_URL_USERINFO_MASK@${auth##*@}" ;;
+    esac
+    printf '%s' "$scheme$auth$rest"
 }
 
 # kb_require_known_api_host <api_base>: the PREFLIGHT (card#7245). Returns 0 only when the
@@ -814,8 +872,12 @@ kb_require_known_api_host() {
     # empty test, so a declaration of "." alone normalises to empty and fails CLOSED rather
     # than becoming a wildcard.
     local expect="${KANBAN_EXPECTED_HOST:-}"; expect="${expect%.}"
+    # THE ONLY SPELLING OF THE BASE THAT MAY BE RENDERED, resolved once here so every message
+    # below — including one added later — prints it rather than $api (card#7500). An api_base
+    # is allowed to carry userinfo and this function's messages are stderr.
+    local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     if [[ -z "$expect" ]]; then
-        echo "$(_kb_prog): KANBAN_EXPECTED_HOST is not set, so no api host is recognised — refusing to use '$api'" >&2
+        echo "$(_kb_prog): KANBAN_EXPECTED_HOST is not set, so no api host is recognised — refusing to use '$api_shown'" >&2
         echo "$(_kb_prog):   → add   export KANBAN_EXPECTED_HOST=\"<the host part of KBCARD_API>\"   to ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
         return 1
     fi
@@ -823,7 +885,7 @@ kb_require_known_api_host() {
     if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
         return 0
     fi
-    echo "$(_kb_prog): api base host '$host' is not '$expect' (or a subdomain of it) — refusing to use '$api'" >&2
+    echo "$(_kb_prog): api base host '$host' is not '$expect' (or a subdomain of it) — refusing to use '$api_shown'" >&2
     echo "$(_kb_prog):   → if '$host' IS your board host, set KANBAN_EXPECTED_HOST=\"$host\" in ~/.kanban-host.env; otherwise KBCARD_API in ~/.kanban-host.env (or \$KANBAN_HOST_ENV) is pointing somewhere you did not intend — check whether something rewrote it" >&2
     return 1
 }
@@ -850,9 +912,11 @@ kb_require_https_host() {
         echo "$(_kb_prog): KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send" >&2
         return 1
     fi
+    # See kb_require_known_api_host — one resolution of the renderable spelling per guard.
+    local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     case "$api" in
         https://*) ;;
-        *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api)" >&2; return 1 ;;
+        *) echo "$(_kb_prog): refusing to send token — api_base is not https:// ($api_shown)" >&2; return 1 ;;
     esac
     local host; host="$(kb_url_host "$api")"
     if [[ -n "$host" && ( "$host" == "$expect" || "$host" == *".$expect" ) ]]; then
@@ -1177,8 +1241,15 @@ fetch_board_cards() {
     # around that redirect, so the number cannot collide with one.
     local errfd=9
     [[ -n "${KB_FETCH_LOUD:-}" ]] && errfd=2
+    # THE RENDERABLE BASE, resolved ONCE for the whole scan (card#7500). Every failure line
+    # below goes to $KB_LOG_FILE, which is DURABLE — a password in it outlives the run — and
+    # an api_base is allowed to carry userinfo. The two prefixes differ only in that mask;
+    # the varying half is built once as $qs and shared, so the logged url and the fetched one
+    # cannot drift into describing different requests.
+    local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     while :; do
-        local url="$api/tasks/search.json?q=board_id=${board}${qextra}&limit=200&page=${page}"
+        local qs="/tasks/search.json?q=board_id=${board}${qextra}&limit=200&page=${page}"
+        local url="$api$qs" url_shown="$api_shown$qs"
         local rc
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
         # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
@@ -1189,7 +1260,7 @@ fetch_board_cards() {
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 echo "fetch_board_cards: page $page read failed for board $board (curl rc=$rc)" >&2
                 [[ -n "${KB_LOG_FILE:-}" ]] && \
-                    echo "$(date -u +%FT%TZ) GET $url FAILED-FETCH curl-rc=$rc" >> "$KB_LOG_FILE"
+                    echo "$(date -u +%FT%TZ) GET $url_shown FAILED-FETCH curl-rc=$rc" >> "$KB_LOG_FILE"
             fi
             [[ "$page" -eq 1 ]] && return 1
             return 2
@@ -1201,7 +1272,7 @@ fetch_board_cards() {
                 echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url HTTP-$http $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http $resp" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
@@ -1288,7 +1359,7 @@ fetch_board_cards() {
                 echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi

@@ -344,11 +344,18 @@ if [ -z "$api" ]; then
     bcs_skip "no usable kanban api_base — committed .release-pr.json is host-scrubbed/absent and \$KBCARD_API is unset (create ~/.kanban-host.env; see docs/INSTALL.md)"
 fi
 
+# THE ONLY SPELLING OF THE BASE THAT MAY BE RENDERED, resolved once here so every message
+# from this point on inherits it rather than having to remember (card#7500). An api_base is
+# allowed to carry userinfo (`https://u:pw@host/api/v3`) and the host guard ACCEPTS it by
+# design — while this hook's diagnostics go to a DURABLE log ($KB_BCS_LOG, kb_bcs_log above),
+# where a password outlives the run on disk. Reads $api, which is final by now.
+api_shown="$(kb_redact_url_userinfo "$api")"
+
 # Guard the api_base before sending the token — a malicious .release-pr.json edit (or
 # host-env value) must not exfiltrate the token to an untrusted host (#3570). Fail-SOFT
 # (exit 0 — this runs from a post-checkout hook and must NEVER block a checkout) but
 # LOUD on stderr; the token is simply never sent when the host isn't trusted.
-kb_require_https_host "$api" || bcs_skip "api_base '$api' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
+kb_require_https_host "$api" || bcs_skip "api_base '$api_shown' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
 
 # The card read + the two writes below go through the shared kb_api / kb_api_status, which
 # resolve the host and bearer from KB_API / KB_TOKEN. api is the effective base resolved+guarded
@@ -451,7 +458,7 @@ if [ "$http" != "200" ]; then
     # Attribute the failure to its ACTUAL cause. Only a 404 means the card isn't there.
     case "$http" in
         404) ;;   # fall through to the not-a-card handling below
-        000) bcs_skip "card #$cid could not be read — the kanban API at $api is unreachable; the card was NOT confirmed missing" ;;
+        000) bcs_skip "card #$cid could not be read — the kanban API at $api_shown is unreachable; the card was NOT confirmed missing" ;;
         401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from ${KB_TOKEN_FILE:-?} (HTTP $http); the card was NOT confirmed missing" ;;
         *) bcs_skip "card #$cid could not be read — the kanban API returned HTTP $http; the card was NOT confirmed missing" ;;
     esac

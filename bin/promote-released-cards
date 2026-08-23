@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # promote-released-cards — move a release's tracking cards to a "released" stage.
 #
-# Generic across repos (sibling to release-pr-body). Board / stage / API base come
-# from `.release-pr.json` (`.promote` block); the API token comes from
-# $KANBAN_WRITEBACK_TOKEN. A card is "shipped in this release" if its
+# Generic across repos (sibling to release-pr-body). Board / stage come from
+# `.release-pr.json` (`.promote` block); the API BASE comes from $KANBAN_API_BASE, falling
+# back to `.promote.api_base`; the API token comes from $KANBAN_WRITEBACK_TOKEN and is only
+# ever sent to a base that passed the $KANBAN_EXPECTED_HOST guard (see ENVIRONMENT below).
+# A card is "shipped in this release" if its
 # `payload.dl_number` matches a shipped DL token, its `payload.pr_number` matches a
 # shipped PR number, or its own `id` is in an explicitly-passed `--cards` set — so
 # cards tracked only by PR (no DL) are promoted too.
@@ -68,6 +70,35 @@
 #   behavior — consumers opt in. ABSENT is the only way to select that default: an
 #   explicitly EMPTY value (`--shipped-stages ""`) is a config error and dies, like any
 #   other malformed set — it never silently degrades to the unguarded default.
+#
+# ENVIRONMENT (all three are read at run time; none has a baked default):
+#
+# --- KANBAN_WRITEBACK_TOKEN (REQUIRED) --------------------------------------------------
+#   The bearer token the card PATCHes are made with. Absent => refuse before any request.
+#
+# --- KANBAN_EXPECTED_HOST (REQUIRED) ----------------------------------------------------
+#   The one host that token may be sent to. The resolved api_base must be https:// on it, or
+#   on a subdomain of it; anything else refuses before the first request. Pin it in the
+#   promote CI env as a repo/org VARIABLE, not in the repo.
+#
+# --- KANBAN_API_BASE (optional) ---------------------------------------------------------
+#   The api base to promote against, e.g. https://kanban.example.com/api/v3. It OVERRIDES
+#   `.promote.api_base`; unset or empty means "use the committed value".
+#
+#   WHY IT EXISTS. The committed `.promote.api_base` is normally a host-scrubbed placeholder
+#   — the real kanban host does not belong in a repo, least of all a vendored one — so the
+#   config alone could name the guard's CONSTRAINT ($KANBAN_EXPECTED_HOST, out-of-band) but
+#   not its TARGET, and the two could never agree: every run refused, for everyone, and the
+#   only ways to run the tool were to commit the real host or carry a permanent uncommitted
+#   edit to a security-sensitive file (card#7494).
+#
+#   WHY IT IS NOT A HOLE IN THE GUARD. The value is host-validated by exactly the same
+#   host_ok call as the config value — one resolution, one guard, no second path — so an
+#   env-supplied base pointing off $KANBAN_EXPECTED_HOST refuses identically. An env var is
+#   not trusted here for being an env var; it is trusted for the same reason the config
+#   value is, which is that it survived the guard. What being out-of-band buys is the
+#   ATTACKER side: a PR can edit `.release-pr.json`, so it could always move the target and
+#   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
@@ -152,6 +183,44 @@ host_ok() {
   case "$h" in *".$e") return 0 ;; *) return 1 ;; esac
 }
 
+# redact_userinfo <url>: the url with any RFC 3986 USERINFO component replaced by `***`,
+# everything else byte-identical; a url with no userinfo comes back UNCHANGED. Mirrors
+# kb_redact_url_userinfo in _kb-board-lib.sh — this script is vendored standalone into
+# consumer repos and MUST NOT source that lib, so the primitive is duplicated; keep the two
+# in sync, as with host_ok and numlist. tests/kb-host-guard-selftest.sh lifts BOTH copies out
+# and asserts they agree on every row, exactly as it does for host_ok. (card#7500)
+#
+# WHY IT EXISTS. host_ok ACCEPTS a base carrying userinfo — `https://u:pw@<expected-host>/`
+# is a legitimate api_base and is a pinned accept row — so every message that echoed $API
+# printed a password to stderr, i.e. into the CI log of the run that failed. The mask keeps
+# the HOST, which is the only thing those messages exist to tell an operator.
+#
+# ⛔ THE AUTHORITY BOUNDARY IS host_ok's, and it must be. `https://evil.example#@good.host`
+# has NO userinfo — the '@' is in the fragment, curl drops the fragment, the authority is
+# evil.example, and host_ok refuses it (the #4346 row). Cutting at the last '@' anywhere in
+# the string would rewrite that refusal to name good.host as the base being contacted.
+redact_userinfo() {
+  local u="$1" scheme="" auth rest
+  # Scheme stripped only when the string actually STARTS with one: a bare `${u#*://}` matches
+  # the FIRST `://` anywhere, so a schemeless `host/p?x://y` would lose everything up to it.
+  # ⛔ LC_ALL IS PINNED ON THE LINE BELOW, NOT THREE LINES UP WITH THE OTHER `local`s. A bare
+  # bracket RANGE widens under UTF-8 collation, so the pin is required — and
+  # tests/locale-range-guard-selftest.sh's static backstop looks for `LC_ALL=C` on the `=~`
+  # line or the two above it, which is a WRITING RULE, not a hint: with the pin declared up
+  # with the other locals the scanner flagged this line (watched red). The lib's copy gets the
+  # same pin from kb_ere_match, which this standalone must not call.
+  local LC_ALL=C
+  if [[ "$u" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+    scheme="${u%%://*}://"; u="${u#*://}"
+  fi
+  auth="${u%%[/?#]*}"     # authority ends at the FIRST of / ? # (RFC 3986)
+  rest="${u:${#auth}}"
+  case "$auth" in
+    *@*) auth="***@${auth##*@}" ;;
+  esac
+  printf '%s' "$scheme$auth$rest"
+}
+
 # True iff <ref> is a MERGE commit (>=2 parents). `git rev-list --parents -n1`
 # prints "<sha> <parent1> <parent2>..." → >=3 tokens ⇒ merge. A merge-commit release
 # tip means the range carries every feature/prep commit subject, so the ref-derivation
@@ -207,27 +276,46 @@ if [ -n "$CARDS_IN" ]; then
     || die "--cards must be a comma-separated list of numeric card ids, e.g. '5877,5874' (got '$CARDS_IN')"
 fi
 
-# SECURITY: .release-pr.json is security-sensitive — .promote.api_base is where the
+# SECURITY: .release-pr.json is security-sensitive — the api_base it names is where the
 # writeback token (KANBAN_WRITEBACK_TOKEN) is sent. A PR editing api_base to point at an
 # attacker host would exfiltrate the token on the next promote CI run. board_id/stage are
-# validated numeric below; api_base is host-validated (https + $EXPECT_HOST) before any
-# token is sent (#3570). Treat any api_base change in a PR as a credential-scope change.
+# validated numeric below; the RESOLVED api_base — whichever source it came from — is
+# host-validated (https + $EXPECT_HOST) before any token is sent (#3570). Treat any api_base
+# change in a PR as a credential-scope change.
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo"
 cfg() { jq -r "$1 // empty" "$CONFIG"; }
 BOARD="$(cfg '.promote.board_id')"
 STAGE="$(cfg '.promote.released_stage_id')"
-API="$(cfg '.promote.api_base')"
 REF_RE="$(cfg '.ref_token_regex')"; REF_RE="${REF_RE:-DL-[0-9]+}"
-[ -n "$BOARD" ] && [ -n "$STAGE" ] && [ -n "$API" ] \
-  || die ".promote.{board_id,released_stage_id,api_base} are required in $CONFIG"
+
+# api_base: $KANBAN_API_BASE FIRST, else the committed .promote.api_base. ONE resolution
+# feeding ONE guard — see the ENVIRONMENT block in the header for why the env channel exists
+# and why it does not weaken the guard. $API_SRC only ever names the CHANNEL, so reporting it
+# discloses nothing the api_base itself does not.
+#
+# EMPTY == UNSET here, and that is not the card#5144 shape. For a value-taking FLAG, an empty
+# value had to become a hard error because it silently selected a DEFAULT PATH that was weaker
+# than the flag (an unguarded promote reported as a guarded one). The default path here is the
+# committed config value, which goes through the identical host guard — so the worst an empty
+# $KANBAN_API_BASE can produce is a REFUSAL on the committed placeholder, never a token sent
+# somewhere unvalidated. Treating it as unset is also what the CI wrapper needs: an unset
+# repo/org variable renders as the empty string, and "no override" is the correct reading of it.
+API="${KANBAN_API_BASE:-}"; API_SRC="\$KANBAN_API_BASE"
+if [ -z "$API" ]; then API="$(cfg '.promote.api_base')"; API_SRC="$CONFIG .promote.api_base"; fi
+
+[ -n "$BOARD" ] && [ -n "$STAGE" ] \
+  || die ".promote.{board_id,released_stage_id} are required in $CONFIG"
+[ -n "$API" ] \
+  || die "no api base — set \$KANBAN_API_BASE, or .promote.api_base in $CONFIG"
 uint_ok "$BOARD" || die ".promote.board_id must be numeric (got '$BOARD')"
 uint_ok "$STAGE" || die ".promote.released_stage_id must be numeric (got '$STAGE')"
 TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
 [ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
 API="${API%/}"
 
-# Fail-closed host guard on the config-supplied api_base BEFORE any token is sent. The
-# expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this script is
+# Fail-closed host guard on the RESOLVED api_base BEFORE any token is sent — one call, on
+# whichever source won above, because two guarded paths is how one of them ends up unguarded.
+# The expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this script is
 # vendored by operators onto their own kanban hosts, so there is no host to safely assume.
 # Pin it in the promote CI env (a repo/org variable — out-of-band from the PR-editable
 # .release-pr.json, so an attacker's api_base edit can't also change the constraint). If it
@@ -235,11 +323,31 @@ API="${API%/}"
 # The single trailing dot comes off the DECLARED host here, before the non-empty check, so
 # a declaration of "." alone normalises to empty and dies LOUD rather than becoming a
 # wildcard — the same order kb_require_known_api_host uses in _kb-board-lib.sh.
+# THE ONLY SPELLING OF THE RESOLVED BASE THAT MAY BE RENDERED, resolved once here — after
+# the trailing-slash strip, so it is the final value — so every message below inherits the
+# redaction rather than having to remember it (card#7500). $API itself is what goes on the
+# wire; $API_SHOWN is what goes to stderr.
+API_SHOWN="$(redact_userinfo "$API")"
+
 EXPECT_HOST="${KANBAN_EXPECTED_HOST:-}"; EXPECT_HOST="${EXPECT_HOST%.}"
 [ -n "$EXPECT_HOST" ] \
   || die "KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send"
 host_ok "$API" \
-  || die "refusing to send token — api_base '$API' is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to your kanban host."
+  || die "refusing to send token — api_base '$API_SHOWN' (from $API_SRC) is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to your kanban host, and \$KANBAN_API_BASE to the api base on it."
+
+# State the CHANNEL the accepted api_base came from, every run. Which source won is the one
+# thing a two-source resolution can get wrong that no other output reveals — a stale exported
+# $KANBAN_API_BASE silently outranking a corrected config is a run against the wrong board
+# with a clean summary. stderr, so the stdout summary line consumers parse stays byte-identical.
+#
+# THE CHANNEL AND THE EXPECTED HOST, NOT THE RESOLVED BASE — deliberately. host_ok ACCEPTS a
+# base carrying userinfo (`https://u:pw@<expected-host>/api/v3` is a legitimate api_base and is
+# asserted as accepted in tests/kb-host-guard-selftest.sh), so echoing $API on the SUCCESS path
+# would print a credential into every CI run log, on every run. The two facts an operator
+# actually needs — which channel won, and what it was checked against — carry neither.
+# (The refuse paths print $API_SHOWN — the same base with any userinfo masked by
+# redact_userinfo above, adopted at every render site in this tool and in the lib, card#7500.)
+echo "promote-released-cards: api_base resolved from $API_SRC, host-guarded against '$EXPECT_HOST'" >&2
 
 # --- resolve the shipped refs (DL tokens + PR numbers) -----------------------
 # numlist normalizes the SHIPPED side (a git-log / --dls text stream) to bare integers with
@@ -310,7 +418,7 @@ fetch_whole_board() {
   local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page=''
   while :; do
     resp="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
-      || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API)"
+      || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API_SHOWN)"
     if [ "$page" -eq 1 ]; then
       # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
       # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically

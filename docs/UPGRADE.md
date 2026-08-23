@@ -56,7 +56,7 @@ git commit -m "chore: bump vendored agent-board-toolkit to $(cat ~/agent-board-t
 > ```bash
 > gh variable set KANBAN_EXPECTED_HOST --repo <owner>/<repo> --body "<your-kanban-host>"
 > ```
-> If your promote workflow also injects `api_base` from a variable, set `KANBAN_API_BASE` the same way. The guard accepts that host or a subdomain of it.
+> If your promote workflow also supplies `api_base` from a variable, set `KANBAN_API_BASE` the same way — from the version that added it, the script reads that variable **directly** and in preference to `.promote.api_base`, so a vendored copy gets the same channel the composite action's `api-base` input uses. Both are host-validated against `KANBAN_EXPECTED_HOST`; the guard accepts that host or a subdomain of it.
 
 > **Why a re-vendor + check instead of a submodule?** It keeps each repo self-contained for CI (no submodule checkout) while `agent-board-toolkit-drift-check` makes silent divergence impossible — the check fails CI if `bin/<tool>` no longer matches the toolkit at the recorded version. If you prefer one literal copy, a git submodule of `agent-board-toolkit` is the supported alternative; then "upgrade" is `git submodule update --remote` and the drift-check is unnecessary.
 

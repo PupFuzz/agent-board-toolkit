@@ -103,7 +103,7 @@ chmod 600 ~/.kanban-host.env
 
 - **Every tool preflights the api base it resolved.** Before a token file is even located, the host of the resolved `KBCARD_API` must equal `KANBAN_EXPECTED_HOST` or be a subdomain of it. Otherwise the run **refuses at setup**: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field` and `adopt-to-dl` exit `2`; `next-dl` warns and skips the board check; `board-stats` exits `1`; `board-snapshot` prints a `SKIPPED` line and stays non-blocking. **An unset or empty `KANBAN_EXPECTED_HOST` refuses too** — with nothing declared, no host is recognised. The predicate is the **host alone**, so an `http://127.0.0.1:8000/api/v3` install passes this preflight as long as it declares `KANBAN_EXPECTED_HOST=127.0.0.1`.
   - **One tool is an exception, and it is the card-movement hook.** `board-card-start` guards the api base it is about to send the token to with the *second* guard below, which requires **`https://`** as well as the host — so on a plaintext `http://` board that hook **fail-softs and moves no card** (`api_base '…' failed the https-host trust guard`), while every other tool runs normally. A plaintext local board is therefore a supported install for reading and for `kbcard`, but card automation on checkout will not run on it. If you need the hook, terminate TLS in front of the board and point `KBCARD_API` at the `https://` URL.
-- **It is also the anti-exfiltration guard's expected host** — the local `board-card-start` post-checkout hook (and any locally-run `promote-released-cards`) **refuses to send the writeback token** unless the committed `.release-pr.json` `api_base` host matches it. Without it, `board-card-start` fail-softs (no card move).
+- **It is also the anti-exfiltration guard's expected host** — the local `board-card-start` post-checkout hook (and any locally-run `promote-released-cards`) **refuses to send the writeback token** unless the api base it resolved is `https://` on this host. Without it, `board-card-start` fail-softs (no card move). Each of those two tools resolves that base from **outside** the repo when the committed `.release-pr.json` `api_base` is a scrubbed placeholder, which it normally is: the hook falls back to `KBCARD_API` from this file, and `promote-released-cards` reads `$KANBAN_API_BASE` (§4). Neither fallback skips the guard — a base from either source is validated identically.
 
 This is the local counterpart to the CI-side `KANBAN_EXPECTED_HOST` in §4/§5; one setting here activates card automation for every repo on the host. (CI jobs set it in their own env, not from this file.)
 
@@ -167,9 +167,11 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 ```bash
 cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-pr.json
-# edit: set promote.{board_id, released_stage_id, api_base}, ref_token_regex (e.g. "DL-[0-9]+"),
+# edit: set promote.{board_id, released_stage_id}, ref_token_regex (e.g. "DL-[0-9]+"),
 # card_token_regex (e.g. "card#[0-9]+"), version_file/version_regex, dev/main branch names,
 # and the artifacts set.
+# promote.api_base: LEAVE IT A PLACEHOLDER and name the real host in $KANBAN_API_BASE
+# instead — the box below says why, and what happens if you commit a real one.
 # main_branch/dev_branch (optional, defaults "main"/"dev"): the branch the release
 # baseline tag is resolved from, and the branch whose commits are bundled — omit both
 # if your repo already uses those names.
@@ -217,6 +219,19 @@ jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove th
 
 > **`.release-pr.json` is security-sensitive.** `.promote.api_base` is the host the release-CI writeback token (`KANBAN_WRITEBACK_TOKEN`) is sent to. A PR that edits `api_base` to an attacker host would exfiltrate the token on the next promote run. `promote-released-cards` (and `board-card-start`) reject any `api_base` that is not `https://` on the **expected host** before sending the token. **`KANBAN_EXPECTED_HOST` is REQUIRED — there is no baked default** (the toolkit ships onto your own kanban host, so it assumes none). Set **`KANBAN_EXPECTED_HOST`** in the promote-CI env (a repo/org variable — out-of-band from this PR-editable file) to your kanban host; the guard accepts that host or a subdomain of it. Leaving it unset makes the guard **fail closed** — the token is never sent. Review any `api_base` change as a credential-scope change.
 
+> **You are meant to leave `api_base` as a placeholder, and name the real host in `$KANBAN_API_BASE` instead.** The real kanban host does not belong in a repo — least of all one that is vendored — so committing it is the thing to avoid, not the thing to do. `promote-released-cards` reads **`$KANBAN_API_BASE`** in preference to `.promote.api_base`; unset or empty means "use the committed value". **Both sources meet the same host guard**, so an env-supplied base that is not `https://` on `$KANBAN_EXPECTED_HOST` refuses exactly as a committed one does — the override moves the *target* out of the repo, it does not exempt it from the *constraint*. With the target and the constraint both supplied out-of-band, a PR editing `.release-pr.json` can move **neither**. Every run states, on stderr, **which of the two channels** the base it is about to use came from — the one thing a two-source resolution can get wrong that nothing else in the output reveals. It deliberately does not echo the base itself, since a legitimate api_base may carry userinfo; a **refusal** does echo it, because you cannot fix a value you cannot see — with any **userinfo masked to `***`**, so the host you need is on the line and the credential is not (a base with no userinfo is printed verbatim, exactly as before).
+>
+> **Running it by hand** (the release-prep dry run `release-pr-body`'s `## Card coverage` section also performs — and which needs all three variables, since a config carrying only the placeholder refuses before the first request):
+>
+> ```bash
+> export KANBAN_API_BASE="https://kanban.example.com/api/v3"   # your host — NOT committed anywhere
+> export KANBAN_EXPECTED_HOST="kanban.example.com"             # or from ~/.kanban-host.env (§3)
+> export KANBAN_WRITEBACK_TOKEN="$(cat ~/.kanban-<board>-token)"
+> promote-released-cards --dry-run            # -> `api_base resolved from $KANBAN_API_BASE, host-guarded against '…'` then the summary
+> ```
+>
+> `--dry-run` moves nothing; drop it only when you mean to promote. A run that refuses with `api_base '…' is not https:// on '…'` names, in the same line, which channel the offending value came from — fix that one.
+
 ## 5. Verify (expected output shown)
 
 ```bash
@@ -246,7 +261,7 @@ Consume `promote-released-cards` via the [`promote/`](../promote/action.yml) com
   with:
     writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
     expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
-    api-base: ${{ vars.KANBAN_API_BASE }}   # injected into the checked-out .release-pr.json when the committed value is a placeholder
+    api-base: ${{ vars.KANBAN_API_BASE }}   # the real api base, passed to the script as $KANBAN_API_BASE; use it when the committed value is a placeholder (it normally is). Still host-validated against expected-host
     dls: ${{ github.event.inputs.dls }}         # optional workflow_dispatch passthrough
     shipped-stage-ids: '52'                    # optional, EXAMPLE id — use YOUR board's Shipped-class stage id(s), comma-separated. A matched card NOT in one is skipped, so a stale/recycled DL stamp on a declined card is never promoted. Blank = no guard (prior behavior). Prefer a LITERAL — see below
     dry-run: ${{ github.event.inputs.dry_run }} # optional workflow_dispatch passthrough
