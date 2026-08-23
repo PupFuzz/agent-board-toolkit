@@ -29,7 +29,43 @@ jobs:
         # (SC1071); they are syntax-checked in the python-shims step below.
         run: ./bin/_shellcheck-pinned -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
       - name: python shims compile clean
-        run: python3 -m py_compile bin/*.py
+        # `compile()` — NOT `py_compile`, and NOT `ast.parse` (card#7207).
+        #
+        # `py_compile` WRITES the bytecode it produces, beside each source, i.e. into
+        # `bin/__pycache__`. Every entry of `bin/` becomes a PATH entry under the documented
+        # install (`docs/INSTALL.md` §2 globs `bin/*` and symlinks each one), so this step was
+        # re-minting the exact non-tool directory card#6871 removed — invisibly, because a
+        # GitHub runner's checkout is disposable and `.gitignore` keeps it out of `git status`.
+        # The damage is LOCAL, on every seat that runs these gates by hand before opening a PR.
+        #
+        # `ast.parse` writes nothing and was the first fix proposed, but it asks a WEAKER
+        # question. Measured on python 3.12.3, it ACCEPTS all of: `return`, `break`, `continue`,
+        # `yield` and `await` outside their construct, `def f(a, a)`, an unbound `nonlocal`, and
+        # `*a = [1]` — eight of the ten error classes `py_compile` rejects. Swapping it in would
+        # have loosened the gate to make the artifact go away.
+        #
+        # `compile(src, f, 'exec')` is `py_compile`'s own check MINUS the write: it rejects all
+        # ten, handles a PEP 263 coding cookie the same way (bytes in, not str), and caches
+        # nothing anywhere. Every bad file is reported, not just the first.
+        #
+        # `tests/python-syntax-gate-selftest.sh` runs THIS block verbatim — extracted from this
+        # file by step name, never restated — over planted fixtures, and holds a no-`py_compile`
+        # rule over every `run:` block in this directory AND in the composite actions, so the
+        # artifact cannot come back by another hand.
+        run: |
+          python3 - bin/*.py <<'PY'
+          import sys
+          rc = 0
+          for f in sys.argv[1:]:
+              with open(f, "rb") as fh:
+                  src = fh.read()
+              try:
+                  compile(src, f, "exec")
+              except SyntaxError as e:
+                  print(f"::error file={f},line={e.lineno}::{e.msg}", file=sys.stderr)
+                  rc = 1
+          sys.exit(rc)
+          PY
 
   drift-check-selftest:
     # NARROW BY DESIGN — and narrower than it reads. Passing the same directory as both
@@ -129,6 +165,7 @@ jobs:
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
+          - python-syntax-gate-selftest
           - read-outcome-collapse-selftest
           - readme-bin-coverage-selftest
           - release-artifacts-selftest

@@ -46,8 +46,9 @@ _SSL_FIND_SELFTESTS="find tests -maxdepth 1 -type f -name '*.sh'"
 # _shipped_shell_files <root> — the SHIPPED shell: `bin/` + `hooks/`, one level, minus the
 # python shims (shellcheck cannot parse them — SC1071 — which is why CI's own expression
 # excludes them by name rather than by extension-guessing). Relative paths, C-collated. A
-# directory is excluded by `-type f`; `bin/__pycache__` is the one that appears, from CI's own
-# `py_compile bin/*.py` step.
+# directory is excluded by `-type f`; `bin/__pycache__` is the one that appears. CI's own
+# syntax gate was minting it until card#7207 (it ran `py_compile bin/*.py`); a hand-run of the
+# same command still can, which is why the exclusion is by TYPE and not by that name.
 _shipped_shell_files() {
     ( cd "$1" && find bin hooks -maxdepth 1 -type f ! -name '*.py' 2>/dev/null | LC_ALL=C sort )
 }
