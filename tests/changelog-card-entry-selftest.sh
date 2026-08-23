@@ -258,9 +258,43 @@ _has_version_header() {
     [[ -n "$(awk -v stop="## [$2]" 'index($0, stop) == 1 { print "y"; exit }' "$1")" ]]
 }
 
-# _added_bullets <repo> <path> <range> — one TAB-separated `<pr>\t<+|->\t<bullet line>` record
-# per line-initial card bullet a commit in <range> added to, or removed from, <path>. Both signs
-# are emitted; `_stale_dupes` owns what they mean.
+# _bullets_at <repo> <rev> <path> <version> — the line-initial card bullets standing in the
+# REGION of <path> as of <rev>, through the same `_region`/`_bullets` the live leg uses rather
+# than a second carve of the same concept. "" when the path does not exist at that revision, and
+# "" when the revision carries no `## [Unreleased]` above the stop header — both are "the region
+# says nothing here", and the caller below is the one that decides what silence buys.
+_bullets_at() {
+    local blob
+    blob="$(git -C "$1" show "$2:$3" 2>/dev/null)" || return 0
+    _bullets <(printf '%s\n' "$blob") "$4"
+}
+
+# _added_bullets <repo> <path> <range> <version> — one TAB-separated `<pr>\t<+|->\t<bullet line>`
+# record per line-initial card bullet a commit in <range> added to <path>, or removed from the
+# unreleased REGION of <path>. Both signs are emitted; `_stale_dupes` owns what they mean.
+#
+# THE TWO SIGNS ARE SCOPED IN DIFFERENT PLACES, AND THAT IS THE POINT (card#7303). `_stale_dupes`
+# states its scope as the region and both halves of its arithmetic have to honour it — but the
+# evidence for the two signs lives in two different files. An ADD can be judged against the
+# CHANGELOG as it stands: the bullet is either standing in the region now or it is not, which is
+# the presence test `_stale_dupes` already runs, so its net half is gated on that same test and
+# nothing is owed here. A REMOVAL cannot be judged that way at all — the line is GONE from the
+# file, so the only witness to where it stood is the revision it was removed FROM. Hence the
+# `<version>` argument and the parent-revision read below.
+#
+# ⛔ THE PATH-SCOPED VERSION ERRED GREEN, measured by construction rather than reasoned about:
+# ONE commit adding two `card#4000` bullets to `[Unreleased]` while deleting two `card#4000`
+# bullets from the frozen `## [0.23.1]` section leaves two duplicate wordings standing and was
+# reported as NOTHING, because the path-scoped net was 2 − 2 = 0. The out-of-region removals are
+# the entire difference — the same commit without them reds. A suppressed red is not a weaker
+# check; on that axis it is a decoration. Both shapes are fixtured below, as a pair.
+#
+# THE BURDEN OF PROOF SITS ON THE SIDE THAT COULD SUPPRESS. A removal LOWERS net, so it is
+# emitted only where the parent revision PROVES the line stood in the region; every unprovable
+# case — the path absent there, or a revision whose region cannot be carved because it carries no
+# `## [Unreleased]` — is dropped, which can only leave net HIGHER and therefore can only
+# over-report. Adds need no such branch: they are emitted unconditionally and gated on presence
+# downstream, so two surviving bullets always contribute net ≥ 2 by themselves.
 #
 # THE GROUP KEY IS THE PR NUMBER, and that is the whole trick. This repo squash-merges, so every
 # commit that reached `dev` carries its PR number in the subject (`… (card#7038) (#265)`), and a
@@ -277,8 +311,11 @@ _has_version_header() {
 # merge conflicts on this file), and attributing all of them to the branch's own group would red
 # a branch for entries it did not write.
 _added_bullets() {
-    git -C "$1" log -p --no-color --format='@@COMMIT@@ %s' "$3" -- "$2" | awk '
+    local repo="$1" path="$2" range="$3" version="$4"
+    local sha pr sign line memo_rev="" memo_bullets=""
+    git -C "$repo" log -p --no-color --format='@@COMMIT@@ %H %s' "$range" -- "$path" | awk '
         /^@@COMMIT@@ / {
+            sha = $2
             pr = "(unsquashed)"; s = $0
             while (match(s, /\(#[0-9]+\)/)) {
                 pr = substr(s, RSTART + 2, RLENGTH - 3)
@@ -286,19 +323,32 @@ _added_bullets() {
             }
             next
         }
-        /^\+- \*\*card#[0-9]+\*\*/ { print pr "\t+\t" substr($0, 2); next }
-        /^-- \*\*card#[0-9]+\*\*/  { print pr "\t-\t" substr($0, 2); next }
-    '
+        /^\+- \*\*card#[0-9]+\*\*/ { print sha "\t" pr "\t+\t" substr($0, 2); next }
+        /^-- \*\*card#[0-9]+\*\*/  { print sha "\t" pr "\t-\t" substr($0, 2); next }
+    ' | while IFS=$'\t' read -r sha pr sign line; do
+        if [[ "$sign" == "-" ]]; then
+            # One read per commit, not per record: `git log -p` emits a commit's records
+            # together, so a single memo slot is all the caching this needs.
+            if [[ "$memo_rev" != "$sha" ]]; then
+                memo_rev="$sha"
+                memo_bullets="$(_bullets_at "$repo" "$sha^" "$path" "$version")"
+            fi
+            [[ "$(has_line "$line" "$memo_bullets")" == true ]] || continue
+        fi
+        printf '%s\t%s\t%s\n' "$pr" "$sign" "$line"
+    done
 }
 
 # _stale_dupes <records> <changelog> <version> — the card ids for which ONE PR left two or more
-# bullets standing in the region.
+# bullets standing in the region. <records> is `_added_bullets`' output, whose REMOVALS are
+# already region-scoped there (they have to be — see below); this function scopes the additions.
 #
 # TWO CONDITIONS, AND EACH REJECTS A REAL SHAPE THE OTHER ACCEPTS.
 #
-#   NET ≥ 2 — the PR's arithmetic: bullets it added for the card, minus bullets it removed for
-#   the card. Editing somebody else's entry is a remove plus an add and nets to zero, which is
-#   the only reason this leg can run on the live history at all: #266 REWORDED #265's card#7038
+#   NET ≥ 2 — the PR's arithmetic, IN THE REGION AT BOTH ENDS (card#7303): bullets it added that
+#   still STAND in the region, minus bullets it removed FROM the region. Editing somebody else's
+#   entry is a remove plus an add and nets to zero, which is the only reason this leg can run on
+#   the live history at all: #266 REWORDED #265's card#7038
 #   bullet and added its own, so two of the three surviving card#7038 lines are its doing. Net
 #   arithmetic reads that as one new entry. Counting raw additions reported it as a duplicate —
 #   a false red on merged, correct history, seen before this rule was written and fixtured below.
@@ -311,6 +361,26 @@ _added_bullets() {
 # Requiring both means a red always corresponds to two lines a reader can see, which is what
 # makes the failure actionable — and neither leg alone is sound: net-only reds a PR that
 # legitimately split one card across two entries, presence-only reds #266.
+#
+# ⛔ UNTIL card#7303 THIS FUNCTION SAID "in the region" AND MEANT IT ON ONE HALF ONLY. `present`
+# was region-scoped; the net arithmetic consumed `_added_bullets` whole, and that is scoped to the
+# PATH. So a bullet a PR removed from a FROZEN released section — tidying a stray preamble bullet,
+# correcting a shipped entry — subtracted from a net computed over the region's survivors, and two
+# duplicate bullets standing in `[Unreleased]` reported NOTHING. It erred GREEN: a suppressed red,
+# measured by construction (`_added_bullets` carries the reproduction) rather than argued.
+#
+# THE SCOPE WAS RIGHT AND THE PREDICATE WAS WRONG, so the predicate is what moved. The removal
+# side is filtered where its evidence lives — in `_added_bullets`, against the parent revision,
+# because a removed line is gone from the file and the file cannot answer for it. The addition
+# side is filtered HERE, by letting an add count toward net only when the presence test has
+# already found it standing in the region: it needs no history, it deletes the second copy of
+# that test rather than adding one, and it makes net ≥ pres STRUCTURALLY — so the only thing that
+# can pull a genuine duplicate back under the threshold is a genuine in-region removal.
+#
+# ⛔ RESIDUAL, deliberate and unchanged in kind: a PR that removes two in-region bullets for one
+# card and files two of its own nets to zero and stays green. That is the replace-an-existing-entry
+# case at multiplicity two — the same trade the net rule already makes at multiplicity one, and a
+# card whose entry a PR must replace TWICE was carrying duplicates before that PR existed.
 _stale_dupes() {
     local present pr sign line id
     present="$(_bullets "$2" "$3")"
@@ -319,11 +389,9 @@ _stale_dupes() {
         id="${line#- \*\*}"; id="${id%%\**}"
         if [[ "$sign" == "-" ]]; then
             printf '%s\t%s\tnet\t-1\n' "$pr" "$id"
-        else
+        elif [[ "$(has_line "$line" "$present")" == true ]]; then
             printf '%s\t%s\tnet\t1\n' "$pr" "$id"
-            if [[ "$(has_line "$line" "$present")" == true ]]; then
-                printf '%s\t%s\tpresent\t%s\n' "$pr" "$id" "$line"
-            fi
+            printf '%s\t%s\tpresent\t%s\n' "$pr" "$id" "$line"
         fi
     done < "$1" | awk -F'\t' '
         $3 == "net" { net[$1 FS $2] += $4; next }
@@ -661,11 +729,11 @@ eq "the derivation attributes both to the one unsquashed branch, and the sibling
    "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
 (unsquashed)	+	- **card#4000** — FIRST WORDING.
 265	+	- **card#9000** — a sibling PR filed at the same anchor." \
-   "$(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' | LC_ALL=C sort)"
+   "$(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1" | LC_ALL=C sort)"
 eq "END TO END: the union-rebase duplicate is reported by the live code path" "card#4000" \
-   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD') "$RB/CHANGELOG.md" "0.23.1")"
+   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1") "$RB/CHANGELOG.md" "0.23.1")"
 eq "and the sibling that arrived from dev is not (witness: it was seen)" "" \
-   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD') "$RB/CHANGELOG.md" "0.23.1" \
+   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1") "$RB/CHANGELOG.md" "0.23.1" \
       | grep -x 'card#9000' || true)"
 
 RBC="$TMP/rebase-plain"
@@ -688,9 +756,82 @@ eq "the edit is recorded with its removal, so #266 nets ONE new entry" \
 266	+	- **card#7038** — the first PR on this card, now cross-referenced.
 266	+	- **card#7038** — the second PR on the same card.
 266	-	- **card#7038** — the first PR on this card." \
-   "$(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' | LC_ALL=C sort)"
+   "$(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" | LC_ALL=C sort)"
 eq "so two surviving bullets from one PR are NOT reported when one replaced an existing entry" \
-   "" "$(_stale_dupes <(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD') "$MV/CHANGELOG.md" "0.23.1")"
+   "" "$(_stale_dupes <(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1") "$MV/CHANGELOG.md" "0.23.1")"
+
+# ---------------------------------------------------------------------------
+# BOTH ENDS OF THE NET ARITHMETIC ARE REGION-SCOPED (card#7303). `_added_bullets` is scoped to the
+# PATH, and until this card `_stale_dupes` consumed it whole while stating its own scope as "in
+# the region" — so a bullet removed from a FROZEN released section subtracted from a net computed
+# over the region's survivors, and a real duplicate went unreported. It erred GREEN, which is the
+# one direction a guard must not err, so what follows is the defect fixture and its MIRROR
+# CONTROL: identical arithmetic (two adds, two removes, one PR), differing only in WHERE the two
+# removed bullets stood. Without the control, "stop counting removals" would satisfy the fixture.
+# ---------------------------------------------------------------------------
+echo "== prove-it-can-fail: an OUT-OF-region removal does not offset an in-region add =="
+OOR="$TMP/removal-out-of-region"
+_newrepo "$OOR"
+printf -- '- **card#4000** — a released wording, frozen under the stop header.\n' >> "$OOR/CHANGELOG.md"
+printf -- '- **card#4000** — a second released wording.\n' >> "$OOR/CHANGELOG.md"
+g -C "$OOR" commit -qam 'docs(changelog): the released section (#264)'
+g -C "$OOR" checkout -q -b feat
+_prepend "$OOR/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
+_prepend "$OOR/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
+sed -i '/^- \*\*card#4000\*\* — a released wording, frozen under the stop header\.$/d
+        /^- \*\*card#4000\*\* — a second released wording\.$/d' "$OOR/CHANGELOG.md"
+g -C "$OOR" commit -qam 'docs(changelog): file the entry and tidy the released section (card#4000)'
+# The two witnesses that make the assertion below about SCOPE rather than about an absent diff:
+# the commit really does remove two card#4000 bullets, and two really do stand in the region.
+eq "the branch commit really removes two card#4000 bullets (witness: the diff is not empty)" "2" \
+   "$(g -C "$OOR" show HEAD -- CHANGELOG.md | { grep -c '^-- \*\*card#4000\*\*' || true; })"
+eq "and two duplicate wordings stand in the region right now" \
+   "- **card#4000** — CORRECTED WORDING.
+- **card#4000** — FIRST WORDING." "$(_bullets "$OOR/CHANGELOG.md" "0.23.1")"
+eq "the derivation keeps the in-region adds and drops the out-of-region removals" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — FIRST WORDING." \
+   "$(_added_bullets "$OOR" CHANGELOG.md 'dev..feat' "0.23.1" | LC_ALL=C sort)"
+eq "END TO END: the duplicate is REPORTED — a released-section tidy-up cannot suppress it" \
+   "card#4000" \
+   "$(_stale_dupes <(_added_bullets "$OOR" CHANGELOG.md 'dev..feat' "0.23.1") "$OOR/CHANGELOG.md" "0.23.1")"
+
+echo "== CONTROL: the same arithmetic with IN-region removals still nets to zero =="
+# Two adds, two removes, one PR — the only difference from the fixture above is that the removed
+# bullets stood INSIDE the region, which is the replace-an-existing-entry case the net rule
+# exists to let through. A fix that simply stopped counting removals reds here.
+INR="$TMP/removal-in-region"
+_newrepo "$INR"
+_prepend "$INR/CHANGELOG.md" '- **card#4000** — a standing wording, inside the region.'
+_prepend "$INR/CHANGELOG.md" '- **card#4000** — a second standing wording, inside the region.'
+g -C "$INR" commit -qam 'docs(changelog): two standing entries (#264)'
+g -C "$INR" checkout -q -b feat
+_prepend "$INR/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
+_prepend "$INR/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
+sed -i '/standing wording, inside the region\.$/d' "$INR/CHANGELOG.md"
+g -C "$INR" commit -qam 'docs(changelog): replace both standing entries (card#4000)'
+eq "the in-region removals ARE recorded (witness: the filter drops removals by scope, not by sign)" \
+   "2" "$(_added_bullets "$INR" CHANGELOG.md 'dev..feat' "0.23.1" | cut -f2 | { grep -c '^-' || true; })"
+eq "so a PR that replaced two standing entries is NOT reported" "" \
+   "$(_stale_dupes <(_added_bullets "$INR" CHANGELOG.md 'dev..feat' "0.23.1") "$INR/CHANGELOG.md" "0.23.1")"
+
+echo "== the removal side reads the PARENT revision, and says nothing when it cannot =="
+# `_bullets_at`'s own arms, unit-tested: a removal is counted only where the parent revision
+# PROVES the line stood in the region, so every way of failing to prove it has to answer "" —
+# and each "" needs a witness, or it is indistinguishable from a helper that always answers "".
+eq "at a revision carrying the region, its bullets are read back (positive control)" \
+   "- **card#4000** — CORRECTED WORDING.
+- **card#4000** — FIRST WORDING." "$(_bullets_at "$OOR" feat CHANGELOG.md "0.23.1")"
+eq "a path that does not exist at the revision is not an error, it is nothing" "" \
+   "$(_bullets_at "$OOR" feat NOTHING-HERE.md "0.23.1")"
+g -C "$OOR" checkout -q -b noheader
+sed -i '/^## \[Unreleased\]$/d' "$OOR/CHANGELOG.md"
+g -C "$OOR" commit -qam 'docs(changelog): a revision with no [Unreleased] header at all'
+eq "a revision whose region cannot be carved answers with nothing …" "" \
+   "$(_bullets_at "$OOR" noheader CHANGELOG.md "0.23.1")"
+eq "… while that same revision still carries the bullets (witness: not an empty file)" "true" \
+   "$(has_line '- **card#4000** — FIRST WORDING.' "$(g -C "$OOR" show noheader:CHANGELOG.md)")"
+g -C "$OOR" checkout -q feat
 
 # ---------------------------------------------------------------------------
 # Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
@@ -751,7 +892,7 @@ eq "no card shipped since $LAST_TAG is missing its entry" "" \
 
 echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
 RECORDS="$TMP/added-live"
-_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" > "$RECORDS"
+_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" > "$RECORDS"
 printf '  ..   %s bullet(s) added, %s removed, across %s contributor(s) since %s\n' \
     "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
     "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
