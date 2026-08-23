@@ -85,7 +85,8 @@
 #     outcomes, whose caller tests emptiness with no `2>/dev/null` in sight.
 #   * Python. `bin/*.py` is excluded with CI's own shellcheck expression; the class exists there
 #     too (`_dependabot-reconcile.py`'s directory reads) and is not covered here.
-#   * The bash embedded in `promote/action.yml` / `release-artifacts/action.yml`.
+#   * The bash embedded in this repo's composite actions — the population
+#     `tests/composite-action-wiring-selftest.sh` derives every run, not a list written here.
 #   * Whether a DISPOSITIONED reason is TRUE. It is a recorded judgement, re-read by whoever
 #     next edits that site — not a proof.
 #   * Leg (b) matches the name anywhere in the file, so a same-named variable in an unrelated

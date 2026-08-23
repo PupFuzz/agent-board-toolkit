@@ -44,6 +44,15 @@
 # re-decides an equal classifying value). A second rule here would
 # be free to drift from the gate that guards release PRs.
 #
+# NEITHER IS THE TAG NAME (card#7203). Which tag a version maps to is `.release-pr.json`'s
+# `tag_format`, and its one reader is `release-pr-body`, so this asks that sibling for the
+# answer (`--tag`) rather than carrying a second copy of the mapping. It carried one until
+# card#7203 — a hardcoded `TAG="v${VERSION}"` — which is correct only for the default scheme:
+# a consumer whose config says `{{version}}` or `release-{{version}}` (documented in
+# `docs/INSTALL.md` §4 for .NET and date tag schemes) had this tool polling for a tag that
+# CANNOT EXIST, so it waited out its whole bound and refused EVERY release — the
+# hard-refuse-every-release outcome the wait above exists to avoid, delivered by a detail.
+#
 # THE NAIVE ALTERNATIVE — "a tag must point at every merge on the release branch" — REFUSES ANY
 # PUSH WHOSE TIP IS UNTAGGED, so what it would cost is a question about `main`'s own history,
 # and that history moves. RE-DERIVE THE NUMBER, never quote one:
@@ -77,6 +86,20 @@
 # REFUSES AND FAILS LOUDLY rather than waiting longer or passing — stamping "Released" late is
 # recoverable, stamping it wrongly is not.
 #
+# ⇒ WORST-CASE RUNTIME IS STATED HERE, and the three callers that size an outer backstop
+# (`timeout-minutes:`) from it point at this block instead of restating it — they carried three
+# hand-synced copies and all three were wrong the moment a second bounded read landed:
+#
+#     classification + --timeout + 2 x --read-timeout
+#
+# — the classifier's own run, then the wait, then AT MOST TWO further bounded reads: the poll
+# that crosses the bound, and the cause-naming second look on the measured-absent branch. That
+# second read is why the figure is 2x and not 1x. Where coreutils `timeout` is absent no read is
+# bounded at all and the run says so on a `::warning::`, so there is no worst case to state on
+# such a host. SIZE THE OUTER BACKSTOP ABOVE THIS, always: the tool's own bound firing first is
+# what makes a refused release report `failure`; an outer kill reports `cancelled`, which is not
+# a verdict about the tag at all.
+#
 # A NON-RELEASE PUSH ASSERTS NOTHING and exits 0 saying so. A push whose range cannot be
 # classified at all is rc 2 from the classifier and is propagated unchanged — never softened
 # into "not a release", because that misclassification is a silent non-run of this whole check,
@@ -88,6 +111,15 @@
 # still REFUSE at the bound — a release that cannot be confirmed must not be reported as
 # shipped, so the rc is 1 either way and no caller has to learn a new one — but the messages
 # make opposite claims, and only one of them is about the tag.
+#
+# EVERY REFUSAL NAMES ITS OWN CAUSE, OR SAYS IT COULD NOT MEASURE ONE — the property
+# card#6579's review ruled this tool must hold. Since the tag NAME became `tag_format`'s answer
+# (above), a measured "no such tag at this commit" no longer implies an untagged release: it
+# also happens when `tag_format` and the workflow that creates the tag disagree, and the release
+# IS tagged under another name. So that branch takes a SECOND look without the tag-name filter
+# before it says anything about a cause. The claim is scoped to the two branches that hold it:
+# UNREADABLE REMOTE and ABSENT TAG each claim only what they measured. The THIRD, tag-elsewhere,
+# does not: it offers two candidate causes it has not told apart, and that is a known gap.
 #
 # Exit status: 0 = tag present at the pushed commit, or not a release push. 1 = the release is
 # untagged past the bound, the remote could not be READ past the bound (a distinct message
@@ -143,7 +175,14 @@ AFTER_SHA="$(git rev-parse --verify "${AFTER}^{commit}" 2>/dev/null)" \
 # consumer may carry a different toolkit version on PATH, and the two must agree on the rule.
 SELF_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 CLASSIFIER="$SELF_DIR/release-artifacts-check"
+TAGGER="$SELF_DIR/release-pr-body"
+# BOTH siblings are checked HERE, before the classification — not each one at its first use.
+# The tag reader is only USED on a release push, so checking it there meant a mis-vendored bin/
+# ran green on every ordinary push and died rc 2 at the first real release: the highest-cost
+# moment, and the exact scenario docs/INSTALL.md §6b's vendoring rule exists for. The cost of
+# checking early is one stat() on a push that asserts nothing.
 [ -x "$CLASSIFIER" ] || die "$CLASSIFIER is missing or not executable — it owns the release classification this check delegates to"
+[ -x "$TAGGER" ] || die "$TAGGER is missing or not executable — it owns .release-pr.json's tag_format, which names the tag this check waits for"
 
 set +e
 CLASS_OUT="$("$CLASSIFIER" --classify-only --base "$BEFORE" --head "$AFTER" --config "$CONFIG" 2>&1)"
@@ -172,7 +211,44 @@ case "$VERDICT" in
   *) die "unrecognised classifier verdict '$VERDICT' — refusing rather than guessing";;
 esac
 VERSION="${VERDICT#release }"
-TAG="v${VERSION}"
+
+# THE SIBLING IS THE ONE READER OF `tag_format`, and this is the second delegation to a bin in
+# this same directory rather than to whatever a PATH lookup finds — same reason as the
+# classifier above. `--tag` returns before that tool touches the network, and the VERSION is
+# passed explicitly: the classifier may have re-decided which value this range ships (its
+# card#6488 arm), and re-reading the version file here would silently assert a different one.
+#
+# ONE ASYMMETRY, STATED: the classification is read at the FORK POINT (the config a PR cannot
+# edit), while `tag_format` is read from the CHECKOUT — which on the push this runs for IS the
+# merged commit. That is the right end for this question: the tag being waited for is the one
+# the tagging workflow will create from the config as merged, not the one the previous release
+# would have named.
+# Its stderr is NOT captured — it passes straight through to this tool's own, so the sibling's
+# message (`no .release-pr.json in this repo`, a jq failure) reaches the run log in its own
+# words. Folding it into the captured value would make it a candidate for the tag name, and
+# reading "the last line" back out of a merged stream is the truncating-reader shape this
+# repo has a class gate for.
+set +e
+TAG="$("$TAGGER" --tag --version "$VERSION" --config "$CONFIG")"
+TAG_RC=$?
+set -e
+# FAIL CLOSED, never fall back to `v${VERSION}`. A silent default here would be the hardcode
+# this delegation removes, re-minted at the one moment the real answer was unavailable.
+if [ "$TAG_RC" -ne 0 ] || [ -z "$TAG" ]; then
+  die "could not resolve the tag name for version ${VERSION} from ${CONFIG} (release-pr-body --tag rc ${TAG_RC}, output '${TAG}') — refusing rather than assuming a 'v' prefix this repo may not use"
+fi
+# THE TAG NAME REACHES A `::error::` ANNOTATION, so a NEWLINE in it is a workflow command this
+# tool would be writing on its config's behalf: `"tag_format": "v{{version}}\n::error::…"` put an
+# attacker-chosen `::error::` line into the promote job's log. Refused fail-closed, on the same
+# terms as the guards above, because no legal tag can be here anyway — `git check-ref-format`
+# forbids space and every control character in a ref name, so a name carrying one names nothing
+# that can exist and polling for it could only ever refuse the release. The REMOTE side of this
+# needs no guard for the same reason: names that come back from `git ls-remote` already passed
+# that rule. `printf %q` so the diagnosis can show the offending value without re-emitting it.
+case "$TAG" in
+  *[[:space:]]*|*[[:cntrl:]]*)
+    die "the tag name resolved for version ${VERSION} from ${CONFIG} contains whitespace or a control character ($(printf '%q' "$TAG")) — no such git ref can exist, and a newline here would inject workflow commands into this job's log";;
+esac
 
 # EVERY POLL IS BOUNDED, so the tool's own --timeout is what fires first. `release-promote-cards.yml`
 # states that ordering — "the tool's own bound fires first and exits 1; a timeout-minutes kill
@@ -187,19 +263,39 @@ TAG="v${VERSION}"
 # host on which this check otherwise works. Where it is missing the poll is unbounded and the
 # run SAYS SO, because the ordering claim above is then not true on that host — a degraded
 # state stated, never a false guarantee kept quiet. GitHub-hosted runners ship coreutils.
-LS_REMOTE=(git ls-remote --tags "$REMOTE" "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
+LS_BASE=(git ls-remote --tags "$REMOTE")
 BOUNDED=0
 if command -v timeout >/dev/null 2>&1; then
   BOUNDED=1
-  LS_REMOTE=(timeout "$READ_BOUND" "${LS_REMOTE[@]}")
+  LS_BASE=(timeout "$READ_BOUND" "${LS_BASE[@]}")
 else
   echo "::warning::release-tag-check: no \`timeout\` on PATH (coreutils), so each poll of ${REMOTE} is UNBOUNDED. The ${TIMEOUT}s bound below still ends the WAIT, but a single hung read can outlast it on this host." >&2
 fi
+# The poll asks for ONE tag; the second look below asks for all of them. Both are the same
+# bounded read, built once — a second `timeout` prefix assembled at the second call site is how
+# one of two copies of a read ends up unbounded.
+LS_REMOTE=("${LS_BASE[@]}" "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
 
 # git's stderr is kept, not discarded — it is the only thing that says WHY a read failed, and
 # a refusal that cannot name its own cause is what card#6579's review caught here.
 ERRF="$(mktemp "${TMPDIR:-/tmp}/release-tag-check.XXXXXX")" || die "cannot create a temporary file for the remote's error output"
 trap 'rm -f "$ERRF"' EXIT
+
+# _read_fault <rc> — git's own reason for a failed read, collapsed to ONE line (a GitHub
+# annotation keeps only the first) and never left empty. ONE owner for both readers below — the
+# poll and the cause-naming second look — because a second copy of a refusal's wording is how
+# the very defect this round fixed survived: a message corrected on one branch of a shape and
+# not the other.
+_read_fault() {
+  local rc="$1" msg
+  msg="$(tr '\n' ' ' < "$ERRF" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+  if [ "$rc" -eq 124 ] && [ "$BOUNDED" -eq 1 ]; then
+    msg="the read was KILLED after ${READ_BOUND}s with no answer from ${REMOTE}${msg:+ (${msg})}"
+  elif [ -z "$msg" ]; then
+    msg="git ls-remote exited ${rc} and printed nothing"
+  fi
+  printf '%s' "$msg"
+}
 
 # A READ HAS THREE OUTCOMES, NOT TWO (the class `tests/read-outcome-collapse-selftest.sh`
 # guards). The first cut of this loop captured `git ls-remote`'s status and then threw it away
@@ -224,20 +320,41 @@ _remote_tag_sha() {
   REMOTE_TAG_SHA=""; REMOTE_READ_ERR=""
   out="$("${LS_REMOTE[@]}" 2>"$ERRF")" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    # Collapsed to one line: this is quoted inside a `::error::` annotation, and a GitHub
-    # annotation keeps only the first line of a multi-line message.
-    REMOTE_READ_ERR="$(tr '\n' ' ' < "$ERRF" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
-    if [ "$rc" -eq 124 ] && [ "$BOUNDED" -eq 1 ]; then
-      REMOTE_READ_ERR="the read was KILLED after ${READ_BOUND}s with no answer from ${REMOTE}${REMOTE_READ_ERR:+ (${REMOTE_READ_ERR})}"
-    elif [ -z "$REMOTE_READ_ERR" ]; then
-      REMOTE_READ_ERR="git ls-remote exited ${rc} and printed nothing"
-    fi
+    REMOTE_READ_ERR="$(_read_fault "$rc")"
     return 2
   fi
   deref="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}^{}" '$2 == t { print $1; exit }')"
   plain="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}"    '$2 == t { print $1; exit }')"
   REMOTE_TAG_SHA="${deref:-$plain}"
   [ -n "$REMOTE_TAG_SHA" ] || return 1
+  return 0
+}
+
+# _tags_at_commit — THE SECOND LOOK, taken only on the measured-absent refusal below, and
+# WITHOUT the tag-name filter: which tag NAMES (if any) does ${REMOTE} carry at ${AFTER_SHA}?
+# It exists because the refusal must name its own cause and, since the tag name became
+# `tag_format`'s answer (card#7203), "no ${TAG} at this commit" has TWO worlds behind it — the
+# release was never tagged, or it was tagged under a name this check was not waiting for
+# because `tag_format` and the workflow that creates the tag disagree. The poll cannot tell them
+# apart: it asks for one refspec.
+#
+#   0  ANSWERED    — TAGS_AT_COMMIT is the (possibly EMPTY) space-separated set of names, and
+#                    empty is a measured "no tag of any name", not a failed look
+#   2  UNREADABLE  — TAGS_READ_ERR carries git's own message; the cause stays unmeasured
+# The `^{}` spelling is stripped and names deduped: an annotated tag stores the tag object's sha
+# on `refs/tags/X` and the commit's on `refs/tags/X^{}`, and the question is about names. A tag
+# name cannot contain `^` (git-check-ref-format), so trimming at it cannot truncate a real name.
+_tags_at_commit() {
+  local out rc=0
+  TAGS_AT_COMMIT=""; TAGS_READ_ERR=""
+  out="$("${LS_BASE[@]}" 2>"$ERRF")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    TAGS_READ_ERR="$(_read_fault "$rc")"
+    return 2
+  fi
+  TAGS_AT_COMMIT="$(printf '%s\n' "$out" \
+    | awk -v s="$AFTER_SHA" '$1 == s { n=$2; sub(/^refs\/tags\//, "", n); sub(/\^.*/, "", n); print n }' \
+    | sort -u | tr '\n' ' ' | sed 's/ $//')"
   return 0
 }
 
@@ -312,5 +429,26 @@ fi
 # reported rather than dropped: they are why the wait had fewer real measurements than polls.
 MIXED=""
 [ "$UNREADABLE" -eq 0 ] || MIXED=" (${UNREADABLE} of ${POLLS} poll(s) could not read ${REMOTE} — last: ${LAST_ERR} — but the FINAL poll answered, so this absence is measured, not inferred)"
-echo "::error::release-tag-check: ${TAG} does not exist on ${REMOTE} after ${TIMEOUT}s, but ${AFTER_SHA} is a release push (version ${VERSION})${MIXED}. The release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579). REFUSING to report this release as shipped." >&2
+
+# THE CAUSE IS MEASURED, NOT ASSUMED (card#7203). "The release merged and was NOT tagged" was
+# this branch's only wording, and the delegation above created a second world in which it is
+# FALSE: with `tag_format` and the tagging workflow disagreeing, the release IS tagged and this
+# check waited for a name nobody creates — so the operator was sent to a workflow run that ran
+# and succeeded. That is the same defect the UNREADABLE branch above exists to remove and the
+# comment at the poll records having removed once already (card#6579's review ruling: a refusal
+# NAMES ITS OWN CAUSE, OR CLAIMS NOTHING); it survived on this branch because the branch was
+# right when it was written and the delegation moved the world under it. The second look is what
+# tells the two apart, and it has the same three outcomes as every other read here — so where it
+# cannot be taken, the refusal says the cause is UNMEASURED rather than picking one.
+set +e; _tags_at_commit; TAGS_RC=$?; set -e
+if [ "$TAGS_RC" -ne 0 ]; then
+  CAUSE="The follow-up look that would tell an untagged release from a tag-name mismatch could NOT READ ${REMOTE} (${TAGS_READ_ERR}), so the CAUSE here is unmeasured: check BOTH the workflow that creates your tags for this commit AND how ${CONFIG} resolved version ${VERSION} to ${TAG} (its tag_format if that key is set, else the default v{{version}}) against what that workflow actually creates."
+elif [ -n "$TAGS_AT_COMMIT" ]; then
+  # Deliberately NOT phrased as "tagged under another name": if ${TAG} itself arrived in the
+  # window between the final poll and this look, every clause below is still true.
+  CAUSE="A second look WITHOUT the tag-name filter finds ${AFTER_SHA} carrying: ${TAGS_AT_COMMIT}. So this commit IS tagged on ${REMOTE}, and ${TAG} is what ${CONFIG} resolved version ${VERSION} to — its tag_format if that key is set, else the default v{{version}}. That resolution tells THIS CHECK what to expect and does NOT change what your tagging workflow creates, so check those two against each other before reading this as a tagging failure."
+else
+  CAUSE="No tag of ANY name points at ${AFTER_SHA} on ${REMOTE}, so a tag under a different name is excluded BY MEASUREMENT: the release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579)."
+fi
+echo "::error::release-tag-check: ${TAG} does not exist on ${REMOTE} after ${TIMEOUT}s, but ${AFTER_SHA} is a release push (version ${VERSION})${MIXED}. ${CAUSE} REFUSING to report this release as shipped." >&2
 exit 1
