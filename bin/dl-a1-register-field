@@ -2,10 +2,27 @@
 # dl-a1-register-field — stand up the `dl_number` custom field on a DL board and
 # real-surface-verify the server derives the `system=dl` by-ref index from it.
 #
+# ⛔ `dl_number` MUST be declared STRING-typed, and this tool is what declares it.
+# Every toolkit writer of that field writes the canonical `DL-NNNN` STRING through the
+# one renderer `kb_dl_canon` — `kbcard --dl`, `next-dl`, `adopt-to-dl` — and kanban's
+# CustomFieldValidator enforces a field's DECLARED type per board, so a NUMBER-typed
+# `dl_number` rejects every one of those writes with `422 {"message":"Must be a number."}`.
+# The board is then broken at first use, with nothing in the setup log saying so. The
+# type is not cosmetic and it is not interchangeable: the derived `system=dl` by-ref
+# index canonicalizes by stripping non-digits, so it works from EITHER type — the index
+# is why the wrong declaration looks fine, not evidence that it is.
+#
 # One-shot, idempotent (DL adoption Phase 0, A1). Steps:
-#   1. register the `dl_number` custom field (type number) — flat body,
-#      a 409/422 means already-registered (idempotent success).
-#   2. create a THROWAWAY card carrying payload.dl_number = <sentinel>.
+#   1. register the `dl_number` custom field (type STRING) — flat body. A 409/422 means
+#      a definition already exists, which is an idempotent success ONLY IF that existing
+#      definition is string-typed: the type is READ BACK off the board's field index and
+#      a non-string one is refused with its remedy (see step 1's block below).
+#   2. create a THROWAWAY card carrying payload.dl_number = the CANONICAL DL-NNNN form
+#      of <sentinel>, rendered through kb_dl_canon — the same renderer every production
+#      writer stamps through. That is deliberate and load-bearing: this step is the only
+#      acceptance test the setup path has, and while it wrote a bare JSON NUMBER it was
+#      testing the ONE value shape no toolkit writer ever produces, so it passed on a
+#      board where every real `--dl` write 422s (card#6517).
 #   3. verify GET .../tasks/by-ref.json?system=dl&ref=<sentinel> resolves it.
 #   4. CLEANUP — clear dl_number, verify by-ref is now empty, then DELETE the
 #      throwaway. A leaked sentinel card would poison the DL minter's
@@ -20,8 +37,12 @@
 #   board id / API base / token file  — from config at runtime (next-dl model).
 #   --stage     throwaway's workflow_stage_id (default: KB_A1_STAGE or KB_STAGE_BACKLOG).
 #   --swimlane  throwaway's swimlane_id        (default: KB_A1_SWIMLANE or 1).
-#   --sentinel  the throwaway's dl_number      (default: KB_A1_SENTINEL or 999000001).
-#               Must be a value extremely unlikely to collide with a real DL.
+#   --sentinel  the throwaway's dl_number      (default: KB_A1_SENTINEL or 999001).
+#               Must be a value extremely unlikely to collide with a real DL, and it is
+#               validated by kb_dl_num — the SAME strict parser `kbcard --dl` uses — so
+#               it is bounded to 1..6 digits like every other DL this toolkit renders.
+#               A sentinel this tool cannot canonicalize is refused at rc 2 before any
+#               request, rather than at the create the board would have rejected.
 
 set -euo pipefail
 
@@ -68,12 +89,29 @@ BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $KB_BOARD_ENV}"
 
 STAGE="${stage_arg:-${KB_A1_STAGE:-${KB_STAGE_BACKLOG:-}}}"
 SWIMLANE="${swimlane_arg:-${KB_A1_SWIMLANE:-1}}"
-SENTINEL="${sentinel_arg:-${KB_A1_SENTINEL:-999000001}}"
+SENTINEL="${sentinel_arg:-${KB_A1_SENTINEL:-999001}}"
 if [[ -z "$STAGE" ]]; then
     echo "dl-a1-register-field: no throwaway stage — pass --stage or set KB_A1_STAGE/KB_STAGE_BACKLOG in $KB_BOARD_ENV" >&2
     exit 2
 fi
-kb_is_uint "$SENTINEL" || { echo "dl-a1-register-field: --sentinel must be a positive integer" >&2; exit 2; }
+# The sentinel is validated by the SAME strict parser the write-side uses, not by a
+# looser local one: what step 2 puts on the wire is kb_dl_canon's output, so a value
+# kb_dl_num refuses cannot become a payload at all. kb_is_uint stood here and admitted
+# every unsigned integer, including the 9-digit default this tool used to ship —
+# canonicalizing that is rc 2 from kb_dl_canon, mid-run, AFTER the registration write.
+# kb_dl_num prints its own refusal naming the value; add this tool's own required-shape
+# line beside it so the message names the flag as the other refusals here do.
+SENTINEL="$(kb_dl_num "$SENTINEL")" || {
+    echo "dl-a1-register-field: --sentinel must be a DL number this toolkit can render (1..6 digits, optional DL- prefix)" >&2
+    exit 2
+}
+SENTINEL_DL="$(kb_dl_canon "$SENTINEL")"
+
+# The `--board` fragment the remediation lines below echo back, so the command they print is
+# the one THIS run would need — an unqualified `kbcard field retype` would silently target the
+# default board when this run was pointed at another one with --board.
+KBC_BOARD_ARG=""
+[[ -n "$board_name" ]] && KBC_BOARD_ARG=" --board $board_name"
 
 # True if the by-ref response for $SENTINEL contains a row with id == $1.
 by_ref_has() {
@@ -88,7 +126,7 @@ by_ref_has() {
 # status global can't cross the $() a body capture needs, so use the
 # status-exposing kb_api_status, which emits "<http>\n<body>". HTTP 000 (curl
 # transport failure) falls through to the FATAL else below.
-reg_out="$(kb_api_status POST "/boards/$BOARD/custom_fields.json" '{"key":"dl_number","label":"DL","type":"number"}')"
+reg_out="$(kb_api_status POST "/boards/$BOARD/custom_fields.json" '{"key":"dl_number","label":"DL","type":"string"}')"
 reg_http="${reg_out%%$'\n'*}"
 reg_body="${reg_out#*$'\n'}"
 if [[ "$reg_http" =~ ^2 ]]; then
@@ -97,20 +135,51 @@ if [[ "$reg_http" =~ ^2 ]]; then
     # worse than loudly. kb_parse_resp (shared lib) yields the empty value the `${fid:-?}` arm
     # below was already written for.
     fid="$(kb_parse_resp "$reg_body" -r '.data.id // empty')"
-    echo "  registered dl_number (field id ${fid:-?})"
+    echo "  registered dl_number as a STRING field (field id ${fid:-?})"
 elif [[ "$reg_http" == "409" || "$reg_http" == "422" ]]; then
-    echo "  dl_number already registered (HTTP $reg_http) — idempotent OK"
+    # A PRE-EXISTING definition is not, on its own, a working one. The 409/422 says only
+    # that the key is taken; it says nothing about the type it was taken WITH, and this arm
+    # used to report "idempotent OK" over both. That is how a number-typed dl_number reaches
+    # first use: the board this tool just certified rejects every `kbcard --dl` write with
+    # `422 Must be a number.`, and the only surface that could have caught it — this one —
+    # had already declared success (card#6517).
+    #
+    # So the type is READ BACK, not assumed. The board's field index is the only read
+    # surface for a definition (there is no GET /custom_fields/<id>.json), which is why this
+    # is a whole-board read for one field.
+    fields_resp="$(kb_api GET "/boards/$BOARD/custom_fields.json")" || {
+        echo "dl-a1-register-field: FATAL: registration was refused (HTTP $reg_http, i.e. a dl_number definition already exists) and the board's custom-field index could not be read, so the EXISTING declaration's type is unknown. This tool cannot certify a board it cannot read: re-run once the board reads, or check the type with 'kbcard${KBC_BOARD_ARG} field list'." >&2
+        exit 1
+    }
+    existing_type="$(kb_parse_resp "$fields_resp" -r '.data[]? | select(.key == "dl_number") | .type')"
+    case "$existing_type" in
+        string)
+            echo "  dl_number already registered, STRING-typed (HTTP $reg_http) — idempotent OK" ;;
+        "")
+            echo "dl-a1-register-field: FATAL register: HTTP $reg_http, but the board's custom-field index carries NO dl_number definition — so the refusal was not 'already registered'. The response body was: $reg_body" >&2
+            exit 1 ;;
+        *)
+            echo "dl-a1-register-field: FATAL: this board declares dl_number as '$existing_type', and it must be 'string'. Every toolkit write of that field is the canonical DL-NNNN STRING (kbcard --dl, next-dl, adopt-to-dl, and step 2 of this tool), and kanban validates a payload value against the field's DECLARED type — so on this board every one of those writes is rejected with 422 \"Must be a number.\" No throwaway card was created." >&2
+            echo "dl-a1-register-field:   Fix it in place — 'field retype' converts the definition AND every stored value in one server-side transaction, issuing no delete, so this costs no delete-and-recreate:" >&2
+            echo "dl-a1-register-field:     kbcard${KBC_BOARD_ARG} field retype --field dl_number --to string --restamp-dl" >&2
+            echo "dl-a1-register-field:   then re-run this tool. (--restamp-dl is what rewrites the converted values to the canonical DL-NNNN form; without it a card holding 305 converts to the string \"305\", which a DSL filter spelled DL-0305 does not match.)" >&2
+            exit 1 ;;
+    esac
 else
     echo "dl-a1-register-field: FATAL register: HTTP $reg_http" >&2
     exit 1
 fi
 
-# --- 2. throwaway card with payload.dl_number = SENTINEL --------------------
+# --- 2. throwaway card with payload.dl_number = the CANONICAL DL-NNNN form -----
+# `--arg`, not `--argjson`: the value on the wire is the DL-NNNN STRING every production
+# writer stamps, which is the whole point of this step as an acceptance test. It used to be
+# `--argjson` over a bare integer, i.e. the one shape no toolkit writer produces — so on a
+# number-typed board this verification passed while every real `--dl` write 422'd.
 body="$(jq -n \
     --argjson board "$BOARD" \
     --argjson stage "$STAGE" \
     --argjson swimlane "$SWIMLANE" \
-    --argjson sentinel "$SENTINEL" \
+    --arg sentinel "$SENTINEL_DL" \
     '{board_id: $board, workflow_stage_id: $stage, swimlane_id: $swimlane,
       name: "[A1-verify] dl_number throwaway — delete me",
       payload: {dl_number: $sentinel}}')"
@@ -128,7 +197,7 @@ if ! kb_is_uint "$TID"; then
     echo "dl-a1-register-field: FATAL create throwaway: no task id in response" >&2
     exit 1
 fi
-echo "  throwaway card $TID created with dl_number=$SENTINEL"
+echo "  throwaway card $TID created with dl_number=$SENTINEL_DL"
 
 # The two throwaway-teardown request bodies, single-sourced: the EXIT trap and the
 # explicit success path below issue the identical clear-dl-then-delete pair.
