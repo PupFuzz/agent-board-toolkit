@@ -40,6 +40,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_gha-surface-lib.sh"
 
 ROOT="$HERE/.."
 WRAP="$ROOT/bin/_shellcheck-pinned"
@@ -85,14 +87,20 @@ echo "== leg 2: no workflow runs a bare shellcheck =="
 # part of a longer word, which is what excludes `_shellcheck-pinned` itself — so the check reads the
 # wrapper's NAME, and renaming the wrapper without updating a call site reds here rather than
 # passing on a substring.
+#
+# The FILE population comes from `_gha_workflow_files` (tests/_gha-surface-lib.sh), which owns
+# both accepted extensions for all three gates that ask this question — this one globbed them
+# inline until card#7207's review found a third copy of the derivation with a narrower predicate.
+# The directory stays a parameter, so the fixture tree below runs through the same derivation.
 _bare_shellcheck() {
-    python3 - "$1" <<'PY'
-import glob, os, re, sys, yaml
+    local -a files=()
+    mapfile -t files < <(_gha_workflow_files "$1")
+    python3 - "${files[@]}" <<'PY'
+import os, re, sys, yaml
 
 TOKEN = re.compile(r'(?<![\w./-])shellcheck(?![\w-])')
 out = []
-for path in sorted(glob.glob(os.path.join(sys.argv[1], '*.yml'))
-                   + glob.glob(os.path.join(sys.argv[1], '*.yaml'))):
+for path in sys.argv[1:]:
     doc = yaml.safe_load(open(path)) or {}
     for job_name, job in (doc.get('jobs') or {}).items():
         for step in (job.get('steps') or []):

@@ -48,6 +48,17 @@ jobs:
         # ten, handles a PEP 263 coding cookie the same way (bytes in, not str), and caches
         # nothing anywhere. Every bad file is reported, not just the first.
         #
+        # BOTH `SyntaxError` AND `ValueError` are caught, and the `line=` field is omitted when
+        # the exception carries no line. A source containing a NUL byte is the case, and the class
+        # it raises MOVED under us — CPython gh-96670, "the parser now raises SyntaxError when
+        # parsing source code containing null bytes", quoted from the NEWS file shipped with 3.12
+        # — so a one-class `except` here is a bet on the runner's interpreter version. MEASURED on
+        # 3.12.3: `SyntaxError` with `lineno` None, so the old annotation read `line=None`, a
+        # location that does not exist. On an interpreter raising the other class (documented as
+        # `ValueError`; NOT verifiable on this box, which has only 3.12) it escapes as an uncaught
+        # traceback, which ABORTS THE LOOP and leaves every later file unchecked at an exit status
+        # that still says 1.
+        #
         # `tests/python-syntax-gate-selftest.sh` runs THIS block verbatim — extracted from this
         # file by step name, never restated — over planted fixtures, and holds a no-`py_compile`
         # rule over every `run:` block in this directory AND in the composite actions, so the
@@ -61,8 +72,10 @@ jobs:
                   src = fh.read()
               try:
                   compile(src, f, "exec")
-              except SyntaxError as e:
-                  print(f"::error file={f},line={e.lineno}::{e.msg}", file=sys.stderr)
+              except (SyntaxError, ValueError) as e:
+                  line = getattr(e, "lineno", None)
+                  loc = f",line={line}" if line else ""
+                  print(f"::error file={f}{loc}::{getattr(e, 'msg', None) or e}", file=sys.stderr)
                   rc = 1
           sys.exit(rc)
           PY
