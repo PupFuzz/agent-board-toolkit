@@ -70,7 +70,9 @@
 #   - Board env is ~/.kanban-<name>-board.env; kanban|dev (and "no --board") map
 #     to the kanban-dev board.
 #   - Token file is $KBCARD_TOKEN_FILE, DECLARED by a board env, a host env, or the
-#     invoking environment. There is NO baked default — see kb_declared_token_file.
+#     invoking environment; failing all three, the coord credential store's
+#     `[kanban] api_token_file` POINTER is discovered. There is NO baked default — see
+#     kb_declared_token_file and kb_coord_store_token_file.
 
 if [[ -n "${_KB_BOARD_LIB_LOADED:-}" ]]; then return 0; fi
 _KB_BOARD_LIB_LOADED=1
@@ -130,22 +132,220 @@ kb_is_uint() { kb_ere_match "${1-}" '^(0|[1-9][0-9]*)$'; }
 #
 # ONE token-file precedence, uniform across every resolver below:
 #     a BOARD env's KBCARD_TOKEN_FILE > the HOST env's > an ambient one
-# It falls out of SOURCE ORDER (host first, board second) rather than a ladder of
-# explicit tests. KBCARD_API is the mirror image — board-independent, host env only.
+#       > the coord credential store's `[kanban] api_token_file` POINTER
+# The first three fall out of SOURCE ORDER (host first, board second) rather than a ladder of
+# explicit tests; the fourth is a DISCOVERY, reached only when all three declared nothing —
+# see kb_coord_store_token_file. KBCARD_API is the mirror image — board-independent, host
+# env only.
 #
-# ⛔ THERE IS NO FOURTH TIER. `~/.kanban-dev-token` was the baked default under those three
-# until card#7245, and being a default is what made it dangerous: NOT ONE board env on the
-# reference host set KBCARD_TOKEN_FILE, so every board — three real ones and a test
-# harness's — resolved to the SAME file, and a single write to it took all of them out at
-# once. (The name is also a trap: `dev` there names the AGENT, not an environment; the file
-# held a prod-capable token.) Every surviving tier is something a human wrote down in a
-# named place; a board nobody wrote a token file for now gets a refusal that names the file
-# to add the line to, which is a state an operator can fix, unlike a shared secret they did
-# not know they were sharing. See kb_declared_token_file.
+# ⛔ THE FOURTH TIER IS A POINTER SOMEBODY WROTE DOWN, NOT A BAKED DEFAULT — and that
+# distinction is card#7245's whole ruling, not a loophole in it. `~/.kanban-dev-token` was a
+# baked default under those three until card#7245, and being a DEFAULT is what made it
+# dangerous: NOT ONE board env on the reference host set KBCARD_TOKEN_FILE, so every board —
+# three real ones and a test harness's — resolved to the SAME file, and a single write to it
+# took all of them out at once. (The name is also a trap: `dev` there names the AGENT, not an
+# environment; the file held a prod-capable token.) The invariant that replaced it survives
+# intact: every tier is something a human wrote down in a named place. This toolkit still
+# ships no path of its own — the store rung resolves whatever path an operator put in their
+# own credential store — and a box with no store, or a store that declares no
+# `[kanban] api_token_file`, still gets the refusal naming the file to add the line to.
+#
+# ⚠ THE STORE RUNG IS BOARD-INDEPENDENT, which is worth knowing before relying on it. The
+# store holds ONE `[kanban] api_token_file`, so two boards that both declare nothing both
+# discover the same file — the shared-credential SHAPE the old default had, minus the two
+# properties that made the incident: nothing here invents the path, and the file it names is
+# one the operator wrote, manages and can rotate. A board that must not share it declares its
+# own KBCARD_TOKEN_FILE, which wins; that is why the discovery is LAST. See
+# kb_declared_token_file.
 
-# kb_declared_token_file <where> <candidate>…: the FIRST non-empty candidate, on stdout.
-# Prints nothing and returns 1 when every candidate is empty — i.e. when no config file and
-# no invoking environment named a token file for this board.
+# kb_coord_store_token_file: the token file the coord credential store POINTS AT, on stdout.
+# Returns 1 with nothing on stdout when there is nothing this rung can use — SILENTLY when
+# the store is simply absent, with a message when the store is present and says something
+# this rung will not act on.
+#
+# WHY IT EXISTS (card#7316). Two packages resolve the same kanban secret through two
+# conventions that are unaware of each other, so a seat whose credential store is already
+# hardened had to mint a SECOND plaintext copy of the token for this toolkit to find one.
+# This rung reads the store's own pointer instead. It is the LAST tier because an operator's
+# own declaration must beat a discovered one.
+#
+# ⛔ POINTER-ONLY. THE INLINE FORM IS REFUSED BY NAME, even though the framework's own
+# resolver still honours it. That store file is also the framework's first-stop DIAGNOSTIC
+# surface — the file every seat greps when auth breaks — so reading an inline value would put
+# a secret's VALUE through this toolkit's code and give the inline form a second consumer at
+# the moment the framework is removing its first. The refusal names the pointer form, and
+# that message IS the migration prompt, which is the useful behaviour.
+#
+# ⛔ NOTHING HERE PRINTS A STORE VALUE — not the pointer's text, not a basename, not a
+# prefix. The realistic operator error under a store migration is pasting the TOKEN into the
+# `_file` slot, and then the pointer's text IS the secret. This toolkit's callers name
+# KB_TOKEN_FILE in their own failure messages (board-card-start's 401 arm does), so handing a
+# pasted token back as a "path" would leak it through messages written before this rung
+# existed. A credential-SHAPED pointer is refused HERE instead, and every message names the
+# store COORDINATE plus a non-reversible fingerprint — the same rule the framework's resolver
+# holds, where the leak it closed was a traceback that had rendered a live PAT.
+#
+# WHAT IT DELIBERATELY DOES NOT DO: it never reads the token, so a DISCOVERED path is handed
+# back exactly as a declared one is, and a pointer at a missing file lands on the caller's
+# existing "token file unreadable" arm — which is the right verdict. A source that is set but
+# broken is a misconfiguration, never a reason to fall through to a weaker one.
+#
+# THE PARSE is awk over the ini — NO dependency on the framework's Python, so the toolkit
+# stays standalone and keeps resolving on a box that has none. It follows configparser's
+# reading of the shape it cares about: `#`/`;` FULL-LINE comments only (an inline `#` is part
+# of a value), the first `=` or `:` is the delimiter, the section name is case-SENSITIVE and
+# the key is matched exactly then case-folded. It is a READER FOR ONE KEY, not a validator:
+# it does not re-implement configparser's strict duplicate/section checks, and an indented
+# continuation line is not understood as one. The single exception is where guessing would
+# hand out a token — a duplicated `api_token_file` is refused rather than resolved to one of
+# the two.
+_kb_coord_store_path() { printf '%s' "${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"; }
+
+# _kb_pointer_fingerprint <value>: `sha256:1a2b3c4d` — correlatable across two messages or two
+# runs, and nowhere near invertible. The value reaches sha256sum over a PIPE from a shell
+# BUILTIN: never argv (`ps` is world-readable), never a temp file. No digest tool ⇒ the label
+# says so rather than the message losing its correlation silently.
+_kb_pointer_fingerprint() {
+    local h
+    if h="$(printf '%s' "${1-}" | sha256sum 2>/dev/null)"; then
+        printf 'sha256:%s' "${h:0:8}"
+    else
+        printf 'sha256:unavailable'
+    fi
+}
+
+# _kb_looks_like_pasted_secret <value>: true when a value that is supposed to be a PATH has
+# the shape of a CREDENTIAL instead. Ported from the framework's resolver so both tools
+# recognise the same mis-paste rather than diverging on it.
+#
+# Conservative on purpose — a false positive here is a wrong-but-specific cause: it takes a
+# value with NO directory separator and no leading `~`, AND either a known token prefix or a
+# long extension-less blob. `REPLACE_ME` is not flagged, and neither are `tok.txt`,
+# `~/.config/coord/tok` or `C:\creds\tok`. Matched under LC_ALL=C for the reason the ASCII
+# helpers at the top of this file exist.
+_kb_looks_like_pasted_secret() {
+    local LC_ALL=C
+    local v="${1-}" lc
+    [[ -n "$v" ]] || return 1
+    case "$v" in
+        '~'*|*/*|*\\*) return 1 ;;
+    esac
+    lc="${v,,}"
+    case "$lc" in
+        ghp_*|gho_*|ghu_*|ghs_*|ghr_*|github_pat_*|glpat-*|xoxb-*|xoxp-*) return 0 ;;
+    esac
+    [[ ${#v} -ge 24 && "$v" != *.* ]]
+}
+
+# _kb_expand_home <value>: expand a LEADING `~`, `$HOME` or `${HOME}` — each only when it is
+# the whole value or is followed by `/`. NEVER eval: the input is a value out of a credential
+# store, and an eval on it is an arbitrary-command door.
+#
+# `~` is what the framework resolver's `Path.expanduser()` does. `$HOME` is a deliberate
+# SUPERSET of it (asked for when this rung was specced): `expanduser()` does not expand
+# environment variables, so a store spelling `$HOME/…` is unreadable to the framework and
+# readable here. It cannot change an answer the framework gets RIGHT — no seat has a
+# directory literally named `$HOME` — so the superset can only rescue a path, never redirect
+# one. `~user` is NOT expanded (it needs a passwd lookup); spell it `~/…` or absolute.
+_kb_expand_home() {
+    local v="${1-}"
+    # SC2088 is about a tilde that will not EXPAND; these are case PATTERNS, where a literal
+    # `~` is precisely what has to match, and the expansion is the printf on the same line.
+    # shellcheck disable=SC2088
+    case "$v" in
+        '~')         printf '%s' "$HOME" ;;
+        '~/'*)       printf '%s%s' "$HOME" "${v#\~}" ;;
+        '$HOME')     printf '%s' "$HOME" ;;
+        '$HOME/'*)   printf '%s%s' "$HOME" "${v#\$HOME}" ;;
+        '${HOME}')   printf '%s' "$HOME" ;;
+        '${HOME}/'*) printf '%s%s' "$HOME" "${v#\$\{HOME\}}" ;;
+        *)           printf '%s' "$v" ;;
+    esac
+}
+
+kb_coord_store_token_file() {
+    local store; store="$(_kb_coord_store_path)"
+    # ABSENT IS SILENT, and that is the decision rather than an omission: a box with no coord
+    # framework at all must not be told about a store it does not have, and its refusal has to
+    # read exactly as it did before this rung existed. PRESENT-BUT-UNREADABLE is NOT absence —
+    # it is a fault hiding a credential the operator believes is configured — so it says so.
+    [[ -e "$store" ]] || return 1
+    if [[ ! -r "$store" ]]; then
+        echo "$(_kb_prog): the coord credential store $store exists but is not readable, so its [kanban] api_token_file (if any) was not consulted" >&2
+        return 1
+    fi
+
+    local parsed verdict ptr coord="[kanban] api_token_file"
+    parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
+        function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+        {
+            l = trim($0)
+            if (l == "") next
+            if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
+            if (substr(l, 1, 1) == "[") {
+                p = 0
+                for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
+                cur = p ? substr(l, 2, p - 2) : ""
+                next
+            }
+            if (cur != sec) next
+            e = index(l, "="); c = index(l, ":")
+            if (e && c) d = (e < c) ? e : c; else d = e ? e : c
+            if (!d) next
+            k = trim(substr(l, 1, d - 1))
+            v = trim(substr(l, d + 1))
+            if (k == want) { nexact++; if (nexact == 1) pv = v }
+            else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
+            else if ((k == inl || tolower(k) == inl) && v != "") ninline++
+        }
+        END {
+            if (nexact > 1) { print "dup"; exit }
+            if (ninline) { if (nexact || nfold) print "inline_ptr"; else print "inline"; exit }
+            if (nexact) { printf "ok\n%s\n", pv; exit }
+            if (nfold)  { printf "ok\n%s\n", fv; exit }
+            print "none"
+        }
+    ' "$store" 2>/dev/null)"
+    verdict="${parsed%%$'\n'*}"
+    ptr=""
+    [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
+
+    case "$verdict" in
+        ok) ;;
+        dup)
+            echo "$(_kb_prog): $coord is declared more than once in $store — refusing to guess which token to send (the framework's own resolver refuses that store outright); remove the duplicate" >&2
+            return 1 ;;
+        inline|inline_ptr)
+            echo "$(_kb_prog): $store holds an INLINE [kanban] api_token — this reads POINTERS only, because that file is also the first surface a transcript captures. Write the token to a file (chmod 600) and declare   api_token_file = <path>   instead (card#7316)" >&2
+            [[ "$verdict" == "inline_ptr" ]] && \
+                echo "$(_kb_prog):   an api_token_file is declared too, but the framework's own resolver prefers the INLINE value — honouring the pointer here would send a different credential than the rest of the framework does, so remove the inline value" >&2
+            return 1 ;;
+        *) return 1 ;;
+    esac
+
+    [[ -n "$ptr" ]] || return 1
+    if [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]]; then
+        echo "$(_kb_prog): $coord in $store contains \`%%\` or \`%(\`, whose meaning is not the same before and after the framework stopped %-interpolating that file — guessing would resolve a path that differs by one character, so this refuses; spell it literally ($(_kb_pointer_fingerprint "$ptr"))" >&2
+        return 1
+    fi
+    if _kb_looks_like_pasted_secret "$ptr"; then
+        echo "$(_kb_prog): $coord in $store holds something with the SHAPE OF A CREDENTIAL, not a path ($(_kb_pointer_fingerprint "$ptr")) — a \`_file\` slot takes the path of a file CONTAINING the token, never the token itself. Its text is deliberately not echoed: if it is live, echoing it is the leak that indirection exists to stop" >&2
+        return 1
+    fi
+    _kb_expand_home "$ptr"
+}
+
+# kb_declared_token_file <where> <candidate>…: the FIRST non-empty candidate, on stdout —
+# else the coord credential store's pointer, if it has one. Prints nothing and returns 1 when
+# every candidate is empty AND the store declares nothing usable — i.e. when no config file,
+# no invoking environment and no credential store named a token file for this board.
+#
+# THE DISCOVERY IS LAST, AND ONLY THE ORDER OF THESE LINES SAYS SO. Every <candidate> is a
+# DECLARATION — a line an operator wrote into a board env, the host env, or the invoking
+# command — and a declaration must beat something a tool went looking for, or an operator who
+# pinned a board to its own token would silently be given another. That is also why the store
+# rung lives here, at the one primitive all four resolvers already funnel through, rather than
+# at four call sites that could drift apart on it (canon #5).
 #
 # WHY A REFUSAL AND NOT A DEFAULT (card#7245). The candidates are the declaration tiers of
 # whichever resolver called this; what it replaced at all four call sites was a trailing
@@ -169,6 +369,13 @@ kb_declared_token_file() {
     for c in "$@"; do
         [[ -n "$c" ]] && { printf '%s' "$c"; return 0; }
     done
+    # Nothing was DECLARED. Ask the coord credential store whether it points at one — the
+    # rung's own messages cover the states it refuses, and an absent store is silent, so a box
+    # without one reaches the refusal below with exactly the wording it had before this tier
+    # existed.
+    if c="$(kb_coord_store_token_file)"; then
+        printf '%s' "$c"; return 0
+    fi
     echo "$(_kb_prog): no token file is declared for $where — there is no default (card#7245: one shared default made a single overwrite take out every board at once)" >&2
     echo "$(_kb_prog):   → add   export KBCARD_TOKEN_FILE=\"\$HOME/.kanban-<board>-token\"   to $where, or a host-wide one to ~/.kanban-host.env (docs/INSTALL.md §3)" >&2
     return 1
@@ -249,7 +456,7 @@ kb_resolve_env() {
     # BEFORE the token file is even located, let alone read: a base nobody vouched for is
     # not a base this process should go looking for credentials to send to (card#7245).
     kb_require_known_api_host "$KB_API" || return 6
-    KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok")" || return 7   # board > host > ambient
+    KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok")" || return 7   # board > host > ambient > coord store
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
     return 0

@@ -6,11 +6,15 @@
 # selftest-CI convention (no bats/shunit2; a runnable script CI invokes).
 #
 # The token LADDER is the thing under test: a board env's KBCARD_TOKEN_FILE > the host env's >
-# an ambient one. It regressed silently once (#4325) because it is a property of source ORDER
-# that nothing exercised. There is no fourth rung: card#7245 removed the baked
-# ~/.kanban-dev-token, so "nobody declared one" is a REFUSAL, and that refusal is asserted
+# an ambient one > the coord credential store's `[kanban] api_token_file` pointer. It regressed
+# silently once (#4325) because the first three are a property of source ORDER that nothing
+# exercised. There is no DEFAULT rung: card#7245 removed the baked ~/.kanban-dev-token, so
+# "nobody declared one and no store points at one" is a REFUSAL, and that refusal is asserted
 # beside a witness that a declared path still resolves — an rc-only assertion here would be
-# satisfied by a resolver that had stopped resolving anything at all.
+# satisfied by a resolver that had stopped resolving anything at all. The fourth rung
+# (card#7316) is a DISCOVERY rather than a declaration, so its section asserts both halves that
+# a discovery has to satisfy: a seat that has a store pointer resolves through it, and a seat
+# that has none behaves exactly as it did before the rung existed.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -50,8 +54,14 @@ expect_rc() { # <label> <expected-rc> <fn> <args...>
 # state — these functions communicate through globals and a leaked one would fake a pass.
 reset_env() {
     unset KBCARD_API KBCARD_TOKEN_FILE KB_API KB_BOARD_ID KB_TOKEN KB_TOKEN_FILE \
-          KB_BOARD_ENV KB_HOST_TOKEN_FILE KANBAN_EXPECTED_HOST
+          KB_BOARD_ENV KB_HOST_TOKEN_FILE KANBAN_EXPECTED_HOST COORD_CREDENTIALS
     : > "$KANBAN_HOST_ENV"
+    # COORD_CREDENTIALS and the scratch store go with them (card#7316). The token ladder now
+    # ends in a DISCOVERY — the coord credential store's `[kanban] api_token_file` — so an
+    # operator shell exporting COORD_CREDENTIALS would point these cases at a REAL store, and a
+    # store fixture written by one case would still be standing under the next. The scratch
+    # HOME already makes the DEFAULT store path absent; this makes the override absent too.
+    rm -rf "$TMP/.config/coord"
     # Every case below resolves an api base on kanban.test, and the api-host preflight
     # (card#7245) refuses a host nobody declared — so the baseline fixture declares it. The
     # preflight's OWN section re-points and unsets it deliberately; nothing else here should
@@ -123,6 +133,287 @@ echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\"" >> "$TMP/.kanban-x-board.en
 rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" || rc=$?
 eq "  …and the SAME fixture resolves once one is declared (witness)" "0" "$rc"
 eq "  …to the declared path"                         "$TMP/board.token" "${KB_TOKEN_FILE:-}"
+
+# ---------------------------------------------------------------------------
+echo "== kb_declared_token_file — the coord-store rung (card#7316: DISCOVERED, pointer-only) =="
+
+# WHAT THIS SECTION IS FOR. The rung is a fourth tier under the three above, and it is a
+# DISCOVERY rather than a declaration — so two properties have to hold at once and neither
+# implies the other: a seat that HAS a store pointer must resolve through it, and a seat that
+# has NONE must behave exactly as it did before the tier existed. The precedence assertions
+# are written so that MOVING the rung up the ladder reds them: each one puts a live, resolvable
+# store fixture underneath a declaration and asserts the DECLARATION is what came out, and each
+# is paired with a control that removes only the declaration and watches the same fixture
+# resolve — without that control, "the declaration won" would also pass against a rung that
+# never worked at all.
+#
+# ⛔ NO STORE VALUE IS EVER ASSERTED BY VALUE. The fixtures below include a token-shaped string
+# in the two slots an operator really mis-pastes into; the assertions are that the refusal does
+# NOT carry it and DOES carry the coordinate plus a `sha256:` fingerprint. A secret-shaped
+# string in a test file is not a secret, but the assertion has to be written the way the
+# production rule reads or it certifies nothing about that rule.
+
+mk_store() {   # <path> <line>… — write a credential-store fixture, creating its directory
+    local f="$1"; shift
+    mkdir -p "$(dirname "$f")"
+    printf '%s\n' "$@" > "$f"
+}
+# The board env every case in this section resolves; the host env declares only the api base,
+# so nothing but the store can supply a token unless a case adds one.
+mk_bare_board() {
+    echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+    echo 'KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+}
+printf 'coord-store-token\n' > "$TMP/store.token"
+STORE_TOKEN_LEN=17          # length of the fixture's CONTENT — the witness is a length, never a value
+DEFAULT_STORE="$TMP/.config/coord/credentials.ini"
+PASTED='ghp_NOTAREALTOKEN000000000000000000000000'
+
+# 1. THE DEFAULT STORE PATH is discovered — no COORD_CREDENTIALS needed.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "store pointer at the default path resolves (rc)" "0" "$rc"
+eq "  …to the file the pointer names"                "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+# ⛔ THE LENGTH IS TAKEN ONLY ON A SUCCESSFUL READ. `${#KB_TOKEN}` on the failing path is an
+# UNBOUND VARIABLE under this file's `set -u`, which aborts the whole script — so a regression
+# in the rung would have killed the suite HERE and left every later case, including the
+# no-store regression check, unrun and reported as nothing rather than as red. Measured: it
+# did exactly that on the first mutation pass.
+tok_len=0; kb_read_token "${KB_TOKEN_FILE:-}" 2>/dev/null && tok_len="${#KB_TOKEN}"
+eq "  …and that file is the one holding the token (length witness, never the value)" \
+   "$STORE_TOKEN_LEN" "$tok_len"
+
+# 2. $COORD_CREDENTIALS overrides the default path — same rule the framework's resolver holds.
+reset_env
+mk_bare_board
+mk_store "$TMP/elsewhere.ini" '[kanban]' "api_token_file = $TMP/store.token"
+export COORD_CREDENTIALS="$TMP/elsewhere.ini"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "COORD_CREDENTIALS names the store (rc)"          "0" "$rc"
+eq "  …and its pointer is what resolved"             "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 3. ⭐ THE REGRESSION THAT MATTERS: no store at all ⇒ byte-for-byte today's behaviour.
+# Every existing seat is this case, so it asserts the rc, the unpublished path AND the two
+# sentences of the refusal — a rung that had started answering on a box with no store would
+# change one of them.
+reset_env
+mk_bare_board
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "no store, nothing declared → still rc 7"         "7" "$rc"
+eq "  and KB_TOKEN_FILE is still not published"      ""  "${KB_TOKEN_FILE:-}"
+eq "  (control: the store file really is absent)"    "false" \
+   "$([[ -e "$DEFAULT_STORE" ]] && echo true || echo false)"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  the refusal still names the file to edit"      "true" "$(has "$TMP/.kanban-x-board.env" "$msg")"
+eq "  the refusal still names the line to add"       "true" "$(has 'export KBCARD_TOKEN_FILE=' "$msg")"
+eq "  and it says NOTHING about a credential store"  "false" "$(has 'coord' "$msg")"
+
+# 4. PRECEDENCE — a DECLARATION beats the discovery, at every one of the three declared tiers.
+# Each case has a live store fixture in place; the control under it removes only the
+# declaration and watches that same fixture resolve.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\"" >> "$TMP/.kanban-x-board.env"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "a BOARD env's declaration beats the store"       "$TMP/board.token" "${KB_TOKEN_FILE:-}"
+
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/host.token\"" >> "$KANBAN_HOST_ENV"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "the HOST env's declaration beats the store"      "$TMP/host.token" "${KB_TOKEN_FILE:-}"
+
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+export KBCARD_TOKEN_FILE="$TMP/ambient.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "an AMBIENT declaration beats the store"          "$TMP/ambient.token" "${KB_TOKEN_FILE:-}"
+
+# CONTROL for all three: the fixture they were declared over is genuinely resolvable, so the
+# three assertions above measured precedence and not a dead rung.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "  (control: with the declarations removed, that same store resolves)" \
+   "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 5. POINTER-ONLY — an INLINE [kanban] api_token is refused, and the refusal is the migration
+# prompt. The value must not appear in it; the coordinate and the pointer spelling must.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token = $PASTED"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "an inline api_token does NOT resolve (rc 7)"     "7" "$rc"
+eq "  and publishes no token file"                   ""  "${KB_TOKEN_FILE:-}"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  the refusal names the pointer form"            "true" "$(has 'api_token_file = <path>' "$msg")"
+eq "  the refusal does NOT echo the inline value"    "false" "$(has "$PASTED" "$msg")"
+# …AND THE INLINE BRANCH IS WHAT REFUSED IT, not the credential-shape guard one layer down.
+# The value above is token-shaped, so BOTH guards would refuse it and the rc alone cannot say
+# which fired (measured: a mutant that let the inline value through as a pointer still ended in
+# rc 7, caught only by the message). A value no guard but this one recognises pins it.
+mk_store "$DEFAULT_STORE" '[kanban]' 'api_token = short1'
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "  an inline value NOTHING else would flag is still refused" "7" "$rc"
+
+# WITNESS: the same store, same box, with the inline value replaced by a pointer — so the two
+# absence assertions above are about the inline FORM and not about a store that never parsed.
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "  …while the pointer form in the SAME slot resolves (witness)" \
+   "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 6. INLINE **and** POINTER — refused, because the framework's own resolver prefers the inline
+# value, so honouring the pointer here would send a different credential than the framework does.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token = $PASTED" "api_token_file = $TMP/store.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "inline + pointer → refused, not resolved"        "7" "$rc"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  and says why the pointer was not taken"        "true" "$(has 'prefers the INLINE value' "$msg")"
+eq "  still without echoing the inline value"        "false" "$(has "$PASTED" "$msg")"
+
+# 7. A TOKEN PASTED INTO THE POINTER SLOT is refused HERE — the leak this rung would otherwise
+# open, because a resolved KB_TOKEN_FILE is named verbatim by callers' own failure messages.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $PASTED"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "a credential-shaped pointer is refused (rc 7)"   "7" "$rc"
+eq "  and is never published as a token file path"   ""  "${KB_TOKEN_FILE:-}"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  the refusal does NOT echo it"                  "false" "$(has "$PASTED" "$msg")"
+eq "  the refusal fingerprints it instead"           "true" "$(has 'sha256:' "$msg")"
+eq "  and names the store coordinate"                "true" "$(has '[kanban] api_token_file' "$msg")"
+# CONTROL: an ordinary path through the very same code path is NOT flagged — the guard
+# discriminates rather than refusing everything.
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "  (control: an ordinary path is not mistaken for one)" "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 8. `~` and `$HOME` in the pointer are expanded — and NOT by eval.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' 'api_token_file = ~/store.token'
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "a leading ~ is expanded"                         "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' 'api_token_file = $HOME/store.token'
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "a leading \$HOME is expanded"                    "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 9. A pointer at a MISSING file is rc 5 (unreadable), NOT rc 7 (undeclared). A source that is
+# SET but broken must be reported as broken, never degraded into "nobody declared one".
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/absent.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "a pointer at a missing file is rc 5, not rc 7"   "5" "$rc"
+eq "  and the path it names is the pointer's"        "$TMP/absent.token" "${KB_TOKEN_FILE:-}"
+
+# 10. Shapes that declare NOTHING for this rung — each must fall through to the refusal, and
+# each is a shape a real store carries. `[kanban]` shipped as a COMMENTED TEMPLATE is the
+# common one; a pointer in another section must not be read as kanban's.
+for shape in commented other_section empty_value; do
+    reset_env
+    mk_bare_board
+    case "$shape" in
+        commented)    mk_store "$DEFAULT_STORE" '[kanban]' "# api_token_file = $TMP/store.token" ;;
+        other_section) mk_store "$DEFAULT_STORE" '[github]' "api_token_file = $TMP/store.token" ;;
+        empty_value)  mk_store "$DEFAULT_STORE" '[kanban]' 'api_token_file =' ;;
+    esac
+    rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+    eq "store shape '$shape' declares nothing → rc 7" "7" "$rc"
+done
+
+# 10b. A COMMENT NEITHER OPENS, CLOSES NOR FILLS A SLOT — asserted as a PROPERTY, with its
+# limit stated, because mutation showed the obvious version of this check was a decoration.
+#
+# ⛔ NO FIXTURE HERE KILLS THE PARSER'S `#`/`;` SKIP, and that is a measurement rather than an
+# oversight: a mutant that DELETED the skip left this whole section green. The reason is that
+# the marker stays glued to the first token — a commented line's key trims to
+# `# api_token_file`, which matches no key, and its first character is not `[`, so it can open
+# no section either. The skip is therefore the INTENTIONAL handling of an input class this
+# store is mostly made of, not the only thing standing between a comment and a match.
+#
+# What these two cases DO pin is the property itself, in both directions, against a future
+# parse change that strips the marker: a bracketed comment (this store's comments
+# cross-reference sections by name) must not close the section a pointer is in, and must not
+# open one — the second direction being the wrong-token outcome, where another section's key is
+# handed over as kanban's.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' '# resolution rides [git-credential-map] below' \
+    "api_token_file = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "a bracketed COMMENT does not close the section" "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[github]' '# the [kanban] section below holds the board token' \
+    "api_token_file = $TMP/board.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "a bracketed COMMENT does not OPEN one either (rc 7)" "7" "$rc"
+eq "  so another section's key is never taken as kanban's" "" "${KB_TOKEN_FILE:-}"
+
+# 11. Two shapes where GUESSING would hand out a token, so the rung refuses instead: the key
+# declared twice (a store the framework's own parser rejects outright), and a pointer holding
+# one of the two escapes whose meaning changed when the framework stopped %-interpolating.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token" "api_token_file = $TMP/board.token"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "a duplicated api_token_file is refused, not picked" "7" "$rc"
+msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+eq "  and says it will not guess"                    "true" "$(has 'declared more than once' "$msg")"
+
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' 'api_token_file = /tmp/a%%b/store.token'
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "an ambiguous %%-escape in the pointer is refused" "7" "$rc"
+
+# 12. Key case: an exact match wins, and a case-folded key still resolves — the framework's
+# resolver folds, so a store spelling that works there must not silently fail here.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "API_TOKEN_FILE = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "a case-folded key resolves"                      "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "API_TOKEN_FILE = $TMP/board.token" "api_token_file = $TMP/store.token"
+kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || true
+eq "an EXACT key beats a case-folded one"            "$TMP/store.token" "${KB_TOKEN_FILE:-}"
+
+# 13. A store that EXISTS but cannot be READ is a fault, not an absence: the refusal still
+# fires, and the operator is told the store was not consulted rather than left believing the
+# credential they configured was ignored for no reason.
+reset_env
+mk_bare_board
+mk_store "$DEFAULT_STORE" '[kanban]' "api_token_file = $TMP/store.token"
+chmod 000 "$DEFAULT_STORE"
+if [[ -r "$DEFAULT_STORE" ]]; then
+    # Running as root (or on a filesystem that ignores the mode): the state this asserts cannot
+    # be produced here, so say so rather than print a pass nothing measured.
+    printf '  --   SKIPPED unreadable-store arm — chmod 000 is still readable by this user\n'
+else
+    rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+    eq "an unreadable store does not resolve (rc 7)"  "7" "$rc"
+    msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" 2>&1 >/dev/null || true)"
+    eq "  and says the store was not consulted"       "true" "$(has 'is not readable' "$msg")"
+fi
+chmod 600 "$DEFAULT_STORE"
+reset_env
 
 # ---------------------------------------------------------------------------
 echo "== kb_resolve_env — the api-host preflight (card#7245) =="
