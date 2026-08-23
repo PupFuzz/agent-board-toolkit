@@ -258,4 +258,113 @@ eq "derive path, guarded-only matches, squash tip → still dies rc 2" "2" "$rc"
 eq "die names the squash cause"                     "true"  "$(has 'not a merge commit' "$err2")"
 eq "the guarded skip itself was logged first"       "true"  "$(has 'never resurrects declined/backlog cards' "$err2")"
 
+echo "== api_base resolution: \$KANBAN_API_BASE overrides the config, and BOTH sources meet the SAME host guard (card#7494) =="
+# WHAT THIS PINS. The committed .promote.api_base is normally a host-scrubbed placeholder — the
+# real kanban host must not live in a vendored repo — and only the GUARD's side
+# ($KANBAN_EXPECTED_HOST) had an env channel, so the target and the constraint could never agree
+# and the tool refused unconditionally, for everyone, on its own committed config. Giving the
+# TARGET the same channel is only correct if the env-supplied value is still host-validated, so
+# all three arms are asserted: override absent, override valid, override INVALID-and-refused.
+#
+# THE OBSERVABLE IS THE URL THE PATCH ACTUALLY WENT TO, which the curl stub logs — the question
+# is where the bearer token was sent, and a log line claiming a source is not that. The stderr
+# source line is asserted separately, as the operator-facing half.
+run_promote_env() { # <KANBAN_API_BASE value> <extra-args...> — as run_promote, with the override set
+  local base="$1"; shift
+  : > "$PATCH_LOG"; rc=0
+  out="$(KANBAN_API_BASE="$base" "$PRC" --config "$TMP/release-pr.json" --dls "DL-100,DL-101" "$@" 2>"$TMP/err")" || rc=$?
+  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+}
+
+# ARM 1 — override ABSENT: the committed value is used, byte-identically to before the override
+# existed (the "unguarded stdout unchanged" block above is the stdout half of that claim).
+run_promote
+eq "no override → rc 0"                                "0"     "$rc"
+eq "no override → the PATCH went to the CONFIG base"   "true"  "$(has 'https://kanban.test/api/v3/tasks/1.json' "$patched")"
+eq "no override → the source line names the config"    "true"  "$(has "resolved from $TMP/release-pr.json .promote.api_base" "$err")"
+eq "no override → it does not claim the env channel"   "false" "$(has 'resolved from $KANBAN_API_BASE' "$err")"
+
+# ARM 1b — set-but-EMPTY reads as absent. An unset repo/org variable renders as the empty string
+# through the composite action, and "no override" is the correct reading of it: the fallback is
+# the config value, which meets the same guard, so the worst case is a refusal — never an
+# unvalidated send. (Contrast --shipped-stages "", which MUST die: its default path is weaker
+# than the flag. This one's is not.)
+run_promote_env ""
+eq "empty override → rc 0"                             "0"     "$rc"
+eq "empty override → falls back to the CONFIG base"    "true"  "$(has 'https://kanban.test/api/v3/tasks/1.json' "$patched")"
+
+# ARM 2 — override SET and host-valid (a subdomain of $KANBAN_EXPECTED_HOST): accepted, and the
+# request goes THERE, not to the committed value. This is also the CONTROL for arm 3: without it,
+# every refusal below would be satisfied by an override channel that never works at all.
+run_promote_env "https://board.kanban.test/api/v3"
+eq "valid override → rc 0"                             "0"     "$rc"
+eq "valid override → the PATCH went to the OVERRIDE"   "true"  "$(has 'https://board.kanban.test/api/v3/tasks/1.json' "$patched")"
+eq "valid override → nothing went to the config base"  "false" "$(has 'https://kanban.test/api/v3/tasks/' "$patched")"
+eq "valid override → the source line names the env"    "true"  "$(has 'resolved from $KANBAN_API_BASE' "$err")"
+
+# The success line names the CHANNEL, never the resolved base — host_ok ACCEPTS a base carrying
+# userinfo (kb-host-guard-selftest asserts `https://u:pw@<expected host>/…` is accepted), so
+# echoing it on the happy path would print a credential into every CI run log. Asserted on the
+# value, not on the mechanism: the needle is the password.
+run_promote_env "https://svc:not-a-real-password@kanban.test/api/v3"
+eq "userinfo base → still promotes (host_ok accepts it)" "0"     "$rc"
+eq "userinfo base → the credential is NOT echoed"        "false" "$(has 'not-a-real-password' "$err")"
+eq "…nor on stdout"                                      "false" "$(has 'not-a-real-password' "$out")"
+
+# ARM 3 — override SET and host-INVALID: STILL REFUSED. This is the arm that matters. An override
+# that bypassed the guard would be the regression the whole card exists to avoid — an env var is
+# not trustworthy for being an env var, and the fix routes both sources through the one host_ok
+# call rather than forking a second, unguarded path. RED-WHEN-REVERTED: move the host_ok call
+# onto the config-only value (or skip it when the env supplied the base) and every line here
+# fails — rc 0, a PATCH logged against the named host, no refusal.
+for bad_base in \
+    "https://evil.example/api/v3" \
+    "http://kanban.test/api/v3" \
+    "https://kanban.test.evil.example/api/v3" \
+    "https://kanban.test@evil.example/api/v3"; do
+  run_promote_env "$bad_base"
+  eq "override '$bad_base' → dies rc 2"                "2"     "$rc"
+  eq "override '$bad_base' → NOTHING was PATCHed"      ""      "$patched"
+  eq "override '$bad_base' → it is the host guard"     "true"  "$(has 'refusing to send token' "$err")"
+  # Value AND channel AND refusal context in ONE needle. Split into "quotes the value" and
+  # "names the env", each half is also satisfied by the SUCCESS path's source line, which says
+  # the same words about an ACCEPTED base — measured: under a mutant that skipped the guard for
+  # an env-supplied base, the split "names the env" assertion still passed.
+  eq "override '$bad_base' → refusal names value+channel" "true" \
+     "$(has "api_base '$bad_base' (from \$KANBAN_API_BASE)" "$err")"
+done
+
+# …and the CONFIG side keeps refusing the same values, which is what "one guard, two sources"
+# means: the guard did not move onto the env path, it stayed under both.
+cat > "$TMP/release-pr-offhost.json" <<'JSON'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "promote": { "board_id": "12", "released_stage_id": "85", "api_base": "https://evil.example/api/v3" }
+}
+JSON
+: > "$PATCH_LOG"; rc=0
+err="$("$PRC" --config "$TMP/release-pr-offhost.json" --dls "DL-100" 2>&1)" || rc=$?
+eq "off-host CONFIG base (no override) → dies rc 2"    "2"     "$rc"
+eq "off-host CONFIG base → nothing PATCHed"            ""      "$(cat "$PATCH_LOG")"
+eq "off-host CONFIG base → refusal names the config"   "true"  "$(has "(from $TMP/release-pr-offhost.json .promote.api_base)" "$err")"
+
+# A config with NO api_base is now runnable — but only through the override, and only through
+# the guard. Before card#7494 this was a hard "required in <config>" die, and the placeholder it
+# was there to satisfy is what made the tool unrunnable.
+cat > "$TMP/release-pr-nobase.json" <<'JSON'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "promote": { "board_id": "12", "released_stage_id": "85" }
+}
+JSON
+: > "$PATCH_LOG"; rc=0
+err="$("$PRC" --config "$TMP/release-pr-nobase.json" --dls "DL-100" 2>&1)" || rc=$?
+eq "no api_base anywhere → dies rc 2"                  "2"     "$rc"
+eq "…and names BOTH ways to supply one"                "true"  \
+   "$( [ "$(has 'KANBAN_API_BASE' "$err")" = true ] && [ "$(has '.promote.api_base' "$err")" = true ] && echo true || echo false )"
+: > "$PATCH_LOG"; rc=0
+out="$(KANBAN_API_BASE="https://kanban.test/api/v3" "$PRC" --config "$TMP/release-pr-nobase.json" --dls "DL-100" 2>"$TMP/err")" || rc=$?
+eq "override alone makes a base-less config runnable"  "0"     "$rc"
+eq "…and the PATCH went to the override base"          "true"  "$(has 'https://kanban.test/api/v3/tasks/1.json' "$(cat "$PATCH_LOG")")"
+
 _summary "promote-stage-guard-selftest"

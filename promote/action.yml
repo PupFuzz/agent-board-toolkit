@@ -26,9 +26,14 @@ inputs:
     required: true
   api-base:
     description: >-
-      Real API base (https://<host>/api/v3) injected into the checked-out
-      .release-pr.json's .promote.api_base at run time. Use when the committed
-      value is a host-scrubbed placeholder. Empty = use the committed value.
+      Real API base (https://<host>/api/v3), passed to the script as
+      $KANBAN_API_BASE, which overrides .promote.api_base. Use when the
+      committed value is a host-scrubbed placeholder — which it normally is,
+      since the real kanban host does not belong in a repo. Empty = use the
+      committed value. Pin it as a repo/org VARIABLE, like expected-host: with
+      both supplied out-of-band, a PR editing .release-pr.json can move neither
+      the token's destination nor the host guard that constrains it. The value
+      is host-validated against expected-host either way.
     required: false
     default: ''
   dls:
@@ -59,15 +64,21 @@ runs:
       env:
         KANBAN_WRITEBACK_TOKEN: ${{ inputs.writeback-token }}
         KANBAN_EXPECTED_HOST: ${{ inputs.expected-host }}
-        API_BASE_IN: ${{ inputs.api-base }}
+        KANBAN_API_BASE: ${{ inputs.api-base }}
         INPUT_DLS: ${{ inputs.dls }}
         SHIPPED_STAGE_IDS: ${{ inputs.shipped-stage-ids }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        if [ -n "$API_BASE_IN" ]; then
-          jq --arg a "$API_BASE_IN" '.promote.api_base=$a' .release-pr.json > .rp.tmp
-          mv .rp.tmp .release-pr.json
-        fi
+        # api-base reaches the script as $KANBAN_API_BASE (env above), which the script reads
+        # in preference to .promote.api_base. It used to be REWRITTEN INTO the checked-out
+        # .release-pr.json with jq, because the script had no env channel for it (card#7494)
+        # — a workaround that only the action could apply, so a host or non-Actions consumer
+        # running the same script had no way at all to name a real host without committing
+        # one. That rewrite is gone rather than kept beside its own fix: two ways to set one
+        # value is how they drift, and mutating a security-sensitive file in the consumer's
+        # workspace mid-job is a side effect no caller asked for. Blank input = unset = the
+        # committed value, exactly as before.
+        #
         # Each optional input is translated to an ABSENT flag when blank — never to a flag
         # carrying an empty value. Load-bearing since card#5144: the script now REJECTS
         # `--flag ""` (an empty value silently selected the flag's default path — for
