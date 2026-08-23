@@ -333,8 +333,9 @@ jobs:
   release-tag-check-action-selftest:
     # The third action's runner leg. Its WIRING assertions are NOT inline here: they live in
     # `tests/composite-action-wiring-selftest.sh`, which derives its population from every
-    # `action.yml` in the tree (so this action, the two above, and a fourth are all covered by
-    # one guard) and runs as a `selftest` matrix entry. What this job adds is the part no local
+    # `action.yml` OR `action.yaml` in the tree — both spellings, because GitHub honours both —
+    # so this action, the two above, and any later one are all covered by one guard, and it runs
+    # as a `selftest` matrix entry. What this job adds is the part no local
     # test can stand in for — the RUNNER actually executing the composite, in both directions.
     runs-on: ubuntu-latest
     steps:

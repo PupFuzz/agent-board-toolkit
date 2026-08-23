@@ -24,7 +24,12 @@ description: >-
   (2) a .release-pr.json (or whatever `config` names) must exist at the
   workspace root, carrying version_file/version_regex — and `tag_format` if
   your tags are not `v<version>`, since that key is what names the tag this
-  action waits for;
+  action waits for. SET `tag_format` AND YOUR TAGGING WORKFLOW TOGETHER: the
+  key tells this gate what to EXPECT and does not change what your tagging
+  workflow CREATES — nothing in the toolkit constrains that workflow — so if
+  the two disagree this gate waits for a tag nobody creates and refuses every
+  release (the refusal takes a second look and names the tag that IS at the
+  commit, but naming a mismatch is not fixing it);
   (3) the step needs a `before-sha`, so guard it with
   `if: github.event_name == 'push'` on any workflow that also has a
   workflow_dispatch/schedule trigger — those events carry no

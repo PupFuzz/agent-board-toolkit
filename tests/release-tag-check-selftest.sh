@@ -229,7 +229,28 @@ tf_run tf-release.json
 eq "a v-tag does NOT satisfy a release- scheme"   "1"    "$RC"
 eq "…and the refusal names the tag_format tag"    "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
 eq "…not the v-prefixed one"                      "false" "$(has 'v0.28.0 does not exist' "$OUT")"
+
+# …AND THE REFUSAL NAMES ITS OWN CAUSE, WHICH THIS ARM IS THE SECOND WORLD OF. `tag_format` made
+# "no ${TAG} at this commit" ambiguous: the release may be untagged, or tagged under a name this
+# check was not waiting for. The fixture is the second one — the tagging workflow ran and pushed
+# `v0.28.0` — so the old wording ("The release merged and was NOT tagged — check the
+# auto-tag-version workflow run") sent the operator to a run that succeeded. Watched RED on the
+# pre-fix binary, every line of this block.
+eq "…the refusal names the tag that IS at the commit" "true" "$(has 'carrying: v0.28.0' "$OUT")"
+eq "…and says this commit IS tagged"              "true" "$(has 'IS tagged on' "$OUT")"
+eq "…naming tag_format as the thing to check"     "true" "$(has "does NOT change what your tagging workflow creates" "$OUT")"
+eq "…and does NOT blame the tagging workflow run" "false" "$(has 'auto-tag-version' "$OUT")"
+eq "…nor claim the release was never tagged"      "false" "$(has 'merged and was NOT tagged' "$OUT")"
 tf_untag v0.28.0
+
+# THE CONTROL THAT MAKES THE BLOCK ABOVE A MEASUREMENT: the same push with NO tag of any name at
+# the commit keeps the untagged-release verdict — and now says the alternative was measured and
+# excluded, rather than assuming it. Without this arm, "does not blame the tagging workflow"
+# would also be true of a tool that never names it at all.
+tf_run tf-release.json
+eq "control: no tag at the commit → untagged verdict" "1"    "$RC"
+eq "…stating the exclusion was MEASURED"          "true" "$(has 'No tag of ANY name points at' "$OUT")"
+eq "…and it DOES name the tagging workflow here"  "true" "$(has 'auto-tag-version' "$OUT")"
 
 # …and with the tag the scheme actually produces, the same push passes.
 tf_tag release-0.28.0
@@ -245,6 +266,51 @@ eq "an unprefixed {{version}} scheme passes"      "0"    "$RC"
 eq "…naming the bare version as the tag"          "true" "$(has "0.28.0 present at $TF_RELEASE" "$OUT")"
 eq "…and never invents a v prefix"                "false" "$(has "v0.28.0" "$OUT")"
 tf_untag 0.28.0
+
+# ── THE SECOND LOOK IS A READ, SO IT HAS THREE OUTCOMES TOO ───────────────────────────────────
+# The cause-naming look above can itself fail, and a refusal that answered "the release was NOT
+# tagged" because the look that would have found another tag never completed would be the same
+# wrong-but-specific cause one layer down. The remote here is an `ext::` helper that serves the
+# POLL and then refuses the next read: with `--timeout 0` the tool looks exactly once, so the
+# absence is measured and the follow-up look is the read that fails — deterministically, not on
+# a timing race.
+if command -v timeout >/dev/null 2>&1; then
+  echo "== a follow-up look that cannot READ leaves the CAUSE unmeasured, not guessed =="
+  HELPER="$T/count-helper.sh"; COUNTF="$T/helper.count"
+  cat > "$HELPER" <<HELPEOF
+#!/bin/sh
+n=\$(cat "$COUNTF" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s\\n' "\$n" > "$COUNTF"
+[ "\$n" -le 1 ] && exec git upload-pack "$REMOTE2"
+echo "fatal: this remote refused read number \$n" >&2
+exit 128
+HELPEOF
+  chmod +x "$HELPER"
+  : > "$COUNTF"
+  RC=0
+  OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
+            --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+  eq "an unreadable follow-up look → still rc 1"  "1"    "$RC"
+  eq "…the absence itself is still reported"      "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
+  eq "…the CAUSE is named as unmeasured"          "true" "$(has 'CAUSE here is unmeasured' "$OUT")"
+  eq "…quoting the follow-up read's own error"    "true" "$(has 'refused read number 2' "$OUT")"
+  eq "…and it does NOT pick a cause anyway"       "false" "$(has 'merged and was NOT tagged' "$OUT")"
+  eq "…nor claim the commit carries another tag"  "false" "$(has 'IS tagged on' "$OUT")"
+  # CONTROL — the same helper with the counter reset serves BOTH reads, and the verdict is the
+  # ordinary measured-absent one. Without it, "reds as unmeasured" would also be true of a tool
+  # that reports every absence that way.
+  : > "$COUNTF"
+  cat > "$HELPER" <<HELPEOF2
+#!/bin/sh
+exec git upload-pack "$REMOTE2"
+HELPEOF2
+  chmod +x "$HELPER"
+  RC=0
+  OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
+            --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+  eq "control: both reads served → rc 1"          "1"    "$RC"
+  eq "control: …and the cause IS measured"        "true" "$(has 'No tag of ANY name points at' "$OUT")"
+  eq "control: …never reported as unmeasured"     "false" "$(has 'CAUSE here is unmeasured' "$OUT")"
+fi
 
 # ── the tag_format read is DELEGATED to its one owner, not re-implemented here ─────────────────
 echo "== the tag name is resolved by the sibling that owns tag_format =="
@@ -267,6 +333,25 @@ rc=0; err="$( (cd "$R2" && "$NOBIN/release-tag-check" --before "$TF_BEFORE" --af
 eq "a missing tag reader → rc 2"                  "2"    "$rc"
 eq "…named, with what it owns"                    "true" "$(has 'release-pr-body is missing or not executable' "$err")"
 eq "…and no tag was asserted from a guessed name" "false" "$(has 'must exist at' "$err")"
+# …AND IT REFUSES ON AN ORDINARY PUSH TOO, which is the whole point of checking both siblings up
+# front. The tag reader is only USED on a release push, so a check at its first use let a
+# mis-vendored bin/ — the exact scenario docs/INSTALL.md §6b's vendoring rule exists for — run
+# green on every ordinary push and die rc 2 at the first real release: the highest-cost moment
+# to discover it. Measured before the hoist: this same invocation printed "not a release push"
+# and exited 0.
+rc=0; err="$( (cd "$R" && "$NOBIN/release-tag-check" --before "$RELEASE_SHA" --after "$NONRELEASE_SHA" \
+                --remote "$REMOTE" --timeout 0) 2>&1 )" || rc=$?
+eq "a NON-release push refuses too → rc 2"        "2"    "$rc"
+eq "…naming the missing sibling"                  "true" "$(has 'release-pr-body is missing or not executable' "$err")"
+eq "…rather than passing as a non-release push"   "false" "$(has 'not a release push' "$err")"
+# CONTROL — the same non-release push through a COMPLETE bin/ still asserts nothing and exits 0,
+# so the refusal above is about the missing sibling and not about this range.
+cp "$HERE/../bin/release-pr-body" "$NOBIN/"
+rc=0; err="$( (cd "$R" && "$NOBIN/release-tag-check" --before "$RELEASE_SHA" --after "$NONRELEASE_SHA" \
+                --remote "$REMOTE" --timeout 0) 2>&1 )" || rc=$?
+eq "control: a complete bin/ → rc 0"              "0"    "$rc"
+eq "control: …and it asserts nothing"             "true" "$(has 'not a release push' "$err")"
+rm -f "$NOBIN/release-pr-body"
 
 # ── AN UNREADABLE REMOTE IS A THIRD STATE, NOT AN ABSENT TAG ──────────────────────────────────
 # A read has three outcomes and the earlier cut of this tool had two: `git ls-remote`'s status

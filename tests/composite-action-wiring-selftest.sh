@@ -10,8 +10,9 @@
 # block, and the copies had already drifted: only one of them asserted the no-interpolation rule,
 # and the property "every declared input reaches the step's env" was enumerated by hand in one
 # and absent from the other. This file makes the population the FILE SYSTEM's answer — every
-# `action.yml` in the tree — so a fourth action is covered by existing, unedited code, and an
-# assertion cannot be silently absent for one member.
+# `action.yml` OR `action.yaml` in the tree, both spellings because GitHub honours both — so a
+# fourth action is covered by existing, unedited code, and an assertion cannot be silently
+# absent for one member.
 #
 # WHAT THIS DOES NOT REPLACE. The per-action jobs in `ci.yml` keep the parts that are genuinely
 # about ONE action: `promote`'s flag-parity derivation (every `--flag` on an `args+=` line has a
@@ -53,7 +54,11 @@ export SHELLCHECK_PIN_CACHE="$TMP/shellcheck-cache"
 # $TMP/run/<slug>.sh so the shellcheck leg below can run the pinned analyser over them — a
 # python-side shellcheck call would be a second way to invoke the pin.
 #
-# CODES: NOT-COMPOSITE, NO-STEPS, BAD-SHELL, NO-SCRIPT, MISSING-SCRIPT, DEAD-INPUT, INTERPOLATED.
+# CODES: UNPARSEABLE, NOT-COMPOSITE, NO-STEPS, BAD-SHELL, NO-SCRIPT, MISSING-SCRIPT, DEAD-INPUT,
+# INTERPOLATED — the full set this function can emit, kept in sync with the mutant block below,
+# which drives one fixture per code. The first cut of this list omitted UNPARSEABLE and the
+# mutant block was two codes short of it, so a reader had two disagreeing enumerations and both
+# were wrong: a code with no mutant is a predicate nothing has watched fail.
 _caw_scan() {
   python3 - "$1" "$TMP/run" <<'PY'
 import os, re, sys, yaml
@@ -61,11 +66,18 @@ import os, re, sys, yaml
 root, rundir = sys.argv[1], sys.argv[2]
 os.makedirs(rundir, exist_ok=True)
 
+# BOTH SPELLINGS. GitHub resolves an action directory by `action.yml` OR `action.yaml`, so a
+# walk keyed on one of them answers about that FILENAME rather than about the actions this repo
+# ships — and the "a fourth action is covered by unedited code" intent above fails silently for
+# whichever spelling its author happens to use.
+ACTION_FILES = ('action.yml', 'action.yaml')
+
 acts = []
 for dirpath, dirnames, filenames in os.walk(root):
     dirnames[:] = [d for d in dirnames if d != '.git']
-    if 'action.yml' in filenames:
-        acts.append(os.path.join(dirpath, 'action.yml'))
+    for name in ACTION_FILES:
+        if name in filenames:
+            acts.append(os.path.join(dirpath, name))
 
 SCRIPT = re.compile(r'"\$GITHUB_ACTION_PATH/\.\./bin/([A-Za-z0-9._-]+)"')
 
@@ -107,26 +119,37 @@ for path in sorted(acts):
         target = os.path.join(root, 'bin', tool)
         if not (os.path.isfile(target) and os.access(target, os.X_OK)):
             finding('MISSING-SCRIPT', f'bin/{tool}')
-    # Every DECLARED input must reach the step it belongs to. The wrapper carries no logic, so
-    # an input it accepts and drops is an input that silently does nothing.
-    reached = '\n'.join(str(v) for e in envs for v in e.values())
+    # Every DECLARED input must reach SOME step's env. The wrapper carries no logic, so an input
+    # it accepts and drops is an input that silently does nothing. The join below covers EVERY
+    # step's env at once, so this is deliberately the weaker property: it cannot say an input
+    # reached the step it BELONGS to, only that it reached one of them. Every action here is single-step today,
+    # which is why the weaker property still holds the contract — stated so the comment does not
+    # over-claim what the code checks.
+    #
+    # THE REFERENCED NAMES ARE PARSED, NOT SUBSTRING-TESTED. `f'inputs.{name}' in reached` reads
+    # `inputs.before-sha` as a reference to an input named `before`, so an input whose name is a
+    # PREFIX of a used one is silently never reported — the false negative a dead-input check
+    # exists to prevent.
+    referenced = set(re.findall(r'inputs\.([A-Za-z0-9_-]+)',
+                                '\n'.join(str(v) for e in envs for v in e.values())))
     for name in (d.get('inputs') or {}):
-        if f'inputs.{name}' not in reached:
+        if name not in referenced:
             finding('DEAD-INPUT', name)
     # An Actions expression inside a run: body is textual substitution into the shell source —
     # the script-injection class. Inputs travel by env or not at all. The needle is BUILT so
     # this file never contains a literal one.
     if '$' + '{{' in joined:
         finding('INTERPOLATED')
-    slug = rel.replace('/', '_').replace('.yml', '')
+    slug = re.sub(r'\.ya?ml$', '', rel).replace('/', '_')
     with open(os.path.join(rundir, slug + '.sh'), 'w') as f:
         f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + joined + '\n')
 PY
 }
 
-# _caw_population <dir> — the action.yml set the scan walks, same walk, printed not recalled.
+# _caw_population <dir> — the action.yml/action.yaml set the scan walks, same walk, printed not
+# recalled. Its spelling coverage is asserted, not assumed: a `.yaml` fixture below reds here.
 _caw_population() {
-  find "$1" -name action.yml -not -path '*/.git/*' -printf '%P\n' | sort
+  find "$1" \( -name action.yml -o -name action.yaml \) -not -path '*/.git/*' -printf '%P\n' | sort
 }
 
 # ── THE POPULATION, RE-DERIVED EVERY RUN ──────────────────────────────────────────────────────
@@ -152,16 +175,22 @@ SC_OUT="$("$SHELLCHECK" -S error "$TMP"/run/*.sh 2>&1)" || SC_RC=$?
 [ "$SC_RC" = 0 ] && ok "shellcheck -S error over $(find "$TMP/run" -name '*.sh' | wc -l) extracted run: body/bodies" \
                  || bad "shellcheck reported: $SC_OUT"
 
-# ── PROVE IT CAN FAIL — one mutant per code, each differing from a clean action by one edit ────
-# A predicate that cannot fail is a decoration. Each fixture below is a COMPLETE action that is
-# clean except for the named defect, so a finding names that defect and nothing else.
+# ── PROVE IT CAN FAIL — EVERY code has a mutant, each one edit away from a clean action ───────
+# A predicate that cannot fail is a decoration, and the first cut of this block shipped two that
+# could not: it claimed "one mutant per code" over 6 fixtures for 8 codes, with `NO-STEPS` and
+# `UNPARSEABLE` unproven and the latter missing from the CODES list as well. The claim is now the
+# thing the block below satisfies — a fixture for each of the eight, plus `NO-STEPS`'s SECOND
+# emission site (a steps list with no `run:` step in it), the prefix-name case that the
+# substring form of the DEAD-INPUT test could not see, and the `action.yaml` spelling.
+# Each fixture is a COMPLETE action, clean except for the named defect, so a finding names that
+# defect and nothing else.
 echo "== prove-it-can-fail: each rule reports its own mutant =="
 FIX="$TMP/fix"; mkdir -p "$FIX/bin"
 cp "$ROOT/bin/release-tag-check" "$FIX/bin/release-tag-check"   # a real, executable target
 
-_mutant() {  # _mutant <name> <yaml>
+_mutant() {  # _mutant <name> <yaml> [filename, default action.yml]
   mkdir -p "$FIX/$1"
-  printf '%s\n' "$2" > "$FIX/$1/action.yml"
+  printf '%s\n' "$2" > "$FIX/$1/${3:-action.yml}"
 }
 CLEAN_RUN='        "$GITHUB_ACTION_PATH/../bin/release-tag-check" --before "$B" --after "$A"'
 
@@ -238,10 +267,60 @@ runs:
       run: |
         \"\$GITHUB_ACTION_PATH/../bin/release-tag-check\" --before \"\${{ inputs.before-sha }}\" --after \"\$B\""
 
+_mutant no-steps "name: 'm'
+description: 'd'
+runs:
+  using: 'composite'
+  steps: []"
+
+_mutant no-run-step "name: 'm'
+description: 'd'
+runs:
+  using: 'composite'
+  steps:
+    - name: 'a step that runs no shell at all'
+      uses: 'actions/checkout@v4'"
+
+# TRUNCATED, not merely odd: the flow mapping is left open, so the parse fails at EOF — the
+# shape a half-written or half-transferred file actually takes. A file the scanner cannot parse
+# must be a FINDING, never a silently skipped member: an action.yml that does not load is an
+# action whose whole contract went unasserted.
+_mutant unparseable "name: 'm'
+description: 'd'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env: { A: 1,"
+
+# THE PREFIX CASE. `before` is declared and never referenced; `before-sha` is referenced. A
+# substring test reads `inputs.before-sha` as a use of `before` and reports nothing.
+_mutant prefix-input "name: 'm'
+description: 'd'
+inputs:
+  before: {description: 'declared, referenced by nobody', required: false, default: ''}
+  before-sha: {description: 'b', required: true}
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        B: \${{ inputs.before-sha }}
+      run: |
+$CLEAN_RUN"
+
+# THE OTHER SPELLING. Same defect, same one edit, `action.yaml` — a walk keyed on `action.yml`
+# alone finds nothing here and reports clean.
+_mutant yaml-spelled "name: 'm'
+description: 'd'
+runs:
+  using: 'node20'
+  main: 'index.js'" action.yaml
+
 rm -rf "$TMP/run"
 MUT="$(_caw_scan "$FIX")"
 printf '%s\n' "$MUT" | sed 's/^/  finding: /'
-_code() { printf '%s\n' "$MUT" | awk -F'\t' -v d="$1/action.yml" '$1 == d { print $2 }' | sort -u | tr '\n' ',' ; }
+_code() { printf '%s\n' "$MUT" | awk -F'\t' -v d="$1/${2:-action.yml}" '$1 == d { print $2 }' | sort -u | tr '\n' ',' ; }
 eq "a clean fixture yields NO finding (control)" ""                "$(_code clean)"
 eq "a non-composite action is named"             "NOT-COMPOSITE,"  "$(_code not-composite)"
 eq "a non-bash run step is named"                "BAD-SHELL,"      "$(_code bad-shell)"
@@ -249,6 +328,19 @@ eq "a wrapper that does not exec its bin"        "NO-SCRIPT,"      "$(_code no-s
 eq "a wrapper pointing at an absent bin"         "MISSING-SCRIPT," "$(_code missing-script)"
 eq "an input that reaches nothing"               "DEAD-INPUT,"     "$(_code dead-input)"
 eq "an Actions expression in the run: body"      "INTERPOLATED,"   "$(_code interpolated)"
+eq "an action declaring no steps at all"         "NO-STEPS,"       "$(_code no-steps)"
+eq "…and one whose steps run no shell"           "NO-STEPS,"       "$(_code no-run-step)"
+eq "a file that does not parse is a FINDING"     "UNPARSEABLE,"    "$(_code unparseable)"
+eq "an input whose NAME PREFIXES a used one"     "DEAD-INPUT,"     "$(_code prefix-input)"
+# …and it names the input that is dead, not the one that is used — the detail is what an
+# operator acts on, and a check reporting the wrong name is worse than one reporting none.
+eq "…naming the DEAD one"                        "before" \
+   "$(printf '%s\n' "$MUT" | awk -F'\t' '$1 == "prefix-input/action.yml" { print $3 }')"
+# The population and the scan must agree on which files ARE actions; asserting only the scan
+# would leave the derivation that PRINTS the population free to disagree with it.
+eq "an action.yaml is scanned like an action.yml" "NOT-COMPOSITE," "$(_code yaml-spelled action.yaml)"
+eq "…and the population derivation lists it"      "true" \
+   "$(has_line 'yaml-spelled/action.yaml' "$(_caw_population "$FIX")")"
 
 echo "== prove-it-can-fail: the shellcheck leg reds on a broken run: body =="
 # The extracted-body path, driven end to end: a body with a real parse error must red under the
