@@ -36,9 +36,10 @@ description: >-
   `github.event.before` to classify against;
   (4) `contents: read` is sufficient — this polls refs with `git ls-remote` and
   writes nothing;
-  (5) the caller owns the job/step `timeout-minutes` backstop. Size it above
-  `timeout` + `read-timeout` + the classification, so the SCRIPT's own bound
-  fires first and the job reports `failure` — a timeout-minutes kill reports as
+  (5) the caller owns the job/step `timeout-minutes` backstop. Size it above the
+  script's worst-case runtime, which `bin/release-tag-check`'s own header states
+  and this description deliberately does not repeat, so the SCRIPT's bound fires
+  first and the job reports `failure` — a timeout-minutes kill reports as
   `cancelled`, and a cancelled run is not a refused release.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --before/--after, an unresolvable --after, an

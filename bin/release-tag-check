@@ -86,6 +86,20 @@
 # REFUSES AND FAILS LOUDLY rather than waiting longer or passing — stamping "Released" late is
 # recoverable, stamping it wrongly is not.
 #
+# ⇒ WORST-CASE RUNTIME IS STATED HERE, and the three callers that size an outer backstop
+# (`timeout-minutes:`) from it point at this block instead of restating it — they carried three
+# hand-synced copies and all three were wrong the moment a second bounded read landed:
+#
+#     classification + --timeout + 2 x --read-timeout
+#
+# — the classifier's own run, then the wait, then AT MOST TWO further bounded reads: the poll
+# that crosses the bound, and the cause-naming second look on the measured-absent branch. That
+# second read is why the figure is 2x and not 1x. Where coreutils `timeout` is absent no read is
+# bounded at all and the run says so on a `::warning::`, so there is no worst case to state on
+# such a host. SIZE THE OUTER BACKSTOP ABOVE THIS, always: the tool's own bound firing first is
+# what makes a refused release report `failure`; an outer kill reports `cancelled`, which is not
+# a verdict about the tag at all.
+#
 # A NON-RELEASE PUSH ASSERTS NOTHING and exits 0 saying so. A push whose range cannot be
 # classified at all is rc 2 from the classifier and is propagated unchanged — never softened
 # into "not a release", because that misclassification is a silent non-run of this whole check,
@@ -99,13 +113,13 @@
 # make opposite claims, and only one of them is about the tag.
 #
 # EVERY REFUSAL NAMES ITS OWN CAUSE, OR SAYS IT COULD NOT MEASURE ONE — the property
-# card#6579's review ruled this tool must hold, and there are now THREE refusal branches to
-# hold it on. Since the tag NAME became `tag_format`'s answer (above), a measured "no such tag
-# at this commit" no longer implies an untagged release: it also happens when `tag_format` and
-# the workflow that creates the tag disagree, and the release IS tagged under another name. So
-# that branch takes a SECOND look without the tag-name filter before it says anything about a
-# cause, and the three branches (unreadable remote, absent tag, tag elsewhere) each claim only
-# what they measured.
+# card#6579's review ruled this tool must hold. Since the tag NAME became `tag_format`'s answer
+# (above), a measured "no such tag at this commit" no longer implies an untagged release: it
+# also happens when `tag_format` and the workflow that creates the tag disagree, and the release
+# IS tagged under another name. So that branch takes a SECOND look without the tag-name filter
+# before it says anything about a cause. The claim is scoped to the two branches that hold it:
+# UNREADABLE REMOTE and ABSENT TAG each claim only what they measured. The THIRD, tag-elsewhere,
+# does not: it offers two candidate causes it has not told apart, and that is a known gap.
 #
 # Exit status: 0 = tag present at the pushed commit, or not a release push. 1 = the release is
 # untagged past the bound, the remote could not be READ past the bound (a distinct message
@@ -223,6 +237,18 @@ set -e
 if [ "$TAG_RC" -ne 0 ] || [ -z "$TAG" ]; then
   die "could not resolve the tag name for version ${VERSION} from ${CONFIG} (release-pr-body --tag rc ${TAG_RC}, output '${TAG}') — refusing rather than assuming a 'v' prefix this repo may not use"
 fi
+# THE TAG NAME REACHES A `::error::` ANNOTATION, so a NEWLINE in it is a workflow command this
+# tool would be writing on its config's behalf: `"tag_format": "v{{version}}\n::error::…"` put an
+# attacker-chosen `::error::` line into the promote job's log. Refused fail-closed, on the same
+# terms as the guards above, because no legal tag can be here anyway — `git check-ref-format`
+# forbids space and every control character in a ref name, so a name carrying one names nothing
+# that can exist and polling for it could only ever refuse the release. The REMOTE side of this
+# needs no guard for the same reason: names that come back from `git ls-remote` already passed
+# that rule. `printf %q` so the diagnosis can show the offending value without re-emitting it.
+case "$TAG" in
+  *[[:space:]]*|*[[:cntrl:]]*)
+    die "the tag name resolved for version ${VERSION} from ${CONFIG} contains whitespace or a control character ($(printf '%q' "$TAG")) — no such git ref can exist, and a newline here would inject workflow commands into this job's log";;
+esac
 
 # EVERY POLL IS BOUNDED, so the tool's own --timeout is what fires first. `release-promote-cards.yml`
 # states that ordering — "the tool's own bound fires first and exits 1; a timeout-minutes kill
@@ -416,11 +442,11 @@ MIXED=""
 # cannot be taken, the refusal says the cause is UNMEASURED rather than picking one.
 set +e; _tags_at_commit; TAGS_RC=$?; set -e
 if [ "$TAGS_RC" -ne 0 ]; then
-  CAUSE="The follow-up look that would tell an untagged release from a ${CONFIG} tag_format mismatch could NOT READ ${REMOTE} (${TAGS_READ_ERR}), so the CAUSE here is unmeasured: check BOTH the workflow that creates your tags for this commit AND ${CONFIG}'s tag_format against what that workflow actually creates."
+  CAUSE="The follow-up look that would tell an untagged release from a tag-name mismatch could NOT READ ${REMOTE} (${TAGS_READ_ERR}), so the CAUSE here is unmeasured: check BOTH the workflow that creates your tags for this commit AND how ${CONFIG} resolved version ${VERSION} to ${TAG} (its tag_format if that key is set, else the default v{{version}}) against what that workflow actually creates."
 elif [ -n "$TAGS_AT_COMMIT" ]; then
   # Deliberately NOT phrased as "tagged under another name": if ${TAG} itself arrived in the
   # window between the final poll and this look, every clause below is still true.
-  CAUSE="A second look WITHOUT the tag-name filter finds ${AFTER_SHA} carrying: ${TAGS_AT_COMMIT}. So this commit IS tagged on ${REMOTE}, and ${TAG} is the name ${CONFIG}'s tag_format maps version ${VERSION} to — that key tells THIS CHECK what to expect and does NOT change what your tagging workflow creates, so check those two against each other before reading this as a tagging failure."
+  CAUSE="A second look WITHOUT the tag-name filter finds ${AFTER_SHA} carrying: ${TAGS_AT_COMMIT}. So this commit IS tagged on ${REMOTE}, and ${TAG} is what ${CONFIG} resolved version ${VERSION} to — its tag_format if that key is set, else the default v{{version}}. That resolution tells THIS CHECK what to expect and does NOT change what your tagging workflow creates, so check those two against each other before reading this as a tagging failure."
 else
   CAUSE="No tag of ANY name points at ${AFTER_SHA} on ${REMOTE}, so a tag under a different name is excluded BY MEASUREMENT: the release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579)."
 fi

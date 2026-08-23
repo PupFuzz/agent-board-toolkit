@@ -93,8 +93,8 @@
 #     safe by an explicit `|| true` documented at the site. Recorded in
 #     `docs/CONSOLIDATION-PLAN.md § Post-program dispositions`; NOT closed here.
 #   * A pipeline BUILT AS A STRING and run through `eval`, or one assembled in a variable.
-#   * `bin/*.py`, and the bash embedded in this repo's composite actions — every `action.yml`
-#     in the tree, not a list written here (one stood here naming two of what are now three).
+#   * `bin/*.py`, and the bash embedded in this repo's composite actions — the population
+#     `tests/composite-action-wiring-selftest.sh` derives every run, not a list written here.
 #   * A `grep -q` reached across a FUNCTION boundary — `_match() { grep -q "$1"; }` called as
 #     `producer | _match x`. There is no `grep` on the pipeline's own line to find.
 #   * Whether a DISPOSITIONED reason is TRUE. It is a recorded judgement re-read by whoever next

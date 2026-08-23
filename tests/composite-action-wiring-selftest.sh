@@ -321,6 +321,12 @@ rm -rf "$TMP/run"
 MUT="$(_caw_scan "$FIX")"
 printf '%s\n' "$MUT" | sed 's/^/  finding: /'
 _code() { printf '%s\n' "$MUT" | awk -F'\t' -v d="$1/${2:-action.yml}" '$1 == d { print $2 }' | sort -u | tr '\n' ',' ; }
+# _detail — the finding's THIRD column. A code alone cannot discriminate two emission sites of
+# ONE code, and this file has such a pair: `NO-STEPS` is emitted for a `steps: []` list and
+# again for a steps list with no `run:` step in it. With only `_code` asserted, deleting either
+# predicate left the other one catching both fixtures and the whole block still passed — the
+# decoration this block exists to forbid, in the block itself.
+_detail() { printf '%s\n' "$MUT" | awk -F'\t' -v d="$1/${2:-action.yml}" '$1 == d { print $3 }' ; }
 eq "a clean fixture yields NO finding (control)" ""                "$(_code clean)"
 eq "a non-composite action is named"             "NOT-COMPOSITE,"  "$(_code not-composite)"
 eq "a non-bash run step is named"                "BAD-SHELL,"      "$(_code bad-shell)"
@@ -329,13 +335,14 @@ eq "a wrapper pointing at an absent bin"         "MISSING-SCRIPT," "$(_code miss
 eq "an input that reaches nothing"               "DEAD-INPUT,"     "$(_code dead-input)"
 eq "an Actions expression in the run: body"      "INTERPOLATED,"   "$(_code interpolated)"
 eq "an action declaring no steps at all"         "NO-STEPS,"       "$(_code no-steps)"
+eq "…from the EMPTY-STEPS site (blank detail)"   ""                "$(_detail no-steps)"
 eq "…and one whose steps run no shell"           "NO-STEPS,"       "$(_code no-run-step)"
+eq "…from the NO-RUN-STEP site, not that one"    "no run: step"    "$(_detail no-run-step)"
 eq "a file that does not parse is a FINDING"     "UNPARSEABLE,"    "$(_code unparseable)"
 eq "an input whose NAME PREFIXES a used one"     "DEAD-INPUT,"     "$(_code prefix-input)"
 # …and it names the input that is dead, not the one that is used — the detail is what an
 # operator acts on, and a check reporting the wrong name is worse than one reporting none.
-eq "…naming the DEAD one"                        "before" \
-   "$(printf '%s\n' "$MUT" | awk -F'\t' '$1 == "prefix-input/action.yml" { print $3 }')"
+eq "…naming the DEAD one"                        "before" "$(_detail prefix-input)"
 # The population and the scan must agree on which files ARE actions; asserting only the scan
 # would leave the derivation that PRINTS the population free to disagree with it.
 eq "an action.yaml is scanned like an action.yml" "NOT-COMPOSITE," "$(_code yaml-spelled action.yaml)"
@@ -359,5 +366,19 @@ _caw_scan "$FIX" >/dev/null
 rc=0; out="$("$SHELLCHECK" -S error "$TMP"/run/broken-shell_action.sh 2>&1)" || rc=$?
 eq "a broken embedded body is rejected"          "false" "$([ "$rc" = 0 ] && echo true || echo false)"
 eq "…and the analyser says why"                  "true"  "$(has 'SC1' "$out")"
+
+# ── THE BATTERY ITSELF, COUNTED ───────────────────────────────────────────────────────────────
+# `_summary` reports FAILURES, and a file that never ran half its assertions has none. Measured
+# on this file: deleting one `eq` line dropped its check silently and it still printed `all
+# checks passed` — so the harness could not tell a whole battery from a truncated one, which is
+# how a `NO-STEPS` mutant that discriminated nothing survived a review round here. The count is
+# the cheapest predicate that reds on a silently-dropped leg. It is a NUMBER on purpose: the
+# legs are hand-written, so there is nothing to derive it from, and a derivation that read the
+# file's own `eq` lines would agree with any file it was given.
+#
+# ⚠ EXPECTED is the count of the assertions ABOVE this line — this one is not in it. When you
+# add or remove an assertion here, move this number by the same amount; a mismatch means the
+# battery changed, and the only question is whether you meant it.
+eq "the whole battery ran (leg count)" "22" "$checks"
 
 _summary "composite-action-wiring-selftest"

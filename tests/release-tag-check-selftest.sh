@@ -193,6 +193,10 @@ _tf_cfg .release-pr.json                       # no tag_format key at all — th
 _tf_cfg tf-v.json        'v{{version}}'        # the default, stated explicitly
 _tf_cfg tf-release.json  'release-{{version}}' # a prefixed non-v scheme
 _tf_cfg tf-bare.json     '{{version}}'         # the version IS the tag (date schemes)
+# A NEWLINE IN THE VALUE. `\n` here is two literal characters in the JSON source, which is a real
+# newline once jq reads it — the shape a config file can actually carry. Written with the other
+# fixtures because the classifier reads every config from the COMMIT, not the working tree.
+_tf_cfg tf-inject.json   'v{{version}}\n::error::INJECTED'
 printf '0.27.0\n' > "$R2/VERSION"
 g -C "$R2" add -A && g -C "$R2" commit -qm "v0.27.0 state"
 TF_BEFORE="$(g -C "$R2" rev-parse HEAD)"
@@ -267,6 +271,50 @@ eq "…naming the bare version as the tag"          "true" "$(has "0.28.0 presen
 eq "…and never invents a v prefix"                "false" "$(has "v0.28.0" "$OUT")"
 tf_untag 0.28.0
 
+# ── THE COMBINATION NOTHING DROVE: the key ABSENT, and another tag AT the commit ──────────────
+# Every arm above reaches the tag-elsewhere cause with a fixture that HAS `tag_format`, so the
+# message was free to say the config MAPS this version to that name — while the unset key is
+# the NORMAL case (`docs/INSTALL.md` §6d: "a repo that leaves the key unset gets `v<version>`"),
+# because the default is applied by the sibling that reads the file, not written in the file.
+# The operator was sent to look up a key they will not find. This is the missing cell.
+echo "== the tag-elsewhere cause holds with NO tag_format key in the config =="
+tf_tag release-0.28.0
+tf_run .release-pr.json
+eq "no key + another tag at the commit → rc 1"    "1"    "$RC"
+# Anchored on the message's own prefix, not on the bare tag: `v0.28.0 does not exist` is a
+# SUBSTRING of what a wrong tag name would print (`Xv0.28.0 does not exist`), so the unanchored
+# needle passes under a mutation of the very thing it is asserting.
+eq "…naming v0.28.0 as the tag it waited for"     "true" \
+   "$(has 'release-tag-check: v0.28.0 does not exist' "$OUT")"
+eq "…and the tag that IS at the commit"           "true" "$(has 'carrying: release-0.28.0' "$OUT")"
+# PRESENCE AND ABSENCE BOTH, because an assertion of absence alone certifies whatever replaces
+# the text it forbids — including nothing at all.
+eq "…saying the key may not be set at all"        "true" \
+   "$(has 'its tag_format if that key is set, else the default v{{version}}' "$OUT")"
+eq "…never asserting the config carries the key"  "false" "$(has 'tag_format maps version' "$OUT")"
+tf_untag release-0.28.0
+
+# ── A CONTROL CHARACTER IN THE TAG NAME IS A WORKFLOW COMMAND ─────────────────────────────────
+# `${TAG}` is interpolated into a `::error::` annotation, so a NEWLINE in `tag_format` makes the
+# refusal carry a second, attacker-chosen workflow command into the promote job's log. No legal
+# ref can hold one anyway (`git check-ref-format` forbids space and control characters), so the
+# name is refused fail-closed before any poll rather than sanitised.
+_wf_lines() { printf '%s\n' "$1" | awk '/^::/ { n++ } END { print n + 0 }'; }
+echo "== a tag name carrying a control character is refused, never emitted =="
+tf_run tf-inject.json
+eq "a newline in tag_format → rc 2"               "2"    "$RC"
+eq "…named as whitespace/control in the tag"      "true" "$(has 'contains whitespace or a control character' "$OUT")"
+eq "…and NO workflow command is emitted"          "0"    "$(_wf_lines "$OUT")"
+# CONTROL — the same counter over an ordinary refusal, which DOES emit one. Without it, "no
+# workflow command" would also be true of a counter that can only ever answer zero.
+tf_tag release-0.28.0
+tf_run .release-pr.json
+# NON-ZERO, not a fixed count: a host with no coreutils `timeout` legitimately adds a
+# `::warning::` of its own, and a control that reds on THAT is measuring the host, not the tool.
+eq "control: an ordinary refusal DOES emit one"   "false" \
+   "$([ "$(_wf_lines "$OUT")" -eq 0 ] && echo true || echo false)"
+tf_untag release-0.28.0
+
 # ── THE SECOND LOOK IS A READ, SO IT HAS THREE OUTCOMES TOO ───────────────────────────────────
 # The cause-naming look above can itself fail, and a refusal that answered "the release was NOT
 # tagged" because the look that would have found another tag never completed would be the same
@@ -274,43 +322,41 @@ tf_untag 0.28.0
 # POLL and then refuses the next read: with `--timeout 0` the tool looks exactly once, so the
 # absence is measured and the follow-up look is the read that fails — deterministically, not on
 # a timing race.
-if command -v timeout >/dev/null 2>&1; then
-  echo "== a follow-up look that cannot READ leaves the CAUSE unmeasured, not guessed =="
-  HELPER="$T/count-helper.sh"; COUNTF="$T/helper.count"
-  cat > "$HELPER" <<HELPEOF
+echo "== a follow-up look that cannot READ leaves the CAUSE unmeasured, not guessed =="
+HELPER="$T/count-helper.sh"; COUNTF="$T/helper.count"
+cat > "$HELPER" <<HELPEOF
 #!/bin/sh
 n=\$(cat "$COUNTF" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s\\n' "\$n" > "$COUNTF"
 [ "\$n" -le 1 ] && exec git upload-pack "$REMOTE2"
 echo "fatal: this remote refused read number \$n" >&2
 exit 128
 HELPEOF
-  chmod +x "$HELPER"
-  : > "$COUNTF"
-  RC=0
-  OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
-            --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
-  eq "an unreadable follow-up look → still rc 1"  "1"    "$RC"
-  eq "…the absence itself is still reported"      "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
-  eq "…the CAUSE is named as unmeasured"          "true" "$(has 'CAUSE here is unmeasured' "$OUT")"
-  eq "…quoting the follow-up read's own error"    "true" "$(has 'refused read number 2' "$OUT")"
-  eq "…and it does NOT pick a cause anyway"       "false" "$(has 'merged and was NOT tagged' "$OUT")"
-  eq "…nor claim the commit carries another tag"  "false" "$(has 'IS tagged on' "$OUT")"
-  # CONTROL — the same helper with the counter reset serves BOTH reads, and the verdict is the
-  # ordinary measured-absent one. Without it, "reds as unmeasured" would also be true of a tool
-  # that reports every absence that way.
-  : > "$COUNTF"
-  cat > "$HELPER" <<HELPEOF2
+chmod +x "$HELPER"
+: > "$COUNTF"
+RC=0
+OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
+          --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+eq "an unreadable follow-up look → still rc 1"  "1"    "$RC"
+eq "…the absence itself is still reported"      "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
+eq "…the CAUSE is named as unmeasured"          "true" "$(has 'CAUSE here is unmeasured' "$OUT")"
+eq "…quoting the follow-up read's own error"    "true" "$(has 'refused read number 2' "$OUT")"
+eq "…and it does NOT pick a cause anyway"       "false" "$(has 'merged and was NOT tagged' "$OUT")"
+eq "…nor claim the commit carries another tag"  "false" "$(has 'IS tagged on' "$OUT")"
+# CONTROL — the same helper with the counter reset serves BOTH reads, and the verdict is the
+# ordinary measured-absent one. Without it, "reds as unmeasured" would also be true of a tool
+# that reports every absence that way.
+: > "$COUNTF"
+cat > "$HELPER" <<HELPEOF2
 #!/bin/sh
 exec git upload-pack "$REMOTE2"
 HELPEOF2
-  chmod +x "$HELPER"
-  RC=0
-  OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
-            --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
-  eq "control: both reads served → rc 1"          "1"    "$RC"
-  eq "control: …and the cause IS measured"        "true" "$(has 'No tag of ANY name points at' "$OUT")"
-  eq "control: …never reported as unmeasured"     "false" "$(has 'CAUSE here is unmeasured' "$OUT")"
-fi
+chmod +x "$HELPER"
+RC=0
+OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
+          --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+eq "control: both reads served → rc 1"          "1"    "$RC"
+eq "control: …and the cause IS measured"        "true" "$(has 'No tag of ANY name points at' "$OUT")"
+eq "control: …never reported as unmeasured"     "false" "$(has 'CAUSE here is unmeasured' "$OUT")"
 
 # ── the tag_format read is DELEGATED to its one owner, not re-implemented here ─────────────────
 echo "== the tag name is resolved by the sibling that owns tag_format =="
