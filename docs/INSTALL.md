@@ -153,7 +153,15 @@ cp ~/agent-board-toolkit/examples/release-pr.json.example <your-repo>/.release-p
 # baseline tag is resolved from, and the branch whose commits are bundled — omit both
 # if your repo already uses those names.
 # tag_format (optional, default "v{{version}}"): how a version maps to its git tag —
-# set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". Version extraction
+# set "{{version}}" for unprefixed tags, or e.g. "release-{{version}}". It names the tag in
+# BOTH tools that act on one: release-pr-body's baseline exclude and body header, and the tag
+# release-tag-check (§6d) waits for — `release-pr-body --tag` is the single reader, so the two
+# cannot disagree.
+# ⚠ SET IT TOGETHER WITH YOUR TAGGING WORKFLOW. The key tells these tools what to EXPECT; it
+# does not change what your tagging workflow CREATES, and nothing in the toolkit constrains
+# that workflow. If the two disagree, §6d's gate waits for a tag nobody creates and refuses
+# every release (it names the mismatch as a candidate cause, but it cannot fix it).
+# Version extraction
 # keeps exactly what YOUR version_regex matches, so a .NET Major.Minor.Build.Revision
 # version needs a 4-segment version_regex: measured, a 3-segment one reads 1.22.1.0 as
 # 1.22.1 and the release then tags and reports the truncated version, silently.
@@ -265,7 +273,20 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit <repo>   # -> "drift-check: OK"
 ```
 
-> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). **Which bins those are is derived, not listed** — `grep -lE '^[[:space:]]*source "\$KB_LIB"' ~/agent-board-toolkit/bin/*` answers it for the version you are vendoring, which a list written here cannot (the list this replaced was already wrong for the newest bin in the tree). Without the lib the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. `promote-released-cards`, `release-pr-body` and `release-artifacts-check` are standalone and need no lib.
+> **Vendoring a *lib-sourcing* bin (not `promote-released-cards`)?** The interactive/hook bins `source` `bin/_kb-board-lib.sh` as a sibling, so you must copy **the lib too** into the same `bin/` (`cp ~/agent-board-toolkit/bin/_kb-board-lib.sh <repo>/bin/`). **Which bins those are is derived, not listed** — `grep -lE '^[[:space:]]*source "\$KB_LIB"' ~/agent-board-toolkit/bin/*` answers it for the version you are vendoring, which a list written here cannot (the list this replaced was already wrong for the newest bin in the tree). Without the lib the tool refuses at startup — since v0.11.2 that is a self-naming message pointing back at this section, **not** the bare `source: …/_kb-board-lib.sh: No such file` it used to be — and it refuses on **every** invocation, `--help` included, because the lib is loaded before any argument is read. `board-card-start` is the one deliberate variant: it runs from a git hook that must never block a checkout, so it reports that board automation was skipped and still exits 0. `agent-board-toolkit-drift-check` also flags a lib-sourcing bin vendored without the co-located lib. The release bins need no lib — but two of them need each OTHER, which is the same failure one directory over: `release-tag-check` resolves its release classification and its tag name by exec'ing siblings in the `bin/` it was copied into, and refuses by name (rc 2) when one is not there. **Which siblings a bin needs is derived, not listed** — and the derivation is on the PROPERTY (*this file resolves its own directory, and then names something else in it*), never on the variable a given bin happens to spell that directory into. Run this against the version you are vendoring:
+>
+> ```bash
+> cd ~/agent-board-toolkit/bin
+> for f in *; do
+>   [ -f "$f" ] || continue                       # a stray bin/__pycache__/ is a directory, not a bin
+>   grep -qE 'dirname.*(\$0|BASH_SOURCE|__file__)' "$f" || continue
+>   sibs="$(grep -v '^[[:space:]]*#' "$f" | grep -oE '[A-Za-z0-9_][A-Za-z0-9._-]+' | sort -u \
+>           | grep -Fxf <(ls) | grep -Fxv "$f" | tr '\n' ' ')"
+>   printf '%s needs: %s\n' "$f" "${sibs:-(nothing)}"
+> done
+> ```
+>
+> The first `grep` is the property; the second half intersects the file's own non-comment text with the **actual contents of `bin/`**, so what comes back is always a set of files you can copy. An earlier recipe here matched two variable NAMES (`$SELF_DIR`, `$d`) instead, and a name-matching pattern answers about the NAME, not the property: re-run against this tree it returned exactly the two bins that use those two spellings, a documentation filename as a spurious third, and a `grep: bin/__pycache__: Is a directory` — while `adopt-to-dl` (`next-dl`, `kbcard`), `dependabot-deploy-reconcile` (`_dependabot-reconcile.py`) and `board-session-close` (`install-board-hooks`, its advisory-leg helpers) resolve their own directory under other spellings and appeared nowhere. **Weakest properties, so this is not over-cited** — the first is the only SILENT one, and the rest all err toward over-collection: **a file whose text does not match the property `grep` produces no line at all**, so a bin that resolves its own directory some other way is absent from the output rather than reported as unexamined, and you cannot tell that from a clean run. Invert the first `grep` to list what it skipped, and read those — on this tree none of them resolves its own directory another way, but that is a fact about today's `bin/`, not about the recipe. Then: it over-collects a sibling merely *named* in a message or help string (err toward one file too many — copying a bin you did not need costs nothing); it cannot see a sibling whose filename is assembled at run time from pieces; and it answers only about files in `bin/`, so a bin needing a sibling **directory** — `install-board-hooks` needs `hooks/` — comes back as `(nothing)` and is not this recipe's question. Vendor them together, and re-vendor them together: a new bin beside an old sibling gets the old sibling's answer. §6a/§6c/§6d consumers have nothing to do here — an action carries the whole `bin/`.
 
 > **Vendoring `board-session-close`, or any of the `bin/_kbc-*.py` helpers?** There is a SECOND sibling lib on the same terms, in Python: `bin/_kbc-archive-lib.py`, which the helpers path-load beside themselves. **Which helpers those are is derived, not listed** — `grep -l '_kbc-archive-lib.py' ~/agent-board-toolkit/bin/*.py` answers it for the version you are vendoring. **Re-vendor `bin/_kbc-archive-lib.py` TOGETHER with any helper you copied**, exactly as the bash lib above: shared code moves INTO that lib over time (`stage_field_maps` and `live_cards` did), so a new helper beside an old lib fails at runtime with `AttributeError: module '…' has no attribute 'stage_field_maps'` — and it fails at the call site, mid-report, not at startup. `board-session-close` resolves its advisory legs as siblings of itself with no env override, so a copy vendored **without** them still runs and says which leg did not run (advisory — a missing leg never blocks a close), but it cannot report what that leg reports.
 
@@ -332,6 +353,60 @@ You still pass `base-sha` — it is what the fork point is resolved *from*.
 4. **`retired_artifacts` is a head-editable narrowing surface by construction.** It is declared, logged and one line; it is not impossible.
 5. **A version file whose *whole matched value set* head can make equal to the fork point's.** The set comparison above closes the prepended-line shape, and the remaining reach is narrow: head must ship a version the fork point already carries somewhere in that file. What is *not* closed is the regex itself — a `version_regex` matching more than the version declaration is a config the repo owns, and this check can only report on the values that regex selects.
 6. **An under-declared `artifacts` array is invisible.** No tool can assert a member you never named.
+
+### 6d. GitHub Actions consumer — the untagged-release gate
+
+Consume `release-tag-check` via the [`release-tag-check/`](../release-tag-check/action.yml) composite action, SHA-pinned on the same terms as §6a. It goes in the workflow that **reports a release as shipped** — the promote job, a deploy, a notification — and refuses to let that report happen while the release's tag does not exist:
+
+```yaml
+name: Promote released cards on merge to main
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read          # sufficient — the gate polls refs with `git ls-remote` and writes nothing
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          fetch-depth: 0     # REQUIRED — the release classification reads both ends of the range
+          fetch-tags: true   # for the §6a promote step below — NOT for this gate, which polls
+                             # the REMOTE (the tag is created after this checkout is taken, so
+                             # no local ref set can carry it)
+
+      - name: Refuse to promote an untagged release
+        if: github.event_name == 'push'   # a workflow_dispatch run has no github.event.before
+        timeout-minutes: 10               # a BACKSTOP, sized above the tool's own bound — see below
+        uses: <owner>/agent-board-toolkit/release-tag-check@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          before-sha: ${{ github.event.before }}
+          after-sha: ${{ github.sha }}
+          # config: .release-pr.json   # optional; the default
+          # remote / timeout / interval / read-timeout — optional; blank = the tool's own
+          # defaults, which are where those numbers are argued. Leave them blank unless you
+          # have a reason, and state the reason where you set them.
+
+      - uses: <owner>/agent-board-toolkit/promote@<full-40-char-SHA>  # vX.Y.Z
+        with: { ... }        # §6a
+```
+
+**Order is the whole point.** The gate must run **before** the step that reports the release. A gate placed after it refuses a release that has already been reported — the board is already wrong, and the red run is now about a state you have to repair by hand.
+
+**Why this exists at all, in one line:** a tagging workflow and a promoting workflow that share the `push: <main>` trigger with no `needs:` between them are **two independent runs**, so the promoting one wins the race on *every* release and reports "shipped" before the tag exists — and on the release where the tag never arrives at all, that report is simply false and stays false. (This repo's own v0.28.0: the tag push took a 403, promote reported success three seconds later, and the board asserted a shipped release for 17m27s until a human re-ran the job.) The tool therefore **waits** rather than refusing on sight; an immediate hard-refuse would red every release. `release-tag-check --help` owns the bound, why it is what it is, and what happens when it is reached — it is not restated here.
+
+**Your `tag_format` is what names the tag it waits for** (§4). A repo on a non-`v` scheme (`{{version}}`, `release-{{version}}`, a date string) is asserted against the tag that scheme names — the same key `release-pr-body` resolves the tag from. A repo that leaves the key unset gets `v<version>`, unchanged. ⚠ **The key and your tagging workflow must be set together:** `tag_format` tells this gate what to expect and does **not** change what your tagging workflow creates — the toolkit constrains that workflow in no way at all. A repo that sets the key without moving its tagger has a gate waiting for a tag nobody creates, which refuses **every** release at the bound; the refusal takes a second look and names the tag that IS at the commit as a candidate cause, but that is a diagnosis, not a repair.
+
+**Size the `timeout-minutes` backstop above the tool's own worst-case runtime** — stated in [`bin/release-tag-check`](../bin/release-tag-check)'s header, and deliberately not restated here: it moved once when a second bounded read was added, and the copies of it did not. That ordering is the difference between a job that reports `failure` — a refused release — and one that reports `cancelled`, which is not a verdict about the tag at all. The tool bounds each individual poll so its own wait is what ends first; on a host with no coreutils `timeout` on `PATH` it says so on a `::warning::` and the polls are unbounded (GitHub-hosted runners ship coreutils).
+
+**What a refusal is, and is not.** A red gate means *check whether the tag exists* — not *the board write failed*. Three refusals with three different messages: the tag is absent past the bound, the tag exists at a **different** commit (two merges claimed one version, or the release PR forgot to bump the version file — refused immediately, since waiting cannot change it), or the remote could not be **read** on the final poll, in which case the tag is **UNMEASURED, not absent** and the message asserts nothing about it. All three exit 1: a release that cannot be confirmed must not be reported as shipped.
+
+The first of those takes a **second look before it names a cause**, without the tag-name filter, and says which of three worlds it measured: no tag of any name is at the commit (the release merged untagged — check your tagging workflow's run), *some other* tag is (the release IS tagged and this gate waited for a name your tagger does not create — check `tag_format` against that workflow, above), or that second look could not read the remote either, in which case the refusal says the **cause** is unmeasured rather than picking one. A refusal names its own cause or claims nothing; sending an operator to a workflow run that succeeded is the failure mode this replaces.
+
+> ⚠ **The refusal is loud in Actions and silent on your board.** When the gate refuses, the cards simply stay where they were — there is no "release refused" signal on the board itself. Watch the workflow run, not the column.
+
+> **Lockstep — one sanctioned copy.** [`release-tag-check/action.yml`](../release-tag-check/action.yml)'s `description:` restates the preconditions above (checkout depth, the `push`-only guard, the caller-owned backstop), because a SHA-pinned consumer reads the action itself and cannot follow a pointer into these docs. **Correcting either one here means correcting `release-tag-check/action.yml` in the same change.**
 
 ## Worked example (host install, primary board named `dev`)
 

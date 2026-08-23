@@ -23,8 +23,14 @@
 export PYTHONDONTWRITEBYTECODE=1
 
 fails=0
-ok()  { printf '  ok   %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
+# `checks` counts every assertion that ran, passed or failed. `fails` alone cannot tell a suite
+# that ran its whole battery from one that lost half of it: delete an `eq` line and the file
+# still prints `all checks passed`. A selftest that wants that leg closed asserts on this
+# counter itself (`composite-action-wiring-selftest.sh` does); nothing here reads it, so no
+# other file's behaviour changes.
+checks=0
+ok()  { checks=$((checks + 1)); printf '  ok   %s\n' "$1"; }
+bad() { checks=$((checks + 1)); printf '  FAIL %s\n' "$1" >&2; fails=$((fails + 1)); }
 
 # eq <label> <expected> <got> — string-equality assertion.
 eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1 — expected '$2' got '$3'"; }

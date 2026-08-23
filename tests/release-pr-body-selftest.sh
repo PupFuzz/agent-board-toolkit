@@ -579,4 +579,62 @@ rc=0; err="$("$BIN" --base 2>&1)" || rc=$?
 eq "trailing --base → rc 2"                   "2"     "$rc"
 eq "trailing --base does not leak set -u"     "false" "$(case "$err" in *'unbound variable'*) echo true ;; *) echo false ;; esac)"
 
+echo "== --tag prints just the tag name, without touching the network (card#7203) =="
+# `tag_format` had ONE reader — this tool — and `bin/release-tag-check` needed the same answer,
+# so it hardcoded `v${VERSION}` and polled for a tag that cannot exist under any other scheme.
+# `--tag` is how that second caller asks the owner instead of carrying a second copy of the
+# mapping, and it must answer WITHOUT the baseline fetch below it: the caller is a CI gate whose
+# whole job is to survive a remote it may not be able to read.
+tokencfg 'DL-[0-9]+'   # config still carries tag_format: release-{{version}}
+rc=0; tagout="$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )" || rc=$?
+eq "--tag → rc 0"                            "0"                "$rc"
+eq "…prints the tag_format tag, alone"       "release-0.3.0"    "$tagout"
+
+# THE NO-NETWORK PROPERTY, MEASURED rather than asserted from reading: origin is repointed at a
+# path that is not a repository, which makes the baseline fetch fail HARD (the tool's documented
+# fail-loud). `--tag` must still answer.
+g -C "$W" remote set-url origin "$T/no-such-origin.git"
+rc=0; tagout2="$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )" || rc=$?
+eq "--tag answers with origin unreachable"   "0"                "$rc"
+eq "…with the same tag"                      "release-0.3.0"    "$tagout2"
+# CONTROL — the SAME invocation without --tag must fail on that unreachable origin, or the arm
+# above proves nothing about the early return (it would pass for a tool that never fetches).
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" || rc=$?
+eq "control: a full body on the same remote fails" "2"          "$rc"
+eq "control: …because the baseline fetch is fatal" "true"       "$(has 'cannot fetch origin' "$out")"
+g -C "$W" remote set-url origin "$T/origin.git"
+
+# The DEFAULT scheme is unchanged: no key ⇒ v<version>. A fixture that sets a key to its own
+# default cannot discriminate, so both spellings are driven — absent, and explicitly-default.
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+" }
+EOF
+eq "control: no tag_format ⇒ v<version>"     "v0.3.0"           "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+", "tag_format": "{{version}}" }
+EOF
+eq "an unprefixed scheme ⇒ the bare version" "0.3.0"            "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
+
+# The version may also come from version_file+version_regex, which is the path a caller with no
+# --version takes.
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+", "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "tag_format": "release-{{version}}" }
+EOF
+printf '0.9.9\n' > "$W/VERSION"
+eq "…and --tag resolves it from version_file" "release-0.9.9"   "$( (cd "$W" && "$BIN" --tag) 2>&1 )"
+
+echo "== the query modes are mutually exclusive, COUNTED not pairwise =="
+# Each mode replaces the whole output with one answer, so any two means one is silently lost.
+# The check was a single `--manifest && --card-manifest` test; with a third mode a pairwise
+# test admits exactly the combination nobody wrote down.
+for pair in "--tag --manifest" "--tag --card-manifest" "--manifest --card-manifest"; do
+  # shellcheck disable=SC2086  # the pair IS two arguments
+  rc=0; err="$( (cd "$W" && "$BIN" $pair --version 0.3.0) 2>&1 )" || rc=$?
+  eq "$pair → rc 2"                          "2"                "$rc"
+  eq "…naming both modes"                    "true"             "$(has 'mutually exclusive query modes' "$err")"
+done
+# CONTROL — one mode alone is accepted, so the refusal above is about the COMBINATION.
+rc=0; (cd "$W" && "$BIN" --tag --version 0.3.0) >/dev/null 2>&1 || rc=$?
+eq "control: one mode alone is fine"         "0"                "$rc"
+
 _summary "release-pr-body-selftest"

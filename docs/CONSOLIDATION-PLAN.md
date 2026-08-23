@@ -1657,8 +1657,10 @@ finding with no owner is abandoned, not filed.
   confident wrong count one file over match identically. So the scanner owns the population and the
   list owns the verdict. **Weakest properties, stated so it is not over-cited:** it cannot see a
   collapse that never touches a variable (`if [ -n "$(cmd 2>/dev/null)" ]`), one carried across a
-  function boundary, `bin/*.py`, or the bash embedded in the two composite actions — and a
-  disposition is a recorded judgement, not a proof.
+  function boundary, `bin/*.py`, or the bash embedded in this repo's composite actions — **however
+  many there are**, a set `tests/composite-action-wiring-selftest.sh` derives from the tree and
+  prints on every run, so this exclusion is not re-counted here (it said "the two" while a third
+  was landing) — and a disposition is a recorded judgement, not a proof.
 
 - **`<producer> | grep -q <needle>` under `pipefail`** (card#7175) — `grep -q` exits the instant
   it matches, so its producer fails on the closed pipe, `pipefail` promotes **that** status, and the
@@ -1688,7 +1690,8 @@ finding with no owner is abandoned, not filed.
   construct held still so `pipeline-free-match-selftest.sh` can watch it fail. All three red paths
   were watched to fire. **Weakest properties, stated so it is not over-cited:** it cannot see a
   pipeline built as a string and `eval`'d, one whose `grep -q` sits behind a function boundary,
-  `bin/*.py`, or the bash in the two composite actions.
+  `bin/*.py`, or the bash in this repo's composite actions — the set
+  `tests/composite-action-wiring-selftest.sh` derives and prints, never a count written here.
 - **The wider EARLY-EXIT-READER class — `| head`, `| tail -N` — is NOT closed** (card#7175, filed
   here rather than as its own item because this document owns the reasoning and the gate above is
   where a future closure would land). `grep -q` is one early-exiting reader; `head -N` is another,

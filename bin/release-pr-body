@@ -13,6 +13,15 @@
 #   release-pr-body [--version X.Y.Z] [--base REF] [--head REF] [--config PATH]
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
+#   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
+#
+# `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). `.release-pr.json`'s
+# `tag_format` is read here and nowhere else; `bin/release-tag-check` needs the same answer to
+# know which tag to wait for, and hardcoding `v${VERSION}` there made it poll for a tag that
+# cannot exist under a non-`v` scheme — refusing EVERY release at its bound, for any consumer
+# who set the key this file documents. It resolves the tag by calling this mode on its sibling,
+# exactly as it delegates the release classification to `release-artifacts-check`. The mode
+# returns BEFORE the baseline block, so it performs no fetch and touches no network.
 #
 # TWO REF SPELLINGS, TWO ID SPACES — the config declares each separately because
 # they correlate against DIFFERENT card fields, and conflating them promotes the
@@ -50,13 +59,14 @@ command -v git >/dev/null || die "git is required"
 # duplicated; keep the two in sync.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
     --base)    require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)    require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config)  require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    --tag)      TAG_ONLY=1; shift;;
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
@@ -74,8 +84,17 @@ done
 # ruled on that shape once (card#5429 — drift-check read two positionals and dropped the
 # rest at rc 0), and a query whose answer is about a different question than the one asked
 # is worse here than in a body generator, because the output is machine-read.
-if [ "$MANIFEST_ONLY" = 1 ] && [ "$CARD_MANIFEST_ONLY" = 1 ]; then
-  die "--manifest and --card-manifest are mutually exclusive (they print different lists — run the tool twice)"
+# COUNTED, NOT PAIRWISE. Each query mode replaces the whole output with one answer, so any two
+# of them means one is silently lost — and a pairwise test is the shape that admits exactly the
+# combination nobody remembered to write down (with three modes there are three pairs; with the
+# next one, six). The count is derived from the flags that were actually seen.
+QUERY_MODES=""; QUERY_COUNT=0
+query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODES, }$2"; QUERY_COUNT=$((QUERY_COUNT + 1)); }
+query_mode "$TAG_ONLY"           --tag
+query_mode "$MANIFEST_ONLY"      --manifest
+query_mode "$CARD_MANIFEST_ONLY" --card-manifest
+if [ "$QUERY_COUNT" -gt 1 ]; then
+  die "$QUERY_MODES are mutually exclusive query modes (each prints a different answer — run the tool once per question)"
 fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
@@ -126,6 +145,15 @@ fi
 # here so an explicit --base (which skips the baseline block) still renders the
 # real tag. Under the default `v{{version}}` this is `v<version>` (back-compat).
 THIS_TAG="${TAG_FORMAT//\{\{version\}\}/$VERSION}"
+
+# THE QUERY MODE RETURNS HERE, before the baseline block below — which FETCHES from origin and
+# dies when it cannot. A caller asking only "what is this version's tag called?" must not need
+# the network to be told, and `bin/release-tag-check` asks this question inside a CI job whose
+# whole purpose is to survive a remote it may not be able to read.
+if [ "$TAG_ONLY" = 1 ]; then
+  printf '%s\n' "$THIS_TAG"
+  exit 0
+fi
 
 # Range: BASE = last release tag reachable on ORIGIN's main (excluding THIS
 # version's tag, in case it already exists — else a re-run after tagging returns
