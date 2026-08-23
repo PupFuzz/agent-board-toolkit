@@ -56,7 +56,8 @@ export KB_STUB_TASK_ID=777
 export KB_STUB_BYREF="hit miss miss"   # one answer per by-ref read, in order; the last repeats
 
 USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
-SENTINEL_DEFAULT=999000001
+SENTINEL_DEFAULT=999001
+SENTINEL_DL_DEFAULT=DL-999001   # what the tool actually STAMPS: kb_dl_canon's output
 
 # --- route table ------------------------------------------------------------------------------
 # Prints "<http>\n<body>"; an unmatched request is answered 599 by the stub itself. The knobs are
@@ -68,6 +69,20 @@ kb_stub_route() {
     local method="$1" url="$2" data="$3" route_n="$4" http body
     local -a byref
     case "$method $url" in
+        "GET "*/custom_fields.json)
+            # The board's field INDEX — read only on the 409/422 arm, to decide whether the
+            # pre-existing dl_number definition is the string-typed one this toolkit writes.
+            # KB_STUB_FIELDS_HTTP fails the read; KB_STUB_FIELD_TYPE selects the declared type,
+            # and the literal `none` stands for an index carrying no dl_number at all.
+            http="${KB_STUB_FIELDS_HTTP:-200}"
+            if [[ "$http" != 2* ]]; then
+                printf '%s\n%s' "$http" '{"message":"nope"}'
+            elif [[ "${KB_STUB_FIELD_TYPE:-string}" == none ]]; then
+                printf '%s\n%s' "$http" '{"data":[{"id":8,"key":"pr_number","type":"number"}]}'
+            else
+                printf '%s\n%s' "$http" \
+                    "{\"data\":[{\"id\":9,\"key\":\"dl_number\",\"type\":\"${KB_STUB_FIELD_TYPE:-string}\"}]}"
+            fi ;;
         "POST "*/custom_fields.json)
             http="${KB_STUB_REGISTER_HTTP:-201}"
             if [[ "$http" == 2* ]]; then body="${KB_STUB_REGISTER_BODY:-$REG_OK_BODY}"
@@ -115,9 +130,9 @@ TEARDOWN=(PATCH /tasks/777.json)
 echo "== happy path: register → create → verify → clear → delete → prove no residue =="
 run_a1
 eq "happy path → rc 0"                    "0" "$rc"
-eq "registration reports the new field id" "true" "$(has 'registered dl_number (field id 9)' "$out")"
-eq "the throwaway is announced with its sentinel" "true" \
-   "$(has "throwaway card 777 created with dl_number=$SENTINEL_DEFAULT" "$out")"
+eq "registration reports the new field id" "true" "$(has 'registered dl_number as a STRING field (field id 9)' "$out")"
+eq "the throwaway is announced with the CANONICAL sentinel it stamped" "true" \
+   "$(has "throwaway card 777 created with dl_number=$SENTINEL_DL_DEFAULT" "$out")"
 eq "by-ref resolves the throwaway"        "true" "$(has "by-ref system=dl ref=$SENTINEL_DEFAULT: FOUND (card 777)" "$out")"
 eq "by-ref is empty once dl_number is cleared" "true" \
    "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
@@ -139,15 +154,23 @@ eq "every by-ref read carries system=dl and the sentinel" "3" \
 eq "the board id reaches every board-scoped path" "4" "$(kb_stub_count_any /boards/42/)"
 
 echo "== the bodies the tool puts on the wire =="
-eq "the registration body is the flat field definition" \
-   '{"key":"dl_number","label":"DL","type":"number"}' "$(kb_stub_bodies "${REGISTER[@]}")"
+# THE TYPE IS THE ASSERTION, not decoration on one. Every toolkit write of dl_number is the
+# canonical DL-NNNN string (kb_dl_canon), and kanban validates a payload value against the
+# field's DECLARED type — so a `number` here is a board that 422s "Must be a number." on every
+# `kbcard --dl`, which is exactly what this literal used to say (card#6517).
+eq "the registration body declares dl_number as a STRING field" \
+   '{"key":"dl_number","label":"DL","type":"string"}' "$(kb_stub_bodies "${REGISTER[@]}")"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "the throwaway targets the configured board"    "42" "$(jq -r '.board_id' <<<"$CREATE_BODY")"
 eq "the throwaway lands in the configured stage"   "51" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "the throwaway swimlane defaults to 1"          "1"  "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
-eq "the throwaway carries payload.dl_number = the sentinel" "$SENTINEL_DEFAULT" \
+eq "the throwaway carries payload.dl_number = the CANONICAL DL-NNNN sentinel" "$SENTINEL_DL_DEFAULT" \
    "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
-eq "the sentinel is a JSON number, not a string"   "number" "$(jq -r '.payload.dl_number | type' <<<"$CREATE_BODY")"
+# This step is the setup path's ONLY acceptance test, so the value shape it puts on the wire has
+# to be the shape production puts on the wire. While it was a JSON NUMBER it tested the one shape
+# no toolkit writer produces, and it passed on a board where every real --dl write was rejected.
+eq "the sentinel is a JSON string, as every production dl_number write is" "string" \
+   "$(jq -r '.payload.dl_number | type' <<<"$CREATE_BODY")"
 eq "the throwaway names itself as disposable"      "[A1-verify] dl_number throwaway — delete me" \
    "$(jq -r '.name' <<<"$CREATE_BODY")"
 # The v0.20.0 flat-body cutover, asserted on the WIRE. tests/no-task-wrapper-selftest.sh scans the
@@ -163,12 +186,65 @@ echo "== idempotence: a re-run against an already-registered field still succeed
 # they are separate literals in the arm, and dropping either would leave the other passing.
 KB_STUB_REGISTER_HTTP=409 run_a1
 eq "409 → rc 0 (idempotent success, not a fatal)" "0" "$rc"
-eq "409 is reported as already-registered"        "true" "$(has 'dl_number already registered (HTTP 409) — idempotent OK' "$out")"
+eq "409 is reported as already-registered, with the type it read back" "true" \
+   "$(has 'dl_number already registered, STRING-typed (HTTP 409) — idempotent OK' "$out")"
 eq "409 still runs the whole verification"        "true" "$(has 'zero residue' "$out")"
 eq "409 still created and removed a throwaway"    "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+eq "409 READ the board's field index before claiming the board is set up" "1" \
+   "$(kb_stub_count GET /custom_fields.json)"
 KB_STUB_REGISTER_HTTP=422 run_a1
 eq "422 → rc 0 (idempotent success, not a fatal)" "0" "$rc"
-eq "422 is reported as already-registered"        "true" "$(has 'dl_number already registered (HTTP 422) — idempotent OK' "$out")"
+eq "422 is reported as already-registered, with the type it read back" "true" \
+   "$(has 'dl_number already registered, STRING-typed (HTTP 422) — idempotent OK' "$out")"
+# The witness for the zeros in the block below: the SAME arm, over a string-typed definition,
+# does create and tear down a throwaway. Without it "no card was created" could pass because
+# the arm never ran at all.
+eq "witness: a string-typed pre-existing definition DOES reach the create" "1" \
+   "$(kb_stub_count "${CREATE[@]}")"
+
+echo "== …but a pre-existing definition of the WRONG TYPE is refused, not certified (card#6517) =="
+# The defect this closes: the 409/422 arm reported "idempotent OK" on the strength of the STATUS
+# alone, which says the key is taken and nothing about the type it was taken with. A number-typed
+# dl_number rejects every `kbcard --dl` write with 422 "Must be a number.", and this tool — the
+# only surface positioned to catch that — had already declared the board set up.
+for wrong_http in 409 422; do
+    KB_STUB_REGISTER_HTTP=$wrong_http KB_STUB_FIELD_TYPE=number run_a1
+    eq "HTTP $wrong_http over a NUMBER-typed dl_number → rc 1" "1" "$rc"
+    eq "…the refusal names the declared type and the required one" "true" \
+       "$(has "declares dl_number as 'number', and it must be 'string'" "$err")"
+    eq "…and names the 422 the board would answer every --dl write with" "true" \
+       "$(has 'Must be a number.' "$err")"
+    eq "…and prints the in-place remedy as a runnable command" "true" \
+       "$(has 'kbcard field retype --field dl_number --to string --restamp-dl' "$err")"
+    eq "…NO throwaway card was created" "0" "$(kb_stub_count "${CREATE[@]}")"
+    eq "…and nothing was torn down (there is nothing to tear down)" "0" "$(kb_stub_count PATCH /tasks/)"
+    eq "…witness: the registration and the index read both happened" "2" \
+       "$(( $(kb_stub_count "${REGISTER[@]}") + $(kb_stub_count GET /custom_fields.json) ))"
+done
+# The remedy command carries the run's OWN --board, so it targets the board this run targeted
+# rather than the default one.
+KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELD_TYPE=number run_a1 --board alt
+eq "the remedy on a --board run names that board" "true" \
+   "$(has 'kbcard --board alt field retype --field dl_number --to string --restamp-dl' "$err")"
+# Any non-string type, not a number special case.
+KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELD_TYPE=enum run_a1
+eq "an ENUM-typed dl_number is refused too → rc 1" "1" "$rc"
+eq "…naming the type it actually found" "true" "$(has "declares dl_number as 'enum'" "$err")"
+
+echo "== an already-registered claim this tool cannot VERIFY is refused, not assumed =="
+KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELDS_HTTP=500 run_a1
+eq "an unreadable field index on the 409 arm → rc 1" "1" "$rc"
+eq "…and says the existing declaration's type is UNKNOWN, not OK" "true" \
+   "$(has "the EXISTING declaration's type is unknown" "$err")"
+eq "…creating no throwaway over a board it could not read" "0" "$(kb_stub_count "${CREATE[@]}")"
+# A 409/422 whose index carries no dl_number at all is not "already registered" — it is a
+# registration that failed for some other reason, and it used to be reported as a success.
+KB_STUB_REGISTER_HTTP=422 KB_STUB_FIELD_TYPE=none run_a1
+eq "a 422 with no dl_number in the index → rc 1" "1" "$rc"
+eq "…and says so rather than claiming idempotence" "true" \
+   "$(has 'carries NO dl_number definition' "$err")"
+eq "…and echoes the body it was refused with" "true" "$(has 'the dl_number field already exists' "$err")"
+eq "…creating no throwaway" "0" "$(kb_stub_count "${CREATE[@]}")"
 
 echo "== a registration failure that is NOT 409/422 is fatal, and creates nothing =="
 KB_STUB_REGISTER_HTTP=500 run_a1
@@ -259,15 +335,15 @@ eq "explicit flags → rc 0"                "0" "$rc"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "--stage reaches the throwaway"        "88"     "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "--swimlane reaches the throwaway"     "5"      "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
-eq "--sentinel reaches the payload"       "424242" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
+eq "--sentinel reaches the payload"       "DL-424242" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 eq "--sentinel reaches the by-ref query"  "3"      "$(kb_stub_count GET 'ref=424242')"
 
-KB_A1_STAGE=61 KB_A1_SWIMLANE=7 KB_A1_SENTINEL=555000001 run_a1
+KB_A1_STAGE=61 KB_A1_SWIMLANE=7 KB_A1_SENTINEL=555001 run_a1
 eq "the KB_A1_* env defaults → rc 0"      "0" "$rc"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "KB_A1_STAGE is honoured over KB_STAGE_BACKLOG" "61" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "KB_A1_SWIMLANE is honoured"           "7"         "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
-eq "KB_A1_SENTINEL is honoured"           "555000001" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
+eq "KB_A1_SENTINEL is honoured"           "DL-555001" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 KB_A1_STAGE=61 run_a1 --stage 88
 eq "an explicit --stage beats KB_A1_STAGE" "88" "$(jq -r '.workflow_stage_id' <<<"$(kb_stub_bodies "${CREATE[@]}")")"
 
@@ -323,10 +399,19 @@ eq "a stray positional → rc 2"            "2" "$rc"
 
 run_a1 --sentinel abc
 eq "a non-numeric --sentinel → rc 2"      "2" "$rc"
-eq "the refusal states the required shape" "true" "$(has '--sentinel must be a positive integer' "$err")"
+eq "the refusal states the required shape" "true" \
+   "$(has '--sentinel must be a DL number this toolkit can render' "$err")"
 eq "a rejected sentinel never reaches the board" "0" "$(kb_stub_total)"
 run_a1 --sentinel -1
 eq "a negative --sentinel → rc 2"         "2" "$rc"
+# The sentinel is validated by kb_dl_num — the same strict parser `kbcard --dl` uses — so the
+# bound it enforces is that parser's, not a second one this file invented: a value this toolkit
+# cannot RENDER is refused before any request rather than at the create the board would reject.
+run_a1 --sentinel 9999999
+eq "a 7-digit --sentinel is out of DL range → rc 2" "2" "$rc"
+eq "…refused before any request"          "0" "$(kb_stub_total)"
+run_a1 --sentinel 0
+eq "a zero --sentinel → rc 2"             "2" "$rc"
 
 run_a1 --board nostage
 eq "no stage anywhere → rc 2"             "2" "$rc"
@@ -355,7 +440,7 @@ echo "== a 2xx whose body is not JSON at all (card#6426) =="
 KB_STUB_REGISTER_BODY='<html><body>502 Bad Gateway</body></html>' run_a1
 eq "an unreadable REGISTER body → the run still completes (rc 0)" "0" "$rc"
 eq "…and reports the field id as unknown, not as a crash" "true" \
-   "$(has 'registered dl_number (field id ?)' "$out")"
+   "$(has 'registered dl_number as a STRING field (field id ?)' "$out")"
 eq "…leaking no raw jq parse error"        "false" "$(has 'parse error' "$err")"
 eq "…and the throwaway is still created AND torn down" "2" "$(kb_stub_count "${TEARDOWN[@]}")"
 KB_STUB_CREATE_BODY='<html><body>502 Bad Gateway</body></html>' run_a1
@@ -366,7 +451,7 @@ eq "…leaking no raw jq parse error"        "false" "$(has 'parse error' "$err"
 # reports the real id.
 run_a1
 eq "control: a well-formed body still reports the field id" "true" \
-   "$(has 'registered dl_number (field id 9)' "$out")"
+   "$(has 'registered dl_number as a STRING field (field id 9)' "$out")"
 
 echo "== a lib-less copy is refused before the argument surface, --help included =="
 # The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That

@@ -118,6 +118,8 @@ Each board you manage needs one env file and one token file. The `--board <name>
 cp ~/agent-board-toolkit/examples/kanban-board.env.example ~/.kanban-<name>-board.env
 chmod 600 ~/.kanban-<name>-board.env
 # how to find the IDs is documented inline in that file (workflows/card_types/custom_fields endpoints).
+# ⛔ read the DECLARED TYPES box in that file before you fill in the KB_CF_* ids — the ids are
+#    only half of what a board needs, and the other half is not in this file (see the box below).
 
 # b) token — a file containing ONLY the bearer token (no quotes, no export):
 printf '%s' '<YOUR_API_TOKEN>' > ~/.kanban-<name>-token
@@ -126,6 +128,12 @@ chmod 600 ~/.kanban-<name>-token
 # c) point KBCARD_TOKEN_FILE at this board's token file:
 echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>-board.env
 ```
+
+> ⛔ **A custom field's DECLARED TYPE is a board-setup prerequisite, and getting it wrong breaks the board at first use — silently, until the first write.** kanban validates every payload value against its field's declared type, per board, so a contract-fixed key declared with a type that does not accept what these tools *write* rejects every write to it. The one that bites: **`dl_number` must be declared `string`.** Every writer of it — `kbcard --dl`, `next-dl`, `adopt-to-dl`, `dl-a1-register-field` — stamps the canonical `DL-NNNN` **string** through one renderer, so a **`number`**-typed `dl_number` answers every one of those writes `422 {"message":"Must be a number."}`. Its mirror image is just as real, and is why "declare everything string" is not a safe default: **`pr_number` / `issue_number` must be declared `number`**, because `kbcard` coerces a numeric value to a JSON number before the write and a `string`-typed field rejects that with `Must be a string.`
+>
+> ⚠ **The by-ref correlation index does not catch a wrong `dl_number` type** — it canonicalizes a ref by stripping non-digits, so it resolves from *either* type. A healthy-looking index is why the wrong declaration survives setup, not evidence that it is right.
+>
+> **Check what your board actually declares** — `kbcard --board <name> field list` prints each field's `key` **and `type`**. On a DL board, the `dl-a1-register-field` tool both declares `dl_number` correctly on a fresh board and **refuses** on a board that already declares it wrong, printing the remedy. **Fixing a wrong declaration does not cost a delete-and-recreate** — per `kbcard field retype`'s contract the server converts the definition and every stored value in one transaction, issuing no delete: `kbcard --board <name> field retype --field dl_number --to string --restamp-dl` (`--restamp-dl` rewrites the converted values to the canonical `DL-NNNN` form; without it a card holding `305` becomes the string `"305"`, which a custom-field DSL filter spelled `DL-0305` does not match).
 
 > `KBCARD_API` is **board-independent** — set it **once** in `~/.kanban-host.env` (§3), not here. A board env that sets it is **refused** (as of v0.14.0) rather than silently honored, with a message naming the file. What "refused" means per tool: `kbcard`, `dl-a0-backfill-triaged`, `dl-a1-register-field`, and `adopt-to-dl` **exit 2 and do nothing**; `next-dl` **warns and skips the board check**, then still mints from its offline scan (fail-soft by design — but that scan is non-atomic, so fix the board env rather than rely on it; since card#7214 the degrade also prints the cause, and `next-dl --require-counter` refuses at **rc 4** instead of minting from it). `board-snapshot` and `board-card-start` never read a board env's `KBCARD_API` at all, so they ignore one.
 

@@ -1723,6 +1723,30 @@ finding with no owner is abandoned, not filed.
     unchanged; what this member adds is that the advisory figure's "mostly legitimate" gloss is a
     per-instance judgement nobody has made, not a property of the population.
 
+- **A contract-fixed payload key's DECLARED custom-field type is a board precondition that nothing
+  in this repo checks — for every key but one** (card#6517). Every write these tools make to a
+  contract-fixed key is validated by kanban against that field's **declared type, per board**
+  (`CustomFieldValidator::validateValue` dispatches on `$def->type` alone), so the declaration and
+  the JSON type the writer emits are two halves of one contract that live in two different places —
+  the board, and `_kbc_build_payload`. They can disagree silently, and when they do the board
+  rejects **every** write to that key, forever. Two members are known and derivable from the writers
+  themselves: **`dl_number` must be `string`** — `kb_dl_canon` renders `DL-NNNN` and a `number`
+  field answers `422 Must be a number.` — and **`pr_number` / `issue_number` must be `number`** —
+  `_kbc_build_payload`'s `tonumber? // .` coerces them to JSON numbers and a `string` field answers
+  `422 Must be a string.` **Only the first is now checked by a program:**
+  `dl-a1-register-field` declares `dl_number` correctly and reads the type back on the
+  already-registered arm. The second is **prose only** — stated in `docs/INSTALL.md` §3b and
+  `examples/kanban-board.env.example`, enforced by nothing — and prose is what card#6517 already
+  proved insufficient once. The gap is recorded rather than closed because closing it well is not a
+  second copy of the same read: the natural owner is a per-board **precondition check over the whole
+  contract-fixed key set** (one read of the field index, one expected-type table derived from the
+  writers rather than hand-listed), which is a new surface and a new decision about what it refuses,
+  not an edit to the DL setup tool. **What is NOT claimed here:** that the two members above are the
+  whole population. `version_target`, `origin`, `pr_url` and `issue_url` were **not** derived — the
+  three working installs inspected declare them `string`, `enum`, `string` and `url` respectively,
+  which is an observation of what works and not a statement of what is required, and no run of
+  anything has tested the alternatives.
+
 ---
 
 ## Corrections carried forward
