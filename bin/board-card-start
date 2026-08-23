@@ -315,10 +315,14 @@ fi
 # `|| bcs_skip`: unguarded, an unreadable token leaves KB_TOKEN unset and `set -u` aborts the
 # next line — and the installed hook wrapper discards stderr, so that reads as a silent dead
 # hook with no durable log entry.
-# The declaration tiers are this board's env and the host env — there is no default third
-# tier any more (card#7245: the baked ~/.kanban-dev-token made one file the credential for
-# every board on the box). kb_declared_token_file names the file to add the line to on its
-# own stderr; this arm only has to carry the hook's fail-soft policy.
+# The declaration tiers are this board's env and the host env, and under them the coord
+# credential store's `[kanban] api_token_file` pointer is discovered (card#7316). There is no
+# DEFAULT tier any more (card#7245: the baked ~/.kanban-dev-token made one file the credential
+# for every board on the box). The store rung does not weaken the gate above it: it is
+# board-independent and lives outside the repo entirely, so a committed, PR-editable file
+# still cannot select which board's credential this hook sends. kb_declared_token_file names
+# the file to add the line to on its own stderr; this arm only has to carry the hook's
+# fail-soft policy.
 tok_where="${board_envf:-$HOME/.kanban-host.env}"
 tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FILE:-}")" \
     || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
