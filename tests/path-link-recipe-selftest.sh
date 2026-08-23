@@ -30,10 +30,12 @@
 # ⛔ NOT NARROWED TO `__pycache__`. The fixture's refused set includes an ordinarily-named
 # directory and a dangling symlink alongside `__pycache__/`, because the defect is "`bin/` holds
 # something that is not a regular file", not "python wrote a cache". card#6871 closed the one
-# known SOURCE of such an entry (`bin/*.py` no longer mint bytecode) and card#7207 covers CI's
-# `py_compile` re-minting it; `tests/bin-artifact-hygiene-selftest.sh` is the guard on that side —
-# that `bin/` stays clean. THIS file is the other side: the recipe stays correct even when it is
-# not. Neither subsumes the other, and the recipe must not depend on the other guard holding.
+# known SOURCE of such an entry (`bin/*.py` no longer mint bytecode) and card#7207 closed the
+# second — CI's own syntax gate, whose `py_compile` was re-minting it on every local gate run.
+# `tests/bin-artifact-hygiene-selftest.sh` and `tests/python-syntax-gate-selftest.sh` are the
+# guards on that side — that `bin/` stays clean. THIS file is the other side: the recipe stays
+# correct even when it is not. Neither subsumes the other, and the recipe must not depend on
+# the other guard holding.
 #
 # ─────────────────────────── THE PREDICATE, STATED ───────────────────────────
 #

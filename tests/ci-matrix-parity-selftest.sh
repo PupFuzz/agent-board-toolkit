@@ -166,6 +166,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_gha-surface-lib.sh"
 
 WORKFLOWS="$HERE/../.github/workflows"
 _need -r "$WORKFLOWS"
@@ -203,9 +205,18 @@ _mktmp_scratch
 # "green build, test never ran" state this guard exists to report. Today no job in these
 # workflows carries one; the day one does, the right answer is an explicit decision, not a
 # silent pass.
+#
+# THE FILE POPULATION IS NOT DERIVED HERE — `_gha_workflow_files` in `tests/_gha-surface-lib.sh`
+# owns "which YAML documents does GitHub Actions execute", both extensions included, and the
+# paths arrive in argv already C-collated. This file globbed `*.yml`+`*.yaml` inline until
+# card#7207's review found a THIRD copy of that derivation with a NARROWER predicate; the copies
+# are gone rather than corrected one by one. The directory stays a parameter, so the fixture
+# trees below go through the same derivation the live directory does.
 _wf_scan() {
-    python3 - "$1" "$2" <<'PY'
-import glob, os, re, sys, yaml
+    local -a files=()
+    mapfile -t files < <(_gha_workflow_files "$1")
+    python3 - "$2" "${files[@]}" <<'PY'
+import os, re, sys, yaml
 
 # The `pull_request` sub-keys that NARROW which pull requests a workflow observes, and the
 # activity types it must keep to observe all of them — one declaration each, exported as the
@@ -270,7 +281,7 @@ def scalars(node):
     elif isinstance(node, str):
         yield node
 
-mode = sys.argv[2]
+mode = sys.argv[1]
 if mode == 'filter-keys':
     print('\n'.join(FILTER_KEYS))
     sys.exit(0)
@@ -279,15 +290,14 @@ if mode == 'required-types':
     sys.exit(0)
 
 names, files, filtered, readers, stale = set(), [], [], [], []
-for path in sorted(glob.glob(os.path.join(sys.argv[1], '*.yml'))
-                   + glob.glob(os.path.join(sys.argv[1], '*.yaml'))):
+for path in sys.argv[2:]:
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
     if not isinstance(doc, dict):
         continue
     base = os.path.basename(path)
-    # Rule (b). The population is re-derived here, on every run, from every file in the
-    # directory; there is no list of PR-field-reading workflows anywhere in this file.
+    # Rule (b). The population is re-derived on every run, from every file the caller's
+    # directory holds; there is no list of PR-field-reading workflows anywhere in this file.
     if any('github.event.pull_request' in sc for sc in scalars(doc)):
         readers.append(base)
         subscribed = [e for e in PR_EVENTS if trigger(doc, e) is not ABSENT]

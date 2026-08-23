@@ -622,6 +622,28 @@ finding with no owner is abandoned, not filed.
   fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
   dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
   prompted the extraction is not something this lib would have caught.
+- **The GitHub Actions file population, in three gates with TWO predicates** (card#7207) —
+  **EXTRACTED, all three adopted in the same PR.** `ci-matrix-parity-selftest.sh` and
+  `shellcheck-pin-selftest.sh` each globbed `*.yml` **and** `*.yaml` inside their own python
+  heredocs; `python-syntax-gate-selftest.sh`, written last, globbed `*.yml` only — and its whole
+  purpose is an assertion of ABSENCE over that population. Measured before the fix: a planted
+  `.github/workflows/sneak.yaml` running `python3 -m py_compile bin/*.py` passed it at `all checks
+  passed`, and the byte-identical file renamed `.yml` red it. The divergence, not the miss, is the
+  entry: a third copy of a derivation is where a narrower predicate gets minted unobserved, and the
+  copies were near-identical enough that per-file review read the narrow one as covered.
+  `tests/_gha-surface-lib.sh` now owns it — `_gha_workflow_files <dir>` (both extensions, one level)
+  and `_gha_action_files <root>` (`action.yml`/`action.yaml` at **any** depth, `.git` pruned, since
+  `uses: ./x/y` resolves to `x/y/action.yml` and a nested action is as executable as a top-level
+  one). **The directory stays a PARAMETER**, exactly as `_shipped-shell-lib.sh` keeps its two halves
+  separate: that is what lets each gate point the same derivation at its own planted fixture tree,
+  which two of the three already did and none could have kept doing against a hardcoded root.
+  Adoption is behaviour-preserving **by measurement**: all nine `ci-matrix-parity` projections and
+  both siblings' complete assertion streams are byte-identical before and after. ⚠ **One property
+  to know before editing it:** narrowing the shared predicate back to `*.yml` reds
+  `python-syntax-gate-selftest.sh` and **leaves both siblings green** — their own fixtures are
+  `.yml` files, so nothing there notices. One owner with one guard is the intended shape (three
+  copies of the fixture would re-mint what this removed), but it means an edit to the lib is
+  answered by that one gate, and it is recorded in the lib's header at the loop it guards.
 - **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
   parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
   inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not

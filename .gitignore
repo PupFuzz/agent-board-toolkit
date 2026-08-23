@@ -4,9 +4,11 @@
 *.env
 .env*
 .kanban-*
-# Python bytecode. The bin/*.py entry points no longer write any (card#6871 — bin/ is
-# symlinked onto PATH entry by entry, so a __pycache__ there becomes a PATH entry); the CI
-# py_compile step still does, and this keeps that and any hand-run out of the index.
+# Python bytecode. Both routes that were minting it are closed: the bin/*.py entry points
+# (card#6871 — bin/ is symlinked onto PATH entry by entry, so a __pycache__ there becomes a
+# PATH entry), and CI's own syntax gate (card#7207 — it ran py_compile, which writes the
+# bytecode it produces; it now uses compile(), which does not). A HAND-RUN of py_compile still
+# mints one, and this keeps that out of the index.
 # ⚠ An ignore is not an absence: an ignored directory in bin/ is invisible to `git status`
 # while still being globbed by every consumer of bin/*. That is what card#6871 was.
 __pycache__/
