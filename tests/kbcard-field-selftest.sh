@@ -111,10 +111,17 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
 BIN="$HERE/../bin/kbcard"
 _need -r "$BIN"
+# ⛔ --home, AND BEFORE THE SOURCE — both halves are load-bearing (card#7245). bin/kbcard
+# resolves `KB_LOG_FILE="${KBCARD_LOG_FILE:-$HOME/.kbcard-failures.log}"` at SOURCE time, so a
+# scratch HOME established afterwards is too late: the path is already baked from the real one.
+# Without this, running this file appended its fabricated HTTP-422/413/500 bodies to the
+# operator's live ~/.kbcard-failures.log — measured, 20 records / 8746 bytes per run — which is
+# a triage surface, so the suite was manufacturing evidence in it. The property is that the
+# suite writes NOTHING outside its scratch, and a scratch HOME buys that for every $HOME-derived
+# path in the bin at once, rather than one override per path as they are noticed.
+_mktmp_scratch --home
 # shellcheck source=/dev/null
 source "$BIN"   # main-guarded — defines the field fns without running main()
-
-_mktmp_scratch
 
 # The verb reads KB_BOARD_ID; kb_api is stubbed so KB_API/KB_TOKEN are never used.
 export KB_BOARD_ID=1
@@ -1552,10 +1559,12 @@ _PATCH_FAIL="9"
 rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "a FAILING restamp PATCH → rc 1"                   "1"    "$rc"
 eq "…names it as a PATCH failure"                     "true" "$(has 'the restamp PATCH FAILED on 1 card(s): 9' "$ERR")"
-# kb_api returns 1 for a TIMED-OUT PATCH exactly as it does for a refused one, and a
-# timed-out write may already be committed — so "this run never wrote them, so each still
-# holds the value the conversion left it with" is a claim about a board nothing read. Same
-# transport, same owner, same wording as the conversion's own 000 arm.
+# kb_api answers a TIMED-OUT PATCH with the same $KB_API_RC_TRANSPORT as a connection it
+# never opened (both read no answer), and a timed-out write may already be committed — and
+# this bucket's bare `||` catches an ANSWERED non-2xx alike (card#6680, the caller-side half
+# left open there) — so "this run never wrote them, so each still holds the value the
+# conversion left it with" is a claim about a board nothing read. Same transport, same
+# owner, same wording as the conversion's own 000 arm.
 eq "…claims UNCERTAINTY, not safety, about the write" "true"  "$(has 'CANNOT say whether it landed' "$ERR")"
 eq "…never claims the card was left untouched"        "false" "$(has 'never wrote them' "$ERR")"
 # The re-run SENTENCE is the caller's here, not the shared note's — on this pass "this

@@ -130,8 +130,6 @@ cfg_commit_only() { printf '%s\n' "$2" > "$R/$1"; }
 # FILENAME carries the version (so the "path contains V ⇒ agrees" arm is exercised). Five
 # comparison units from four entries.
 CFG_BASE='{
-  "main_branch": "main",
-  "dev_branch": "dev",
   "version_file": "VERSION",
   "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
   "artifacts": [
@@ -303,6 +301,88 @@ g -C "$R" add -A; g -C "$R" commit -qm "release: version file relocated at head"
 # narrowing riding along.
 mk_head     head-e5      poison
 mk_cfg_head head-e5-lost poison "$CFG_NO_NOTES"
+# …the same poisoning on an otherwise CORRECT release PR. This is the head that separates
+# "classified as a release of 0.2.0" from "reds for some reason": every member moved and
+# agrees, so it can only pass if the version being shipped was read as 0.2.0 (card#6488).
+g -C "$R" checkout -q -B head-e5-good base-0.1.0
+bump_tree good
+printf '# was 0.1.0\n0.2.0\n' > "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "release: 0.2.0, with a version-shaped comment above the version"
+# …the ECHO shape: the prepended line carries a value the fork point ALREADY carries, and no
+# version is bumped. Nothing is new at head, so this must stay a non-release PR — the control
+# that separates "a value head introduces" from "the version file changed at all".
+g -C "$R" checkout -q -B head-e5-echo base-0.1.0
+printf '# was 0.1.0\n0.1.0\n' > "$R/VERSION"
+echo "changed, but no version bump" > "$R/src.txt"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: a version-shaped comment repeating the current version"
+# …and the AMBIGUOUS shape: the classifying match is unchanged and head introduces TWO values,
+# so which one is being shipped is unknowable. rc 2 — never a pass.
+g -C "$R" checkout -q -B head-e5-two base-0.1.0
+bump_tree poison
+printf '# was 0.1.0\n0.2.0\n# and 0.3.0 is coming\n' > "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "release: two candidate versions above and below"
+# …and the same shape with ONE new value written TWICE. The candidate set is a SET: counting
+# the repeat as a second candidate would refuse a perfectly ordinary release whose version
+# file happens to name the version twice (a heading and a value).
+g -C "$R" checkout -q -B head-e5-twice base-0.1.0
+bump_tree good
+printf '# was 0.1.0\n0.2.0\n# shipped as 0.2.0\n' > "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "release: the new version named twice"
+# …the fork point carries a stray version-shaped value that head REMOVES, on a PR that bumps
+# nothing. A value present at the fork point and absent at head is a deletion, not a release,
+# so this must stay rc 0 — the other side of the direction rule. `MULTI` is a version file of
+# its own (with its own config) so the stock cases keep their single-valued one.
+g -C "$R" checkout -q -B head-drop-stray base-0.1.0
+printf '0.1.0\n# superseded 9.8.7\n' > "$R/MULTI"
+cfg cfg-multi.json '{ "version_file": "MULTI", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the stray-value case"
+g -C "$R" branch base-multi
+printf '0.1.0\n' > "$R/MULTI"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: drop the stray version-shaped line"
+# …and a version_regex that is NOT three segments. `version_regex` is the ONE declaration of
+# what a version looks like, and until card#7208 this file applied a hardcoded
+# `[0-9]+(\.[0-9]+){1,3}` AFTER it — a second stage that only ever saw what the config regex
+# had already matched, so it could narrow that match but never widen it. A single-segment
+# version_regex is legal and this tool REFUSED it outright (`no version matched version_regex`,
+# rc 2 — a message that was also false: it matched). SEG is its own version file with its own
+# config so the stock cases keep their three-segment one.
+g -C "$R" checkout -q -B head-seg base-0.1.0
+printf '7\n' > "$R/SEG"
+cfg cfg-seg.json '{ "version_file": "SEG", "version_regex": "[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the single-segment config case"
+g -C "$R" branch base-seg
+printf '8\n' > "$R/SEG"
+g -C "$R" add -A; g -C "$R" commit -qm "release: single-segment version 7 → 8"
+# …and the two shapes that pin WHICH KEY the candidate-set dedupe runs on. The set feeds
+# `${#NEW_AT_HEAD[@]}`, which is release / ::warning:: / rc-2 refusal, so the key is a verdict
+# input and not a list detail. Until card#7208 the key was a hardcoded `[0-9]+(\.[0-9]+){1,3}`
+# numeric run pulled back out of each match; it is the whole match now. KEYSPELL is a
+# `version_regex` admitting an optional `v`, so one version has two spellings the old key
+# folded into one candidate. KEYTRUNC is a legal FIVE-segment config, where that same fold ran
+# the other way: two genuinely DIFFERENT versions both keyed to the same truncated four
+# segments, so one was silently dropped and the survivor was asserted against a string the
+# file never carried. Both files carry their own config so the stock cases keep theirs.
+g -C "$R" checkout -q -B head-key-two base-0.1.0
+printf '0.1.0\n' > "$R/KEYSPELL"
+cfg cfg-keyspell.json '{ "version_file": "KEYSPELL", "version_regex": "v?[0-9]+\\.[0-9]+\\.[0-9]+",
+  "artifacts": ["VERSION → {{version}}"] }'
+printf '1.2.3.4.5\n' > "$R/KEYTRUNC"
+cfg cfg-keytrunc.json '{ "version_file": "KEYTRUNC", "version_regex": "[0-9]+(\\.[0-9]+){4}",
+  "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the dedupe-key cases"
+g -C "$R" branch base-key
+printf '0.1.0\nnext: v2.0.0 == 2.0.0\n' > "$R/KEYSPELL"
+printf '1.2.3.4.5\nnext: 2.0.0.0.5\nalt:  2.0.0.0.9\n' > "$R/KEYTRUNC"
+g -C "$R" add -A; g -C "$R" commit -qm "chore: two candidate spellings, and two truncation-colliding candidates"
+# CONTROL for both — the SAME configs, each with ONE new candidate written twice. If rc 2 above
+# came from anything other than the candidate COUNT (the regexes, the extra text, the files
+# themselves) this would refuse too, and it must not.
+g -C "$R" checkout -q -B head-key-one base-key
+printf '0.1.0\nnext: v2.0.0 and again v2.0.0\n' > "$R/KEYSPELL"
+printf '1.2.3.4.5\nnext: 2.0.0.0.5\nagain: 2.0.0.0.5\n' > "$R/KEYTRUNC"
+g -C "$R" add -A; g -C "$R" commit -qm "release: one candidate, written twice, in each file"
 # WIDENING — a third alternative added to the live brace set. Under a string-identity
 # comparison unit this reds (the old entry string is gone), which is exactly what the expanded
 # unit exists to prevent.
@@ -527,6 +607,11 @@ cfg cfg-badentry-narrow.json '{ "version_file": "VERSION", "version_regex": "[0-
 cfg cfg-trailingjunk-base.json "$CFG_ONE_MEMBER"
 cfg cfg-trailingjunk.json      "$CFG_TRAILING_JUNK"
 cfg no-version-file.json '{ "artifacts": ["VERSION → {{version}}"] }'
+# A repo that declares NO artifacts and no classification keys — a vendored adopter that took
+# `bin/` but never opted into the release-artifact gate. Under the normal mode the empty-set
+# opt-out answers it before the keys are ever read; under --classify-only there is no opt-out
+# to reach, so this is the config that used to be told it "declares artifacts".
+cfg no-keys-no-artifacts.json '{ "artifacts": [] }'
 cfg bad-syntax.json      '{"artifacts": [,]}'
 cfg empty-cfg.json       ''
 cfg bad-obj-array.json   '[1,2]'
@@ -783,27 +868,123 @@ eq "…and saying relocation is a cause"       "true" "$(has 'head relocated the
 run base-0.1.0 head-good
 eq "control: no relocation → rc 0"          "0"    "$RC"
 
-echo "== (case 22) E5: poisoning the version file's CONTENT silently skips the member legs =="
-# Reproduced and DOCUMENTED, not fixed: classification is by version VALUE and head owns the
-# file's content, which is a property of the tool's founding design rather than of this change.
-# What this card closes is the COMPOUNDING — see the second half.
+echo "== (case 22) E5: a version-shaped line above the version line no longer skips the gate =="
+# PRE-FIX (card#6055 shipped this as a DOCUMENTED non-closure, and the assertions below said
+# `rc 0` / `version unchanged (0.1.0)`): classification is by the FIRST regex match over
+# content head owns, so one prepended `# was 0.1.0` made both ends extract 0.1.0 and every
+# member leg silently did not run. card#6488 compares the two ends' SETS of matched values on
+# an equal classifying value: the one value head introduces names the version being shipped.
 eq "witness: head's version file really carries 0.2.0 as well" "true" \
    "$(has '0.2.0' "$(g -C "$R" show head-e5:VERSION)")"
+eq "witness: …below a line carrying the fork point's version" "true" \
+   "$(has '# was 0.1.0' "$(g -C "$R" show head-e5:VERSION)")"
+eq "witness: …so the FIRST match is identical at both ends" "0.1.0" \
+   "$(g -C "$R" show head-e5:VERSION | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 run base-0.1.0 head-e5
-eq "documented today: rc 0"                 "0"    "$RC"
-eq "…reading as 'not a release PR'"         "true" "$(has 'version unchanged (0.1.0)' "$OUT")"
-eq "…so the missing member is never named"  "false" "$(has "not moved: 'NOTES.md'" "$OUT")"
-# CONTROL — the same PR unpoisoned reds, which is what makes the non-run above a real skip
-# rather than a PR with nothing wrong with it.
+eq "rc 1"                                    "1"    "$RC"
+# The needle is the VERDICT line, not the words "version unchanged" — which now also appear
+# inside the classification warning's own remedy prose, where they would answer about the
+# message rather than about the verdict.
+eq "…and does NOT take the non-release verdict" "false" \
+   "$(has 'not a release PR; nothing to assert' "$OUT")"
+eq "…nor its narrowing-only spelling"           "false" \
+   "$(has 'not a release PR, so no member was asserted' "$OUT")"
+eq "…naming the version it is judged by"     "true" "$(has 'classifying this as a release PR of 0.2.0' "$OUT")"
+eq "…and naming the member that did not move" "true" "$(has "not moved: 'NOTES.md'" "$OUT")"
+# The rc-1 above is the "missing member" verdict, not a refusal to classify: the same
+# poisoning on an otherwise CORRECT release PR must go GREEN, asserting every member against
+# 0.2.0. Without this, "reds when poisoned" would also be true of a tool that reds on any
+# version file it finds odd.
+run base-0.1.0 head-e5-good
+eq "an otherwise correct poisoned release is rc 0" "0"    "$RC"
+eq "…asserting every member against 0.2.0"         "true" \
+   "$(has 'all 5 declared artifact member(s) moved and agree with 0.2.0' "$OUT")"
+eq "…behind the warning that says why"             "true" \
+   "$(has '::warning::release-artifacts-check' "$OUT")"
+# CONTROL — the same PR unpoisoned reds identically, so the poisoned verdict above is the
+# tool doing its job rather than a second, differently-motivated failure.
 run base-0.1.0 head-not-moved
 eq "control: unpoisoned, the same PR reds"  "1"    "$RC"
 eq "control: …naming the member"            "true" "$(has "not moved: 'NOTES.md'" "$OUT")"
-# …and the compounding IS closed: E5 buys no leniency on the narrowing check.
+# NEGATIVE CONTROL — a version-shaped line that repeats a value the fork point ALREADY carries
+# introduces nothing, so an ordinary PR stays an ordinary PR. This is what keeps the predicate
+# on "a value head introduced" rather than on "the version file changed", which would classify
+# every comment edit as a release and red it against a version nobody is shipping.
+run base-0.1.0 head-e5-echo
+eq "an echoed value is NOT a release"       "0"    "$RC"
+eq "…and still reads as version unchanged"  "true" "$(has 'version unchanged (0.1.0)' "$OUT")"
+eq "…with no classification warning"        "false" "$(has '::warning::release-artifacts-check' "$OUT")"
+# …nor is a value the fork point carries and head DROPS.
+eq "witness: the fork point carries a stray value head removes" "true" \
+   "$(has '9.8.7' "$(g -C "$R" show base-multi:MULTI)")"
+eq "witness: …and head does not"                                "false" \
+   "$(has '9.8.7' "$(g -C "$R" show head-drop-stray:MULTI)")"
+run base-multi head-drop-stray --config cfg-multi.json
+eq "a dropped value is NOT a release"       "0"    "$RC"
+eq "…and still reads as version unchanged"  "true" "$(has 'version unchanged (0.1.0)' "$OUT")"
+
+echo "== the version SHAPE comes from version_regex alone — no second pattern here (card#7208) =="
+# RED WHEN REVERTED. Re-adding the deleted `[0-9]+(\.[0-9]+){1,3}` numeric pull turns this
+# back into the rc-2 refusal described at the fixture: the pull needs two segments, so a
+# legal single-segment version_regex extracted nothing and the range could not be classified
+# at all — a refusal on a config this tool's own error text tells consumers to write.
+run base-seg head-seg --config cfg-seg.json --classify-only
+eq "a single-segment version_regex classifies" "0"          "$RC"
+eq "…as a release of the value head carries"   "release 8"  "$OUT"
+# CONTROL — the same config over an UNCHANGED single-segment version is not a release, so the
+# rc-0 above is the classifier running, not a mode that says "release" to everything.
+run base-seg base-seg --config cfg-seg.json --classify-only
+eq "…and an unchanged one is not a release"    "not-release 7" "$OUT"
+
+echo "== the candidate-set dedupe keys on the WHOLE match, and that decides a verdict (card#7208) =="
+# RED WHEN THE KEY IS NARROWED. Re-adding the deleted numeric pull as the dedupe key folds
+# `v2.0.0` and `2.0.0` onto one candidate, and this rc-2 refusal becomes an rc-0 `release`
+# that runs every artifact leg — an accept/reject move, not a message change.
+eq "witness: head carries both spellings" "true" \
+   "$(has 'v2.0.0 == 2.0.0' "$(g -C "$R" show head-key-two:KEYSPELL)")"
+run base-key head-key-two --config cfg-keyspell.json --classify-only
+eq "two spellings of one version are two candidates → rc 2" "2" "$RC"
+eq "…naming both, unnarrowed"               "true" "$(has 'v2.0.0 2.0.0' "$OUT")"
+eq "…and never answering 'not a release'"   "false" "$(has 'not-release' "$OUT")"
+# …and the same key in the other direction: two candidates that a four-segment fold would have
+# made ONE, shipping a version string the file never carried.
+run base-key head-key-two --config cfg-keytrunc.json --classify-only
+eq "two five-segment candidates that share four segments → rc 2" "2" "$RC"
+eq "…naming both at full length"            "true" "$(has '2.0.0.0.5 2.0.0.0.9' "$OUT")"
+# (No literal "not the truncation" assertion is written here: `has` is a SUBSTRING test and
+# `2.0.0.0` is a substring of `2.0.0.0.5`, so such a check could not fail — a decoration. What
+# discriminates is the rc and the full-length names above, plus the remedy this file points at
+# on every ambiguous refusal.)
+eq "…and pointing at the version_regex as the remedy" "true" "$(has 'Tighten the version_regex' "$OUT")"
+# CONTROL — one candidate written twice, both configs. Proves the refusals above are the
+# candidate COUNT and not the configs, the files, or the surrounding text.
+run base-key head-key-one --config cfg-keyspell.json --classify-only
+eq "control: one spelling written twice is one candidate" "0"             "$RC"
+eq "control: …classified whole, not narrowed"             "release v2.0.0" \
+   "$(printf '%s\n' "$OUT" | tail -1)"
+run base-key head-key-one --config cfg-keytrunc.json --classify-only
+eq "control: one five-segment candidate written twice"    "0"                 "$RC"
+eq "control: …classified at full length"                  "release 2.0.0.0.5" \
+   "$(printf '%s\n' "$OUT" | tail -1)"
+# AMBIGUOUS — the classifying match unchanged and TWO values new at head. The version being
+# shipped is unknowable, so this refuses; it is never read as "not a release PR", which is the
+# silent non-run this whole case exists about.
+run base-0.1.0 head-e5-two
+eq "rc 2"                                   "2"    "$RC"
+eq "…naming both candidates"                "true" "$(has '0.2.0 0.3.0' "$OUT")"
+eq "…and not taking the non-release verdict" "false" \
+   "$(has 'not a release PR; nothing to assert' "$OUT")"
+eq "…nor asserting a member against either candidate" "false" "$(has 'OK — VERSION moved' "$OUT")"
+eq "…and pointing at the version_regex as the remedy" "true" "$(has 'Tighten the version_regex' "$OUT")"
+# CONTROL for that refusal — ONE new value written twice is one candidate, not two.
+run base-0.1.0 head-e5-twice
+eq "control: a repeated new value is one candidate → rc 0" "0" "$RC"
+eq "control: …asserting every member against 0.2.0"        "true" \
+   "$(has 'all 5 declared artifact member(s) moved and agree with 0.2.0' "$OUT")"
+# …and the compounding stays closed: the narrowing check never read the classification.
 run base-0.1.0 head-e5-lost
 eq "E1 + E5 still reds"                     "1"    "$RC"
 eq "…on the narrowing"                      "true" "$(has 'NARROWED' "$OUT")"
-eq "…even though the PR reads as a non-release one" "true" \
-   "$(has 'not a release PR, so no member was asserted' "$OUT")"
 
 echo "== (case 20) retired_artifacts of a non-array type is a config error =="
 # Unguarded, `.retired_artifacts[]` on a string is a jq runtime error swallowed by the `while
@@ -1383,8 +1564,100 @@ run base-0.1.0 head-good --config no-version-file.json
 eq "rc 2"                    "2"    "$RC"
 eq "…and names what is missing" "true" "$(has 'no version_file' "$OUT")"
 
+echo "== a repo that declares NO artifacts is told the TRUTH about which key it is missing =="
+# THE PREMISE OF A REFUSAL IS A CLAIM ABOUT THE WORLD. `--classify-only` skips the empty-set
+# opt-out (the artifact legs are not its question), so a config carrying `"artifacts": []`
+# reaches the classification-key check and used to die with "declares artifacts but no
+# version_file" — false about that config, and the entire diagnosis a vendored adopter gets
+# when their promote job reds rc 2 on a key they never set.
+run base-0.1.0 head-good --config no-keys-no-artifacts.json
+eq "no artifacts + no keys, normal mode → rc 0" "0"    "$RC"
+eq "…via the empty-set opt-out"                 "true" "$(has 'no artifacts declared' "$OUT")"
+run base-0.1.0 head-good --config no-keys-no-artifacts.json --classify-only
+eq "…and under --classify-only → rc 2"          "2"    "$RC"
+eq "…never softened into not-release"           "false" "$(has 'not-release' "$OUT")"
+eq "…naming the key that is missing"            "true" "$(has 'declares no version_file' "$OUT")"
+eq "…NOT claiming it declares artifacts"        "false" "$(has 'declares artifacts but no' "$OUT")"
+eq "…and saying the keys are the MODE's need"   "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+# THE PREMISE IS CONDITIONAL ON THE MODE, NOT ON THE DECLARATION, and deliberately so: under
+# --classify-only the artifact sets are never collected (that read carries its own refusals),
+# so the tool does not KNOW whether any member is declared and must not say. The mode's message
+# therefore claims nothing about artifacts either way — asserted here on the config that DOES
+# declare a set, which is the half a mode-blind reword would have got wrong.
+run base-0.1.0 head-good --config no-version-file.json --classify-only
+eq "control: a declared set with no keys → rc 2"   "2"    "$RC"
+eq "control: …gets the same mode-conditional text" "true" \
+   "$(has 'required in this mode even when no artifact is declared' "$OUT")"
+eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares artifacts but no' "$OUT")"
+# …while the NORMAL mode, where the set IS collected and the empty-set opt-out has already been
+# passed, keeps the original premise — that arm is driven above ("a declared set with no
+# version_file is a CONFIG error"), so this fix narrows nothing.
+
+echo "== --classify-only: the release rule, EXPOSED — one implementation, not two (card#6579) =="
+# WHY THIS BLOCK EXISTS. `release-tag-check` must know whether a post-merge push is a release
+# before it asserts a tag, and re-deriving that there would have been a SECOND rule free to
+# drift from this one. The mode exposes THIS rule instead, so these cases pin the contract its
+# caller depends on: one machine-readable line, rc 0 for BOTH answers, and the artifact legs
+# not merely ignored but SKIPPED.
+run base-0.1.0 head-good --classify-only
+eq "a release range → rc 0"                 "0"              "$RC"
+eq "…and reports the release verdict"       "release 0.2.0"  "$OUT"
+run base-0.1.0 head-nonrelease --classify-only
+eq "a non-release range → rc 0"             "0"              "$RC"
+eq "…and reports the non-release verdict"   "not-release 0.1.0" "$OUT"
+
+# THE ARTIFACT LEGS ARE SKIPPED, NOT RUN-AND-IGNORED. Each fixture below is one this tool
+# REFUSES in its normal mode — that is asserted above, so these are not vacuous — and each must
+# still classify cleanly for a caller asking only "is this a release?".
+run base-0.1.0 head-not-moved --classify-only
+eq "a member that did not move still classifies" "0"         "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+eq "…and reports no member failure"         "false"          "$(has '::error::' "$OUT")"
+run base-0.1.0 head-e1 --classify-only
+eq "an unacknowledged LOST member still classifies" "0"      "$RC"
+eq "…and reports no narrowing"              "false"          "$(has 'NARROWED' "$OUT")"
+run base-0.1.0 head-wholesale --classify-only
+eq "a repo declaring NO artifacts still classifies" "0"      "$RC"
+eq "…as a release"                          "release 0.2.0"  "$OUT"
+
+# THE MODE ANSWERS WITH THE WHOLE RULE, NOT ITS FIRST CLAUSE. A range whose classifying match
+# is EQUAL at both ends while head introduces one new value is a release (card#6488), and a
+# `--classify-only` that short-circuited on `BASE_VERSION = HEAD_VERSION` would answer
+# `not-release` for exactly those ranges — the second rule this mode exists to prevent, and the
+# one that would leave `release-tag-check` asserting no tag on a real release. The E5 fixtures
+# above already pin the normal mode's verdict on the same ranges, so these are not vacuous.
+run base-0.1.0 head-e5-good --classify-only
+eq "a poisoned but real release still classifies" "0"     "$RC"
+eq "…as a release of the value head introduced"   "true"  "$(has 'release 0.2.0' "$OUT")"
+eq "…and the verdict is the LAST line, after the warning that says why" \
+                                                  "release 0.2.0" "$(printf '%s\n' "$OUT" | tail -1)"
+run base-0.1.0 head-e5-echo --classify-only
+eq "an echoed value is still NOT a release"       "0"     "$RC"
+eq "…and reports the non-release verdict"         "not-release 0.1.0" "$OUT"
+run base-0.1.0 head-e5-two --classify-only
+eq "an ambiguous shipped version still refuses"   "2"     "$RC"
+eq "…and does NOT answer not-release"             "false" "$(has 'not-release' "$OUT")"
+
+# EVERY rc-2 REFUSAL SURVIVES THE MODE. A range this tool cannot classify must never read as
+# "not a release" — that misclassification is a silent non-run of the caller's whole check.
+run unrelated head-good --classify-only
+eq "no common ancestor still refuses"       "2"              "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
+run base-0.1.0 head-noversion --classify-only
+eq "an unreadable version_file still refuses" "2"            "$RC"
+eq "…and does NOT answer not-release"       "false"          "$(has 'not-release' "$OUT")"
+
 echo "== value-taking flags reject an EMPTY value, and both refs are required =="
-for f in --base --head --config; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--base --head --config)
+expect_value_flags "$BIN" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
   rc=0; err="$("$BIN" "$f" "" 2>&1)" || rc=$?
   eq "$f \"\" → rc 2"         "2"    "$rc"
   eq "$f \"\" names the flag" "true" "$(has "$f requires a non-empty value" "$err")"

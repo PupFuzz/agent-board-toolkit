@@ -18,7 +18,9 @@ starting point — bounded because the gate makes one `gh` call per backing sour
 authoritative per-card gate already runs in `kbcard archive` at archive time, so gating
 the whole historical done backlog here would be a slow network storm for no added safety.
 It uses the SAME shared GitHub-state resolver and kanban_common locator as
-`_kbc-may-archive.py` (both live in `_kbc-archive-lib.py`; canon #5). The surviving-cards
+`_kbc-may-archive.py`, and the same board-shape readers (`stage_field_maps` /
+`live_cards`) as `_kbc-stale-blocker.py` — all four live in `_kbc-archive-lib.py`
+(canon #5). The surviving-cards
 set is EVERY non-archived card on the board, so a live source that still has a
 non-archived twin is (correctly) reported eligible.
 
@@ -31,6 +33,10 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+
+# `bin/` is PATH-linked entry by entry, so no `.pyc` may be minted in it — and only an ENTRY
+# POINT can suppress one (`_kbc-archive-lib.py`'s header owns the contract). card#6871.
+sys.dont_write_bytecode = True
 
 _LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_kbc-archive-lib.py")
 
@@ -46,24 +52,6 @@ def _load_lib():
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
-
-
-def _stage_field_maps(board: dict) -> "tuple[dict, dict]":
-    """({stage_id: lane_type}, {stage_id: name}) from the board's
-    workflows[].stages[] (a board GET's own stage shape)."""
-    lane: dict = {}
-    name: dict = {}
-    for wf in board.get("workflows") or []:
-        for s in wf.get("stages") or []:
-            lane[s.get("id")] = s.get("lane_type")
-            name[s.get("id")] = s.get("name")
-    return lane, name
-
-
-def _non_archived(board: dict) -> list:
-    """Live cards from the ONE board GET: not archived, not deleted."""
-    return [t for t in (board.get("tasks") or [])
-            if not t.get("archived_at") and not t.get("deleted_at")]
 
 
 def main() -> int:
@@ -120,9 +108,9 @@ def main() -> int:
             errors += 1
             continue
 
-        lane, name = _stage_field_maps(board)
+        lane, name = lib.stage_field_maps(board)
         cfg_repo = (bc.get("repo") or "").strip() or None
-        surviving = _non_archived(board)
+        surviving = lib.live_cards(board)
         terminal = [t for t in surviving
                     if lane.get(t.get("workflow_stage_id")) == "done"]
 

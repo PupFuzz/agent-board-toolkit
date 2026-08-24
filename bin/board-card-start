@@ -57,7 +57,13 @@ KB_PROG="board-card-start"
 _bcs_is_placeholder_host() {
     local api="${1:-}"
     [ -z "$api" ] && return 0
-    printf '%s' "$api" | grep -qiE '://([^/]*\.)?example\.(com|net|org)([:/]|$)|://([^/]*\.)?(invalid|test|example)([:/]|$)|://localhost([:/]|$)'
+    # Herestring, never `printf … | grep -q` (card#7175): under `pipefail` a `grep -q` that
+    # matches exits while its writer is still writing, the writer fails on the closed pipe, and
+    # `pipefail` promotes its non-zero status — a MATCH read as a NON-MATCH. A bash builtin
+    # upstream is not exempt; it is forked into a subshell and dies the same way once the payload
+    # crosses the 64 KiB pipe buffer. `$api` is short today, which makes this latent, not safe.
+    # `tests/pipeline-free-match-selftest.sh` owns the mechanism in full.
+    grep -qiE '://([^/]*\.)?example\.(com|net|org)([:/]|$)|://([^/]*\.)?(invalid|test|example)([:/]|$)|://localhost([:/]|$)' <<< "$api"
 }
 
 # kb_bcs_log <reason>: the loud + DURABLE diagnostic for an *attempted-but-failed* move (a
@@ -309,8 +315,19 @@ fi
 # `|| bcs_skip`: unguarded, an unreadable token leaves KB_TOKEN unset and `set -u` aborts the
 # next line — and the installed hook wrapper discards stderr, so that reads as a silent dead
 # hook with no durable log entry.
-kb_read_token "${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}}" \
-    || bcs_skip "kanban token file not readable: ${board_tok:-${KB_HOST_TOKEN_FILE:-$HOME/.kanban-dev-token}} (create ~/.kanban-host.env; see docs/INSTALL.md)"
+# The declaration tiers are this board's env and the host env, and under them the coord
+# credential store's `[kanban] api_token_file` pointer is discovered (card#7316). There is no
+# DEFAULT tier any more (card#7245: the baked ~/.kanban-dev-token made one file the credential
+# for every board on the box). The store rung does not weaken the gate above it: it is
+# board-independent and lives outside the repo entirely, so a committed, PR-editable file
+# still cannot select which board's credential this hook sends. kb_declared_token_file names
+# the file to add the line to on its own stderr; this arm only has to carry the hook's
+# fail-soft policy.
+tok_where="${board_envf:-$HOME/.kanban-host.env}"
+tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FILE:-}")" \
+    || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
+kb_read_token "$tokfile" \
+    || bcs_skip "kanban token file not readable: $tokfile (see docs/INSTALL.md §3)"
 token="$KB_TOKEN"
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host
@@ -327,11 +344,18 @@ if [ -z "$api" ]; then
     bcs_skip "no usable kanban api_base — committed .release-pr.json is host-scrubbed/absent and \$KBCARD_API is unset (create ~/.kanban-host.env; see docs/INSTALL.md)"
 fi
 
+# THE ONLY SPELLING OF THE BASE THAT MAY BE RENDERED, resolved once here so every message
+# from this point on inherits it rather than having to remember (card#7500). An api_base is
+# allowed to carry userinfo (`https://u:pw@host/api/v3`) and the host guard ACCEPTS it by
+# design — while this hook's diagnostics go to a DURABLE log ($KB_BCS_LOG, kb_bcs_log above),
+# where a password outlives the run on disk. Reads $api, which is final by now.
+api_shown="$(kb_redact_url_userinfo "$api")"
+
 # Guard the api_base before sending the token — a malicious .release-pr.json edit (or
 # host-env value) must not exfiltrate the token to an untrusted host (#3570). Fail-SOFT
 # (exit 0 — this runs from a post-checkout hook and must NEVER block a checkout) but
 # LOUD on stderr; the token is simply never sent when the host isn't trusted.
-kb_require_https_host "$api" || bcs_skip "api_base '$api' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
+kb_require_https_host "$api" || bcs_skip "api_base '$api_shown' failed the https-host trust guard (KANBAN_EXPECTED_HOST)"
 
 # The card read + the two writes below go through the shared kb_api / kb_api_status, which
 # resolve the host and bearer from KB_API / KB_TOKEN. api is the effective base resolved+guarded
@@ -366,7 +390,8 @@ fi
 branch_just_created() {
     local last ts age
     last="$(git reflog show --date=unix "$branch" 2>/dev/null | tail -1)" || return 1
-    printf '%s' "$last" | grep -q 'branch: Created from' || return 1
+    # Herestring for the reason _bcs_is_placeholder_host states (card#7175).
+    grep -q 'branch: Created from' <<< "$last" || return 1
     ts="$(printf '%s' "$last" | grep -oE '@\{[0-9]+\}' | tr -d '@{}')"
     [ -n "$ts" ] || return 1
     age=$(( $(date +%s) - ts ))
@@ -433,7 +458,7 @@ if [ "$http" != "200" ]; then
     # Attribute the failure to its ACTUAL cause. Only a 404 means the card isn't there.
     case "$http" in
         404) ;;   # fall through to the not-a-card handling below
-        000) bcs_skip "card #$cid could not be read — the kanban API at $api is unreachable; the card was NOT confirmed missing" ;;
+        000) bcs_skip "card #$cid could not be read — the kanban API at $api_shown is unreachable; the card was NOT confirmed missing" ;;
         401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from ${KB_TOKEN_FILE:-?} (HTTP $http); the card was NOT confirmed missing" ;;
         *) bcs_skip "card #$cid could not be read — the kanban API returned HTTP $http; the card was NOT confirmed missing" ;;
     esac

@@ -38,7 +38,17 @@
 # time; gating the whole done backlog here would be a slow network storm). It only
 # surfaces (never archives); a missing sibling is a warning, not a hard failure.
 #
-# A fourth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
+# A fourth READ-ONLY leg — "Stale blocker citations" — is DELEGATED to the sibling
+# `_kbc-stale-blocker.py`: which OPEN card's own text still says it is blocked behind a
+# card that has since become terminal? The claim was TRUE when written and nothing
+# re-reads the card when its blocker ships, so the next reader meets a stale hold and
+# treats pullable work as blocked — a defect no other leg here can see, because the card
+# and the board agree with each other and only the CITED card has moved. Advisory on the
+# SAME contract as the archive leg, with the same asymmetry the reconciler leg states: a
+# stale citation is a FINDING and rides the report at rc 0, so a non-zero from that tool
+# means the instrument could not read a board, not that the boards are clean.
+#
+# A fifth READ-ONLY leg delegates to the sibling `dependabot-deploy-reconcile`: does the
 # fix a CLOSED Dependabot alert claims actually exist in what is deployed and RUNNING? An
 # alert closes when its fix reaches the default branch, while production serves something
 # cut by a separate process — so a repo reading 0-open can be serving the vulnerable
@@ -315,15 +325,30 @@ _bsc_runnable() {
 # Both were reproduced against this implementation. The general case of the second, and the
 # first, are why these stay open; anything a pure READ can decide is fixed instead of disclosed
 # (see _bsc_runnable), so that rationale is never stretched to cover what reading can catch.
+#
+# _bsc_names_start <comment-stripped-source> — does this source name board-card-start? ONE owner
+# for the two files the reach test asks it about (the dispatch hook, and the hook it chains to).
+#
+# It takes the TEXT, never a pipe, and that is the whole point (card#7175). The chained-hook site
+# below used to ask it as `sed … | grep -q`: `grep -q` exits on the first match, closing the pipe
+# while `sed` is still writing, `sed` then fails on the closed pipe, and `pipefail` promotes ITS
+# non-zero status to the pipeline's — so a hook that DOES reach board-card-start read as one that
+# does not, as soon as the hook grew past the 64 KiB pipe buffer. Capturing first and matching
+# second removes the window rather than narrowing it. (The writer's status is 141 where SIGPIPE
+# is at its default and 1 where an ancestor has ignored it — both non-zero, both promoted;
+# `tests/pipeline-free-match-selftest.sh` owns that detail.)
+_bsc_names_start() { grep -q 'board-card-start' <<< "$1"; }
+
 _bsc_hook_reaches() {
-  local f="$1" hook="$2" p refs code broken=""
+  local f="$1" hook="$2" p refs code chained broken=""
   code="$(sed 's/#.*//' "$f" 2>/dev/null)" || return 1
-  grep -q 'board-card-start' <<< "$code" && return 0
+  _bsc_names_start "$code" && return 0
   refs="$(grep -o "/[^\"'[:space:]]*/hooks/$hook" <<< "$code" | sort -u)"
   [[ -n "$refs" ]] || return 1
   while IFS= read -r p; do
     [[ -n "$p" && -r "$p" ]] || continue
-    if sed 's/#.*//' "$p" 2>/dev/null | grep -q 'board-card-start'; then
+    chained="$(sed 's/#.*//' "$p" 2>/dev/null)" || continue
+    if _bsc_names_start "$chained"; then
       # The chained hook must be runnable too — the SAME question, so the same owner. This
       # call is why a fact added to _bsc_runnable can no longer land on one path only.
       if _bsc_runnable "$p" >/dev/null; then return 0; fi
@@ -876,7 +901,13 @@ main() {
     } >&2
     return 1
   fi
-  out="$(python3 "$hook" --detect 2>&1)"; rc=$?
+  # PYTHONDONTWRITEBYTECODE=1: the hook `sys.path.insert`s its own directory and imports a
+  # sibling BY NAME, so the load caches a `.pyc` in the plugin's directory — a tree this repo
+  # does not own and must not leave build artifacts in. The file is foreign and cannot be
+  # edited from here, but this repo owns the INVOCATION and the environment it passes
+  # (card#6871; `tests/bin-artifact-hygiene-selftest.sh` holds this over every foreign-python
+  # invocation in bin/, not just this one).
+  out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$hook" --detect 2>&1)"; rc=$?
   printf '%s\n' "$out" | sed 's/^/  /'
   # The hook's inverse leg is config-gated: a board without inverse_check_columns
   # runs the FORWARD leg only and reports 'inverse check OFF' at rc 0 — a PASS that
@@ -909,6 +940,15 @@ main() {
   echo "   (read-only surfacing via _kbc-archive-eligible.py over the shipped may_archive gate)"
   _bsc_advisory_leg _kbc-archive-eligible.py -f \
     "archive-eligible surfacing" "config/API error above" "" python3
+
+  echo
+  echo "── Stale blocker citations — open cards still citing a blocker that has since become terminal ──"
+  echo "   (read-only surfacing via _kbc-stale-blocker.py; every run prints its own denominator)"
+  _bsc_advisory_leg _kbc-stale-blocker.py -f \
+    "stale-blocker-citation scan" \
+    "a board could not be read, so the population scanned is smaller than the report claims — see above" \
+    "A flagged card is NOT this: findings ride the report at rc 0, so a non-zero here means the instrument." \
+    python3
 
   echo
   echo "── Dependabot fixed-alert vs deployed-tree reconciliation ──"

@@ -17,11 +17,14 @@
 # THE RULE, on the two axes that separate the four:
 #   * `_`-prefixed entries are EXCLUDED, by NAME — the shared lib and the python helpers are
 #     implementation, neither documented as tools nor probed on PATH.
-#   * entries are NOT filtered by type and NOT filtered by the +x bit. The one `_`-prefixed
-#     DIRECTORY (`__pycache__`) is already excluded by the name rule, so a `-type f` filter
-#     would buy nothing and would silently drop two real defects instead: a non-`_` directory
-#     dropped into bin/, and a tool that lost its +x bit. Both stay in the set and read RED at
-#     whichever caller sees them.
+#   * entries are NOT filtered by type and NOT filtered by the +x bit. A `_`-prefixed DIRECTORY
+#     is already excluded by the name rule — `__pycache__` is the one that shows up. Both
+#     routes that were minting it are closed (card#6871 stopped the helpers; card#7207 stopped
+#     CI's own syntax gate, which ran `py_compile bin/*.py`), but a HAND-RUN of that command
+#     still mints one, and the rule is about a non-tool ENTRY rather than about one way of
+#     getting one — so a `-type f` filter would buy nothing and would silently drop two real
+#     defects instead: a non-`_` directory dropped into bin/, and a tool that lost its +x bit.
+#     Both stay in the set and read RED at whichever caller sees them.
 
 # _public_bin_names <dir> — every public tool name in <dir>, C-collated. Globs the directory
 # rather than `find`, so the exclusion is the NAME rule above and nothing else.

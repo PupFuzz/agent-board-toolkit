@@ -9,13 +9,35 @@
 #   server-side (race-free across concurrent allocators). A claim RESERVES the
 #   number — an unused claim simply burns it (gaps are expected and fine). If the
 #   endpoint is absent (older kanban / not deployed) or unreachable, it falls
-#   back SILENTLY to the offline max+1 scan below — so behaviour is unchanged
-#   until the endpoint ships.
+#   back to the offline max+1 scan below — LOUDLY, naming which cause fired
+#   (card#7214, THE FALLBACK IS ANNOUNCED below). What it MINTS is unchanged
+#   until the endpoint ships; what it SAYS while doing so is not.
 #
 #   --peek: return the next number WITHOUT reserving it — reads the board's
 #   NON-CONSUMING `dl-sequence` inspect endpoint when reachable, and falls back to
 #   the offline max+1 scan only when that endpoint is absent/unreachable, under the
-#   same 404-absent vs present-but-errored discipline the claim path uses.
+#   same 404-absent vs present-but-errored discipline the claim path uses, and with
+#   the same announcement and the same --require-counter refusal.
+#
+# THE FALLBACK IS ANNOUNCED, AND CAN BE REFUSED (card#7214). It used to be SILENT:
+# rc 0, a number on stdout, nothing on stderr — byte-identical to an atomic claim,
+# so no caller could tell a RESERVED number from a guess taken off a non-atomic
+# scan. That is the very failure the allocator exists to retire, wearing the
+# allocator's authority. Two changes, neither of which narrows what next-dl accepts:
+#   * EVERY degrade writes its CAUSE to stderr, in that cause's own words.
+#     dl_sequence_call returns rc 1 for FOUR distinct situations — config
+#     unresolved / unreachable / 404-absent / a 2xx carrying no usable value — and
+#     each prints its own line. ONE generic "falling back" line would re-mint the
+#     conflation this closes: the point is not that stderr is non-empty, it is that
+#     the reader can tell "not deployed here" from "I could not reach it".
+#   * --require-counter makes the degrade a REFUSAL: exit 4, mint nothing, so a
+#     caller that needs an atomic number gets a refusal it can surface instead of a
+#     number it cannot distinguish. OPT-IN, and strict is deliberately NOT the
+#     default: a single-stream caller on an install whose kanban predates the
+#     endpoint is safe on the offline scan, and flipping the default would start
+#     failing it. Flipping it is a separate, gated decision.
+# A caller that reads neither the exit code nor stderr is making its own choice;
+# before this it had no choice to make.
 #
 # WHY --peek PREFERS THE ENDPOINT (card#6232). --peek used to go straight to the
 # offline scan. That scan maxes over DLs that reached a CARD, so a number that was
@@ -45,11 +67,16 @@
 # "no board is configured": a named, reachable board holding a real floor reaches the
 # first of these, and a named, reachable board answering 200 reaches the second.
 #   (a) a RESOLVE failure, where no request is issued at all. Its members are
-#       resolve_board_cfg's own exit paths (below), derived from it and from
-#       kb_resolve_env's return contract: curl or jq missing; an unreadable/absent board
-#       env; no api_base for kb_resolve_env to publish, e.g. no ~/.kanban-host.env (rc 3);
-#       a board env that sets KBCARD_API (rc 4); a missing or unreadable token file
-#       (rc 5); a resolved config carrying no board id. kb_resolve_env's rc 2 is
+#       resolve_board_cfg's own exit paths (below) — curl or jq missing, an
+#       unreadable/absent board env, and a resolved config carrying no board id — plus
+#       EVERY nonzero rc of kb_resolve_env, whose return contract is stated in full on
+#       that function in bin/_kb-board-lib.sh and is deliberately NOT copied here. The
+#       copy that used to stand in this spot listed rcs 3/4/5 and was written before the
+#       contract grew rcs 6 (an api host nobody declared) and 7 (no token file declared),
+#       so it read as a complete enumeration while missing two members — and the runtime
+#       message below repeated it, telling operators five things that were not the cause.
+#       One owner, no restatement (card#7245). The one qualifier that IS local, because it
+#       is a fact about this caller and not about the contract: kb_resolve_env's rc 2 is
 #       pre-empted by resolve_board_cfg's own readable-board-env test.
 #   (b) a SUCCESSFUL read out of which no dl_number came — the ordinary case being a
 #       complete read of a board that carries no stamp at all. max_int's grep then matches
@@ -61,12 +88,15 @@
 # NOTE: the offline path is NOT atomic — safe for single-stream allocation; concurrent
 # allocators on a shared board need the claim endpoint (the default) to avoid
 # duplicates — and, per card#6232 above, it is a FLOOR rather than the truth: it cannot
-# observe a claimed-but-unstamped number, so it can only ever under-report.
+# observe a claimed-but-unstamped number, so it can only ever under-report. Reaching it
+# is now always announced on stderr, and --require-counter refuses to reach it at all.
 #
 # Minting numbers in the wrong (far-too-high) range? The board's DL counter is
 # stranded — recover it over the API: see docs/DL-COUNTER-RECOVERY.md.
 #
-# Usage: next-dl kanban|bridge|--board <name> [--peek]   (--board: an arbitrary PM-project board)
+# Usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]
+#   --board: an arbitrary PM-project board.  --require-counter: exit 4 rather than
+#   degrade to the non-atomic offline scan (see card#7214 above).
 set -euo pipefail
 
 # Shared toolkit lib (config resolution + whole-board pagination).
@@ -76,12 +106,14 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 source "$KB_LIB"
 KB_PROG="next-dl"
 
-USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
+USAGE='usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]'
 peek=0
+require_counter=0
 project=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --peek|--no-claim) peek=1 ;;
+        --require-counter) require_counter=1 ;;
         --board)   # FR-2: an arbitrary PM-project board, not just kanban|bridge
             # TWO refusals, deliberately not one condition. This was a single
             # `[[ -n "${1:-}" && -z "$project" ]]` doing two unrelated jobs: the left
@@ -184,26 +216,68 @@ resolve_board_cfg() (
 #       value — benign; the caller falls back to the offline max+1 scan. A 2xx with no
 #       value is deliberately here and not below: it is indistinguishable from an older
 #       response shape, so aborting would break every board predating the route.
+#       ONE rc, FOUR causes — so the rc is NOT the whole answer, and each cause prints
+#       its OWN line through `unusable` before returning (card#7214). The caller cannot
+#       re-derive which fired (that is the conflation), and the operator must be able to:
+#       "this kanban has no such route" and "I could not reach this kanban" are different
+#       actions. Any new way to reach exit 1 from here owes a distinct `unusable` cause.
 #   3 → endpoint PRESENT but the call FAILED (any non-2xx other than 404) — surfaced
 #       loudly; the caller MUST abort rather than quietly answer from the offline scan.
 #       A wrong-but-plausible DL is worse than no DL: it lands in a decision log and
 #       becomes a duplicate correlation key nobody re-checks.
 dl_sequence_call() (
     method="$1"; path="$2"; field="$3"; label="$4"; risk="$5"
-    cfg="$(resolve_board_cfg 2>/dev/null)" || exit 1
+    # The rc-1 cause channel. Written HERE and not by the caller because this is the only
+    # scope that knows WHICH of the four happened; the caller sees one exit code.
+    unusable() { echo "next-dl: NO AUTHORITATIVE NUMBER — the $label $1." >&2; }
+    # ⛔ THE CAUSE IS RELAYED, NEVER ENUMERATED. This line used to list the resolve failures
+    # longhand — a copy of kb_resolve_env's return contract, written before that contract grew
+    # rcs 6 and 7, so an undeclared api host (rc 6) or an undeclared token file (rc 7) printed
+    # a five-item list containing neither: measured, `next-dl kanban` against a host env whose
+    # KANBAN_EXPECTED_HOST did not match its KBCARD_API printed all five causes and then
+    # `board config incomplete (rc=6)` from a LATER call. A restatement of a contract owned
+    # elsewhere is what went stale; the fix is to have no copy, not a longer one.
+    # kb_resolve_env's own contract block in bin/_kb-board-lib.sh owns the rc list, and
+    # resolve_board_cfg already prints the specific reason — so capture that and relay it.
+    #
+    # Emitted HERE only under --require-counter: that mode refuses before the offline scan's
+    # board read, which is the UNmuted second call that prints this same reason in the normal
+    # path. So the reason reaches the operator exactly once in both modes — and the
+    # "Fix the cause above" the refusal prints now has a real cause above it, which under the
+    # old enumeration it did not.
+    cfgerr="$(mktemp)"
+    cfg="$(resolve_board_cfg 2>"$cfgerr")" || {
+        unusable "was never called: this board's config could not be resolved"
+        [[ "$require_counter" -eq 1 ]] && cat "$cfgerr" >&2
+        rm -f "$cfgerr"
+        exit 1
+    }
+    rm -f "$cfgerr"
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) + portable
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
     resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
-        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || exit 1   # connection failure → benign fallback
+        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || {
+        # connection failure → benign fallback. NOT the same as a 404: nothing was learned
+        # about whether the route exists, so "not deployed" would be a fabricated finding.
+        unusable "could not be REACHED (curl transport failure — no HTTP status came back, so whether the route exists here is unknown)"
+        exit 1
+    }
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     case "$http" in
         2[0-9][0-9])
             val="$(kb_parse_resp "$body" -r "$field // empty")"
-            kb_is_uint "$val" && [[ "$val" -ge 1 ]] || exit 1   # 2xx but no positive value → benign fallback
+            kb_is_uint "$val" && [[ "$val" -ge 1 ]] || {
+                # 2xx but no positive value → benign fallback (an older response shape, or
+                # a body this tool cannot read). The route ANSWERED; that is the difference.
+                unusable "answered HTTP $http but carried no usable number at $field (an older response shape, or a body that could not be read)"
+                exit 1
+            }
             printf '%s' "$val" ;;
-        404) exit 1 ;;   # endpoint not deployed — benign; fall back to the offline scan
+        404)   # endpoint not deployed — benign; fall back to the offline scan
+            unusable "is NOT DEPLOYED on this board's kanban (HTTP 404) — this kanban predates the DL-sequence route"
+            exit 1 ;;
         *)
             echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(printf '%s' "$body" | tr '\n' ' ' | head -c 300)" >&2
             exit 3 ;;
@@ -226,6 +300,18 @@ board_peek() {
         "which cannot see a claimed-but-unstamped DL and would under-report"
 }
 
+# The ONE place either mode leaves the authoritative counter for the offline scan, so
+# there is one policy and one wording rather than two that must be kept in agreement.
+# The CAUSE is already on stderr from dl_sequence_call; this adds the DISPOSITION, which
+# is the half --require-counter changes.
+degrade_or_refuse() {   # <endpoint-label>
+    if [[ $require_counter -eq 1 ]]; then
+        echo "next-dl: --require-counter: refusing to mint. The offline max+1 scan is NOT atomic and cannot see a claimed-but-unstamped DL, so a number taken from it is indistinguishable from an answer by the $1 while being neither reserved nor race-free. Fix the cause above, or drop --require-counter to accept a scanned number." >&2
+        exit 4
+    fi
+    echo "next-dl: FALLING BACK to the offline max+1 scan after the $1 gave no number. That scan is NOT ATOMIC — two allocators running now can be handed the SAME DL — and it is a FLOOR that cannot see a claimed-but-unstamped number. Pass --require-counter to refuse instead of minting one." >&2
+}
+
 # DEFAULT: prefer the atomic claim. Fall back to the offline peek ONLY when the
 # endpoint is genuinely absent/unreachable (exit 1, the rollout case). A claim that
 # FAILED against a PRESENT endpoint (exit 3) is surfaced by board_claim and aborts
@@ -238,6 +324,7 @@ if [[ $peek -eq 0 ]]; then
         exit 0
     fi
     [[ $crc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT mint via the racy scan
+    degrade_or_refuse "atomic claim endpoint"
 fi
 
 # --peek: prefer the authoritative NON-CONSUMING read, with the same fall-through
@@ -253,6 +340,7 @@ if [[ $peek -eq 1 ]]; then
         exit 0
     fi
     [[ $prc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT answer from the scan
+    degrade_or_refuse "DL-sequence inspect endpoint"
 fi
 
 # Offline fallback (either mode): max+1 over local headers + board-stamped dl_numbers.

@@ -271,6 +271,13 @@ run_a0 -h
 eq "-h → rc 0"                           "0" "$rc"
 eq "-h prints the same usage"            "usage: dl-a0-backfill-triaged [--board NAME] [--apply] [--remove]" "$out"
 
+# Sibling of the card#6645 class, closed by the same shared gate. This bin guards exactly ONE
+# value-taking flag today, so the assertions below ARE the whole population — and a population
+# of one is the shape that most readily stops being one without anything noticing.
+# `expect_value_flags` derives it from the bin's own guard call sites, so a second flag reds
+# here until it is named and driven.
+expect_value_flags "$A0" --board
+
 # MISSING and EMPTY are separate inputs and are asserted separately: the two are the same
 # behaviour here only because the guard tests the VALUE, and a regression that dispatched on the
 # flag being seen would keep one of them green. Both must name the offending flag — the usage

@@ -70,7 +70,7 @@ kb_stub_board_config alt 77       # a second RESOLVABLE board, so the refusals b
 kb_stub_board_config bridge 88    # `bridge` is a bare project TOKEN here, resolvable for the same reason
 kb_stub_install
 
-USAGE='usage: next-dl kanban|bridge|--board <name> [--peek]'
+USAGE='usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]'
 NO_VALUE='next-dl: --board requires a non-empty value'
 
 # The atomic claim is the DEFAULT path, so a run that gets past the arg loop lands here; the
@@ -96,6 +96,11 @@ run_ndl() {
 CLAIM=(POST /boards/42/dl-sequence/claim.json)
 
 echo "== --board's VALUE guard names the flag, missing and empty alike =="
+# Sibling of the card#6645 class, closed by the same shared gate. `--board` is this bin's whole
+# value-taking population today, so the two assertions below cover it — and nothing here could
+# notice a second flag arriving. `expect_value_flags` derives the population from the bin's own
+# guard call sites and reds in both directions.
+expect_value_flags "$NDL" --board
 # Both forms are asserted because they are different inputs: `--board` trailing leaves $1 unset,
 # `--board ""` sets it empty. The old compound condition answered both with the bare usage line,
 # which named none of the three ways to spell a project.
@@ -330,6 +335,186 @@ eq "no board env → rc 0"                            "0" "$rc"
 eq "no board env → mints local-floor + 1"           "DL-0301" "$out"
 eq "no board env → says it is skipping the board check" "true" "$(has 'skipping board check' "$err")"
 eq "no board env → never reached the API"           "0" "$(kb_stub_total)"
+# ⛔ AND THE "CAUSE" IT NAMES IS THE REAL ONE, not a list (card#7245). This line used to
+# enumerate kb_resolve_env's rcs 3/4/5 longhand — a copy of a contract that had since grown
+# rcs 6 (an api host nobody declared) and 7 (no token file declared), so the two newest causes
+# printed five reasons that were all false. Under --require-counter it is the ONLY thing the
+# operator gets: that mode refuses before the offline scan's unmuted board read, and its
+# refusal ends "Fix the cause above", which the enumeration made unactionable.
+eq "no board env → does NOT enumerate causes it did not check" "false" \
+   "$(has 'a board env that sets KBCARD_API' "$err")"
+run_ndl --board nosuchboard --require-counter
+eq "strict + no board env → refuses at rc 4"        "4" "$rc"
+eq "strict + no board env → mints NOTHING"          ""  "$out"
+eq "strict + no board env → still no enumeration"   "false" \
+   "$(has 'a board env that sets KBCARD_API' "$err")"
+# The relay itself: resolve_board_cfg's OWN reason reaches the operator in the mode where
+# nothing else will print it. Without the relay this is the arm that said "Fix the cause
+# above" with no cause above it.
+eq "strict + no board env → relays the actual reason" "true" \
+   "$(has 'skipping board check' "$err")"
+eq "strict + no board env → and still says what it refused" "true" \
+   "$(has 'refusing to mint' "$err")"
+
+# --- the fallback is ANNOUNCED, and --require-counter refuses it (card#7214) -------------------
+# THE DEFECT, reproduced network-free: with the counter endpoint unavailable, next-dl printed a
+# number from the non-atomic offline max+1 scan at rc 0 with an EMPTY stderr — byte-identical, on
+# every channel a caller can read, to an atomic claim. Two concurrent allocators were handed the
+# same DL by the tool whose whole purpose is to stop that, and nothing said so.
+#
+# WHY THE CAUSE MATRIX IS THE POINT AND NOT DECORATION. `dl_sequence_call` exits 1 for FOUR
+# different situations, and the exit code is the same for all four, so the stderr line is the ONLY
+# place they are distinguishable. A "stderr is non-empty" assertion would be satisfied by one
+# generic line, which re-mints the conflation this card is about — so each cause asserts its OWN
+# phrase present AND the other three ABSENT. Measured: collapsing the four `unusable` calls into
+# one shared string reds 12 of the 16 matrix assertions.
+#
+# The fixture is the card#6631 block's, deliberately: a local floor of DL-0300 over a board whose
+# cards top out at DL-0219, so the offline answer is DL-0301 — a value the counter never returns
+# (its claim is 93), so "it degraded" and "it claimed" are never the same number.
+NDL_CAUSES=("config could not be resolved" "could not be REACHED" "NOT DEPLOYED" "carried no usable number")
+FALLBACK='FALLING BACK to the offline max+1 scan'
+REFUSAL='--require-counter: refusing to mint'
+
+# only_cause <label> <index-into-NDL_CAUSES|none> <stderr> — the anti-generic-line control.
+only_cause() {
+    local label="$1" want="$2" errtext="$3" i
+    for i in "${!NDL_CAUSES[@]}"; do
+        if [[ "$i" == "$want" ]]; then
+            eq "$label names its own cause (${NDL_CAUSES[$i]})" "true" "$(has "${NDL_CAUSES[$i]}" "$errtext")"
+        else
+            eq "$label does NOT borrow '${NDL_CAUSES[$i]}'"      "false" "$(has "${NDL_CAUSES[$i]}" "$errtext")"
+        fi
+    done
+}
+
+# One route table for the whole block; each cause is selected by exported variable. The claim and
+# the inspect route are both switchable so the peek path is exercised through the same causes.
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/dl-sequence/claim.json)
+            if [[ -n "${NDL_CLAIM_CURLFAIL:-}" ]]; then printf '!curl %s' "$NDL_CLAIM_CURLFAIL"
+            else printf '%s\n%s' "$NDL_CLAIM_HTTP" "$NDL_CLAIM_BODY"; fi ;;
+        "GET "*/boards/42/dl-sequence.json*)
+            if [[ -n "${NDL_PEEK_CURLFAIL:-}" ]]; then printf '!curl %s' "$NDL_PEEK_CURLFAIL"
+            else printf '%s\n%s' "$NDL_PEEK_HTTP" "$NDL_PEEK_BODY"; fi ;;
+        "GET "*/tasks/search.json*) printf '%s\n%s' 200 "$NDL_BOARD_CARDS" ;;
+    esac
+}
+export -f kb_stub_route
+export NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{"value":93}}'
+export NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{"next":222}}'
+export NDL_CLAIM_CURLFAIL="" NDL_PEEK_CURLFAIL=""
+
+echo "== POSITIVE WITNESS: --require-counter still gets an ATOMIC CLAIM when the endpoint answers =="
+# PAIRED WITH EVERY REFUSAL BELOW, and the reason this file cannot pass by breaking the tool: a
+# next-dl that refused unconditionally would satisfy all four strict legs perfectly. This leg is
+# the one that fails for it — the claim is issued, its number is minted, and nothing degrades.
+run_ndl --board dev --require-counter
+eq "endpoint present + strict → rc 0"                 "0" "$rc"
+eq "endpoint present + strict → the CLAIMED number"   "DL-0093" "$out"
+eq "endpoint present + strict → claimed against board 42" "1" "$(kb_stub_count "${CLAIM[@]}")"
+eq "endpoint present + strict → no refusal"           "false" "$(has "$REFUSAL" "$err")"
+eq "endpoint present + strict → no fallback notice"   "false" "$(has "$FALLBACK" "$err")"
+only_cause "endpoint present + strict" none "$err"
+eq "endpoint present + strict → never reaches the scan" "0" "$(kb_stub_count_any "$SEARCH")"
+
+echo "== PERMISSIVE is unchanged where the endpoint answers — no new stderr on the happy path =="
+# The compat claim the CHANGELOG makes ("nothing changes for an existing caller, except stderr
+# gains a line on the degraded path") is asserted, not asserted-about: a run that does NOT degrade
+# must gain nothing at all.
+run_ndl --board dev
+eq "endpoint present, permissive → rc 0"              "0" "$rc"
+eq "endpoint present, permissive → the claimed number" "DL-0093" "$out"
+eq "endpoint present, permissive → stderr still SILENT" "" "$err"
+
+echo "== cause 3 (404 ABSENT): permissive mints LOUDLY, strict REFUSES =="
+NDL_CLAIM_HTTP=404 NDL_CLAIM_BODY='{"message":"not found"}' run_ndl --board dev
+eq "404 permissive → rc 0"                            "0" "$rc"
+eq "404 permissive → still mints the offline floor"   "DL-0301" "$out"
+eq "404 permissive → announces the fallback"          "true" "$(has "$FALLBACK" "$err")"
+eq "404 permissive → names the CLAIM endpoint in the notice" "true" "$(has 'atomic claim endpoint gave no number' "$err")"
+eq "404 permissive → offers the opt-out"              "true" "$(has 'Pass --require-counter' "$err")"
+only_cause "404 permissive" 2 "$err"
+
+NDL_CLAIM_HTTP=404 NDL_CLAIM_BODY='{"message":"not found"}' run_ndl --board dev --require-counter
+eq "404 strict → rc 4"                                "4" "$rc"
+eq "404 strict → mints NOTHING"                       "" "$out"
+eq "404 strict → says it is refusing"                 "true" "$(has "$REFUSAL" "$err")"
+eq "404 strict → does NOT announce a fallback it did not take" "false" "$(has "$FALLBACK" "$err")"
+eq "404 strict → does not leak the floor anywhere"    "false" "$(has 'DL-0301' "$out$err")"
+only_cause "404 strict" 2 "$err"
+eq "404 strict → never reads the board at all"        "0" "$(kb_stub_count_any "$SEARCH")"
+
+echo "== cause 2 (TRANSPORT failure): distinct from 404 — nothing was learned about the route =="
+# curl exits non-zero with no status. Reporting that as "not deployed" would be a fabricated
+# finding about the server, which is card#7210's class: a failed read scored as a usable negative.
+NDL_CLAIM_CURLFAIL=7 run_ndl --board dev
+eq "transport fail permissive → rc 0"                 "0" "$rc"
+eq "transport fail permissive → mints the offline floor" "DL-0301" "$out"
+eq "transport fail permissive → announces the fallback" "true" "$(has "$FALLBACK" "$err")"
+only_cause "transport fail permissive" 1 "$err"
+
+NDL_CLAIM_CURLFAIL=7 run_ndl --board dev --require-counter
+eq "transport fail strict → rc 4"                     "4" "$rc"
+eq "transport fail strict → mints NOTHING"            "" "$out"
+only_cause "transport fail strict" 1 "$err"
+
+echo "== cause 4 (2xx carrying no usable value): the route ANSWERED, and says so =="
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl --board dev
+eq "2xx-no-value permissive → rc 0"                   "0" "$rc"
+eq "2xx-no-value permissive → mints the offline floor" "DL-0301" "$out"
+eq "2xx-no-value permissive → names the HTTP status it got" "true" "$(has 'answered HTTP 200' "$err")"
+only_cause "2xx-no-value permissive" 3 "$err"
+
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl --board dev --require-counter
+eq "2xx-no-value strict → rc 4"                       "4" "$rc"
+eq "2xx-no-value strict → mints NOTHING"              "" "$out"
+only_cause "2xx-no-value strict" 3 "$err"
+
+echo "== cause 1 (config UNRESOLVED): no request was issued, and the notice says that =="
+# The fourth rc-1 cause, which the endpoint-shaped three hide: dl_sequence_call returns 1 before
+# any request when the board config does not resolve, so an UNCONFIGURED board degraded as
+# silently as an absent endpoint. Its permissive outcome is card#6631's stated bound — it still
+# mints — so only the announcement is new here.
+run_ndl --board nosuchboard
+eq "unresolved config permissive → rc 0"              "0" "$rc"
+eq "unresolved config permissive → still mints the local floor" "DL-0301" "$out"
+eq "unresolved config permissive → announces the fallback" "true" "$(has "$FALLBACK" "$err")"
+eq "unresolved config permissive → keeps the old skip message too" "true" "$(has 'skipping board check' "$err")"
+only_cause "unresolved config permissive" 0 "$err"
+eq "unresolved config permissive → issued no request" "0" "$(kb_stub_total)"
+
+run_ndl --board nosuchboard --require-counter
+eq "unresolved config strict → rc 4"                  "4" "$rc"
+eq "unresolved config strict → mints NOTHING"         "" "$out"
+only_cause "unresolved config strict" 0 "$err"
+
+echo "== --peek degrades through the SAME policy, in the INSPECT endpoint's name =="
+# The two modes call one degrade_or_refuse with different labels. A swapped label would hand the
+# operator the claim endpoint's reasoning for a peek, which is the card#6232 mistake one layer up.
+NDL_PEEK_HTTP=404 NDL_PEEK_BODY='{"message":"not found"}' run_ndl --board dev --peek
+eq "peek 404 permissive → rc 0"                       "0" "$rc"
+eq "peek 404 permissive → the offline floor"          "DL-0301" "$out"
+eq "peek 404 permissive → names the INSPECT endpoint" "true" "$(has 'DL-sequence inspect endpoint gave no number' "$err")"
+eq "peek 404 permissive → does NOT name the claim endpoint" "false" "$(has 'atomic claim endpoint' "$err")"
+only_cause "peek 404 permissive" 2 "$err"
+eq "peek 404 permissive → claims nothing"             "0" "$(kb_stub_count_any "$CLAIM_URL")"
+
+NDL_PEEK_HTTP=404 NDL_PEEK_BODY='{"message":"not found"}' run_ndl --board dev --peek --require-counter
+eq "peek 404 strict → rc 4"                           "4" "$rc"
+eq "peek 404 strict → mints NOTHING"                  "" "$out"
+eq "peek 404 strict → says it is refusing"            "true" "$(has "$REFUSAL" "$err")"
+
+echo "== --require-counter does NOT refuse a present-but-errored endpoint differently (rc 1 stands) =="
+# The rc-3 abort is upstream of the degrade decision and unchanged: strict must not renumber an
+# outcome that already refused, or a caller keying on rc 1 loses the abort it already handles.
+NDL_CLAIM_HTTP=500 NDL_CLAIM_BODY='{"message":"boom"}' run_ndl --board dev --require-counter
+eq "claim 500 + strict → still rc 1, not 4"           "1" "$rc"
+eq "claim 500 + strict → still the PRESENT-but-FAILED message" "true" "$(has 'PRESENT but FAILED' "$err")"
+eq "claim 500 + strict → not reported as a strict refusal" "false" "$(has "$REFUSAL" "$err")"
+
+unset NDL_CLAIM_CURLFAIL NDL_PEEK_CURLFAIL
 
 unset KB_DL_CHECKOUT_GLOBS
 

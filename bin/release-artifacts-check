@@ -28,9 +28,8 @@
 #     `retired_artifacts` array — PR-declared, read at head, and printed as a `RETIRED:`
 #     line in the CI log. A member in BOTH arrays is a config error (rc 2), so a tombstone
 #     cannot be pre-planted against a member that is still declared.
-# Everything else in the config (`promote.*`, `ref_token_regex`, `title_prefix`,
-# `card_token_regex`, branch names) stays head-read and unguarded: none of it decides a
-# verdict.
+# Everything else in the config (`promote.*`, `ref_token_regex`, `card_token_regex`,
+# branch names) stays head-read and unguarded: none of it decides a verdict.
 #
 # COMPARISON IS ON EXPANDED, VERSION-AGNOSTIC MEMBERS, not on entry strings: `{{version}}`
 # is replaced by a sentinel (never by a concrete version — otherwise every templated member
@@ -46,11 +45,34 @@
 # but absent from the checkout is fine.
 #
 # Usage:
-#   release-artifacts-check --base <ref> --head <ref> [--config PATH]
+#   release-artifacts-check --base <ref> --head <ref> [--config PATH] [--classify-only]
 #
 #   --base   the PR's base commit/ref (e.g. github.event.pull_request.base.sha)
 #   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
 #   --config per-repo release config (default `.release-pr.json`), inside this repository
+#   --classify-only  answer ONLY "is this range a release?" and assert no artifact member.
+#                    version_file/version_regex are REQUIRED in this mode even by a repo that
+#                    declares no artifacts: they are what the answer is computed from, and the
+#                    empty-`artifacts` opt-out below is an opt-out of the artifact LEGS, not of
+#                    the classification. A config lacking them is rc 2 here, never "not-release".
+#
+# `--classify-only` EXISTS SO THE RULE HAS ONE IMPLEMENTATION, NOT TWO (card#6579). The
+# release-VALUE test below — the fork-point version against head's, INCLUDING the arm that
+# re-decides an EQUAL classifying value (card#6488) — is the repo's definition of
+# "this range is a release", and a second consumer needed it: `release-tag-check` asserts
+# post-merge that the release's tag actually exists, and must not assert on a non-release push.
+# Re-deriving "is this a release" there would have been a second rule free to drift from this
+# one, so the existing rule is EXPOSED instead. The mode prints one machine-readable line —
+# `release <version>` or `not-release <version>` — and exits 0 for both, because "not a
+# release" is an ANSWER, not a failure. Every refusal path (rc 2) is unchanged and still
+# fail-closed: a range this tool cannot classify must never read as "not a release". The mode
+# answers from the SAME variable the artifact legs are judged by, decided before either is
+# answered, so the two consumers cannot disagree about what a release is.
+#
+# The mode deliberately SKIPS the artifact legs rather than running and ignoring them. They
+# carry their own verdicts (a LOST member exits 1 on every PR class), so a classifier that ran
+# them would report an artifact failure as a classification failure to a caller asking a
+# different question entirely.
 #
 # THE RANGE IS `merge-base(base, head)..head` — the PR's OWN changes — never base's tip.
 # Both are resolved against the MERGE BASE, and that is a correctness requirement, not a
@@ -67,6 +89,18 @@
 # `config/app.php`), where a file-moved test would misfire on any unrelated edit to it.
 # Merge-base version == head version ⇒ not a release PR ⇒ no member is asserted — but a
 # narrowed declaration is still refused, because that check never reads the classification.
+#
+# AND THE CLASSIFYING VALUE IS THE FIRST REGEX MATCH OVER CONTENT HEAD OWNS, so "equal" is not
+# on its own an answer (card#6488). A version-shaped line above the version line makes both
+# ends extract the same value and a real release PR read as "version unchanged": one prepended
+# comment, no config edit, and every member leg silently does not run. The unsteerable half is
+# the fork point's SET of matched values, and a real release must introduce a value there that
+# head carries and the fork point does not. So on an equal classifying value the two sets are
+# compared: exactly one value new at head NAMES the version being shipped and the PR is a
+# release after all (`::warning::`, then every member asserted against that value); more than
+# one is rc 2, because which version is being shipped is then genuinely unknown; none is the
+# ordinary unchanged verdict. A value the fork point carries and head drops is a deletion, not
+# a release, and does not enter the test.
 #
 # NO FORK-POINT CONFIG (the adoption PR that CREATES it, a config renamed since, an
 # unparseable or key-less one) is a WARN, never a refusal: those keys can only enter the
@@ -85,13 +119,15 @@
 # store. Each of those can satisfy a content assertion while asserting nothing about a
 # release artifact, so each is named and refused rather than read.
 #
-# Exit status: 0 = nothing to assert, or every declared member passed. 1 = at least one
+# Exit status: 0 = nothing to assert, every declared member passed, or (under
+# `--classify-only`) the range was classified either way. 1 = at least one
 # member failed, or a declared member was removed without acknowledgement (every failure is
 # reported, not just the first). 2 = usage/config error, an unresolvable merge base, a
 # config not committed at head, a member declared in both `artifacts` and
-# `retired_artifacts`, or a version that could not be read at either end — none of these is
-# EVER classified as "not a release PR", because that misclassification is a silent non-run
-# of the whole gate rather than a pass.
+# `retired_artifacts`, a version that could not be read at either end, or a version file whose
+# classifying match is unchanged while it carries SEVERAL values head introduced (the version
+# being shipped is then unknown) — none of these is EVER classified as "not a release PR",
+# because that misclassification is a silent non-run of the whole gate rather than a pass.
 set -euo pipefail
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
@@ -112,12 +148,13 @@ command -v git >/dev/null || die "git is required"
 # is self-contained and does not source that lib, so the guard is duplicated; keep them in sync.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; BASE=""; HEAD_REF=""
+CONFIG=".release-pr.json"; BASE=""; HEAD_REF=""; CLASSIFY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base)   require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)   require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config) require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    --classify-only) CLASSIFY_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — a fixed `sed -n '2,20p'` is
     # silently wrong in both directions as the header grows or shrinks (card#5145).
     -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
@@ -408,52 +445,59 @@ _collect() { # <config-content> <key> <destination set: B|H|R> <disposition> <so
   done < <(printf '%s\n' "$content" | jq -r --arg k "$key" '(.[$k] // []) | .[]')
 }
 
-if [ "$FORK_USABLE" -eq 1 ]; then _collect "$FORK_CFG" artifacts B warn "the fork point ($BASEREF)"; fi
-_collect "$HEAD_CFG" artifacts         H refuse "head ($HEAD_REF)"
-_collect "$HEAD_CFG" retired_artifacts R refuse "head ($HEAD_REF)"
-
-# A member cannot be simultaneously asserted and retired. Refusing this is what stops a
-# tombstone being PRE-PLANTED against a still-declared member (the entry is deleted in a later
-# PR and the retirement is already acknowledged, so nothing ever reports the narrowing), and
-# it is equally what catches a retire-then-re-add that left its tombstone behind.
-if [ "${#H_UNITS[@]}" -gt 0 ]; then
-  for u in "${H_UNITS[@]}"; do
-    [ -z "${R_HAS[$u]:-}" ] \
-      || die "'$(_pasteable "$u")' is declared in BOTH .artifacts and .retired_artifacts at $HEAD_REF — a member cannot be asserted and retired at the same time; remove it from one of the two"
-  done
-fi
-
-# LOST — declared at the fork point, absent from head, unacknowledged. This is a SET
-# DIFFERENCE with its own verdict, evaluated regardless of whether the removed member's own
-# legs would have passed: a PR that deletes an entry while still updating the file it named
-# passes every leg, exits 0, and from the next release the fork point no longer carries the
-# entry either. It is also evaluated BEFORE, and independently of, the release-PR
-# classification — a severity that depended on classification would be bought back by
-# poisoning the version file's content, which costs no config edit at all.
+# THE ARTIFACT LEGS ARE SKIPPED WHOLESALE UNDER --classify-only, not run and ignored. Each
+# carries its own verdict independent of the release classification (a LOST member exits 1 on
+# EVERY PR class, by design), so running them for a caller that only asked "is this a release?"
+# would surface an artifact failure as a classification failure. LOST is pre-set because the
+# classification arm below reads it.
 LOST=0
-if [ "${#B_UNITS[@]}" -gt 0 ]; then
-  for u in "${B_UNITS[@]}"; do
-    [ -z "${H_HAS[$u]:-}" ] || continue
-    if [ -n "${R_HAS[$u]:-}" ]; then
-      echo "release-artifacts-check: RETIRED: $(_pasteable "$u") — declared at the fork point, absent from .artifacts at head, acknowledged in .retired_artifacts; not asserted"
-    else
-      echo "::error::release artifact declaration NARROWED: '$(_pasteable "$u")' is declared at the fork point ($BASEREF) but absent from .artifacts at $HEAD_REF (declared there as: ${B_RAW[$u]}) — restore the entry, or acknowledge the retirement by adding \"$(_pasteable "$u")\" to .retired_artifacts in this PR"
-      LOST=$((LOST + 1))
-    fi
-  done
-fi
+if [ "$CLASSIFY_ONLY" -eq 0 ]; then
+  if [ "$FORK_USABLE" -eq 1 ]; then _collect "$FORK_CFG" artifacts B warn "the fork point ($BASEREF)"; fi
+  _collect "$HEAD_CFG" artifacts         H refuse "head ($HEAD_REF)"
+  _collect "$HEAD_CFG" retired_artifacts R refuse "head ($HEAD_REF)"
 
-# The opt-out tests the UNION: head alone would let a wholesale deletion of `artifacts` opt
-# the repo out of its own gate, and the fork point alone would refuse a repo adopting the key
-# for the first time. Checked after LOST (which cannot fire when the union is empty) and
-# before the version legs, because a fail-closed version read would otherwise refuse a repo
-# that never opted in.
-if [ "${#B_UNITS[@]}" -eq 0 ] && [ "${#H_UNITS[@]}" -eq 0 ]; then
-  case "$HEAD_ARTIFACTS_TYPE" in
-    array) echo "release-artifacts-check: no artifacts declared (empty array) — nothing to assert";;
-    *)     echo "release-artifacts-check: no artifacts declared — nothing to assert";;
-  esac
-  exit 0
+  # A member cannot be simultaneously asserted and retired. Refusing this is what stops a
+  # tombstone being PRE-PLANTED against a still-declared member (the entry is deleted in a later
+  # PR and the retirement is already acknowledged, so nothing ever reports the narrowing), and
+  # it is equally what catches a retire-then-re-add that left its tombstone behind.
+  if [ "${#H_UNITS[@]}" -gt 0 ]; then
+    for u in "${H_UNITS[@]}"; do
+      [ -z "${R_HAS[$u]:-}" ] \
+        || die "'$(_pasteable "$u")' is declared in BOTH .artifacts and .retired_artifacts at $HEAD_REF — a member cannot be asserted and retired at the same time; remove it from one of the two"
+    done
+  fi
+
+  # LOST — declared at the fork point, absent from head, unacknowledged. This is a SET
+  # DIFFERENCE with its own verdict, evaluated regardless of whether the removed member's own
+  # legs would have passed: a PR that deletes an entry while still updating the file it named
+  # passes every leg, exits 0, and from the next release the fork point no longer carries the
+  # entry either. It is also evaluated BEFORE, and independently of, the release-PR
+  # classification — a severity that depended on classification would be bought back by
+  # poisoning the version file's content, which costs no config edit at all.
+  if [ "${#B_UNITS[@]}" -gt 0 ]; then
+    for u in "${B_UNITS[@]}"; do
+      [ -z "${H_HAS[$u]:-}" ] || continue
+      if [ -n "${R_HAS[$u]:-}" ]; then
+        echo "release-artifacts-check: RETIRED: $(_pasteable "$u") — declared at the fork point, absent from .artifacts at head, acknowledged in .retired_artifacts; not asserted"
+      else
+        echo "::error::release artifact declaration NARROWED: '$(_pasteable "$u")' is declared at the fork point ($BASEREF) but absent from .artifacts at $HEAD_REF (declared there as: ${B_RAW[$u]}) — restore the entry, or acknowledge the retirement by adding \"$(_pasteable "$u")\" to .retired_artifacts in this PR"
+        LOST=$((LOST + 1))
+      fi
+    done
+  fi
+
+  # The opt-out tests the UNION: head alone would let a wholesale deletion of `artifacts` opt
+  # the repo out of its own gate, and the fork point alone would refuse a repo adopting the key
+  # for the first time. Checked after LOST (which cannot fire when the union is empty) and
+  # before the version legs, because a fail-closed version read would otherwise refuse a repo
+  # that never opted in.
+  if [ "${#B_UNITS[@]}" -eq 0 ] && [ "${#H_UNITS[@]}" -eq 0 ]; then
+    case "$HEAD_ARTIFACTS_TYPE" in
+      array) echo "release-artifacts-check: no artifacts declared (empty array) — nothing to assert";;
+      *)     echo "release-artifacts-check: no artifacts declared — nothing to assert";;
+    esac
+    exit 0
+  fi
 fi
 
 # --- classification keys: fork point, else head ------------------------------------------
@@ -470,10 +514,23 @@ if [ -z "$VERSION_FILE" ] || [ -z "$VERSION_REGEX" ]; then
   VERSION_REGEX="$(_cfg '.version_regex // empty' "$HEAD_CFG")"
   KEY_SRC="head ($HEAD_REF)"
 fi
-[ -n "$VERSION_FILE" ]  || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_file — the release-PR classification cannot run"
-[ -n "$VERSION_REGEX" ] || die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no version_regex — the release-PR classification cannot run"
+# THE PREMISE IS CONDITIONAL BECAUSE THE REACHABILITY IS. In the normal mode these lines are
+# reachable only with a non-empty declared set — the opt-out above exits 0 on an empty union —
+# so "declares artifacts but no version_file" is a true account of how the run got here.
+# `--classify-only` SKIPS that opt-out, because the question it answers has nothing to do with
+# artifacts, so a config carrying `"artifacts": []` reaches these lines and the same sentence
+# states something FALSE about it. That sentence is not cosmetic for an adopter: it is the
+# entire diagnosis they get when their promote job reds rc 2 on a key they never set.
+_need_class_key() {
+  [ "$CLASSIFY_ONLY" -eq 0 ] \
+    || die "$CONFIG_ROOTREL at $KEY_SRC declares no $1. --classify-only answers 'is this range a release', which is decided from version_file/version_regex ALONE, so both keys are required in this mode even when no artifact is declared — an empty or absent 'artifacts' array does not opt a repo out of the CLASSIFICATION. Declare them, or drop the caller's release-tag-check step: refusing rather than answering 'not a release', which would silently skip whatever the caller gates on this"
+  die "$CONFIG_ROOTREL at $KEY_SRC declares artifacts but no $1 — the release-PR classification cannot run"
+}
+[ -n "$VERSION_FILE" ]  || _need_class_key version_file
+[ -n "$VERSION_REGEX" ] || _need_class_key version_regex
 
-# _extract_version <ref> <label> — sets EXTRACTED_VERSION from <ref>:<version_file>. <label>
+# _extract_version <ref> <label> — sets EXTRACTED_VERSION and EXTRACTED_VALUES from
+# <ref>:<version_file>. <label>
 # names which END of the range <ref> is, because <ref> is often a resolved merge-base SHA that
 # appears in none of the caller's inputs — an error naming only that SHA is not actionable.
 #
@@ -482,14 +539,35 @@ fi
 # assignment's status to abort — an implicit path that a later `|| true` or an `if` context
 # would silently defeat. Here `die` runs in the script's own shell and the exit is explicit.
 #
-# The two-stage extraction is the same one `release-pr-body` uses (project regex first, then
-# a 2-4-segment numeric pull, so a .NET Major.Minor.Build.Revision is not truncated to three).
+# The extraction is the same one `release-pr-body` uses, and it is ONE stage: the version
+# SHAPE is declared once, by `.release-pr.json`'s version_regex, and a match of it IS the
+# value. ⛔ DO NOT RE-ADD THE SECOND `[0-9]+(\.[0-9]+){1,3}` NUMERIC PULL that stood here
+# until card#7208 — running after the config regex, it could only narrow that regex's own
+# match, never widen it, so the 4-segment support it read as was never reachable through a
+# 3-segment version_regex; what it reached was a legal 1-segment config (refused outright)
+# and a legal 5-segment one (cut to four).
 # `|| true` on the pipeline is required, not defensive: `head -1` closes the pipe on the
-# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as rc 141 on a
-# perfectly good extraction. Emptiness is what is tested, immediately below.
+# first line, and under `pipefail` the upstream grep's SIGPIPE would surface as the PIPELINE's
+# status on a perfectly good extraction. Emptiness is what is tested, immediately below.
+#
+# ⛔ DO NOT PIN THAT STATUS TO A NUMBER — it is disposition-dependent, and this line said `141`
+# until card#7175. The dead writer's status is **non-zero — 141 at SIGPIPE's default, 1 on the
+# EPIPE path an inherited `SIG_IGN` produces — and `pipefail` promotes either**. The GitHub
+# Actions runner is the second case (its step shell is started by the runner's Node process,
+# which sets `SIG_IGN`, and that survives `execve` into every child), so an assertion written
+# against `141` here passes locally and REDS IN CI. `tests/pipeline-free-match-selftest.sh`
+# owns the measurement; the only property this `|| true` needs is that the status is non-zero.
+#
+# EXTRACTED_VALUES is EVERY value the regex matches at that ref — deduped, in first-appearance
+# order — and it exists because the CLASSIFYING value above is the FIRST match over content
+# HEAD OWNS (card#6488). Its first element is always EXTRACTED_VERSION: one grep, one pattern,
+# one content, and an empty first match has already died. The two therefore cannot disagree
+# about which value classifies; the list only adds the ones the `head -1` discards.
 EXTRACTED_VERSION=""
+EXTRACTED_VALUES=()
 _extract_version() {
-  local ref="$1" label="$2" content
+  local ref="$1" label="$2" content m
+  local -A seen=()
   # The remediation names WHERE THE PATH CAME FROM, not just the path: `version_file` is read
   # from the config at $KEY_SRC, so the commonest real cause is that head RELOCATED the file
   # while the fork point still names the old path — a shallow-clone message alone would be
@@ -497,16 +575,102 @@ _extract_version() {
   content="$(git show "$ref:$VERSION_FILE" 2>/dev/null)" \
     || die "cannot read '$VERSION_FILE' at $label ($ref) — that path is the version_file declared by $CONFIG_ROOTREL at $KEY_SRC, so this fails when head relocated the file the fork point still names, or when the path or ref is missing from this clone: the caller must check out with fetch-depth: 0 so both ends of the range are present; refusing rather than classifying this as 'not a release PR'"
   EXTRACTED_VERSION="$(printf '%s\n' "$content" \
-    | grep -oiE "$VERSION_REGEX" | head -1 \
-    | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+    | grep -oiE "$VERSION_REGEX" | head -1 || true)"
   [ -n "$EXTRACTED_VERSION" ] \
     || die "no version matched version_regex in '$VERSION_FILE' at $label ($ref) — refusing rather than classifying this as 'not a release PR'"
+  # The same extraction, every match rather than the first one. The loop body is a dedupe and
+  # nothing else — and THE KEY IS THE WHOLE MATCH `$m`, not a numeric run pulled back out of
+  # it, because with the second stage gone a match IS a value and every other identity this
+  # could dedupe on would re-declare the version shape that no file under bin/ now states.
+  #
+  # ⛔ THAT KEY DECIDES A VERDICT, not just the contents of a list: `${#NEW_AT_HEAD[@]}` below
+  # is release / ::warning:: / rc-2 refusal, so a `version_regex` admitting two spellings of one
+  # version (`v2.0.0` and `2.0.0` under `v?[0-9]+\.[0-9]+\.[0-9]+`) yields TWO values here
+  # where the pre-card#7208 numeric key folded them to one and classified. ⛔ DO NOT NARROW THE
+  # KEY BACK TO MAKE THAT CASE PASS: the same fold ran in the other direction too — two
+  # genuinely DIFFERENT five-segment versions (`2.0.0.0.5`, `2.0.0.0.9`) both keyed to the
+  # truncated `2.0.0.0`, so the gate silently dropped one and asserted every artifact member
+  # against a version string that appeared nowhere in the file (measured, both directions, on
+  # the pre-change bin). The refusal is this file's rule everywhere else: a version it cannot
+  # determine is rc 2, never a pass and never a silent non-run.
+  #
+  # No emptiness guard on $m: `grep -o` emits no line for a zero-length match, so an empty one
+  # cannot arrive here (measured, GNU grep 3.11, against a `[0-9]*` pattern over a digit-free
+  # line) — and the empty EXTRACTED_VERSION case already died two lines up.
+  EXTRACTED_VALUES=()
+  while IFS= read -r m; do
+    [ -z "${seen[$m]:-}" ] || continue
+    seen["$m"]=1; EXTRACTED_VALUES+=("$m")
+  done < <(printf '%s\n' "$content" | grep -oiE "$VERSION_REGEX")
 }
 
-_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"
-_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"
+_extract_version "$BASEREF"  "the fork point of '$BASE' and '$HEAD_REF'"; BASE_VERSION="$EXTRACTED_VERSION"; BASE_VALUES=("${EXTRACTED_VALUES[@]}")
+_extract_version "$HEAD_REF" "head '$HEAD_REF'";                        HEAD_VERSION="$EXTRACTED_VERSION"; HEAD_VALUES=("${EXTRACTED_VALUES[@]}")
 
+# The classification below has TWO consumers — this file's own artifact legs and
+# `--classify-only`'s caller — and it runs BEFORE either is answered, deliberately. A mode that
+# answered from `BASE_VERSION = HEAD_VERSION` alone would be a SECOND rule, blind to the arm
+# below, and would report `not-release` for exactly the ranges this file goes on to assert
+# every member against (card#6488 steered by content head owns + card#6579 exposing the rule).
+IS_RELEASE=1
+V="$HEAD_VERSION"
 if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+  # EQUAL IS NOT YET AN ANSWER (card#6488; the header states the rule, this states why it is
+  # shaped the way it is). The unsteerable half is the FORK POINT's set of matched values — a merged commit no PR
+  # under review can edit. A release SHIPS a version, and the version file must carry it to be
+  # tagged and to satisfy its own artifact leg, so a real release ALWAYS introduces a value at
+  # head that the fork point does not carry. That is the test, and it needs no diff and no
+  # match positions: a value at head absent from the fork point, while the classifying match
+  # is unchanged, is a release the first-match selector was steered away from.
+  #
+  # ONE such value NAMES the version being shipped, so the gate runs — this classifies as a
+  # release PR and asserts every member against it, which is the verdict the poisoning existed
+  # to avoid. SEVERAL and the version being shipped is genuinely ambiguous: rc 2, never a pass,
+  # on the rule this file already holds everywhere else — a version that cannot be determined
+  # is a refusal, because reading it as "not a release PR" is a silent non-run of the gate.
+  #
+  # A value the fork point carries and head does NOT is not a release signal (a deletion or a
+  # reorder), so it does not enter the test: the pre-existing "unchanged" verdict stands, and
+  # a repo that removes a stray version-shaped line is not redded for it.
+  # Neither list can be empty here — both extractions refused above unless they produced a
+  # value — so no emptiness guard is written around either loop.
+  NEW_AT_HEAD=()
+  for v in "${HEAD_VALUES[@]}"; do
+    found=0
+    for b in "${BASE_VALUES[@]}"; do [ "$b" != "$v" ] || { found=1; break; }; done
+    [ "$found" -eq 1 ] || NEW_AT_HEAD+=("$v")
+  done
+  case "${#NEW_AT_HEAD[@]}" in
+    0) IS_RELEASE=0;;
+    1)
+      V="${NEW_AT_HEAD[0]}"
+      # A `::warning::`, not a silent switch: the classifying match says one thing and the file
+      # says another, and WHICH value the members are judged against is the first thing a
+      # maintainer needs when this fires on an honest PR that merely added a version-shaped
+      # string. The remedy is the regex, and it is named — `version_regex` is read from the
+      # fork point, so tightening it takes effect from the PR that MERGES the tightening, not
+      # from this one.
+      echo "::warning::release-artifacts-check: '$VERSION_FILE' carries $V at $HEAD_REF and not at the fork point ($BASEREF), while the FIRST version_regex match is unchanged ($HEAD_VERSION) at both ends — classifying this as a release PR of $V rather than as 'version unchanged', which would silently assert no member. If this is not a release, the version_regex declared by $CONFIG_ROOTREL at $KEY_SRC matches more than the version declaration; tighten it (in its own PR — it is read from the fork point) or drop the extra version-shaped text.";;
+    *)
+      die "cannot determine the version being shipped: '$VERSION_FILE' carries ${#NEW_AT_HEAD[@]} values at $HEAD_REF that the fork point ($BASEREF) does not (${NEW_AT_HEAD[*]}), while the FIRST version_regex match is unchanged ($HEAD_VERSION) at both ends — refusing rather than classifying this as 'not a release PR', which would silently assert no member. Tighten the version_regex declared by $CONFIG_ROOTREL at $KEY_SRC so it matches only the version declaration (in its own PR — it is read from the fork point), or drop the extra version-shaped text.";;
+  esac
+fi
+
+if [ "$CLASSIFY_ONLY" -eq 1 ]; then
+  # One machine-readable line, and rc 0 for BOTH answers: "not a release" is an answer, not a
+  # failure, and a caller that had to tell them apart by exit code could not distinguish either
+  # from the rc-2 refusals above — which is precisely the silent-non-run this mode must not mint.
+  # The verdict is printed LAST, after the arm above may have emitted its `::warning::`, so a
+  # caller reading the final line of a combined stdout+stderr capture reads the verdict.
+  if [ "$IS_RELEASE" -eq 1 ]; then
+    echo "release $V"
+  else
+    echo "not-release $V"
+  fi
+  exit 0
+fi
+
+if [ "$IS_RELEASE" -eq 0 ]; then
   if [ "$LOST" -gt 0 ]; then
     echo "release-artifacts-check: version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR, so no member was asserted — but $LOST declared artifact(s) were removed without acknowledgement, which is refused on every PR class" >&2
     exit 1
@@ -514,12 +678,13 @@ if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
   echo "release-artifacts-check: OK — version unchanged ($HEAD_VERSION) between the fork point and $HEAD_REF — not a release PR; nothing to assert"
   exit 0
 fi
-V="$HEAD_VERSION"
 
 # Captured ONCE, into a variable. Never `git diff … | grep -q`: `grep -q` exits on the first
-# match and SIGPIPEs the writer, which under `pipefail` surfaces as rc 141 — i.e. a MATCH
-# reading as a failure. Every membership test below is a shell `case`, so no subprocess and
-# no pipeline is involved in answering "did this path move".
+# match and SIGPIPEs the writer, whose status `pipefail` then promotes to the pipeline's — i.e.
+# a MATCH reading as a failure. That status is non-zero but NOT a fixed number: 141 at SIGPIPE's
+# default, 1 on the EPIPE path an inherited `SIG_IGN` produces, and `pipefail` promotes either
+# (card#7175 — see the note at `_extract_version`). Every membership test below is a shell
+# `case`, so no subprocess and no pipeline is involved in answering "did this path move".
 #
 # `core.quotePath=false` is load-bearing, not tidiness: by default git C-quotes any path
 # containing a non-ASCII byte (`"docs/caf\303\251.md"`), which matches no declared member, so

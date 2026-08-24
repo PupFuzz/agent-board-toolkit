@@ -38,6 +38,18 @@ description: >-
   classification and independently of it, so an ordinary PR that drops a
   declared artifact without acknowledging it reds exactly as a release PR
   would. Run it on every pull request, knowing that.
+  AND "the version value" is the FIRST version_regex match over content head
+  owns, so an equal value at both ends is not on its own a non-release: a
+  version-shaped line above the version line would otherwise make a real
+  release PR read as "version unchanged" and assert nothing. On an equal
+  classifying value the two ends' SETS of matched values are compared —
+  exactly one value present at head and not at the fork point NAMES the
+  version being shipped (a ::warning::, then every member is asserted against
+  it), several is rc 2 because which one is being shipped is unknown, and none
+  is the ordinary unchanged verdict. A repo whose version_regex matches more
+  than its version declaration can see a non-release PR classified as a
+  release one by this rule; tighten the regex (in its own PR — it is read from
+  the fork point).
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.

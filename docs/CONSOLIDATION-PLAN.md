@@ -469,6 +469,15 @@ That test is the **security** test in the CI matrix, and it **exits 1** if it ca
 `host_ok` — so any rename or removal of that mirror fails the build by design rather than
 silently reducing coverage.
 
+It now carries a **second** sed-extracted mirror on the same terms: `redact_userinfo`, the
+standalone copy of the lib's `kb_redact_url_userinfo` (card#7500). The guards *accept* an
+api_base carrying userinfo — that is one of the 6 accept rows above — so every message that
+renders a base masks it, and the masking primitive is duplicated for exactly the reason
+`host_ok` is. Same discipline, same failure mode if it is renamed: the extraction exits 1.
+The *class* — that no shipped tool renders a URL a credential can ride in — is held by
+`tests/url-userinfo-render-selftest.sh`, which re-derives the population from the tree rather
+than enumerating the ten sites the fix touched.
+
 **If it is ever revived:** use the literal `source "$KB_LIB"` — `agent-board-toolkit-drift-check`
 matches that exact string (anchored, with leading whitespace allowed), and `. "$KB_LIB"` evades it.
 Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already split the tools into
@@ -590,6 +599,60 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
+  recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
+  drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
+  with 0 B of stdout** on a bare one, because `kb_load_config` resolves `$HOME/.kanban-dev-board.env`
+  before the no-argument help arm. The gate therefore returned **different verdicts for the same
+  commit** depending on who ran it, and only CI could see it. Closed with a planted config plus a
+  control that drives both sides — but the control is a **CI-side guard only** (measured: deleting
+  the plant reds on a bare box, reds nothing on a configured one), which is the property that makes
+  this shape survive review. **The whole 42-selftest CI matrix was re-run under a bare `$HOME`
+  looking for siblings and found none**, so this is one instance, not a class — recorded so the next
+  gate author knows the axis exists and that `--help`-shaped is not the same as host-independent.
+  One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
+  box, though its classification does not.
+- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
+  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+  (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
+  '*.sh'`), and by the time this was noticed the expression had been re-typed into
+  `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
+  `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
+  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
+  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  class found were inside the harness. So the lib exports **CI's two halves separately** and each
+  caller composes its own union — the population is a parameter, never a constant. Adoption is
+  behaviour-preserving by construction (byte-identical output to what each already computes), so
+  the other two can adopt in their own PRs; they were left untouched here because they were outside
+  that PR's file scope. The `ci.yml`↔lib restatement **cannot be deleted** (a workflow `run:` string
+  cannot source a bash lib), so it is **GUARDED** instead: `_ci_shellcheck_drift` reds when ci.yml
+  stops running either half, with planted positive/negative/no-file controls, all three watched to
+  fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
+  dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
+  prompted the extraction is not something this lib would have caught.
+- **The GitHub Actions file population, in three gates with TWO predicates** (card#7207) —
+  **EXTRACTED, all three adopted in the same PR.** `ci-matrix-parity-selftest.sh` and
+  `shellcheck-pin-selftest.sh` each globbed `*.yml` **and** `*.yaml` inside their own python
+  heredocs; `python-syntax-gate-selftest.sh`, written last, globbed `*.yml` only — and its whole
+  purpose is an assertion of ABSENCE over that population. Measured before the fix: a planted
+  `.github/workflows/sneak.yaml` running `python3 -m py_compile bin/*.py` passed it at `all checks
+  passed`, and the byte-identical file renamed `.yml` red it. The divergence, not the miss, is the
+  entry: a third copy of a derivation is where a narrower predicate gets minted unobserved, and the
+  copies were near-identical enough that per-file review read the narrow one as covered.
+  `tests/_gha-surface-lib.sh` now owns it — `_gha_workflow_files <dir>` (both extensions, one level)
+  and `_gha_action_files <root>` (`action.yml`/`action.yaml` at **any** depth, `.git` pruned, since
+  `uses: ./x/y` resolves to `x/y/action.yml` and a nested action is as executable as a top-level
+  one). **The directory stays a PARAMETER**, exactly as `_shipped-shell-lib.sh` keeps its two halves
+  separate: that is what lets each gate point the same derivation at its own planted fixture tree,
+  which two of the three already did and none could have kept doing against a hardcoded root.
+  Adoption is behaviour-preserving **by measurement**: all nine `ci-matrix-parity` projections and
+  both siblings' complete assertion streams are byte-identical before and after. ⚠ **One property
+  to know before editing it:** narrowing the shared predicate back to `*.yml` reds
+  `python-syntax-gate-selftest.sh` and **leaves both siblings green** — their own fixtures are
+  `.yml` files, so nothing there notices. One owner with one guard is the intended shape (three
+  copies of the fixture would re-mint what this removed), but it means an edit to the lib is
+  answered by that one gate, and it is recorded in the lib's header at the loop it guards.
 - **`board-snapshot`'s inline roster parser vs `kb_board_roster`** (card #5981) — the lib now owns the
   parser and `board-stats` is its second caller, but `board-snapshot` still carries the original
   inline copy, so a parser fix must be carried across by hand. Migrating it is **decision-gated, not
@@ -860,6 +923,287 @@ finding with no owner is abandoned, not filed.
   SessionStart display does not show. *Covered* was true of the refuse-policy callers only; for the
   rendering ones the census turned a silent truncation into a **quietly rendered** one. Both are
   now rc 2, refused before the census.
+
+  **The "quietly rendered" half is closed at the RENDERER too, and no longer only for this
+  fixture (card#6365) — closed for THE PARTIAL READS THE PAGINATOR CAN DETECT, which is not the
+  same sentence as "the renderer cannot quietly render a partial read".** Moving that fixture to
+  rc 2 removed *this* route to a quiet render; it left the property itself standing, because rc 3
+  (page cap) and rc 4 (a genuine short read on a reachable board) still reach the rendering
+  consumers with a partial array by design — that is what those rcs are for. `bin/board-snapshot`
+  now marks it **on stdout**, the channel its SessionStart consumer surfaces: every count that
+  pass prints carries a `≥` and each of its two sections carries a `card list INCOMPLETE (fetch
+  rc=$rc)` note.
+
+  The scoping clause is load-bearing rather than a hedge: three shapes still reach the renderer at
+  **rc 0** and are rendered as confident totals — a server that omits `meta.total` (no census to
+  run), a page delivered twice and scored as a dedup artifact, and a board the token cannot see
+  answering the same well-formed empty envelope as an empty board. All three are named as accepted
+  residuals in `fetch_board_cards`' own body — two under the words *"Residual, accepted"* (the
+  token-visibility envelope at the parse refusal, the duplicate page at the census) and the third
+  stated in the card#6630 paragraph, which names an omitted `meta.total` as the case the census
+  cannot speak for. All three are upstream of every renderer, and none is closable by a stricter
+  row count — the token-visibility one needs a membership signal the envelope does not carry. A marker
+  driven off `$rc` cannot see any of them, so what the renderer now guarantees is *"a read the
+  paginator flagged is never rendered as whole"*, not *"a rendered count is whole"*.
+
+  **The marker covers the arms that RENDER and the arms that read NOTHING (card#6365 review).**
+  The first cut marked only rc 3 and rc 4 — the two arms that render a partial array. The other
+  five arms that reach the untriaged section (env file missing, env sets no `KB_BOARD_ID`, token
+  file unreadable, and the read guard's rc 1 / rc 2) reported once on stdout and wrote nothing to
+  fd 3, so the untriaged section rendered **empty** under a header that says *"triage is my
+  responsibility; none may be silently missed"* — for a board where zero rows were read. That is a
+  stronger version of the claim the rc-3/rc-4 note exists to forbid one line above it, and it was
+  reachable by a 500 from the API. All five now report through one `board_unread` helper that
+  writes the same reason to both channels; the two jq renders each gained a fallback on their own
+  channel for the same reason. The old behaviour was documented as a preserved *"fail-soft
+  asymmetry"* — it was inherited from the era when the two sections were two independent passes,
+  not a ruling, and it is recorded here as ruled-on rather than left implicit.
+
+  **`bin/board-stats` is the class's SECOND MEMBER and it is OPEN, not closed (card#6365 review —
+  the RENDERING half has closed since; the disposition paragraph directly below this one owns the
+  current state, and this paragraph is the finding as it was written).**
+  It already emits an INCOMPLETE note at its `3|4` arm (`every stock count below is a floor, not a
+  total`), which is why the first cut of this paragraph recorded the class as *"two members and was
+  one instance"*. That was true of the NOTE and silent about the MARKER: every stock number
+  `board-stats` prints is bare — measured at NINE per board on all three boards here (eight columns
+  plus the total), each quotable out of the one `⚠` line that qualifies them — and `--format json`
+  is worse. Its rc-3/rc-4 arm leaves the internal `stock_ok` **true**, so `.stock` is emitted as a
+  fully populated object with **no field that distinguishes it from a whole read** (the emitted keys
+  are `board`, `board_id`, `failures`, `flow`, `label`, `stock` — there is no completeness field at
+  all); the only signal is a prose string inside `failures[]`, which a JSON consumer has to
+  string-match to learn the counts are floors. Either the `≥` carrier is load-bearing, in which case `board-stats` needs it (and its
+  JSON needs a machine-readable completeness field, not prose), or it is deliberately
+  board-snapshot-specific. It is the former: the carrier exists because a number survives being
+  quoted out of its line, and a JSON field survives being read by a program that never sees prose
+  at all. Recorded as an OPEN member of this entry — it has an owner and a queue position here
+  (canon #18) — rather than fixed inside card#6365, whose scope is the SessionStart renderer.
+  Changing what `board-stats` prints and what its JSON asserts is an operator-facing report change
+  and is ask-gated.
+
+  **DISPOSITION of that second member — the STOCK RENDERING is closed, the CLASS IS NOT
+  (card#7228).** The operator approved the rendering half only, and only that half was built:
+  `board-stats` now derives the completeness state once at its own `fetch_board_cards` rc guard and
+  prefixes `≥` onto every number the stock section prints. The state is **fail-closed**: it is
+  initialised false and exactly one arm — rc 0, the whole read — claims otherwise, so an rc added
+  to the accepted-partial `3|4` arm floors its numbers whether or not anyone remembers to say so,
+  and only an explicit edit to the rc-0 arm can ever claim a read is whole. (A `rc -ne 0`
+  derivation over one merged `0|3|4` arm — `board-snapshot`'s shape — was the first cut and is not
+  what shipped. **The reason first recorded here for abandoning it was wrong and is corrected:** it
+  said that shape pushed the guard's own `*)` arm past the ten-code-line window
+  `tests/fetch-board-cards-caller-claims-selftest.sh` derives its arm population inside. Re-measured
+  on the shipped bin, a COMPACT spelling of exactly that derivation — the merged arm plus a
+  single-line `if [[ "$rc" -ne 0 ]]; then … else … fi` — runs that selftest at **rc 0**, while a
+  fully expanded `if … fi` of the SAME derivation reds it on `bin/board-stats: the registered arm is
+  INSIDE the derived window [card snapshot unavailable …]`. So `ARM_WINDOW=10` constrains how many
+  CODE LINES a spelling spends between the call and its last arm — it constrains LAYOUT, not the
+  derivation — and it forbids no shape. The fail-closed default-false spelling stands on its own
+  stated ground, which is the only ground it ever needed: it is the stronger invariant, because a
+  new rc added to the accepted-partial arm inherits the floor instead of inheriting a claim.) The
+  denominator is one count per column, the total, and the oldest-card AGE in each
+  pullable column that holds one; the age joins the counts because a card the read never delivered
+  can only be OLDER than the oldest one it did, so the printed age is a floor for the same reason
+  the counts are. Measured against the pre-change bin, side by side through the shared curl stub:
+  the two bins are byte-identical on FOUR of the six format × rc combinations — the text render at
+  rc 0, and `--format json` at rc 0, rc 3 and rc 4 — and the two that differ are the text render at
+  rc 3 and rc 4, which is exactly this change. (The first cut of this sentence read "a complete read
+  is byte-identical … on text AND `--format json`, at rc 0, rc 3 and rc 4", which asserts the
+  partial TEXT renders are unchanged. They are not, and could not be.)
+
+  **THE CARD ID beside that age — this paragraph is the single owner of the ruling, and the first
+  one was wrong.** The id is the only value in the stock section that is not a number, so the
+  marker cannot carry it: `≥` says nothing about an identity. The first cut therefore left it bare
+  and justified that by *"the ⚠ line directly above the section already says the named card may not
+  be the oldest one on the board"* — **a sentence that does not exist**. The rendered ⚠ line is
+  `card snapshot INCOMPLETE (fetch rc=4) — every stock count below is a floor, not a total`; it
+  speaks only about the counts, so the age was correctly floored while `(#11)` was left asserting
+  *the oldest Backlog card is #11* off a read this tool had just declared incomplete — and by this
+  entry's own premise, the card that is actually oldest can be one the read never delivered, under a
+  DIFFERENT id. An operator could act on the wrong card. Two routes were on the table and neither
+  shipped: **extending the ⚠ text** would put the qualification back onto the line this whole change
+  exists because a value survives being quoted out of it, and **dropping the id on a partial read**
+  discards a datum that is true and actionable (#11 really is that old and really is pullable — and
+  on a page-capped board the report would then name no card at all). What ships is the qualification
+  ON the value, for the same reason the marker is: a floored render prints `oldest ≥232.3d (#11
+  among the cards read)`, which is true as written and stays true quoted out of every line around
+  it. A complete read prints the id bare, asserted with its own control — a qualifier on every
+  report would be a worse defect than the one it closes. `bin/board-stats`' `idq` definition and the
+  CHANGELOG entry POINT here; the false sentence was minted into three surfaces in one change, which
+  is what made re-stating it three times the wrong correction.
+
+  **DISPOSITION of the FLOW half — CLOSED (card#7235), and it is the same fix one section lower
+  rather than a second mechanism.** `_bs_one_board` sets `flow_ok=true` on a window it could only
+  partly read and appends *"changelog window INCOMPLETE: … — the flow counts below are a floor, not
+  a total"*, and then `created`, `moved`, `same-stage moves` and every per-transition,
+  per-resolution and per-wash count rendered unqualified under it. Every one of them now carries the
+  `≥` the stock section carries, through the SAME `fl($f)` carrier card#7228 built — the marker takes
+  a cell of the existing right-padded column, so alignment holds, proven by a strip control that
+  compares the floored render to the complete one as a byte equality rather than by eye.
+
+  **The denominator is wider than the card named it, and the two additions are the reason it was
+  re-derived instead of copied.** The card listed `created` / `moved` / `same-stage moves` / every
+  transition, resolution and wash count. Two more classes of quantity print in that section and both
+  are floors for the same reason:
+
+  - **the human/service/unattributed numbers inside every split note** — they count the same rows
+    the line they hang off counts, so `split_note` now takes the marker as an argument rather than
+    reading none;
+  - **`transitions: none in window` / `resolutions: none in window`** — a ZERO is a quantity, and
+    `none in window` asserts a TOTAL of zero that survives being quoted out of the ⚠ line exactly as
+    a digit does. It is the one claim in the section the marker cannot reach, because there is no
+    number to prefix, so a floored render names the population instead — `none in the events read` —
+    which is the route `idq` already takes for the oldest-card id, not a new one. A complete window
+    still prints `none in window`, with its own control.
+
+  Two things in that section are deliberately NOT marked, and neither is a quantity: the stage
+  LABELS, and the `⤷ the changelog reaches back only to …` line, whose instant is the oldest row that
+  WAS read and is therefore exact rather than a floor.
+
+  **The two completeness states are SEPARATE, and that is a ruling, not an implementation detail.**
+  `flow_complete` is derived at the changelog guard and `stock_complete` at the card guard, from two
+  reads with two failure modes: a whole card read under a partly-read window floors the flow half
+  ALONE, and the reverse floors the stock half ALONE. One shared flag would floor a section that was
+  read whole, and a qualifier on every report is a worse defect than the one this closes — so both
+  directions are asserted against the same bin in the same run.
+
+  **The two flags are NOT fail-closed the same way, and the review that found it is why this says
+  so.** `flow_complete` is initialised false with exactly ONE arm — an empty `error`, the window
+  read to its cutoff — claiming otherwise, and that much reads like `stock_complete`. It is not the
+  same dispatch. `stock_complete` switches on an **enumerated rc**, so an rc nobody listed lands in
+  `*)` and floors by default. `flow_complete` switches on the **absence of a string** that
+  `_bs_window_rows`' own exits have to remember to set: the completeness claim is driven off
+  exactly the break sites that set `err`, and a `break` added to that loop which does not set `err`
+  reaches the same arm as a window read to its cutoff and claims the window is WHOLE. **That
+  direction is FAIL-OPEN**, and a future editor is entitled to know it: adding a break means adding
+  its `err=` in the same edit. **Which break sites those are is enumerated ONCE — in
+  `bin/board-stats`, in the comment above the `flow_complete` guard in `_bs_one_board` — and this
+  document deliberately carries no copy of the list.** The copy it used to carry was one short (it
+  named four, omitting the failed changelog READ, which is two messages on one break), which is
+  what a hand-synced enumeration in four places produces; the same reason the ask-gated decision
+  below is owned here and pointed at from there, in the other direction.
+
+  The nearest EXISTING instance of the shape is the short-page arm's `oldest == none` route, which
+  breaks with no `err`. `oldest` is `ep()` of the page's **last row**, so a last row whose
+  `created_at` this tool cannot read renders a truncated window as a complete one. **Measured
+  against the live board API on 2026-08-22, that read is not exposed there:** the changelog renders
+  `created_at` at second precision with a `+00:00` offset — `2026-08-22T18:57:21+00:00` on a fresh
+  row, and `2026-06-29T21:12:44+00:00` on the oldest row board 12's log still holds, i.e. at both
+  ends of a seven-page window — which `ep()` rewrites to `Z` and parses (1787425041), while the
+  fractional-second form (`2026-08-22T18:57:21.123456+00:00`) is the control and returns `null`,
+  re-run here rather than carried across. So the shape is real and
+  the live trigger is absent on the host measured — a statement about that host on that date, not
+  about every host, and not a claim that no host can produce one.
+
+  **The fix that would close the direction is ask-gated and is NOT in this branch.** Making the
+  flag affirmative — each stop declaring completeness rather than every stop declaring an error —
+  floors strictly more reports than this change does, which is an operator-facing render change and
+  therefore takes the same approval the two fixes above took. It was escalated to the operator on
+  2026-08-22 separately from this branch, as **card#7298**, which carries the recommendation and
+  the measurement; recorded here so the bin's own comment can point at one owner for the decision
+  rather than restate it.
+
+  **ONE member of this class stays OPEN on this tool, and it is not a residual of either fix —
+  it is the same defect on a surface neither approval covered:**
+
+  - **`--format json` still carries no completeness field for EITHER half.** This was left alone on
+    purpose: it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to
+    be enumerated before a key consumers must honour is added. The document behind the renderer does
+    now carry a `stock_complete` and a `flow_complete` (the text renderer computes nothing of its own
+    and needed fields to read), and the `json` arm STRIPS both — so the emitted object is the same six
+    keys it always was, asserted in `tests/board-stats-selftest.sh` on a whole read, a partial card
+    read and a partly-read window. **The unmeasured bound is unchanged and is the first step of that
+    half, not a detail of it:** nothing in this repository consumes `board-stats --format json`
+    (grepped), which is a statement about this repository and not about who runs the tool.
+
+  **TWO NEW members were found by the card#7235 sibling audit, on OTHER tools — found, not fixed,
+  because each is an operator-facing report change and therefore ask-gated exactly as these two
+  were.** **Filed 2026-08-22 as card#7291 and card#7292.**
+
+  - **card#7291 — `bin/board-session-close`'s `_bsc_advisory_leg` prints a KILLED leg's partial output on
+    STDOUT and says it is partial on STDERR, below it** (`bin/board-session-close` :797 for the
+    output, :804–:806 for the notice). A leg that hits the 60s wall clock is killed at `timeout`'s
+    rc 124; its output — which for `_kbc-archive-eligible.py` and `_kbc-stale-blocker.py` is a block
+    of counts — is printed first and unqualified, and the *"the … is INCOMPLETE, and what you see
+    above is a partial answer"* notice goes to fd 2. That is BOTH halves of card#6365 at once: the
+    qualification is on a different CHANNEL from the numbers (the exact half card#6365 closed for
+    `board-snapshot`, whose notice moved to stdout because that is the channel its consumer
+    surfaces) and it is on a LINE rather than on the values. **This route is why a scripted sweep
+    could not have found it:** the partiality does not come from a partial READ at all — this tool
+    reads no collection — it comes from a leg killed mid-run, so the "calls a paginator" predicate
+    the audit derived its population with does not select this file. The pass that found it MOVED
+    the denominator, which is exactly the shape of audit whose clean result means *a pass that moves
+    neither the numerator nor the denominator*, not *a grep came back empty*. The drift-check leg
+    at :911 splits the same two channels for the same reason — the delegate's output on stdout, the
+    degraded-coverage ⚠ on stderr — so a fix here has two sites in this file, not one.
+  - **card#7292 — `bin/_kbc-stale-blocker.py`'s summary block prints bare counts under a partial corpus**
+    (:627–:638). A declared board that fails to read is warned on stderr and the run continues, and
+    the summary then prints `{total_live}` live cards indexed, `{total_open}` open cards scanned,
+    `{examined}` citations examined, then `no blocking marker before it: N`, each `excluded, …: N`,
+    and `asserted as a blocker: N → M flagged, K out-of-tenant, U unresolved`. The `N of M declared
+    board(s) read` clause rides the SAME line as the first three and qualifies nothing below it.
+    ⚠ **Not every number there is a floor, and a fix must not assume it is:** `unresolved` moves the
+    other way — a citation naming a card on an unread board resolves as unresolved *because* the
+    board was unread — so a blanket `≥` would be a wrong claim on that one. It needs the same
+    per-value derivation this card did, not a copied prefix.
+
+  **The audit's denominator, so a later pass can re-derive it rather than inherit it.** Population:
+  every script in `bin/` + `hooks/` (**28**), narrowed by the property that makes a partial render
+  possible — the tool prints a QUANTITY on an operator-facing channel from an input it knows was
+  incomplete. **The outer population is scripted; the narrowing to 14 is NOT, and saying otherwise
+  was the defect the card#7235 review caught in this paragraph.** Both commands, so a later pass
+  re-runs them rather than quoting these figures:
+
+  ```sh
+  find bin hooks -maxdepth 1 -type f | wc -l                      # 28 — the population
+  command grep -rlE 'fetch_board_cards|fetch_whole_board|fetch_board\b|changelog\.json|search/code|os\.walk|\.rglob|\.iterdir' \
+      bin hooks --exclude-dir=__pycache__ | sort                   # 12 — the read-driven sweep
+  ```
+
+  Measured 2026-08-22: the sweep returns **12**, not the 14 below. It selects every tool that
+  accumulates a COLLECTION through a board read, and the two it cannot select —
+  `bin/install-board-hooks` and `bin/release-tag-check` — were added by READING: one iterates the
+  hook set it installs, the other polls a remote for a tag, and neither reaches this predicate
+  through any token. So the 14 is a hand-enumeration that a token sweep starts and a read finishes,
+  and the sweep is shipped here as the reproducible part rather than described as the whole
+  derivation. Each of those 14 was then READ at its own read site and classified REFUSE vs
+  RENDER-ANYWAY: `promote-released-cards` dies on every truncation path, `kbcard` refuses at three of its four `fetch_board_cards` sites and makes no
+  operator-facing claim at the fourth, and `next-dl` / `dl-a0-backfill-triaged` / `board-card-start`
+  all refuse, `bin/_kb-board-lib.sh` IS the paginator and renders nothing, and
+  `bin/install-board-hooks` / `bin/release-tag-check` print no quantity derived from a partial read
+  at all. Two RENDER-ANYWAY tools are non-members on their content rather than on their arm:
+  `bin/gh-code-search` puts `incomplete_results` on the SAME LINE as `total_count` in every branch by
+  explicit design, and `bin/_dependabot-reconcile.py` prints *"a population that was never measured"*
+  rather than a number it cannot stand behind. `bin/_kbc-archive-eligible.py` is ADJACENT and
+  deliberately not counted: a board it could not read is warned to stderr with no stdout row, which is
+  card#6365's channel half — but every number it prints belongs to a board it DID read, so no printed
+  quantity is a floor. **The arithmetic closes on 14:** 6 refuse or render nothing
+  (`promote-released-cards`, `kbcard`, `next-dl`, `dl-a0-backfill-triaged`, `board-card-start`,
+  `_kb-board-lib.sh`), 2 print no such quantity (`install-board-hooks`, `release-tag-check`), 2 are
+  non-members on content (`gh-code-search`, `_dependabot-reconcile.py`), 1 is adjacent
+  (`_kbc-archive-eligible.py`), and **3 are members** — `board-stats` (both halves now closed, the
+  json field open), `board-snapshot` (closed by card#6365, with the candidate below), and
+  `_kbc-stale-blocker.py` (new, above). `board-session-close` is the 15th, and it is the one this
+  population did not contain. **One candidate is recorded undecided rather than either way:**
+  `bin/board-snapshot`:177 says *"the in-flight count below is a FLOOR"* and an in-flight LIST follows
+  it, so the notice speaks about the count and is silent about the list — the same wording gap
+  card#7228's review found for `(#11)`. It is weaker than that one, because a list asserts no
+  superlative the way "the oldest is #11" does, and it is left as a question for whoever takes the
+  `board-snapshot` surface next rather than answered here.
+
+  **So the class is OPEN**, with three members outstanding: the `--format json` field on this tool,
+  and the two new ones above. Recording it closed over these would be the same failure this document
+  records for the `has()` class — the first cut of that section said it had.
+
+  **The SessionStart delivery bound, filed not fixed (card#6365 review).** `board-snapshot`'s
+  in-flight list is UNCAPPED — one line per in-flight card — while the untriaged list caps at six.
+  Measured on the rc-3 page-cap fixture: **7,057 characters for ONE board** (212 lines), against a
+  SessionStart `additionalContext` cap measured at ~10 KiB PER OUTPUT, in characters, above which
+  the payload is spooled and only a ~2 KB preview injects while the hook still exits 0. The first
+  casualty of that truncation is the TAIL — the fd-3 note and the entire untriaged section, i.e.
+  exactly the lines this change added. Today's live three-board run is 1,400 characters, so the
+  bound is conditional and not firing; it is filed because the fix's premise is *"the notice
+  reaches the consumer"*, and writing to stdout is necessary, not sufficient. The remedy is to
+  **SPLIT the output, not shrink it** (the framework's own finding on this cap), which is a change
+  to the hook's delivery contract rather than to this renderer, and therefore not card#6365's.
 
   **THE THIRD INSTANCE — `bin/board-stats` `_bs_window_rows`, now FIXED, and the reason this entry
   was not closed with the other two.** The changelog window is read by paging BACKWARD on a
@@ -1180,12 +1524,237 @@ finding with no owner is abandoned, not filed.
   no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
   reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
   **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
-- **The lib-sourcing-bins list, in three prose copies** (card #5981) — the lib header, `ADOPTION.md`
-  and `INSTALL.md` §6b each enumerate the bins that `source` `_kb-board-lib.sh`, while
-  `agent-board-toolkit-drift-check` **derives** the real set from the files. That is the restatement
-  shape Stage B closed elsewhere by deleting the copy and pointing at the owner; the same fix applies
-  here, and the same caution does — the three copies are consumer-facing prose with different
-  audiences, so the replacement has to leave each audience an answer, not just a pointer.
+- **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
+  THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
+  not in conflict: it counts attempts at the LIST itself, of which the first two closures here were
+  two). *(This line read "on the second attempt" until a third review pass measured that
+  the gate the second attempt shipped had the class's own defect inside it — see the second ⛔ below.
+  The correction is left visible rather than smoothed, because "shipped on the second attempt" is
+  precisely the kind of claim this bullet exists to distrust.)* The lib header, `ADOPTION.md`,
+  `INSTALL.md` §6b and `UPGRADE.md` §3 each
+  enumerated the bins that `source` `_kb-board-lib.sh`, while `agent-board-toolkit-drift-check`
+  **derives** the real set from the files. The prediction this bullet carried is what came true:
+  `gh-code-search` joined the set and reached **one** copy, leaving the others telling a vendoring
+  consumer to copy a bin set that omitted it — an rc-1 "shared lib not found" refusal on every
+  invocation, from following the instructions. Every enumeration is now **deleted**, each replaced
+  by the derivation itself — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` — which is the
+  answer this bullet required each audience to be left with (a command they can run against the
+  version in their hand), not a bare pointer.
+
+  ⛔ **THE FIRST CLOSURE OF THIS BULLET WAS FALSE, and how it was false is the reason the ruling
+  below reversed.** It fixed three copies, wrote *"no fourth copy and no new gate"*, and marked the
+  class SHIPPED — against a denominator taken from **this bullet's own prose** rather than
+  re-derived from the tree. `UPGRADE.md` §3 was never in that three, and it is the copy a
+  re-vendoring consumer actually follows (`INSTALL.md` §6b points at it): it named **six** bins
+  where the derivation answers **nine**, omitting `adopt-to-dl`, `board-stats` and `gh-code-search`.
+  The re-derivation is the one the fix now publishes, run against the tree in hand rather than
+  quoted — `grep -lE '^[[:space:]]*source "\$KB_LIB"' bin/*` (9), controlled against the wider
+  `grep -ln _kb-board-lib bin/*` (16), whose seven extra hits are each a documented standalone that
+  mirrors a helper rather than sourcing it. A pass that had re-derived instead of quoting would have
+  moved its own denominator, which is exactly the signal that a class audit has not converged.
+
+  **The "no new gate" ruling is REVERSED, and the reversal is the finding, not a preference.** The
+  argument for it was sound — `drift-check`'s `MISSING-LIB` probe and
+  `tests/drift-check-fixture-selftest.sh` do keep the *pattern* honest — but it answers a different
+  question: those two prove the derivation still discriminates a sourcer from a standalone; neither
+  can see a prose list that has stopped agreeing with it, and a prose list is what the consumer
+  reads. A four-copy class that survived a three-copy audit **is** the argument for a gate, and it
+  now has one: **`tests/lib-set-derivation-selftest.sh`**, which (1) extracts every published
+  spelling of the derivation from the tree, runs each against `bin/`, and reds when one answers a
+  different set — or nothing, which is how the release note shipped it, with `$KB_LIB` unescaped
+  inside single quotes so the ERE anchor matched **0** files — and (2) reds when a line **anywhere
+  in the tree** both names the lib and enumerates two or more members of the derived set, with
+  fixture controls so the leg is watched to fire. Its unit is the LINE, which is a
+  whole paragraph in the markdown a consumer follows and a wrapped fragment in a shell comment —
+  stated in the check, because it means a historical aside wrapped across comment lines is out of
+  its reach by construction, not by luck. Version-specific history
+  (`UPGRADE.md`'s version-specific section and `docs/CHANGELOG.md`'s RELEASED entries, each split
+  at its heading; plus `CLAUDE.md`, carved WHOLE-FILE for a second and independent reason — it is
+  agent orientation and reaches no vendoring consumer, so `LEG3_HISTORY=("CLAUDE.md")` skips the
+  file, not its release-snapshot table) is deliberately out
+  of its population and the check says
+  why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
+
+  ⛔ **THE SECOND CLOSURE WAS ALSO WEAKER THAN ITS WORDING, and by the same mechanism — which is
+  why this bullet now names three attempts.** The gate above shipped with leg 3 stated as *"**No**
+  consumer-facing surface enumerates the set in prose again"* while it ran over **four hard-coded
+  paths**. A class audit's own instrument had a hand-kept denominator: a fifth surface joined
+  silently, measured by appending a re-vendor sentence naming four bins to `README.md` and watching
+  `lib-set-derivation-selftest` stay at **rc 0** — the file was outside its four paths entirely —
+  with `readme-bin-coverage-selftest` at rc 0 beside it, because that gate owns a *different*
+  inventory and compares names only, which it says. That is the same shape as the first closure (an instrument answering about
+  its list rather than about the repo) with a check in front of it, which is worse, not better: the
+  green now certifies the narrower question.
+  **Leg 3's population is now DERIVED on every run** — every readable non-binary file in the tree,
+  `.git` excluded, the same population leg 1 uses — minus two carve-outs of deliberately different
+  shape: version-specific frozen history, carved out at the HEADING where it begins for two of its
+  three members — `CLAUDE.md` stays whole-file, for the independent reason named above (a per-line
+  disposition there would need a new entry every release, i.e. the hand-kept list again — it was
+  carved **whole-file** until the fourth pass below), and a small set of
+  **per-line** dispositions for prose that names the same nouns without instructing anyone to copy
+  anything, each keyed `<path>::<substring>` and each **asserted to still match a live line**, so a
+  disposition cannot outlive the line it disposed. Line scope is load-bearing on `README.md`
+  specifically: it carries one disposed paragraph and is the most consumer-facing file in the repo,
+  so a whole-file carve-out would have hidden a regrown list exactly where it does the most damage.
+  Three mutations were watched red and restored by copy + `cmp`: the reviewer's `README.md` line
+  (1 red), a brand-new `docs/` file nobody named (1 red), and a disposition made stale (2 red).
+  **Leg 2 keeps its four-path list, and that is not the same defect**: "this surface OWES the reader
+  a derivation" is an editorial obligation no property of the tree can derive, the list is a FLOOR
+  rather than a population, and leg 3 no longer reads it.
+
+  ⛔ **A FOURTH PASS THEN MEASURED THE THIRD CLOSURE'S CARVE-OUTS WRONG IN TWO PLACES — same shape
+  again: a stated scope wider than the predicate under it.** *(a)* The `UPGRADE.md` split was cut on
+  `^## 6\.` while one sentence beside it called it *"derived, not a line number"* (three
+  mentions of the split, one making the claim): only the
+  OFFSET was derived — the **6** was a hand-kept fact, this bullet's own subject inside this
+  bullet's own gate. Measured: a new LIVE `## 6.` section carrying an enumeration line, with the
+  history renumbered to `## 7.`, left the run **rc 0 all-green** while the live region silently
+  SHRANK, because the only premise beside the cut asserted what the live region LACKS — a direction
+  that catches a too-WIDE cut and never a too-narrow one. Both splits are now located by the
+  heading's TEXT with the number left free, and each asserts how many headings matched and that the
+  matched one lands in the frozen complement. *(b)* `docs/CHANGELOG.md` was carved **whole-file** on
+  a reason — *a frozen at-a-version list cannot rot* — that is simply false of `[Unreleased]`, the
+  section the release in flight is written INTO: a regrown enumeration line under it passed at rc 0
+  (measured). It is now split at its first versioned heading, live head IN. *(c)* Stated rather than
+  widened, per the ratified rule: leg 3's per-file predicate is three literal spellings of the lib,
+  so a vendoring instruction spelled *"the toolkit library file"* is invisible to it — the leg is
+  fail-closed over the FILE population and **not** over the spellings, and that bound now sits
+  beside the predicate rather than in a claim about the leg.
+  **This is a correction to the gate, not a fourth closure of the class, and the count above is
+  deliberately left at three:** the third attempt's finding — derive the population, never list it —
+  held; what measured wrong was two of the carve-outs subtracted from that population.
+
+- **The value-taking flag population, in ten hand-typed lists** (card#6645) — **SHIPPED.** Stage C
+  gave the flag axis one guard (`kb_require_value`, plus the vendored mirrors that cannot source
+  the lib). What it did not give the *tests* was one statement of **which flags the guard covers**:
+  ten selftest blocks each typed that population out, six of them under an explicit totality claim
+  (*"every value-taking flag … the whole class, not one instance"*). A typed list cannot go red
+  when the bin grows a flag, so each claim narrowed with every release that added one — and two had
+  already lost members when this was measured: `promote-stage-guard-selftest` named **five** of
+  `promote-released-cards`' **six** (`--cards`, shipped in v0.26.0, was never driven) and
+  `kbcard-selftest` drove **two** of `bin/kbcard`'s **27**. This is Stage B's card#5740 shape one
+  axis over: that one deleted the duplicated *helper*, this one deletes the duplicated
+  **population**. Closed the same way — `_value_flags` / `expect_value_flags` in
+  `tests/_selftest-prelude.sh` derive the population from each bin's own `require_value` /
+  `kb_require_value` call sites (both spellings, because the standalone movers carry their own
+  copy) and two-way-compare it against what the block names, so neither direction can drift in
+  silence; `tests/value-flag-derivation-selftest.sh` is the control on the derivation itself.
+  **Weakest property, stated so it is not over-cited:** the predicate keys on the **guard**, so it
+  answers *"is every guarded flag accounted for"*, never *"is every value-taking flag guarded"* —
+  `agent-board-toolkit-runtime-check`'s `--reference` guards with `"${2:?…}"` and is invisible to
+  it, which is the exclusion Stage C already reasons and keeps by design, not a new gap.
+- **The three-outcome read, collapsed to two** (card#7210; the roll is #6572 #6594 #6630 #6631
+  #6680 #6884 #7174 #6365) — a read has three outcomes, *present* / *absent* / *unreadable*, and a
+  site that discards the read's status and then tests the survivor for emptiness has two. The
+  unreadable case is scored as a **measured negative** and the claim built on it is stated with the
+  confidence of a real one — `fetch_board_cards` answered an unreadable page-1 `2xx` with
+  `RC=0 STDOUT=[[]]`, byte-identical to an empty board. Every instance was found by **reading**,
+  never by a failure, which is the property that makes instance-fixing insufficient here: **PR #274
+  re-minted the shape one commit after its own parent (`b2071b9`) closed it at
+  `install-board-hooks`.** That is Stage B's card#5740 lesson a third time — *fixing N copies
+  without the guard that forbids the N+1th leaves the cause in place* — so the guard is
+  `tests/read-outcome-collapse-selftest.sh`, and it is deliberately **not** a rewrite of the sites
+  it lists. It derives its population from the tree on every run (`find bin hooks -maxdepth 1 -type
+  f ! -name '*.py'` — the `bin`/`hooks` half of `ci.yml`'s shellcheck expression; `tests/` is a
+  stated exclusion, since the harness discards a read's status on purpose), keys members on
+  `<file>:<var>` rather than a line number so a disposition does not rot on the next edit above it,
+  prints its **denominator** on every run — clean or not — and reds on a member its
+  **disposition list** does not carry, one line each with the reason it is permitted. The split
+  between the two halves is the point: (a) *the status is discarded* and (b) *the value is later
+  tested for emptiness* are both derivable, but **whether that collapse is a defect is not** — it
+  depends on what the branch does next, and `fetch_board_cards`' `-z "$data"` refusal and a
+  confident wrong count one file over match identically. So the scanner owns the population and the
+  list owns the verdict. **Weakest properties, stated so it is not over-cited:** it cannot see a
+  collapse that never touches a variable (`if [ -n "$(cmd 2>/dev/null)" ]`), one carried across a
+  function boundary, `bin/*.py`, or the bash embedded in this repo's composite actions — **however
+  many there are**, a set `tests/composite-action-wiring-selftest.sh` derives from the tree and
+  prints on every run, so this exclusion is not re-counted here (it said "the two" while a third
+  was landing) — and a disposition is a recorded judgement, not a proof.
+
+- **`<producer> | grep -q <needle>` under `pipefail`** (card#7175) — `grep -q` exits the instant
+  it matches, so its producer fails on the closed pipe, `pipefail` promotes **that** status, and the
+  `&& echo true || echo false` tail every call site wore reported a **MATCH as `false`** — a wrong
+  answer at rc 0, not an error. **47 copies**, 44 of them in `tests/`; 46 migrated to the prelude's
+  new `has_line` (a `case` glob with the newline sentinels made explicit — no pipeline, no
+  subprocess, so the window structurally cannot exist), the 47th closed independently on `dev` by
+  card#6680. Two facts about it were relayed wrong before anyone re-measured, each costing a red:
+  the discriminator is **not** builtin-vs-external (bash forks a subshell for a builtin in a
+  pipeline and it takes SIGPIPE like anything else — the "a `printf` builtin survives, rc 0 over a
+  5 MB body" measurement is *reproducible*, and reproduces only with the match at the **END** of
+  the body, where `grep -q` never leaves early); and the dead producer's status is **not 141** —
+  that is the rendering where SIGPIPE is at its **default**, while an inherited `SIG_IGN`, which
+  the GitHub Actions runner installs, gives an EPIPE write error at **1**. `pipefail` promotes
+  either, so the defect is disposition-independent and only the number moves — **a test asserting
+  `rc == 141` passes locally and reds in CI**, which is how the correction cost its own cycle.
+  **The gate is `tests/piped-match-gate-selftest.sh`**, and it exists because the first cut of
+  `pipeline-free-match-selftest.sh` declined it in writing (*"it is not a gate on new ones"*)
+  while **two copies survived the audit** — this document's own § Corrections carried forward had
+  already ruled that *a copy that survives an audit of its own class is the argument FOR the gate
+  that audit declined*, and Stage B's card#5740 section had ruled it once before that. It derives
+  its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus
+  `tests/*.sh` — **`tests/` is IN**, unlike `read-outcome-collapse-selftest.sh`, because this class
+  minted its red inside the harness), keys members on `<file>` carrying an **occurrence count** so
+  that an N+1th copy inside an already-dispositioned file still reds, prints its denominator on
+  every run, and carries exactly one disposition: the `_piped*` / `_stat*` fixtures that ARE the
+  construct held still so `pipeline-free-match-selftest.sh` can watch it fail. All three red paths
+  were watched to fire. **Weakest properties, stated so it is not over-cited:** it cannot see a
+  pipeline built as a string and `eval`'d, one whose `grep -q` sits behind a function boundary,
+  `bin/*.py`, or the bash in this repo's composite actions — the set
+  `tests/composite-action-wiring-selftest.sh` derives and prints, never a count written here.
+- **The wider EARLY-EXIT-READER class — `| head`, `| tail -N` — is NOT closed** (card#7175, filed
+  here rather than as its own item because this document owns the reasoning and the gate above is
+  where a future closure would land). `grep -q` is one early-exiting reader; `head -N` is another,
+  and it does the same thing to its producer under `pipefail`. `bin/release-artifacts-check`'s
+  two-stage version extraction (`… | grep -oiE "$VERSION_REGEX" | head -1 | grep -oE … | head -1`)
+  is a **live member**, held safe by an explicit `|| true` that is documented at the site as a
+  SIGPIPE guard rather than defensive tidying. It is not gated, and the reason is a cost decision
+  stated rather than a claim of safety: the population is large, and most of it is legitimate
+  (a short producer, or a captured value whose emptiness is then tested), so a disposition list
+  over it would be mostly noise on this pass. **The number is not written down here** — a written
+  count becomes a quoted authority that relays intact across the passes that falsify it; instead
+  `piped-match-gate-selftest.sh` **re-derives it every run and prints it in its denominator as an
+  explicitly ADVISORY, un-asserted figure**, so the remainder is a number that moves rather than a
+  prose figure that rots.
+  - **A SECOND live member, found and fixed** (card#6911, appended here rather than filed anew —
+    the class already has this owner). `agent-board-toolkit-runtime-check` carried
+    `newest="$(git … tag --list 'v*' --sort=-version:refname | head -1)"`, and it is the member that
+    breaks the "most of it is legitimate (a short producer …)" reading above: the producer is short
+    *today* and is not bounded to stay so. Measured with a planted tag set — **0/40 runs died at 350
+    `v*` tags, 21/40 at 400, 16/20 at 5 900, 40/40 at 12 000** — so it is a **RACE at git's ~4 KiB
+    stdio buffer**, not a cliff at the 64 KiB pipe buffer, and it dies at rc 141 *before the
+    verdict*. Two corrections this instance forces on the class's own reasoning: **`trap '' PIPE`
+    does not cover it** (git restores SIGPIPE to `SIG_DFL` for itself, so the parent's ignore is not
+    inherited — the fix ratified for the EXTERNAL reader buys nothing against the INTERNAL one), and
+    the reachability is not ours to bound, because `$root` there is `git rev-parse --show-toplevel`
+    of the tool's own directory, which for a toolkit **vendored inside a consumer repo** is the
+    consumer's repo. Fixed in place by taking the first line with a parameter expansion — byte
+    identical output, no second process. **Still not gated**, and that cost decision stands
+    unchanged; what this member adds is that the advisory figure's "mostly legitimate" gloss is a
+    per-instance judgement nobody has made, not a property of the population.
+
+- **A contract-fixed payload key's DECLARED custom-field type is a board precondition that nothing
+  in this repo checks — for every key but one** (card#6517). Every write these tools make to a
+  contract-fixed key is validated by kanban against that field's **declared type, per board**
+  (`CustomFieldValidator::validateValue` dispatches on `$def->type` alone), so the declaration and
+  the JSON type the writer emits are two halves of one contract that live in two different places —
+  the board, and `_kbc_build_payload`. They can disagree silently, and when they do the board
+  rejects **every** write to that key, forever. Two members are known and derivable from the writers
+  themselves: **`dl_number` must be `string`** — `kb_dl_canon` renders `DL-NNNN` and a `number`
+  field answers `422 Must be a number.` — and **`pr_number` / `issue_number` must be `number`** —
+  `_kbc_build_payload`'s `tonumber? // .` coerces them to JSON numbers and a `string` field answers
+  `422 Must be a string.` **Only the first is now checked by a program:**
+  `dl-a1-register-field` declares `dl_number` correctly and reads the type back on the
+  already-registered arm. The second is **prose only** — stated in `docs/INSTALL.md` §3b and
+  `examples/kanban-board.env.example`, enforced by nothing — and prose is what card#6517 already
+  proved insufficient once. The gap is recorded rather than closed because closing it well is not a
+  second copy of the same read: the natural owner is a per-board **precondition check over the whole
+  contract-fixed key set** (one read of the field index, one expected-type table derived from the
+  writers rather than hand-listed), which is a new surface and a new decision about what it refuses,
+  not an edit to the DL setup tool. **What is NOT claimed here:** that the two members above are the
+  whole population. `version_target`, `origin`, `pr_url` and `issue_url` were **not** derived — the
+  three working installs inspected declare them `string`, `enum`, `string` and `url` respectively,
+  which is an observation of what works and not a statement of what is required, and no run of
+  anything has tested the alternatives.
 
 ---
 
@@ -1196,6 +1765,49 @@ teaches the next reader nothing.
 
 - **"The drift gate cannot fail"** — true only for the content-drift axis; its `MISSING-LIB` leg is
   live. Revision 1 said *replace*; that would have deleted it. → **add, never replace.**
+- **"The lib-sourcing-bins list lives in three prose copies"** and **"no fourth copy and no new
+  gate"** — both false, and the second followed from the first. The count came from this document's
+  own prose instead of from the tree, so `UPGRADE.md` §3 — the standing re-vendor recipe — was
+  never in the population and shipped naming six bins against a derived nine. → **a class audit
+  re-derives its denominator every pass; a pass that moves the denominator has not converged, and
+  a copy that survives an audit of its own class is the argument FOR the gate that audit declined.**
+- **"The class is closed, it now carries a gate"** — false as first written, and false the same way
+  twice: the gate's own leg 3 was stated over the repo and ran over four hard-coded paths, so the
+  lesson directly above it was discharged by an instrument that fixed *its* denominator at four. →
+  **the rule binds the INSTRUMENT too: a check written to close a hand-kept-list class must derive
+  its own population, or state the bound it actually runs over where the maintainer reads it.** The
+  gate's leg 3 now derives; leg 2's four-path list stays and is stated as a floor, not a population.
+- **"A stated scope and a measured predicate can be left to agree by inspection"** — false across
+  three findings in one pass (this one, the writer census in `bin/gh-code-search`, and the rc
+  contract in `README.md` / `docs/CHANGELOG.md`). Each read broader than what it actually tested or
+  described, and each was written by the same hand that had just named the defect. → **the claim and
+  the predicate are one artifact: widen the predicate to the claim, or narrow the claim to the
+  predicate and say so where it is read — never ship them apart.**
+- **"Every surface that said `rc 141` is corrected"** (card#7175's own commit message) — false, and
+  false in the direction that costs the most: the CODE sites were all migrated and the claim was
+  read off that. **Twelve prose copies survived**, two of them forward-looking *predictions* in the
+  shipped `bin/release-artifacts-check`, sitting directly above a live `head -1` pipeline held safe
+  by an `|| true`. A maintainer hardening that pipeline reads the line, writes an `rc 141`
+  assertion, and gets a green local run and a red CI — the identical propagation path this card
+  documents, on its third repetition, with the CHANGELOG shipping the correction and the bin
+  shipping the error at the same time. → **a doc-sweep is over the CLAIM, not over the files the
+  fix touched; "the file was checked" answers about code and must not be relayed as answering
+  about text.** (§ Ground rules → Review discipline already required this: *a corrected code-state
+  claim is swept across all docs in the same PR*. It was declared done, not performed.)
+- **"~28 sibling `printf | grep -q` sites"** — false; the derived figure is **36**. 19 + 9 is
+  exactly the two largest files, so a six-occurrence tail across five more files plus two in
+  `bin/board-card-start` were never added in. The counts that GATED the work in the same entry
+  (47 / 11 / 46 / 1) were *derived* and re-derive exactly; this one was *typed*, in the same
+  paragraph, and read as equally load-bearing. → **a figure a reader cannot tell apart from a
+  derived one must be derived, or dropped** — and the derivation, not the number, is what belongs
+  in the tree (`piped-match-gate-selftest.sh` re-computes its population every run and prints it).
+- **"`pipeline-free-match-selftest.sh` … is not a gate on new ones"** — a declined gate, stated in
+  the file, while **two copies of the class survived that same audit** inside that same file. The
+  ruling directly above ("a copy that survives an audit of its own class is the argument FOR the
+  gate that audit declined") and Stage B's card#5740 section had both already settled it. →
+  **a control battery and a census are different artifacts; writing "this is only a battery" is a
+  statement of scope, never a disposition of the census.** The gate is
+  `tests/piped-match-gate-selftest.sh`.
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
 - **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured

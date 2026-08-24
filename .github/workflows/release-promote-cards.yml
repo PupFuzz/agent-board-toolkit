@@ -9,7 +9,14 @@ name: Promote released cards on merge to main
 # pin. Closes the gap (card #3895) where toolkit tracking cards stranded in
 # Shipped-to-Dev because, unlike boards 5 (kanban) and 8 (bridge), board 12 had no
 # release-promote wiring. Board / stage / api come from .release-pr.json (.promote).
-# Isolated so a card hiccup never blocks the release.
+# Isolated so a card HICCUP never blocks the release — but NOT isolated from whether the
+# release was actually tagged (card#6579). This workflow and `auto-tag-version.yml` share
+# the `push: main` trigger with no `needs:` between them, so this one wins the race on EVERY
+# release and used to stamp cards "Released to main" without the tag existing yet. On the
+# v0.28.0 merge the tag never arrived at all (auto-tag's push took a 403) and this workflow
+# still reported "2 moved" and SUCCESS three seconds later, leaving the board asserting a
+# shipped release against a tag that did not exist. The gate step below now waits for the tag
+# and refuses to promote if it never appears.
 #
 # workflow_dispatch lets an operator exercise the path on demand — dry-run by
 # default, so it moves nothing.
@@ -50,6 +57,34 @@ jobs:
       # .release-pr.json) so the failure is a clear ::error:: rather than the
       # action's script fail-closing on an empty value. The promote step itself is
       # the LOCAL composite action (uses: ./promote) — no external pin to bump.
+      # WAIT-THEN-VERIFY, REFUSE ON TIMEOUT. Not an immediate hard-refuse: promote and auto-tag
+      # start together, so the tag is legitimately absent for the first seconds of EVERY release
+      # and refusing on sight would red them all. Not a bare warning either — a line in a run log
+      # nobody reads is the same silence this card exists to end. The bound, why it is 300s, and
+      # what happens at it are stated in the tool's own header.
+      #
+      # `contents: read` above is UNCHANGED and sufficient: this polls refs with `git ls-remote`
+      # and writes nothing. The v0.28.0 403 was NOT a permissions defect — the failing job log
+      # showed `Contents: write` already granted — so nothing here widens a token.
+      #
+      # Skipped on workflow_dispatch, which has no `github.event.before` to classify against and
+      # is a deliberate operator-driven path (dry-run by default).
+      - name: Refuse to promote an untagged release
+        if: github.event_name == 'push'
+        # A backstop only, and the ordering it depends on is now ENFORCED rather than asserted:
+        # the tool bounds EACH `git ls-remote` and measures its wait in REAL elapsed time, so
+        # its own bound fires first and it exits 1. Nothing made that true before — no
+        # individual poll was bounded and the wait counted sleeps rather than the clock, so ONE
+        # hung read could consume the whole entitlement and produce exactly the outcome this
+        # comment claims to avoid: a timeout-minutes kill reports as `cancelled`, not `failure`,
+        # and a cancelled run is not a refused release.
+        #
+        # ⇒ DO NOT TIGHTEN THIS FROM A FIGURE WRITTEN HERE. The worst-case runtime is stated
+        # in `bin/release-tag-check`'s own header; it moved once already and the copies of it
+        # here did not. Read it there before changing this number.
+        timeout-minutes: 10
+        run: bin/release-tag-check --before "${{ github.event.before }}" --after "${{ github.sha }}"
+
       - name: Preflight required repo variables
         env:
           KANBAN_API_BASE: ${{ vars.KANBAN_API_BASE }}

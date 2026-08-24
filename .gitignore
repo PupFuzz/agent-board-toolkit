@@ -2,11 +2,68 @@
 # Templates live in examples/*.example (kept).
 *-token
 *.env
+.env*
 .kanban-*
-# Python bytecode from the bin/*.py shims + their CI py_compile step.
+# Python bytecode. Both routes that were minting it are closed: the bin/*.py entry points
+# (card#6871 — bin/ is symlinked onto PATH entry by entry, so a __pycache__ there becomes a
+# PATH entry), and CI's own syntax gate (card#7207 — it ran py_compile, which writes the
+# bytecode it produces; it now uses compile(), which does not). A HAND-RUN of py_compile still
+# mints one, and this keeps that out of the index.
+# ⚠ An ignore is not an absence: an ignored directory in bin/ is invisible to `git status`
+# while still being globbed by every consumer of bin/*. That is what card#6871 was.
 __pycache__/
 *.pyc
 # .release-pr.json IS committed (non-secret project config: board id + public API
 # base + artifact list) — same as agent-webhook-bridge and kanban-board. It drives
 # bin/release-pr-body + bin/promote-released-cards and must be in-repo for the
 # release tooling to run reproducibly (incl. CI).
+
+# Editor, backup and packaging siblings of ANY file, secret-bearing ones included. A
+# backup carries the same secret as the file it copies, and a per-file enumeration is
+# permanently one editor behind: `.env` was ignored here while `.env~`, `auth.json~`
+# and `storage/*.key~` were all stageable (roundtable #316, found live on a peer
+# install as a 4,339-byte `.env~`). The rules above name WHICH files are secret;
+# these cover HOW a tool spells a copy of one, so a new secret file added above
+# inherits the coverage instead of needing its own siblings enumerated.
+#
+# ⚑ ONE BLOCK OVER EVERY FILE, NOT ONE BLOCK PER SECRET RULE — that is the whole point.
+# Four rules above name secret-bearing files; giving each its own sibling list is four
+# places to forget the fifth affix, which is exactly how the first pass of this fix
+# shipped without `*.swp` and left `auth.json.swp` stageable.
+#
+# ⛔ THIS LIST IS A LOWER BOUND AND CANNOT BE COMPLETED. nano writes `.save.1`, `.save.2`
+# … without limit and `cp .env .env.for-alice` invents a suffix on the spot; gitignore has
+# no "any backup of this" concept to express that. A rule spelled with a trailing `*`
+# (`.env*`, `.kanban-*` above) is the only construction that covers its whole suffix family
+# unconditionally — prefer it wherever it does not over-widen. `bin/gitignore-secret-family-check`
+# holds this block level with the affix table it derives; every entry below was taken from
+# its producer's own documentation or measured on a real box, never recalled.
+*~
+.#*
+# the next line is emacs's auto-save spelling `#<name>#`; the leading `#` MUST be
+# backslash-escaped or gitignore reads the whole line as a comment and the rule
+# silently does nothing (measured — it is why this needed a second pass).
+\#*#
+*.bak
+*.bak-*
+*.bak.*
+*.orig
+*.rej
+*.save
+*.save.[0-9]*
+*.sw[a-p]
+*.old
+*.tmp
+*.copy
+*.dpkg-old
+*.dpkg-dist
+*.dpkg-new
+*.rpmsave
+*.rpmnew
+*.ucf-old
+*.ucf-dist
+*.ucf-new
+*.BACKUP.[0-9]*
+*.LOCAL.[0-9]*
+*.REMOTE.[0-9]*
+*.BASE.[0-9]*

@@ -67,12 +67,16 @@ g -C "$S" push -q origin dev
 g -C "$W" checkout -q dev
 g -C "$W" pull -q origin dev
 
+# NO `main_branch`/`dev_branch` key here, deliberately. This fixture's branches ARE `main` and
+# `dev`, so SETTING the keys to those values is a control that cannot discriminate: a pass could
+# not tell "the key was read" from "the default fired" (card#7038, instances 4-5). With the keys
+# genuinely ABSENT this block asserts the DEFAULTS — a distinct behaviour worth keeping covered —
+# and the non-default fixture below asserts the READ. Every fixture here that does not care about
+# the branch names omits them for the same reason: the ONE that sets them sets them to names that
+# are not the defaults, which is the only setting that can tell the two apart.
 cat > "$W/.release-pr.json" <<'EOF'
 {
-  "main_branch": "main",
-  "dev_branch": "dev",
-  "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release"
+  "ref_token_regex": "DL-[0-9]+"
 }
 EOF
 
@@ -94,6 +98,9 @@ contains     "counts only the unshipped commit"  "$body" "Bundles 1 commit(s)"
 contains     "bundles the cycle-two commit"      "$body" "new work for cycle two"
 not_contains "already-shipped PR is NOT re-listed" "$body" "shipped in cycle one"
 contains     "drift note names local-vs-origin"  "$(cat "$T/err")" "note: local 'main'"
+# The config above carries NEITHER branch key, so this is the defaults-when-absent path and the
+# header is where both defaults become observable at once.
+contains     "absent branch keys ⇒ the defaults fire" "$(printf '%s\n' "$body" | head -1)" '`dev → main` release PR'
 
 echo "== --manifest sees the same corrected range =="
 man="$( (cd "$W" && "$BIN" --version 0.3.0 --manifest) 2>/dev/null )" || man="(rc=$?)"
@@ -115,23 +122,110 @@ contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
 # Restore the real origin (the fetch-failure case above pointed it at a void).
 g -C "$W" remote set-url origin "$T/origin.git"
 
-echo "== version-file extraction keeps all 4 segments of a .NET-style version =="
-# A 3-segment-only extraction pattern silently truncates 1.22.1.0 → 1.22.1; the
-# body's version line makes that visible ('v1.22.1.0' never appears).
-echo "AssemblyVersion: 1.22.1.0" > "$W/VERSION.txt"
-cat > "$W/.release-pr.json" <<'EOF'
+echo "== main_branch / dev_branch are READ, not defaulted (card#7038 instances 4-5) =="
+# WHAT WAS UNCOVERED. Every fixture in this file used to SET these two keys to their own
+# default values (`main`/`dev`). The assertions were real and the fixtures were real, and the
+# coverage was still zero for the thing the keys exist to do: a pass could not distinguish "the
+# key was read" from "the default fired". Measured, not argued — deleting either `cfg_opt` read
+# left the whole suite green.
+#
+# THE FIXTURE IS WHAT DISCRIMINATES. Non-default branch names alone are not enough: if `main`
+# and `dev` simply did not exist here, ignoring the keys would merely CRASH the tool, and a red
+# would prove nothing more than "it ran". So this origin ALSO carries decoy `main` and `dev`
+# branches, on their own commits, under their own tag. A build that ignores the config still
+# produces a complete, rc-0 body — a WRONG one, naming the decoys. That is the only shape that
+# separates read-the-key from fired-the-default.
+AO="$T/alt-origin.git"; AW="$T/alt"
+g init --bare -q "$AO"
+g -C "$AO" symbolic-ref HEAD refs/heads/trunk
+g clone -q "$AO" "$AW" 2>/dev/null
+g -C "$AW" symbolic-ref HEAD refs/heads/trunk
+echo one > "$AW/f"; g -C "$AW" add f; g -C "$AW" commit -qm "chore: init"
+g -C "$AW" tag v0.1.0
+g -C "$AW" checkout -qb main
+echo decoy > "$AW/f"; g -C "$AW" commit -qam "chore: decoy on main (#98)"
+g -C "$AW" tag v9.9.9                       # a default-`main` baseline describes THIS
+g -C "$AW" checkout -qb dev v0.1.0
+echo devdecoy > "$AW/f"; g -C "$AW" commit -qam "feat: decoy on dev (#99) DL-99"
+g -C "$AW" checkout -qb integration v0.1.0
+echo real > "$AW/f"; g -C "$AW" commit -qam "feat: integration work (#7) DL-7"
+g -C "$AW" push -q origin trunk main dev integration --tags
+
+cat > "$AW/.release-pr.json" <<'EOF'
 {
-  "main_branch": "main",
-  "dev_branch": "dev",
-  "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release",
-  "version_file": "VERSION.txt",
-  "version_regex": "[0-9]+(\\.[0-9]+){1,3}"
+  "main_branch": "trunk",
+  "dev_branch": "integration",
+  "ref_token_regex": "DL-[0-9]+"
 }
 EOF
-body4="$( (cd "$W" && "$BIN") 2>/dev/null )" && rc=0 || rc=$?
-if [[ "$rc" -eq 0 ]]; then ok "resolves the version from the file (rc=0)"; else bad "expected rc=0, got rc=$rc"; fi
-contains "4-segment version survives extraction" "$body4" "v1.22.1.0"
+rc=0; altbody="$( (cd "$AW" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
+eq "non-default branch config → rc 0" "0" "$rc"
+alt_hdr="$(printf '%s\n' "$altbody" | head -1)"
+contains     "header names the CONFIGURED branches"   "$alt_hdr" '`integration → trunk` release PR'
+not_contains "…and not the defaults"                  "$alt_hdr" '`dev → main`'
+# main_branch reaches the BASELINE, not just the header: v0.1.0 is on trunk, v9.9.9 on the decoy.
+contains     "baseline comes from the configured main" "$altbody" "since v0.1.0"
+not_contains "…not the default branch's tag"           "$altbody" "since v9.9.9"
+# dev_branch is what HEAD defaults to, so it decides which commits are bundled at all.
+contains     "head defaults to the configured dev"     "$altbody" "integration work"
+not_contains "…not the default 'dev' branch"           "$altbody" "decoy on dev"
+
+echo "== the version SHAPE is version_regex's to declare, and bin/ holds no second pattern (card#7208) =="
+# WHAT THIS BLOCK USED TO BE, AND WHY IT PROVED NOTHING. One case: a 4-segment version file
+# read through a config whose version_regex was ITSELF 4-segment-capable. A pass could not tell
+# "the config governs" from "the hardcoded `[0-9]+(\.[0-9]+){1,3}` in the bin rescued it" — and
+# the bin's pattern could rescue nothing, because it ran SECOND, over a first stage that had
+# already applied the config regex. With a 3-segment version_regex, 1.22.1.0 reached it as
+# 1.22.1; the comment sitting above that line named exactly that truncation as prevented.
+#
+# The literal is gone. What these cases pin is that version_regex — the same key
+# `auto-tag-version.yml` anchors at merge time — is the ONLY thing that decides the shape:
+# a config that admits four segments gets four, one that admits three gets three (even over a
+# 4-segment file), and the two shapes the old literal quietly overrode (one segment, five)
+# now resolve as declared. Cases 4 and 5 are the red-when-reverted pair: re-adding the literal
+# turns 4 into an rc-2 refusal and cuts 5 to four segments.
+_verhdr() { # <version-file content> <version_regex, JSON-escaped> → the body's first line, or "rc=N"
+  local content="$1" re="$2" b rc=0
+  printf '%s\n' "$content" > "$W/VERSION.txt"
+  # Unquoted heredoc so $re expands; a parameter expansion's RESULT is not rescanned for
+  # backslash escapes, so the JSON's `\\.` arrives intact.
+  cat > "$W/.release-pr.json" <<EOF
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "version_file": "VERSION.txt",
+  "version_regex": "$re"
+}
+EOF
+  b="$( (cd "$W" && "$BIN") 2>/dev/null )" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then printf 'rc=%s\n' "$rc"; else printf '%s\n' "$b" | head -1; fi
+}
+# The needle carries the header's closing `.**`, so `v1.22.1.**` cannot match a body that
+# rendered `v1.22.1.0` — without it every truncation assertion would pass on both behaviours.
+
+# (1) PAIRED WITNESS — an ordinary 3-segment release, byte-identical before and after. Without
+#     it, "stopped truncating" is indistinguishable from "stopped extracting".
+contains "3-segment config + 3-segment file → the whole version" \
+  "$(_verhdr '0.29.0' '[0-9]+\\.[0-9]+\\.[0-9]+')" 'release PR — v0.29.0.**'
+
+# (2) a config that ADMITS four segments keeps all four (the case this block always had).
+contains "4-segment-capable config + .NET version → all four segments" \
+  "$(_verhdr 'AssemblyVersion: 1.22.1.0' '[0-9]+(\\.[0-9]+){1,3}')" 'release PR — v1.22.1.0.**'
+
+# (3) …and a 3-segment config over the SAME file yields three, honestly. This is the case the
+#     old comment claimed was prevented; it never was, and now nothing says it is.
+hdr3="$(_verhdr 'AssemblyVersion: 1.22.1.0' '[0-9]+\\.[0-9]+\\.[0-9]+')"
+contains     "3-segment config + .NET version → three segments, because the config says three" \
+  "$hdr3" 'release PR — v1.22.1.**'
+not_contains "…and no pattern inside the bin widens it back" "$hdr3" 'v1.22.1.0'
+
+# (4) RED WHEN REVERTED — the deleted literal needed two segments, so it turned a legal
+#     single-segment version_regex into `could not resolve version` (rc 2).
+contains "a single-segment version_regex resolves" \
+  "$(_verhdr '7' '[0-9]+')" 'release PR — v7.**'
+
+# (5) RED WHEN REVERTED — …and it cut a legal five-segment one down to four.
+contains "a five-segment version_regex is not cut to four" \
+  "$(_verhdr '1.2.3.4.5' '[0-9]+(\\.[0-9]+){1,4}')" 'release PR — v1.2.3.4.5.**'
 
 echo "== tag_format drives the own-tag exclude (re-run after tagging, non-v scheme) =="
 # Release cycle 2 lands on the remote under a release-{{version}} tag scheme; a
@@ -144,10 +238,7 @@ g -C "$S" tag release-0.3.0
 g -C "$S" push -q origin main release-0.3.0
 cat > "$W/.release-pr.json" <<'EOF'
 {
-  "main_branch": "main",
-  "dev_branch": "dev",
   "ref_token_regex": "DL-[0-9]+",
-  "title_prefix": "Release",
   "tag_format": "release-{{version}}"
 }
 EOF
@@ -187,10 +278,7 @@ echo "== a range with no ref-token match still exits 0 (card#5874) =="
 tokencfg() { # <ref_token_regex> — everything else held constant
   cat > "$W/.release-pr.json" <<EOF
 {
-  "main_branch": "main",
-  "dev_branch": "dev",
   "ref_token_regex": "$1",
-  "title_prefix": "Release",
   "tag_format": "release-{{version}}"
 }
 EOF
@@ -216,7 +304,8 @@ echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) ==
 # repo's commit subjects had migrated to `card#NNNN` while that key still said `DL-`, so the
 # manifest was unconditionally empty and the section rendered clean WITHOUT CHECKING — the
 # canon-#9 shape, a check that cannot fail. Nothing here exercised it: every case above runs
-# without a board token, so they all take the "_Not checked here_" branch.
+# without a board token, so before card#7038 they all rendered the "_Not checked here_"
+# placeholder branch — and now render no coverage section at all (see the block below).
 #
 # WHY NOT JUST RE-SPELL ref_token_regex. Measured, not argued: promote-released-cards reads the
 # SAME key and matches the token's NUMERIC part against `payload.dl_number`, so a `card#`
@@ -245,11 +334,8 @@ chmod +x "$COV/bin/curl"
 
 cat > "$CR/.release-pr.json" <<'EOF'
 {
-  "main_branch": "main",
-  "dev_branch": "dev",
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
-  "title_prefix": "Release",
   "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
 }
 EOF
@@ -269,7 +355,11 @@ cat > "$BOARD_FILE" <<'EOF'
 EOF
 covmiss="$(coverage_body)"
 eq "an uncarded card# ref is REPORTED"                "true"  "$(has '**Shipped refs with no tracking card:** card#9999' "$covmiss")"
-eq "…and the section is not the never-checked branch" "false" "$(has 'Not checked here' "$covmiss")"
+# The presence of the heading is now itself the claim that a measurement ran (card#7038), so
+# that is what this arm asserts. It replaces a `has 'Not checked here'` == false line: that
+# string no longer exists anywhere in the tool, and this arm supplies a board token, so it
+# could not have failed in either direction — a decoration, not a check.
+eq "…and the section is there because it MEASURED"    "true"  "$(has '## Card coverage' "$covmiss")"
 eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipped refs in range' "$covmiss")"
 # The id-space confusion the second key exists to prevent, asserted rather than described: the
 # board's only card carries DL-42, and 42 is NOT what card#9999 asks about.
@@ -284,6 +374,88 @@ EOF
 covok="$(coverage_body)"
 eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
 eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+
+echo "== the coverage section is EMITTED ONLY when it carries a measurement (card#7038) =="
+# WHAT CHANGED. The section used to render unconditionally, and when it could not check
+# anything it SAID so — a heading whose entire content was "not checked here, go run another
+# tool". That is a placeholder, not a measurement: it tells the merger nothing about what the
+# merge contains, and it was struck BY HAND from a real release PR body — which does not hold,
+# because the next release re-emits it. The section is now emitted only when the check ran, so
+# its PRESENCE is itself the signal that coverage was measured. The obligation it used to
+# narrate is stated in the release docs instead (`VERSIONING.md` § Release flow, and
+# `docs/INSTALL.md` §4 for consumers), where a reader looks for release process.
+#
+# Each arm removes exactly ONE leg of the can-we-measure guard and holds the range, the commit
+# subjects and the token keys constant. `$covok` above — same fixture, every leg present — is
+# the positive control: it DOES emit the section, carrying a verdict.
+eq "control: every leg present ⇒ the section IS emitted" "true" "$(has '## Card coverage' "$covok")"
+eq "control: …carrying a verdict, not a placeholder"     "true" "$(has 'All shipped refs have a tracking card' "$covok")"
+
+# LEG 1 — no board token. This is the historical case, not a hypothetical: every other block in
+# this file runs without one, which is why they all used to render the placeholder branch.
+#
+# The token is EMPTIED here rather than inherited, for the same reason LEG 2 below derives its
+# own PATH: an arm must not take the property it isolates from the runner. An ambient token
+# turns this silently into the MEASURED case — the section IS emitted and the arm reds — and
+# `VERSIONING.md` § Release flow has the releaser export one while preparing a release body, so
+# a seat running this suite around a release does carry one. Asserted, not assumed.
+eq "precondition: no board token reaches the arm" "" \
+   "$( PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN= KANBAN_EXPECTED_HOST=kanban.test \
+       sh -c 'printf %s "${KANBAN_WRITEBACK_TOKEN-}"' )"
+rc=0; notoken="$( cd "$CR" \
+  && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN= KANBAN_EXPECTED_HOST=kanban.test \
+     "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no board token → still rc 0"                  "0"     "$rc"
+eq "…body is still complete (no token)"           "true"  "$(has '## Bundled' "$notoken")"
+eq "…and NO coverage section is emitted (no token)"       "false" "$(has '## Card coverage' "$notoken")"
+eq "…nor the placeholder it used to carry"        "false" "$(has 'Not checked here' "$notoken")"
+
+# LEG 2 — the promote tool is unreachable. The bin is run from a directory of its own, so
+# neither `command -v` nor the `dirname "$0"` sibling lookup finds a promoter; the board token
+# and the `.promote` config are both present, so this leg alone decides the outcome.
+#
+# The PATH is DERIVED, not inherited: a developer host commonly has the toolkit installed on
+# `~/.local/bin`, so `PATH="$COV/bin:$PATH"` still resolves a promoter and this arm passes for
+# the wrong reason locally while discriminating on a bare CI runner (observed, on this arm's
+# first run). Drop exactly the directories that carry the property under test, and assert the
+# precondition rather than assuming it.
+promoterless_path() {  # $PATH minus every directory that holds a promote-released-cards
+  local out="" d; local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    # a plain `if`, not `[ -e … ] && continue`: this file already rules against the
+    # trailing-test form (card#5874, in bin/release-pr-body's own comment).
+    if [ -e "$d/promote-released-cards" ]; then continue; fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
+NOPROM_PATH="$COV/bin:$(promoterless_path)"
+eq "precondition: no promoter on the derived PATH" "" \
+   "$(PATH="$NOPROM_PATH" command -v promote-released-cards 2>/dev/null || true)"
+mkdir -p "$COV/lonebin"; cp "$BIN" "$COV/lonebin/release-pr-body"
+rc=0; nopromote="$( cd "$CR" \
+  && PATH="$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no promote tool → still rc 0"                 "0"     "$rc"
+eq "…body is still complete (no promoter)"        "true"  "$(has '## Bundled' "$nopromote")"
+eq "…and NO coverage section is emitted (no promoter)"    "false" "$(has '## Card coverage' "$nopromote")"
+# CONTROL for this leg: the SAME lone copy with the promoter back on PATH does emit — so the
+# absence above is the missing promoter, not "a copy outside bin/ cannot check anything".
+withpromote="$( cd "$CR" \
+  && PATH="$HERE/../bin:$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )"
+eq "control: the same copy WITH a promoter emits" "true"  "$(has '## Card coverage' "$withpromote")"
+
+# LEG 3 — no `.promote` config. Handed over as a sibling --config so the fixture repo's own
+# config, which every later block reads, is left exactly as it is.
+jq 'del(.promote)' "$CR/.release-pr.json" > "$COV/nopromote.json"
+rc=0; nocfg="$( cd "$CR" \
+  && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+     "$BIN" --config "$COV/nopromote.json" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+eq "no .promote config → still rc 0"              "0"     "$rc"
+eq "…body is still complete (no .promote)"        "true"  "$(has '## Bundled' "$nocfg")"
+eq "…and NO coverage section is emitted (no .promote)"    "false" "$(has '## Card coverage' "$nocfg")"
 
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
@@ -338,8 +510,7 @@ eq "control: --card-manifest alone still answers" "9999" \
 
 echo "== a repo that sets NEITHER token key still renders (no new required config) =="
 cat > "$CR/.release-pr.json" <<'EOF'
-{ "main_branch": "main", "dev_branch": "dev", "title_prefix": "Release",
-  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
+{ "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
 EOF
 rc=0; notok="$(coverage_body)" || rc=$?
 eq "no token keys → still rc 0"                  "0"     "$rc"
@@ -347,11 +518,59 @@ eq "…body is complete"                           "true"  "$(has '## Bundled' "
 eq "…and the coverage section is omitted whole"  "false" "$(has '## Card coverage' "$notok")"
 unset BOARD_FILE
 
+echo "== the artifacts checklist RENDERS, with {{version}} expanded (card#7038 instance 3) =="
+# `artifacts` was a declared OUTPUT with no assertion of effect: wrapping the whole
+# `## Release artifacts` block in `if false;` left this entire suite green. Nothing anywhere
+# covered it — `release-artifacts-selftest.sh` drives `bin/release-artifacts-check`, a DIFFERENT
+# tool (the asserter, not this printer), and never runs this bin at all.
+#
+# The LAST member is asserted alongside the first, so a render that stops after one entry reds
+# rather than passing on a prefix; and the raw placeholder is asserted ABSENT, so dropping the
+# template expansion reds too instead of shipping `{{version}}` into a release PR body.
+cat > "$CR/.release-pr.json" <<'EOF'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "artifacts": [
+    "VERSION → {{version}}",
+    "docs/CHANGELOG.md → [{{version}}] section",
+    "README.md § Recent releases row"
+  ]
+}
+EOF
+rc=0; arts="$( (cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD) 2>/dev/null )" || rc=$?
+eq "artifacts config → rc 0"                      "0"     "$rc"
+eq "the checklist section is rendered"            "true"  "$(has '## Release artifacts' "$arts")"
+eq "…first member, {{version}} expanded"          "true"  "$(has '- [ ] VERSION → 0.2.0' "$arts")"
+eq "…a member templated mid-string"               "true"  "$(has '- [ ] docs/CHANGELOG.md → [0.2.0] section' "$arts")"
+eq "…and the LAST member, verbatim"               "true"  "$(has '- [ ] README.md § Recent releases row' "$arts")"
+eq "…no raw {{version}} placeholder survives"     "false" "$(has '{{version}}' "$arts")"
+
+# CONTROL — same tool, same range, the same config minus `artifacts`. Without this arm the
+# assertions above are equally satisfied by a generator that prints the section unconditionally,
+# and emitting it only when the key is declared is a behaviour in its own right.
+# The config is DERIVED from the one above by deleting exactly the key under test and handed
+# over as a sibling --config, so the two arms cannot drift the way a second hand-written fixture
+# would; nothing after this block reads the fixture repo's own config.
+jq 'del(.artifacts)' "$CR/.release-pr.json" > "$COV/noartifacts.json"
+rc=0; noarts="$( (cd "$CR" && "$BIN" --config "$COV/noartifacts.json" \
+                   --version 0.2.0 --base v0.1.0 --head HEAD) 2>/dev/null )" || rc=$?
+eq "control: no artifacts key → rc 0"             "0"     "$rc"
+eq "control: …body is still complete"             "true"  "$(has '## Bundled' "$noarts")"
+eq "control: …and NO artifacts section is emitted" "false" "$(has '## Release artifacts' "$noarts")"
+
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact
 # reading this tool takes pains to make explicit, silently substituted for the one the caller
 # named. Every value-taking flag now dies by name instead.
-for f in --version --base --head --config; do
+# The population is DERIVED from the bin, not typed here (card#6645). A hand list cannot go red
+# when the bin grows a flag, so a totality claim made over one narrows silently with every
+# release — measured on this repo: `promote-stage-guard-selftest` named five of
+# `promote-released-cards`' six guarded flags for two minor versions under the same claim.
+# `expect_value_flags` compares the list below against the bin's own guard call sites and reds
+# in both directions, so this block's claim cannot outlive the population it is about.
+VALUE_FLAGS=(--version --base --head --config)
+expect_value_flags "$BIN" "${VALUE_FLAGS[@]}"
+for f in "${VALUE_FLAGS[@]}"; do
     rc=0; err="$("$BIN" "$f" "" 2>&1)" || rc=$?
     eq "$f \"\" → rc 2"           "2"    "$rc"
     eq "$f \"\" names the flag"   "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -359,5 +578,63 @@ done
 rc=0; err="$("$BIN" --base 2>&1)" || rc=$?
 eq "trailing --base → rc 2"                   "2"     "$rc"
 eq "trailing --base does not leak set -u"     "false" "$(case "$err" in *'unbound variable'*) echo true ;; *) echo false ;; esac)"
+
+echo "== --tag prints just the tag name, without touching the network (card#7203) =="
+# `tag_format` had ONE reader — this tool — and `bin/release-tag-check` needed the same answer,
+# so it hardcoded `v${VERSION}` and polled for a tag that cannot exist under any other scheme.
+# `--tag` is how that second caller asks the owner instead of carrying a second copy of the
+# mapping, and it must answer WITHOUT the baseline fetch below it: the caller is a CI gate whose
+# whole job is to survive a remote it may not be able to read.
+tokencfg 'DL-[0-9]+'   # config still carries tag_format: release-{{version}}
+rc=0; tagout="$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )" || rc=$?
+eq "--tag → rc 0"                            "0"                "$rc"
+eq "…prints the tag_format tag, alone"       "release-0.3.0"    "$tagout"
+
+# THE NO-NETWORK PROPERTY, MEASURED rather than asserted from reading: origin is repointed at a
+# path that is not a repository, which makes the baseline fetch fail HARD (the tool's documented
+# fail-loud). `--tag` must still answer.
+g -C "$W" remote set-url origin "$T/no-such-origin.git"
+rc=0; tagout2="$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )" || rc=$?
+eq "--tag answers with origin unreachable"   "0"                "$rc"
+eq "…with the same tag"                      "release-0.3.0"    "$tagout2"
+# CONTROL — the SAME invocation without --tag must fail on that unreachable origin, or the arm
+# above proves nothing about the early return (it would pass for a tool that never fetches).
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" || rc=$?
+eq "control: a full body on the same remote fails" "2"          "$rc"
+eq "control: …because the baseline fetch is fatal" "true"       "$(has 'cannot fetch origin' "$out")"
+g -C "$W" remote set-url origin "$T/origin.git"
+
+# The DEFAULT scheme is unchanged: no key ⇒ v<version>. A fixture that sets a key to its own
+# default cannot discriminate, so both spellings are driven — absent, and explicitly-default.
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+" }
+EOF
+eq "control: no tag_format ⇒ v<version>"     "v0.3.0"           "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+", "tag_format": "{{version}}" }
+EOF
+eq "an unprefixed scheme ⇒ the bare version" "0.3.0"            "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
+
+# The version may also come from version_file+version_regex, which is the path a caller with no
+# --version takes.
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+", "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+", "tag_format": "release-{{version}}" }
+EOF
+printf '0.9.9\n' > "$W/VERSION"
+eq "…and --tag resolves it from version_file" "release-0.9.9"   "$( (cd "$W" && "$BIN" --tag) 2>&1 )"
+
+echo "== the query modes are mutually exclusive, COUNTED not pairwise =="
+# Each mode replaces the whole output with one answer, so any two means one is silently lost.
+# The check was a single `--manifest && --card-manifest` test; with a third mode a pairwise
+# test admits exactly the combination nobody wrote down.
+for pair in "--tag --manifest" "--tag --card-manifest" "--manifest --card-manifest"; do
+  # shellcheck disable=SC2086  # the pair IS two arguments
+  rc=0; err="$( (cd "$W" && "$BIN" $pair --version 0.3.0) 2>&1 )" || rc=$?
+  eq "$pair → rc 2"                          "2"                "$rc"
+  eq "…naming both modes"                    "true"             "$(has 'mutually exclusive query modes' "$err")"
+done
+# CONTROL — one mode alone is accepted, so the refusal above is about the COMBINATION.
+rc=0; (cd "$W" && "$BIN" --tag --version 0.3.0) >/dev/null 2>&1 || rc=$?
+eq "control: one mode alone is fine"         "0"                "$rc"
 
 _summary "release-pr-body-selftest"

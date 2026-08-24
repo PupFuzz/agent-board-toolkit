@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""_kbc-archive-lib.py — shared archive-gate plumbing for the toolkit's archive
-tooling (roundtable #39).
+"""_kbc-archive-lib.py — shared plumbing for the toolkit's board-reading Python
+siblings: the archive-gate half (roundtable #39) plus the board-shape readers every
+one of them needs.
 
 Two archive-time consumers ride the framework's shipped `may_archive` primitive
 (`kanban_common.may_archive`): the per-card stdin gate `_kbc-may-archive.py`
@@ -12,9 +13,36 @@ plugin-maintained `kanban_common`, and (b) the tri-state GitHub-state per-source
 for both, so the second consumer extends the primitive rather than sibling-ing a
 divergent copy (canon #5).
 
+A THIRD consumer — `_kbc-stale-blocker.py`, the session-close leg that reports an
+open card citing a blocker that has since become terminal — needs neither of those
+two, but does need the same two BOARD-SHAPE readers `_kbc-archive-eligible.py`
+already had inline: "what lane_type / name does each of this board's stages carry"
+and "which of its tasks are live". Those are hoisted here at that second real caller
+(canon #5) rather than copied, because the `lane_type == "done"` classification IS
+the terminal-state predicate both legs decide on — two divergent copies of it would
+be two answers to one question. The file's NAME stays `_kbc-archive-lib.py`: it is a
+vendorable path with two existing path-loaders, so renaming it to match the widened
+scope would cost every consumer a re-vendor to buy nothing.
+
 It is NOT importable by name (its filename carries hyphens, matching its sibling
 scripts); a consumer path-loads it via `importlib.util.spec_from_file_location`,
 the same by-path load the reconcile hook uses for `kanban_common`.
+
+THE PATH-LOAD CONTRACT, both halves (card#6871). A by-path load compiles the target and
+CACHES the bytecode beside it — `<dir>/__pycache__/<name>.cpython-NN.pyc` — so a load
+writes into whatever directory the target lives in. That is two directories neither of
+which is a build tree: this file's own `bin/`, which a consumer symlinks onto PATH entry
+by entry (`docs/INSTALL.md` §2), and the *framework plugin's* directory that
+`load_kanban_common` reaches into. Both were measured accumulating a `__pycache__` from a
+single read-only invocation. So **every `bin/*.py` ENTRY POINT sets
+`sys.dont_write_bytecode = True` in its own module body**, whether or not it path-loads today
+— these are one-shot CLI invocations, so the cache buys nothing to trade against that.
+
+It has to be the ENTRY POINT that sets it, and that is why THIS file does not: the loader
+writes the cache file while it COMPILES, ahead of executing the module body, so a module
+setting the flag on itself is already too late for its own `.pyc`. The entry point's setting
+covers this file's own load AND every load this file goes on to make.
+`tests/bin-artifact-hygiene-selftest.sh` holds that rule over every `bin/*.py`.
 """
 from __future__ import annotations
 
@@ -95,3 +123,28 @@ def make_github_state_resolver(kc, card: dict, cfg_repo: "str | None" = None):
         return "unresolvable"
 
     return resolve
+
+
+def stage_field_maps(board: dict) -> "tuple[dict, dict]":
+    """({stage_id: lane_type}, {stage_id: name}) from ONE board GET's own stage shape
+    (`workflows[].stages[]`).
+
+    Stage ids are keys of the board they were read from — a caller holding more than
+    one board qualifies them itself rather than merging two boards' maps blind."""
+    lane: dict = {}
+    name: dict = {}
+    for wf in board.get("workflows") or []:
+        for s in wf.get("stages") or []:
+            lane[s.get("id")] = s.get("lane_type")
+            name[s.get("id")] = s.get("name")
+    return lane, name
+
+
+def live_cards(board: dict) -> list:
+    """The cards from ONE board GET that are neither archived nor deleted.
+
+    The board GET returns every ACTIVE task by its own contract, so this filter is
+    belt-and-braces on that surface — and it is exactly what makes the same call
+    correct against a fixture (or a future surface) that does carry them."""
+    return [t for t in (board.get("tasks") or [])
+            if not t.get("archived_at") and not t.get("deleted_at")]

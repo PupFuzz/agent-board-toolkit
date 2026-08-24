@@ -135,17 +135,28 @@ pin "board-card-start a b" 0 "board-card-start: unexpected extra argument: b —
 # a MINIMAL WORKING config — nothing is faked about the guard itself, and the unknown-command arm
 # is the witness that config really resolved (a broken fixture says "board env file not readable"
 # there and reds). Still network-free: every arm exits inside main's dispatch, before any request.
-unset KBCARD_BOARD_ENV KBCARD_API KBCARD_TOKEN_FILE
+unset KBCARD_BOARD_ENV KBCARD_API KBCARD_TOKEN_FILE KANBAN_EXPECTED_HOST
 KBC="$HERE/../bin/kbcard"
 _need -x "$KBC"
 : > "$TMP/board.token"
+# KANBAN_EXPECTED_HOST is part of "a MINIMAL WORKING config" since card#7245: without it the
+# api-host preflight refuses before dispatch, and every arm below would report THAT instead of
+# the guard under test. It names the fixture's own host, so nothing real is reachable either way.
 { echo "export KBCARD_API=\"https://kbcard-guard.invalid/api/v3\""
+  echo "export KANBAN_EXPECTED_HOST=\"kbcard-guard.invalid\""
   echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$HOME/.kanban-host.env"
 echo 'KB_BOARD_ID=42' > "$HOME/.kanban-dev-board.env"
 
 echo "== kbcard — an ordinary CLI: refuses at rc 2 =="
 pin "kbcard ''"                 2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" ""
 pin "kbcard --board dev ''"     2 "kbcard: <command> is empty (an unexpanded variable?)" "$KBC" --board dev ""
+# The GLOBAL --board's own empty-value guard, driven here because this is the only file that
+# runs kbcard as a PROCESS with a resolvable config — and it was the one guarded flag in the
+# toolkit that nothing drove (card#6645, found by deriving kbcard's guarded set instead of
+# reading the list of flags the tests happened to name). The bin's own header calls it the
+# highest-stakes instance of the class: an empty --board falls through to the DEFAULT board, so
+# `--board "$KEY"` with KEY unset is a wrong-board WRITE, not a no-op.
+pin "kbcard --board '' list"    2 "kbcard: --board requires a non-empty value" "$KBC" --board "" list
 # The discrimination the guard exists to make: NO arguments is a help request and stays rc 0 on
 # stdout, while an EMPTY first argument is a failed expansion and is refused. Asserting only the
 # refusal would pass just as well for a kbcard that refused its own help.

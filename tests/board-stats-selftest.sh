@@ -61,6 +61,12 @@ expect_rc "--format xml is rc 2"                     2 "$BIN" --format xml
 expect_rc "--board with an empty value is rc 2"      2 "$BIN" --board ""
 expect_rc "--since with an empty value is rc 2"      2 "$BIN" --since ""
 expect_rc "--format with an empty value is rc 2"     2 "$BIN" --format ""
+# Sibling of the card#6645 class, closed by the same shared gate: the three empty-value lines
+# above are a HAND LIST of this bin's value-taking flags, so a fourth flag would join with
+# nothing here able to notice. `expect_value_flags` derives the population from the bin's own
+# guard call sites and reds in BOTH directions — a flag the bin grew that this block does not
+# name, and a flag named here that the bin no longer guards.
+expect_value_flags "$BIN" --board --since --format
 expect_rc "--all and --board together are rc 2"      2 "$BIN" --all --board dev
 expect_rc "--board given twice is rc 2"              2 "$BIN" --board a --board b
 expect_rc "--since with an unreadable window is rc 2" 2 "$BIN" --since 24x
@@ -258,11 +264,43 @@ eq "…while still keeping the rows it read"  "200"  "$(jq -s 'add | length' "$r
 
 echo "== _bs_window_rows — an unreadable first page is an error, not an empty window =="
 : > "$CALLS"; rowsf4="$TMP/rows4.jsonl"; : > "$rowsf4"
-kb_api() { printf '%s\n' "$2" >> "$CALLS"; return 1; }
+# The stub sets KB_HTTP exactly as the real kb_api does when the server ANSWERED a non-2xx.
+# A stub that left the global alone would measure this arm against a state the lib cannot
+# produce, and the arm reads that global.
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; KB_HTTP="503"; return 1; }
 meta4="$(_bs_window_rows 1 "$CUT" "$rowsf4")"
 eq "no page is reported read"            "0"     "$(printf '%s' "$meta4" | jq -r '.pages')"
 eq "an error is reported"                "false" "$(printf '%s' "$meta4" | jq -r '.error == null')"
 eq "…and no rows are claimed"            "0"     "$(jq -s 'add // [] | length' "$rowsf4")"
+
+echo "== _bs_window_rows — a request that NEVER COMPLETED is not a status the server sent (card#6680) =="
+# THE DEFECT. The read was `resp="$(kb_api …)" || err="… (HTTP ${KB_HTTP:-000}) …"`, and a
+# command substitution is a SUBSHELL: the KB_HTTP kb_api set inside it never reached that line,
+# so the status came from the lib's own empty initialiser and EVERY failure rendered `HTTP 000`
+# — the sentinel for a request that never completed — including the 403/500 the server actually
+# answered. `KB_API_QUIET=1` also suppresses kb_api's own `HTTP 500 on GET …` line, so nothing
+# anywhere in the run contradicted it: an answered non-2xx was reported, silently, as a
+# transport failure. Measured before the fix: both stubs below produced the byte-identical
+# `changelog read failed (HTTP 000) after 0 page(s)`.
+#
+# ⛔ ASSERTED AS A DISTINCTION, NOT AS A STRING. "an error is reported" above was already true
+# of BOTH states, so it could not have failed on this defect. The two messages are compared
+# against each other, in the same run.
+: > "$CALLS"; rowsf4b="$TMP/rows4b.jsonl"; : > "$rowsf4b"
+kb_api() { printf '%s\n' "$2" >> "$CALLS"; KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"; }
+meta4b="$(_bs_window_rows 1 "$CUT" "$rowsf4b")"
+err4="$(printf '%s' "$meta4" | jq -r '.error')"
+err4b="$(printf '%s' "$meta4b" | jq -r '.error')"
+eq "⭐ the two failures do NOT share one message" "differ" \
+   "$(if [[ "$err4" == "$err4b" ]]; then echo same; else echo differ; fi)"
+eq "the ANSWERED non-2xx names the status the server sent" "true"  "$(has 'HTTP 503' "$err4")"
+eq "…and never says the request failed to complete"        "false" "$(has 'DID NOT COMPLETE' "$err4")"
+eq "the never-completed request says exactly that"         "true"  "$(has 'DID NOT COMPLETE' "$err4b")"
+# `000` is this state's own sentinel, not something the server sent, so the line names no
+# status at all rather than dressing the sentinel up as one.
+eq "…and names NO status — none was read"                  "false" "$(has 'HTTP' "$err4b")"
+eq "…reports no page read"                                 "0"     "$(printf '%s' "$meta4b" | jq -r '.pages')"
+eq "…and claims no rows"                                   "0"     "$(jq -s 'add // [] | length' "$rowsf4b")"
 
 echo "== _bs_window_rows — a body of the wrong shape is refused, not half-read =="
 : > "$CALLS"; rowsf5="$TMP/rows5.jsonl"; : > "$rowsf5"
@@ -640,6 +678,35 @@ eq "the zeros it warns about are really there"       "0" \
 eq "control: the healthy board carries neither line"  "false" \
    "$(has 'could be classified' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
 
+echo "== _bs_one_board — a board that DECLARES no token file is a failure line (card#7245) =="
+# It used to fall through to ~/.kanban-dev-token, i.e. report on a board using a credential
+# nobody chose for it. The host tier is unset for this case because that is the tier under
+# test; the witness below restores it and the SAME env reports normally.
+cat > "$HOME/.kanban-fx3-board.env" <<'ENVF'
+export KB_BOARD_ID=1
+ENVF
+kb_api() {
+    case "$2" in
+        */preload.json) cat "$TMP/fx-preload.json" ;;
+        */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        *) return 1 ;;
+    esac
+}
+mkdir -p "$TMP/b3a"
+onb3a="$(unset KB_HOST_TOKEN_FILE; _bs_one_board fx3 "Undeclared board" "$CUT4" "$NOW4" "$TMP/b3a" 2>/dev/null)"
+eq "the missing declaration is on the board's own failure list" "true" \
+   "$(has 'no KBCARD_TOKEN_FILE declared' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+eq "…naming the board env to add the line to"        "true" \
+   "$(has '.kanban-fx3-board.env' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+eq "…and it never names ~/.kanban-dev-token"         "false" \
+   "$(has '.kanban-dev-token' "$(printf '%s' "$onb3a" | jq -r '.failures[]')")"
+# WITNESS: the same env under a host-declared token file reports with no such line, so the
+# assertions above are about the DECLARATION and not about this fixture being broken.
+mkdir -p "$TMP/b3b"
+onb3b="$(KB_HOST_TOKEN_FILE="$TMP/fx-token" _bs_one_board fx3 "Undeclared board" "$CUT4" "$NOW4" "$TMP/b3b" 2>/dev/null)"
+eq "control: a host-declared token file covers that same board" "false" \
+   "$(has 'no KBCARD_TOKEN_FILE declared' "$(printf '%s' "$onb3b" | jq -r '.failures[]')")"
+
 echo "== _bs_one_board — an unreadable changelog page reaches the report as a FLOOR line =="
 # This is the surface bin/board-stats' header promise is kept on: "a number that is a floor
 # rather than a total (a capped card read, a truncated changelog window) says so where it is
@@ -663,6 +730,12 @@ eq "…and the flow section is still rendered, not dropped" "false" \
    "$(printf '%s' "$onb3" | jq '.flow == null')"
 eq "…carrying the page count that kept it renderable" "1" \
    "$(printf '%s' "$onb3" | jq '.flow.pages')"
+# …and the completeness state the renderer reads, which is FAIL-CLOSED (card#7235). This arm is
+# a DIFFERENT cause from the truncation the e2e block drives — an unreadable page, which sets
+# no `truncated` at all — reaching the same single `error` channel, so it is the leg that says
+# the state is derived from that channel rather than from the truncation flag beside it.
+eq "…and the flow half is marked INCOMPLETE for the renderer" "false" \
+   "$(printf '%s' "$onb3" | jq '.flow_complete')"
 # The ⚠ must reach the TEXT a human reads, above the counts it qualifies — the JSON field
 # alone is not where this report is consumed.
 printf '%s' "$onb3" | jq -s --argjson now "$NOW4" '
@@ -676,6 +749,8 @@ eq "the floor line is printed above the flow counts" "true" \
 # such line — otherwise the ⚠ would be a decoration that fires on every run.
 eq "control: a readable window carries no INCOMPLETE line" "false" \
    "$(has 'changelog window INCOMPLETE' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
+eq "control: …and its flow half is marked COMPLETE, so the flag is not stuck false" "true" \
+   "$(printf '%s' "$onb" | jq '.flow_complete')"
 
 # ---------------------------------------------------------------------------
 echo "== _bs_render_text — the text renders what the JSON carries =="
@@ -719,6 +794,527 @@ eq "the report ends with a PARTIAL line"    "true" "$(has 'PARTIAL REPORT' "$txt
 # The control for the leg above: a healthy document must NOT carry that trailer, or "partial"
 # would be a decoration that fires on every run.
 eq "control: a healthy report carries no PARTIAL line" "false" "$(has 'PARTIAL REPORT' "$txt")"
+
+# ===========================================================================
+# card#7228 — THE STOCK NUMBERS THEMSELVES carry the floor marker on a partial
+# read. The SECOND member of the class card#6365 closed for board-snapshot
+# (docs/CONSOLIDATION-PLAN.md § the read-outcome entry).
+#
+# board-stats accepts fetch_board_cards' rc 3 (page cap) and rc 4 (short read)
+# and RENDERS the partial array on purpose — that is what those two rcs are for.
+# It said so on one ⚠ line and then printed NINE bare numbers per board under it
+# (eight columns plus the total, measured on all three boards on this box). A
+# number survives being quoted out of its line and the ⚠ does not, which is the
+# whole argument card#6365 closed board-snapshot on.
+#
+# WHY THESE LEGS RUN THE BIN AS A PROCESS. The state they turn on is produced by
+# the real paginator's own census — not by anything this file could fake at the
+# function seam — and what it must change is the TEXT a human reads. Asserting on
+# the sourced functions would exercise neither end. The curl stand-in is the same
+# one board-snapshot-selftest drives.
+# ===========================================================================
+echo "== board-stats(1) — a partial card read floors every stock number (card#7228) =="
+# shellcheck source=tests/_kb-api-stub.sh
+source "$HERE/_kb-api-stub.sh"
+kb_stub_scrub_env
+kb_stub_board_config e2e 7 \
+    'export KB_STAGE_BACKLOG=83' \
+    'export KB_STAGE_SHIPPED_TO_DEV=89'
+kb_stub_install
+
+# One preload naming three stages, with the two lane_types the classification derives
+# from, so no "could not be classified" line joins the failure list and the only ⚠ under
+# test is the card read's.
+KB_STUB_PRELOAD="$(jq -cn '{data:{workflows:[{stages:[
+    {id:83,name:"Backlog",position:1,lane_type:"backlog_inventory"},
+    {id:84,name:"In Progress",position:2,lane_type:null},
+    {id:89,name:"Shipped to dev",position:3,lane_type:"done"}]}]}}')"
+# THE SAME three cards under two different `meta` blocks: `complete` declares the total it
+# delivered (rc 0), `short` declares five (rc 4 — the census sees sum_n < total). Same rows,
+# so the two renders differ ONLY by what this change adds, which is what makes the
+# strip-the-marker control below an equality rather than a resemblance.
+_E2E_ROWS='[{"id":11,"workflow_stage_id":83,"created_at":"2026-01-02T00:00:00+00:00","deleted_at":null},
+            {"id":12,"workflow_stage_id":84,"created_at":"2026-01-03T00:00:00+00:00","deleted_at":null},
+            {"id":13,"workflow_stage_id":89,"created_at":"2026-01-04T00:00:00+00:00","deleted_at":null}]'
+KB_STUB_CARDS_OK="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:3,last_page:1}}')"
+KB_STUB_CARDS_SHORT="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:5,last_page:1}}')"
+# A FULL page (the paginator's own limit=200) plus a page cap of 1 is the only way to reach
+# rc 3 — see fetch_board_cards' rc table. 200 rows in one column, so the cap scenario's own
+# numbers are distinct from the short one's.
+KB_STUB_CARDS_FULL="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:83,
+                                created_at:"2026-01-02T00:00:00+00:00",deleted_at:null}],
+                               meta:{total:400,last_page:2}}')"
+# One changelog page holding two rows INSIDE the 24h window and one that PRECEDES it. The last
+# row is what closes the window: the pager stops on a page whose oldest row is older than the
+# cutoff, so without it the log would read as ending inside the window and the flow half would
+# contribute a ⚠ of its own to the failure list under test. The two in-window rows are a
+# resolution (83 -> 89, non-terminal -> terminal) and a WASH (89 -> 83, back out of a terminal
+# stage): the wash is here because `.flow.washes` was empty in every window fixture, so the
+# washes render arm never ran and the floor marker on it was a check that could not fail.
+KB_STUB_CHANGELOG="$(jq -cn '{data:[
+  {id:10,board_id:7,subject_id:3,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:89,to_stage_id:83,from_stage_name:"Shipped to dev",to_stage_name:"Backlog"},
+   created_at:((now - 1800)|todate)},
+  {id:9,board_id:7,subject_id:1,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:83,to_stage_id:89,from_stage_name:"Backlog",to_stage_name:"Shipped to dev"},
+   created_at:((now - 3600)|todate)},
+  {id:8,board_id:7,subject_id:2,action:"task.created",actor_type:"human",
+   payload:{},created_at:((now - 259200)|todate)}]}')"
+# THE SAME rows minus the one that PRECEDES the cutoff. That row is what closes the
+# window — the pager stops on a page whose oldest row is older than the cutoff — so without it
+# the page is short with its oldest row still INSIDE the window, which is `the log ran out
+# before the window did`: truncated, `data_available_from` set, and an `error` that makes
+# _bs_one_board floor the flow half (card#7235). It contributes NO counts either way, since a
+# row before the cutoff is filtered out of the complete fixture too — which is what lets the
+# floored render be compared to the complete one as an EQUALITY below.
+KB_STUB_CHANGELOG_SHORT="$(jq -cn '{data:[
+  {id:10,board_id:7,subject_id:3,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:89,to_stage_id:83,from_stage_name:"Shipped to dev",to_stage_name:"Backlog"},
+   created_at:((now - 1800)|todate)},
+  {id:9,board_id:7,subject_id:1,action:"task.moved",actor_type:"service",
+   payload:{from_stage_id:83,to_stage_id:89,from_stage_name:"Backlog",to_stage_name:"Shipped to dev"},
+   created_at:((now - 3600)|todate)}]}')"
+# The same pair with NO move at all: the transitions and resolutions lists come out EMPTY, so
+# the render reaches the arm that prints a word instead of a number. A zero is a quantity too,
+# and `none in window` is the one claim in this section the marker cannot reach.
+KB_STUB_CHANGELOG_NOMOVE="$(jq -cn '{data:[
+  {id:9,board_id:7,subject_id:1,action:"task.created",actor_type:"human",
+   payload:{},created_at:((now - 3600)|todate)},
+  {id:8,board_id:7,subject_id:2,action:"task.created",actor_type:"human",
+   payload:{},created_at:((now - 259200)|todate)}]}')"
+KB_STUB_CHANGELOG_NOMOVE_SHORT="$(jq -cn '{data:[
+  {id:9,board_id:7,subject_id:1,action:"task.created",actor_type:"human",
+   payload:{},created_at:((now - 3600)|todate)}]}')"
+export KB_STUB_PRELOAD KB_STUB_CARDS_OK KB_STUB_CARDS_SHORT KB_STUB_CARDS_FULL KB_STUB_CHANGELOG
+export KB_STUB_CHANGELOG_SHORT KB_STUB_CHANGELOG_NOMOVE KB_STUB_CHANGELOG_NOMOVE_SHORT
+# ONE route table for both e2e blocks. The changelog arm switches on KB_STUB_WINDOW, which
+# `stats` — the ONLY caller that reaches this table, since every other invocation of the bin in
+# this file is refused by the argument parser before a request is issued — exports on EVERY
+# call, defaulting to `complete`. So the card#7228 legs above select the complete fixture they
+# were written against by that default, not by leaving the variable unset, and the case below
+# reads the variable directly: a `:-` fallback here would be a second declaration of the same
+# default guarding a state no caller can produce.
+kb_stub_route() {
+    local url="$2"
+    case "$url" in
+        */preload.json*)   printf '200\n%s\n' "$KB_STUB_PRELOAD" ;;
+        */changelog.json*)
+            case "$KB_STUB_WINDOW" in
+                short)        printf '200\n%s\n' "$KB_STUB_CHANGELOG_SHORT" ;;
+                nomove)       printf '200\n%s\n' "$KB_STUB_CHANGELOG_NOMOVE" ;;
+                nomove-short) printf '200\n%s\n' "$KB_STUB_CHANGELOG_NOMOVE_SHORT" ;;
+                *)            printf '200\n%s\n' "$KB_STUB_CHANGELOG" ;;
+            esac ;;
+        *tasks/search.json*)
+            case "$KB_STUB_SCENARIO" in
+                complete) printf '200\n%s\n' "$KB_STUB_CARDS_OK" ;;
+                short)    printf '200\n%s\n' "$KB_STUB_CARDS_SHORT" ;;
+                cap)      printf '200\n%s\n' "$KB_STUB_CARDS_FULL" ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+
+# stats <scenario> [format] [card-page-cap] [window] — the bin's STDOUT, its rc in $STATS_RC.
+# <scenario> selects the CARD read, <window> the CHANGELOG read; the two are independent
+# because the two sections are, and asserting that independence is a leg of card#7235.
+STATS_RC=0
+stats() {
+    export KB_STUB_SCENARIO="$1" BOARD_STATS_CARD_PAGE_CAP="${3:-25}" KB_STUB_WINDOW="${4:-complete}"
+    kb_stub_reset
+    local out; out="$(bash "$BIN" --board e2e --format "${2:-text}" 2>/dev/null)"; STATS_RC=$?
+    printf '%s' "$out"
+}
+# The report stamps the wall clock twice (generated_at, the window cutoff) and ages the
+# oldest pullable card against it, so an EQUALITY over the render has to hold the clock
+# still. Each clock-derived field is replaced by a placeholder rather than deleted, so a
+# field that moved or vanished still reds — and the age's marker is kept OUTSIDE the
+# placeholder, because whether it carries one is exactly what is under test.
+_declock() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g;
+                     s/oldest (≥?)[0-9]+(\.[0-9]+)?d/oldest \1<AGE>d/g'; }
+# The stock section only: the ⚠ lines sit above it and the flow counts below, and a marker
+# in one says nothing about the other.
+_stock_section() { printf '%s\n' "$1" | awk '/^  stock/{f=1} /^  flow/{f=0} f'; }
+# _stock_count <render> <single-word column label> — that row's NUMBER, read as a field
+# rather than matched inside a spacing literal: the count is right-padded into a fixed
+# column, so a literal needle would encode the padding and red on the marker taking one of
+# its cells (which is the point — the marker occupies a cell instead of adding one).
+_stock_count() { _stock_section "$1" | awk -v k="$2" '$1 == k {print $2}'; }
+# _bare_digits <stock-section> <board-object> — the digits still standing in the stock
+# section after every FLOORED number and every identifier THE DOCUMENT ITSELF names is
+# removed. The identifier set is derived from the board object — the column labels (which
+# are a bare "stage <id>" on a column the preload never named) and the oldest-card ids — so
+# a NEW number added to this section is in the population the day it is written rather than
+# when someone remembers this rule. The id token is `#<id>` and NOT the `(#<id>)` the render
+# happens to wrap it in: this predicate asks whether a NUMBER is unaccounted for, so encoding
+# the render punctuation would make it red on any rewording of the text AROUND the id — which
+# it did, the day the id gained its own qualifier. Empty means every number carries its marker.
+_bare_digits() {
+    local sect="$1" doc="$2" tok
+    sect="$(printf '%s' "$sect" | sed -E 's/≥[0-9]+(\.[0-9]+)?//g')"
+    while IFS= read -r tok; do
+        [[ -n "$tok" ]] && sect="${sect//"$tok"/}"
+    done < <(printf '%s' "$doc" | jq -r '
+        ([ .stock.columns[].stage,
+           (.stock.columns[] | select(.oldest_card != null) | "#\(.oldest_card.id)") ] | .[])')
+    printf '%s' "$sect" | tr -cd '0-9'
+}
+
+# --- CONTROL FIRST: a COMPLETE read renders exactly as it always did --------
+# An equality over the whole report, not a substring: a fix that marked every report
+# incomplete would be worse than the defect this closes, and only an exact comparison can
+# see that. The three clock-derived fields are placeholders (see _declock).
+okout="$(stats complete)"
+okexpect="── Board stats ── stock from the card snapshot · flow from the changelog ──
+window: 24h — flow counts events at or after <TS> · generated <TS>
+
+▸ e2e  [e2e · board 7]
+  stock — a state question, read from the card snapshot
+    Backlog                      1   oldest <AGE>d (#11)   [pullable]
+    In Progress                  1
+    Shipped to dev               1   [terminal]
+    total                        3
+  flow — a rate question, read from the changelog
+    created                      0
+    moved                        2   human 0 · service 2
+    same-stage moves             0   swimlane-only; not transitions, not resolutions
+    transitions:
+      Backlog -> Shipped to dev                         1   human 0 · service 1   [resolution]
+      Shipped to dev -> Backlog                         1   human 0 · service 1   [WASH]
+    resolutions, per destination stage (never collapsed into one number):
+      Shipped to dev                                    1   human 0 · service 1
+    washes (terminal -> non-terminal; reported, NOT netted against the resolutions above):
+      Shipped to dev -> Backlog                         1"
+eq "CONTROL rc 0: the complete-read report is byte-identical" "$okexpect" "$(printf '%s' "$okout" | _declock)"
+eq "CONTROL rc 0: exits 0"                                    "0" "$STATS_RC"
+eq "CONTROL rc 0: no floor marker anywhere in the report"     "false" "$(has '≥' "$okout")"
+
+# --- positive 1: the short read (rc 4) --------------------------------------
+shortout="$(stats short)"
+# Read off THIS run, before the json one below moves $STATS_RC: a partial read is a finding
+# in the report, not a broken instrument, and the exit status is where that is stated.
+eq "rc 4: fail-soft — the report still exits 0"     "0" "$STATS_RC"
+shortjs="$(stats short json)"
+eq "rc 4: the ⚠ line still names the read INCOMPLETE and the rc" "true" \
+   "$(has 'card snapshot INCOMPLETE (fetch rc=4)' "$shortout")"
+eq "rc 4: a column count carries the marker"        "≥1" "$(_stock_count "$shortout" Backlog)"
+eq "rc 4: the TOTAL carries it too"                 "≥3" "$(_stock_count "$shortout" total)"
+eq "rc 4: the oldest-card AGE carries it"           "true" "$(has 'oldest ≥' "$shortout")"
+# The card ID beside that age is the section's one NON-number, and a bare `(#11)` is an
+# ATTRIBUTION — "the oldest Backlog card is #11" — asserted off a read this tool has just
+# declared incomplete: by the same premise that floors the age, the card that is actually
+# oldest can be one the read never delivered, and it has a DIFFERENT id. `≥` says nothing
+# about an identity, so the id names the population it is the oldest OF instead, and it does
+# so IN PLACE for the reason the markers exist at all — the ⚠ line does not survive the value
+# being quoted out of it.
+eq "rc 4: the oldest-card ID names the population it is the oldest OF" "true" \
+   "$(has '(#11 among the cards read)' "$shortout")"
+# The complete render of the SAME rows is the control for both: same fields, no markers.
+eq "CONTROL rc 0: the same two numbers are bare"    "1 3" \
+   "$(_stock_count "$okout" Backlog) $(_stock_count "$okout" total)"
+# …and the same control for the id qualifier: on a WHOLE read the attribution is true as
+# written, so the qualifier must be absent — a renderer that appended it unconditionally
+# would satisfy the positive above while telling every operator their complete read is not.
+eq "CONTROL rc 0: the id is bare on a complete read" "true"  "$(has '(#11)' "$okout")"
+eq "CONTROL rc 0: …and carries no qualifier at all"  "false" "$(has 'among the cards read' "$okout")"
+
+# The DENOMINATOR for "every stock number", re-derived from the document on every run
+# rather than written down: one per column, one total, and one age per pullable column
+# that holds a card.
+want="$(printf '%s' "$shortjs" | jq '(.boards[0].stock.columns | length) + 1
+        + ([.boards[0].stock.columns[] | select(.oldest_card != null)] | length)')"
+# Counted with grep -o, not `tr -cd`: tr works on BYTES, and `≥` is three of them — two of
+# which also occur inside the section's own em-dash, so a byte counter reads a marker that
+# is not there.
+got="$(_stock_section "$shortout" | command grep -o '≥' | command grep -c . || true)"
+eq "rc 4: the marker count equals the numbers the document says are printed" "$want" "$got"
+# …and the total statement the count alone cannot make: NOTHING numeric is left bare.
+eq "rc 4: no bare digit survives in the stock section" "" \
+   "$(_bare_digits "$(_stock_section "$shortout")" "$(printf '%s' "$shortjs" | jq -c '.boards[0]')")"
+# CONTROL for that predicate — it must be able to fail. The rc-0 render is the same section
+# with the same identifiers and no markers, i.e. exactly the pre-fix shape.
+eq "CONTROL: the same predicate FINDS the bare numbers in a complete render" "true" \
+   "$([[ -n "$(_bare_digits "$(_stock_section "$okout")" \
+        "$(stats complete json | jq -c '.boards[0]')")" ]] && echo true || echo false)"
+
+# CONTROL: the marker is the ONLY thing the partial render adds. Drop the two lines the tool
+# already printed before this change, undo the marker, and what is left must equal the
+# complete render BYTE FOR BYTE — same rows, same counts, same ages, same COLUMNS. A marker
+# that moved a number, or that pushed a padded column out of alignment, does not survive it.
+#
+# Undoing it takes the section's two number KINDS plus the id qualifier, which is the same
+# denominator _bare_digits derives: a count sits in a right-padded column, so its marker took
+# a cell that must be given back as a space; the queue age is inline, so its marker is simply
+# removed; and the id qualifier is inline text that is dropped whole.
+eq "CONTROL rc 4: stripped of its floor annotations, the partial render IS the complete one" \
+   "$(printf '%s' "$okout" | _declock)" \
+   "$(printf '%s' "$shortout" | _declock | command grep -v 'card snapshot INCOMPLETE' \
+      | command grep -v 'PARTIAL REPORT' \
+      | sed -E 's/ among the cards read//g; s/oldest ≥/oldest /g; s/≥/ /g')"
+
+# --- positive 2: the page cap (rc 3) ----------------------------------------
+capout="$(stats cap text 1)"
+eq "rc 3: fail-soft — the report still exits 0"     "0" "$STATS_RC"
+capjs="$(stats cap json 1)"
+eq "rc 3: the ⚠ line names the page cap's rc"       "true" \
+   "$(has 'card snapshot INCOMPLETE (fetch rc=3)' "$capout")"
+eq "rc 3: the column count carries the marker"      "≥200" "$(_stock_count "$capout" Backlog)"
+eq "rc 3: the TOTAL carries it too"                 "≥200" "$(_stock_count "$capout" total)"
+eq "rc 3: no bare digit survives in the stock section" "" \
+   "$(_bare_digits "$(_stock_section "$capout")" "$(printf '%s' "$capjs" | jq -c '.boards[0]')")"
+# The id qualifier is driven off the same single derived state as the markers, but this is the
+# OTHER arm that reaches it, and `_bare_digits` cannot see the difference (it removes the id
+# token either way) — so the qualifier is asserted here in its own right.
+eq "rc 3: the oldest-card ID is qualified on this arm too" "true" \
+   "$(has '(#101 among the cards read)' "$capout")"
+
+# --- the JSON surface is DELIBERATELY unchanged (card#7228 half 2, OPEN) ----
+# The machine-readable half of this card — a real completeness field instead of a prose
+# string inside failures[] — is a CONTRACT change whose consumer set has not been
+# enumerated, so it is not made here. That is a decision, not an oversight, and it is
+# asserted so the next change to this renderer cannot make it by accident: the per-board
+# key set is the same six keys on a partial read as on a whole one.
+_e2e_keys='["board","board_id","failures","flow","label","stock"]'
+eq "the per-board JSON keys are unchanged on a COMPLETE read" "$_e2e_keys" \
+   "$(printf '%s' "$(stats complete json)" | jq -c '.boards[0] | keys')"
+eq "…and unchanged on a PARTIAL one"                          "$_e2e_keys" \
+   "$(printf '%s' "$shortjs" | jq -c '.boards[0] | keys')"
+eq "…with .stock still a fully populated object"              "false" \
+   "$(printf '%s' "$shortjs" | jq '.boards[0].stock == null')"
+eq "…so a JSON consumer still has only the PROSE in failures[] (half 2, OPEN)" "true" \
+   "$(has 'card snapshot INCOMPLETE' "$(printf '%s' "$shortjs" | jq -r '.boards[0].failures[]')")"
+
+# ===========================================================================
+# card#7235 — THE FLOW NUMBERS carry the floor marker on a window this tool
+# could only partly read. The THIRD member of the class card#6365 closed for
+# board-snapshot and card#7228 closed for this tool's STOCK section
+# (docs/CONSOLIDATION-PLAN.md § the read-outcome entry).
+#
+# The shape is the one directly above, one section lower in the same renderer:
+# _bs_one_board sets `flow_ok=true` on a window it could only partly read,
+# appends `changelog window INCOMPLETE: … — the flow counts below are a floor,
+# not a total`, and then printed `created`, `moved`, `same-stage moves`, every
+# per-transition / per-resolution / per-wash count and every human/service
+# number inside them BARE under that one line. A number survives being quoted
+# out of its line and the ⚠ does not.
+#
+# THE TWO STATES ARE SEPARATE, and the two controls that say so are the
+# load-bearing legs here: the card read and the changelog window fail
+# independently, so a marker driven off ONE state would floor a section that
+# was read whole. Both directions are asserted — a partial CARD read must
+# leave the flow section bare, and a partly-read WINDOW must leave the stock
+# section bare — against the same bin, in the same run.
+# ===========================================================================
+echo "== board-stats(1) — a partly-read changelog window floors every flow number (card#7235) =="
+# The flow section only: the ⚠ lines and the stock counts sit above it, and a marker in one
+# section says nothing about the other — which is exactly what the cross controls below test.
+# It stops at the next board heading and at the line-initial ⚠ of the report trailer, neither
+# of which belongs to it (a board's own ⚠ lines are indented and sit above the section anyway).
+_flow_section() { printf '%s\n' "$1" | awk '/^  flow/{f=1} /^▸/{f=0} /^⚠ /{f=0} f'; }
+# _flow_count <render> <label> — that row's NUMBER, read as the field AFTER the label rather
+# than matched inside a spacing literal, for the reason _stock_count is a field read: the count
+# is right-padded into a fixed column and the marker takes one of its cells instead of adding
+# one, so a literal needle would encode the padding and red on the fix rather than on the
+# defect. The label may carry spaces (`same-stage moves`, a transition's `A -> B`), so the
+# field index is derived from the label's own word count rather than written down.
+_flow_count() {
+    _flow_section "$1" | awk -v k="$2" 'BEGIN { n = split(k, w, " ") }
+        { ok = 1
+          for (i = 1; i <= n; i++) if ($i != w[i]) ok = 0
+          if (ok) { print $(n + 1); exit } }'
+}
+# _flow_row <render> <subsection header> <row label> — one ROW's number, read INSIDE the named
+# subsection rather than off the first line of the section that carries the label. The three row
+# lists are three separate render arms, and one move prints in two of them: a terminal ->
+# non-terminal move is a transition row tagged [WASH] AND a row in the washes block below it. A
+# read that took the first match would assert the transition arm twice and the washes arm never
+# — which is how the marker on the washes arm stayed a check that COULD NOT FAIL: no window
+# fixture produced a wash at all, so dropping `fl($fflow)` from that arm left all 228 checks in
+# this file green (measured). The header is matched at its own indent (column 5) and the rows at
+# theirs, so a subsection ends where the next header begins.
+_flow_row() {
+    _flow_section "$1" | awk -v h="$2" -v k="$3" '
+        index($0, h) == 5 { f = 1; next }
+        /^    [^ ]/       { f = 0 }
+        f { n = split(k, w, " ")
+            ok = 1
+            for (i = 1; i <= n; i++) if ($i != w[i]) ok = 0
+            if (ok) { print $(n + 1); exit } }'
+}
+# _flow_bare_digits <flow-section> <board-object> — the digits still standing in the flow
+# section after every FLOORED number and every non-quantity THE DOCUMENT ITSELF names is
+# removed. The non-quantity set is derived from the board object rather than listed here — the
+# stage labels (a bare `stage <id>` on a stage the preload never named) and
+# `data_available_from`, the instant the changelog itself ends, which is the oldest row that WAS
+# read and is therefore exact, not a floor. Deriving it means a NEW number added to this section
+# is in the population the day it is written rather than when someone remembers this rule.
+# Empty means nothing numeric is left bare.
+_flow_bare_digits() {
+    local sect="$1" doc="$2" tok
+    sect="$(printf '%s' "$sect" | sed -E 's/≥[0-9]+(\.[0-9]+)?//g')"
+    while IFS= read -r tok; do
+        [[ -n "$tok" ]] && sect="${sect//"$tok"/}"
+    done < <(printf '%s' "$doc" | jq -r '
+        ([ .flow.transitions[].from_stage, .flow.transitions[].to_stage,
+           .flow.resolutions[].stage,
+           .flow.washes[].from_stage, .flow.washes[].to_stage,
+           (.flow.data_available_from // empty) ] | .[])')
+    printf '%s' "$sect" | tr -cd '0-9'
+}
+
+# --- CONTROL FIRST: a window read to its cutoff renders as it always did ----
+flowok="$(stats complete text 25 complete)"
+eq "CONTROL complete window: exits 0"                    "0" "$STATS_RC"
+eq "CONTROL complete window: no marker in the flow section" "false" \
+   "$(has '≥' "$(_flow_section "$flowok")")"
+eq "CONTROL complete window: the counts are bare"        "2 0" \
+   "$(_flow_count "$flowok" moved) $(_flow_count "$flowok" created)"
+# The wash row's count is the one flow quantity NO fixture reached before this leg was added:
+# `.flow.washes` was empty in every window fixture, so the washes line never rendered and the
+# marker on it was a check that could not fail — dropping `fl($fflow)` from that one render arm
+# left all 228 checks green (measured). It is a SEPARATE render arm from the transition row
+# that carries the same move with `[WASH]`, so neither asserts anything about the other.
+eq "CONTROL complete window: the WASH row's count is bare" "1" \
+   "$(_flow_row "$flowok" 'washes ' 'Shipped to dev -> Backlog')"
+
+# --- positive: the log ends INSIDE the window -------------------------------
+flowout="$(stats complete text 25 short)"
+eq "partly-read window: fail-soft — the report still exits 0" "0" "$STATS_RC"
+flowjs="$(stats complete json 25 short)"
+eq "partly-read window: the ⚠ line still names it INCOMPLETE and a floor" "true" \
+   "$(has 'changelog window INCOMPLETE' "$flowout")"
+eq "partly-read window: created carries the marker"           "≥0" "$(_flow_count "$flowout" created)"
+eq "partly-read window: moved carries it"                     "≥2" "$(_flow_count "$flowout" moved)"
+eq "partly-read window: same-stage moves carries it"          "≥0" \
+   "$(_flow_count "$flowout" 'same-stage moves')"
+eq "partly-read window: the per-transition count carries it"  "≥1" \
+   "$(_flow_row "$flowout" 'transitions:' 'Backlog -> Shipped to dev')"
+eq "partly-read window: the per-resolution count carries it"  "≥1" \
+   "$(_flow_row "$flowout" 'resolutions,' 'Shipped to dev')"
+# The washes line is its OWN render arm — the same move also prints as a transition row tagged
+# [WASH], and a marker on that row says nothing about this one.
+eq "partly-read window: the per-WASH count carries it"        "≥1" \
+   "$(_flow_row "$flowout" 'washes ' 'Shipped to dev -> Backlog')"
+# The actor split is three MORE counts of the same rows, on the same line — the shape a fix
+# that marked only the leading number of each row would leave bare.
+eq "partly-read window: the human/service split carries it too" "true" \
+   "$(has 'human ≥0 · service ≥1' "$flowout")"
+eq "CONTROL complete window: that same split is bare"          "true" \
+   "$(has 'human 0 · service 1' "$flowok")"
+
+# The DENOMINATOR for "every flow number", re-derived from the document on every run rather
+# than written down: created + moved + same-stage moves, the actor split on the moved line,
+# then per transition and per resolution one count plus its own split, and one per wash row.
+want="$(printf '%s' "$flowjs" | jq '
+    def sp: (if .actors.other > 0 then 3 else 2 end);
+    .boards[0].flow
+    | 3 + sp
+      + ([ .transitions[] | 1 + sp ] | add // 0)
+      + ([ .resolutions[] | 1 + sp ] | add // 0)
+      + (.washes | length)')"
+# grep -o, not `tr -cd`: tr works on BYTES and `≥` is three of them, two of which also occur
+# inside this section's own `⤷` and `·`, so a byte counter reads markers that are not there.
+got="$(_flow_section "$flowout" | command grep -o '≥' | command grep -c . || true)"
+eq "partly-read window: the marker count equals the numbers the document says are printed" \
+   "$want" "$got"
+# …and the total statement the count alone cannot make: NOTHING numeric is left bare.
+eq "partly-read window: no bare digit survives in the flow section" "" \
+   "$(_flow_bare_digits "$(_flow_section "$flowout")" "$(printf '%s' "$flowjs" | jq -c '.boards[0]')")"
+# CONTROL for that predicate — it must be able to fail. The complete render is the same section
+# with the same labels and no markers, i.e. exactly the pre-fix shape.
+eq "CONTROL: the same predicate FINDS the bare numbers in a complete window" "true" \
+   "$([[ -n "$(_flow_bare_digits "$(_flow_section "$flowok")" \
+        "$(stats complete json 25 complete | jq -c '.boards[0]')")" ]] && echo true || echo false)"
+
+# --- the two states are SEPARATE, asserted in both directions ---------------
+# $shortout is the card#7228 scenario: a partial CARD read under a window read to its cutoff.
+# A single shared flag — or a flag read off the wrong half — reds exactly one of these two.
+eq "CONTROL: a partial CARD read leaves the FLOW section bare"  "false" \
+   "$(has '≥' "$(_flow_section "$shortout")")"
+eq "CONTROL: a partly-read WINDOW leaves the STOCK section bare" "false" \
+   "$(has '≥' "$(_stock_section "$flowout")")"
+# …and the presence witness that stops both of the above from passing over an empty section.
+eq "CONTROL: each render DOES carry markers, in its own section" "true true" \
+   "$(has '≥' "$(_stock_section "$shortout")") $(has '≥' "$(_flow_section "$flowout")")"
+
+# CONTROL: the marker is the ONLY thing the floored render adds. Drop the lines the tool
+# already printed before this change, undo the markers, and what is left must equal the
+# complete render BYTE FOR BYTE — same rows, same counts, same COLUMNS. A marker that moved a
+# number, or that pushed a padded column out of alignment, does not survive it. The two
+# fixtures differ only by a row that PRECEDES the cutoff, which contributes to neither render.
+#
+# Undoing it takes the section's two number KINDS: a count sits in a right-padded column, so
+# its marker took a cell that must be given back as a space, while the split-note numbers are
+# inline and their marker is simply removed.
+eq "CONTROL: stripped of its floor annotations, the floored render IS the complete one" \
+   "$(printf '%s' "$flowok" | _declock)" \
+   "$(printf '%s' "$flowout" | _declock \
+      | command grep -v 'changelog window INCOMPLETE' \
+      | command grep -v 'the changelog reaches back only to' \
+      | command grep -v 'PARTIAL REPORT' \
+      | sed -E 's/ \(WINDOW TRUNCATED\)//; s/(human|service|unattributed) ≥/\1 /g; s/≥/ /g')"
+
+# --- the arm that prints a WORD instead of a number -------------------------
+# A zero is a quantity too: `transitions: none in window` asserts a TOTAL of zero and survives
+# being quoted out of the ⚠ line exactly as a digit does — and it is the one claim in this
+# section the marker cannot reach, because there is no number to prefix. So the population the
+# `none` is true of is named in its place, the route the oldest-card id already takes.
+nomvout="$(stats complete text 25 nomove-short)"
+nomvok="$(stats complete text 25 nomove)"
+nomvjs="$(stats complete json 25 nomove-short)"
+eq "empty transitions on a floored window name the population" "true" \
+   "$(has 'transitions: none in the events read' "$nomvout")"
+eq "…and so do empty resolutions"                              "true" \
+   "$(has 'resolutions: none in the events read' "$nomvout")"
+# CONTROL: on a window read to its cutoff the bare `none in window` is true as written, so the
+# qualifier must be ABSENT — a renderer that appended it unconditionally would satisfy both
+# positives above while telling every operator their complete report is not one.
+eq 'CONTROL complete window: transitions read "none in window"' "true" \
+   "$(has 'transitions: none in window' "$nomvok")"
+eq "CONTROL complete window: …and carry no population qualifier at all" "false" \
+   "$(has 'in the events read' "$nomvok")"
+# The counts on that same floored render are still marked — the word arm must not be a route
+# around the numbers beside it.
+eq "the no-move floored render still marks created" "≥1" "$(_flow_count "$nomvout" created)"
+eq "…and leaves no bare digit in the section either" "" \
+   "$(_flow_bare_digits "$(_flow_section "$nomvout")" "$(printf '%s' "$nomvjs" | jq -c '.boards[0]')")"
+
+# --- the JSON surface is DELIBERATELY unchanged (still OPEN) ----------------
+# The machine-readable half is one decision for both sections and it has not been taken: the
+# consumer set has to be enumerated before a key consumers must honour is added. Asserted so
+# the next change to this renderer cannot make it by accident.
+eq "the per-board JSON keys are unchanged on a partly-read WINDOW" "$_e2e_keys" \
+   "$(printf '%s' "$flowjs" | jq -c '.boards[0] | keys')"
+eq "…so no flow completeness field reaches a machine (OPEN)" "false" \
+   "$(printf '%s' "$flowjs" | jq '.boards[0] | has("flow_complete")')"
+eq "…and .flow is still a fully populated object"            "false" \
+   "$(printf '%s' "$flowjs" | jq '.boards[0].flow == null')"
+eq "…leaving a JSON consumer only the PROSE in failures[]"   "true" \
+   "$(has 'changelog window INCOMPLETE' "$(printf '%s' "$flowjs" | jq -r '.boards[0].failures[]')")"
+
+# ---------------------------------------------------------------------------
+echo "== board-stats(1) — the api-host preflight refuses BEFORE any board is read (card#7245) =="
+# Same stub, same board, same everything — the ONLY thing that moves is which host the host env
+# declares. The request log is the observable that makes "refused before it read anything" a
+# measurement rather than a claim about a message: a refusal that still issued the reads would
+# leave lines in it.
+kb_stub_reset
+export KB_STUB_SCENARIO=complete
+_pf_out="$(bash "$BIN" --board e2e 2>/dev/null)"; _pf_rc=$?
+eq "control: the declared host is read normally (rc)" "0" "$_pf_rc"
+eq "  …and it issued requests"                        "false" "$([[ "$(kb_stub_total)" -eq 0 ]] && echo true || echo false)"
+eq "  …and rendered a report"                         "true"  "$(has 'stock' "$_pf_out")"
+
+sed 's/^export KANBAN_EXPECTED_HOST=.*/export KANBAN_EXPECTED_HOST="somewhere.else.invalid"/' \
+    "$KANBAN_HOST_ENV" > "$TMP/host-mismatch.env"
+eq "the mismatch fixture really differs (control)" "false" \
+   "$(cmp -s "$KANBAN_HOST_ENV" "$TMP/host-mismatch.env" && echo true || echo false)"
+kb_stub_reset
+_pf_err="$(KANBAN_HOST_ENV="$TMP/host-mismatch.env" bash "$BIN" --board e2e 2>&1 >/dev/null)"; _pf_rc=$?
+eq "an undeclared api host is rc 1"                   "1" "$_pf_rc"
+eq "  and NOTHING was requested"                      "0" "$(kb_stub_total)"
+eq "  and the refusal names the host it refused"      "true" "$(has "$KB_STUB_HOST" "$_pf_err")"
+eq "  and names the variable to fix"                  "true" "$(has 'KANBAN_EXPECTED_HOST' "$_pf_err")"
 
 # ---------------------------------------------------------------------------
 _summary "board-stats-selftest"

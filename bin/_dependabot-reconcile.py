@@ -60,6 +60,12 @@ import sys
 import time
 import traceback
 
+# `bin/` is PATH-linked entry by entry, so no `.pyc` may be minted in it — and only an ENTRY
+# POINT can suppress one; `tests/bin-artifact-hygiene-selftest.sh` holds that over every
+# `bin/*.py`, which is why this file carries the line although it path-loads nothing.
+# card#6871.
+sys.dont_write_bytecode = True
+
 # Host-local by nature, exactly like board-session-close's BSC_WORKTREES: this is the agent
 # host's own session instrument, not a vendored per-repo tool. The deployed DIRECTORY is
 # resolved (never hardcoded) because it is what the reconciliation is about; the repository the

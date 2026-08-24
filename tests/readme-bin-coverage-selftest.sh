@@ -30,16 +30,19 @@
 # TWO EXCLUSIONS, BOTH DELIBERATE AND BOTH STATED — neither is a side effect of a regex:
 #   1. `_`-prefixed entries in bin/ are not tools: the private lib + the python helpers
 #      (`_kb-board-lib.sh`, `_kbc-archive-lib.py`, `_kbc-archive-eligible.py`,
-#      `_kbc-may-archive.py`) are implementation, deliberately undocumented as tools. The
+#      `_kbc-may-archive.py`, `_kbc-stale-blocker.py`, `_dependabot-reconcile.py`) are
+#      implementation, deliberately undocumented as tools. The
 #      rule is the NAME, applied to every directory entry — `__pycache__` is `_`-prefixed and
 #      is a DIRECTORY, so this must not assume an entry is a file. The rule itself lives in
 #      `_bin-set-lib.sh` (`_public_bin_names`) because runtime-check's TOOLS gate needs the
 #      identical set; WHY it is right *here* is this paragraph and stays here.
-#   2. Table rows not keyed by `bin/…` are out of scope — today exactly one,
-#      `promote/action.yml`, a real row for a real artifact that simply does not live in
-#      bin/. It is dropped by a NAMED partition step, not by a `^| \`bin/` pattern that would
-#      silently swallow it, and the live out-of-scope set is PRINTED on every run so the
-#      exclusion stays visible rather than becoming folklore.
+#   2. Table rows not keyed by `bin/…` are out of scope — the composite actions, real rows for
+#      real artifacts that simply do not live in bin/. They are dropped by a NAMED partition
+#      step, not by a `^| \`bin/` pattern that would silently swallow them, and the live
+#      out-of-scope set is PRINTED on every run so the exclusion stays visible rather than
+#      becoming folklore. That print is why this line does not enumerate them: it said "today
+#      exactly one, `promote/action.yml`" while the table already carried a second action row,
+#      and card#7203 added a third.
 #
 # The extraction is scoped to the ONE section, not the whole file: a `bin/…` row appearing
 # under some other heading would otherwise satisfy this check while the inventory table
@@ -113,9 +116,9 @@ eq "bin/ enumeration is non-empty"        "false" "$([ -z "$bins" ] && echo true
 # A named member, not a count: a count pins the check to a past value and goes stale as the
 # toolkit grows, whereas a member that must be present re-derives nothing and cannot rot.
 eq "README table extraction contains a known row key" "true" \
-   "$(printf '%s\n' "$rows" | grep -qx 'bin/kbcard' && echo true || echo false)"
+   "$(has_line 'bin/kbcard' "$rows")"
 eq "bin/ enumeration contains a known tool" "true" \
-   "$(printf '%s\n' "$bins" | grep -qx 'kbcard' && echo true || echo false)"
+   "$(has_line 'kbcard' "$bins")"
 
 # Exclusion 1, asserted on the live tree: the absence claim is paired with its presence
 # witness, and the witness is OBSERVED present first — otherwise "not in the public set"
@@ -167,9 +170,11 @@ eq "the omission leg stays clean on that fixture (the two legs are independent)"
    "$(undocumented "$TMP/README-phantom.md" "$BINDIR")"
 
 echo "== prove-it-can-fail: exclusion 1 covers a DIRECTORY, and only by its name =="
-# `__pycache__` is gitignored, so it is absent from a fresh CI checkout and present on a
-# maintainer's host — asserting against the live tree would prove different things in the two
-# places. A fixture makes the directory case deterministic in both.
+# `__pycache__` is gitignored and, since card#6871, is not minted by running the helpers either
+# — so it is absent from a fresh CI checkout and present only on a host where something ran
+# `py_compile`. Asserting against the live tree would prove different things in the two places,
+# and today would usually assert nothing at all. A fixture makes the directory case
+# deterministic in both.
 mkdir -p "$TMP/bin-dir/__pycache__" "$TMP/bin-dir/realdir"
 touch "$TMP/bin-dir/kbcard"
 eq "witness: the fixture's _-prefixed entry is a directory, and is present" "true" \
@@ -198,7 +203,7 @@ cat > "$TMP/README-nonbin.md" <<'MD'
 | `bin/out-of-section` | must not be seen — this table is under another heading |
 MD
 eq "witness: the extractor DOES see the non-bin/ row" "true" \
-   "$(_table_rows "$TMP/README-nonbin.md" | grep -qx 'promote/action.yml' && echo true || echo false)"
+   "$(has_line 'promote/action.yml' "$(_table_rows "$TMP/README-nonbin.md")")"
 eq "…and the compared set excludes it" "kbcard" "$(_bin_rows "$TMP/README-nonbin.md")"
 eq "the out-of-scope row is reported, not silently dropped" "promote/action.yml" \
    "$(_nonbin_rows "$TMP/README-nonbin.md")"

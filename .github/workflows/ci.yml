@@ -10,7 +10,16 @@ permissions:
 
 jobs:
   shellcheck:
-    runs-on: ubuntu-latest   # ships shellcheck preinstalled — no third-party action needed
+    # THE ANALYSER IS PINNED, NOT INHERITED (card#6619). Every shellcheck call in this file goes
+    # through `bin/_shellcheck-pinned`, which runs the version `.shellcheck-version` declares and
+    # prints on stderr which binary it actually ran — so a log says what produced its verdict, and a
+    # local sweep of these same commands is about the same program. A bare `shellcheck` here would
+    # take whatever the runner image ships this month; the two ends of that drift disagree at ERROR
+    # severity, measured, with the reproduction in `.shellcheck-version`. The image happens to ship
+    # the pinned version today, so the wrapper resolves it off PATH and downloads nothing;
+    # `tests/shellcheck-pin-selftest.sh` holds this rule over the whole workflow directory and
+    # drives the download arm that CI therefore never exercises.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: shellcheck bin/, hooks/ and tests/
@@ -18,9 +27,58 @@ jobs:
         # run confirms the existing scripts are warning-clean. Non-shell helpers
         # (e.g. bin/*.py shims) are filtered out — shellcheck cannot parse them
         # (SC1071); they are syntax-checked in the python-shims step below.
-        run: shellcheck -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
+        run: ./bin/_shellcheck-pinned -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
       - name: python shims compile clean
-        run: python3 -m py_compile bin/*.py
+        # `compile()` — NOT `py_compile`, and NOT `ast.parse` (card#7207).
+        #
+        # `py_compile` WRITES the bytecode it produces, beside each source, i.e. into
+        # `bin/__pycache__`. Every entry of `bin/` becomes a PATH entry under the documented
+        # install (`docs/INSTALL.md` §2 globs `bin/*` and symlinks each one), so this step was
+        # re-minting the exact non-tool directory card#6871 removed — invisibly, because a
+        # GitHub runner's checkout is disposable and `.gitignore` keeps it out of `git status`.
+        # The damage is LOCAL, on every seat that runs these gates by hand before opening a PR.
+        #
+        # `ast.parse` writes nothing and was the first fix proposed, but it asks a WEAKER
+        # question. Measured on python 3.12.3, it ACCEPTS all of: `return`, `break`, `continue`,
+        # `yield` and `await` outside their construct, `def f(a, a)`, an unbound `nonlocal`, and
+        # `*a = [1]` — eight of the ten error classes `py_compile` rejects. Swapping it in would
+        # have loosened the gate to make the artifact go away.
+        #
+        # `compile(src, f, 'exec')` is `py_compile`'s own check MINUS the write: it rejects all
+        # ten, handles a PEP 263 coding cookie the same way (bytes in, not str), and caches
+        # nothing anywhere. Every bad file is reported, not just the first.
+        #
+        # BOTH `SyntaxError` AND `ValueError` are caught, and the `line=` field is omitted when
+        # the exception carries no line. A source containing a NUL byte is the case, and the class
+        # it raises MOVED under us — CPython gh-96670, "the parser now raises SyntaxError when
+        # parsing source code containing null bytes", quoted from the NEWS file shipped with 3.12
+        # — so a one-class `except` here is a bet on the runner's interpreter version. MEASURED on
+        # 3.12.3: `SyntaxError` with `lineno` None, so the old annotation read `line=None`, a
+        # location that does not exist. On an interpreter raising the other class (documented as
+        # `ValueError`; NOT verifiable on this box, which has only 3.12) it escapes as an uncaught
+        # traceback, which ABORTS THE LOOP and leaves every later file unchecked at an exit status
+        # that still says 1.
+        #
+        # `tests/python-syntax-gate-selftest.sh` runs THIS block verbatim — extracted from this
+        # file by step name, never restated — over planted fixtures, and holds a no-`py_compile`
+        # rule over every `run:` block in this directory AND in the composite actions, so the
+        # artifact cannot come back by another hand.
+        run: |
+          python3 - bin/*.py <<'PY'
+          import sys
+          rc = 0
+          for f in sys.argv[1:]:
+              with open(f, "rb") as fh:
+                  src = fh.read()
+              try:
+                  compile(src, f, "exec")
+              except (SyntaxError, ValueError) as e:
+                  line = getattr(e, "lineno", None)
+                  loc = f",line={line}" if line else ""
+                  print(f"::error file={f}{loc}::{getattr(e, 'msg', None) or e}", file=sys.stderr)
+                  rc = 1
+          sys.exit(rc)
+          PY
 
   drift-check-selftest:
     # NARROW BY DESIGN — and narrower than it reads. Passing the same directory as both
@@ -48,6 +106,13 @@ jobs:
     # the `changelog-card-entry` job into its own workflow (for a trigger this file cannot
     # give it), and a scan of ci.yml alone would report that test as unrun.
     #
+    # It also holds the TRIGGER CONTRACT over that directory (card#6099): no workflow observes
+    # fewer than all pull requests (a `paths:`/`branches:` filter, or a `types:` list missing
+    # `opened`/`synchronize`), and every workflow that reads a `github.event.pull_request.*`
+    # field subscribes `edited` on every PR trigger it has. Neither rule has an instance on
+    # this tree — the reasoning, the bounds, and the fixtures that keep both from being
+    # decorations are in the selftest's own header rather than restated here.
+    #
     # Deliberately its OWN job, not a `selftest` matrix entry: a matrix entry would be
     # self-referential, so deleting that one line would disable the guard silently — the exact
     # hole it closes. Being named in this `run:` block is also how it satisfies the rule it
@@ -55,7 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: every selftest on disk is run by a PR-triggered workflow
+      - name: every selftest is run by a PR-triggered workflow, and the triggers hold their contract
         run: bash tests/ci-matrix-parity-selftest.sh
 
   selftest:
@@ -80,16 +145,21 @@ jobs:
         test:
           - adopt-to-dl-selftest
           - agent-dispatch-card-start-selftest
+          - bin-artifact-hygiene-selftest
           - board-card-start-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
           - board-stats-selftest
           - bsc-same-dir-selftest
+          - composite-action-wiring-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
           - drift-check-fixture-selftest
+          - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
+          - gh-code-search-selftest
+          - gitignore-secret-family-selftest
           - help-output-selftest
           - install-board-hooks-capability-selftest
           - kb-board-lib-selftest
@@ -97,26 +167,81 @@ jobs:
           - kb-positional-guard-selftest
           - kbc-archive-eligible-selftest
           - kbc-may-archive-selftest
+          - kbc-stale-blocker-selftest
           - kbcard-field-selftest
           - kbcard-selftest
+          - lib-set-derivation-selftest
           - locale-range-guard-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
+          - path-link-recipe-selftest
+          - piped-match-gate-selftest
+          - pipeline-free-match-selftest
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-stage-guard-selftest
+          - python-syntax-gate-selftest
+          - read-outcome-collapse-selftest
           - readme-bin-coverage-selftest
           - release-artifacts-selftest
           - release-pr-body-selftest
+          - release-tag-check-selftest
           - runtime-check-selftest
+          - shellcheck-pin-selftest
+          - url-userinfo-render-selftest
+          - value-flag-derivation-selftest
+          - verdict-through-truncating-reader-selftest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: bash tests/${{ matrix.test }}.sh
         run: bash "tests/${{ matrix.test }}.sh"
 
+  suite-home-containment:
+    # Runs EVERY tests/*selftest*.sh under a sacrificial HOME and asserts nothing is left in it
+    # — the property card#7245's incident actually violated ("the suite writes nothing outside
+    # its scratch"), as opposed to the sub-population the e2e-harness containment test declares.
+    #
+    # ⛔ NOT a `selftest` matrix entry, for two mechanical reasons — the same two that put
+    # `ci-matrix-parity` and `changelog-card-entry` in their own jobs:
+    #
+    #   1. SELF-REFERENCE. It runs the suite, so as a matrix entry it would be handed itself
+    #      and recurse. It excludes itself by name, and that exclusion is asserted — but a
+    #      meta-check that must skip one member of the list it is generated from does not
+    #      belong in that list.
+    #   2. fetch-depth: 0, WHICH THE MATRIX CANNOT GIVE IT. The matrix job has ONE shared
+    #      checkout for all 44 entries, at the default depth 1. One subject —
+    #      `changelog-card-entry-selftest` — derives its obligation set from
+    #      `git log <last release tag>..HEAD` and REFUSES (rc 1) when no tag resolves, which is
+    #      deliberate: it fails loud rather than passing blindly on a truncated history. Under
+    #      a depth-1 checkout it therefore never runs, its containment is never measured, and
+    #      this job's UNMEASURED leg correctly reds — which is exactly what happened on the
+    #      first CI run of this instrument. The fix belongs to the POPULATION, not the verdict:
+    #      give the subject the history it needs so it genuinely runs. Widening the matrix
+    #      checkout to depth 0 for all 45 jobs to serve one subject is the wrong trade.
+    #
+    # PR_TITLE is deliberately NOT passed. It is a second obligation SOURCE for that subject,
+    # not something it needs in order to run — without it the subject checks merged history
+    # instead, which exercises the same write surface (a git read plus a grep, into its own
+    # $TMP). Passing it would couple THIS job's containment verdict to whether some card is
+    # missing a CHANGELOG entry, reporting an unrelated content failure as "containment not
+    # measured". The title check has its own job, which owns that question.
+    #
+    # ~4 min: it is the suite, once more. That is the price of measuring the property instead
+    # of asserting it, and the incident it exists to prevent cost a hand-restored credential.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history + tags: see reason 2 above. A truncated checkout does not make this
+          # job fail — it makes one subject UNMEASURED, which is a finding, not a pass.
+          fetch-depth: 0
+      - name: every selftest writes nothing outside its own scratch
+        run: bash tests/suite-home-containment-selftest.sh
+
   promote-action-selftest:
     # Guards the composite action's wiring: SHA-pinned consumers get no
-    # toolkit-side signal if the wrapper rots (shellcheck only sees bin/*).
+    # toolkit-side signal if the wrapper rots (the shellcheck job's population is bin/,
+    # hooks/ and tests/ — never promote/action.yml's embedded run: block).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -180,7 +305,7 @@ jobs:
           with open('/tmp/action-run.sh', 'w') as f:
               f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + run)
           PY
-          shellcheck -S error /tmp/action-run.sh
+          ./bin/_shellcheck-pinned -S error /tmp/action-run.sh
       - name: Invoke the action (expects fail-closed at the token guard)
         # Proves the runner can execute the composite end-to-end into the
         # script: with an empty token it must die at the KANBAN_WRITEBACK_TOKEN
@@ -201,7 +326,8 @@ jobs:
 
   release-artifacts-action-selftest:
     # The promote job's sibling, for the same reason: a SHA-pinned consumer gets no
-    # toolkit-side signal if the wrapper rots, and shellcheck only sees bin/.
+    # toolkit-side signal if the wrapper rots, and the shellcheck job's population does not
+    # reach this action's embedded run: block either.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -238,7 +364,7 @@ jobs:
           with open('/tmp/ra-action-run.sh', 'w') as f:
               f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + run)
           PY
-          shellcheck -S error /tmp/ra-action-run.sh
+          ./bin/_shellcheck-pinned -S error /tmp/ra-action-run.sh
       - name: Invoke the action (degenerate same-sha range ⇒ classifies as not-a-release-PR)
         # Proves the runner can execute the composite end-to-end into the script. base == head
         # means the version is byte-identical at both ends, which is the exit-0 arm — so this
@@ -255,3 +381,50 @@ jobs:
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           [ "$SMOKE_OUTCOME" = "success" ] || { echo "::error::release-artifacts action failed on a same-sha range — the wrapper does not reach the script"; exit 1; }
+
+  release-tag-check-action-selftest:
+    # The third action's runner leg. Its WIRING assertions are NOT inline here: they live in
+    # `tests/composite-action-wiring-selftest.sh`, which derives its population from every
+    # `action.yml` OR `action.yaml` in the tree — both spellings, because GitHub honours both —
+    # so this action, the two above, and any later one are all covered by one guard, and it runs
+    # as a `selftest` matrix entry. What this job adds is the part no local
+    # test can stand in for — the RUNNER actually executing the composite, in both directions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0   # the action's own precondition; both smoke steps below need it
+      - run: test -x bin/release-tag-check
+
+      - name: Invoke the action (degenerate same-sha range ⇒ not a release ⇒ asserts no tag)
+        # Deterministic and network-free: base == head means the version is byte-identical at
+        # both ends, so the classifier returns not-release and the tool exits 0 BEFORE polling
+        # any remote. This asserts "the composite runs end-to-end into the script", not "the tag
+        # gate works" — the gate's own verdicts are covered by tests/release-tag-check-selftest.sh.
+        # Every optional input is left blank on purpose: that is the default consumer wiring, and
+        # it is the path where a blank-to-absent translation bug would surface as `--timeout ""`.
+        id: pass
+        continue-on-error: true
+        uses: ./release-tag-check
+        with:
+          before-sha: ${{ github.sha }}
+          after-sha: ${{ github.sha }}
+
+      - name: Invoke the action on a range it CANNOT classify (must fail the step)
+        # THE SECOND DIRECTION, and the one that matters for a gate: a wrapper that swallowed the
+        # script's non-zero status would look identical to a passing gate on the step above. An
+        # unresolvable --after is refused at rc 2 by the script with no network access.
+        id: refuse
+        continue-on-error: true
+        uses: ./release-tag-check
+        with:
+          before-sha: ${{ github.sha }}
+          after-sha: '0000000000000000000000000000000000000000'
+
+      - name: Assert both directions
+        env:
+          PASS_OUTCOME: ${{ steps.pass.outcome }}
+          REFUSE_OUTCOME: ${{ steps.refuse.outcome }}
+        run: |
+          [ "$PASS_OUTCOME" = "success" ] || { echo "::error::release-tag-check action failed on a non-release range — the wrapper does not reach the script"; exit 1; }
+          [ "$REFUSE_OUTCOME" = "failure" ] || { echo "::error::release-tag-check action reported '$REFUSE_OUTCOME' on an unclassifiable range — the wrapper is swallowing the script's refusal, which would make every release look tagged"; exit 1; }

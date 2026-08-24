@@ -232,7 +232,8 @@ INDETERMINATE)
     eq "--allow-copies does not unblock it"          "4" "$_rc"
     eq "…and still installs nothing"                 "0" "$(_hooks_present "$r")"
     printf '   NOTE: an INDETERMINATE seat has a LOCAL FAULT the reason names (permissions, a stray\n'
-    printf '   probe file, an unreadable directory). Report the probe line above — it is the finding.\n'
+    printf '   probe file, an unreadable directory, or a reader — git or the shell — that cannot read\n'
+    printf '   the probe entries). Report the probe line above — it is the finding.\n'
     ;;
 *)
     bad "no disposition could be checked: the probe returned '$VERDICT_LINE'"

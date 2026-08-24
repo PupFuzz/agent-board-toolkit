@@ -77,7 +77,7 @@ echo "== board-card-start --lint — the wiring the pre-push hook invokes (subpr
 # --lint short-circuits before any board/network work; exercises the real arg path + exit code.
 _lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
 [[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
-printf '%s' "$_lout" | grep -q "board-branch-lint:.*card 4524" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
+grep -q "board-branch-lint:.*card 4524" <<< "$_lout" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
 _lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
 [[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
 
@@ -114,7 +114,7 @@ if command -v git >/dev/null 2>&1; then
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
-        [[ -s "$_log" ]] || printf '%s' "$_out" | grep -q "fix/card-4242-x"
+        [[ -s "$_log" ]] || grep -q "fix/card-4242-x" <<< "$_out"
     }
 
     # ZERO ARGS → the current branch. hooks/post-checkout passes NO arguments at all, so this is
@@ -131,7 +131,7 @@ if command -v git >/dev/null 2>&1; then
     # moves a card the caller never named (an unexpanded "$BRANCH" is the way in).
     _bcs_run ""
     [[ "$_rc" -eq 0 ]] && ok "empty branch: exits 0 (fail-soft)" || bad "empty branch: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "is empty" \
+    grep -q "is empty" <<< "$_out" \
         && ok "empty branch: refuses loudly" || bad "empty branch: no refusal on stderr: $_out"
     _bcs_attempted_move \
         && bad "empty branch: fell through to HEAD and attempted a move: $_out" \
@@ -146,7 +146,7 @@ if command -v git >/dev/null 2>&1; then
         || ok "<branch> --lint: no move attempted"
     # …and it is lint MODE, not merely an early exit: a warn-worthy branch must still warn.
     _bcs_run "fix/card_4524-x" --lint
-    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4524" \
+    grep -q "board-branch-lint:.*card 4524" <<< "$_out" \
         && ok "<branch> --lint: actually lints (the warning is emitted)" || bad "<branch> --lint: no lint warning: $_out"
 
     # LEADING --lint — hooks/pre-push's call form — keeps working: lint only, no move.
@@ -161,13 +161,13 @@ if command -v git >/dev/null 2>&1; then
     # here: with a token-free `--bogus` it would pass even when the flag is stored as the branch.
     _bcs_run --card-4242
     [[ "$_rc" -eq 0 ]] && ok "unknown option: exits 0" || bad "unknown option: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unknown option" \
+    grep -q "unknown option" <<< "$_out" \
         && ok "unknown option: refuses loudly" || bad "unknown option: not refused: $_out"
     _bcs_attempted_move \
         && bad "unknown option: attempted a move: $_out" || ok "unknown option: NO board work attempted"
     _bcs_run "fix/card-4242-x" "fix/card-9999-y"
     [[ "$_rc" -eq 0 ]] && ok "extra positional: exits 0" || bad "extra positional: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unexpected extra argument" \
+    grep -q "unexpected extra argument" <<< "$_out" \
         && ok "extra positional: refuses loudly" || bad "extra positional: not refused: $_out"
     _bcs_attempted_move \
         && bad "extra positional: attempted a move: $_out" || ok "extra positional: NO board work attempted"
@@ -182,7 +182,7 @@ if command -v git >/dev/null 2>&1; then
     }
     for _hflag in --help -h; do
         rm -f "$_log"; _bcs_help_stdout "$_hflag"
-        printf '%s' "$_hout" | grep -q "^usage: board-card-start" \
+        grep -q "^usage: board-card-start" <<< "$_hout" \
             && ok "$_hflag: prints the usage line on STDOUT" \
             || bad "$_hflag: no usage line on stdout: $_hout"
         [[ -s "$_log" ]] \
@@ -220,10 +220,10 @@ if command -v git >/dev/null 2>&1; then
     # while dropping the argument would pass an rc-0-and-no-refusal test).
     _bcs_run --lint -- "-card_4242-x"
     [[ "$_rc" -eq 0 ]] && ok "--lint -- <dash-name>: exits 0" || bad "--lint -- <dash-name>: expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "unknown option" \
+    grep -q "unknown option" <<< "$_out" \
         && bad "--lint -- <dash-name>: refused as an option — the terminator is decorative: $_out" \
         || ok "--lint -- <dash-name>: NOT refused as an unknown option"
-    printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+    grep -q "board-branch-lint:.*card 4242" <<< "$_out" \
         && ok "--lint -- <dash-name>: the name reached the lint (it warns)" \
         || bad "--lint -- <dash-name>: no lint warning — the argument was dropped: $_out"
     # "no move attempted" is asserted on the CORRELATING dash-name, never on the warn-worthy one:
@@ -247,7 +247,7 @@ if command -v git >/dev/null 2>&1; then
     # of that arm is how the two sides would drift apart, so this is the assertion that pins it.
     _bcs_run -- ""
     [[ "$_rc" -eq 0 ]] && ok "-- \"\": exits 0" || bad "-- \"\": expected rc=0 got $_rc"
-    printf '%s' "$_out" | grep -q "is empty" \
+    grep -q "is empty" <<< "$_out" \
         && ok "-- \"\": still refuses an empty positional" || bad "-- \"\": empty not refused: $_out"
     _bcs_attempted_move \
         && bad "-- \"\": fell through to HEAD and attempted a move: $_out" \
@@ -282,12 +282,125 @@ if command -v git >/dev/null 2>&1; then
         [[ -z "$_out" ]] && ok "pre-push '-foo': SILENT — no 'no card moved' refusal on a valid branch" \
             || bad "pre-push '-foo': the hook printed a refusal for a branch git accepts: $_out"
         _pp_run "-card_4242-x"
-        printf '%s' "$_out" | grep -q "board-branch-lint:.*card 4242" \
+        grep -q "board-branch-lint:.*card 4242" <<< "$_out" \
             && ok "pre-push '-card_4242-x': still LINTS through the terminator" \
             || bad "pre-push '-card_4242-x': the advisory did not fire: $_out"
     else
         bad "hooks/pre-push not readable — the call site could not be exercised"
     fi
+
+    # ── the token DECLARATION gate (card#7245) ───────────────────────────────────────────
+    # Every case above stops at the board-id gate, so the token ladder is never reached there.
+    # This block gets past it — a host-local board id plus a matching board env — so the arm
+    # under test is the one that used to fall through to ~/.kanban-dev-token: a hook on a box
+    # with no per-board token would send the SHARED credential, and did so silently.
+    git -C "$_repo" config kanban.board-id 42
+    printf 'export KB_BOARD_ID=42\n' > "$_home/.kanban-t-board.env"
+    _bcs_run
+    [[ "$_rc" -eq 0 ]] && ok "no declared token: exits 0 (never blocks a checkout)" \
+        || bad "no declared token: expected rc=0 got $_rc"
+    grep -q "no token file is declared" <<< "$_out" \
+        && ok "no declared token: refuses loudly, naming the missing declaration" \
+        || bad "no declared token: did not name it: $_out"
+    grep -q "kanban-dev-token" <<< "$_out" \
+        && bad "no declared token: still names the removed shared default: $_out" \
+        || ok "no declared token: does NOT reach for the removed shared default"
+    # WITNESS for the absence assertion above: the SAME repo and board env, with one declaration
+    # added, gets PAST this gate — it stops at the NEXT one instead (no api_base: this fixture
+    # runs with KBCARD_API='' and a scratch HOME, so there is no host env to resolve one from).
+    # Without this, a board-card-start that had started refusing everything would satisfy all
+    # three assertions above.
+    : > "$_home/board.token"
+    printf 'export KB_BOARD_ID=42\nexport KBCARD_TOKEN_FILE=%s\n' "$_home/board.token" \
+        > "$_home/.kanban-t-board.env"
+    _bcs_run
+    grep -q "no token file is declared" <<< "$_out" \
+        && bad "declared token: still refused at the token gate: $_out" \
+        || ok "declared token: gets PAST the token gate (witness)"
+    grep -q "no usable kanban api_base" <<< "$_out" \
+        && ok "declared token: stops at the NEXT gate, naming it" \
+        || bad "declared token: did not reach the api_base gate: $_out"
+
+    # ── a userinfo-bearing api_base never reaches the DURABLE log (card#7500) ────────────
+    # `https://user:password@host/api/v3` is a SUPPORTED api_base — kb_require_https_host
+    # ACCEPTS it, by design, because it judges the HOST (kb-host-guard-selftest pins the row).
+    # This hook's diagnostics are written to $KB_BCS_LOG, a FILE: stderr in a CI run is at least
+    # bounded by log retention, a password under ~/.cache/ is not. Both of this bin's sites that
+    # render the base are driven here, and both are past the token gate the block above just
+    # cleared, so the fixture is already in the right state.
+    #
+    # ⛔ ASSERTED ON THE CREDENTIAL VALUE, never on the presence of a mask — a run printing
+    # `***` AND the password would satisfy a mask check and leak anyway. Paired with a HOST leg
+    # each time: these messages exist to tell an operator which host was involved, and an edit
+    # that redacted the whole base would pass the absence half while destroying that.
+    #
+    # THE HOST IS 127.0.0.1 AND NOT AN RFC-2606 NAME, deliberately: `_bcs_is_placeholder_host`
+    # treats every reserved documentation host (.test / .invalid / example.*) as host-scrubbed
+    # and substitutes $KB_API for it, so a fixture using one would never reach these lines with
+    # the base it declared. A loopback literal is the RFC-2606-equivalent that survives the scrub
+    # check. Nothing is ever sent: the guard refuses in the first case, and the second runs
+    # against a `curl` stub that answers a transport failure without opening a socket.
+    _UI_PW='not-a-real-password-card7500'
+    _UI_USER='fakeuser'
+    printf '{"promote":{"board_id":"42","released_stage_id":"85","api_base":"https://%s:%s@127.0.0.1/api/v3"}}\n' \
+        "$_UI_USER" "$_UI_PW" > "$_repo/.release-pr.json"
+    # The stage ids the board env above deliberately lacked — the block that wrote it was
+    # asserting the token gate and stops before them. The SECOND site below is past that gate,
+    # so this fixture needs them; declared here rather than earlier so nothing above moves.
+    printf 'export KB_BOARD_ID=42\nexport KBCARD_TOKEN_FILE=%s\nexport KB_STAGE_IN_PROGRESS=84\nexport KB_STAGE_BACKLOG=81\nexport KB_STAGE_PRIORITIZED=82\nexport KB_STAGE_HELD=83\n' \
+        "$_home/board.token" > "$_home/.kanban-t-board.env"
+    mkdir -p "$_t/stubbin"
+    # A `curl` that can never reach anything: rc 7 is what real curl returns when it cannot
+    # connect, which is what makes kb_api_status yield HTTP 000 and reach the second site.
+    printf '#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 7\n' > "$_t/stubbin/curl"
+    chmod +x "$_t/stubbin/curl"
+
+    _ui_run() {  # <expected-host> [--stub-curl] — run the bin, leave the durable log in $_log
+        local _eh="$1" _p="$PATH"
+        [[ "${2:-}" == "--stub-curl" ]] && _p="$_t/stubbin:$PATH"
+        rm -f "$_log"; _rc=0
+        _out="$(cd "$_repo" && HOME="$_home" PATH="$_p" KBCARD_API='' KBCARD_TOKEN_FILE='' \
+                KANBAN_EXPECTED_HOST="$_eh" KB_BCS_LOG="$_log" bash "$BCS" 2>&1)" || _rc=$?
+        _ui_log="$(cat "$_log" 2>/dev/null || true)"
+    }
+    _ui_assert() {  # <label>
+        local _l="$1"
+        # POSITIVE CONTROL FIRST: every leg below is an ABSENCE, and an empty durable log — a
+        # run that never got here, a renamed knob — satisfies all of them while measuring nothing.
+        eq "$_l — the durable log was written (positive control)" "true" \
+           "$(has 'board-card-start:' "$_ui_log")"
+        eq "$_l — the password is NOT in the durable log" "false" "$(has "$_UI_PW"   "$_ui_log")"
+        eq "$_l — the username is NOT in the durable log" "false" "$(has "$_UI_USER" "$_ui_log")"
+        eq "$_l — the HOST is still named"                "true"  "$(has '127.0.0.1' "$_ui_log")"
+        eq "$_l — nor is the password on the merged stream" "false" "$(has "$_UI_PW" "$_out")"
+        eq "$_l — the hook still exits 0 (never blocks a checkout)" "0" "$_rc"
+    }
+
+    # SITE 1 — the https-host trust guard refuses (the expected host is not this base's host).
+    _ui_run "board.invalid"
+    eq "userinfo base, guard refuses — it IS the guard line" "true" \
+       "$(has 'failed the https-host trust guard' "$_ui_log")"
+    _ui_assert "userinfo base, guard refuses"
+
+    # SITE 2 — the guard PASSES (the base is on the expected host) and the card read cannot
+    # complete, which is the HTTP 000 arm. This is the one that only fires once a credential
+    # has been accepted as legitimate, i.e. on a real operator's real base.
+    _ui_run "127.0.0.1" --stub-curl
+    eq "userinfo base, unreachable API — it IS the 000 arm" "true" \
+       "$(has 'is unreachable' "$_ui_log")"
+    _ui_assert "userinfo base, unreachable API"
+
+    # CONTROL — a userinfo-FREE base is still rendered verbatim, so the mask is not a rewrite of
+    # every message. Without this, redacting the base wholesale would pass everything above.
+    printf '{"promote":{"board_id":"42","released_stage_id":"85","api_base":"https://127.0.0.1/api/v3"}}\n' \
+        > "$_repo/.release-pr.json"
+    _ui_run "board.invalid"
+    eq "CONTROL: a userinfo-free base is quoted verbatim" "true" \
+       "$(has "api_base 'https://127.0.0.1/api/v3' failed" "$_ui_log")"
+    eq "CONTROL: …and no mask is inserted into it"        "false" "$(has '***' "$_ui_log")"
+    unset -f _ui_run _ui_assert
+    unset _UI_PW _UI_USER _ui_log
+
     rm -rf "$_t"
 else
     echo "  skip (git not on PATH)"
@@ -336,7 +449,7 @@ if command -v git >/dev/null 2>&1; then
     git init -q "$_t/refuse"; git -C "$_t/refuse" config core.hooksPath .githooks
     _rc=0; _out="$(bash "$IBH" "$_t/refuse" 2>&1)" || _rc=$?
     [[ "$_rc" -ne 0 ]] && ok "in-tree hooksPath refused (rc=$_rc)" || bad "in-tree hooksPath must refuse (got rc=$_rc)"
-    printf '%s' "$_out" | grep -q "resolves inside the tracked work tree" \
+    grep -q "resolves inside the tracked work tree" <<< "$_out" \
         && ok "refuse prints operator guidance" || bad "refuse guidance missing (set -e dead-code): $_out"
     # default repo (no hooksPath) → installs a symlink for EACH hook into .git/hooks
     git init -q "$_t/ok"
@@ -383,9 +496,9 @@ if command -v git >/dev/null 2>&1; then
         local _rc=0 _o
         _o="$(bash "$IBH" --check "$2" 2>&1)" || _rc=$?
         [[ "$_rc" -ne 0 ]] && ok "$1: refused (rc=$_rc)" || bad "$1: must refuse (got rc=$_rc, out=$_o)"
-        printf '%s' "$_o" | grep -q "$3" \
+        grep -q "$3" <<< "$_o" \
             && ok "$1: message names its own topology ($3)" || bad "$1: wrong message: $_o"
-        printf '%s' "$_o" | grep -q "$4" \
+        grep -q "$4" <<< "$_o" \
             && bad "$1: message carries another topology's wording ($4): $_o" \
             || ok "$1: does NOT emit another topology's wording"
     }
@@ -418,10 +531,10 @@ if command -v git >/dev/null 2>&1; then
 
         # (c) the note is on STDERR, names this topology, and not another's.
         _err="$(bash "$IBH" --check "$_repo" 2>&1 >/dev/null)"
-        printf '%s' "$_err" | grep -q "$_want" \
+        grep -q "$_want" <<< "$_err" \
             && ok "$_label: stderr note names its own topology ($_want)" \
             || bad "$_label: wrong/absent stderr note: $_err"
-        printf '%s' "$_err" | grep -q "$_not" \
+        grep -q "$_not" <<< "$_err" \
             && bad "$_label: note carries another topology's wording ($_not): $_err" \
             || ok "$_label: does NOT emit another topology's wording"
 
@@ -485,7 +598,7 @@ if command -v git >/dev/null 2>&1; then
     # Captured, never piped: `set -o pipefail` is live here, so `<refusal> | grep -q` reports the
     # REFUSAL's rc 1 and a matching pattern reads as a failure.
     _out="$(bash "$IBH" --check "$_t/wt" 2>&1 || true)"
-    printf '%s' "$_out" | grep -q "install-board-hooks $_t/main\$" \
+    grep -q "install-board-hooks $_t/main\$" <<< "$_out" \
         && ok "worktree refusal names the MAIN checkout as the command to run" \
         || bad "worktree refusal did not name the main checkout: $_out"
 
@@ -528,7 +641,7 @@ echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the ca
 _tmpd="$(mktemp -d)"
 kb_api() { KB_HTTP=200; return 0; }   # success path
 _out="$(KB_BCS_LOG="$_tmpd/ok.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
-printf '%s' "$_out" | grep -q 'OKMSG-emitted' && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
+grep -q 'OKMSG-emitted' <<< "$_out" && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
 [[ ! -s "$_tmpd/ok.log" ]] && ok "2xx writes NO durable failure line" || bad "2xx wrote an unexpected failure line: $(cat "$_tmpd/ok.log")"
 kb_api() { KB_HTTP=422; return 1; }   # non-2xx: KB_HTTP carries the code kb_api captured
 _out="$(KB_BCS_LOG="$_tmpd/fail.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
@@ -537,7 +650,7 @@ if grep -q 'FAILMSG-reason' "$_tmpd/fail.log" 2>/dev/null && grep -q 'HTTP 422' 
 else
     bad "non-2xx did not log fail-reason+status: $(cat "$_tmpd/fail.log" 2>/dev/null)"
 fi
-printf '%s' "$_out" | grep -q 'OKMSG-emitted' && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
+grep -q 'OKMSG-emitted' <<< "$_out" && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
 kb_api() { KB_HTTP=500; return 1; }
 _rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' 'x' 'y' >/dev/null 2>&1 || _rc=$?
 [[ "$_rc" -eq 0 ]] && ok "returns 0 even on a failed write (fail-soft: never blocks a checkout)" || bad "returned rc=$_rc on failure (must be 0)"

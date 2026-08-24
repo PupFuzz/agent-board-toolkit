@@ -13,6 +13,15 @@
 #   release-pr-body [--version X.Y.Z] [--base REF] [--head REF] [--config PATH]
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
+#   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
+#
+# `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). `.release-pr.json`'s
+# `tag_format` is read here and nowhere else; `bin/release-tag-check` needs the same answer to
+# know which tag to wait for, and hardcoding `v${VERSION}` there made it poll for a tag that
+# cannot exist under a non-`v` scheme — refusing EVERY release at its bound, for any consumer
+# who set the key this file documents. It resolves the tag by calling this mode on its sibling,
+# exactly as it delegates the release classification to `release-artifacts-check`. The mode
+# returns BEFORE the baseline block, so it performs no fetch and touches no network.
 #
 # TWO REF SPELLINGS, TWO ID SPACES — the config declares each separately because
 # they correlate against DIFFERENT card fields, and conflating them promotes the
@@ -50,13 +59,14 @@ command -v git >/dev/null || die "git is required"
 # duplicated; keep the two in sync.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
     --base)    require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)    require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config)  require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
+    --tag)      TAG_ONLY=1; shift;;
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
@@ -74,8 +84,17 @@ done
 # ruled on that shape once (card#5429 — drift-check read two positionals and dropped the
 # rest at rc 0), and a query whose answer is about a different question than the one asked
 # is worse here than in a body generator, because the output is machine-read.
-if [ "$MANIFEST_ONLY" = 1 ] && [ "$CARD_MANIFEST_ONLY" = 1 ]; then
-  die "--manifest and --card-manifest are mutually exclusive (they print different lists — run the tool twice)"
+# COUNTED, NOT PAIRWISE. Each query mode replaces the whole output with one answer, so any two
+# of them means one is silently lost — and a pairwise test is the shape that admits exactly the
+# combination nobody remembered to write down (with three modes there are three pairs; with the
+# next one, six). The count is derived from the flags that were actually seen.
+QUERY_MODES=""; QUERY_COUNT=0
+query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODES, }$2"; QUERY_COUNT=$((QUERY_COUNT + 1)); }
+query_mode "$TAG_ONLY"           --tag
+query_mode "$MANIFEST_ONLY"      --manifest
+query_mode "$CARD_MANIFEST_ONLY" --card-manifest
+if [ "$QUERY_COUNT" -gt 1 ]; then
+  die "$QUERY_MODES are mutually exclusive query modes (each prints a different answer — run the tool once per question)"
 fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
@@ -88,7 +107,6 @@ VERSION_FILE="$(cfg_opt '.version_file')"
 VERSION_REGEX="$(cfg_opt '.version_regex')"
 REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"    # e.g. "DL-[0-9]+"; optional — numeric part is a DL number
 CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optional — numeric part is a CARD ID
-TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release}"
 # How a version maps to its git tag name, with {{version}} as the placeholder
 # (symmetric with the `artifacts` template expansion below). Drives both the
 # baseline own-tag exclude AND the body's display header, so a non-v scheme names
@@ -100,12 +118,25 @@ TITLE_PREFIX="$(cfg_opt '.title_prefix')"; TITLE_PREFIX="${TITLE_PREFIX:-Release
 # the inline form works. The two-line form is kept as the clearer one.)
 TAG_FORMAT="$(cfg_opt '.tag_format')"; [ -n "$TAG_FORMAT" ] || TAG_FORMAT='v{{version}}'
 
-# Resolve the version: explicit flag, else extract from the version file. The
-# numeric extraction accepts 2-4 segments (SemVer 3-segment AND .NET 4-segment
-# Major.Minor.Build.Revision) — matching changelog-tag-coverage.py; a 3-segment-
-# only pattern here would silently truncate a 4-segment version (1.22.1.0→1.22.1).
+# Resolve the version: explicit flag, else the FIRST version_regex match in the
+# version file. That regex is the ONE declaration of what a version looks like:
+# `release-artifacts-check` classifies release PRs by it, and the toolkit's own
+# `auto-tag-version.yml` anchors it (^…$) against the whole VERSION at merge time.
+# How many segments a version has is therefore the CONFIG's to say, not this file's.
+#
+# ⛔ DO NOT RE-ADD A SECOND, WIDER PATTERN HERE. There was one until card#7208: a
+# hardcoded `[0-9]+(\.[0-9]+){1,3}` ran as a second stage over the FIRST stage's
+# output, and a stage that only ever sees what the config regex already matched can
+# narrow it but can never widen it. It read as "2-4 segments accepted" and was not:
+# with a 3-segment version_regex, `1.22.1.0` reached it already cut to `1.22.1`
+# (measured — the comment that stood here named that exact truncation as prevented).
+# What it did do was refuse a single-segment version_regex outright, cut a legal
+# 5-segment one to four, and drop any non-numeric text the config regex was written
+# to match. A repo that wants 4 segments declares them in version_regex.
 if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -f "$VERSION_FILE" ]; then
-  VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1 || true)"
+  # `|| true` is the SIGPIPE guard, not a swallowed read: `head -1` closes the pipe on the
+  # first line and `pipefail` would promote the dead grep's status. Emptiness is tested below.
+  VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 || true)"
 fi
 [ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
 
@@ -114,6 +145,15 @@ fi
 # here so an explicit --base (which skips the baseline block) still renders the
 # real tag. Under the default `v{{version}}` this is `v<version>` (back-compat).
 THIS_TAG="${TAG_FORMAT//\{\{version\}\}/$VERSION}"
+
+# THE QUERY MODE RETURNS HERE, before the baseline block below — which FETCHES from origin and
+# dies when it cannot. A caller asking only "what is this version's tag called?" must not need
+# the network to be told, and `bin/release-tag-check` asks this question inside a CI job whose
+# whole purpose is to survive a remote it may not be able to read.
+if [ "$TAG_ONLY" = 1 ]; then
+  printf '%s\n' "$THIS_TAG"
+  exit 0
+fi
 
 # Range: BASE = last release tag reachable on ORIGIN's main (excluding THIS
 # version's tag, in case it already exists — else a re-run after tagging returns
@@ -219,8 +259,20 @@ bundle_lines() {
 # board tracking card — so the gap is caught at release-prep (cheap to fix) instead of
 # only on the post-merge promote run (a red check needing manual board surgery). Reuses
 # `promote-released-cards --dls/--cards <manifest> --dry-run` (an explicit ref set → no
-# squash/parent-count branch, just the cardless report). Best-effort: needs the promote
-# tool + a board token + a `.promote` config; otherwise a static reminder.
+# squash/parent-count branch, just the cardless report).
+#
+# The section is emitted ONLY when the check could actually run — it needs the promote tool
+# + a board token + a `.promote` config, and where any of those is missing the body carries
+# NO section at all. It used to emit the heading unconditionally and, in that case, a
+# placeholder saying "not checked here, run `promote-released-cards --dry-run` before
+# merge": a section whose entire content is "this was not measured" tells the merger nothing
+# about what the merge contains, and it was struck by hand from a real release PR body —
+# which does not hold, because the next release re-emits it. Making the presence conditional
+# is what holds. The `--dry-run`-before-merge obligation did not go away; it is stated in the
+# release doc a reader consults for release process (this repo's `VERSIONING.md` § Release
+# flow; `docs/INSTALL.md` §4 for a consumer setting the keys up), not narrated per release.
+# So: the heading now MEANS coverage was measured. A run that was attempted and failed still
+# says so — that is a fact about this release, not a placeholder.
 #
 # The two legs are passed SEPARATELY because they correlate against different card
 # fields (see the header): DL tokens against `payload.dl_number`, card ids against the
@@ -231,7 +283,6 @@ bundle_lines() {
 # unrelated card.
 card_coverage_section() {
   [ -n "$REF_TOKEN_REGEX" ] || [ -n "$CARD_TOKEN_REGEX" ] || return 0
-  echo ""; echo "## Card coverage"
   local board promote
   board="$(cfg_opt '.promote.board_id')"
   promote="$(command -v promote-released-cards 2>/dev/null || true)"
@@ -239,10 +290,12 @@ card_coverage_section() {
     local d; d="$(dirname "$0")"
     [ -x "$d/promote-released-cards" ] && promote="$d/promote-released-cards"
   fi
+  # Nothing to measure with ⇒ nothing to say. The return is BEFORE the heading is printed, so
+  # the body gains no empty section either.
   if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:-}" ] || [ -z "$promote" ]; then
-    echo "_Not checked here (needs a board token + a \`.promote\` config + the promote tool). Run \`promote-released-cards --dry-run\` before merge._"
     return 0
   fi
+  echo ""; echo "## Card coverage"
   local dl_manifest card_manifest
   dl_manifest="$(emit_manifest | paste -sd, -)"
   card_manifest="$(emit_card_ids | paste -sd, -)"
