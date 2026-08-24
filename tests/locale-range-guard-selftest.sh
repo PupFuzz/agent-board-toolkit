@@ -165,6 +165,25 @@ EXTID='source "$BIN/kbcard" 2>/dev/null || true
 both "--external-id rejects U+0663"      "REJECT" "$AI3" "$EXTID"
 both "--external-id accepts 99 (posctl)" "ACCEPT" "99"   "$EXTID"
 
+# --pr / --issue (card#7536). This guard's WHOLE contract is that the tool's accept-set equals
+# the set of values the board derives a by-ref key from, and the board's rule is PCRE `\d`
+# without /u — ASCII digits only. A collation-widened range here would therefore accept a value
+# the board derives NOTHING from, i.e. mint exactly the silent mis-correlation the guard exists
+# to refuse, so the ASCII claim in its docblock is measured rather than asserted. The
+# discriminating input is a BARE non-ASCII digit: `4<U+0663>` cannot tell the locales apart
+# (widened it is one run, C-collated the U+0663 is trailing decoration — ACCEPT either way).
+# The probe asks "did the tool refuse?", NOT "did it print one particular sentence": the
+# predicate now keys on the refusal's flag-and-value prefix, which every arm of the guard emits
+# (shape, sign, zero). Keyed on one arm's wording it answered ACCEPT for a value refused by
+# another arm — a silent false negative the day a second arm landed, which is exactly what
+# card#7536's sign/zero ruling then did.
+REFINT='source "$BIN/kbcard" 2>/dev/null || true
+        out="$(_kbc_build_payload "" "$IN" "" "" "" "" 2>&1 || true)"
+        case "$out" in *"kbcard: --pr "*) echo REJECT ;; *) echo ACCEPT ;; esac'
+both "--pr rejects a bare U+0663"      "REJECT" "$AI3" "$REFINT"
+both "--pr accepts 178 (posctl)"       "ACCEPT" "178"  "$REFINT"
+both "--pr accepts #178 (posctl)"      "ACCEPT" "#178" "$REFINT"
+
 # resolve_task: a non-numeric ref is an external_id LOOKUP, not a task id. Under the
 # widened range it took the id branch and died in the arithmetic that follows it.
 REFPATH='source "$BIN/kbcard" 2>/dev/null || true

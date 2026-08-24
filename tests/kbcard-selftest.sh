@@ -858,6 +858,191 @@ unset _CUR_TAGS
 rm -f "$_REQ_LOG"; unset _REQ_LOG; trap - EXIT
 
 # ---------------------------------------------------------------------------
+echo "== --pr / --issue must name ONE POSITIVE integer — the correlation MINT site (card#7536) =="
+# THE DEFECT, and why it is refused HERE rather than handled by each reader: kbcard is the
+# reachable operator path that WRITES payload.pr_number / issue_number, and it accepted any
+# string. A stored value carrying SEVERAL digit runs is then read two incompatible ways and
+# neither reader errors — a board applying kanban's DL-251 rule (`^\D*(\d+)\D*$`) derives NO
+# reference, so the card correlates to nothing while its stamp looks set, while a reader that
+# strips every non-digit derives the CONCATENATION of the runs ("1.5" -> 15, "2026-08-23" ->
+# 20260823): a real but DIFFERENT pull request or issue. One value, two authorities, two
+# answers. The refusal is at the mint site because that is upstream of both, and because the
+# value is only unambiguous at the moment it is typed.
+#
+# Unit legs on the shared assembler first, then both verbs as its callers, then the leg that
+# makes "before any request" a measurement rather than a claim.
+unset KB_CF_VERSION_TARGET 2>/dev/null || true
+
+echo "-- the rule, on the shared assembler --"
+# arg 2 is --pr, arg 5 is --issue (see _kbc_build_payload's positional contract).
+for bad in 1.5 2026-08-23 "PR 12 of 34" TBD 1.0e20; do
+    rc=0; out="$(_kbc_build_payload '' "$bad" '' '' '' '' 2>/dev/null)" || rc=$?
+    eq "--pr '$bad' -> rc 2"       "2" "$rc"
+    eq "--pr '$bad' -> no payload" ""  "$out"
+    rc=0; out="$(_kbc_build_payload '' '' '' '' "$bad" '' 2>/dev/null)" || rc=$?
+    eq "--issue '$bad' -> rc 2"       "2" "$rc"
+    eq "--issue '$bad' -> no payload" ""  "$out"
+done
+# The diagnostic names the FLAG and the VALUE — a refusal that names neither leaves the caller
+# guessing which of two co-stamped correlation flags it was about.
+err="$(_kbc_build_payload '' 1.5 '' '' '' '' 2>&1 >/dev/null || true)"
+eq "the refusal names the flag"  "true" "$(has "kbcard: --pr '1.5'" "$err")"
+err="$(_kbc_build_payload '' '' '' '' 2026-08-23 '' 2>&1 >/dev/null || true)"
+eq "…and names --issue when it is --issue" "true" "$(has "kbcard: --issue '2026-08-23'" "$err")"
+
+# THE POSITIVE CONTROLS, and the reason they are not optional: every assertion above is a
+# refusal, and a predicate that refused EVERYTHING would satisfy all of them. The accept set is
+# the board's own accept-set NARROWED TO THE POSITIVES — one integer, optionally decorated — so
+# a decorated spelling the board canonicalizes must still pass here. (`0` was a control on this
+# list until the sign/zero ruling below refused it; the reasoning it carried is preserved and
+# answered there.)
+eq "control: a bare integer still stamps"     '{"pr_number":178}'   "$(_kbc_build_payload '' 178 '' '' '' '' | jq -Sc .)"
+eq "control: a DECORATED integer still stamps" '{"pr_number":"#178"}' "$(_kbc_build_payload '' '#178' '' '' '' '' | jq -Sc .)"
+eq "control: PR-085 is one decorated integer"  '{"issue_number":"PR-085"}' "$(_kbc_build_payload '' '' '' '' 'PR-085' '' | jq -Sc .)"
+eq "control: a decorated value with an INTERIOR hyphen is not a sign" '{"pr_number":"PR-085"}' \
+   "$(_kbc_build_payload '' 'PR-085' '' '' '' '' | jq -Sc .)"
+# ⚠ SHAPE, not declared TYPE: a decorated value is not numeric, so it rides as a JSON STRING
+# (above) and a `number`-typed pr_number refuses it server-side. That is a different question
+# and deliberately not this predicate's — narrowing to a bare integer would refuse a spelling
+# the board itself canonicalizes, on a board that declares the field `string`.
+#
+# ⭐ THE SIGN PIN, FLIPPED — DELIBERATELY, AND THIS IS WHERE THE RULING IS RECORDED.
+#
+# WHAT THIS LEG USED TO ASSERT, AND WHY IT DID. The first half of card#7536 landed the SHAPE
+# rule only, and `-5` satisfies it by construction: `-` is a non-digit, so `-5` is ONE decorated
+# integer under the board's own rule. That was left standing rather than narrowed on the spot
+# because narrowing it REFUSES a value the approved rule accepts, which was a ruling nobody had
+# made — and this leg existed precisely so the narrowing could not land silently. It has now
+# been made, and this is its record.
+#
+# WHY REFUSING IS RIGHT. `-5` was accepted and STORED, and the three readers of that one stamp
+# then answered three different ways with none of them erring: this tool stored `-5`; the board
+# drops the sign with the rest of the decoration and indexes the card under github_pr ref "5",
+# a real but DIFFERENT pull request (MEASURED on the vendored 1:1 mirror of the server's rule,
+# `canonicalize('github_pr', '-5') === '5'`, not inferred); and the reconciler's own ADMISSION
+# test, `is_numeric && (float) > 0` — which DL-309 deliberately did NOT widen — declines the
+# value outright, so the card is invisible to it. Stored, mis-correlated and invisible at once.
+# GitHub numbers pull requests and issues from 1, so refusing costs no legitimate caller, and it
+# collapses the three answers into one at the MINT site, which is the cheapest place to fix it
+# and the only point at which the value is still unambiguous.
+#
+# ZERO GOES WITH IT, as its own explicit ruling and not a side effect of the sign. `0` was
+# accepted and stamped too (this block's own former positive control asserted it, on the
+# reasoning that kbcard's pre-PR placeholder is `.../pull/0`) — but that placeholder is a URL
+# and rides on `--pr-url`, which this predicate does not cover and which is untouched; nothing
+# in the toolkit passes `--pr 0`. There is no pull request or issue 0 to correlate to, the board
+# indexes ref "0" and the same `> 0` admission test declines it, and `--dl` — the third
+# correlation key — has refused a token resolving to 0 in its own words since it was written.
+# The three keys now agree.
+#
+# The accept set is still NON-EMPTY and still DECORATED (the four controls above), so the
+# refusals below are not satisfiable by a predicate that refuses everything.
+for neg in -5 ' -5' -0 '-178'; do
+    rc=0; out="$(_kbc_build_payload '' "$neg" '' '' '' '' 2>/dev/null)" || rc=$?
+    eq "ruling: --pr '$neg' is NEGATIVE -> rc 2" "2" "$rc"
+    eq "ruling: --pr '$neg' -> no payload"       ""  "$out"
+    rc=0; out="$(_kbc_build_payload '' '' '' '' "$neg" '' 2>/dev/null)" || rc=$?
+    eq "ruling: --issue '$neg' is NEGATIVE -> rc 2" "2" "$rc"
+done
+err="$(_kbc_build_payload '' -5 '' '' '' '' 2>&1 >/dev/null || true)"
+eq "the sign refusal names the flag and the value" "true" "$(has "kbcard: --pr '-5'" "$err")"
+eq "…and says NEGATIVE, not \"not one integer\""   "true" "$(has "is NEGATIVE" "$err")"
+# ZERO, in every spelling that names it — bare, padded, and decorated. `#0` and `PR-000` are the
+# legs a bare `-eq 0` arithmetic test would miss: they ride as JSON strings, never as numbers.
+for z in 0 00 '#0' 'PR-000' 'issue-0'; do
+    rc=0; out="$(_kbc_build_payload '' "$z" '' '' '' '' 2>/dev/null)" || rc=$?
+    eq "ruling: --pr '$z' names ZERO -> rc 2" "2" "$rc"
+    eq "ruling: --pr '$z' -> no payload"      ""  "$out"
+    rc=0; out="$(_kbc_build_payload '' '' '' '' "$z" '' 2>/dev/null)" || rc=$?
+    eq "ruling: --issue '$z' names ZERO -> rc 2" "2" "$rc"
+done
+err="$(_kbc_build_payload '' 'PR-000' '' '' '' '' 2>&1 >/dev/null || true)"
+eq "the zero refusal names the flag and the value" "true" "$(has "kbcard: --pr 'PR-000'" "$err")"
+eq "…and points at --pr-url for the placeholder"   "true" "$(has "--pr-url" "$err")"
+# ⭐ THE SCOPE LEG. The narrowing is the SIGN and ZERO — nothing else moved, and #304's
+# deliberate non-decisions stay non-decided: a decorated value is still accepted (no bare-integer
+# requirement), and `--pr-url` / `--issue-url` still take any string, including the `.../pull/0`
+# placeholder the zero rule above would otherwise read as a refusal.
+eq "scope: --pr-url is untouched, placeholder and all" \
+   '{"pr_url":"https://github.com/o/r/pull/0"}' \
+   "$(_kbc_build_payload '' '' 'https://github.com/o/r/pull/0' '' '' '' | jq -Sc .)"
+eq "scope: --issue-url is untouched too" \
+   '{"issue_url":"https://github.com/o/r/issues/0"}' \
+   "$(_kbc_build_payload '' '' '' '' '' 'https://github.com/o/r/issues/0' | jq -Sc .)"
+# ⭐ THE SIBLING AXIS, ASSERTED RATHER THAN ARGUED. The other two flags that carry an integer
+# correlation key were audited for this same hole and have none — their predicates are ANCHORED
+# canonical-decimal (`kb_is_uint`) and anchored DL (`kb_dl_num`), so neither ever admitted a
+# sign, and `kb_dl_num` already refused 0. These legs pin that, so a future widening of either
+# predicate to a decoration-tolerant one cannot re-open the hole unnoticed.
+rc=0; _kbc_require_ext_id -5 >/dev/null 2>&1 || rc=$?
+eq "sibling: --external-id -5 was ALREADY refused" "2" "$rc"
+rc=0; kb_dl_canon -5 >/dev/null 2>&1 || rc=$?
+eq "sibling: --dl -5 was ALREADY refused"          "2" "$rc"
+rc=0; kb_dl_canon 0 >/dev/null 2>&1 || rc=$?
+eq "sibling: --dl 0 was ALREADY refused"           "2" "$rc"
+
+echo "-- both verbs refuse it, and the refusal costs NO request --"
+_REF_LOG="$(mktemp)"
+trap 'rm -f "$_REF_LOG"' EXIT
+# GET answers the external-id search with a resolvable row; every other method echoes its
+# request body. The log is what turns "no request" into a measurement.
+kb_api() {
+    printf '%s\n' "$1" >> "$_REF_LOG"
+    case "$1" in GET) printf '{"data":[{"id":99}]}' ;; *) printf '%s' "$3" ;; esac
+}
+_kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
+export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
+unset KB_TYPING_MODE 2>/dev/null || true
+rreqs() { tr '\n' ' ' < "$_REF_LOG" | sed 's/ $//'; }
+
+: > "$_REF_LOG"
+rc=0; cmd_patch --task 99 --pr 1.5 >/dev/null 2>&1 || rc=$?
+eq "patch --pr 1.5 -> rc 2"       "2" "$rc"
+eq "patch --pr 1.5 -> NO request" ""  "$(rreqs)"
+: > "$_REF_LOG"
+rc=0; cmd_create_card --type task --name x --issue 2026-08-23 >/dev/null 2>&1 || rc=$?
+eq "create-card --issue 2026-08-23 -> rc 2"        "2" "$rc"
+eq "create-card --issue 2026-08-23 -> NO card POSTed" "" "$(rreqs)"
+# Positive controls for those two empty results: the same probes DO reach the wire on a valid
+# value, so the empties measure the refusal and not a stub that never writes.
+: > "$_REF_LOG"; cmd_patch --task 99 --pr 178 >/dev/null 2>&1
+eq "control: a valid --pr reaches the PATCH"      "PATCH" "$(rreqs)"
+: > "$_REF_LOG"; cmd_create_card --type task --name x --issue 300 >/dev/null 2>&1
+eq "control: a valid --issue reaches the POST"    "POST"  "$(rreqs)"
+
+# ⭐ THE ORDERING LEG. `--task 99` short-circuits resolve_task, so the two "NO request" legs
+# above would hold even if the payload were assembled AFTER the ref lookup. An EXTERNAL task
+# ref is what distinguishes them: the refusal must land before the external-id search, i.e.
+# the assembler must sit with the no-network preflight, not below resolve_task.
+: > "$_REF_LOG"
+rc=0; cmd_patch --task EXT-9 --pr 1.5 >/dev/null 2>&1 || rc=$?
+eq "patch --task EXT-9 --pr 1.5 -> rc 2"                    "2" "$rc"
+eq "…and NOT EVEN the external-id lookup was issued"        ""  "$(rreqs)"
+: > "$_REF_LOG"; cmd_patch --task EXT-9 --pr 178 >/dev/null 2>&1
+eq "control: the same ref DOES search, then PATCH, on a valid --pr" "GET PATCH" "$(rreqs)"
+# The SIGN and ZERO arms ride the same assembler at the same point, and "rc 2 before any
+# request" is measured for them too rather than inherited by argument: they are new arms of an
+# existing guard, and a guard's ORDER is the property a later edit is most likely to move.
+: > "$_REF_LOG"
+rc=0; cmd_patch --task EXT-9 --pr -5 >/dev/null 2>&1 || rc=$?
+eq "patch --task EXT-9 --pr -5 -> rc 2"                     "2" "$rc"
+eq "…and the sign refusal issued no lookup either"          ""  "$(rreqs)"
+: > "$_REF_LOG"
+rc=0; cmd_create_card --type task --name x --issue 0 >/dev/null 2>&1 || rc=$?
+eq "create-card --issue 0 -> rc 2"                          "2" "$rc"
+eq "create-card --issue 0 -> NO card POSTed"                ""  "$(rreqs)"
+# --dl rides the same assembler and inherits the same ordering — it was refused only AFTER the
+# lookup before this moved.
+: > "$_REF_LOG"
+rc=0; cmd_patch --task EXT-9 --dl not-a-dl >/dev/null 2>&1 || rc=$?
+eq "patch --task EXT-9 --dl not-a-dl -> rc 2"        "2" "$rc"
+eq "…and issues no request either"                   ""  "$(rreqs)"
+
+unset -f kb_api rreqs
+unset KB_BOARD_ID KB_STAGE_BACKLOG KB_TYPE_TASK
+rm -f "$_REF_LOG"; unset _REF_LOG; trap - EXIT
+
+# ---------------------------------------------------------------------------
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # An option that consumes "$2" and is then dispatched with `[[ -n "$var" ]]` reads an
 # explicitly-empty value as an ABSENT flag. `kbcard patch --dl "$DL"` with DL unset

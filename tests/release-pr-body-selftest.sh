@@ -106,6 +106,98 @@ echo "== --manifest sees the same corrected range =="
 man="$( (cd "$W" && "$BIN" --version 0.3.0 --manifest) 2>/dev/null )" || man="(rc=$?)"
 if [[ "$man" == "DL-2" ]]; then ok "manifest is exactly DL-2"; else bad "manifest expected 'DL-2', got '$man'"; fi
 
+echo "== the HEAD leg is resolved from ORIGIN too — a lagging local dev drops PRs from the body AND the manifest (card#7517) =="
+# WHAT WAS BROKEN, AND WHY NOTHING SAW IT. `HEAD_REF="${HEAD_REF:-$DEV_BRANCH}"` defaulted the
+# head of the range to the LOCAL integration ref — three lines above a `die` whose own words say
+# a local ref "is NOT a usable fallback", and feeding the SAME `RANGE` as that refusal. The
+# release worktree is cut once and dev keeps moving under it, so the lag is the normal case, not
+# an exotic one. A short range is well-formed: the body renders, the count looks plausible, the
+# `shipped-cards` footer is valid — and it is simply missing its newest entries, which is the
+# input `promote-released-cards` uses to decide which cards reach Released. Measured at the
+# v0.30.0 cut: 38 rows instead of 39, no `#298`, and no `7500` — the SECURITY fix's card, which
+# would therefore never have been promoted.
+#
+# THE FIXTURE IS THE INCIDENT. Its origin's dev carries a commit the workstation's LOCAL dev —
+# and its remote-tracking ref — do not have, so ONLY the tool's own fetch can surface it. The
+# assertions below are PRESENCE assertions on that commit's PR number and card id: pre-fix they
+# are all absent (range `v0.29.0..dev`, one commit, `shipped-cards=7494`), post-fix all present.
+# That absence-then-presence pair is the proof; a test written only against the fixed code would
+# be satisfied by a tool that bundled everything unconditionally.
+HO="$T/head-origin.git"; HS="$T/head-seed"; HW="$T/head-work"
+g init --bare -q "$HO"
+g -C "$HO" symbolic-ref HEAD refs/heads/main
+g clone -q "$HO" "$HS" 2>/dev/null
+g -C "$HS" symbolic-ref HEAD refs/heads/main
+echo one > "$HS/f"; g -C "$HS" add f; g -C "$HS" commit -qm "chore: init"
+g -C "$HS" tag v0.29.0
+g -C "$HS" push -q origin main --tags
+g -C "$HS" checkout -qb dev
+echo two > "$HS/f"; g -C "$HS" commit -qam "fix(a): an ordinary change (card#7494) (#297)"
+g -C "$HS" push -q origin dev
+
+# The release worktree, cut HERE — while dev is at #297.
+g clone -q "$HO" "$HW"
+g -C "$HW" checkout -q dev
+
+# …and dev keeps moving under it: the security fix lands on origin AFTER the cut.
+echo three > "$HS/f"; g -C "$HS" commit -qam "security(url): mask userinfo on ten error paths (card#7500) (#298)"
+g -C "$HS" push -q origin dev
+
+# Branch keys deliberately ABSENT — this block is about the DEFAULT head leg, and a fixture that
+# set `dev_branch` to `dev` could not tell "the key was read" from "the default fired" (the same
+# discrimination rule the block below states for main_branch/dev_branch).
+cat > "$HW/.release-pr.json" <<'EOF'
+{
+  "card_token_regex": "card#[0-9]+"
+}
+EOF
+
+echo "-- precondition: the local refs lag the remote, so only a fetch can surface #298"
+eq "local dev is still at #297"                    "true"  "$(has '(#297)' "$(g -C "$HW" log -1 --format=%s dev)")"
+eq "…and so is the remote-TRACKING ref"            "true"  "$(has '(#297)' "$(g -C "$HW" log -1 --format=%s refs/remotes/origin/dev)")"
+eq "…while origin's dev already carries #298"      "true"  "$(has '(#298)' "$(g -C "$HS" log -1 --format=%s dev)")"
+
+rc=0; hbody="$( (cd "$HW" && "$BIN" --version 0.30.0) 2>"$T/herr" )" || rc=$?
+eq "generates a body (rc 0)"                       "0"     "$rc"
+eq "the baseline is still origin's tag"            "true"  "$(has 'since v0.29.0' "$hbody")"
+eq "the range counts BOTH commits"                 "true"  "$(has 'Bundles 2 commit(s)' "$hbody")"
+eq "the bundled table carries the remote-only PR"  "true"  "$(has '**#298**' "$hbody")"
+eq "…alongside the one the local ref had"          "true"  "$(has '**#297**' "$hbody")"
+eq "the shipped-cards footer carries BOTH ids"     "true"  "$(has '<!-- release-manifest:shipped-cards=7500,7494 -->' "$hbody")"
+eq "--card-manifest sees the same corrected range" "7500
+7494" "$( (cd "$HW" && "$BIN" --version 0.30.0 --card-manifest) 2>/dev/null )"
+eq "…and the local drift is NOTED, not silent"     "true"  "$(has "note: local 'dev'" "$(cat "$T/herr")")"
+
+echo "-- an explicit --head still wins, and says when it is behind"
+# The v0.30.0 cut's own workaround was an explicit --head, and a caller may legitimately want a
+# local or a release-branch ref. The override is honoured verbatim — the ONLY thing the fix adds
+# on this path is the note, because the omission it causes leaves no other trace.
+rc=0; hlocal="$( (cd "$HW" && "$BIN" --version 0.30.0 --head dev) 2>"$T/herr2" )" || rc=$?
+eq "explicit --head → rc 0"                        "0"     "$rc"
+eq "…the LOCAL ref is what is used"                "false" "$(has '**#298**' "$hlocal")"
+eq "…bundling only what that ref carries"          "true"  "$(has '**#297**' "$hlocal")"
+eq "…and its manifest is short, as asked"          "true"  "$(has '<!-- release-manifest:shipped-cards=7494 -->' "$hlocal")"
+eq "…with a note naming the gap it costs"          "true"  "$(has "--head 'dev' is 1 commit(s) behind origin/dev" "$(cat "$T/herr2")")"
+# CONTROL — the same flag on a ref that is NOT behind draws no note, so the arm above is the
+# behind-ness and not "an explicit --head always warns". (The default run above fetched, so
+# origin/dev is now local and resolvable here.)
+rc=0; hup="$( (cd "$HW" && "$BIN" --version 0.30.0 --head origin/dev) 2>"$T/herr3" )" || rc=$?
+eq "control: an up-to-date explicit --head → rc 0" "0"     "$rc"
+eq "control: …carries the remote-only PR"          "true"  "$(has '**#298**' "$hup")"
+eq "control: …and draws NO behind-note"            "false" "$(has 'behind origin/dev' "$(cat "$T/herr3")")"
+
+echo "-- in sync, the change is a NO-OP: the same range renders the same bytes"
+# The constraint this fix had to hold: where the local and remote tips agree, the body must be
+# byte-identical to what the old local-ref default produced. Asserted as an equality between the
+# DEFAULTED head (origin/dev) and the explicit LOCAL head (dev) over the same commit — the two
+# spellings the fix moves between.
+g -C "$HW" merge -q --ff-only origin/dev
+eq "precondition: local dev now equals origin/dev" "$(g -C "$HW" rev-parse dev)" "$(g -C "$HW" rev-parse refs/remotes/origin/dev)"
+sync_default="$( (cd "$HW" && "$BIN" --version 0.30.0) 2>"$T/herr4" )"
+sync_local="$(   (cd "$HW" && "$BIN" --version 0.30.0 --head dev) 2>/dev/null )"
+eq "default head and local head render identical bytes" "$sync_default" "$sync_local"
+eq "…and no drift note is emitted at all"          "false" "$(has 'note: local' "$(cat "$T/herr4")")"
+
 echo "== fetch failure is LOUD, never a silent stale-local fallback =="
 g -C "$W" remote set-url origin "$T/nonexistent.git"
 out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" && rc=0 || rc=$?
@@ -113,11 +205,118 @@ if [[ "$rc" -ne 0 ]]; then ok "non-zero exit on unfetchable origin (rc=$rc)"; el
 contains     "error names the fetch + the override" "$out" "cannot fetch origin"
 not_contains "no body emitted on a wrong baseline"  "$out" "## Bundled"
 
-echo "== explicit --base is the offline override (skips the fetch) =="
-body2="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>/dev/null )" && rc=0 || rc=$?
-if [[ "$rc" -eq 0 ]]; then ok "works offline with --base (rc=0)"; else bad "expected rc=0 with --base, got rc=$rc"; fi
+echo "== offline takes BOTH overrides now — one per range leg (card#7517) =="
+# Each explicit flag skips ITS OWN leg's fetch, and nothing else's. `--base` alone used to be a
+# complete offline override only because the head leg silently fell back to the local ref, which
+# is the defect: the flag that made the run possible was not the flag that decided the answer.
+# With origin unreachable it now refuses, and the refusal names the flag that settles the other
+# end rather than making the caller infer it.
+rc=0; onlybase="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>&1 )" || rc=$?
+eq "--base alone on an unreachable origin → rc 2" "2"     "$rc"
+eq "…the refusal names the head leg's override"   "true"  "$(has "pass an explicit --head <ref>" "$onlybase")"
+eq "…and no body is emitted over a short range"   "false" "$(has '## Bundled' "$onlybase")"
+
+body2="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head dev) 2>/dev/null )" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 ]]; then ok "works offline with --base + --head (rc=0)"; else bad "expected rc=0 with --base + --head, got rc=$rc"; fi
 contains "uses the given baseline" "$body2" "since v0.1.0"
 contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
+
+echo "== an explicit --base/--head that does not RESOLVE is refused by name (card#7525) =="
+# WHAT WAS BROKEN, AND WHY card#7517 DID NOT CLOSE IT. That card hardened the DEFAULTED legs:
+# they resolve from the remote, fetch, and die loudly. The explicit legs are deliberately
+# exempt from that fetch — the flag is the caller's override, and it is the offline route the
+# block above documents — so nothing ever looked the handed-in ref up at all. `git log "$RANGE"`
+# runs under `2>/dev/null` at four sites, and the three observable outcomes are all silent:
+#   * `--manifest` / `--card-manifest`  → an EMPTY list at rc 0. These are the MACHINE-READ
+#     surfaces, and `shipped-cards` is the input deciding which cards get promoted.
+#   * the full body                     → the `COUNT=` pipeline fails 128 under pipefail and
+#     errexit aborts the script: rc 128 with ZERO BYTES on either stream, naming neither the
+#     ref nor the flag. Measured pre-fix, not inferred — it is not the rc-0 empty body the
+#     shape suggests, because `set -o pipefail` promotes git's 128 out of the substitution.
+# ⇒ a typo'd or deleted ref is indistinguishable from a genuinely empty range, in every one.
+#
+# THE ARMS BELOW ARE THE FAIL-THEN-PASS PAIR. Pre-fix: rc 128 (body) / rc 0 (manifests), and
+# no message anywhere. Post-fix: rc 2 naming the flag AND the value. Origin is still pointed at
+# a void here, on purpose — the refusal must not need the network, and the arm that pins that
+# is the bad `--base` with the head leg DEFAULTED, which pre-fix could only reach the fetch
+# refusal.
+badhead="no-such-ref"
+rc=0; bh="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead") 2>&1 )" || rc=$?
+eq "unresolvable --head → rc 2"                    "2"     "$rc"
+eq "…the refusal names the FLAG"                   "true"  "$(has "--head '$badhead'" "$bh")"
+eq "…and says it resolves to no commit here"       "true"  "$(has "does not resolve to a commit in this repo" "$bh")"
+eq "…and no body is emitted over a dead range"     "false" "$(has '## Bundled' "$bh")"
+eq "…nor the empty-bundle placeholder"             "false" "$(has 'no non-merge commits in' "$bh")"
+
+# The manifest modes are where the pre-fix rc was 0 — a valid, empty, machine-read answer.
+rc=0; bhm="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead" --manifest) 2>&1 )" || rc=$?
+eq "unresolvable --head --manifest → rc 2"         "2"     "$rc"
+eq "…rather than an empty list at rc 0"            "true"  "$(has "--head '$badhead'" "$bhm")"
+rc=0; bhc="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead" --card-manifest) 2>&1 )" || rc=$?
+eq "unresolvable --head --card-manifest → rc 2"    "2"     "$rc"
+eq "…rather than a manifest that promotes nothing" "true"  "$(has "--head '$badhead'" "$bhc")"
+
+# A FULL-LENGTH HEX NAMING NO OBJECT — the arm that reds if the `^{commit}` peel is dropped.
+# `git rev-parse --verify -q <40-hex>` exits 0 on it (it verifies the SPELLING can become a raw
+# object name, not that the object is present — measured, git 2.43.0), while `git log` dies
+# `bad object`. This is not a curiosity: a sha copied off a rebased-away branch or an old PR is
+# the "deleted ref" case, and a raw sha is the natural offline spelling of --head.
+deadsha="0000000000000000000000000000000000000001"
+rc=0; ( cd "$W" && g rev-parse --verify -q "$deadsha" ) >/dev/null 2>&1 || rc=$?
+eq "precondition: bare --verify passes this sha"   "0"     "$rc"
+eq "precondition: …and git log dies on it"         "true" \
+   "$(has 'bad object' "$( (cd "$W" && g log "$deadsha" --oneline) 2>&1 || true )")"
+rc=0; bs="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$deadsha") 2>&1 )" || rc=$?
+eq "a hex sha naming no object → rc 2"             "2"     "$rc"
+eq "…named in the refusal"                         "true"  "$(has "--head '$deadsha'" "$bs")"
+
+# --base has the IDENTICAL shape — verified rather than assumed. It skips its own leg's fetch,
+# `require_value` has already made it non-empty, and it goes straight into `$BASE..$HEAD_REF`.
+rc=0; bb="$( (cd "$W" && "$BIN" --version 0.3.0 --base no-such-tag --head dev) 2>&1 )" || rc=$?
+eq "unresolvable --base → rc 2"                    "2"     "$rc"
+eq "…the refusal names --base and its value"       "true"  "$(has "--base 'no-such-tag'" "$bb")"
+eq "…and emits no body"                            "false" "$(has '## Bundled' "$bb")"
+
+# ORDERING: the base leg is checked BEFORE the head leg's fetch, so a bad baseline refuses
+# without touching the network. Origin is a void here, so pre-ordering-fix this would report
+# the FETCH failure instead — a true statement about a run that should never have got that far.
+rc=0; bo="$( (cd "$W" && "$BIN" --version 0.3.0 --base no-such-tag) 2>&1 )" || rc=$?
+eq "bad --base + defaulted head → rc 2"            "2"     "$rc"
+eq "…refuses on the BASE, before any fetch"        "true"  "$(has "--base 'no-such-tag'" "$bo")"
+eq "…not on the unreachable origin"                "false" "$(has 'cannot fetch origin' "$bo")"
+
+# POSITIVE CONTROLS — without them a check that refuses EVERYTHING passes every arm above.
+# Three resolvable --head spellings, all still rc 0 over the same unreachable origin: a branch
+# name, `HEAD`, and a raw sha (the spelling the `^{commit}` peel must not break); the annotated
+# tag below is the fourth, on the --base leg, where a peel that refused non-commit objects would
+# be the way this check breaks a good run.
+devsha="$(g -C "$W" rev-parse dev)"
+for spelling in dev HEAD "$devsha"; do
+  rc=0; okbody="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$spelling") 2>&1 )" || rc=$?
+  eq "control: --head '$spelling' still renders (rc 0)" "0"    "$rc"
+  eq "control: …with the bundled section"               "true" "$(has '## Bundled' "$okbody")"
+  eq "control: …over the given baseline"                "true" "$(has 'since v0.1.0' "$okbody")"
+done
+# …and the guard adds NOTHING to a good run's output: the resolvable invocation renders the same
+# bytes as $body2, generated by the identical invocation earlier in this file. An IN-RUN
+# consistency arm, honestly labelled — not a pre/post comparison, which a selftest cannot make
+# because it cannot hold two versions of its own bin. It reds if this check ever grows a warning
+# on stdout. The pre/post identity was measured out of band against the unguarded binary over 16
+# invocations (rc + stdout + stderr sha256 each); docs/CHANGELOG.md records the result.
+eq "control: a resolvable run is byte-identical to the unguarded one" "$body2" \
+   "$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head dev) 2>/dev/null )"
+# An annotated tag must peel through `^{commit}` rather than be refused as "not a commit".
+g -C "$W" tag -a -m "annotated" v0.1.0-annot v0.1.0
+rc=0; annot="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0-annot --head dev) 2>&1 )" || rc=$?
+eq "control: an ANNOTATED tag resolves (rc 0)"     "0"     "$rc"
+eq "control: …and is used as the baseline"         "true"  "$(has 'since v0.1.0-annot' "$annot")"
+g -C "$W" tag -d v0.1.0-annot >/dev/null
+
+# --tag returns BEFORE the range block and builds no range, so it must still answer with a
+# nonsense --head — `release-tag-check` asks it in a CI job with no promise the refs are there.
+rc=0; tagok="$( (cd "$W" && "$BIN" --tag --version 0.3.0 --head "$badhead") 2>&1 )" || rc=$?
+eq "control: --tag answers despite a bogus --head" "0"      "$rc"
+eq "control: …with the tag name alone"             "v0.3.0" "$tagok"
 
 # Restore the real origin (the fetch-failure case above pointed it at a void).
 g -C "$W" remote set-url origin "$T/origin.git"

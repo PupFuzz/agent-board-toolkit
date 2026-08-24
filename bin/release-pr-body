@@ -36,12 +36,22 @@
 # `dl_number`, so a range naming card#42 promotes whichever card happens to carry
 # DL-42 (measured — it moves that card and reports "0 no-card").
 #
-# Exit non-zero on a config/usage error, or when the baseline fetch from origin
-# fails — a baseline read from a stale local ref reports already-shipped PRs as
-# new, which is worse than no body (pass --base <tag> as the explicit offline
-# override). An empty range yields an empty (but valid) bundled section, not a
-# failure — and neither is a range that matches neither token spelling: that
-# simply omits the optional manifest footers, and still exits 0.
+# BOTH ENDS OF THE RANGE ARE RESOLVED FROM ORIGIN, and a leg that is DEFAULTED is
+# fetched first — a fetch failure is fatal, never a silent fall-back to the local
+# ref. A stale local ref is wrong in both directions and silent in both: a stale
+# baseline reports already-shipped PRs as new, and a stale head DROPS PRs from the
+# bundled table and from the `shipped-cards` manifest that decides which cards get
+# promoted (card#7517). Each leg's explicit flag is that leg's override and skips
+# that leg's fetch, so an offline run passes BOTH: `--base <tag> --head <ref>`.
+# AN EXPLICIT REF MUST STILL RESOLVE HERE (card#7525) — the flag says WHICH ref to
+# use, never that a ref this repo does not have should be read as an empty range;
+# skipping the fetch is precisely why nothing else would catch it.
+#
+# Exit non-zero on a config/usage error, when a required fetch from origin fails,
+# or when an explicit --base/--head names no commit in this repo. An empty range
+# yields an empty (but valid) bundled section, not a failure — and neither is a
+# range that matches neither token spelling: that simply omits the optional
+# manifest footers, and still exits 0.
 set -euo pipefail
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
@@ -157,16 +167,65 @@ fi
 
 # Range: BASE = last release tag reachable on ORIGIN's main (excluding THIS
 # version's tag, in case it already exists — else a re-run after tagging returns
-# the current release as its own 'previous tag'), HEAD = the work about to ship
-# (dev default). The baseline MUST come from the remote: the documented
-# branch-off-dev release flow never checks out the local main ref, so it drifts a
-# full release behind every cycle — a local `describe` names an already-shipped
-# tag and the body reports shipped PRs as new. Fetch with tags (release tags point
-# at main-only merge commits a dev-side fetch's tag auto-follow never brings over);
-# a fetch failure is FATAL rather than a silent fall-back to the stale local ref.
-# An explicit --base skips the fetch entirely. The excluded tag name is derived
-# from tag_format, not a hardcoded `v` prefix (preserves .NET / date tag schemes).
-HEAD_REF="${HEAD_REF:-$DEV_BRANCH}"
+# the current release as its own 'previous tag'), HEAD = the work about to ship —
+# ORIGIN's integration tip.
+#
+# ONE RULE FOR BOTH LEGS: a DEFAULTED leg is resolved against the REMOTE, fetching
+# it first, and a fetch failure is FATAL rather than a silent fall-back to a stale
+# local ref. That leg's explicit flag (--base / --head) is its override, skips its
+# fetch, and is therefore what makes an offline run possible — with both legs
+# defaulted there is no ref in this repo the tool is entitled to trust.
+#
+# WHY, PER LEG. The documented branch-off-dev release flow never checks out the
+# local main ref, so it drifts a full release behind every cycle — a local
+# `describe` names an already-shipped tag and the body reports shipped PRs as new.
+# The local dev ref drifts the other way: a release worktree is cut once and dev
+# keeps moving under it, so every merge after the cut is a commit the local ref
+# does not have. ⛔ THE HEAD LEG DEFAULTED TO THAT LOCAL REF UNTIL card#7517 —
+# three lines ABOVE a `die` whose own words say a local ref "is NOT a usable
+# fallback". Measured at the v0.30.0 cut: local dev one commit behind origin/dev
+# produced 38 rows instead of 39, no `#298`, and a `shipped-cards` manifest missing
+# the SECURITY fix's card — which `promote-released-cards` then never promoted. A
+# short range is WELL-FORMED, so nothing downstream can notice: the body renders,
+# the count looks plausible, the manifest is valid and simply missing its newest
+# entries. Do not re-introduce the asymmetry; the two ends feed ONE range.
+#
+# AN EXPLICIT LEG IS STILL CHECKED FOR RESOLVABILITY — not for freshness (card#7525).
+# Honouring the handed-in ref verbatim is the point of the override, and this does NOT
+# second-guess which ref the caller meant: no fetch, no substitution, no widening. It asks
+# only whether the named ref EXISTS here, because skipping the fetch means nothing else ever
+# looks it up. `git log "$RANGE"` runs under `2>/dev/null` at four sites below, so a typo'd or
+# deleted ref is silent in every one of them: the two query modes (`--manifest`,
+# `--card-manifest`) print an EMPTY list at rc 0 — the machine-read surfaces, and the second is
+# what decides which cards `promote-released-cards` promotes — and the full body path aborts at
+# the `COUNT=` pipeline (pipefail + errexit) with rc 128 and NOT ONE BYTE on either stream,
+# naming neither the ref nor the flag. All three are "a typo is indistinguishable from a
+# genuinely empty range". Refusing by name replaces all three.
+#
+# `^{commit}` IS LOAD-BEARING, not decoration. `git rev-parse --verify -q <40-hex>` exits 0 for
+# a full-length hex string naming NO object — it verifies that the spelling can be turned into
+# a raw object name, not that the object is here (measured, git 2.43.0) — while `git log` on it
+# dies `bad object`. A stale sha copied off an old PR is exactly the "deleted ref" case, and it
+# is the natural offline spelling of `--head`. Peeling asks the question the range actually
+# needs: an annotated tag peels through, and anything `git log` could not use as a range end
+# fails here too, so no ref that resolves today changes behaviour.
+#
+# NOT reached by `--tag`, which returns above: that mode builds no range, and `release-tag-check`
+# asks it inside a CI job with no guarantee the range's refs are present at all.
+require_resolvable() { # <flag> <ref>
+  git rev-parse --verify -q "$2^{commit}" >/dev/null \
+    || die "$1 '$2' does not resolve to a commit in this repo — an explicit $1 is the caller's override and skips its leg's fetch, so nothing else ever looks the ref up, and a range built from it walks NOTHING — indistinguishable from a genuinely empty release; check the spelling, or fetch the ref before passing it"
+}
+
+# The base leg fetches with tags (release tags point at main-only merge commits a
+# dev-side fetch's tag auto-follow never brings over); the excluded tag name is
+# derived from tag_format, not a hardcoded `v` prefix (preserves .NET / date tag
+# schemes). The two fetches are SEPARATE commands on purpose: each resolves its own
+# tip with a FETCH_HEAD fallback, for a clone whose refspec does not cover that
+# branch and so never gets a `refs/remotes/origin/…` update — and one combined
+# fetch leaves FETCH_HEAD naming two branches with no way to tell which line is
+# whose. The base leg runs FIRST so its FETCH_HEAD is consumed before the head
+# leg's fetch overwrites it.
 if [ -z "$BASE" ]; then
   git fetch --quiet --tags origin "$MAIN_BRANCH" \
     || die "cannot fetch origin/'$MAIN_BRANCH' — the release baseline is resolved against the remote (the local '$MAIN_BRANCH' ref is stale by design under the branch-off-'$DEV_BRANCH' release flow, so it is NOT a usable fallback); fix network/remote access or pass an explicit --base <tag>"
@@ -177,6 +236,60 @@ if [ -z "$BASE" ]; then
     echo "release-pr-body: note: local '$MAIN_BRANCH' ($(git rev-parse --short "$LOCAL_TIP")) is behind/apart from origin/$MAIN_BRANCH ($(git rev-parse --short "$MAIN_TIP")) — expected under the release flow; the baseline uses the remote tip." >&2
   fi
   BASE="$(git describe --tags --abbrev=0 --exclude="$THIS_TAG" "$MAIN_TIP" 2>/dev/null || true)"
+else
+  # An explicit --base has the SAME shape as an explicit --head, verified rather than assumed:
+  # it skips this leg's fetch, `require_value` has already made it non-empty, and it is
+  # substituted straight into `$BASE..$HEAD_REF` with nothing between the flag and `git log`.
+  # Checked BEFORE the head leg's fetch below, so a bad baseline refuses without reaching the
+  # network — the same ordering reason the base leg runs first at all.
+  #
+  # A DEFAULTED base needs no such check: it is either `git describe`'s answer about a tip this
+  # process just fetched, or empty, and an empty BASE is a legitimate range (`${BASE:+…}` makes
+  # it "everything reachable from HEAD" — the first-ever release).
+  require_resolvable --base "$BASE"
+fi
+
+if [ -z "$HEAD_REF" ]; then
+  git fetch --quiet origin "$DEV_BRANCH" \
+    || die "cannot fetch origin/'$DEV_BRANCH' — the shipped range's head is resolved against the remote (the local '$DEV_BRANCH' ref lags every merge that lands after a release worktree is cut, and a short range silently drops PRs from the bundled table AND from the shipped-cards manifest that promotes their cards); fix network/remote access or pass an explicit --head <ref>"
+  if git rev-parse --verify -q "refs/remotes/origin/$DEV_BRANCH" >/dev/null; then
+    HEAD_REF="origin/$DEV_BRANCH"      # the readable spelling, when the refspec produced it
+  else
+    HEAD_REF="$(git rev-parse --verify -q FETCH_HEAD)" \
+      || die "fetched origin '$DEV_BRANCH' but cannot resolve its tip"
+  fi
+  HEAD_TIP="$(git rev-parse "$HEAD_REF")"
+  # The baseline's divergence note, at the other end: say why the body lists work the
+  # reader's own checkout does not have.
+  LOCAL_DEV="$(git rev-parse --verify -q "refs/heads/$DEV_BRANCH" || true)"
+  if [ -n "$LOCAL_DEV" ] && [ "$LOCAL_DEV" != "$HEAD_TIP" ]; then
+    echo "release-pr-body: note: local '$DEV_BRANCH' ($(git rev-parse --short "$LOCAL_DEV")) is behind/apart from origin/$DEV_BRANCH ($(git rev-parse --short "$HEAD_TIP")) — expected under the release flow; the range uses the remote tip." >&2
+  fi
+else
+  # An explicit --head is the caller's call: honoured as given, with no fetch, which is
+  # what keeps it usable as the offline override. It is still worth SAYING when the ref
+  # named is strictly BEHIND a remote tip this repo already knows about — that is the
+  # card#7517 shape arriving by hand, and its omission leaves no trace in the body.
+  #
+  # STRICTLY BEHIND, not "differs" — and that is a deliberate divergence from the base
+  # leg's note, because the two flags do not take the same kind of value. `--base` names
+  # a TAG, which cannot be stale; `--head` routinely names a release branch that has
+  # legitimately diverged from dev, and noting mere divergence on every release is noise
+  # nobody reads. Behind-ness is the exact shape that costs the body a PR. No fetch: the
+  # comparison uses only what is already local, so an unknown or absent origin/dev simply
+  # yields no note rather than reaching the network on the override path.
+  #
+  # The resolvability check comes FIRST, before that note: `merge-base --is-ancestor` on an
+  # unresolvable ref fails under its own `2>/dev/null` and simply draws no note, so an
+  # unresolvable --head used to switch OFF the one diagnostic this path has.
+  require_resolvable --head "$HEAD_REF"
+  REMOTE_DEV="$(git rev-parse --verify -q "refs/remotes/origin/$DEV_BRANCH" || true)"
+  if [ -n "$REMOTE_DEV" ] && git merge-base --is-ancestor "$HEAD_REF" "$REMOTE_DEV" 2>/dev/null; then
+    BEHIND="$(git rev-list --count "$HEAD_REF..$REMOTE_DEV")"
+    if [ "$BEHIND" -gt 0 ]; then
+      echo "release-pr-body: note: --head '$HEAD_REF' is $BEHIND commit(s) behind origin/$DEV_BRANCH — those commits are NOT in this body, nor in its shipped-cards manifest." >&2
+    fi
+  fi
 fi
 RANGE="${BASE:+$BASE..}$HEAD_REF"
 
