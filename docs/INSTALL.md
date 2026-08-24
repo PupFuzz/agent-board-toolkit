@@ -7,7 +7,7 @@ Follow top to bottom. Every command is copy-pasteable; placeholders are in `<ang
 ```bash
 for c in bash curl jq git gh ps timeout; do command -v "$c" >/dev/null && echo "ok: $c" || echo "MISSING: $c"; done
 ```
-All must print `ok:`. (`gh` is only needed for tools that touch GitHub — `board-session-close`, `dependabot-deploy-reconcile`, and `gh-code-search`, which is a thin guarded wrapper around `gh api search/code` and refuses at rc 2 without it. `release-pr-body` needs no `gh`, but it does need `git fetch` access to `origin` — it resolves the release baseline from the remote's release branch, since the local one is stale by design under the branch-off-dev flow.)
+All must print `ok:`. (`gh` is only needed for tools that touch GitHub — `board-session-close`, `dependabot-deploy-reconcile`, and `gh-code-search`, which is a thin guarded wrapper around `gh api search/code` and refuses at rc 2 without it. `release-pr-body` needs no `gh`, but it does need `git fetch` access to `origin` — it resolves **both ends** of the release range from the remote: the baseline from the remote's release branch, since the local one is stale by design under the branch-off-dev flow, and the head from the remote's integration branch, since the local one lags every merge that lands after a release worktree is cut. Each leg has its own explicit override — `--base <tag>` and `--head <ref>` — and each skips only its own leg's fetch, so an offline run passes both.)
 
 Two of these are newer and **not** fatal if missing, so they are listed to be checked rather than assumed:
 
