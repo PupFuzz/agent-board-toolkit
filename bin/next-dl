@@ -381,10 +381,20 @@ board_dl_max() (
         exit 2
     }
     # dl_number is stamped in MIXED forms across boards/adopters: a string "DL-093" OR a
-    # bare number 93. Extract bare digits so the scan is honest across heterogeneous boards
-    # (this is the max over a STREAM — distinct from kb_dl_num's single-token canon, which
-    # would reject a leaked >6-digit sentinel mid-stream).
-    printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | max_int
+    # bare number 93. Each stamp is read through KB_JQ_REF_CANON, so every WELL-FORMED
+    # spelling contributes its bare integer and the scan stays honest across heterogeneous
+    # boards — distinct from kb_dl_num's single-token canon, which would reject a leaked
+    # >6-digit sentinel mid-stream and abort the whole read.
+    #
+    # ⛔ A STAMP THAT IS NOT ONE DECORATED INTEGER CONTRIBUTES NOTHING (card#7592). This was
+    # a stream `grep -oE [0-9]+`, which SPLITS a multi-run value into its runs, so one card
+    # holding "2026-08-23" raised this board's DL floor to 2026 and burned every number
+    # under it — permanently, since the floor is shared state and the mint only ever moves
+    # up. The direction was safe (never re-mints), the cost was the allocator. Under the
+    # rule the board itself applies such a stamp derives NO ref, so it occupies no DL and
+    # must not raise the floor. max_int still runs: it takes the MAX over the stream and
+    # turns an empty stream into the rc 1 the caller reads as "no floor from this board".
+    printf '%s' "$cards" | jq -r "$KB_JQ_REF_CANON"'.[]? | .payload.dl_number | norm | select(. != "")' | max_int
 )
 # board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board did not
 # answer a whole read (EVERY non-zero paginator rc, 1 through 4) ⇒ fail loud, mint
@@ -396,6 +406,11 @@ board_dl_max() (
 # no dl_number came out of it, which max_int's grep turns into a rc 1 under pipefail. Both
 # are reachable with a named board in the config; only the first is what card#6631's ruling
 # declined to scope.
+# ⚑ THE SECOND SITUATION IS WIDER THAN "no card carries the field" (card#7592): a board every
+# one of whose stamps is not ONE decorated integer now reaches it too, because such a stamp
+# names no DL under the rule the board itself applies and so contributes no floor. That board
+# mints from the local sources, exactly as a board with no stamps at all does — which is the
+# correct answer, not a fail-soft: there is no DL up there to avoid re-minting.
 # TWO KNOWN-OPEN CASES where a mint still proceeds past a board that ANSWERED 200, named
 # rather than implied. Both are the envelope-predicate class owned by card#6630 — which stays
 # OPEN, so both stay owned — not this arm's policy: this API answers a board the token cannot

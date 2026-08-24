@@ -404,8 +404,19 @@ branch_just_created() {
 via_cardid=0
 if [ -n "$dl" ]; then
     # Whole-board paginated fetch (fix: was page-1 only, so a DL beyond page 1 was
-    # missed). Match NUMERICALLY on the dl_number's digits so every stored form —
-    # "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves.
+    # missed). Match NUMERICALLY through KB_JQ_REF_CANON, so every WELL-FORMED stored
+    # form — "DL-093" (legacy 3-pad), "DL-0156" (canonical), or a bare 156 — resolves,
+    # and a stamp that is not ONE decorated integer selects NO card (card#7592).
+    #
+    # ⛔ THE GUARD IS THE FIX, not decoration. The previous reader took the FIRST digit
+    # run of the stored value (`capture("(?<n>[0-9]+)")`), so a card stamped "1.5"
+    # answered to DL-1 and this hook MOVED it — the wrong card, on an ordinary branch
+    # checkout, with the move landing in the board changelog as a legitimate event. It
+    # now correlates to nothing, so the DL either falls through to a card-id token or
+    # reaches the loud unresolved-DL refusal below; both are recoverable by hand, a
+    # wrong move is not. The rule, the two shipped spellings of it, and the reasoning
+    # live at KB_JQ_REF_CANON in _kb-board-lib.sh — never restate it here.
+    #
     # A bare `||`, so this arm catches paginator rc 1, 2, 3 AND 4 — all four measured
     # reaching it. It therefore names the rc and no cause, per the wording rule at
     # fetch_board_cards' header. Where the cause is instead: this bin does not set
@@ -417,12 +428,11 @@ if [ -n "$dl" ]; then
     # operator's only lead and wrong on three rcs out of four.
     cards="$(fetch_board_cards "$api" "$token" "$board")" \
         || bcs_skip "board $board did not return a complete card list (fetch rc=$?)"
-    cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" '
+    cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" "$KB_JQ_REF_CANON"'
         [ .[]
-          | (.payload.dl_number // empty) as $raw
-          | ($raw | tostring) as $s
-          | select($s | test("[0-9]"))
-          | select(($s | capture("(?<n>[0-9]+)").n | tonumber) == $want)
+          | (.payload.dl_number | norm) as $n
+          | select($n != "")
+          | select(($n | tonumber) == $want)
           | .id ] | .[0] // empty' 2>/dev/null)"
     if [ -n "$cid" ]; then
         # (1)/(3) DL resolved → it wins. A co-present card-id token is ignored (loud).
@@ -502,7 +512,14 @@ fi
 # write at all. Fail-soft — never blocks.
 if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     curdl="$(printf '%s' "$card" | jq -r '.data.payload.dl_number // empty' 2>/dev/null)"
-    curdl_num="$(printf '%s' "$curdl" | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
+    # The SAME reader rule as the selection above (KB_JQ_REF_CANON), for the same reason one
+    # property over: this comparison used to take the FIRST digit run, so a card stamped
+    # "1.5" on a DL-1 branch compared EQUAL and the conflict warning was suppressed (card#7592).
+    # Both arms here are write-free — the stamp writes only when the card carries NO stamp —
+    # so the cost was never a bad write, it was the operator not being told that the card
+    # holds a value no correlating tool can read. It now answers "" for such a stamp, which
+    # can never equal a DL ($dl is kb_dl_num-validated, so >= 1), and the warning fires.
+    curdl_num="$(printf '%s' "$card" | jq -r "$KB_JQ_REF_CANON"'.data.payload.dl_number | norm' 2>/dev/null)"
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
         if [ -n "$want" ]; then

@@ -3,18 +3,26 @@
 # the toolkit can carry that rule in two runtimes without them drifting apart (card#7587).
 #
 # ⛔ WHY A FIXTURE AND NOT A SHARED PREDICATE. The rule is kanban DL-251's — a correlation ref
-# must name ONE integer, optionally decorated (`^\D*(\d+)\D*$`) — and it is expressed TWICE in
-# this toolkit, in two languages, and cannot be expressed once:
+# must name ONE integer, optionally decorated (`^\D*(\d+)\D*$`) — and it is expressed in TWO
+# LANGUAGES in this toolkit, and cannot be expressed once:
 #   * BASH, `_kbc_require_ref_int` in `bin/kbcard`, at the MINT site (card#7536): it refuses to
 #     WRITE a value no reader can agree about.
-#   * JQ, the `def norm:` inside `bin/promote-released-cards`, at a READ site (card#7587): it
-#     refuses to CORRELATE one, so the release sweep leaves such a card alone instead of
-#     PATCHing it onto an unrelated pull request.
-# jq cannot call the bash predicate, and `promote-released-cards` is a vendored standalone that
-# must not even source `_kb-board-lib.sh`. A second expression of one rule is a drift risk, so
-# what is shared is the TABLE: one list of values and one expected answer per value, asserted
-# against both implementations by `tests/promote-ref-canon-selftest.sh`. Neither side owns it,
-# so neither side can move without the other going red.
+#   * JQ, at every READ site, where refusing means the stored stamp correlates to NOTHING and
+#     the tool leaves the card alone. The jq text exists TWICE — once as `KB_JQ_REF_CANON` in
+#     `bin/_kb-board-lib.sh`, which every lib-sourcing reader prepends to its own filter
+#     (card#7592; which readers those are is DERIVED by the census in the selftest named below,
+#     never counted here), and once inline as the `def norm:` in `bin/promote-released-cards`
+#     (card#7587), a vendored standalone that must not even source the lib and so cannot read
+#     the constant.
+#     ⚑ Those two jq texts are asserted BYTE-IDENTICAL by `tests/reader-ref-canon-selftest.sh`
+#     — a copy that cannot be removed is pinned instead of tolerated.
+# jq cannot call the bash predicate. A second expression of one rule is a drift risk, so what is
+# shared is the TABLE: one list of values and one expected answer per value. Neither side owns
+# it, so neither side can move without the other going red. TWO selftests consume it and the
+# split is by SUBJECT, not by coverage: `tests/promote-ref-canon-selftest.sh` holds the
+# standalone plus the mint site (including the `numlist` column, which only that bin has), and
+# `tests/reader-ref-canon-selftest.sh` holds the shared lib constant and the bins that prepend
+# it. Both run the whole table.
 #
 # ⚑ WHAT EACH SIDE IS HELD TO — they are not held to the same thing, and saying so is the point:
 #   * CONTAINMENT, in one direction, is the invariant: every value the MINT site accepts must be
