@@ -183,6 +183,7 @@ jobs:
           - promote-stage-guard-selftest
           - python-syntax-gate-selftest
           - read-outcome-collapse-selftest
+          - reader-ref-canon-selftest
           - readme-bin-coverage-selftest
           - release-artifacts-selftest
           - release-pr-body-selftest

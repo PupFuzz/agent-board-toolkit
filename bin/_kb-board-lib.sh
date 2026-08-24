@@ -1457,6 +1457,50 @@ kb_dl_int_lenient() {
     printf '%s' "$((10#$d))"   # 10# forces base-10 so a zero-padded value isn't read as octal
 }
 
+# KB_JQ_REF_CANON — the ONE-DECORATED-INTEGER rule as a jq program fragment, for every
+# lib-sourcing reader of a STORED correlation stamp. It defines `def norm:`, which answers the
+# bare zero-stripped integer of a value that is exactly one digit run with optional non-digit
+# decoration, and "" for anything else — the rule the board itself applies (kanban DL-251,
+# `^\D*(\d+)\D*$`). A stamp that answers "" correlates to NO card.
+#
+# ⛔ WHY IT EXISTS, and why it is a READ-side rule. Stripping every non-digit CONCATENATES the
+# runs of a multi-run value; taking the FIRST run TRUNCATES it. `1.5` becomes 15 one way and 1
+# the other, and both name a real, unrelated ref. Measured, both directions, on live tools:
+# promote-released-cards PATCHed a card onto an unrelated pull request (card#7587), and
+# board-card-start MOVED the wrong card on an ordinary branch checkout (card#7592). The stamp
+# provenance is whatever wrote the card — the board UI, another tool, an API caller, a human —
+# so refusing at the MINT site alone cannot close it; the reader is where it has to be answered.
+# Refusing is the recoverable direction: a card left alone is moved by hand, a card moved onto
+# somebody else's ref is a durable board event that looks legitimate afterwards.
+#
+# ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` carries
+# this exact jq text inline: it is a vendored standalone that must not source this lib, so it
+# cannot read this constant. `tests/reader-ref-canon-selftest.sh` asserts the two texts are
+# BYTE-IDENTICAL and drives both through the shared table in `tests/_ref-canon-cases.sh`, so
+# neither can move alone. The bash half of the same rule lives at the MINT site
+# (`_kbc_require_ref_int` in bin/kbcard) and is held by that same table to CONTAINMENT, not
+# equality — it is deliberately narrower (card#7536).
+#
+# ⚑ NOT the same thing as kb_dl_int_lenient above, which CONCATENATES on purpose for its one
+# fail-closed caller. Reading a stamp of unknown provenance for a value a tool then ACTS on is
+# what this constant is for.
+#
+# USAGE — prepend as a separate shell word; never interpolate into a double-quoted program:
+#     jq -r "$KB_JQ_REF_CANON"'.payload.dl_number | norm'
+# The caller filter stays SINGLE-quoted so its own jq variables survive the shell.
+#
+# ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW. It is a single-quoted shell string; an
+# apostrophe ends it and everything after is re-parsed as shell — which fails at RUNTIME, not
+# at shellcheck time.
+#
+# `\A`/`\z`, NOT `^`/`$`: jq regexes are Oniguruma, where `^`/`$` are LINE anchors unless the
+# syntax in force sets SINGLELINE, so a stored "1\n5" could satisfy an `^…$` test on its first
+# line alone and normalize to 15 — the defect, straight through the guard. ⚠ HONEST SCOPE:
+# measured on jq 1.7 the two spellings answer identically and no jq separating them has been
+# exercised here, so the selftest pins the embedded-newline VALUE and CANNOT discriminate the
+# two spellings. `[^0-9]` is a NEGATED set of ASCII bytes, so no locale collation widens it.
+KB_JQ_REF_CANON='def norm: (. // "")|tostring|if test("\\A[^0-9]*[0-9]+[^0-9]*\\z") then gsub("[^0-9]";"")|sub("^0+(?=.)";"") else "" end;'
+
 # kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
 # id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
 # envelope OR a bare top-level array — so every caller (adoption verify, field registration)
