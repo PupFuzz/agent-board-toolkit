@@ -391,13 +391,41 @@ host_ok "$API" \
 echo "promote-released-cards: api_base resolved from $API_SRC, host-guarded against '$EXPECT_HOST'" >&2
 
 # --- resolve the shipped refs (DL tokens + PR numbers) -----------------------
-# numlist normalizes the SHIPPED side (a git-log / --dls text stream) to bare integers with
-# leading zeros stripped (keeping >=1 digit) + deduped. The CARD side is normalized by the
-# `norm` jq def in the correlation below (`sub("^0+(?=.)";"")`) — the SAME leading-zero rule,
-# re-expressed in jq because the two sides live in different runtimes (shell stream vs board
-# JSON) on opposite sides of one comparison, and this script is a vendored standalone that
-# must not source the lib. Keep the two in sync (like the host_ok mirror): "093" and 93 must
-# compare equal, so a change to either strip must be mirrored in the other.
+# numlist normalizes the SHIPPED side (a git-log / --dls / --cards text stream) to bare
+# integers with leading zeros stripped (keeping >=1 digit) + deduped. The CARD side is
+# normalized by the `norm` jq def in the correlation below, re-expressed in jq because the two
+# sides live in different runtimes (shell stream vs board JSON) on opposite sides of one
+# comparison, and this script is a vendored standalone that must not source the lib.
+#
+# WHAT THE TWO SIDES SHARE, AND WHERE THEY DELIBERATELY DIVERGE — stated exactly, because the
+# claim this comment used to make ("the SAME rule; keep the two in sync") was true of the
+# leading-zero strip only and false of everything else (card#7587).
+#   * SHARED, and a change to either must be mirrored: the leading-zero strip. "093" and 93
+#     must compare equal, so `sed 's/^0*\([0-9]\)/\1/'` here and `sub("^0+(?=.)";"")` there
+#     are one rule in two runtimes, like the host_ok mirror.
+#   * DIVERGENT BY DESIGN on a value carrying SEVERAL digit runs. numlist SPLITS it — each run
+#     becomes its own candidate ref. `norm` REFUSES it — the card correlates to nothing. The
+#     asymmetry is the point: this side's value names what SHIPPED and every feed into it is
+#     already single-run (`--cards` is uint_csv_ok-validated; the PR marker is `\(#[0-9]+\)[[:space:]]*$`;
+#     DL tokens are whatever `ref_token_regex` matched), while the CARD side's value has
+#     arbitrary provenance and decides a PATCH on a card, so it fails safe. They agree
+#     byte-for-byte on every single-run value, which is the only shape either side is
+#     supposed to see. `tests/promote-ref-canon-selftest.sh` asserts both columns off one
+#     shared fixture, so the divergence stays measured rather than assumed.
+#
+# ⚠ TWO WAYS THIS SIDE CAN STILL EMIT A REF THE CARD SIDE CANNOT MATCH OR DID NOT MEAN.
+# Both are reported rather than closed here — narrowing this accept set changes which cards
+# the sweep moves, which is its own ruling. The first OVER-emits (a spurious ref that can
+# match an unrelated card); the second UNDER-emits (a ref nothing can equal, so a card that
+# genuinely shipped is left un-promoted):
+#   * a `ref_token_regex` whose own MATCH carries two digit runs ("PROJ2-DL-[0-9]+") makes
+#     this split into a spurious extra ref ("2") that can match an unrelated card's
+#     dl_number. The default `DL-[0-9]+` cannot; `bin/release-pr-body`'s emit_card_ids hit
+#     the same shape and took the TRAILING run instead, which is the fix if this is ever
+#     ruled on.
+#   * `[0-9]` is a RANGE, so a UTF-8 collation widens it: measured under en_US.UTF-8,
+#     "DL-4<U+0663>" yields the ref "4<U+0663>", which `norm`'s ASCII-only set cannot equal,
+#     so the card is not promoted (see tests/locale-range-guard-selftest.sh for the class).
 numlist() { grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
 CARD_IDS="$(printf '%s' "$CARDS_IN" | numlist || true)"
 if [ -n "$DLS_IN" ] || [ -n "$CARDS_IN" ]; then
@@ -559,10 +587,41 @@ CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number, pr_number OR own id is in the shipped sets
 PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" '
-  # normalize a card ref (dl_number, pr_number or id) to the bare-integer, zero-stripped
-  # form numlist produces for the shipped side, so "093"/93 correlate. Single-sourced so the
-  # ref fields cannot strip differently.
-  def norm: (. // "")|tostring|gsub("[^0-9]";"")|sub("^0+(?=.)";"");
+  # norm reads a card ref (dl_number, pr_number or id) and answers the bare-integer,
+  # zero-stripped form numlist produces for the shipped side, so "093"/93 correlate — or ""
+  # for a value that is not ONE integer, which correlates to nothing and leaves the card alone.
+  #
+  # THE ACCEPT SET IS THE RULE THE BOARD ITSELF APPLIES (kanban DL-251: `^\D*(\d+)\D*$`), and
+  # the "" arm is the whole fix (card#7587). Stripping every non-digit CONCATENATES the runs
+  # of a multi-run value — "1.5" -> 15, "2026-08-23" -> 20260823, "PR 12 of 34" -> 1234 — so a
+  # card holding "1.5" correlated against shipped PR 15, a real but UNRELATED pull request, and
+  # this sweep PATCHed it to the released stage. The provenance of that stamp is arbitrary
+  # (board UI, another tool, a human; `kbcard` refuses to MINT one, one writer of many), so the
+  # reader is where it has to be answered. Refusing is the recoverable direction: an
+  # un-promoted card is moved by hand, a card moved onto an unrelated PR is a durable event in
+  # the changelog of the board that looks legitimate afterwards.
+  #
+  # ONE def FOR ALL THREE REF FIELDS, deliberately — re-splitting it per field is how they
+  # start stripping differently. A card `id` is a board integer and an id can only ever be one
+  # run, so the guard is a no-op there; it costs nothing and keeps the single source.
+  #
+  # `\A`/`\z`, NOT `^`/`$`: the jq regex engine is Oniguruma, where `^`/`$` are LINE anchors
+  # unless the syntax in force sets SINGLELINE — under one that does not, a stored "1\n5" would
+  # satisfy an `^…$` test on its first line and normalize to 15, i.e. the exact defect, straight
+  # through the guard. ⚠ HONEST SCOPE, so this is not over-cited: MEASURED on jq 1.7 the two
+  # spellings answer identically, and no jq that separates them has been exercised here, so the
+  # selftest pins the embedded-newline VALUE but CANNOT discriminate the two spellings (an
+  # `^…$` mutant of this line is green there). It is written this way because this is a vendored
+  # standalone that runs on whatever jq a consumer has, and the absolute anchors do not depend
+  # on which regex options that jq was built with.
+  # `[^0-9]` is a NEGATED set of ASCII bytes, so no locale collation widens it.
+  #
+  # ⛔ NO APOSTROPHE ANYWHERE IN THIS jq PROGRAM (from the opening quote on the PLAN= line to
+  # its close). These are jq comments inside a SHELL single-quoted string: an apostrophe ends
+  # that string, and everything after it is re-parsed as shell — which fails at RUNTIME, not
+  # at shellcheck time. Orientation for the next author, not the guard: every selftest that
+  # drives this tool as a process reds immediately, because no run survives it.
+  def norm: (. // "")|tostring|if test("\\A[^0-9]*[0-9]+[^0-9]*\\z") then gsub("[^0-9]";"")|sub("^0+(?=.)";"") else "" end;
   [ .[]
     | . as $c
     | ($c.payload.dl_number | norm) as $cdl

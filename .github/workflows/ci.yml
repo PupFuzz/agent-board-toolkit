@@ -179,6 +179,7 @@ jobs:
           - pipeline-free-match-selftest
           - prelude-shadow-selftest
           - promote-pagination-selftest
+          - promote-ref-canon-selftest
           - promote-stage-guard-selftest
           - python-syntax-gate-selftest
           - read-outcome-collapse-selftest
