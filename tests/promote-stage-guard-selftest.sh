@@ -424,4 +424,127 @@ out="$(KANBAN_API_BASE="https://kanban.test/api/v3" "$PRC" --config "$TMP/releas
 eq "override alone makes a base-less config runnable"  "0"     "$rc"
 eq "…and the PATCH went to the override base"          "true"  "$(has 'https://kanban.test/api/v3/tasks/1.json' "$(cat "$PATCH_LOG")")"
 
+echo "== an explicit --base/--head that does not RESOLVE is refused by name (card#7535) =="
+# WHAT WAS BROKEN. The derive path built `RANGE="$BASE..$HEAD_REF"` from the two explicit flags
+# and read it with `git log "$RANGE" … 2>/dev/null || true`: `2>/dev/null` swallowed git's
+# "bad object" and `|| true` converted its rc 128 into success, so an unresolvable ref produced
+# an EMPTY subject list — which is what a genuinely empty range produces. The run then printed
+# "no shipped refs in range — nothing to do" and exited **0**. That is a PROMOTION that promoted
+# nothing and reported success: the release's cards stay un-promoted and the log looks clean.
+#
+# MEASURED PRE-FIX, not inferred — six of the SEVEN unresolvable-ref invocations below were
+# rc 0 with that line and an empty PATCH log, on both legs, for both a nonsense NAME and a hex
+# sha naming no object. The seventh (`--head <bad>` with the base DEFAULTED) was already rc 2,
+# but by the wrong route: the
+# `git describe "${HEAD_REF}^"` above swallows its own failure, leaving BASE empty, so it
+# surfaced as "no base tag found before <head>" — a refusal that blamed the baseline for a bad
+# head, after printing a NOTE about a baseline of ''.
+#
+# SCOPE — THE EXPLICIT LEGS ONLY, which is why the controls at the bottom of this block are not
+# optional. A defaulted HEAD_REF (`HEAD`) and a defaulted BASE keep their existing refusals; the
+# explicit-refs path (--dls/--cards) builds no range at all and must be untouched.
+GR="$TMP/gitrange"; mkdir -p "$GR"
+git -C "$GR" init -q -b main
+# Identity in the fixture's own config rather than per-command `-c`: the merge tip and the
+# ANNOTATED tag below both need a committer/tagger, and $HOME is the scratch dir (--home), so
+# there is no global identity to fall back on.
+git -C "$GR" config user.email t@t
+git -C "$GR" config user.name t
+git -C "$GR" commit -q --allow-empty -m "baseline"
+git -C "$GR" tag v0.0.1
+git -C "$GR" checkout -q -b feat
+git -C "$GR" commit -q --allow-empty -m "feat: the thing DL-100"
+git -C "$GR" checkout -q main
+git -C "$GR" merge -q --no-ff -m "Merge the thing" feat
+GR_TIP="$(git -C "$GR" rev-parse main)"
+
+run_range() { # <args...> — the real script in the range fixture, no --dls/--cards
+  : > "$PATCH_LOG"; rc=0
+  out="$( (cd "$GR" && "$PRC" --config "$TMP/release-pr.json" "$@") 2>"$TMP/err")" || rc=$?
+  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+}
+
+badref="no-such-ref"
+run_range --base v0.0.1 --head "$badref"
+eq "unresolvable --head → rc 2"                     "2"     "$rc"
+eq "…the refusal names the FLAG and its value"      "true"  "$(has "--head '$badref'" "$err")"
+eq "…and says it resolves to no commit here"        "true"  "$(has 'does not resolve to a commit in this repo' "$err")"
+eq "…it does NOT report success and stop"           "false" "$(has 'no shipped refs in range' "$out")"
+eq "…and nothing was PATCHed"                       ""      "$patched"
+
+run_range --base no-such-tag --head main
+eq "unresolvable --base → rc 2"                     "2"     "$rc"
+eq "…the refusal names --base and its value"        "true"  "$(has "--base 'no-such-tag'" "$err")"
+eq "…rather than nothing-to-do at rc 0"             "false" "$(has 'no shipped refs in range' "$out")"
+
+# The base leg with the head leg DEFAULTED: pre-fix this was the plain rc-0 nothing-to-do too.
+run_range --base no-such-tag
+eq "bad --base + defaulted head → rc 2"             "2"     "$rc"
+eq "…refuses on the BASE it was handed"             "true"  "$(has "--base 'no-such-tag'" "$err")"
+
+# ORDERING: with BOTH legs bad the BASE is named, matching bin/release-pr-body's ordering so the
+# two release tools answer the same way about the same pair of flags.
+run_range --base no-such-tag --head "$badref"
+eq "both legs bad → the BASE is the one named"      "true"  "$(has "--base 'no-such-tag'" "$err")"
+eq "…and the head is not reported instead"          "false" "$(has "--head '$badref'" "$err")"
+
+# The head leg must nonetheless be checked BEFORE `git describe "${HEAD_REF}^"`, which swallows
+# its own failure. Pre-fix this arm was rc 2 already — by blaming the baseline for a bad head.
+run_range --head "$badref"
+eq "bad --head + defaulted base → rc 2"             "2"     "$rc"
+eq "…names the --head it was handed"                "true"  "$(has "--head '$badref'" "$err")"
+eq "…not 'no base tag found', which blamed the base" "false" "$(has 'no base tag found' "$err")"
+eq "…nor the NOTE about a baseline of ''"           "false" "$(has "baseline '' derived from LOCAL tags" "$err")"
+
+# A FULL-LENGTH HEX NAMING NO OBJECT — the arm that reds if the `^{commit}` peel is dropped.
+# `git rev-parse --verify -q <40-hex>` exits 0 on it (it verifies the SPELLING can become a raw
+# object name, not that the object is present — measured, git 2.43.0), while `git log` dies
+# `bad object`. A sha copied off a rebased-away branch or an old PR IS the deleted-ref case, and
+# a raw sha is the natural hand spelling of --head. The two preconditions below are what make
+# this arm mean something: without them a peel-less predicate looks equally good here.
+deadsha="0000000000000000000000000000000000000001"
+rc=0; ( cd "$GR" && git rev-parse --verify -q "$deadsha" ) >/dev/null 2>&1 || rc=$?
+eq "precondition: the BARE predicate passes this sha" "0"   "$rc"
+eq "precondition: …and git log dies on it"          "true" \
+   "$(has 'bad object' "$( (cd "$GR" && git log "$deadsha" --oneline) 2>&1 || true )")"
+run_range --base v0.0.1 --head "$deadsha"
+eq "a hex sha naming no object as --head → rc 2"    "2"     "$rc"
+eq "…named in the refusal"                          "true"  "$(has "--head '$deadsha'" "$err")"
+run_range --base "$deadsha" --head main
+eq "a hex sha naming no object as --base → rc 2"    "2"     "$rc"
+eq "…named in the refusal"                          "true"  "$(has "--base '$deadsha'" "$err")"
+
+# POSITIVE CONTROLS — without them a guard that refused EVERYTHING satisfies every arm above.
+# Each is a resolvable spelling that must still promote, over the same fixture: a branch name,
+# `HEAD`, a live raw sha (the spelling the peel must not break) and an ANNOTATED tag (a peel
+# that refused non-commit objects would break the baseline every release tag actually uses).
+for spelling in main HEAD "$GR_TIP"; do
+  run_range --base v0.0.1 --head "$spelling"
+  eq "control: --head '$spelling' still promotes (rc 0)" "0"    "$rc"
+  eq "control: …and the card was PATCHed"                "true" "$(has '/tasks/1.json' "$patched")"
+done
+# Created for this arm and removed straight after: an annotated tag at the baseline commit WINS
+# `git describe --tags --abbrev=0` (measured), so leaving it in place would silently change which
+# baseline the defaulted-leg control below reports.
+git -C "$GR" tag -a -m "annotated" v0.0.1-annot v0.0.1
+run_range --base v0.0.1-annot --head main
+eq "control: an ANNOTATED tag as --base (rc 0)"     "0"     "$rc"
+eq "control: …and the card was PATCHed"             "true"  "$(has '/tasks/1.json' "$patched")"
+git -C "$GR" tag -d v0.0.1-annot >/dev/null
+
+# THE DEFAULTED PATH IS OUT OF SCOPE AND MUST BE UNCHANGED. Both legs defaulted still derives
+# the baseline from local tags, still prints that NOTE, and still promotes.
+run_range
+eq "control: both legs defaulted still promotes"    "0"     "$rc"
+eq "control: …and the card was PATCHed"             "true"  "$(has '/tasks/1.json' "$patched")"
+eq "control: …and the LOCAL-tags NOTE is unchanged" "true"  "$(has "baseline 'v0.0.1' derived from LOCAL tags" "$err")"
+
+# …AND SO IS THE EXPLICIT-REFS PATH, which builds no range: a --base nobody can resolve is
+# simply unused there, exactly as before. This pins that the guard sits inside the derive
+# branch and did not move up into the parse.
+: > "$PATCH_LOG"; rc=0
+out="$( (cd "$GR" && "$PRC" --config "$TMP/release-pr.json" --dls "DL-100" --base no-such-tag) 2>"$TMP/err")" || rc=$?
+eq "control: --dls with an unresolvable --base → rc 0" "0"    "$rc"
+eq "control: …and it still promotes"                   "true" "$(has '/tasks/1.json' "$(cat "$PATCH_LOG")")"
+
 _summary "promote-stage-guard-selftest"
