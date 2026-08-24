@@ -458,9 +458,28 @@ git -C "$GR" checkout -q main
 git -C "$GR" merge -q --no-ff -m "Merge the thing" feat
 GR_TIP="$(git -C "$GR" rev-parse main)"
 
-run_range() { # <args...> — the real script in the range fixture, no --dls/--cards
+# ⛔ EVERY INVOCATION IN THIS BLOCK GOES THROUGH run_range, AND run_range PINS $GITHUB_ACTIONS.
+# That is not tidiness. The derived-baseline NOTE below is emitted only when that variable is
+# UNSET (`[ -n "${GITHUB_ACTIONS:-}" ] ||`, a pre-existing branch this card does not touch), so
+# two arms here — the NOTE-present control and the "no NOTE about a baseline of ''" absence arm
+# — mean the OPPOSITE things on a workstation and on a runner. MEASURED, not inferred: run
+# UNPINNED against the pre-fix binary this block reds 17 arms in EACH environment, but not the
+# SAME 17 — with the variable set the absence arm passes VACUOUSLY, satisfied by an output the
+# environment had suppressed, and the NOTE-present control reds in its place. That control is
+# the arm this block first shipped CI-red on, green on the same commit locally.
+#
+# Pinning is what makes an arm mean ONE thing in both places, and the pin is measured too: with
+# it, each mutant's red set is IDENTICAL in both directions — pre-fix binary 17, `^{commit}`
+# peel dropped 4, guard hoisted out of the derive branch 2, NOTE suppression deleted 1.
+#
+# The suppressed direction is NOT skipped: RANGE_ENV is the one knob, and the last control below
+# flips it to assert the runner's branch head-on. Keep it the ONLY way this block invokes the
+# tool — a hand-rolled second invocation would drift from run_range's rc/out/err/PATCH capture,
+# and would silently reintroduce the ambient-environment dependence this comment exists to close.
+RANGE_ENV=(-u GITHUB_ACTIONS)
+run_range() { # <args...> — the real script in the range fixture, under RANGE_ENV
   : > "$PATCH_LOG"; rc=0
-  out="$( (cd "$GR" && "$PRC" --config "$TMP/release-pr.json" "$@") 2>"$TMP/err")" || rc=$?
+  out="$( (cd "$GR" && env "${RANGE_ENV[@]}" "$PRC" --config "$TMP/release-pr.json" "$@") 2>"$TMP/err")" || rc=$?
   err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
 }
 
@@ -538,13 +557,24 @@ run_range
 eq "control: both legs defaulted still promotes"    "0"     "$rc"
 eq "control: …and the card was PATCHed"             "true"  "$(has '/tasks/1.json' "$patched")"
 eq "control: …and the LOCAL-tags NOTE is unchanged" "true"  "$(has "baseline 'v0.0.1' derived from LOCAL tags" "$err")"
+# THE OTHER SIDE OF THAT ENVIRONMENT BRANCH, asserted rather than merely avoided by the pin:
+# with $GITHUB_ACTIONS SET the NOTE is suppressed and the run still promotes. Both directions
+# are pre-existing behaviour and unchanged by this card — measured on the defaulted-leg run, rc,
+# stdout, the PATCH set and stderr are identical under the pre- and post-fix binaries in EACH
+# environment (stderr compared with the scratch path its api_base line names normalised away,
+# because the two binaries necessarily run under different mktemp dirs). Deleting the tool's
+# suppression branch reds the first arm here and nothing else in this FILE — measured — so this
+# is the only thing holding the runner's side of that branch.
+RANGE_ENV=(GITHUB_ACTIONS=true); run_range; RANGE_ENV=(-u GITHUB_ACTIONS)
+eq "control: under GITHUB_ACTIONS the NOTE is suppressed" "false" "$(has 'derived from LOCAL tags' "$err")"
+eq "control: …and that run still promotes"          "0"     "$rc"
+eq "control: …and the card was PATCHed"             "true"  "$(has '/tasks/1.json' "$patched")"
 
 # …AND SO IS THE EXPLICIT-REFS PATH, which builds no range: a --base nobody can resolve is
 # simply unused there, exactly as before. This pins that the guard sits inside the derive
 # branch and did not move up into the parse.
-: > "$PATCH_LOG"; rc=0
-out="$( (cd "$GR" && "$PRC" --config "$TMP/release-pr.json" --dls "DL-100" --base no-such-tag) 2>"$TMP/err")" || rc=$?
+run_range --dls "DL-100" --base no-such-tag
 eq "control: --dls with an unresolvable --base → rc 0" "0"    "$rc"
-eq "control: …and it still promotes"                   "true" "$(has '/tasks/1.json' "$(cat "$PATCH_LOG")")"
+eq "control: …and it still promotes"                   "true" "$(has '/tasks/1.json' "$patched")"
 
 _summary "promote-stage-guard-selftest"
