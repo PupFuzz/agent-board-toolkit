@@ -221,6 +221,103 @@ if [[ "$rc" -eq 0 ]]; then ok "works offline with --base + --head (rc=0)"; else 
 contains "uses the given baseline" "$body2" "since v0.1.0"
 contains "full range from v0.1.0"  "$body2" "Bundles 2 commit(s)"
 
+echo "== an explicit --base/--head that does not RESOLVE is refused by name (card#7525) =="
+# WHAT WAS BROKEN, AND WHY card#7517 DID NOT CLOSE IT. That card hardened the DEFAULTED legs:
+# they resolve from the remote, fetch, and die loudly. The explicit legs are deliberately
+# exempt from that fetch — the flag is the caller's override, and it is the offline route the
+# block above documents — so nothing ever looked the handed-in ref up at all. `git log "$RANGE"`
+# runs under `2>/dev/null` at four sites, and the three observable outcomes are all silent:
+#   * `--manifest` / `--card-manifest`  → an EMPTY list at rc 0. These are the MACHINE-READ
+#     surfaces, and `shipped-cards` is the input deciding which cards get promoted.
+#   * the full body                     → the `COUNT=` pipeline fails 128 under pipefail and
+#     errexit aborts the script: rc 128 with ZERO BYTES on either stream, naming neither the
+#     ref nor the flag. Measured pre-fix, not inferred — it is not the rc-0 empty body the
+#     shape suggests, because `set -o pipefail` promotes git's 128 out of the substitution.
+# ⇒ a typo'd or deleted ref is indistinguishable from a genuinely empty range, in every one.
+#
+# THE ARMS BELOW ARE THE FAIL-THEN-PASS PAIR. Pre-fix: rc 128 (body) / rc 0 (manifests), and
+# no message anywhere. Post-fix: rc 2 naming the flag AND the value. Origin is still pointed at
+# a void here, on purpose — the refusal must not need the network, and the arm that pins that
+# is the bad `--base` with the head leg DEFAULTED, which pre-fix could only reach the fetch
+# refusal.
+badhead="no-such-ref"
+rc=0; bh="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead") 2>&1 )" || rc=$?
+eq "unresolvable --head → rc 2"                    "2"     "$rc"
+eq "…the refusal names the FLAG"                   "true"  "$(has "--head '$badhead'" "$bh")"
+eq "…and says it resolves to no commit here"       "true"  "$(has "does not resolve to a commit in this repo" "$bh")"
+eq "…and no body is emitted over a dead range"     "false" "$(has '## Bundled' "$bh")"
+eq "…nor the empty-bundle placeholder"             "false" "$(has 'no non-merge commits in' "$bh")"
+
+# The manifest modes are where the pre-fix rc was 0 — a valid, empty, machine-read answer.
+rc=0; bhm="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead" --manifest) 2>&1 )" || rc=$?
+eq "unresolvable --head --manifest → rc 2"         "2"     "$rc"
+eq "…rather than an empty list at rc 0"            "true"  "$(has "--head '$badhead'" "$bhm")"
+rc=0; bhc="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead" --card-manifest) 2>&1 )" || rc=$?
+eq "unresolvable --head --card-manifest → rc 2"    "2"     "$rc"
+eq "…rather than a manifest that promotes nothing" "true"  "$(has "--head '$badhead'" "$bhc")"
+
+# A FULL-LENGTH HEX NAMING NO OBJECT — the arm that reds if the `^{commit}` peel is dropped.
+# `git rev-parse --verify -q <40-hex>` exits 0 on it (it verifies the SPELLING can become a raw
+# object name, not that the object is present — measured, git 2.43.0), while `git log` dies
+# `bad object`. This is not a curiosity: a sha copied off a rebased-away branch or an old PR is
+# the "deleted ref" case, and a raw sha is the natural offline spelling of --head.
+deadsha="0000000000000000000000000000000000000001"
+rc=0; ( cd "$W" && g rev-parse --verify -q "$deadsha" ) >/dev/null 2>&1 || rc=$?
+eq "precondition: bare --verify passes this sha"   "0"     "$rc"
+eq "precondition: …and git log dies on it"         "true" \
+   "$(has 'bad object' "$( (cd "$W" && g log "$deadsha" --oneline) 2>&1 || true )")"
+rc=0; bs="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$deadsha") 2>&1 )" || rc=$?
+eq "a hex sha naming no object → rc 2"             "2"     "$rc"
+eq "…named in the refusal"                         "true"  "$(has "--head '$deadsha'" "$bs")"
+
+# --base has the IDENTICAL shape — verified rather than assumed. It skips its own leg's fetch,
+# `require_value` has already made it non-empty, and it goes straight into `$BASE..$HEAD_REF`.
+rc=0; bb="$( (cd "$W" && "$BIN" --version 0.3.0 --base no-such-tag --head dev) 2>&1 )" || rc=$?
+eq "unresolvable --base → rc 2"                    "2"     "$rc"
+eq "…the refusal names --base and its value"       "true"  "$(has "--base 'no-such-tag'" "$bb")"
+eq "…and emits no body"                            "false" "$(has '## Bundled' "$bb")"
+
+# ORDERING: the base leg is checked BEFORE the head leg's fetch, so a bad baseline refuses
+# without touching the network. Origin is a void here, so pre-ordering-fix this would report
+# the FETCH failure instead — a true statement about a run that should never have got that far.
+rc=0; bo="$( (cd "$W" && "$BIN" --version 0.3.0 --base no-such-tag) 2>&1 )" || rc=$?
+eq "bad --base + defaulted head → rc 2"            "2"     "$rc"
+eq "…refuses on the BASE, before any fetch"        "true"  "$(has "--base 'no-such-tag'" "$bo")"
+eq "…not on the unreachable origin"                "false" "$(has 'cannot fetch origin' "$bo")"
+
+# POSITIVE CONTROLS — without them a check that refuses EVERYTHING passes every arm above.
+# Three resolvable --head spellings, all still rc 0 over the same unreachable origin: a branch
+# name, `HEAD`, and a raw sha (the spelling the `^{commit}` peel must not break); the annotated
+# tag below is the fourth, on the --base leg, where a peel that refused non-commit objects would
+# be the way this check breaks a good run.
+devsha="$(g -C "$W" rev-parse dev)"
+for spelling in dev HEAD "$devsha"; do
+  rc=0; okbody="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$spelling") 2>&1 )" || rc=$?
+  eq "control: --head '$spelling' still renders (rc 0)" "0"    "$rc"
+  eq "control: …with the bundled section"               "true" "$(has '## Bundled' "$okbody")"
+  eq "control: …over the given baseline"                "true" "$(has 'since v0.1.0' "$okbody")"
+done
+# …and the guard adds NOTHING to a good run's output: the resolvable invocation renders the same
+# bytes as $body2, generated by the identical invocation earlier in this file. An IN-RUN
+# consistency arm, honestly labelled — not a pre/post comparison, which a selftest cannot make
+# because it cannot hold two versions of its own bin. It reds if this check ever grows a warning
+# on stdout. The pre/post identity was measured out of band against the unguarded binary over 16
+# invocations (rc + stdout + stderr sha256 each); docs/CHANGELOG.md records the result.
+eq "control: a resolvable run is byte-identical to the unguarded one" "$body2" \
+   "$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head dev) 2>/dev/null )"
+# An annotated tag must peel through `^{commit}` rather than be refused as "not a commit".
+g -C "$W" tag -a -m "annotated" v0.1.0-annot v0.1.0
+rc=0; annot="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0-annot --head dev) 2>&1 )" || rc=$?
+eq "control: an ANNOTATED tag resolves (rc 0)"     "0"     "$rc"
+eq "control: …and is used as the baseline"         "true"  "$(has 'since v0.1.0-annot' "$annot")"
+g -C "$W" tag -d v0.1.0-annot >/dev/null
+
+# --tag returns BEFORE the range block and builds no range, so it must still answer with a
+# nonsense --head — `release-tag-check` asks it in a CI job with no promise the refs are there.
+rc=0; tagok="$( (cd "$W" && "$BIN" --tag --version 0.3.0 --head "$badhead") 2>&1 )" || rc=$?
+eq "control: --tag answers despite a bogus --head" "0"      "$rc"
+eq "control: …with the tag name alone"             "v0.3.0" "$tagok"
+
 # Restore the real origin (the fetch-failure case above pointed it at a void).
 g -C "$W" remote set-url origin "$T/origin.git"
 
