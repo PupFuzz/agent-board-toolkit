@@ -73,18 +73,26 @@
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
-#     --pr / --issue MUST NAME ONE INTEGER, optionally decorated (178, #178, PR-178). A value
-#     carrying no digits, or SEVERAL digit runs (1.5, 2026-08-23, "PR 12 of 34"), is rc 2 before
-#     any request, on both create-card and patch. That is the board's own rule for deriving a
-#     card's by-ref key, applied at the point the value is typed: a stamp the board derives no
-#     reference from correlates the card to NOTHING while looking set, and a reader that instead
-#     concatenates the runs derives a real but DIFFERENT PR/issue (1.5 → 15, 2026-08-23 →
-#     20260823). Only the value's SHAPE is checked here — the board's declared field type is a
-#     separate question, and the two are not the same narrowing: a DECORATED value is accepted
-#     by this check (as the board's own rule accepts it) but is not numeric, so it goes on the
-#     wire as a JSON string, which a `number`-typed pr_number/issue_number field then refuses
-#     server-side (docs/INSTALL.md §3b). --dl has always been strict in the same way
-#     (kb_dl_canon); --pr-url / --issue-url are URLs and are not covered.
+#     --pr / --issue MUST NAME ONE POSITIVE INTEGER, optionally decorated (178, #178, PR-178).
+#     A value carrying no digits, or SEVERAL digit runs (1.5, 2026-08-23, "PR 12 of 34"), is
+#     rc 2 before any request, on both create-card and patch — as is a NEGATIVE value (-5) and
+#     ZERO in any spelling (0, 00, #0, PR-000). The shape half is the board's own rule for
+#     deriving a card's by-ref key, applied at the point the value is typed: a stamp the board
+#     derives no reference from correlates the card to NOTHING while looking set, and a reader
+#     that instead concatenates the runs derives a real but DIFFERENT PR/issue (1.5 → 15,
+#     2026-08-23 → 20260823). The sign/zero half is STRICTER than that rule on purpose: GitHub
+#     numbers pull requests and issues from 1, so -5 and 0 name nothing to correlate to, and
+#     each is read three incompatible ways (stored as typed here, sign-and-decoration stripped
+#     to a real but DIFFERENT ref by the board, declined outright by the positive-only admission
+#     test a reconciler applies to the same field) with no reader erring. Beyond shape, sign and
+#     zero nothing about the value is checked here —
+#     the board's declared field type is a separate question, and the two are not the same
+#     narrowing: a DECORATED value is accepted by this check (as the board's own rule accepts
+#     it) but is not numeric, so it goes on the wire as a JSON string, which a `number`-typed
+#     pr_number/issue_number field then refuses server-side (docs/INSTALL.md §3b). --dl has
+#     always been strict in the same way (kb_dl_canon, which refuses a sign and refuses 0);
+#     --pr-url / --issue-url are URLs and are not covered — the pre-PR placeholder .../pull/0
+#     is a URL and rides there, unaffected.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
 #     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
@@ -525,7 +533,7 @@ resolve_task() {
 # the task.payload object shared by create-card and patch from the optional card-metadata
 # flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
-# that is not ONE decorated integer (_kbc_require_ref_int). Both callers assemble the payload
+# that is not ONE POSITIVE decorated integer (_kbc_require_ref_int). Both callers assemble the payload
 # BEFORE they resolve the task ref, so those refusals cost no request at all. Numeric-looking
 # values are coerced to JSON numbers so number-typed custom fields (e.g. pr_number,
 # issue_number) don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
@@ -603,10 +611,10 @@ _kbc_require_ext_id() {
 }
 
 # _kbc_require_ref_int <flag> <value>: a correlation value (--pr / --issue) must name ONE
-# integer, optionally decorated. This is the board's OWN rule for deriving a card's by-ref key
-# (kanban DL-251: `^\D*(\d+)\D*$` after trimming), applied here at the operator path that
-# MINTS the stored value, so the tool's accept-set equals the set of values the board derives a
-# ref from.
+# POSITIVE integer, optionally decorated. The SHAPE half is the board's OWN rule for deriving a
+# card's by-ref key (kanban DL-251: `^\D*(\d+)\D*$` after trimming), applied here at the
+# operator path that MINTS the stored value; the SIGN and ZERO halves are deliberately STRICTER
+# than that rule — see the two blocks below for why each is refused rather than canonicalized.
 #
 # WHAT IT REFUSES AND WHY REFUSING BEATS COERCING. A value carrying no digits ("TBD") or SEVERAL
 # digit runs ("1.5", "2026-08-23", "PR 12 of 34") names no single identifier. A reader applying
@@ -624,12 +632,47 @@ _kbc_require_ext_id() {
 # server-side on TYPE. That is the server failing loud about a different question, and tying
 # this predicate to kb_is_uint instead would refuse spellings the board itself canonicalizes
 # (a board declaring the field `string` accepts them) — a narrowing this card did not rule on.
+#
+# ⭐ WHY THE SIGN AND ZERO ARE REFUSED HERE, STRICTER THAN THE BOARD'S OWN RULE. "-5" is ONE
+# decorated integer under DL-251, so the shape leg alone accepts it — and the value it mints is
+# then read THREE ways with no reader erring: this tool stores -5; the board drops the sign with
+# the rest of the decoration and indexes the card under github_pr ref "5", i.e. somebody else's
+# pull request (measured on the vendored 1:1 mirror: canonicalize('github_pr', '-5') === '5');
+# and the admission test a reconciler applies to the same field, `is_numeric && (float) > 0`,
+# DECLINES the value, so the card is invisible to it. Stored, mis-correlated and invisible at
+# once. Zero is the same defect one value over: "0", "00", "#0", "PR-000" all name a pull
+# request / issue that cannot exist on GitHub — the board indexes ref "0" and that same `> 0`
+# declines it just the same.
+#
+# Refusing at the MINT costs no legitimate caller (GitHub numbers PRs and issues from 1) and
+# collapses the three answers into one at the cheapest place — the only point where the value
+# is still unambiguous. It is the rule `--dl` has always applied (kb_dl_num refuses a sign by
+# anchoring, and refuses a token resolving to 0 in its own words); this brings the other two
+# correlation keys alongside it. The pre-PR placeholder is the URL form `.../pull/0` carried by
+# `--pr-url` / `--issue-url`, which are URLs and are not covered by this predicate at all.
 _kbc_require_ref_int() {
     # `[^0-9]` rather than a bracket range, through kb_ere_match, so the class is ASCII bytes
     # and not a collation range (an en_US.UTF-8 shell reads `[0-9]` as the latter).
-    kb_ere_match "$2" '^[^0-9]*[0-9]+[^0-9]*$' && return 0
-    echo "kbcard: $1 '$2' must name ONE integer, optionally decorated (178, #178, PR-178) — a value with no digits, or with several digit runs (1.5, 2026-08-23), names no reference: the board derives none from it, and a reader that concatenates the runs derives a real but DIFFERENT PR/issue." >&2
-    return 2
+    if ! kb_ere_match "$2" '^[^0-9]*([0-9]+)[^0-9]*$'; then
+        echo "kbcard: $1 '$2' must name ONE integer, optionally decorated (178, #178, PR-178) — a value with no digits, or with several digit runs (1.5, 2026-08-23), names no reference: the board derives none from it, and a reader that concatenates the runs derives a real but DIFFERENT PR/issue." >&2
+        return 2
+    fi
+    # Captured BEFORE the next match clobbers BASH_REMATCH (kb_ere_match leaves it non-local
+    # on purpose, so it survives the call but not a second one).
+    local run="${BASH_REMATCH[1]}"
+    # A LEADING minus is a sign; a minus anywhere else is decoration ("PR-178"), which the
+    # board canonicalizes and this accepts. `[[:space:]]` is ASCII here because kb_ere_match
+    # pins LC_ALL=C for the match — " -5" reaches this assembler as typed, and jq's tonumber
+    # then stores it as -5, so the leading blank must not hide the sign.
+    if kb_ere_match "$2" '^[[:space:]]*-'; then
+        echo "kbcard: $1 '$2' is NEGATIVE — a pull request / issue number is positive (GitHub numbers them from 1). Refusing it at the mint is the only place this stamp's readers agree: stored, it keeps the sign here, while the board drops the sign as decoration and correlates the card to a real but DIFFERENT ref, and the reconciler's positive-only admission test declines the value outright — stored, mis-correlated and invisible at once." >&2
+        return 2
+    fi
+    if kb_ere_match "$run" '^0+$'; then
+        echo "kbcard: $1 '$2' names 0 — there is no pull request or issue 0 to correlate to (GitHub numbers them from 1), and --dl has always refused 0 the same way. The pre-PR placeholder is the URL form .../pull/0, which belongs on --pr-url / --issue-url and is unaffected." >&2
+        return 2
+    fi
+    return 0
 }
 
 # _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file>: resolve a free-TEXT argument from
@@ -1004,7 +1047,7 @@ cmd_patch() {
     # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
     # ORDER IS LOAD-BEARING: this sits with the no-network preflight, ABOVE resolve_task,
     # because it is where a malformed correlation value is refused (a --dl kb_dl_canon rejects,
-    # a --pr / --issue that is not one decorated integer). Assembled after the ref lookup, that
+    # a --pr / --issue that is not one positive decorated integer). Assembled after the ref lookup, that
     # rc-2 refusal arrived having already issued a GET — a bad invocation must cost no traffic,
     # exactly as the --type / --external-id / --column / --swimlane refusals above do. Nothing
     # here reads the resolved task id.

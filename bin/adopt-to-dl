@@ -140,7 +140,7 @@ main() {
     fi
     # --issue is a bare positive integer (the GitHub issue number). Stricter than kbcard's own
     # `--issue` rule on purpose, and still worth having after it: kbcard refuses a value that is
-    # not ONE decorated integer, which still leaves a DECORATED spelling ("#7", "issue-7")
+    # not ONE POSITIVE decorated integer, which still leaves a DECORATED spelling ("#7", "issue-7")
     # accepted there and then refused on the wire by the number-typed field, and a padded "007"
     # silently renumbered to 7 by the payload merge's tonumber. This adoption path names the
     # issue number itself, so it refuses both — one clear cause, before anything is stamped.

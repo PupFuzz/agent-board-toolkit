@@ -172,9 +172,14 @@ both "--external-id accepts 99 (posctl)" "ACCEPT" "99"   "$EXTID"
 # to refuse, so the ASCII claim in its docblock is measured rather than asserted. The
 # discriminating input is a BARE non-ASCII digit: `4<U+0663>` cannot tell the locales apart
 # (widened it is one run, C-collated the U+0663 is trailing decoration — ACCEPT either way).
+# The probe asks "did the tool refuse?", NOT "did it print one particular sentence": the
+# predicate now keys on the refusal's flag-and-value prefix, which every arm of the guard emits
+# (shape, sign, zero). Keyed on one arm's wording it answered ACCEPT for a value refused by
+# another arm — a silent false negative the day a second arm landed, which is exactly what
+# card#7536's sign/zero ruling then did.
 REFINT='source "$BIN/kbcard" 2>/dev/null || true
         out="$(_kbc_build_payload "" "$IN" "" "" "" "" 2>&1 || true)"
-        case "$out" in *"must name ONE integer"*) echo REJECT ;; *) echo ACCEPT ;; esac'
+        case "$out" in *"kbcard: --pr "*) echo REJECT ;; *) echo ACCEPT ;; esac'
 both "--pr rejects a bare U+0663"      "REJECT" "$AI3" "$REFINT"
 both "--pr accepts 178 (posctl)"       "ACCEPT" "178"  "$REFINT"
 both "--pr accepts #178 (posctl)"      "ACCEPT" "#178" "$REFINT"
