@@ -41,6 +41,12 @@
 #     tool promoted from a board it had only partly read, at rc 0.
 #   - A server SHORT READ (pages deliver fewer rows than the board's own meta.total) => FAIL:
 #     promoting from an incomplete scan would silently leave a shipped card un-promoted.
+#   - An EXPLICIT --base/--head naming a ref this repo does not have => FAIL (rc 2, naming the
+#     flag and the value). `git log` runs under `2>/dev/null || true`, which turned git's rc-128
+#     "bad object" into an EMPTY subject list — so the run printed "no shipped refs in range —
+#     nothing to do" and exited 0: a promotion that promoted nothing and reported success, with
+#     the release's cards left un-promoted (card#7535). A DEFAULTED leg is not affected; its own
+#     refusals below already cover it.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
@@ -61,6 +67,11 @@
 #   to select the prior behavior, and with it absent every run is byte-identical to
 #   before. Combinable with --dls; either flag selects the explicit-ref path, so no git
 #   range is read. Strictly numeric: `--cards "card#12"` is a config error, not a parse.
+#
+# --base REF / --head REF: the ends of the git range the shipped refs are derived from, when
+#   no explicit --dls/--cards set is given. Each is the caller's override for a leg this tool
+#   otherwise derives, and each MUST NAME A COMMIT THIS REPO HAS: a ref that does not resolve is
+#   refused at rc 2 naming the flag and the value, never read as an empty range (card#7535).
 #
 # --shipped-stages "51,52": comma-separated numeric workflow_stage_ids that count as a
 #   "Shipped-class" source stage. When set, a DL/PR-matched card whose CURRENT stage is
@@ -233,6 +244,36 @@ merge_commit_tip() {
   [ "$(printf '%s' "$line" | wc -w)" -ge 3 ]
 }
 
+# require_resolvable <flag> <ref>: die unless <ref> names a commit in THIS repo.
+#
+# WHY, AND WHY ONLY ON THE EXPLICIT LEGS (card#7535). `git log "$RANGE"` in the derive path
+# below runs under `2>/dev/null || true`, so git's rc 128 "bad object" became an EMPTY subject
+# list, which is indistinguishable from a genuinely empty range: the run printed "no shipped
+# refs in range — nothing to do" and exited 0. That is a PROMOTION that promoted nothing and
+# reported success — the release's cards stay un-promoted and the log looks clean. Measured on
+# the pre-fix tool: `--base <good> --head <typo>`, `--base <typo> --head <good>` and a
+# `--base <typo>` with the head defaulted ALL exited 0 with that line and no PATCH.
+#
+# `^{commit}` IS LOAD-BEARING, not decoration. `git rev-parse --verify -q <40-hex>` exits 0 for
+# a full-length hex string naming NO object — it verifies that the spelling can be turned into a
+# raw object name, not that the object is here (measured, git 2.43.0) — while `git log` on it
+# dies `bad object`. A sha copied off a rebased-away branch or an old PR IS the deleted-ref case,
+# and a raw sha is the natural hand spelling of --head. Peeling asks the question the range
+# actually needs: an annotated tag peels through, and anything `git log` could not use as a range
+# end fails here too, so no ref that resolves today changes behaviour.
+#
+# Mirrors require_resolvable in bin/release-pr-body (card#7525) — that tool met the same class
+# one release bin over. This script is vendored standalone into consumer repos and MUST NOT
+# source _kb-board-lib.sh, so the predicate is duplicated, as host_ok / require_value / numlist
+# already are; keep the two in sync. The MESSAGES diverge on purpose: each names what its own
+# tool does with a dead range, which is the half an operator acts on. What must not diverge is
+# the `^{commit}` peel, and the guard against that is behavioural rather than textual — each
+# tool's selftest carries a hex-sha arm that reds if its own copy loses the peel.
+require_resolvable() { # <flag> <ref>
+  git rev-parse --verify -q "$2^{commit}" >/dev/null \
+    || die "$1 '$2' does not resolve to a commit in this repo — a range built from it walks NOTHING, which this tool would report as 'no shipped refs in range — nothing to do' at rc 0: a promotion that promoted nothing and called it success. Check the spelling, or fetch the ref before passing it"
+}
+
 CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -363,6 +404,25 @@ if [ -n "$DLS_IN" ] || [ -n "$CARDS_IN" ]; then
   DL_NUMS="$(printf '%s' "$DLS_IN" | grep -oiE "$REF_RE" | numlist || true)"
   PR_NUMS=""
 else
+  # AN EXPLICIT --base/--head MUST RESOLVE HERE, and is checked BEFORE the range is built
+  # (card#7535). Non-empty at this point means exactly "the flag was passed": require_value has
+  # already rejected an empty value, and neither variable has any other writer.
+  #
+  # ⛔ ONLY THE EXPLICIT LEGS. A DEFAULTED HEAD_REF is `HEAD`, and it is deliberately NOT checked
+  # here: its failure direction is the opposite one and is dispositioned in place — an empty repo
+  # falls through to the base-tag die below, which names no flag because the caller passed none.
+  # A DEFAULTED BASE is `git describe`'s answer about that same tip and gets the full-history-
+  # sweep refusal below, which is the stronger check. Widening this guard to cover them would
+  # rewrite two refusals that are already correct into ones that name flags nobody used.
+  #
+  # THE BASE LEG IS CHECKED FIRST, matching bin/release-pr-body's ordering so the two tools
+  # answer the same way about the same pair of flags. The head leg must nonetheless be checked
+  # before the `git describe "${HEAD_REF}^"` below, and is: that describe swallows its own
+  # failure, leaving BASE empty, so an unresolvable EXPLICIT --head used to surface as
+  # "no base tag found before <head>" — a refusal (rc 2) that blamed the wrong leg, and printed
+  # a NOTE about a baseline of ''.
+  [ -z "$BASE" ]     || require_resolvable --base "$BASE"
+  [ -z "$HEAD_REF" ] || require_resolvable --head "$HEAD_REF"
   HEAD_REF="${HEAD_REF:-HEAD}"
   if [ -z "$BASE" ]; then
     BASE="$(git describe --tags --abbrev=0 "${HEAD_REF}^" 2>/dev/null || true)"
