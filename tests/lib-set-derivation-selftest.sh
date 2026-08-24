@@ -347,40 +347,13 @@ LEG3_DISPOSED=(
     "tests/kb-positional-guard-selftest.sh::kb_require_positional"
     # This file's own regrown-list control fixture, below. It MUST be reportable; that is its job.
     "tests/lib-set-derivation-selftest.sh::IF you vendored a lib-sourcing bin"
-    # The live `[Unreleased]` entry for card#7175, disposed on the same terms as card#6884's and
-    # card#6680's below. It reached the predicate only when the doc-sweep half of that card landed:
-    # the entry already named `bin/release-artifacts-check` and `bin/_kb-board-lib.sh`, and the
-    # sweep added `bin/gh-code-search`, which is the SECOND lib-sourcing bin on the line — the
-    # guard firing correctly, on a paragraph that instructs nobody to copy anything. What it
-    # narrates is a SIGPIPE class removed from `bin/` and `tests/` alike; its only sentence about
-    # the lib says that file was CHECKED and carries no instance, which is the (b) shape and the
-    # opposite of a vendoring list.
-    # ⛔ Same bound as its neighbours: the unit is the LINE and the entry is one line, so a list
-    # regrown inside it is suppressed too — and at release time this moves below the version cut,
-    # where the live-line assertion above turns this disposition red rather than letting the next
-    # author inherit the ruling.
-    "docs/CHANGELOG.md::**card#7175** — **"
-    # The live `[Unreleased]` entry for card#6884 — reported the moment the CHANGELOG stopped being
-    # carved out whole-file, and correctly so by the predicate: it is one markdown paragraph, i.e.
-    # ONE line, that narrates a change across most of `bin/` and so names many members of the set.
-    # It instructs nobody to copy a SET — its one vendoring sentence names a single bin ("copy
-    # `bin/_kb-board-lib.sh` beside it") — which is the (b) shape exactly.
-    # ⛔ THE UNIT IS THE LINE AND THE ENTRY IS ONE LINE, so this disposes the WHOLE entry: a list
-    # regrown INSIDE it would be suppressed too. What is NOT suppressed is the next entry, which is
-    # its own line — and at release time this one moves below the version cut, where the live-line
-    # assertion above turns the disposition red and forces the next author to dispose theirs
-    # deliberately rather than inherit this ruling.
-    "docs/CHANGELOG.md::**card#6884** — **"
-    # The live `[Unreleased]` entry for card#6680, reported for the same reason and disposed on
-    # the same terms as card#6884's directly above: one markdown paragraph is ONE line, and this
-    # one narrates a change to `bin/_kb-board-lib.sh` while naming the bins whose CALLER SHAPES
-    # decided the design (`kbcard`'s `resp="$(kb_api …)"`, `dl-a1-register-field`'s bare
-    # assignment under `set -e`). It instructs nobody to copy a SET — its one vendoring sentence
-    # names a single bin, "re-vendor `bin/_kb-board-lib.sh`" — which is the (b) shape.
-    # ⛔ Same bound: the unit is the LINE, so a list regrown inside this entry is suppressed too,
-    # and at release time this moves below the version cut and the live-line assertion above
-    # turns it red for the next author to rule on rather than inherit.
-    "docs/CHANGELOG.md::**card#6680** — **"
+    # ⛔ NO `docs/CHANGELOG.md` DISPOSITION SURVIVES A RELEASE, and that is the contract, not an
+    # omission. v0.30.0 carried three — card#7175, card#6884 and card#6680 — each ruled on the
+    # live `[Unreleased]` entry it named. Step 4 of VERSIONING.md retitled that section as
+    # `## [0.30.0]`, which moved all three below leg 3's version cut; they stopped matching a live
+    # line and the liveness assertion below turned every one of them red, on the release PR, which
+    # is where each was written to expire. Deleting them there is the release's half of it: a
+    # ruling is re-made against the entry in hand, never inherited by the next author.
 )
 
 # _leg3_scan <root> — every reported line in the tree under <root>, as `<relpath>: <line>`.
