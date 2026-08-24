@@ -112,9 +112,16 @@
 #     any word shorter than the index's minimum token length (the server pins that at 3, which is
 #     MariaDB's default) falls back to a literal substring match of the WHOLE term — which is a
 #     PHRASE, not an AND of words. If a multi-word query surprises you, suspect that fallback
-#     first (measured live: `pagination` matched 5 cards on a real board, `a pagination` matched 0).
-#     COMMENT TEXT IS NOT SEARCHED: this endpoint's free text is name + description only, and
-#     `comments_count<op>N` filters on the COUNT, never the content.
+#     first. NO FIGURE IS QUOTED HERE ON PURPOSE: a hit count measured against a live board is
+#     stale the next time anyone files a card, and this paragraph has drifted twice that way.
+#     WHICH ARM RUNS IS THE SERVER'S, AND IT IS VERSION-DEPENDENT — newer servers narrow the
+#     fallback to an AND of words and disclose the arm in the response meta, older ones do
+#     neither, and this tool cannot tell you which you are talking to. Read the kanban API's own
+#     free-text contract for the instance you point at; do not infer it from this comment.
+#     COMMENT CONTENT IS SEARCHED: the free-text arms cover name + description + comment content
+#     — a word appearing ONLY in a comment does reach the card (verified live). Separately,
+#     `comments_count<op>N` filters on the COUNT, never the content: two different things, and
+#     only the second is about counting.
 #     --column / --type filter the matched set client-side exactly as on `list`, and add the
 #     same `<M> of <N>` stderr denominator. A search that matched nothing prints one explicit
 #     line at rc 0 — never a silent empty stdout — and says separately when the query DID
