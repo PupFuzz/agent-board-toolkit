@@ -14,13 +14,17 @@
 # ⛔ WHAT IT GUARDS THAT NO SINGLE-SIDED TEST CAN. The rule now lives in two places that cannot
 # share code — `_kbc_require_ref_int` (bash, the MINT site in `bin/kbcard`) and the `def norm:`
 # (jq, the READ site here) — and a second expression of one rule drifts. `tests/_ref-canon-cases.sh`
-# is the shared fixture both are asserted against, so neither can move alone. Both expressions are
+# is the shared fixture both are asserted against, so neither can move alone. ⚠ It does NOT hold
+# the two accept sets EQUAL — card#7536 narrowed the mint site below the board's own rule while
+# this reader is pinned to that rule — it holds the CONTAINMENT that matters and requires every
+# divergence to be declared with a reason (the fixture header owns that reasoning). Both expressions are
 # EXTRACTED FROM THE SHIPPED FILES rather than restated here: a copy in this test would be a third
 # expression of the rule, and it would stay green while the tool it claims to be about rotted.
 #
 # LAYERS, and why each is not redundant:
 #   1. the fixture, against the extracted jq reader, the extracted shipped-side `numlist`, and
-#      the real bash mint predicate — the accept-set equality claim;
+#      the real bash mint predicate — the containment claim (every value the mint site writes is
+#      one the reader correlates) plus the DECLARED divergence set;
 #   2. a differential against the PRE-FIX jq expression — behaviour-neutrality on well-formed
 #      values, measured rather than asserted;
 #   3. the non-ASCII cases the fixture deliberately excludes;
@@ -78,35 +82,51 @@ eq "the bash mint predicate is defined by the shipped bin" "true" \
 kbc_accepts() { _kbc_require_ref_int --pr "$1" >/dev/null 2>&1 && echo true || echo false; }
 
 # ---------------------------------------------------------------------------
-echo "== the shared fixture: one table, three implementations, one accept set =="
+echo "== the shared fixture: one table, three implementations, containment + declared divergence =="
 # POSITIVE CONTROL FIRST. Every row below is a comparison, and a fixture that loaded as the
 # empty array satisfies all of them by running none. The named witness is a row, not a count —
 # a count pins this to a past table size and rots the moment a case is added.
 eq "the shared fixture loaded (positive control)" "false" \
    "$([ "${#REF_CANON_CASES[@]}" -eq 0 ] && echo true || echo false)"
 eq "…and carries the flagship defect case"        "true"  \
-   "$(has_line '1.5||1 5' "$(printf '%s\n' "${REF_CANON_CASES[@]}")")"
+   "$(has_line '1.5||1 5|refuse-multirun' "$(printf '%s\n' "${REF_CANON_CASES[@]}")")"
 
-accepted=0; refused=0
+accepted=0; refused=0; uncorrelatable=""; divergent=""; declared=""
 for row in "${REF_CANON_CASES[@]}"; do
-    IFS='|' read -r raw want_norm want_numlist <<< "$row"
+    IFS='|' read -r raw want_norm want_numlist want_mint <<< "$row"
     val="$(printf '%b' "$raw")"
     label="$(printf '%s' "$raw")"   # the row's own spelling, so a newline case stays one line
 
     eq "jq reader: '$label' → '$want_norm'" "$want_norm" "$(jqnorm_s "$val")"
     eq "shipped-side numlist: '$label' → '$want_numlist'" "$want_numlist" \
        "$(printf '%s' "$val" | numlist | tr '\n' ' ' | sed 's/ *$//')"
+    eq "mint site on '$label' → $want_mint" \
+       "$([ "$want_mint" = accept ] && echo true || echo false)" "$(kbc_accepts "$val")"
 
-    # THE ANTI-DRIFT CLAIM ITSELF: the mint site refuses exactly the values the reader
-    # correlates to nothing. Asserted per row, in both directions, off ONE expectation column.
-    if [ -n "$want_norm" ]; then
+    if [ "$want_mint" = accept ]; then
         accepted=$((accepted + 1))
-        eq "mint site accepts '$label' (the reader correlates it)" "true" "$(kbc_accepts "$val")"
+        # THE INVARIANT: a value the MINT site writes must be one the READER correlates. The
+        # other direction is not an invariant (see the fixture header) and is handled below.
+        [ -n "$want_norm" ] || uncorrelatable="$uncorrelatable $label"
     else
         refused=$((refused + 1))
-        eq "mint site refuses '$label' (the reader correlates nothing)" "false" "$(kbc_accepts "$val")"
+        [ -z "$want_norm" ] || declared="$declared $label"
+    fi
+    # The MEASURED divergence set, taken from the two implementations rather than from the
+    # table: values the mint site refuses and the reader nonetheless correlates.
+    if [ "$(kbc_accepts "$val")" = false ] && [ -n "$(jqnorm_s "$val")" ]; then
+        divergent="$divergent $label"
     fi
 done
+# CONTAINMENT — the whole ordering claim, and the one a drift would break silently: a stamp
+# `kbcard` accepted that the release sweep would then skip is a card stranded by two tools that
+# each think they are right.
+eq "every value the mint site accepts is one the reader correlates" "" "$uncorrelatable"
+# THE DIVERGENCE SET IS EXACTLY THE DECLARED ONE. `$divergent` is MEASURED off the two shipped
+# implementations; `$declared` is what the fixture's reason tags say. Equality in both
+# directions is what survives the two sides being ruled on separately: a new divergence nobody
+# named reds here, and a tag left behind after a divergence closes reds here too.
+eq "the measured divergence set is exactly the tagged one" "$declared" "$divergent"
 # BOTH ARMS OF THE TABLE ARE POPULATED. A fixture that had drifted to all-accept or all-refuse
 # would still pass every row above while measuring only one direction of the rule.
 eq "the fixture exercises the ACCEPT arm" "false" "$([ "$accepted" -eq 0 ] && echo true || echo false)"
@@ -118,7 +138,7 @@ echo "== behaviour-neutrality: on every value the rule ACCEPTS, the answer is by
 # correlates to exactly what it correlated to before.
 changed_on_accept=0
 for row in "${REF_CANON_CASES[@]}"; do
-    IFS='|' read -r raw want_norm _ <<< "$row"
+    IFS='|' read -r raw want_norm _ _ <<< "$row"
     [ -n "$want_norm" ] || continue
     val="$(printf '%b' "$raw")"
     eq "unchanged vs pre-fix: '$raw'" "$(prefixnorm_s "$val")" "$(jqnorm_s "$val")"
@@ -132,16 +152,22 @@ eq "no accepted value changed answer" "0" "$changed_on_accept"
 eq "pre-fix expression still concatenates '1.5'"        "15"       "$(prefixnorm_s '1.5')"
 eq "pre-fix expression still concatenates '2026-08-23'" "20260823" "$(prefixnorm_s '2026-08-23')"
 eq "pre-fix expression still concatenates 'PR 12 of 34'" "1234"    "$(prefixnorm_s 'PR 12 of 34')"
-disagreed=0
+disagreed=0; nocorrelate=0; nodigits=0
 for row in "${REF_CANON_CASES[@]}"; do
-    IFS='|' read -r raw want_norm _ <<< "$row"
+    IFS='|' read -r raw want_norm _ want_mint <<< "$row"
+    [ "$want_mint" = refuse-nodigits ] && nodigits=$((nodigits + 1))
     [ -z "$want_norm" ] || continue
+    nocorrelate=$((nocorrelate + 1))
     val="$(printf '%b' "$raw")"
     [ "$(prefixnorm_s "$val")" = "$(jqnorm_s "$val")" ] || disagreed=$((disagreed + 1))
 done
-# 'TBD', '' and 'v' carry no digits, so the pre-fix expression already answered "" for them —
-# the two expressions agree there. The other refused rows are exactly where the fix bites.
-eq "the two expressions disagree on every DIGIT-bearing refused row" "$((refused - 3))" "$disagreed"
+# A row carrying NO digits ('TBD', '', 'v') already answered "" under the pre-fix expression, so
+# the two agree there and always did. Every OTHER row the reader correlates to nothing is a row
+# the pre-fix expression answered a number for — that difference IS the fix. The expectation is
+# DERIVED from the table's own two counts rather than written as a figure, so adding a case to
+# either group moves it automatically instead of rotting.
+eq "the two expressions disagree on every DIGIT-bearing uncorrelated row" \
+   "$((nocorrelate - nodigits))" "$disagreed"
 
 echo "== JSON types the fixture cannot spell: a number, and an absent key =="
 # `payload.pr_number` is declared a `number` field, so a well-formed stamp reaches the reader as
