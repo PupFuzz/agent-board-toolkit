@@ -73,6 +73,18 @@
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
+#     --pr / --issue MUST NAME ONE INTEGER, optionally decorated (178, #178, PR-178). A value
+#     carrying no digits, or SEVERAL digit runs (1.5, 2026-08-23, "PR 12 of 34"), is rc 2 before
+#     any request, on both create-card and patch. That is the board's own rule for deriving a
+#     card's by-ref key, applied at the point the value is typed: a stamp the board derives no
+#     reference from correlates the card to NOTHING while looking set, and a reader that instead
+#     concatenates the runs derives a real but DIFFERENT PR/issue (1.5 → 15, 2026-08-23 →
+#     20260823). Only the value's SHAPE is checked here — the board's declared field type is a
+#     separate question, and the two are not the same narrowing: a DECORATED value is accepted
+#     by this check (as the board's own rule accepts it) but is not numeric, so it goes on the
+#     wire as a JSON string, which a `number`-typed pr_number/issue_number field then refuses
+#     server-side (docs/INSTALL.md §3b). --dl has always been strict in the same way
+#     (kb_dl_canon); --pr-url / --issue-url are URLs and are not covered.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
 #     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
@@ -511,10 +523,12 @@ resolve_task() {
 
 # _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin]: assemble
 # the task.payload object shared by create-card and patch from the optional card-metadata
-# flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2 on a malformed
-# --dl (propagated from kb_dl_canon, before any output). Numeric-looking values are
-# coerced to JSON numbers so number-typed custom fields (e.g. pr_number, issue_number)
-# don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
+# flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
+# output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
+# that is not ONE decorated integer (_kbc_require_ref_int). Both callers assemble the payload
+# BEFORE they resolve the task ref, so those refusals cost no request at all. Numeric-looking
+# values are coerced to JSON numbers so number-typed custom fields (e.g. pr_number,
+# issue_number) don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
 # exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
 # alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
@@ -542,9 +556,9 @@ _kbc_build_payload() {
     local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
     local payload_args=()
     if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
-    [[ -n "$pr" ]]        && payload_args+=("pr_number=$pr")
+    if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; payload_args+=("pr_number=$pr"); fi
     [[ -n "$pr_url" ]]    && payload_args+=("pr_url=$pr_url")       # sets the by-ref `source` (owner/repo); pr_number does not
-    [[ -n "$issue" ]]     && payload_args+=("issue_number=$issue")
+    if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; payload_args+=("issue_number=$issue"); fi
     [[ -n "$issue_url" ]] && payload_args+=("issue_url=$issue_url") # sets the by-ref `source` (owner/repo); issue_number does not
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
@@ -585,6 +599,36 @@ _kbc_require_type_alias() {
 _kbc_require_ext_id() {
     kb_is_uint "$1" && return 0
     echo "kbcard: --external-id must be numeric (the integer per-board sync id); got '$1'. For a DL id use --dl." >&2
+    return 2
+}
+
+# _kbc_require_ref_int <flag> <value>: a correlation value (--pr / --issue) must name ONE
+# integer, optionally decorated. This is the board's OWN rule for deriving a card's by-ref key
+# (kanban DL-251: `^\D*(\d+)\D*$` after trimming), applied here at the operator path that
+# MINTS the stored value, so the tool's accept-set equals the set of values the board derives a
+# ref from.
+#
+# WHAT IT REFUSES AND WHY REFUSING BEATS COERCING. A value carrying no digits ("TBD") or SEVERAL
+# digit runs ("1.5", "2026-08-23", "PR 12 of 34") names no single identifier. A reader applying
+# DL-251 derives NO ref from it, so the stamp correlates the card to nothing while looking set;
+# a reader still stripping every non-digit derives the CONCATENATION of the runs — "1.5" → 15,
+# "2026-08-23" → 20260823 — which is a real but DIFFERENT pull request or issue, i.e. a card
+# silently correlated to someone else's work. Both consumers are wrong about the same stamp, in
+# opposite directions, and neither reports an error; the value is only unambiguous at the point
+# it is typed, which is here.
+#
+# NOT a claim about the field's declared TYPE, and deliberately not narrowed to one.
+# `pr_number`/`issue_number` are declared `number` (docs/INSTALL.md §3b) while the merge below
+# only coerces a value `tonumber` accepts, so a DECORATED value such as "#178" — which this
+# rule accepts, as the board's own rule does — travels as a JSON string and is refused
+# server-side on TYPE. That is the server failing loud about a different question, and tying
+# this predicate to kb_is_uint instead would refuse spellings the board itself canonicalizes
+# (a board declaring the field `string` accepts them) — a narrowing this card did not rule on.
+_kbc_require_ref_int() {
+    # `[^0-9]` rather than a bracket range, through kb_ere_match, so the class is ASCII bytes
+    # and not a collation range (an en_US.UTF-8 shell reads `[0-9]` as the latter).
+    kb_ere_match "$2" '^[^0-9]*[0-9]+[^0-9]*$' && return 0
+    echo "kbcard: $1 '$2' must name ONE integer, optionally decorated (178, #178, PR-178) — a value with no digits, or with several digit runs (1.5, 2026-08-23), names no reference: the board derives none from it, and a reader that concatenates the runs derives a real but DIFFERENT PR/issue." >&2
     return 2
 }
 
@@ -957,13 +1001,13 @@ cmd_patch() {
     local swim_json=""
     if [[ -n "$swimlane" ]]; then swim_json="$(_kbc_swimlane_value "$swimlane")" || return 2; fi
 
-    local task; task="$(resolve_task "$task_ref")"
-    # Empty when the board has no native card type for the alias — _kbc_patch_tags then
-    # writes the `type:<alias>` tag instead, exactly as create-card does at birth.
-    local type_id=""
-    if [[ -n "$type" ]]; then type_id="$(native_type_id "$type")"; fi
-
     # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
+    # ORDER IS LOAD-BEARING: this sits with the no-network preflight, ABOVE resolve_task,
+    # because it is where a malformed correlation value is refused (a --dl kb_dl_canon rejects,
+    # a --pr / --issue that is not one decorated integer). Assembled after the ref lookup, that
+    # rc-2 refusal arrived having already issued a GET — a bad invocation must cost no traffic,
+    # exactly as the --type / --external-id / --column / --swimlane refusals above do. Nothing
+    # here reads the resolved task id.
     # pr_url sets payload.pr_url, from which the kanban derives a card's by-ref `source`
     # (owner/repo, lowercased) — required for the repo-qualified PR→card lookup on a
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
@@ -979,6 +1023,12 @@ cmd_patch() {
     elif [[ "$column" == "wont_do" ]]; then
         echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
     fi
+
+    local task; task="$(resolve_task "$task_ref")"
+    # Empty when the board has no native card type for the alias — _kbc_patch_tags then
+    # writes the `type:<alias>` tag instead, exactly as create-card does at birth.
+    local type_id=""
+    if [[ -n "$type" ]]; then type_id="$(native_type_id "$type")"; fi
 
     # Empty unless --tags/--type/--triaged makes this call touch the tag list at all.
     local tags_json

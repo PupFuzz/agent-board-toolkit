@@ -1436,6 +1436,21 @@ kb_dl_canon() {
 # correlation key, where kb_dl_num anchors + bounds + REJECTS non-DL user input loudly. Keep
 # both — a raw kb_dl_num on the canonical "DL-NNNN" form is fine, but it throws on a mixed /
 # leaked stored value this must tolerate.
+#
+# ⚠ THE MIRROR IS EXACT ONLY FOR A VALUE CARRYING ONE DIGIT RUN. kanban DL-251 narrowed the
+# server's rule to exactly one run — a stored value with several ("1.5", "2026-08-23") now
+# derives NO ref there, while this still concatenates them (15, 20260823). So "mirror of the
+# server's canonicalize", which is what a future caller would rely on, is NOT unconditional.
+#
+# The two live callers are NOT alike on provenance, and saying so is the point:
+#   * adopt-to-dl's MINT leg passes next-dl's output — this repo's own "DL-NNNN", one run, exact.
+#   * adopt-to-dl's ALREADY-ADOPTED guard passes a card's STORED payload.dl_number, whose
+#     provenance is whatever wrote the card (board UI, another tool, a human). The divergence is
+#     LIVE there. It does not mis-stamp, and the direction is why: a multi-run stored value
+#     yields a non-empty int here, which that guard reads as "already adopted" and REFUSES on —
+#     fail-closed, no write — where the server would have derived no ref at all. What it does
+#     cost is a diagnostic naming a DL that does not exist ("already adopted as DL-20042").
+# Do not adopt this for a value of unknown provenance without ruling on that difference.
 kb_dl_int_lenient() {
     local d; d="$(printf '%s' "${1:-}" | tr -cd '0-9')"
     [[ -n "$d" ]] || return 0

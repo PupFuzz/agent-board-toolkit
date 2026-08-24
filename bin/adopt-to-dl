@@ -138,9 +138,12 @@ main() {
     if [[ -n "$req_dl" ]]; then
         req_int="$(kb_dl_num "$req_dl")" || { echo "adopt-to-dl: --dl '$req_dl' is not a DL number" >&2; exit 2; }
     fi
-    # --issue is a bare positive integer (the GitHub issue number). Reject anything else LOUD
-    # rather than stamp a non-numeric issue_number (kbcard would coerce a non-number to a string
-    # and the number-typed field would 422 — fail here with a clearer cause).
+    # --issue is a bare positive integer (the GitHub issue number). Stricter than kbcard's own
+    # `--issue` rule on purpose, and still worth having after it: kbcard refuses a value that is
+    # not ONE decorated integer, which still leaves a DECORATED spelling ("#7", "issue-7")
+    # accepted there and then refused on the wire by the number-typed field, and a padded "007"
+    # silently renumbered to 7 by the payload merge's tonumber. This adoption path names the
+    # issue number itself, so it refuses both — one clear cause, before anything is stamped.
     if [[ -n "$req_issue" ]] && ! kb_is_uint "$req_issue"; then
         echo "adopt-to-dl: --issue must be a positive integer (the GitHub issue number); got '$req_issue'" >&2
         exit 2
