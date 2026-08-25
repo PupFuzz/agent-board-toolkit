@@ -383,6 +383,28 @@ g -C "$R" checkout -q -B head-key-one base-key
 printf '0.1.0\nnext: v2.0.0 and again v2.0.0\n' > "$R/KEYSPELL"
 printf '1.2.3.4.5\nnext: 2.0.0.0.5\nagain: 2.0.0.0.5\n' > "$R/KEYTRUNC"
 g -C "$R" add -A; g -C "$R" commit -qm "release: one candidate, written twice, in each file"
+# …and a config that ALSO declares `version_extract_cmd` (card#7599). That key is
+# `release-pr-body`'s, and it answers a DIFFERENT question: "what version is this CHECKOUT
+# at", for the body it renders. THIS tool asks "did the version VALUE change between two
+# REFS", read with `git show <ref>:<file>` and never from the working tree — a command cannot
+# answer that (it can only report on the checkout, so both ends would read ONE value and every
+# real release PR would classify as "version unchanged", asserting no member), and running a
+# script the head under review names would hand the PR arbitrary code execution inside the job
+# that judges it. The fixture is built so wiring the key in cannot be silent: XVER genuinely
+# moves 0.1.0 → 0.2.0 while the script prints a constant 9.9.9 at BOTH ends.
+g -C "$R" checkout -q -B head-xcmd base-0.1.0
+printf '0.1.0\n' > "$R/XVER"
+mkdir -p "$R/xbin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" 9.9.9\n' > "$R/xbin/version.sh"
+chmod +x "$R/xbin/version.sh"
+cfg cfg-xcmd.json '{ "version_file": "XVER", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "version_extract_cmd": "xbin/version.sh", "artifacts": ["VERSION → {{version}}"] }'
+g -C "$R" add -A; g -C "$R" commit -qm "chore: fork-point state for the version_extract_cmd case"
+g -C "$R" branch base-xcmd
+printf '0.2.0\n' > "$R/XVER"
+echo "0.2.0" > "$R/VERSION"
+g -C "$R" add -A; g -C "$R" commit -qm "release: 0.1.0 → 0.2.0 under a config that also names an extractor"
+
 # WIDENING — a third alternative added to the live brace set. Under a string-identity
 # comparison unit this reds (the old entry string is gone), which is exactly what the expanded
 # unit exists to prevent.
@@ -636,6 +658,11 @@ g -C "$R" checkout -q base-0.1.0
 # happens. `cfg-committed-only.json` is deliberately absent from this map (case 21), and
 # `cfg-tree-only.json` is written here and nowhere else (case 24).
 for p in "${!TREE_CFG[@]}"; do printf '%s\n' "${TREE_CFG[$p]}" > "$R/$p"; done
+# The version_extract_cmd fixture's script, in the WORKING TREE this time — the final checkout
+# is base-0.1.0, which does not carry it. Without this line an implementation that wired the
+# key in would red on "no such file" instead of on the constant it printed, and the case would
+# stop diagnosing the thing it exists to catch (card#7599).
+mkdir -p "$R/xbin"; printf '#!/usr/bin/env bash\nprintf "%%s\\n" 9.9.9\n' > "$R/xbin/version.sh"; chmod +x "$R/xbin/version.sh"
 printf '%s\n' "$CFG_ONE_MEMBER" > "$R/cfg-tree-only.json"
 # A config outside any repository, for the --config normalization refusal.
 mkdir -p "$T/outside"; printf '%s\n' "$CFG_ONE_MEMBER" > "$T/outside/.release-pr.json"
@@ -935,6 +962,25 @@ eq "…as a release of the value head carries"   "release 8"  "$OUT"
 # rc-0 above is the classifier running, not a mode that says "release" to everything.
 run base-seg base-seg --config cfg-seg.json --classify-only
 eq "…and an unchanged one is not a release"    "not-release 7" "$OUT"
+
+echo "== version_extract_cmd is NOT a classification key here, and must not become one (card#7599) =="
+# The classifying value comes from the two REFS' content, so the config carrying that key
+# changes nothing about this verdict. If it were ever honoured, the command would answer 9.9.9
+# for BOTH ends: `not-release 9.9.9`, and in the full mode every declared member silently
+# unasserted. Case (i) above is the standing control that "version unchanged" IS reachable
+# here, which is what makes these assertions falsifiable rather than decorative.
+# SEEN RED, on a bin whose `_extract_version` was wired to honour the key: `not-release 9.9.9`
+# and no `OK — VERSION moved`. ⚠ THE TWO `rc 0` LEGS STAYED GREEN under that mutation, and are
+# kept only as the fixture's own health check — the failure this pins is a SILENT non-run, so
+# an rc is structurally the wrong instrument for it.
+run base-xcmd head-xcmd --config cfg-xcmd.json --classify-only
+eq "the two refs still decide the classification" "0"              "$RC"
+eq "…as a release of the value HEAD's file carries" "release 0.2.0" "$OUT"
+eq "…never the command's constant"                "false"          "$(has '9.9.9' "$OUT")"
+# …and the member legs run, which is what a silent "version unchanged" would have cost.
+run base-xcmd head-xcmd --config cfg-xcmd.json
+eq "rc 0"                                         "0"              "$RC"
+eq "…and the declared member IS asserted"         "true"           "$(has 'OK — VERSION moved' "$OUT")"
 
 echo "== the candidate-set dedupe keys on the WHOLE match, and that decides a verdict (card#7208) =="
 # RED WHEN THE KEY IS NARROWED. Re-adding the deleted numeric pull as the dedupe key folds
