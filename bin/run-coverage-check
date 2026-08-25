@@ -162,7 +162,10 @@
 #     key is refused rather than half-read.
 #   * WHETHER A RUN THAT EXISTS ACTUALLY ASSERTED ANYTHING. RAN means a run object exists for
 #     this head and this workflow path. Its conclusion is PRINTED, never judged — a run that
-#     failed, was cancelled, or skipped every job is still RAN here. This tool answers "did the
+#     failed, was cancelled, or skipped every job is still RAN here, and one that has not
+#     finished prints its STATUS in the conclusion's place (`pull_request/in_progress`) rather
+#     than being withheld: "the check has not reported YET" and "the check will never report"
+#     are the two readings this tool exists to separate, and only the second is a finding. This tool answers "did the
 #     check report", which is the question `mergeStateStatus` cannot answer; whether it reported
 #     PASS is a question every other gate already answers.
 #   * A CHECK THAT IS NOT A WORKFLOW RUN — an external status context, an App check-run. Those
@@ -564,7 +567,7 @@ report+="  population    $n_wf workflow file(s) — $n_ran ran, $n_skip skipped,
 report+=$'\n'
 if [[ -n "$L_MISS" ]]; then report+="MISSING — this PR matches the workflow triggers and filters, and no run exists"$'\n'"$L_MISS"$'\n'; fi
 if [[ -n "$L_UNM"  ]]; then report+="UNMEASURED — no verdict is sound for these; this is NOT 'covered'"$'\n'"$L_UNM"$'\n'; fi
-if [[ -n "$L_RAN"  ]]; then report+="RAN — a run exists for this head (its CONCLUSION is printed, never judged)"$'\n'"$L_RAN"$'\n'; fi
+if [[ -n "$L_RAN"  ]]; then report+="RAN — a run exists for this head (its conclusion, or its status while it is still running, is printed and never judged)"$'\n'"$L_RAN"$'\n'; fi
 if [[ -n "$L_SKIP" ]]; then report+="SKIPPED — correct silence, with the reason it is correct"$'\n'"$L_SKIP"$'\n'; fi
 if [[ -n "$L_OOS"  ]]; then report+="OUT-OF-SCOPE — no pull-request trigger, so no expectation is derived (see --help)"$'\n'"$L_OOS"$'\n'; fi
 case "$verdict" in
