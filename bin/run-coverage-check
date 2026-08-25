@@ -1,0 +1,576 @@
+#!/usr/bin/env bash
+# run-coverage-check — a CI check that NEVER RAN is indistinguishable from one that PASSED.
+# This tool makes the two distinguishable, by deriving which workflows SHOULD have produced a
+# run on a pull request's head and comparing that against the runs that actually exist.
+#
+# ⛔ REPORT-ONLY. IT GATES NOTHING, BLOCKS NOTHING, AND WRITES NOTHING. It issues only GET
+# requests, posts no comment, sets no status, and is deliberately NOT wired into any workflow
+# and NOT a required status check. Making it one would change what gates a merge, which is an
+# ask-first decision and has not been approved. Its verdict rides its EXIT CODE, for a caller
+# that chose to read it.
+#
+# ─────────────────────────────── WHY THIS EXISTS (card#7615) ───────────────────────────────
+#
+# GitHub creates NO WORKFLOW RUNS AT ALL for a pull request whose merge ref it cannot compute
+# (the base moved, the PR is conflicting). Measured on `kanban-board` PR #651: `rows=0` on the
+# first head — not a slow queue, no runs ever. `mergeStateStatus` does not separate never-ran
+# from passed, and on a repository with no branch protection nothing stops the merge. The push
+# that clears the conflict arrives as a `synchronize`, so a workflow whose `types:` list omits
+# that event never gets a first run at all.
+#
+# ⭐ THE DISCRIMINATING CONTROL, still retrievable on the live API: `agent-webhook-bridge`
+# PR #574's push-created head `8623d5fa892a34072487eb1a87b291dee7daf12c` carries SIX
+# `pull_request` runs — and `pr-title-lint.yml`, whose `types:` was `[opened, edited,
+# reopened]`, is ABSENT from them while six sibling gates ran. Six green ticks, one gate that
+# never reported, and nothing anywhere said so.
+#
+# ⚠ AND IT IS WORSE FOR A PATH-FILTERED WORKFLOW, which is what makes this a class rather than
+# an instance. For a workflow carrying `paths:`, ZERO RUNS IS THE NORMAL, CORRECT STATE on most
+# pull requests. So "never ran", "correctly skipped" and "passed" are all the SAME READING, and
+# no count-the-runs check can separate them without also computing the path match. That
+# computation is what this tool does.
+#
+# ⭐ THE PREFERRED FIX IS NOT THIS TOOL — IT IS A REQUIRED STATUS CHECK, which makes GitHub
+# itself block a merge on a check that has not reported, and closes the whole class rather than
+# reporting on it. Adopt that FIRST wherever it is available, and reach for this tool for what
+# it cannot cover. Two things put a repository out of its reach, both measured:
+#   * NO BRANCH PROTECTION AND NO WAY TO ADD IT. On a private repository under a plan that does
+#     not carry protected branches, `branches/<b>/protection` answers
+#     `403 "Upgrade to GitHub Pro or make this repository public"` — a PLAN limit that no
+#     credential can fix. Nothing there can be required, so nothing blocks a merge on a check
+#     that never reported. That is the case this tool was built for.
+#   * A PATH-FILTERED WORKFLOW CANNOT BE REQUIRED AT ALL, whatever the plan: GitHub treats a
+#     required check that has not reported as PENDING, so requiring one that correctly skips
+#     would deadlock every pull request that does not touch its paths. Exactly the workflows
+#     this tool's `paths:` half exists for are the ones fix shape 1 must not be pointed at.
+# This tool never becomes that fix. It reports; it is not, and must not be made into, a gate.
+#
+# ⛔ AND IT DELIBERATELY NAMES NO REPOSITORY'S CURRENT CONFIGURATION. Which gate is required
+# where is live state in someone else's settings, and a shipped tool asserting it is a stale
+# doc waiting to happen; the repo-by-repo record belongs in the CHANGELOG entry that shipped
+# this, which is dated.
+#
+# ─────────────────────────────── THE THREE STATES ───────────────────────────────
+#
+# Collapsing these is the entire defect, so they are three separate report lines and the
+# exit code separates them too:
+#
+#   RAN         a run exists for this PR's head, for this workflow file.
+#   SKIPPED     no run exists, AND this PR genuinely does not match the workflow's triggers,
+#               branch filters or path filters. Correct silence. The REASON is printed.
+#   MISSING     no run exists, and this PR DOES match. ⛔ This is the finding.
+#
+# and two more that are NOT verdicts and must never be read as coverage:
+#
+#   UNMEASURED  the workflow matches on everything this tool could read, but something it
+#               needed was unreadable or truncated, so no verdict is sound. A read that
+#               returned nothing is a measurement that never happened — it is NEVER reported
+#               as SKIPPED, and never folded into "covered".
+#   OUT-OF-SCOPE  the workflow carries no `pull_request` / `pull_request_target` trigger, so
+#               this tool derives no expectation for it (see the bounds below). Printed on
+#               every run so the exclusion stays visible instead of becoming folklore.
+#
+# ─────────────────────────────── EXIT STATUS ───────────────────────────────
+#
+#   0  every in-scope workflow got a DECIDED verdict and each was RAN or SKIPPED. Nothing
+#      unmeasured, nothing missing. This is the only code that means "covered".
+#   1  at least one MISSING. ⚠ rc 1 is a FINDING, not a completeness claim: a run can carry
+#      both MISSING and UNMEASURED lines, and MISSING outranks. Read the UNMEASURED block.
+#   2  this run stands behind NOTHING — the pull request, the workflow directory, the run
+#      list or the changed-file list could not be read whole, or the derived population was
+#      empty, or the invocation was refused. A usage error is a member of this code on
+#      purpose: a caller who cannot tell a typo from a truncated read is still correctly told
+#      not to treat either as coverage.
+#
+# ⛔ WHY MISSING OUTRANKS UNMEASURED, stated because the opposite is defensible and was
+# considered: a MISSING found on workflow A is a definite finding whatever happened to
+# workflow B, and reporting it under the softer "I could not look" heading files a live
+# finding inside a bundle where it goes quiet. The direction that must never happen — an
+# unreadable anything scoring as rc 0 — is closed in both orderings.
+#
+# ─────────────────────────────── HOW THE EXPECTATION IS DERIVED ───────────────────────────
+#
+# For each `*.yml`/`*.yaml` under `.github/workflows/` AT THE PR'S HEAD (the tree GitHub
+# evaluates for a `pull_request` event; `--ref` overrides it), the `on:` block is parsed and
+# the `pull_request` / `pull_request_target` trigger evaluated against THIS pull request:
+#
+#   types:            expected iff the list is absent, or contains any of `opened`,
+#                     `reopened`, `synchronize`. ⚠ OVER-COLLECTS BY DESIGN — an open PR's
+#                     current head is either the head it was opened with or the product of a
+#                     synchronize push, and the API does not say which, so a workflow whose
+#                     types cover only the OTHER one reads as MISSING. That errs RED (a
+#                     reported finding to dismiss), never green. A `types:` list carrying
+#                     `opened`/`reopened` but NOT `synchronize` is additionally annotated
+#                     `no-synchronize`: that is the card#7594 / card#7597 shape itself, a
+#                     workflow that stops reporting on every push after the first.
+#   branches: /
+#   branches-ignore:  matched against the PR's BASE ref.
+#   paths: /
+#   paths-ignore:     matched against the PR's ACTUAL CHANGED FILE LIST. `paths:` expects a
+#                     run iff at least one changed file matches; `paths-ignore:` iff at least
+#                     one changed file does NOT. Patterns are applied IN ORDER with `!`
+#                     negation, so a later pattern overrides an earlier one, as GitHub does.
+#
+# THE CHANGED-FILE LIST IS PAGINATED AND CAN TRUNCATE — GitHub's files endpoint caps at 3000
+# — AND A TRUNCATED LIST MAKES EVERY `paths:` VERDICT UNSOUND. So the retrieved count is
+# compared against the PR object's own `changed_files`, and on any mismatch every
+# path-filtered workflow is reported UNMEASURED rather than guessed. A workflow with no path
+# filter still gets a sound verdict on the same run; the truncation is not allowed to
+# swallow the whole report, and is not allowed to be quiet either.
+#
+# ⛔ THE HEAD SHA IS USED AT FULL 40-HEX WIDTH, ALWAYS. `actions/runs?head_sha=` matches
+# EXACTLY: a short SHA returns zero rows at HTTP 200, which reads byte-identically to "no runs
+# exist" — measured on this very fixture (`head_sha=8623d5fa` → `total_count 0`;
+# `head_sha=8623d5fa892a34072487eb1a87b291dee7daf12c` → `total_count 6`). That is this card's
+# own defect arriving through the query string, so the width is asserted before the request.
+#
+# THE RUN LIST IS READ WHOLE OR NOT AT ALL. Every MISSING verdict is an assertion about an
+# ABSENCE from that list, so a truncated list would manufacture findings. The retrieved count
+# is compared against the endpoint's `total_count`; a mismatch is rc 2 for the entire run and
+# no per-workflow verdict is emitted at all.
+#
+# A DISABLED WORKFLOW IS NOT A MISSING ONE. `actions/workflows` is read for each file's
+# `state`, and a non-`active` one is SKIPPED with that reason. A file present at the head but
+# absent from that listing is treated as ACTIVE — that is the normal state of a workflow
+# introduced by this very PR, and it is annotated `new-at-head` rather than assumed away.
+#
+# ─────────────────────────────── ⛔ WHAT THIS STRUCTURALLY CANNOT SEE ───────────────────────
+#
+# Stated so a green run is not over-cited. A green run means "every workflow carrying a
+# pull-request trigger, whose `on:` block this parser could read, produced a run or is
+# provably not expected to" — and nothing wider.
+#
+#   * A `push`-ONLY WORKFLOW IS OUT OF SCOPE, and is listed as such on every run rather than
+#     dropped. Whether a `push` run should exist depends on the push's own commit RANGE (which
+#     for a force-push or a multi-commit push is not the PR diff) and on whether the head
+#     branch lives in this repository at all (for a fork PR it does not) — neither is
+#     derivable from the PR object, so an expectation here would be a guess wearing a verdict's
+#     clothes. A workflow carrying BOTH triggers is in scope through its pull-request half.
+#   * `pull_request_target` IS EVALUATED FROM THE HEAD'S COPY of the workflow, while GitHub
+#     evaluates it from the BASE branch's. A head that edits such a workflow is therefore
+#     mis-derived; `--ref <base-ref>` is the spelling for that question.
+#   * A `types:` list naming only activities the PR object cannot confirm (`labeled`,
+#     `closed`, `assigned`…) is OUT-OF-SCOPE, not SKIPPED: whether that activity occurred is
+#     not derivable, and calling it "correctly skipped" would be the collapse this tool exists
+#     to prevent.
+#   * A GLOB FEATURE THIS PARSER DOES NOT IMPLEMENT — a character class `[…]`, a `+`, a brace
+#     — makes the workflow UNMEASURED, never SKIPPED. `*`, `**`, `?` and leading-`!` negation
+#     are implemented; everything else is refused out loud.
+#   * AN `on:` BLOCK SHAPE THE PARSER CANNOT READ is UNMEASURED for the same reason. It reads
+#     the block/flow forms GitHub's own docs use (`on: [a, b]`, `on:\n  pull_request:`,
+#     `types: [x, y]`, a `-` block sequence); a multi-line flow sequence, an anchor, or a merge
+#     key is refused rather than half-read.
+#   * WHETHER A RUN THAT EXISTS ACTUALLY ASSERTED ANYTHING. RAN means a run object exists for
+#     this head and this workflow path. Its conclusion is PRINTED, never judged — a run that
+#     failed, was cancelled, or skipped every job is still RAN here. This tool answers "did the
+#     check report", which is the question `mergeStateStatus` cannot answer; whether it reported
+#     PASS is a question every other gate already answers.
+#   * A CHECK THAT IS NOT A WORKFLOW RUN — an external status context, an App check-run. Those
+#     never appear in `actions/runs` and this tool makes no claim about them.
+#
+# Usage:
+#   run-coverage-check --repo <owner/name> --pr <N> [--ref <git-ref>]
+#
+#   --repo  the repository, `owner/name`.
+#   --pr    the pull-request number.
+#   --ref   the ref to read `.github/workflows/` from. Default: the PR's head SHA.
+#
+# Requires `gh` (authenticated, read scope is enough) and `jq`. Emits no credential: every
+# request is built from the validated `--repo`/`--pr`/`--ref` values, and `gh`'s own stderr is
+# not relayed — a refusal is reported as the endpoint plus the status `gh` exited with.
+set -euo pipefail
+# ⛔ FIRST STATEMENT AFTER `set`, and the position is load-bearing — every write in this file
+# is behind it, including the lib-missing refusal on the next lines. A verdict-carrying tool
+# that dies of SIGPIPE mid-emit reports NOTHING at a status its caller cannot read, which is
+# the same read-outcome collapse this file exists to close, arriving through the pipe.
+trap '' PIPE
+
+# --- shared lib -------------------------------------------------------------
+KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board-lib.sh"
+[ -r "$KB_LIB" ] || { printf '%s\n' "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2 2>/dev/null || true; exit 2; }
+# shellcheck source=bin/_kb-board-lib.sh
+source "$KB_LIB"
+KB_PROG="run-coverage-check"
+
+# --- the write rule ---------------------------------------------------------
+# Every byte goes through one of these two, as an ALREADY-COMPLETE string whose write failure
+# is tolerated: with `trap '' PIPE` in force a closed reader makes the write RETURN non-zero,
+# and under `set -e` a bare write standing in front of the verdict-carrying `exit` would take
+# the rc with it — turning "1 MISSING" into "1" from a completely different cause.
+_put()     { printf '%s\n' "$1" 2>/dev/null || true; }
+_put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
+
+USAGE='usage: run-coverage-check --repo <owner/name> --pr <N> [--ref <git-ref>]'
+# BOTH exit 2 — the single "this run stands behind nothing" code — and they are two functions
+# rather than one because they answer different questions and a caller has to be able to tell
+# them apart from the text: `die` is a refused INVOCATION and prints the usage line, `refuse` is
+# a refused MEASUREMENT, where the usage line is noise that buries the endpoint that failed.
+die()    { _put_err "$KB_PROG: $*"$'\n'"$USAGE"; exit 2; }
+refuse() { _put_err "$KB_PROG: $*"; exit 2; }
+
+REPO=""; PR=""; REF=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo) kb_require_value "$1" "${2:-}" || exit 2; shift; REPO="$1" ;;
+        --pr)   kb_require_value "$1" "${2:-}" || exit 2; shift; PR="$1" ;;
+        --ref)  kb_require_value "$1" "${2:-}" || exit 2; shift; REF="$1" ;;
+        # Contiguous leading comment block, not a fixed range — see the release movers.
+        -h|--help) _put "$(awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0")"; exit 0 ;;
+        *) die "unknown argument '$1'" ;;
+    esac
+    shift
+done
+
+# The three inputs are interpolated into API PATHS, so each is pinned to a shape that cannot
+# carry a path segment, a query parameter or a URL authority. This is a refusal, not a
+# sanitiser: a value that does not match is reported by name and nothing is requested.
+#
+# ⛔ EVERY SHAPE TEST BELOW GOES THROUGH `kb_ere_match`, WHICH PINS `LC_ALL=C` — never a bare
+# `[[ … =~ [0-9] ]]`. A bracket range in a bash pattern is a COLLATION range: under a UTF-8
+# locale `^[0-9]+$` matches U+0663 ARABIC-INDIC DIGIT THREE and `^[A-Za-z0-9._-]+$` matches
+# U+00E9 (measured on the reference host, card#5409). These three guards decide what may be
+# interpolated into a REQUEST PATH, so a locale-widened accept-set is precisely the wrong
+# direction to be wrong in.
+[[ -n "$REPO" ]] || die "--repo is required"
+[[ -n "$PR"   ]] || die "--pr is required"
+kb_ere_match "$REPO" '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || die "--repo must be 'owner/name', got '$REPO'"
+if ! kb_is_uint "$PR" || [[ "$PR" -eq 0 ]]; then die "--pr must be a positive integer, got '$PR'"; fi
+[[ -z "$REF" ]] || kb_ere_match "$REF" '^[A-Za-z0-9._/-]+$' \
+    || die "--ref carries a character this tool will not put in a request path, got '$REF'"
+
+command -v gh >/dev/null 2>&1 || refuse "gh is not on PATH — this tool reads the GitHub API through it"
+command -v jq >/dev/null 2>&1 || refuse "jq is not on PATH"
+
+# _api <endpoint> [extra gh args…] — GET it, print the body, and REPORT the status. gh's own
+# stderr is discarded on purpose (it is a diagnostic surface this tool does not relay), and
+# the status is returned rather than swallowed: every caller below branches on it, because an
+# unreadable endpoint and an empty one are the two answers this tool exists to keep apart.
+_api() { gh api "$@" 2>/dev/null </dev/null; }
+
+# ── the `on:`-block reader ──────────────────────────────────────────────────────────────────
+#
+# awk, not a YAML library: the tool must run wherever `gh` does, and neither `yq` nor a python
+# YAML module is a dependency this repo already carries. The scan is deliberately NARROW and
+# fails LOUD — it reads the shapes GitHub's own documentation uses and prints UNMEASURED with
+# the offending construct for everything else, rather than half-reading a block and returning
+# a verdict-shaped guess.
+#
+# Input: the changed-file list first, the workflow YAML second. Output: exactly one TAB record
+#   <EXPECTED|NOT-EXPECTED|OUT-OF-SCOPE|UNMEASURED> <TAB> <events> <TAB> <reason>
+_ON_AWK='
+function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+function unq(s,  c){ s=trim(s); if(length(s)>=2){ c=substr(s,1,1); if((c=="\""||c==SQ) && substr(s,length(s),1)==c) s=substr(s,2,length(s)-2) } return s }
+function ind(s,  i,n,c){ n=length(s); for(i=1;i<=n;i++){ c=substr(s,i,1); if(c!=" ") return i-1 } return -1 }
+# a `#` opens a comment only OUTSIDE quotes and only at a word boundary: `cron: "23 5 * * 1"  # x`
+function decomment(L,  i,n,c,q,out){
+  n=length(L); q=""; out=""
+  for(i=1;i<=n;i++){
+    c=substr(L,i,1)
+    if(q!=""){ out=out c; if(c==q) q=""; continue }
+    if(c=="\""||c==SQ){ q=c; out=out c; continue }
+    if(c=="#" && (i==1 || substr(L,i-1,1)==" ")) break
+    out=out c
+  }
+  sub(/[ \t]+$/,"",out); return out
+}
+function splitflow(s, arr,   t,n,i,k,v,tmp){
+  t=trim(s); sub(/^\[/,"",t); sub(/\]$/,"",t)
+  n=split(t, tmp, ","); k=0
+  for(i=1;i<=n;i++){ v=unq(tmp[i]); if(v!="") arr[++k]=v }
+  return k
+}
+# GitHub filter-pattern glob → ERE. `**` crosses `/`, `*` and `?` do not. Everything else is
+# escaped to a literal, which is why badglob() below must refuse the constructs that would
+# silently BECOME literals here (a `[a-z]` class would match the four characters).
+function g2re(p,  i,n,c,out){
+  out="^"; n=length(p)
+  for(i=1;i<=n;i++){
+    c=substr(p,i,1)
+    if(c=="*"){ if(substr(p,i+1,1)=="*"){ out=out ".*"; i++ } else out=out "[^/]*" }
+    else if(c=="?") out=out "[^/]"
+    else if(index("\\^$.|+()[]{}", c) > 0) out=out "\\" c
+    else out=out c
+  }
+  return out "$"
+}
+function badglob(p){ if(substr(p,1,1)=="!") p=substr(p,2); return (p ~ /[][{}()+]/ || p ~ /!/) }
+# ordered evaluation with `!` negation — a LATER matching pattern overrides an earlier one.
+function lmatch(f, arr, n,   i,p,neg,res){
+  res=0
+  for(i=1;i<=n;i++){ p=arr[i]; neg=0; if(substr(p,1,1)=="!"){ neg=1; p=substr(p,2) }
+    if(f ~ g2re(p)) res=(neg?0:1) }
+  return res
+}
+# an EMPTY field would be swallowed: tab is an IFS whitespace character, so bash `read` collapses
+# a run of them into one delimiter and the REASON would silently arrive in the events column.
+function emit(st,ev,why){ if(ev=="") ev="-"; printf "%s\t%s\t%s\n", st, ev, why; exit }
+# ⛔ FILENAME, NOT THE `NR==FNR` IDIOM. An EMPTY first file makes NR==FNR true for every
+# record of the SECOND one too, so a pull request that changed no files would have its whole
+# workflow YAML consumed as the changed-file list — leaving the document empty and every
+# workflow reported OUT-OF-SCOPE `no top-level on: key`. Watched fail: the positive control in
+# tests/run-coverage-check-selftest.sh reproduced it on the first run, on a fixture with zero
+# changed files, while thirteen live pull requests (all of them with files) had passed.
+BEGIN { FIRSTF = ARGV[1] }
+FILENAME==FIRSTF { if($0!="") cf[++ncf]=$0; next }
+{ y[++ny]=decomment($0) }
+END {
+  for(i=1;i<=ny;i++) if(y[i] ~ /^["'"'"']?on["'"'"']?:/) { onl=i; break }
+  if(!onl) emit("OUT-OF-SCOPE","","no top-level on: key")
+  rest=trim(substr(y[onl], index(y[onl],":")+1))
+  if(rest != "") {
+    # `on: [a, b]` / `on: push` — a trigger list with no filters at all.
+    if(rest ~ /^\[.*\]$/) nt=splitflow(rest, tg)
+    else if(rest ~ /^[A-Za-z_][A-Za-z0-9_]*$/) { tg[1]=rest; nt=1 }
+    else emit("UNMEASURED","","on: scalar this parser does not read: " rest)
+    for(i=1;i<=nt;i++) if(tg[i]=="pull_request"||tg[i]=="pull_request_target") ev=(ev==""?tg[i]:ev "+" tg[i])
+    if(ev=="") emit("OUT-OF-SCOPE","","no pull_request trigger (on: " rest ")")
+    emit("EXPECTED",ev,"no types/branches/paths filter")
+  }
+  # block form. The base indent is the first non-blank child; the block ends at the first
+  # non-blank line back at column 0.
+  base=-1
+  for(i=onl+1;i<=ny;i++){
+    k=ind(y[i]); if(k<0) continue
+    if(k==0) break
+    if(base<0) base=k
+    if(k>base) continue
+    if(y[i] !~ /^[ ]*[A-Za-z_][A-Za-z0-9_-]*:/) emit("UNMEASURED","","on: block line this parser does not read: " trim(y[i]))
+    t=trim(y[i]); sub(/:.*$/,"",t)
+    trg[++ntr]=t; trgl[ntr]=i
+    if(t=="pull_request"||t=="pull_request_target") { prname[++npr]=t; prline[npr]=i }
+    if(t=="push") haspush=1
+  }
+  if(base<0) emit("UNMEASURED","","on: has an empty block")
+  if(npr==0) { for(i=1;i<=ntr;i++) tl=(tl==""?trg[i]:tl "," trg[i]); emit("OUT-OF-SCOPE","","no pull_request trigger (on: " tl ")") }
+
+  anyexp=0; evs=""; whyskip=""; ann=""
+  for(p=1;p<=npr;p++){
+    delete types; delete br; delete bri; delete pt; delete pti
+    ntypes=0; nbr=0; nbri=0; npt=0; npti=0
+    # the filter keys of THIS trigger: the lines indented past `base`, up to the next sibling.
+    j=prline[p]+1; ci=-1
+    while(j<=ny){
+      k=ind(y[j]); if(k<0){ j++; continue }
+      if(k<=base) break
+      if(ci<0) ci=k
+      if(k==ci){
+        if(y[j] !~ /^[ ]*[a-z][a-z-]*:/) emit("UNMEASURED","",prname[p] ": filter line this parser does not read: " trim(y[j]))
+        key=trim(y[j]); sub(/:.*$/,"",key)
+        val=trim(substr(y[j], index(y[j],":")+1))
+        if(key!="types"&&key!="branches"&&key!="branches-ignore"&&key!="paths"&&key!="paths-ignore")
+          emit("UNMEASURED","",prname[p] ": filter key this parser does not read: " key)
+        delete items; ni=0
+        if(val!=""){
+          if(val ~ /^\[.*\]$/) ni=splitflow(val, items)
+          else emit("UNMEASURED","",prname[p] "." key ": value this parser does not read: " val)
+        } else {
+          m=j+1
+          while(m<=ny){ kk=ind(y[m]); if(kk<0){ m++; continue }
+            if(kk<=ci) break
+            if(y[m] !~ /^[ ]*-[ ]/) emit("UNMEASURED","",prname[p] "." key ": sequence line this parser does not read: " trim(y[m]))
+            v=trim(y[m]); sub(/^-[ ]+/,"",v); items[++ni]=unq(v); m++ }
+        }
+        if(key=="types"){ for(q=1;q<=ni;q++) types[++ntypes]=items[q] }
+        else if(key=="branches"){ for(q=1;q<=ni;q++) br[++nbr]=items[q] }
+        else if(key=="branches-ignore"){ for(q=1;q<=ni;q++) bri[++nbri]=items[q] }
+        else if(key=="paths"){ for(q=1;q<=ni;q++) pt[++npt]=items[q] }
+        else { for(q=1;q<=ni;q++) pti[++npti]=items[q] }
+      }
+      j++
+    }
+    xpct=1; why=""
+    if(ntypes>0){
+      hit=0; sync=0
+      for(q=1;q<=ntypes;q++){ if(types[q]=="opened"||types[q]=="reopened"||types[q]=="synchronize") hit=1
+                              if(types[q]=="synchronize") sync=1 }
+      if(!hit) emit("OUT-OF-SCOPE","",prname[p] ": types names no activity this PR object can confirm")
+      if(!sync) ann=ann (ann==""?"":" ") "no-synchronize"
+    }
+    if(xpct && nbr>0){ for(q=1;q<=nbr;q++) if(badglob(br[q])) emit("UNMEASURED","",prname[p] ".branches: glob feature this parser does not implement: " br[q])
+      if(!lmatch(BASEREF, br, nbr)){ xpct=0; why="branches: does not match base ref " BASEREF } }
+    if(xpct && nbri>0){ for(q=1;q<=nbri;q++) if(badglob(bri[q])) emit("UNMEASURED","",prname[p] ".branches-ignore: glob feature this parser does not implement: " bri[q])
+      if(lmatch(BASEREF, bri, nbri)){ xpct=0; why="branches-ignore: matches base ref " BASEREF } }
+    if(xpct && npt>0 && npti>0) emit("UNMEASURED","",prname[p] ": paths and paths-ignore on one trigger — GitHub rejects this workflow")
+    if(xpct && (npt>0||npti>0)){
+      if(FILESOK!="1") emit("UNMEASURED","","path-filtered, and the changed-file list is not whole — a paths verdict would be unsound")
+      for(q=1;q<=npt;q++) if(badglob(pt[q])) emit("UNMEASURED","",prname[p] ".paths: glob feature this parser does not implement: " pt[q])
+      for(q=1;q<=npti;q++) if(badglob(pti[q])) emit("UNMEASURED","",prname[p] ".paths-ignore: glob feature this parser does not implement: " pti[q])
+      hit=0
+      if(npt>0){ for(q=1;q<=ncf;q++) if(lmatch(cf[q], pt, npt)) { hit=1; break }
+                 if(!hit){ xpct=0; why="paths: no changed file matches" } }
+      else     { for(q=1;q<=ncf;q++) if(!lmatch(cf[q], pti, npti)) { hit=1; break }
+                 if(!hit){ xpct=0; why="paths-ignore: every changed file is ignored" } }
+    }
+    if(xpct){ anyexp=1; evs=(evs==""?prname[p]:evs "+" prname[p]) }
+    else whyskip=(whyskip==""?prname[p] " " why : whyskip "; " prname[p] " " why)
+  }
+  if(anyexp) emit("EXPECTED", evs, (ann==""?"matches":"matches (" ann ")"))
+  emit("NOT-EXPECTED","",whyskip)
+}'
+
+# _decide <files-list> <workflow-yaml> <base-ref> <files-whole 0|1> — one TAB record.
+_decide() {
+    awk -v SQ="'" -v BASEREF="$3" -v FILESOK="$4" "$_ON_AWK" "$1" "$2"
+}
+
+# ── the reads ───────────────────────────────────────────────────────────────────────────────
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+
+rc=0
+PRJSON="$(_api "repos/$REPO/pulls/$PR")" || rc=$?
+[[ "$rc" -eq 0 ]] || refuse "could not read repos/$REPO/pulls/$PR (gh exited $rc) — nothing was measured"
+HEAD_SHA="$(printf '%s' "$PRJSON" | jq -r '.head.sha // ""')"
+BASE_REF="$(printf '%s' "$PRJSON" | jq -r '.base.ref // ""')"
+PR_STATE="$(printf '%s' "$PRJSON" | jq -r '.state // ""')"
+CHANGED_N="$(printf '%s' "$PRJSON" | jq -r '.changed_files // -1')"
+
+# ⛔ THE WIDTH IS ASSERTED, NOT ASSUMED. `actions/runs?head_sha=` matches exactly; a short SHA
+# answers HTTP 200 with total_count 0, which is byte-identical to "this head has no runs" —
+# the exact collapse this tool exists to report, arriving through its own query string.
+kb_ere_match "$HEAD_SHA" '^[0-9a-f]{40}$' || refuse "the PR object carried no full 40-hex head SHA (got '$HEAD_SHA') — refusing to query runs with a value that answers 0 rows for the wrong reason"
+[[ -n "$BASE_REF" ]] || refuse "the PR object carried no base ref — nothing was measured"
+kb_is_uint "$CHANGED_N" || refuse "the PR object carried no changed_files count — the truncation test has no denominator, so no paths verdict is sound"
+
+WF_REF="${REF:-$HEAD_SHA}"
+
+# changed files, read WHOLE or declared not-whole. `changed_files` from the PR object is the
+# denominator; GitHub's files endpoint caps at 3000, so a large PR lands here as a MISMATCH and
+# every path-filtered workflow below goes UNMEASURED rather than being guessed at.
+rc=0
+_api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' > "$TMPD/files.txt" || rc=$?
+FILES_WHOLE=0; FILES_NOTE=""
+if [[ "$rc" -ne 0 ]]; then
+    FILES_NOTE="UNREADABLE — gh exited $rc"
+else
+    got="$(wc -l < "$TMPD/files.txt")"; got="${got// /}"
+    if [[ "$got" -eq "$CHANGED_N" ]]; then
+        FILES_WHOLE=1; FILES_NOTE="$got file(s), complete"
+    else
+        FILES_NOTE="TRUNCATED — read $got of $CHANGED_N (GitHub's files endpoint caps at 3000)"
+    fi
+fi
+
+# the run list, read WHOLE or the run refuses. Every MISSING below is an assertion about an
+# ABSENCE from this list; a short read would manufacture findings out of pagination.
+rc=0
+RUNS_TOTAL="$(_api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=1" --jq '.total_count')" || rc=$?
+{ [[ "$rc" -eq 0 ]] && kb_is_uint "$RUNS_TOTAL"; } || refuse "could not read the run total for head $HEAD_SHA (gh exited $rc) — every 'no run exists' reading below would be a fabrication"
+rc=0
+_api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" --paginate \
+     --jq '.workflow_runs[] | [.path, .event, (.conclusion // .status // "?")] | @tsv' > "$TMPD/runs.tsv" || rc=$?
+[[ "$rc" -eq 0 ]] || refuse "could not page the run list for head $HEAD_SHA (gh exited $rc) — nothing was measured"
+RUNS_GOT="$(wc -l < "$TMPD/runs.tsv")"; RUNS_GOT="${RUNS_GOT// /}"
+[[ "$RUNS_GOT" -eq "$RUNS_TOTAL" ]] || refuse "the run list is not whole — read $RUNS_GOT of $RUNS_TOTAL for head $HEAD_SHA; refusing to report an absence from a partial list"
+
+# the workflow files at the evaluated ref
+rc=0
+WF_NAMES="$(_api "repos/$REPO/contents/.github/workflows?ref=$WF_REF" --jq '.[] | select(.type=="file") | .name')" || rc=$?
+[[ "$rc" -eq 0 ]] || refuse "could not read .github/workflows at $WF_REF (gh exited $rc) — nothing was measured"
+
+# per-file enablement state. A file absent from this listing is NEW AT HEAD, not disabled.
+rc=0
+_api "repos/$REPO/actions/workflows" --paginate --jq '.workflows[] | [.path, .state] | @tsv' > "$TMPD/states.tsv" || rc=$?
+[[ "$rc" -eq 0 ]] || refuse "could not read actions/workflows on $REPO (gh exited $rc) — a disabled workflow would read as MISSING, so no verdict is sound"
+
+# ── the comparison ──────────────────────────────────────────────────────────────────────────
+declare -A RUN_OF=() STATE_OF=()
+while IFS=$'\t' read -r p e c; do
+    [[ -n "$p" ]] || continue
+    RUN_OF["$p"]="${RUN_OF[$p]:+${RUN_OF[$p]}, }$e/$c"
+done < "$TMPD/runs.tsv"
+while IFS=$'\t' read -r p s; do
+    [[ -n "$p" ]] || continue
+    STATE_OF["$p"]="$s"
+done < "$TMPD/states.tsv"
+
+L_RAN=""; L_SKIP=""; L_MISS=""; L_UNM=""; L_OOS=""
+n_wf=0; n_ran=0; n_skip=0; n_miss=0; n_unm=0; n_oos=0
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    case "$name" in *.yml|*.yaml) ;; *) continue ;; esac
+    n_wf=$((n_wf + 1))
+    path=".github/workflows/$name"
+    # The listing is an EXTERNAL response and its entries are interpolated into a request path,
+    # so the name is pinned at that boundary exactly as --repo/--ref are. A name this refuses is
+    # UNMEASURED, never dropped: silently skipping it would shrink the denominator invisibly.
+    if ! kb_ere_match "$name" '^[A-Za-z0-9._-]+$'; then
+        n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — the listing returned a name this tool will not put in a request path"$'\n'; continue
+    fi
+    rc=0
+    _api "repos/$REPO/contents/$path?ref=$WF_REF" -H "Accept: application/vnd.github.raw" > "$TMPD/wf.yml" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — unreadable at $WF_REF (gh exited $rc)"$'\n'; continue
+    fi
+    # ⛔ A ZERO-BYTE BODY AT rc 0 IS THE COLLAPSE THIS TOOL IS NAMED AFTER, one level down: the
+    # `on:` reader would answer "no top-level on: key" and the workflow would be filed
+    # OUT-OF-SCOPE — a shrug — when what actually happened is that the read returned nothing.
+    if [[ ! -s "$TMPD/wf.yml" ]]; then
+        n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — the body read back EMPTY at rc 0; a read that returned nothing is not a workflow without triggers"$'\n'; continue
+    fi
+    rc=0
+    rec="$(_decide "$TMPD/files.txt" "$TMPD/wf.yml" "$BASE_REF" "$FILES_WHOLE")" || rc=$?
+    if [[ "$rc" -ne 0 || -z "$rec" ]]; then
+        n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — the on: reader produced no record (awk exited $rc)"$'\n'; continue
+    fi
+    IFS=$'\t' read -r st evs why <<< "$rec"
+    wstate="${STATE_OF[$path]:-}"
+    runs="${RUN_OF[$path]:-}"
+    case "$st" in
+        OUT-OF-SCOPE) n_oos=$((n_oos + 1)); L_OOS+="  $path — $why"$'\n' ;;
+        UNMEASURED)   n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — $why"$'\n' ;;
+        NOT-EXPECTED)
+            if [[ -n "$runs" ]]; then
+                # a run exists where none was derived: the DERIVATION is what is wrong here,
+                # and reporting it as SKIPPED would hide that this tool's model is off.
+                n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — derived NOT-EXPECTED yet a run exists ($runs); the derivation is wrong, not the repo"$'\n'
+            else
+                n_skip=$((n_skip + 1)); L_SKIP+="  SKIPPED       $path — $why"$'\n'
+            fi ;;
+        EXPECTED)
+            if [[ -n "$wstate" && "$wstate" != "active" ]]; then
+                n_skip=$((n_skip + 1)); L_SKIP+="  SKIPPED       $path — workflow state is '$wstate', not active"$'\n'
+            elif [[ -n "$runs" ]]; then
+                n_ran=$((n_ran + 1)); L_RAN+="  RAN           $path — $runs"$'\n'
+            else
+                n_miss=$((n_miss + 1))
+                newnote=""; [[ -z "$wstate" ]] && newnote=", new-at-head"
+                L_MISS+="  MISSING       $path — expected on $evs ($why)$newnote, and NO run exists for this head"$'\n'
+            fi ;;
+        *) n_unm=$((n_unm + 1)); L_UNM+="  UNMEASURED    $path — unrecognised record '$st'"$'\n' ;;
+    esac
+done <<< "$WF_NAMES"
+
+# ── the report ──────────────────────────────────────────────────────────────────────────────
+#
+# ONE assembled string, ONE tolerated write, and the verdict on the exit code — never in the
+# prose. A report whose only statement of a finding is a sentence in its body is not a gate;
+# an exit code is, and it is the half that survives a caller that truncates its reader.
+verdict=0
+if [[ "$n_unm" -gt 0 ]]; then verdict=2; fi
+if [[ "$n_miss" -gt 0 ]]; then verdict=1; fi
+# An empty population, or one in which nothing at all was decided, is NOT coverage: it is a
+# read that returned nothing, and reporting it as rc 0 is the defect this tool is named after.
+if [[ "$n_wf" -eq 0 ]]; then verdict=2; fi
+if [[ "$((n_ran + n_skip + n_miss + n_unm))" -eq 0 ]]; then verdict=2; fi
+
+report="$KB_PROG: $REPO PR #$PR ($PR_STATE)"$'\n'
+report+="  head          $HEAD_SHA"$'\n'
+report+="  base          $BASE_REF"$'\n'
+report+="  workflows at  $WF_REF"$'\n'
+report+="  changed files $FILES_NOTE"$'\n'
+report+="  runs for head $RUNS_GOT (total_count $RUNS_TOTAL)"$'\n'
+report+="  population    $n_wf workflow file(s) — $n_ran ran, $n_skip skipped, $n_miss MISSING, $n_unm unmeasured, $n_oos out-of-scope"$'\n'
+report+=$'\n'
+if [[ -n "$L_MISS" ]]; then report+="MISSING — this PR matches the workflow triggers and filters, and no run exists"$'\n'"$L_MISS"$'\n'; fi
+if [[ -n "$L_UNM"  ]]; then report+="UNMEASURED — no verdict is sound for these; this is NOT 'covered'"$'\n'"$L_UNM"$'\n'; fi
+if [[ -n "$L_RAN"  ]]; then report+="RAN — a run exists for this head (its CONCLUSION is printed, never judged)"$'\n'"$L_RAN"$'\n'; fi
+if [[ -n "$L_SKIP" ]]; then report+="SKIPPED — correct silence, with the reason it is correct"$'\n'"$L_SKIP"$'\n'; fi
+if [[ -n "$L_OOS"  ]]; then report+="OUT-OF-SCOPE — no pull-request trigger, so no expectation is derived (see --help)"$'\n'"$L_OOS"$'\n'; fi
+case "$verdict" in
+    0) report+="rc 0 — every in-scope workflow got a decided verdict, and each RAN or is provably not expected." ;;
+    1) report+="rc 1 — $n_miss workflow(s) MISSING. A finding, not a completeness claim: $n_unm unmeasured." ;;
+    2) report+="rc 2 — this run stands behind nothing: $n_unm unmeasured, $n_miss missing, over a population of $n_wf." ;;
+esac
+_put "$report"
+exit "$verdict"

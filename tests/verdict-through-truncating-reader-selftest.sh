@@ -86,11 +86,11 @@
 #   (no state) bytes == 0                              the driver never reached a write
 #
 # ⛔ BOTH DISPOSITIONS ARE MEASURED, AND THAT IS NOT BELT-AND-BRACES — THE ANSWER DIFFERS.
-# Measured on this tree: under SIG_DFL 12 of 15 driven members lose their verdict; under
+# Measured on this tree: under SIG_DFL 12 of 16 driven members lose their verdict; under
 # SIG_IGN only 9 do. (⚠ THOSE ARE THE READING, NOT THE POPULATION — the run's own denominator
 # block re-derives both on every invocation and is the figure to quote. This pair moved from
 # 11-of-14 / 8 the day `release-tag-check` landed, and quoting a written count is exactly how
-# it went stale.) A bin with NO errexit (`board-card-start`, `board-snapshot`,
+# it went stale — it moved again, 15 to 16, the day `run-coverage-check` landed.) A bin with NO errexit (`board-card-start`, `board-snapshot`,
 # `board-session-close`) is killed outright by the signal but merely gets a non-zero `printf`
 # it never inspects when the signal is ignored — so it LOSES on a developer box and SURVIVES on
 # a GitHub Actions runner. Measuring one disposition and recording the result would therefore
@@ -185,6 +185,7 @@ DRIVERS=(
   "bin/kbcard|"
   "bin/promote-released-cards|--help"
   "bin/release-artifacts-check|--help"
+  "bin/run-coverage-check|--help"
   "bin/release-pr-body|--help"
   "bin/release-tag-check|--help"
 )
@@ -197,6 +198,7 @@ DRIVERS=(
 # point — an open class item blocks its own symptoms (canon #18), and a bin fixed silently
 # would take its entry's warning with it.
 DISPOSITIONED=(
+  "bin/run-coverage-check|SURVIVES|BUILT SAFE (card#7615) — \`trap '' PIPE\` as the first statement after \`set\`, plus one tolerated write per stream of an already-built string, adopted from gh-code-search rather than re-derived. Its VERDICT paths are measured too, not only its help: driven at the live \`agent-webhook-bridge\` PR #574 fixture it holds rc 1 (1 MISSING) through both \`head -n 0\` and \`head -1\` under BOTH signal dispositions, and holds rc 2 through the same on an unreadable repo. A tool whose whole contract is that a lost verdict must not read as a pass cannot afford to lose its own."
   "bin/gh-code-search|SURVIVES|FIXED (card#6884) — \`trap '' PIPE\` as the first statement after \`set\`, plus one tolerated write per stream of an already-built string. Its VERDICT path is measured too, in tests/gh-code-search-selftest.sh: rc 3 with 671 B of stderr through both \`head -1\` and \`head -n 0\`."
   "bin/agent-board-toolkit-runtime-check|SURVIVES|FIXED (card#6911) — the same two mechanisms. Its VERDICT path is measured: driven to a real STALE-COPIES verdict it answers rc 1 with 259 B of stderr through \`head -n 0\`, where it answered rc 141 with 0 B before."
   "bin/gitignore-secret-family-check|SURVIVES|BUILT THIS WAY (card#7036) — the same two mechanisms as the two fixed members above: \`trap '' PIPE\` as the first statement after \`set\`, and one tolerated write per stream of an already-built string. It ships correct rather than joining the roll below, deliberately: this is a SECURITY gate whose entire product is the rc plus a FINDINGS block on STDOUT, so a lost verdict is the gate reporting nothing while the invocation looks like it worked. Its VERDICT path is measured, not just \`--help\`: driven to a real UNCOVERED verdict it answers rc 1 through \`head -n 0\` AND \`head -1\`, under the default SIGPIPE disposition and under an inherited SIG_IGN, and its rc-2 refusal keeps its stderr through a truncating reader."
