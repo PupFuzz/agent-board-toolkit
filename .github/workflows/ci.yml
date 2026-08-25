@@ -188,6 +188,7 @@ jobs:
           - release-artifacts-selftest
           - release-pr-body-selftest
           - release-tag-check-selftest
+          - run-coverage-check-selftest
           - runtime-check-selftest
           - shellcheck-pin-selftest
           - url-userinfo-render-selftest
