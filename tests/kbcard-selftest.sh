@@ -2090,6 +2090,64 @@ rc=0; out="$(printf '%s' '[{"id":9,"name":"n","description":{"oops":1}},{"id":10
 eq "render: a non-string description does not kill the render"        "0" "$rc"
 eq "render: …and the block AFTER it is still printed"                 "true" "$(has 'card 10' "$out")"
 
+echo "-- render --brief: header lines only, and the SAME BYTES as the block form's (card#7694) --"
+# THE PROMISE THE FLAG MAKES is byte-identity with the header line the block form already
+# prints, so nothing downstream needs a second parser. It is asserted here as an EQUALITY
+# between the two renderers over one fixture, not as "--brief prints something header-shaped":
+# a second rendering that agrees on the easy cards and diverges on a sanitized one would pass
+# any weaker leg, and the sanitized cards are exactly the ones a consumer cannot re-derive.
+#
+# _kbs_headers <render-output> — the output's NON-INDENTED lines. This is a TOTAL split of the
+# block form, not a heuristic: every body line it prints is indented two spaces, the
+# no-description case included (it says so in words, indented). No pipeline — the shell reads a
+# string it already holds.
+_kbs_headers() {
+    local line out=""
+    while IFS= read -r line; do
+        [[ "$line" == "  "* ]] && continue
+        out+="$line"$'\n'
+    done <<<"$1"
+    printf '%s' "$out"
+}
+# One fixture carrying every shape the two forms could disagree on: a multi-line body, an absent
+# body, an ESC in the description (c0_safe), a NEWLINE in the name (the stricter c0_header, and
+# the one that would forge an extra line in a --brief count), a non-string name, and a card
+# missing both id and stage.
+SR_MIX="$(jq -nc --arg e "$(printf '\033')" '[
+  {id:11,workflow_stage_id:48,name:"multi",description:"one\ntwo"},
+  {id:12,workflow_stage_id:49,name:"bodyless"},
+  {id:13,workflow_stage_id:50,name:"esc body",description:($e + "[2K" + $e + "[1Abody")},
+  {id:14,workflow_stage_id:51,name:"forge\ncard 99 · stage 1 · impostor",description:"b"},
+  {id:15,workflow_stage_id:52,name:{oops:1},description:"c"},
+  {name:"no ids",description:"d"}]')"
+SR_FULL="$(printf '%s' "$SR_MIX" | _kbc_search_render)"
+SR_BRIEF="$(printf '%s' "$SR_MIX" | _kbc_search_render --brief)"
+# Presence witnesses FIRST: the equality below is between two derived strings, and two empty
+# ones satisfy it while measuring nothing at all.
+eq "render --brief: the block form produced bodies to strip (witness)" "true" \
+   "$(has '  one' "$SR_FULL")"
+eq "render --brief: …and --brief produced output (witness)"            "true" \
+   "$(has 'card 11' "$SR_BRIEF")"
+eq "render --brief: one line per hit, no more"                         "6" \
+   "$(printf '%s\n' "$SR_BRIEF" | /usr/bin/grep -c '^card ')"
+eq "render --brief: BYTE-IDENTICAL to the block form's header lines" \
+   "$(_kbs_headers "$SR_FULL")" "$SR_BRIEF"
+# The three legs that say WHICH bytes were dropped — an identity that held because both forms
+# had gone empty would still pass the equality above on its own.
+eq "render --brief: the description is gone"                           "false" "$(has 'two' "$SR_BRIEF")"
+eq "render --brief: …including the (no description) stand-in"          "false" "$(has '(no description)' "$SR_BRIEF")"
+eq "render --brief: …and no line is indented at all"                   "false" "$(has "$(printf '\n  ')" "$SR_BRIEF")"
+# The header sanitizer is NOT relaxed by dropping the bodies: a newline in a name would mint a
+# second `card N · …` line, i.e. a forged hit, in the form a consumer is most likely to count.
+# Line-anchored, not a substring: the sanitizer turns the newline into `?`, so the impostor text
+# is still THERE — inside the real header line, which is exactly the point. What must not exist
+# is a SECOND line beginning `card `, i.e. a hit this search never returned.
+eq "render --brief: a NEWLINE in a card NAME still cannot forge a second line" "0" \
+   "$(printf '%s\n' "$SR_BRIEF" | /usr/bin/grep -c '^card 99' || true)"
+eq "render --brief: …the forged text stays inside its own header line" "true" \
+   "$(has 'forge?card 99' "$SR_BRIEF")"
+unset -f _kbs_headers; unset SR_MIX SR_FULL SR_BRIEF
+
 # --- process-level: the real paginator + kb_api, over a faked kanban ---------
 rm -rf "$TMP"
 _mktmp_scratch --home
@@ -2203,6 +2261,93 @@ eq "…says the query DID match, and the flags removed them" "true" \
    "$(has 'the query matched 2 card(s) on board 42, none of which passed the filter flags' "$out")"
 eq "…and does not claim the board holds no match"    "false" "$(has 'no card on board 42 matched' "$out")"
 
+echo "-- search --brief / --count: opt-in narrowings that do NOT move the default (card#7694) --"
+# WHY THESE EXIST: on a large board a handful of hits is tens of KB of bodies, so a caller who
+# cannot afford that falls back to `list` + a title match — which is structurally incapable of
+# answering a body question and hands back a candidate set dressed as a derived population. Both
+# flags are OPT-IN and the block form stays the default: a forgotten flag must cost too much
+# output, never a silent truncation.
+kbc search 'deploy hook' --brief
+eq "--brief → rc 0"                                  "0" "$rc"
+eq "--brief keeps every hit's header"                "true" "$(has 'card 501 · stage 48 · deploy hook card' "$out")"
+eq "…including the second hit"                       "true" "$(has 'card 502 · stage 49 · other' "$out")"
+eq "…and drops the body it would otherwise print"    "false" "$(has 'first line' "$out")"
+eq "…the second body line too"                       "false" "$(has 'second line' "$out")"
+eq "…so stdout is exactly one line per hit"          "2" "$(/usr/bin/grep -c '^card ' <<<"$out")"
+eq "…with nothing else on stdout at all"             "2" "$(/usr/bin/grep -c . <<<"$out")"
+eq "…and nothing on stderr"                          ""  "$err"
+BRIEF_OUT="$out"
+# The byte-identity promise, re-asserted THROUGH THE SHIPPED BIN and not only on the renderer:
+# the unit leg proves the two jq forms agree, this one proves the verb wires --brief to the form
+# that agrees. Same derivation as the unit leg (the block form's non-indented lines).
+kbc search 'deploy hook'
+FULL_HDRS=""
+while IFS= read -r _l; do
+    [[ "$_l" == "  "* ]] && continue
+    FULL_HDRS+="$_l"$'\n'
+done <<<"$out"
+eq "control: the default form still prints the bodies (the flag changed the read, not the fixture)" \
+   "true" "$(has '  second line' "$out")"
+eq "--brief is BYTE-IDENTICAL to the default form's header lines" "${FULL_HDRS%$'\n'}" "$BRIEF_OUT"
+unset BRIEF_OUT FULL_HDRS _l
+
+# --brief suppresses BODIES, not the explicit zero lines: there are no headers to print, and a
+# bare empty stdout would be indistinguishable from a read that failed — the property the prose
+# arm exists for, which a projection flag must not quietly remove.
+KBS_SCENARIO=empty kbc search 'nothing matches this' --brief
+eq "--brief with no match → rc 0"                    "0" "$rc"
+eq "…still says so in words, never a silent empty stdout" "true" \
+   "$(has 'no card on board 42 matched this search' "$out")"
+
+kbc search 'deploy hook' --count
+eq "--count → rc 0"                                  "0" "$rc"
+# ONE line, on STDOUT (the count IS the requested output), in the denominator's own words.
+eq "--count prints the matched count and its denominator, and nothing else" \
+   "kbcard: search: 2 of 2 cards matched by the query" "$out"
+eq "…no card block is printed"                       "0" "$(/usr/bin/grep -c '^card ' <<<"$out" || true)"
+eq "…and no body"                                    "false" "$(has 'first line' "$out")"
+eq "…nothing on stderr (unfiltered: there is no denominator to add)" "" "$err"
+# With a filter flag the stdout line is the SAME line the stderr denominator carries — one
+# string with one owner, so the two streams can never quote different numbers.
+kbc search 'deploy hook' --count --column backlog
+eq "--count + --column: stdout carries the filtered denominator" \
+   "kbcard: search --column backlog: 1 of 2 cards matched by the query" "$out"
+eq "…and the stderr denominator is UNCHANGED (no existing caller's bytes moved)" "true" \
+   "$(has 'kbcard: search --column backlog: 1 of 2 cards matched by the query' "$err")"
+# The two ZERO answers stay distinguishable — which is the whole reason the prose lines exist —
+# and `0 of 0` vs `0 of N` is how the count form says the same two things.
+KBS_SCENARIO=empty kbc search 'nothing matches this' --count
+eq "--count with no match at all → 0 of 0"           "kbcard: search: 0 of 0 cards matched by the query" "$out"
+eq "…and does not ALSO print the prose line"         "false" "$(has 'no card on board 42 matched' "$out")"
+kbc search 'deploy hook' --count --column in_progress --type fr
+eq "--count filtered to nothing → 0 of 2, a different answer from 0 of 0" \
+   "kbcard: search --column in_progress --type fr: 0 of 2 cards matched by the query" "$out"
+eq "…and does not claim the board holds no match"    "false" "$(has 'no card on board 42 matched' "$out")"
+# Neither flag touches WHICH cards matched: --brief + --column drops the same card the block
+# form drops, so the flags compose rather than interacting.
+kbc search 'deploy hook' --brief --column backlog
+eq "--brief composes with --column: the filtered card is gone" "false" "$(has 'card 502' "$out")"
+eq "…the kept one is still there"                    "true"  "$(has 'card 501' "$out")"
+eq "…and the stderr denominator is unchanged"        "true"  \
+   "$(has 'search --column backlog: 1 of 2 cards matched by the query' "$err")"
+
+echo "-- search: --brief and --count TOGETHER are refused, before any request --"
+# Refused rather than resolved for the caller: they answer different questions, and silently
+# picking one would hand back a number where header lines were asked for.
+kbc search 'deploy hook' --brief --count
+eq "--brief --count → rc 2"                          "2" "$rc"
+eq "…says they are different reads"                  "true" "$(has 'different reads' "$err")"
+eq "…and issues NO request"                          "0" "$(kb_stub_total)"
+eq "…with nothing on stdout"                         ""  "$out"
+kbc search --count --brief 'deploy hook'
+eq "…order-independent (--count first is the same refusal)" "2" "$rc"
+eq "…and still issues no request"                    "0" "$(kb_stub_total)"
+# THE REGRESSION GUARD: the DEFAULT is unmoved. Asserted last, after every flag has been
+# exercised, because "the flags are opt-in" is the property the card turns on.
+kbc search 'deploy hook'
+eq "no flag → the block form, bodies and all"        "true" "$(has '  first line' "$out")"
+eq "…still one block per matched card"               "2" "$(/usr/bin/grep -c '^card ' <<<"$out")"
+
 echo "-- search: an INCOMPLETE read is a refusal, never a partial answer presented as whole --"
 # THE mid-pagination case (card#6630): page 1 delivers a full 200 rows, page 2 fails. The
 # paginator returns rc 2 and emits nothing; the verb must not print the 200 cards it does have.
@@ -2250,6 +2395,156 @@ eq "control: …and issues its request"                "1" "$(kb_stub_total)"
 
 unset -f kb_stub_route sq_url
 unset KBS_SCENARIO KBS_FULL_PAGE KBS_HITS_BODY SR_MULTI KB_JQ_REAL
+
+# ---------------------------------------------------------------------------
+echo "== stages — the stage id → column name map, read out of the caller's OWN config (card#7694) =="
+# THE GAP: `list` projects `stage` as a native numeric id, `--column` takes a name, and no verb
+# read the map between them — so every consumer hardcoded or INFERRED it. Two seats got a
+# confident wrong answer from that on one day: one inferred a stage id from the order of the
+# --column enum, one filtered a board sweep on the wrong key and read `OPEN 0` over a real
+# backlog, twice. Neither failure was an error; both were a plausible number.
+#
+# ⭐ THE PROPERTY THAT MAKES THIS AN EXPOSE AND NOT A SECOND MAP is asserted directly below:
+# every row the verb emits is stage_name's own answer for that row's id.
+#
+# ⛔ WHAT THAT LEG DOES AND DOES NOT DISCRIMINATE, stated because it was MEASURED rather than
+# assumed. Replacing the stage_name call with a local lowercase of the variable suffix reds
+# NOTHING in this file — the two agree on every input a board env can hold, duplicate ids
+# included, because both resolve through the same `${!KB_STAGE_@}` expansion and so pick the
+# same alphabetically-first variable. The leg is therefore not a test of WHICH implementation
+# the verb uses; it is a test that the verb's output still EQUALS the primitive's, which is the
+# state a private copy leaves the moment either side moves. Its red was shown by moving
+# stage_name (dropping its lowercasing) while a local copy stayed put — i.e. against the drift,
+# not against the duplication. The duplication itself is a canon-#5 judgement, not a measurement,
+# and `bin/kbcard`'s own header says so in those terms rather than claiming a behaviour split.
+
+# The parent shell may still carry a KB_STAGE_* from a block above, and the bin reads the
+# ambient environment as well as the board env — so scrub before asserting on either.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+export KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"
+KB_BOARD_ID=42
+export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77
+ST_ROWS="$(cmd_stages)"
+eq "stages: emits a JSON array"                      "array" "$(jq -r 'type' <<<"$ST_ROWS")"
+eq "stages: one row per mapped stage"                "3"     "$(jq 'length' <<<"$ST_ROWS")"
+eq "stages: a row is {id, name} and nothing else"    '["id","name"]' \
+   "$(jq -c '.[0] | keys' <<<"$ST_ROWS")"
+eq "stages: the id is a NUMBER, so it joins list's stage projection without a cast" "number" \
+   "$(jq -r '.[0].id | type' <<<"$ST_ROWS")"
+eq "stages: a board's OWN taxonomy resolves, not just the eight --column aliases" "77" \
+   "$(jq -r '.[] | select(.name == "testing") | .id' <<<"$ST_ROWS")"
+eq "stages: a multi-word suffix keeps its underscores" "in_progress" \
+   "$(jq -r '.[] | select(.id == 49) | .name' <<<"$ST_ROWS")"
+# NO ORDINAL. Nothing this read can see carries the board's column ORDER, so a `position`/
+# `ordinal` key would be a plausible-looking sequence with no source — the exact defect the
+# card names, minted by the fix for it.
+eq "stages: NO ordinal key is invented on any row" "true" \
+   "$(jq -r 'map(has("ordinal") or has("position") or has("order")) | any | not' <<<"$ST_ROWS")"
+# Rows come out sorted by NAME — deterministic, and visibly not a board order.
+eq "stages: rows are sorted by name" "true" \
+   "$(jq -r '. == (. | sort_by(.name))' <<<"$ST_ROWS")"
+
+# ⭐ THE REUSE LEG. Every row must BE stage_name's answer, checked row by row against the
+# primitive itself rather than against a re-typed expectation.
+ST_BAD=""
+while IFS=$'\t' read -r _id _nm; do
+    [[ -n "$_id" ]] || continue
+    [[ "$(stage_name "$_id")" == "$_nm" ]] || ST_BAD+="$_id=$_nm "
+done < <(jq -r '.[] | "\(.id)\t\(.name)"' <<<"$ST_ROWS")
+eq "stages: EVERY row is stage_name's own answer for its id (no second map)" "" "$ST_BAD"
+eq "  …over a non-empty set of rows (witness: the loop had work to do)" "false" \
+   "$([[ "$(jq 'length' <<<"$ST_ROWS")" -eq 0 ]] && echo true || echo false)"
+
+# A duplicated id is ONE row, resolving to the one name stage_name returns for it — the case a
+# hand-rolled lowercase of the variable suffix would print twice, under two different names.
+export KB_STAGE_ALIAS_OF_BACKLOG=48
+ST_DUP="$(cmd_stages)"
+eq "stages: a duplicated id yields ONE row"          "1" \
+   "$(jq '[.[] | select(.id == 48)] | length' <<<"$ST_DUP")"
+eq "  …under the name stage_name resolves it to"     "$(stage_name 48)" \
+   "$(jq -r '.[] | select(.id == 48) | .name' <<<"$ST_DUP")"
+unset KB_STAGE_ALIAS_OF_BACKLOG
+
+# A value that is not a native stage id is NAMED rather than dropped or emitted as a string: a
+# row typed differently from the rest is a join that silently misses.
+export KB_STAGE_JUNK="not-an-id"
+ST_ERR="$(cmd_stages 2>&1 >/dev/null)"
+ST_ROWS2="$(cmd_stages 2>/dev/null)"
+eq "stages: a non-numeric KB_STAGE_* value is reported on stderr" "true" \
+   "$(has "KB_STAGE_JUNK='not-an-id' is not a native stage id" "$ST_ERR")"
+eq "  …and does not appear on stdout in any form"    "false" "$(has 'not-an-id' "$ST_ROWS2")"
+eq "  …while the usable rows are still emitted"      "3" "$(jq 'length' <<<"$ST_ROWS2")"
+unset KB_STAGE_JUNK
+# `000` IS that case on a real box, not a synthetic one: it is what
+# examples/kanban-board.env.example ships as the not-yet-configured placeholder, and it is not a
+# stage id — a card written to stage `000` is not in any column, and `list --column` already
+# dies on it. Reported, never listed as though it mapped something.
+export KB_STAGE_UNCONFIGURED=000
+ST_ERR="$(cmd_stages 2>&1 >/dev/null)"
+eq "stages: the shipped 000 template placeholder is reported, not listed" "true" \
+   "$(has "KB_STAGE_UNCONFIGURED='000' is not a native stage id" "$ST_ERR")"
+eq "  …and the message names it as the template placeholder" "true" \
+   "$(has 'not-yet-configured placeholder' "$ST_ERR")"
+eq "  …so the row count is unchanged"                "3" "$(cmd_stages 2>/dev/null | jq 'length')"
+unset KB_STAGE_UNCONFIGURED
+# An EMPTY-valued var maps nothing (stage_name can never return it), so it is not a row either.
+export KB_STAGE_UNSET_ON_THIS_BOARD=""
+eq "stages: an empty-valued KB_STAGE_* is not a row" "3" "$(cmd_stages | jq 'length')"
+unset KB_STAGE_UNSET_ON_THIS_BOARD
+
+# rc 1, never `[]`: an empty array reads as "this board has no columns", and a board with no
+# columns is not addressable by this tool at all — every --column would refuse.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+rc=0; out="$(cmd_stages 2>/dev/null)" || rc=$?
+err="$(cmd_stages 2>&1 >/dev/null || true)"
+eq "stages: a board env mapping NO stage → rc 1"     "1" "$rc"
+eq "  …with nothing on stdout (never an empty array)" "" "$out"
+eq "  …and says it is a board-env gap, not a board with no columns" "true" \
+   "$(has 'that is a board-env gap' "$err")"
+rc=0; cmd_stages --column backlog >/dev/null 2>&1 || rc=$?
+eq "stages: takes no arguments → rc 2"               "2" "$rc"
+KB_BOARD_ID="$KB_BOARD_ID_SAVED"; unset KB_BOARD_ID_SAVED ST_ROWS ST_ROWS2 ST_DUP ST_BAD ST_ERR _id _nm
+
+# --- process-level: the verb through the real bin, and the --board selection ----
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_SHIPPED_TO_DEV=51'
+kb_stub_board_config other 99 'export KB_STAGE_BACKLOG=800' 'export KB_STAGE_TRIAGE=801'
+kb_stub_install
+kb_stub_route() { printf '500\n{"message":"stages must not reach the wire"}'; }
+export -f kb_stub_route
+
+kbc stages
+eq "stages: through the bin → rc 0"                  "0" "$rc"
+eq "stages: NO request is issued — it is a read of local config" "0" "$(kb_stub_total)"
+eq "stages: the board env's own pairs come back"     '[{"id":48,"name":"backlog"},{"id":51,"name":"shipped_to_dev"}]' \
+   "$(jq -c . <<<"$out")"
+eq "stages: nothing on stderr"                       "" "$err"
+# --board actually selects WHICH env is read — the ids are per-install, which is the whole
+# argument for reading them at run time, so a verb that ignored --board would be worse than
+# useless. Asserted as a DIFFERENT answer, not merely a non-empty one.
+kbc --board other stages
+eq "--board other: rc 0"                             "0" "$rc"
+eq "--board other: a different install's ids, read from that board's env" \
+   '[{"id":800,"name":"backlog"},{"id":801,"name":"triage"}]' "$(jq -c . <<<"$out")"
+eq "--board other: still no request"                 "0" "$(kb_stub_total)"
+kbc stages --column backlog
+eq "stages with an argument → rc 2 through the bin"  "2" "$rc"
+eq "…names the global --board flag as the selector"  "true" "$(has 'select the board with the global --board flag' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+# The verb is REACHABLE: an unknown command is still rc 2, so the leg above is not passing
+# because `stages` fell through to the unknown-command arm.
+kbc stagez
+eq "control: an unknown verb is still refused"       "2" "$rc"
+eq "control: …in the unknown-command words, which the stages verb never took" "true" \
+   "$(has "unknown command 'stagez'" "$err")"
+
+unset -f kb_stub_route
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
