@@ -137,7 +137,7 @@ TOOLS=(kbcard next-dl board-snapshot board-stats board-card-start board-session-
        release-pr-body release-artifacts-check release-tag-check promote-released-cards install-board-hooks
        agent-board-toolkit-drift-check dl-a0-backfill-triaged dl-a1-register-field
        agent-board-toolkit-runtime-check dependabot-deploy-reconcile gh-code-search
-       gitignore-secret-family-check)
+       gitignore-secret-family-check run-coverage-check)
 
 fails=0
 warns=0

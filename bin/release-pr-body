@@ -115,6 +115,7 @@ MAIN_BRANCH="$(cfg_opt '.main_branch')"; MAIN_BRANCH="${MAIN_BRANCH:-main}"
 DEV_BRANCH="$(cfg_opt '.dev_branch')";  DEV_BRANCH="${DEV_BRANCH:-dev}"
 VERSION_FILE="$(cfg_opt '.version_file')"
 VERSION_REGEX="$(cfg_opt '.version_regex')"
+VERSION_EXTRACT_CMD="$(cfg_opt '.version_extract_cmd')"  # optional; see the version block below
 REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"    # e.g. "DL-[0-9]+"; optional — numeric part is a DL number
 CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optional — numeric part is a CARD ID
 # How a version maps to its git tag name, with {{version}} as the placeholder
@@ -128,8 +129,9 @@ CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optiona
 # the inline form works. The two-line form is kept as the clearer one.)
 TAG_FORMAT="$(cfg_opt '.tag_format')"; [ -n "$TAG_FORMAT" ] || TAG_FORMAT='v{{version}}'
 
-# Resolve the version: explicit flag, else the FIRST version_regex match in the
-# version file. That regex is the ONE declaration of what a version looks like:
+# Resolve the version: explicit flag, else `version_extract_cmd` if the config names one,
+# else the FIRST version_regex match in the version file. That regex is the ONE declaration
+# of what a version looks like:
 # `release-artifacts-check` classifies release PRs by it, and the toolkit's own
 # `auto-tag-version.yml` anchors it (^…$) against the whole VERSION at merge time.
 # How many segments a version has is therefore the CONFIG's to say, not this file's.
@@ -143,12 +145,116 @@ TAG_FORMAT="$(cfg_opt '.tag_format')"; [ -n "$TAG_FORMAT" ] || TAG_FORMAT='v{{ve
 # What it did do was refuse a single-segment version_regex outright, cut a legal
 # 5-segment one to four, and drop any non-numeric text the config regex was written
 # to match. A repo that wants 4 segments declares them in version_regex.
-if [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -f "$VERSION_FILE" ]; then
+#
+# ── WHY THERE IS A SECOND RESOLUTION PATH AT ALL (card#7599) ──────────────────
+# THE REGEX CANNOT BE THE EXTRACTOR FOR A REPO WHOSE VERSION LIVES INSIDE A CODE FILE.
+# `grep -oiE` returns the WHOLE match, and a version declared inside a config file has to be
+# matched WITH ITS SURROUNDING CONTEXT to be picked out of the file at all — kanban-board's
+# `version_regex` is `'version' => '[0-9.]+'` over `config/app.php`. The match therefore IS
+# `'version' => '0.43.0'`, and that whole string became $VERSION: the scope line rendered
+# `release PR — v'version' => '0.43.0'.` (measured, at the v0.43.0 cut). There is no capture
+# group to reach for — this is one `grep -o` — and the ⛔ note above is why a second pattern
+# is not the answer either.
+#
+# `version_extract_cmd` names the repo's OWN extractor and takes its stdout as the version.
+# ⛔ IT IS NOT A SECOND WAY OF SAYING WHAT version_regex SAYS — it COLLAPSES A DIVERGENCE THAT
+# ALREADY EXISTS. A repo whose version needs context to match usually already owns a script
+# that extracts it, because its tagging workflow needed one first: kanban's
+# `auto-tag-version.yml` mints the release tag from `bin/extract-version.sh`, which answers
+# `0.43.0`. Two extractors, one question, different answers — and that repo was safe only
+# because the AUTHORITATIVE one was right and the cosmetic one was wrong. A capture group here
+# would have fixed the display and LEFT the two implementations standing; pointing this tool
+# at the repo's own extractor is what makes them one.
+#
+# PRECEDENCE: `--version` beats everything (the flag stays a complete bypass — it is what a
+# releaser reaches for when resolution is broken, and it runs no command at all), then
+# version_extract_cmd, then version_file+version_regex. A config declaring BOTH the cmd and the
+# regex is the normal case, not a conflict: `release-artifacts-check` requires version_regex to
+# classify release PRs and does not read this key (see below), so the two coexist by design.
+# A config with no cmd key resolves exactly as it always has, byte for byte.
+#
+# ⛔ THIS RUNS A COMMAND NAMED BY A CONFIG FILE. The trust boundary, stated rather than assumed:
+#   * WHAT IS TRUSTED, AND WHY THAT IS ENOUGH HERE. `.release-pr.json` and the script it names
+#     are both COMMITTED IN THE REPO WHOSE RELEASE IS BEING PREPARED, and this tool is run by a
+#     releaser, in a checkout of that repo, over the code they are about to ship. Anyone able to
+#     edit either can already edit `bin/` in that same checkout. The key hands its holder no
+#     capability they did not have — and that argument holds ONLY under those conditions.
+#   * WHERE IT IS NOT REACHED — traced, not assumed. Exactly one CI path reaches this tool:
+#     `release-tag-check`, on a push to the release branch (post-merge, already-trusted
+#     content), delegates the tag-name mapping here — and it calls
+#     `release-pr-body --tag --version "$VERSION"`, WITH an explicit version, so resolution
+#     short-circuits above and this function never runs on that path. No PR-time job runs this
+#     tool at all. And the PR-time gate must never grow this key: `release-artifacts-check`
+#     runs on `pull_request` over an UNTRUSTED head and is built so the PR it judges cannot
+#     steer its verdict (it reads its classification keys from the fork point for exactly that
+#     reason). A config-named command, run by that gate from the head under review, is arbitrary
+#     code execution by the PR author inside the job that judges them — strictly worse than the
+#     head-retarget it already declines to honour. It does not read this key; keep it that way.
+#   * WHAT IS CONSTRAINED ANYWAY, because "trusted" is not "unconstrained", and a typo should
+#     refuse rather than surprise:
+#       - NO SHELL. The value is an argv[0], not a command line. It is exec'd directly, so `>`,
+#         `|`, `;`, `&&` and `$(…)` are never interpreted and arguments are not supported — a
+#         value carrying any of them names no file and is refused by name.
+#       - INSIDE THE REPO ONLY. An absolute path, or one with a `..` component, is refused.
+#       - NO $PATH SEARCH. A value with no `/` is run as `./<value>`; without that, a bare
+#         `extract-version.sh` would resolve against $PATH and a same-named script anywhere on
+#         it would answer for this repo.
+#       - It must exist and be executable (the interpreter comes from its own `#!` line).
+#     Resolved relative to the CURRENT DIRECTORY, exactly as `version_file` already is.
+#     ⚑ THE SCOPE OF THOSE CHECKS, STATED SO IT IS NOT OVER-CITED: they constrain the CONFIG
+#     STRING, not the process. A committed SYMLINK is followed, and the script itself may do
+#     anything a script can do. This is not a sandbox and cannot be one — the trust argument
+#     above is what carries the safety; the checks only make a typo refuse instead of surprise.
+#
+# THE COMMAND'S STDOUT **IS** THE VERSION — taken verbatim, with no pattern applied to it.
+# ⛔ DO NOT ADD A SHAPE CHECK HERE: that is precisely the "second, wider pattern" the ⛔ note
+# above records, one indirection out — a check in this position can only narrow what the repo
+# itself just told us, and the repo is the authority this key exists to defer to. Two answers
+# are still refused, because neither is a version at all and both would be rendered silently
+# into a one-line scope header, a tag name and the artifact checklist: EMPTY output, and output
+# spanning more than one line. The newline case is refused HERE for the same reason
+# `release-tag-check` refuses a tag name carrying one — a version reaches a `::error::`
+# annotation through `tag_format`, where a newline is a workflow command — except that this end
+# can name the extractor that produced it, while that end sees only an impossible tag.
+#
+# Sets the global rather than printing it, for the reason `release-artifacts-check`'s
+# `_extract_version` states: `die` inside `$( … )` exits only the SUBSHELL, leaving the abort to
+# depend on errexit noticing an assignment's status — which an `if` context or a later `|| true`
+# silently defeats. Here every refusal runs in the script's own shell.
+_version_from_cmd() {
+  local cmd="$VERSION_EXTRACT_CMD" run out nl rc=0
+  case "$cmd" in
+    /*) die "version_extract_cmd '$cmd' is an absolute path — it must name a file inside this repo, relative to the directory this tool is run from (e.g. \"bin/extract-version.sh\")";;
+  esac
+  # The `..` test is on PATH COMPONENTS, not a `*..*` substring: a legal filename may carry two
+  # dots (`v..sh`), and refusing that would be a refusal nobody could diagnose.
+  case "/$cmd/" in
+    */../*) die "version_extract_cmd '$cmd' has a '..' path component — it must name a file inside this repo";;
+  esac
+  case "$cmd" in
+    */*) run="$cmd";;
+    *)   run="./$cmd";;
+  esac
+  [ -f "$run" ] || die "version_extract_cmd '$cmd' is not a file here — it is exec'd directly with NO shell, so it must be a bare path to an executable in this repo: no arguments, no redirection, no pipeline (and it resolves from the current directory, like version_file)"
+  [ -x "$run" ] || die "version_extract_cmd '$cmd' is not executable — \`chmod +x\` it; it is exec'd directly, so its interpreter comes from its own '#!' line"
+  out="$("$run")" || rc=$?
+  [ "$rc" -eq 0 ] || die "version_extract_cmd '$cmd' exited $rc (anything it printed on stderr is above) — refusing, rather than falling back to version_regex: this key exists BECAUSE that fallback answers differently, so a silent fall-back would re-introduce the divergence it removes"
+  [ -n "$out" ] || die "version_extract_cmd '$cmd' printed nothing on stdout — its stdout IS the version"
+  nl=$'\n'
+  case "$out" in
+    *"$nl"*) die "version_extract_cmd '$cmd' printed more than one line — its stdout IS the version, and a multi-line value would be rendered into the scope header, the tag name and the artifact checklist";;
+  esac
+  VERSION="$out"
+}
+
+if [ -z "$VERSION" ] && [ -n "$VERSION_EXTRACT_CMD" ]; then
+  _version_from_cmd
+elif [ -z "$VERSION" ] && [ -n "$VERSION_FILE" ] && [ -n "$VERSION_REGEX" ] && [ -f "$VERSION_FILE" ]; then
   # `|| true` is the SIGPIPE guard, not a swallowed read: `head -1` closes the pipe on the
   # first line and `pipefail` would promote the dead grep's status. Emptiness is tested below.
   VERSION="$(grep -oiE "$VERSION_REGEX" "$VERSION_FILE" | head -1 || true)"
 fi
-[ -n "$VERSION" ] || die "could not resolve version (pass --version or set version_file+version_regex)"
+[ -n "$VERSION" ] || die "could not resolve version (pass --version, or set version_extract_cmd, or set version_file+version_regex)"
 
 # The actual tag name for this version, per tag_format. Drives BOTH the baseline
 # own-tag exclude (below) AND the body's display header — computed unconditionally

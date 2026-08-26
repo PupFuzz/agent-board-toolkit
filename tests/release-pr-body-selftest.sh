@@ -426,6 +426,168 @@ contains "a single-segment version_regex resolves" \
 contains "a five-segment version_regex is not cut to four" \
   "$(_verhdr '1.2.3.4.5' '[0-9]+(\\.[0-9]+){1,4}')" 'release PR — v1.2.3.4.5.**'
 
+echo "== version_extract_cmd: the repo's own extractor answers, and the config regex stops being one (card#7599) =="
+# THE INCIDENT, REPRODUCED RATHER THAN DESCRIBED. kanban-board declares its version INSIDE
+# `config/app.php`, so its `version_regex` has to match the surrounding context to pick the
+# number out of the file at all — and `grep -oiE` returns the WHOLE match. `$VERSION` became
+# the string `'version' => '0.43.0'` and the release PR's scope line rendered
+# `release PR — v'version' => '0.43.0'.` The fixture below is that config verbatim.
+#
+# The key does NOT add a second way to say what version_regex says. That repo ALREADY had a
+# correct extractor — `bin/extract-version.sh`, which its `auto-tag-version.yml` mints the
+# release TAG from — so the question had two implementations and the cosmetic one was the
+# wrong one. These cases pin that the config can now name the authoritative one.
+mkdir -p "$W/config" "$W/xbin"
+printf "<?php\nreturn [\n    'name' => 'App',\n    'version' => '0.43.0',\n];\n" > "$W/config/app.php"
+# A stand-in for the consumer's own extractor: same shape as the real one (a `#!` script that
+# prints one line), and it is the FIXTURE's, so no other repo's file is read.
+_xscript() { # <path> <body-line...>
+  local p="$W/$1"; shift
+  mkdir -p "$(dirname "$p")"
+  { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$@"; } > "$p"
+  chmod +x "$p"
+}
+_xscript xbin/extract-version.sh 'printf "%s\n" 0.43.0'
+
+# _xcfg [version_extract_cmd] — the kanban-shaped config, with the key only when one is given.
+# The ABSENT spelling is a real case, not a formality: it is the byte-identity control for
+# every consumer that never sets the key.
+_xcfg() {
+  { printf '{ "ref_token_regex": "DL-[0-9]+", "version_file": "config/app.php",'
+    printf ' "version_regex": "%s",' "'version' => '[0-9.]+'"
+    [ -z "${1:-}" ] || printf ' "version_extract_cmd": "%s",' "$1"
+    printf ' "artifacts": ["config/app.php \\u2192 {{version}}"] }\n'
+  } > "$W/.release-pr.json"
+}
+_xbody() { # → the whole body, or "rc=N"
+  local b rc=0
+  b="$( (cd "$W" && "$BIN") 2>/dev/null )" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then printf 'rc=%s\n' "$rc"; else printf '%s\n' "$b"; fi
+}
+_xerr() { # → "rc=N|<stderr+stdout>" for the refusal cases
+  local o rc=0
+  o="$( (cd "$W" && "$BIN" --tag) 2>&1 )" || rc=$?
+  printf 'rc=%s|%s\n' "$rc" "$o"
+}
+
+# (1) CONTROL — with NO key, resolution is exactly what it always was, malformation included.
+# This asserts the defect's own output on purpose: it is what proves the fallback path was not
+# touched, and it is the line that would red if the fix had "helpfully" narrowed the regex path.
+_xcfg
+contains "no key ⇒ the version_regex path is unchanged, whole match and all" \
+  "$(printf '%s\n' "$(_xbody)" | head -1)" "release PR — v'version' => '0.43.0'.**"
+
+# (2) THE FIX — the config names the repo's own extractor and its stdout IS the version.
+_xcfg xbin/extract-version.sh
+xbody="$(_xbody)"; xhdr="$(printf '%s\n' "$xbody" | head -1)"
+contains     "the extractor's answer is the version"      "$xhdr" "release PR — v0.43.0.**"
+not_contains "…and the matched context is gone from it"   "$xhdr" "'version' =>"
+
+# (3) …and it reaches the OTHER consumers of \$VERSION, not just the header: the artifact
+# checklist's {{version}} expansion and the tag name. A fix that only corrected the scope line
+# would leave both rendering the malformed string.
+contains "the artifact checklist expands with it" "$xbody" '- [ ] config/app.php → 0.43.0'
+eq       "--tag maps it through tag_format"       "v0.43.0" "$( (cd "$W" && "$BIN" --tag) 2>&1 )"
+
+# (4) THE COMMAND IS THE SOURCE, not a narrowed regex. Cases 2-3 use an extractor that agrees
+# with the file, which is the real consumer's shape — but agreement is exactly what makes them
+# unable to tell "the command answered" from "the regex was quietly fixed". This one disagrees.
+_xscript xbin/other.sh 'printf "%s\n" 9.9.9'
+_xcfg xbin/other.sh
+eq "the command WINS over version_regex, and its value is what renders" "v9.9.9" \
+   "$( (cd "$W" && "$BIN" --tag) 2>&1 )"
+
+# (5) `--version` REMAINS A COMPLETE BYPASS — the documented workaround for the incident, and
+# the escape hatch for a repo whose extractor is itself broken. The marker file is what makes
+# "not used" distinguishable from "used and overridden": the command is never RUN at all.
+_xscript xbin/marker.sh 'touch xbin/RAN' 'printf "%s\n" 1.1.1'
+rm -f "$W/xbin/RAN"
+_xcfg xbin/marker.sh
+eq "--version beats version_extract_cmd"     "v3.2.1" "$( (cd "$W" && "$BIN" --tag --version 3.2.1) 2>&1 )"
+eq "…and the command was not run at all"     "false"  "$([[ -e "$W/xbin/RAN" ]] && echo true || echo false)"
+
+# (6) NO $PATH SEARCH. A value with no `/` is the repo's own file or nothing: resolved via
+# $PATH, a same-named script anywhere on it would answer for this repo — silently, and with a
+# value that looks exactly like a real one. The decoy is on PATH and is what a lookup WOULD
+# find, asserted rather than assumed, so this case cannot pass by the decoy being unreachable.
+mkdir -p "$T/decoybin"
+{ printf '#!/usr/bin/env bash\nprintf "%%s\\n" 6.6.6\n'; } > "$T/decoybin/repo-version.sh"
+chmod +x "$T/decoybin/repo-version.sh"
+_xscript repo-version.sh 'printf "%s\n" 0.43.0'
+_xcfg repo-version.sh
+eq "control: the decoy IS what \$PATH resolves that name to" "$T/decoybin/repo-version.sh" \
+   "$( PATH="$T/decoybin:$PATH"; command -v repo-version.sh )"
+eq "a bare name runs the REPO's file, never \$PATH's" "v0.43.0" \
+   "$( cd "$W" && PATH="$T/decoybin:$PATH" "$BIN" --tag 2>&1 )"
+
+# (7) THE REFUSALS. Each is rc 2 with a message naming the value — and each is a case the
+# pre-fix tool answered rc 0 by ignoring the key and falling back to the regex, i.e. by
+# rendering the malformed version the key exists to remove. A silent fall-back is precisely
+# what must not happen: this key is set BECAUSE the fallback answers differently.
+_xcfg /etc/hostname
+xr="$(_xerr)"
+eq       "an absolute path is refused"       "rc=2" "${xr%%|*}"
+contains "…naming why"                       "$xr"  "is an absolute path"
+
+_xcfg ../evil.sh
+xr="$(_xerr)"
+eq       "a '..' component is refused"       "rc=2" "${xr%%|*}"
+contains "…naming why"                       "$xr"  "has a '..' path component"
+
+_xcfg xbin/nope.sh
+xr="$(_xerr)"
+eq       "a path naming no file is refused"  "rc=2" "${xr%%|*}"
+contains "…naming why"                       "$xr"  "is not a file here"
+
+_xscript xbin/noexec.sh 'printf "%s\n" 0.43.0'
+chmod -x "$W/xbin/noexec.sh"
+_xcfg xbin/noexec.sh
+xr="$(_xerr)"
+eq       "a non-executable file is refused"  "rc=2" "${xr%%|*}"
+contains "…naming the fix"                   "$xr"  "chmod +x"
+
+# NO SHELL — the value is an argv[0], not a command line. Arguments, a redirection and a
+# pipeline are each refused as "no such file", and the redirection's target is asserted absent:
+# an implementation that ran this through `sh -c` would create it while still looking correct.
+rm -f "$W/pwned"
+for xv in 'xbin/extract-version.sh --verbose' 'xbin/extract-version.sh > pwned' 'xbin/extract-version.sh | head -1'; do
+  _xcfg "$xv"
+  xr="$(_xerr)"
+  eq       "no shell: '$xv' is refused"      "rc=2" "${xr%%|*}"
+  contains "…as a path, not a command line"  "$xr"  "is not a file here"
+done
+eq "…and the redirection target was never created" "false" \
+   "$([[ -e "$W/pwned" ]] && echo true || echo false)"
+
+# The command's own failure is FATAL, never a fall-back: the regex is what this key overrides,
+# so quietly answering with it would restore the divergence. Its stderr reaches the caller.
+_xscript xbin/fails.sh 'echo "the extractor could not read the version" >&2' 'exit 3'
+_xcfg xbin/fails.sh
+xr="$(_xerr)"
+eq       "a failing extractor is fatal"                 "rc=2" "${xr%%|*}"
+contains "…naming its exit status"                      "$xr"  "exited 3"
+contains "…and its own message is passed through"       "$xr"  "could not read the version"
+not_contains "…and it does NOT fall back to the regex"  "$xr"  "'version' => '0.43.0'"
+
+# Empty and multi-line stdout are the two answers that are not a version at all. Both would
+# otherwise be rendered, silently, into the scope header AND the tag name.
+_xscript xbin/silent.sh 'exit 0'
+_xcfg xbin/silent.sh
+xr="$(_xerr)"
+eq       "empty stdout is refused"           "rc=2" "${xr%%|*}"
+contains "…naming why"                       "$xr"  "printed nothing on stdout"
+
+_xscript xbin/chatty.sh 'printf "%s\n" 0.43.0' 'printf "%s\n" "and a second line"'
+_xcfg xbin/chatty.sh
+xr="$(_xerr)"
+eq       "multi-line stdout is refused"      "rc=2" "${xr%%|*}"
+contains "…naming why"                       "$xr"  "printed more than one line"
+
+# CONTROL for the whole refusal battery: the same fixture with a WORKING extractor is rc 0, so
+# the rc 2s above are attributable to each value under test and not to the fixture.
+_xcfg xbin/extract-version.sh
+eq "control: the same fixture with a good extractor is rc 0" "rc=0|v0.43.0" "$(_xerr)"
+
 echo "== tag_format drives the own-tag exclude (re-run after tagging, non-v scheme) =="
 # Release cycle 2 lands on the remote under a release-{{version}} tag scheme; a
 # re-run for 0.3.0 must exclude release-0.3.0 (its own tag) when resolving BASE.

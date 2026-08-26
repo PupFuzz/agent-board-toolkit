@@ -31,6 +31,22 @@
 # Everything else in the config (`promote.*`, `ref_token_regex`, `card_token_regex`,
 # branch names) stays head-read and unguarded: none of it decides a verdict.
 #
+# ⛔ `version_extract_cmd` IS NOT READ HERE, AND MUST NOT BE. `release-pr-body` grew that key
+# (card#7599) because a version declared INSIDE a code file has to be matched with its
+# surrounding context, so the match is not the value; the key names a script in the repo and
+# takes its stdout. Two independent reasons it stops at that tool's door:
+#   * IT CANNOT ANSWER THIS QUESTION. The classification compares the version value AT TWO REFS,
+#     read with `git show <ref>:<file>` and never from the working tree. A command can only
+#     report on the checkout it runs in, so it would return one value for BOTH ends — and every
+#     release PR would then classify as "version unchanged" and assert no member.
+#   * IT WOULD HAND THE PR THE VERDICT. This runs on `pull_request` over an untrusted head, and
+#     the fork-point design above exists precisely so the PR being judged cannot steer its own
+#     gate. Executing a config-named script out of that head is arbitrary code execution by the
+#     PR author inside the judging job — a strictly larger hole than the retarget just refused.
+# The two keys answer two different questions, and version_regex is right for THIS one: a regex
+# that matches its context still classifies correctly, because all this tool asks of it is
+# equal-vs-changed. It is only as a DISPLAY value that the same match is unusable.
+#
 # COMPARISON IS ON EXPANDED, VERSION-AGNOSTIC MEMBERS, not on entry strings: `{{version}}`
 # is replaced by a sentinel (never by a concrete version — otherwise every templated member
 # would read as removed at every release, since the two ends carry different versions), the

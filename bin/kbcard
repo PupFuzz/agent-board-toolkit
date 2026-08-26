@@ -112,7 +112,33 @@
 #     board cards matched` — the denominator a filtered result otherwise hides, so an
 #     empty answer is distinguishable from an empty board. stdout is unchanged (still
 #     just the array). Unfiltered, nothing is printed: the array's length IS N.
-#   kbcard search <query> [--column COL] [--type TYPE]
+#     `stage` is a NATIVE NUMERIC ID and `--column` takes a NAME: `kbcard stages` prints
+#     the map between them, so a consumer joins the two at run time instead of pinning a
+#     number this install happens to use.
+#   kbcard stages
+#     READ the stage id → column name map as JSON, symmetric with `field list`: one
+#     {"id": <n>, "name": "<column>"} object per mapped stage, and no other key. This is
+#     the join `list` needs, and it exists because nothing read the map out: one seat
+#     inferred a stage id from the order of the --column list above and another filtered a
+#     board sweep on the wrong key and read `0` over a real backlog (card#7694). Both
+#     answers were confident and wrong, which is what a hardcoded id buys you.
+#     ⚠ IT READS THIS CALLER'S OWN CONFIG, NOT THE SERVER — the pairs are the KB_STAGE_*
+#     variables of ~/.kanban-<board>-board.env (selected by the global --board flag), and
+#     no request is issued. So these ids are PER-INSTALL, which is the argument for reading
+#     them at run time rather than baking them in, and a `name` here is this install's word
+#     for the column rather than the board's own label. A board env mapping NO stage is
+#     rc 1 with nothing on stdout — every column this tool can address needs a KB_STAGE_*
+#     var, so an empty map is a config fault, not a board with no columns — and a
+#     KB_STAGE_* whose value is not a stage id is NAMED on stderr rather than dropped,
+#     which includes the `000` placeholder a copied board-env template still carries.
+#     THERE IS NO ORDINAL FIELD, deliberately: nothing this read can see carries the
+#     board's column ORDER (the env is an unordered set of name=id pairs), so an ordinal
+#     would be a plausible-looking sequence with no source. Rows are emitted sorted by
+#     NAME for determinism; that is not the board's order and is not offered as one.
+#     The name half is stage_name's — the same resolver `show` fills a card's `column`
+#     from — so this read cannot disagree with it: ANY KB_STAGE_* var maps (a board's own
+#     taxonomy, not just the eight aliases above) and a duplicate id resolves once.
+#   kbcard search <query> [--column COL] [--type TYPE] [--brief | --count]
 #     READ: the server's own free-text search over this board, printed as one BLOCK per hit —
 #     a `card <id> · stage <sid> · <name>` header line, then the card's FULL description
 #     indented two spaces on every line (a card with no description says so in words).
@@ -150,6 +176,22 @@
 #     An incomplete board read is rc 1 with no blocks printed: a match set missing whatever
 #     was on the page that failed reads as "not on the board", which is a wrong answer, not a
 #     short one.
+#     TWO OPT-IN NARROWINGS, AND THE BLOCK FORM STAYS THE DEFAULT: forgetting a flag costs you
+#     too much output, never a silent truncation. Neither changes WHICH cards match — both
+#     drop what is printed ABOUT them, so the filter flags and the denominator are unaffected.
+#     --brief prints the header lines ONLY — the SAME BYTES the block form's header already
+#     carries, one renderer owning that line, so nothing downstream needs a second parser and
+#     the two cannot drift apart. It is the projection for "which cards match" on a board
+#     where a handful of hits is tens of KB of bodies, i.e. the read whose absence sent
+#     callers to `list` + a title match, which cannot answer a body question at all.
+#     --count prints ONE line and no bodies: the `<M> of <N>` denominator above, in the same
+#     words, on STDOUT because with this flag the count IS the requested output (it still
+#     goes to stderr as well when a filter flag is active — that line is unchanged). It
+#     REPLACES the zero-result prose too, so `0 of 0` and `0 of 5` are what tell a nothing-
+#     matched apart from a filtered-to-nothing.
+#     TOGETHER THEY ARE rc 2 BEFORE ANY REQUEST. --count is not a narrower --brief, it answers
+#     a different question, and silently picking one would hand back a number where header
+#     lines were asked for — the shape both flags exist to prevent.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
 #   kbcard show --task ID-OR-EXT
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
@@ -1177,6 +1219,53 @@ _kbc_list_project() {
                 dl: .payload.dl_number, pr: .payload.pr_number})'
 }
 
+# cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are this caller's
+# own KB_STAGE_* board-env vars, which is exactly why the read is worth having: the ids are
+# per-install, so a consumer that hardcodes one is guaranteed wrong on somebody else's box, and
+# `list` projects `stage` as one of those numbers while every write flag takes a name.
+#
+# ⭐ IT CALLS stage_name AND BUILDS NO MAP OF ITS OWN. That is the whole point of the verb: this
+# output is BY CONSTRUCTION the set of pairs (id, stage_name(id)), so it cannot answer anything
+# `show`'s `column` annotation would not. Lowercasing the var suffix here instead would be a
+# second mapping of the same thing — and the argument for not doing it is NOT that the two
+# disagree today. Measured: they agree on every input this env can hold, duplicate ids included
+# (both resolve through the same prefix expansion, so both pick the alphabetically-first var).
+# The point is that the agreement would then be a coincidence maintained by hand, and the ONE
+# claim this verb makes to its consumer — the name here is the name `show` will print — would
+# stop being a property of the code and become something a reader has to re-verify.
+#
+# A value that is not a stage id is NAMED on stderr and left off, rather than dropped or emitted
+# as a string: `list`'s `stage` is a JSON number, so one row typed differently from the rest is a
+# join that silently misses, and a silent miss is the defect this verb exists to close.
+cmd_stages() {
+    [[ $# -gt 0 ]] && { echo "kbcard: stages takes no arguments (select the board with the global --board flag)" >&2; return 2; }
+    local var val name rows=""
+    for var in "${!KB_STAGE_@}"; do
+        val="${!var}"
+        [[ -n "$val" ]] || continue
+        if ! kb_is_uint "$val"; then
+            echo "kbcard: stages: $var='$val' is not a native stage id and is NOT listed — a KB_STAGE_* value is the board's numeric workflow_stage_id (\`000\` is the not-yet-configured placeholder examples/kanban-board.env.example ships)" >&2
+            continue
+        fi
+        name="$(stage_name "$val")" || continue
+        rows+="$val"$'\t'"$name"$'\n'
+    done
+    # rc 1, never `[]`: an empty array here would read as "this board has no columns", and a
+    # board with no columns is not a thing this tool can address at all — stage_id refuses every
+    # --column on such an env. So the empty map is a config fault, reported as one.
+    [[ -n "$rows" ]] || {
+        echo "kbcard: no KB_STAGE_* variable is defined for board $KB_BOARD_ID — that is a board-env gap, not a board with no columns (docs/INSTALL.md §3b)" >&2
+        return 1
+    }
+    # unique_by drops the duplicate rows a duplicated id produces (both resolve through
+    # stage_name to the same name, so the pair is identical); sort_by(.name) is jq's codepoint
+    # order, i.e. deterministic and locale-free — and NOT the board's column order, which
+    # nothing readable here carries.
+    printf '%s' "$rows" | jq -R -s \
+        'split("\n") | map(select(length > 0) | split("\t") | {id: (.[0] | tonumber), name: .[1]})
+         | unique_by(.id) | sort_by(.name)'
+}
+
 cmd_list() {
     local column="" type="" swimlane=""
     while [[ $# -gt 0 ]]; do
@@ -1519,9 +1608,17 @@ cmd_comments() {
     printf '%s' "$comments" | _kbc_comments_render
 }
 
-# _kbc_search_render: the projection for a matched-card ARRAY on STDIN — one block per hit, a
-# header line then the card's FULL description indented two spaces on EVERY line. Extracted
-# from cmd_search so it is unit-testable on synthetic cards.
+# _KBC_SEARCH_HEADER: the jq expression for a hit's HEADER LINE, and the ONE owner of it. Both
+# render forms below interpolate this same string, which is what makes `--brief`'s output the
+# same BYTES as the block form's first line rather than a second rendering that agrees today —
+# the promise the flag makes to a caller is that nothing downstream needs a new parser, and a
+# promise about bytes cannot be kept by two expressions kept in step by hand (canon #5).
+_KBC_SEARCH_HEADER='("card \(.id // "?") · stage \(.workflow_stage_id // "?") · \(.name // "" | tostring)" | c0_header)'
+
+# _kbc_search_render [--brief]: the projection for a matched-card ARRAY on STDIN — one block per
+# hit, a header line then the card's FULL description indented two spaces on EVERY line, or with
+# --brief the header lines alone. Extracted from cmd_search so it is unit-testable on synthetic
+# cards.
 #
 # PRINTING THE DESCRIPTION IS THE POINT OF THE VERB (card#6771). `list`'s row projection drops
 # it, so a grep for a phrase in a card BODY through that projection answers 0 whatever the board
@@ -1537,26 +1634,46 @@ cmd_comments() {
 # through `(… // "") | tostring`, so a name or description that is not a string renders as its
 # JSON text instead of dying at jq's rc 5 PART WAY THROUGH the blocks — the shape that hands a
 # caller a truncated result at an exit status from a program it never ran.
+#
+# --brief DROPS THE BODIES AND NOTHING ELSE — same hits, same order, same header bytes. The C0
+# sanitizer still applies to the header under its stricter arm, because a NEWLINE in a card name
+# forges a second `card N · …` line here exactly as it would there, and this form is the one a
+# consumer is most likely to count lines of.
 _kbc_search_render() {
+    if [[ "${1:-}" == "--brief" ]]; then
+        jq -r "$_KBC_C0_DEFS"'
+      .[] | '"$_KBC_SEARCH_HEADER"
+        return
+    fi
     jq -r "$_KBC_C0_DEFS"'
       .[] | ((.description // "" | tostring) as $d
-             | ("card \(.id // "?") · stage \(.workflow_stage_id // "?") · \(.name // "" | tostring)" | c0_header),
+             | '"$_KBC_SEARCH_HEADER"',
                (if $d == "" then "  (no description)"
                 else (($d | c0_safe | split("\n"))[] | "  " + .) end))'
 }
 
 cmd_search() {
-    local query="" column="" type=""
+    local query="" column="" type="" brief=0 count=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
+            --brief) brief=1; shift ;;
+            --count) count=1; shift ;;
             -*) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
             *) kb_require_positional "$query" "$1" "<query>" || return 2; query="$1"; shift ;;
         esac
     done
+    # Refused, never silently resolved in the caller's stead: --count is not a narrower --brief
+    # (one asks which cards matched, the other how many), so picking a winner would answer a
+    # question nobody asked — the silent-narrowing shape both flags exist to avoid. Offline, so
+    # a bad invocation costs no request.
+    [[ "$brief" -eq 1 && "$count" -eq 1 ]] && {
+        echo "kbcard: search --brief and --count are different reads (header lines vs one number) — pass one, not both" >&2
+        return 2
+    }
     [[ -n "$query" ]] || {
-        echo "kbcard: search requires a query — kbcard search \"text\" [--column COL] [--type ALIAS]" >&2
+        echo "kbcard: search requires a query — kbcard search \"text\" [--column COL] [--type ALIAS] [--brief|--count]" >&2
         return 2
     }
     # A term with no non-space character does not narrow anything: the server trims the q value,
@@ -1590,7 +1707,21 @@ cmd_search() {
     # `<<<`, never --argjson: a match set can be a whole board, and passing it in argv trips
     # "Argument list too long" over MAX_ARG_STRLEN. Same stdin rule as the reads above.
     total="$(jq '(. // []) | length' <<<"$cards")"
-    if [[ "$matched" -eq 0 ]]; then
+    # The flags echoed on the denominator line are the ones that narrowed the MATCH SET, so
+    # --brief/--count are deliberately absent from it: they change what is printed about a hit,
+    # never which cards are hits, and echoing them would move bytes an existing caller reads.
+    local flags=""
+    [[ -n "$column" ]] && flags="$flags --column $column"
+    [[ -n "$type" ]]   && flags="$flags --type $type"
+    local denom="kbcard: search$flags: $matched of $total cards matched by the query"
+    if [[ "$count" -eq 1 ]]; then
+        # The count IS the requested output, so it goes to STDOUT — in the denominator's own
+        # words, from the denominator's own string, so the two can never quote different
+        # numbers. It replaces the zero-result prose below rather than adding to it: `0 of 0`
+        # and `0 of N` already separate a query that matched nothing from a filter that removed
+        # everything, which is the distinction that prose exists to make.
+        printf '%s\n' "$denom"
+    elif [[ "$matched" -eq 0 ]]; then
         # Explicit, never a bare empty stdout: "nothing matched" and "the read failed" must not
         # look the same at the call site. The two zero cases are DIFFERENT answers — a query
         # that matched nothing, and a query that matched cards the filter flags then removed —
@@ -1600,17 +1731,17 @@ cmd_search() {
         else
             echo "kbcard: the query matched $total card(s) on board $KB_BOARD_ID, none of which passed the filter flags"
         fi
+    elif [[ "$brief" -eq 1 ]]; then
+        printf '%s' "$hits" | _kbc_search_render --brief
     else
         printf '%s' "$hits" | _kbc_search_render
     fi
     # The denominator, on stderr, on the same rule `list` follows: a filtered result hides the
     # population it came out of. Unfiltered there is nothing to add — the query's match count IS
-    # what was printed, one block each.
+    # what was printed, one block each. Unchanged by the two projection flags, --count included:
+    # a caller who already reads this line must keep reading the same bytes on the same stream.
     if [[ -n "$column" || -n "$type" ]]; then
-        local flags=""
-        [[ -n "$column" ]] && flags="$flags --column $column"
-        [[ -n "$type" ]]   && flags="$flags --type $type"
-        echo "kbcard: search$flags: $matched of $total cards matched by the query" >&2
+        printf '%s\n' "$denom" >&2
     fi
 }
 
@@ -3002,6 +3133,7 @@ main() {
         move)        cmd_move "$@" ;;
         patch)       cmd_patch "$@" ;;
         list)        cmd_list "$@" ;;
+        stages)      cmd_stages "$@" ;;
         link)        cmd_link "$@" ;;
         show)        cmd_show "$@" ;;
         comment)     cmd_comment "$@" ;;
