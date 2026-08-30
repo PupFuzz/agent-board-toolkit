@@ -287,4 +287,12 @@ eq "…and exactly that one line (the comment and the -f call are not hits)" "1"
    "$(_rl_m_hits "$FIX" | grep -c . || true)"
 
 chmod 755 "$L/priv"     # let the harness's own cleanup descend
+
+# ⛔⛔ DELIBERATE, TEMPORARY BREAKAGE — card#8261 fail-first evidence ONLY (canon #9).
+# `ci-gate` is about to become this repository's single required status context, and an
+# aggregator that has only ever been observed GREEN is a decoration. This planted failure exists
+# to watch a red matrix leg actually turn `ci-gate` RED on a real runner. REVERTED in the very
+# next commit; if you are reading this on any branch, it escaped and must be removed.
+bad "DELIBERATE card#8261 fail-first probe — this assertion is planted and must be reverted"
+
 _summary "bsc-same-dir-selftest"
