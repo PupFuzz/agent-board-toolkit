@@ -503,7 +503,7 @@ jobs:
       - promote-action-selftest
       - release-artifacts-action-selftest
       - release-tag-check-action-selftest
-    if: always()
+    # ⛔ TEMP — `if: always()` REMOVED to demonstrate the fail-open (card#8261). Restored next commit.
     runs-on: ubuntu-latest
     steps:
       - name: every needed job succeeded
