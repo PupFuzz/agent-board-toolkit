@@ -22,9 +22,15 @@
 # NAMING. This is `drift-check-FIXTURE-selftest`, deliberately not `drift-check-selftest`: the
 # CI job of that name is the self-run and executes no `tests/` file, so a file with the
 # matching name would read as that job's script and is not. The JOB is what keeps its name —
-# it is a required status check on `main`, so renaming it would leave that required context
-# permanently unreported and every release PR sitting on a check that can never be satisfied
-# (the same reason the #137 CI dedup renamed no required check).
+# the same reason the #137 CI dedup renamed no required check.
+#
+# ⚠ THIS PARAGRAPH USED TO SAY that job "is a required status check on `main`". It was true when
+# written and is NOT true now: `branches/main/protection` answers `required_status_checks: null`
+# (read live, card#8261) — the fleet branch-protection model applied on 2026-08-30 replaced the
+# whole protection object and did not carry the contexts over. The rename hazard is real and is
+# now a property of ONE name rather than of this job: `ci-gate` in `.github/workflows/ci.yml`.
+# `tests/ci-gate-selftest.sh` owns which contexts are required and is the only place that is
+# stated, so this file does not restate it.
 #
 # THE BIN HAS NO MAIN-GUARD, so it is exercised as a PROCESS. Sourcing it would run its
 # argument guards and `exit` inside this shell.
