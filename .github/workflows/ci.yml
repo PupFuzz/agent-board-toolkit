@@ -2,12 +2,7 @@ name: CI
 
 on:
   push:
-    # ⛔ TEMPORARY — card#8261 fail-first evidence ONLY. `ci-gate` is about to become the required
-    # status context, and an aggregator observed only green is a decoration (canon #9), so it has
-    # to be watched going RED on a real runner before anyone requires it. This branch cannot
-    # produce a run any other way: `pull_request` needs a PR (deliberately not opened yet) and
-    # `workflow_dispatch` is honoured only from the default branch. REMOVED before handover.
-    branches: [main, dev, feat/8261-ci-aggregator-gate]
+    branches: [main, dev]
   pull_request:
 
 permissions:
