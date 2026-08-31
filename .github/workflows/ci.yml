@@ -91,8 +91,13 @@ jobs:
     # KEEP IT ANYWAY: that MISSING-LIB assertion is about the SHIPPED tree, which the
     # fixture-driven `drift-check-fixture-selftest` cannot make a claim about. The two are
     # complements, not duplicates — the fixture test ADDS the two dead legs, it does not
-    # replace this job. This job's NAME is also a required status check on `main`; renaming it
-    # would leave that context permanently unreported.
+    # replace this job.
+    #
+    # ⚠ THIS COMMENT USED TO SAY this job's name "is also a required status check on `main`". It
+    # was true when written and is NOT true now — `branches/main/protection` answers
+    # `required_status_checks: null` (read live, card#8261); the fleet branch-protection model
+    # applied on 2026-08-30 replaced the whole protection object without carrying the contexts
+    # over. The one name branch protection pins is `ci-gate` below, which depends on this job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -151,6 +156,7 @@ jobs:
           - board-snapshot-selftest
           - board-stats-selftest
           - bsc-same-dir-selftest
+          - ci-gate-selftest
           - composite-action-wiring-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
@@ -431,3 +437,101 @@ jobs:
         run: |
           [ "$PASS_OUTCOME" = "success" ] || { echo "::error::release-tag-check action failed on a non-release range — the wrapper does not reach the script"; exit 1; }
           [ "$REFUSE_OUTCOME" = "failure" ] || { echo "::error::release-tag-check action reported '$REFUSE_OUTCOME' on an unclassifiable range — the wrapper is swallowing the script's refusal, which would make every release look tagged"; exit 1; }
+
+  ci-gate:
+    # ⭐ THE ONE REQUIRED STATUS CONTEXT for this repository (card#8261). Every other job in this
+    # file is a leaf. `main` and `dev` carry the whole fleet branch-protection model —
+    # `enforce_admins`, blocked force-pushes and deletions, the merge-method rulesets — with
+    # `required_status_checks` at **`null`**, so the repo reads as protected on every surface an
+    # operator inspects while NO CI result is required to merge.
+    #
+    # WHY THE OBVIOUS FIX IS NOT AVAILABLE. A protection `contexts` list is a hand-maintained
+    # registry of check names, and the `selftest` matrix above is edited by ordinary pull
+    # requests — `run-coverage-check-selftest` was added three PRs before this job. An
+    # enumerated list rots in BOTH directions, and only one of them is loud: a name dropped from
+    # the matrix never reports again and deadlocks every PR (loud), while a name ADDED to it is
+    # required by nothing at all (silent, and the direction that matters). This job is the one
+    # context that does not move when the matrix does.
+    #
+    # ⛔ RENAMING THIS JOB — or giving it a `name:`, which REPLACES the context string GitHub
+    # reports — leaves branch protection waiting on a context that can never report again, i.e.
+    # every pull request permanently unmergeable. `tests/ci-gate-selftest.sh` reds on both.
+    #
+    # ⛔ `if: always()` IS THE LOAD-BEARING HALF, and is where this shape is usually got wrong.
+    # Without it the job is SKIPPED the moment a needed job fails — and a skipped required check
+    # does NOT block a merge. The gate would then be satisfied precisely when the suite was red:
+    # green for the wrong reason, which is strictly worse than the honest `null` it replaces. It
+    # must run unconditionally and THEN assert on what it collected.
+    #
+    # ⚑ THE RULING ON EACH `needs.<job>.result`. Three of the four values are not `success`, and
+    # each is a decision rather than a detail:
+    #   * `failure`   — FAIL. The whole point.
+    #   * `cancelled` — FAIL. A cancelled run MEASURED NOTHING; there is no verdict to inherit,
+    #     and "nobody looked" must not read as "nothing wrong". `always()` rather than
+    #     `!cancelled()` is precisely what keeps this job alive to say so.
+    #   * `skipped`   — FAIL, and this is the judgement call. NO job in this file carries a
+    #     job-level `if:` or its own `needs:`, so nothing here can be skipped today and this arm
+    #     is currently unreachable — it is a ruling about the next edit, not about this tree.
+    #     Reading `skipped` as a PASS would mean a future `if:` condition (or an upstream job
+    #     that itself skips) silently drops a leg out of the merge gate with no signal anywhere,
+    #     which is this card's own defect shape re-minted one layer down. Reading it as a FAIL
+    #     costs a loud red that its author clears by saying out loud, here, that the skip is
+    #     intended. Between a silent hole and a noisy question, the noisy one is cheaper.
+    #   The results are read from `toJSON(needs)`, which is DERIVED from the list below — so a
+    #   job added to `needs:` is gated with no second edit. A hand-written
+    #   `needs.a.result != 'success' || needs.b.result != 'success'` chain would be a guard
+    #   reading a proper subset of the set it claims to cover, i.e. card#5910's class again.
+    #
+    # THE `needs:` LIST IS NOT HELD LEVEL BY DILIGENCE. `tests/ci-gate-selftest.sh` derives every
+    # top-level job in this file and reds in both directions, so a new job here is gated or the
+    # build fails. That file also owns the ONE declaration of which contexts must be required
+    # BESIDE this one: `needs:` cannot cross a workflow file, so the PR-triggered jobs living in
+    # the sibling workflows are covered by nothing here and have to be named to branch
+    # protection themselves. It is not restated in this comment, because a second copy is a
+    # second thing to correct.
+    needs:
+      - shellcheck
+      - drift-check-selftest
+      - ci-matrix-parity
+      - selftest
+      - suite-home-containment
+      - promote-action-selftest
+      - release-artifacts-action-selftest
+      - release-tag-check-action-selftest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: every needed job succeeded
+        env:
+          # By env, never `${{ }}` inside the `run:` body — an Actions expression there is
+          # textual substitution into the shell source, which is the script-injection class the
+          # `release-artifacts-action-selftest` job already holds over the composite actions.
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          needs = json.loads(os.environ["NEEDS"])
+
+          # CONTROL, and not a hypothetical: this job IS the required context, so an aggregator
+          # that needs nothing would report a green tick standing in front of an unmeasured
+          # suite — the exact false-confidence this whole job exists to remove.
+          if not needs:
+              print("::error::ci-gate declares no `needs:` — it is standing in front of nothing")
+              sys.exit(1)
+
+          bad = []
+          for job in sorted(needs):
+              result = needs[job].get("result")
+              print(f"{result:<9} {job}")
+              if result != "success":
+                  bad.append((job, result))
+
+          for job, result in bad:
+              print(f"::error::{job} reported '{result}' — only 'success' satisfies this gate")
+          if bad:
+              print(f"::error::{len(bad)} of {len(needs)} needed job(s) did not succeed")
+              sys.exit(1)
+
+          print(f"all {len(needs)} needed job(s) succeeded")
+          PY

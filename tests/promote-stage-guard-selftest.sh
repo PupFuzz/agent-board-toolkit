@@ -17,8 +17,16 @@
 # real script as a process, over a canned board, with its PATCH set observable. Adding a third
 # selftest would have meant a third bespoke `curl` stub in tests/ (this one and the shared
 # `_kb-api-stub-curl.sh` are already two, for genuinely different callers), so the cases live
-# with the harness they need. The filename is NOT renamed on purpose: it is a required status
-# check name via ci.yml's matrix, and a rename leaves that context permanently unreported.
+# with the harness they need. The filename is NOT renamed on purpose: it names a `selftest` matrix
+# entry, so a rename moves the reported check name `selftest (promote-stage-guard-selftest)`.
+#
+# ⚠ THIS PARAGRAPH USED TO SAY that check name "is a required status check", and that a rename
+# would leave the context permanently unreported. Read live for card#8261,
+# `branches/{main,dev}/protection` answer `required_status_checks: null` — nothing is required, so
+# no matrix entry's name has been load-bearing on a merge. It is not going to become load-bearing
+# either: the required context is the single `ci-gate` job, which `needs:` the whole matrix and
+# survives any entry being renamed. That is what the aggregator is FOR. The rename is still
+# avoided, for the reading reason above; the settings reason is retired.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
