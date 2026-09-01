@@ -599,6 +599,25 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **The coord-store token rung, MIRRORED into `agent-board-toolkit-runtime-check`** (card#8376) —
+  **DUPLICATED ON PURPOSE, GUARDED, on Stage D's terms.** The duplicate-kanban-token leg has to
+  resolve a token file exactly as the tools do, and that resolution lives in `_kb-board-lib.sh`
+  (`kb_coord_store_token_file` + `_kb_expand_home` + `_kb_looks_like_pasted_secret`, plus
+  `kb_board_env_get`'s unset-then-source read). `runtime-check` **cannot source the lib** — it
+  JUDGES the lib, and a stale or broken lib must not take the judge down with it — so four
+  `_rc_*` mirrors ship inside it. That is the same trade this program settled for
+  `promote-released-cards`' `host_ok`, and it is pinned the same way:
+  `tests/token-duplication-selftest.sh` extracts all four with `sed` and drives them **row-by-row
+  against the lib's originals** over a shared case table (16 store shapes, 10 home expansions, 12
+  credential shapes, 3 board-env reads), and **exits 1 if it cannot extract one**, so a rename
+  reds the build rather than retiring the comparison. ⛔ **Why a drifted mirror is worse here than
+  a disagreement:** it would resolve a DIFFERENT file than the tools do, and the leg would then
+  report a duplicate credential that is not there, or miss the one that is — a security finding
+  invented or lost, either way against a file nobody is looking at. ⚠ **Do not read this as a
+  Stage D revival case.** The alternative is not "source the lib" (forbidden here) but "make the
+  lib callable out-of-process", which would give the judge a runtime dependency on the artifact
+  under judgement. The mirror is the smaller cost, and this entry exists so the next author meets
+  the decision instead of re-deriving it — or worse, "fixing" it by adding a `source`.
 - **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
   recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
   drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
