@@ -212,13 +212,16 @@ STUB
 chmod +x "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH"
 
+# `source: "*"` — REQUIRED as of card#8421, and the right declaration here: this fixture's
+# board is one repo, so every assertion below stays a claim about the ref canon alone.
 cat > "$TMP/release-pr.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
   "promote": {
     "board_id": "12",
     "released_stage_id": "85",
-    "api_base": "https://kanban.test/api/v3"
+    "api_base": "https://kanban.test/api/v3",
+    "source": "*"
   }
 }
 JSON

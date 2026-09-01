@@ -1756,6 +1756,24 @@ finding with no owner is abandoned, not filed.
   which is an observation of what works and not a statement of what is required, and no run of
   anything has tested the alternatives.
 
+- **The `curl` stub that drives `promote-released-cards` end to end, in three selftests**
+  (card#8421) — **EXTRACTED at the second real caller; one adoption still owed, and it is a
+  DECISION, not a chore.** `bin/promote-released-cards` runs its whole subject at top level in a
+  standalone that must not be sourced, so a fake `curl` on `$PATH` is the only way to exercise the
+  correlation, the guards, the reports and the exit policy at all — which is why the fixture that
+  decides what "the board said" means had already been hand-rolled twice
+  (`promote-stage-guard-selftest.sh`, `promote-ref-canon-selftest.sh`) with a third about to land.
+  `tests/_promote-curl-stub.sh` now owns it; the stage-guard file and the new
+  `promote-source-qualify-selftest.sh` are its two callers, byte-identical stub content.
+  ⛔ **`promote-ref-canon-selftest.sh` was deliberately NOT adopted, and the reason is not
+  file scope.** Its own stub logs the PATCH **url alone**, and its `moved()` asserts whole-LINE
+  equality against that log via the prelude's `has_line`. The shared stub logs `<url>\t<body>` —
+  which the stage-guard file needs, since it asserts on the request BODY — so adopting it there
+  means rewriting a deliberately strict assertion into a substring one. That is a change to a
+  test's STRENGTH, in the file that pins the card#7587 ref-canon rule, and it belongs to whoever
+  is willing to argue it on its own. The alternative that costs nothing — a second log channel in
+  the shared stub — is worse: two ways to spell one observation is the shape being consolidated.
+
 ---
 
 ## Corrections carried forward

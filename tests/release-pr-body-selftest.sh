@@ -697,7 +697,7 @@ cat > "$CR/.release-pr.json" <<'EOF'
 {
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
-  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "*" }
 }
 EOF
 
