@@ -20,6 +20,12 @@
 #     tool against a reference checkout when one is named/derivable — stale copy = FAIL;
 #     no reference findable = WARN (cannot verify currency; the copy loop is on you)
 #
+# It then judges the seat's CREDENTIAL topology, which is the same question one layer over
+# (card#8376): a kanban token resolving from more than one source. The same bytes in two files is
+# a copy that is redundant today — FAIL. A readable token file no board resolves is a second live
+# credential — WARN, because its innocent twin is a supported install (see the block below). It
+# reports SOURCES and PATHS and never a token value, on either arm.
+#
 # Exit codes: 0 current/coherent · 1 stale or incoherent (the loud failure the recipe
 # lacked) · 0 with warnings for cannot-verify (honest UNKNOWN ≠ ok is stated in the output).
 #
@@ -260,6 +266,308 @@ fi
 
 if [ "${#roots[@]}" -eq 0 ] && [ "${#copies[@]}" -eq 0 ]; then
     warn "no toolkit tools found on PATH — nothing to judge"
+fi
+
+# --- one credential, one place: a kanban token resolving from MORE THAN ONE source ----------
+#
+# WHY THIS LEG LIVES IN THIS TOOL (card#8376, roundtable 336). The coord-store rung (v0.31.0,
+# card#7316) lets a seat whose credential store already holds the kanban token stop keeping a
+# SECOND plaintext copy for this toolkit to find. Shipping the rung does not REMOVE the copy an
+# operator already minted: both keep working, every tool reports healthy, and the shadowed one is
+# a live credential nobody tracks and nobody rotates. Nothing on this box measured that state.
+#
+# ⛔ IT REPORTS SOURCES, NEVER VALUES — canon #20, and the property this leg is the most able to
+# break: a duplicate detector is by construction the one instrument that resolves two credentials
+# at once. Every message names a SOURCE (a config file, an env var, the store coordinate) and a
+# PATH. Token bytes reach exactly one place — `sha256sum`'s STDIN, through a file redirect: never
+# argv (`ps` is world-readable), never a temp file, never a variable a message could interpolate.
+# The digests are compared and are not printed either. `tests/token-duplication-selftest.sh`
+# plants a known fake token and greps this tool's whole stdout+stderr for it on the firing path.
+#
+# WHAT IT ASSERTS, in the units the tools actually resolve. Every board env on this box gets its
+# EFFECTIVE token file under the documented precedence — this board env's KBCARD_TOKEN_FILE > the
+# host env's > an ambient one > the coord store's `[kanban] api_token_file` pointer (INSTALL.md
+# §3b) — and then:
+#   • two DIFFERENT files holding the SAME bytes ⇒ ✗ DUPLICATE. One of them is redundant today,
+#     whichever source names it; that is the copy the store rung leaves behind.
+#   • a source naming a readable token file that is the effective token of NO board ⇒ ⚠ SECOND
+#     CREDENTIAL: a DIFFERENT live token this seat carries and nothing on it resolves. WARN, not
+#     FAIL — the reasoning is at the arm itself, where the split can be read next to the code.
+# ⚑ WHAT IT DELIBERATELY DOES NOT CALL A DEFECT: several boards each declaring their OWN token
+#   file, all different, all in use. That is the per-board isolation card#7245 exists to produce,
+#   and a check that reds on it would be telling every correct install to break itself. The
+#   predicate is "a copy, or an orphan" — never "more than one token file on the box".
+# ⚑ NO BOARD ENV ⇒ NO VERDICT, silently. With no ~/.kanban-*-board.env there is no resolution
+#   context on this seat: nothing resolves a token, so nothing can be shadowed by anything. That
+#   glob IS the population, the same discovery `_kb_discovered_boards` and `kb_board_roster` use —
+#   so a board env parked somewhere else and reached only through $KBCARD_BOARD_ENV is outside it,
+#   and a token file only THAT board resolves would read here as an orphan. Stated rather than
+#   guessed at: INSTALL.md §3b's own recipe puts every board env under that glob.
+#
+# ⛔ IT RESOLVES, IT DOES NOT SOURCE THE LIB. This file stays standalone (see the header), so the
+# store rung and its two helpers are MIRRORED below — guarded duplication, the disposition
+# `docs/CONSOLIDATION-PLAN.md` § Stage D settled for `promote-released-cards`' `host_ok`. The pin
+# is the parity block in `tests/token-duplication-selftest.sh`: it extracts these functions and
+# drives them row-by-row against `bin/_kb-board-lib.sh`'s originals over a shared case table, and
+# EXITS 1 if it cannot extract one — so a rename reds the build instead of silently retiring the
+# comparison. A drifted mirror does not merely disagree: it resolves a different file than the
+# tools do, and then this leg reports a duplicate that is not there, or misses the one that is.
+
+# _rc_expand_home <value> — mirror of the lib's _kb_expand_home.
+_rc_expand_home() {
+    local v="${1-}"
+    # shellcheck disable=SC2088
+    case "$v" in
+        '~')         printf '%s' "$HOME" ;;
+        '~/'*)       printf '%s%s' "$HOME" "${v#\~}" ;;
+        '$HOME')     printf '%s' "$HOME" ;;
+        '$HOME/'*)   printf '%s%s' "$HOME" "${v#\$HOME}" ;;
+        '${HOME}')   printf '%s' "$HOME" ;;
+        '${HOME}/'*) printf '%s%s' "$HOME" "${v#\$\{HOME\}}" ;;
+        *)           printf '%s' "$v" ;;
+    esac
+}
+
+# _rc_looks_like_pasted_secret <value> — mirror of the lib's _kb_looks_like_pasted_secret. Here
+# it guards the REPORT as well as the resolution: a value with the shape of a credential is never
+# rendered into a message, because printing it is the leak the indirection exists to stop.
+_rc_looks_like_pasted_secret() {
+    local LC_ALL=C
+    local v="${1-}" lc
+    [[ -n "$v" ]] || return 1
+    case "$v" in
+        '~'*|*/*|*\\*) return 1 ;;
+    esac
+    lc="${v,,}"
+    case "$lc" in
+        ghp_*|gho_*|ghu_*|ghs_*|ghr_*|github_pat_*|glpat-*|xoxb-*|xoxp-*) return 0 ;;
+    esac
+    [[ ${#v} -ge 24 && "$v" != *.* ]]
+}
+
+# _rc_store_pointer — the token file the coord credential store POINTS AT, on stdout; rc 1 with
+# nothing on stdout when the store declares nothing this rung would act on. Mirror of the lib's
+# kb_coord_store_token_file MINUS its messages: the lib speaks for itself at every tool's use
+# site, and a second voice repeating it at SessionStart is noise. The REFUSALS are mirrored
+# exactly, because each of them means the tools resolve NOTHING from the store — a mirror that
+# resolved one anyway would invent a source and then report a duplicate against it.
+_rc_store_pointer() {
+    local store="${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"
+    [[ -r "$store" ]] || return 1
+    local parsed verdict ptr
+    parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
+        function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+        {
+            l = trim($0)
+            if (l == "") next
+            if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
+            if (substr(l, 1, 1) == "[") {
+                p = 0
+                for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
+                cur = p ? substr(l, 2, p - 2) : ""
+                next
+            }
+            if (cur != sec) next
+            e = index(l, "="); c = index(l, ":")
+            if (e && c) d = (e < c) ? e : c; else d = e ? e : c
+            if (!d) next
+            k = trim(substr(l, 1, d - 1))
+            v = trim(substr(l, d + 1))
+            if (k == want) { nexact++; if (nexact == 1) pv = v }
+            else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
+            else if ((k == inl || tolower(k) == inl) && v != "") ninline++
+        }
+        END {
+            if (nexact > 1) { print "dup"; exit }
+            if (ninline) { print "inline"; exit }
+            if (nexact) { printf "ok\n%s\n", pv; exit }
+            if (nfold)  { printf "ok\n%s\n", fv; exit }
+            print "none"
+        }
+    ' "$store" 2>/dev/null)"
+    verdict="${parsed%%$'\n'*}"
+    ptr=""
+    [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
+    [[ "$verdict" == "ok" && -n "$ptr" ]] || return 1
+    [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]] && return 1
+    _rc_looks_like_pasted_secret "$ptr" && return 1
+    _rc_expand_home "$ptr"
+}
+
+# _rc_declared_token_file <env file> — the KBCARD_TOKEN_FILE that file itself declares, on
+# stdout; rc 1 when it declares none. Same mechanism as the lib's kb_board_env_get: UNSET the
+# var, then SOURCE in a subshell. The unset is load-bearing rather than hygiene — board envs
+# `export` their keys, so in an operator shell that sourced one board's env, a board declaring NO
+# token file of its own would otherwise report its neighbour's, which is a duplicate this leg
+# would then have invented. Reading these files TEXTUALLY is what would drift: the tools SOURCE
+# them, so only sourcing them answers the question the tools ask.
+_rc_declared_token_file() {
+    [[ -r "$1" ]] || return 1
+    local v
+    v="$( set +e; unset KBCARD_TOKEN_FILE; . "$1" >/dev/null 2>&1; printf '%s' "${KBCARD_TOKEN_FILE:-}" )" || true
+    [[ -n "$v" ]] || return 1
+    printf '%s' "$v"
+}
+
+# _rc_digest <file> — the sha256 of a token file's CONTENT, on stdout; rc 1 when no digest tool
+# is available. THE ONLY PLACE IN THIS TOOL THAT READS TOKEN BYTES AT ALL, and they arrive on
+# sha256sum's STDIN through a redirect: not argv, not a variable, not a temp file. The caller
+# compares digests and prints none of them.
+_rc_digest() {
+    local h
+    h="$(sha256sum <"$1" 2>/dev/null)" || return 1
+    [[ -n "$h" ]] || return 1
+    printf '%s' "${h%% *}"
+}
+
+# _rc_member <needle> <newline-separated list> — whole-line membership, no pipeline and no
+# word-splitting, so a token-file path containing a space is still compared as one path.
+_rc_member() {
+    local nl=$'\n'
+    case "$nl$2$nl" in *"$nl$1$nl"*) return 0 ;; *) return 1 ;; esac
+}
+
+declare -A TOK_LBL=()      # canonical token-file path -> the source(s) naming it
+declare -A TOK_USED=()     # canonical token-file path -> the board env(s) whose token it IS
+declare -A TOK_DIG=()      # canonical token-file path -> sha256 of its content (never printed)
+TOK_PATHS=()               # the same keys in discovery order, so the report is deterministic
+tok_nodigest=0
+tok_findings=0
+
+# _rc_canon <path> — the path a comparison is keyed on. Two declarations naming one file through
+# a symlink or a `..` are ONE credential, not two, and reporting them as a duplicate would be the
+# cry-wolf half of this leg's failure modes.
+_rc_canon() {
+    local r; r="$(readlink -f "$1" 2>/dev/null || true)"
+    [[ -n "$r" ]] && printf '%s' "$r" || printf '%s' "$1"
+}
+
+# _rc_add_source <label> <declared value> — record one source of a kanban token file.
+_rc_add_source() {
+    local lbl="$1" raw="${2:-}" p real
+    [[ -n "$raw" ]] || return 0
+    if _rc_looks_like_pasted_secret "$raw"; then
+        warn "$lbl names something with the SHAPE OF A CREDENTIAL rather than a path — its text is deliberately not shown; a \`_file\` slot takes the path of a file CONTAINING the token (docs/INSTALL.md §3b). This leg skipped it, so that source is UNJUDGED (UNKNOWN, not ok)"
+        return 0
+    fi
+    p="$(_rc_expand_home "$raw")"
+    # Only a file with content is a credential this seat CARRIES. A declaration naming a missing
+    # or empty file is a misconfiguration the tools themselves refuse at use time ("token file
+    # unreadable"); it is not a second token, and re-reporting it here would be a second voice on
+    # somebody else's finding.
+    [[ -r "$p" && -s "$p" ]] || return 0
+    real="$(_rc_canon "$p")"
+    if [[ -z "${TOK_LBL[$real]:-}" ]]; then
+        TOK_PATHS+=("$real")
+        TOK_LBL["$real"]="$lbl"
+    else
+        TOK_LBL["$real"]="${TOK_LBL[$real]}, $lbl"
+    fi
+}
+
+rc_host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
+rc_store_file="${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"
+rc_amb="${KBCARD_TOKEN_FILE:-}"
+rc_host_tok="$(_rc_declared_token_file "$rc_host_env" || true)"
+if [ -e "$rc_store_file" ] && [ ! -r "$rc_store_file" ]; then
+    warn "the coord credential store $rc_store_file exists but is not readable, so whether it points at a SECOND kanban token could not be judged (UNKNOWN, not ok)"
+fi
+rc_store_tok="$(_rc_store_pointer || true)"
+
+_rc_add_source "the KBCARD_TOKEN_FILE exported into this process's environment" "$rc_amb"
+_rc_add_source "$rc_host_env" "$rc_host_tok"
+
+rc_boards=0
+for envf in "$HOME"/.kanban-*-board.env; do
+    [ -e "$envf" ] || continue          # literal glob when none match
+    rc_boards=$((rc_boards + 1))
+    board_tok="$(_rc_declared_token_file "$envf" || true)"
+    _rc_add_source "$envf" "$board_tok"
+    # The documented precedence, reproduced: board > host > ambient > store.
+    eff="${board_tok:-${rc_host_tok:-${rc_amb:-$rc_store_tok}}}"
+    [ -n "$eff" ] || continue
+    eff="$(_rc_expand_home "$eff")"
+    { [ -r "$eff" ] && [ -s "$eff" ]; } || continue
+    eff_real="$(_rc_canon "$eff")"
+    if [ -n "${TOK_USED[$eff_real]:-}" ]; then
+        TOK_USED["$eff_real"]="${TOK_USED[$eff_real]}, $envf"
+    else
+        TOK_USED["$eff_real"]="$envf"
+    fi
+done
+
+_rc_add_source "the coord credential store's [kanban] api_token_file pointer" "$rc_store_tok"
+
+if [ "$rc_boards" -eq 0 ]; then
+    :                                   # no resolution context on this box — see the ⚑ note above
+elif [ "${#TOK_PATHS[@]}" -eq 1 ]; then
+    say "runtime-check: ok — one kanban token file resolves on this seat (${TOK_LBL[${TOK_PATHS[0]}]})"
+elif [ "${#TOK_PATHS[@]}" -gt 1 ]; then
+    for tp in "${TOK_PATHS[@]}"; do
+        d="$(_rc_digest "$tp" || true)"
+        if [ -z "$d" ]; then tok_nodigest=1; else TOK_DIG["$tp"]="$d"; fi
+    done
+    if [ "$tok_nodigest" = 1 ]; then
+        warn "${#TOK_PATHS[@]} kanban token files resolve on this seat but no working sha256sum was found, so whether they hold the SAME credential or two different ones CANNOT BE VERIFIED (UNKNOWN, not ok)"
+    else
+        declare -A tok_group=()
+        for tp in "${TOK_PATHS[@]}"; do
+            d="${TOK_DIG[$tp]}"
+            if [ -n "${tok_group[$d]:-}" ]; then
+                tok_group["$d"]="${tok_group[$d]}"$'\n'"$tp"
+            else
+                tok_group["$d"]="$tp"
+            fi
+        done
+        rc_store_real=""
+        [ -n "$rc_store_tok" ] && rc_store_real="$(_rc_canon "$rc_store_tok")"
+        for tp in "${TOK_PATHS[@]}"; do
+            group="${tok_group[${TOK_DIG[$tp]}]}"
+            [ "$group" = "${group%%$'\n'*}" ] && continue      # a group of one: not a copy
+            # Reported ONCE per group, at its first member, so N copies are one finding.
+            [ "$tp" = "${group%%$'\n'*}" ] || continue
+            tok_findings=$((tok_findings + 1))
+            # Keep the store's pointer when the group contains it: that file is the one the
+            # credential store already manages and rotates, and letting it resolve is what
+            # INSTALL.md §3b's fourth tier is for. Otherwise keep the first copy a board resolves.
+            keep=""
+            if [ -n "$rc_store_real" ] && _rc_member "$rc_store_real" "$group"; then
+                keep="$rc_store_real"
+            else
+                for gp in "${TOK_PATHS[@]}"; do
+                    _rc_member "$gp" "$group" || continue
+                    [ -n "${TOK_USED[$gp]:-}" ] && [ -z "$keep" ] && keep="$gp"
+                done
+            fi
+            [ -n "$keep" ] || keep="${group%%$'\n'*}"
+            drop=""
+            for gp in "${TOK_PATHS[@]}"; do
+                _rc_member "$gp" "$group" || continue
+                [ "$gp" = "$keep" ] && continue
+                drop="${drop:+$drop, }$gp (named by ${TOK_LBL[$gp]})"
+            done
+            fail "DUPLICATE kanban token — the same credential is in more than one file on this seat: keep $keep (named by ${TOK_LBL[$keep]}) and DELETE $drop. Then either DROP the KBCARD_TOKEN_FILE line that named it — right where the survivor is the store's pointer, which is what docs/INSTALL.md §3b's fourth tier is for — or REPOINT that line at the file you kept; dropping it otherwise leaves that board resolving nothing. Compared by digest — no token value is read into a message here"
+        done
+        # THE SECOND ARM IS A WARN, AND THE SPLIT IS THE WHOLE JUDGEMENT IN THIS LEG. A file
+        # holding the SAME bytes as another is redundant TODAY, on any topology, so it fails. A
+        # file holding a DIFFERENT token that no board resolves is a second live credential — and
+        # the shape is real (the seat minted a toolkit token and the store still points at the
+        # framework's own), but so is its innocent twin: a store whose kanban token belongs to the
+        # framework's own tooling while every board here declares its own is a SUPPORTED install,
+        # and failing it would red every SessionStart on a correct seat and teach the operator to
+        # ignore this tool. Reported, never gated — canon #21's three-way test, of which this
+        # clears none. `runtime-check: ⚠` is the same channel the incomplete-install finding uses,
+        # which is likewise definite and likewise non-blocking.
+        for tp in "${TOK_PATHS[@]}"; do
+            [ -n "${TOK_USED[$tp]:-}" ] && continue
+            group="${tok_group[${TOK_DIG[$tp]}]}"
+            [ "$group" = "${group%%$'\n'*}" ] || continue      # already reported as a duplicate
+            tok_findings=$((tok_findings + 1))
+            warn "SECOND kanban credential — ${TOK_LBL[$tp]} names $tp, holding a DIFFERENT token than any board on this seat resolves. Two live credentials on one seat, and only the resolved one gets rotated: delete it and the declaration naming it so the surviving source resolves, or point a board env at it (docs/INSTALL.md §3b). Compared by digest — no token value is read into a message here"
+        done
+        [ "$tok_findings" -gt 0 ] || \
+            say "runtime-check: ok — ${#TOK_PATHS[@]} kanban token files resolve, each a different credential a board actually uses (per-board isolation)"
+    fi
 fi
 
 _flush
