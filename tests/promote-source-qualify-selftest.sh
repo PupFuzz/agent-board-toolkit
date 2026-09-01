@@ -175,6 +175,22 @@ run_promote "$CFG_STAR" --source '*'
 eq "control: --source '*' runs (rc 0)"              "0"     "$rc"
 eq "control: …and qualification is OFF"             "true"  "$(has 'repo-qualification OFF' "$err")"
 
+echo "== 3b. a refusal echoes the OPERATOR'S spelling, not only the canonical one =="
+# A message naming only the canonicalized value is a message the operator cannot GREP FOR. The
+# worked case is the committed placeholder: `"source": "REPLACE_ME"` reads back as `replace_me`,
+# which appears nowhere in their config or their workflow file, so the one search that would
+# find the line they have to edit comes up empty.
+run_promote "$CFG_STAR" --source "REPLACE_ME"
+eq "the refusal carries the RAW spelling"           "true"  "$(has 'REPLACE_ME' "$err")"
+run_promote "$CFG_STAR" --source "ACME/Widget.git"
+eq "a mixed-case bad value shows the raw form"      "true"  "$(has 'ACME/Widget.git' "$err")"
+eq "…and the canonical form it was checked as"      "true"  "$(has 'acme/widget.git' "$err")"
+# CONTROL — an ALREADY-canonical value is rendered exactly once, so the "(canonicalized to …)"
+# half is a real conditional and not noise appended to every message.
+run_promote "$CFG_STAR" --source "acme/widget.git"
+eq "an already-canonical value is not double-printed" "false" "$(has 'canonicalized to' "$err")"
+eq "…and is still named"                              "true"  "$(has 'acme/widget.git' "$err")"
+
 echo "== 4. THE DEFECT, held still: one shipped ref, three cards, two of them not ours =="
 # This is card#8421 reproduced in miniature. Under `"*"` the tool promotes all three — that is
 # the pre-fix behaviour and it is CORRECT there, because `*` is a declaration that no such
@@ -215,6 +231,72 @@ summ="$(cat "$TMP/step-summary.md")"
 eq "step summary names the unsourced count"         "true"  "$(has '1 ref-matched card(s) had NO by-ref source' "$summ")"
 eq "…and carries the per-card line"                 "true"  "$(has '(#3)' "$summ")"
 eq "…and names the declared source"                 "true"  "$(has 'acme/widget' "$summ")"
+# The FOREIGN list reaches the step summary too, and for the identical stated reason: the
+# rejection is WARN-only, so it lands in a GREEN job, where a stderr line is invisible in a
+# collapsed log. Its lines are the guard's proof it fired at all, which is the half an
+# operator auditing a `.promote.source` change actually goes looking for.
+eq "step summary names the other-repo count"        "true"  "$(has '1 ref-matched card(s) belong to ANOTHER repo' "$summ")"
+eq "…and carries that card's per-card line"         "true"  "$(has '(#2)' "$summ")"
+eq "…naming the repo it actually belongs to"        "true"  "$(has 'acme/other' "$summ")"
+
+echo "== 4c. an UNSOURCED card's ref is NOT reported as 'no card' (the single-report contract) =="
+# THE DEFECT THIS SECTION HOLDS STILL. `MATCHED_DLS` is computed from the PLAN — matches only —
+# so under qualification the DL of a card the run REFUSED to attribute fell into $MISSING and
+# was printed by the one `matched NO card` WARNING line. `bin/release-pr-body`'s coverage
+# section greps exactly that line, so a release PR body told its author to "Create (or correct)
+# a board card" for a card that is already on the board and needs a STAMP. The two kinds need
+# OPPOSITE remedies, so they get two lines and release-pr-body reads both.
+#
+# `foreign` deliberately STAYS on the no-card line: "no card OF THIS REPO carries this ref" is
+# exactly true of it, and the per-card ⊘ line above already names the other repo's card that
+# did. Only `unsourced` moves, because only there does a card of possibly-this-repo exist.
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-77"}},
+  {"id":43,"workflow_stage_id":51,"payload":{"dl_number":"DL-88","pr_url":"https://github.com/acme/other/pull/2"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+run_promote "$CFG_REPO" --dls "DL-77,DL-88,DL-99"
+nocard_line="$(printf '%s\n' "$err" | grep -F 'matched NO card' || true)"
+stranded_line="$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+eq "4c: rc 0"                                       "0"     "$rc"
+eq "4c: nothing was promoted"                       ""      "$patched"
+eq "4c: the genuinely cardless DL-99 IS on the no-card line" "true"  "$(has 'DL-99' "$nocard_line")"
+eq "4c: the FOREIGN-only DL-88 stays on it"                 "true"  "$(has 'DL-88' "$nocard_line")"
+eq "4c: the UNSOURCED card's DL-77 is NOT on it"            "false" "$(has 'DL-77' "$nocard_line")"
+eq "4c: …it is reported on its OWN line"                    "true"  "$(has 'DL-77' "$stranded_line")"
+eq "4c: …saying the card EXISTS and carries the ref"        "true"  "$(has 'the card exists and carries the ref' "$stranded_line")"
+# The REMEDY belongs on the per-card ⊘ line, NOT on this one, and that is a constraint rather
+# than a layout choice: release-pr-body cuts this line at its FIRST colon to get the ref list,
+# so a `https://…` ahead of the refs would truncate it. The two lines together are the report.
+eq "4c: …and the per-card line carries the remedy"          "true"  "$(has 'kbcard patch --pr-url' "$err")"
+# THE CROSS-BIN CONTRACT, pinned on the PRODUCER side: release-pr-body extracts the ref list
+# with this exact grep+sed, so the anchor phrase must carry no colon of its own. The consumer
+# side is driven for real in tests/release-pr-body-selftest.sh — this arm is what reds HERE, in
+# the file that owns the line, if a future edit puts a `https://…` ahead of the refs.
+eq "4c: …and the consumer's reader extracts exactly the refs" "DL-77" \
+   "$(printf '%s\n' "$err" | grep -oE 'matched ONLY an unsourced card[^:]*: .*' | sed 's/[^:]*: //')"
+eq "4c: …and carries no OTHER ref"                          "false" "$(has 'DL-88' "$stranded_line")"
+# The second line must not satisfy release-pr-body's no-card grep, or it re-creates the defect
+# through the other door.
+eq "4c: the new line does NOT read 'matched NO card'"       "false" "$(has 'matched NO card' "$stranded_line")"
+eq "4c: the no-card COUNT excludes the unsourced ref"       "true"  "$(has '2 no-card,' "$out")"
+# CONTROL — the SAME board and the SAME refs under the single-repo declaration. Card #42 is
+# attributable there (qualification is off), so DL-77 is COVERED and there is no second line at
+# all: the split above is the qualification's doing, not this fixture's.
+run_promote "$CFG_STAR" --dls "DL-77,DL-88,DL-99"
+eq "4c control: under '*' card #42 IS promoted"             "true"  "$(moved 42)"
+eq "4c control: …DL-77 is on no report at all"              "false" "$(has 'DL-77' "$err")"
+eq "4c control: …and no unsourced line is printed"          ""      "$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+# restore the four-card board for everything below
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/other/pull/15"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"pr_number":"15"}},
+  {"id":4,"workflow_stage_id":51,"payload":{"pr_number":"99","pr_url":"https://github.com/acme/widget/pull/99"}}
+],"meta":{"last_page":1,"total":4}}
+JSON
 
 echo "== 5. a card's source is derived through the server's field-preference order =="
 # The jq `derive_source` is a FOURTH runtime expressing one rule (server PHP, bridge PHP, the
@@ -234,6 +316,13 @@ JSON
   run_promote "$CFG_REPO"
   moved 7
 }
+ext_json_case() { # <external_link-as-RAW-JSON> — the same field, non-string values included
+  cat > "$BOARD_FILE" <<JSON
+{"data":[{"id":7,"workflow_stage_id":51,"external_link":$1,"payload":{"pr_number":"15"}}],"meta":{"last_page":1,"total":1}}
+JSON
+  run_promote "$CFG_REPO"
+  moved 7
+}
 eq "payload.repo wins outright"                  "true"  "$(src_case '{"pr_number":"15","repo":"acme/widget","pr_url":"https://github.com/acme/other/pull/1"}')"
 eq "…including when it disqualifies the card"    "false" "$(src_case '{"pr_number":"15","repo":"acme/other","pr_url":"https://github.com/acme/widget/pull/1"}')"
 eq "a repo string with no slash is NOT a source" "false" "$(src_case '{"pr_number":"15","repo":"widget"}')"
@@ -244,6 +333,22 @@ eq "a trailing .git in the URL is trimmed"       "true"  "$(src_case '{"pr_numbe
 eq "the URL host is case-insensitive"            "true"  "$(src_case '{"pr_number":"15","pr_url":"https://GitHub.com/ACME/Widget/pull/1"}')"
 eq "a BARE repo URL yields no source (the rule)" "false" "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget"}')"
 eq "a non-github URL yields no source"           "false" "$(src_case '{"pr_number":"15","pr_url":"https://git.example.com/acme/widget/pull/1"}')"
+# A NON-STRING url field derives NOTHING, because the server guards `is_string` before it
+# parses one (`sourceFor`, and `is_string($externalLink)` for the top-level field). The jq
+# mirror used to `tostring` the value first, so an object or an array whose JSON TEXT happens
+# to contain a GitHub url derived a source here and null on the server — and the direction of
+# that disagreement is toward PROMOTING, which is the one direction this whole guard exists to
+# close. The two shapes below are the JSON renderings that carry a matchable url.
+eq "an OBJECT pr_url is not a string"            "false" "$(src_case '{"pr_number":"15","pr_url":{"u":"https://github.com/acme/widget/pull/1"}}')"
+eq "an ARRAY pr_url is not a string either"      "false" "$(src_case '{"pr_number":"15","pr_url":["https://github.com/acme/widget/pull/1"]}')"
+# Not a discriminating row — a bare number carries no url under either implementation. It is
+# here as a NO-THROW guard on the type test: jq `capture` on a non-string is a runtime error,
+# so a mirror written without either a `tostring` or a type arm dies mid-correlation.
+eq "control: a NUMBER url derives nothing, no throw" "false" "$(src_case '{"pr_number":"15","pr_url":1234}')"
+eq "an object external_link is not a string"     "false" "$(ext_json_case '{"u":"https://github.com/acme/widget/pull/1"}')"
+# CONTROL — the SAME url as a bare string DOES qualify, so the three arms above are about the
+# TYPE and not about the fixture having stopped matching anything.
+eq "control: the same url as a STRING qualifies" "true"  "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/1"}')"
 eq "external_link is read last, and IS read"     "true"  "$(ext_case 'https://github.com/acme/widget/pull/1')"
 eq "…and an external_link for another repo is not ours" "false" "$(ext_case 'https://github.com/acme/other/pull/1')"
 # restore the four-card board for everything below

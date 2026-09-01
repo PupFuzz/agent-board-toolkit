@@ -1774,6 +1774,33 @@ finding with no owner is abandoned, not filed.
   is willing to argue it on its own. The alternative that costs nothing — a second log channel in
   the shared stub — is worse: two ways to spell one observation is the shape being consolidated.
 
+- **The source-derivation rule, expressed in a FOURTH runtime as jq** (card#8421) — **NOT
+  consolidated onto the server, and the reason is what the server ENDPOINT can answer, not
+  effort.** `bin/promote-released-cards` mirrors the kanban `ExternalReferenceNormalizer`
+  (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
+  bridge PHP and `kanban_common._derive_card_source`. The obvious consolidation is to stop
+  mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
+  <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
+  with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
+  `->where('source', $source)` — a strict equality — so a card whose source is a *different* repo
+  and a card whose source is *null* are both simply **absent** from the answer, indistinguishable
+  from "no card carries this ref". Those two rows **are** the report: the `⊘` lines are the only
+  evidence the guard fired, and the unsourced one is the only thing that tells an operator to
+  **stamp** a card rather than mint one. An endpoint that answers the qualification by *deleting*
+  the rows the qualification rejected cannot report on them.
+  Two further costs, both measured rather than assumed: `external_references` is
+  `whenLoaded`-gated on `TaskResource` and `tasks/search.json` eager-loads only
+  `lastStageMoveChangelog`, so the **paged board read this tool already makes carries no
+  `source` at all** — adopting by-ref means one request per `(system, ref)` in place of one
+  paginated scan, and that scan is also where `workflow_stage_id` (idempotence, the
+  `--shipped-stages` guard) comes from; and the `--cards` leg correlates on a card's own **id**,
+  which is not an external-reference system, so it has no by-ref query in the first place.
+  **Revisit if** the by-ref endpoint grows a way to return the rejected rows (an
+  `include_unqualified`, or a per-row `source` on the answer), or `tasks/search.json` gains an
+  opt-in `external_references` include — the second alone would remove the mirror, because the
+  derivation would no longer need re-expressing to read a value the board already handed over.
+  The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
+
 ---
 
 ## Corrections carried forward

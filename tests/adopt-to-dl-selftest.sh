@@ -23,6 +23,36 @@ expect_rc "whitespace rejected"       2 _ata_validate_repo "owner /name"
 expect_rc "empty rejected"            2 _ata_validate_repo ""
 expect_rc "empty owner rejected"      2 _ata_validate_repo "/name"
 expect_rc "empty name rejected"       2 _ata_validate_repo "owner/"
+# THE SHAPE-ONLY ROWS ABOVE ARE NOT THE WHOLE ACCEPT SET, and the gap is not cosmetic
+# (card#8421). This predicate gates a value that is then spent TWICE, on both sides of ONE
+# comparison: it is interpolated into the placeholder `pr_url` the card is STAMPED with, and
+# into the `source=` of the step-5 by-ref VERIFY. A spelling that survives here therefore
+# derives the SAME garbage on both sides, so the verify passes VACUOUSLY and "adopted =>
+# correlatable" is certified by a check that could not have failed (canon #9) — while the
+# bridge writeback and the reconcile, which derive the source through the server's own
+# repoFromGitHubUrl, correlate the card to nothing.
+#   * `git@github.com:acme/widget` — one slash, two non-empty parts, no whitespace, so the
+#     shape ALONE accepts it (measured). It stamps `github.com/git@github.com:acme/widget/pull/0`,
+#     whose capture is `git@github.com:acme/widget`; the verify then queries that same string.
+#   * `acme/*` — same story, and the stored source is a literal `*` that names no repo.
+#   * `acme/widget.git` — the one spelling that does NOT pass vacuously, and it is worse than a
+#     refusal rather than better: repoFromGitHubUrl TRIMS the `.git`, so the card's derived
+#     source is `acme/widget` while the verify queries `acme/widget.git` — it fails LOUD, AFTER
+#     the card has already been stamped. Refusing before the write leaves nothing half-applied.
+# The charset+shape pair asserted here is the one `bin/promote-released-cards` applies to
+# `.promote.source` (`src_charset_ok` plus the shape `case`) — the same value at the other end
+# of the same correlation. Keep the two in sync.
+expect_rc "scp-style remote rejected" 2 _ata_validate_repo "git@github.com:acme/widget"
+expect_rc "a .git suffix rejected"    2 _ata_validate_repo "acme/widget.git"
+expect_rc "a glob is not a repo"      2 _ata_validate_repo "acme/*"
+expect_rc "a URL scheme rejected"     2 _ata_validate_repo "ssh://git@github.com/acme/widget"
+expect_rc "a colon is not in the set" 2 _ata_validate_repo "acme:x/widget"
+# CONTROLS — without these a validator that refused EVERYTHING would pass every row above.
+# Each is a spelling a real adoption uses and must keep accepting.
+expect_rc "control: a plain repo passes"    0 _ata_validate_repo "acme/widget"
+expect_rc "control: a dot inside a name"    0 _ata_validate_repo "acme/widget.js"
+expect_rc "control: underscore + hyphen"    0 _ata_validate_repo "acme_org/my-repo"
+expect_rc "control: digits either side"     0 _ata_validate_repo "acme2/widget3"
 
 echo "== _ata_pr_url =="
 expect_out "placeholder url"          "https://github.com/owner/name/pull/0"        _ata_pr_url "owner/name"
