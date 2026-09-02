@@ -185,6 +185,44 @@ _mktmp_scratch() {
     fi
 }
 
+# ── a window measured from a stamp the FIXTURE wrote (card#8533) ─────────────────────────────
+#
+# WHY A SHARED PAIR RATHER THAN TWO LOCAL COPIES. A selftest that bounds elapsed time around a
+# tool must not start its clock in the TEST: the tool's own startup then sits inside the window
+# and a loaded box reds the cell for a defect the tool does not have. The fix is that the
+# fixture stamps the instant its subject began — `release-tag-check-selftest`'s `ext::` remote
+# helper stamps the read it is about to hang, `board-session-close-selftest`'s hanging delegate
+# stamps its own launch — and the test measures from there. The WRITERS are properly different
+# (a git remote helper vs a `/bin/sh` delegate); the READER is one behaviour, and it arrived in
+# two near-verbatim copies in a single commit. Extracted at that second caller.
+#
+# ⛔ THE TWO ARE A PAIR, AND USING `_since_stamp` WITHOUT `_stamp_taken` IS THE TRAP. A stamp
+# that was never written reads as epoch 0, so `_since_stamp` answers the seconds since 1970 —
+# a number no bound passes, which LOOKS like the bound firing. The failure text then blames the
+# subject for an interval that never happened. Assert `_stamp_taken` first, as its own cell, so
+# a fixture that was never reached is reported as a fixture that was never reached.
+
+# _since_stamp <stamp-file> — whole seconds from the epoch second in <stamp-file> until now.
+# A stamp that yields NO epoch second counts from 0 (see the pairing rule above), and that is
+# THREE states, not two: absent, unreadable, and — the one the writers actually produce —
+# PRESENT BUT EMPTY. `date +%s > stamp` opens the redirect before it execs `date`, so a fixture
+# killed in that window leaves a real zero-byte file, which `cat` then reads SUCCESSFULLY as
+# nothing. `${s:-0}` is what covers that third state; without it the arithmetic is
+# `$(( now -  ))` — a syntax error, so the reader fails instead of the subject, and in a
+# `set -e` selftest the whole file aborts at this call, ahead of the `_stamp_taken` cell that
+# exists to name exactly this. The `|| echo 0` is kept as well as `${s:-0}`, not replaced by
+# it: it is what makes the absent/unreadable states independent of `inherit_errexit`, which no
+# file here sets today and nothing stops a consumer setting tomorrow.
+_since_stamp() { local s; s="$(cat "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - ${s:-0} )); }
+
+# _stamp_taken <stamp-file> — true/false: did the fixture actually write the stamp? The
+# precondition cell for every `_since_stamp` window; answers a STRING for `eq <label> true …`,
+# the same contract as `has`/`has_line`.
+# `-s`, not `-e`, and that is the half that pairs with the third state above: the zero-byte
+# stamp is a file that EXISTS, so `-e` would answer `true` for a fixture that never wrote and
+# hand the window a start it never had — the wrong diagnosis this pair exists to prevent.
+_stamp_taken() { [[ -s "$1" ]] && echo true || echo false; }
+
 # _summary <name> — the trailing PASS/FAIL block: fail loud on stderr + exit 1, else pass.
 _summary() {
     if [[ "$fails" -gt 0 ]]; then
