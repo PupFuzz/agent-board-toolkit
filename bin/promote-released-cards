@@ -444,20 +444,36 @@ uint_ok "$STAGE" || die ".promote.released_stage_id must be numeric (got '$STAGE
 # …)}` fall-through, which would run an UNGUARDED promote off a `"*"` config whenever an
 # unexpanded variable reached the flag, cannot happen here.
 #
-# The value is canonicalized ONCE, here, through the server's `canonicalizeSource` rule
-# (trim -> empty means absent -> cap 255 -> lowercase), so the shell side and the jq side of
-# the one comparison this script makes agree. `tr` runs under LC_ALL=C: a GitHub
+# THE SHELL SPELLING OF `canonicalizeSource` IS `src_canon`, ONE FUNCTION, and BOTH shell-side
+# values that take part in a source comparison go through it — the operator's `.promote.source`
+# resolved just below, and the $GITHUB_REPOSITORY it is checked against further down. It was two
+# byte-identical inline copies until the second one was minted six lines under a comment
+# claiming to enumerate every copy of this rule, and nothing red: the extraction is canon #5 at
+# the second caller, and it is also what keeps that census true by construction rather than by
+# hand.
+#
+# The rule: trim -> empty means absent -> cap 255 -> lowercase, so the shell side and the jq
+# side of the one comparison this script makes agree. `tr` runs under LC_ALL=C: a GitHub
 # `<owner>/<repo>` is ASCII by construction, and a locale-sensitive fold would be a second,
 # divergent rule — the class tests/locale-range-guard-selftest.sh exists for. That the value
-# reaching this `tr` really is ASCII is not assumed either: `src_charset_ok` above enforces it,
-# and the `promote --source` arms in that file drive this flag end to end under both locales.
+# reaching this `tr` really is ASCII is not assumed either: `src_charset_ok` above enforces it
+# for the config side, and the `promote --source` arms in that file drive this flag end to end
+# under both locales.
+src_canon() {
+  local v
+  v="$(printf '%s' "${1:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  printf '%s' "${v:0:255}" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
 #
-# ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421). The kanban server
-# class is the SoT; the copies are this shell one (the CONFIG side), the jq `canon_source` in
-# the correlation below (the CARD side — this script must not source the lib, so it cannot share
-# one implementation with either), and `_ata_canon_source` in `bin/adopt-to-dl`, which
-# canonicalizes the same value where a card is STAMPED with it. What binds the config and card
-# sides to each other is NOT this comment — see the jq def, which states it exactly.
+# ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421), and the set is
+# DERIVED rather than trusted: tests/promote-source-qualify-selftest.sh § 3d re-computes it from
+# `bin/` on every run and reds when a copy appears, moves, or stops being named here. The kanban
+# server class is the SoT; the copies are `src_canon` above (the SHELL side — every shell-side
+# value passes through it), the jq `canon_source` in the correlation below (the CARD side — this
+# script must not source the lib, so it cannot share one implementation with either), and
+# `_ata_canon_source` in `bin/adopt-to-dl`, which canonicalizes the same value where a card is
+# STAMPED with it. What binds the config and card sides to each other is NOT this comment — see
+# the jq def, which states it exactly.
 if [ -n "$SOURCE_IN" ]; then SOURCE="$SOURCE_IN"; SOURCE_SRC="--source"
 else                        SOURCE="$(cfg '.promote.source')"; SOURCE_SRC="$CONFIG .promote.source"; fi
 #
@@ -468,8 +484,7 @@ else                        SOURCE="$(cfg '.promote.source')"; SOURCE_SRC="$CONF
 # find the line to edit comes up empty. `src_shown` below renders the raw value, and the
 # canonical form ONLY when canonicalization actually changed it.
 SOURCE_RAW="$SOURCE"
-SOURCE="$(printf '%s' "$SOURCE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-SOURCE="$(printf '%s' "${SOURCE:0:255}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+SOURCE="$(src_canon "$SOURCE")"
 src_shown() {
   if [ "$SOURCE_RAW" = "$SOURCE" ]; then printf "'%s'" "$SOURCE_RAW"
   else printf "'%s' (canonicalized to '%s')" "$SOURCE_RAW" "$SOURCE"; fi
@@ -535,10 +550,11 @@ fi
 #
 # $GITHUB_REPOSITORY is the one thing in the environment that answers it: GitHub sets it to
 # `<owner>/<repo>` of the repository the workflow is running in, so on the promote runner it is
-# the repo whose release is being promoted, by construction. Compared through the SAME
-# canonicalization the config value went through above, because the comparison is only worth
-# something if both sides mean one thing (GitHub slugs are case-insensitive; a config saying
-# `PupFuzz/kanban-board` and a runner saying `pupfuzz/kanban-board` are the same repo).
+# the repo whose release is being promoted, by construction. Compared through `src_canon` — the
+# SAME function the config value went through above, not a second spelling of the rule — because
+# the comparison is only worth something if both sides mean one thing (GitHub slugs are
+# case-insensitive; a config saying `PupFuzz/kanban-board` and a runner saying
+# `pupfuzz/kanban-board` are the same repo).
 #
 # THREE THINGS IT DELIBERATELY DOES NOT DO:
 #   * it does not fire on `*`, which is a DECLARATION that the board tracks one repo, not a
@@ -553,8 +569,7 @@ fi
 #     the case that makes this a safety leg and not only a typo leg — its $GITHUB_REPOSITORY is
 #     the fork, so it cannot promote the upstream board's cards on the upstream's ref numbers.
 GH_REPO="${GITHUB_REPOSITORY:-}"
-GH_REPO="$(printf '%s' "$GH_REPO" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-GH_REPO="$(printf '%s' "${GH_REPO:0:255}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+GH_REPO="$(src_canon "$GH_REPO")"
 if [ "$SOURCE" != '*' ] && [ -n "$GH_REPO" ] && [ "$SOURCE" != "$GH_REPO" ]; then
   die "refusing to promote — the resolved repo qualification $(src_shown) (from $SOURCE_SRC) is not the repository this run is in (\$GITHUB_REPOSITORY = '$GH_REPO'). Every ref this release ships is a REPO-SCOPED number, so a source naming a different repo correlates against that repo's cards or against none at all: the run would exit 0 having promoted nothing, or having moved cards this release did not ship. TO FIX, set \`.promote.source\` in $CONFIG to '$GH_REPO' (or to \"*\" if this board tracks exactly ONE repo). If the mismatch is deliberate, this tool is the wrong one: it promotes the cards of the repo it runs in."
 fi
@@ -884,11 +899,12 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
   #
   # WHAT BINDS THE TWO SIDES OF THE ONE COMPARISON THIS SCRIPT MAKES — stated exactly, because
   # the claim this comment used to make ("BOTH sides run through THIS def") is FALSE: the CONFIG
-  # side is canonicalized in SHELL, above (sed trim, ${SOURCE:0:255}, LC_ALL=C tr), and never
-  # reaches this def. What makes the two agree is narrower, and it is ENFORCED rather than
-  # assumed: the config side must first pass `src_charset_ok` and the shape `case`, which admit
-  # only ASCII letters, digits, `.`, `_`, `-` and the one `/` — and over exactly that set the
-  # shell trio and this def are identical (nothing to trim, an ASCII-only fold, the same cap).
+  # side is canonicalized in SHELL, above, by `src_canon` (sed trim, 255-cap, LC_ALL=C tr — one
+  # function, both of its callers), and never reaches this def. What makes the two agree is
+  # narrower, and it is ENFORCED rather than assumed: the config side must first pass
+  # `src_charset_ok` and the shape `case`, which admit only ASCII letters, digits, `.`, `_`, `-`
+  # and the one `/` — and over exactly that set `src_canon` and this def are identical (nothing
+  # to trim, an ASCII-only fold, the same cap).
   #
   # KNOWN DIVERGENCES FROM THE PHP, all of them on the CARD side (the config side cannot carry
   # any of them, per the charset above):

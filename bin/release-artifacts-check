@@ -344,6 +344,17 @@ esac
 # refusal below names it, because "declare the key" is the wrong instruction there and an
 # author following it does the wrong thing quietly.
 #
+# ⛔ AND THE MESSAGE HAS TO DISCRIMINATE, because "the key is already on your base branch" is
+# true of the DELIBERATE DELETER as well — the author this leg's head-only read exists to catch
+# — and their remedy is the OPPOSITE one. Measured on two fixture repos driven through this
+# binary: the stale author merges the base, the config gains the key and the run goes rc 0; the
+# deleter's `git merge <base>` says `Already up to date`, the config does not move, and the
+# rerun is rc 2 on a byte-identical message — a loop, since the condition is still true. So the
+# refusal keys its first remedy on whether THIS BRANCH EDITED THE CONFIG, not on where the key
+# is, and it names the deletion case with `unset_correlation_keys` as its own answer. It also
+# asks first whether the base carries the key at all, because for a repo that has NEVER declared
+# it (the card#8423 population, this leg's primary catch) merging the base is equally a no-op.
+#
 # ⛔ THE `promote.source` ACCEPT SET IS NOT RE-IMPLEMENTED HERE, and that is a decision, not an
 # omission. `bin/promote-released-cards` owns that predicate (a shape `case` plus
 # `src_charset_ok`), `kb_is_repo_slug` in `bin/_kb-board-lib.sh` is its one declared duplicate,
@@ -399,7 +410,7 @@ if [ "$CLASSIFY_ONLY" -eq 0 ]; then
       if [ "$_type" = null ]; then
         [ -z "${UNSET_KEY[$_key]:-}" ] \
           || { echo "release-artifacts-check: UNSET: $_key — declared absent in .unset_correlation_keys at head. $_reader reads it to $_buys. $_absent"; continue; }
-        die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent FIRST CHECK WHETHER THIS BRANCH SIMPLY PREDATES THE KEY: this leg reads the HEAD config only, so a branch cut before $_key landed on your base branch reds here without having touched the config — if the key is already on your base branch, MERGE THE BASE BRANCH, do not edit the config. Otherwise: declare the key, or acknowledge the gap by name — add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
+        die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent FIRST CHECK WHETHER THIS BRANCH SIMPLY PREDATES THE KEY: this leg reads the HEAD config only, so a branch cut before $_key landed on your base branch reds here without having touched the config. TWO QUESTIONS, because the remedies are OPPOSITE and nothing this leg can read tells the two authors apart. (1) IS $_key ON YOUR BASE BRANCH — \`git show <base>:$CONFIG_ROOTREL\`? If it is not, merging changes nothing: the key has simply never been declared in this repo, so declare it (or acknowledge it, below). (2) IF IT IS, HAS THIS BRANCH EDITED THE CONFIG — \`git log --oneline <base>.. -- $CONFIG_ROOTREL\`? NO COMMIT means this branch merely predates the key: MERGE THE BASE BRANCH, do not edit the config, because declaring the key again lands a duplicate declaration and acknowledging it would tombstone a key that is live on the base. A COMMIT OF YOURS means the key is missing because THIS BRANCH dropped it, so merging the base is a NO-OP that returns you to this identical message: put the key back, or, if you dropped it deliberately, acknowledge the gap by name. TO ACKNOWLEDGE: add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
       fi
       [ -z "${UNSET_KEY[$_key]:-}" ] \
         || die "$CONFIG_ROOTREL at $HEAD_REF declares $_key AND lists it in .unset_correlation_keys — a key cannot be both declared and acknowledged absent; remove it from one of the two (the acknowledgement is a tombstone, and a tombstone standing over a live key acknowledges the NEXT deletion of it in advance, with nothing reporting the narrowing)"

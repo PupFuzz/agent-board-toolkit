@@ -1702,6 +1702,19 @@ for miss in card_token_regex:corr-no-card:release-pr-body \
   # left to prose, because the message is the only surface that author reads.
   eq "…and naming MERGE-THE-BASE for a branch that predates the key" "true" \
      "$(has 'MERGE THE BASE BRANCH' "$OUT")"
+  # …AND DISCRIMINATING THE STALE AUTHOR FROM THE DELETER, whose remedies are opposite. "The
+  # key is already on your base branch" is true of BOTH: a branch that deliberately drops a key
+  # is cut FROM the base, so its `git merge <base>` is `Already up to date` and the rerun is
+  # rc 2 on the same bytes — the message would loop them. Measured on two fixture repos against
+  # this binary (stale ⇒ merge ⇒ rc 0; deleter ⇒ no-op merge ⇒ rc 2, identical message), which
+  # is why the condition is now "did THIS BRANCH edit the config" and why the never-declared
+  # repo — the population above — gets its own question ahead of both.
+  eq "…telling the DELIBERATE DELETER that the merge is a no-op" "true" \
+     "$(has 'merging the base is a NO-OP' "$OUT")"
+  eq "…and printing the command that tells the two apart"        "true" \
+     "$(has 'git log --oneline <base>.. --' "$OUT")"
+  eq "…and asking FIRST whether the base carries the key at all" "true" \
+     "$(has 'git show <base>:' "$OUT")"
   eq "…never softened to a pass"             "false" "$(has 'all 1 declared artifact' "$OUT")"
 done
 run base-0.1.0 head-good --config corr-blank-source.json

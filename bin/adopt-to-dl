@@ -74,10 +74,15 @@ _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
 # ASCII + case-insensitive). The card's stored `source` is the lowercased repo, so the verify
 # query must lowercase too rather than rely on the server canonicalizing the query param.
 #
-# ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421). The server class is
-# the SoT; the copies are this one, plus TWO in `bin/promote-released-cards`, which is a vendored
-# standalone that must not source this lib and cannot call this function:
-#   * its SHELL copy, canonicalizing the operator's `.promote.source` (sed trim, cap 255, tr);
+# ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421), and the set is
+# DERIVED rather than trusted: tests/promote-source-qualify-selftest.sh § 3d re-computes it from
+# `bin/` on every run and reds when a copy appears, moves, or stops being named here. The server
+# class is the SoT; the copies are this one — `_ata_canon_source` — plus TWO in
+# `bin/promote-released-cards`, which is a vendored standalone that must not source this lib and
+# cannot call this function:
+#   * `src_canon`, its ONE shell spelling (sed trim, cap 255, tr), through which BOTH sides of
+#     its own comparison pass — the operator's `.promote.source` and the $GITHUB_REPOSITORY that
+#     value is checked against;
 #   * its jq copy `canon_source`, canonicalizing the CARD side of the same comparison.
 # Trim and the 255 cap are omitted HERE deliberately, not forgotten: `kb_is_repo_slug` — the
 # `--repo` gate at the readiness check below — has already refused every value that either

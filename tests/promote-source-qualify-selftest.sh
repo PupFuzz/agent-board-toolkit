@@ -278,6 +278,96 @@ eq "declared divergence 1: …and not a repo name"          "R" "$(lib_verdict '
 eq "declared divergence 2: promote trims before judging"  "A" "$(promote_verdict '  acme/widget  ')"
 eq "declared divergence 2: …the lib's callers do not"     "R" "$(lib_verdict '  acme/widget  ')"
 
+echo "== 3d. THE canonicalizeSource MIRROR SET IS DERIVED FROM bin/, never restated (card#8538) =="
+# WHY THIS EXISTS. `canonicalizeSource` is the kanban server's rule, and this repo carries THREE
+# copies of it across two vendored bins that must not share an implementation. Two hand-kept
+# comments — one per bin — claim to enumerate every copy, and until this leg that comment WAS the
+# mechanism. It failed the way a comment fails: a FOURTH copy was minted in
+# `bin/promote-released-cards` (the $GITHUB_REPOSITORY side of the identity check in § 7),
+# byte-identical to the config-side copy six lines of comment away, and both censuses went stale
+# in the same commit with nothing red. That copy is gone — `src_canon` is the one shell spelling
+# and both sides call it — and this leg is what stops the next one. A census that enumerates
+# copies with no check behind it is a comment, not a contract; the cost is not theoretical, since
+# card#8421 already forced one correction to this rule across this same pair.
+#
+# THE PREDICATE. Every mirror must FOLD CASE — the one step none of them can omit — so the
+# population is every case-fold under `bin/`, re-derived on every run, with COMMENT lines
+# excluded (a fold NAMED in prose is not a fold performed: this bin's jq header discusses
+# `ascii_downcase` while comparing against the PHP). It is attributed per FILE with a COUNT, so a
+# new copy inside an already-known file moves that file's number and reds. The two folds that are
+# NOT mirrors are declared here by name and reason rather than subtracted silently:
+#   * `bin/kbcard` folds a `KB_STAGE_*` VARIABLE NAME, not a repo slug;
+#   * `bin/_shellcheck-pinned` folds `uname -s` into a release-asset name.
+# ⛔ WHAT IT CANNOT SEE, stated rather than implied: a mirror that reaches its fold through a
+# helper defined in another file, and any copy outside `bin/`. Both are out of the population by
+# choice — the two bins are the only vendored standalones carrying the rule — and leg 1 is what
+# reds if a third file starts naming it.
+BINDIR="$HERE/../bin"
+# awk, not a `grep | grep` pair: the comment exclusion and the match are one stateless pass. It
+# reads STDIN, so the same predicate answers for a whole file and for an extracted block.
+_fold_count() { awk '/^[[:space:]]*#/ {next} /tr .\[:upper:\]. .\[:lower:\]./ || /ascii_downcase/ {n++} END {print n+0}'; }
+# The sort is LC_ALL=C because the expected block below is written in BYTE order, and this repo
+# has already been bitten by a locale-sensitive range (tests/locale-range-guard-selftest.sh):
+# under en_US.UTF-8 collation `_shellcheck-pinned` sorts AFTER `promote-released-cards`, so the
+# same census would read as a different one on a differently-configured runner. Measured here,
+# not assumed — it is how this leg first failed.
+_fold_census() {
+  local f n
+  for f in "$BINDIR"/*; do
+    [ -f "$f" ] || continue
+    n="$(_fold_count < "$f")"
+    if [ "$n" -gt 0 ]; then printf '%s=%s\n' "${f##*/}" "$n"; fi
+  done | LC_ALL=C sort
+}
+
+# LEG 1 — the bins that NAME the rule are exactly the bins that mirror it. A third file starting
+# to carry a copy has to say so here first, which is the cheapest place to catch it.
+eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
+   "adopt-to-dl promote-released-cards" \
+   "$(command grep -rl 'canonicalizeSource' "$BINDIR" | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+
+# LEG 2 — the whole population, per file, as ONE assertion, so a miss names the file that moved.
+eq "every case-fold under bin/, attributed per file" \
+   "$(printf '%s\n' '_shellcheck-pinned=1' 'adopt-to-dl=1' 'kbcard=1' 'promote-released-cards=2')" \
+   "$(_fold_census)"
+
+# LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
+# folds sitting anywhere in the file, which is the state this leg exists to distinguish from.
+eq "promote's shell fold is inside src_canon, and only there" "1" \
+   "$(awk '/^src_canon\(\) \{/ {f=1} f {print} f && /^\}/ {exit}' "$BINDIR/promote-released-cards" | _fold_count)"
+# A FLOOR, not an exact count. The regression this catches is a side that STOPS canonicalizing
+# — folds stay at 2 and the caller count drops to 1, which leg 2 cannot see. Pinning it at
+# exactly 2 would instead red on a THIRD caller, i.e. on reuse of the primitive that was just
+# hoisted, which is the behaviour this whole section exists to encourage.
+eq "…and BOTH sides of the identity comparison call it"       "true" \
+   "$( [ "$(command grep -c 'src_canon "' "$BINDIR/promote-released-cards")" -ge 2 ] && echo true || echo false )"
+eq "promote's jq fold is inside canon_source"                 "1" \
+   "$(awk '/def canon_source:/ {f=1} f {print} f && /end;[[:space:]]*$/ {exit}' "$BINDIR/promote-released-cards" | _fold_count)"
+eq "adopt-to-dl's fold IS _ata_canon_source"                  "1" \
+   "$(awk '/^_ata_canon_source\(\)/ {print}' "$BINDIR/adopt-to-dl" | _fold_count)"
+
+# LEG 4 — the DOC half, which is the half that actually went stale. Every mirror symbol above is
+# named in BOTH censuses; a copy added, renamed or hoisted without both being updated reds here
+# rather than shipping a census that enumerates a set it no longer describes.
+for _sym in src_canon canon_source _ata_canon_source; do
+  eq "promote's census names $_sym"     "true" \
+     "$(has "$_sym" "$(sed -n '/MIRRORS OF/,/^[^#]/p' "$BINDIR/promote-released-cards" | command grep '^#')")"
+  eq "adopt-to-dl's census names $_sym" "true" \
+     "$(has "$_sym" "$(sed -n '/MIRRORS OF/,/^[^#]/p' "$BINDIR/adopt-to-dl" | command grep '^#')")"
+done
+
+# CONTROLS — the instrument discriminates in BOTH directions (canon #9). Without them leg 2 is
+# satisfied by a derivation that can only ever answer the numbers written above it.
+_MIRROR_MUT="$TMP/mirror-mutant"
+cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
+cat >> "$_MIRROR_MUT" <<'FOURTH'
+X="$(printf '%s' "$Y" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+FOURTH
+eq "control: a re-minted FOURTH shell mirror is counted, not missed" "3" "$(_fold_count < "$_MIRROR_MUT")"
+cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
+printf '%s\n' "# a comment naming ascii_downcase is prose, not a fold" >> "$_MIRROR_MUT"
+eq "control: a fold NAMED in a comment is not counted"              "2" "$(_fold_count < "$_MIRROR_MUT")"
+
 echo "== 4. THE DEFECT, held still: one shipped ref, three cards, two of them not ours =="
 # This is card#8421 reproduced in miniature. Under `"*"` the tool promotes all three — that is
 # the pre-fix behaviour and it is CORRECT there, because `*` is a declaration that no such
