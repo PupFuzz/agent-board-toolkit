@@ -1077,6 +1077,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
                     --content          # driven with an empty value at the comment verb, below
+                    --link-id --on     # driven empty at the unlink verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
                     --content-file --description-file --name-file
                     --field --from --to --relation --key --label)
@@ -2545,6 +2546,312 @@ eq "control: …in the unknown-command words, which the stages verb never took" 
    "$(has "unknown command 'stagez'" "$err")"
 
 unset -f kb_stub_route
+
+# ---------------------------------------------------------------------------
+echo "== unlink — the removal is the READ-BACK, never the status (card#8449) =="
+# THE GAP: `link` shipped without its inverse, so a mislinked relation was PERMANENT with the
+# shipped toolkit — the reported case is a `blocks` link that cannot be discharged by the work
+# it blocks, which makes every gate count derived from links wrong by one, forever.
+#
+# ⭐ THE PROPERTY UNDER TEST, and the reason a `204` fixture is not enough on its own: a
+# DELETE that answers 204 is the SERVER'S CLAIM, and this verb's whole contract is that it
+# reports a removal only when it has READ the link's absence back — on BOTH ends, because a
+# cross-board link projects onto both boards and one end is half a measurement. Every leg
+# below is therefore paired with the request log, which nothing under test can truncate: a
+# refusal that says the right words while still issuing the DELETE is the failure this file
+# exists to catch, and only the log can tell the two apart.
+#
+# ⛔ THE FIXTURE'S SHARPEST EDGE, measured against the live API (boards 3 + 13, 2026-09-02)
+# rather than invented: a `linked_tasks` entry's `id` is the OTHER TASK and the link id is
+# `task_link_id`. Both are integers, both address real rows, and a tool reading the wrong one
+# DELETEs a link belonging to some other pair of cards — which 204s, and reads back as gone
+# from the card that was never linked by it. The entries below carry the two as DIFFERENT
+# numbers (task 506, link 9) precisely so that confusion cannot pass, and the leg that names
+# 506 as a `--link-id` is what holds it.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_board_config other 77 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+# u_card <card-id> <linked_tasks-array-json> <truncated:true|false> — a task-detail body in the
+# shape the live API returns, counts derived from the array so the fixture cannot state a count
+# its own list contradicts.
+u_card() {
+    jq -nc --argjson id "$1" --argjson l "$2" --argjson t "$3" '{data: {
+        id: $id, name: "probe", workflow_stage_id: 48, board_id: 42,
+        linked_tasks: $l,
+        linked_tasks_count: {outgoing: ($l | map(select(.direction == "outgoing")) | length),
+                             incoming: ($l | map(select(.direction == "incoming")) | length)},
+        linked_tasks_truncated: $t}}'
+}
+# link 9: card 505 --blocks--> card 506, seen from 505 (outgoing) and its mirror seen from 505
+# as the TO end (incoming, i.e. 506 --blocks--> 505). Link 12 is a SECOND link over the same
+# pair and relation — the ambiguity the --from/--to/--relation form must refuse to guess at.
+U_OUT9='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"outgoing","created_at":"2026-09-01T00:00:00+00:00","task_link_id":9}'
+U_IN9='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"incoming","created_at":"2026-09-01T00:00:00+00:00","task_link_id":9}'
+U_OUT12='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"outgoing","created_at":"2026-09-01T00:00:00+00:00","task_link_id":12}'
+U_FROM_PRE="$(u_card 505 "[$U_OUT9]" false)"
+U_FROM_POST="$(u_card 505 '[]' false)"
+U_TO="$(u_card 506 '[]' false)"
+export U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO
+
+# ROUTE_N is what separates the PRE-witness read of the from-card from the POST-witness one:
+# they are the same method and the same URL, and the whole verb is the difference between
+# them. Every knob defaults to the happy path so exactly one thing is failed per leg.
+kb_stub_route() {
+    local method="$1" url="$2" route_n="$4"
+    case "$method $url" in
+        "DELETE "*/task_links/*)    printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "GET "*/tasks/505.json)     if [[ "$route_n" == 1 ]]; then
+                                        printf '%s\n%s' "${U_PRE_HTTP:-200}" "$U_FROM_PRE"
+                                    else
+                                        printf '%s\n%s' "${U_POST_HTTP:-200}" "$U_FROM_POST"
+                                    fi ;;
+        "GET "*/tasks/506.json)     printf '%s\n%s' "${U_TO_HTTP:-200}" "$U_TO" ;;
+    esac
+}
+export -f kb_stub_route
+
+echo "-- unlink --link-id: the happy path, and what it had to READ to say so --"
+kbc unlink --link-id 9 --on 505
+eq "unlink: a witnessed link, a 204 and an absent re-read on both ends → rc 0" "0" "$rc"
+eq "unlink: stdout is the removed link, in the same three keys \`link\` POSTs" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+eq "unlink: exactly ONE DELETE, addressed by task_link_id" "1" "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink: …and no other link was touched at all"         "1" "$(kb_stub_count_any '/task_links/')"
+eq "unlink: the from-card is read TWICE — once to witness, once to prove" "2" \
+   "$(kb_stub_count GET '/tasks/505.json')"
+eq "unlink: the TO end is read as well — one end is half a measurement" "1" \
+   "$(kb_stub_count GET '/tasks/506.json')"
+eq "unlink: four requests and no more (two witnesses, one delete, one far end)" "4" "$(kb_stub_total)"
+eq "unlink: the success line says the proof was taken on both ends" "true" \
+   "$(has 'is GONE — re-read on BOTH ends' "$err")"
+
+echo "-- ⭐ THE LOAD-BEARING LEG: a 204 alone is NEVER the removal --"
+# The server says success and the link is still on the card. There is no reading of the HTTP
+# response that can detect this — only the read-back can — which is why this is the leg the
+# mutant in the PR body is run against.
+U_FROM_POST="$(u_card 505 "[$U_OUT9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: 204 + the link STILL on the from-card → rc 1, not success" "1" "$rc"
+eq "unlink: …and nothing on stdout that could be mistaken for a removal" "" "$out"
+eq "unlink: …named as a hard failure, not a warning"        "true" "$(has 'HARD FAILURE' "$err")"
+eq "unlink: …naming the card it is still on"                "true" "$(has 'STILL on card 505' "$err")"
+eq "unlink: …saying outright that the status is not the removal" "true" \
+   "$(has 'The status is not the removal; the read-back is' "$err")"
+eq "unlink: …and printing the card's OWN entry as the evidence" "true" \
+   "$(has '"task_link_id":9' "$err")"
+eq "unlink: control — the DELETE really was issued on this leg" "1" \
+   "$(kb_stub_count DELETE '/task_links/9.json')"
+# The FAR end is the half a single-end check would miss: the from-card is clean and the link
+# survives on the to-card. A verb that stopped at the near end reports this as a success.
+U_TO="$(u_card 506 "[$U_IN9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: 204 + the link still on the TO end → rc 1"      "1" "$rc"
+eq "unlink: …naming the far card, not the near one"         "true" "$(has 'STILL on card 506' "$err")"
+eq "unlink: …and nothing on stdout"                         "" "$out"
+
+echo "-- a re-read that came back TRUNCATED is UNMEASURED, which is not a success --"
+U_TO="$(u_card 506 '[]' true)" kbc unlink --link-id 9 --on 505
+eq "unlink: a truncated post-witness → rc 1"                "1" "$rc"
+eq "unlink: …says the list was TRUNCATED"                   "true" "$(has 'TRUNCATED' "$err")"
+eq "unlink: …and calls the absence UNMEASURED by name"      "true" \
+   "$(has 'ABSENCE of link 9 there is UNMEASURED' "$err")"
+eq "unlink: …explicitly not a success"                      "true" "$(has 'which is not a success' "$err")"
+eq "unlink: …and prints no removal object"                  "" "$out"
+
+echo "-- an end that cannot be RE-READ is UNVERIFIED at that end, and the other is still read --"
+U_TO_HTTP=500 kbc unlink --link-id 9 --on 505
+eq "unlink: an unreadable far end → rc 1"                   "1" "$rc"
+eq "unlink: …named as unverified rather than assumed gone"  "true" \
+   "$(has 'the removal is UNVERIFIED at that end' "$err")"
+eq "unlink: …and the NEAR end was still proven (both ends, always)" "2" \
+   "$(kb_stub_count GET '/tasks/505.json')"
+eq "unlink: …with nothing on stdout"                        "" "$out"
+
+echo "-- nothing is deleted that was not first READ --"
+kbc unlink --link-id 12 --on 505
+eq "unlink: an id that is not on the named card → rc 2"     "2" "$rc"
+eq "unlink: …naming the card AND the id"                    "true" \
+   "$(has 'link 12 is not among card 505' "$err")"
+eq "unlink: ⭐ …and issuing NO DELETE AT ALL"               "0" "$(kb_stub_count_any '/task_links/')"
+# ⭐ The `id`-vs-`task_link_id` leg. 506 is the OTHER TASK's id, sitting right there in the
+# same entry; a tool reading `id` as the link id would find a match here and DELETE link 506.
+kbc unlink --link-id 506 --on 505
+eq "unlink: the other TASK's id is not the LINK's id → rc 2" "2" "$rc"
+eq "unlink: …and no DELETE was addressed to it"             "0" "$(kb_stub_count_any '/task_links/')"
+# A truncated PRE-witness cannot say the link is absent — only that it was not in what came
+# back. That is a different sentence from "it is not there", and a different one from a match.
+U_FROM_PRE="$(u_card 505 '[]' true)" kbc unlink --link-id 9 --on 505
+eq "unlink: a truncated pre-witness with no match → rc 2"   "2" "$rc"
+eq "unlink: …says UNMEASURED, not 'not on this card'"       "true" "$(has 'is UNMEASURED' "$err")"
+eq "unlink: …and does not claim the link is absent"         "false" "$(has 'is not among' "$err")"
+eq "unlink: …with no DELETE"                                "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the DELETE's failures are NAMED, each one differently --"
+U_DEL_HTTP=403 U_DEL_BODY='{"message":"This board is read-only."}' kbc unlink --link-id 9 --on 505
+eq "unlink: a 403 → rc 1"                                   "1" "$rc"
+eq "unlink: …named as POLICY, not as a transport or address fault" "true" \
+   "$(has 'HTTP 403 — POLICY' "$err")"
+eq "unlink: …naming the condition: a read-only or trashed board at EITHER end" "true" \
+   "$(has 'read-only or trashed board at either end refuses' "$err")"
+eq "unlink: …and stating the link is unchanged"             "true" "$(has 'The link is UNCHANGED' "$err")"
+eq "unlink: …carrying the server's own message"             "true" "$(has 'This board is read-only.' "$err")"
+eq "unlink: …and taking NO post-witness read of the far end" "0" "$(kb_stub_count GET '/tasks/506.json')"
+# A policy refusal routinely carries NO body, and `$()` strips the trailing newline off the
+# status line — so an unguarded "everything after the newline" quotes the STATUS back as
+# though the server had said it. Asserted as the absence of a quoted-message line at all.
+U_DEL_HTTP=403 U_DEL_BODY='' kbc unlink --link-id 9 --on 505
+eq "unlink: a 403 with an EMPTY body still → rc 1"          "1" "$rc"
+eq "unlink: …and invents no 'server said' line for a body that does not exist" "false" \
+   "$(has 'server said' "$err")"
+eq "unlink: …while still naming the policy refusal"         "true" "$(has 'HTTP 403 — POLICY' "$err")"
+U_DEL_HTTP=401 kbc unlink --link-id 9 --on 505
+eq "unlink: a 401 takes the same policy arm → rc 1"         "1" "$rc"
+eq "unlink: …and says POLICY there too"                     "true" "$(has 'HTTP 401 — POLICY' "$err")"
+U_DEL_HTTP=404 kbc unlink --link-id 9 --on 505
+eq "unlink: a 404 → rc 1"                                   "1" "$rc"
+eq "unlink: …says the server does not know the link"        "true" \
+   "$(has 'does not know link 9 (HTTP 404)' "$err")"
+eq "unlink: …and is NOT worded as the policy refusal"       "false" "$(has 'POLICY' "$err")"
+U_DEL_HTTP='!curl 7' kbc unlink --link-id 9 --on 505
+eq "unlink: a request that never completed → rc 1"          "1" "$rc"
+eq "unlink: …says DID NOT COMPLETE, with no HTTP status"    "true" "$(has 'DID NOT COMPLETE' "$err")"
+eq "unlink: …and claims no outcome in either direction"     "true" \
+   "$(has 'claims an outcome in either direction' "$err")"
+eq "unlink: …taking no post-witness read"                   "0" "$(kb_stub_count GET '/tasks/506.json')"
+U_DEL_HTTP=500 U_DEL_BODY='{"message":"boom"}' kbc unlink --link-id 9 --on 505
+eq "unlink: an unclassified failure → rc 1"                 "1" "$rc"
+eq "unlink: …calls the outcome UNKNOWN rather than picking one" "true" \
+   "$(has 'Whether anything was removed is UNKNOWN' "$err")"
+
+echo "-- which end is FROM comes from the card's own \`direction\`, never from the flag --"
+# --on takes EITHER end, so a verb that inferred from/to from the flag would print a reversed
+# relation for half its invocations. Same card named, same link id, opposite direction.
+U_FROM_PRE="$(u_card 505 "[$U_IN9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: an INCOMING link named from its TO end → rc 0"  "0" "$rc"
+eq "unlink: …reports 506 → 505, the direction the CARD declares" \
+   '{"task_link_id":9,"from_task_id":506,"to_task_id":505,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+eq "unlink: …and still proves it on both ends"              "1" "$(kb_stub_count GET '/tasks/506.json')"
+U_FROM_PRE="$(u_card 505 '[{"id":506,"relation_type":"blocks","direction":"sideways","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: a direction that is neither → rc 2"             "2" "$rc"
+eq "unlink: …says it cannot tell which end is which"        "true" \
+   "$(has "declares direction 'sideways'" "$err")"
+eq "unlink: …and deletes nothing on a shape it cannot read" "0" "$(kb_stub_count_any '/task_links/')"
+# The other end's id is server data that becomes a URL path AND a jq --argjson value: left
+# unchecked it addresses /tasks/null.json and kills the run with jq's own error under set -e.
+U_FROM_PRE="$(u_card 505 '[{"relation_type":"blocks","direction":"outgoing","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: an entry naming no other end → rc 2"            "2" "$rc"
+eq "unlink: …says that end could not be re-read"            "true" \
+   "$(has 'which is not a task id' "$err")"
+eq "unlink: …leaks no raw jq error"                         "false" "$(has 'Invalid JSON text' "$err")"
+eq "unlink: …and deletes nothing"                           "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- a 2xx no linked_tasks LIST can be read out of is UNMEASURED, never 'no links' --"
+U_PRE_HTTP=200 U_FROM_PRE='<html><body>502 Bad Gateway</body></html>' kbc unlink --link-id 9 --on 505
+eq "unlink: a 2xx that is not JSON at all → rc 1, not jq's rc 5" "1" "$rc"
+eq "unlink: …in kbcard's words"                             "true" "$(has 'kbcard: unlink' "$err")"
+eq "unlink: …leaking no raw jq parse error"                 "false" "$(has 'parse error' "$err")"
+eq "unlink: …and no DELETE"                                 "0" "$(kb_stub_count_any '/task_links/')"
+# `false` is the shape a `// []` default turns into an empty list — i.e. into "this card has
+# no links", which would make an unmeasured end a green one.
+U_FROM_PRE='{"data":{"id":505,"linked_tasks":false,"linked_tasks_truncated":false}}' \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: a linked_tasks of \`false\` → rc 1"             "1" "$rc"
+eq "unlink: …reported as UNMEASURED, never as 'no such link'" "true" \
+   "$(has 'no linked_tasks LIST that could be read' "$err")"
+eq "unlink: …and no DELETE"                                 "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the --from/--to/--relation convenience form resolves ONE link or refuses --"
+kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: exactly one match → rc 0"           "0" "$rc"
+eq "unlink by relation: …DELETEs the id it resolved"        "1" "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink by relation: …and reports the same object the id form does" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+kbc unlink --from 505 --to 506 --relation caused
+eq "unlink by relation: no match → rc 2"                    "2" "$rc"
+eq "unlink by relation: …naming both cards and the relation" "true" \
+   "$(has "no 'caused' link from card 505 to card 506" "$err")"
+eq "unlink by relation: …with no DELETE"                    "0" "$(kb_stub_count_any '/task_links/')"
+U_FROM_PRE="$(u_card 505 "[$U_OUT9,$U_OUT12]" false)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: TWO matches → rc 2, refusing to pick" "2" "$rc"
+eq "unlink by relation: …says how many matched"             "true" "$(has '2 links match' "$err")"
+eq "unlink by relation: …lists their ids so one can be named" "true" "$(has 'Their ids: 9, 12' "$err")"
+eq "unlink by relation: …and issues NO DELETE"              "0" "$(kb_stub_count_any '/task_links/')"
+# The direction is part of the selection: `--from 505 --to 506` names a link running THAT way,
+# and the mirror link (506 → 505) is a different link, not a looser match for this one.
+U_FROM_PRE="$(u_card 505 "[$U_IN9]" false)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: an INCOMING link does not satisfy --from/--to → rc 2" "2" "$rc"
+eq "unlink by relation: …and deletes nothing"               "0" "$(kb_stub_count_any '/task_links/')"
+U_FROM_PRE="$(u_card 505 "[$U_OUT9]" true)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: a TRUNCATED list cannot say EXACTLY ONE → rc 2" "2" "$rc"
+eq "unlink by relation: …says a second match may be in what was not returned" "true" \
+   "$(has 'may be in the part that was not returned' "$err")"
+eq "unlink by relation: …points at the --link-id form"      "true" "$(has 'name the link directly with --link-id' "$err")"
+eq "unlink by relation: …and deletes nothing"               "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the refusals decided OFFLINE, each costing no traffic at all --"
+kbc unlink
+eq "unlink with no flags → rc 2"                            "2" "$rc"
+eq "unlink with no flags names both forms"                  "true" "$(has 'or --from <task> --to <task> --relation' "$err")"
+eq "unlink with no flags issues no request"                 "0" "$(kb_stub_total)"
+kbc unlink --link-id 9
+eq "unlink --link-id with no --on → rc 2"                   "2" "$rc"
+eq "…names --on as the missing half"                        "true" "$(has 'requires --on <id-or-ext>' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --on 505
+eq "unlink --on with no --link-id → rc 2"                   "2" "$rc"
+eq "…names --link-id, not the flag that WAS passed"         "true" "$(has 'but not WHICH link' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --link-id 9 --on 505 --relation blocks
+eq "unlink mixing the two forms → rc 2"                     "2" "$rc"
+eq "…refuses rather than giving one form precedence"        "true" "$(has 'never both' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --from 505 --to 506
+eq "unlink --from/--to without --relation → rc 2"           "2" "$rc"
+eq "…says all three are one form"                           "true" "$(has 'is ONE form' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+for bad in abc 0 -1 9.5 " 9"; do
+    kbc unlink --link-id "$bad" --on 505
+    eq "unlink --link-id '$bad' → rc 2"                     "2" "$rc"
+    eq "unlink --link-id '$bad' names the rule"             "true" \
+       "$(has 'must be a positive integer' "$err")"
+    eq "unlink --link-id '$bad' issues no request"          "0" "$(kb_stub_total)"
+done
+# The empty-value guard, on this verb's own two flags (registered in GUARDED_NOT_DRIVEN above).
+for f in --link-id --on; do
+    kbc unlink "$f" "" --on 505
+    eq "unlink $f \"\" → rc 2"                              "2" "$rc"
+    eq "unlink $f \"\" names the flag"                      "true" "$(has "$f requires a non-empty value" "$err")"
+    eq "unlink $f \"\" issues no request"                   "0" "$(kb_stub_total)"
+done
+kbc unlink --link-id 9 --on 505 --frobnicate
+eq "unlink with an unknown arg → rc 2"                      "2" "$rc"
+eq "…names the argument"                                    "true" "$(has "unknown arg '--frobnicate'" "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+
+echo "-- the global --board selects the board through the SAME resolution \`link\` uses --"
+# There is no second board-resolution path: the ref lookup this verb does is resolve_task's,
+# so the board reaches the wire in the one place it always did. Asserted as a DIFFERENT board
+# id on the wire, not merely as a run that succeeded.
+kbc unlink --link-id 9 --on ext-abc
+eq "unlink: an external ref resolves through the board's own search" "0" "$rc"
+eq "unlink: …carrying the DEFAULT board's id"               "true" \
+   "$(has 'board_id%3D42' "$(kb_stub_lines GET '/tasks/search.json')")"
+kbc --board other unlink --link-id 9 --on ext-abc
+eq "--board other unlink: rc 0"                             "0" "$rc"
+eq "--board other unlink: the OTHER board's id is what goes on the wire" "true" \
+   "$(has 'board_id%3D77' "$(kb_stub_lines GET '/tasks/search.json')")"
+eq "--board other unlink: …and the default board's id does not"  "false" \
+   "$(has 'board_id%3D42' "$(kb_stub_lines GET '/tasks/search.json')")"
+
+unset -f kb_stub_route u_card
+unset U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO bad f
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

@@ -193,6 +193,31 @@
 #     a different question, and silently picking one would hand back a number where header
 #     lines were asked for — the shape both flags exist to prevent.
 #   kbcard link --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
+#   kbcard unlink --link-id N --on ID-OR-EXT
+#   kbcard unlink --from TASK --to TASK --relation "bundles"|"blocks"|"caused"
+#     REMOVE a task link — the half `link` shipped without, and without which a mislink is
+#     PERMANENT. A link is deleted BY ID (the API has no from/to/relation delete form) and
+#     there is no read route for a link on its own, so the id alone cannot be read back:
+#     --link-id therefore takes --on, the card the link is witnessed on. EITHER end will do
+#     — a link is carried on both, and the card's own entry says which direction it runs —
+#     so the card you are LOOKING at is the card you name. The --from/--to/--relation form
+#     is a convenience that resolves the id off the from-card first; it refuses, with NO
+#     DELETE sent, when that matches zero links or more than one, naming the ids it found so
+#     the ambiguous case is pickable with --link-id.
+#     ⚠ THE 204 IS NOT THE REMOVAL — THE READ-BACK IS. Nothing is deleted that was not first
+#     READ: an id that is not on the named card is rc 2 with no DELETE at all. After the
+#     DELETE, BOTH ends are re-read and success is reported ONLY when the link is absent from
+#     each — a cross-board link projects onto both boards, so one end is half a measurement.
+#     A success status with the link still present is a HARD FAILURE that prints the card's
+#     own entry as the evidence, and an end whose linked_tasks comes back TRUNCATED makes the
+#     absence UNMEASURED, which is reported as a failure and never as a success.
+#     Each way it can fail is NAMED rather than collapsed: 401/403 is the board POLICY
+#     refusal (a read-only or trashed board at EITHER end — the mirror of what refuses the
+#     create), 404 is no such link, and a request that never completed says exactly that
+#     rather than claiming an outcome in either direction.
+#     On success stdout carries the removed link as one JSON object — {task_link_id,
+#     from_task_id, to_task_id, relation_type} — the same three keys `link` POSTs, so the
+#     removal is machine-readable in the spelling the creation already uses.
 #   kbcard show --task ID-OR-EXT
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
@@ -1360,6 +1385,239 @@ cmd_link() {
         return 1
     }
     printf '%s\n' "$link"
+}
+
+# --- unlink: remove a task link, and PROVE it is gone -----------------------
+# MEASURED against the live API (2026-09-02, boards 3 + 13), not assumed, because the read
+# this verb witnesses on has a shape that is easy to get wrong in a way nothing would catch:
+#   * GET /tasks/<id>.json carries `linked_tasks` on EVERY card read — an array of
+#     {id, board_id, name, relation_type, direction, created_at, task_link_id} — alongside
+#     `linked_tasks_count` ({outgoing, incoming}) and `linked_tasks_truncated` (a bool).
+#   * ⚠ AN ENTRY'S `id` IS THE OTHER TASK, NOT THE LINK. The link id is `task_link_id`.
+#     Reading `id` as the link id addresses a REAL link_id row that belongs to some other
+#     pair of cards, so the wrong-target DELETE would 204 and read back as a success here.
+#   * `direction` is THIS card's end of the link — "outgoing" means the card being read is
+#     the from-task, "incoming" that it is the to-task. That is what lets either end be the
+#     card the caller names, and it is what the reported from/to is derived from.
+#   * DELETE /task_links/<task_link_id>.json answers 204 with an empty body. There is no
+#     from/to/relation delete form and no per-link GET — the two absences the usage block
+#     above turns into the caller's contract, which is why the flag shape and the failure
+#     vocabulary are stated THERE and are not restated here.
+# `linked_tasks_count` is deliberately NOT used as a second truncation oracle: it equalled
+# the array length on every card probed, which is an observation and not a contract, and a
+# second source that can disagree with the server's own flag would manufacture UNMEASURED
+# verdicts of its own. The flag is the server's declaration and this verb reads only it.
+
+# _kbc_link_witness <task-id>: the card's link surface as ONE object on stdout —
+# {"links": [...], "truncated": <bool>}. Returns 1, with the diagnostic, when the card
+# cannot be read or its 2xx carries no linked_tasks LIST.
+#
+# ONE OWNER FOR THREE CALL SITES — the pre-witness and both post-witness ends — because the
+# question each asks is identical and the refusal each owes is identical: an end that could
+# not be read is UNMEASURED, and this verb's whole contract is that it never reports a
+# removal it did not measure. Three copies of that would be three chances to soften one.
+# The `select(type == "array")` is on the near side of any default, per the rule the tag
+# read learned the hard way: `// []` yields its right-hand side for `false` as well as for
+# null, so a `linked_tasks` of `false` would arrive here as an empty list and read as
+# "no links", which is the shape that turns an unmeasured end into a green one.
+_kbc_link_witness() {
+    local task="$1" resp data out
+    resp="$(kb_api GET "/tasks/$task.json")" || {
+        echo "kbcard: unlink: card $task could not be read (see the status above) — its links are UNMEASURED" >&2
+        return 1
+    }
+    data="$(kb_parse_resp "$resp" -c '.data | select(type == "object")')"
+    [[ -n "$data" ]] || {
+        echo "kbcard: unlink: the read of card $task returned success but no card could be read out of its body — its links are UNMEASURED (nothing was read)" >&2
+        return 1
+    }
+    out="$(kb_parse_resp "$data" -c '{links: (.linked_tasks | select(type == "array")), truncated: (.linked_tasks_truncated == true)}')"
+    [[ -n "$out" ]] || {
+        echo "kbcard: unlink: card $task carries no linked_tasks LIST that could be read — its links are UNMEASURED (nothing was read)" >&2
+        return 1
+    }
+    printf '%s\n' "$out"
+}
+
+cmd_unlink() {
+    local link_id="" on_ref="" from_ref="" to_ref="" relation=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --link-id)  kb_require_value "$1" "${2:-}" || return 2; link_id="$2"; shift 2 ;;
+            --on)       kb_require_value "$1" "${2:-}" || return 2; on_ref="$2"; shift 2 ;;
+            --from)     kb_require_value "$1" "${2:-}" || return 2; from_ref="$2"; shift 2 ;;
+            --to)       kb_require_value "$1" "${2:-}" || return 2; to_ref="$2"; shift 2 ;;
+            --relation) kb_require_value "$1" "${2:-}" || return 2; relation="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+
+    # The two forms are two ways to name ONE link, so mixing them is refused rather than
+    # given a precedence: a precedence rule silently ignores half of what the caller typed,
+    # and the half it ignores is the half they would have checked.
+    local by_id="" by_rel=""
+    [[ -n "$link_id$on_ref" ]] && by_id=1
+    [[ -n "$from_ref$to_ref$relation" ]] && by_rel=1
+    if [[ -n "$by_id" && -n "$by_rel" ]]; then
+        echo "kbcard: unlink takes EITHER --link-id + --on OR --from + --to + --relation, never both — they are two ways to name one link, and mixing them leaves it ambiguous which one selects" >&2
+        return 2
+    fi
+    if [[ -z "$by_id" && -z "$by_rel" ]]; then
+        echo "kbcard: unlink requires --link-id <id> --on <id-or-ext>, or --from <task> --to <task> --relation <rel>" >&2
+        return 2
+    fi
+    if [[ -n "$by_id" ]]; then
+        # Two refusals, not one: the missing half is what the caller has to supply, and a
+        # message naming the flag they DID pass sends them to re-read the wrong one.
+        [[ -n "$link_id" ]] || {
+            echo "kbcard: unlink --on names the card to read the link back on but not WHICH link — add --link-id <id>, or select by relation with --from/--to/--relation" >&2
+            return 2
+        }
+        [[ -n "$on_ref" ]] || {
+            echo "kbcard: unlink --link-id requires --on <id-or-ext> — the id names the link, and a card is the only surface a link can be READ BACK on (there is no per-link GET)" >&2
+            return 2
+        }
+        # `||` short-circuits, so the arithmetic test is never reached for a value the
+        # uint predicate already refused — an `-lt` on a non-numeric string is a fatal
+        # bash error, not a false.
+        if ! kb_is_uint "$link_id" || [[ "$link_id" -lt 1 ]]; then
+            echo "kbcard: unlink: --link-id must be a positive integer, got '$link_id'" >&2
+            return 2
+        fi
+    else
+        [[ -n "$from_ref" && -n "$to_ref" && -n "$relation" ]] || {
+            echo "kbcard: unlink --from/--to/--relation is ONE form — all three are required (or name the link directly with --link-id <id> --on <id-or-ext>)" >&2
+            return 2
+        }
+    fi
+
+    local witness_ref="${on_ref:-$from_ref}" witness w_json links trunc entry=""
+    witness="$(resolve_task "$witness_ref")" || return 2
+    w_json="$(_kbc_link_witness "$witness")" || return 1
+    # Bare jq from here: $w_json came through the tolerant parse and a non-empty guard, and
+    # its shape is this file's own, not the server's.
+    links="$(jq -c '.links' <<<"$w_json")"
+    trunc="$(jq -r '.truncated' <<<"$w_json")"
+
+    if [[ -n "$by_id" ]]; then
+        entry="$(jq -c --argjson id "$link_id" 'first(.[] | select(.task_link_id == $id)) // empty' <<<"$links")"
+        [[ -n "$entry" ]] || {
+            if [[ "$trunc" == "true" ]]; then
+                echo "kbcard: unlink: card $witness reports its linked_tasks list TRUNCATED and link $link_id is not in the part it returned — whether that link is on this card is UNMEASURED, so NO DELETE was sent" >&2
+            else
+                echo "kbcard: unlink: link $link_id is not among card $witness's linked_tasks — NO DELETE was sent (this verb deletes only a link it has first read on the card you named)" >&2
+            fi
+            return 2
+        }
+    else
+        # The convenience form. Its refusals cost no DELETE — but they are NOT free of
+        # traffic, and cannot be: resolving a from/to/relation triple to an id means reading
+        # the from-card, because the API offers no lookup that takes the triple.
+        local to_id matches n
+        to_id="$(resolve_task "$to_ref")" || return 2
+        if [[ "$trunc" == "true" ]]; then
+            echo "kbcard: unlink: card $witness reports its linked_tasks list TRUNCATED, so '$relation' → card $to_id cannot be resolved to EXACTLY ONE link from it — a second match may be in the part that was not returned. NO DELETE was sent; name the link directly with --link-id <id> --on $witness_ref" >&2
+            return 2
+        fi
+        matches="$(jq -c --argjson to "$to_id" --arg rel "$relation" \
+            '[.[] | select(.direction == "outgoing" and .id == $to and .relation_type == $rel)]' <<<"$links")"
+        n="$(jq 'length' <<<"$matches")"
+        if [[ "$n" -eq 0 ]]; then
+            echo "kbcard: unlink: no '$relation' link from card $witness to card $to_id — NO DELETE was sent" >&2
+            return 2
+        fi
+        if [[ "$n" -gt 1 ]]; then
+            echo "kbcard: unlink: $n links match '$relation' from card $witness to card $to_id — refusing to pick one. NO DELETE was sent; name the one you mean with --link-id <id> --on $witness_ref. Their ids: $(jq -r '[.[].task_link_id] | join(", ")' <<<"$matches")" >&2
+            return 2
+        fi
+        entry="$(jq -c '.[0]' <<<"$matches")"
+        link_id="$(jq -r '.task_link_id' <<<"$entry")"
+        # A boundary check, not a defensive one: this value came off the server and is about
+        # to become a URL PATH. Unchecked, a missing key addresses /task_links/null.json.
+        if ! kb_is_uint "$link_id" || [[ "$link_id" -lt 1 ]]; then
+            echo "kbcard: unlink: the matching link on card $witness carries no usable task_link_id ('$link_id') — there is nothing to address a DELETE to, so none was sent" >&2
+            return 2
+        fi
+    fi
+
+    # Which end is which comes from the card's own `direction`, never from the flag the
+    # caller used — --on takes either end, so inferring from the flag would print a reversed
+    # relation for half the invocations. A third value is refused rather than defaulted: it
+    # would make the reported from/to a guess, and this verb reports no guesses.
+    local other rel_type direction from_id to_end
+    other="$(jq -r '.id' <<<"$entry")"
+    if ! kb_is_uint "$other" || [[ "$other" -lt 1 ]]; then
+        echo "kbcard: unlink: link $link_id on card $witness names its other end as '$other', which is not a task id — that end could not be re-read, so NO DELETE was sent" >&2
+        return 2
+    fi
+    rel_type="$(jq -r '.relation_type' <<<"$entry")"
+    direction="$(jq -r '.direction' <<<"$entry")"
+    case "$direction" in
+        outgoing) from_id="$witness"; to_end="$other" ;;
+        incoming) from_id="$other";   to_end="$witness" ;;
+        *) echo "kbcard: unlink: link $link_id on card $witness declares direction '$direction', which is neither 'outgoing' nor 'incoming' — this tool cannot say which end is which, so NO DELETE was sent" >&2
+           return 2 ;;
+    esac
+
+    # kb_api_status, not kb_api, for the reason `field retype`'s conversion call gives: the
+    # statuses here are DIFFERENT OUTCOMES an operator acts on differently — a policy refusal
+    # at either end, a link the server does not know, a request that never left — and kb_api
+    # collapses every one of them to rc 1 with KB_HTTP stranded in a subshell.
+    local del http errbody=""
+    del="$(kb_api_status DELETE "/task_links/$link_id.json")"
+    http="${del%%$'\n'*}"
+    # The body only exists if the capture still HOLDS a newline: kb_api_status emits
+    # "<status>\n<body>", and `$()` strips the trailing newline of an EMPTY body — so the
+    # unguarded `${del#*\n}` yields the STATUS and would be quoted back as the server's
+    # own message. A 204 and a policy 403 both routinely carry no body at all.
+    [[ "$del" == *$'\n'* ]] && errbody="${del#*$'\n'}"
+    case "$http" in
+        2*) : ;;
+        000) echo "kbcard: unlink: the DELETE of link $link_id DID NOT COMPLETE — no HTTP status came back at all, so whether the server received it is UNKNOWN. Re-read card $witness before retrying; nothing here claims an outcome in either direction." >&2
+             return 1 ;;
+        401|403) echo "kbcard: unlink: the server REFUSED the DELETE of link $link_id (HTTP $http — POLICY, not a transport or address problem). A link is deletable only while BOTH ends' boards are writable: a read-only or trashed board at either end refuses, which is the mirror of what refuses the create. The link is UNCHANGED." >&2
+             [[ -n "$errbody" ]] && echo "kbcard:   server said: $errbody" >&2
+             return 1 ;;
+        404) echo "kbcard: unlink: the server does not know link $link_id (HTTP 404) although card $witness listed it on the read just above — nothing was deleted." >&2
+             return 1 ;;
+        *) echo "kbcard: unlink: the DELETE of link $link_id failed (HTTP $http). Whether anything was removed is UNKNOWN — re-read card $from_id and card $to_end before retrying." >&2
+           [[ -n "$errbody" ]] && echo "kbcard:   server said: $errbody" >&2
+           return 1 ;;
+    esac
+
+    # BOTH ENDS, ALWAYS, and neither short-circuits the other: a cross-board link projects
+    # onto both boards, so a single-end read is half a measurement — and an end that cannot
+    # be re-read is a result the caller needs BY NAME, not a reason to stop looking at the
+    # other one. Presence is tested before truncation: a link still listed is a definite
+    # failure whether or not the list was complete, while its absence from a truncated list
+    # is not a measurement at all.
+    local end end_json still fail=""
+    for end in "$from_id" "$to_end"; do
+        end_json="$(_kbc_link_witness "$end")" || {
+            echo "kbcard: unlink: the DELETE of link $link_id answered HTTP $http, but card $end could not be re-read — the removal is UNVERIFIED at that end." >&2
+            fail=1
+            continue
+        }
+        still="$(jq -c --argjson id "$link_id" 'first(.links[] | select(.task_link_id == $id)) // empty' <<<"$end_json")"
+        if [[ -n "$still" ]]; then
+            echo "kbcard: unlink: HARD FAILURE — the server answered HTTP $http to the DELETE of link $link_id and the link is STILL on card $end. The status is not the removal; the read-back is. Evidence, that card's own linked_tasks entry: $still" >&2
+            fail=1
+            continue
+        fi
+        if [[ "$(jq -r '.truncated' <<<"$end_json")" == "true" ]]; then
+            echo "kbcard: unlink: the DELETE of link $link_id answered HTTP $http, but card $end reports its linked_tasks list TRUNCATED — the ABSENCE of link $link_id there is UNMEASURED, which is not a success." >&2
+            fail=1
+        fi
+    done
+    if [[ -n "$fail" ]]; then
+        return 1
+    fi
+
+    local removed
+    removed="$(jq -nc --argjson id "$link_id" --argjson f "$from_id" --argjson t "$to_end" --arg r "$rel_type" \
+        '{task_link_id: $id, from_task_id: $f, to_task_id: $t, relation_type: $r}')"
+    printf '%s\n' "$removed"
+    echo "kbcard: unlink: link $link_id ($from_id --$rel_type--> $to_end) is GONE — re-read on BOTH ends after the DELETE and absent from each" >&2
 }
 
 # The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
@@ -3135,6 +3393,7 @@ main() {
         list)        cmd_list "$@" ;;
         stages)      cmd_stages "$@" ;;
         link)        cmd_link "$@" ;;
+        unlink)      cmd_unlink "$@" ;;
         show)        cmd_show "$@" ;;
         comment)     cmd_comment "$@" ;;
         comments)    cmd_comments "$@" ;;
