@@ -1484,11 +1484,30 @@ echo "== Advisory legs are bounded in WALL-CLOCK, not just in exit code =="
 #
 # BSC_ADVISORY_TIMEOUT is overridden to 1s here for exactly one reason: to test the bound
 # without making this suite wait out the real 60s budget. The real default is asserted below.
-printf '%s\n' '#!/bin/sh' 'sleep 30' 'echo "never reached"' > "$DRTOOL"; chmod +x "$DRTOOL"
-_t0=$SECONDS
+#
+# THE CLOCK STARTS WHEN THE DELEGATE DOES, NOT WHEN THE RITUAL DOES (card#8533). `_t0` used to
+# be a `SECONDS` set before `run_dr_leg`, so the whole close — its own startup and every leg
+# ahead of this one — was inside the interval the 1s budget is judged by, and a loaded box
+# reddens the cell for a bound that fired exactly on time. The fixture stamps the instant it is
+# launched instead; the window is then the budget plus the ritual's remaining work, and nothing
+# that runs before the leg under test. The bound stays a loose 15: what discriminates is the
+# delegate's own 30s runtime, and no part of the window scales with the box any more.
+DRSTAMP="$TMP/dr-hang.launched"; rm -f "$DRSTAMP"
+cat > "$DRTOOL" <<EOF
+#!/bin/sh
+date +%s > "$DRSTAMP"
+sleep 30
+echo "never reached"
+EOF
+chmod +x "$DRTOOL"
 rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
-_elapsed=$((SECONDS - _t0))
+_elapsed=$(( $(date +%s) - $(cat "$DRSTAMP" 2>/dev/null || echo 0) ))
 eq "a hanging leg does NOT hang the close — it still exits 0" "0" "$rc"
+# The fixture's own precondition, asserted rather than assumed: the window below is "from the
+# delegate's launch", so a run that never reached the delegate would time an interval that
+# never happened — and without this cell that surfaces only as a wrong number.
+eq "…the hanging delegate was actually LAUNCHED (the window below is its own)" "true" \
+   "$([ -s "$DRSTAMP" ] && echo true || echo false)"
 eq "…and the ritual returns in about the budget, not the delegate's own runtime" "true" \
    "$([ "$_elapsed" -lt 15 ] && echo true || echo false)"
 eq "…with a ⚠ naming the kill and the budget that caused it" "true" \
