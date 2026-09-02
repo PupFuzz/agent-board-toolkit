@@ -603,14 +603,20 @@ finding with no owner is abandoned, not filed.
   **DUPLICATED ON PURPOSE, GUARDED, on Stage D's terms.** The duplicate-kanban-token leg has to
   resolve a token file exactly as the tools do, and that resolution lives in `_kb-board-lib.sh`
   (`kb_coord_store_token_file` + `_kb_expand_home` + `_kb_looks_like_pasted_secret`, plus
-  `kb_board_env_get`'s unset-then-source read). `runtime-check` **cannot source the lib** — it
+  `kb_resolve_env`'s host-then-board sourced read). `runtime-check` **cannot source the lib** — it
   JUDGES the lib, and a stale or broken lib must not take the judge down with it — so four
   `_rc_*` mirrors ship inside it. That is the same trade this program settled for
   `promote-released-cards`' `host_ok`, and it is pinned the same way:
   `tests/token-duplication-selftest.sh` extracts all four with `sed` and drives them **row-by-row
-  against the lib's originals** over a shared case table (16 store shapes, 10 home expansions, 12
-  credential shapes, 3 board-env reads), and **exits 1 if it cannot extract one**, so a rename
-  reds the build rather than retiring the comparison. ⛔ **Why a drifted mirror is worse here than
+  against the lib's originals** over a shared case table, and **exits 1 if it cannot extract one**,
+  so a rename reds the build rather than retiring the comparison. **The table's size is not
+  written here:** the selftest counts the rows as it runs them and prints them on its own
+  `== the parity table this run actually drove ==` line, because the figure that stood in this
+  spot (`16 store shapes`) was 15 on the day it was typed and had relayed intact ever since. ⚑
+  **The board-env row is pinned against `kb_resolve_env`, not `kb_board_env_get`** — the
+  single-file read cannot express a board env whose token path interpolates a variable the HOST
+  env sets, so a mirror sourcing the board env alone answered a different path than the tools do,
+  and the parity block could not see it (found in review of card#8376). ⛔ **Why a drifted mirror is worse here than
   a disagreement:** it would resolve a DIFFERENT file than the tools do, and the leg would then
   report a duplicate credential that is not there, or miss the one that is — a security finding
   invented or lost, either way against a file nobody is looking at. ⚠ **Do not read this as a
