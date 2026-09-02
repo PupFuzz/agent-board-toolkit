@@ -2561,15 +2561,15 @@ echo "== unlink — the removal is the READ-BACK, never the status (card#8545) =
 # refusal that says the right words while still issuing the DELETE is the failure this file
 # exists to catch, and only the log can tell the two apart.
 #
-# ⛔ THE FIXTURE'S SHARPEST EDGE — and the claim the whole section RESTS on rather than tests,
-# INHERITED from the seat this change was adopted from and never measured here: a `linked_tasks`
-# entry's `id` is the OTHER TASK and the link id is `task_link_id`. This repo has never read a
-# live link entry and has never run `unlink` against a real server, so every leg below measures
-# the TOOL against a fixture built to that claim, never the claim against the API. What closes
-# it is stated at `bin/kbcard`'s `unlink` header; card#8545 owns the run and its result. Taking
-# it as given: both are integers, both address real rows, and a tool reading the wrong one
-# DELETEs a link belonging to some other pair of cards — which 204s, and reads back as gone
-# from the card that was never linked by it. The entries below carry the two as DIFFERENT
+# ⛔ THE FIXTURE'S SHARPEST EDGE, and it is a claim this section RESTS on rather than tests: a
+# `linked_tasks` entry's `id` is the OTHER TASK and the link id is `task_link_id`. Every leg below
+# measures the TOOL against a fixture built to that claim, never the claim against the API — so
+# what state the claim is in is load-bearing here and is NOT restated here. `bin/kbcard`'s `unlink`
+# header is the one place that says what has been measured and what has not; card#8545 owns the
+# measurements and the run still owed. Read it there and do not re-derive the condition from this
+# comment. Taking the claim as given: both are integers, both address real rows, and a tool reading
+# the wrong one DELETEs a link belonging to some other pair of cards — which 204s, and reads back
+# as gone from the card that was never linked by it. The entries below carry the two as DIFFERENT
 # numbers (task 506, link 9) precisely so that confusion cannot pass, and the leg that names
 # 506 as a `--link-id` is what holds it.
 rm -rf "$TMP"

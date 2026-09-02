@@ -1399,22 +1399,32 @@ cmd_link() {
 }
 
 # --- unlink: remove a task link, and PROVE it is gone -----------------------
-# ⛔ THE ENTRY SHAPE BELOW IS INHERITED, NOT MEASURED BY THIS REPO, AND NO LIVE `unlink` HAS
-# EVER RUN. It was measured by the seat this change was adopted from, against another install's
-# boards; nothing here re-measured it, and every test under it drives a FIXTURE built to this
-# description — so a wrong description makes a wrong fixture and no leg would notice. Confirmed
-# from this repo, and only this much: a card read here does carry `linked_tasks`,
-# `linked_tasks_count` and `linked_tasks_truncated`. The PER-ENTRY keys are not confirmable
-# without creating a link, and none of the DELETE behaviour is confirmable without deleting one.
-# Shipped rather than held because every wrong-shape mode is fail-closed or loud: a renamed or
-# differently-typed key matches no entry (rc 2, NO DELETE), a `direction` outside the two values
-# below is rc 2, and the one branch that would delete the WRONG link — `id` and `task_link_id`
-# swapped — still finds the entry present on the re-read and reports HARD FAILURE at rc 1, so it
-# costs one wrong DELETE on first use and says so rather than reading back clean.
-# WHAT CLOSES IT, and it has to be run rather than argued: on a sandbox board running the same
-# server build, link two throwaway cards, `show` BOTH ends and capture the per-entry key set
-# verbatim, then `unlink --link-id`. card#8545 owns that run and its result — re-derive the
-# shape from there, not from this comment.
+# ⛔ THE DELETE HALF OF THIS SHAPE HAS NEVER BEEN EXERCISED FROM THIS REPO: that
+# `DELETE /task_links/<id>.json` answers 204, and that the row actually goes, are the only parts
+# still taken on the word of the seat this change was adopted from. No live `unlink` has ever run
+# here, and every leg under this header drives a FIXTURE, so if that half is wrong the fixture is
+# wrong with it and nothing would notice.
+# THE READ HALF IS NO LONGER INHERITED — it was measured against live boards, read-only, with no
+# link created and nothing written: the seven per-entry keys below, `id` being the OTHER task
+# while `task_link_id` is the link (both ends of one link carry the SAME `task_link_id` and each
+# names the other card as `id`), `direction` taking no third value and reading opposite on the
+# two ends, `linked_tasks_truncated` typed boolean, `linked_tasks_count` shaped
+# {outgoing, incoming} — and the cross-board case, one link spanning two boards read from both
+# ends with each board's own token. card#8545 owns that sweep, its denominator and its date; cite
+# it rather than restating a figure here, which would go stale on the next linked card. Re-derive
+# by re-running the read, not by trusting this comment: `kbcard show` cards on the boards
+# configured for the seat and compare the `linked_tasks` entries the two ends of each link carry.
+# It is a measurement of the boards this install can read, not a promise about every server build.
+# The residual DELETE half ships rather than waits because a wrong shape there is still fail-closed
+# or loud: a renamed or differently-typed key matches no entry (rc 2, NO DELETE), a `direction`
+# outside the two values below is rc 2, and the one branch that would delete the WRONG link — `id`
+# and `task_link_id` swapped, the reading the sweep above found no instance of — would still find
+# the entry present on the re-read and report HARD FAILURE at rc 1, so it costs one wrong DELETE on
+# first use and says so rather than reading back clean.
+# WHAT CLOSES THE REST, and it has to be run rather than argued: on a sandbox board running the same
+# server build, link two throwaway cards and `unlink` one. The entry shape no longer needs capturing
+# — what the run is for is the 204 and the link's absence on a re-read. card#8545 owns that run and
+# its result.
 # The shape is written out here because it is easy to get wrong in a way nothing would catch:
 #   * GET /tasks/<id>.json carries `linked_tasks` on EVERY card read — an array of
 #     {id, board_id, name, relation_type, direction, created_at, task_link_id} — alongside
