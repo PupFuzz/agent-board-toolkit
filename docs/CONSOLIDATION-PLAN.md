@@ -640,12 +640,47 @@ finding with no owner is abandoned, not filed.
   on the one instrument in this repo that resolves two credentials at once. Fixed by **adopting
   `_rc_digest` out of the bin** (`_adopt_fn`, the same `sed`-extract-or-exit-1 the mirror block
   uses, now one spelling shared by both callers) and deriving the needle from it.
+  ⚑ **`_adopt_fn` itself now lives in `tests/_selftest-prelude.sh`, and that is not tidying.**
+  Minted local to this one selftest it was the SIXTH hand-spelling of one `sed` range in this
+  suite — `board-snapshot-selftest.sh`, `kb-host-guard-selftest.sh` (×2),
+  `kb-positional-guard-selftest.sh` and `promote-pagination-selftest.sh` carry the other five —
+  i.e. this entry's own rule re-minted in the act of closing it. In the prelude it is one
+  definition every selftest already sources, and `prelude-shadow-selftest.sh` reds on the
+  seventh copy. **RESIDUAL, counted rather than estimated, because "five hand-spellings" reads
+  like five one-line adoptions and only ONE of them is:** `promote-pagination-selftest.sh:29`
+  evals verbatim and could adopt `_adopt_fn` today; `kb-host-guard-selftest.sh:35`/`:269` and
+  `kb-positional-guard-selftest.sh:44` eval the extracted source **through a rename**
+  (`${src/host_ok() \{/host_ok_prc() \{}`), because the mirror and the lib's original have to
+  coexist in one shell, so they need an alias parameter `_adopt_fn` does not have; and
+  `board-snapshot-selftest.sh:310` never evals at all — it greps the extracted TEXT, which needs
+  a text-returning sibling. Two more primitives, i.e. a design call, which is why this round
+  moved the one spelling it owned and filed the rest here instead of guessing at the other two.
+  All five were re-read at this change: each guards its own extraction (`board-snapshot`'s by an
+  `[[ "$early_exits" -ge 4 ]]` floor rather than an emptiness test, which reds the same way), so
+  none of them can silently retire a comparison — the residual is duplication, not a dead guard.
   **Instance 2 — the call graph.** The parity block drives each mirrored function against its
   original, which cannot see a divergence in **which sites call it**: `_kb_expand_home` has ONE
   call site in the lib (inside `kb_coord_store_token_file`), and `_rc_expand_home` had THREE, so a
   board env spelling `KBCARD_TOKEN_FILE="~/tok"` was literal to every tool (`kb_resolve_env` rc 5)
-  and expanded here. Fixed by dropping the two extra expansions and pinning the shape **through
+  and expanded here. Fixed by dropping the two extra expansions and driving the shape **through
   `kb_resolve_env`**, not through the mirrored function.
+  ⛔ **AND THAT BEHAVIOURAL ROW PINNED ONE OF THE TWO SITES, WHILE THIS ENTRY AND THE PR BOTH
+  SAID IT PINNED BOTH — corrected here rather than quietly rewritten, because the wrong version
+  is the one a future author would have trusted to have retired this.** Measured, twice each:
+  restoring `_rc_add_source`'s expansion reds that row (**2 FAIL**); restoring the precedence
+  `eff` expansion — the one-line pre-fix restore, on the arm that tells an operator to DELETE a
+  file — left the whole selftest at **rc 0, 0 FAIL**. A scenario row per call site is the wrong
+  shape in any case: **the divergence is a COUNT**, so what is asserted now is the count —
+  `_rc_expand_home` call sites in the bin against `_kb_expand_home` call sites in the lib,
+  derived from each file (occurrences outside comment lines and outside the definition line),
+  behind a positive control, because an equality between two derivations that both broke and
+  answered 0 measures nothing. One assertion, both sites, every future one, at **either** end.
+  Seen to fail four ways, each re-measured on a copy of the tree with the count assertion in
+  place: restoring the `eff` expansion ⇒ **1 FAIL**, `expected '1' got '2'` (it was 0 FAIL);
+  restoring `_rc_add_source`'s ⇒ **3 FAIL**, the two behavioural rows plus this one (it was 2);
+  planting a second call in the LIB ⇒ **1 FAIL**, `expected '2' got '1'`; removing the bin's one
+  remaining call ⇒ **3 FAIL**, the positive control among them. The behavioural row stays as the
+  witness — the count compares HOW MANY, never WHICH.
   **The sibling audit of instance 2, and its disposition.** The other three mirrors were counted
   against the lib's call graph at this change: `_rc_declared_token_file` matches
   (`kb_resolve_env` reads the host env and the board env, and so does this), `_rc_store_pointer`

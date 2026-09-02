@@ -36,16 +36,10 @@ LIB="$HERE/../bin/_kb-board-lib.sh"
 _need -x "$CHECK"
 _need -r "$LIB"
 
-# _adopt_fn <name> — eval one shell function out of $CHECK, by name, and EXIT 1 if it is not
-# there. The one spelling of "borrow a function from the tool under test": the mirror-parity
-# block below adopts four, and the leak control above adopts `_rc_digest`. A second spelling of
-# the extraction would be a second place for the guard to retire itself silently on a rename.
-_adopt_fn() {
-    local src
-    src="$(sed -n "/^$1() {/,/^}/p" "$CHECK")"
-    [[ -n "$src" ]] || { echo "selftest: could not extract $1 from $CHECK — did it get renamed?" >&2; exit 1; }
-    eval "$src"
-}
+# `_adopt_fn <src> <name>` — the sed-extract-or-exit-1 this file drives five functions of $CHECK
+# through — lives in `_selftest-prelude.sh`, sourced above. It was defined HERE first and that
+# was the sixth hand-spelling of one extraction primitive in this suite; a helper every selftest
+# already sources is where one spelling of it can actually be shared.
 
 _mktmp_scratch
 SEAT="$TMP/home"
@@ -78,7 +72,7 @@ OTHER='OTHERTOKEN-c8376-planted-second-credential-4d5e6f'
 # the compared digest into the ✗ message leaked it with this file at rc 0 / 0 FAIL. So the needle
 # is derived by ADOPTING `_rc_digest` out of the bin, the same way the mirror-parity block adopts
 # the store rung: one definition of the identity, two callers, and a rename reds the build.
-_adopt_fn _rc_digest
+_adopt_fn "$CHECK" _rc_digest
 printf '%s\n' "$FAKE" > "$TMP/needle.token"
 FAKE_DIGEST="$(_rc_digest "$TMP/needle.token")"
 [[ "${#FAKE_DIGEST}" -eq 64 ]] || { echo "selftest: _rc_digest produced no needle (got [$FAKE_DIGEST])" >&2; exit 1; }
@@ -522,7 +516,7 @@ eq "control: the mutated glob is in NO surface (README)" "false" "$(has "$MUT_LI
 # ── mirror parity: the three functions runtime-check duplicates from the lib ──────────────────
 echo "== mirror parity vs bin/_kb-board-lib.sh =="
 for fn in _rc_expand_home _rc_looks_like_pasted_secret _rc_store_pointer _rc_declared_token_file; do
-    _adopt_fn "$fn"
+    _adopt_fn "$CHECK" "$fn"
 done
 # shellcheck source=/dev/null
 source "$LIB"
@@ -643,6 +637,50 @@ eq "  …so the check does NOT credit that board env with declaring it" "false" 
    "$(has "$SEAT/.kanban-dev-board.env" "$OUT")"
 eq "  …and reports the copy as one no source it walks declares" "true" \
    "$(has 'NO source this check walks declares it' "$OUT")"
+
+echo "-- call-site parity: the COUNT, which is the thing that actually drifted --"
+# THE ROW ABOVE IS A BEHAVIOURAL WITNESS, AND IT PINS ONE SITE OF THE TWO. Measured, before this
+# block existed: restoring `_rc_add_source`'s expansion reds those two rows (2 FAIL), while
+# restoring the precedence `eff` expansion — the other half of the same call-graph fix, on the
+# arm that says DELETE — left this whole file at rc 0 / 0 FAIL, twice. A scenario row per call
+# site is the wrong shape anyway: the divergence IS a count, so the COUNT is what is asserted
+# here, and one assertion covers both sites and every future one, at either end.
+#
+# WHAT A CALL SITE IS, STATED, because the answer is a number and a number hides its predicate:
+# an occurrence of the name outside a COMMENT line and outside its own `name() {` definition
+# line. Comments are excluded because BOTH files narrate this function in prose — a header
+# sentence naming it is not a call, and counting it would let a dropped call be paid for by an
+# added paragraph. ⚑ It compares HOW MANY, never WHICH: two call graphs of equal size that
+# expand in different places satisfy this. That case is what the behavioural row above is for.
+_call_sites() { # <fn> <file> → the number of times <file> CALLS <fn>
+    awk -v fn="$1" '
+        $0 ~ /^[[:space:]]*#/            { next }   # prose naming a function is not a call
+        $0 ~ "^" fn "\\(\\)"             { next }   # the definition itself is not a call
+        {
+            line = $0
+            while (match(line, "(^|[^A-Za-z0-9_])" fn "([^A-Za-z0-9_]|$)")) {
+                n++
+                # -1 keeps the delimiter this match consumed, so two calls sharing one space
+                # between them are both seen.
+                line = substr(line, RSTART + RLENGTH - 1)
+            }
+        }
+        END { print n + 0 }
+    ' "$2"
+}
+RC_SITES="$(_call_sites _rc_expand_home "$CHECK")"
+LIB_SITES="$(_call_sites _kb_expand_home "$LIB")"
+# Positive control FIRST: the row below is an EQUALITY between two derived numbers, and two
+# derivations that both broke and answered 0 satisfy it while measuring nothing at all.
+eq "control: both call-site derivations found real data" "true" \
+   "$([ "$RC_SITES" -gt 0 ] && [ "$LIB_SITES" -gt 0 ] && echo true || echo false)"
+eq "the mirror calls _rc_expand_home at as many sites as the lib calls _kb_expand_home" \
+   "$LIB_SITES" "$RC_SITES"
+# Control: the counter SEES a planted call, so the equality above can red in the drift direction
+# — asserted as a VALUE, since "different from RC_SITES" is satisfied by a derivation that broke.
+awk '{ print } /^[[:space:]]*_rc_expand_home "/ { print }' "$CHECK" > "$TMP/expand-drift-bin"
+eq "control: a planted extra call site is counted" "$((RC_SITES + 1))" \
+   "$(_call_sites _rc_expand_home "$TMP/expand-drift-bin")"
 
 echo "== the parity table this run actually drove =="
 echo "   $n_store store shapes · $n_home home expansions · $n_secret credential shapes · $n_boardenv board-env reads"
