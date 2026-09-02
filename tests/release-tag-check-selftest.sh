@@ -133,11 +133,11 @@ g -C "$R" push -q --delete origin v0.28.0 && g -C "$R" tag -d v0.28.0 >/dev/null
 # does not poll for an UNBOUNDED interval after it starts: `git rev-parse`, then the
 # `release-artifacts-check` and `release-pr-body` delegations, each spawning git of its own.
 # The elapsed clocks this file carried at the time — both since re-based off the tool's own
-# reads by card#8533 — put that startup at 2–9s across the 21 red runs of a 30-run baseline at load ~26, against a 2s
-# timer: the tag was already present when poll 1 looked,
-# `POLLS` was 1, and the tool printed its (correct) no-wait form — reddening the `WAITED` cell
-# on 19 of 30 runs with the tool right every time. A fixture
-# whose precondition is "the tool is faster than N seconds" measures the box, not the tool.
+# reads by card#8533 — put that startup at 2–9s across the 21 red runs of a 30-run baseline at
+# load ~26, against a 2s timer: the tag was already present when poll 1 looked, `POLLS` was 1,
+# and the tool printed its (correct) no-wait form — reddening the `WAITED` cell on 19 of 30 runs
+# with the tool right every time. A fixture whose precondition is "the tool is faster than N
+# seconds" measures the box, not the tool.
 # `_counting_remote` below counts REAL reads instead: the ref is created just before a chosen
 # read is served, so it is still a real arrival discovered by a real `ls-remote`, but "the tag
 # was already there when the tool first looked" is now unrepresentable rather than merely
@@ -216,8 +216,13 @@ eq "…control: no tag ever ⇒ still rc 1" "1"    "$RC"
 # the tool does, so the tool's startup — `git rev-parse` plus the two delegations, at the figure
 # this file's header measures (card#8485) — was inside the bound, and a slower box reds the cell
 # for a defect the tool does not have. It is also the weaker predicate: waiting out that timeout
-# means THIRTEEN polls, so the property is "it looked once and refused", which the read counter
-# states exactly and a wall clock only approximates.
+# means roughly `--timeout / --interval` polls rather than one, so the property is "it looked
+# once and refused", which the read counter states exactly and a wall clock only approximates.
+# ⚑ THE EXACT POLL COUNT IS NOT A CONSTANT AND IS NOT ASSERTED ANYWHERE. `bin/release-tag-check`
+# truncates its own `WAITED` to whole seconds and breaks at `WAITED -ge TIMEOUT`, so whether the
+# last poll happens depends on where in the second its `START=$SECONDS` landed: 13 or 14 on this
+# arm, host-decided. What the cell below asserts is `1` — any count above it is the regression,
+# whatever the ceiling would have been.
 echo "== a tag at the wrong commit is refused without waiting =="
 g -C "$R" tag v0.28.0 "$BEFORE_SHA" && g -C "$R" push -q origin v0.28.0
 WRONG_READS="$T/wrong-commit-remote.reads"
@@ -522,13 +527,14 @@ eq "…and NOT as unreadable"                       "false" "$(has 'could NOT RE
 # remote used to APPEAR mid-run by an atomic rename out of a `( sleep 3; mv … ) &`, so the
 # fixture needed the tool's unbounded startup (the two sibling delegations above) to finish
 # inside 3s for even ONE poll to fail. The elapsed clocks this file then carried — since
-# re-based off the tool's own reads by card#8533 — put that startup at 2–9s across the 21 red
-# runs of that same 30-run baseline at load ~26: every poll then answered,
-# `UNREADABLE` was 0, and this cell and the one below it went red TOGETHER on 16 of 30 runs — the perfect correlation being the tell, since both clauses hang off that
-# single counter. The tool was CORRECT on every one of those runs: an all-answered absence
-# carries no caveat, which is precisely what the control below asserts. The refusal is still a
-# REAL failed read — a real `git ls-remote` against a helper that exits non-zero, with git's own
-# stderr reaching the tool — and it is now the FIRST read by construction.
+# re-based off the tool's own reads by card#8533 — put that startup at the figure this file's
+# header measures, over the 21 red runs of that same 30-run baseline at load ~26: every poll
+# then answered, `UNREADABLE` was 0, and this cell and the one below it went red TOGETHER on 16
+# of 30 runs — the perfect correlation being the tell, since both clauses hang off that single
+# counter. The tool was CORRECT on every one of those runs: an all-answered absence carries no
+# caveat, which is precisely what the control below asserts. The refusal is still a REAL failed
+# read — a real `git ls-remote` against a helper that exits non-zero, with git's own stderr
+# reaching the tool — and it is now the FIRST read by construction.
 echo "== a run whose reads partly failed reports the absence AND the failed polls =="
 # ONLY THE FIRST READ IS REFUSED. That is what keeps the FINAL poll an answering one without the
 # fixture having to know, or care, how many polls the tool fits inside its own 8s bound — one
@@ -583,7 +589,7 @@ if command -v timeout >/dev/null 2>&1; then
   RC=0
   OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
             --remote "ext::$T/hang-remote" --read-timeout 1 --timeout 0) 2>&1 )" || RC=$?
-  HANG_ELAPSED=$(( $(date +%s) - $(cat "$HANG_READS.read1" 2>/dev/null || echo 0) ))
+  HANG_ELAPSED="$(_since_stamp "$HANG_READS.read1")"
   eq "a hung remote → rc 1"                       "1"    "$RC"
   eq "…named as a KILLED read, with its bound"    "true" "$(has 'KILLED after 1s' "$OUT")"
   eq "…scored as unreadable"                      "true" "$(has 'could NOT READ' "$OUT")"
@@ -592,13 +598,21 @@ if command -v timeout >/dev/null 2>&1; then
   # window below is "from read 1", so a run in which the helper was never reached would measure
   # an interval that never happened. Without this cell that shows up only as a wrong number.
   eq "…the hung read was actually TAKEN (the window below is that read's)" "true" \
-     "$([ -s "$HANG_READS.read1" ] && echo true || echo false)"
+     "$(_stamp_taken "$HANG_READS.read1")"
   # THE DISCRIMINATING CONTROL. The fixture sleeps 20s, so an unbounded read could only return
-  # after 20; returning in a fraction of that is the bound firing, and nothing else. The bound
-  # stays deliberately loose at 10 — what discriminates is 1s-vs-20s, and now that the startup
-  # is outside the window there is nothing left in it that scales with the box's load.
-  [ "$HANG_ELAPSED" -lt 10 ] && ok "…and the BOUND is what ended it (${HANG_ELAPSED}s from read 1 < the fixture's 20s hang)" \
-                             || bad "…the read ran ${HANG_ELAPSED}s from its own start — it was not bounded"
+  # after 20; returning in a fraction of that is the bound firing, and nothing else.
+  #
+  # THE BOUND IS 5 BECAUSE THE WINDOW IS NOW ~1s, AND THE COMPANION CELL CANNOT COVER FOR IT.
+  # `…named as a KILLED read, with its bound` reads `KILLED after ${READ_BOUND}s` off the FLAG
+  # VALUE, never off the measured duration, so it is green for any bound the tool was told to
+  # use — including one it then failed to apply. A read that regressed to several seconds while
+  # still announcing `1s` therefore has this cell as its ONLY witness, and the 10 it inherited
+  # — sized for a window that still contained the startup this file's header measures — left
+  # exactly that regression green.
+  # Measured 1s on three consecutive runs at load ~8 with the startup outside the window; 5 is
+  # 5x that, and it is watched red against a 6s read that still prints `KILLED after 1s`.
+  [ "$HANG_ELAPSED" -lt 5 ] && ok "…and the BOUND is what ended it (${HANG_ELAPSED}s from read 1 < the fixture's 20s hang)" \
+                            || bad "…the read ran ${HANG_ELAPSED}s from its own start — it was not bounded"
 else
   echo "== \`timeout\` is absent on this host: the bound cannot hold, and the tool must SAY so =="
   run "$BEFORE_SHA" "$RELEASE_SHA" --timeout 0
