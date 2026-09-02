@@ -13,46 +13,13 @@ _need -r "$BIN"
 # shellcheck source=/dev/null
 source "$BIN"
 
-echo "== _ata_validate_repo =="
-expect_rc "owner/name valid"          0 _ata_validate_repo "owner/name"
-expect_rc "mixed-case owner valid"    0 _ata_validate_repo "AIMLA-org/platform"
-expect_rc "no slash rejected"         2 _ata_validate_repo "owner"
-expect_rc "two slashes rejected"      2 _ata_validate_repo "owner/name/extra"
-expect_rc "full URL rejected"         2 _ata_validate_repo "https://github.com/owner/name"
-expect_rc "whitespace rejected"       2 _ata_validate_repo "owner /name"
-expect_rc "empty rejected"            2 _ata_validate_repo ""
-expect_rc "empty owner rejected"      2 _ata_validate_repo "/name"
-expect_rc "empty name rejected"       2 _ata_validate_repo "owner/"
-# THE SHAPE-ONLY ROWS ABOVE ARE NOT THE WHOLE ACCEPT SET, and the gap is not cosmetic
-# (card#8421). This predicate gates a value that is then spent TWICE, on both sides of ONE
-# comparison: it is interpolated into the placeholder `pr_url` the card is STAMPED with, and
-# into the `source=` of the step-5 by-ref VERIFY. A spelling that survives here therefore
-# derives the SAME garbage on both sides, so the verify passes VACUOUSLY and "adopted =>
-# correlatable" is certified by a check that could not have failed (canon #9) — while the
-# bridge writeback and the reconcile, which derive the source through the server's own
-# repoFromGitHubUrl, correlate the card to nothing.
-#   * `git@github.com:acme/widget` — one slash, two non-empty parts, no whitespace, so the
-#     shape ALONE accepts it (measured). It stamps `github.com/git@github.com:acme/widget/pull/0`,
-#     whose capture is `git@github.com:acme/widget`; the verify then queries that same string.
-#   * `acme/*` — same story, and the stored source is a literal `*` that names no repo.
-#   * `acme/widget.git` — the one spelling that does NOT pass vacuously, and it is worse than a
-#     refusal rather than better: repoFromGitHubUrl TRIMS the `.git`, so the card's derived
-#     source is `acme/widget` while the verify queries `acme/widget.git` — it fails LOUD, AFTER
-#     the card has already been stamped. Refusing before the write leaves nothing half-applied.
-# The charset+shape pair asserted here is the one `bin/promote-released-cards` applies to
-# `.promote.source` (`src_charset_ok` plus the shape `case`) — the same value at the other end
-# of the same correlation. Keep the two in sync.
-expect_rc "scp-style remote rejected" 2 _ata_validate_repo "git@github.com:acme/widget"
-expect_rc "a .git suffix rejected"    2 _ata_validate_repo "acme/widget.git"
-expect_rc "a glob is not a repo"      2 _ata_validate_repo "acme/*"
-expect_rc "a URL scheme rejected"     2 _ata_validate_repo "ssh://git@github.com/acme/widget"
-expect_rc "a colon is not in the set" 2 _ata_validate_repo "acme:x/widget"
-# CONTROLS — without these a validator that refused EVERYTHING would pass every row above.
-# Each is a spelling a real adoption uses and must keep accepting.
-expect_rc "control: a plain repo passes"    0 _ata_validate_repo "acme/widget"
-expect_rc "control: a dot inside a name"    0 _ata_validate_repo "acme/widget.js"
-expect_rc "control: underscore + hyphen"    0 _ata_validate_repo "acme_org/my-repo"
-expect_rc "control: digits either side"     0 _ata_validate_repo "acme2/widget3"
+# THE `--repo` PREDICATE IS NOT TESTED HERE ANY MORE, and that is a move rather than a drop
+# (card#8421). `_ata_validate_repo` was a hand-rolled third copy of one accept-set; it is now
+# `kb_is_repo_slug` in `bin/_kb-board-lib.sh`, called directly at this tool's readiness gate and
+# by `bin/run-coverage-check`. Its arms — and the reasoning for every one of them — moved WITH
+# it, to `tests/kb-board-lib-selftest.sh`, so the predicate is exercised in the file that owns
+# it rather than in one of its two callers. What stays HERE is the end-to-end arm below that
+# this tool actually refuses a bad `--repo` before anything is stamped.
 
 echo "== _ata_pr_url =="
 expect_out "placeholder url"          "https://github.com/owner/name/pull/0"        _ata_pr_url "owner/name"
@@ -95,6 +62,30 @@ case "$out" in *"unexpected extra argument"*) ok "…and that guard names itself
 _rc=0; out="$(bash "$BIN" 2>&1)" || _rc=$?
 case "$out" in *"<card-id> is required"*) ok "no positional at all still reports the missing id" ;;
                *) bad "expected the required-id diagnostic, got: $out" ;; esac
+
+# THE WIRING, not the predicate: `kb_is_repo_slug` is unit-tested in tests/kb-board-lib-selftest.sh,
+# and NOTHING there can tell whether THIS tool still calls it. That is the gap the hoist opened —
+# a bin that dropped the call would leave every lib arm green — so the readiness gate is driven
+# for real here, on the spelling an operator most often pastes from a git remote. It must refuse
+# BEFORE the board is named, which is what proves nothing was stamped: `--board` is supplied and
+# the refusal must still be about the repo.
+echo "== the --repo readiness gate calls the lib predicate, and refuses before the board =="
+_rc=0; out="$(bash "$BIN" 4242 --repo "git@github.com:acme/widget" --board dev 2>&1)" || _rc=$?
+if [[ "$_rc" -eq 2 ]]; then ok "an scp-style --repo is refused (rc 2)"
+else bad "expected rc=2 for an scp-style --repo, got $_rc"; fi
+case "$out" in *"--repo must be a bare <owner>/<name>"*) ok "…and the refusal names the flag and its shape" ;;
+               *) bad "expected the --repo diagnostic, got: $out" ;; esac
+case "$out" in *"board"*) bad "the run got as far as the board — the repo gate did not refuse first" ;;
+               *) ok "…and it refused before the board was resolved (nothing stamped)" ;; esac
+_rc=0; out="$(bash "$BIN" 4242 --repo "acme/widget.git" --board dev 2>&1)" || _rc=$?
+case "$out" in *"--repo must be a bare <owner>/<name>"*) ok "a .git suffix is refused by the same gate" ;;
+               *) bad "expected the --repo diagnostic for a .git suffix, got: $out" ;; esac
+# CONTROL — a WELL-FORMED --repo gets PAST this gate. Without it every arm above is satisfied by
+# a gate that refuses everything, which would be a tool that can adopt nothing at all.
+_rc=0; out="$(bash "$BIN" 4242 --repo "acme/widget" 2>&1)" || _rc=$?
+case "$out" in *"--repo must be a bare <owner>/<name>"*) bad "a well-formed --repo was refused by the repo gate" ;;
+               *"--board <name> is required"*) ok "control: a well-formed --repo reaches the NEXT gate (--board)" ;;
+               *) bad "expected the --board diagnostic after a good --repo, got: $out" ;; esac
 
 # Every value-taking flag must be gated on the flag being SEEN with a value. `--dl ""` (an
 # unexpanded variable) used to read as "no --dl" and take the MINT path — so a crash-retry that

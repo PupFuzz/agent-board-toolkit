@@ -631,6 +631,29 @@ finding with no owner is abandoned, not filed.
   fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
   dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
   prompted the extraction is not something this lib would have caught.
+- **The repo-slug predicate, in three bins with THREE spellings** (card#8421) — **EXTRACTED to
+  `kb_is_repo_slug` in `bin/_kb-board-lib.sh`; two of the three adopted, the third is a documented
+  standalone.** One accept-set — a bare GitHub `<owner>/<name>` — was written three ways:
+  `bin/adopt-to-dl`'s `_ata_validate_repo` hand-rolled it as three `case` steps under a local
+  `LC_ALL=C`; `bin/run-coverage-check` re-spelled it as a bare regex through `kb_ere_match`;
+  `bin/promote-released-cards` spells it as `src_charset_ok` plus a shape `case`. **The divergence
+  is the entry, not the count:** the three did not agree. `run-coverage-check --repo` accepted
+  `owner/name.git`, which the other two refuse — and the `.git` arm is the one with a stated
+  reason (the server's source canonicalizer does not trim a `.git` while `repoFromGitHubUrl` does,
+  so the two derivations disagree and a stamped card verifies against a source no card can
+  carry). A third copy is where the narrow rule quietly fails to arrive, exactly as the card#7207
+  entry above records. **`promote-released-cards` keeps its copy and that is not an oversight** —
+  it is vendored standalone into consumer repos and must not source the lib (the same constraint
+  that duplicates `host_ok` and `require_value`), so the two are bound by cross-reference and by
+  `tests/locale-range-guard-selftest.sh` driving BOTH ends of the correlation under both locales.
+  **Consequence recorded rather than discovered later:** adopting the shared predicate NARROWS
+  `run-coverage-check --repo`, which now refuses `owner/name.git` at rc 2 instead of putting it
+  into a `repos/<slug>/…` request path GitHub answers 404 for; the narrowing carries its own arm
+  in `tests/run-coverage-check-selftest.sh`. The predicate's arms moved WITH it, from
+  `tests/adopt-to-dl-selftest.sh` to `tests/kb-board-lib-selftest.sh`, and the caller's selftest
+  keeps an end-to-end arm for the WIRING — a lib unit test cannot tell whether its caller still
+  calls it.
+
 - **The GitHub Actions file population, in three gates with TWO predicates** (card#7207) —
   **EXTRACTED, all three adopted in the same PR.** `ci-matrix-parity-selftest.sh` and
   `shellcheck-pin-selftest.sh` each globbed `*.yml` **and** `*.yaml` inside their own python

@@ -302,55 +302,62 @@ echo "== 5. a card's source is derived through the server's field-preference ord
 # The jq `derive_source` is a FOURTH runtime expressing one rule (server PHP, bridge PHP, the
 # python client, this). Nothing binds it to the others by inspection, so it is bound by this
 # corpus: `<card-payload-json>|<yes|no: does it qualify as acme/widget>|<label>`.
+# ⛔ EVERY ROW BELOW REPORTS `<rc>/<moved>`, NOT `<moved>` ALONE, and the rc half is the
+# load-bearing one for the four non-string-derivation arms. Those assert that a card does NOT
+# move, and "did not move" is also what happens when the bin DIES: mutate the type guard to
+# `if false then null` and jq throws mid-correlation, promote exits 5 with an empty patch log,
+# and all four arms went on PASSING while the tool they certify had crashed (measured). An
+# absence-only assertion certifies whatever replaces the behaviour it describes; the rc is the
+# PRESENCE witness that says the run completed and then declined, rather than never ruling.
 src_case() { # <payload-json> — does a card carrying it get promoted under acme/widget?
   cat > "$BOARD_FILE" <<JSON
 {"data":[{"id":7,"workflow_stage_id":51,"payload":$1}],"meta":{"last_page":1,"total":1}}
 JSON
   run_promote "$CFG_REPO"
-  moved 7
+  printf '%s/%s' "$rc" "$(moved 7)"
 }
 ext_case() { # <external_link> — the top-level field, last in the preference order
   cat > "$BOARD_FILE" <<JSON
 {"data":[{"id":7,"workflow_stage_id":51,"external_link":"$1","payload":{"pr_number":"15"}}],"meta":{"last_page":1,"total":1}}
 JSON
   run_promote "$CFG_REPO"
-  moved 7
+  printf '%s/%s' "$rc" "$(moved 7)"
 }
 ext_json_case() { # <external_link-as-RAW-JSON> — the same field, non-string values included
   cat > "$BOARD_FILE" <<JSON
 {"data":[{"id":7,"workflow_stage_id":51,"external_link":$1,"payload":{"pr_number":"15"}}],"meta":{"last_page":1,"total":1}}
 JSON
   run_promote "$CFG_REPO"
-  moved 7
+  printf '%s/%s' "$rc" "$(moved 7)"
 }
-eq "payload.repo wins outright"                  "true"  "$(src_case '{"pr_number":"15","repo":"acme/widget","pr_url":"https://github.com/acme/other/pull/1"}')"
-eq "…including when it disqualifies the card"    "false" "$(src_case '{"pr_number":"15","repo":"acme/other","pr_url":"https://github.com/acme/widget/pull/1"}')"
-eq "a repo string with no slash is NOT a source" "false" "$(src_case '{"pr_number":"15","repo":"widget"}')"
-eq "pr_url is preferred over issue_url"          "false" "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/other/pull/1","issue_url":"https://github.com/acme/widget/issues/1"}')"
-eq "issue_url is read when pr_url is absent"     "true"  "$(src_case '{"pr_number":"15","issue_url":"https://github.com/acme/widget/issues/1"}')"
-eq "html_url is read after those two"            "true"  "$(src_case '{"pr_number":"15","html_url":"https://github.com/acme/widget/commit/abc"}')"
-eq "a trailing .git in the URL is trimmed"       "true"  "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget.git/pull/1"}')"
-eq "the URL host is case-insensitive"            "true"  "$(src_case '{"pr_number":"15","pr_url":"https://GitHub.com/ACME/Widget/pull/1"}')"
-eq "a BARE repo URL yields no source (the rule)" "false" "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget"}')"
-eq "a non-github URL yields no source"           "false" "$(src_case '{"pr_number":"15","pr_url":"https://git.example.com/acme/widget/pull/1"}')"
+eq "payload.repo wins outright"                  "0/true"  "$(src_case '{"pr_number":"15","repo":"acme/widget","pr_url":"https://github.com/acme/other/pull/1"}')"
+eq "…including when it disqualifies the card"    "0/false" "$(src_case '{"pr_number":"15","repo":"acme/other","pr_url":"https://github.com/acme/widget/pull/1"}')"
+eq "a repo string with no slash is NOT a source" "0/false" "$(src_case '{"pr_number":"15","repo":"widget"}')"
+eq "pr_url is preferred over issue_url"          "0/false" "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/other/pull/1","issue_url":"https://github.com/acme/widget/issues/1"}')"
+eq "issue_url is read when pr_url is absent"     "0/true"  "$(src_case '{"pr_number":"15","issue_url":"https://github.com/acme/widget/issues/1"}')"
+eq "html_url is read after those two"            "0/true"  "$(src_case '{"pr_number":"15","html_url":"https://github.com/acme/widget/commit/abc"}')"
+eq "a trailing .git in the URL is trimmed"       "0/true"  "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget.git/pull/1"}')"
+eq "the URL host is case-insensitive"            "0/true"  "$(src_case '{"pr_number":"15","pr_url":"https://GitHub.com/ACME/Widget/pull/1"}')"
+eq "a BARE repo URL yields no source (the rule)" "0/false" "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget"}')"
+eq "a non-github URL yields no source"           "0/false" "$(src_case '{"pr_number":"15","pr_url":"https://git.example.com/acme/widget/pull/1"}')"
 # A NON-STRING url field derives NOTHING, because the server guards `is_string` before it
 # parses one (`sourceFor`, and `is_string($externalLink)` for the top-level field). The jq
 # mirror used to `tostring` the value first, so an object or an array whose JSON TEXT happens
 # to contain a GitHub url derived a source here and null on the server — and the direction of
 # that disagreement is toward PROMOTING, which is the one direction this whole guard exists to
 # close. The two shapes below are the JSON renderings that carry a matchable url.
-eq "an OBJECT pr_url is not a string"            "false" "$(src_case '{"pr_number":"15","pr_url":{"u":"https://github.com/acme/widget/pull/1"}}')"
-eq "an ARRAY pr_url is not a string either"      "false" "$(src_case '{"pr_number":"15","pr_url":["https://github.com/acme/widget/pull/1"]}')"
+eq "an OBJECT pr_url is not a string"            "0/false" "$(src_case '{"pr_number":"15","pr_url":{"u":"https://github.com/acme/widget/pull/1"}}')"
+eq "an ARRAY pr_url is not a string either"      "0/false" "$(src_case '{"pr_number":"15","pr_url":["https://github.com/acme/widget/pull/1"]}')"
 # Not a discriminating row — a bare number carries no url under either implementation. It is
 # here as a NO-THROW guard on the type test: jq `capture` on a non-string is a runtime error,
 # so a mirror written without either a `tostring` or a type arm dies mid-correlation.
-eq "control: a NUMBER url derives nothing, no throw" "false" "$(src_case '{"pr_number":"15","pr_url":1234}')"
-eq "an object external_link is not a string"     "false" "$(ext_json_case '{"u":"https://github.com/acme/widget/pull/1"}')"
+eq "control: a NUMBER url derives nothing, no throw" "0/false" "$(src_case '{"pr_number":"15","pr_url":1234}')"
+eq "an object external_link is not a string"     "0/false" "$(ext_json_case '{"u":"https://github.com/acme/widget/pull/1"}')"
 # CONTROL — the SAME url as a bare string DOES qualify, so the three arms above are about the
 # TYPE and not about the fixture having stopped matching anything.
-eq "control: the same url as a STRING qualifies" "true"  "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/1"}')"
-eq "external_link is read last, and IS read"     "true"  "$(ext_case 'https://github.com/acme/widget/pull/1')"
-eq "…and an external_link for another repo is not ours" "false" "$(ext_case 'https://github.com/acme/other/pull/1')"
+eq "control: the same url as a STRING qualifies" "0/true"  "$(src_case '{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/1"}')"
+eq "external_link is read last, and IS read"     "0/true"  "$(ext_case 'https://github.com/acme/widget/pull/1')"
+eq "…and an external_link for another repo is not ours" "0/false" "$(ext_case 'https://github.com/acme/other/pull/1')"
 # restore the four-card board for everything below
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[

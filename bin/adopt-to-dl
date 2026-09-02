@@ -52,50 +52,12 @@ KB_PROG="adopt-to-dl"
 
 # ── pure decision logic (network-free; unit-tested by tests/adopt-to-dl-selftest.sh) ──
 
-# _ata_validate_repo <repo>: 0 iff <repo> is a bare `<owner>/<name>` — exactly one slash, both
-# parts non-empty, and only characters a GitHub `<owner>/<repo>` can hold (ASCII letters, digits,
-# `.`, `_`, `-`). Case is accepted as given; the by-ref `source` is compared lowercased (GitHub
-# owner/repo is case-insensitive; the server stores + looks up the source lowercased — see
-# _ata_canon_source).
-#
-# ⛔ A SHAPE TEST ALONE CANNOT DO THIS JOB, and the reason is that the value it gates is spent
-# TWICE, on both sides of one comparison: it is interpolated into the placeholder `pr_url` this
-# tool STAMPS, and into the `source=` of the step-5 by-ref VERIFY. So a garbage spelling that
-# gets past here derives the same garbage on both sides, and the verify — the check that makes
-# "adopted" mean "correlatable" — passes VACUOUSLY. The predicate here used to be
-# `^[^[:space:]/]+/[^[:space:]/]+$`, which ACCEPTS (measured) `git@github.com:acme/widget` and
-# `acme/*`: one slash, two non-empty parts, no whitespace. Both stamped a card the bridge
-# writeback and the reconcile then correlate to nothing, under a green "verified via by-ref".
-# `acme/widget.git` is the third, and it fails the other way — repoFromGitHubUrl trims the
-# `.git`, so the derived source and the queried one differ and the verify fails LOUD, but only
-# AFTER the card has been stamped. Refusing here is what leaves nothing half-applied.
-#
-# CHARSET + SHAPE, AS ONE PAIR — and neither half stands alone: the shape accepts
-# `git@github.com:acme/widget`, the charset accepts `acme/a/b`. This is the SAME pair
-# `bin/promote-released-cards` applies to `.promote.source` (`src_charset_ok` plus its shape
-# `case`), which is the same value at the other end of the same correlation; that tool is a
-# vendored standalone that must not source this lib, so the predicate is duplicated rather than
-# hoisted — keep the two in sync, as with the `canonicalizeSource` mirror below.
-#
-# The bracket ranges are COLLATION ranges, so LC_ALL=C is load-bearing, not hygiene: under an
-# ordinary UTF-8 locale `[!a-zA-Z0-9._/-]` silently admits characters outside ASCII, which is
-# the class tests/locale-range-guard-selftest.sh exists for.
-_ata_validate_repo() {
-    local LC_ALL=C repo="${1:-}"
-    case "$repo" in
-        ''|*/*/*|/*|*/) return 2 ;;   # empty, >2 segments, or an empty segment
-        */*)            ;;            # exactly one slash, both sides non-empty
-        *)              return 2 ;;   # no slash at all (a bare name, or a scheme-less token)
-    esac
-    # Rejects a URL (`:`, `//`), an scp-style remote (`@`, `:`), a glob (`*`) and any whitespace
-    # in one test — none of those bytes is in a GitHub owner/repo.
-    case "$repo" in *[!a-zA-Z0-9._/-]*) return 2 ;; esac
-    # `.git` is IN the charset and IS a legal repo-name ending, so it needs its own arm: the
-    # source canonicalizer does not trim it while repoFromGitHubUrl does, which is exactly the
-    # stamp/verify mismatch described above.
-    case "$repo" in *.git) return 2 ;; esac
-    return 0
-}
+# THE `--repo` PREDICATE LIVES IN THE LIB, as `kb_is_repo_slug` (bin/_kb-board-lib.sh), which
+# owns the reasoning: the value is spent TWICE, on both sides of ONE comparison — the placeholder
+# `pr_url` this tool STAMPS, and the `source=` of the step-5 by-ref VERIFY — so a shape-only test
+# lets a garbage spelling derive the SAME garbage on both sides and the verify passes VACUOUSLY.
+# It is called directly at the readiness gate below; there is no wrapper here, because a second
+# name for one predicate is how a second predicate starts.
 
 # _ata_pr_url <repo>: the pre-PR placeholder pr_url whose repo segment yields the card's
 # by-ref `source`. The reconciler/writeback overwrite the URL when the real PR opens; only the
@@ -117,11 +79,11 @@ _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
 # standalone that must not source this lib and cannot call this function:
 #   * its SHELL copy, canonicalizing the operator's `.promote.source` (sed trim, cap 255, tr);
 #   * its jq copy `canon_source`, canonicalizing the CARD side of the same comparison.
-# Trim and the 255 cap are omitted HERE deliberately, not forgotten: `_ata_validate_repo` above
-# has already refused every value that either would change (whitespace is outside the charset,
-# and a >255-byte `<owner>/<repo>` is not one GitHub issues), so adding them would be a second
-# rule with no input to act on. The `tr` runs under the caller's locale, which is safe for the
-# same reason: only ASCII reaches it.
+# Trim and the 255 cap are omitted HERE deliberately, not forgotten: `kb_is_repo_slug` — the
+# `--repo` gate at the readiness check below — has already refused every value that either
+# would change (whitespace is outside the charset, and a >255-byte `<owner>/<repo>` is not one
+# GitHub issues), so adding them would be a second rule with no input to act on. The `tr` runs
+# under the caller's locale, which is safe for the same reason: only ASCII reaches it.
 _ata_canon_source() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 
 # _ata_adopt_decision <existing-dl-int|""> <requested-dl-int|"">: the MUST-FIX-3 guard, as a
@@ -182,7 +144,7 @@ main() {
     # the value is one an operator often pastes from a git remote: `git@github.com:acme/widget`
     # and `acme/widget.git` are both git-remote spellings of a repo and neither is the
     # `<owner>/<name>` a card's by-ref source resolves to.
-    _ata_validate_repo "$repo" \
+    kb_is_repo_slug "$repo" \
         || { echo "adopt-to-dl: --repo must be a bare <owner>/<name> — exactly one '/', and only letters, digits, '.', '_', '-' either side of it, with no '.git' suffix (got '$repo'). An scp-style 'git@github.com:owner/name', a URL, a '.git' suffix or a glob is the usual cause: this value becomes the card's stamped pr_url AND the by-ref verify query, so a spelling that is not a real repo correlates to nothing." >&2; exit 2; }
     [[ -n "$board_name" ]] || { echo "adopt-to-dl: --board <name> is required (a deliberate adoption must name its board)" >&2; exit 2; }
 

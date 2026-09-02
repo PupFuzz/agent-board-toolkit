@@ -128,6 +128,43 @@ kb_ere_match() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }
 # already has one, and this predicate vouches for exactly one spelling per value.
 kb_is_uint() { kb_ere_match "${1-}" '^(0|[1-9][0-9]*)$'; }
 
+# kb_is_repo_slug <string>: true iff the string is a BARE GitHub `<owner>/<name>` —
+# exactly one `/`, both sides non-empty, and only ASCII letters, digits, `.`, `_`
+# and `-` either side of it. A `.git` suffix is refused.
+#
+# WHY THIS IS A PRIMITIVE AND NOT A SHAPE TEST AT EACH CALLER (card#8421). Every
+# caller spends this value the same way: it becomes a `<owner>/<name>` segment of a
+# GitHub URL or a request path, and — for the adoption path — of BOTH sides of one
+# comparison (the placeholder `pr_url` a card is STAMPED with, and the `source=` of
+# the by-ref VERIFY that is supposed to prove the stamp correlatable). A spelling
+# that gets past the guard therefore derives the SAME garbage on both sides, so the
+# verify passes VACUOUSLY: "adopted ⇒ correlatable" certified by a check that could
+# not fail. A SHAPE-only predicate (`^[^[:space:]/]+/[^[:space:]/]+$`) is what did
+# that — measured, it ACCEPTS `git@github.com:acme/widget` and `acme/*`, which are
+# one slash and two non-empty parts apiece. Shape and charset are ONE pair and
+# neither half stands alone: the shape admits the scp-style remote, the charset
+# admits `acme/a/b`. The pair is spelled here once, as one regex.
+#
+# `.git` NEEDS ITS OWN ARM, and it is not an oversight that the regex does not carry
+# it: `.git` is inside the charset and IS a legal repo-name ending, and ERE has no
+# negative lookahead to exclude a suffix with. It is refused because the two
+# derivations disagree about it — the server's source canonicalizer does not trim a
+# `.git` while `repoFromGitHubUrl` does, so `acme/widget.git` stamps a card whose
+# derived source is `acme/widget` and then verifies against `acme/widget.git`: it
+# fails LOUD, but only AFTER the write. Refusing here leaves nothing half-applied.
+# The `case` glob carries no bracket range, so it needs no locale scoping of its own.
+#
+# ⛔ ONE ACCEPT PREDICATE, and callers may not re-spell it. `bin/promote-released-cards`
+# is the one exception and cannot be fixed by adoption: it is VENDORED STANDALONE into
+# consumer repos and MUST NOT source this lib, so its `src_charset_ok` plus its shape
+# `case` are a deliberate duplicate of this function gating the SAME value at the other
+# end of the SAME correlation — keep the two in sync, as with kb_require_https_host.
+kb_is_repo_slug() {
+    kb_ere_match "${1-}" '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || return 1
+    case "${1-}" in *.git) return 1 ;; esac
+    return 0
+}
+
 # --- config resolution ------------------------------------------------------
 #
 # ONE token-file precedence, uniform across every resolver below:

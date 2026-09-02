@@ -210,7 +210,12 @@ uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return
 # remote spelling that no card's derived source can ever equal, so it correlates to nothing
 # while looking configured. Same LC_ALL=C reasoning as uint_ok above, and it is not theoretical
 # here: a bracket RANGE is a COLLATION range, so under en_US.UTF-8 this set silently admits
-# characters outside ASCII.
+# characters outside ASCII. MEASURED, not asserted: with the pin removed, `--source
+# acme/widg<U+0663>t` is ACCEPTED under en_US.utf8 and the run proceeds to the token guard.
+# The covering arms are named, because a citation of "the class" is what this pin carried
+# until card#8421 while NOTHING reached the line — tests/locale-range-guard-selftest.sh
+# `promote --source rejects a U+0663 in the repo name` (behaviour, both locales) and its
+# static backstop, which since that card matches the GLOB spelling used here and not only `=~`.
 src_charset_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!a-zA-Z0-9._/-]*) return 1 ;; esac; }
 
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
@@ -279,8 +284,8 @@ redact_userinfo() {
   # the FIRST `://` anywhere, so a schemeless `host/p?x://y` would lose everything up to it.
   # ⛔ LC_ALL IS PINNED ON THE LINE BELOW, NOT THREE LINES UP WITH THE OTHER `local`s. A bare
   # bracket RANGE widens under UTF-8 collation, so the pin is required — and
-  # tests/locale-range-guard-selftest.sh's static backstop looks for `LC_ALL=C` on the `=~`
-  # line or the two above it, which is a WRITING RULE, not a hint: with the pin declared up
+  # tests/locale-range-guard-selftest.sh's static backstop looks for `LC_ALL=C` on the guard's
+  # own line or the two above it, which is a WRITING RULE, not a hint: with the pin declared up
   # with the other locals the scanner flagged this line (watched red). The lib's copy gets the
   # same pin from kb_ere_match, which this standalone must not call.
   local LC_ALL=C
@@ -433,7 +438,9 @@ uint_ok "$STAGE" || die ".promote.released_stage_id must be numeric (got '$STAGE
 # (trim -> empty means absent -> cap 255 -> lowercase), so the shell side and the jq side of
 # the one comparison this script makes agree. `tr` runs under LC_ALL=C: a GitHub
 # `<owner>/<repo>` is ASCII by construction, and a locale-sensitive fold would be a second,
-# divergent rule — the class tests/locale-range-guard-selftest.sh exists for.
+# divergent rule — the class tests/locale-range-guard-selftest.sh exists for. That the value
+# reaching this `tr` really is ASCII is not assumed either: `src_charset_ok` above enforces it,
+# and the `promote --source` arms in that file drive this flag end to end under both locales.
 #
 # ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421). The kanban server
 # class is the SoT; the copies are this shell one (the CONFIG side), the jq `canon_source` in
@@ -488,9 +495,18 @@ if [ "$SOURCE" != '*' ]; then
   case "$SOURCE" in *[[:space:]]*) die "--source/.promote.source must not contain whitespace (got $(src_shown), from $SOURCE_SRC)";; esac
   # THE SHAPE `case` ABOVE AND THIS CHARSET CHECK ARE ONE PAIR, and neither half stands alone —
   # the shape accepts `git@github.com:acme/widget` (one slash, two non-empty parts) and the
-  # charset accepts `acme/a/b`. `bin/adopt-to-dl`'s `_ata_validate_repo` gates the SAME value at
-  # the other end of the same correlation (it becomes the `<owner>/<repo>` of a stamped pr_url,
-  # and the `source=` of the by-ref verify) and applies the identical pair; keep the two in sync.
+  # charset accepts `acme/a/b`. `kb_is_repo_slug` in `bin/_kb-board-lib.sh` gates the SAME value
+  # at the other end of the same correlation (it becomes the `<owner>/<repo>` of the pr_url
+  # `bin/adopt-to-dl` stamps, and the `source=` of the by-ref verify) and is the ONE accept
+  # predicate for a repo slug; this pair is its deliberate duplicate, because this script is
+  # vendored standalone and must not source that lib. Keep the two in sync — and note the
+  # spellings differ on purpose (that one is a single ERE plus a `.git` arm, this one is a glob
+  # `case` pair) while the ACCEPT SET must not. ⚠ HONEST SCOPE: no test asserts the two sets are
+  # EQUAL. tests/locale-range-guard-selftest.sh drives both ends under both locales, so a drift
+  # in LOCALE SCOPING reds; each end's other rows (the `.git` arm, the scp-style spelling, the
+  # glob) are pinned separately in tests/promote-source-qualify-selftest.sh and
+  # tests/kb-board-lib-selftest.sh. A shared-corpus equality check is the thing that would make
+  # this a contract rather than a convention, and it does not exist yet.
   src_charset_ok "$SOURCE" \
     || die "--source/.promote.source must be a bare '<owner>/<repo>' — only letters, digits and '.', '_', '-' may appear either side of the one '/'. $(src_shown) (from $SOURCE_SRC) carries something else, so it can never equal a card's derived 'owner/repo'; an scp-style 'git@github.com:owner/repo' is the usual cause."
 fi
@@ -767,16 +783,27 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
   # on which regex options that jq was built with.
   # `[^0-9]` is a NEGATED set of ASCII bytes, so no locale collation widens it.
   #
-  # ⛔ NO APOSTROPHE ANYWHERE IN THIS jq PROGRAM (from the opening quote on the PLAN= line to
-  # its close). These are jq comments inside a SHELL single-quoted string: an apostrophe ends
+  # ⛔ NO APOSTROPHE ANYWHERE IN THIS jq PROGRAM — the CORREL= one, whose bounds are the
+  # opening single quote on the `CORREL="$(printf ... | jq -c ...` line above and its close at
+  # the end of this block. (The variable was named PLAN= when this warning was written. PLAN=
+  # is now a DIFFERENT, one-line jq program further down, so naming it here sent the next
+  # author to the wrong bounds — and the bounds are the whole content of the warning.)
+  # These are jq comments inside a SHELL single-quoted string: an apostrophe ends
   # that string, and everything after it is re-parsed as shell — which fails at RUNTIME, not
   # at shellcheck time. Orientation for the next author, not the guard: every selftest that
   # drives this tool as a process reds immediately, because no run survives it.
   def norm: (. // "")|tostring|if test("\\A[^0-9]*[0-9]+[^0-9]*\\z") then gsub("[^0-9]";"")|sub("^0+(?=.)";"") else "" end;
 
   # ── source derivation: a jq mirror of the kanban server source normalizer (card#8421) ──
-  # OWNER OF THE RULE: the kanban repo DL-SOURCE-CORRELATION.md sections 1 and 2, itself a
-  # mirror of the server class that is the SoT. The rule is NOT restated here — read it there.
+  # OWNER OF THE RULE, and it is NOT in the kanban repo — a locator naming it there was read
+  # live and is false. Two surfaces, both confirmed present:
+  #   * the PROSE contract — DL-SOURCE-CORRELATION.md sections 1 and 2, published by the coord
+  #     plugin at .claude/plugins/marketplaces/agent-board-framework/plugins/coord/docs/. This
+  #     is the surface a CONSUMER of this vendored script can actually reach, and it is the
+  #     only DECLARE surface this mirror has, so it has to resolve.
+  #   * the CODE source of truth it mirrors — app/Services/ExternalReferenceNormalizer.php in
+  #     the kanban-board repo.
+  # The rule is NOT restated here — read it there.
   # This is a FOURTH runtime expressing it (server PHP, bridge PHP, the python client
   # kanban_common._derive_card_source, and this jq), for the same reason host_ok is duplicated
   # in this file: the script is VENDORED STANDALONE into consumer repos and may not source a
@@ -913,7 +940,14 @@ PLAN="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="match")]')"
 #     that was already on the board, and the two remedies are opposites — that is why the split
 #     is a second line rather than more prose on the first. Where a ref matched an unsourced
 #     card AND a foreign one, the unsourced report wins: it is the one naming a card that may
-#     well be this repo's, and it is the actionable half.
+#     well be this repo's, and it is the actionable half. ⚠ THE PRECEDENCE IS NAMED IN THE LINE
+#     ITSELF, because the word ONLY is not true of that ref on its own — it matched a foreign
+#     card too. The anchor phrase is deliberately left byte-identical: `bin/release-pr-body`
+#     greps it, `command -v promote-released-cards` resolves that reader against whatever copy
+#     is on PATH, and the two are separately vendorable (INSTALL.md §6a ships this one as a
+#     SHA-pinned composite action), so a reworded anchor is a silently half-read report across
+#     any version skew. The qualifier goes AFTER the phrase and carries no colon, per the
+#     colon rule below.
 # Unmatched PRs are on neither line (see above). With --cards absent the card leg is empty, and
 # under `source: "*"` nothing can classify as unsourced — so line 2 is absent and line 1 is
 # byte-identical to the DL-only report this tool has always printed.
@@ -1019,7 +1053,7 @@ fi
 # the ref list: that reader cuts at the FIRST colon of the matched text.
 nstranded="$(printf '%s' "$STRANDED_REFS" | jq 'length')"
 if [ "${nstranded:-0}" -gt 0 ]; then
-  echo "promote-released-cards: WARNING — $nstranded shipped ref(s) matched ONLY an unsourced card (the card exists and carries the ref, but has no by-ref source): $(printf '%s' "$STRANDED_REFS" | jq -r 'join(", ")')" >&2
+  echo "promote-released-cards: WARNING — $nstranded shipped ref(s) matched ONLY an unsourced card, counting no card of THIS repo (the card exists and carries the ref, but has no by-ref source; a ref that ALSO matched another repo card is reported here rather than on the other-repo line, because this is the actionable half): $(printf '%s' "$STRANDED_REFS" | jq -r 'join(", ")')" >&2
 fi
 # The stage-guarded and repo-qualification counts are surfaced only when their guard is
 # ACTIVE, so a run with no --shipped-stages on a `source: "*"` board keeps a byte-identical
