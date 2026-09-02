@@ -533,6 +533,17 @@ _rc_attrib() {
 }
 
 # _rc_add_source <label> <declared value> — record one source of a kanban token file.
+#
+# ⛔ NO `~` EXPANSION HERE, AND THAT IS PARITY, NOT AN OMISSION. `_kb_expand_home` has exactly ONE
+# call site in the lib — inside `kb_coord_store_token_file`, on the value that came out of the
+# credential STORE — and `kb_declared_token_file` hands a DECLARED candidate back verbatim,
+# because a board env is sourced by a shell and an operator who wrote `KBCARD_TOKEN_FILE="~/tok"`
+# has a literal `~` directory component as far as every tool here is concerned (`kb_resolve_env`
+# rc 5, token file unreadable). Expanding it on this side made the check resolve a file the tools
+# do not, and then ELECT that unreadable path as the survivor of a duplicate group. The mirror is
+# guarded at function level, which cannot see a divergence in WHICH SITES call a mirrored
+# function; this leg's parity is therefore one expansion, in `_rc_store_pointer`, matching the
+# lib's one.
 _rc_add_source() {
     local lbl="$1" raw="${2:-}" p real
     [[ -n "$raw" ]] || return 0
@@ -540,7 +551,7 @@ _rc_add_source() {
         warn "$lbl names something with the SHAPE OF A CREDENTIAL rather than a path — its text is deliberately not shown; a \`_file\` slot takes the path of a file CONTAINING the token (docs/INSTALL.md §3b). This leg skipped it, so that source is UNJUDGED (UNKNOWN, not ok)"
         return 0
     fi
-    p="$(_rc_expand_home "$raw")"
+    p="$raw"
     # Only a file with content is a credential this seat CARRIES. A declaration naming a missing
     # or empty file is a misconfiguration the tools themselves refuse at use time ("token file
     # unreadable"); it is not a second token, and re-reporting it here would be a second voice on
@@ -574,9 +585,10 @@ for envf in "$HOME"/.kanban-*-board.env; do
     board_tok="$(_rc_declared_token_file "$envf" "$rc_host_env" || true)"
     _rc_add_source "$envf" "$board_tok"
     # The documented precedence, reproduced: board > host > ambient > store.
+    # Verbatim, for the reason `_rc_add_source` states: the three DECLARED tiers are literal to
+    # the tools, and the store tier arrived already expanded from `_rc_store_pointer`.
     eff="${board_tok:-${rc_host_tok:-${rc_amb:-$rc_store_tok}}}"
     [ -n "$eff" ] || continue
-    eff="$(_rc_expand_home "$eff")"
     { [ -r "$eff" ] && [ -s "$eff" ]; } || continue
     eff_real="$(_rc_key "$eff")"
     if [ -n "${TOK_USED[$eff_real]:-}" ]; then
@@ -699,7 +711,7 @@ elif [ "${#TOK_PATHS[@]}" -ge 1 ]; then
             [ "$group" = "${group%%$'\n'*}" ] || continue      # already reported as a duplicate
             tok_findings=$((tok_findings + 1))
             if [ -n "${TOK_UNDECL[$tp]:-}" ]; then
-                orphan_remedy="nothing declares it, so nothing rotates it — \`rm $tp\` if it is what an install left behind when it moved onto another source (docs/INSTALL.md §3b), or point a board env at it if it is the token you meant that board to use"
+                orphan_remedy="no source this check walks declares it, so nothing rotates it — \`rm $tp\` if it is what an install left behind when it moved onto another source (docs/INSTALL.md §3b), or point a board env at it if it is the token you meant that board to use"
             else
                 # THE THIRD ARM IS NOT A COURTESY. The first two both CHANGE a topology
                 # docs/INSTALL.md §3b sanctions — "leave step (c) in place and let the pointer stay

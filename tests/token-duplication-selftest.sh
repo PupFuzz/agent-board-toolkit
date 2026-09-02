@@ -36,6 +36,17 @@ LIB="$HERE/../bin/_kb-board-lib.sh"
 _need -x "$CHECK"
 _need -r "$LIB"
 
+# _adopt_fn <name> — eval one shell function out of $CHECK, by name, and EXIT 1 if it is not
+# there. The one spelling of "borrow a function from the tool under test": the mirror-parity
+# block below adopts four, and the leak control above adopts `_rc_digest`. A second spelling of
+# the extraction would be a second place for the guard to retire itself silently on a rename.
+_adopt_fn() {
+    local src
+    src="$(sed -n "/^$1() {/,/^}/p" "$CHECK")"
+    [[ -n "$src" ]] || { echo "selftest: could not extract $1 from $CHECK — did it get renamed?" >&2; exit 1; }
+    eval "$src"
+}
+
 _mktmp_scratch
 SEAT="$TMP/home"
 
@@ -55,8 +66,22 @@ run_check() {
 
 FAKE='FAKETOKEN-c8376-planted-do-not-leak-8f3a2b1c'
 HOSTNAME_FIXTURE='board.invalid'   # kb_require_known_api_host needs a declared host to match
-FAKE_DIGEST="$(printf '%s\n' "$FAKE" | sha256sum)"; FAKE_DIGEST="${FAKE_DIGEST%% *}"
 OTHER='OTHERTOKEN-c8376-planted-second-credential-4d5e6f'
+
+# THE LEAK NEEDLE IS THE TOOL'S OWN DIGEST FUNCTION, NOT A SECOND SPELLING OF IT. This value is
+# the search string of the canon #20 absence assertions below, so it has to be the string the
+# tool would actually emit if it leaked — and identity here is NOT the raw bytes: `_rc_digest`
+# normalises trailing newlines, because that is what every reader of a token file sees through
+# `$(cat …)`. A `printf … | sha256sum` here computed a needle over the RAW bytes and therefore a
+# string the tool cannot print on ANY input, which left both absence rows searching for nothing
+# and their positive controls proving only that `has` works — measured: a mutant interpolating
+# the compared digest into the ✗ message leaked it with this file at rc 0 / 0 FAIL. So the needle
+# is derived by ADOPTING `_rc_digest` out of the bin, the same way the mirror-parity block adopts
+# the store rung: one definition of the identity, two callers, and a rename reds the build.
+_adopt_fn _rc_digest
+printf '%s\n' "$FAKE" > "$TMP/needle.token"
+FAKE_DIGEST="$(_rc_digest "$TMP/needle.token")"
+[[ "${#FAKE_DIGEST}" -eq 64 ]] || { echo "selftest: _rc_digest produced no needle (got [$FAKE_DIGEST])" >&2; exit 1; }
 
 mk_board() { # <name> [token file path]
     printf 'export KB_BOARD_ID=%s\n' "$((RANDOM % 900 + 100))" > "$SEAT/.kanban-$1-board.env"
@@ -212,6 +237,11 @@ eq "undeclared, different value → rc 0"      "0"     "$RC"
 eq "  …named as a SECOND credential"         "true"  "$(has 'SECOND kanban credential' "$OUT")"
 eq "  …distinguished from a stale copy"      "false" "$(has 'DUPLICATE kanban token' "$OUT")"
 eq "  …with the rm-or-adopt remedy"          "true"  "$(has "rm $SEAT/.kanban-dev-token" "$OUT")"
+# The remedy sentence carries the SAME bound the label does: "nothing declares it" is a claim
+# about the sources this check WALKS, and a board env reached only through $KBCARD_BOARD_ENV is
+# not one of them. Asserted here because a remedy sentence is where an operator reads it.
+eq "  …and the remedy keeps the bound on 'declares it'" "true" \
+   "$(has 'no source this check walks declares it, so nothing rotates it' "$OUT")"
 eq "  …and no declaration to delete is implied" "false" \
    "$(has 'delete it and the declaration naming it' "$OUT")"
 eq "  …and it leaks nothing"                 "false" "$(has "$OTHER" "$OUT")"
@@ -492,9 +522,7 @@ eq "control: the mutated glob is in NO surface (README)" "false" "$(has "$MUT_LI
 # ── mirror parity: the three functions runtime-check duplicates from the lib ──────────────────
 echo "== mirror parity vs bin/_kb-board-lib.sh =="
 for fn in _rc_expand_home _rc_looks_like_pasted_secret _rc_store_pointer _rc_declared_token_file; do
-    src="$(sed -n "/^$fn() {/,/^}/p" "$CHECK")"
-    [[ -n "$src" ]] || { echo "selftest: could not extract $fn from $CHECK — did it get renamed?" >&2; exit 1; }
-    eval "$src"
+    _adopt_fn "$fn"
 done
 # shellcheck source=/dev/null
 source "$LIB"
@@ -587,6 +615,34 @@ lib_v="$( unset KBCARD_TOKEN_FILE KBCARD_API KANBAN_EXPECTED_HOST KANBAN_HOST_EN
 mir_v="$(_rc_declared_token_file "$SEAT/.kanban-h-board.env" "$SEAT/.kanban-host.env" || true)"
 eq "control: the resolver really composes it" "$SEAT/toks/x.token" "$lib_v"
 eq "host-composed token path agrees with the resolver" "$lib_v" "$mir_v"
+
+echo "-- call-site parity: a DECLARED \`~/…\` is literal to the tools, so it must be literal here --"
+# THE MIRROR IS GUARDED AT FUNCTION LEVEL, AND THAT CANNOT SEE WHICH SITES CALL A MIRRORED
+# FUNCTION. `_kb_expand_home` has ONE call site in the lib — inside `kb_coord_store_token_file`,
+# on a value out of the credential STORE — while `kb_declared_token_file` returns a DECLARED
+# candidate verbatim. runtime-check had THREE, so a board env spelling `KBCARD_TOKEN_FILE="~/tok"`
+# resolved to a real file here and to a literal `~` directory for every tool (`kb_resolve_env`
+# rc 5). The check then credited that board with declaring the copy and could elect a path the
+# tools cannot read as the survivor of a duplicate group. Driven through the RESOLVER, not
+# through the mirrored function, because the divergence is in the call graph and not in the
+# function.
+reset_seat
+n_boardenv=$((n_boardenv + 1))
+printf 'export KBCARD_API="https://%s/api"\nexport KANBAN_EXPECTED_HOST="%s"\n' \
+    "$HOSTNAME_FIXTURE" "$HOSTNAME_FIXTURE" > "$SEAT/.kanban-host.env"
+printf 'export KB_BOARD_ID=11\nexport KBCARD_TOKEN_FILE="~/.kanban-dev-token"\n' > "$SEAT/.kanban-dev-board.env"
+printf '%s\n' "$FAKE" > "$SEAT/.kanban-dev-token"
+printf '%s\n' "$FAKE" > "$SEAT/.config/coord/kanban-token"
+mk_store "$SEAT/.config/coord/kanban-token"
+tilde_rc=0
+( unset KBCARD_TOKEN_FILE KBCARD_API KANBAN_EXPECTED_HOST KANBAN_HOST_ENV
+  kb_resolve_env "$SEAT/.kanban-dev-board.env" ) >/dev/null 2>&1 || tilde_rc=$?
+eq "control: the tools really refuse the literal \`~\` (rc 5)" "5" "$tilde_rc"
+run_check
+eq "  …so the check does NOT credit that board env with declaring it" "false" \
+   "$(has "$SEAT/.kanban-dev-board.env" "$OUT")"
+eq "  …and reports the copy as one no source it walks declares" "true" \
+   "$(has 'NO source this check walks declares it' "$OUT")"
 
 echo "== the parity table this run actually drove =="
 echo "   $n_store store shapes · $n_home home expansions · $n_secret credential shapes · $n_boardenv board-env reads"
