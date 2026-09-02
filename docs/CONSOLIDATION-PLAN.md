@@ -1985,6 +1985,27 @@ finding with no owner is abandoned, not filed.
   was never reached". A future caller taking the measurement without the precondition re-mints the
   wrong-diagnosis half of the defect, so the pairing rule is stated in the prelude beside them
   rather than left to be re-derived.
+  ⚠ **"Unwritten" is THREE states, and the reader was total over only two — found at R2, fixed
+  before merge.** `date +%s > stamp` opens its redirect *before* it execs `date`, so a fixture
+  killed in that window leaves a zero-byte file that EXISTS: `cat` succeeds, prints nothing, and
+  the reader's `|| echo 0` never fires. The arithmetic was then `$(( now -  ))` — a syntax error,
+  so the READER failed rather than the subject. Driven rather than read, with the hung-read
+  fixture made to open its stamp redirect and not reach `date` before the tool's 1s read bound
+  expires — the observed regime, reproduced: `release-tag-check-selftest`
+  is `set -e` and evaluates `_since_stamp` one cell AHEAD of the `_stamp_taken` cell written to
+  diagnose exactly this, so the file aborted there — **44 of its 142 assertions went unrun, with
+  no FAIL line and no `_summary`.** Fixed with `${s:-0}` kept *beside* the existing `|| echo 0`
+  rather than replacing it, so the absent/unreadable states stay independent of
+  `inherit_errexit`. The docblock's stated states now equal the states the code handles: the
+  header had been a completeness claim enumerating two of three — this document's own recurring
+  defect shape, sitting in a code comment.
+  ⚑ **Disposition — the saturation regime this pair now SURFACES is the design working, not a
+  residual flake, and is not tracked further.** At artificial CPU saturation the hung-read arm can
+  red as `…the read ran <epoch-sized>s from its own start`: read 1 never began inside the tool's
+  1s bound, so no stamp exists and the window is measured from epoch 0. The `5`-vs-`10` bound is
+  irrelevant to that number — no bound passes it — and `_stamp_taken` reds one cell earlier with
+  "the hung read was actually TAKEN" false, which is the pair converting a wrong number into a
+  named cause. Recorded so a later reader does not re-open it as a defect in the bound.
   ⛔ **What this does NOT close, stated so it is not over-cited:** `prelude-shadow-selftest.sh`
   compares NAMES. A third selftest that hand-spells `$(( $(date +%s) - $(cat …) ))` inline under
   no function name at all is invisible to it — the same bound that section already states for

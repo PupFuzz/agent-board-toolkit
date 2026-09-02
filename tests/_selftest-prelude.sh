@@ -203,12 +203,24 @@ _mktmp_scratch() {
 # a fixture that was never reached is reported as a fixture that was never reached.
 
 # _since_stamp <stamp-file> — whole seconds from the epoch second in <stamp-file> until now.
-# An unwritten or unreadable stamp counts from epoch 0 (see the pairing rule above).
-_since_stamp() { echo $(( $(date +%s) - $(cat "$1" 2>/dev/null || echo 0) )); }
+# A stamp that yields NO epoch second counts from 0 (see the pairing rule above), and that is
+# THREE states, not two: absent, unreadable, and — the one the writers actually produce —
+# PRESENT BUT EMPTY. `date +%s > stamp` opens the redirect before it execs `date`, so a fixture
+# killed in that window leaves a real zero-byte file, which `cat` then reads SUCCESSFULLY as
+# nothing. `${s:-0}` is what covers that third state; without it the arithmetic is
+# `$(( now -  ))` — a syntax error, so the reader fails instead of the subject, and in a
+# `set -e` selftest the whole file aborts at this call, ahead of the `_stamp_taken` cell that
+# exists to name exactly this. The `|| echo 0` is kept as well as `${s:-0}`, not replaced by
+# it: it is what makes the absent/unreadable states independent of `inherit_errexit`, which no
+# file here sets today and nothing stops a consumer setting tomorrow.
+_since_stamp() { local s; s="$(cat "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - ${s:-0} )); }
 
 # _stamp_taken <stamp-file> — true/false: did the fixture actually write the stamp? The
 # precondition cell for every `_since_stamp` window; answers a STRING for `eq <label> true …`,
 # the same contract as `has`/`has_line`.
+# `-s`, not `-e`, and that is the half that pairs with the third state above: the zero-byte
+# stamp is a file that EXISTS, so `-e` would answer `true` for a fixture that never wrote and
+# hand the window a start it never had — the wrong diagnosis this pair exists to prevent.
 _stamp_taken() { [[ -s "$1" ]] && echo true || echo false; }
 
 # _summary <name> — the trailing PASS/FAIL block: fail loud on stderr + exit 1, else pass.
