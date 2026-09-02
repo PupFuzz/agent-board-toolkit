@@ -21,10 +21,12 @@
 #     no reference findable = WARN (cannot verify currency; the copy loop is on you)
 #
 # It then judges the seat's CREDENTIAL topology, which is the same question one layer over
-# (card#8376): a kanban token resolving from more than one source. The same bytes in two files is
-# a copy that is redundant today — FAIL. A readable token file no board resolves is a second live
-# credential — WARN, because its innocent twin is a supported install (docs/INSTALL.md §3b owns
-# all three outcomes; the reasoning for the split is at the arm itself in this file).
+# (card#8376): a kanban token resolving from more than one source. The same CREDENTIAL in two
+# files — the same content its READERS see, i.e. the bytes with trailing newlines stripped, which
+# is what `$(cat …)` hands every one of them — is a copy that is redundant today — FAIL. A
+# readable token file no board resolves is a second live credential — WARN, because its innocent
+# twin is a supported install (docs/INSTALL.md §3b owns all three outcomes; the reasoning for the
+# split is at the arm itself in this file).
 #
 # ITS POPULATION IS EVERY DECLARED SOURCE PLUS THE LITERAL GLOB `~/.kanban-*-token`, and the
 # second half is not a widening for its own sake: an install that moves onto the store's pointer
@@ -287,8 +289,9 @@ fi
 # ⛔ IT REPORTS SOURCES, NEVER VALUES — canon #20, and the property this leg is the most able to
 # break: a duplicate detector is by construction the one instrument that resolves two credentials
 # at once. Every message names a SOURCE (a config file, an env var, the store coordinate) and a
-# PATH. Token bytes reach exactly one place — `sha256sum`'s STDIN, through a file redirect: never
-# argv (`ps` is world-readable), never a temp file, never a variable a message could interpolate.
+# PATH. Token bytes travel one route — the file, into a normaliser's STDIN through a redirect,
+# down a PIPE into `sha256sum`'s STDIN: never argv (`ps` is world-readable), never a temp file,
+# never a variable a message could interpolate.
 # The digests are compared and are not printed either. `tests/token-duplication-selftest.sh`
 # plants a known fake token and greps this tool's whole stdout+stderr for it on the firing path.
 #
@@ -296,17 +299,20 @@ fi
 # EFFECTIVE token file under the documented precedence — this board env's KBCARD_TOKEN_FILE > the
 # host env's > an ambient one > the coord store's `[kanban] api_token_file` pointer (INSTALL.md
 # §3b) — and then:
-#   • two DIFFERENT files holding the SAME bytes ⇒ ✗ DUPLICATE. One of them is redundant today,
-#     whichever source names it; that is the copy the store rung leaves behind.
+#   • two DIFFERENT files holding the SAME CREDENTIAL — equal once trailing newlines are
+#     stripped, which is what `$(cat …)` hands every reader — ⇒ ✗ DUPLICATE. One of them is
+#     redundant today, whichever source names it; that is the copy the store rung leaves behind.
 #   • a source naming a readable token file that is the effective token of NO board ⇒ ⚠ SECOND
 #     CREDENTIAL: a DIFFERENT live token this seat carries and nothing on it resolves. WARN, not
 #     FAIL — the reasoning is at the arm itself, where the split can be read next to the code.
 #   • THE UNDECLARED HALF, which is the card's own state: after the declared pass, every file
 #     matching the literal glob `~/.kanban-*-token` that is not already one of them — by FILE
 #     IDENTITY, not by name (`_rc_key`) — joins the population carrying no declaring source. It
-#     lands in the SAME two arms: the same bytes as a file some source names ⇒ ✗ DUPLICATE, naming
-#     it an UNDECLARED copy whose whole remedy is `rm` (no config line changes); different bytes
-#     ⇒ ⚠ SECOND CREDENTIAL. That glob is INSTALL §3b's own recipe for minting a token file, which
+#     lands in the SAME two arms: the same credential as a file some source names ⇒ ✗ DUPLICATE,
+#     naming it an UNDECLARED copy whose remedy is `rm` and no config change — bounded, because
+#     the sources walked here are not every source there is (a board env reached only through
+#     $KBCARD_BOARD_ENV declares one this scan cannot see); different content ⇒ ⚠ SECOND
+#     CREDENTIAL. That glob is INSTALL §3b's own recipe for minting a token file, which
 #     is what makes it a population rather than a guess — and it is stated verbatim on every
 #     surface that describes this leg, so its edge is legible instead of implied.
 # ⚑ WHAT IT DELIBERATELY DOES NOT CALL A DEFECT: several boards each declaring their OWN token
@@ -440,13 +446,35 @@ _rc_declared_token_file() {
     printf '%s' "$v"
 }
 
-# _rc_digest <file> — the sha256 of a token file's CONTENT, on stdout; rc 1 when no digest tool
-# is available. THE ONLY PLACE IN THIS TOOL THAT READS TOKEN BYTES AT ALL, and they arrive on
-# sha256sum's STDIN through a redirect: not argv, not a variable, not a temp file. The caller
-# compares digests and prints none of them.
+# _rc_digest <file> — the sha256 of a token file's CONTENT AS ITS READERS SEE IT, on stdout;
+# rc 1 when nothing could produce one. THE ONLY PLACE IN THIS TOOL THAT READS TOKEN BYTES AT
+# ALL, and they never leave the pipeline: the file redirects into awk's stdin, awk writes down a
+# pipe into sha256sum's stdin. Not argv, not a variable, not a temp file. The caller compares
+# digests and prints none of them.
+#
+# ⛔ TRAILING NEWLINES ARE STRIPPED, AND THAT IS THE IDENTITY, not a tidy-up. Every reader of a
+# token file on this seat takes it through `$(cat …)` — `kb_read_token` and the board-env reads
+# in `_kb-board-lib.sh`, `next-dl`'s counter reads — and command substitution strips trailing
+# newlines. So docs/INSTALL.md §3b step (b)'s own recipe (`printf '%s'`, unterminated) and the
+# same secret written by an editor are ONE credential to every tool here, and a digest over the
+# RAW bytes answers "each a different credential" at rc 0 over exactly the state this leg exists
+# to detect — a confident wrong answer, in the direction that reads as healthy.
+#
+# POSIX awk only, and no `RS` games: the record-separator trick that reads a file as one record
+# needs a hex escape this tool cannot assume of the runner's awk, and it mangles a file that
+# happens to carry that byte. `pipefail` is set, so a missing or failing awk OR sha256sum takes
+# the whole pipeline non-zero and lands on the caller's honest-UNKNOWN arm rather than on a
+# verdict; stderr is dropped for the same reason it was before — a diagnostic from either half
+# is not this tool's output. (`trap '' PIPE` at the top of this file is inherited, so awk takes
+# an EPIPE write error rather than a signal if sha256sum is gone; both are non-zero.) `LC_ALL=C`
+# so the normaliser is a BYTE filter: a token file is not required to be text in the ambient
+# locale, and an awk that decoded it as one could alter what reaches the digest.
 _rc_digest() {
     local h
-    h="$(sha256sum <"$1" 2>/dev/null)" || return 1
+    h="$( { LC_ALL=C awk '{ a[NR] = $0 }
+                 END { n = NR; while (n > 0 && a[n] == "") n--
+                       for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "\n" : ""), a[i] }' <"$1" \
+           | sha256sum; } 2>/dev/null )" || return 1
     [[ -n "$h" ]] || return 1
     printf '%s' "${h%% *}"
 }
@@ -464,8 +492,11 @@ declare -A TOK_DIG=()      # token-file key -> sha256 of its content (never prin
 declare -A TOK_UNDECL=()   # token-file key -> set when NO source names it (the glob scan found it)
 TOK_PATHS=()               # the same keys in discovery order, so the report is deterministic
 # The one spelling of the undeclared source, so the message text and the population statement
-# cannot drift apart: what a reader is told to look at is the glob the scan actually walks.
-TOK_SCAN_LBL='NO source declares it — found by the `~/.kanban-*-token` scan'
+# cannot drift apart: what a reader is told to look at is the glob the scan actually walks. It
+# carries the SAME bound the ⚠ arm carries, because "nothing declares it" is a claim about the
+# sources this check WALKS — a board env reached only through $KBCARD_BOARD_ENV is not one of
+# them, and the ✗ arm is the one that tells an operator to delete a file.
+TOK_SCAN_LBL='NO source this check walks declares it — found by the `~/.kanban-*-token` scan (a board env reached only through $KBCARD_BOARD_ENV is outside what this can see)'
 tok_nodigest=0
 tok_findings=0
 
@@ -641,15 +672,20 @@ elif [ "${#TOK_PATHS[@]}" -ge 1 ]; then
             done
             # One sentence per remedy the drop set actually needs, and neither when it does not:
             # an undeclared copy has no config line to drop, and telling an operator to edit one
-            # sends them looking for a declaration that is not there.
+            # sends them looking for a declaration that is not there. The `rm` sentence is
+            # CONDITIONAL for the reason the ⚠ arm states its own bound: a board env reached only
+            # through $KBCARD_BOARD_ENV is outside the population walked above, so a file it
+            # declares arrives here labelled undeclared, and an unconditional "`rm` is the whole
+            # remedy" would have this tool tell an operator to delete a file a live board
+            # resolves (that board then refuses at `kb_resolve_env` rc 5, on this check's advice).
             drop_remedy=""
-            [ "$drop_undecl" = 1 ] && drop_remedy=" An UNDECLARED copy is named by no config line — it is what an install leaves behind when it drops its KBCARD_TOKEN_FILE line and moves onto another source (docs/INSTALL.md §3b), so \`rm\` is the whole remedy there and no config changes."
+            [ "$drop_undecl" = 1 ] && drop_remedy=" An UNDECLARED copy is named by no config line THIS CHECK WALKS — it is what an install leaves behind when it drops its KBCARD_TOKEN_FILE line and moves onto another source (docs/INSTALL.md §3b), so \`rm\` is the whole remedy there and no config changes — unless a board env reached only through \$KBCARD_BOARD_ENV declares it, which is outside what this can see, and which that \`rm\` would leave resolving nothing."
             [ "$drop_declared" = 1 ] && drop_remedy="$drop_remedy Then either DROP the KBCARD_TOKEN_FILE line that named it — right where the survivor is the store's pointer, which is what docs/INSTALL.md §3b's fourth tier is for — or REPOINT that line at the file you kept; dropping it otherwise leaves that board resolving nothing."
             fail "DUPLICATE kanban token — the same credential is in more than one file on this seat: keep $keep ($(_rc_attrib "$keep")) and DELETE $drop.$drop_remedy Compared by digest — no token value is read into a message here"
         done
         # THE SECOND ARM IS A WARN, AND THE SPLIT IS THE WHOLE JUDGEMENT IN THIS LEG. A file
-        # holding the SAME bytes as another is redundant TODAY, on any topology, so it fails. A
-        # file holding a DIFFERENT token that no board resolves is a second live credential — and
+        # holding the SAME CREDENTIAL as another is redundant TODAY, on any topology, so it
+        # fails. A file holding a DIFFERENT token that no board resolves is a second live credential — and
         # the shape is real (the seat minted a toolkit token and the store still points at the
         # framework's own), but so is its innocent twin: a store whose kanban token belongs to the
         # framework's own tooling while every board here declares its own is a SUPPORTED install,

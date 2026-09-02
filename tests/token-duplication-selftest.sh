@@ -171,10 +171,20 @@ run_check
 eq "an UNDECLARED same-digest copy → rc 1"   "1"     "$RC"
 eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
 eq "  …names the forgotten file to DELETE"   "true"  "$(has "DELETE $SEAT/.kanban-dev-token" "$OUT")"
-eq "  …says NO source declares it"           "true"  "$(has 'NO source declares it' "$OUT")"
+eq "  …says NO source THIS CHECK WALKS declares it" "true" \
+   "$(has 'NO source this check walks declares it' "$OUT")"
 eq "  …states the population it walked"      "true"  "$(has '`~/.kanban-*-token` scan' "$OUT")"
+# The GATING arm is the one that tells an operator to DELETE a file, so it carries the same
+# bound the ⚠ arm carries: a board env reached only through $KBCARD_BOARD_ENV is outside the
+# population this check walks, so "nothing declares it" is a claim about what it CAN see. A
+# `$KBCARD_BOARD_ENV`-only board declaring this file plus a store copy lands here, and an
+# unconditional `rm` there breaks that board (`kb_resolve_env` rc 5) on the check's own advice.
+eq "  …and names what it cannot see"         "true" \
+   "$(has 'reached only through $KBCARD_BOARD_ENV' "$OUT")"
 eq "  …and the remedy is rm, not a config edit" "true" \
    "$(has 'UNDECLARED copy is named by no config line' "$OUT")"
+eq "  …with the rm-is-the-whole-remedy sentence made CONDITIONAL on that bound" "true" \
+   "$(has 'unless a board env reached only through $KBCARD_BOARD_ENV declares it' "$OUT")"
 eq "  …no DROP-the-declaration sentence, since there is none" "false" \
    "$(has 'Then either DROP the KBCARD_TOKEN_FILE line' "$OUT")"
 eq "  …keeping the store-managed file"       "true"  "$(has "keep $SEAT/.config/coord/kanban-token" "$OUT")"
@@ -211,6 +221,91 @@ eq "  …and it leaks nothing"                 "false" "$(has "$OTHER" "$OUT")"
 run_check --quiet
 eq "  …and the ⚠ still prints under --quiet" "true"  "$(has 'SECOND kanban credential' "$OUT")"
 eq "  …at rc 0"                              "0"     "$RC"
+
+echo "== ⭐ the SAME credential under DIFFERENT terminators is ONE credential =="
+# IDENTITY IS WHAT THE READERS SEE, NOT THE RAW BYTES. Every consumer takes a token through
+# `$(cat …)` — `kb_read_token` (`bin/_kb-board-lib.sh`), the board-env reads, `next-dl` — and
+# command substitution strips TRAILING NEWLINES. So a file written by docs/INSTALL.md §3b step
+# (b)'s own recipe (`printf '%s'`, no terminator) and one an editor or a `>>` terminated hold
+# the SAME credential as far as every tool on this seat is concerned. A digest over raw bytes
+# answers `ok — each a different credential` at rc 0 over exactly the state this leg exists to
+# detect — the confident-wrong direction, and one the whole fixture set above cannot see,
+# because every one of its files is written `'%s\n'`.
+
+echo "-- (a) the store-pointer + forgotten-copy shape --"
+reset_seat
+printf '%s'   "$FAKE" > "$SEAT/.kanban-dev-token"              # §3b step (b): NO trailing newline
+printf '%s\n' "$FAKE" > "$SEAT/.config/coord/kanban-token"     # the same credential, terminated
+mk_store "$SEAT/.config/coord/kanban-token"
+mk_board dev                                                    # step (c) dropped: nothing names it
+run_check
+eq "mismatched terminators, one credential → rc 1" "1"    "$RC"
+eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
+eq "  …names the forgotten file to DELETE"   "true"  "$(has "DELETE $SEAT/.kanban-dev-token" "$OUT")"
+eq "  …and never calls them different credentials" "false" \
+   "$(has 'each a different credential' "$OUT")"
+eq "  …and no SECOND-credential finding"     "false" "$(has 'SECOND kanban credential' "$OUT")"
+eq "control: the search FINDS the value when present" "true" "$(has "$FAKE" "$OUT$FAKE")"
+eq "  …and the token VALUE is absent"        "false" "$(has "$FAKE" "$OUT")"
+# Positive control: the SAME pair written byte-identically reds the same way, so the row above
+# is about the terminator and not about a fixture that reds for some other reason.
+printf '%s\n' "$FAKE" > "$SEAT/.kanban-dev-token"
+run_check
+eq "control: the byte-identical pair → rc 1" "1"     "$RC"
+eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
+
+echo "-- (b) two DECLARED boards, one credential, two terminators --"
+reset_seat
+printf '%s'   "$FAKE" > "$SEAT/.kanban-a-token"
+printf '%s\n' "$FAKE" > "$SEAT/.kanban-b-token"
+mk_board a "$SEAT/.kanban-a-token"
+mk_board b "$SEAT/.kanban-b-token"
+run_check
+eq "two boards, one credential, two terminators → rc 1" "1" "$RC"
+eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
+eq "  …and NOT blessed as per-board isolation" "false" "$(has 'per-board isolation' "$OUT")"
+eq "  …and leaks nothing"                    "false" "$(has "$FAKE" "$OUT")"
+# Positive control, same seat, byte-identical files.
+printf '%s\n' "$FAKE" > "$SEAT/.kanban-a-token"
+run_check
+eq "control: the byte-identical pair → rc 1" "1"     "$RC"
+
+echo "-- (c) control: two GENUINELY different credentials are still two --"
+# The negative direction of the same normalisation: stripping trailing newlines must not
+# collapse two different tokens into one, which would red every correct multi-board seat.
+printf '%s'   "$FAKE"  > "$SEAT/.kanban-a-token"
+printf '%s\n' "$OTHER" > "$SEAT/.kanban-b-token"
+run_check
+eq "different credentials, mismatched terminators → rc 0" "0" "$RC"
+eq "  …no duplicate invented"                "false" "$(has 'DUPLICATE kanban token' "$OUT")"
+eq "  …reported as per-board isolation"      "true"  "$(has 'per-board isolation' "$OUT")"
+# …and the ⚠ arm still separates them when one is undeclared.
+reset_seat
+printf '%s\n' "$FAKE"  > "$SEAT/.config/coord/kanban-token"
+printf '%s'   "$OTHER" > "$SEAT/.kanban-dev-token"
+mk_store "$SEAT/.config/coord/kanban-token"
+mk_board dev
+run_check
+eq "an undeclared DIFFERENT credential → rc 0" "0"    "$RC"
+eq "  …named as a SECOND credential"         "true"  "$(has 'SECOND kanban credential' "$OUT")"
+eq "  …and not as a duplicate"               "false" "$(has 'DUPLICATE kanban token' "$OUT")"
+
+echo "-- (d) TRAILING is the whole normalisation: interior bytes still decide --"
+# `$(cat)` strips every trailing newline and nothing else. Both halves are driven, because a
+# normalisation that went one character further would merge two real credentials silently.
+reset_seat
+printf '%s\n\n\n' "$FAKE" > "$SEAT/.kanban-a-token"
+printf '%s'       "$FAKE" > "$SEAT/.kanban-b-token"
+mk_board a "$SEAT/.kanban-a-token"
+mk_board b "$SEAT/.kanban-b-token"
+run_check
+eq "several trailing newlines vs none → rc 1" "1"     "$RC"
+eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
+printf 'AB%s\n' "$FAKE" > "$SEAT/.kanban-a-token"
+printf 'A\nB%s'  "$FAKE" > "$SEAT/.kanban-b-token"
+run_check
+eq "control: an INTERIOR newline is still a difference → rc 0" "0" "$RC"
+eq "  …no duplicate invented"                "false" "$(has 'DUPLICATE kanban token' "$OUT")"
 
 echo "== two DIFFERENT live credentials → reported, distinguished, and NOT gated =="
 # The host env declares one, every board overrides it: nothing on this seat resolves the host's
@@ -358,6 +453,41 @@ eq "  …and that source is named UNJUDGED"    "true"  "$(has 'UNJUDGED' "$OUT")
 eq "  …naming the file that declares it"     "true"  "$(has "$SEAT/.kanban-dev-board.env" "$OUT")"
 run_check --quiet
 eq "  …and that ⚠ survives --quiet"          "true"  "$(has 'UNJUDGED' "$OUT")"
+
+echo "== the population LITERAL is stated verbatim wherever this leg is described =="
+# `~/.kanban-*-token` is restated on SIX surfaces — this bin's header and three of its
+# messages, docs/INSTALL.md §3b, README.md's tool row — and NONE of them is the population:
+# the scan loop is. A check's edge is not guessable from its output, which is the whole reason
+# those surfaces spell the glob out, so a restatement that drifts from the loop is worse than
+# silence — it tells an operator a `~/.kanban-dev-token.bak` is covered when it is not.
+# Extracted from the loop the same way the mirror block below extracts its functions, and
+# EXITS 1 if the extraction fails, so a reshaped loop reds the build instead of retiring the
+# comparison.
+_pop_glob() { # <bin> -> the glob the token scan walks, as written in its `for` line
+    sed -n 's|^[[:space:]]*for [A-Za-z_][A-Za-z0-9_]* in "\$HOME"/\(\.kanban-[^;"]*-token\); do$|~/\1|p' "$1"
+}
+POP_LIT="$(_pop_glob "$CHECK")"
+[ -n "$POP_LIT" ] || { echo "selftest: could not extract the token-scan glob from $CHECK — did the loop change shape?" >&2; exit 1; }
+INSTALL_3B="$(sed -n '/^## 3b\./,/^## 4\./p' "$HERE/../docs/INSTALL.md")"
+README_ROW="$(sed -n '/| `bin\/agent-board-toolkit-runtime-check` |/p' "$HERE/../README.md")"
+BIN_HEADER="$(sed -n '/^#!/,/^set -euo pipefail$/p' "$CHECK")"
+eq "control: the INSTALL §3b section was extracted"  "true" "$([ "${#INSTALL_3B}" -gt 500 ] && echo true || echo false)"
+eq "control: the README tool row was extracted"    "true" "$([ "${#README_ROW}" -gt 200 ] && echo true || echo false)"
+eq "control: the bin header was extracted"         "true" "$([ "${#BIN_HEADER}" -gt 500 ] && echo true || echo false)"
+eq "the bin header states the glob the scan walks" "true" "$(has "$POP_LIT" "$BIN_HEADER")"
+eq "docs/INSTALL.md §3b states it verbatim"          "true" "$(has "$POP_LIT" "$INSTALL_3B")"
+eq "README.md's tool row states it verbatim"       "true" "$(has "$POP_LIT" "$README_ROW")"
+# Positive control: the same extraction over a bin whose glob is MUTATED yields the mutated
+# literal, and none of the three surfaces carries it — so the three rows above are the surfaces
+# agreeing with the loop, not a search that matches whatever it is given.
+sed 's|\.kanban-\*-token|.kanban-MUTATED-token|g' "$CHECK" > "$TMP/mutant-bin"
+MUT_LIT="$(_pop_glob "$TMP/mutant-bin")"
+# Asserted as a VALUE, not as "different from POP_LIT": an extraction that broke and answered ""
+# would satisfy the inequality and every absence row below, measuring nothing at all.
+eq "control: the mutation moved the extracted literal" "~/.kanban-MUTATED-token" "$MUT_LIT"
+eq "control: the mutated glob is in NO surface (bin)"    "false" "$(has "$MUT_LIT" "$BIN_HEADER")"
+eq "control: the mutated glob is in NO surface (INSTALL)" "false" "$(has "$MUT_LIT" "$INSTALL_3B")"
+eq "control: the mutated glob is in NO surface (README)" "false" "$(has "$MUT_LIT" "$README_ROW")"
 
 # ── mirror parity: the three functions runtime-check duplicates from the lib ──────────────────
 echo "== mirror parity vs bin/_kb-board-lib.sh =="
