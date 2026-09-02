@@ -38,43 +38,26 @@ _need -x "$PRC"
 _mktmp_scratch --home
 
 # --- fake curl on PATH: serves the canned board on a GET, records PATCH targets+bodies ----
-mkdir -p "$TMP/bin"
-cat > "$TMP/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-# Minimal curl stand-in for promote-released-cards' api(): a PATCH (via `-X PATCH`) is a card
-# move — log "<url>\t<body>" and return success; anything else is the paged board GET.
-method=GET; url=""; data=""; want_data=0
-for a in "$@"; do
-  if [ "$want_data" = 1 ]; then data="$a"; want_data=0; continue; fi
-  case "$a" in
-    -X) method=_next ;;
-    PATCH|GET|POST) [ "$method" = _next ] && method="$a" ;;
-    -d) want_data=1 ;;
-    http://*|https://*) url="$a" ;;
-  esac
-done
-if [ "$method" = PATCH ]; then
-  printf '%s\t%s\n' "$url" "$data" >> "$PATCH_LOG"
-  printf '{"data":{"id":0}}'
-else
-  # STUB_GET_FAIL makes the board READ fail the way `curl -fsS` fails on a non-2xx (rc 22),
-  # which is the only way to reach fetch_whole_board's read-failure die (card#7500). Scoped to
-  # the GET so a test can still observe whether any PATCH was attempted after it.
-  [ -n "${STUB_GET_FAIL:-}" ] && exit 22
-  cat "$BOARD_FILE"
-fi
-STUB
-chmod +x "$TMP/bin/curl"
-export PATH="$TMP/bin:$PATH"
+# The stub itself moved to tests/_promote-curl-stub.sh at its second real caller (card#8421);
+# its contract, including $STUB_GET_FAIL used below, is documented there.
+# shellcheck source=/dev/null
+source "$HERE/_promote-curl-stub.sh"
+promote_install_curl_stub "$TMP/bin"
 
 # --- config + board fixture -------------------------------------------------------------
+# `source: "*"` is REQUIRED as of card#8421 and is the DECLARATION that this fixture's board
+# tracks one repo — which is what makes every assertion in this file a claim about the stage
+# guard and the flags, unchanged, rather than about repo qualification. The qualification
+# itself is driven by tests/promote-source-qualify-selftest.sh, including the arm that reds if
+# a config omitting this key is allowed to run.
 cat > "$TMP/release-pr.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
   "promote": {
     "board_id": "12",
     "released_stage_id": "85",
-    "api_base": "https://kanban.test/api/v3"
+    "api_base": "https://kanban.test/api/v3",
+    "source": "*"
   }
 }
 JSON
@@ -150,7 +133,7 @@ echo "== every value-taking flag rejects an empty value (the whole class, not on
 # red about it, so this block asserted totality over 5/6 for two minor versions (card#6645).
 # expect_value_flags derives the population from the bin's own guard call sites and reds in both
 # directions, so the seventh flag cannot join in silence.
-VALUE_FLAGS=(--dls --cards --base --head --shipped-stages --config)
+VALUE_FLAGS=(--dls --cards --base --head --source --shipped-stages --config)
 expect_value_flags "$PRC" "${VALUE_FLAGS[@]}"
 for f in "${VALUE_FLAGS[@]}"; do
   rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" "$f" "" 2>&1)" || rc=$?
@@ -404,7 +387,7 @@ eq "userinfo decoy → it DOES still name the host it refused"    "true"  "$(has
 cat > "$TMP/release-pr-offhost.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
-  "promote": { "board_id": "12", "released_stage_id": "85", "api_base": "https://evil.example/api/v3" }
+  "promote": { "board_id": "12", "released_stage_id": "85", "api_base": "https://evil.example/api/v3", "source": "*" }
 }
 JSON
 : > "$PATCH_LOG"; rc=0
@@ -419,7 +402,7 @@ eq "off-host CONFIG base → refusal names the config"   "true"  "$(has "(from $
 cat > "$TMP/release-pr-nobase.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
-  "promote": { "board_id": "12", "released_stage_id": "85" }
+  "promote": { "board_id": "12", "released_stage_id": "85", "source": "*" }
 }
 JSON
 : > "$PATCH_LOG"; rc=0

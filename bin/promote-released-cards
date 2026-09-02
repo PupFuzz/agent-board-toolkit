@@ -8,7 +8,8 @@
 # A card is "shipped in this release" if its
 # `payload.dl_number` matches a shipped DL token, its `payload.pr_number` matches a
 # shipped PR number, or its own `id` is in an explicitly-passed `--cards` set — so
-# cards tracked only by PR (no DL) are promoted too.
+# cards tracked only by PR (no DL) are promoted too — AND, for the two REF fields, its
+# by-ref `source` qualifies against `.promote.source` (see REPO QUALIFICATION below).
 # Idempotent (skips a card already at target), best-effort per card.
 # With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
 # Shipped-class source stage is skipped, not moved (promotion never resurrects a
@@ -33,6 +34,46 @@
 # coverage line that reads "covered". Do not "complete" this by adding a
 # `card_token_regex` read to the derive path below.
 #
+# REPO QUALIFICATION — `.promote.source`, REQUIRED, no default (card#8421).
+#   `dl_number` and `pr_number` are REPO-SCOPED counters. On a board that tracks SEVERAL
+#   repos they COLLIDE, and a bare-number correlation then promotes ANOTHER repo's cards.
+#   MEASURED by a reporting peer on a board carrying three repos: one release's 15 shipped
+#   PRs matched 24 cards across all three lanes — including cards already sitting at a
+#   released stage from a DIFFERENT repo's own version line. So this mover REFUSES to run
+#   until it is told which arity of board it is pointed at. There is no safe default, for
+#   the same reason $KANBAN_EXPECTED_HOST has none: a vendored tool cannot assume the
+#   operator's topology, and the unsafe assumption here is a WRITE into a terminal stage.
+#     `.promote.source`: "<owner>/<repo>"  — the repo this release ships. Every REF-matched
+#        card is qualified against it by the card's own by-ref `source`; a card belonging to
+#        a different repo is NOT promoted, and is named. See `derive_source` in the
+#        correlation below for how a card's source is read.
+#     `.promote.source`: "*"               — an explicit DECLARATION that this board tracks
+#        exactly ONE repo, so a bare `dl_number`/`pr_number` is unambiguous on it.
+#        Byte-identical to the pre-card#8421 behavior, summary line included. `*` is a
+#        DECLARATION, not a wildcard match: use it only when the board really is single-repo.
+#   `--source <owner/repo>|*` overrides the config for one run (a dry-run pointed elsewhere).
+#
+#   ⚠ A card with NO derivable by-ref source cannot be attributed under a qualified run: it is
+#   NOT promoted, and it is named individually and counted — never dropped silently. That
+#   inverts the reconciler's "a null source matches every repo" rule ON PURPOSE, and the
+#   inversion is an asymmetry rather than a disagreement: that rule governs a DEFER, whose
+#   failure mode is to do nothing, whereas this is a WRITE into a terminal stage — there,
+#   "matches every repo" means EVERY repo's release promotes that one unstamped card. Fix the
+#   card, not the guard: stamp a repo-qualified `payload.pr_url`
+#   (`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>`) and it correlates.
+#   Its shipped ref is NOT reported as "no card" — that would send `bin/release-pr-body`'s
+#   `## Card coverage` section to tell the author to CREATE a card that is already on the board.
+#   It gets its own report line, and that section renders it as "card exists but carries no
+#   by-ref source — stamp it". See THE NO-CARD REPORT, below the correlation.
+#
+#   ⛔ `--cards` IS EXEMPT, and the exemption is this rule's own logic, not a hole in it.
+#   Qualification exists because a dl/pr NUMBER is repo-scoped; a card `id` is not — it names
+#   exactly one card on exactly one board, so there is no collision for a guard to break.
+#   Refusing an id the caller named EXPLICITLY would refuse an unambiguous instruction, and it
+#   would make `bin/release-pr-body`'s coverage line for any other-repo card on a shared board
+#   read "no card". An id-matched card whose source is not this repo IS promoted, and is NAMED
+#   on stderr, so the exemption is legible in the log instead of silent.
+#
 # Robustness (these states are silent-but-wrong, so they're made loud):
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
 #   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
@@ -47,7 +88,13 @@
 #     nothing to do" and exited 0: a promotion that promoted nothing and reported success, with
 #     the release's cards left un-promoted (card#7535). A DEFAULTED leg is not affected; its own
 #     refusals below already cover it.
-#   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
+#   - A shipped ref that matched NO card is reported at the end (a card may be unstamped). A ref
+#     whose ONLY match was a card with no derivable source is reported SEPARATELY, on its own
+#     line: that card exists and carries the ref, so "create a card" is the wrong remedy for it
+#     and "stamp this card" is the right one (see THE NO-CARD REPORT below).
+#   - `.promote.source` absent => FAIL before any read (the repo-scoped ref collision above).
+#   - A ref-matched card belonging to ANOTHER repo, or to NO derivable repo, is named
+#     individually and counted — never silently promoted, and never silently dropped.
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
 #     ref-derivation was COMPLETE, so the refs are genuinely cardless => WARN (exit 0); a
@@ -60,7 +107,13 @@
 #     non-merge commit pushed directly to main whose range carries cardless DLs would fail
 #     loud by the same rule — intended, given the assumption.
 #
-# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--shipped-stages IDS] [--dry-run] [--config PATH]
+# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--dry-run] [--config PATH]
+#
+# --source "owner/repo" | "*": override `.promote.source` for this run (see REPO QUALIFICATION
+#   above). One of the two — the config key or this flag — MUST be present, or the run refuses
+#   before it reads the board. ABSENT is the only way to select the config value: an explicitly
+#   EMPTY `--source ""` dies, like every other value-taking flag here, so an unexpanded shell
+#   variable can never silently fall through to whatever the committed config happens to say.
 #
 # --cards "12,34": comma-separated numeric CARD IDS, correlated against each card's own
 #   `id` (not against dl_number/pr_number). Opt-in and additive — ABSENT is the only way
@@ -150,6 +203,21 @@ in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return
 uint_ok()     { local LC_ALL=C; case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; }
 uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return 1 ;; esac; }
 
+# src_charset_ok <s>: true iff <s> holds only characters a GitHub `<owner>/<repo>` can hold —
+# ASCII letters, digits, `.`, `_`, `-`, and the separating `/`. It is a CHARSET check only; the
+# `<owner>/<repo>` SHAPE is checked separately at the call site, and both are needed: the shape
+# alone accepts `git@github.com:acme/widget` (one slash, two non-empty parts) — an scp-style
+# remote spelling that no card's derived source can ever equal, so it correlates to nothing
+# while looking configured. Same LC_ALL=C reasoning as uint_ok above, and it is not theoretical
+# here: a bracket RANGE is a COLLATION range, so under en_US.UTF-8 this set silently admits
+# characters outside ASCII. MEASURED, not asserted: with the pin removed, `--source
+# acme/widg<U+0663>t` is ACCEPTED under en_US.utf8 and the run proceeds to the token guard.
+# The covering arms are named, because a citation of "the class" is what this pin carried
+# until card#8421 while NOTHING reached the line — tests/locale-range-guard-selftest.sh
+# `promote --source rejects a U+0663 in the repo name` (behaviour, both locales) and its
+# static backstop, which since that card matches the GLOB spelling used here and not only `=~`.
+src_charset_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!a-zA-Z0-9._/-]*) return 1 ;; esac; }
+
 # host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
 # subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
 # calling — see the required-var check below). Host is parsed per RFC 3986 — the authority
@@ -216,8 +284,8 @@ redact_userinfo() {
   # the FIRST `://` anywhere, so a schemeless `host/p?x://y` would lose everything up to it.
   # ⛔ LC_ALL IS PINNED ON THE LINE BELOW, NOT THREE LINES UP WITH THE OTHER `local`s. A bare
   # bracket RANGE widens under UTF-8 collation, so the pin is required — and
-  # tests/locale-range-guard-selftest.sh's static backstop looks for `LC_ALL=C` on the `=~`
-  # line or the two above it, which is a WRITING RULE, not a hint: with the pin declared up
+  # tests/locale-range-guard-selftest.sh's static backstop looks for `LC_ALL=C` on the guard's
+  # own line or the two above it, which is a WRITING RULE, not a hint: with the pin declared up
   # with the other locals the scanner flagged this line (watched red). The lib's copy gets the
   # same pin from kb_ere_match, which this standalone must not call.
   local LC_ALL=C
@@ -275,12 +343,14 @@ require_resolvable() { # <flag> <ref>
 }
 
 CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
+SOURCE_IN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
     --cards)          require_value "$1" "${2:-}"; CARDS_IN="$2"; shift 2;;
     --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    --source)         require_value "$1" "${2:-}"; SOURCE_IN="$2"; shift 2;;
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
     --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
@@ -350,6 +420,103 @@ if [ -z "$API" ]; then API="$(cfg '.promote.api_base')"; API_SRC="$CONFIG .promo
   || die "no api base — set \$KANBAN_API_BASE, or .promote.api_base in $CONFIG"
 uint_ok "$BOARD" || die ".promote.board_id must be numeric (got '$BOARD')"
 uint_ok "$STAGE" || die ".promote.released_stage_id must be numeric (got '$STAGE')"
+
+# --- REPO QUALIFICATION: resolve + validate `.promote.source` (card#8421) -----
+# REQUIRED, no default, refused when absent — the REPO QUALIFICATION block in the header has
+# the WHY (a bare dl/pr number is a repo-scoped counter, and this mover writes to a TERMINAL
+# stage). Resolved HERE: after the config exists and its other `.promote` keys are validated,
+# and BEFORE the token guard and every read, so a config that cannot say which repo it means
+# never reaches a board at all.
+#
+# TWO SOURCES, ONE RESOLUTION, reported by CHANNEL exactly as $KANBAN_API_BASE is above.
+# `--source` wins. A non-empty $SOURCE_IN means precisely "the flag was passed": require_value
+# has already refused an empty value, and nothing else writes the variable — so a `${X:-$(cfg
+# …)}` fall-through, which would run an UNGUARDED promote off a `"*"` config whenever an
+# unexpanded variable reached the flag, cannot happen here.
+#
+# The value is canonicalized ONCE, here, through the server's `canonicalizeSource` rule
+# (trim -> empty means absent -> cap 255 -> lowercase), so the shell side and the jq side of
+# the one comparison this script makes agree. `tr` runs under LC_ALL=C: a GitHub
+# `<owner>/<repo>` is ASCII by construction, and a locale-sensitive fold would be a second,
+# divergent rule — the class tests/locale-range-guard-selftest.sh exists for. That the value
+# reaching this `tr` really is ASCII is not assumed either: `src_charset_ok` above enforces it,
+# and the `promote --source` arms in that file drive this flag end to end under both locales.
+#
+# ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421). The kanban server
+# class is the SoT; the copies are this shell one (the CONFIG side), the jq `canon_source` in
+# the correlation below (the CARD side — this script must not source the lib, so it cannot share
+# one implementation with either), and `_ata_canon_source` in `bin/adopt-to-dl`, which
+# canonicalizes the same value where a card is STAMPED with it. What binds the config and card
+# sides to each other is NOT this comment — see the jq def, which states it exactly.
+if [ -n "$SOURCE_IN" ]; then SOURCE="$SOURCE_IN"; SOURCE_SRC="--source"
+else                        SOURCE="$(cfg '.promote.source')"; SOURCE_SRC="$CONFIG .promote.source"; fi
+#
+# THE OPERATOR'S OWN SPELLING IS KEPT, because every refusal below has to be GREPPABLE by the
+# person who wrote the value. A message naming only the canonical form is a message they cannot
+# search for: the committed placeholder `"source": "REPLACE_ME"` reads back as `replace_me`,
+# which appears nowhere in their config or their workflow file, so the one search that would
+# find the line to edit comes up empty. `src_shown` below renders the raw value, and the
+# canonical form ONLY when canonicalization actually changed it.
+SOURCE_RAW="$SOURCE"
+SOURCE="$(printf '%s' "$SOURCE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+SOURCE="$(printf '%s' "${SOURCE:0:255}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+src_shown() {
+  if [ "$SOURCE_RAW" = "$SOURCE" ]; then printf "'%s'" "$SOURCE_RAW"
+  else printf "'%s' (canonicalized to '%s')" "$SOURCE_RAW" "$SOURCE"; fi
+}
+# What the REQUIRED refusal calls a value that canonicalized to nothing. "empty" is only true of
+# a genuinely empty one: an operator who wrote "  " needs to be told their value was there and
+# vanished in the trim, or the message describes a config they do not have.
+SRC_EMPTY_SHOWN="empty"
+if [ -n "$SOURCE_RAW" ]; then SRC_EMPTY_SHOWN="'$SOURCE_RAW', which is whitespace only"; fi
+# THE REFUSAL NAMES ITS OWN FIX, in full. A hard failure whose message does not tell an
+# operator how to satisfy it is a worse defect than the one it closes: every existing install
+# breaks on this key until it declares one, so the message carries the key, the block it goes
+# in, the file, and the fact that `"*"` is the single-repo answer that restores prior behavior.
+[ -n "$SOURCE" ] || die "refusing to promote — \`.promote.source\` is REQUIRED and has no default. \`dl_number\`/\`pr_number\` are REPO-SCOPED counters: on a board tracking several repos they collide, and an unqualified match promotes ANOTHER repo's cards into a terminal stage (measured: 15 shipped PRs matched 24 cards across 3 repos). TO FIX, add one key to the \`promote\` block of $CONFIG: \"source\": \"<owner>/<repo>\" naming the repo this release ships, OR \"source\": \"*\" to DECLARE that this board tracks exactly ONE repo — \"*\" is the single-repo answer and restores the previous behavior byte for byte. \`--source <owner/repo>|*\` overrides it for one run. (The value resolved from $SOURCE_SRC was $SRC_EMPTY_SHOWN.)"
+if [ "$SOURCE" != '*' ]; then
+  # Boundary validation of an operator-supplied value (canon #6). Every refusal below is a
+  # spelling that would otherwise correlate to NOTHING while LOOKING configured — a silent
+  # zero-promotion release, which is the failure this whole block exists to make impossible:
+  #   - a URL: a card's derived source is `<owner>/<repo>`, never a scheme;
+  #   - a `.git` suffix: `canonicalizeSource` does NOT trim it (only the URL path does, upstream),
+  #     so `owner/repo.git` can never equal a card's URL-derived `owner/repo`;
+  #   - a glob: `*` is a DECLARATION spelled alone, never a pattern — `owner/*` matches no card;
+  #   - a bare name, >2 segments, an empty segment, or embedded whitespace: not the
+  #     `<owner>/<repo>` any card resolves to.
+  case "$SOURCE" in
+    *://*)       die "--source/.promote.source must be a bare '<owner>/<repo>', not a URL (got $(src_shown), from $SOURCE_SRC)";;
+    *.git)       die "--source/.promote.source must not carry a '.git' suffix — the source canonicalizer does not trim it, so $(src_shown) would never match a card's URL-derived 'owner/repo' (from $SOURCE_SRC)";;
+    *\**)        die "--source/.promote.source is not a glob — '*' is the single-repo DECLARATION and is spelled alone; $(src_shown) would match no card (from $SOURCE_SRC)";;
+    */*/*|/*|*/) die "--source/.promote.source must be exactly '<owner>/<repo>' (got $(src_shown), from $SOURCE_SRC)";;
+    */*)         ;;
+    *)           die "--source/.promote.source must be '<owner>/<repo>', or the single-repo declaration '*' (got $(src_shown), from $SOURCE_SRC)";;
+  esac
+  case "$SOURCE" in *[[:space:]]*) die "--source/.promote.source must not contain whitespace (got $(src_shown), from $SOURCE_SRC)";; esac
+  # THE SHAPE `case` ABOVE AND THIS CHARSET CHECK ARE ONE PAIR, and neither half stands alone —
+  # the shape accepts `git@github.com:acme/widget` (one slash, two non-empty parts) and the
+  # charset accepts `acme/a/b`. `kb_is_repo_slug` in `bin/_kb-board-lib.sh` gates the SAME value
+  # at the other end of the same correlation (it becomes the `<owner>/<repo>` of the pr_url
+  # `bin/adopt-to-dl` stamps, and the `source=` of the by-ref verify) and is the ONE accept
+  # predicate for a repo slug; this pair is its deliberate duplicate, because this script is
+  # vendored standalone and must not source that lib. Keep the two in sync — and note the
+  # spellings differ on purpose (that one is a single ERE plus a case-insensitive `.git` arm,
+  # this one is a glob `case` pair over an already-lowercased value) while the ACCEPT SET must
+  # not. THE EQUALITY IS A CONTRACT, NOT A CONVENTION: § 3c of
+  # tests/promote-source-qualify-selftest.sh drives ONE corpus through both copies and pins each
+  # side's verdict row for row, and the only two spellings on which they may differ (`*`, and a
+  # value this script trims before judging) are declared there by name. It exists because the
+  # comment that used to stand here — "keep the two in sync" — had already failed: the lib arm
+  # was `*.git)`, case-SENSITIVE, so `acme/widget.GIT` was refused HERE and accepted THERE
+  # (card#8421). tests/locale-range-guard-selftest.sh remains the LOCALE leg of the same pair,
+  # driving both ends under both locales.
+  src_charset_ok "$SOURCE" \
+    || die "--source/.promote.source must be a bare '<owner>/<repo>' — only letters, digits and '.', '_', '-' may appear either side of the one '/'. $(src_shown) (from $SOURCE_SRC) carries something else, so it can never equal a card's derived 'owner/repo'; an scp-style 'git@github.com:owner/repo' is the usual cause."
+fi
+# The jq comparison key: the canonical source, or "" meaning qualification is OFF. Everything
+# downstream branches on THIS, never on $SOURCE, so `*` has exactly one meaning in one place.
+if [ "$SOURCE" = '*' ]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi
+
 TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
 [ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
 API="${API%/}"
@@ -586,7 +753,10 @@ fetch_whole_board() {
 CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number, pr_number OR own id is in the shipped sets
-PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" '
+#     AND (when repo qualification is on) the REF legs are this repo's — see REPO QUALIFICATION.
+# The classification is done ONCE here, in one pass, and every downstream leg reads `.cls`, so
+# the move loop, the reports and the summary cannot disagree about which cards matched.
+CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" '
   # norm reads a card ref (dl_number, pr_number or id) and answers the bare-integer,
   # zero-stripped form numlist produces for the shipped side, so "093"/93 correlate — or ""
   # for a value that is not ONE integer, which correlates to nothing and leaves the card alone.
@@ -616,12 +786,107 @@ PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_
   # on which regex options that jq was built with.
   # `[^0-9]` is a NEGATED set of ASCII bytes, so no locale collation widens it.
   #
-  # ⛔ NO APOSTROPHE ANYWHERE IN THIS jq PROGRAM (from the opening quote on the PLAN= line to
-  # its close). These are jq comments inside a SHELL single-quoted string: an apostrophe ends
+  # ⛔ NO APOSTROPHE ANYWHERE IN THIS jq PROGRAM — the CORREL= one, whose bounds are the
+  # opening single quote on the `CORREL="$(printf ... | jq -c ...` line above and its close at
+  # the end of this block. (The variable was named PLAN= when this warning was written. PLAN=
+  # is now a DIFFERENT, one-line jq program further down, so naming it here sent the next
+  # author to the wrong bounds — and the bounds are the whole content of the warning.)
+  # These are jq comments inside a SHELL single-quoted string: an apostrophe ends
   # that string, and everything after it is re-parsed as shell — which fails at RUNTIME, not
   # at shellcheck time. Orientation for the next author, not the guard: every selftest that
   # drives this tool as a process reds immediately, because no run survives it.
   def norm: (. // "")|tostring|if test("\\A[^0-9]*[0-9]+[^0-9]*\\z") then gsub("[^0-9]";"")|sub("^0+(?=.)";"") else "" end;
+
+  # ── source derivation: a jq mirror of the kanban server source normalizer (card#8421) ──
+  # OWNER OF THE RULE, and it is NOT in the kanban repo — a locator naming it there was read
+  # live and is false. Two surfaces, both confirmed present:
+  #   * the PROSE contract — DL-SOURCE-CORRELATION.md sections 1 and 2, published by the coord
+  #     plugin at .claude/plugins/marketplaces/agent-board-framework/plugins/coord/docs/. This
+  #     is the surface a CONSUMER of this vendored script can actually reach, and it is the
+  #     only DECLARE surface this mirror has, so it has to resolve.
+  #   * the CODE source of truth it mirrors — app/Services/ExternalReferenceNormalizer.php in
+  #     the kanban-board repo.
+  # The rule is NOT restated here — read it there.
+  # This is a FOURTH runtime expressing it (server PHP, bridge PHP, the python client
+  # kanban_common._derive_card_source, and this jq), for the same reason host_ok is duplicated
+  # in this file: the script is VENDORED STANDALONE into consumer repos and may not source a
+  # lib nor shell out to python. The copy is bound BEHAVIOURALLY, not by this comment —
+  # tests/promote-source-qualify-selftest.sh drives it over a corpus covering every field of
+  # the preference order, the trailing-segment requirement and the .git trim.
+  #
+  # ⛔ WHY NOT ASK THE SERVER, which already owns this rule — considered, and rejected on what
+  # the ENDPOINT can answer, not on effort. `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N
+  # &source=<repo>` (the query bin/adopt-to-dl step-5-verifies with) applies the qualification
+  # server-side, so a 4th runtime looks avoidable. Read live, its filter is
+  # `->where(source, $source)` — a STRICT equality, so a card whose source is another repo, and
+  # a card whose source is NULL, are both simply ABSENT from the answer, indistinguishable from
+  # "no card carries this ref". Those two rows ARE the whole report here: the ⊘ lines are the only
+  # proof the guard fired, and the unsourced one is the only thing that tells an operator to
+  # STAMP a card rather than mint one. The endpoint that answers the qualification cannot
+  # produce the report the qualification exists to make. Two lesser reasons, both measured:
+  # `external_references` is whenLoaded-gated on TaskResource (the "externalReferences" relation) and
+  # `tasks/search.json` eager-loads only `lastStageMoveChangelog`, so the paged board read this
+  # tool already makes carries no `source` at all — adopting by-ref means one request per
+  # (system, ref) in place of one paginated scan, and the scan is also where `workflow_stage_id`
+  # (idempotence, --shipped-stages) comes from; and the `--cards` leg correlates on the OWN ID of a
+  # card, which is not an external-reference system, so it has no by-ref query in the first
+  # place. Recorded in docs/CONSOLIDATION-PLAN.md as well, so the decision is not only a comment.
+  #
+  # canonicalizeSource: trim, then empty means null, then cap 255, then lowercase.
+  # Deliberately NO .git trim and NO shape check here — both belong to repo_from_gh_url,
+  # upstream, and only for URL values.
+  #
+  # WHAT BINDS THE TWO SIDES OF THE ONE COMPARISON THIS SCRIPT MAKES — stated exactly, because
+  # the claim this comment used to make ("BOTH sides run through THIS def") is FALSE: the CONFIG
+  # side is canonicalized in SHELL, above (sed trim, ${SOURCE:0:255}, LC_ALL=C tr), and never
+  # reaches this def. What makes the two agree is narrower, and it is ENFORCED rather than
+  # assumed: the config side must first pass `src_charset_ok` and the shape `case`, which admit
+  # only ASCII letters, digits, `.`, `_`, `-` and the one `/` — and over exactly that set the
+  # shell trio and this def are identical (nothing to trim, an ASCII-only fold, the same cap).
+  #
+  # KNOWN DIVERGENCES FROM THE PHP, all of them on the CARD side (the config side cannot carry
+  # any of them, per the charset above):
+  #   * trim(): PHP strips NUL and does NOT strip \f; Oniguruma [[:space:]] does the opposite.
+  #     \f is the PROMOTING direction — this def trims it, the server does not, so a card source
+  #     of "acme/widget\f" matches here and would not there. NUL is the refusing direction.
+  #     Neither byte can appear in a GitHub owner/repo, nor in a URL-path capture.
+  #   * mb_strtolower vs ascii_downcase: unreachable for this comparison in either direction —
+  #     a value needing a non-ASCII fold cannot equal an ASCII-only config value either way.
+  #   * `tostring` on a non-string used to be a third, and the WORST, because it ran toward
+  #     promoting on ordinary board data rather than on a control byte. It is FIXED below:
+  #     repo_from_gh_url now type-guards exactly as the server does with `is_string`.
+  def canon_source:
+    if . == null then null
+    else (tostring | sub("^[[:space:]]+";"") | sub("[[:space:]]+$";"")) as $t
+      | if $t == "" then null else ($t[0:255] | ascii_downcase) end
+    end;
+  # repoFromGitHubUrl: a github.com URL yields a source ONLY when a
+  # /{pull|issues|commit|tree|blob}/ segment follows the repo — a BARE github.com/<owner>/<repo>
+  # yields null, and that IS the rule, not an oversight. Non-greedy repo part; a trailing .git
+  # is trimmed HERE and only here. No "g" flag, so first match only, like preg_match.
+  #
+  # ⛔ NON-STRINGS DERIVE NOTHING, and the type test is the whole of it. The server reads these
+  # fields behind `is_string` (sourceFor, and `is_string($externalLink)` for the top-level one),
+  # so a payload value that is an OBJECT or an ARRAY yields null there. This def used to
+  # `tostring` first — which renders such a value as its JSON TEXT, so a `{"u":"https://github.
+  # com/acme/widget/pull/1"}` matched the capture here and yielded a source the server says does
+  # not exist. That disagreement ran toward PROMOTING, which is the one direction this guard
+  # exists to close. The arm also keeps `capture` off a non-string, which is a jq runtime error.
+  def repo_from_gh_url:
+    if type != "string" then null
+    else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
+    end;
+  # sourceFor field preference: payload.repo — ONLY when it is a string containing "/", and it
+  # then WINS outright, with no fall-through on a null canon — then payload.pr_url,
+  # payload.issue_url, payload.html_url, and finally the top-level external_link.
+  def derive_source:
+    . as $c | ($c.payload // {}) as $p
+    | if (($p.repo | type) == "string") and ($p.repo | test("/"))
+      then ($p.repo | canon_source)
+      else ( [ $p.pr_url, $p.issue_url, $p.html_url, $c.external_link ]
+             | map(repo_from_gh_url) | map(select(. != null)) | .[0] ) as $u
+        | if $u == null then null else ($u | canon_source) end
+      end;
   [ .[]
     | . as $c
     | ($c.payload.dl_number | norm) as $cdl
@@ -631,28 +896,130 @@ PLAN="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_
     | (($cpr != "") and ($prs|index($cpr) != null)) as $byPr
     | (($cid != "") and ($cids|index($cid) != null)) as $byId
     | select($byDl or $byPr or $byId)
+    | ($c | derive_source) as $csrc
     # Display precedence keeps DL first so a run with no --cards renders exactly as before.
     | { id: $c.id, stage: ($c.workflow_stage_id|tostring),
         ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" else "#\($cpr)" end),
         dl: (if $byDl then $cdl else null end),
         pr: (if $byPr then $cpr else null end),
-        card: (if $byId then $cid else null end) } ]')"
+        card: (if $byId then $cid else null end),
+        src: $csrc,
+        # match     — promote it: qualification is OFF, the card is THIS repo, or the caller
+        #             named its ID (a card id is not a repo-scoped counter — see the header).
+        # foreign   — ref-matched, but the card belongs to a DIFFERENT repo. The card#8421 defect.
+        # unsourced — ref-matched, but NO source is derivable, so it cannot be attributed.
+        cls: (if   $qsrc == ""    then "match"
+              elif $byId          then "match"
+              elif $csrc == null  then "unsourced"
+              elif $csrc == $qsrc then "match"
+              else                     "foreign" end),
+        # An id-matched card the qualification WOULD have rejected. Promoted, by the --cards
+        # exemption — but the exemption is reported rather than silent, because a promote whose
+        # only justification is an explicit id is a thing an operator should see in the log.
+        idxrepo: ($byId and $qsrc != "" and ($csrc == null or $csrc != $qsrc)) } ]')"
+PLAN="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="match")]')"
 
 # A shipped DL or CARD ID with no matching card is the high-value miss (a decision whose
-# card is unstamped/absent, or an id naming no card on this board) — warn on it. Unmatched
+# card is unstamped/absent, or an id naming no card on this board) — warn on it. Under repo
+# qualification the population it is computed over is the PLAN — the cards this repo may move —
+# LESS the refs that matched an unsourced card, which get their own line below. So a DL whose
+# only match was another repo's card IS reported here as no-card, and correctly: no card OF THIS
+# REPO carries it. The ⊘ line above names the card that did, so the two reports together say
+# what happened; neither on its own would. Unmatched
 # PRs are NOT reported: a PR is only a correlation fallback and routinely has no card (dep
 # bumps, release commits), so warning on them is cry-wolf noise.
 #
-# Both kinds go into ONE list so the single WARNING line stays the whole no-card report —
-# release-pr-body's coverage section reads that one line, and a second line would give it a
-# report it silently half-read. With --cards absent the card leg is empty and the list is
-# byte-identical to the DL-only one.
+# THE NO-CARD REPORT IS EXACTLY TWO LINES, and which refs go on which is the contract
+# release-pr-body's `card_coverage_section` is written against — it greps BOTH, by their
+# leading phrases. A THIRD kind may not be added here without teaching that function to read
+# it, or the body silently half-reads a report it believes is whole.
+#   line 1, "matched NO card"  — a shipped ref no card of this repo carries. `foreign` refs
+#     belong here and stay here: "no card OF THIS REPO carries it" is exactly true of them, and
+#     the ⊘ line above already names the other repo's card that did, so the two reports together
+#     say what happened. The remedy is to create or correct a card.
+#   line 2, "matched ONLY an unsourced card" — a shipped ref whose ONLY correlation was a card
+#     this run could not attribute. That card EXISTS and carries the ref; what it lacks is a
+#     by-ref source. Folding it into line 1 made release-pr-body tell an author to CREATE a card
+#     that was already on the board, and the two remedies are opposites — that is why the split
+#     is a second line rather than more prose on the first. Where a ref matched an unsourced
+#     card AND a foreign one, the unsourced report wins: it is the one naming a card that may
+#     well be this repo's, and it is the actionable half. ⚠ THE PRECEDENCE IS NAMED IN THE LINE
+#     ITSELF, because the word ONLY is not true of that ref on its own — it matched a foreign
+#     card too. The anchor phrase is deliberately left byte-identical: `bin/release-pr-body`
+#     greps it, `command -v promote-released-cards` resolves that reader against whatever copy
+#     is on PATH, and the two are separately vendorable (INSTALL.md §6a ships this one as a
+#     SHA-pinned composite action), so a reworded anchor is a silently half-read report across
+#     any version skew. The qualifier goes AFTER the phrase and carries no colon, per the
+#     colon rule below.
+# Unmatched PRs are on neither line (see above). With --cards absent the card leg is empty, and
+# under `source: "*"` nothing can classify as unsourced — so line 2 is absent and line 1 is
+# byte-identical to the DL-only report this tool has always printed.
 MATCHED_DLS="$(printf '%s' "$PLAN" | jq -c '[.[].dl|select(.!=null)]|unique')"
 MATCHED_CARDS="$(printf '%s' "$PLAN" | jq -c '[.[].card|select(.!=null)]|unique')"
-MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" \
+# Only DLs can land here. A `--cards` id-matched row is classified "match" by the exemption arm
+# in the correlation above, so no card ID ever carries cls=="unsourced".
+UNSOURCED_DLS="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="unsourced")|.dl|select(.!=null)]|unique')"
+MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" --argjson ud "$UNSOURCED_DLS" \
                     --argjson sc "$CARDS_J" --argjson mc "$MATCHED_CARDS" '
-  [ $sd[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]
+  [ $sd[] | select(. as $x | (($md|index($x))|not) and (($ud|index($x))|not)) | "DL-\(.)" ]
   + [ $sc[] | select(. as $x | ($mc|index($x))|not) | "card#\(.)" ]')"
+STRANDED_REFS="$(jq -c -n --argjson ud "$UNSOURCED_DLS" --argjson md "$MATCHED_DLS" '
+  [ $ud[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]')"
+
+# --- repo-qualification report (card#8421) -----------------------------------
+# The two rejected classes are NAMED, one line per card, BEFORE any write — never folded into
+# a count and never silently dropped. `foreign` is the defect this card closes and its lines
+# are the proof the guard fired; `unsourced` is a card this run genuinely cannot attribute, and
+# it is the one an operator must act on (stamp it, or promote it by hand).
+#
+# Both are WARN-ONLY and neither touches the exit code, for the same reason the stage guard's
+# skips do not: they are a PRE-EXISTING BOARD CONDITION, not a failure of this run, and a red
+# clearable only by editing board data is a red that gets ignored. Loudness comes from the
+# register instead — stderr, plus $GITHUB_STEP_SUMMARY under Actions, because a stderr line in
+# a GREEN job is invisible in a collapsed log.
+foreign_n=0; unsourced_n=0; STRANDED=""; FOREIGN=""
+if [ -n "$QUALIFY_SRC" ]; then
+  foreign_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="foreign")]|length')"
+  unsourced_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="unsourced")]|length')"
+  # Rendered BY jq, not assembled in the shell: every value interpolated here is BOARD DATA,
+  # and a card ref or source must never be re-parsed by a shell on its way to the log.
+  # Captured rather than printed straight through, so the SAME text reaches stderr and the step
+  # summary — two renderings of one finding is two things that can disagree.
+  FOREIGN="$(printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.cls=="foreign")
+    | "  ⊘ \(.ref) (#\(.id)): card source \"\(.src)\" is NOT \"\($q)\" — this card belongs to a DIFFERENT repo and matched only by a colliding ref number; not promoted"')"
+  # A plain `if`, never `[ -n "$X" ] && printf …`: that trailing-test form is what leaked a false
+  # status out of a sibling release bin once already (card#5874), and it is one edit away from
+  # becoming a block's last statement again.
+  if [ -n "$FOREIGN" ]; then printf '%s\n' "$FOREIGN" >&2; fi
+  STRANDED="$(printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.cls=="unsourced")
+    | "  ⊘ \(.ref) (#\(.id)): card has NO by-ref source (no payload.repo / pr_url / issue_url / html_url / external_link) — cannot be attributed to \"\($q)\"; not promoted. Stamp a repo-qualified payload.pr_url (kbcard patch --pr-url) and re-run, or promote by hand."')"
+  if [ -n "$STRANDED" ]; then printf '%s\n' "$STRANDED" >&2; fi
+  # The --cards exemption, made legible. These cards ARE promoted; the line exists so that
+  # "an id outranks the repo guard" is something an operator reads in the log rather than
+  # something they have to re-derive from this file.
+  printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.idxrepo)
+    | "  ⚠ \(.ref) (#\(.id)): promoted by EXPLICIT card id, though its source \(.src|tostring) is not \"\($q)\" — a card id is not a repo-scoped counter, so --cards is exempt from repo qualification"' >&2
+  # BOTH rejected classes reach the step summary, for the one stated reason: they are WARN-only,
+  # so they land in a GREEN job, where a stderr line is invisible in a collapsed log. That
+  # argument never distinguished the two — `foreign` lines are the only proof the guard fired at
+  # all, which is the half an operator auditing a `.promote.source` change goes looking for.
+  if [ -n "$FOREIGN" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### promote-released-cards — $foreign_n ref-matched card(s) belong to ANOTHER repo"
+      echo ""
+      echo "Not promoted. This board is repo-qualified (\`.promote.source\` = \`$QUALIFY_SRC\`) and these cards resolve to a different \`owner/repo\`, so they matched only by a colliding ref number."
+      echo ""
+      printf '```\n%s\n```\n' "$FOREIGN"
+    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+  if [ -n "$STRANDED" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### promote-released-cards — $unsourced_n ref-matched card(s) had NO by-ref source"
+      echo ""
+      echo "Not promoted. This board is repo-qualified (\`.promote.source\` = \`$QUALIFY_SRC\`) and these cards carry nothing to derive \`owner/repo\` from, so this run cannot tell whose they are."
+      echo ""
+      printf '```\n%s\n```\n' "$STRANDED"
+    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+fi
 
 # --- move --------------------------------------------------------------------
 moved=0; skipped=0; failed=0; guarded=0
@@ -683,9 +1050,19 @@ nmiss="$(printf '%s' "$MISSING" | jq 'length')"
 if [ "${nmiss:-0}" -gt 0 ]; then
   echo "promote-released-cards: WARNING — $nmiss shipped ref(s) matched NO card (unstamped card, or none): $(printf '%s' "$MISSING" | jq -r 'join(", ")')" >&2
 fi
-# The stage-guarded count is surfaced only when the guard is active, so a run with no
-# --shipped-stages keeps a byte-identical summary line (backward compatibility).
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# Line 2 of the two-line no-card report (see the contract above). Its leading phrase is what
+# release-pr-body greps, and it deliberately does NOT contain "matched NO card" — sharing that
+# phrase would put these refs back on the line whose remedy is the wrong one. ⛔ NO COLON before
+# the ref list: that reader cuts at the FIRST colon of the matched text.
+nstranded="$(printf '%s' "$STRANDED_REFS" | jq 'length')"
+if [ "${nstranded:-0}" -gt 0 ]; then
+  echo "promote-released-cards: WARNING — $nstranded shipped ref(s) matched ONLY an unsourced card, counting no card of THIS repo (the card exists and carries the ref, but has no by-ref source; a ref that ALSO matched another repo card is reported here rather than on the other-repo line, because this is the actionable half): $(printf '%s' "$STRANDED_REFS" | jq -r 'join(", ")')" >&2
+fi
+# The stage-guarded and repo-qualification counts are surfaced only when their guard is
+# ACTIVE, so a run with no --shipped-stages on a `source: "*"` board keeps a byte-identical
+# summary line (backward compatibility — a v0.21.0 fleet-adoption decision, asserted below by
+# tests/promote-stage-guard-selftest.sh).
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -701,6 +1078,16 @@ if [ -n "$SHIPPED_STAGES" ]; then
   echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
 else
   echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
+fi
+# The repo-qualification state, ALWAYS, on its own stderr line — for exactly the reason the
+# stage-guard pair above exists (card#5152). `source: "*"` is a DECLARATION about the board,
+# made in a config file nobody re-reads, and its whole effect is to switch this guard off; a
+# run that acts on it must say so, or the declaration is unauditable after the fact. Separate
+# line, not folded into the summary, so the summary stays the stable parse target it is.
+if [ -n "$QUALIFY_SRC" ]; then
+  echo "promote-released-cards: repo-qualification ON (source '$QUALIFY_SRC', from $SOURCE_SRC) — a ref-matched card belonging to another repo, or to no derivable repo, was NOT promoted." >&2
+else
+  echo "promote-released-cards: repo-qualification OFF — source '*' (from $SOURCE_SRC) DECLARES this board tracks exactly one repo, so a bare dl_number/pr_number is unambiguous on it. If it tracks several, set .promote.source to '<owner>/<repo>': those counters are repo-scoped and an unqualified match promotes another repo's cards." >&2
 fi
 # --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
 # Systemic move failure (a card matched but every PATCH errored) → exit 1.
@@ -723,7 +1110,12 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 # markers can be lost while a title DL still matches. A guarded-skip therefore cannot
 # disprove a dropped sibling ref; on this off-process path (non-merge tip only) the
 # ~2-minute manual verification a false alarm costs is the right side of the asymmetry
-# vs a silently un-promoted shipped card.
+# vs a silently un-promoted shipped card. The card#8421 counts (`foreign`, `unsourced`) are
+# NOT in the guard either, and for the same reason: a repo-qualification rejection says
+# nothing about whether the RANGE was complete, which is the only question this die asks. A
+# release whose refs ALL matched other repos therefore still fails behind a squash tip — which
+# is right, because the two possible causes (nothing of ours shipped / our refs were dropped)
+# are exactly what a human has to tell apart there.
 if [ "$moved" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi

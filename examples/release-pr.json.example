@@ -1,5 +1,5 @@
 {
-  "_comment": "agent-board-toolkit per-repo release config. Copy to <your-repo>/.release-pr.json and edit. Consumed by bin/release-pr-body (scaffolds the release PR body), bin/release-artifacts-check (fails a release PR whose declared artifacts did not all move, and any PR that drops a declared entry without acknowledging it in retired_artifacts) and bin/promote-released-cards (moves shipped cards to the released stage). JSON has no comments; each field is documented in agent-board-toolkit/docs/INSTALL.md §4 — read the 'artifacts is a must-move-together SET' note there before editing that array, since it is now asserted rather than merely printed. Replace every placeholder â EXCEPT api_base, which you are meant to leave as a documentation placeholder: the real kanban host does not belong in a repo, and promote-released-cards reads $KANBAN_API_BASE in preference to it (INSTALL.md §4). Spell the placeholder as an RFC-2606 documentation host (https://kanban.example.com/api/v3) if you leave it unset, since that is the form board-card-start recognises as a placeholder and falls back to ~/.kanban-host.env for.",
+  "_comment": "agent-board-toolkit per-repo release config. Copy to <your-repo>/.release-pr.json and edit. Consumed by bin/release-pr-body (scaffolds the release PR body), bin/release-artifacts-check (fails a release PR whose declared artifacts did not all move, and any PR that drops a declared entry without acknowledging it in retired_artifacts) and bin/promote-released-cards (moves shipped cards to the released stage). JSON has no comments; each field is documented in agent-board-toolkit/docs/INSTALL.md §4 — read the 'artifacts is a must-move-together SET' note there before editing that array, since it is now asserted rather than merely printed. Replace every placeholder â EXCEPT api_base, which you are meant to leave as a documentation placeholder: the real kanban host does not belong in a repo, and promote-released-cards reads $KANBAN_API_BASE in preference to it (INSTALL.md §4). Spell the placeholder as an RFC-2606 documentation host (https://kanban.example.com/api/v3) if you leave it unset, since that is the form board-card-start recognises as a placeholder and falls back to ~/.kanban-host.env for. promote.source is REQUIRED and has no default: set it to the owner/repo this repo releases when the board tracks SEVERAL repos, or to * (a literal asterisk) to DECLARE that the board tracks exactly one repo. The asterisk is the single-repo answer and is byte-identical to the pre-card#8421 behaviour. dl_number and pr_number are REPO-SCOPED counters, so on a multi-repo board an unqualified match promotes another repo's cards into a terminal stage; that is why there is no safe default and promote-released-cards refuses to run until the key is present.",
   "dev_branch": "dev",
   "main_branch": "main",
   "version_file": "config/app.php",
@@ -14,6 +14,7 @@
   "promote": {
     "board_id": 0,
     "released_stage_id": 0,
-    "api_base": "https://YOUR-KANBAN-HOST/api/v3"
+    "api_base": "https://YOUR-KANBAN-HOST/api/v3",
+    "source": "REPLACE_ME"
   }
 }

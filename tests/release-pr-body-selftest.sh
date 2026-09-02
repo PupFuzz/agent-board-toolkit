@@ -697,7 +697,7 @@ cat > "$CR/.release-pr.json" <<'EOF'
 {
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
-  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "*" }
 }
 EOF
 
@@ -735,6 +735,71 @@ EOF
 covok="$(coverage_body)"
 eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
 eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+
+echo "== a card that EXISTS but carries no by-ref source is NOT reported as cardless (card#8421) =="
+# THE DEFECT, END TO END ACROSS THE TWO BINS. Under a repo-qualified `.promote.source`,
+# promote-released-cards will not MOVE a ref-matched card whose by-ref source it cannot derive
+# — but that card EXISTS and carries the ref. Its DL used to fall into the one `matched NO
+# card` WARNING line this section greps, so a release PR body told its author to "Create (or
+# correct) a board card" for a card already on the board. The remedy is the opposite one:
+# stamp the card that is there. Measured on the pre-fix pair, on exactly this fixture.
+#
+# EVERY BLOCK ABOVE RUNS UNDER `"source": "*"`, where no card can be unsourced — which is why
+# nothing here covered it. This block gets its OWN repo and config so that fixture is untouched.
+QC="$COV/qrepo"
+g init -q "$QC"
+echo one > "$QC/f"; g -C "$QC" add f; g -C "$QC" commit -qm "chore: init"; g -C "$QC" tag v0.1.0
+echo two > "$QC/f"; g -C "$QC" commit -qam "feat: a tracked thing (DL-77) (#43)"
+echo three > "$QC/f"; g -C "$QC" commit -qam "feat: an untracked thing (DL-99) (#44)"
+cat > "$QC/.release-pr.json" <<'EOF'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "acme/widget" }
+}
+EOF
+# The board holds card #42 for DL-77 with NO source-yielding field at all. DL-99 is on no card.
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-77"}}],"meta":{"last_page":1,"total":1}}
+EOF
+qbody() {  # <head-ref> — the body for v0.1.0..<head-ref> of the qualified fixture repo
+  ( cd "$QC" \
+    && PATH="$COV/bin:$HERE/../bin:$PATH" \
+       KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+       "$BIN" --version 0.2.0 --base v0.1.0 --head "$1" 2>/dev/null )
+}
+# ONLY the unsourced ref is shipped, so a body that still says "no tracking card" anywhere is
+# the defect, and there is no cardless ref to make the phrase legitimately appear.
+qonly="$(qbody HEAD~1)"
+eq "the coverage section MEASURED (qualified)"        "true"  "$(has '## Card coverage' "$qonly")"
+eq "the unsourced ref is NOT called cardless"         "false" "$(has 'no tracking card' "$qonly")"
+eq "…so the author is NOT told to create a card"      "false" "$(has 'Create (or correct) a board card' "$qonly")"
+eq "…it is reported as a card lacking a SOURCE"       "true"  "$(has 'no by-ref source' "$qonly")"
+eq "…naming the ref"                                  "true"  "$(has 'DL-77' "$qonly")"
+eq "…and the remedy is to STAMP the existing card"    "true"  "$(has 'kbcard patch --pr-url' "$qonly")"
+eq "…and it does not read as all-clear either"        "false" "$(has 'All shipped refs have a tracking card' "$qonly")"
+# BOTH kinds at once: the two reports are independent lines, each carrying only its own ref.
+qboth="$(qbody HEAD)"
+eq "both: the cardless DL-99 IS reported cardless"    "true"  "$(has '**Shipped refs with no tracking card:** DL-99' "$qboth")"
+eq "both: …and the unsourced DL-77 is not in it"      "false" "$(has 'no tracking card:** DL-77' "$qboth")"
+eq "both: the unsourced line names DL-77"             "true"  "$(has 'no by-ref source:** DL-77' "$qboth")"
+eq "both: …and the create-a-card advice IS present"   "true"  "$(has 'Create (or correct) a board card' "$qboth")"
+# CONTROL — the SAME repo, the SAME range, the SAME board, under the single-repo DECLARATION.
+# Card #42 is attributable there, so DL-77 is simply covered and no second line exists: the
+# split above is repo qualification acting, not this fixture being unusual.
+# The key is flipped in the repo's OWN config, not handed over as a sibling --config:
+# `card_coverage_section` invokes the promoter with no --config at all, so the promoter reads
+# `.release-pr.json` from the CWD and a sibling file would leave this control re-running the
+# qualified case (observed — it failed for that reason before this line existed).
+jq '.promote.source = "*"' "$QC/.release-pr.json" > "$COV/qstar.json"
+cp "$COV/qstar.json" "$QC/.release-pr.json"
+qstar="$(qbody HEAD~1)"
+eq "control: under '*' the same ref reports clean"    "true"  "$(has 'All shipped refs have a tracking card' "$qstar")"
+eq "control: …with no unsourced line at all"          "false" "$(has 'no by-ref source' "$qstar")"
+# restore the board the blocks below read
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}},
+         {"id":9999,"workflow_stage_id":51,"payload":{}}],"meta":{"last_page":1,"total":2}}
+EOF
 
 echo "== the coverage section is EMITTED ONLY when it carries a measurement (card#7038) =="
 # WHAT CHANGED. The section used to render unconditionally, and when it could not check

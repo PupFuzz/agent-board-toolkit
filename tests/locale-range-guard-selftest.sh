@@ -253,13 +253,13 @@ both "marker does not parse a U+2163 board key" "NO-PARSE" "$ROMAN4"  "$MARKER_K
 both "marker parses the toolkit key (posctl)"   "PARSED"   "toolkit"  "$MARKER_KEY"
 
 # ---------------------------------------------------------------------------
-echo "== promote-released-cards — the standalone's glob guards (uint_ok / uint_csv_ok) =="
+echo "== promote-released-cards — the standalone's glob guards (uint_ok / uint_csv_ok / src_charset_ok) =="
 # Network-free by ordering: both numeric guards run BEFORE the token check, and the
 # --shipped-stages guard runs before the config file is even read. The ASCII positive
 # control is the NEXT refusal in each sequence, which is what proves the guard passed.
 PBOARD='D="$(mktemp -d)"; cd "$D"
         jq -n --arg b "$IN" "{version_file:\"VERSION\",
-          promote:{board_id:\$b,released_stage_id:1,api_base:\"https://h/api/v3\"}}" > .release-pr.json
+          promote:{board_id:\$b,released_stage_id:1,api_base:\"https://h/api/v3\",source:\"*\"}}" > .release-pr.json
         unset KANBAN_WRITEBACK_TOKEN
         out="$(bash "$ROOT/bin/promote-released-cards" --dry-run 2>&1 || true)"
         case "$out" in *"board_id must be numeric"*) echo REJECT ;;
@@ -276,6 +276,38 @@ PSTAGES='D="$(mktemp -d)"; cd "$D"
 both "promote --shipped-stages rejects U+0663"      "REJECT"     "$AI3"   "$PSTAGES"
 both "promote --shipped-stages rejects 84,U+0663"   "REJECT"     "84,$AI3" "$PSTAGES"
 both "promote --shipped-stages accepts 84,85 (posctl)" "PAST-GUARD" "84,85" "$PSTAGES"
+
+# src_charset_ok — the REPO-SLUG charset guard on `.promote.source` / `--source` (card#8421).
+# THIS CASE EXISTS BECAUSE THE SITE HAD NO BEHAVIOUR CASE AT ALL while two comments in the bin
+# cited "the class tests/locale-range-guard-selftest.sh exists for": the file's cases stopped at
+# uint_ok/uint_csv_ok, and the static backstop below matched only the `=~` spelling, so NOTHING
+# here reached a glob bracket range. Measured with `local LC_ALL=C` removed from src_charset_ok:
+# under en_US.utf8 the slug below is ACCEPTED (it reaches the token guard) while every other arm
+# in this file stays green — i.e. the citation was true of the class and false of the site.
+#
+# The value is a real-looking `<owner>/<repo>` carrying ONE non-ASCII digit, which is the
+# discriminating input: it passes the SHAPE `case` (one slash, two non-empty parts) and the
+# whitespace arm, so the charset guard is the only thing that can refuse it. A card's derived
+# source can never equal it, so accepting it is a silently zero-promoting release.
+PSRC='D="$(mktemp -d)"; cd "$D"
+      jq -n "{version_file:\"VERSION\",
+        promote:{board_id:\"12\",released_stage_id:1,api_base:\"https://h/api/v3\",source:\"*\"}}" > .release-pr.json
+      unset KANBAN_WRITEBACK_TOKEN
+      out="$(bash "$ROOT/bin/promote-released-cards" --dry-run --source "$IN" 2>&1 || true)"
+      case "$out" in *"only letters, digits and"*) echo REJECT ;;
+                     *"KANBAN_WRITEBACK_TOKEN is not set"*) echo PAST-GUARD ;; *) echo OTHER ;; esac
+      rm -rf "$D"'
+#
+# ⚠ U+00E9 IS THE WRONG FIXTURE FOR A GLOB, and this is not a style note: measured on the
+# reference host, en_US.utf8 widens the GLOB class `[!a-zA-Z0-9._/-]` to admit U+0663 and
+# U+2163 but NOT U+00E9, while the REGEX form `[A-Za-z0-9_-]` (the TAGSAFE cases above) admits
+# all three. An arm written with EACUTE here therefore stays green with the pin REMOVED — a
+# decoration that reads exactly like coverage. Both arms below were watched red against the
+# unpinned bin; do not swap the fixtures without re-watching them.
+both "promote --source rejects a U+0663 in the repo name" "REJECT"     "acme/widg${AI3}t"     "$PSRC"
+both "promote --source rejects a U+2163 in the owner"     "REJECT"     "acme${ROMAN4}/widget" "$PSRC"
+both "promote --source accepts acme/widget (posctl)"      "PAST-GUARD" "acme/widget"          "$PSRC"
+
 
 # ---------------------------------------------------------------------------
 echo "== dl-a1-register-field --sentinel + adopt-to-dl <card-id>/--issue =="
@@ -324,6 +356,24 @@ ISSUE='T="$(mktemp -d)"; export HOME="$T"
 both "adopt-to-dl --issue rejects U+0663"      "REJECT"     "$AI3" "$ISSUE"
 both "adopt-to-dl --issue accepts 77 (posctl)" "PAST-GUARD" "77"   "$ISSUE"
 
+# adopt-to-dl --repo — the OTHER end of the same correlation as promote --source above, and the
+# second site that had no behaviour case while a comment cited this file (card#8421). The
+# predicate now lives in the lib as `kb_is_repo_slug`, so what this exercises is the lib pin
+# (kb_ere_match) reached THROUGH the shipped bin: measured with `local LC_ALL=C` removed from
+# kb_ere_match, both slugs below are ACCEPTED under en_US.utf8 and fall through to the --board
+# gate. `--board` is deliberately NOT passed, so PAST-GUARD is that gate's own refusal — an
+# AFFIRMATIVE next stop rather than a `*)` catch-all, and it doubles as the proof that a repo
+# this run could not vouch for was never stamped onto a card.
+REPOSLUG='T="$(mktemp -d)"; export HOME="$T"
+          out="$(bash "$ROOT/bin/adopt-to-dl" 4945 --repo "$IN" 2>&1 || true)"
+          case "$out" in *"--repo must be a bare <owner>/<name>"*) echo REJECT ;;
+                         *"--board <name> is required"*) echo PAST-GUARD ;; *) echo OTHER ;; esac
+          rm -rf "$T"'
+both "adopt-to-dl --repo rejects a U+0663 in the repo name" "REJECT"     "acme/widg${AI3}t"     "$REPOSLUG"
+both "adopt-to-dl --repo rejects a U+2163 in the owner"     "REJECT"     "acme${ROMAN4}/widget" "$REPOSLUG"
+both "adopt-to-dl --repo accepts acme/widget (posctl)"      "PAST-GUARD" "acme/widget"          "$REPOSLUG"
+
+
 # ---------------------------------------------------------------------------
 echo "== .github/workflows/auto-tag-version.yml — the merge-time VERSION gate =="
 # The definition is EXTRACTED from the shipped workflow rather than restated here, so a
@@ -344,17 +394,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-echo "== static backstop: no bare bash bracket-RANGE regex left in bin/ or hooks/ =="
+echo "== static backstop: no bare bash bracket-RANGE left in bin/ or hooks/ =="
 # Behavior cases cannot reach every adopter (next-dl's three need a live board), and a NEW
-# site would be born defective with no case watching it. This scan is the backstop: a
-# `[[ =~ ]]` whose pattern carries a bracket range, on a non-comment line, with no
-# `LC_ALL=C` on that line or the two above it.
+# site would be born defective with no case watching it. This scan is the backstop.
 #
-# The exemption is that STRUCTURAL PROPERTY, not a list of blessed lines: "this range is
+# ⛔ BOTH SPELLINGS ARE IN SCOPE, and until card#8421 only one of them was. bash has TWO
+# bracket-range syntaxes and they widen identically:
+#   * the REGEX form  `[[ $x =~ ^[0-9]+$ ]]`
+#   * the GLOB  form  `case "$x" in *[!0-9]*) …`
+# The header of this file has always claimed the glob form, and the matcher only ever tested
+# `=~`. That gap was not theoretical: `src_charset_ok` in bin/promote-released-cards and the
+# `--repo` charset arm in bin/adopt-to-dl are both GLOB guards, both carried a `local LC_ALL=C`
+# whose only stated justification was "the class this selftest exists for", and NOTHING in this
+# file reached either — neither a behavior case (there was none until the two above) nor this
+# scan. A guard whose citation points at a test that does not cover it is worse than an
+# uncited one: the next author reads the citation and believes the line is watched.
+#
+# HOW THE GLOB FORM IS RECOGNISED WITHOUT DROWNING IN FALSE POSITIVES. A bracket range inside a
+# QUOTED string is an argument to grep/sed/awk/jq/python, and those engines do NOT widen (that
+# asymmetry is what identifies bash as the cause — see this file's header). So each line is
+# quote-STRIPPED first, and only a range surviving that strip is a bash glob. It must also be in
+# case-statement context: either the line opens one (`case … in`), or the scanner is between a
+# `case … in` and its `esac`, which is what reaches an arm written on its own line
+# (`2[0-9][0-9])`). Measured over bin/ + hooks/ this yields exactly the real glob guards and no
+# grep/sed/awk/jq line at all; without the quote strip it yields 40+ lines of other engines'
+# regexes, which is a backstop nobody would keep green.
+#
+# THE EXEMPTION IS A STRUCTURAL PROPERTY, not a list of blessed lines: "this range is
 # matched under the C locale" is exactly what makes a range legitimate, and a hardcoded
 # allow-list would have silently exempted any line that happened to look like one of them
 # (an earlier draft's `[[ "$1" =~` exemption did precisely that, and let a re-minted
-# kb_dl_num through). Both halves of the window rule are positive-controlled below.
+# kb_dl_num through). It is satisfied two ways, and BOTH are positive-controlled below:
+#   * a WINDOW pin — `LC_ALL=C` on the line or the two above it (the `local LC_ALL=C` idiom);
+#   * a FILE pin — a top-level `export LC_ALL=C`, which covers every range below it in that
+#     file. bin/release-tag-check and bin/release-artifacts-check are pinned this way, and
+#     without this arm the widened matcher reports release-tag-check's `require_uint` as a
+#     defect it is not (measured: that is exactly what the first draft of this widening did).
 #
 # The matcher is an awk REGEX LITERAL, not a -v string: awk processes backslash escapes in
 # a -v assignment, so `\[` would arrive as a bare `[` and the pattern would silently match
@@ -365,13 +440,26 @@ scan_ranges() {
     while IFS= read -r f; do files+=("$f"); done < <(find "$dir" -maxdepth 1 -type f | sort)
     [[ ${#files[@]} -gt 0 ]] || return 0
     awk '
-        FNR == 1 { p1 = ""; p2 = "" }
+        FNR == 1 { p1 = ""; p2 = ""; incase = 0; filepin = 0 }
         {
             line = $0
             sub(/^[[:space:]]+/, "", line)
             if (line ~ /^#/) { p2 = p1; p1 = $0; next }        # comments describe the defect
-            if ($0 ~ /=~[^#]*\[\^?[A-Za-z0-9]-[A-Za-z0-9]/ && ($0 p1 p2) !~ /LC_ALL=C/)
+            # A file-level `export LC_ALL=C` covers every range below it in this file.
+            if (line ~ /^export[[:space:]]+LC_ALL=C([[:space:]]|$)/) filepin = 1
+            # Quote-strip: a range inside a quoted string belongs to grep/sed/awk/jq, whose
+            # engines do not widen. What survives is bash syntax.
+            bare = $0
+            gsub(/\047[^\047]*\047/, "", bare)
+            gsub(/"[^"]*"/, "", bare)
+            hit = 0
+            if ($0 ~ /=~[^#]*\[\^?[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
+            if ((incase || bare ~ /case[[:space:]].*[[:space:]]in([[:space:]]|$)/) &&
+                bare ~ /\[[!^]?[^]]*[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
+            if (hit && !filepin && ($0 p1 p2) !~ /LC_ALL=C/)
                 printf "%s:%d:%s\n", FILENAME, FNR, $0
+            if (bare ~ /case[[:space:]].*[[:space:]]in([[:space:]]|$)/) incase = 1
+            if (bare ~ /(^|[[:space:];])esac([[:space:];]|$)/) incase = 0
             p2 = p1; p1 = $0
         }
     ' "${files[@]}" 2>/dev/null || true
@@ -398,8 +486,46 @@ printf '%s\n' 'kb_is_uint "$x" || die "not numeric"'             > "$pos/benign-
 # The window rule's other half: scoped by an LC_ALL=C two lines above ⇒ NOT flagged.
 printf '%s\n' 'marker() {' '    local LC_ALL=C' '    [[ "$1" =~ ^[A-Za-z0-9_-]+#([0-9]+) ]]' '}' \
     > "$pos/benign-scoped"
+# THE GLOB HALF of the matcher (card#8421), controlled in both directions. Without these the
+# widening is asserted by nothing: the shipped tree is CLEAN of unscoped glob ranges, so a
+# widened predicate that silently matched nothing would leave every arm above green.
+printf '%s\n' 'require_uint() { case "${2:-}" in '"''"'|*[!0-9]*) return 1 ;; esac; }' \
+    > "$pos/reminted-glob-oneliner"
+# An arm on its OWN line, which the `case … in` line alone cannot see — this is the shape the
+# scanner's incase/esac tracking exists for, and bin/next-dl carried exactly it.
+printf '%s\n' 'status_ok() {' '    case "$http" in' '        2[0-9][0-9]) return 0 ;;' \
+    '        *) return 1 ;;' '    esac' '}' > "$pos/reminted-glob-arm"
+# BENIGN, and each rules out one way the widened matcher could be wrong:
+#   * a glob range with the window pin — the `local LC_ALL=C` idiom the real guards use;
+#   * a glob range under a FILE pin — bin/release-tag-check's shape, reported as a defect by
+#     the first draft of this widening;
+#   * a bracket range inside a QUOTED grep/sed argument — the 40+ false positives the quote
+#     strip removes, and the reason the matcher is not simply "any bracket range".
+printf '%s\n' 'uint_ok() { local LC_ALL=C; case "${1:-}" in '"''"'|*[!0-9]*) return 1 ;; esac; }' \
+    > "$pos/benign-glob-scoped"
+printf '%s\n' '#!/usr/bin/env bash' 'export LC_ALL=C' \
+    'require_uint() { case "${2:-}" in '"''"'|*[!0-9]*) return 1 ;; esac; }' \
+    > "$pos/benign-glob-filepin"
+printf '%s\n' 'n="$(printf %s "$x" | grep -oE '"'"'^[0-9]+$'"'"' | head -1)"' \
+    > "$pos/benign-quoted-range"
+# An esac must CLOSE the case: a range after it is not in a case arm, and a scanner that never
+# reset `incase` would flag every later line in the file.
+printf '%s\n' 'f() {' '    case "$x" in a) : ;; esac' '    y=$(sed -E '"'"'s/[a-z]+//'"'"')' '}' \
+    > "$pos/benign-after-esac"
 pos_hits="$(scan_ranges "$pos")"
-eq "scanner flags exactly the three re-minted files" "3" "$(n_hits "$pos_hits")"
+eq "scanner flags exactly the five re-minted files" "5" "$(n_hits "$pos_hits")"
+case "$pos_hits" in *reminted-glob-oneliner:*) ok "glob range in a one-line case flagged";;
+                    *) bad "glob range in a one-line case NOT flagged (the widening does nothing)";; esac
+case "$pos_hits" in *reminted-glob-arm:*) ok "glob range in a bare case ARM flagged";;
+                    *) bad "glob range in a bare case ARM NOT flagged (incase tracking is dead)";; esac
+case "$pos_hits" in *benign-glob-scoped:*) bad "an LC_ALL=C-scoped GLOB range was flagged";;
+                    *) ok "LC_ALL=C-scoped glob range not flagged";; esac
+case "$pos_hits" in *benign-glob-filepin:*) bad "a file-level 'export LC_ALL=C' did not exempt";;
+                    *) ok "file-pinned glob range not flagged";; esac
+case "$pos_hits" in *benign-quoted-range:*) bad "a QUOTED grep range was flagged (quote strip is dead)";;
+                    *) ok "quoted grep range not flagged";; esac
+case "$pos_hits" in *benign-after-esac:*) bad "a range AFTER esac was flagged (incase never resets)";;
+                    *) ok "range after esac not flagged";; esac
 case "$pos_hits" in *reminted-digit:*)     ok "digit range flagged";;      *) bad "digit range NOT flagged";; esac
 case "$pos_hits" in *reminted-alnum:*)     ok "alnum range flagged";;      *) bad "alnum range NOT flagged";; esac
 case "$pos_hits" in *reminted-lookalike:*) ok "unscoped look-alike flagged";; *) bad "unscoped look-alike NOT flagged (an allow-list would have missed it)";; esac
