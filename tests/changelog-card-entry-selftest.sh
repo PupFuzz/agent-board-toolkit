@@ -520,8 +520,17 @@ _branch_added_lines() {
         awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}'
 }
 
-# _prefold_heading <repo> <path> <base> <head> <merged-changelog> — the released label to NAME in
-# the remedy, or nothing at rc 1 when the fold diagnosis is not established.
+# _prefold_heading <repo> <path> <base> <head> <merged-changelog> <card> — the released label to
+# NAME in <card>'s remedy, or nothing at rc 1 when the fold diagnosis is not established for it.
+#
+# ⚠ THE QUESTION IS PER-CARD, and that is what makes the remedy safe when `_missing` names more
+# than one (card#8442 R1). The needles are narrowed to the line-initial `- **<card>**` bullets THIS
+# BRANCH ADDED, so the label answers "where did THIS card's entry land" rather than "does any line
+# this branch wrote sit in a released section". Without the narrowing, one folded card would put
+# every other missing card under a "do NOT file a second entry" instruction that is false for
+# them — they have no entry to move, and following it would leave them undocumented. It also
+# tightens the single-card case: a branch line that is not a card bullet at all can no longer mint
+# a label.
 #
 # THE FOLD IS ASSERTED, NOT INFERRED FROM THE LABEL. Bridge #632 R1 measured two shapes that make
 # `_added_section_label` return a released label while the fold sentence is FALSE, and both are
@@ -555,13 +564,21 @@ _branch_added_lines() {
 # empty base is a legal command with a different meaning — a diagnosis derived from it would be a
 # confident claim about a range nobody asked for.
 _prefold_heading() {
-    local repo="$1" path="$2" base="$3" head="$4" merged="$5"
+    local repo="$1" path="$2" base="$3" head="$4" merged="$5" card="$6"
     local d="$TMP/prefold" label='' mb='' rc=0
-    [[ -n "$base" && -n "$head" ]] || return 1
+    [[ -n "$base" && -n "$head" && -n "$card" ]] || return 1
     rm -rf "$d"
     mkdir -p "$d"
     {
-        _branch_added_lines "$repo" "$path" "$base" "$head" > "$d/added" &&
+        _branch_added_lines "$repo" "$path" "$base" "$head" > "$d/all-added" &&
+        # The needle set, narrowed to this card's own bullets. `index(...) == 1` is `_discharged`'s
+        # line-initial rule spelled literally — the token carries `#`, which is not a regex
+        # metacharacter, but the version labels alongside it are matched by `index()` everywhere
+        # else in this file and a lone regex here would be the odd one out.
+        awk -v want="- **$card**" 'index($0, want) == 1' "$d/all-added" > "$d/added" &&
+        # No bullet for this card among the branch's additions ⇒ nothing was folded FOR IT, so the
+        # diagnosis stops here rather than borrowing another card's evidence.
+        [[ -s "$d/added" ]] &&
         git -C "$repo" show "$base:$path" > "$d/baseline" &&
         mb="$(git -C "$repo" merge-base "$base" "$head")" &&
         git -C "$repo" show "$mb:$path" > "$d/mergebase" &&
@@ -580,24 +597,42 @@ _prefold_heading() {
     printf '%s\n' "$label"
 }
 
-# _missing_remedy <repo> <path> <base> <head> <merged-changelog> — the text printed beside a red
-# `_missing`. ONE spelling of both arms, in one function: a guard's remediation string is a doc
-# surface, and a per-caller copy is two versions of one instruction free to drift.
+# _missing_remedy <repo> <path> <base> <head> <merged-changelog> <missing-cards> — the text printed
+# beside a red `_missing`, ONE LINE PER MISSING CARD. `<missing-cards>` is `_missing`'s own output.
+# ONE spelling of every arm, in one function: a guard's remediation string is a doc surface, and a
+# per-caller copy is two versions of one instruction free to drift.
 #
-# The `|| heading=''` collapses EVERY refusal above — an unestablished diagnosis and a tooling
-# failure alike mean "this is not established", and the remedy for that is the one this gate
+# ⛔ PER-CARD IS THE POINT, not formatting (card#8442 R1). `_missing` routinely names more than one
+# card, and a fold is a property of ONE card's bullet — so a single verdict-wide sentence would
+# tell the author of a genuinely undocumented card "do NOT file a second entry", which is the exact
+# wrong instruction and would leave that card undocumented. Each card is asked separately and gets
+# the arm that is true of it; the shared paragraph prints only when at least one card really was
+# folded, and it points back at those lines rather than at "your entry".
+#
+# The `|| heading=''` collapses EVERY refusal in `_prefold_heading` — an unestablished diagnosis
+# and a tooling failure alike mean "not established", and the remedy for that is the one this gate
 # always printed. Naming a fold nobody verified would send the author to edit a RELEASED section.
 _missing_remedy() {
-    local heading=''
-    heading="$(_prefold_heading "$@")" || heading=''
-    if [[ -n "$heading" ]]; then
-        printf 'your entry landed under `[%s]` after the fold — move it back to `[Unreleased]`.\n' "$heading"
-        printf 'v%s was cut while this branch was open. The fold renamed the `[Unreleased]` heading your\n' "$heading"
-        printf 'entry sat under and opened a fresh one above it, so the merge left the entry inside a\n'
-        printf 'RELEASED section, which now claims work that did not ship in it. Do NOT file a second\n'
-        printf 'entry — move the one you already have.\n'
-    else
-        printf 'add a line-initial `- **card#NNNN**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.\n'
+    local repo="$1" path="$2" base="$3" head="$4" merged="$5" missing="$6"
+    local card heading folded=0
+    while IFS= read -r card; do
+        [[ -n "$card" ]] || continue
+        heading="$(_prefold_heading "$repo" "$path" "$base" "$head" "$merged" "$card")" || heading=''
+        if [[ -n "$heading" ]]; then
+            folded=1
+            printf '%s — your entry landed under `[%s]` after the fold; move it back to `[Unreleased]`.\n' \
+                "$card" "$heading"
+        else
+            printf '%s — add a line-initial `- **%s**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.\n' \
+                "$card" "$card"
+        fi
+    done <<< "$missing"
+    if [[ "$folded" -eq 1 ]]; then
+        printf 'A release was cut while this branch was open. The fold renamed the `[Unreleased]` heading\n'
+        printf 'those entries sat under and opened a fresh one above it, so the merge left them inside a\n'
+        printf 'RELEASED section, which now claims work that did not ship in it. Do NOT file a second entry\n'
+        printf 'for a card named above as FOLDED — move the one it already has. The other lines above are\n'
+        printf 'ordinary missing entries and do need a new bullet.\n'
     fi
 }
 
@@ -1200,19 +1235,19 @@ _pf_prmerge() {
     g -C "$1" merge -q --no-ff --no-edit "$2" >/dev/null 2>&1 || rc=$?
     echo "$rc"
 }
-# _pf_remedy <dir> — the LIVE LEG's two calls, verbatim: derive the refs off the merge commit,
+# _pf_remedy <dir> <missing-cards> — the LIVE LEG's two calls, verbatim: derive the refs off the merge commit,
 # then ask for the remedy. `GITHUB_BASE_REF` is what a pull_request run sets and what
 # `_pr_merge_refs` requires; setting it here is the fixture standing in for that event.
 _pf_remedy() {
     local refs
     refs="$(GITHUB_BASE_REF=dev _pr_merge_refs "$1")"
-    _missing_remedy "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md"
+    _missing_remedy "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md" "$2"
 }
-# _pf_heading <dir> — the same derivation, stopping at the label the three legs establish.
+# _pf_heading <dir> <card> — the same derivation, stopping at the label the three legs establish.
 _pf_heading() {
     local refs
     refs="$(GITHUB_BASE_REF=dev _pr_merge_refs "$1")"
-    _prefold_heading "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md" || true
+    _prefold_heading "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md" "$2" || true
 }
 # _pf_label <dir> — `_added_section_label` alone, off the same merge commit. Every negative
 # fixture asserts on this too: without it, "the generic text printed" is equally satisfied by a
@@ -1228,8 +1263,12 @@ _pf_label() {
     rm -rf "$d"
 }
 
-PF_FOLD_LINE='your entry landed under `[0.24.0]` after the fold — move it back to `[Unreleased]`.'
-PF_GENERIC='add a line-initial `- **card#NNNN**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
+# Spelled out per card rather than built by a helper: an expectation formatted by the same rule the
+# implementation uses would agree with it whatever that rule became.
+PF_FOLD_9100='card#9100 — your entry landed under `[0.24.0]` after the fold; move it back to `[Unreleased]`.'
+PF_GEN_9100='card#9100 — add a line-initial `- **card#9100**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
+PF_GEN_8902='card#8902 — add a line-initial `- **card#8902**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
+PF_GEN_9200='card#9200 — add a line-initial `- **card#9200**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
 printf 'fix(x): the branch entry (card#9100)\n' > "$TMP/prefold-subjects"
 
 echo "== prove-it-can-fail: a PRE-FOLD branch's entry is folded under [0.24.0] and NAMED =="
@@ -1251,19 +1290,20 @@ eq "the entry survives the merge (witness: this is a MOVE, not a loss)" "true" \
 eq "… under the FOLDED heading, outside the region" "0.24.0" "$(_pf_label "$PFF")"
 eq "THE VERDICT IS UNCHANGED: the card is still reported missing its entry" "card#9100" \
    "$(_missing "$TMP/prefold-subjects" "$PFF/CHANGELOG.md" "0.24.0")"
-eq "the three legs establish the fold and name the heading" "0.24.0" "$(_pf_heading "$PFF")"
+eq "the three legs establish the fold and name the heading" "0.24.0" "$(_pf_heading "$PFF" card#9100)"
 # ONE call, three assertions off the captured text: the leading line, the absence of the generic
 # arm, and the instruction the card exists to deliver. `${x%%$'\n'*}` rather than `| head -1` —
 # nothing in this file reaches for a pipeline it does not need.
-PF_OUT="$(_pf_remedy "$PFF")"
-eq "so the remedy names the MOVE, not a second entry" "$PF_FOLD_LINE" "${PF_OUT%%$'\n'*}"
-eq "and it says so out loud (witness: the generic text is NOT what printed)" "false" \
-   "$(has_line "$PF_GENERIC" "$PF_OUT")"
+PF_OUT="$(_pf_remedy "$PFF" card#9100)"
+eq "so the remedy names the MOVE, not a second entry" "$PF_FOLD_9100" "${PF_OUT%%$'\n'*}"
+eq "and it says so out loud (witness: the generic arm is NOT what printed for it)" "false" \
+   "$(has_line "$PF_GEN_9100" "$PF_OUT")"
 # The instruction this whole card exists to deliver, asserted as a LINE rather than left to the
 # first line's summary: the remedy an author acted on before this change was "your entry is
 # missing", and the file that came back had two.
 eq "the remedy tells the author NOT to file a second entry" "true" \
-   "$(has_line 'entry — move the one you already have.' "$PF_OUT")"
+   "$(has_line 'for a card named above as FOLDED — move the one it already has. The other lines above are' \
+       "$PF_OUT")"
 
 echo "== CONTROL: a STALE-FIX branch editing a section that already stood at its fork is NOT =="
 # The first false positive bridge #632 R1 measured. The fold happened BEFORE this branch existed,
@@ -1281,8 +1321,9 @@ g -C "$PFS" commit -qam 'docs(changelog): correct a shipped entry (card#8902)'
 eq "the merge is clean here too" "0" "$(_pf_prmerge "$PFS" feat)"
 eq "the LABEL is the same one the fold fixture returns (witness: leg 3 is what differs)" "0.24.0" \
    "$(_pf_label "$PFS")"
-eq "but 0.24.0 already stood at the merge-base, so no fold is established" "" "$(_pf_heading "$PFS")"
-eq "and the remedy is the generic one" "$PF_GENERIC" "$(_pf_remedy "$PFS")"
+eq "but 0.24.0 already stood at the merge-base, so no fold is established" "" \
+   "$(_pf_heading "$PFS" card#8902)"
+eq "and the remedy is the generic one" "$PF_GEN_8902" "$(_pf_remedy "$PFS" card#8902)"
 
 echo "== CONTROL: a branch that CUTS the section itself is not told somebody else cut it =="
 # The second shape, and the only fixture LEG 2 decides: the release PR adds `## [0.24.0]` and
@@ -1303,8 +1344,8 @@ eq "the LABEL is again 0.24.0 (witness: leg 2 is what differs)" "0.24.0" "$(_pf_
 eq "… and that heading stands on NO base — the branch brought it (witness for leg 2)" "false" \
    "$(g -C "$PFC" show 'HEAD^1:CHANGELOG.md' > "$TMP/pf-cuts-base" &&
       _has_version_header "$TMP/pf-cuts-base" 0.24.0 && echo true || echo false)"
-eq "so no fold is established" "" "$(_pf_heading "$PFC")"
-eq "and the remedy is the generic one" "$PF_GENERIC" "$(_pf_remedy "$PFC")"
+eq "so no fold is established" "" "$(_pf_heading "$PFC" card#9100)"
+eq "and the remedy is the generic one" "$PF_GEN_9100" "$(_pf_remedy "$PFC" card#9100)"
 
 echo "== THE DISCLOSED RESIDUAL: a pre-fold branch that already MERGED the fold drops to generic =="
 # Same defect as the first fixture — the entry really is stranded under [0.24.0] and really was
@@ -1332,8 +1373,50 @@ eq "the merge-base IS the folded base, so leg 3 goes false" "true" \
    "$(g -C "$PFR" show \
         "$(g -C "$PFR" merge-base 'HEAD^1' 'HEAD^2'):CHANGELOG.md" > "$TMP/pf-res-mb" &&
       _has_version_header "$TMP/pf-res-mb" 0.24.0 && echo true || echo false)"
-eq "so the diagnosis is not established, and the generic remedy prints" "$PF_GENERIC" \
-   "$(_pf_remedy "$PFR")"
+eq "so the diagnosis is not established, and the generic remedy prints" "$PF_GEN_9100" \
+   "$(_pf_remedy "$PFR" card#9100)"
+
+echo "== TWO missing cards, ONE folded: each gets the arm that is TRUE OF IT =="
+# The shape a verdict-wide sentence gets WRONG, and the reason the needles are scoped per card
+# (card#8442 R1). `_missing` routinely names several cards; a fold is a property of ONE card's
+# bullet. Before the scoping, one folded card put every other missing card under "do NOT file a
+# second entry" — the exact wrong instruction for a card that has no entry to move, and following
+# it leaves that card undocumented, which is the failure this whole gate exists to prevent.
+PFM="$TMP/prefold-multi"
+_pf_newrepo "$PFM"
+g -C "$PFM" checkout -q -b feat
+_pf_file_entry "$PFM" '- **card#9100** — the entry, filed while [Unreleased] was still open.'
+g -C "$PFM" commit -qam 'fix(x): the branch entry (card#9100)'
+# The second card ships with NO entry at all — an ordinary omission, riding the same branch.
+printf 'a second change, documented nowhere\n' > "$PFM/other.txt"
+g -C "$PFM" add other.txt && g -C "$PFM" commit -qm 'feat(y): a change with no entry (card#9200)'
+g -C "$PFM" checkout -q dev
+_pf_fold "$PFM" 0.24.0
+g -C "$PFM" commit -qam 'chore(release): v0.24.0 (#301)'
+eq "the merge is clean here too" "0" "$(_pf_prmerge "$PFM" feat)"
+printf 'fix(x): the branch entry (card#9100)\nfeat(y): a change with no entry (card#9200)\n' \
+    > "$TMP/prefold-subjects-multi"
+PF_MULTI_MISSING="$(_missing "$TMP/prefold-subjects-multi" "$PFM/CHANGELOG.md" 0.24.0)"
+eq "BOTH cards are reported missing — the verdict is unchanged for either" "card#9100
+card#9200" "$PF_MULTI_MISSING"
+# Only card#9100's bullet was folded; card#9200 never had one. The two arms must not be swapped
+# and must not be merged.
+eq "card#9100's own bullet is located under the fold" "0.24.0" \
+   "$(_pf_heading "$PFM" card#9100)"
+eq "card#9200 has no bullet the branch added, so nothing is established for it" "" \
+   "$(_pf_heading "$PFM" card#9200)"
+PF_MULTI="$(_pf_remedy "$PFM" "$PF_MULTI_MISSING")"
+eq "the folded card is told to MOVE its entry" "true" "$(has_line "$PF_FOLD_9100" "$PF_MULTI")"
+eq "and the undocumented card is told to ADD one — not to withhold it" "true" \
+   "$(has_line "$PF_GEN_9200" "$PF_MULTI")"
+# The two witnesses that make the pair about SCOPING rather than about ordering: neither card
+# receives the other's arm.
+eq "the undocumented card does NOT get the fold sentence" "false" \
+   "$(has_line "card#9200 — your entry landed under \`[0.24.0]\` after the fold; move it back to \`[Unreleased]\`." \
+       "$PF_MULTI")"
+eq "the folded card does NOT get the generic add" "false" "$(has_line "$PF_GEN_9100" "$PF_MULTI")"
+eq "and the shared paragraph scopes itself to the cards named as folded" "true" \
+   "$(has_line 'ordinary missing entries and do need a new bullet.' "$PF_MULTI")"
 
 echo "== a checkout that is NOT a pull_request merge ref establishes nothing, by design =="
 # The other residual, and the reason it is safe: a local run has no merge commit to read parents
@@ -1363,11 +1446,11 @@ eq "on the pull_request shape the refs ARE derived — the per-call value decide
    "$(g -C "$PFF" rev-parse HEAD^1) $(g -C "$PFF" rev-parse HEAD^2)" \
    "$(export GITHUB_BASE_REF=''; GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
 eq "with GITHUB_BASE_REF EMPTY nothing is derived from that same merge commit, under an EXPORTED one" \
-   "" "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF= _pr_merge_refs "$PFF")"
+   "" "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF='' _pr_merge_refs "$PFF")"
 g -C "$PFF" checkout -q feat
 eq "and on a non-merge checkout, nothing is derived even on a pull_request event" "" \
    "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
-eq "so the remedy falls back to the generic text" "$PF_GENERIC" "$(_pf_remedy "$PFF")"
+eq "so the remedy falls back to the generic text" "$PF_GEN_9100" "$(_pf_remedy "$PFF" card#9100)"
 g -C "$PFF" checkout -q pr-feat
 
 echo "== the locator subtracts what the BASELINE already carries, and still finds what it does not =="
@@ -1489,7 +1572,7 @@ if [[ -n "$MISSING" ]]; then
     while IFS= read -r REMEDY_LINE; do
         printf '  ..   %s\n' "$REMEDY_LINE" >&2
     done <<< "$(_missing_remedy "$ROOT" docs/CHANGELOG.md \
-        "${PR_REFS%% *}" "${PR_REFS##* }" "$CHANGELOG")"
+        "${PR_REFS%% *}" "${PR_REFS##* }" "$CHANGELOG" "$MISSING")"
 fi
 
 echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
