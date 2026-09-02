@@ -1339,14 +1339,34 @@ echo "== a checkout that is NOT a pull_request merge ref establishes nothing, by
 # The other residual, and the reason it is safe: a local run has no merge commit to read parents
 # off, so it takes the generic arm — the text this gate printed before this card. Both halves of
 # `_pr_merge_refs` are exercised, because either alone would let the other's shape through.
-eq "on the pull_request shape the refs ARE derived (positive control)" \
+#
+# ⛔ EACH ARM IS DRIVEN AGAINST THE OPPOSITE AMBIENT, and that is a CI red rather than a flourish.
+# The negative cell first asserted "with GITHUB_BASE_REF unset" by simply CALLING the function and
+# relying on the variable being absent — which is a property of the SHELL, not of the code. A
+# GitHub runner exports `GITHUB_BASE_REF` to EVERY step of a `pull_request` job, so on the runner
+# the cell's stated condition never held: it passed four local runs and went red on the real event
+# (PR #325, run 33593043265, `expected '' got 'fa2558f… 724801b…'`). The premise a fixture relies
+# on has to be one the fixture ESTABLISHES.
+#
+# So each arm now carries its own per-call assignment AND an exported ambient set to the OTHER
+# value, inside the command substitution's own subshell — nothing leaks to the live leg below,
+# which reads the runner's real `GITHUB_BASE_REF` and must keep seeing it. What the pair
+# discriminates is the assignment, on one commit, with the environment pushing the other way.
+#
+# THE ISOLATION IS COMPLETE BECAUSE THE INPUT SET IS SMALL AND ENUMERATED, not because the two
+# values were chosen well: `_pr_merge_refs` reads exactly `$GITHUB_BASE_REF` and the repository
+# named by `$1`. It opens no event payload and consults no `GITHUB_REF` / `GITHUB_HEAD_REF` /
+# `GITHUB_SHA` / `GITHUB_EVENT_PATH`, and `git -C "$1"` answers about the FIXTURE repo, never the
+# runner's checkout. Grep the function before adding an input to it; a third one makes this pair
+# under-isolated again.
+eq "on the pull_request shape the refs ARE derived — the per-call value decides, not the ambient" \
    "$(g -C "$PFF" rev-parse HEAD^1) $(g -C "$PFF" rev-parse HEAD^2)" \
-   "$(GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
-eq "with GITHUB_BASE_REF unset, nothing is derived from the same merge commit" "" \
-   "$(_pr_merge_refs "$PFF")"
+   "$(export GITHUB_BASE_REF=''; GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
+eq "with GITHUB_BASE_REF EMPTY nothing is derived from that same merge commit, under an EXPORTED one" \
+   "" "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF= _pr_merge_refs "$PFF")"
 g -C "$PFF" checkout -q feat
 eq "and on a non-merge checkout, nothing is derived even on a pull_request event" "" \
-   "$(GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
+   "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
 eq "so the remedy falls back to the generic text" "$PF_GENERIC" "$(_pf_remedy "$PFF")"
 g -C "$PFF" checkout -q pr-feat
 
