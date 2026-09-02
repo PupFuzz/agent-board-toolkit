@@ -1674,9 +1674,10 @@ eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares
 echo "== correlation keys: a .promote-declaring config that correlates NOTHING is refused (card#8538) =="
 # WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent ⇒ `release-pr-body` emits a 0-id
 # `shipped-cards` manifest AT RC 0 under the line "All shipped refs have a tracking card" — a
-# clean assertion about coverage that was never measured. It shipped on two consumer repos
-# (card#8423) precisely because nothing read the key: this file's subject used to say so in its
-# own header ("promote.*, ref_token_regex, card_token_regex stay head-read and unguarded").
+# clean assertion about coverage that was never measured. It shipped on the consumer repos
+# card#8423 enumerates (that card owns the list; no count is restated here) precisely because
+# nothing read the key: this file's subject used to say so in its own header ("promote.*,
+# ref_token_regex, card_token_regex stay head-read and unguarded").
 # Every arm below asserts the OUTCOME (rc + the text an operator has to act on), never a bare
 # status, and each names the key AND the tool that reads it — "add a key" is not actionable
 # without knowing which tool went quiet.
@@ -1692,6 +1693,15 @@ for miss in card_token_regex:corr-no-card:release-pr-body \
   eq "…naming the key"                       "true"  "$(has "but no $key" "$OUT")"
   eq "…naming the tool that reads it"        "true"  "$(has "bin/$reader" "$OUT")"
   eq "…and naming the acknowledgement channel" "true" "$(has 'unset_correlation_keys' "$OUT")"
+  # THE THIRD REMEDY IS LOAD-BEARING, not politeness. This leg reads HEAD only, and on a
+  # `pull_request` event GitHub takes the WORKFLOW (hence the action pin) from the
+  # base-merged ref while the config comes from the raw branch tip — so the first branch a
+  # consumer has open when it bumps its pin reds here having touched no config. "Declare the
+  # key" is the WRONG instruction for that author: the key is already on their base, and
+  # following the message lands a duplicate declaration on a feature branch. Asserted, not
+  # left to prose, because the message is the only surface that author reads.
+  eq "…and naming MERGE-THE-BASE for a branch that predates the key" "true" \
+     "$(has 'MERGE THE BASE BRANCH' "$OUT")"
   eq "…never softened to a pass"             "false" "$(has 'all 1 declared artifact' "$OUT")"
 done
 run base-0.1.0 head-good --config corr-blank-source.json

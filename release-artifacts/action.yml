@@ -63,6 +63,14 @@ description: >-
   empty-`artifacts` opt-out (a repo that declares no artifacts still promotes),
   and SKIPPED under --classify-only, whose post-merge caller cannot act on a
   config finding. A repo with no `promote` block owes none of the three keys.
+  ⚠ HEAD-ONLY MEANS THE PIN DOES NOT CONTAIN THIS LEG. On a pull_request event
+  GitHub takes the workflow — and therefore this action's SHA pin — from the
+  BASE-merged ref, while the recipe passes head-sha: the pin travels with the
+  base branch and the config does not. The first bump of this pin on your
+  integration branch therefore reds every branch you have open that was cut
+  BEFORE the correlation keys landed, on a config it never touched. Do not fix
+  that as a config bug: merge the base branch (the refusal message says so
+  first). Branches carrying the keys, and the release PR itself, are unaffected.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.
