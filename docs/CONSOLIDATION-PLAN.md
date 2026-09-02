@@ -599,6 +599,103 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **The coord-store token rung, MIRRORED into `agent-board-toolkit-runtime-check`** (card#8376) —
+  **DUPLICATED ON PURPOSE, GUARDED, on Stage D's terms.** The duplicate-kanban-token leg has to
+  resolve a token file exactly as the tools do, and that resolution lives in `_kb-board-lib.sh`
+  (`kb_coord_store_token_file` + `_kb_expand_home` + `_kb_looks_like_pasted_secret`, plus
+  `kb_resolve_env`'s host-then-board sourced read). `runtime-check` **cannot source the lib** — it
+  JUDGES the lib, and a stale or broken lib must not take the judge down with it — so four
+  `_rc_*` mirrors ship inside it. That is the same trade this program settled for
+  `promote-released-cards`' `host_ok`, and it is pinned the same way:
+  `tests/token-duplication-selftest.sh` extracts all four with `sed` and drives them **row-by-row
+  against the lib's originals** over a shared case table, and **exits 1 if it cannot extract one**,
+  so a rename reds the build rather than retiring the comparison. **The table's size is not
+  written here:** the selftest counts the rows as it runs them and prints them on its own
+  `== the parity table this run actually drove ==` line, because the figure that stood in this
+  spot (`16 store shapes`) was 15 on the day it was typed and had relayed intact ever since. ⚑
+  **The board-env row is pinned against `kb_resolve_env`, not `kb_board_env_get`** — the
+  single-file read cannot express a board env whose token path interpolates a variable the HOST
+  env sets, so a mirror sourcing the board env alone answered a different path than the tools do,
+  and the parity block could not see it (found in review of card#8376). ⛔ **Why a drifted mirror is worse here than
+  a disagreement:** it would resolve a DIFFERENT file than the tools do, and the leg would then
+  report a duplicate credential that is not there, or miss the one that is — a security finding
+  invented or lost, either way against a file nobody is looking at. ⚠ **Do not read this as a
+  Stage D revival case.** The alternative is not "source the lib" (forbidden here) but "make the
+  lib callable out-of-process", which would give the judge a runtime dependency on the artifact
+  under judgement. The mirror is the smaller cost, and this entry exists so the next author meets
+  the decision instead of re-deriving it — or worse, "fixing" it by adding a `source`.
+- **A DEFINITION duplicated into the test that guards it, and a parity block whose population is
+  FUNCTIONS rather than USES** (card#8376, found in review at R2 and again at R3) — **the class,
+  not the two instances.** The entry above pins the mirrored *functions*; neither instance below
+  was a mirrored function, and that is the whole point.
+  **Instance 1 — the needle.** `_rc_digest` defines what "the same credential" MEANS: the file's
+  content **as its readers see it**, i.e. with trailing newlines stripped, because every reader
+  takes a token through `$(cat …)`. `tests/token-duplication-selftest.sh` re-spelled that rule as
+  `printf '%s\n' "$FAKE" | sha256sum` to build the needle its canon #20 absence assertions search
+  the tool's whole output for. When R2 corrected the definition in the bin, the copy in the test
+  stayed on RAW BYTES — so both absence rows searched for a string the tool **cannot emit on any
+  input**, and their positive controls proved only that the search function works. Measured: a
+  mutant interpolating the compared digest into the `✗` message leaked it with the suite at rc 0
+  and 0 FAIL, while a mutant emitting `$(cat …)` reds — the VALUE half live, the sha256 half dead,
+  on the one instrument in this repo that resolves two credentials at once. Fixed by **adopting
+  `_rc_digest` out of the bin** (`_adopt_fn`, the same `sed`-extract-or-exit-1 the mirror block
+  uses, now one spelling shared by both callers) and deriving the needle from it.
+  ⚑ **`_adopt_fn` itself now lives in `tests/_selftest-prelude.sh`, and that is not tidying.**
+  Minted local to this one selftest it was the SIXTH hand-spelling of one `sed` range in this
+  suite — `board-snapshot-selftest.sh`, `kb-host-guard-selftest.sh` (×2),
+  `kb-positional-guard-selftest.sh` and `promote-pagination-selftest.sh` carry the other five —
+  i.e. this entry's own rule re-minted in the act of closing it. In the prelude it is one
+  definition every selftest already sources, and `prelude-shadow-selftest.sh` reds on the
+  seventh copy. **RESIDUAL, counted rather than estimated, because "five hand-spellings" reads
+  like five one-line adoptions and only ONE of them is:** `promote-pagination-selftest.sh:29`
+  evals verbatim and could adopt `_adopt_fn` today; `kb-host-guard-selftest.sh:35`/`:269` and
+  `kb-positional-guard-selftest.sh:44` eval the extracted source **through a rename**
+  (`${src/host_ok() \{/host_ok_prc() \{}`), because the mirror and the lib's original have to
+  coexist in one shell, so they need an alias parameter `_adopt_fn` does not have; and
+  `board-snapshot-selftest.sh:310` never evals at all — it greps the extracted TEXT, which needs
+  a text-returning sibling. Two more primitives, i.e. a design call, which is why this round
+  moved the one spelling it owned and filed the rest here instead of guessing at the other two.
+  All five were re-read at this change: each guards its own extraction (`board-snapshot`'s by an
+  `[[ "$early_exits" -ge 4 ]]` floor rather than an emptiness test, which reds the same way), so
+  none of them can silently retire a comparison — the residual is duplication, not a dead guard.
+  **Instance 2 — the call graph.** The parity block drives each mirrored function against its
+  original, which cannot see a divergence in **which sites call it**: `_kb_expand_home` has ONE
+  call site in the lib (inside `kb_coord_store_token_file`), and `_rc_expand_home` had THREE, so a
+  board env spelling `KBCARD_TOKEN_FILE="~/tok"` was literal to every tool (`kb_resolve_env` rc 5)
+  and expanded here. Fixed by dropping the two extra expansions and driving the shape **through
+  `kb_resolve_env`**, not through the mirrored function.
+  ⛔ **AND THAT BEHAVIOURAL ROW PINNED ONE OF THE TWO SITES, WHILE THIS ENTRY AND THE PR BOTH
+  SAID IT PINNED BOTH — corrected here rather than quietly rewritten, because the wrong version
+  is the one a future author would have trusted to have retired this.** Measured, twice each:
+  restoring `_rc_add_source`'s expansion reds that row (**2 FAIL**); restoring the precedence
+  `eff` expansion — the one-line pre-fix restore, on the arm that tells an operator to DELETE a
+  file — left the whole selftest at **rc 0, 0 FAIL**. A scenario row per call site is the wrong
+  shape in any case: **the divergence is a COUNT**, so what is asserted now is the count —
+  `_rc_expand_home` call sites in the bin against `_kb_expand_home` call sites in the lib,
+  derived from each file (occurrences outside comment lines and outside the definition line),
+  behind a positive control, because an equality between two derivations that both broke and
+  answered 0 measures nothing. One assertion, both sites, every future one, at **either** end.
+  Seen to fail four ways, each re-measured on a copy of the tree with the count assertion in
+  place: restoring the `eff` expansion ⇒ **1 FAIL**, `expected '1' got '2'` (it was 0 FAIL);
+  restoring `_rc_add_source`'s ⇒ **3 FAIL**, the two behavioural rows plus this one (it was 2);
+  planting a second call in the LIB ⇒ **1 FAIL**, `expected '2' got '1'`; removing the bin's one
+  remaining call ⇒ **3 FAIL**, the positive control among them. The behavioural row stays as the
+  witness — the count compares HOW MANY, never WHICH.
+  **The sibling audit of instance 2, and its disposition.** The other three mirrors were counted
+  against the lib's call graph at this change: `_rc_declared_token_file` matches
+  (`kb_resolve_env` reads the host env and the board env, and so does this), `_rc_store_pointer`
+  matches, and `_rc_looks_like_pasted_secret` DIVERGES — two sites here against the lib's one,
+  the extra one in `_rc_add_source`. **Accepted, on the record, not carried as a finding:** the
+  lib refuses a credential-shaped *store pointer*, while the extra call here refuses to render a
+  credential-shaped *declared value* into a message, which is canon #20 on an instrument that
+  resolves two credentials at once. It cannot move a verdict — a value of that shape is not a
+  readable file, so the source drops out of the population either way — it only replaces silence
+  with an UNJUDGED warn.
+  ⛔ **The rule this entry exists to state: a duplicated DEFINITION is not covered by a guard over
+  duplicated FUNCTIONS.** Extraction is cheap here — the whole mechanism is one `sed` range — so
+  the disposition for a rule the test needs to know is **adopt it from the bin**, never re-spell
+  it. A re-spelling in a *test* is the worst place for one: it does not fail loudly when it
+  drifts, it disarms the assertion that was supposed to notice.
 - **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
   recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
   drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
