@@ -125,19 +125,70 @@ g -C "$R" push -q --delete origin v0.28.0 && g -C "$R" tag -d v0.28.0 >/dev/null
 
 # ── THE LOAD-BEARING CASE: a tag that ARRIVES mid-poll is accepted ────────────────────────────
 # This is the only arm that separates wait-then-verify from look-once. The tag is absent when
-# the tool starts and is pushed while it polls.
+# the tool starts and appears while it polls.
+#
+# ⛔ THE ARRIVAL IS SEQUENCED ON THE TOOL'S OWN READS, NEVER ON A WALL CLOCK (card#8485). This
+# arm used to push the tag from a `( sleep 2; … ) &` forked immediately before the run. That
+# timer starts at the FORK, but the event it must beat is the tool's FIRST POLL — and the tool
+# does not poll for an UNBOUNDED interval after it starts: `git rev-parse`, then the
+# `release-artifacts-check` and `release-pr-body` delegations, each spawning git of its own.
+# Measured on a loaded box, that startup ran 17.5–27.8s against the 2s timer, so the tag was
+# already present when poll 1 looked, `POLLS` was 1, and the tool printed its (correct) no-wait
+# form — reddening the `WAITED` cell on 19 of 30 runs with the tool right every time. A fixture
+# whose precondition is "the tool is faster than N seconds" measures the box, not the tool.
+# `_counting_remote` below counts REAL reads instead: the ref is created just before a chosen
+# read is served, so it is still a real arrival discovered by a real `ls-remote`, but "the tag
+# was already there when the tool first looked" is now unrepresentable rather than merely
+# unlikely.
+
+# _counting_remote <helper> <count-file> <refuse-first> <arrive-before-read|never> — write an
+# `ext::` remote helper that serves $REMOTE and TALLIES every read it is asked for, so an arm can
+# sequence its fixture events on the tool's own polls instead of on a wall clock. ONE owner for
+# both shapes this file needs, because they are one behaviour with two settings and a second copy
+# of "count the reads, then serve" is how the two arms below drifted apart in the first place:
+#   <refuse-first>        leading reads are refused — a REAL non-zero read, git's own stderr
+#                         reaching the tool. Refusing is the cheapest path this helper has (no
+#                         upload-pack, no objects), so a refused poll is over in milliseconds and
+#                         cannot eat the tool's own --timeout.
+#   <arrive-before-read>  v0.28.0 is created immediately before that read is served — a REAL ref
+#                         found by a real `ls-remote` — or `never`.
+_counting_remote() {
+  local helper="$1" count="$2" refuse="$3" arrive="$4"
+  rm -f "$count"
+  cat > "$helper" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$count" 2>/dev/null || echo 0) + 1 )); printf '%s' "\$n" > "$count"
+if [ "\$n" -le "$refuse" ]; then echo "fixture: read \$n refused" >&2; exit 1; fi
+if [ "$arrive" != never ] && [ "\$n" -ge "$arrive" ]; then
+  git --git-dir="$REMOTE" update-ref refs/tags/v0.28.0 "$RELEASE_SHA"
+fi
+exec git upload-pack "$REMOTE"
+EOF
+  chmod +x "$helper"
+}
+
 echo "== a tag that ARRIVES during the poll is accepted =="
-( sleep 2; g -C "$R" tag v0.28.0 "$RELEASE_SHA" >/dev/null 2>&1; g -C "$R" push -q origin v0.28.0 >/dev/null 2>&1 ) &
-LATE_PID=$!
-run "$BEFORE_SHA" "$RELEASE_SHA" --timeout 30 --interval 1
-wait "$LATE_PID" 2>/dev/null || true
+LATE_READS="$T/late-remote.reads"
+_counting_remote "$T/late-remote" "$LATE_READS" 0 2
+RC=0
+OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
+          --remote "ext::$T/late-remote" --timeout 30 --interval 1) 2>&1 )" || RC=$?
 eq "late tag → rc 0"                    "0"    "$RC"
 eq "…and it reports it WAITED"          "true" "$(has '(after ' "$OUT")"
+# THE FIXTURE'S OWN PRECONDITION, ASSERTED RATHER THAN ASSUMED — which is the entire defect the
+# `sleep 2` carried. This cell is about a tag that was ABSENT on the first look; had the tool
+# read only once it could not have been, and the two cells above would then be reporting the
+# fixture's failure to set up as the tool's failure to wait.
+eq "…having actually read the remote more than once" "true" \
+   "$([ "$(cat "$LATE_READS" 2>/dev/null || echo 0)" -ge 2 ] && echo true || echo false)"
 
 # CONTROL: the SAME fixture with the tag never arriving must still red — otherwise the case
 # above would pass for a tool that ignores the tag entirely.
-g -C "$R" push -q --delete origin v0.28.0 && g -C "$R" tag -d v0.28.0 >/dev/null
-run "$BEFORE_SHA" "$RELEASE_SHA" --timeout 2 --interval 1
+g --git-dir="$REMOTE" update-ref -d refs/tags/v0.28.0
+_counting_remote "$T/never-remote" "$T/never-remote.reads" 0 never
+RC=0
+OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
+          --remote "ext::$T/never-remote" --timeout 2 --interval 1) 2>&1 )" || RC=$?
 eq "…control: no tag ever ⇒ still rc 1" "1"    "$RC"
 
 # ── a tag present at a DIFFERENT commit is refused immediately, not waited out ────────────────
@@ -450,22 +501,46 @@ eq "…and NOT as unreadable"                       "false" "$(has 'could NOT RE
 # A MIXED RUN — some polls unreadable, the FINAL one answering — reports the measured absence
 # AND the reads it lost. Two claims that both have to be true at once: the verdict is about the
 # tag (the remote answered at the end), and the run does not quietly drop the polls that never
-# measured anything. The remote appears mid-poll by an atomic rename, so the failures are real.
+# measured anything.
+#
+# ⛔ THE FAILED READ IS SEQUENCED ON THE TOOL'S OWN READS, NEVER ON A WALL CLOCK (card#8485) —
+# the late-tag arm's defect in its mirror image, and the one the card was filed against. The
+# remote used to APPEAR mid-run by an atomic rename out of a `( sleep 3; mv … ) &`, so the
+# fixture needed the tool's unbounded startup (the two sibling delegations above) to finish
+# inside 3s for even ONE poll to fail. Measured under load that startup is 17.5–27.8s: every
+# poll then answered, `UNREADABLE` was 0, and this cell and the one below it went red TOGETHER
+# on 16 of 30 runs — the perfect correlation being the tell, since both clauses hang off that
+# single counter. The tool was CORRECT on every one of those runs: an all-answered absence
+# carries no caveat, which is precisely what the control below asserts. The refusal is still a
+# REAL failed read — a real `git ls-remote` against a helper that exits non-zero, with git's own
+# stderr reaching the tool — and it is now the FIRST read by construction.
 echo "== a run whose reads partly failed reports the absence AND the failed polls =="
-MOVABLE="$T/movable.git"
-rm -rf "$MOVABLE" "$T/staged.git"
-cp -r "$REMOTE" "$T/staged.git"
-( sleep 3; mv "$T/staged.git" "$MOVABLE" ) &
-MOVE_PID=$!
-run "$BEFORE_SHA" "$RELEASE_SHA" --remote "$MOVABLE" --timeout 8 --interval 1
-wait "$MOVE_PID" 2>/dev/null || true
+# ONLY THE FIRST READ IS REFUSED. That is what keeps the FINAL poll an answering one without the
+# fixture having to know, or care, how many polls the tool fits inside its own 8s bound — one
+# refusal costs milliseconds (see `_counting_remote`), so the bound cannot expire on it.
+_counting_remote "$T/flaky-remote" "$T/flaky-remote.reads" 1 never
+RC=0
+OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
+          --remote "ext::$T/flaky-remote" --timeout 8 --interval 1) 2>&1 )" || RC=$?
 eq "mixed run → the untagged verdict"             "1"    "$RC"
 eq "…which names the tag as absent"               "true" "$(has 'v0.28.0 does not exist on' "$OUT")"
 eq "…and states the absence is MEASURED"          "true" "$(has 'measured, not inferred' "$OUT")"
 eq "…while still counting the polls that failed"  "true" "$(has 'could not read' "$OUT")"
-# CONTROL — a run with NO failed poll carries no such caveat, so the clause above is reporting
-# the mixed state rather than being printed unconditionally.
-run "$BEFORE_SHA" "$RELEASE_SHA" --timeout 2 --interval 1
+# HOW MANY, not merely THAT — the count is the fixture's own decision now rather than a race's,
+# so it can be pinned, and pinning it is what keeps this arm's SUBJECT from drifting. Every
+# other cell here is satisfied by ANY non-zero count: a helper that came to refuse three of
+# five reads, with the last still answering, would leave all of them green while no longer
+# testing the one-lost-read case anyone wrote this for. (It does NOT stand in for the
+# all-failed verdict — refusing every read reds `…states the absence is MEASURED` above, since
+# that is the UNREADABLE branch and it prints no such caveat at all.)
+eq "…naming HOW MANY of them failed"              "true" "$(has '(1 of ' "$OUT")"
+# CONTROL — the SAME helper, re-driven. Its one refusal is already spent, so every read now
+# answers: identical transport, identical remote, identical binary, differing in exactly the
+# failed poll under test. A run with NO failed poll must carry no such caveat, or the clause
+# above is printed unconditionally and asserts nothing.
+RC=0
+OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
+          --remote "ext::$T/flaky-remote" --timeout 2 --interval 1) 2>&1 )" || RC=$?
 eq "control: an all-answered run → same verdict"  "1"    "$RC"
 eq "control: …and no failed-poll caveat"          "false" "$(has 'measured, not inferred' "$OUT")"
 
