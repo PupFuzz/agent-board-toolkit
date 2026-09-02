@@ -644,8 +644,10 @@ finding with no owner is abandoned, not filed.
   carry). A third copy is where the narrow rule quietly fails to arrive, exactly as the card#7207
   entry above records. **`promote-released-cards` keeps its copy and that is not an oversight** —
   it is vendored standalone into consumer repos and must not source the lib (the same constraint
-  that duplicates `host_ok` and `require_value`), so the two are bound by cross-reference and by
-  `tests/locale-range-guard-selftest.sh` driving BOTH ends of the correlation under both locales.
+  that duplicates `host_ok` and `require_value`), so the two are bound by the single accept/reject
+  corpus in § 3c of `tests/promote-source-qualify-selftest.sh`, which drives BOTH ends from one row
+  set — the lib predicate called directly, `promote-released-cards` run end-to-end — and pins
+  the two declared divergences in both directions.
   **Consequence recorded rather than discovered later:** adopting the shared predicate NARROWS
   `run-coverage-check --repo`, which now refuses `owner/name.git` at rc 2 instead of putting it
   into a `repos/<slug>/…` request path GitHub answers 404 for; the narrowing carries its own arm

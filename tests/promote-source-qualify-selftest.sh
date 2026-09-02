@@ -217,7 +217,9 @@ _need -r "$LIB"
 lib_verdict() {
   if bash -c 'source "$1"; kb_is_repo_slug "$2"' _ "$LIB" "$1" >/dev/null 2>&1; then echo A; else echo R; fi
 }
-promote_verdict() { run_promote "$CFG_STAR" --source "$1"; if [ "$rc" = 0 ]; then echo A; else echo R; fi; }
+# rc 2 is promote's DOCUMENTED refusal (every `die`); rc 0 is acceptance. Any other rc is a
+# CRASH, and folding it into R would let a bin that died read as a bin that refused.
+promote_verdict() { run_promote "$CFG_STAR" --source "$1"; case "$rc" in 0) echo A;; 2) echo R;; *) echo "CRASHED-rc$rc";; esac; }
 # `<A|R>|<value>` — the verdict BOTH copies must reach. The pin is per-side, not a bare
 # "they agree": a mutant that refused everything would satisfy an equality-only check, and the
 # accept rows below are what stops it (canon #9).
