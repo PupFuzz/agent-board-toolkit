@@ -132,44 +132,50 @@ g -C "$R" push -q --delete origin v0.28.0 && g -C "$R" tag -d v0.28.0 >/dev/null
 # timer starts at the FORK, but the event it must beat is the tool's FIRST POLL — and the tool
 # does not poll for an UNBOUNDED interval after it starts: `git rev-parse`, then the
 # `release-artifacts-check` and `release-pr-body` delegations, each spawning git of its own.
-# Measured on a loaded box, that startup ran 17.5–27.8s against the 2s timer, so the tag was
-# already present when poll 1 looked, `POLLS` was 1, and the tool printed its (correct) no-wait
-# form — reddening the `WAITED` cell on 19 of 30 runs with the tool right every time. A fixture
+# This file's own elapsed clocks put that startup at 2–9s across the 21 red runs of a 30-run
+# baseline at load ~26, against a 2s timer: the tag was already present when poll 1 looked,
+# `POLLS` was 1, and the tool printed its (correct) no-wait form — reddening the `WAITED` cell
+# on 19 of 30 runs with the tool right every time. A fixture
 # whose precondition is "the tool is faster than N seconds" measures the box, not the tool.
 # `_counting_remote` below counts REAL reads instead: the ref is created just before a chosen
 # read is served, so it is still a real arrival discovered by a real `ls-remote`, but "the tag
 # was already there when the tool first looked" is now unrepresentable rather than merely
 # unlikely.
 
-# _counting_remote <helper> <count-file> <refuse-first> <arrive-before-read|never> — write an
-# `ext::` remote helper that serves $REMOTE and TALLIES every read it is asked for, so an arm can
-# sequence its fixture events on the tool's own polls instead of on a wall clock. ONE owner for
-# both shapes this file needs, because they are one behaviour with two settings and a second copy
-# of "count the reads, then serve" is how the two arms below drifted apart in the first place:
-#   <refuse-first>        leading reads are refused — a REAL non-zero read, git's own stderr
-#                         reaching the tool. Refusing is the cheapest path this helper has (no
-#                         upload-pack, no objects), so a refused poll is over in milliseconds and
-#                         cannot eat the tool's own --timeout.
-#   <arrive-before-read>  v0.28.0 is created immediately before that read is served — a REAL ref
-#                         found by a real `ls-remote` — or `never`.
+# _counting_remote <helper> <count-file> <refuse-first> <refuse-after> <arrive-before-read|never> [remote]
+# — write an `ext::` remote helper that serves a bare remote ($REMOTE unless a sixth argument
+# names another) and TALLIES every read it is asked for, so an arm can sequence its fixture
+# events on the tool's own polls instead of on a wall clock. ONE owner for every read-sequenced
+# remote in this file — the late-tag arm, the mixed-poll arm, the unreadable-follow-up arm, and
+# each one's control — because they are one behaviour with settings, and a second copy of "count
+# the reads, then serve" is how two of those arms drifted apart in the first place (card#8485):
+#   <refuse-first>        reads 1..N are refused; 0 refuses none.
+#   <refuse-after>        reads N+1.. are refused; 0 refuses none. A refusal is a REAL non-zero
+#                         read, git's own stderr reaching the tool — and the cheapest path this
+#                         helper has (no upload-pack, no objects), so a refused poll is over in
+#                         milliseconds and cannot eat the tool's own --timeout.
+#   <arrive-before-read>  v0.28.0 is created on that remote immediately before that read is
+#                         served — a REAL ref found by a real `ls-remote` — or `never`.
 _counting_remote() {
-  local helper="$1" count="$2" refuse="$3" arrive="$4"
+  local helper="$1" count="$2" refuse_first="$3" refuse_after="$4" arrive="$5" remote="${6:-$REMOTE}"
   rm -f "$count"
   cat > "$helper" <<EOF
 #!/usr/bin/env bash
 n=\$(( \$(cat "$count" 2>/dev/null || echo 0) + 1 )); printf '%s' "\$n" > "$count"
-if [ "\$n" -le "$refuse" ]; then echo "fixture: read \$n refused" >&2; exit 1; fi
-if [ "$arrive" != never ] && [ "\$n" -ge "$arrive" ]; then
-  git --git-dir="$REMOTE" update-ref refs/tags/v0.28.0 "$RELEASE_SHA"
+if [ "\$n" -le "$refuse_first" ] || { [ "$refuse_after" -gt 0 ] && [ "\$n" -gt "$refuse_after" ]; }; then
+  echo "fixture: read \$n refused" >&2; exit 1
 fi
-exec git upload-pack "$REMOTE"
+if [ "$arrive" != never ] && [ "\$n" -ge "$arrive" ]; then
+  git --git-dir="$remote" update-ref refs/tags/v0.28.0 "$RELEASE_SHA"
+fi
+exec git upload-pack "$remote"
 EOF
   chmod +x "$helper"
 }
 
 echo "== a tag that ARRIVES during the poll is accepted =="
 LATE_READS="$T/late-remote.reads"
-_counting_remote "$T/late-remote" "$LATE_READS" 0 2
+_counting_remote "$T/late-remote" "$LATE_READS" 0 0 2
 RC=0
 OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
           --remote "ext::$T/late-remote" --timeout 30 --interval 1) 2>&1 )" || RC=$?
@@ -185,7 +191,7 @@ eq "…having actually read the remote more than once" "true" \
 # CONTROL: the SAME fixture with the tag never arriving must still red — otherwise the case
 # above would pass for a tool that ignores the tag entirely.
 g --git-dir="$REMOTE" update-ref -d refs/tags/v0.28.0
-_counting_remote "$T/never-remote" "$T/never-remote.reads" 0 never
+_counting_remote "$T/never-remote" "$T/never-remote.reads" 0 0 never
 RC=0
 OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
           --remote "ext::$T/never-remote" --timeout 2 --interval 1) 2>&1 )" || RC=$?
@@ -369,42 +375,28 @@ tf_untag release-0.28.0
 # ── THE SECOND LOOK IS A READ, SO IT HAS THREE OUTCOMES TOO ───────────────────────────────────
 # The cause-naming look above can itself fail, and a refusal that answered "the release was NOT
 # tagged" because the look that would have found another tag never completed would be the same
-# wrong-but-specific cause one layer down. The remote here is an `ext::` helper that serves the
-# POLL and then refuses the next read: with `--timeout 0` the tool looks exactly once, so the
-# absence is measured and the follow-up look is the read that fails — deterministically, not on
-# a timing race.
+# wrong-but-specific cause one layer down. The remote here is `_counting_remote` set to serve the
+# POLL and refuse the next read: with `--timeout 0` the tool looks exactly once, so the absence
+# is measured and the follow-up look is the read that fails — deterministically, not on a timing
+# race.
 echo "== a follow-up look that cannot READ leaves the CAUSE unmeasured, not guessed =="
-HELPER="$T/count-helper.sh"; COUNTF="$T/helper.count"
-cat > "$HELPER" <<HELPEOF
-#!/bin/sh
-n=\$(cat "$COUNTF" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s\\n' "\$n" > "$COUNTF"
-[ "\$n" -le 1 ] && exec git upload-pack "$REMOTE2"
-echo "fatal: this remote refused read number \$n" >&2
-exit 128
-HELPEOF
-chmod +x "$HELPER"
-: > "$COUNTF"
+_counting_remote "$T/follow-up-remote" "$T/follow-up-remote.reads" 0 1 never "$REMOTE2"
 RC=0
 OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
-          --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+          --remote "ext::$T/follow-up-remote" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
 eq "an unreadable follow-up look → still rc 1"  "1"    "$RC"
 eq "…the absence itself is still reported"      "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
 eq "…the CAUSE is named as unmeasured"          "true" "$(has 'CAUSE here is unmeasured' "$OUT")"
-eq "…quoting the follow-up read's own error"    "true" "$(has 'refused read number 2' "$OUT")"
+eq "…quoting the follow-up read's own error"    "true" "$(has 'read 2 refused' "$OUT")"
 eq "…and it does NOT pick a cause anyway"       "false" "$(has 'merged and was NOT tagged' "$OUT")"
 eq "…nor claim the commit carries another tag"  "false" "$(has 'IS tagged on' "$OUT")"
-# CONTROL — the same helper with the counter reset serves BOTH reads, and the verdict is the
-# ordinary measured-absent one. Without it, "reds as unmeasured" would also be true of a tool
+# CONTROL — the same helper re-written to refuse nothing serves BOTH reads, and the verdict is
+# the ordinary measured-absent one. Without it, "reds as unmeasured" would also be true of a tool
 # that reports every absence that way.
-: > "$COUNTF"
-cat > "$HELPER" <<HELPEOF2
-#!/bin/sh
-exec git upload-pack "$REMOTE2"
-HELPEOF2
-chmod +x "$HELPER"
+_counting_remote "$T/follow-up-remote" "$T/follow-up-remote.reads" 0 0 never "$REMOTE2"
 RC=0
 OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after "$TF_RELEASE" \
-          --remote "ext::$HELPER" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
+          --remote "ext::$T/follow-up-remote" --config tf-release.json --timeout 0) 2>&1 )" || RC=$?
 eq "control: both reads served → rc 1"          "1"    "$RC"
 eq "control: …and the cause IS measured"        "true" "$(has 'No tag of ANY name points at' "$OUT")"
 eq "control: …never reported as unmeasured"     "false" "$(has 'CAUSE here is unmeasured' "$OUT")"
@@ -507,9 +499,9 @@ eq "…and NOT as unreadable"                       "false" "$(has 'could NOT RE
 # the late-tag arm's defect in its mirror image, and the one the card was filed against. The
 # remote used to APPEAR mid-run by an atomic rename out of a `( sleep 3; mv … ) &`, so the
 # fixture needed the tool's unbounded startup (the two sibling delegations above) to finish
-# inside 3s for even ONE poll to fail. Measured under load that startup is 17.5–27.8s: every
-# poll then answered, `UNREADABLE` was 0, and this cell and the one below it went red TOGETHER
-# on 16 of 30 runs — the perfect correlation being the tell, since both clauses hang off that
+# inside 3s for even ONE poll to fail. This file's own elapsed clocks put that startup at 2–9s
+# across the 21 red runs of a 30-run baseline at load ~26: every poll then answered,
+# `UNREADABLE` was 0, and this cell and the one below it went red TOGETHER on 16 of 30 runs — the perfect correlation being the tell, since both clauses hang off that
 # single counter. The tool was CORRECT on every one of those runs: an all-answered absence
 # carries no caveat, which is precisely what the control below asserts. The refusal is still a
 # REAL failed read — a real `git ls-remote` against a helper that exits non-zero, with git's own
@@ -518,7 +510,7 @@ echo "== a run whose reads partly failed reports the absence AND the failed poll
 # ONLY THE FIRST READ IS REFUSED. That is what keeps the FINAL poll an answering one without the
 # fixture having to know, or care, how many polls the tool fits inside its own 8s bound — one
 # refusal costs milliseconds (see `_counting_remote`), so the bound cannot expire on it.
-_counting_remote "$T/flaky-remote" "$T/flaky-remote.reads" 1 never
+_counting_remote "$T/flaky-remote" "$T/flaky-remote.reads" 1 0 never
 RC=0
 OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
           --remote "ext::$T/flaky-remote" --timeout 8 --interval 1) 2>&1 )" || RC=$?
@@ -542,6 +534,11 @@ RC=0
 OUT="$( (cd "$R" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$BEFORE_SHA" --after "$RELEASE_SHA" \
           --remote "ext::$T/flaky-remote" --timeout 2 --interval 1) 2>&1 )" || RC=$?
 eq "control: an all-answered run → same verdict"  "1"    "$RC"
+# THE PRESENCE WITNESS. rc 1 is shared by the measured-absence and the UNREADABLE verdicts, and
+# the caveat cell below is an absence-only check the UNREADABLE branch also satisfies (it prints
+# no such caveat at all) — so without this line a helper that refused EVERY read would leave
+# both control cells green with the control's subject false.
+eq "control: …whose reads ANSWERED"               "true" "$(has 'v0.28.0 does not exist on' "$OUT")"
 eq "control: …and no failed-poll caveat"          "false" "$(has 'measured, not inferred' "$OUT")"
 
 # ── EACH POLL IS BOUNDED, so the tool's own --timeout is what fires ────────────────────────────
