@@ -659,6 +659,72 @@ rc=0; body8="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
 eq "control: matching range exits 0"         "0"     "$rc"
 eq "control: footer names the shipped token" "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$body8")"
 
+echo "== an EMPTY manifest over a NON-EMPTY range is a FINDING, not silence (card#8538) =="
+# WHAT WAS SILENT. The two arms directly above pin that a no-match range still exits 0 and
+# "simply carries no manifest footer" — correct, and exactly the hole: an omitted footer and a
+# footer whose range legitimately had nothing to say are the SAME bytes to every reader of this
+# body. Measured on a real release: a consumer whose `card_token_regex` was absent got 0
+# `shipped-cards` lines over a range carrying eight card ids, at rc 0, under a `## Card
+# coverage` section reading "All shipped refs have a tracking card" (card#8423). The body now
+# says which of the two it is. It still exits 0 — this tool GENERATES the release PR body, and
+# a non-zero would block the very PR the finding is written for.
+gapcfg() { printf '%s\n' "$1" > "$W/.release-pr.json"; }
+gapbody() { rc=0; GAPBODY="$( (cd "$W" && "$BIN" --version 0.3.0) 2>"$T/gap.err" )" || rc=$?; GAPERR="$(cat "$T/gap.err")"; }
+
+# A: BOTH keys declared, only one yields — the half-empty case, and the one the card names.
+gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "a declared key matching nothing still exits 0"   "0"     "$rc"
+eq "…and the body carries a Correlation gaps section" "true" "$(has '## Correlation gaps' "$GAPBODY")"
+eq "…naming the key that matched nothing"            "true"  "$(has '`card_token_regex` is declared' "$GAPBODY")"
+eq "…and saying WHICH manifest is empty"             "true"  "$(has 'The `shipped-cards` manifest is EMPTY' "$GAPBODY")"
+eq "…while the key that DID yield is not named"      "false" "$(has '`ref_token_regex` is declared (`DL-[0-9]+`) and matched no' "$GAPBODY")"
+eq "…the strong headline does NOT fire (one key yielded)" "false" "$(has 'NOTHING in' "$GAPBODY")"
+eq "…and the finding reaches stderr too"             "true"  "$(has 'card_token_regex' "$GAPERR")"
+eq "…the shipped-refs footer is still emitted"       "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$GAPBODY")"
+
+# B: NEITHER key yields — the strong shape. Both manifests empty, so the run correlates
+# nothing at all, and an UNDECLARED key becomes a finding too (it is not one when the other
+# key yields — a repo that uses one spelling is not owed a warning about the other).
+gapcfg '{ "ref_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "nothing correlated → still rc 0"                 "0"     "$rc"
+eq "…the headline names the range and its size"      "true"  "$(has 'NOTHING in' "$GAPBODY")"
+eq "…the DECLARED key that matched nothing is named" "true"  "$(has '`ref_token_regex` is declared' "$GAPBODY")"
+eq "…and the UNDECLARED one is named as undeclared"  "true"  "$(has '`card_token_regex` is not declared' "$GAPBODY")"
+
+# C: NEITHER key declared at all — the shape `release-artifacts-check` reds a promoting config
+# for, seen from the range's side. A repo with no `.promote` block is outside that check's
+# population, so this body is the only surface that can say it.
+gapcfg '{ "tag_format": "release-{{version}}" }'
+gapbody
+eq "neither key declared → still rc 0"               "0"     "$rc"
+eq "…both keys are named as undeclared"              "true"  \
+   "$( [ "$(has '`ref_token_regex` is not declared' "$GAPBODY")" = true ] \
+       && [ "$(has '`card_token_regex` is not declared' "$GAPBODY")" = true ] && echo true || echo false )"
+eq "…and the body is otherwise complete"             "true"  "$(has '## Bundled' "$GAPBODY")"
+
+# NEGATIVE CONTROL 1 — both declared, both yield: NO section at all. Without it every arm above
+# is satisfied by a tool that prints the section unconditionally.
+# The fixture is NOT mutated to produce this arm: the range's head is resolved from
+# `origin/dev`, so a local commit would not enter it, and pushing one would move the commit
+# count every later case asserts. The range's one subject is
+# `feat: new work for cycle two (#3) DL-2`, so a second key spelled `#[0-9]+` yields `3` off
+# the same commit — two keys, two id spaces, both non-empty, which is all this control needs.
+gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "control: both keys yielding → rc 0"              "0"     "$rc"
+eq "control: …and NO Correlation gaps section"       "false" "$(has '## Correlation gaps' "$GAPBODY")"
+eq "control: …both footers present"                  "true"  \
+   "$( [ "$(has 'shipped-refs=DL-2' "$GAPBODY")" = true ] && [ "$(has 'shipped-cards=3' "$GAPBODY")" = true ] && echo true || echo false )"
+
+# NEGATIVE CONTROL 2 — an EMPTY range says nothing. "No tokens over zero commits" is not a
+# finding, and a section that fired there would cry wolf on every no-op range.
+gapcfg '{ "ref_token_regex": "ZZZ-[0-9]+", "card_token_regex": "QQQ#[0-9]+", "tag_format": "release-{{version}}" }'
+rc=0; emptyrange="$( (cd "$W" && "$BIN" --version 0.3.0 --base HEAD --head HEAD) 2>/dev/null )" || rc=$?
+eq "control: an empty range → rc 0"                  "0"     "$rc"
+eq "control: …and no Correlation gaps section"       "false" "$(has '## Correlation gaps' "$emptyrange")"
+
 echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) =="
 # WHAT WAS BROKEN. `card_coverage_section` computed its manifest from `ref_token_regex` only,
 # and short-circuited on an empty one with a confident `_No shipped DL refs in range._`. This

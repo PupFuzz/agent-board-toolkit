@@ -26,7 +26,9 @@
 #   * a `"*"` run over the same fixture promotes all of them and prints the pre-card#8421
 #     summary line byte for byte;
 #   * the card source is derived through the server's field-preference order;
-#   * `--source` beats the config, and `--cards` is exempt and says so.
+#   * `--source` beats the config, and `--cards` is exempt and says so;
+#   * a resolved source other than `*` that is not $GITHUB_REPOSITORY refuses before any board
+#     read, case-folded on both sides, and does not fire when that variable is absent (§ 7).
 # It proves nothing about a live board, and nothing about the server's own normalizer beyond
 # the corpus in § 5 — that mirror is bound by this corpus, not by inspection.
 set -euo pipefail
@@ -92,6 +94,10 @@ git -C "$GITDIR" merge -q --no-ff feat -m "Merge feat"
 
 # run_bin <bin> <config> <extra-args...> — <bin> over the git fixture, capturing rc / stdout
 # (out) / stderr (err) / the PATCH set (patched) / the GET set (gets).
+# $GITHUB_REPOSITORY is absent from these runs because the PRELUDE removes it for the whole
+# suite (see the note there): every arm below drives a fixture source, and on a runner the
+# repo-identity leg would refuse them for the wrong reason. § 7 sets it explicitly per arm,
+# and asserts the floor still holds.
 run_bin() {
   local bin="$1" cfg="$2"; shift 2
   : > "$PATCH_LOG"; : > "$TMP/gets.log"; rc=0
@@ -527,5 +533,79 @@ eq "control: …refuses the unattributable card"                "false" "$(moved
 eq "control: …and still promotes our own"                     "true"  "$(moved 1)"
 run_promote "$CFG_NONE"
 eq "control: …and still refuses a source-less config"         "2"     "$rc"
+
+echo "== 7. THE DECLARATION IS CHECKED AGAINST THE REPO IT IS MADE IN (card#8538) =="
+# WHAT § 1-§ 6 CANNOT SEE. Every arm above asks whether the declared source is well SHAPED and
+# whether the correlation honours it. None asks whether the declaration is TRUE: a typo'd or
+# copy-pasted slug — `acme/wdiget`, or a slug lifted from the repo the config was copied from —
+# passes the shape `case`, passes `src_charset_ok`, and then correlates against NO card. The
+# run prints `⊘` lines nobody reads and exits 0 having promoted nothing. A guard whose failure
+# mode is a clean exit is the class this whole file exists for, one level up.
+#
+# $GITHUB_REPOSITORY is set EXPLICITLY on each arm: the variable IS the subject here, so
+# inheriting it from the runner would make the arms mean different things in CI and on a laptop.
+# The first assertion is the FLOOR the rest of the suite depends on — the prelude's `unset`. It
+# is vacuous on a laptop by construction (nothing sets the variable there) and is the only thing
+# in the suite that reds IN CI if that line is deleted, which is exactly where it is needed.
+# Watched red: delete the prelude's `unset`, export GITHUB_REPOSITORY, re-run this file and the
+# two named there — this arm reds, and so do the arms it protects.
+eq "the prelude floor holds: no runner \$GITHUB_REPOSITORY reaches this suite" "" "${GITHUB_REPOSITORY+set}"
+run7() { # run7 <GITHUB_REPOSITORY value or OMIT> <config> [args...]
+  local gh="$1"; shift
+  local cfg="$1"; shift
+  : > "$PATCH_LOG"; : > "$TMP/gets.log"; rc=0
+  if [ "$gh" = OMIT ]; then
+    out="$( (cd "$GITDIR" && env -u GITHUB_REPOSITORY GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
+  else
+    out="$( (cd "$GITDIR" && env GITHUB_REPOSITORY="$gh" GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
+  fi
+  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; gets="$(cat "$TMP/gets.log")"
+}
+
+# THE REFUSAL, and like § 1 it is asserted on the GET log rather than on an empty PATCH set: a
+# run that read the board and then moved nothing would satisfy an empty PATCH while the
+# writeback token had already gone over the wire.
+run7 acme/other "$CFG_REPO"
+eq "a source naming a DIFFERENT repo → rc 2"        "2"     "$rc"
+eq "…no card was PATCHed"                           ""      "$patched"
+eq "…and NO board GET was issued at all"            ""      "$gets"
+eq "refusal names the declared source"              "true"  "$(has "'acme/widget'" "$err")"
+eq "…names the repo the run is actually in"         "true"  "$(has "GITHUB_REPOSITORY = 'acme/other'" "$err")"
+eq "…names the channel the value came from"         "true"  "$(has ".promote.source" "$err")"
+eq "…and spells the fix with the real value"        "true"  "$(has "to 'acme/other'" "$err")"
+
+# CASE-FOLDED, both sides, because GitHub slugs are case-insensitive and a config written
+# `Acme/Widget` names the same repository as a runner saying `acme/widget`. Without this arm the
+# leg would refuse a correct config on any repo whose owner is capitalised — which is most.
+run7 Acme/Widget "$CFG_REPO"
+eq "a case-different but EQUAL slug is accepted"    "true"  "$(has '/tasks/search.json' "$gets")"
+eq "…and promotes our own card"                     "true"  "$(moved 1)"
+
+# THE TWO NON-FIRING ARMS, each for a stated reason, and each is a control: without them the
+# refusal above is satisfied by a leg that simply refuses everything.
+run7 OMIT "$CFG_REPO"
+eq "OFF a runner (no GITHUB_REPOSITORY) the leg does not fire" "true" "$(has '/tasks/search.json' "$gets")"
+eq "…and the run proceeds normally"                 "true"  "$(moved 1)"
+run7 '' "$CFG_REPO"
+eq "an EMPTY GITHUB_REPOSITORY does not fire either" "true" "$(has '/tasks/search.json' "$gets")"
+run7 acme/other "$CFG_STAR"
+eq "'*' is a DECLARATION, not a repo name — exempt"  "true" "$(has '/tasks/search.json' "$gets")"
+eq "…and it still promotes every matched card"       "true" "$(moved 2)"
+
+# THE FLAG IS NOT AN ESCAPE HATCH. `--source` is the per-run override of the VALUE, and the leg
+# applies to whatever it resolved to: a run that promotes another repo cards is the failure, not
+# the channel that asked for it. Asserted because the opposite is the natural implementation.
+run7 acme/other "$CFG_STAR" --source acme/widget
+eq "--source cannot escape the check"               "2"     "$rc"
+eq "…and the refusal names the flag as the channel" "true"  "$(has 'from --source' "$err")"
+
+# MUTANT — the leg deleted. Without this the arms above pass under a bin that never had it.
+mutant identity-off '/GH_REPO="${GITHUB_REPOSITORY:-}"/,/^fi$/d'
+: > "$PATCH_LOG"; : > "$TMP/gets.log"; rc=0
+out="$( (cd "$GITDIR" && env GITHUB_REPOSITORY=acme/other GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$MUT" --config "$CFG_REPO") 2>"$TMP/err")" || rc=$?
+err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; gets="$(cat "$TMP/gets.log")"
+eq "M5 (identity leg deleted): the mismatched run reads the board" "true" "$(has '/tasks/search.json' "$gets")"
+eq "M5: …and exits 0 having promoted our own card"  "0"     "$rc"
+eq "M5: …so § 7's refusal arms would all red"       "false" "$(has 'is not the repository this run is in' "$err")"
 
 _summary "promote-source-qualify-selftest"

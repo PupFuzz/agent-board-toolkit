@@ -53,6 +53,14 @@
 #        DECLARATION, not a wildcard match: use it only when the board really is single-repo.
 #   `--source <owner/repo>|*` overrides the config for one run (a dry-run pointed elsewhere).
 #
+#   AND THE DECLARATION IS CHECKED AGAINST THE REPO IT IS MADE IN (card#8538). Whichever of
+#   the two channels wins, a resolved source other than `*` must equal $GITHUB_REPOSITORY
+#   when that variable is set — GitHub sets it to the repository the workflow runs in, which
+#   on the promote runner IS the repo being released. A typo'd or copy-pasted slug otherwise
+#   passes every shape check and correlates against nothing: 0 promoted, rc 0, silent. Off a
+#   runner ($GITHUB_REPOSITORY unset) there is no repo identity to check and the leg does not
+#   fire; `*` is a declaration rather than a repo name and does not fire either.
+#
 #   ⚠ A card with NO derivable by-ref source cannot be attributed under a qualified run: it is
 #   NOT promoted, and it is named individually and counted — never dropped silently. That
 #   inverts the reconciler's "a null source matches every repo" rule ON PURPOSE, and the
@@ -93,6 +101,8 @@
 #     line: that card exists and carries the ref, so "create a card" is the wrong remedy for it
 #     and "stamp this card" is the right one (see THE NO-CARD REPORT below).
 #   - `.promote.source` absent => FAIL before any read (the repo-scoped ref collision above).
+#   - `.promote.source` present but naming a repo other than $GITHUB_REPOSITORY (when set)
+#     => FAIL before any read: the declaration is false of the repo it is made in.
 #   - A ref-matched card belonging to ANOTHER repo, or to NO derivable repo, is named
 #     individually and counted — never silently promoted, and never silently dropped.
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
@@ -513,6 +523,42 @@ if [ "$SOURCE" != '*' ]; then
   src_charset_ok "$SOURCE" \
     || die "--source/.promote.source must be a bare '<owner>/<repo>' — only letters, digits and '.', '_', '-' may appear either side of the one '/'. $(src_shown) (from $SOURCE_SRC) carries something else, so it can never equal a card's derived 'owner/repo'; an scp-style 'git@github.com:owner/repo' is the usual cause."
 fi
+# --- THE CHECK HALF of the same seam: the declared source must BE this repo (card#8538) ----
+# `.promote.source` is a DECLARATION made in one repo about which repo's cards a release
+# promotes, and until now nothing anywhere established that the declaration was TRUE of the
+# repo it was declared in. A typo'd or copy-pasted slug — `PupFuzz/kanban-boards`, or a slug
+# lifted wholesale from the repo the config was copied from — passes the shape `case` and
+# `src_charset_ok` above and then correlates against NO card: every release promotes 0, prints
+# `⊘ … other-repo` lines nobody reads, and exits 0. A guard whose failure mode is a clean exit
+# is not a guard, and the DECLARE half added in `release-artifacts-check` cannot close it —
+# presence and shape are local facts, and "is this the right repo" is not.
+#
+# $GITHUB_REPOSITORY is the one thing in the environment that answers it: GitHub sets it to
+# `<owner>/<repo>` of the repository the workflow is running in, so on the promote runner it is
+# the repo whose release is being promoted, by construction. Compared through the SAME
+# canonicalization the config value went through above, because the comparison is only worth
+# something if both sides mean one thing (GitHub slugs are case-insensitive; a config saying
+# `PupFuzz/kanban-board` and a runner saying `pupfuzz/kanban-board` are the same repo).
+#
+# THREE THINGS IT DELIBERATELY DOES NOT DO:
+#   * it does not fire on `*`, which is a DECLARATION that the board tracks one repo, not a
+#     repo name — there is nothing to compare it against, and refusing it would break every
+#     single-repo install for no finding;
+#   * it does not fire when $GITHUB_REPOSITORY is unset or empty — off a runner (an operator's
+#     terminal, a vendored cron) there is no repo identity to check against, and inventing one
+#     from `git remote` would be a second, weaker rule that a fork or a mirror answers wrongly;
+#   * it has NO override flag. `--source` is already the per-run override and this check applies
+#     to whatever `--source` resolved to, deliberately: a run that promotes another repo's cards
+#     is the failure, not the spelling that reached it. A fork running the release workflow is
+#     the case that makes this a safety leg and not only a typo leg — its $GITHUB_REPOSITORY is
+#     the fork, so it cannot promote the upstream board's cards on the upstream's ref numbers.
+GH_REPO="${GITHUB_REPOSITORY:-}"
+GH_REPO="$(printf '%s' "$GH_REPO" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+GH_REPO="$(printf '%s' "${GH_REPO:0:255}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+if [ "$SOURCE" != '*' ] && [ -n "$GH_REPO" ] && [ "$SOURCE" != "$GH_REPO" ]; then
+  die "refusing to promote — the resolved repo qualification $(src_shown) (from $SOURCE_SRC) is not the repository this run is in (\$GITHUB_REPOSITORY = '$GH_REPO'). Every ref this release ships is a REPO-SCOPED number, so a source naming a different repo correlates against that repo's cards or against none at all: the run would exit 0 having promoted nothing, or having moved cards this release did not ship. TO FIX, set \`.promote.source\` in $CONFIG to '$GH_REPO' (or to \"*\" if this board tracks exactly ONE repo). If the mismatch is deliberate, this tool is the wrong one: it promotes the cards of the repo it runs in."
+fi
+
 # The jq comparison key: the canonical source, or "" meaning qualification is OFF. Everything
 # downstream branches on THIS, never on $SOURCE, so `*` has exactly one meaning in one place.
 if [ "$SOURCE" = '*' ]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi

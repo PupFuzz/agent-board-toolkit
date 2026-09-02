@@ -50,6 +50,19 @@ description: >-
   than its version declaration can see a non-release PR classified as a
   release one by this rule; tighten the regex (in its own PR — it is read from
   the fork point).
+  IT ALSO GUARDS THE CORRELATION KEYS, which is the one leg not about
+  `artifacts`: a config declaring a `promote` block must declare
+  `promote.source`, `ref_token_regex` and `card_token_regex`, or name the
+  missing one in an `unset_correlation_keys` array at head (logged as an
+  `UNSET:` line instead of failing; a key both declared and listed, or a name
+  that is not one of the three, is a config error). Absent, each of them fails
+  SILENTLY downstream — `release-pr-body` emits a 0-id `shipped-cards` manifest
+  at rc 0 under the line "All shipped refs have a tracking card". A key that is
+  present but empty/whitespace-only, or a token regex `grep -E` cannot compile,
+  is the same silent zero and is refused too. Read at HEAD only, run BEFORE the
+  empty-`artifacts` opt-out (a repo that declares no artifacts still promotes),
+  and SKIPPED under --classify-only, whose post-merge caller cannot act on a
+  config finding. A repo with no `promote` block owes none of the three keys.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.

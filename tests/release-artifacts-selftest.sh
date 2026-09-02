@@ -634,6 +634,37 @@ cfg no-version-file.json '{ "artifacts": ["VERSION → {{version}}"] }'
 # opt-out answers it before the keys are ever read; under --classify-only there is no opt-out
 # to reach, so this is the config that used to be told it "declares artifacts".
 cfg no-keys-no-artifacts.json '{ "artifacts": [] }'
+# --- correlation-key fixtures (card#8538) -------------------------------------------------
+# THE POPULATION THIS LEG READS is a config that declares a `.promote` block: that block IS the
+# repo's claim that its releases move board cards, and the three keys are what that promotion
+# correlates on. Every config above declares no `promote`, which is why not one of them changes
+# verdict — the leg's own controls, at no extra cost.
+# CORR_OK is the complete one; each sibling differs from it by exactly one key, so a case
+# cannot fail for two reasons at once.
+CORR_OK='{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+",
+  "artifacts": ["VERSION → {{version}}"],
+  "promote": { "board_id": 1, "released_stage_id": 2, "source": "acme/widget" } }'
+_corr() { cfg "$1" "$(printf '%s' "$CORR_OK" | jq -c "$2")"; }
+cfg corr-ok.json "$CORR_OK"
+_corr corr-no-card.json     'del(.card_token_regex)'
+_corr corr-no-ref.json      'del(.ref_token_regex)'
+_corr corr-no-source.json   'del(.promote.source)'
+_corr corr-blank-source.json '.promote.source = "   "'
+_corr corr-num-source.json  '.promote.source = 12'
+_corr corr-bad-regex.json   '.card_token_regex = "card#[0-9+"'
+_corr corr-ack.json         'del(.card_token_regex) | .unset_correlation_keys = ["card_token_regex"]'
+_corr corr-ack-source.json  'del(.promote.source) | .unset_correlation_keys = ["promote.source"]'
+_corr corr-ack-conflict.json '.unset_correlation_keys = ["card_token_regex"]'
+_corr corr-ack-typo.json    'del(.card_token_regex) | .unset_correlation_keys = ["card_token_rgex"]'
+_corr corr-ack-empty.json   'del(.card_token_regex) | .unset_correlation_keys = [""]'
+_corr corr-ack-nonstr.json  'del(.card_token_regex) | .unset_correlation_keys = [7]'
+_corr corr-ack-type.json    'del(.card_token_regex) | .unset_correlation_keys = "card_token_regex"'
+_corr corr-promote-type.json '.promote = "acme/widget"'
+# The same three keys MISSING with no `promote` block — the vendored adopter who runs the
+# artifact gate and no promotion at all. It must stay rc 0, or this leg taxes a repo the class
+# cannot reach.
+_corr corr-no-promote.json  'del(.promote) | del(.ref_token_regex) | del(.card_token_regex)'
 cfg bad-syntax.json      '{"artifacts": [,]}'
 cfg empty-cfg.json       ''
 cfg bad-obj-array.json   '[1,2]'
@@ -1639,6 +1670,101 @@ eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares
 # …while the NORMAL mode, where the set IS collected and the empty-set opt-out has already been
 # passed, keeps the original premise — that arm is driven above ("a declared set with no
 # version_file is a CONFIG error"), so this fix narrows nothing.
+
+echo "== correlation keys: a .promote-declaring config that correlates NOTHING is refused (card#8538) =="
+# WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent ⇒ `release-pr-body` emits a 0-id
+# `shipped-cards` manifest AT RC 0 under the line "All shipped refs have a tracking card" — a
+# clean assertion about coverage that was never measured. It shipped on two consumer repos
+# (card#8423) precisely because nothing read the key: this file's subject used to say so in its
+# own header ("promote.*, ref_token_regex, card_token_regex stay head-read and unguarded").
+# Every arm below asserts the OUTCOME (rc + the text an operator has to act on), never a bare
+# status, and each names the key AND the tool that reads it — "add a key" is not actionable
+# without knowing which tool went quiet.
+run base-0.1.0 head-good --config corr-ok.json
+eq "the complete config passes"              "0"     "$RC"
+eq "…with no UNSET line"                     "false" "$(has 'UNSET:' "$OUT")"
+for miss in card_token_regex:corr-no-card:release-pr-body \
+            ref_token_regex:corr-no-ref:release-pr-body \
+            promote.source:corr-no-source:promote-released-cards; do
+  key="${miss%%:*}"; rest="${miss#*:}"; file="${rest%%:*}"; reader="${rest#*:}"
+  run base-0.1.0 head-good --config "$file.json"
+  eq "$key absent → rc 2"                    "2"     "$RC"
+  eq "…naming the key"                       "true"  "$(has "but no $key" "$OUT")"
+  eq "…naming the tool that reads it"        "true"  "$(has "bin/$reader" "$OUT")"
+  eq "…and naming the acknowledgement channel" "true" "$(has 'unset_correlation_keys' "$OUT")"
+  eq "…never softened to a pass"             "false" "$(has 'all 1 declared artifact' "$OUT")"
+done
+run base-0.1.0 head-good --config corr-blank-source.json
+eq "a whitespace-only value is not a declaration" "2"    "$RC"
+eq "…said in those words"                    "true"  "$(has 'empty or whitespace only' "$OUT")"
+run base-0.1.0 head-good --config corr-num-source.json
+eq "a non-string key → rc 2"                 "2"     "$RC"
+eq "…naming the type it found"               "true"  "$(has "of type 'number'" "$OUT")"
+run base-0.1.0 head-good --config corr-promote-type.json
+eq "a non-object .promote → rc 2"            "2"     "$RC"
+eq "…naming the type it found"               "true"  "$(has ".promote of type 'string'" "$OUT")"
+
+echo "== a token regex that grep -E cannot compile is the SAME silent zero, and is refused =="
+# The readers pipe these values straight into `grep -oiE` behind a `|| true`, so an
+# uncompilable regex does not fail — it matches nothing and yields an empty manifest at rc 0.
+# Present, non-empty, and still correlating nothing: this arm is what distinguishes a presence
+# check from a guard.
+run base-0.1.0 head-good --config corr-bad-regex.json
+eq "an uncompilable card_token_regex → rc 2" "2"     "$RC"
+eq "…saying it cannot compile"               "true"  "$(has 'grep -E cannot compile' "$OUT")"
+eq "…and naming the swallowed failure"       "true"  "$(has 'EMPTY manifest at rc 0' "$OUT")"
+
+echo "== the acknowledgement channel: declared absent BY NAME, logged, never silent =="
+run base-0.1.0 head-good --config corr-ack.json
+eq "an acknowledged absence passes"          "0"     "$RC"
+eq "…and is LOGGED, not silent"              "true"  "$(has 'UNSET: card_token_regex' "$OUT")"
+eq "…naming the reader that goes quiet"      "true"  "$(has 'bin/release-pr-body' "$OUT")"
+eq "…and stating what the absence DOES (silence)" "true" "$(has 'none of that happens SILENTLY' "$OUT")"
+# THE CONSEQUENCE IS PER KEY, and asserting only the shared half would let one sentence stand
+# for all three while being FALSE of one: `promote.source` absent makes promote-released-cards
+# REFUSE at rc 2, not go quiet, so an operator acknowledging it must be told the acknowledgement
+# does not silence that refusal. Driven on the config that acknowledges the SOURCE, not a regex.
+run base-0.1.0 head-good --config corr-ack-source.json
+eq "acknowledging promote.source also passes" "0"    "$RC"
+eq "…but says that tool REFUSES rather than going quiet" "true" "$(has 'REFUSES AT RC 2' "$OUT")"
+eq "…and does NOT reuse the silence sentence" "false" "$(has 'none of that happens SILENTLY' "$OUT")"
+run base-0.1.0 head-good --config corr-ack-conflict.json
+eq "declared AND acknowledged → rc 2"        "2"     "$RC"
+eq "…naming both"                            "true"  "$(has 'AND lists it in .unset_correlation_keys' "$OUT")"
+run base-0.1.0 head-good --config corr-ack-typo.json
+eq "a MISSPELLED acknowledgement acknowledges nothing" "2" "$RC"
+eq "…and says so rather than silently covering the key" "true" "$(has 'is not a correlation key' "$OUT")"
+run base-0.1.0 head-good --config corr-ack-empty.json
+eq "an empty acknowledgement entry → rc 2"   "2"     "$RC"
+eq "…naming what it should have said"        "true"  "$(has 'EMPTY entry in .unset_correlation_keys' "$OUT")"
+run base-0.1.0 head-good --config corr-ack-nonstr.json
+eq "a non-string acknowledgement entry → rc 2" "2"   "$RC"
+eq "…typed at the boundary, not at the name check" "true" "$(has 'non-string entr' "$OUT")"
+run base-0.1.0 head-good --config corr-ack-type.json
+eq "a non-array unset_correlation_keys → rc 2" "2"   "$RC"
+eq "…naming the type it found"               "true"  "$(has ".unset_correlation_keys of type 'string'" "$OUT")"
+
+echo "== NEGATIVE CONTROL: a config with no .promote block is NOT in this leg's population =="
+# The trigger is the repo's own CLAIM that its releases move cards, never the artifact set. A
+# vendored adopter running the artifact gate and no promotion owes none of the three keys, and
+# a leg that taxed it would be one every consumer works around rather than satisfies. This arm
+# is what makes the population a decision instead of an accident — and it is not vacuous: the
+# same three keys are missing here as in the rc-2 arms above.
+run base-0.1.0 head-good --config corr-no-promote.json
+eq "no .promote block, no correlation keys → rc 0" "0" "$RC"
+eq "…and nothing is said about the keys"     "false" "$(has 'unset_correlation_keys' "$OUT")"
+
+echo "== --classify-only does NOT answer this question (the leg is skipped, not run-and-ignored) =="
+# `--classify-only` answers "is this range a release" for `release-tag-check`, POST-merge on a
+# push. A correlation finding there is unactionable — the config it is about has already
+# merged — while the same finding on the PR run is exactly where it can be fixed, and every
+# repo that runs the mode runs the full check on its PRs. Not vacuous: the same config is rc 2
+# in the normal mode, asserted above.
+run base-0.1.0 head-good --config corr-no-card.json --classify-only
+eq "a config missing a key still classifies" "0"     "$RC"
+# The verdict is the LAST line: this fixture's config is created at the release commit, so the
+# fork point does not carry it and the no-baseline `::warning::` precedes the answer.
+eq "…as a release"                           "release 0.2.0" "$(printf '%s\n' "$OUT" | tail -1)"
 
 echo "== --classify-only: the release rule, EXPOSED — one implementation, not two (card#6579) =="
 # WHY THIS BLOCK EXISTS. `release-tag-check` must know whether a post-merge push is a release
