@@ -4,6 +4,15 @@
 
 <!-- one or two lines -->
 
+## Scope
+
+- **Built:** `dispatched (coder ×N / mechanic ×N)` | `inline (trivial-tier: <reason>)` | `inline (dispatch-prohibited: <directive>)` | `in-session (docs/coordination)`
+  <!-- REQUIRED on every PR body — keep exactly ONE value, delete the others. The value set,
+       and when each value is legitimate, is owned by the coord plugin's `coord-thread` skill
+       § "The `Built:` line"; read it there. Deliberately not restated here — a second copy
+       drifts. -->
+- **Coordinated in:** <!-- card#NNNN — the card this work is coordinated on -->
+
 ## Checklist
 - [ ] The shellcheck gate passes locally — run the `shellcheck` job's own `run:` line from
       `.github/workflows/ci.yml` (it goes through `bin/_shellcheck-pinned`, so your sweep uses the
