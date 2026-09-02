@@ -500,13 +500,16 @@ if [ "$SOURCE" != '*' ]; then
   # `bin/adopt-to-dl` stamps, and the `source=` of the by-ref verify) and is the ONE accept
   # predicate for a repo slug; this pair is its deliberate duplicate, because this script is
   # vendored standalone and must not source that lib. Keep the two in sync — and note the
-  # spellings differ on purpose (that one is a single ERE plus a `.git` arm, this one is a glob
-  # `case` pair) while the ACCEPT SET must not. ⚠ HONEST SCOPE: no test asserts the two sets are
-  # EQUAL. tests/locale-range-guard-selftest.sh drives both ends under both locales, so a drift
-  # in LOCALE SCOPING reds; each end's other rows (the `.git` arm, the scp-style spelling, the
-  # glob) are pinned separately in tests/promote-source-qualify-selftest.sh and
-  # tests/kb-board-lib-selftest.sh. A shared-corpus equality check is the thing that would make
-  # this a contract rather than a convention, and it does not exist yet.
+  # spellings differ on purpose (that one is a single ERE plus a case-insensitive `.git` arm,
+  # this one is a glob `case` pair over an already-lowercased value) while the ACCEPT SET must
+  # not. THE EQUALITY IS A CONTRACT, NOT A CONVENTION: § 3c of
+  # tests/promote-source-qualify-selftest.sh drives ONE corpus through both copies and pins each
+  # side's verdict row for row, and the only two spellings on which they may differ (`*`, and a
+  # value this script trims before judging) are declared there by name. It exists because the
+  # comment that used to stand here — "keep the two in sync" — had already failed: the lib arm
+  # was `*.git)`, case-SENSITIVE, so `acme/widget.GIT` was refused HERE and accepted THERE
+  # (card#8421). tests/locale-range-guard-selftest.sh remains the LOCALE leg of the same pair,
+  # driving both ends under both locales.
   src_charset_ok "$SOURCE" \
     || die "--source/.promote.source must be a bare '<owner>/<repo>' — only letters, digits and '.', '_', '-' may appear either side of the one '/'. $(src_shown) (from $SOURCE_SRC) carries something else, so it can never equal a card's derived 'owner/repo'; an scp-style 'git@github.com:owner/repo' is the usual cause."
 fi

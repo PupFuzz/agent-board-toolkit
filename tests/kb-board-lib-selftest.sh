@@ -1486,6 +1486,20 @@ expect_rc "empty owner rejected"      1 kb_is_repo_slug "/name"
 expect_rc "empty name rejected"       1 kb_is_repo_slug "owner/"
 expect_rc "scp-style remote rejected" 1 kb_is_repo_slug "git@github.com:acme/widget"
 expect_rc "a .git suffix rejected"    1 kb_is_repo_slug "acme/widget.git"
+# THE SUFFIX ARM IS CASE-INSENSITIVE, and the uppercase spellings are not a curiosity — they are
+# the one input on which this predicate DISAGREED with its declared duplicate. `.git` is refused
+# because the two derivations disagree about it (see the arm's own comment in the lib), and that
+# disagreement is a property of the SUFFIX, not of its casing: GitHub's `<owner>/<name>` is
+# case-insensitive, `repoFromGitHubUrl` is `/i` and trims `.GIT` too, so `acme/widget.GIT` stamps
+# a card whose derived source is `acme/widget` and then verifies against `acme/widget.git` —
+# LOUD, but only AFTER the counter is consumed and the card stamped, which is the exact
+# half-applied write the arm exists to prevent. `bin/promote-released-cards`' copy lowercases
+# before its own `case`, so it refused these all along; this predicate accepted them until
+# card#8421's third review round, and § 3c of tests/promote-source-qualify-selftest.sh is what
+# now holds the two accept sets to each other rather than leaving it to two files' comments to
+# agree.
+expect_rc "a .GIT suffix rejected"    1 kb_is_repo_slug "acme/widget.GIT"
+expect_rc "a .Git suffix rejected"    1 kb_is_repo_slug "acme/widget.Git"
 expect_rc "a glob is not a repo"      1 kb_is_repo_slug "acme/*"
 expect_rc "a URL scheme rejected"     1 kb_is_repo_slug "ssh://git@github.com/acme/widget"
 expect_rc "a colon is not in the set" 1 kb_is_repo_slug "acme:x/widget"
@@ -1499,6 +1513,7 @@ expect_rc "control: digits either side"     0 kb_is_repo_slug "acme2/widget3"
 # a name that merely CONTAINS `.git` is legal and must still pass, or the suffix arm has quietly
 # become a substring ban.
 expect_rc "control: '.git' inside a name is not the suffix" 0 kb_is_repo_slug "acme/widget.gitignore"
+expect_rc "control: '.GIT' inside a name is not the suffix" 0 kb_is_repo_slug "acme/widget.GITIGNORE"
 expect_rc "control: an owner may end in .git-ish text"      0 kb_is_repo_slug "acme.github/widget"
 
 echo "== kb_dl_num — strict (rejects non-DL loudly) =="

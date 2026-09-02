@@ -191,6 +191,85 @@ run_promote "$CFG_STAR" --source "acme/widget.git"
 eq "an already-canonical value is not double-printed" "false" "$(has 'canonicalized to' "$err")"
 eq "…and is still named"                              "true"  "$(has 'acme/widget.git' "$err")"
 
+echo "== 3c. ONE ACCEPT SET, TWO COPIES: one corpus, driven through both of them =="
+# WHY THIS EXISTS (card#8421). `.promote.source` here and `--repo` at bin/adopt-to-dl and
+# bin/run-coverage-check are THE SAME VALUE at the two ends of ONE correlation — the `owner/repo`
+# a card's `source` is derived from, and the `owner/repo` a release qualifies against — so a
+# spelling one end accepts and the other refuses is a card that can be stamped and never matched.
+# The two copies (`kb_is_repo_slug` in bin/_kb-board-lib.sh, and `src_charset_ok` plus the shape
+# `case` in this bin) were sync-paired BY COMMENT ONLY, and they had already drifted: this bin
+# lowercases before its `case`, so it refused `acme/widget.GIT`, while the lib arm was written
+# `*.git)` — case-SENSITIVE — and ACCEPTED it, which reached adopt-to-dl's mint/stamp path and
+# left exactly the half-applied write that arm exists to prevent. Two comments asserting "keep
+# these in sync" is not a contract; this corpus is.
+#
+# WHY NOT THE EXTRACT-AND-EXERCISE PATTERN tests/kb-host-guard-selftest.sh uses on `host_ok`:
+# this bin's half is not one function to lift — it is `src_charset_ok` PLUS the shape `case`
+# inline in the main flow — so a RUN is the only place both halves exist together, and the
+# promote side is therefore driven end-to-end (rc 0 = accepted, rc 2 = refused). The lib side
+# needs no such ceremony and is called directly: both its callers — `bin/adopt-to-dl`, at its
+# readiness gate, and `bin/run-coverage-check`, at its `--repo` gate — hand it the RAW flag
+# value with no canonicalization of their own, so the predicate's verdict IS the deployed
+# verdict at both of them.
+LIB="$HERE/../bin/_kb-board-lib.sh"
+_need -r "$LIB"
+# A fresh shell per row, so nothing this harness has defined can stand in for the lib.
+lib_verdict() {
+  if bash -c 'source "$1"; kb_is_repo_slug "$2"' _ "$LIB" "$1" >/dev/null 2>&1; then echo A; else echo R; fi
+}
+promote_verdict() { run_promote "$CFG_STAR" --source "$1"; if [ "$rc" = 0 ]; then echo A; else echo R; fi; }
+# `<A|R>|<value>` — the verdict BOTH copies must reach. The pin is per-side, not a bare
+# "they agree": a mutant that refused everything would satisfy an equality-only check, and the
+# accept rows below are what stops it (canon #9).
+while IFS='|' read -r want value; do
+  [ -n "$want" ] || continue
+  eq "corpus '$value' → lib predicate $want"    "$want" "$(lib_verdict "$value")"
+  eq "corpus '$value' → promote's copy $want"   "$want" "$(promote_verdict "$value")"
+done <<'ROWS'
+A|acme/widget
+A|acme/widget.js
+A|acme_org/my-repo
+A|acme2/widget3
+A|acme.github/widget
+A|ACME/Widget
+A|acme/widget.gitignore
+R|acme/widget.git
+R|acme/widget.GIT
+R|acme/widget.Git
+R|git@github.com:acme/widget
+R|https://github.com/acme/widget
+R|ssh://git@github.com/acme/widget
+R|acme/*
+R|*/widget
+R|**
+R|widget
+R|acme/widget/extra
+R|/widget
+R|acme/
+R|acme widget/x
+R|acme:x/widget
+R|acme/wid+get
+R|acme/wid~get
+R|acme/wid%get
+R|
+ROWS
+# THE TWO DIVERGENCES ARE DECLARED, not discovered — every other spelling above is a row where a
+# disagreement is a defect, and these two are the complete list of where the copies may differ.
+#   1. `*` is a DECLARATION this tool accepts ("this board tracks exactly one repo") and is not a
+#      repo name, so the predicate that vouches for repo names must refuse it. A `--repo '*'` at
+#      adopt-to-dl would stamp a card with a URL naming no repository.
+#   2. This tool CANONICALIZES an operator's config value before judging it (trim, 255-cap,
+#      lowercase); the lib's two callers judge the raw flag value. So a padded spelling is
+#      accepted here and refused there — benign in that direction only: adopt-to-dl refuses it
+#      loudly before anything is stamped, which is why `_ata_canon_source` in bin/adopt-to-dl
+#      can omit the trim its promote-side mirror performs.
+# Both rows are asserted in BOTH directions, so a change that accidentally unified the copies
+# here would red rather than pass quietly.
+eq "declared divergence 1: '*' is a promote DECLARATION"  "A" "$(promote_verdict '*')"
+eq "declared divergence 1: …and not a repo name"          "R" "$(lib_verdict '*')"
+eq "declared divergence 2: promote trims before judging"  "A" "$(promote_verdict '  acme/widget  ')"
+eq "declared divergence 2: …the lib's callers do not"     "R" "$(lib_verdict '  acme/widget  ')"
+
 echo "== 4. THE DEFECT, held still: one shipped ref, three cards, two of them not ours =="
 # This is card#8421 reproduced in miniature. Under `"*"` the tool promotes all three — that is
 # the pre-fix behaviour and it is CORRECT there, because `*` is a declaration that no such

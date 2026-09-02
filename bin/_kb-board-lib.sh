@@ -152,16 +152,30 @@ kb_is_uint() { kb_ere_match "${1-}" '^(0|[1-9][0-9]*)$'; }
 # `.git` while `repoFromGitHubUrl` does, so `acme/widget.git` stamps a card whose
 # derived source is `acme/widget` and then verifies against `acme/widget.git`: it
 # fails LOUD, but only AFTER the write. Refusing here leaves nothing half-applied.
-# The `case` glob carries no bracket range, so it needs no locale scoping of its own.
+#
+# THE ARM IS CASE-INSENSITIVE because the disagreement it encodes is a property of the
+# SUFFIX and not of its casing: GitHub `<owner>/<name>` is case-insensitive and the
+# server's `repoFromGitHubUrl` is `/i`, so `acme/widget.GIT` derives the same
+# `acme/widget` and half-applies exactly as the lowercase spelling does. A
+# case-SENSITIVE arm accepted it (card#8421) while the duplicate in
+# `bin/promote-released-cards` — which lowercases before its own `case` — refused it:
+# one accept set, two verdicts. `[Gg][Ii][Tt]` is a bracket LIST of explicit ASCII
+# members, not a bracket RANGE, so no collation order is consulted and the arm needs no
+# `LC_ALL=C` window of its own — contrast the ranges tests/locale-range-guard-selftest.sh
+# scans for, which do.
 #
 # ⛔ ONE ACCEPT PREDICATE, and callers may not re-spell it. `bin/promote-released-cards`
 # is the one exception and cannot be fixed by adoption: it is VENDORED STANDALONE into
 # consumer repos and MUST NOT source this lib, so its `src_charset_ok` plus its shape
 # `case` are a deliberate duplicate of this function gating the SAME value at the other
-# end of the SAME correlation — keep the two in sync, as with kb_require_https_host.
+# end of the SAME correlation. The two are held in sync BY A TEST rather than by two
+# comments agreeing — the same regime kb_require_https_host's duplicate has in
+# tests/kb-host-guard-selftest.sh: § 3c of tests/promote-source-qualify-selftest.sh
+# drives ONE corpus through both and asserts the verdicts match row for row, with the
+# only divergences (`*`, and promote-side trimming) declared there by name.
 kb_is_repo_slug() {
     kb_ere_match "${1-}" '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || return 1
-    case "${1-}" in *.git) return 1 ;; esac
+    case "${1-}" in *.[Gg][Ii][Tt]) return 1 ;; esac
     return 0
 }
 
