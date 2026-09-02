@@ -141,6 +141,39 @@ _need() {
     [[ "$have" -eq 0 ]] || { printf 'selftest: %s not found\n' "$label" >&2; exit 1; }
 }
 
+# _adopt_fn <src> <name> — eval one shell function out of <src>, by name, into THIS shell, and
+# exit 1 naming it if <src> does not define it. The one spelling of "borrow a function from the
+# tool under test", for the tests that drive a bin's internal function directly rather than the
+# bin's CLI (`token-duplication-selftest.sh` adopts five out of
+# `bin/agent-board-toolkit-runtime-check`: the digest that defines its needle, and the four
+# `_kb-board-lib.sh` mirrors its parity block drives row-by-row).
+#
+# ⛔ THE `exit 1` IS THE POINT, not defensive padding. An extraction that silently answered ""
+# would `eval` nothing, leave the caller's later invocations to fail as "command not found" in a
+# subshell, and — where the caller compares two outputs — retire the comparison rather than red
+# it. A rename in the bin must red the build, which is the same rule the population-glob and
+# `require_value` derivations in this file are built on.
+#
+# ⚑ BOUND: this recognises the `^name() {` … `^}` spelling, which is what every bin here uses. A
+# function defined as `name ()` or `function name {` is NOT extracted — it exits 1 naming the
+# function, so the bound is loud rather than silent.
+#
+# ⚑ FIVE OTHER SITES, IN FOUR SELFTESTS, STILL HAND-SPELL THIS `sed` RANGE, and only ONE of them
+# could adopt this as it stands — counted, not estimated, so the residual is not read as smaller
+# than it is. `promote-pagination-selftest.sh:29` evals verbatim (adoptable today).
+# `kb-host-guard-selftest.sh:35`/`:269` and `kb-positional-guard-selftest.sh:44` eval the source
+# through a RENAME (`${src/host_ok() \{/host_ok_prc() \{}`) because the mirror and the lib copy
+# must coexist in one shell — they need an alias parameter this does not have.
+# `board-snapshot-selftest.sh:310` never evals at all; it greps the extracted TEXT, which needs a
+# text-returning sibling. Not migrated here, and named rather than implied:
+# `docs/CONSOLIDATION-PLAN.md` § Post-program dispositions carries that residual.
+_adopt_fn() {
+    local src
+    src="$(sed -n "/^$2() {/,/^}/p" "$1")"
+    [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
+    eval "$src"
+}
+
 # _mktmp_scratch [--home] — set TMP to a fresh temp dir + an EXIT trap that removes it.
 # With --home, also export a scratch HOME=$TMP so no real ~/.kanban-* file taints a result.
 _mktmp_scratch() {

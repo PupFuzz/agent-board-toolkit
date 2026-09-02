@@ -198,6 +198,7 @@ jobs:
           - run-coverage-check-selftest
           - runtime-check-selftest
           - shellcheck-pin-selftest
+          - token-duplication-selftest
           - url-userinfo-render-selftest
           - value-flag-derivation-selftest
           - verdict-through-truncating-reader-selftest
