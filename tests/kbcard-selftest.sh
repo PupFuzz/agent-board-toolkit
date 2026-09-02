@@ -2548,7 +2548,7 @@ eq "control: …in the unknown-command words, which the stages verb never took" 
 unset -f kb_stub_route
 
 # ---------------------------------------------------------------------------
-echo "== unlink — the removal is the READ-BACK, never the status (card#8449) =="
+echo "== unlink — the removal is the READ-BACK, never the status (card#8545) =="
 # THE GAP: `link` shipped without its inverse, so a mislinked relation was PERMANENT with the
 # shipped toolkit — the reported case is a `blocks` link that cannot be discharged by the work
 # it blocks, which makes every gate count derived from links wrong by one, forever.
@@ -2561,9 +2561,13 @@ echo "== unlink — the removal is the READ-BACK, never the status (card#8449) =
 # refusal that says the right words while still issuing the DELETE is the failure this file
 # exists to catch, and only the log can tell the two apart.
 #
-# ⛔ THE FIXTURE'S SHARPEST EDGE, measured against the live API (boards 3 + 13, 2026-09-02)
-# rather than invented: a `linked_tasks` entry's `id` is the OTHER TASK and the link id is
-# `task_link_id`. Both are integers, both address real rows, and a tool reading the wrong one
+# ⛔ THE FIXTURE'S SHARPEST EDGE — and the claim the whole section RESTS on rather than tests,
+# INHERITED from the seat this change was adopted from and never measured here: a `linked_tasks`
+# entry's `id` is the OTHER TASK and the link id is `task_link_id`. This repo has never read a
+# live link entry and has never run `unlink` against a real server, so every leg below measures
+# the TOOL against a fixture built to that claim, never the claim against the API. What closes
+# it is stated at `bin/kbcard`'s `unlink` header; card#8545 owns the run and its result. Taking
+# it as given: both are integers, both address real rows, and a tool reading the wrong one
 # DELETEs a link belonging to some other pair of cards — which 204s, and reads back as gone
 # from the card that was never linked by it. The entries below carry the two as DIFFERENT
 # numbers (task 506, link 9) precisely so that confusion cannot pass, and the leg that names
@@ -2671,6 +2675,20 @@ eq "unlink: …named as unverified rather than assumed gone"  "true" \
 eq "unlink: …and the NEAR end was still proven (both ends, always)" "2" \
    "$(kb_stub_count GET '/tasks/505.json')"
 eq "unlink: …with nothing on stdout"                        "" "$out"
+# ⭐ THE CROSS-BOARD CASE THE USAGE BLOCK NAMES, and the verb's motivating one: the far board
+# refuses THIS board's token on the RE-READ — a policy status, not a transport fault, and on a
+# request made AFTER the DELETE was already answered. It must land as a statement about the
+# MEASUREMENT (unverified at that end) and never as the 401/403 arm's "the link is UNCHANGED",
+# which would be false: the DELETE went out.
+U_TO_HTTP=403 kbc unlink --link-id 9 --on 505
+eq "unlink: a far end this token may not READ → rc 1"       "1" "$rc"
+eq "unlink: …named UNVERIFIED at that end"                  "true" \
+   "$(has 'the removal is UNVERIFIED at that end' "$err")"
+eq "unlink: …and NOT as the DELETE's policy arm, which claims the link is unchanged" "false" \
+   "$(has 'The link is UNCHANGED' "$err")"
+eq "unlink: …with the DELETE already issued — which is why it is unverified, not undone" "1" \
+   "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink: …and nothing on stdout"                         "" "$out"
 
 echo "-- nothing is deleted that was not first READ --"
 kbc unlink --link-id 12 --on 505
@@ -2742,15 +2760,33 @@ eq "unlink: a direction that is neither → rc 2"             "2" "$rc"
 eq "unlink: …says it cannot tell which end is which"        "true" \
    "$(has "declares direction 'sideways'" "$err")"
 eq "unlink: …and deletes nothing on a shape it cannot read" "0" "$(kb_stub_count_any '/task_links/')"
-# The other end's id is server data that becomes a URL path AND a jq --argjson value: left
-# unchecked it addresses /tasks/null.json and kills the run with jq's own error under set -e.
+# The other end's id is server data that becomes a URL PATH. ⚠ IT DOES NOT SELF-REPORT: an
+# entry with no `id` yields the STRING `null`, which is valid JSON text, so the `--argjson`
+# that later carries this value takes it at rc 0 (`jq -nc --argjson t null '{t:$t}'` →
+# `{"t":null}`) — and no `--argjson` input in this verb can be non-JSON in the first place, since
+# every one is either kb_is_uint-validated or resolve_task-derived. Left unchecked the run
+# therefore goes on QUIETLY: the DELETE is sent and the post-witness addresses
+# `GET /tasks/null.json`. So what the guard buys is the URL path and the no-DELETE contract,
+# and those are what the legs below assert — an "it would have crashed" leg would be a
+# decoration that no mutation of this guard can red.
 U_FROM_PRE="$(u_card 505 '[{"relation_type":"blocks","direction":"outgoing","task_link_id":9}]' false)" \
     kbc unlink --link-id 9 --on 505
 eq "unlink: an entry naming no other end → rc 2"            "2" "$rc"
 eq "unlink: …says that end could not be re-read"            "true" \
    "$(has 'which is not a task id' "$err")"
-eq "unlink: …leaks no raw jq error"                         "false" "$(has 'Invalid JSON text' "$err")"
+eq "unlink: …addressing NO read to the literal /tasks/null.json" "0" \
+   "$(kb_stub_count GET '/tasks/null.json')"
 eq "unlink: …and deletes nothing"                           "0" "$(kb_stub_count_any '/task_links/')"
+# The success object is advertised as machine-readable in the spelling `link` POSTs, so it may
+# not INVENT a value: `jq -r` on an absent key yields the four-character string "null", which a
+# consumer round-tripping into `link --relation` would turn into a relation literally named
+# null. An absent relation is JSON null — a value a reader can test for. The removal itself is
+# unaffected: relation_type is a report field and nothing branches on it.
+U_FROM_PRE="$(u_card 505 '[{"id":506,"board_id":42,"direction":"outgoing","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: an entry carrying no relation_type still removes the link → rc 0" "0" "$rc"
+eq "unlink: ⭐ …reporting relation_type as JSON null, never the STRING \"null\"" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":null}' "$(jq -c . <<<"$out")"
 
 echo "-- a 2xx no linked_tasks LIST can be read out of is UNMEASURED, never 'no links' --"
 U_PRE_HTTP=200 U_FROM_PRE='<html><body>502 Bad Gateway</body></html>' kbc unlink --link-id 9 --on 505

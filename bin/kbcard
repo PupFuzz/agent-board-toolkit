@@ -215,9 +215,20 @@
 #     refusal (a read-only or trashed board at EITHER end — the mirror of what refuses the
 #     create), 404 is no such link, and a request that never completed says exactly that
 #     rather than claiming an outcome in either direction.
+#     ⚠ A CROSS-BOARD UNLINK IS rc 1 UNLESS THIS BOARD'S TOKEN CAN READ THE FAR BOARD, and
+#     that is the verb's motivating case, not an exotic one. The far end is re-read through
+#     the same credentials as everything else here, so a token scoped to one board gets 401/403
+#     on that read and the run ends "the removal is UNVERIFIED at that end" — with the DELETE
+#     ALREADY SENT. That is a report about the MEASUREMENT, not about the removal: the link is
+#     very likely gone, and this tool will not say so because it did not read it. Re-running is
+#     safe and is the way to find out — the second run's pre-witness no longer lists the link,
+#     so it refuses at rc 2 with no DELETE. To get a green, run it from a seat whose token
+#     reads BOTH boards.
 #     On success stdout carries the removed link as one JSON object — {task_link_id,
 #     from_task_id, to_task_id, relation_type} — the same three keys `link` POSTs, so the
-#     removal is machine-readable in the spelling the creation already uses.
+#     removal is machine-readable in the spelling the creation already uses. relation_type is
+#     projected off the card's own entry, so an entry carrying no such key reports JSON `null`
+#     rather than the string "null" a consumer could round-trip back into `link --relation`.
 #   kbcard show --task ID-OR-EXT
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
@@ -1388,8 +1399,23 @@ cmd_link() {
 }
 
 # --- unlink: remove a task link, and PROVE it is gone -----------------------
-# MEASURED against the live API (2026-09-02, boards 3 + 13), not assumed, because the read
-# this verb witnesses on has a shape that is easy to get wrong in a way nothing would catch:
+# ⛔ THE ENTRY SHAPE BELOW IS INHERITED, NOT MEASURED BY THIS REPO, AND NO LIVE `unlink` HAS
+# EVER RUN. It was measured by the seat this change was adopted from, against another install's
+# boards; nothing here re-measured it, and every test under it drives a FIXTURE built to this
+# description — so a wrong description makes a wrong fixture and no leg would notice. Confirmed
+# from this repo, and only this much: a card read here does carry `linked_tasks`,
+# `linked_tasks_count` and `linked_tasks_truncated`. The PER-ENTRY keys are not confirmable
+# without creating a link, and none of the DELETE behaviour is confirmable without deleting one.
+# Shipped rather than held because every wrong-shape mode is fail-closed or loud: a renamed or
+# differently-typed key matches no entry (rc 2, NO DELETE), a `direction` outside the two values
+# below is rc 2, and the one branch that would delete the WRONG link — `id` and `task_link_id`
+# swapped — still finds the entry present on the re-read and reports HARD FAILURE at rc 1, so it
+# costs one wrong DELETE on first use and says so rather than reading back clean.
+# WHAT CLOSES IT, and it has to be run rather than argued: on a sandbox board running the same
+# server build, link two throwaway cards, `show` BOTH ends and capture the per-entry key set
+# verbatim, then `unlink --link-id`. card#8545 owns that run and its result — re-derive the
+# shape from there, not from this comment.
+# The shape is written out here because it is easy to get wrong in a way nothing would catch:
 #   * GET /tasks/<id>.json carries `linked_tasks` on EVERY card read — an array of
 #     {id, board_id, name, relation_type, direction, created_at, task_link_id} — alongside
 #     `linked_tasks_count` ({outgoing, incoming}) and `linked_tasks_truncated` (a bool).
@@ -1613,9 +1639,15 @@ cmd_unlink() {
         return 1
     fi
 
+    # relation_type is projected off the ENTRY rather than routed through $rel_type, which is a
+    # `jq -r` and therefore renders an ABSENT key as the four-character string "null". This
+    # object is advertised as machine-readable in the spelling `link` POSTs, and a consumer
+    # round-tripping that string back through `kbcard link --relation` would mint a relation
+    # literally NAMED null. Projected, an absent key is JSON `null` — a value a reader can test
+    # for. $rel_type stays what the human line below interpolates; that one is prose.
     local removed
-    removed="$(jq -nc --argjson id "$link_id" --argjson f "$from_id" --argjson t "$to_end" --arg r "$rel_type" \
-        '{task_link_id: $id, from_task_id: $f, to_task_id: $t, relation_type: $r}')"
+    removed="$(jq -c --argjson id "$link_id" --argjson f "$from_id" --argjson t "$to_end" \
+        '{task_link_id: $id, from_task_id: $f, to_task_id: $t, relation_type: .relation_type}' <<<"$entry")"
     printf '%s\n' "$removed"
     echo "kbcard: unlink: link $link_id ($from_id --$rel_type--> $to_end) is GONE — re-read on BOTH ends after the DELETE and absent from each" >&2
 }
