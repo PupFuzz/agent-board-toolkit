@@ -265,6 +265,13 @@ dl_sequence_call() (
         exit 1
     }
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    # `2[0-9][0-9]` is a glob BRACKET RANGE, so it is a COLLATION range: under a UTF-8 locale
+    # it admits non-ASCII digits (card#5409). $http is curl's own %{http_code} and is ASCII by
+    # construction, so nothing can reach it that this would misclassify — the pin is here
+    # because what makes a range legitimate is that it is C-collated, not that today's writer
+    # can vouch for today's input, and tests/locale-range-guard-selftest.sh enforces exactly
+    # that structural property rather than a list of blessed lines.
+    local LC_ALL=C
     case "$http" in
         2[0-9][0-9])
             val="$(kb_parse_resp "$body" -r "$field // empty")"

@@ -9,7 +9,9 @@ description: >-
   out with fetch-depth: 0 + fetch-tags (the script derives the shipped-ref
   range from the CONSUMER's git history; it fail-closes on a tagless/shallow
   clone), and a .release-pr.json with a .promote block must exist at the
-  workspace root.
+  workspace root — including .promote.source, which is REQUIRED and has no
+  default: the script refuses before any read without it (see the `source`
+  input below, and INSTALL.md §4).
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing token / expected-host / api_base host mismatch)
   are the real gate and die with actionable messages.
@@ -40,6 +42,17 @@ inputs:
     description: 'DLs to promote (comma-separated). Blank = derive from the git range.'
     required: false
     default: ''
+  source:
+    description: >-
+      Optional override for .promote.source, the REQUIRED repo-qualification
+      key. "<owner>/<repo>" qualifies every ref-matched card against that repo;
+      "*" DECLARES that the board tracks exactly one repo. Blank (default) =
+      use the committed .promote.source, which must then be present — the
+      script refuses to run without one of the two, because dl_number and
+      pr_number are repo-scoped counters and an unqualified match on a
+      multi-repo board promotes another repo's cards into a terminal stage.
+    required: false
+    default: ''
   shipped-stage-ids:
     description: >-
       Optional comma-separated numeric workflow_stage_ids that count as a
@@ -66,6 +79,7 @@ runs:
         KANBAN_EXPECTED_HOST: ${{ inputs.expected-host }}
         KANBAN_API_BASE: ${{ inputs.api-base }}
         INPUT_DLS: ${{ inputs.dls }}
+        INPUT_SOURCE: ${{ inputs.source }}
         SHIPPED_STAGE_IDS: ${{ inputs.shipped-stage-ids }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
@@ -87,6 +101,7 @@ runs:
         # every consumer that leaves an optional input blank. Keep these conditional.
         args=()
         [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
+        [ -n "$INPUT_SOURCE" ] && args+=(--source "$INPUT_SOURCE")
         [ -n "$SHIPPED_STAGE_IDS" ] && args+=(--shipped-stages "$SHIPPED_STAGE_IDS")
         [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
         "$GITHUB_ACTION_PATH/../bin/promote-released-cards" "${args[@]}"

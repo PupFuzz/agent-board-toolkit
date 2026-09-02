@@ -631,6 +631,31 @@ finding with no owner is abandoned, not filed.
   fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
   dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
   prompted the extraction is not something this lib would have caught.
+- **The repo-slug predicate, in three bins with THREE spellings** (card#8421) — **EXTRACTED to
+  `kb_is_repo_slug` in `bin/_kb-board-lib.sh`; two of the three adopted, the third is a documented
+  standalone.** One accept-set — a bare GitHub `<owner>/<name>` — was written three ways:
+  `bin/adopt-to-dl`'s `_ata_validate_repo` hand-rolled it as three `case` steps under a local
+  `LC_ALL=C`; `bin/run-coverage-check` re-spelled it as a bare regex through `kb_ere_match`;
+  `bin/promote-released-cards` spells it as `src_charset_ok` plus a shape `case`. **The divergence
+  is the entry, not the count:** the three did not agree. `run-coverage-check --repo` accepted
+  `owner/name.git`, which the other two refuse — and the `.git` arm is the one with a stated
+  reason (the server's source canonicalizer does not trim a `.git` while `repoFromGitHubUrl` does,
+  so the two derivations disagree and a stamped card verifies against a source no card can
+  carry). A third copy is where the narrow rule quietly fails to arrive, exactly as the card#7207
+  entry above records. **`promote-released-cards` keeps its copy and that is not an oversight** —
+  it is vendored standalone into consumer repos and must not source the lib (the same constraint
+  that duplicates `host_ok` and `require_value`), so the two are bound by the single accept/reject
+  corpus in § 3c of `tests/promote-source-qualify-selftest.sh`, which drives BOTH ends from one row
+  set — the lib predicate called directly, `promote-released-cards` run end-to-end — and pins
+  the two declared divergences in both directions.
+  **Consequence recorded rather than discovered later:** adopting the shared predicate NARROWS
+  `run-coverage-check --repo`, which now refuses `owner/name.git` at rc 2 instead of putting it
+  into a `repos/<slug>/…` request path GitHub answers 404 for; the narrowing carries its own arm
+  in `tests/run-coverage-check-selftest.sh`. The predicate's arms moved WITH it, from
+  `tests/adopt-to-dl-selftest.sh` to `tests/kb-board-lib-selftest.sh`, and the caller's selftest
+  keeps an end-to-end arm for the WIRING — a lib unit test cannot tell whether its caller still
+  calls it.
+
 - **The GitHub Actions file population, in three gates with TWO predicates** (card#7207) —
   **EXTRACTED, all three adopted in the same PR.** `ci-matrix-parity-selftest.sh` and
   `shellcheck-pin-selftest.sh` each globbed `*.yml` **and** `*.yaml` inside their own python
@@ -1755,6 +1780,51 @@ finding with no owner is abandoned, not filed.
   three working installs inspected declare them `string`, `enum`, `string` and `url` respectively,
   which is an observation of what works and not a statement of what is required, and no run of
   anything has tested the alternatives.
+
+- **The `curl` stub that drives `promote-released-cards` end to end, in three selftests**
+  (card#8421) — **EXTRACTED at the second real caller; one adoption still owed, and it is a
+  DECISION, not a chore.** `bin/promote-released-cards` runs its whole subject at top level in a
+  standalone that must not be sourced, so a fake `curl` on `$PATH` is the only way to exercise the
+  correlation, the guards, the reports and the exit policy at all — which is why the fixture that
+  decides what "the board said" means had already been hand-rolled twice
+  (`promote-stage-guard-selftest.sh`, `promote-ref-canon-selftest.sh`) with a third about to land.
+  `tests/_promote-curl-stub.sh` now owns it; the stage-guard file and the new
+  `promote-source-qualify-selftest.sh` are its two callers, byte-identical stub content.
+  ⛔ **`promote-ref-canon-selftest.sh` was deliberately NOT adopted, and the reason is not
+  file scope.** Its own stub logs the PATCH **url alone**, and its `moved()` asserts whole-LINE
+  equality against that log via the prelude's `has_line`. The shared stub logs `<url>\t<body>` —
+  which the stage-guard file needs, since it asserts on the request BODY — so adopting it there
+  means rewriting a deliberately strict assertion into a substring one. That is a change to a
+  test's STRENGTH, in the file that pins the card#7587 ref-canon rule, and it belongs to whoever
+  is willing to argue it on its own. The alternative that costs nothing — a second log channel in
+  the shared stub — is worse: two ways to spell one observation is the shape being consolidated.
+
+- **The source-derivation rule, expressed in a FOURTH runtime as jq** (card#8421) — **NOT
+  consolidated onto the server, and the reason is what the server ENDPOINT can answer, not
+  effort.** `bin/promote-released-cards` mirrors the kanban `ExternalReferenceNormalizer`
+  (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
+  bridge PHP and `kanban_common._derive_card_source`. The obvious consolidation is to stop
+  mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
+  <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
+  with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
+  `->where('source', $source)` — a strict equality — so a card whose source is a *different* repo
+  and a card whose source is *null* are both simply **absent** from the answer, indistinguishable
+  from "no card carries this ref". Those two rows **are** the report: the `⊘` lines are the only
+  evidence the guard fired, and the unsourced one is the only thing that tells an operator to
+  **stamp** a card rather than mint one. An endpoint that answers the qualification by *deleting*
+  the rows the qualification rejected cannot report on them.
+  Two further costs, both measured rather than assumed: `external_references` is
+  `whenLoaded`-gated on `TaskResource` and `tasks/search.json` eager-loads only
+  `lastStageMoveChangelog`, so the **paged board read this tool already makes carries no
+  `source` at all** — adopting by-ref means one request per `(system, ref)` in place of one
+  paginated scan, and that scan is also where `workflow_stage_id` (idempotence, the
+  `--shipped-stages` guard) comes from; and the `--cards` leg correlates on a card's own **id**,
+  which is not an external-reference system, so it has no by-ref query in the first place.
+  **Revisit if** the by-ref endpoint grows a way to return the rejected rows (an
+  `include_unqualified`, or a per-row `source` on the answer), or `tasks/search.json` gains an
+  opt-in `external_references` include — the second alone would remove the mirror, because the
+  derivation would no longer need re-expressing to read a value the board already handed over.
+  The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
 
 ---
 
