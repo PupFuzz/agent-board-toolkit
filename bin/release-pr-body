@@ -536,13 +536,34 @@ card_coverage_section() {
     echo "_Coverage check could not run (\`promote-released-cards\` exited ${rc}). Run it manually before merge._"
     return 0
   fi
-  local miss
+  # THE PROMOTE TOOL'S NO-CARD REPORT IS TWO LINES, and both are read here (card#8421). They
+  # are not two spellings of one finding — they carry OPPOSITE remedies, so reading only the
+  # first told an author to CREATE a board card for a card that was already on the board and
+  # merely needed a stamp. `promote-released-cards` owns the contract in a block named THE
+  # NO-CARD REPORT; a third kind added there needs a third read HERE, or this section
+  # silently half-reads a report it presents as whole.
+  #
+  # Each `sed` cuts at the FIRST colon of the matched text, which is why `grep -oE` anchors on a
+  # colon-free phrase and neither promote-side line may put a colon before its ref list.
+  local miss stranded said=0
   miss="$(printf '%s\n' "$out" | grep -oE 'matched NO card[^:]*: .*' | sed 's/[^:]*: //' || true)"
+  stranded="$(printf '%s\n' "$out" | grep -oE 'matched ONLY an unsourced card[^:]*: .*' | sed 's/[^:]*: //' || true)"
   if [ -n "$miss" ]; then
     echo "⚠ **Shipped refs with no tracking card:** $miss"
     echo ""
     echo "Create (or correct) a board card for each before merging — a cardless *feature* ref is a tracking gap; a cardless *docs* ref is acceptable but better carded. A \`card#NNNN\` naming no card on this board is usually a typo or a card belonging to a different board. Otherwise the post-merge promote step reports them as no-card."
-  else
+    said=1
+  fi
+  if [ -n "$stranded" ]; then
+    # A blank line only BETWEEN the two blocks — a plain `if`, not a trailing test, per the
+    # card#5874 rule this file already states above.
+    if [ "$said" = 1 ]; then echo ""; fi
+    echo "⚠ **Shipped refs whose card carries no by-ref source:** $stranded"
+    echo ""
+    echo "**Do not create a card for these — the card already exists** and carries the ref. What it lacks is a repo-qualified source, so a repo-qualified promote (\`.promote.source\` set to an \`<owner>/<repo>\`) cannot tell whose card it is and will NOT move it. Stamp the card that is there — \`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>\` — or promote it by hand after merge."
+    said=1
+  fi
+  if [ "$said" = 0 ]; then
     echo "_All shipped refs have a tracking card._"
   fi
 }

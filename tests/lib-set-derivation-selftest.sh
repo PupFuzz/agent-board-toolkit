@@ -347,6 +347,18 @@ LEG3_DISPOSED=(
     "tests/kb-positional-guard-selftest.sh::kb_require_positional"
     # This file's own regrown-list control fixture, below. It MUST be reportable; that is its job.
     "tests/lib-set-derivation-selftest.sh::IF you vendored a lib-sourcing bin"
+    # card#8421 round 2. The line names `bin/_kb-board-lib.sh` beside `adopt-to-dl` and
+    # `run-coverage-check`, which is the co-mention this leg reports — but it is not the
+    # prohibited shape. What is prohibited is prose that ENUMERATES the lib-sourcing SET, because
+    # a reader vendoring by copy would then work from the list instead of deriving it. This
+    # sentence names the two bins that adopted ONE PREDICATE (`kb_is_repo_slug`) — a strictly
+    # smaller set, with no instruction to copy anything, and it says outright that
+    # `promote-released-cards` does NOT source the lib, which an enumeration of lib-sourcing
+    # bins could not say. Ruled reportable-but-correct rather than reworded, because rewording
+    # to dodge the grep (dropping the path, or writing "board library" for "shared lib") would
+    # leave the same sentence with a worse locator and the guard none the wiser. ⛔ EXPIRES AT
+    # THE NEXT RELEASE by the rule immediately below — do not carry it forward.
+    "docs/CHANGELOG.md::one predicate, three spellings, now two callers"
     # ⛔ NO `docs/CHANGELOG.md` DISPOSITION SURVIVES A RELEASE, and that is the contract, not an
     # omission. v0.30.0 carried three — card#7175, card#6884 and card#6680 — each ruled on the
     # live `[Unreleased]` entry it named. Step 4 of VERSIONING.md retitled that section as
