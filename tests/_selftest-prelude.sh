@@ -5,10 +5,25 @@
 #     HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 #     source "$HERE/_selftest-prelude.sh"
 #
-# It carries only the harness the selftests all shared verbatim — the assertion
-# helpers (ok/bad/fails, eq, expect_rc/expect_out, has), the required-bin guard, the
-# temp-dir+trap[+scratch-HOME] setup, and the PASS/FAIL summary. It defines no test
-# cases and asserts nothing; the fixtures and cases stay in each selftest.
+# It carries the harness for the suite: assertion and reporting helpers, guards, scratch
+# setup, and shared extractors. It defines no test cases and asserts nothing; the fixtures
+# and cases stay in each selftest.
+#
+# ⛔ WHAT IS IN HERE IS NOT ENUMERATED HERE, AND THAT IS THE FIX RATHER THAN AN OMISSION. This
+# docblock used to list the contents ("ok/bad/fails, eq, expect_rc/expect_out, has, the
+# required-bin guard, the temp-dir setup, the summary") and the list went stale on EVERY
+# addition — `has_line`, `expect_value_flags`, `_value_flags`, `_adopt_fn`, `_since_stamp` and
+# `_stamp_taken` all landed without it, and it named `fails` (a counter VARIABLE) as if it were
+# a helper. Three separate rounds appended one missing name and left the next addition to
+# re-mint the drift; card#8548 ruled the restatement itself the defect. The contents are
+# DERIVED instead: `tests/prelude-shadow-selftest.sh` extracts them from this file on every run
+# and prints them as its denominator, so `bash tests/prelude-shadow-selftest.sh` is the current
+# list and cannot disagree with the file. Nothing here needs editing when a helper is added.
+#
+# ⛔ NOR IS THE ADMISSION RULE "shared verbatim by every selftest" — that sentence was also here
+# and is also false: `_adopt_fn` arrived with ONE caller. What earns a place is that a SECOND
+# hand-spelling of one behaviour would otherwise exist in the suite (canon #5), which is a
+# statement about the class, not about the caller count.
 #
 # It deliberately does NOT run `set` — each selftest keeps its own shell options
 # (board-snapshot omits -e on purpose). A selftest that needs a variant helper simply
@@ -158,6 +173,57 @@ _need() {
     [[ "$have" -eq 0 ]] || { printf 'selftest: %s not found\n' "$label" >&2; exit 1; }
 }
 
+# _fn_src <src> <name> — the SOURCE TEXT of one shell function in <src>, on stdout; exits 1
+# naming it if <src> does not define it. `_adopt_fn` below is this plus an `eval`, so there is
+# ONE definition of "where does that function's text start and stop" for both the callers that
+# want to RUN the function and the callers that want to READ it (`board-snapshot-selftest.sh`
+# counts early-exit arms inside `board_report`; `token-duplication-selftest.sh` counts
+# `_kb_expand_home` call sites inside the mirrored lib function). A text-returning sibling is
+# what those readers used to hand-spell, so it is here rather than in one of them.
+#
+# ⛔ THE `exit 1` IS THE POINT, not defensive padding. An extraction that silently answered ""
+# would `eval` nothing, leave the caller's later invocations to fail as "command not found" in a
+# subshell, and — where the caller compares two outputs — retire the comparison rather than red
+# it. A rename in the bin must red the build, which is the same rule the population-glob and
+# `require_value` derivations in this file are built on.
+#   ⚑ A CALLER THAT CAPTURES IT MUST PROPAGATE THE STATUS. `x="$(_fn_src …)"` runs the exit in a
+#     SUBSHELL: the message reaches stderr but the exit does not leave the caller's shell. Under
+#     `set -e` the failed assignment ends the script; a caller that omits `set -e` (or captures
+#     inside a pipeline) gets "" and must red on its own floor — `board-snapshot-selftest.sh`'s
+#     `[[ "$early_exits" -ge 4 ]]` is that floor. `_adopt_fn` propagates explicitly.
+#
+# ⚑ BOUND: this recognises `^name() {` … `^}` and nothing else — ONE space before the brace. A
+# function defined as `name ()`, `function name {`, or `name()` with two or more spaces before the
+# `{` is NOT extracted; it exits 1 naming the function, so the bound is loud rather than silent.
+# That last spelling is live here (`bin/promote-released-cards`'s `uint_ok`,
+# `bin/release-tag-check`'s `require_uint`/`require_pint`, six more): every one of them is a
+# one-line function, so they are refused either way and widening the spelling would buy nothing
+# until the one-line MODE below exists. Stated because "what every bin here uses" is not true of
+# them, and a bound that overstates its reach is what card#8548 is about.
+#
+# ⚑ BOUND: A ONE-LINE FUNCTION IS REFUSED, NOT GUESSED AT — and that refusal is the second half of
+# the `exit 1` above, not a separate policy. `max_int() { …; }` carries no `^}` line of its own, so
+# the range runs on to the NEXT function's closing brace and hands that function's whole body back
+# with it: `_fn_src bin/next-dl max_int` returned 129 lines carrying two further definitions, at
+# rc 0. A caller reading "the source text of one shell function, or exit 1" then evals or greps a
+# plausible-looking wrong answer — the one failure shape this docblock already promises not to
+# have. So the extracted text is checked for a SECOND top-level definition line, and finding one
+# is a refusal that names what got swallowed. What the primitive still owes is a one-line MODE;
+# until it has one the sites needing it stay hand-spelled, dispositioned by name in
+# `prelude-shadow-selftest.sh`'s `EXTRACTORS`.
+_fn_src() {
+    local src swallowed
+    src="$(sed -n "/^$2() {/,/^}/p" "$1")"
+    [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
+    swallowed="$(printf '%s\n' "$src" | sed -nE '/^[A-Za-z_][A-Za-z0-9_]*\(\) \{/p' | tail -n +2 | tr '\n' ' ')"
+    [[ -z "$swallowed" ]] || {
+        printf 'selftest: %s in %s is a ONE-LINE function — the range ran past it and swallowed: %s— _fn_src has no one-line mode, so extract it by hand and disposition the site\n' \
+            "$2" "$1" "$swallowed" >&2
+        exit 1
+    }
+    printf '%s\n' "$src"
+}
+
 # _adopt_fn <src> <name> — eval one shell function out of <src>, by name, into THIS shell, and
 # exit 1 naming it if <src> does not define it. The one spelling of "borrow a function from the
 # tool under test", for the tests that drive a bin's internal function directly rather than the
@@ -165,29 +231,14 @@ _need() {
 # `bin/agent-board-toolkit-runtime-check`: the digest that defines its needle, and the four
 # `_kb-board-lib.sh` mirrors its parity block drives row-by-row).
 #
-# ⛔ THE `exit 1` IS THE POINT, not defensive padding. An extraction that silently answered ""
-# would `eval` nothing, leave the caller's later invocations to fail as "command not found" in a
-# subshell, and — where the caller compares two outputs — retire the comparison rather than red
-# it. A rename in the bin must red the build, which is the same rule the population-glob and
-# `require_value` derivations in this file are built on.
-#
-# ⚑ BOUND: this recognises the `^name() {` … `^}` spelling, which is what every bin here uses. A
-# function defined as `name ()` or `function name {` is NOT extracted — it exits 1 naming the
-# function, so the bound is loud rather than silent.
-#
-# ⚑ FIVE OTHER SITES, IN FOUR SELFTESTS, STILL HAND-SPELL THIS `sed` RANGE, and only ONE of them
-# could adopt this as it stands — counted, not estimated, so the residual is not read as smaller
-# than it is. `promote-pagination-selftest.sh:29` evals verbatim (adoptable today).
-# `kb-host-guard-selftest.sh:35`/`:269` and `kb-positional-guard-selftest.sh:44` eval the source
-# through a RENAME (`${src/host_ok() \{/host_ok_prc() \{}`) because the mirror and the lib copy
-# must coexist in one shell — they need an alias parameter this does not have.
-# `board-snapshot-selftest.sh:310` never evals at all; it greps the extracted TEXT, which needs a
-# text-returning sibling. Not migrated here, and named rather than implied:
-# `docs/CONSOLIDATION-PLAN.md` § Post-program dispositions carries that residual.
+# ⚑ OTHER SITES IN THE SUITE STILL HAND-SPELL THIS EXTRACTION, and the count is NOT written here
+# — a number in a comment is a quoted authority that outlives the edit that falsifies it, which
+# is how "five hand-spellings" survived two more being added. `prelude-shadow-selftest.sh`
+# derives the live population every run, prints it as a denominator and REDS on one its
+# disposition list does not carry; its list is where each residual site's reason lives.
 _adopt_fn() {
     local src
-    src="$(sed -n "/^$2() {/,/^}/p" "$1")"
-    [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
+    src="$(_fn_src "$1" "$2")" || exit 1
     eval "$src"
 }
 

@@ -26,9 +26,7 @@ PRC="$HERE/../bin/promote-released-cards"
 _need -r "$PRC"
 
 # Lift fetch_whole_board out of the standalone (it is never meant to be sourced whole).
-prc_src="$(sed -n '/^fetch_whole_board() {/,/^}/p' "$PRC")"
-[[ -n "$prc_src" ]] || { echo "selftest: could not extract fetch_whole_board from $PRC — did it get renamed?" >&2; exit 1; }
-eval "$prc_src"
+_adopt_fn "$PRC" fetch_whole_board
 
 # …and the file-scope helpers it calls. Lifting the REAL uint_ok rather than stubbing one
 # keeps this exercising the shipped numeric check (which matches under LC_ALL=C, because a

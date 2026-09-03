@@ -41,8 +41,7 @@ source "$LIB"
 # kb-host-guard-selftest.sh uses on the promote-released-cards mirror. This keeps the vendored
 # copy honest rather than trusting the "keep the two in sync" comment. The extraction requires
 # the mirror to be defined at COLUMN 0 (it would be indented inside _ibh_main).
-ibh_src="$(sed -n '/^_ibh_require_positional() {/,/^}/p' "$IBH")"
-[[ -n "$ibh_src" ]] || { echo "selftest: could not extract _ibh_require_positional from $IBH — was it renamed, or moved inside another function?" >&2; exit 1; }
+ibh_src="$(_fn_src "$IBH" _ibh_require_positional)"
 eval "${ibh_src/_ibh_require_positional() \{/_ibh_mir() \{}"
 
 # The equalization pair: the mirror hardcodes this prefix, the lib copy reads it from KB_PROG.

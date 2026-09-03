@@ -218,10 +218,14 @@ than restating it (a hardcoded list would be this program's own defect again), a
 sanctioned variants by name so adding a shadow costs an explicit edit, and fails if an allow-list
 entry outlives the shadow it excuses.
 
-**Weakest property, stated so it is not over-cited:** that guard compares **names**, not behaviour.
+**Weakest property, stated so it is not over-cited:** that leg compares **names**, not behaviour.
 It catches a re-declared helper; it cannot catch a selftest that hand-rolls the same logic inline
 under a different name, and it says nothing about whether the prelude's argument order is the right
 one. It closes the copy channel that actually minted the bug — not every conceivable one.
+⚑ **That file has since grown a SECOND leg over a hand-spelled idiom (card#8548), and its exact
+reach is stated in its own header — read there rather than here.** This paragraph describes the
+name leg only, and is left standing because that leg's bound is what Stage B's argument turns on;
+a doc that restates a guard's whole predicate in its own words is how this class went wrong twice.
 
 ---
 
@@ -641,23 +645,67 @@ finding with no owner is abandoned, not filed.
   `_rc_digest` out of the bin** (`_adopt_fn`, the same `sed`-extract-or-exit-1 the mirror block
   uses, now one spelling shared by both callers) and deriving the needle from it.
   ⚑ **`_adopt_fn` itself now lives in `tests/_selftest-prelude.sh`, and that is not tidying.**
-  Minted local to this one selftest it was the SIXTH hand-spelling of one `sed` range in this
-  suite — `board-snapshot-selftest.sh`, `kb-host-guard-selftest.sh` (×2),
-  `kb-positional-guard-selftest.sh` and `promote-pagination-selftest.sh` carry the other five —
-  i.e. this entry's own rule re-minted in the act of closing it. In the prelude it is one
-  definition every selftest already sources, and `prelude-shadow-selftest.sh` reds on the
-  seventh copy. **RESIDUAL, counted rather than estimated, because "five hand-spellings" reads
-  like five one-line adoptions and only ONE of them is:** `promote-pagination-selftest.sh:29`
-  evals verbatim and could adopt `_adopt_fn` today; `kb-host-guard-selftest.sh:35`/`:269` and
-  `kb-positional-guard-selftest.sh:44` eval the extracted source **through a rename**
-  (`${src/host_ok() \{/host_ok_prc() \{}`), because the mirror and the lib's original have to
-  coexist in one shell, so they need an alias parameter `_adopt_fn` does not have; and
-  `board-snapshot-selftest.sh:310` never evals at all — it greps the extracted TEXT, which needs
-  a text-returning sibling. Two more primitives, i.e. a design call, which is why this round
-  moved the one spelling it owned and filed the rest here instead of guessing at the other two.
-  All five were re-read at this change: each guards its own extraction (`board-snapshot`'s by an
-  `[[ "$early_exits" -ge 4 ]]` floor rather than an emptiness test, which reds the same way), so
-  none of them can silently retire a comparison — the residual is duplication, not a dead guard.
+  Minted local to this one selftest it was one more hand-spelling of a `sed` range this suite
+  already carried several of — i.e. this entry's own rule re-minted in the act of closing it.
+  (The list of files that carried the others was written out here and went stale within one
+  release, twice over; it is derived now, see below.) In the prelude it is one
+  definition every selftest already sources.
+  ⛔ **AND THE GATE THAT SENTENCE PROMISED DID NOT EXIST — corrected here rather than quietly
+  rewritten, because the wrong version is the one a future author would have trusted to have
+  closed this** (card#8548). This entry, `docs/CHANGELOG.md` and PR #323's body all said
+  `prelude-shadow-selftest.sh` *"reds on the seventh copy"*. That guard compared NAMES: it red
+  only on a copy called `_adopt_fn`, and a seventh hand-spelling under any other name left it at
+  **rc 0** — which is the exact shape of every residual site listed below, so the doc promised
+  the guard covered the drift this very paragraph says remains. It was not hypothetical:
+  measured on `dev` at `52125a6`, two further copies had already been minted in
+  `promote-source-qualify-selftest.sh`, spelled in `awk` instead of `sed`, with the suite green
+  — and PR #323's own out-of-scope note had already named a third spelling, a
+  `grep -E '^uint_ok\(\)'`, that no name comparison could see either.
+  `prelude-shadow-selftest.sh` now carries a **second leg** whose population is the IDIOM —
+  every regex literal anchoring a shell function's definition at column zero, whatever tool
+  consumes it and whatever DELIMITER it is written in — dispositioned per file with a count, so a
+  new spelling reds wherever and however it is written. ⛔ **The delimiter was the same defect one
+  level down, and it shipped:** the first cut of this leg took `/`, the second took `/ ' "`, and
+  both were inclusion lists a keystroke wide. Measured on this tree, the three-delimiter version
+  was blind to two hand-spelled copies that were live at the time — one with a character class
+  between the `^` and the name, one with an alternation group — so the delimiter is now taken from
+  the line and the name is sought inside the literal that delimiter opened. Both copies are
+  dispositioned. The leg's file population is `tests/_shipped-shell-lib.sh`'s, not a fourth
+  hand-copy of `ci.yml`'s `find` (card#6911 owns that derivation), and it asserts
+  `_ci_shellcheck_drift` so a narrowed workflow cannot leave it scanning a set CI no longer has.
+  ⚑ **What that guard covers is stated in its own header and is not restated
+  here or in the changelog**: three surfaces describing one predicate in their own words is how
+  this got wrong in the first place.
+  ⚑ **NO COUNT OF THE RESIDUAL IS WRITTEN HERE EITHER.** "Five hand-spellings" was true when it
+  was typed and was two short within one release — a number in prose is a quoted authority that
+  outlives the edit that falsifies it. `prelude-shadow-selftest.sh` derives the live population
+  every run and prints it as a denominator; its `EXTRACTORS` list is where each remaining site's
+  reason lives, one line per file, and a site that leaves the list reds as a stale disposition.
+  **What is left is ONE shape, and the shape it is NOT is recorded here rather than quietly
+  dropped, because the wrong version is the one a future author would have acted on.** This entry
+  filed a second shape as a design call: `kb-host-guard-selftest.sh` (×2) and
+  `kb-positional-guard-selftest.sh` eval the extracted source **through a rename**
+  (`${src/host_ok() \{/host_ok_prc() \{}`), so — it said — they need an **alias parameter**
+  neither `_fn_src` nor `_adopt_fn` has. **That was false the moment `_fn_src` landed.** Those
+  sites apply the rename themselves, in their own `${var/…}` expansion, and need only the
+  function's TEXT, which is exactly what `_fn_src` returns; all three are migrated, one line each,
+  with the suite byte-identical either side. A reason that outlives the change that falsified it
+  leaves copies in place waiting on a primitive that is not missing.
+  The shape that IS left: sites that locate a **one-line** function, whose source has no `^}` line
+  for `_fn_src`'s range to stop at. ⛔ **It used to run on to the next function's closing brace and
+  hand that function's whole body back at rc 0** (`_fn_src bin/next-dl max_int` ⇒ 129 lines,
+  two further definitions inside) — a silent wrong answer from a primitive whose docblock promised
+  "text, or exit 1". It now REFUSES, naming what the range would have swallowed, so the bound is
+  loud like the other one; what it owes those sites is a one-line MODE before they can migrate.
+  Other derived sites are anchors but not extractions at all — a definition-line LOCATE that must
+  not stop at the first hit, a `sed` `i` mutation planter, and a locate in a NON-SHELL file where
+  the definition is not at column zero — and are dispositioned as such.
+  **Which files are in each shape, and how many, is in `EXTRACTORS` and not here**;
+  writing the file list out is exactly what went stale twice. Each guards its
+  own extraction, so none can silently retire a comparison — the residual is duplication, not a
+  dead guard. The sites that needed only the **text-returning sibling** are migrated onto it:
+  `_fn_src` is that sibling, and `_adopt_fn` is now `_fn_src` plus an `eval`, so there is one
+  spelling of "where does this function's text start and stop" for readers and runners alike.
   **Instance 2 — the call graph.** The parity block drives each mirrored function against its
   original, which cannot see a divergence in **which sites call it**: `_kb_expand_home` has ONE
   call site in the lib (inside `kb_coord_store_token_file`), and `_rc_expand_home` had THREE, so a
@@ -670,17 +718,33 @@ finding with no owner is abandoned, not filed.
   restoring `_rc_add_source`'s expansion reds that row (**2 FAIL**); restoring the precedence
   `eff` expansion — the one-line pre-fix restore, on the arm that tells an operator to DELETE a
   file — left the whole selftest at **rc 0, 0 FAIL**. A scenario row per call site is the wrong
-  shape in any case: **the divergence is a COUNT**, so what is asserted now is the count —
-  `_rc_expand_home` call sites in the bin against `_kb_expand_home` call sites in the lib,
-  derived from each file (occurrences outside comment lines and outside the definition line),
-  behind a positive control, because an equality between two derivations that both broke and
-  answered 0 measures nothing. One assertion, both sites, every future one, at **either** end.
-  Seen to fail four ways, each re-measured on a copy of the tree with the count assertion in
-  place: restoring the `eff` expansion ⇒ **1 FAIL**, `expected '1' got '2'` (it was 0 FAIL);
-  restoring `_rc_add_source`'s ⇒ **3 FAIL**, the two behavioural rows plus this one (it was 2);
-  planting a second call in the LIB ⇒ **1 FAIL**, `expected '2' got '1'`; removing the bin's one
-  remaining call ⇒ **3 FAIL**, the positive control among them. The behavioural row stays as the
-  witness — the count compares HOW MANY, never WHICH.
+  shape in any case: **the divergence is in the CALL GRAPH**, so the call graph is what is
+  asserted now — derived from each file (occurrences outside comment lines and outside the
+  definition line) behind a positive control, because an equality between two derivations that
+  both broke and answered 0 measures nothing.
+  ⛔ **AND THE FIRST CUT OF THAT PIN COUPLED THE GUARD TO AN UNRELATED POPULATION — corrected
+  here for the same reason, at card#8548.** It compared `_rc_expand_home` call sites in the bin
+  against `_kb_expand_home` call sites **anywhere in the lib**, and this entry recorded *"planting
+  a second call in the LIB ⇒ 1 FAIL, `expected '2' got '1'`"* as one of its four seen-to-fail
+  arms. That arm was the DEFECT, certified as a feature: the lib is a far larger surface than the
+  four functions runtime-check mirrors, so a legitimate new expansion in an unmirrored lib
+  function (measured: `kb_resolve_env`) red the guard with **no mirror drift at all** — and
+  because the failure named an expected-vs-got count, the remedy it invited was to add a matching
+  call to the mirror, which is the opposite of correct. **The population is now the mirrored
+  region, in two legs**: (A) every `_rc_expand_home` call in the bin is INSIDE the store-pointer
+  mirror — the bin has no business expanding `~` anywhere else, and both dropped sites were
+  outside it, as is every future one whatever it is called; (B) inside that mirror it expands as
+  often as `kb_coord_store_token_file` does, which is the only leg that reads the lib and it
+  reads one function of it. Each failure **names the drift, the direction and the remedy** rather
+  than a count, and says outright which side must NOT be changed to match.
+  Seen to fail, each on a copy of the tree: restoring `_rc_add_source`'s expansion ⇒ leg A reds,
+  naming the line; removing the mirror's one remaining call ⇒ leg B reds *"MISSING an expansion
+  its original performs"*, with the behavioural rows and the positive control beside it; a second
+  expansion inside the mirror ⇒ leg B reds *"expands MORE often … DROP the extra call in the
+  mirror"*. And the **negative** control is shipped in the file rather than only measured: a
+  planted `_kb_expand_home` in an unmirrored lib function leaves the derivation unchanged, which
+  the old pin red on (re-measured at `52125a6`: old ⇒ 1 FAIL, new ⇒ 0 FAIL). The behavioural row
+  stays as the witness — leg B compares HOW MANY, never WHICH.
   **The sibling audit of instance 2, and its disposition.** The other three mirrors were counted
   against the lib's call graph at this change: `_rc_declared_token_file` matches
   (`kb_resolve_env` reads the host env and the board env, and so does this), `_rc_store_pointer`
@@ -2006,10 +2070,10 @@ finding with no owner is abandoned, not filed.
   irrelevant to that number — no bound passes it — and `_stamp_taken` reds one cell earlier with
   "the hung read was actually TAKEN" false, which is the pair converting a wrong number into a
   named cause. Recorded so a later reader does not re-open it as a defect in the bound.
-  ⛔ **What this does NOT close, stated so it is not over-cited:** `prelude-shadow-selftest.sh`
-  compares NAMES. A third selftest that hand-spells `$(( $(date +%s) - $(cat …) ))` inline under
-  no function name at all is invisible to it — the same bound that section already states for
-  `has`. The population is a derivation rather than a figure: `command grep -rn 'date +%s'
+  ⛔ **What this does NOT close, stated so it is not over-cited:** `prelude-shadow-selftest.sh`'s
+  name leg compares NAMES, and its idiom leg (card#8548) covers function-EXTRACTION anchors only.
+  A third selftest that hand-spells `$(( $(date +%s) - $(cat …) ))` inline under no function name
+  at all is invisible to both — the same bound that section already states for `has`. The population is a derivation rather than a figure: `command grep -rn 'date +%s'
   tests/` re-runs it, and at this change it answers THREE — the prelude's one reader, plus the
   two fixture WRITERS, which are the deliberately-unconsolidated half. Those two writers are
   also this derivation's positive control: a run that returns none of them is a broken grep, not
