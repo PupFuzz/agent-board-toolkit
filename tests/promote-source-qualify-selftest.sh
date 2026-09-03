@@ -278,7 +278,7 @@ eq "declared divergence 1: …and not a repo name"          "R" "$(lib_verdict '
 eq "declared divergence 2: promote trims before judging"  "A" "$(promote_verdict '  acme/widget  ')"
 eq "declared divergence 2: …the lib's callers do not"     "R" "$(lib_verdict '  acme/widget  ')"
 
-echo "== 3d. THE canonicalizeSource MIRROR SET IS DERIVED FROM bin/, never restated (card#8538) =="
+echo "== 3d. LOCATING the canonicalizeSource MIRRORS under bin/ — BEST-EFFORT; § 3e is what BINDS them (card#8538) =="
 # WHY THIS EXISTS. `canonicalizeSource` is the kanban server's rule, and this repo carries THREE
 # copies of it across two vendored bins that must not share an implementation. Two hand-kept
 # comments — one per bin — claim to enumerate every copy, and until this leg that comment WAS the
@@ -286,11 +286,13 @@ echo "== 3d. THE canonicalizeSource MIRROR SET IS DERIVED FROM bin/, never resta
 # `bin/promote-released-cards` (the $GITHUB_REPOSITORY side of the identity check in § 7),
 # byte-identical to the config-side copy six lines of comment away, and both censuses went stale
 # in the same commit with nothing red. That copy is gone — `src_canon` is the one shell spelling
-# and both sides call it — and this leg is what stops the next one. A census that enumerates
-# copies with no check behind it is a comment, not a contract; the cost is not theoretical, since
-# card#8421 already forced one correction to this rule across this same pair.
+# and both sides call it — and this leg is what catches the next one WHEN THE PREDICATE BELOW CAN
+# SEE IT, which is a real guarantee and a bounded one; the bound is stated below, not implied. A
+# census that enumerates copies with no check behind it is a comment, not a contract; the cost is
+# not theoretical, since card#8421 already forced one correction to this rule across this pair.
 #
-# ⛔ AN INCLUSION LIST FAILS OPEN, AND THAT IS WHY THIS PREDICATE IS DELIBERATELY OVER-BROAD.
+# ⛔ AN INCLUSION LIST FAILS OPEN, AND THAT IS WHY THE NAMED HALF OF THIS PREDICATE IS
+# DELIBERATELY OVER-BROAD — the SPELLED half is still one, and says so below.
 # This leg's predicate has been an ALLOW-LIST OF SPELLINGS twice, and both times a legal fifth
 # mirror walked through it while the leg answered rc 0. First it was two spellings
 # (`tr '[:upper:]' '[:lower:]'` and `ascii_downcase`), covering 5 of the 12 folds present, and
@@ -305,22 +307,64 @@ echo "== 3d. THE canonicalizeSource MIRROR SET IS DERIVED FROM bin/, never resta
 # covers the construct. A control that cannot fail for the property it appears to guarantee is
 # the same defect this whole section exists to catch, sitting inside the catcher.
 #
-# So the polarity is flipped. The predicate now ADMITS TOO MUCH ON PURPOSE and every admission
-# it makes is declared below by name and reason. It can no longer be defeated by an unlisted
-# SPELLING — only by something that is not a written case fold at all, which is a residual with
-# a shape rather than a gap with a next cell, and the two shapes it has are minted below as
-# controls asserted to ESCAPE, so the stated scope equals the predicate in BOTH directions.
+# So the polarity was flipped — ON THE NAMED HALF, and that is where the good news stops. NAMED
+# is genuinely over-broad now: bare substrings, no command position, no language, 22 admitted
+# lines under `bin/`, each declared below by name and reason. It has not been defeated. THE
+# SPELLED HALF NEVER GOT THE SAME TREATMENT, and what follows is the account of what that leaves
+# rather than a claim that nothing is left.
 #
-# ⛔ WHAT IT STILL CANNOT SEE, and this is a DISJUNCTION — any one of these escapes:
+# ⛔ § 3d LOCATES MIRRORS ON A BEST-EFFORT BASIS; IT DOES NOT BOUND THE SET. `_FOLD_SPELLED`'s
+# alphabet arms are an INCLUSION LIST of three tokens — `A-Z`, `ABCDEFGHIJKLMNOPQRSTUVWXYZ` and
+# `[:upper:]` — so a `tr` whose alphabets are written some other way is a real, legal, literal
+# case fold that this predicate scores 0. Six such spellings are known, measured against the
+# predicate below rather than reasoned about:
+#     tr '\101-\132' '\141-\172'          octal alphabets — and the LOCALE-SAFE `tr` idiom,
+#                                         since a letter RANGE is collation-dependent, so this
+#                                         is what a careful author writes
+#     tr 'A-MN-Z' 'a-mn-z'                one `tr`, both operands literal, no `A-Z` substring
+#     tr 'A-M' 'a-m' | tr 'N-Z' 'n-z'     two stages, four literal operands
+#     sed 's/A/a/g;s/B/b/g;...'           a per-character mapping written out
+#     awk '{ gsub(/A/, "a"); ... }'       the same, one interpreter over
+#     a `case`-per-letter mapping         the same, in bash
+# ⛔ READ THAT AS A DECLARED RESIDUAL, NOT AS SIX MISSING CELLS. Three consecutive rounds of this
+# leg were each closed by adding the spellings the round before had missed, and each next round
+# found more; a widening to cover these six was costed and REFUSED for exactly that reason. An
+# inclusion list cannot be finished, so this one is DECLARED instead of extended — and the six
+# are named here so that a maintainer auditing against this section gets the question rather than
+# the confidence.
+#
+# ⭐ SO IF YOU CAME HERE FOR A GUARANTEE, THE ONE THAT EXISTS IS § 3e'S — AND IT IS BOUNDED TOO.
+# § 3d asks "are there more copies than the censuses name", usefully but not completely. § 3e asks
+# the question card#8421 actually posed, "do the copies AGREE", and answers it properly: it
+# extracts the THREE NAMED copies from the shipped files and EXECUTES them over one corpus, so a
+# divergence between them reds whatever spelling minted it — drop `| ascii_downcase` from the jq
+# copy and § 3e reds while nothing here moves. ⛔ ITS POPULATION IS THOSE THREE. An unnamed fifth
+# mirror is outside § 3e exactly as it is outside this predicate, so the two sections do NOT close
+# each other's gap and must not be read as doing so. § 3d is a locator with a declared residual;
+# § 3e is a contract over the copies that are named. Neither is a bound on the copies that are not.
+#
+# ⛔ WHAT § 3d CANNOT SEE — any one of these escapes:
+#   * a fold spelled outside `_FOLD_SPELLED`'s alphabet tokens — the six above, and an OPEN class,
+#     which is why this section no longer claims a bound;
 #   * a fold whose evidence is not in the file's TEXT: the alphabets held in variables
 #     (`tr "$UP" "$LO"`), the mapping computed arithmetically (`chr(ord(c) + 32)`), or the
-#     program text assembled at run time. Both shapes are minted below and asserted to escape.
+#     program text assembled at run time. Two of those shapes are minted below and asserted to
+#     ESCAPE, which pins THOSE TWO as still-escaping; it does not bound the residual;
 #   * a mirror that reaches its fold through a helper defined in ANOTHER file — leg 1 is what
-#     reds if a third file under `bin/` starts naming the rule.
+#     reds if a third file under `bin/` starts naming the rule;
 #   * any copy outside `bin/`. Out of the population by choice: the two bins are the only
 #     vendored standalones carrying the rule.
-# What is NOT in the residual any more, and was in the predecessor's: any spelling of a fold
-# whose operation the line names or writes out.
+#
+# ⭐ AND WHAT IT IS STILL WORTH, so the demotion does not read as a deletion: the census is
+# re-derived from `bin/` on every run instead of trusted from a comment; a named copy that is
+# renamed, moved or dropped reds at leg 2 or leg 4; the walk is recursive, so a copy one directory
+# down is inside the population; and the battery below keeps, VERBATIM, the spellings that defeated
+# this predicate's two allow-list predecessors, so those widenings cannot be quietly undone.
+# ⛔ The six spellings named above defeat the CURRENT predicate and are deliberately NOT in that
+# battery. Adding them as caught rows is the widening this round refused; adding them as rows
+# asserted to ESCAPE would cement the escape as intended behaviour instead of declaring it as a
+# limitation. They are declared in prose, where a limitation belongs, and § 3e is what a reader
+# who needs more than a declaration should be reading.
 BINDIR="$HERE/../bin"
 
 # ── THE PREDICATE ────────────────────────────────────────────────────────────────────────────
@@ -618,13 +662,13 @@ eq "control: a mirror in a SUBDIRECTORY of bin/ is inside the census" \
    "$(_fold_census "$_MUT_BIN")"
 rm -rf "$_MUT_BIN"
 
-# ⭐ THE RESIDUAL, MEASURED RATHER THAN CLAIMED. An over-broad predicate's stated scope is only
-# honest if what it does NOT admit is pinned too — otherwise "it can only be defeated by a fold
-# that is not written down" is a sentence with no check behind it. Both shapes below are REAL
-# folds, executed here, whose INVOCATION LINE carries no evidence of a fold: each is minted the
-# same way as the caught corpus and asserted to move the count by ZERO. If a later widening
-# catches one, its arm reds and the residual paragraph at the top of this section must be
-# rewritten in the same commit — which is the property that keeps the two equal.
+# ⭐ TWO NAMED MEMBERS OF THE RESIDUAL, MEASURED. ⛔ THESE ARMS DO NOT BOUND THE RESIDUAL AND
+# MUST NOT BE READ AS DOING SO — the residual is an open class (the six spellings named at the top
+# of this section escape too, and are not minted here). What these two arms buy is narrower and
+# still worth having: each is a REAL fold, executed here, whose INVOCATION LINE carries no evidence
+# of a fold, minted the same way as the caught corpus and asserted to move the count by ZERO — so
+# if a later widening catches one, its arm reds and the residual paragraph at the top of this
+# section has to be revisited in the same commit instead of drifting out of date quietly.
 eq "residual: alphabets reached through variables really do fold" "abc" \
    "$(bash -c 'UP=A-Z; LO=a-z; printf %s AbC | tr "$UP" "$LO"' 2>&1)"
 cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
@@ -659,9 +703,11 @@ a -l flag on another command|NLINES="$(wc -l < "$f")"
 NEGATIVES
 echo "== 3e. THE THREE canonicalizeSource COPIES, BOUND BY BEHAVIOUR: one corpus, all three (card#8538) =="
 # WHY NAME AND COUNT ARE NOT ENOUGH, and why this section exists beside § 3d rather than instead
-# of it. § 3d proves the mirror SET is what both censuses say it is — three copies, in the three
-# functions named, and a fourth cannot appear unnoticed. It cannot see the class that has already
-# cost this repo a defect: card#8421's divergence was BEHAVIOURAL, between two copies that were
+# of it. § 3d LOCATES copies — it checks that the three the censuses name are where they say, and
+# it catches a fourth spelled in a way its predicate admits; it is best-effort and says so, and a
+# copy spelled outside that predicate is invisible to it. This section is the one that does not
+# depend on any of that, because it does not read for a spelling at all. What it covers is also
+# the class that has already cost this repo a defect: card#8421's divergence was BEHAVIOURAL, between two copies that were
 # both present, both named and both counted (the `.GIT` casing). Concretely, what a divergence
 # buys here is a SILENT ZERO in both directions — a `src_canon` ↔ `canon_source` disagreement
 # over the admitted charset makes the config and card sides of promote's ONE comparison answer
