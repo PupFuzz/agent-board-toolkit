@@ -1761,7 +1761,11 @@ mkcell() {
   # The marker keeps the base-tip commit non-empty in the two cells where the tip config is
   # byte-identical to the fork's: `git commit` fails on an empty change, and under `set -e` that
   # aborts the whole file rather than the case.
-  printf '%s\n' "$tip" > "$CR/.release-pr.json"; echo "$c" > "$CR/base-marker"
+  # A tip of `NONE` REMOVES the config there — "no config at all" and "a config this run cannot
+  # parse" are different answers, and only the second one is `unreadable`.
+  if [ "$tip" = NONE ]; then rm -f "$CR/.release-pr.json"
+  else printf '%s\n' "$tip" > "$CR/.release-pr.json"; fi
+  echo "$c" > "$CR/base-marker"
   g -C "$CR" add -A; g -C "$CR" commit -qm "chore: base tip"
   g -C "$CR" checkout -q feat
   echo 0.2.0 > "$CR/VERSION"; printf '%s\n' "$head" > "$CR/.release-pr.json"
@@ -1773,11 +1777,24 @@ mkcell yy "$CELL_WITH"    "$CELL_WITH"    "$CELL_WITHOUT"
 mkcell yn "$CELL_WITH"    "$CELL_WITHOUT" "$CELL_WITHOUT"
 mkcell ny "$CELL_WITHOUT" "$CELL_WITH"    "$CELL_EDITED"
 mkcell nn "$CELL_WITHOUT" "$CELL_WITHOUT" "$CELL_WITHOUT"
-# A base tip whose config cannot be READ there. It is not a fifth cell — it folds into
-# `not declaring the key`, which is what it is — but the EVIDENCE line must say `unreadable`
-# rather than `absent`, or an author looking at a config they can plainly see is told it has no
-# key, which sends them to the wrong fix.
+# ⛔ THE BASE TIP'S THREE NON-BINARY STATES, each its OWN cell rather than folded into one of
+# the four. `_key_state_at` used to score a key `present` on `type != null`, which is COARSER
+# than this leg's own notion of a usable key, so a tip carrying `"source": "   "` or an
+# uncompilable regex landed in `(absent, present)` — the STALE cell, whose remedy PROMISES that
+# merging turns this check green. It does not: the merge lands the unusable value and the rerun
+# is rc 2 on a different message, which is the loop this partition exists to end. And a tip this
+# run cannot PARSE establishes nothing at all, so folding it into `retired`/`never-declared`
+# printed a retirement off evidence that contradicts it and routed the author to a TOMBSTONE.
+#   xu  config present at the tip but not parseable  → its own remedy, and NO tombstone advice
+#   xb  key declared at the tip but whitespace-only  → fix it on the base, NOT merge
+# `_key_usability`'s uncompilable arm needs no cell of its own: it is ONE function, and the head
+# refusal above drives that arm on the same code (`an uncompilable card_token_regex → rc 2`).
+#   xm  NO CONFIG AT ALL at the tip                  → genuinely `absent`; the adoption PR's own
+#                                                      state, and it must stay `never declared`
+CELL_BLANK_SRC="$(printf '%s' "$CELL_WITH" | jq '.promote.source = "   "')"
 mkcell xu "$CELL_WITHOUT" '{ "artifacts": [,] }' "$CELL_WITHOUT"
+mkcell xb "$CELL_WITHOUT" "$CELL_BLANK_SRC"      "$CELL_WITHOUT"
+mkcell xm "$CELL_WITHOUT" NONE                   "$CELL_WITHOUT"
 
 # (present, present) — it was there when you branched and it is still on the base: you deleted it.
 run_cell yy
@@ -1829,12 +1846,40 @@ eq "cell (absent, absent) → rc 2"                      "2"     "$RC"
 eq "…read as never declared in this repo"              "true"  "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
 eq "…and not sent to merge anything"                   "false" "$(has 'MERGE THE BASE BRANCH' "$OUT")"
 
-# An unreadable base tip folds into `not declared` — the same remedy — while the EVIDENCE says
-# so in its own word.
+# ⭐ AN UNREADABLE BASE TIP GETS ITS OWN REMEDY, and the arm that matters is the NEGATIVE one:
+# it used to be folded into `never declared`, whose remedy offers `unset_correlation_keys` — a
+# TOMBSTONE — off a run that established no retirement, two clauses after its own evidence line
+# said it could not read that ref.
 run_cell xu
 eq "an unreadable base tip → rc 2"                     "2"     "$RC"
 eq "…evidenced as unreadable, never as absent"         "true"  "$(has 'unreadable at the tip of main' "$OUT")"
-eq "…and folded into the never-declared remedy"        "true"  "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
+eq "…and says so as the remedy, not as a footnote"     "true"  "$(has 'COULD NOT READ' "$OUT")"
+eq "…NOT read as a repo that never declared the key"   "false" "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
+eq "…NOT read as a retirement on the base"             "false" "$(has 'RETIRED ON main AS WELL' "$OUT")"
+eq "…and explicitly refuses to advise the tombstone"   "true"  "$(has 'Do NOT acknowledge the gap on this evidence' "$OUT")"
+
+# ⭐ A BASE TIP WHOSE KEY IS DECLARED BUT UNUSABLE — the cell `type != null` scored as `present`,
+# which put this author in STALE and promised them a green the merge cannot deliver. Driven both
+# ways: the remedy no longer says merge, AND the merge is shown to be the wrong advice.
+run_cell xb
+eq "a base tip whose key is declared but unusable → rc 2" "2"  "$RC"
+eq "…evidenced as unusable, not as present"            "true"  "$(has 'unusable at the tip of main' "$OUT")"
+eq "…routed to FIX IT ON the base"                     "true"  "$(has 'FIX IT ON main' "$OUT")"
+eq "…and NOT sent to merge, as the old cell did"       "false" "$(has 'MERGE THE BASE BRANCH' "$OUT")"
+eq "…nor told the branch is simply stale"              "false" "$(has 'SO THIS BRANCH IS SIMPLY STALE' "$OUT")"
+merge_cell xb
+eq "…the merge itself succeeds"                        "0"     "$MRC"
+run_cell xb
+eq "…and the rerun is rc 2 — the STALE promise WOULD have been false" "2" "$RC"
+eq "…reddening on the value this time"                 "true"  "$(has 'empty or whitespace only' "$OUT")"
+
+# NO CONFIG AT ALL at the tip is `absent`, not `unreadable`: a repo with no `.release-pr.json`
+# declares no key, and that is the state of the very PR that adopts the file. Collapsing it into
+# `unreadable` would send that author to read a ref that has nothing to read.
+run_cell xm
+eq "a base tip with NO config → rc 2"                  "2"     "$RC"
+eq "…evidenced as absent, not as unreadable"           "true"  "$(has 'absent at the tip of main' "$OUT")"
+eq "…and read as never declared in this repo"          "true"  "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
 
 # ⭐ THE CLOSING ARM: FOUR CELLS, THREE REMEDIES, NO RESIDUAL — as ONE assertion. Four separate
 # phrase arms all pass if some cell silently answers another cell's text, or if a fifth path
@@ -1846,19 +1891,24 @@ _cell_verdict() {
     *'RETIRED ON main AS WELL'*)             echo retired;;
     *'SO THIS BRANCH IS SIMPLY STALE'*)      echo stale;;
     *'HAS NEVER BEEN DECLARED IN THIS REPO'*) echo never;;
+    *'COULD NOT READ'*)                      echo unread;;
+    *'FIX IT ON main'*)                      echo unusable;;
     *)                                       echo none;;
   esac
 }
-# Rebuilt, because yy/yn/ny were merged above and their cells have moved on.
+# Rebuilt, because yy/yn/ny/xb were merged above and their cells have moved on.
 rm -rf "$CELLS"
 mkcell yy "$CELL_WITH"    "$CELL_WITH"    "$CELL_WITHOUT"
 mkcell yn "$CELL_WITH"    "$CELL_WITHOUT" "$CELL_WITHOUT"
 mkcell ny "$CELL_WITHOUT" "$CELL_WITH"    "$CELL_EDITED"
 mkcell nn "$CELL_WITHOUT" "$CELL_WITHOUT" "$CELL_WITHOUT"
+mkcell xu "$CELL_WITHOUT" '{ "artifacts": [,] }' "$CELL_WITHOUT"
+mkcell xb "$CELL_WITHOUT" "$CELL_BLANK_SRC"      "$CELL_WITHOUT"
+mkcell xm "$CELL_WITHOUT" NONE                   "$CELL_WITHOUT"
 CELL_VERDICTS=""
-for _c in yy yn ny nn; do run_cell "$_c"; CELL_VERDICTS="$CELL_VERDICTS$(_cell_verdict "$OUT") "; done
-eq "the four cells map onto three remedies with no residual" \
-   "deleted retired stale never" "${CELL_VERDICTS% }"
+for _c in yy yn ny nn xu xb xm; do run_cell "$_c"; CELL_VERDICTS="$CELL_VERDICTS$(_cell_verdict "$OUT") "; done
+eq "every base-tip state maps onto its own remedy, with no residual" \
+   "deleted retired stale never unread unusable never" "${CELL_VERDICTS% }"
 
 echo "== a token regex that grep -E cannot compile is the SAME silent zero, and is refused =="
 # The readers pipe these values straight into `grep -oiE` behind a `|| true`, so an

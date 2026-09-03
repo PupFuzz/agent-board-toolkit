@@ -405,48 +405,119 @@ esac
 # refusal into a pass, which is the property that keeps the head-only decision settled: a
 # fork-point READ that could weaken a verdict would red on a merged commit no PR can edit.
 #
-# A ref whose config cannot be read there — absent, not valid JSON, not an object — is treated
-# as NOT DECLARING the key, because that is what it is. The evidence line prints `unreadable`
-# rather than `absent` in that case, so an author looking at a config they can plainly see is
-# never told it has no key: they are told this tool could not read it there, which is a
-# different fix.
-declare -A _REF_CFG=() _REF_CFG_OK=()
-_ref_cfg_usable() {
+# ⛔ NO CONFIG AT ALL AND A CONFIG THIS RUN CANNOT PARSE ARE DIFFERENT ANSWERS, and collapsing
+# them is what made the `unreadable` evidence line useless. A ref with no `.release-pr.json`
+# declares no key — that is a FACT, and the ordinary state of the very PR that adopts the file,
+# whose author must be told to declare it. A ref whose config is THERE but is not JSON, or not
+# an object, tells this run NOTHING about the key: an author looking at a config they can
+# plainly see must not be told it has no key, and — the half that matters — must not be routed
+# to a TOMBSTONE on a retirement this run never established.
+declare -A _REF_CFG=() _REF_CFG_STATE=()
+# _ref_cfg_load <ref> — fills _REF_CFG_STATE[ref] with ok | missing | unreadable, and _REF_CFG
+# with the blob where that state is `ok`. It ASSIGNS rather than prints, and its callers read
+# the array directly: a `$(_ref_cfg_state …)` runs in a SUBSHELL, so the blob it caches dies
+# with it and the very next read of `_REF_CFG[$ref]` is an unbound variable under `set -u`.
+_ref_cfg_load() {
   local ref="$1" blob
-  if [ -z "${_REF_CFG_OK[$ref]:-}" ]; then
-    _REF_CFG_OK["$ref"]=no; _REF_CFG["$ref"]=""
-    if blob="$(git show "$ref:$CONFIG_ROOTREL" 2>/dev/null)" \
-       && _json_parses "$blob" && [ "$(_json_type "$blob")" = object ]; then
-      _REF_CFG["$ref"]="$blob"; _REF_CFG_OK["$ref"]=yes
+  if [ -z "${_REF_CFG_STATE[$ref]:-}" ]; then
+    _REF_CFG["$ref"]=""
+    if ! blob="$(git show "$ref:$CONFIG_ROOTREL" 2>/dev/null)"; then
+      _REF_CFG_STATE["$ref"]=missing
+    elif _json_parses "$blob" && [ "$(_json_type "$blob")" = object ]; then
+      _REF_CFG["$ref"]="$blob"; _REF_CFG_STATE["$ref"]=ok
+    else
+      _REF_CFG_STATE["$ref"]=unreadable
     fi
   fi
-  [ "${_REF_CFG_OK[$ref]}" = yes ]
 }
-# _key_state_at <ref> <key> → present | absent | unreadable. The jq is written to survive a
-# config whose `.promote` is not an object at that ref: `.promote.source` would ERROR there,
-# and an error swallowed by `2>/dev/null` reads as an empty answer, which would be scored
-# `present`. Wrapping the path in `[ (…)? ]` makes "the path does not apply here" and "the key
-# is null here" the same measurable thing — absent — which is the honest reading of both.
+# _key_usability <config blob> <key> → absent | type:<t> | empty | uncompilable | usable.
+# ⭐ THE ONE DEFINITION OF "THIS KEY IS USABLE", and both readers of that question route through
+# it: the head refusal below, which turns each answer into its own message and its own fix, and
+# `_key_state_at`, which turns it into a cell of the 2×2 that CHOOSES that message. They were
+# two definitions, and the remedy's was the coarser one: `_key_state_at` scored a key `present`
+# on `type != null` alone, so a base tip carrying `"source": "   "` or an uncompilable
+# `card_token_regex` put the author in the STALE cell — whose remedy PROMISES that merging the
+# base turns this check green. Driven on fixtures: the merge is rc 0, the unusable value lands,
+# and the rerun is rc 2 on a different message, i.e. the loop this partition exists to end. A
+# remedy is only as true as the predicate it was derived from, so there is one predicate.
+#
+# The `[ (…)? ]` wrapper is what makes this safe to point at ANY ref's config, not just head's:
+# `.promote.source` ERRORS where `.promote` is not an object, and an error swallowed by
+# `2>/dev/null` reads as an empty answer, which would be scored `present`. Wrapped, "the path
+# does not apply here" and "the key is null here" are one measurable thing — absent — which is
+# the honest reading of both. At head the two spellings cannot disagree (`.promote` is typed as
+# null-or-object above, and the loop only runs on object), so nothing this leg accepts or
+# refuses moved when the head side adopted it.
+_key_usability() {
+  local blob="$1" key="$2" t v rc=0
+  t="$(_cfg "[ (.${key})? ] | if length == 0 then \"null\" else (.[0] | type) end" "$blob")"
+  if [ "$t" = null ];    then printf 'absent';       return 0; fi
+  if [ "$t" != string ]; then printf 'type:%s' "$t"; return 0; fi
+  v="$(_cfg "[ (.${key})? ] | .[0]" "$blob")"
+  if [ -z "${v//[[:space:]]/}" ]; then printf 'empty'; return 0; fi
+  case "$key" in
+    # The two token keys are handed STRAIGHT to `grep -oiE` by their readers, under a `|| true`
+    # that turns a compile failure into an empty match set — i.e. into the same silent 0-id
+    # manifest this leg exists to catch, from a key that is present and looks set. Compiled with
+    # the readers' own flags. `printf ''` feeds no input, so this asks the one question it means
+    # to: rc >1 is a bad regex, rc 1 is "compiled, matched nothing", and rc 1 is usable.
+    *_token_regex)
+      printf '' | grep -oiE "$v" >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -gt 1 ]; then printf 'uncompilable'; return 0; fi;;
+  esac
+  printf 'usable'
+}
+# _key_state_at <ref> <key> → present | absent | unusable | unreadable, where `present` means
+# USABLE — see above for why that is one predicate and not two.
 _key_state_at() {
   local ref="$1" key="$2"
-  _ref_cfg_usable "$ref" || { printf 'unreadable'; return 0; }
-  if [ "$(_cfg "[ (.${key})? ] | if length == 0 then \"null\" else (.[0] | type) end" "${_REF_CFG[$ref]}")" = null ]
-  then printf 'absent'; else printf 'present'; fi
+  _ref_cfg_load "$ref"
+  case "${_REF_CFG_STATE[$ref]}" in
+    missing)    printf 'absent';     return 0;;
+    unreadable) printf 'unreadable'; return 0;;
+  esac
+  case "$(_key_usability "${_REF_CFG[$ref]}" "$key")" in
+    absent) printf 'absent';;
+    usable) printf 'present';;
+    *)      printf 'unusable';;
+  esac
 }
 # _absent_key_remedy <key> — the evidence, then the ONE remedy that evidence selects.
+#
+# ⛔ THE BASE TIP HAS FOUR STATES, NOT TWO, AND THE TWO NON-BINARY ONES ARE ANSWERED FIRST. The
+# 2×2 below is a partition of *usable / not usable*, and neither of its `not usable` cells is
+# true of a tip this run could not READ or whose value it REFUSES. Folding either into the
+# `retired` or `never-declared` cell prints a retirement this run did not establish and routes
+# the author to `unset_correlation_keys` — a TOMBSTONE — on evidence its own preceding clause
+# contradicts, which is the one action `docs/INSTALL.md` and `release-artifacts/action.yml` both
+# warn against. Each therefore gets its own remedy and its own verdict word.
 _absent_key_remedy() {
   local key="$1" p b cell
   p="$(_key_state_at "$BASEREF" "$key")"
   b="$(_key_state_at "$BASE" "$key")"
-  cell=n; if [ "$p" = present ]; then cell=y; fi
-  if [ "$b" = present ]; then cell="${cell}y"; else cell="${cell}n"; fi
   printf 'NOTHING TO ANSWER — THIS IS DERIVED FROM YOUR OWN HISTORY: %s is %s at your fork point (%s) and %s at the tip of %s. ' \
     "$key" "$p" "$BASEREF" "$b" "$BASE"
+  case "$b" in
+    unreadable)
+      printf 'THIS RUN COULD NOT READ %s AT %s AT ALL, so it has NOT established whether the key is declared there and will not guess. Read that ref yourself: if the key is on %s, MERGE THE BASE BRANCH (`git merge %s`); if it genuinely is not, declare it here. ⛔ Do NOT acknowledge the gap on this evidence — the acknowledgement is a tombstone, and nothing on this run establishes a retirement to tombstone. ' \
+        "$CONFIG_ROOTREL" "$BASE" "$BASE" "$BASE"
+      return 0;;
+    unusable)
+      printf 'THE KEY IS DECLARED AT %s BUT THIS CHECK REFUSES THE VALUE THERE, so merging the base would land a value that reds this same check for a different reason — the message you would get next names it. FIX IT ON %s: a good value declared only here leaves the bad one live on %s for every other branch cut from it, and acknowledging the gap would tombstone a key that IS declared there. ' \
+        "$BASE" "$BASE" "$BASE"
+      return 0;;
+  esac
+  cell=n; if [ "$p" = present ]; then cell=y; fi
+  if [ "$b" = present ]; then cell="${cell}y"; else cell="${cell}n"; fi
   case "$cell" in
     yy) printf 'SO THIS BRANCH DELETED IT: it was there when you branched and it is still on %s, which makes merging the base a NO-OP that returns you to this identical message. Put the key back, or — if you dropped it deliberately — acknowledge the gap by name.' "$BASE";;
     yn) printf 'SO THE KEY WAS RETIRED ON %s AS WELL: merging the base is a genuine NO-OP, and re-declaring it here would re-open on your branch a gap the base closed. Acknowledge the gap by name. If the retirement on %s was itself a mistake, fix it THERE — a lone re-declaration on this branch correlates nothing once it merges.' "$BASE" "$BASE";;
-    ny) printf 'SO THIS BRANCH IS SIMPLY STALE — you branched before the key landed, whether or not you have since edited the config for some other reason. MERGE THE BASE BRANCH (`git merge %s`) and do not touch the config: the merge lands the key and this check goes green. Declaring it again here would land a DUPLICATE declaration, and acknowledging it would tombstone a key that is LIVE on %s.' "$BASE" "$BASE";;
-    nn) printf 'SO THE KEY HAS NEVER BEEN DECLARED IN THIS REPO: merging the base changes nothing, because there is nothing there to merge. Declare it, or acknowledge the gap by name.';;
+    # The clause after the dash is what the FORK POINT establishes, and `absent` is only one of
+    # the three ways to reach this cell — `you branched before the key landed` is false of the
+    # other two, while the instruction is right for all three.
+    ny) printf 'SO THIS BRANCH IS SIMPLY STALE — it carries no usable %s and %s does, whether or not you have since edited the config for some other reason. MERGE THE BASE BRANCH (`git merge %s`) and do not touch the config: the merge lands the key and this check goes green. Declaring it again here would land a DUPLICATE declaration, and acknowledging it would tombstone a key that is LIVE on %s.' "$key" "$BASE" "$BASE" "$BASE";;
+    nn) printf 'SO %s: merging the base changes nothing, because there is nothing there to merge. Declare it, or acknowledge the gap by name.' \
+          "$( [ "$p" = absent ] && printf 'THE KEY HAS NEVER BEEN DECLARED IN THIS REPO' || printf 'NEITHER THE FORK POINT NOR THE TIP OF THE BASE GIVES THIS RUN A USABLE KEY' )";;
   esac
   printf ' '
 }
@@ -490,31 +561,24 @@ if [ "$CLASSIFY_ONLY" -eq 0 ]; then
     # `promote.source` absent has to be told that the acknowledgement silences THIS check and not
     # that refusal, or they will read a green gate as "promotion is configured".
     while IFS='|' read -r _key _reader _buys _absent; do
-      _type="$(_cfg ".${_key} | type" "$HEAD_CFG")"
-      if [ "$_type" = null ]; then
+      # ⭐ ONE PREDICATE, TWO READERS. `_key_usability` is the definition; every message below is
+      # a rendering of one of its answers. Spelling the same three tests inline here is how the
+      # remedy's copy of them drifted coarser than this one and started promising a green the
+      # merge could not deliver.
+      _usable="$(_key_usability "$HEAD_CFG" "$_key")"
+      if [ "$_usable" = absent ]; then
         [ -z "${UNSET_KEY[$_key]:-}" ] \
           || { echo "release-artifacts-check: UNSET: $_key — declared absent in .unset_correlation_keys at head. $_reader reads it to $_buys. $_absent"; continue; }
         die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent THIS LEG READS THE HEAD CONFIG ONLY, so a branch cut before $_key landed on your base branch reds here without having touched the config — and which author you are is not a question you are asked, it is READ. $(_absent_key_remedy "$_key")TO ACKNOWLEDGE: add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
       fi
       [ -z "${UNSET_KEY[$_key]:-}" ] \
         || die "$CONFIG_ROOTREL at $HEAD_REF declares $_key AND lists it in .unset_correlation_keys — a key cannot be both declared and acknowledged absent; remove it from one of the two (the acknowledgement is a tombstone, and a tombstone standing over a live key acknowledges the NEXT deletion of it in advance, with nothing reporting the narrowing)"
-      [ "$_type" = string ] \
-        || die "$CONFIG_ROOTREL at $HEAD_REF has $_key of type '$_type' — it must be a string ($_reader reads it to $_buys)"
       _val="$(_cfg ".${_key}" "$HEAD_CFG")"
-      [ -n "${_val//[[:space:]]/}" ] \
-        || die "$CONFIG_ROOTREL at $HEAD_REF has $_key set to '$_val', which is empty or whitespace only — byte-identical to omitting it. $_reader reads it to $_buys, and an empty value does none of that. Give it a value, or acknowledge the gap by name in .unset_correlation_keys"
-      # The two token keys are handed STRAIGHT to `grep -oiE` by their readers, under a
-      # `|| true` that turns a compile failure into an empty match set — i.e. into the same
-      # silent 0-id manifest this leg exists to catch, from a key that is present and looks
-      # set. Compiled here with the readers' own flags. `printf ''` feeds no input, so this
-      # asks the one question it means to: rc >1 is a bad regex, rc 1 is "compiled, matched
-      # nothing", and rc 1 is a pass.
-      case "$_key" in
-        *_token_regex)
-          _rc=0; printf '' | grep -oiE "$_val" >/dev/null 2>&1 || _rc=$?
-          [ "$_rc" -le 1 ] \
-            || die "$CONFIG_ROOTREL at $HEAD_REF has $_key = '$_val', which grep -E cannot compile — $_reader pipes it straight into \`grep -oiE\` behind a \`|| true\`, so an uncompilable regex does not fail: it matches nothing and yields an EMPTY manifest at rc 0"
-          ;;
+      case "$_usable" in
+        usable) ;;
+        type:*) die "$CONFIG_ROOTREL at $HEAD_REF has $_key of type '${_usable#type:}' — it must be a string ($_reader reads it to $_buys)";;
+        empty)  die "$CONFIG_ROOTREL at $HEAD_REF has $_key set to '$_val', which is empty or whitespace only — byte-identical to omitting it. $_reader reads it to $_buys, and an empty value does none of that. Give it a value, or acknowledge the gap by name in .unset_correlation_keys";;
+        uncompilable) die "$CONFIG_ROOTREL at $HEAD_REF has $_key = '$_val', which grep -E cannot compile — $_reader pipes it straight into \`grep -oiE\` behind a \`|| true\`, so an uncompilable regex does not fail: it matches nothing and yields an EMPTY manifest at rc 0";;
       esac
     done <<'ROWS'
 promote.source|bin/promote-released-cards|qualify a matched card against the repo this release ships (dl_number/pr_number are REPO-SCOPED counters, so an unqualified match promotes another repo's cards into a terminal stage)|Absent, that tool REFUSES AT RC 2 rather than going quiet — the key is required there with no default — so acknowledging it here silences THIS check and not that refusal: your post-merge promote job still reds.

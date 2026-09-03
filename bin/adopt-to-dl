@@ -77,8 +77,8 @@ _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
 # ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421), and the set is
 # DERIVED rather than trusted: tests/promote-source-qualify-selftest.sh § 3d re-derives it from
 # `bin/` on every run and reds when a copy appears, moves, or stops being named here. ⛔ § 3d —
-# not this comment — OWNS the scope of that derivation: which fold constructs it matches, which
-# languages it covers and what it still cannot see are stated there, once. Do not restate them
+# not this comment — OWNS the scope of that derivation: which lines its predicate admits, every
+# admission it makes and what it still cannot see are stated there, once. Do not restate them
 # here; a scope restated in two places is what went stale last time. The server
 # class is the SoT; the copies are this one — `_ata_canon_source` — plus TWO in
 # `bin/promote-released-cards`, which is a vendored standalone that must not source this lib and
