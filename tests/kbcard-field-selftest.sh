@@ -138,9 +138,21 @@ _PATCH_FILE="$TMP/patch-body.json"
 # Default stub: GET returns the fixture; PATCH records its body to a file (a $()-
 # subshell side effect on a global can't survive, so use a file) and echoes back a
 # {data:…} envelope with the sent options applied.
+# THE INDEX REFLECTS THE LAST PATCH, because `set-options` now confirms its converge by
+# re-reading the BOARD rather than by reading the PATCH's own echo (card#8556). A stub that
+# answered the pre-write index on that second read would red every converge below for the
+# FIXTURE's reason instead of the tool's — and, worse, could never exercise the confirming
+# read in the agreeing direction. `_SO_STALE` is the disagreeing direction: a PATCH that
+# answered 2xx over a board that did not move.
 kb_api() {
     case "$1 $2" in
-        "GET /boards/"*) printf '%s' "$_GET_FIELDS" ;;
+        "GET /boards/"*)
+            if [[ -z "${_SO_STALE:-}" && -f "$_PATCH_FILE" ]]; then
+                jq -c --argjson o "$(jq -c '.options' "$_PATCH_FILE")" \
+                    '(.data[] | select(.id == 10) | .options) |= $o' <<<"$_GET_FIELDS"
+            else
+                printf '%s' "$_GET_FIELDS"
+            fi ;;
         "PATCH /custom_fields/"*)
             printf '%s' "$3" > "$_PATCH_FILE"
             jq -nc --argjson body "$3" \
@@ -293,6 +305,11 @@ _CT_REFIMPACT_CAP=""   # name only this many offenders in the ref-impact refusal
                        # first key and not the second, which is the asymmetry the
                        # --accept-ref-impact path has to disclose
 _CT_TYPE_MOVED=""      # a concurrent conversion committed between the read and this write
+_CT_DEFINITION_STUCK="" # the conversion answers 2xx and the DEFINITION does not move — the
+                        # board a run that reported off the write's own echo could not see
+_POST_NOT_INDEXED=""   # the create POST echoes an id and the board does not define the key
+_FIELDS_FAIL_ON_READ="" # fail the Nth `GET /boards/…/custom_fields.json` of this run, so a
+                        # CONFIRMING re-read can fail while the resolve read before it does not
 # Carriers the conversion converted that NO board read this client makes returns —
 # archived and soft-deleted cards. The server's candidateQuery is
 # `withTrashed()->where(board_id)->whereNotNull(payload->key)` with no archive filter,
@@ -326,6 +343,7 @@ _seed() {
     _CT_FORCE_HTTP=""; _CT_FORCE_BODY=""; _CT_UNREADABLE=""; _CT_REFIMPACT=""
     _CT_REFIMPACT_SHIFT=""; _CT_TYPE_MOVED=""; _CT_REFIMPACT_GONE=""
     _CT_REFIMPACT_CAP=""; _CT_UNSEEN_CARRIERS=0; _CT_LIVE_GROWTH=""
+    _CT_DEFINITION_STUCK=""; _POST_NOT_INDEXED=""; _FIELDS_FAIL_ON_READ=""
     printf '%s' "$1" > "$_FIELDS"
     printf '%s' "$2" > "$_BOARD"
 }
@@ -357,6 +375,14 @@ kb_api() {
             # decides success on the status class, so this arrives at the projection as a
             # SUCCESS and only _kbc_fetch_fields' own empty-value guard refuses it.
             [[ -z "$_FIELDS_UNREADABLE" ]] || { printf '<html>502 Bad Gateway</html>'; return 0; }
+            # Fail one NUMBERED read. `_FIELDS_UNREADABLE` fails every one, which for the
+            # create and retype verbs is refused BEFORE the write (they resolve against this
+            # same index), so it can never reach their confirming re-read. The call is already
+            # logged above, so `_calls` counts THIS one.
+            if [[ -n "$_FIELDS_FAIL_ON_READ" && "$(_calls 'GET /boards')" == "$_FIELDS_FAIL_ON_READ" ]]; then
+                echo "kbcard: HTTP 503 on GET $path" >&2
+                return 1
+            fi
             jq -c '{data: .}' "$_FIELDS" ;;
         "POST /boards/"*"/custom_fields.json")
             printf '%s' "$body" > "$_POST_BODY"
@@ -373,7 +399,9 @@ kb_api() {
                 '(([.[].id] | max // 90) + 1) as $id
                  | {id: $id, board_id: 1, key: $b.key, label: $b.label, type: $b.type,
                     options: ($b.options // null)}' "$_FIELDS")"
-            jq -c --argjson f "$nf" '. + [$f]' "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+            # _POST_NOT_INDEXED: the 201 echoes the whole definition, id first, and the board
+            # does not define it. The id alone cannot see that — only the index can.
+            [[ -n "$_POST_NOT_INDEXED" ]] || { jq -c --argjson f "$nf" '. + [$f]' "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"; }
             jq -nc --argjson f "$nf" '{data: $f}' ;;
         "DELETE /custom_fields/"*)
             id="${path#/custom_fields/}"; id="${id%.json}"
@@ -563,9 +591,12 @@ kb_api_status() {
                               elif $t == "number" then (if ($v|type) == "number" then $v else ($v|tonumber) end)
                               else ($v|tostring) end)
                     else . end)' "$_BOARD" > "$TMP/b.tmp" && mv "$TMP/b.tmp" "$_BOARD"
-            jq -c --argjson id "$id" --arg t "$to" --argjson o "${opts:-null}" \
+            # _CT_DEFINITION_STUCK leaves the definition where it was while the call still
+            # answers 200 with a converted-looking echo — the board a run reporting off that
+            # echo describes and never reads.
+            [[ -n "$_CT_DEFINITION_STUCK" ]] || { jq -c --argjson id "$id" --arg t "$to" --argjson o "${opts:-null}" \
                 'map(if .id == $id then .type = $t | (if $o == null then . else .options = $o end) else . end)' \
-                "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"
+                "$_FIELDS" > "$TMP/f.tmp" && mv "$TMP/f.tmp" "$_FIELDS"; }
             # The conversion's count is fixed HERE, at the moment the transaction commits.
             # Anything the knob below adds to the live set lands after it, which is what
             # makes the client's later census a read of a different moment.
@@ -635,8 +666,12 @@ eq "…and the field is really on the board now"       "2"    "$(jq 'length' "$_
 _seed "$_F_DL_STR" '[]'
 _POST_NOID=1
 rc=0; ERR="$(_kbc_field_create --key severity --label S --type string 2>&1 >/dev/null)" || rc=$?
-eq "create whose 2xx carries no id → rc 1"           "1"    "$rc"
-eq "…and says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$ERR")"
+eq "create whose 2xx carries no id → rc 3"           "3"    "$rc"
+eq "…and says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED WRITE' "$ERR")"
+# The verb PROPAGATES the primitive's rc rather than collapsing it: rc 3 there is a write
+# that went out and could not be confirmed, and reporting it as rc 1 would be a claim about
+# a board nobody read.
+eq "…and no confirming index read was even attempted" "1" "$(_calls 'GET /boards')"
 
 # A 2xx NOTHING CAN BE READ OUT OF, at the two response reads these verbs own. THE
 # ADOPTION of the shared tolerant parse (kb_parse_resp, card#6426) is what these two legs
@@ -648,8 +683,8 @@ _seed "$_F_DL_STR" '[]'
 _POST_UNREADABLE=1
 rc=0; OUT="$(_kbc_field_create --key severity --label S --type string 2>"$TMP/e")" || rc=$?
 ERR="$(cat "$TMP/e")"
-eq "create on a 2xx nothing reads out of → rc 1, not jq's 5"  "1"     "$rc"
-eq "…the SAME UNVERIFIED-write arm an id-less 2xx takes"      "true"  "$(has 'UNVERIFIED' "$ERR")"
+eq "create on a 2xx nothing reads out of → rc 3, not jq's 5"  "3"     "$rc"
+eq "…the SAME UNVERIFIED-write arm an id-less 2xx takes"      "true"  "$(has 'UNVERIFIED WRITE' "$ERR")"
 eq "…leaks no raw jq parse error"                             "false" "$(has 'parse error' "$ERR")"
 eq "…and prints no id on stdout"                              ""      "$OUT"
 
@@ -734,7 +769,12 @@ eq "…and no success line is printed"                 "false" "$(has 'deleted f
 _seed "$_F_DL_STR" '[{"id":8,"payload":{"other":5}}]'
 _FIELDS_FAIL_AFTER_DELETE=1
 rc=0; ERR="$(_kbc_field_delete --field dl_number 2>&1 >/dev/null)" || rc=$?
-eq "a DELETE whose CONFIRMING re-read fails → rc 1"  "1"    "$rc"
+# THE TWO BOARDS NO LONGER SHARE AN rc (card#8556). This one is a 2xx whose confirming
+# re-read failed — the definition is gone as far as anything can tell — which is the
+# UNVERIFIED outcome and NOT "the delete did not happen". Its sibling above (a 2xx that
+# removed nothing) is KNOWN and stays rc 1. The message still tells them apart; the rc
+# now does too, which is what a caller that must not act on an unconfirmed write reads.
+eq "a DELETE whose CONFIRMING re-read fails → rc 3"  "3"    "$rc"
 eq "…the DELETE was really issued"                   "1"    "$(_calls DELETE)"
 eq "…and it really landed (the definition is gone)"  "0"    "$(jq 'length' "$_FIELDS")"
 # The load-bearing half: a 2xx is the server saying it acted, so this board must be
@@ -882,7 +922,12 @@ eq "…and the run says the labels were DESTROYED"      "true" \
 eq "…naming the way to keep them"                     "true" "$(has 'OMITTING --options carries the existing set over verbatim' "$ERR")"
 # It costs no extra request: the definition read that resolves --field already carried
 # the labels, so the disclosure rides a read the verb makes either way.
-eq "…off exactly ONE field-index read, with no second one" "1" "$(_calls 'GET /boards')"
+# The DISCLOSURE still costs no request of its own — it is projected off the definition the
+# --field resolution already read. The count is 2 rather than 1 because the verb now makes a
+# CONFIRMING re-read of its own after the conversion (card#8556); neither read belongs to the
+# label warning, which is what this leg pins. RED if the disclosure grows a read: 3.
+eq "…off the resolve read, adding no read of its own (2 = resolve + confirm)" "2" \
+   "$(_calls 'GET /boards')"
 
 # The same conversion with no labels to lose says nothing — a warning that fires on
 # every --options is noise, and would not distinguish the state it exists to report.
@@ -1238,8 +1283,8 @@ _seed "$_F_DL_NUM" "$_B_MIXED"
 _CT_UNREADABLE=1
 rc=0; OUT="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>"$TMP/e")" || rc=$?
 ERR="$(cat "$TMP/e")"
-eq "an unreadable conversion echo → rc 1, not jq's 5" "1"     "$rc"
-eq "…calls the conversion UNCONFIRMED"                "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "an unreadable conversion echo → rc 3, not jq's 5" "3"     "$rc"
+eq "…calls it an UNVERIFIED WRITE"                    "true"  "$(has 'UNVERIFIED WRITE' "$ERR")"
 eq "…leaks no raw jq parse error"                     "false" "$(has 'parse error' "$ERR")"
 eq "…prints no field row on stdout"                   ""      "$OUT"
 # It must not restamp: the pass is scoped to a conversion this run never read.
@@ -1265,8 +1310,8 @@ _seed "$_F_DL_NUM" "$_B_MIXED"
 _CT_UNREADABLE=1
 rc=0; OUT="$(_kbc_field_retype --field dl_number --to string 2>"$TMP/e")" || rc=$?
 ERR="$(cat "$TMP/e")"
-eq "the same arm without --restamp-dl → rc 1"        "1"     "$rc"
-eq "…still calls the conversion UNCONFIRMED"         "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "the same arm without --restamp-dl → rc 3"        "3"     "$rc"
+eq "…still calls it an UNVERIFIED WRITE"             "true"  "$(has 'UNVERIFIED WRITE' "$ERR")"
 eq "…still prints no field row on stdout"            ""      "$OUT"
 eq "…still names the re-run as safe"                 "true"  "$(has 'Re-run this exact command' "$ERR")"
 eq "…because the conversion half is a no-op"         "true"  "$(has 'answers as a server-side no-op' "$ERR")"
@@ -1287,8 +1332,8 @@ eq "…nor reads the board for one"                    "0"     "$(_calls FETCH)"
 _seed "$_F_SEV_ENUM" "$_B_SEV"
 _CT_UNREADABLE=1
 rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
-eq "an unreadable echo on a command carrying --options → rc 1" "1" "$rc"
-eq "…still calls the conversion UNCONFIRMED"         "true"  "$(has 'the conversion is UNCONFIRMED' "$ERR")"
+eq "an unreadable echo on a command carrying --options → rc 3" "3" "$rc"
+eq "…still calls it an UNVERIFIED WRITE"             "true"  "$(has 'UNVERIFIED WRITE' "$ERR")"
 eq "…names the re-run WITHOUT --options"             "true"  "$(has 'Re-run it WITHOUT --options' "$ERR")"
 eq "…never tells the operator to re-run it as typed" "false" "$(has 'Re-run this exact command' "$ERR")"
 eq "…nor calls re-running it safe"                   "false" "$(has 'so re-running is safe' "$ERR")"
@@ -1715,5 +1760,61 @@ rc=0; _kbc_field_retype --field dl_number --to string --options '' >/dev/null 2>
 eq "retype with an explicitly-empty --options → rc 2" "2"    "$rc"
 rc=0; _kbc_field_delete >/dev/null 2>&1 || rc=$?
 eq "delete with no --field → rc 2"                    "2"    "$rc"
+
+# ---------------------------------------------------------------------------
+echo "== create / retype are reported from the BOARD'S INDEX, not from the write's echo =="
+# THE CLASS (card#8556): a mutating verb reports success it never read back. `field delete`
+# already re-read the index; `create` reported off the id in its 201 and `retype` off the row
+# in its 200 — both the write's own answer. The index is the ONLY read surface a custom field
+# has (there is no per-field GET), which is why it is the surface all three now confirm on.
+
+echo "-- create: a 201 with an id for a field the board does not define --"
+_seed "$_F_DL_STR" '[]'
+_POST_NOT_INDEXED=1
+rc=0; OUT="$(_kbc_field_create --key severity --label S --type string 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "create the index does not confirm → rc 1"        "1"     "$rc"
+eq "…named as a HARD FAILURE"                        "true"  "$(has 'HARD FAILURE' "$ERR")"
+eq "…and prints no id (the 201 carried one)"         ""      "$OUT"
+eq "…and no success line"                            "false" "$(has 'created on board' "$ERR")"
+# The control on the same route: the identical call over a board that DOES index it.
+_seed "$_F_DL_STR" '[]'
+rc=0; OUT="$(_kbc_field_create --key severity --label S --type string 2>/dev/null)" || rc=$?
+eq "control: the same create over an indexing board → rc 0" "0"  "$rc"
+eq "control: …and prints the id"                            "92" "$OUT"
+eq "control: …off TWO index reads (uniqueness, then confirm)" "2" "$(_calls 'GET /boards')"
+
+echo "-- create: an index that cannot be re-read is UNVERIFIED, not a failure --"
+_seed "$_F_DL_STR" '[]'
+_FIELDS_FAIL_ON_READ=2
+rc=0; ERR="$(_kbc_field_create --key severity --label S --type string 2>&1 >/dev/null)" || rc=$?
+eq "create whose confirming index read fails → rc 3" "3"    "$rc"
+eq "…named as an UNVERIFIED WRITE"                   "true" "$(has 'UNVERIFIED WRITE' "$ERR")"
+eq "…and says to treat it as LANDED"                 "true" "$(has 'treat it as LANDED' "$ERR")"
+eq "…the POST really was issued"                     "1"    "$(_calls 'POST /boards')"
+
+echo "-- retype: a 200 over a definition that did not move --"
+# The sharpest of the three. A conversion that did not take leaves every DSL filter on the key
+# matching the OLD JSON type while `field list` is never consulted — invisible from every
+# surface an operator looks at, which is why the run has to look at it.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_CT_DEFINITION_STUCK=1
+rc=0; OUT="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>"$TMP/e")" || rc=$?
+ERR="$(cat "$TMP/e")"
+eq "retype the index does not confirm → rc 1"        "1"     "$rc"
+eq "…named as a HARD FAILURE naming both types"      "true"  "$(has "still declares 'dl_number' as type 'number', not the 'string'" "$ERR")"
+eq "…prints no field row on stdout"                  ""      "$OUT"
+# And it must not restamp: canonicalizing card values against a type this run could not
+# confirm would be rewriting them on a guess.
+eq "…and does NOT run the --restamp-dl pass"         "0"     "$(_calls PATCH)"
+
+echo "-- retype: a confirming index read that fails is UNVERIFIED --"
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_FIELDS_FAIL_ON_READ=2
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "retype whose confirming index read fails → rc 3" "3"    "$rc"
+eq "…named as an UNVERIFIED WRITE"                   "true" "$(has 'UNVERIFIED WRITE' "$ERR")"
+eq "…and says to treat the conversion as LANDED"     "true" "$(has 'Treat the conversion as LANDED' "$ERR")"
+eq "…and still does NOT run the --restamp-dl pass"   "0"    "$(_calls PATCH)"
 
 _summary "kbcard-field-selftest"
