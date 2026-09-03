@@ -307,7 +307,7 @@ eq "CONTROL rc 0: it still carries the untriaged card"          "true"  "$(has '
 # board_unread, and a new arm that echoes to stdout instead reds here. The two jq
 # render fallbacks are counted separately below because they exit through the
 # pipeline, not through a `return`.
-_bs_body() { sed -n '/^board_report() {/,/^}/p' "$BIN"; }
+_bs_body() { _fn_src "$BIN" board_report; }
 early_exits="$(_bs_body | command grep -c 'return 0; }')"
 via_unread="$(_bs_body | command grep -c 'board_unread "\$label"')"
 eq "denominator: every early-exit arm in board_report reports through board_unread" \

@@ -505,7 +505,7 @@ eq "the declared groups account for every admitted line (3 + 9 + 10)" "22" \
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
 # folds sitting anywhere in the file, which is the state this leg exists to distinguish from.
 eq "promote's shell fold is inside src_canon, and only there" "1" \
-   "$(awk '/^src_canon\(\) \{/ {f=1} f {print} f && /^\}/ {exit}' "$BINDIR/promote-released-cards" | _fold_count)"
+   "$(_fn_src "$BINDIR/promote-released-cards" src_canon | _fold_count)"
 # A FLOOR, not an exact count. The regression this catches is a side that STOPS canonicalizing
 # — folds stay at 2 and the caller count drops to 1, which leg 2 cannot see. Pinning it at
 # exactly 2 would instead red on a THIRD caller, i.e. on reuse of the primitive that was just
@@ -727,7 +727,7 @@ echo "== 3e. THE THREE canonicalizeSource COPIES, BOUND BY BEHAVIOUR: one corpus
 # caller's gate has already refused every value either would change. Over that set all three must
 # agree EXACTLY. The two omissions are then asserted SEPARATELY and in both directions as the
 # DECLARED divergence, so unifying the copies by accident reds here rather than passing quietly.
-_SRC_CANON_SRC="$(awk '/^src_canon\(\) \{/ {f=1} f {print} f && /^\}/ {exit}' "$BINDIR/promote-released-cards")"
+_SRC_CANON_SRC="$(_fn_src "$BINDIR/promote-released-cards" src_canon)"
 _ATA_CANON_SRC="$(awk '/^_ata_canon_source\(\)/ {print; exit}' "$BINDIR/adopt-to-dl")"
 _JQ_CANON_SRC="$(awk '/def canon_source:/ {f=1} f {print} f && /end;[[:space:]]*$/ {exit}' "$BINDIR/promote-released-cards")"
 eq "the three copies were all extracted (non-empty)" "yes yes yes" \

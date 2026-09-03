@@ -638,49 +638,122 @@ eq "  …so the check does NOT credit that board env with declaring it" "false" 
 eq "  …and reports the copy as one no source it walks declares" "true" \
    "$(has 'NO source this check walks declares it' "$OUT")"
 
-echo "-- call-site parity: the COUNT, which is the thing that actually drifted --"
+echo "-- call-site parity: WHERE the check expands \`~\`, which is the thing that actually drifted --"
 # THE ROW ABOVE IS A BEHAVIOURAL WITNESS, AND IT PINS ONE SITE OF THE TWO. Measured, before this
 # block existed: restoring `_rc_add_source`'s expansion reds those two rows (2 FAIL), while
 # restoring the precedence `eff` expansion — the other half of the same call-graph fix, on the
 # arm that says DELETE — left this whole file at rc 0 / 0 FAIL, twice. A scenario row per call
-# site is the wrong shape anyway: the divergence IS a count, so the COUNT is what is asserted
-# here, and one assertion covers both sites and every future one, at either end.
+# site is the wrong shape anyway: the divergence is in the CALL GRAPH, so the call graph is what
+# is asserted here, and two legs cover both sites and every future one, at either end.
+#
+# ⛔ THE POPULATION IS THE MIRRORED REGION, NOT THE WHOLE LIB, AND THAT IS card#8548's CORRECTION.
+# This leg used to compare `_rc_expand_home` calls in the CHECK against `_kb_expand_home` calls
+# ANYWHERE IN THE LIB. The lib is a much larger surface than the four functions runtime-check
+# mirrors, so a legitimate new expansion in an UNMIRRORED lib function reds it with no mirror
+# drift at all (measured: one planted in `kb_resolve_env`) — and because it reported an
+# expected-vs-got COUNT, the obvious remedy it invited was to add a matching call to the mirror,
+# which is the opposite of correct. The negative control below is that exact case, and it must
+# stay GREEN. A guard that reds on the wrong thing is not a stricter guard, it is a broken one.
+#
+# WHAT IS ACTUALLY TRUE, in two legs rather than one count:
+#   A. Every `_rc_expand_home` call in the check is INSIDE the store-pointer mirror. The check has
+#      no business expanding `~` anywhere else — `kb_declared_token_file` returns a declared
+#      candidate VERBATIM, so a board env spelling `KBCARD_TOKEN_FILE="~/tok"` is a literal `~`
+#      directory to every tool (`kb_resolve_env` rc 5). Both dropped sites (`_rc_add_source`, the
+#      precedence `eff`) were outside it; so is every future one, whatever it is called.
+#   B. Inside that mirror, it expands as many times as the lib function it mirrors does. This is
+#      the only leg that reads the lib, and it reads ONE function of it.
 #
 # WHAT A CALL SITE IS, STATED, because the answer is a number and a number hides its predicate:
 # an occurrence of the name outside a COMMENT line and outside its own `name() {` definition
 # line. Comments are excluded because BOTH files narrate this function in prose — a header
 # sentence naming it is not a call, and counting it would let a dropped call be paid for by an
-# added paragraph. ⚑ It compares HOW MANY, never WHICH: two call graphs of equal size that
-# expand in different places satisfy this. That case is what the behavioural row above is for.
-_call_sites() { # <fn> <file> → the number of times <file> CALLS <fn>
+# added paragraph. ⚑ Leg B compares HOW MANY, never WHICH: two call graphs of equal size that
+# expand in different places inside the mirror satisfy it. That case is what the behavioural row
+# above is for.
+RC_MIRROR_FN=_rc_store_pointer                 # the check's mirror of…
+LIB_STORE_FN=kb_coord_store_token_file         # …this lib function, the lib's only expansion site
+
+# _expand_hits <fn> <file> — "<line>\t<calls on that line>", one record per line that CALLS <fn>.
+# ONE predicate: the totals, the per-site line list and every control below read it, so a
+# spelling one of them learned and another did not cannot exist.
+_expand_hits() {
     awk -v fn="$1" '
         $0 ~ /^[[:space:]]*#/            { next }   # prose naming a function is not a call
         $0 ~ "^" fn "\\(\\)"             { next }   # the definition itself is not a call
         {
-            line = $0
+            line = $0; n = 0
             while (match(line, "(^|[^A-Za-z0-9_])" fn "([^A-Za-z0-9_]|$)")) {
                 n++
                 # -1 keeps the delimiter this match consumed, so two calls sharing one space
                 # between them are both seen.
                 line = substr(line, RSTART + RLENGTH - 1)
             }
+            if (n > 0) printf "%s\t%s\n", NR, n
         }
-        END { print n + 0 }
     ' "$2"
 }
-RC_SITES="$(_call_sites _rc_expand_home "$CHECK")"
-LIB_SITES="$(_call_sites _kb_expand_home "$LIB")"
-# Positive control FIRST: the row below is an EQUALITY between two derived numbers, and two
-# derivations that both broke and answered 0 satisfy it while measuring nothing at all.
+_call_sites() { _expand_hits "$1" "$2" | awk -F'\t' '{ t += $2 } END { print t + 0 }'; }
+
+# The mirror's SPAN in the check, derived from the text `_fn_src` already extracts rather than by
+# a second spelling of the same range — a third hand-spelling of "where does this function start
+# and stop" is the very class card#8548 is about. `_fn_src` exits 1 on a rename; the start-line
+# lookup is asserted below so a body whose first line stopped being unique cannot answer 0.
+_rc_body="$(_fn_src "$CHECK" "$RC_MIRROR_FN")"
+_rc_first="${_rc_body%%$'\n'*}"
+RC_BODY_START="$(awk -v first="$_rc_first" '$0 == first { print NR; exit }' "$CHECK")"
+RC_BODY_END=$((RC_BODY_START + $(printf '%s\n' "$_rc_body" | wc -l) - 1))
+_fn_src "$LIB" "$LIB_STORE_FN" > "$TMP/lib-store-rung"
+
+RC_TOTAL="$(_call_sites _rc_expand_home "$CHECK")"
+RC_INSIDE="$(_expand_hits _rc_expand_home "$CHECK" \
+    | awk -F'\t' -v a="$RC_BODY_START" -v b="$RC_BODY_END" '$1 >= a && $1 <= b { t += $2 } END { print t + 0 }')"
+LIB_INSIDE="$(_call_sites _kb_expand_home "$TMP/lib-store-rung")"
+
+# Positive controls FIRST: the two legs below are assertions of ABSENCE, and derivations that
+# all broke and answered 0 satisfy both while measuring nothing at all.
+eq "control: the mirror's span in the check was located" "true" \
+   "$([ -n "$RC_BODY_START" ] && [ "$RC_BODY_START" -gt 0 ] && echo true || echo false)"
 eq "control: both call-site derivations found real data" "true" \
-   "$([ "$RC_SITES" -gt 0 ] && [ "$LIB_SITES" -gt 0 ] && echo true || echo false)"
-eq "the mirror calls _rc_expand_home at as many sites as the lib calls _kb_expand_home" \
-   "$LIB_SITES" "$RC_SITES"
-# Control: the counter SEES a planted call, so the equality above can red in the drift direction
-# — asserted as a VALUE, since "different from RC_SITES" is satisfied by a derivation that broke.
+   "$([ "$RC_TOTAL" -gt 0 ] && [ "$LIB_INSIDE" -gt 0 ] && echo true || echo false)"
+
+# LEG A — every expansion in the check is inside the mirror. The FAIL NAMES THE DRIFT AND THE
+# REMEDY, not a count: the count is what sent the last reader to "add a matching call".
+_outside="$(_expand_hits _rc_expand_home "$CHECK" \
+    | awk -F'\t' -v a="$RC_BODY_START" -v b="$RC_BODY_END" '$1 < a || $1 > b { print $1 }')"
+drift_a=""
+if [ -n "$_outside" ]; then
+    drift_a="runtime-check expands \`~\` OUTSIDE $RC_MIRROR_FN, at $CHECK line(s): $(printf '%s' "$_outside" | tr '\n' ' ')— DROP the call(s). A DECLARED \`~/…\` is literal to every tool (kb_resolve_env rc 5), so expanding one here credits a board with declaring a file no tool can read, and can elect it as a duplicate group's survivor. Never add a matching call to the lib."
+fi
+eq "every _rc_expand_home call is inside $RC_MIRROR_FN" "" "$drift_a"
+
+# LEG B — inside the mirror, it expands as often as the lib function it mirrors does.
+drift_b=""
+if [ "$RC_INSIDE" -lt "$LIB_INSIDE" ]; then
+    drift_b="$RC_MIRROR_FN is MISSING an expansion its original performs: $LIB_STORE_FN calls _kb_expand_home $LIB_INSIDE time(s), the mirror calls _rc_expand_home $RC_INSIDE — the mirror resolves a store pointer the tools would have expanded, so it reports a duplicate that is not there or misses the one that is. ADD it to $RC_MIRROR_FN."
+elif [ "$RC_INSIDE" -gt "$LIB_INSIDE" ]; then
+    drift_b="$RC_MIRROR_FN expands MORE often than $LIB_STORE_FN does ($RC_INSIDE vs $LIB_INSIDE) — DROP the extra call in the mirror. The lib is the authority here; do not add one to $LIB_STORE_FN to match."
+fi
+eq "$RC_MIRROR_FN expands exactly as often as $LIB_STORE_FN" "" "$drift_b"
+
+# CONTROL, POSITIVE: the counter SEES a planted call, so both legs can red in the drift direction
+# — asserted as a VALUE, since "different from RC_TOTAL" is satisfied by a derivation that broke.
 awk '{ print } /^[[:space:]]*_rc_expand_home "/ { print }' "$CHECK" > "$TMP/expand-drift-bin"
-eq "control: a planted extra call site is counted" "$((RC_SITES + 1))" \
+eq "control: a planted extra call site is counted" "$((RC_TOTAL + 1))" \
    "$(_call_sites _rc_expand_home "$TMP/expand-drift-bin")"
+
+# ⛔ CONTROL, NEGATIVE — THE ONE card#8548 EXISTS FOR, and the reason leg B reads one lib function
+# instead of the file. A new `_kb_expand_home` call in an UNMIRRORED lib function is not mirror
+# drift and must not red: `kb_resolve_env` is not mirrored into runtime-check at all, so nothing
+# about the check is wrong when it grows one. Planted with the lib's own call-line text so this
+# measures the predicate and not a typo, and asserted as the UNCHANGED value.
+awk '{ print }
+     /^kb_resolve_env\(\) \{/ { print "    _kb_expand_home \"$KB_TOKEN_FILE\"" }' "$LIB" > "$TMP/lib-unmirrored-plant"
+eq "control: the plant landed (the whole-lib count really moves)" "$(( $(_call_sites _kb_expand_home "$LIB") + 1 ))" \
+   "$(_call_sites _kb_expand_home "$TMP/lib-unmirrored-plant")"
+_fn_src "$TMP/lib-unmirrored-plant" "$LIB_STORE_FN" > "$TMP/lib-store-rung-planted"
+eq "an unrelated _kb_expand_home call elsewhere in the lib is NOT mirror drift" \
+   "$LIB_INSIDE" "$(_call_sites _kb_expand_home "$TMP/lib-store-rung-planted")"
 
 echo "== the parity table this run actually drove =="
 echo "   $n_store store shapes · $n_home home expansions · $n_secret credential shapes · $n_boardenv board-env reads"
