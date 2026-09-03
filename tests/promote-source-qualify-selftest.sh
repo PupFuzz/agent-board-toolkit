@@ -290,35 +290,176 @@ echo "== 3d. THE canonicalizeSource MIRROR SET IS DERIVED FROM bin/, never resta
 # copies with no check behind it is a comment, not a contract; the cost is not theoretical, since
 # card#8421 already forced one correction to this rule across this same pair.
 #
-# THE PREDICATE. Every mirror must FOLD CASE — the one step none of them can omit — so the
-# population is every case-fold under `bin/`, re-derived on every run, with COMMENT lines
-# excluded (a fold NAMED in prose is not a fold performed: this bin's jq header discusses
-# `ascii_downcase` while comparing against the PHP). It is attributed per FILE with a COUNT, so a
-# new copy inside an already-known file moves that file's number and reds. The two folds that are
-# NOT mirrors are declared here by name and reason rather than subtracted silently:
-#   * `bin/kbcard` folds a `KB_STAGE_*` VARIABLE NAME, not a repo slug;
-#   * `bin/_shellcheck-pinned` folds `uname -s` into a release-asset name.
-# ⛔ WHAT IT CANNOT SEE, stated rather than implied: a mirror that reaches its fold through a
-# helper defined in another file, and any copy outside `bin/`. Both are out of the population by
-# choice — the two bins are the only vendored standalones carrying the rule — and leg 1 is what
-# reds if a third file starts naming it.
+# ⛔ THE PREDICATE MUST *BE* THE POPULATION, AND ONCE IT WAS NOT. This leg's stated scope has
+# always been "every case-fold under `bin/`". Its predicate used to be TWO SPELLINGS of a fold —
+# `tr '[:upper:]' '[:lower:]'` and `ascii_downcase` — which covered 5 of the 12 folds actually
+# present. Measured, not argued: a fifth mirror written `${SOURCE_ALT,,}` — an idiom this repo
+# already uses three times under `bin/`, one of them in `bin/release-artifacts-check` — was
+# minted INSIDE `bin/promote-released-cards` as a new site with nothing removed, and this leg
+# answered 14/14 ok at rc 0. A predicate narrower than its stated scope is canon #7's
+# worse-than-silence case: the maintainer auditing against the census gets CONFIDENCE instead of
+# a question. Widening it by one more spelling would have been the same defect one cell along,
+# so the predicate is DERIVED instead, in two stages, and neither stage is a list of spellings
+# somebody happened to see:
+#
+#   STAGE 1 — THE LANGUAGES (leg 0). A fold spelling belongs to a LANGUAGE, so the set of
+#     languages under `bin/` is what bounds stage 2, and it is re-derived from the tree every
+#     run: every file's shebang (plus the `# shellcheck shell=` directive, which is how a sourced
+#     lib declares its language), UNION every case-folding-capable interpreter invoked at a
+#     COMMAND POSITION on a non-comment line. A language appearing under `bin/` for the first
+#     time reds HERE — before any of its fold spellings can hide in a stage-2 blind spot — and
+#     its control drives exactly that.
+#
+#   STAGE 2 — THE CONSTRUCTS (the table below). For each of those languages, every construct the
+#     LANGUAGE provides for folding case, taken from the language and not from this tree. Each
+#     row is checked twice, so neither half can be a decoration:
+#       * leg A EXECUTES the row's sample and asserts it really folds `AbC` — a row whose ERE
+#         matches something that is not a case fold is caught here;
+#       * leg B mints that sample as a fifth mirror inside `bin/promote-released-cards` and
+#         asserts the census MOVES BY EXACTLY ONE — so every spelling the table claims to cover
+#         is DEMONSTRATED to be caught, row by row, rather than asserted for the table as a whole.
+#     The old leg had one control, a re-minted `tr` copy; it passed while a `${v,,}` copy walked
+#     straight through it.
+#
+# ⛔ WHAT IT STILL CANNOT SEE, stated rather than implied: a mirror that reaches its fold through
+# a helper defined in another file; any copy outside `bin/`; and a fold performed by a program
+# that leg 0's universe list does not name AND that is not invoked at a command position. The
+# first two are out of the population by choice — the two bins are the only vendored standalones
+# carrying the rule, and leg 1 is what reds if a third file starts naming it. The third is what
+# leg 0's own control bounds, and it is the only residual left after this round.
+#
+# THE FOLDS THAT ARE NOT MIRRORS are declared here by name and reason rather than subtracted
+# silently. Every one of them except `kbcard`'s and `_shellcheck-pinned`'s was INVISIBLE to the
+# old two-spelling predicate, which is why the count below is 12 and not 5:
+#   * `bin/_kb-board-lib.sh` x3 — `_kb_looks_like_pasted_secret` folds a candidate TOKEN before
+#     matching known credential prefixes, and its awk env-file parser folds a KEY NAME twice for
+#     the case-insensitive lookup;
+#   * `bin/agent-board-toolkit-runtime-check` x3 — the same two, mirrored into that vendored bin
+#     as `_rc_looks_like_pasted_secret` and its own copy of the parser. That mirroring is
+#     deliberate, dispositioned and separately guarded: `docs/CONSOLIDATION-PLAN.md`
+#     § Post-program dispositions owns the reasoning (the bin JUDGES the lib, so it must not
+#     source it) and `tests/token-duplication-selftest.sh` drives both copies against each other
+#     row by row — so it is not a finding to re-raise here;
+#   * `bin/kbcard` x1 — `stage_name` folds a `KB_STAGE_*` VARIABLE NAME, not a repo slug;
+#   * `bin/_shellcheck-pinned` x1 — folds `uname -s` into a release-asset name;
+#   * `bin/release-artifacts-check` x1 — folds a CHANGELOG heading for its section selector.
+# None of those NINE folds takes a repo slug. `promote-released-cards` x2 and `adopt-to-dl` x1 ARE the
+# mirror set, and legs 1 and 3 pin which function each of them lives in.
 BINDIR="$HERE/../bin"
+
+# ── STAGE 1: the LANGUAGES `bin/` is written in ──────────────────────────────────────────────
+# The universe is every program that can fold case and could plausibly be reached from a shell
+# script. Membership in the UNIVERSE is not membership in the SET: the set is what the tree
+# actually invokes, and that is what the assertion below pins.
+_FOLD_LANG_UNIVERSE='awk|gawk|mawk|busybox|sed|jq|jaq|gojq|yq|tr|dd|perl|ruby|node|deno|php|python|python2|python3|tclsh|lua|m4|rev'
+# A command POSITION, not a mention. `bin/_dependabot-reconcile.py` contains
+# `os.path.basename(first) == "node"` — an interpreter it will never run — so a
+# mention-anywhere scan reports `node` as a language of this tree, which is false. The anchor is
+# start-of-line or a shell operator, optionally through `env` and any number of assignment
+# prefixes (`LC_ALL=C tr …` is how this repo writes half of them).
+_lang_census() {
+  local d="$1" f re
+  re='(^|[|;&(`]|\$\()[[:space:]]*(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*('"$_FOLD_LANG_UNIVERSE"')([[:space:]]|$)'
+  {
+    for f in "$d"/*; do
+      [ -f "$f" ] || continue
+      sed -n '1,3p' "$f" | sed -n -e 's|^#!.*[/ ]\([a-z0-9.]*\)$|\1|p' -e 's|^# shellcheck shell=\([a-z0-9.]*\).*|\1|p'
+    done
+    for f in "$d"/*; do
+      [ -f "$f" ] || continue
+      _RE="$re" awk '
+        /^[[:space:]]*#/ { next }
+        { s = " " $0 " "
+          while (match(s, ENVIRON["_RE"])) {
+            t = substr(s, RSTART, RLENGTH); gsub(/[^A-Za-z0-9_.]/, " ", t)
+            n = split(t, a, " "); print a[n]; s = substr(s, RSTART + RLENGTH) } }' "$f"
+    done
+  } | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# LEG 0 — the language set, re-derived from the tree. This is what makes the construct table
+# below a CLOSED enumeration rather than an open one: the table is complete for these languages,
+# so a new language has to red here first.
+eq "the languages bin/ is written in, re-derived from the tree" \
+   "awk bash jq python3 sed tr" "$(_lang_census "$BINDIR")"
+# CONTROL — a language arriving under `bin/` moves the set. Without this, leg 0 is satisfied by a
+# scan that can only ever answer the string written above it.
+_LANG_MUT="$TMP/lang-mutant-bin"
+rm -rf "$_LANG_MUT"; cp -r "$BINDIR" "$_LANG_MUT"
+printf '%s\n' 'X="$(printf %s "$Y" | perl -pe "\$_=lc")"' >> "$_LANG_MUT/promote-released-cards"
+eq "control: a NEW language invoked under bin/ moves that set" \
+   "awk bash jq perl python3 sed tr" "$(_lang_census "$_LANG_MUT")"
+rm -rf "$_LANG_MUT"
+
+# ── STAGE 2: the CONSTRUCTS those languages provide for folding case ─────────────────────────
+# `<id>|<ERE the census matches>|<what the sample must print>|<a sample that must REALLY fold it>`
+# The sample is LAST because samples contain pipes; no ERE contains one, because an alternation
+# is a new ROW — that is what keeps `|` usable as the separator and what keeps every row
+# individually executable and individually mutated below.
+# `bash-comma`'s ERE also covers `${v,}` (fold the first character only); `py-lower`'s also
+# covers the `str.lower(x)` spelling.
+_FOLD_ROWS=()
+while IFS= read -r _row; do [ -n "$_row" ] && _FOLD_ROWS+=("$_row"); done <<'ROWS'
+bash-comma|[^[:alnum:]_]\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?,|abc|v=AbC; printf %s "${v,,}"
+bash-at-L|[^[:alnum:]_]\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@L\}|abc|v=AbC; printf %s "${v@L}"
+bash-declare-l|[^[:alnum:]_]declare[[:space:]]+-[[:alnum:]]*l[^[:alnum:]]|abc|declare -l v; v=AbC; printf %s "$v"
+bash-typeset-l|[^[:alnum:]_]typeset[[:space:]]+-[[:alnum:]]*l[^[:alnum:]]|abc|typeset -l v; v=AbC; printf %s "$v"
+bash-local-l|[^[:alnum:]_]local[[:space:]]+-[[:alnum:]]*l[^[:alnum:]]|abc|f() { local -l v=AbC; printf %s "$v"; }; f
+tr-posix|[^[:alnum:]_]tr[[:space:]][^;&]*\[:upper:\][^;&]*\[:lower:\]|abc|printf %s AbC | tr '[:upper:]' '[:lower:]'
+tr-range|[^[:alnum:]_]tr[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*'?\[?A-Z\]?'?[[:space:]]+'?\[?a-z\]?'?|abc|printf %s AbC | tr -s A-Z a-z
+tr-explicit|[^[:alnum:]_]tr[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*'?[A-Z][A-Z][A-Z]|abc|printf %s AbC | tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz
+sed-fold-rest|\\L|abc|printf %s AbC | sed 's/.*/\L&/'
+sed-fold-one|\\l|abc|printf %s AbC | sed 's/\(.\)\(.\)\(.\)/\l\1\l\2\l\3/'
+sed-y|[^[:alnum:]_]y/[^/]*[A-Z][^/]*/[^/]*[a-z]|abc|printf %s AbC | sed 'y/AC/ac/'
+awk-tolower|[^[:alnum:]_]tolower[[:space:]]*\(|abc|printf %s AbC | awk '{ printf "%s", tolower($0) }'
+jq-ascii-downcase|[^[:alnum:]_]ascii_downcase[^[:alnum:]_]|abc|printf '"AbC"' | jq -rj ascii_downcase
+py-lower|\.lower[^[:alnum:]_]|abc|python3 -c 'import sys; sys.stdout.write("".join(map(str.lower, "AbC")))'
+py-casefold|\.casefold[^[:alnum:]_]|abc|python3 -c 'import sys; sys.stdout.write("AbC".casefold())'
+dd-lcase|conv=[^[:space:]]*lcase|abc|printf %s AbC | dd conv=lcase 2>/dev/null
+ROWS
+
+# The census predicate IS the table's second column, joined. There is no second list of
+# spellings anywhere in this file, which is the property that failed last round.
+FOLD_RE="$(printf '%s\n' "${_FOLD_ROWS[@]}" | awk -F'|' 'NF { printf "%s%s", (n++ ? "|" : ""), $2 }')"
 # awk, not a `grep | grep` pair: the comment exclusion and the match are one stateless pass. It
-# reads STDIN, so the same predicate answers for a whole file and for an extracted block.
-_fold_count() { awk '/^[[:space:]]*#/ {next} /tr .\[:upper:\]. .\[:lower:\]./ || /ascii_downcase/ {n++} END {print n+0}'; }
+# reads STDIN, so the same predicate answers for a whole file and for an extracted block. The
+# regex travels through the ENVIRONMENT rather than `-v`, because awk expands escape sequences
+# in a `-v` value and half these EREs are backslashes. The line is padded with a space on both
+# ends so a word-boundary can be written `[^[:alnum:]_]` — POSIX ERE has no `\b`.
+_fold_count() { _RE="$FOLD_RE" awk '/^[[:space:]]*#/ { next } (" " $0 " ") ~ ENVIRON["_RE"] { n++ } END { print n+0 }'; }
 # The sort is LC_ALL=C because the expected block below is written in BYTE order, and this repo
 # has already been bitten by a locale-sensitive range (tests/locale-range-guard-selftest.sh):
 # under en_US.UTF-8 collation `_shellcheck-pinned` sorts AFTER `promote-released-cards`, so the
 # same census would read as a different one on a differently-configured runner. Measured here,
 # not assumed — it is how this leg first failed.
 _fold_census() {
-  local f n
-  for f in "$BINDIR"/*; do
+  local d="$1" f n
+  for f in "$d"/*; do
     [ -f "$f" ] || continue
     n="$(_fold_count < "$f")"
     if [ "$n" -gt 0 ]; then printf '%s=%s\n' "${f##*/}" "$n"; fi
   done | LC_ALL=C sort
 }
+
+# LEG A — every row is a REAL case fold, executed here. A table of EREs nobody runs is a
+# decoration (canon #9), and the expectation is checked too: `want` must be a case-ONLY
+# transform of `AbC` that folded at least one character, so a row cannot declare `want=AbC` and
+# certify a construct that folds nothing.
+# `${v@L}` is bash 5.1+; that floor is its own cell so an older bash reports the ROW rather than
+# an unexplained mismatch. Nothing under `bin/` needs 5.1 — only this sample does.
+# ⚑ THREE SAMPLES NEED A GNU USERLAND, and it is NAMED here rather than guarded away:
+# `sed-fold-rest` and `sed-fold-one` exercise GNU sed's `\L` and `\l`, and `dd-lcase` GNU
+# coreutils' `conv=lcase`. On a BSD userland those three samples fail and their own rows red,
+# naming themselves — a loud, self-describing red rather than a silent pass, which is why there
+# is no `skip` arm. CI and this repo's reference host are both GNU.
+eq "this bash can execute the \${v@L} row (bash >= 5.1)" "true" \
+   "$( ((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 501)) && echo true || echo false )"
+for _row in "${_FOLD_ROWS[@]}"; do
+  IFS='|' read -r _id _ _want _sample <<< "$_row"
+  eq "row $_id: its expected output is a case-only fold of AbC" "ABC/folded" \
+     "$(printf '%s' "$_want" | tr 'a-z' 'A-Z')/$( [ "$_want" != AbC ] && echo folded || echo unfolded )"
+  eq "row $_id: the construct really folds case"                "$_want" "$(bash -c "$_sample" 2>&1)"
+done
 
 # LEG 1 — the bins that NAME the rule are exactly the bins that mirror it. A third file starting
 # to carry a copy has to say so here first, which is the cheapest place to catch it.
@@ -327,9 +468,11 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
    "$(command grep -rl 'canonicalizeSource' "$BINDIR" | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
 
 # LEG 2 — the whole population, per file, as ONE assertion, so a miss names the file that moved.
-eq "every case-fold under bin/, attributed per file" \
-   "$(printf '%s\n' '_shellcheck-pinned=1' 'adopt-to-dl=1' 'kbcard=1' 'promote-released-cards=2')" \
-   "$(_fold_census)"
+_FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=3' '_shellcheck-pinned=1' 'adopt-to-dl=1' \
+                                       'agent-board-toolkit-runtime-check=3' 'kbcard=1' \
+                                       'promote-released-cards=2' 'release-artifacts-check=1')"
+eq "every case-fold under bin/, in any construct of those languages, attributed per file" \
+   "$_FOLD_CENSUS_EXPECTED" "$(_fold_census "$BINDIR")"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
 # folds sitting anywhere in the file, which is the state this leg exists to distinguish from.
@@ -349,24 +492,161 @@ eq "adopt-to-dl's fold IS _ata_canon_source"                  "1" \
 # LEG 4 — the DOC half, which is the half that actually went stale. Every mirror symbol above is
 # named in BOTH censuses; a copy added, renamed or hoisted without both being updated reds here
 # rather than shipping a census that enumerates a set it no longer describes.
+#
+# ⛔ WORD-BOUNDED, AND THAT IS A CORRECTION. These arms used the prelude's `has`, a LITERAL
+# substring test, and `_ata_canon_source` CONTAINS `canon_source` — so two of the six arms could
+# not fail: deleting every standalone mention of the jq def from both censuses still answered
+# `true`. `grep -w` is the fix and it is exact here, because `_` is a word constituent to grep,
+# so `_ata_canon_source` does not satisfy `-w canon_source`. A herestring, not a pipeline —
+# `tests/piped-match-gate-selftest.sh` owns that rule.
+_names_sym() { command grep -qw -- "$1" <<< "$2" && echo true || echo false; }
+# _redact_sym <symbol> <census> — the control's other half: strip the STANDALONE mentions of
+# <symbol> and re-ask. awk with an explicit boundary class, NOT `sed` with `\b`: `\b` is a GNU
+# extension, and a control that silently redacted nothing under a BSD sed would answer `true`
+# and read as exactly the arm it exists to disprove. Each line is padded so a symbol sitting at
+# either end still has a boundary character to match.
+_redact_sym() {
+  _names_sym "$1" "$(_S="$1" awk '{ s = " " $0 " "
+      gsub("[^A-Za-z0-9_]" ENVIRON["_S"] "[^A-Za-z0-9_]", " REDACTED ", s)
+      print substr(s, 2, length(s) - 2) }' <<< "$2")"
+}
+_census_of() { sed -n '/MIRRORS OF/,/^[^#]/p' "$1" | command grep '^#'; }
+_PRC_CENSUS="$(_census_of "$BINDIR/promote-released-cards")"
+_ATD_CENSUS="$(_census_of "$BINDIR/adopt-to-dl")"
 for _sym in src_canon canon_source _ata_canon_source; do
-  eq "promote's census names $_sym"     "true" \
-     "$(has "$_sym" "$(sed -n '/MIRRORS OF/,/^[^#]/p' "$BINDIR/promote-released-cards" | command grep '^#')")"
-  eq "adopt-to-dl's census names $_sym" "true" \
-     "$(has "$_sym" "$(sed -n '/MIRRORS OF/,/^[^#]/p' "$BINDIR/adopt-to-dl" | command grep '^#')")"
+  eq "promote's census names $_sym"     "true" "$(_names_sym "$_sym" "$_PRC_CENSUS")"
+  eq "adopt-to-dl's census names $_sym" "true" "$(_names_sym "$_sym" "$_ATD_CENSUS")"
+  # CONTROL, per symbol and per census — each of the six arms watched to fail on the one input
+  # it exists to reject. `\b` does not match inside `_ata_canon_source`, so redacting
+  # `canon_source` leaves the containing symbol intact: exactly the state the old arms passed on.
+  eq "control: promote's census with $_sym redacted does NOT name it"     "false" \
+     "$(_redact_sym "$_sym" "$_PRC_CENSUS")"
+  eq "control: adopt-to-dl's census with $_sym redacted does NOT name it" "false" \
+     "$(_redact_sym "$_sym" "$_ATD_CENSUS")"
 done
 
-# CONTROLS — the instrument discriminates in BOTH directions (canon #9). Without them leg 2 is
-# satisfied by a derivation that can only ever answer the numbers written above it.
+# ── CONTROLS — the instrument discriminates in BOTH directions (canon #9) ────────────────────
 _MIRROR_MUT="$TMP/mirror-mutant"
+eq "promote-released-cards carries exactly its two mirror folds" "2" \
+   "$(_fold_count < "$BINDIR/promote-released-cards")"
+# LEG B — one control PER ROW, which is the generalization the old single `tr` control lacked.
+# Each spelling the table claims to cover is minted as a fifth mirror in the bin the fourth one
+# was minted in, and must move that file's count by exactly one.
+for _row in "${_FOLD_ROWS[@]}"; do
+  IFS='|' read -r _id _ _ _sample <<< "$_row"
+  cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
+  printf '%s\n' "$_sample" >> "$_MIRROR_MUT"
+  eq "control: a fifth mirror spelled '$_id' is COUNTED, not missed" "3" "$(_fold_count < "$_MIRROR_MUT")"
+done
+# THE MUTANT THAT DEFEATED THE PREDECESSOR, verbatim, as its own named control — a new site with
+# nothing removed, against which the two-spelling predicate answered rc 0, 0 FAIL, § 3d 14/14 ok.
 cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
-cat >> "$_MIRROR_MUT" <<'FOURTH'
-X="$(printf '%s' "$Y" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
-FOURTH
-eq "control: a re-minted FOURTH shell mirror is counted, not missed" "3" "$(_fold_count < "$_MIRROR_MUT")"
+cat >> "$_MIRROR_MUT" <<'FIFTH'
+SOURCE_ALT="${SOURCE_IN:-}"; SOURCE_ALT="${SOURCE_ALT:0:255}"; SOURCE_ALT="${SOURCE_ALT,,}"
+FIFTH
+eq "control: the \${SOURCE_ALT,,} mirror that DEFEATED the old predicate is counted" "3" \
+   "$(_fold_count < "$_MIRROR_MUT")"
+# …and it moves the CENSUS, not merely one file's count — the census is what leg 2 asserts, so
+# the two are bound rather than adjacent.
+_MUT_BIN="$TMP/mirror-mutant-bin"
+rm -rf "$_MUT_BIN"; cp -r "$BINDIR" "$_MUT_BIN"
+cp "$_MIRROR_MUT" "$_MUT_BIN/promote-released-cards"
+eq "control: …and the per-file CENSUS moves with it" \
+   "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | sed 's/^promote-released-cards=2$/promote-released-cards=3/')" \
+   "$(_fold_census "$_MUT_BIN")"
+rm -rf "$_MUT_BIN"
 cp "$BINDIR/promote-released-cards" "$_MIRROR_MUT"
-printf '%s\n' "# a comment naming ascii_downcase is prose, not a fold" >> "$_MIRROR_MUT"
+printf '%s\n' "# a comment naming ascii_downcase and \${v,,} is prose, not a fold" >> "$_MIRROR_MUT"
 eq "control: a fold NAMED in a comment is not counted"              "2" "$(_fold_count < "$_MIRROR_MUT")"
+
+echo "== 3e. THE THREE canonicalizeSource COPIES, BOUND BY BEHAVIOUR: one corpus, all three (card#8538) =="
+# WHY NAME AND COUNT ARE NOT ENOUGH, and why this section exists beside § 3d rather than instead
+# of it. § 3d proves the mirror SET is what both censuses say it is — three copies, in the three
+# functions named, and a fourth cannot appear unnoticed. It cannot see the class that has already
+# cost this repo a defect: card#8421's divergence was BEHAVIOURAL, between two copies that were
+# both present, both named and both counted (the `.GIT` casing). Concretely, what a divergence
+# buys here is a SILENT ZERO in both directions — a `src_canon` ↔ `canon_source` disagreement
+# over the admitted charset makes the config and card sides of promote's ONE comparison answer
+# differently, so a release promotes 0 at rc 0 or promotes another repo's cards; an
+# `_ata_canon_source` disagreement makes the source STAMPED at adopt time unmatchable at promote
+# time, the same zero one bin over. This is § 3c's one-corpus-through-both pattern, applied to
+# the folds instead of to the accept set.
+#
+# THE COPIES ARE DRIVEN, NOT READ. Each is extracted from the shipped file by the same awk § 3d
+# uses to locate it, and executed — the two shell copies in a FRESH bash, so nothing this harness
+# has defined can stand in for them, and the jq def as a program string, which is the only way it
+# is ever reachable (a bash function cannot be called from inside `jq`, which is exactly why the
+# copy exists).
+#
+# THE CORPUS IS RESTRICTED TO VALUES `kb_is_repo_slug` ADMITS, AND THAT IS THE CONTRACT, not a
+# convenience: `_ata_canon_source` deliberately omits the trim and the 255-cap because its
+# caller's gate has already refused every value either would change. Over that set all three must
+# agree EXACTLY. The two omissions are then asserted SEPARATELY and in both directions as the
+# DECLARED divergence, so unifying the copies by accident reds here rather than passing quietly.
+_SRC_CANON_SRC="$(awk '/^src_canon\(\) \{/ {f=1} f {print} f && /^\}/ {exit}' "$BINDIR/promote-released-cards")"
+_ATA_CANON_SRC="$(awk '/^_ata_canon_source\(\)/ {print; exit}' "$BINDIR/adopt-to-dl")"
+_JQ_CANON_SRC="$(awk '/def canon_source:/ {f=1} f {print} f && /end;[[:space:]]*$/ {exit}' "$BINDIR/promote-released-cards")"
+eq "the three copies were all extracted (non-empty)" "yes yes yes" \
+   "$( [ -n "$_SRC_CANON_SRC" ] && printf yes || printf no
+      [ -n "$_ATA_CANON_SRC" ] && printf ' yes' || printf ' no'
+      [ -n "$_JQ_CANON_SRC" ] && printf ' yes' || printf ' no' )"
+# <function source> <function name> <value> — a fresh shell per call.
+_fold_sh() { bash -c 'eval "$1"; "$2" "$3"' _ "$1" "$2" "$3"; }
+# The jq def with `// ""` on the tail: `canon_source` answers null for a value that canonicalizes
+# to nothing, and the shell copies answer the empty string; rendering null as "" is what makes
+# the two comparable rather than papering over a difference (the empty row below pins it).
+_fold_jq() { jq -rn --arg v "$1" "$_JQ_CANON_SRC (\$v | canon_source) // \"\""; }
+
+while IFS= read -r _v; do
+  [ -n "$_v" ] || continue
+  _v="${_v#|}"
+  _want="$(_fold_sh "$_SRC_CANON_SRC" src_canon "$_v")"
+  eq "corpus '$_v' → jq canon_source agrees with src_canon"        "$_want" "$(_fold_jq "$_v")"
+  eq "corpus '$_v' → _ata_canon_source agrees with src_canon"      "$_want" \
+     "$(_fold_sh "$_ATA_CANON_SRC" _ata_canon_source "$_v")"
+done <<'FOLDROWS'
+|acme/widget
+|ACME/Widget
+|ACME/WIDGET
+|AcMe/WiDgEt
+|acme_org/My-Repo
+|acme2/WIDGET3
+|acme.github/Widget
+|acme/widget.GITIGNORE
+|A/B
+|acme/Widget.js
+FOLDROWS
+# The empty value, and the one row where the shell copies and the jq def are TYPED differently:
+# jq answers `null`, both shell copies answer the empty string, and the rendering above is what
+# binds them. Asserted, because a future `// "-"` or a dropped `//` would change what promote
+# compares against and nothing else here would see it.
+eq "an empty value: src_canon"                     ""     "$(_fold_sh "$_SRC_CANON_SRC" src_canon '')"
+eq "an empty value: _ata_canon_source"             ""     "$(_fold_sh "$_ATA_CANON_SRC" _ata_canon_source '')"
+eq "an empty value: the jq def answers null"       "null" "$(jq -rn --arg v '' "$_JQ_CANON_SRC (\$v | canon_source) | type")"
+
+# THE TWO DECLARED DIVERGENCES — `_ata_canon_source` omits the trim and the 255-cap. Both are
+# asserted in BOTH directions: the two full copies must perform them and the partial copy must
+# not, so a well-meaning "fix" that unifies the three reds here and meets the reason first.
+_PADDED='  ACME/Widget  '
+eq "declared divergence: src_canon TRIMS"          "acme/widget"     "$(_fold_sh "$_SRC_CANON_SRC" src_canon "$_PADDED")"
+eq "…and so does the jq def"                       "acme/widget"     "$(_fold_jq "$_PADDED")"
+eq "…while _ata_canon_source does NOT"             "  acme/widget  " "$(_fold_sh "$_ATA_CANON_SRC" _ata_canon_source "$_PADDED")"
+_LONG="acme/$(printf 'W%.0s' {1..300})"
+eq "declared divergence: src_canon CAPS at 255"    "255" "$(_fold_sh "$_SRC_CANON_SRC" src_canon "$_LONG" | wc -c | tr -d ' ')"
+eq "…and so does the jq def"                       "255" "$(_fold_jq "$_LONG" | tr -d '\n' | wc -c | tr -d ' ')"
+eq "…while _ata_canon_source does NOT"             "305" "$(_fold_sh "$_ATA_CANON_SRC" _ata_canon_source "$_LONG" | wc -c | tr -d ' ')"
+
+# CONTROLS — the corpus DISCRIMINATES, and each control is pinned on the mutant's OWN output
+# rather than on "they now differ": a mutation that merely broke the function would also make
+# them differ, and would certify nothing. Each mutant must answer the UNFOLDED value exactly,
+# which is only true if the harness really reached that copy and the fold really was what moved.
+# Each mutation is applied to the EXTRACTED source, never to the file under `bin/`.
+eq "control: src_canon with its fold removed answers the UNFOLDED value" "ACME/Widget" \
+   "$(_fold_sh "$(printf '%s' "$_SRC_CANON_SRC" | sed "s/LC_ALL=C tr '\[:upper:\]' '\[:lower:\]'/cat/")" src_canon 'ACME/Widget')"
+eq "control: the jq def with ascii_downcase removed does the same"       "ACME/Widget" \
+   "$(jq -rn --arg v 'ACME/Widget' "$(printf '%s' "$_JQ_CANON_SRC" | sed 's/ | ascii_downcase//') (\$v | canon_source) // \"\"")"
+eq "control: _ata_canon_source with its fold removed does the same"      "ACME/Widget" \
+   "$(_fold_sh "$(printf '%s' "$_ATA_CANON_SRC" | sed "s/tr '\[:upper:\]' '\[:lower:\]'/cat/")" _ata_canon_source 'ACME/Widget')"
 
 echo "== 4. THE DEFECT, held still: one shipped ref, three cards, two of them not ours =="
 # This is card#8421 reproduced in miniature. Under `"*"` the tool promotes all three — that is

@@ -1693,28 +1693,21 @@ for miss in card_token_regex:corr-no-card:release-pr-body \
   eq "…naming the key"                       "true"  "$(has "but no $key" "$OUT")"
   eq "…naming the tool that reads it"        "true"  "$(has "bin/$reader" "$OUT")"
   eq "…and naming the acknowledgement channel" "true" "$(has 'unset_correlation_keys' "$OUT")"
-  # THE THIRD REMEDY IS LOAD-BEARING, not politeness. This leg reads HEAD only, and on a
-  # `pull_request` event GitHub takes the WORKFLOW (hence the action pin) from the
-  # base-merged ref while the config comes from the raw branch tip — so the first branch a
-  # consumer has open when it bumps its pin reds here having touched no config. "Declare the
-  # key" is the WRONG instruction for that author: the key is already on their base, and
-  # following the message lands a duplicate declaration on a feature branch. Asserted, not
-  # left to prose, because the message is the only surface that author reads.
-  eq "…and naming MERGE-THE-BASE for a branch that predates the key" "true" \
+  # THE REMEDY IS READ, NOT ASKED — and this fixture is ONE CELL of that read. `corr-*.json`
+  # is created on the head commit, so the key is absent at the fork point AND at the base tip:
+  # that is the card#8423 population (never declared anywhere), whose one correct remedy is
+  # "declare it, or acknowledge it" with NO merge instruction, because merging really would
+  # change nothing here. The other three cells, and the merges the remedies claim things about,
+  # are driven end to end in the battery below — which is where the discrimination lives, since
+  # a message asserted only on this fixture cannot tell a derived remedy from a constant one.
+  eq "…reading the fork point and the base tip instead of asking" "true" \
+     "$(has 'DERIVED FROM YOUR OWN HISTORY' "$OUT")"
+  eq "…and naming this cell: never declared in this repo"         "true" \
+     "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
+  eq "…without telling a never-declared repo to merge its base"   "false" \
      "$(has 'MERGE THE BASE BRANCH' "$OUT")"
-  # …AND DISCRIMINATING THE STALE AUTHOR FROM THE DELETER, whose remedies are opposite. "The
-  # key is already on your base branch" is true of BOTH: a branch that deliberately drops a key
-  # is cut FROM the base, so its `git merge <base>` is `Already up to date` and the rerun is
-  # rc 2 on the same bytes — the message would loop them. Measured on two fixture repos against
-  # this binary (stale ⇒ merge ⇒ rc 0; deleter ⇒ no-op merge ⇒ rc 2, identical message), which
-  # is why the condition is now "did THIS BRANCH edit the config" and why the never-declared
-  # repo — the population above — gets its own question ahead of both.
-  eq "…telling the DELIBERATE DELETER that the merge is a no-op" "true" \
-     "$(has 'merging the base is a NO-OP' "$OUT")"
-  eq "…and printing the command that tells the two apart"        "true" \
-     "$(has 'git log --oneline <base>.. --' "$OUT")"
-  eq "…and asking FIRST whether the base carries the key at all" "true" \
-     "$(has 'git show <base>:' "$OUT")"
+  eq "…and without asking the author a single question"           "false" \
+     "$(has 'git log --oneline' "$OUT")"
   eq "…never softened to a pass"             "false" "$(has 'all 1 declared artifact' "$OUT")"
 done
 run base-0.1.0 head-good --config corr-blank-source.json
@@ -1726,6 +1719,146 @@ eq "…naming the type it found"               "true"  "$(has "of type 'number'"
 run base-0.1.0 head-good --config corr-promote-type.json
 eq "a non-object .promote → rc 2"            "2"     "$RC"
 eq "…naming the type it found"               "true"  "$(has ".promote of type 'string'" "$OUT")"
+
+echo "== correlation keys: the remedy is a FUNCTION of (fork point, base tip) — all four cells (card#8538) =="
+# ⛔ WHY THIS BATTERY EXISTS, AND WHY IT NEEDS A SECOND FIXTURE REPO. The remedy the leg above
+# prints used to be a QUESTION the author answered — "is the key on your base branch", "has this
+# branch edited the config" — and the second one is a PROXY for the fact that decides, which is
+# whether this branch ever CARRIED the key. Three consecutive review rounds each found one more
+# author the proxy could not tell apart (one class, then two, then three, then four), because a
+# partition derived from INSTANCES gains a cell per round. The tool now derives the remedy from
+# the two facts it already holds — the key's state at `merge-base(base, head)` and at the base
+# TIP — which is four cells, three remedies and no residual. A battery over that needs four
+# different HISTORIES, not four different configs, and the fixture above has exactly one history.
+#
+# ⛔ AND WHY IT DRIVES THE MERGE. Three of the four remedies are CLAIMS ABOUT WHAT `git merge
+# <base>` WILL DO, and a claim about a merge is checkable only by merging. The fourth author —
+# the one this battery was built for — is a branch cut before the key landed that edited the
+# config for an UNRELATED reason: the old message told them THIS BRANCH DROPPED IT (false), that
+# merging was a no-op returning the same message (false — driven below: the merge is rc 0 and
+# the rerun is rc 0), and offered `unset_correlation_keys`, which would have tombstoned a key
+# that is LIVE on the base — the exact action `docs/INSTALL.md` and this same message's other
+# branch both warn against. So the `(absent, present)` head here COMMITS a `ref_token_regex`
+# tightening, on purpose: it is the input that made the proxy answer wrongly.
+CELLS="$T/cells"
+CELL_WITH="$(printf '%s' '{ "version_file": "VERSION", "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+",
+  "artifacts": ["VERSION → {{version}}"],
+  "promote": { "board_id": 1, "released_stage_id": 2, "source": "acme/widget" } }' | jq .)"
+CELL_WITHOUT="$(printf '%s' "$CELL_WITH" | jq 'del(.promote.source)')"
+CELL_EDITED="$(printf '%s' "$CELL_WITH" | jq 'del(.promote.source) | .ref_token_regex = "DL-[0-9]{1,6}"')"
+# PRETTY-PRINTED, one key per line, and that is load-bearing rather than cosmetic: a one-line
+# JSON config makes every edit a textual conflict, and the `(absent, present)` cell's entire
+# claim is that its merge SUCCEEDS while the branch has its own committed edit to the same file.
+# Measured — with the compact spelling that merge is rc 1 and the cell proves nothing.
+mkcell() {
+  local c="$1" fork="$2" tip="$3" head="$4"
+  local CR="$CELLS/$c"
+  mkdir -p "$CR"; g -C "$CR" init -q .
+  echo 0.1.0 > "$CR/VERSION"; printf '%s\n' "$fork" > "$CR/.release-pr.json"
+  g -C "$CR" add -A; g -C "$CR" commit -qm "chore: 0.1.0"
+  g -C "$CR" branch feat
+  # The marker keeps the base-tip commit non-empty in the two cells where the tip config is
+  # byte-identical to the fork's: `git commit` fails on an empty change, and under `set -e` that
+  # aborts the whole file rather than the case.
+  printf '%s\n' "$tip" > "$CR/.release-pr.json"; echo "$c" > "$CR/base-marker"
+  g -C "$CR" add -A; g -C "$CR" commit -qm "chore: base tip"
+  g -C "$CR" checkout -q feat
+  echo 0.2.0 > "$CR/VERSION"; printf '%s\n' "$head" > "$CR/.release-pr.json"
+  g -C "$CR" add -A; g -C "$CR" commit -qm "release: 0.2.0"
+}
+run_cell()   { RC=0;  OUT="$( (cd "$CELLS/$1" && "$BIN" --base main --head feat) 2>&1 )" || RC=$?; }
+merge_cell() { MRC=0; ( cd "$CELLS/$1" && g merge --no-edit main ) >/dev/null 2>&1 || MRC=$?; }
+mkcell yy "$CELL_WITH"    "$CELL_WITH"    "$CELL_WITHOUT"
+mkcell yn "$CELL_WITH"    "$CELL_WITHOUT" "$CELL_WITHOUT"
+mkcell ny "$CELL_WITHOUT" "$CELL_WITH"    "$CELL_EDITED"
+mkcell nn "$CELL_WITHOUT" "$CELL_WITHOUT" "$CELL_WITHOUT"
+# A base tip whose config cannot be READ there. It is not a fifth cell — it folds into
+# `not declaring the key`, which is what it is — but the EVIDENCE line must say `unreadable`
+# rather than `absent`, or an author looking at a config they can plainly see is told it has no
+# key, which sends them to the wrong fix.
+mkcell xu "$CELL_WITHOUT" '{ "artifacts": [,] }' "$CELL_WITHOUT"
+
+# (present, present) — it was there when you branched and it is still on the base: you deleted it.
+run_cell yy
+eq "cell (present, present) → rc 2"                    "2"     "$RC"
+eq "…read as THIS BRANCH DELETED IT"                   "true"  "$(has 'SO THIS BRANCH DELETED IT' "$OUT")"
+eq "…and the merge is correctly called a NO-OP"        "true"  "$(has 'merging the base a NO-OP' "$OUT")"
+eq "…and the evidence names the real fork point"       "true"  \
+   "$(has "$(g -C "$CELLS/yy" merge-base main feat)" "$OUT")"
+merge_cell yy
+eq "…the merge itself succeeds"                        "0"     "$MRC"
+run_cell yy
+eq "…and the rerun is still rc 2, exactly as claimed"  "2"     "$RC"
+
+# (present, absent) — the base retired it too, so merging really is a no-op and re-declaring it
+# here re-opens on one branch a gap the base closed.
+run_cell yn
+eq "cell (present, absent) → rc 2"                     "2"     "$RC"
+eq "…read as a retirement on the base as well"         "true"  "$(has 'RETIRED ON main AS WELL' "$OUT")"
+eq "…and this author is NOT sent to merge"             "false" "$(has 'MERGE THE BASE BRANCH' "$OUT")"
+merge_cell yn
+eq "…the merge succeeds"                               "0"     "$MRC"
+run_cell yn
+eq "…and is a genuine no-op: still rc 2"               "2"     "$RC"
+
+# ⭐ (absent, present) — THE CELL THE PREVIOUS MESSAGE GOT WRONG, and the reason this battery
+# exists. This head has a committed config edit, so the old proxy answered "yes, you edited it"
+# and produced two false statements plus a destructive instruction.
+run_cell ny
+eq "cell (absent, present) → rc 2"                     "2"     "$RC"
+eq "…read as STALE even though this branch edited the config" "true" \
+   "$(has 'SO THIS BRANCH IS SIMPLY STALE' "$OUT")"
+eq "…and routed to MERGE THE BASE BRANCH"              "true"  "$(has 'MERGE THE BASE BRANCH' "$OUT")"
+eq "…NOT told that this branch deleted it"             "false" "$(has 'THIS BRANCH DELETED IT' "$OUT")"
+eq "…NOT told the merge would be a no-op"              "false" "$(has 'NO-OP' "$OUT")"
+eq "…and warned that acknowledging tombstones a LIVE key" "true" \
+   "$(has 'tombstone a key that is LIVE' "$OUT")"
+merge_cell ny
+eq "…the merge succeeds despite this branch's own config edit" "0" "$MRC"
+eq "…and it really lands the key"                      "true"  \
+   "$(has '"source"' "$(cat "$CELLS/ny/.release-pr.json")")"
+eq "…keeping this branch's unrelated edit"             "true"  \
+   "$(has 'DL-[0-9]{1,6}' "$(cat "$CELLS/ny/.release-pr.json")")"
+run_cell ny
+eq "…so the rerun is rc 0 — the remedy WORKS"          "0"     "$RC"
+
+# (absent, absent) — the card#8423 population, and the cell the fixture above lands in.
+run_cell nn
+eq "cell (absent, absent) → rc 2"                      "2"     "$RC"
+eq "…read as never declared in this repo"              "true"  "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
+eq "…and not sent to merge anything"                   "false" "$(has 'MERGE THE BASE BRANCH' "$OUT")"
+
+# An unreadable base tip folds into `not declared` — the same remedy — while the EVIDENCE says
+# so in its own word.
+run_cell xu
+eq "an unreadable base tip → rc 2"                     "2"     "$RC"
+eq "…evidenced as unreadable, never as absent"         "true"  "$(has 'unreadable at the tip of main' "$OUT")"
+eq "…and folded into the never-declared remedy"        "true"  "$(has 'HAS NEVER BEEN DECLARED IN THIS REPO' "$OUT")"
+
+# ⭐ THE CLOSING ARM: FOUR CELLS, THREE REMEDIES, NO RESIDUAL — as ONE assertion. Four separate
+# phrase arms all pass if some cell silently answers another cell's text, or if a fifth path
+# emits no remedy at all; this pins the whole partition, and `none` is what a residual would
+# read as.
+_cell_verdict() {
+  case "$1" in
+    *'SO THIS BRANCH DELETED IT'*)           echo deleted;;
+    *'RETIRED ON main AS WELL'*)             echo retired;;
+    *'SO THIS BRANCH IS SIMPLY STALE'*)      echo stale;;
+    *'HAS NEVER BEEN DECLARED IN THIS REPO'*) echo never;;
+    *)                                       echo none;;
+  esac
+}
+# Rebuilt, because yy/yn/ny were merged above and their cells have moved on.
+rm -rf "$CELLS"
+mkcell yy "$CELL_WITH"    "$CELL_WITH"    "$CELL_WITHOUT"
+mkcell yn "$CELL_WITH"    "$CELL_WITHOUT" "$CELL_WITHOUT"
+mkcell ny "$CELL_WITHOUT" "$CELL_WITH"    "$CELL_EDITED"
+mkcell nn "$CELL_WITHOUT" "$CELL_WITHOUT" "$CELL_WITHOUT"
+CELL_VERDICTS=""
+for _c in yy yn ny nn; do run_cell "$_c"; CELL_VERDICTS="$CELL_VERDICTS$(_cell_verdict "$OUT") "; done
+eq "the four cells map onto three remedies with no residual" \
+   "deleted retired stale never" "${CELL_VERDICTS% }"
 
 echo "== a token regex that grep -E cannot compile is the SAME silent zero, and is refused =="
 # The readers pipe these values straight into `grep -oiE` behind a `|| true`, so an

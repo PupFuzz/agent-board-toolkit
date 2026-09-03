@@ -367,6 +367,90 @@ esac
 # error into an empty manifest — that it COMPILES. A well-shaped but WRONG slug is caught where
 # it can actually be measured: `promote-released-cards` compares the resolved source against
 # $GITHUB_REPOSITORY (card#8538, the CHECK half of this same seam).
+# ── THE REMEDY FOR AN ABSENT CORRELATION KEY, DERIVED RATHER THAN ASKED ──────────────────────
+#
+# ⛔ WHY THIS IS A FUNCTION OF TWO BLOB READS AND NOT A LIST OF AUTHOR TYPES. The refusal below
+# used to ASK the author two questions and let them pick a remedy from their own answers, and
+# the second question — "has THIS BRANCH edited the config?" — is a PROXY for the one that
+# decides, which is "did this branch ever CARRY the key". The proxy is neither necessary nor
+# sufficient. A long-lived branch cut before the keys landed that touched `.release-pr.json` for
+# an unrelated reason — a `board_id`, a regex, an `artifacts` entry — answers YES and never had
+# the key, and the message then told that author three things, two of them false and the third
+# destructive: that THIS BRANCH DROPPED IT (false), that merging the base is a NO-OP returning
+# the same message (false — driven on a fixture, the merge is rc 0, the key lands, the rerun is
+# rc 0), and that the alternative is to acknowledge the gap in `unset_correlation_keys` — which
+# TOMBSTONES A KEY THAT IS LIVE ON THE BASE, the exact action the other half of this same
+# message, `docs/INSTALL.md` and `release-artifacts/action.yml` all warn against.
+#
+# That author was the FOURTH class three consecutive review rounds found in a partition derived
+# from INSTANCES: one round found one author, the next two, the next three, this one four. A
+# partition derived from instances gains a cell per round, so the partition is derived from the
+# INPUTS instead. Given the key is absent at head, the remedy depends on exactly two facts and
+# nothing else:
+#
+#   P = the key was present at the FORK POINT   (`$BASEREF`, already resolved above)
+#   B = the key is present at the BASE TIP      (`$BASE`)
+#
+#   P  B   who this author is                          the one correct remedy
+#   ─  ─   ───────────────────────────────────────     ────────────────────────────────────────
+#   Y  Y   deleted it on this branch                   restore it, or acknowledge by name
+#   Y  N   the base retired it too                     acknowledge — merging IS a no-op here
+#   N  Y   stale: cut before the key landed            MERGE THE BASE BRANCH
+#   N  N   never declared in this repo (card#8423)     declare it, or acknowledge by name
+#
+# Four cells, three remedies, no residual, and no question for the author to answer wrongly.
+#
+# ⛔ THE VERDICT IS UNCHANGED AND STILL HEAD-ONLY. Every cell is rc 2, exactly as before; the
+# fork point and the base tip select the WORDING only. Nothing read from either can turn a
+# refusal into a pass, which is the property that keeps the head-only decision settled: a
+# fork-point READ that could weaken a verdict would red on a merged commit no PR can edit.
+#
+# A ref whose config cannot be read there — absent, not valid JSON, not an object — is treated
+# as NOT DECLARING the key, because that is what it is. The evidence line prints `unreadable`
+# rather than `absent` in that case, so an author looking at a config they can plainly see is
+# never told it has no key: they are told this tool could not read it there, which is a
+# different fix.
+declare -A _REF_CFG=() _REF_CFG_OK=()
+_ref_cfg_usable() {
+  local ref="$1" blob
+  if [ -z "${_REF_CFG_OK[$ref]:-}" ]; then
+    _REF_CFG_OK["$ref"]=no; _REF_CFG["$ref"]=""
+    if blob="$(git show "$ref:$CONFIG_ROOTREL" 2>/dev/null)" \
+       && _json_parses "$blob" && [ "$(_json_type "$blob")" = object ]; then
+      _REF_CFG["$ref"]="$blob"; _REF_CFG_OK["$ref"]=yes
+    fi
+  fi
+  [ "${_REF_CFG_OK[$ref]}" = yes ]
+}
+# _key_state_at <ref> <key> → present | absent | unreadable. The jq is written to survive a
+# config whose `.promote` is not an object at that ref: `.promote.source` would ERROR there,
+# and an error swallowed by `2>/dev/null` reads as an empty answer, which would be scored
+# `present`. Wrapping the path in `[ (…)? ]` makes "the path does not apply here" and "the key
+# is null here" the same measurable thing — absent — which is the honest reading of both.
+_key_state_at() {
+  local ref="$1" key="$2"
+  _ref_cfg_usable "$ref" || { printf 'unreadable'; return 0; }
+  if [ "$(_cfg "[ (.${key})? ] | if length == 0 then \"null\" else (.[0] | type) end" "${_REF_CFG[$ref]}")" = null ]
+  then printf 'absent'; else printf 'present'; fi
+}
+# _absent_key_remedy <key> — the evidence, then the ONE remedy that evidence selects.
+_absent_key_remedy() {
+  local key="$1" p b cell
+  p="$(_key_state_at "$BASEREF" "$key")"
+  b="$(_key_state_at "$BASE" "$key")"
+  cell=n; if [ "$p" = present ]; then cell=y; fi
+  if [ "$b" = present ]; then cell="${cell}y"; else cell="${cell}n"; fi
+  printf 'NOTHING TO ANSWER — THIS IS DERIVED FROM YOUR OWN HISTORY: %s is %s at your fork point (%s) and %s at the tip of %s. ' \
+    "$key" "$p" "$BASEREF" "$b" "$BASE"
+  case "$cell" in
+    yy) printf 'SO THIS BRANCH DELETED IT: it was there when you branched and it is still on %s, which makes merging the base a NO-OP that returns you to this identical message. Put the key back, or — if you dropped it deliberately — acknowledge the gap by name.' "$BASE";;
+    yn) printf 'SO THE KEY WAS RETIRED ON %s AS WELL: merging the base is a genuine NO-OP, and re-declaring it here would re-open on your branch a gap the base closed. Acknowledge the gap by name. If the retirement on %s was itself a mistake, fix it THERE — a lone re-declaration on this branch correlates nothing once it merges.' "$BASE" "$BASE";;
+    ny) printf 'SO THIS BRANCH IS SIMPLY STALE — you branched before the key landed, whether or not you have since edited the config for some other reason. MERGE THE BASE BRANCH (`git merge %s`) and do not touch the config: the merge lands the key and this check goes green. Declaring it again here would land a DUPLICATE declaration, and acknowledging it would tombstone a key that is LIVE on %s.' "$BASE" "$BASE";;
+    nn) printf 'SO THE KEY HAS NEVER BEEN DECLARED IN THIS REPO: merging the base changes nothing, because there is nothing there to merge. Declare it, or acknowledge the gap by name.';;
+  esac
+  printf ' '
+}
+
 if [ "$CLASSIFY_ONLY" -eq 0 ]; then
   HEAD_UNSET_TYPE="$(_cfg '.unset_correlation_keys | type' "$HEAD_CFG")"
   case "$HEAD_UNSET_TYPE" in
@@ -410,7 +494,7 @@ if [ "$CLASSIFY_ONLY" -eq 0 ]; then
       if [ "$_type" = null ]; then
         [ -z "${UNSET_KEY[$_key]:-}" ] \
           || { echo "release-artifacts-check: UNSET: $_key — declared absent in .unset_correlation_keys at head. $_reader reads it to $_buys. $_absent"; continue; }
-        die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent FIRST CHECK WHETHER THIS BRANCH SIMPLY PREDATES THE KEY: this leg reads the HEAD config only, so a branch cut before $_key landed on your base branch reds here without having touched the config. TWO QUESTIONS, because the remedies are OPPOSITE and nothing this leg can read tells the two authors apart. (1) IS $_key ON YOUR BASE BRANCH — \`git show <base>:$CONFIG_ROOTREL\`? If it is not, merging changes nothing: the key has simply never been declared in this repo, so declare it (or acknowledge it, below). (2) IF IT IS, HAS THIS BRANCH EDITED THE CONFIG — \`git log --oneline <base>.. -- $CONFIG_ROOTREL\`? NO COMMIT means this branch merely predates the key: MERGE THE BASE BRANCH, do not edit the config, because declaring the key again lands a duplicate declaration and acknowledging it would tombstone a key that is live on the base. A COMMIT OF YOURS means the key is missing because THIS BRANCH dropped it, so merging the base is a NO-OP that returns you to this identical message: put the key back, or, if you dropped it deliberately, acknowledge the gap by name. TO ACKNOWLEDGE: add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
+        die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent THIS LEG READS THE HEAD CONFIG ONLY, so a branch cut before $_key landed on your base branch reds here without having touched the config — and which author you are is not a question you are asked, it is READ. $(_absent_key_remedy "$_key")TO ACKNOWLEDGE: add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
       fi
       [ -z "${UNSET_KEY[$_key]:-}" ] \
         || die "$CONFIG_ROOTREL at $HEAD_REF declares $_key AND lists it in .unset_correlation_keys — a key cannot be both declared and acknowledged absent; remove it from one of the two (the acknowledgement is a tombstone, and a tombstone standing over a live key acknowledges the NEXT deletion of it in advance, with nothing reporting the narrowing)"

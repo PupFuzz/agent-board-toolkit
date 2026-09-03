@@ -75,8 +75,11 @@ _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
 # query must lowercase too rather than rely on the server canonicalizing the query param.
 #
 # ⚠ MIRRORS OF `canonicalizeSource`, ALL OF THEM — keep in sync (card#8421), and the set is
-# DERIVED rather than trusted: tests/promote-source-qualify-selftest.sh § 3d re-computes it from
-# `bin/` on every run and reds when a copy appears, moves, or stops being named here. The server
+# DERIVED rather than trusted: tests/promote-source-qualify-selftest.sh § 3d re-derives it from
+# `bin/` on every run and reds when a copy appears, moves, or stops being named here. ⛔ § 3d —
+# not this comment — OWNS the scope of that derivation: which fold constructs it matches, which
+# languages it covers and what it still cannot see are stated there, once. Do not restate them
+# here; a scope restated in two places is what went stale last time. The server
 # class is the SoT; the copies are this one — `_ata_canon_source` — plus TWO in
 # `bin/promote-released-cards`, which is a vendored standalone that must not source this lib and
 # cannot call this function:
@@ -89,6 +92,16 @@ _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }
 # would change (whitespace is outside the charset, and a >255-byte `<owner>/<repo>` is not one
 # GitHub issues), so adding them would be a second rule with no input to act on. The `tr` runs
 # under the caller's locale, which is safe for the same reason: only ASCII reaches it.
+#
+# ⛔ AND THAT PARTIALNESS IS WHY THIS COPY STAYS HERE RATHER THAN MOVING INTO THE LIB THIS FILE
+# ALREADY SOURCES. The reason is NOT "a vendored standalone cannot reach the lib" — that is true
+# of `bin/promote-released-cards` and FALSE of this file, which sources `_kb-board-lib.sh` at the
+# top of this file. It is that this function is a deliberately PARTIAL canonicalizer whose omissions
+# are safe only because `kb_is_repo_slug` ran first: published in the shared lib under a general
+# name it would offer a partial rule to callers that have no such gate, which is how a second
+# divergent implementation starts (canon #5). The hoist would not shrink the mirror set either —
+# `promote-released-cards` still cannot reach the lib — so it buys nothing and costs a name that
+# would misdescribe what it does.
 _ata_canon_source() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 
 # _ata_adopt_decision <existing-dl-int|""> <requested-dl-int|"">: the MUST-FIX-3 guard, as a

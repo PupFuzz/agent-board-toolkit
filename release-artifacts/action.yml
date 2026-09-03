@@ -69,8 +69,10 @@ description: >-
   base branch and the config does not. The first bump of this pin on your
   integration branch therefore reds every branch you have open that was cut
   BEFORE the correlation keys landed, on a config it never touched. Do not fix
-  that as a config bug: merge the base branch (the refusal message says so
-  first). Branches carrying the keys, and the release PR itself, are unaffected.
+  that as a config bug: merge the base branch. The author is not asked to work
+  out which case they are in: the refusal reads the key's state at the branch's
+  fork point and at the base tip and prints the ONE remedy those two facts
+  select. Branches carrying the keys, and the release PR itself, are unaffected.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing --base/--head, unresolvable merge base,
   unreadable version file) are the real gate and die with actionable messages.
