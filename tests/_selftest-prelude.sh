@@ -192,9 +192,14 @@ _need() {
 #     inside a pipeline) gets "" and must red on its own floor — `board-snapshot-selftest.sh`'s
 #     `[[ "$early_exits" -ge 4 ]]` is that floor. `_adopt_fn` propagates explicitly.
 #
-# ⚑ BOUND: this recognises the `^name() {` … `^}` spelling, which is what every bin here uses. A
-# function defined as `name ()` or `function name {` is NOT extracted — it exits 1 naming the
-# function, so the bound is loud rather than silent.
+# ⚑ BOUND: this recognises `^name() {` … `^}` and nothing else — ONE space before the brace. A
+# function defined as `name ()`, `function name {`, or `name()` with two or more spaces before the
+# `{` is NOT extracted; it exits 1 naming the function, so the bound is loud rather than silent.
+# That last spelling is live here (`bin/promote-released-cards`'s `uint_ok`,
+# `bin/release-tag-check`'s `require_uint`/`require_pint`, six more): every one of them is a
+# one-line function, so they are refused either way and widening the spelling would buy nothing
+# until the one-line MODE below exists. Stated because "what every bin here uses" is not true of
+# them, and a bound that overstates its reach is what card#8548 is about.
 #
 # ⚑ BOUND: A ONE-LINE FUNCTION IS REFUSED, NOT GUESSED AT — and that refusal is the second half of
 # the `exit 1` above, not a separate policy. `max_int() { …; }` carries no `^}` line of its own, so
