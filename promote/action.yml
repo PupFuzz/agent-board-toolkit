@@ -12,6 +12,14 @@ description: >-
   workspace root — including .promote.source, which is REQUIRED and has no
   default: the script refuses before any read without it (see the `source`
   input below, and INSTALL.md §4).
+  AND THE DECLARED SOURCE MUST BE THIS REPO. A resolved source other than "*"
+  is compared, case-folded, against $GITHUB_REPOSITORY — which Actions sets to
+  the repository this workflow runs in — and a mismatch refuses at rc 2 before
+  any board read. A typo'd or copy-pasted slug otherwise passes every shape
+  check and correlates against no card: the job promotes 0 and exits 0. The
+  leg applies to the `source` input too (it overrides the value, not the
+  check), and does not fire when $GITHUB_REPOSITORY is absent. A FORK running
+  this workflow is refused by it, on the fork's own $GITHUB_REPOSITORY.
   NOTE: composite-action `required:` is not runner-enforced — the script's own
   fail-closed guards (missing token / expected-host / api_base host mismatch)
   are the real gate and die with actionable messages.
@@ -51,6 +59,8 @@ inputs:
       script refuses to run without one of the two, because dl_number and
       pr_number are repo-scoped counters and an unqualified match on a
       multi-repo board promotes another repo's cards into a terminal stage.
+      NOT an escape hatch from the identity check above: whichever channel
+      wins, a resolved value other than "*" must equal $GITHUB_REPOSITORY.
     required: false
     default: ''
   shipped-stage-ids:

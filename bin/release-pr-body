@@ -50,8 +50,12 @@
 # Exit non-zero on a config/usage error, when a required fetch from origin fails,
 # or when an explicit --base/--head names no commit in this repo. An empty range
 # yields an empty (but valid) bundled section, not a failure — and neither is a
-# range that matches neither token spelling: that simply omits the optional
-# manifest footers, and still exits 0.
+# range that matches neither token spelling: that omits the optional manifest
+# footers, and still exits 0. It is no longer SILENT, though: over a NON-EMPTY
+# range, a declared token key that matched nothing (and the case where neither
+# key is declared at all) is reported in a `## Correlation gaps` section of the
+# body and on stderr, because an omitted footer and a footer with nothing to say
+# are otherwise indistinguishable to every reader of this body (card#8538).
 set -euo pipefail
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
@@ -519,7 +523,15 @@ card_coverage_section() {
   dl_manifest="$(emit_manifest | paste -sd, -)"
   card_manifest="$(emit_card_ids | paste -sd, -)"
   if [ -z "$dl_manifest" ] && [ -z "$card_manifest" ]; then
-    echo "_No shipped refs in range._"; return 0
+    # Named with the range's commit COUNT, and pointing at the section above when there is one.
+    # "No shipped refs in range" over thirty commits is true and reads like "nothing to do";
+    # the reader needs to know the range was not empty (card#8538).
+    if [ "${COUNT:-0}" -gt 0 ]; then
+      echo "_No shipped ref or card id matched in \`$RANGE\` ($COUNT commit(s)) — there is nothing to check coverage against; see § Correlation gaps above._"
+    else
+      echo "_No shipped refs in range._"
+    fi
+    return 0
   fi
   # Built as an array with plain `if` blocks, never `[ -n "$x" ] && args+=(…)`: that
   # trailing-test form is what leaked a false status out of this script once already
@@ -570,6 +582,73 @@ card_coverage_section() {
 
 COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')"
 
+# --- correlation gaps: an EMPTY manifest over a NON-EMPTY range is a finding (card#8538) ---
+# THE FAILURE THIS CLOSES IS A CLEAN LINE, NOT AN ERROR. With `card_token_regex` absent — or
+# present and matching nothing — `emit_card_ids` yields nothing, the `shipped-cards` footer is
+# simply omitted, and `## Card coverage` reports "All shipped refs have a tracking card" off
+# whatever the OTHER key happened to see. Measured on a real release: 0 `shipped-cards` lines
+# over a range carrying eight card ids, rc 0, and a coverage section reading clean (card#8423).
+# An omitted footer and a footer that legitimately has nothing to say are indistinguishable to
+# every reader of this body, so the body has to say which one it is.
+#
+# WHY IT IS ITS OWN SECTION AND NOT PART OF `## Card coverage`. That section needs the promote
+# tool, a board id and a writeback token, and renders nothing when any is missing — its
+# presence IS the claim that coverage was measured. This finding needs none of them: it is a
+# fact about git and the config, so it must not inherit that section's preconditions, or the
+# repos least able to measure coverage would also be the ones told nothing about why.
+#
+# THE RULE, one predicate over both keys, so there is no second answer to one question:
+#   * a key that IS declared and matched NOTHING over a non-empty range — its manifest is empty
+#     and the reader cannot tell that from "the key was never set";
+#   * a key that is NOT declared, when the range correlated nothing through the other one
+#     either — the body correlates nothing at all, which is the shape `release-artifacts-check`
+#     reds a `.promote`-declaring config for, seen here from the range's side.
+# A key that is not declared while the OTHER one YIELDS is NOT a finding: a repo whose subjects
+# carry only `card#NNNN` is not obliged to invent a DL scheme, and warning per release about a
+# key it deliberately does not use is the noise that gets a real warning ignored. That gate is
+# the yield, never the declaration — the card#8423 shape had `ref_token_regex` declared and
+# `card_token_regex` absent, and the DECLARED key was the one matching nothing.
+#
+# It never changes the exit status. This tool GENERATES a body — a non-zero here would block
+# the release PR it is being written for, and the finding belongs in front of the person
+# reviewing that PR, not in a runner's rc. The same lines go to stderr so a CI log carries them
+# too (the body may be redirected to a file the log never shows).
+correlation_gap_section() {
+  [ "${COUNT:-0}" -gt 0 ] || return 0
+  local ref_yield="" card_yield=""
+  if [ -n "$REF_TOKEN_REGEX" ];  then ref_yield="$(emit_manifest | paste -sd, -)"; fi
+  if [ -n "$CARD_TOKEN_REGEX" ]; then card_yield="$(emit_card_ids | paste -sd, -)"; fi
+  # ZERO_TOTAL is the strong shape: nothing in this range correlates to the board by EITHER id
+  # space. It is what gates the "not declared" arm — an undeclared key is a finding only when
+  # the release correlates nothing anyway, never on a repo that uses one spelling and yields.
+  local zero_total=0
+  [ -n "$ref_yield" ] || [ -n "$card_yield" ] || zero_total=1
+  local -a gaps=()
+  local key re yield manifest field
+  for key in ref_token_regex card_token_regex; do
+    case "$key" in
+      ref_token_regex)  re="$REF_TOKEN_REGEX";  yield="$ref_yield";  manifest="shipped-refs";  field="a card's \`payload.dl_number\`";;
+      *)                re="$CARD_TOKEN_REGEX"; yield="$card_yield"; manifest="shipped-cards"; field="the card's own \`id\`";;
+    esac
+    if [ -n "$re" ] && [ -z "$yield" ]; then
+      gaps+=("⚠ **\`$key\` is declared (\`$re\`) and matched no commit subject in \`$RANGE\` ($COUNT commit(s)).** The \`$manifest\` manifest is EMPTY, so nothing here is correlated against $field — check the regex against the subjects this range actually carries before reading a coverage section as clean.")
+    elif [ -z "$re" ] && [ "$zero_total" = 1 ]; then
+      gaps+=("⚠ **\`$key\` is not declared in \`$CONFIG\`.** The \`$manifest\` manifest is absent, so nothing here is correlated against $field. Declare it if your commit subjects carry that spelling — the two keys are two id spaces, so do not re-spell the other one as this one.")
+    fi
+  done
+  [ "${#gaps[@]}" -gt 0 ] || return 0
+  echo ""; echo "## Correlation gaps"
+  if [ "$zero_total" = 1 ]; then
+    gaps=("⚠ **NOTHING in \`$RANGE\` ($COUNT commit(s)) correlates to a board card.** Both manifests are empty, so no card can be promoted from this release and no coverage was measured — a body with no manifest footer reads exactly like one whose range legitimately had nothing to say." "${gaps[@]}")
+  fi
+  local g
+  for g in "${gaps[@]}"; do
+    echo ""; echo "$g"
+    printf 'release-pr-body: %s\n' "$g" >&2
+  done
+}
+
+
 # --- the body --------------------------------------------------------------
 cat <<EOF
 **\`${DEV_BRANCH} → ${MAIN_BRANCH}\` release PR — ${THIS_TAG}.** Bundles ${COUNT} commit(s) since ${BASE:-the start}.
@@ -590,6 +669,7 @@ if jq -e '.artifacts | type == "array"' "$CONFIG" >/dev/null 2>&1; then
   done
 fi
 
+correlation_gap_section
 card_coverage_section
 
 # Machine-readable manifest of shipped refs — a deterministic footer a downstream

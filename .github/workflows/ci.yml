@@ -329,11 +329,34 @@ jobs:
           writeback-token: ''
           expected-host: kanban.invalid
           dry-run: 'true'
-      - name: Assert fail-closed
+      - name: Assert fail-closed AT THE TOKEN GUARD, by message
         env:
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        # ⛔ THE OUTCOME IS NOT THE SUBJECT. `outcome == failure` is satisfied by ANY failure of
+        # the composite, while the step above states a specific one ("it must die at the
+        # KANBAN_WRITEBACK_TOKEN guard"). That gap became real with card#8538: the identity leg
+        # (`.promote.source` vs $GITHUB_REPOSITORY) runs BEFORE the token guard in
+        # bin/promote-released-cards, so on a runner — the one place in this repo's CI where the
+        # script executes with $GITHUB_REPOSITORY set — there is now a second way to satisfy an
+        # outcome-only assertion. It is exempt for THIS repo (`.promote.source` is `"*"`), which
+        # is exactly why an outcome-only assertion would go on passing after it stopped being
+        # exempt, and why a consumer copying this job would inherit a green tick for the wrong
+        # failure. A composite step's stderr cannot be captured in-job, so the message half is
+        # asserted by running the same script the composite execs, with the same env and argv
+        # the composite builds from these blank inputs. The two steps are one pair: the smoke
+        # proves the runner reaches the script end-to-end through the wrapper; this proves WHICH
+        # guard answered.
         run: |
           [ "$SMOKE_OUTCOME" = "failure" ] || { echo "::error::promote action ran with an empty token — the fail-closed guard did not fire"; exit 1; }
+          rc=0
+          out="$(KANBAN_WRITEBACK_TOKEN='' KANBAN_EXPECTED_HOST='kanban.invalid' KANBAN_API_BASE='' \
+                 ./bin/promote-released-cards --dry-run 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -ne 0 ] || { echo "::error::bin/promote-released-cards exited 0 with an empty token"; exit 1; }
+          case "$out" in
+            *"KANBAN_WRITEBACK_TOKEN is not set"*) ;;
+            *) echo "::error::the promote script failed, but NOT at the token guard — this job's stated subject no longer holds (see the last line above)"; exit 1;;
+          esac
 
   release-artifacts-action-selftest:
     # The promote job's sibling, for the same reason: a SHA-pinned consumer gets no

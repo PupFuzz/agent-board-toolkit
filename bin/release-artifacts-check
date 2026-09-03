@@ -28,8 +28,14 @@
 #     `retired_artifacts` array — PR-declared, read at head, and printed as a `RETIRED:`
 #     line in the CI log. A member in BOTH arrays is a config error (rc 2), so a tombstone
 #     cannot be pre-planted against a member that is still declared.
-# Everything else in the config (`promote.*`, `ref_token_regex`, `card_token_regex`,
-# branch names) stays head-read and unguarded: none of it decides a verdict.
+# The CORRELATION keys are head-read too, but they are no longer unguarded (card#8538): a
+# config that declares a `.promote` block must declare `promote.source`, `ref_token_regex` and
+# `card_token_regex`, or name the missing one in a `unset_correlation_keys` array. Absent, they
+# fail SILENTLY downstream — `release-pr-body` emits a 0-id `shipped-cards` manifest at rc 0
+# under the line "All shipped refs have a tracking card" — and a silent zero is the one shape a
+# release gate must not have. Head-read and NOT fork-point-read, for the reason stated at the
+# leg. Everything else in the config (`promote.board_id`, `api_base`, branch names) still
+# stays head-read and unguarded: none of it decides a verdict here.
 #
 # ⛔ `version_extract_cmd` IS NOT READ HERE, AND MUST NOT BE. `release-pr-body` grew that key
 # (card#7599) because a version declared INSIDE a code file has to be matched with its
@@ -140,7 +146,9 @@
 # member failed, or a declared member was removed without acknowledgement (every failure is
 # reported, not just the first). 2 = usage/config error, an unresolvable merge base, a
 # config not committed at head, a member declared in both `artifacts` and
-# `retired_artifacts`, a version that could not be read at either end, or a version file whose
+# `retired_artifacts`, a `.promote`-declaring config missing (or mis-typing) a correlation key
+# it did not acknowledge in `unset_correlation_keys`, a version that could not be read at
+# either end, or a version file whose
 # classifying match is unchanged while it carries SEVERAL values head introduced (the version
 # being shipped is then unknown) — none of these is EVER classified as "not a release PR",
 # because that misclassification is a silent non-run of the whole gate rather than a pass.
@@ -298,6 +306,287 @@ case "$HEAD_RETIRED_TYPE" in
   null|array) ;;
   *) die "$CONFIG_ROOTREL at $HEAD_REF has .retired_artifacts of type '$HEAD_RETIRED_TYPE' — it must be an array of strings (omit the key entirely if nothing has been retired)";;
 esac
+
+# --- correlation keys: the DECLARE half of the promote seam (card#8538) --------------------
+# WHY THIS LEG EXISTS. The three keys below are what makes a release PR's card manifest, and
+# the post-merge promote run, correlate to anything at all — and until this leg they were
+# exactly what this file's header (above) still called "head-read and unguarded: none of it
+# decides a verdict". That was true of THIS tool and false of the release: a config that omits
+# `card_token_regex` makes `release-pr-body` emit a 0-id `shipped-cards` manifest AT RC 0 and
+# print "All shipped refs have a tracking card" — a clean line asserting coverage that was
+# never measured (it shipped on the consumer repos card#8423 enumerates — that card owns the
+# list, and no count of them is restated here). A silent zero is the one failure shape a
+# release gate must not have.
+#
+# THE TRIGGER IS `.promote`, NOT `artifacts`. A repo that declares a `promote` block has
+# declared that its releases move board cards; the correlation keys are what that promotion
+# reads, so their absence is a gap IN THAT REPO'S DECLARATION. A config with no `promote`
+# block has not made that claim — it correlates nothing on purpose, no manifest is expected of
+# it, and requiring the keys there would be ceremony for a repo the class cannot reach. The
+# trigger is therefore the claim, never the artifact set: this leg runs BEFORE the artifacts
+# opt-out below, because `artifacts` and `promote` are independent declarations and a repo that
+# opted out of the artifact legs still promotes.
+#
+# HEAD ONLY, unlike the artifact set. The fork-point read upstream exists because `artifacts`
+# is a set the PR could NARROW to weaken its own verdict; there is no narrowing to catch here —
+# deleting a correlation key is what this leg REDS on, and reading the fork point would instead
+# red every consumer's next PR for a key their already-merged config never had. The one
+# acknowledged-absence channel is explicit and PR-declared, exactly like `retired_artifacts`.
+#
+# ⚠ WHAT HEAD-ONLY COSTS, AND WHY THE MESSAGE CARRIES A THIRD REMEDY. On a `pull_request`
+# event GitHub takes the WORKFLOW from the base-merged ref while this leg is handed
+# `pull_request.head.sha` — so the action's pin travels with the base branch and the config
+# does not. The day a consumer bumps its pin on `dev`, every branch CUT BEFORE the keys landed
+# on `dev` reds here having touched no config: the gap is real at that head, but its author did
+# not introduce it and MUST NOT close it by declaring the key again on their own branch (that
+# lands a duplicate declaration, and `unset_correlation_keys` would tombstone a key that is
+# live on the base). Merging the base branch is the correct remedy for that case and the
+# refusal below names it, because "declare the key" is the wrong instruction there and an
+# author following it does the wrong thing quietly.
+#
+# ⛔ AND THE MESSAGE HAS TO DISCRIMINATE, because "the key is already on your base branch" is
+# true of the DELIBERATE DELETER as well — the author this leg's head-only read exists to catch
+# — and their remedy is the OPPOSITE one. Measured on two fixture repos driven through this
+# binary: the stale author merges the base, the config gains the key and the run goes rc 0; the
+# deleter's `git merge <base>` says `Already up to date`, the config does not move, and the
+# rerun is rc 2 on a byte-identical message — a loop, since the condition is still true. So the
+# refusal keys its first remedy on whether THIS BRANCH EDITED THE CONFIG, not on where the key
+# is, and it names the deletion case with `unset_correlation_keys` as its own answer. It also
+# asks first whether the base carries the key at all, because for a repo that has NEVER declared
+# it (the card#8423 population, this leg's primary catch) merging the base is equally a no-op.
+#
+# ⛔ THE `promote.source` ACCEPT SET IS NOT RE-IMPLEMENTED HERE, and that is a decision, not an
+# omission. `bin/promote-released-cards` owns that predicate (a shape `case` plus
+# `src_charset_ok`), `kb_is_repo_slug` in `bin/_kb-board-lib.sh` is its one declared duplicate,
+# and the two DIVERGED in service on the `.GIT` casing — measured, card#8421 — which is why
+# `tests/promote-source-qualify-selftest.sh` § 3c now drives one corpus through both. A THIRD
+# copy here would buy a shift-left on a failure that is already LOUD (promote refuses rc 2 and
+# names the fix) at the price of a false red on every PR the day the copies disagree. What this
+# leg asserts is the half that is SILENT: the key is there, it is a non-empty string, and — for
+# the two regexes, which are fed to `grep -oiE` under a `|| true` that swallows a compile
+# error into an empty manifest — that it COMPILES. A well-shaped but WRONG slug is caught where
+# it can actually be measured: `promote-released-cards` compares the resolved source against
+# $GITHUB_REPOSITORY (card#8538, the CHECK half of this same seam).
+# ── THE REMEDY FOR AN ABSENT CORRELATION KEY, DERIVED RATHER THAN ASKED ──────────────────────
+#
+# ⛔ WHY THIS IS A FUNCTION OF TWO BLOB READS AND NOT A LIST OF AUTHOR TYPES. The refusal below
+# used to ASK the author two questions and let them pick a remedy from their own answers, and
+# the second question — "has THIS BRANCH edited the config?" — is a PROXY for the one that
+# decides, which is "did this branch ever CARRY the key". The proxy is neither necessary nor
+# sufficient. A long-lived branch cut before the keys landed that touched `.release-pr.json` for
+# an unrelated reason — a `board_id`, a regex, an `artifacts` entry — answers YES and never had
+# the key, and the message then told that author three things, two of them false and the third
+# destructive: that THIS BRANCH DROPPED IT (false), that merging the base is a NO-OP returning
+# the same message (false — driven on a fixture, the merge is rc 0, the key lands, the rerun is
+# rc 0), and that the alternative is to acknowledge the gap in `unset_correlation_keys` — which
+# TOMBSTONES A KEY THAT IS LIVE ON THE BASE, the exact action the other half of this same
+# message, `docs/INSTALL.md` and `release-artifacts/action.yml` all warn against.
+#
+# That author was the FOURTH class three consecutive review rounds found in a partition derived
+# from INSTANCES: one round found one author, the next two, the next three, this one four. A
+# partition derived from instances gains a cell per round, so the partition is derived from the
+# INPUTS instead. Given the key is absent at head, the remedy depends on exactly two facts and
+# nothing else:
+#
+#   P = the key was present at the FORK POINT   (`$BASEREF`, already resolved above)
+#   B = the key is present at the BASE TIP      (`$BASE`)
+#
+#   P  B   who this author is                          the one correct remedy
+#   ─  ─   ───────────────────────────────────────     ────────────────────────────────────────
+#   Y  Y   deleted it on this branch                   restore it, or acknowledge by name
+#   Y  N   the base retired it too                     acknowledge — merging IS a no-op here
+#   N  Y   stale: cut before the key landed            MERGE THE BASE BRANCH
+#   N  N   never declared in this repo (card#8423)     declare it, or acknowledge by name
+#
+# Four cells, three remedies, no residual, and no question for the author to answer wrongly.
+#
+# ⛔ THE VERDICT IS UNCHANGED AND STILL HEAD-ONLY. Every cell is rc 2, exactly as before; the
+# fork point and the base tip select the WORDING only. Nothing read from either can turn a
+# refusal into a pass, which is the property that keeps the head-only decision settled: a
+# fork-point READ that could weaken a verdict would red on a merged commit no PR can edit.
+#
+# ⛔ NO CONFIG AT ALL AND A CONFIG THIS RUN CANNOT PARSE ARE DIFFERENT ANSWERS, and collapsing
+# them is what made the `unreadable` evidence line useless. A ref with no `.release-pr.json`
+# declares no key — that is a FACT, and the ordinary state of the very PR that adopts the file,
+# whose author must be told to declare it. A ref whose config is THERE but is not JSON, or not
+# an object, tells this run NOTHING about the key: an author looking at a config they can
+# plainly see must not be told it has no key, and — the half that matters — must not be routed
+# to a TOMBSTONE on a retirement this run never established.
+declare -A _REF_CFG=() _REF_CFG_STATE=()
+# _ref_cfg_load <ref> — fills _REF_CFG_STATE[ref] with ok | missing | unreadable, and _REF_CFG
+# with the blob where that state is `ok`. It ASSIGNS rather than prints, and its callers read
+# the array directly: a `$(_ref_cfg_state …)` runs in a SUBSHELL, so the blob it caches dies
+# with it and the very next read of `_REF_CFG[$ref]` is an unbound variable under `set -u`.
+_ref_cfg_load() {
+  local ref="$1" blob
+  if [ -z "${_REF_CFG_STATE[$ref]:-}" ]; then
+    _REF_CFG["$ref"]=""
+    if ! blob="$(git show "$ref:$CONFIG_ROOTREL" 2>/dev/null)"; then
+      _REF_CFG_STATE["$ref"]=missing
+    elif _json_parses "$blob" && [ "$(_json_type "$blob")" = object ]; then
+      _REF_CFG["$ref"]="$blob"; _REF_CFG_STATE["$ref"]=ok
+    else
+      _REF_CFG_STATE["$ref"]=unreadable
+    fi
+  fi
+}
+# _key_usability <config blob> <key> → absent | type:<t> | empty | uncompilable | usable.
+# ⭐ THE ONE DEFINITION OF "THIS KEY IS USABLE", and both readers of that question route through
+# it: the head refusal below, which turns each answer into its own message and its own fix, and
+# `_key_state_at`, which turns it into a cell of the 2×2 that CHOOSES that message. They were
+# two definitions, and the remedy's was the coarser one: `_key_state_at` scored a key `present`
+# on `type != null` alone, so a base tip carrying `"source": "   "` or an uncompilable
+# `card_token_regex` put the author in the STALE cell — whose remedy PROMISES that merging the
+# base turns this check green. Driven on fixtures: the merge is rc 0, the unusable value lands,
+# and the rerun is rc 2 on a different message, i.e. the loop this partition exists to end. A
+# remedy is only as true as the predicate it was derived from, so there is one predicate.
+#
+# The `[ (…)? ]` wrapper is what makes this safe to point at ANY ref's config, not just head's:
+# `.promote.source` ERRORS where `.promote` is not an object, and an error swallowed by
+# `2>/dev/null` reads as an empty answer, which would be scored `present`. Wrapped, "the path
+# does not apply here" and "the key is null here" are one measurable thing — absent — which is
+# the honest reading of both. At head the two spellings cannot disagree (`.promote` is typed as
+# null-or-object above, and the loop only runs on object), so nothing this leg accepts or
+# refuses moved when the head side adopted it.
+_key_usability() {
+  local blob="$1" key="$2" t v rc=0
+  t="$(_cfg "[ (.${key})? ] | if length == 0 then \"null\" else (.[0] | type) end" "$blob")"
+  if [ "$t" = null ];    then printf 'absent';       return 0; fi
+  if [ "$t" != string ]; then printf 'type:%s' "$t"; return 0; fi
+  v="$(_cfg "[ (.${key})? ] | .[0]" "$blob")"
+  if [ -z "${v//[[:space:]]/}" ]; then printf 'empty'; return 0; fi
+  case "$key" in
+    # The two token keys are handed STRAIGHT to `grep -oiE` by their readers, under a `|| true`
+    # that turns a compile failure into an empty match set — i.e. into the same silent 0-id
+    # manifest this leg exists to catch, from a key that is present and looks set. Compiled with
+    # the readers' own flags. `printf ''` feeds no input, so this asks the one question it means
+    # to: rc >1 is a bad regex, rc 1 is "compiled, matched nothing", and rc 1 is usable.
+    *_token_regex)
+      printf '' | grep -oiE "$v" >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -gt 1 ]; then printf 'uncompilable'; return 0; fi;;
+  esac
+  printf 'usable'
+}
+# _key_state_at <ref> <key> → present | absent | unusable | unreadable, where `present` means
+# USABLE — see above for why that is one predicate and not two.
+_key_state_at() {
+  local ref="$1" key="$2"
+  _ref_cfg_load "$ref"
+  case "${_REF_CFG_STATE[$ref]}" in
+    missing)    printf 'absent';     return 0;;
+    unreadable) printf 'unreadable'; return 0;;
+  esac
+  case "$(_key_usability "${_REF_CFG[$ref]}" "$key")" in
+    absent) printf 'absent';;
+    usable) printf 'present';;
+    *)      printf 'unusable';;
+  esac
+}
+# _absent_key_remedy <key> — the evidence, then the ONE remedy that evidence selects.
+#
+# ⛔ THE BASE TIP HAS FOUR STATES, NOT TWO, AND THE TWO NON-BINARY ONES ARE ANSWERED FIRST. The
+# 2×2 below is a partition of *usable / not usable*, and neither of its `not usable` cells is
+# true of a tip this run could not READ or whose value it REFUSES. Folding either into the
+# `retired` or `never-declared` cell prints a retirement this run did not establish and routes
+# the author to `unset_correlation_keys` — a TOMBSTONE — on evidence its own preceding clause
+# contradicts, which is the one action `docs/INSTALL.md` and `release-artifacts/action.yml` both
+# warn against. Each therefore gets its own remedy and its own verdict word.
+_absent_key_remedy() {
+  local key="$1" p b cell
+  p="$(_key_state_at "$BASEREF" "$key")"
+  b="$(_key_state_at "$BASE" "$key")"
+  printf 'NOTHING TO ANSWER — THIS IS DERIVED FROM YOUR OWN HISTORY: %s is %s at your fork point (%s) and %s at the tip of %s. ' \
+    "$key" "$p" "$BASEREF" "$b" "$BASE"
+  case "$b" in
+    unreadable)
+      printf 'THIS RUN COULD NOT READ %s AT %s AT ALL, so it has NOT established whether the key is declared there and will not guess. Read that ref yourself: if the key is on %s, MERGE THE BASE BRANCH (`git merge %s`); if it genuinely is not, declare it here. ⛔ Do NOT acknowledge the gap on this evidence — the acknowledgement is a tombstone, and nothing on this run establishes a retirement to tombstone. ' \
+        "$CONFIG_ROOTREL" "$BASE" "$BASE" "$BASE"
+      return 0;;
+    unusable)
+      printf 'THE KEY IS DECLARED AT %s BUT THIS CHECK REFUSES THE VALUE THERE, so merging the base would land a value that reds this same check for a different reason — the message you would get next names it. FIX IT ON %s: a good value declared only here leaves the bad one live on %s for every other branch cut from it, and acknowledging the gap would tombstone a key that IS declared there. ' \
+        "$BASE" "$BASE" "$BASE"
+      return 0;;
+  esac
+  cell=n; if [ "$p" = present ]; then cell=y; fi
+  if [ "$b" = present ]; then cell="${cell}y"; else cell="${cell}n"; fi
+  case "$cell" in
+    yy) printf 'SO THIS BRANCH DELETED IT: it was there when you branched and it is still on %s, which makes merging the base a NO-OP that returns you to this identical message. Put the key back, or — if you dropped it deliberately — acknowledge the gap by name.' "$BASE";;
+    yn) printf 'SO THE KEY WAS RETIRED ON %s AS WELL: merging the base is a genuine NO-OP, and re-declaring it here would re-open on your branch a gap the base closed. Acknowledge the gap by name. If the retirement on %s was itself a mistake, fix it THERE — a lone re-declaration on this branch correlates nothing once it merges.' "$BASE" "$BASE";;
+    # The clause after the dash is what the FORK POINT establishes, and `absent` is only one of
+    # the three ways to reach this cell — `you branched before the key landed` is false of the
+    # other two, while the instruction is right for all three.
+    ny) printf 'SO THIS BRANCH IS SIMPLY STALE — it carries no usable %s and %s does, whether or not you have since edited the config for some other reason. MERGE THE BASE BRANCH (`git merge %s`) and do not touch the config: the merge lands the key and this check goes green. Declaring it again here would land a DUPLICATE declaration, and acknowledging it would tombstone a key that is LIVE on %s.' "$key" "$BASE" "$BASE" "$BASE";;
+    nn) printf 'SO %s: merging the base changes nothing, because there is nothing there to merge. Declare it, or acknowledge the gap by name.' \
+          "$( [ "$p" = absent ] && printf 'THE KEY HAS NEVER BEEN DECLARED IN THIS REPO' || printf 'NEITHER THE FORK POINT NOR THE TIP OF THE BASE GIVES THIS RUN A USABLE KEY' )";;
+  esac
+  printf ' '
+}
+
+if [ "$CLASSIFY_ONLY" -eq 0 ]; then
+  HEAD_UNSET_TYPE="$(_cfg '.unset_correlation_keys | type' "$HEAD_CFG")"
+  case "$HEAD_UNSET_TYPE" in
+    null|array) ;;
+    *) die "$CONFIG_ROOTREL at $HEAD_REF has .unset_correlation_keys of type '$HEAD_UNSET_TYPE' — it must be an array of key names (omit the key entirely if every correlation key is declared)";;
+  esac
+  # A non-string member would reach the membership `case` below rendered by jq (a number as
+  # its digits, an object as JSON) and be refused there with a message about a key name that
+  # is not what the operator wrote. Typed at the boundary instead, once.
+  NONSTR="$(_cfg '[.unset_correlation_keys // [] | .[] | select(type != "string")] | length' "$HEAD_CFG")"
+  [ "$NONSTR" = 0 ] \
+    || die "$CONFIG_ROOTREL at $HEAD_REF has $NONSTR non-string entr(y/ies) in .unset_correlation_keys — every member must be one of the key NAMES: promote.source, ref_token_regex, card_token_regex"
+  declare -A UNSET_KEY=()
+  while IFS= read -r _k; do
+    case "$_k" in
+      promote.source|ref_token_regex|card_token_regex) UNSET_KEY["$_k"]=1;;
+      "") die "$CONFIG_ROOTREL at $HEAD_REF has an EMPTY entry in .unset_correlation_keys — name the key being declared absent: promote.source, ref_token_regex or card_token_regex";;
+      *) die "$CONFIG_ROOTREL at $HEAD_REF lists '$_k' in .unset_correlation_keys, which is not a correlation key — the three are promote.source, ref_token_regex and card_token_regex. A misspelling here acknowledges NOTHING: the key it was meant to name is still required, and this array is the only place the acknowledgement is read";;
+    esac
+  done < <(printf '%s\n' "$HEAD_CFG" | jq -r '(.unset_correlation_keys // []) | .[]')
+
+  HEAD_PROMOTE_TYPE="$(_cfg '.promote | type' "$HEAD_CFG")"
+  case "$HEAD_PROMOTE_TYPE" in
+    null|object) ;;
+    *) die "$CONFIG_ROOTREL at $HEAD_REF has .promote of type '$HEAD_PROMOTE_TYPE' — it must be an object (board_id, released_stage_id, api_base, source); omit the key entirely if this repo promotes no cards";;
+  esac
+  if [ "$HEAD_PROMOTE_TYPE" = object ]; then
+    # <jq path> <reader> <what it buys> <what its ABSENCE does> — one row per key, and the
+    # READER is named in every message because "add card_token_regex" is not actionable without
+    # knowing which tool went quiet. The rows are the population this leg covers; there is no
+    # second list of them.
+    #
+    # THE FOURTH FIELD IS NOT DECORATION. The two token keys go silent when absent; `promote.source`
+    # does the opposite — `promote-released-cards` REFUSES at rc 2, because that key has been
+    # required with no default since card#8421. One shared sentence would therefore be FALSE of one
+    # of the three, and it is the UNSET line where that matters most: an operator acknowledging
+    # `promote.source` absent has to be told that the acknowledgement silences THIS check and not
+    # that refusal, or they will read a green gate as "promotion is configured".
+    while IFS='|' read -r _key _reader _buys _absent; do
+      # ⭐ ONE PREDICATE, TWO READERS. `_key_usability` is the definition; every message below is
+      # a rendering of one of its answers. Spelling the same three tests inline here is how the
+      # remedy's copy of them drifted coarser than this one and started promising a green the
+      # merge could not deliver.
+      _usable="$(_key_usability "$HEAD_CFG" "$_key")"
+      if [ "$_usable" = absent ]; then
+        [ -z "${UNSET_KEY[$_key]:-}" ] \
+          || { echo "release-artifacts-check: UNSET: $_key — declared absent in .unset_correlation_keys at head. $_reader reads it to $_buys. $_absent"; continue; }
+        die "$CONFIG_ROOTREL at $HEAD_REF declares a .promote block but no $_key. $_reader reads it to $_buys. $_absent THIS LEG READS THE HEAD CONFIG ONLY, so a branch cut before $_key landed on your base branch reds here without having touched the config — and which author you are is not a question you are asked, it is READ. $(_absent_key_remedy "$_key")TO ACKNOWLEDGE: add \"$_key\" to a top-level \"unset_correlation_keys\": [] array in this PR, which is logged as an UNSET: line instead of failing"
+      fi
+      [ -z "${UNSET_KEY[$_key]:-}" ] \
+        || die "$CONFIG_ROOTREL at $HEAD_REF declares $_key AND lists it in .unset_correlation_keys — a key cannot be both declared and acknowledged absent; remove it from one of the two (the acknowledgement is a tombstone, and a tombstone standing over a live key acknowledges the NEXT deletion of it in advance, with nothing reporting the narrowing)"
+      _val="$(_cfg ".${_key}" "$HEAD_CFG")"
+      case "$_usable" in
+        usable) ;;
+        type:*) die "$CONFIG_ROOTREL at $HEAD_REF has $_key of type '${_usable#type:}' — it must be a string ($_reader reads it to $_buys)";;
+        empty)  die "$CONFIG_ROOTREL at $HEAD_REF has $_key set to '$_val', which is empty or whitespace only — byte-identical to omitting it. $_reader reads it to $_buys, and an empty value does none of that. Give it a value, or acknowledge the gap by name in .unset_correlation_keys";;
+        uncompilable) die "$CONFIG_ROOTREL at $HEAD_REF has $_key = '$_val', which grep -E cannot compile — $_reader pipes it straight into \`grep -oiE\` behind a \`|| true\`, so an uncompilable regex does not fail: it matches nothing and yields an EMPTY manifest at rc 0";;
+      esac
+    done <<'ROWS'
+promote.source|bin/promote-released-cards|qualify a matched card against the repo this release ships (dl_number/pr_number are REPO-SCOPED counters, so an unqualified match promotes another repo's cards into a terminal stage)|Absent, that tool REFUSES AT RC 2 rather than going quiet — the key is required there with no default — so acknowledging it here silences THIS check and not that refusal: your post-merge promote job still reds.
+ref_token_regex|bin/release-pr-body (and bin/promote-released-cards)|build the shipped-refs manifest and the ## Card coverage section, correlated against a card's payload.dl_number|Absent, none of that happens SILENTLY, at rc 0: the manifest footer is simply omitted, which reads exactly like a range that legitimately had nothing to say.
+card_token_regex|bin/release-pr-body|build the shipped-cards manifest and the ## Card coverage section, correlated against the card's own id|Absent, none of that happens SILENTLY, at rc 0: the body emits a 0-id manifest under the line "All shipped refs have a tracking card", asserting coverage nothing measured.
+ROWS
+  fi
+fi
 
 # --- fork-point config: the baseline the PR may not edit ----------------------------------
 # NOTHING READ FROM THE FORK POINT EVER PRODUCES rc 2. The fork point is a MERGED commit: a

@@ -359,6 +359,22 @@ LEG3_DISPOSED=(
     # leave the same sentence with a worse locator and the guard none the wiser. ⛔ EXPIRES AT
     # THE NEXT RELEASE by the rule immediately below — do not carry it forward.
     "docs/CHANGELOG.md::one predicate, three spellings, now two callers"
+    # card#8538 round 3. The reported line says `shared lib` once and names two members of the
+    # derived set, which is the co-mention this leg reports — and it is not the prohibited shape
+    # either. (This comment is hard-wrapped so no single line of it carries both halves of the
+    # predicate; a disposition that reports itself is the shape the wrap exists to avoid.)
+    # What that line enumerates is the CASE-FOLD CENSUS over `bin/`: `kbcard`'s stage-name fold
+    # is named there as a fold that is NOT a `canonicalizeSource` mirror, and `adopt-to-dl` as
+    # the one bin outside `promote-released-cards` carrying one. A different set, with its own derivation
+    # and its own gate — `tests/promote-source-qualify-selftest.sh` § 3d re-derives it from `bin/`
+    # on every run, which is the opposite of a hand-kept list. There is no instruction to copy
+    # anything, and the ONE sentence naming the shared lib says a copy must NOT be hoisted into
+    # it, which an enumeration of lib-sourcing bins could not say. Ruled reportable-but-correct
+    # rather than reworded, for exactly the reason the card#8421 entry above states: rewording to
+    # dodge the grep (dropping the noun, or writing "toolkit library") leaves the same sentence
+    # with a worse locator and this guard none the wiser. ⛔ EXPIRES AT THE NEXT RELEASE by the
+    # rule immediately below — do not carry it forward.
+    "docs/CHANGELOG.md::a guard whose STATED SCOPE was wider than its predicate"
     # ⛔ NO `docs/CHANGELOG.md` DISPOSITION SURVIVES A RELEASE, and that is the contract, not an
     # omission. v0.30.0 carried three — card#7175, card#6884 and card#6680 — each ruled on the
     # live `[Unreleased]` entry it named. Step 4 of VERSIONING.md retitled that section as

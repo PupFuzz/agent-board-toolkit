@@ -22,6 +22,23 @@
 # clears it again per probe — its mutants have to be able to write, or they measure nothing.
 export PYTHONDONTWRITEBYTECODE=1
 
+# $GITHUB_REPOSITORY IS REMOVED FOR THE WHOLE SUITE, and this is a floor rather than a tidy-up.
+# Actions sets it to the repository the workflow is running in, and since card#8538
+# `bin/promote-released-cards` REFUSES a resolved `.promote.source` that is not it. Several
+# files drive that bin with a fixture source (`acme/widget`) while asking about something else
+# entirely — the charset guard, the unsourced-card report, the coverage section — and every one
+# of them would then refuse for the WRONG reason IN CI while passing on a laptop. No count is
+# written here, because one in a comment rots: reproduce it by deleting this line, exporting
+# GITHUB_REPOSITORY to this repo's own slug, and running promote-source-qualify-selftest,
+# release-pr-body-selftest and locale-range-guard-selftest — all three red, all three green
+# locally, which is the whole hazard.
+#
+# The floor is HERE and not at each call site on purpose: a per-site scrub is a hand-kept list,
+# and the site it misses is a CI-ONLY red — the most expensive kind to diagnose. A file for
+# which the variable IS the subject sets it EXPLICITLY per arm instead
+# (`promote-source-qualify-selftest.sh` § 7 is the one that does, and asserts this floor holds).
+unset GITHUB_REPOSITORY
+
 fails=0
 # `checks` counts every assertion that ran, passed or failed. `fails` alone cannot tell a suite
 # that ran its whole battery from one that lost half of it: delete an `eq` line and the file
