@@ -50,27 +50,48 @@
 #
 # ─────────────────────────── LEG 2: THE PREDICATE, STATED ───────────────────────────
 #
-# POPULATION — `find bin hooks -maxdepth 1 -type f ! -name '*.py'` (the `bin`/`hooks` half of
-# `.github/workflows/ci.yml`'s shellcheck expression) PLUS `tests/*.sh`, re-derived on every
-# invocation, the same population `piped-match-gate-selftest.sh` scans. No file list is stored.
+# POPULATION — BOTH halves of `.github/workflows/ci.yml`'s shellcheck expression, unioned:
+# `_shipped_shell_files` and `_selftest_shell_files` out of `tests/_shipped-shell-lib.sh`, which
+# is this repo's ONE OWNER of that derivation (card#6911) and is sourced rather than re-spelled
+# here. Re-derived on every invocation; no file list is stored, and no `find` is restated.
+# `_ci_shellcheck_drift`, asserted below, is what reds if `ci.yml` stops running it.
 #
 # MEMBER — a FILE, `<relpath>`, carrying a COUNT. Not a line number: a line number rots on the
 # next edit above it. The count is what makes the file-level key safe — a NEW occurrence inside
 # an already-dispositioned file moves the count and reds, which is the N+1th case a bare per-file
 # allow-list swallows.
 #
-# AN OCCURRENCE is a PATTERN LITERAL ANCHORING A SHELL FUNCTION'S DEFINITION LINE AT COLUMN ZERO
-# — an opening delimiter (`/`, `'` or `"`), then `^`, then an identifier (`$2` and `${x}`
-# included, since the prelude's own anchor is parameterised), then `()`, with the backslashes
-# `awk` needs optional. Two on one line count as two. Comment lines are excluded — a header
-# narrating the idiom (this one does it repeatedly) is prose.
+# AN OCCURRENCE is a PATTERN LITERAL ANCHORING A SHELL FUNCTION'S DEFINITION LINE AT COLUMN ZERO,
+# derived in TWO parts rather than as one regex, because the two axes have different populations:
+#
+#   1. THE ANCHOR — any character that is not alphanumeric, `_` or a space, immediately followed by
+#      `^`. That character is the literal's OPENING DELIMITER, and the delimiter set is OPEN: `sed`
+#      takes `\%…%`, `perl` takes `m{…}`, and there is no last one to enumerate.
+#   2. THE NAME, searched ONLY INSIDE THAT SAME LITERAL — from the `^` up to the next occurrence of
+#      the delimiter the anchor opened with (end of line if it does not close on that character).
+#      An identifier (`$2` and `${x}` included, since the prelude's own anchor is parameterised),
+#      optionally closing a group (`'^(uint_ok)\(\)'`), then `()`, with the backslashes `awk` and
+#      `grep -E` need and a `*` quantifier optional. Two names inside one line count as two.
+#
+# WHATEVER SITS BETWEEN THE `^` AND THE NAME IS SKIPPED WHOLESALE — a group, a character class, an
+# alternation. That vocabulary is regex syntax and is as open as the delimiter set; enumerating it
+# is what an inclusion list looks like. Comment lines are excluded — a header narrating the idiom
+# (this one does it repeatedly) is prose.
 #   ⛔ THE ANCHOR IS THE PREDICATE, NOT THE TOOL, and that is the correction card#8548 exists
 #     for. A list of known tool spellings is an inclusion list: it fails open on the next one,
 #     which is precisely how two `awk` copies of `sed`'s job walked past leg 1. Whatever consumes
 #     it — `sed -n …,/^}/p`, an `awk` range, a `grep -E`, a `sed` `i` planter — must first WRITE
 #     that anchor, so the anchor is what is counted and a tool this file has never heard of is
-#     still derived. The THREE delimiters are why: the first cut took `/` only, and PR #323's own
-#     out-of-scope note had already named a `grep -E '^uint_ok\(\)'` site it therefore missed.
+#     still derived.
+#   ⛔ AND THE DELIMITER IS NOT ENUMERATED EITHER — that was the same defect one level down. The
+#     first cut of this leg took `/`; the second took `/ ' "` and shipped; BOTH were inclusion
+#     lists one keystroke wide. Measured on this tree: the three-delimiter predicate was blind to
+#     two live copies it should have censused — `locale-range-guard-selftest.sh` (a character
+#     class between the `^` and the name) and `next-dl-selftest.sh` (an alternation group) — both
+#     dispositioned below now that it can see them. Bounding the NAME search by the delimiter the
+#     ANCHOR itself opened with is what lets the delimiter set stay open without reporting the
+#     whole tree: an unrelated `foo()` further along the line is outside the literal and is not
+#     counted (`hand-enumerated-population-census.sh:179` is exactly that line, and stays out).
 #
 # ⛔ WHAT IS NOT SCRIPTABLE, AND IS THEREFORE THE DISPOSITION LIST'S JOB. The scanner derives
 # where the anchor IS; whether an occurrence should have been `_fn_src` is a judgement no regex
@@ -90,6 +111,25 @@
 #     whole tree. A negative control below pins that this is the bound and not an accident.
 #   * A NON-SHELL definition: `promote-source-qualify-selftest.sh` extracts a `jq` `def` with
 #     `/def canon_source:/`, which is the same duplication shape and is NOT derived here.
+#   * AN ANCHOR WHOSE NAME POSITION IS A CLASS RATHER THAN A NAME — `/^[A-Za-z_][A-Za-z0-9_]*\(\) \{/`
+#     addresses ANY definition line, not one function's. Live in `_selftest-prelude.sh` itself
+#     (`_fn_src`'s own swallow check) and in `_defs_in` below. It is not a hand-spelled copy of an
+#     extraction — it is the shape `_fn_src` exists to be — so it is out of the population by
+#     intent, and named here rather than left to look like an accident.
+#   * WHAT MAY SIT BETWEEN THE NAME AND ITS `()` — the ONE axis still enumerated, and the only
+#     inclusion list left in this predicate: a group-closing paren, spaces, `*`, and the
+#     backslashes `awk`/`grep -E` need. `^name\s*\(\)` spelled with a `\s`, or with any other
+#     regex shorthand in that position, is NOT derived. Stated by name because it IS a list, and
+#     a list that is not written down is the defect this leg was minted for.
+#   * A LITERAL WHOSE CLOSING DELIMITER IS A DIFFERENT CHARACTER FROM ITS OPENER — perl's `m{…}`,
+#     `m(…)`, `m[…]`. The name window then ends at the next copy of the OPENING character rather
+#     than at the true close, which can only TRUNCATE the search (a false negative), never widen
+#     it. `m{^host_ok\(\) \{}` is still derived because the name precedes the `\{`; a name pushed
+#     past a nested `{` would not be.
+#   * A FILE OUTSIDE THAT POPULATION — a program file the suite feeds to a tool (`tests/x.awk`,
+#     a `.py`, a `.pl`), and anything nested below the one level `ci.yml` checks
+#     (`tests/lib/x.sh`, `bin/sub/y`). The population is CI's, and is deliberately not widened
+#     past what CI analyses; a bound, not an oversight.
 #   * WHETHER a dispositioned reason is TRUE. It is a recorded judgement re-read by whoever next
 #     edits that file — not a proof.
 #
@@ -101,6 +141,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=/dev/null
+source "$HERE/_shipped-shell-lib.sh"
 
 ROOT="$(cd "$HERE/.." && pwd)"
 PRELUDE="$HERE/_selftest-prelude.sh"
@@ -198,10 +240,10 @@ echo "== the helper this class was minted on is still derived =="
 # file whose COUNT moved. The third is the N+1th-copy case.
 EXTRACTORS=(
   "tests/_selftest-prelude.sh|1|THE OWNER. \`_fn_src\`'s \`sed\` range is the one sanctioned spelling in the suite; \`_adopt_fn\` is that plus an \`eval\`. Every other entry below is a residual measured against it."
-  "tests/kb-host-guard-selftest.sh|2|RESIDUAL, MISSING PRIMITIVE: AN ALIAS. Extracts THROUGH A RENAME (\`\${src/host_ok() \\{/host_ok_prc() \\{}\`) because the vendored mirror and the lib's original must coexist in one shell. \`_fn_src\` returns text and \`_adopt_fn\` evals it verbatim; neither takes an alias, and adding one is a design call, not a migration. \`docs/CONSOLIDATION-PLAN.md\` § Post-program dispositions carries it."
-  "tests/kb-positional-guard-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: AN ALIAS. The same rename shape as kb-host-guard, on install-board-hooks' \`_ibh_require_positional\` mirror. Same missing parameter, same disposition."
-  "tests/promote-source-qualify-selftest.sh|2|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. Both anchors address \`_ata_canon_source\`, whose whole body is on its definition line. \`_fn_src\` would not exit 1 on it — it would run to the NEXT function's closing brace and hand that function's whole body back too (measured), which is worse than refusing. One occurrence counts the fold; the other takes the single line as source text."
-  "tests/promote-pagination-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^uint_ok\\(\\)'\` over another one-line function. PR #323 named this site as a seventh extraction under a different mechanism and left it out of scope; it is the reason this leg's anchor takes quote delimiters and not just \`/\`."
+  "tests/locale-range-guard-selftest.sh|1|RESIDUAL, OUT OF \`_fn_src\`'S REACH ENTIRELY: A NON-SHELL FILE, AND NOT AT COLUMN ZERO. It locates \`version_ok()\` inside \`.github/workflows/auto-tag-version.yml\`'s \`run:\` block — indented, with no \`^}\` line to stop at — then strips the indent and evals the one line. \`_fn_src\` anchors at column zero in a shell file and can express neither half. DERIVED ONLY SINCE THE DELIMITER SET STOPPED BEING A LIST: the \`[[:space:]]*\` between the \`^\` and the name made it invisible to the predicate this leg shipped with."
+  "tests/next-dl-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^(max_int|max_dl)\\(\\) \\{'\` lifts BOTH of next-dl's one-line primitives in one read and asserts it got exactly two lines. \`_fn_src\` now REFUSES a one-liner by name rather than handing back the next function's body with it, so this cannot migrate until the primitive has a one-line mode — and it wants two names at once, which it also does not have. DERIVED ONLY SINCE THE ANCHOR STOPPED BEING AN INCLUSION LIST: the alternation group hid it. \`reader-ref-canon-selftest.sh\` below is the same site's sibling, on \`max_int\` alone."
+  "tests/promote-source-qualify-selftest.sh|2|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. Both anchors address \`_ata_canon_source\`, whose whole body is on its definition line. \`_fn_src\` REFUSES it, naming what the range would have swallowed (\`_ata_adopt_decision\`), so the blocker is the missing one-line MODE and not a silent wrong answer. One occurrence counts the fold; the other takes the single line as source text."
+  "tests/promote-pagination-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^uint_ok\\(\\)'\` over another one-line function; \`_fn_src\` refuses it for the same reason. PR #323 named this site as a seventh extraction under a different mechanism and left it out of scope; it is why this leg's anchor stopped taking only \`/\`."
   "tests/reader-ref-canon-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^max_int\\(\\) \\{'\` over next-dl's one-line \`max_int\`. Same shape and same blocker as the two entries above."
   "tests/promote-ref-canon-selftest.sh|1|A LOCATE, NOT AN EXTRACTION. It collects the DEFINITION LINES so its leg can assert there is EXACTLY ONE — an extraction that silently concatenated two definitions is the failure it exists to catch, so it must not stop at the first."
   "tests/url-userinfo-render-selftest.sh|1|A MUTATION PLANTER. \`sed\` \`i\` INSERTS a new line BEFORE the definition; the anchor addresses the site, nothing is read out of it. Migrating it to \`_fn_src\` is not expressible and would not mean anything."
@@ -209,35 +251,56 @@ EXTRACTORS=(
 )
 
 # _extract_anchors <file> — "<line>\t<count>" per non-comment line carrying the anchor. ONE
-# predicate: the census total, the per-file counts and the fixture controls all read it, so a
-# spelling one of them learned and another did not cannot exist.
+# predicate, in the two parts the header states: `_EX_ANCHOR` finds the delimiter-plus-`^`, and
+# `_EX_NAME` finds the function name inside the literal that anchor opened. The census total, the
+# per-file counts and the fixture controls all read THIS FUNCTION, so a spelling one of them
+# learned and another did not cannot exist.
 #
-# The regex is built as an awk STRING rather than a literal so this file is not a member of its
+# ⛔ THE DELIMITER IS TAKEN FROM THE LINE, NOT FROM A SET. `_EX_ANCHOR` accepts any non-word,
+# non-space character before the `^`, and the character it matched is then used as the CLOSING
+# delimiter for the name search. That is what makes the delimiter axis a derivation rather than
+# the `/ ' "` list this leg shipped with — and what keeps it from reporting the whole tree: a
+# `foo()` after the literal has closed is a call, not an anchor, and is not counted.
+#
+# The regexes are built as awk STRINGS rather than literals so this file is not a member of its
 # own population — a literal `/^…()` here would make the scanner's own definition the thing it
 # reds on, and the only ways out of that are excusing the gate in its own list (whose count then
 # rots on every edit) or excluding this path (a hole exactly where the next author reaches for
 # the idiom). Same reasoning, same fix, as `piped-match-gate-selftest.sh`'s `@GQ@` placeholder.
 #
-# ⛔ IT TRAVELS THROUGH THE ENVIRONMENT, NOT THROUGH `-v`. awk applies escape processing to a
+# ⛔ THEY TRAVEL THROUGH THE ENVIRONMENT, NOT THROUGH `-v`. awk applies escape processing to a
 # `-v` assignment, so `\^`, `\(` and `\)` arrive as plain `^`, `(` and `)` — the regex still
 # compiles, matches nothing here, and every absence assertion below passes over an empty scan.
 # Measured: it did exactly that, loudly (`awk: warning: escape sequence …`) but at rc 0 per file.
 # `ENVIRON[]` is handed over verbatim.
-_EX_RE='["'"'"'/]\^[A-Za-z_$][A-Za-z0-9_${}]*\\?\(\\?\)'
+_EX_ANCHOR='[^A-Za-z0-9_ ]\^'
+_EX_NAME='[A-Za-z_$][A-Za-z0-9_${}]*\\?\)?[ *]*\\?\(\\?\)'
 _extract_anchors() {
-    _EX_RE="$_EX_RE" awk '
+    _EX_ANCHOR="$_EX_ANCHOR" _EX_NAME="$_EX_NAME" awk '
         $0 ~ /^[[:space:]]*#/ { next }          # a header narrating the idiom is prose
         {
             line = $0; c = 0
-            while (match(line, ENVIRON["_EX_RE"])) { c++; line = substr(line, RSTART + RLENGTH) }
+            while (match(line, ENVIRON["_EX_ANCHOR"])) {
+                d = substr(line, RSTART, 1)                 # the delimiter this literal opened with
+                line = substr(line, RSTART + RLENGTH)       # everything after the ^
+                p = index(line, d)                          # …up to where that literal closes
+                if (p > 0) { seg = substr(line, 1, p - 1); line = substr(line, p + 1) }
+                else       { seg = line;                  line = "" }
+                while (match(seg, ENVIRON["_EX_NAME"])) { c++; seg = substr(seg, RSTART + RLENGTH) }
+            }
             if (c > 0) printf "%s\t%s\n", NR, c
         }' "$1"
 }
 
-# _ex_files <root> — the population, re-derived from the tree with CI's own expression.
+# _ex_files <root> — the population: CI's shellcheck expression, BOTH halves, unioned. It is not
+# spelled out here. `tests/_shipped-shell-lib.sh` is this repo's declared ONE OWNER of that
+# derivation (card#6911, minted because the same `find` had been hand-copied into three gates),
+# and a fourth hand-copy here — in the gate whose whole job is to red on hand-copies — would be
+# this class re-minted by the file that forbids it. Adopting it also buys the drift row: a copy is
+# guarded by nothing, so a narrowed `ci.yml` would leave this leg scanning the old set and
+# printing a denominator for a population CI no longer has.
 _ex_files() {
-    ( cd "$1" && { find bin hooks -maxdepth 1 -type f ! -name '*.py' 2>/dev/null
-                   find tests -maxdepth 1 -type f -name '*.sh' 2>/dev/null; } | LC_ALL=C sort )
+    { _shipped_shell_files "$1"; _selftest_shell_files "$1"; } | LC_ALL=C sort
 }
 
 # _ex_counts <root> — "<relpath> <total>", one line per file carrying any.
@@ -281,11 +344,29 @@ awk '@A@src_canon\(\) \{/ {f=1} f {print} f && @A@\}/ {exit}' "$BIN"
 sed -n "@A@$2() {/,/^}/p" "$1"
 a="$(sed -n '@A@foo() {/,/^}/p' "$X")"; b="$(sed -n '@A@bar() {/,/^}/p' "$X")"
 EOF
-# POSITIVE 3 — a tool this file has never heard of. The anchor is the predicate, so it is derived
-# anyway; a spelling list would report nothing here.
+# POSITIVE 3 — a tool this file has never heard of, IN THE SPELLING ITS AUTHORS ACTUALLY WRITE.
+# ⛔ This control shipped once already with `@A@` here, i.e. `m{/^host_ok\(\) \{}` — a perl regex
+# requiring a literal `/` before the anchor, which no perl author would type. Driven against a
+# real function it extracted ZERO lines, while the real spelling below was MISSED by the
+# predicate it was shipped to pin. A control written in a spelling its own author invented proves
+# the sample matched, never that the pattern covers.
 _plant "$FIX/hooks/planted-unknown-tool" <<'EOF'
 #!/usr/bin/env bash
-perl -ne 'print if m{@A@host_ok\(\) \{} .. m{^\}}' "$BIN"
+perl -ne 'print if m{@C@host_ok\(\) \{} .. m{^\}}' "$BIN"
+EOF
+# POSITIVE 5 — the DIALECTS the shipped `/ ' "` list could not see, one line each, every one of
+# them a legal seventh copy: a `sed` CUSTOM delimiter, a character class between the `^` and the
+# name, an alternation group, a `perl` group capture, and a `*` quantifier before the parens. Two
+# of them are not hypothetical: the character class and the alternation group are the shapes
+# `locale-range-guard-selftest.sh` and `next-dl-selftest.sh` wear, both live in this repo and both
+# invisible to the three-delimiter predicate this leg shipped with.
+_plant "$FIX/tests/planted-dialects-selftest.sh" <<'EOF'
+#!/usr/bin/env bash
+src="$(sed -n '\%@C@fetch_whole_board() {%,/^}/p' "$PRC")"
+d="$(grep -E '@C@[[:space:]]*version_ok\(\)' "$WF" | head -1)"
+n="$(grep -E '@C@(max_int|max_dl)\(\) \{' "$NDL")"
+p="$(perl -0777 -ne 'print $1 if /@C@(board_report\(\) \{.*?^\})/ms' "$BIN")"
+q="$(sed -n '/@C@src_canon *() {/,/^}/p' "$BIN")"
 EOF
 # POSITIVE 4 — the QUOTE delimiters, both of them. `grep -E '^uint_ok\(\)'` is live in this repo
 # (`promote-pagination-selftest.sh`) and PR #323 named it as a seventh extraction it was leaving
@@ -333,11 +414,20 @@ cat > "$FIX/hooks/planted-jq-def" <<'EOF'
 awk '/def canon_source:/ {f=1} f {print} f && /end;[[:space:]]*$/ {exit}' "$BIN"
 EOF
 
+# NEGATIVE 5 — an anchored regex and, LATER ON THE SAME LINE, an ordinary function CALL. This is
+# the price of an open delimiter set, and the reason the name search stops where the literal
+# closes: a predicate that just looked for `^` … `name()` anywhere on the line derives this, and
+# `hand-enumerated-population-census.sh:179` is exactly this shape, live in the tree today.
+cat > "$FIX/tests/planted-call-after-selftest.sh" <<'EOF'
+#!/usr/bin/env bash
+awk 'L ~ /^echo "== / { flush_block(); reset_block(i, b); next }' "$1"
+EOF
+
 echo "== leg 2: the scanner finds the planted idiom (positive controls) =="
-eq "the fixture population is the two derived sets, not a stored list" "9" \
+eq "the fixture population is the two derived sets, not a stored list" "11" \
    "$(_ex_files "$FIX" | wc -l | tr -d ' ')"
-eq "sed, awk, grep and an unheard-of tool are all derived under all three delimiters; a parameterised anchor counts and two on one line count as two" \
-   "$(printf 'bin/planted-awk 4\nhooks/planted-unknown-tool 1\ntests/planted-quoted-selftest.sh 2\ntests/planted-sed-selftest.sh 1\n')" \
+eq "sed, awk, grep, perl and an unheard-of tool are all derived; the delimiter is taken from the line and not from a set; a class, a group or a quantifier between the anchor and the name is skipped; a parameterised anchor counts and two on one line count as two" \
+   "$(printf 'bin/planted-awk 4\nhooks/planted-unknown-tool 1\ntests/planted-dialects-selftest.sh 5\ntests/planted-quoted-selftest.sh 2\ntests/planted-sed-selftest.sh 1\n')" \
    "$(_ex_counts "$FIX")"
 
 echo "== leg 2: the scanner discriminates (negative controls) =="
@@ -347,6 +437,7 @@ eq "a \${var/host_ok() \\{/…} rename is not an anchor"     "false" "$(has 'pla
 eq "a plain function DEFINITION is not an anchor"          "false" "$(has 'planted-definition' "$PLANTED")"
 eq "a jq \`def\` extraction is outside the stated bound"    "false" "$(has 'planted-jq-def'     "$PLANTED")"
 eq "an anchor composed at runtime is outside the stated bound" "false" "$(has 'planted-composed'  "$PLANTED")"
+eq "a function CALL after the literal closed is not an anchor" "false" "$(has 'planted-call-after' "$PLANTED")"
 
 # ── the denominator ─────────────────────────────────────────────────────────────────────────
 #
@@ -389,6 +480,12 @@ eq "the scan of $ROOT reached files" "true" \
    "$([[ "${#EX_FILES[@]}" -gt 20 ]] && echo true || echo false)"
 eq "…and derived at least one occurrence" "true" \
    "$([[ "$EX_TOTAL" -gt 0 ]] && echo true || echo false)"
+# …and pointed at the population CI actually shellchecks. `_ex_files` derives it from
+# `_shipped-shell-lib.sh`, which restates `ci.yml`'s two `find` expressions because a workflow
+# `run:` string cannot source a bash lib — a restatement that can only be GUARDED, never deleted
+# (canon #16). Without this row a narrowed `ci.yml` leaves the denominator above describing a
+# set nobody checks, at rc 0.
+eq "the population matches what ci.yml shellchecks" "" "$(_ci_shellcheck_drift "$ROOT")"
 
 echo "== leg 2: every hand-spelled function extraction is dispositioned =="
 eq "undispositioned function-extraction anchor (use the prelude's _fn_src/_adopt_fn, or add a line to EXTRACTORS with its reason)" \

@@ -195,10 +195,27 @@ _need() {
 # ⚑ BOUND: this recognises the `^name() {` … `^}` spelling, which is what every bin here uses. A
 # function defined as `name ()` or `function name {` is NOT extracted — it exits 1 naming the
 # function, so the bound is loud rather than silent.
+#
+# ⚑ BOUND: A ONE-LINE FUNCTION IS REFUSED, NOT GUESSED AT — and that refusal is the second half of
+# the `exit 1` above, not a separate policy. `max_int() { …; }` carries no `^}` line of its own, so
+# the range runs on to the NEXT function's closing brace and hands that function's whole body back
+# with it: `_fn_src bin/next-dl max_int` returned 129 lines carrying two further definitions, at
+# rc 0. A caller reading "the source text of one shell function, or exit 1" then evals or greps a
+# plausible-looking wrong answer — the one failure shape this docblock already promises not to
+# have. So the extracted text is checked for a SECOND top-level definition line, and finding one
+# is a refusal that names what got swallowed. What the primitive still owes is a one-line MODE;
+# until it has one the sites needing it stay hand-spelled, dispositioned by name in
+# `prelude-shadow-selftest.sh`'s `EXTRACTORS`.
 _fn_src() {
-    local src
+    local src swallowed
     src="$(sed -n "/^$2() {/,/^}/p" "$1")"
     [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
+    swallowed="$(printf '%s\n' "$src" | sed -nE '/^[A-Za-z_][A-Za-z0-9_]*\(\) \{/p' | tail -n +2 | tr '\n' ' ')"
+    [[ -z "$swallowed" ]] || {
+        printf 'selftest: %s in %s is a ONE-LINE function — the range ran past it and swallowed: %s— _fn_src has no one-line mode, so extract it by hand and disposition the site\n' \
+            "$2" "$1" "$swallowed" >&2
+        exit 1
+    }
     printf '%s\n' "$src"
 }
 

@@ -663,8 +663,17 @@ finding with no owner is abandoned, not filed.
   `grep -E '^uint_ok\(\)'`, that no name comparison could see either.
   `prelude-shadow-selftest.sh` now carries a **second leg** whose population is the IDIOM —
   every regex literal anchoring a shell function's definition at column zero, whatever tool
-  consumes it — dispositioned per file with a count, so a new spelling reds wherever and however
-  it is written. ⚑ **What that guard covers is stated in its own header and is not restated
+  consumes it and whatever DELIMITER it is written in — dispositioned per file with a count, so a
+  new spelling reds wherever and however it is written. ⛔ **The delimiter was the same defect one
+  level down, and it shipped:** the first cut of this leg took `/`, the second took `/ ' "`, and
+  both were inclusion lists a keystroke wide. Measured on this tree, the three-delimiter version
+  was blind to two hand-spelled copies that were live at the time — one with a character class
+  between the `^` and the name, one with an alternation group — so the delimiter is now taken from
+  the line and the name is sought inside the literal that delimiter opened. Both copies are
+  dispositioned. The leg's file population is `tests/_shipped-shell-lib.sh`'s, not a fourth
+  hand-copy of `ci.yml`'s `find` (card#6911 owns that derivation), and it asserts
+  `_ci_shellcheck_drift` so a narrowed workflow cannot leave it scanning a set CI no longer has.
+  ⚑ **What that guard covers is stated in its own header and is not restated
   here or in the changelog**: three surfaces describing one predicate in their own words is how
   this got wrong in the first place.
   ⚑ **NO COUNT OF THE RESIDUAL IS WRITTEN HERE EITHER.** "Five hand-spellings" was true when it
@@ -672,21 +681,29 @@ finding with no owner is abandoned, not filed.
   outlives the edit that falsifies it. `prelude-shadow-selftest.sh` derives the live population
   every run and prints it as a denominator; its `EXTRACTORS` list is where each remaining site's
   reason lives, one line per file, and a site that leaves the list reds as a stale disposition.
-  **What is left is a design call, which is why it is filed rather than guessed at:**
-  `kb-host-guard-selftest.sh` (×2) and `kb-positional-guard-selftest.sh` eval the extracted
-  source **through a rename** (`${src/host_ok() \{/host_ok_prc() \{}`), because the mirror and
-  the lib's original have to coexist in one shell, so they need an **alias parameter** neither
-  `_fn_src` nor `_adopt_fn` has; and sites that locate a **one-line** function, whose
-  source has no `^}` line for `_fn_src`'s range to stop at — it does not refuse those, it runs on
-  to the next function's closing brace and hands back that function's whole body as well
-  (measured), which is worse than refusing, so the primitive owes a one-line mode before they can
-  migrate. Other derived sites are anchors but not extractions at all — a definition-line LOCATE
-  that must not stop at the first hit, and a `sed` `i` mutation planter — and are dispositioned
-  as such. **Which files are in each shape, and how many, is in `EXTRACTORS` and not here**;
+  **What is left is ONE shape, and the shape it is NOT is recorded here rather than quietly
+  dropped, because the wrong version is the one a future author would have acted on.** This entry
+  filed a second shape as a design call: `kb-host-guard-selftest.sh` (×2) and
+  `kb-positional-guard-selftest.sh` eval the extracted source **through a rename**
+  (`${src/host_ok() \{/host_ok_prc() \{}`), so — it said — they need an **alias parameter**
+  neither `_fn_src` nor `_adopt_fn` has. **That was false the moment `_fn_src` landed.** Those
+  sites apply the rename themselves, in their own `${var/…}` expansion, and need only the
+  function's TEXT, which is exactly what `_fn_src` returns; all three are migrated, one line each,
+  with the suite byte-identical either side. A reason that outlives the change that falsified it
+  leaves copies in place waiting on a primitive that is not missing.
+  The shape that IS left: sites that locate a **one-line** function, whose source has no `^}` line
+  for `_fn_src`'s range to stop at. ⛔ **It used to run on to the next function's closing brace and
+  hand that function's whole body back at rc 0** (`_fn_src bin/next-dl max_int` ⇒ 129 lines,
+  two further definitions inside) — a silent wrong answer from a primitive whose docblock promised
+  "text, or exit 1". It now REFUSES, naming what the range would have swallowed, so the bound is
+  loud like the other one; what it owes those sites is a one-line MODE before they can migrate.
+  Other derived sites are anchors but not extractions at all — a definition-line LOCATE that must
+  not stop at the first hit, a `sed` `i` mutation planter, and a locate in a NON-SHELL file where
+  the definition is not at column zero — and are dispositioned as such.
+  **Which files are in each shape, and how many, is in `EXTRACTORS` and not here**;
   writing the file list out is exactly what went stale twice. Each guards its
   own extraction, so none can silently retire a comparison — the residual is duplication, not a
-  dead guard. The two sites that needed only the **text-returning sibling** (`board-snapshot`'s
-  `board_report` census) and the plain one (`promote-pagination`'s verbatim eval) are migrated:
+  dead guard. The sites that needed only the **text-returning sibling** are migrated onto it:
   `_fn_src` is that sibling, and `_adopt_fn` is now `_fn_src` plus an `eval`, so there is one
   spelling of "where does this function's text start and stop" for readers and runners alike.
   **Instance 2 — the call graph.** The parity block drives each mirrored function against its
