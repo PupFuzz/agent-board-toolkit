@@ -3172,5 +3172,40 @@ eq "…and says the card is left soft-deleted"           "true" "$(has 'now SOFT
 unset -f kb_stub_route
 unset D_LIVE D_TRASHED D_ARCHIVED
 
+echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
+# rc 1 under this file's contract is an ASSERTION — "NOT APPLIED, and KNOWN" — and every caller
+# above prints it as HARD FAILURE quoting the board. `jq -e` answers 1 for a filter that RAN and
+# came out false, and 4/5 for one that never ran at all; only the first is a measurement, so the
+# second must not borrow the first's certainty. A predicate that cannot run measured NOTHING,
+# which is rc 3.
+#
+# ⚠ DRIVEN AS A DIRECT CALL, not through a verb, and that is not a shortcut. The four shipped
+# predicates are LITERALS in `bin/kbcard`, so no invocation a caller can type reaches the fault
+# arm — a leg driven through the CLI would certify the split without ever exercising it. The
+# witness is stubbed so the read is unambiguously fine and the only thing left to fail is the
+# filter. Top level of a fresh subprocess, as `_lane_child` above and for the same reason: an
+# in-process capture suspends errexit for the code under test.
+_conf_child='set -euo pipefail; source "'"$BIN"'";
+  _kbc_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
+  _kbc_confirm_card 505 "$1" >/dev/null'
+conf() { rc=0; err="$(bash -c "$_conf_child" _ "$1" 2>&1 >/dev/null)" || rc=$?; }
+
+conf '.state == "present"'
+eq "confirm_card: a predicate that RAN and HOLDS → rc 0"     "0" "$rc"
+eq "…and says nothing (the verb owns the words)"             ""  "$err"
+conf '.state == "absent"'
+eq "confirm_card: a predicate that RAN and is FALSE → rc 1"  "1" "$rc"
+eq "…and still says nothing"                                 ""  "$err"
+# The mutation that makes this a measurement: collapse the case back to `|| return 1` and the
+# next three legs red — rc 3 becomes rc 1 and the diagnostic disappears.
+conf '.state ==== "present"'
+eq "confirm_card: a predicate that CANNOT RUN → rc 3, not rc 1" "3" "$rc"
+eq "…names kbcard's own filter as the fault"                 "true" \
+   "$(has "it is kbcard's own filter that is at fault" "$err")"
+eq "…and claims NOTHING about the write"                     "true" \
+   "$(has 'no claim in either direction' "$err")"
+unset -f conf
+unset _conf_child
+
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

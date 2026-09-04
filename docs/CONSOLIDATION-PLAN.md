@@ -1986,24 +1986,34 @@ finding with no owner is abandoned, not filed.
   opt-in `external_references` include — the second alone would remove the mirror, because the
   derivation would no longer need re-expressing to read a value the board already handed over.
   The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
-- **The single-card read and its "was anything actually read?" refusal — SIX spellings in
+- **The single-card read and its "was anything actually read?" refusal — SEVEN spellings in
   `bin/kbcard`, and they do not agree on what a card IS** (raised as **m7** and again as **m11** in the review of
   card#8545, the `unlink` verb, and reported-not-minted on that card's instruction; the finding
   was EJECTED from card#8556 on purpose — that card's class is *a
   mutating verb reports success it never read back*, and this is duplication, so it had no owner
-  until this entry). `_kbc_link_witness` is the sixth. The shape every one of them spells is the
+  until this entry). `_kbc_link_witness` is the sixth and `_kbc_card_witness` — minted by
+  card#8556 itself, after this entry was written — is the seventh. The shape every one of them spells is the
   same three steps: `kb_api GET "/tasks/<id>.json"`, pull the card out of the 2xx body with
   `kb_parse_resp`, then test the result for emptiness and refuse with a "nothing was read"
   diagnostic — because a 2xx whose body carries no card is not an empty card, which is this
   program's own *empty vs absent* trap (§ *Diagnosis*, item 1) at the read boundary. **The population, re-derived rather than quoted:**
-  `command grep -n 'kb_api GET "/tasks/\$' bin/kbcard` returns 6 — `_kbc_patch_tags`,
-  `_kbc_link_witness`, `cmd_show`, `cmd_comments`, `_kbc_archive_decision` and
-  `_kbc_field_restamp_dl`'s verify loop — plus a seventh in `bin/adopt-to-dl` that this count
-  deliberately excludes, because it is a
-  different bin with its own refusal vocabulary and hoisting across that boundary is a separate
-  call. Re-run the grep; do not trust the six.
-  ⚑ **The cost is not the line count, it is that the six spellings DISAGREE, and the disagreement
-  is invisible at every call site.** Four of them qualify the read — `.data | select(type ==
+  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard` returns 7 — `_kbc_patch_tags`,
+  `_kbc_link_witness`, `_kbc_card_witness`, `cmd_show`, `cmd_comments`, `_kbc_archive_decision`
+  and `_kbc_field_restamp_dl`'s verify loop — plus two more outside this bin that the count
+  deliberately excludes (repo-wide the same grep over `bin/` returns 9): `bin/adopt-to-dl`'s and
+  `bin/board-card-start`'s, each a different bin with its own refusal vocabulary, and hoisting
+  across that boundary is a separate call. Re-run the grep; do not trust the seven.
+  ⛔ **THE `kb_api\(_status\)\?` ALTERNATION IS THE LOAD-BEARING PART OF THAT PATTERN, and it is
+  here because the narrower one FAILED.** This entry originally derived on `kb_api GET
+  "/tasks/\$` — and `_kbc_card_witness`, the seventh spelling, reads through **`kb_api_status`**,
+  so the narrow grep returned 6 both before and after the commit that minted it. The trigger this
+  entry exists to arm was therefore standing on a count that could not move. An instrument that
+  greps a NAME answers about the NAME, and a population derived BEFORE an edit cannot see what
+  the edit ADDS: re-run the derivation AFTER writing, not before. The `\$` at the end is equally
+  load-bearing in the other direction — dropping it admits `GET "/tasks/search.json` (line 633),
+  which is the board search, not a single-card read, and the count silently becomes 8.
+  ⚑ **The cost is not the line count, it is that the seven spellings DISAGREE, and the disagreement
+  is invisible at every call site.** Five of them qualify the read — `.data | select(type ==
   "object")`, or a projection that can only come off an object — so a 2xx whose `.data` is a
   scalar is refused. **Two take `.data` bare:** `cmd_show`, which hands the result
   straight to `_kbc_annotate_card`, and `_kbc_archive_decision`, which tests only for
@@ -2011,7 +2021,7 @@ finding with no owner is abandoned, not filed.
   driving `kb_parse_resp` (it is `jq "$@" <<<"$resp" 2>/dev/null || true`) over four bodies:
   `{"data":"a string"}`, `{"data":5}` and `{"data":true}` all yield a NON-EMPTY result through
   the bare spelling and are refused by the guarded one; `{"data":{"id":1}}` passes both. So the
-  same malformed body is a refusal in four verbs and a readable card in two — and in
+  same malformed body is a refusal in five verbs and a readable card in two — and in
   `_kbc_archive_decision` the two arms are a fail-closed `noprimitive` verdict versus reaching
   the shim, which is this repo's own "empty vs absent" axis re-minted one layer down.
   ⚠ **Reachability is UNMEASURED and is not claimed.** Whether the board ever answers a task GET
@@ -2019,17 +2029,29 @@ finding with no owner is abandoned, not filed.
   observed it. What is measured is the divergence between the spellings, which is the thing a
   hoist would remove; the entry is filed on the duplication, per this section's own bar, not on
   an incident.
-  **What a hoist has to carry, which is why this is filed rather than done in passing:** the six
+  **What a hoist has to carry, which is why this is filed rather than done in passing:** the seven
   refusals are not interchangeable text. They differ in RETURN POSTURE (`return 1` in four;
   `_kbc_archive_decision` prints a tab-separated `noprimitive` verdict and returns 0 so the gate
   fails closed without aborting its caller; the backfill loop pushes onto `unread` and
-  `continue`s so one bad row cannot abort a batch) and in the NOUN the diagnostic names ("its
-  links are UNMEASURED", "refusing to replace this card's tags with a list built from nothing",
-  "cannot verify archive safety"). A primitive that returns the card and lets each caller own its
-  own refusal keeps all three postures; one that owns the refusal too would flatten them, and the
-  flattening is exactly what turns `_kbc_archive_decision`'s deliberate fail-closed into an
-  abort. **Do NOT collapse the diagnostics** — Stage A's rule that consolidating a guard deletes
-  it silently applies here in full.
+  `continue`s so one bad row cannot abort a batch; `_kbc_card_witness` returns 1 only for
+  UNMEASURED and answers **rc 0 with `{"state":"absent"}` on a 404** — the one spelling of the
+  seven for which *the card is not there* is an ANSWER rather than a failure) and in the NOUN the
+  diagnostic names ("its links are UNMEASURED", "refusing to replace this card's tags with a list
+  built from nothing", "cannot verify archive safety"). A primitive that returns the card and lets
+  each caller own its own refusal keeps all four postures; one that owns the refusal too would
+  flatten them, and the flattening is exactly what turns `_kbc_archive_decision`'s deliberate
+  fail-closed into an abort. **Do NOT collapse the diagnostics** — Stage A's rule that
+  consolidating a guard deletes it silently applies here in full.
+  ⛔ **AND `_kbc_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
+  hoist would silently lose.** It is the only one of the seven that reads through
+  **`kb_api_status`** rather than `kb_api` — because a 404 and a 403 are two different answers
+  there and `kb_api` collapses both to rc 1 with `KB_HTTP` stranded in a subshell — and the only
+  one that sends **`?trashed=1`**, without which a merely SOFT-deleted card answers 404 exactly as
+  a purged one does and a `--hard` read-back reports a DL ref released that is still pinning the
+  allocation floor (`docs/DL-COUNTER-RECOVERY.md` § *Why it strands*). A hoist that unified the
+  seven on `kb_api GET "/tasks/$id.json"` would be re-minting card#8556's own defect inside the
+  primitive built to prevent it. **The seventh is a member of this class, not a duplicate of it:
+  it is here to be counted, and it is here with the reason it cannot simply be folded in.**
 - **A window measured from a fixture's stamp — the READER shipped twice in one commit, and it is
   now the prelude's** (card#8533, found in review at R1) — **hoisted, not recorded, because the
   second caller is what this document's own rule waits for.** Re-basing three elapsed-time bounds

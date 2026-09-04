@@ -1449,9 +1449,24 @@ cmd_link() {
     #
     # WHAT THE PREDICATE ESTABLISHES, exactly: a link from card $f to card $t with this
     # relation is on $f's list now. It does NOT establish that it is the row this POST created
-    # — the two are indistinguishable from here, because a duplicate link would match either
-    # way, and a `task_link_id` in the create echo is not a key this read has been measured to
-    # carry. "The link you asked for exists" is the claim this verb makes and all it makes.
+    # — a duplicate link would match either way. "The link you asked for exists" is the claim
+    # this verb makes and all it makes.
+    #
+    # ⚠ THAT NARROWNESS IS A DELIBERATE DEFERRAL, NOT A CONSTRAINT — written out because the
+    # weaker predicate is easy to justify with a claim that is FALSE. The READ carries the link
+    # id: every `linked_tasks` entry has `task_link_id`, stated in the unlink header above,
+    # measured against live boards by card#8545, and it is the key `unlink` addresses its own
+    # DELETE with. What is UNMEASURED is the OTHER half — nothing in this repo records the shape
+    # of a LIVE `link` POST response, so whether the CREATE ECHO carries that id, and under which
+    # key, is unknown here. The only echo the tree contains is `tests/kbcard-selftest.sh`'s
+    # `LINK_BODY`, a fixture this repo wrote: evidence about the fixture, not about a server.
+    # Matching on it would compare against a key nobody has
+    # read off a real echo, and a key that turned out to be named differently would report HARD
+    # FAILURE over a link that LANDED — a false claim in the direction that costs more than the
+    # ambiguity accepted here.
+    # REVISIT the moment a live `link` runs and its echo is captured: match `task_link_id`
+    # against the echoed id, keeping this shape predicate as the fallback for an echo that
+    # carries no id. That is a strictly narrower predicate and needs the measurement first.
     # Only the FROM end is re-read: the far card may live on a board this token cannot read,
     # and `unlink`'s own header records that a cross-board read is a policy refusal there —
     # making it one here would turn a landed cross-board link into a refusal.
@@ -1519,14 +1534,16 @@ cmd_link() {
 # second source that can disagree with the server's own flag would manufacture UNMEASURED
 # verdicts of its own. The flag is the server's declaration and this verb reads only it.
 
-# _kbc_link_witness <task-id>: the card's link surface as ONE object on stdout —
+# _kbc_link_witness <task-id> [verb]: the card's link surface as ONE object on stdout —
 # {"links": [...], "truncated": <bool>}. Returns 1, with the diagnostic, when the card
-# cannot be read or its 2xx carries no linked_tasks LIST.
+# cannot be read or its 2xx carries no linked_tasks LIST. [verb] is the caller's own verb and
+# names it in that diagnostic; it defaults to `unlink`, the three call sites that predate it.
 #
-# ONE OWNER FOR THREE CALL SITES — the pre-witness and both post-witness ends — because the
-# question each asks is identical and the refusal each owes is identical: an end that could
-# not be read is UNMEASURED, and this verb's whole contract is that it never reports a
-# removal it did not measure. Three copies of that would be three chances to soften one.
+# ONE OWNER FOR FOUR CALL SITES — `unlink`'s pre-witness and both post-witness ends, and
+# `link`'s post-write read-back (card#8556) — because the question each asks is identical and
+# the refusal each owes is identical: an end that could not be read is UNMEASURED, and neither
+# verb may report a link's presence or absence it did not measure. Four copies of that would be
+# four chances to soften one.
 # The `select(type == "array")` is on the near side of any default, per the rule the tag
 # read learned the hard way: `// []` yields its right-hand side for `false` as well as for
 # null, so a `linked_tasks` of `false` would arrive here as an empty list and read as
@@ -1831,14 +1848,28 @@ _kbc_card_witness() {
 #                     holds, and a caller with nothing to quote would be back to describing a
 #                     board it never read.
 #   rc $KBC_RC_UNVERIFIED  the read is not a measurement (the witness already said which way).
-# The predicate is evaluated with `jq -e` on a value THIS FILE built, so a filter typo is a
-# false DENIED rather than a false CONFIRMED — the direction that refuses rather than asserts.
+# ⛔ JQ'S OWN rc IS SPLIT, because under this file's contract rc 1 IS AN ASSERTION. `jq -e`
+# answers 1 for "the filter RAN and its result was false or null" and 4/5 for "the filter did
+# not run at all" (a parse error, a runtime fault). Only the first is a measurement. Collapsing
+# them read as "a filter typo is a false DENIED rather than a false CONFIRMED — the direction
+# that refuses rather than asserts", and that was wrong twice over: rc 1 here is printed by
+# every caller as HARD FAILURE quoting the board, i.e. the definite claim NOT APPLIED AND
+# KNOWN, and it would have been built out of a predicate that never evaluated. An unrunnable
+# predicate measured nothing, and nothing measured is rc 3's territory, not rc 1's. The fault
+# is kbcard's own — a caller interpolating a server-supplied value into its filter is how one
+# gets minted (`comment`'s does, which is why its id is kb_is_uint-guarded BEFORE it is spliced)
+# — so the diagnostic says whose fault it is rather than describing the board.
 _kbc_confirm_card() {
-    local task="$1" pred="$2" w
+    local task="$1" pred="$2" w jrc=0
     w="$(_kbc_card_witness "$task")" || return "$KBC_RC_UNVERIFIED"
     printf '%s\n' "$w"
-    jq -e "$pred" <<<"$w" >/dev/null 2>&1 || return 1
-    return 0
+    jq -e "$pred" <<<"$w" >/dev/null 2>&1 || jrc=$?
+    case "$jrc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "kbcard: the confirming predicate for card $task DID NOT RUN (jq rc $jrc) — card $task was read back fine; it is kbcard's own filter that is at fault, so NOTHING was measured about the write and this run makes no claim in either direction." >&2
+           return "$KBC_RC_UNVERIFIED" ;;
+    esac
 }
 
 # The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
@@ -2012,7 +2043,7 @@ cmd_comment() {
     local crc=0
     _kbc_confirm_card "$task" "([.card.comments[]? | select((.id|tostring) == \"$cid\")] | length) > 0" >/dev/null || crc=$?
     if [[ "$crc" -eq "$KBC_RC_UNVERIFIED" ]]; then
-        _kbc_unverified comment "on task $task" "The POST answered 2xx and echoed comment id $cid; card $task could not be re-read, so whether the comment is on it is UNMEASURED."
+        _kbc_unverified comment "on task $task" "The POST answered 2xx and echoed comment id $cid; the confirming read produced no measurement (its cause is on the line above), so whether the comment is on it is UNMEASURED."
         return $?
     fi
     if [[ "$crc" -ne 0 ]]; then
@@ -2832,11 +2863,12 @@ _kbc_field_create_call() {
 #
 # THE RC IS THE BOARD STATE: the three failure arms are three DIFFERENT boards, and
 # each one SAYS which it is in its own words. The rc is what a caller that wants to
-# branch on them reads; the one caller in this file does not branch — `_kbc_field_delete`
-# collapses all three to rc 1, because every one of them is "the delete did not verify"
-# at the verb's boundary and the operator's discriminator there is the message, not the
-# status. Distinguishing them is the primitive's contract regardless: a caller that
-# folded them together before printing would be describing a board it never read.
+# branch on them reads, and the one caller in this file DOES branch — `_kbc_field_delete`
+# maps 3 to rc 3 (UNVERIFIED) and folds 1 and 4 together into rc 1, because those two are
+# both KNOWN boards while 3 is the one nobody read. It used to collapse all three to rc 1,
+# which reads as "the delete did not happen" and is false for exactly one of them.
+# Distinguishing them is the primitive's contract regardless: a caller that folded them
+# together before printing would be describing a board it never read.
 #
 #   1 — the DELETE itself was refused. The definition stands; the board is INTACT.
 #   3 — the DELETE returned 2xx and the confirming re-read failed. The definition is
