@@ -42,6 +42,14 @@
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
 #   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs]
+#     The stage the server ECHOES is compared against the stage this call asked for, and a
+#     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
+#     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
+#     post-write resource, so it is a statement about what the server holds — but it is not a
+#     SECOND request, and only `workflow_stage_id` is compared. name / tags / external_id /
+#     payload ride the server's own normalization (a decorated --pr goes as a string, --dl is
+#     canonicalized, the tag list is replaced wholesale) and are NOT compared, because a
+#     byte-wise compare there would manufacture a failure on a write that landed as asked.
 #     Moving a card to wont_do (decline) CLEARS its correlation stamps
 #     (payload.dl_number / pr_number / pr_url) in the SAME PATCH, so a stale stamp
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
@@ -235,7 +243,11 @@
 #     stdout. That id is the write verification: adding a comment does NOT bump the card's
 #     updated_at (measured on the sandbox instance, board 1162), so the echoed id is the only
 #     cheap signal that the write landed, and a success carrying no id is reported as an
-#     UNVERIFIED write (rc 1) rather than printed as a plausible-looking `null`.
+#     UNVERIFIED write (rc 3) rather than printed as a plausible-looking `null`.
+#     The id is then READ BACK on the card: the comment must be in the `comments` array the
+#     task-detail GET carries (the only read surface a comment has — GET on the comments path
+#     is 405), which is complete rather than a first page. Absent there is rc 1 HARD FAILURE;
+#     a card that could not be re-read is rc 3.
 #     Text sourcing is the shared free-text contract at the top of this block, with the one
 #     difference that block states: this pair is REQUIRED (neither source is rc 2, not a no-op,
 #     because the text IS the request) and BOTH its sources are normalized and blank-checked,
@@ -267,12 +279,27 @@
 #     surviving twin card — archiving its only card would hide a live source from
 #     the reconcile/detect backstop (roundtable #39). --force overrides the gate
 #     and records an audited override line (stderr + the kbcard failure log).
+#     The PATCH is READ BACK: `archived_at` must be stamped on a re-read of the card before
+#     this reports an archive. Still on the board is rc 1 HARD FAILURE; a card that could not
+#     be re-read is rc 3.
 #   kbcard delete --task ID-OR-EXT [--hard] [--yes|-y] [--dry-run]
 #     Default: soft-delete (trashed, recoverable within the retention window; RETAINS
 #     dl_number). --hard: permanent force-delete (cascades subtasks/comments/links;
 #     RELEASES dl_number; two-step soft-then-force). --hard prompts to confirm unless
 #     --yes, and refuses without --yes in a non-interactive shell. --dry-run prints
 #     the exact API calls without executing them.
+#     ⚠ BOTH STEPS ARE READ BACK, and the re-read PASSES `?trashed=1` — which is the whole
+#     difference between confirming a purge and confirming nothing. `GET /tasks/<id>.json`
+#     404s a card that is merely in the TRASH unless that parameter is sent, so a bare re-read
+#     cannot tell a soft-deleted card from a purged one, and a `--hard` confirmed on it would
+#     report "DL ref released" for a card still pinning the board's allocation floor.
+#     So: the soft step is confirmed by `deleted_at` being stamped, and --hard's force-delete
+#     by the card being ABSENT from a trash-asking read. Under --hard the soft read-back is
+#     also the force-delete's PRECONDITION (force-delete 422s unless the card is trashed) — a
+#     soft step this run could not confirm sends NO force-delete at all, because an
+#     irreversible request does not go out behind a precondition nobody read. A 2xx over a
+#     card that did not move is rc 1 HARD FAILURE; a card that could not be re-read is rc 3,
+#     and on --hard that rc explicitly says NOT to treat the DL ref as released.
 #   kbcard field list
 #     READ: list the board's custom fields (id/key/label/type); enum & multi_select
 #     fields include their full {value,label} option sets. The board index
@@ -306,7 +333,9 @@
 #     WRITE: define a new custom field on the board (POST the board's custom_fields
 #     route) and print the CREATED FIELD ID on stdout — that id is the write
 #     verification, and a success carrying no id is reported as an UNVERIFIED write
-#     (rc 1) rather than printed as a plausible-looking `null`.
+#     (rc 3) rather than printed as a plausible-looking `null`. The definition is then READ
+#     BACK off the board's field index (the only read surface a field has): not defined there
+#     is rc 1 HARD FAILURE, an index that could not be re-read is rc 3.
 #     --type is one of: string number date enum multi_select boolean url. enum and
 #     multi_select REQUIRE --options; every other type REFUSES it (the API would store
 #     the array and never interpret it — a silent no-effect, the same reason
@@ -409,11 +438,30 @@
 #     verification read could not observe it (UNKNOWN state) · not a DL number at all ·
 #     outside this pass's census (the remainder above). Requires --to string.
 #
+# ─── WHAT A WRITE VERB'S EXIT CODE MEANS ────────────────────────────────────
+#   0  APPLIED — the mutation was READ BACK and the read agrees with what was asked. Every
+#      write verb below confirms on a surface the caller can go and read for itself, and a
+#      success LINE says which surface and what it showed. A 2xx is not this: the status is
+#      the server saying it accepted the request, never the board saying it holds the result.
+#   1  NOT APPLIED, and KNOWN — the request was refused (the status and the server's own
+#      message say why), or the read-back is a MEASUREMENT and it says the mutation did not
+#      take. The second spelling is reported as HARD FAILURE and quotes what the board holds.
+#   2  BAD INVOCATION — nothing was sent. Everything this tool can decide offline is decided
+#      before the first request, so a typo'd flag costs no traffic.
+#   3  UNVERIFIED WRITE — the request WAS SENT and its outcome could NOT be read: the
+#      confirming read did not complete, was refused (401/403 — a card this token cannot read
+#      is not a card that is gone), or answered a 2xx nothing could be read out of. Nothing
+#      here says the write landed and nothing says it did not. RE-READ before acting either
+#      way; a retry is safe only where the verb is idempotent.
+#      This is a THIRD outcome, not a rename of rc 1: every state that was rc 1 and is still
+#      KNOWN is still rc 1. A caller that today treats "non-zero" as failure keeps working and
+#      merely loses the distinction; one that must not act on an unconfirmed write tests for 3.
+#
 # A 2xx NOTHING CAN BE READ OUT OF is refused by the verb, not by jq: every single-card /
 # single-field read and every write echo takes the verb's own empty-value arm at the verb's own
 # rc, so an unreadable body is not reported as "no such card" / "no comments" / "no custom
-# fields" (one measured exception, on `comments` — README) and an unreadable write echo is
-# UNCONFIRMED rather than printed. Two caller-visible boundaries on that: `list` reaches the same
+# fields" (one measured exception, on `comments` — README) and an unreadable write echo is an
+# UNVERIFIED WRITE at rc 3 rather than printed (the block above owns that contract). Two caller-visible boundaries on that: `list` reaches the same
 # posture by a different route — it reads the board through the shared paginator, which refuses a
 # page-1 body carrying no card array at its own rc 1 and takes `list` to rc 1 with empty stdout
 # (card#6594) — and `patch --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at
@@ -1036,7 +1084,7 @@ cmd_create_card() {
     local resp
     resp="$(kb_api POST "/tasks.json" "$body")" || return 1
     _kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
-        "${swimlane:+swimlane_id: (.swimlane_id // null)}"
+        "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage"
 }
 
 cmd_move() {
@@ -1069,10 +1117,11 @@ cmd_move() {
     local resp echo_out
     resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
     echo_out="$(kb_parse_resp "$resp" '.data | {id, name, workflow_stage_id}')"
-    [[ -n "$echo_out" ]] || {
-        echo "kbcard: move on task $task: the write returned success but no card could be read out of its body — the move is UNCONFIRMED (nothing was read back)" >&2
-        return 1
-    }
+    [[ -n "$echo_out" ]] || _kbc_unverified move "on task $task" || return $?
+    # The whole point of this verb is the stage, so the stage is what it checks. Same owner as
+    # create-card's and patch's, per its own header rule: the PROJECTION differs here, the
+    # outcome contract does not.
+    _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
     printf '%s\n' "$echo_out"
 }
 
@@ -1177,7 +1226,8 @@ cmd_patch() {
     [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
     local resp
     resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
-    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra"
+    # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
+    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage"
 }
 
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure
@@ -1391,10 +1441,50 @@ cmd_link() {
     local resp link
     resp="$(kb_api POST "/task_links.json" "$body")" || return 1
     link="$(kb_parse_resp "$resp" '.data')"
-    [[ -n "$link" ]] || {
-        echo "kbcard: link $from→$to: the write returned success but no link could be read out of its body — the link is UNCONFIRMED (nothing was read back)" >&2
-        return 1
+    [[ -n "$link" ]] || _kbc_unverified link "$from→$to" || return $?
+
+    # READ IT BACK ON THE CARD, through the same witness `unlink` re-reads both ends with —
+    # this is the create half of that shape and it owes the same proof. The echo is the POST's
+    # own answer; a link is only really there once the card that carries it says so.
+    #
+    # WHAT THE PREDICATE ESTABLISHES, exactly: a link from card $f to card $t with this
+    # relation is on $f's list now. It does NOT establish that it is the row this POST created
+    # — a duplicate link would match either way. "The link you asked for exists" is the claim
+    # this verb makes and all it makes.
+    #
+    # ⚠ THAT NARROWNESS IS A DELIBERATE DEFERRAL, NOT A CONSTRAINT — written out because the
+    # weaker predicate is easy to justify with a claim that is FALSE. The READ carries the link
+    # id: every `linked_tasks` entry has `task_link_id`, stated in the unlink header above,
+    # measured against live boards by card#8545, and it is the key `unlink` addresses its own
+    # DELETE with. What is UNMEASURED is the OTHER half — nothing in this repo records the shape
+    # of a LIVE `link` POST response, so whether the CREATE ECHO carries that id, and under which
+    # key, is unknown here. The only echo the tree contains is `tests/kbcard-selftest.sh`'s
+    # `LINK_BODY`, a fixture this repo wrote: evidence about the fixture, not about a server.
+    # Matching on it would compare against a key nobody has
+    # read off a real echo, and a key that turned out to be named differently would report HARD
+    # FAILURE over a link that LANDED — a false claim in the direction that costs more than the
+    # ambiguity accepted here.
+    # REVISIT the moment a live `link` runs and its echo is captured: match `task_link_id`
+    # against the echoed id, keeping this shape predicate as the fallback for an echo that
+    # carries no id. That is a strictly narrower predicate and needs the measurement first.
+    # Only the FROM end is re-read: the far card may live on a board this token cannot read,
+    # and `unlink`'s own header records that a cross-board read is a policy refusal there —
+    # making it one here would turn a landed cross-board link into a refusal.
+    local w still
+    w="$(_kbc_link_witness "$f" link)" || {
+        _kbc_unverified link "$from→$to" "The POST answered 2xx and echoed a link; card $f could not be re-read, so whether the link is on it is UNMEASURED."
+        return $?
     }
+    still="$(jq -c --argjson t "$t" --arg rel "$relation" \
+        'first(.links[] | select(.direction == "outgoing" and .id == $t and .relation_type == $rel)) // empty' <<<"$w")"
+    if [[ -z "$still" ]]; then
+        if [[ "$(jq -r '.truncated' <<<"$w")" == "true" ]]; then
+            _kbc_unverified link "$from→$to" "Card $f reports its linked_tasks list TRUNCATED and no '$relation' link to card $t is in the part it returned, so the link's PRESENCE is UNMEASURED."
+            return $?
+        fi
+        echo "kbcard: link $from→$to: HARD FAILURE — the POST answered 2xx and echoed a link, and card $f carries no '$relation' link to card $t on a re-read. The status is not the link; the read-back is." >&2
+        return 1
+    fi
     printf '%s\n' "$link"
 }
 
@@ -1444,32 +1534,34 @@ cmd_link() {
 # second source that can disagree with the server's own flag would manufacture UNMEASURED
 # verdicts of its own. The flag is the server's declaration and this verb reads only it.
 
-# _kbc_link_witness <task-id>: the card's link surface as ONE object on stdout —
+# _kbc_link_witness <task-id> [verb]: the card's link surface as ONE object on stdout —
 # {"links": [...], "truncated": <bool>}. Returns 1, with the diagnostic, when the card
-# cannot be read or its 2xx carries no linked_tasks LIST.
+# cannot be read or its 2xx carries no linked_tasks LIST. [verb] is the caller's own verb and
+# names it in that diagnostic; it defaults to `unlink`, the three call sites that predate it.
 #
-# ONE OWNER FOR THREE CALL SITES — the pre-witness and both post-witness ends — because the
-# question each asks is identical and the refusal each owes is identical: an end that could
-# not be read is UNMEASURED, and this verb's whole contract is that it never reports a
-# removal it did not measure. Three copies of that would be three chances to soften one.
+# ONE OWNER FOR FOUR CALL SITES — `unlink`'s pre-witness and both post-witness ends, and
+# `link`'s post-write read-back (card#8556) — because the question each asks is identical and
+# the refusal each owes is identical: an end that could not be read is UNMEASURED, and neither
+# verb may report a link's presence or absence it did not measure. Four copies of that would be
+# four chances to soften one.
 # The `select(type == "array")` is on the near side of any default, per the rule the tag
 # read learned the hard way: `// []` yields its right-hand side for `false` as well as for
 # null, so a `linked_tasks` of `false` would arrive here as an empty list and read as
 # "no links", which is the shape that turns an unmeasured end into a green one.
 _kbc_link_witness() {
-    local task="$1" resp data out
+    local task="$1" verb="${2:-unlink}" resp data out
     resp="$(kb_api GET "/tasks/$task.json")" || {
-        echo "kbcard: unlink: card $task could not be read (see the status above) — its links are UNMEASURED" >&2
+        echo "kbcard: $verb: card $task could not be read (see the status above) — its links are UNMEASURED" >&2
         return 1
     }
     data="$(kb_parse_resp "$resp" -c '.data | select(type == "object")')"
     [[ -n "$data" ]] || {
-        echo "kbcard: unlink: the read of card $task returned success but no card could be read out of its body — its links are UNMEASURED (nothing was read)" >&2
+        echo "kbcard: $verb: the read of card $task returned success but no card could be read out of its body — its links are UNMEASURED (nothing was read)" >&2
         return 1
     }
     out="$(kb_parse_resp "$data" -c '{links: (.linked_tasks | select(type == "array")), truncated: (.linked_tasks_truncated == true)}')"
     [[ -n "$out" ]] || {
-        echo "kbcard: unlink: card $task carries no linked_tasks LIST that could be read — its links are UNMEASURED (nothing was read)" >&2
+        echo "kbcard: $verb: card $task carries no linked_tasks LIST that could be read — its links are UNMEASURED (nothing was read)" >&2
         return 1
     }
     printf '%s\n' "$out"
@@ -1662,6 +1754,124 @@ cmd_unlink() {
     echo "kbcard: unlink: link $link_id ($from_id --$rel_type--> $to_end) is GONE — re-read on BOTH ends after the DELETE and absent from each" >&2
 }
 
+# --- the write-outcome contract: APPLIED / NOT APPLIED / UNVERIFIED --------
+# The class this section owns: a mutating verb that reports success it never READ BACK. The
+# verb issues its write, the status class says 2xx, and it prints a success built out of what
+# it SENT — so a mutation the server did not apply reaches the caller as applied. `unlink` is
+# the shape that does not do that (it re-reads BOTH ends after the DELETE and refuses to call
+# a removal it did not measure a removal), and this section is that shape hoisted so the other
+# verbs stop hand-rolling three quarters of it.
+#
+# KBC_RC_UNVERIFIED — the THIRD outcome, and it is a THIRD because the two that existed
+# cannot carry it. A caller scripting this tool has to tell "the server now holds what I asked
+# for" from "the request went out and nobody here can say what happened", and neither rc 0 nor
+# rc 1 is that: rc 0 asserts the mutation, rc 1 asserts its absence, and an unverified write
+# asserts NEITHER. Spelled as an EXIT CODE rather than a word in a message because the
+# distinction has to survive `2>/dev/null` and has to be readable without parsing prose — the
+# same argument kb_api's rc contract makes for its own transport rc.
+#   rc 0  APPLIED     — a read of what the server now holds agrees with what was asked.
+#   rc 1  NOT APPLIED — KNOWN: the request was refused, or the read-back is a measurement and
+#                       it says the mutation did not take (the HARD FAILURE arm).
+#   rc 2  bad invocation — nothing was sent.
+#   rc 3  UNVERIFIED  — the request WAS SENT and its outcome could not be read. Nothing here
+#                       says it landed and nothing says it did not; re-read before acting on
+#                       either reading. This is NOT a widening of rc 1: every state that used
+#                       to be rc 1 and IS still known stays rc 1.
+KBC_RC_UNVERIFIED=3
+
+# _kbc_unverified <verb> <subject> [detail]: the ONE owner of the unverified-write report.
+# Every "the write returned success but nothing could be read back" arm in this file routes
+# through it, so the vocabulary and the rc are decided once. Seven hand-written copies of this
+# sentence is what let one of them drift into a plausible-looking success in the first place.
+# Always returns $KBC_RC_UNVERIFIED, and the caller propagates it — an arm that swallowed it
+# into rc 1 would be re-asserting the very thing the arm exists to refuse to assert.
+_kbc_unverified() {
+    local verb="$1" subject="$2" detail="${3:-}"
+    echo "kbcard: $verb $subject: the write was SENT and its outcome could NOT be read back — UNVERIFIED WRITE (rc $KBC_RC_UNVERIFIED). Nothing here says it landed and nothing says it did not; re-read before acting.${detail:+ $detail}" >&2
+    return "$KBC_RC_UNVERIFIED"
+}
+
+# _kbc_card_witness <task-id>: the card's post-write state as ONE object on stdout, the exact
+# sibling of _kbc_link_witness and for the same reason — one owner for a question several
+# verbs ask and one refusal for the end that cannot be read.
+#   {"state":"present","http":"<2xx>","card":{…}}   the server returned a readable card
+#   {"state":"absent","http":"404"}                 the server does not know this id
+# rc 1, with the diagnostic, when the read is NOT A MEASUREMENT: a transport failure (000, so
+# no answer was read at all), a policy refusal (401/403 — the card may be perfectly fine and
+# unreadable by this token), any other status, or a 2xx no card can be read out of. A caller
+# may conclude NOTHING from rc 1; that is the UNVERIFIED arm, not the absent one.
+#
+# ⚠ `?trashed=1` IS LOAD-BEARING AND IS NOT AN OPTIMIZATION. `GET /tasks/{task}.json` binds
+# `->withTrashed()`, but the controller then 404s a trashed card unless the caller opts in with
+# that query parameter (read out of the server's own routes/api.php and TasksController::show
+# guard, not inferred from a response). Without it a SOFT-deleted card answers 404 exactly as a
+# HARD-deleted one does — so a `--hard` read-back would report "permanently deleted, DL ref
+# released" for a card that is merely in the trash with its DL ref still pinning the board's
+# allocation floor (docs/DL-COUNTER-RECOVERY.md § Why it strands). The whole point of reading
+# back a hard delete is to tell those two boards apart, and the bare read cannot.
+#
+# kb_api_status, not kb_api, for the reason unlink's DELETE gives: the statuses here are
+# DIFFERENT OUTCOMES — a 404 is this function's answer, a 403 is its refusal — and kb_api
+# collapses both to rc 1 with KB_HTTP stranded in a subshell.
+_kbc_card_witness() {
+    local task="$1" resp http body data
+    resp="$(kb_api_status GET "/tasks/$task.json?trashed=1")"
+    http="${resp%%$'\n'*}"
+    body=""
+    [[ "$resp" == *$'\n'* ]] && body="${resp#*$'\n'}"
+    case "$http" in
+        404) printf '{"state":"absent","http":"404"}\n'; return 0 ;;
+        2*)  : ;;
+        000) echo "kbcard: the re-read of card $task DID NOT COMPLETE — no HTTP status came back at all, so its state is UNMEASURED" >&2
+             return 1 ;;
+        401|403) echo "kbcard: the re-read of card $task was REFUSED (HTTP $http — POLICY, not an address problem): this token cannot read that card, so its state is UNMEASURED. That is not evidence the card is gone." >&2
+             return 1 ;;
+        *)   echo "kbcard: the re-read of card $task failed (HTTP $http) — its state is UNMEASURED" >&2
+             return 1 ;;
+    esac
+    data="$(kb_parse_resp "$body" -c '.data | select(type == "object")')"
+    [[ -n "$data" ]] || {
+        echo "kbcard: the re-read of card $task returned success but no card could be read out of its body — its state is UNMEASURED (nothing was read)" >&2
+        return 1
+    }
+    jq -c --arg h "$http" --argjson c "$data" -n '{state: "present", http: $h, card: $c}'
+}
+
+# _kbc_confirm_card <task> <predicate>: re-read card <task> and RULE on <predicate>, a jq
+# filter over the witness object above that must answer exactly `true`. It reads and rules;
+# it says nothing — the verb's own words are the caller's, exactly as _kbc_link_witness leaves
+# them to unlink, because a shared owner cannot know which mutation was asked for.
+#   rc 0  CONFIRMED — the read is a measurement and the predicate holds. The witness object is
+#                     on stdout, so the caller can quote the state it just measured.
+#   rc 1  DENIED    — the read is a measurement and the predicate is FALSE. The witness object
+#                     is STILL on stdout: this is the arm that names what the board actually
+#                     holds, and a caller with nothing to quote would be back to describing a
+#                     board it never read.
+#   rc $KBC_RC_UNVERIFIED  the read is not a measurement (the witness already said which way).
+# ⛔ JQ'S OWN rc IS SPLIT, because under this file's contract rc 1 IS AN ASSERTION. `jq -e`
+# answers 1 for "the filter RAN and its result was false or null" and 4/5 for "the filter did
+# not run at all" (a parse error, a runtime fault). Only the first is a measurement. Collapsing
+# them read as "a filter typo is a false DENIED rather than a false CONFIRMED — the direction
+# that refuses rather than asserts", and that was wrong twice over: rc 1 here is printed by
+# every caller as HARD FAILURE quoting the board, i.e. the definite claim NOT APPLIED AND
+# KNOWN, and it would have been built out of a predicate that never evaluated. An unrunnable
+# predicate measured nothing, and nothing measured is rc 3's territory, not rc 1's. The fault
+# is kbcard's own — a caller interpolating a server-supplied value into its filter is how one
+# gets minted (`comment`'s does, which is why its id is kb_is_uint-guarded BEFORE it is spliced)
+# — so the diagnostic says whose fault it is rather than describing the board.
+_kbc_confirm_card() {
+    local task="$1" pred="$2" w jrc=0
+    w="$(_kbc_card_witness "$task")" || return "$KBC_RC_UNVERIFIED"
+    printf '%s\n' "$w"
+    jq -e "$pred" <<<"$w" >/dev/null 2>&1 || jrc=$?
+    case "$jrc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "kbcard: the confirming predicate for card $task DID NOT RUN (jq rc $jrc) — card $task was read back fine; it is kbcard's own filter that is at fault, so NOTHING was measured about the write and this run makes no claim in either direction." >&2
+           return "$KBC_RC_UNVERIFIED" ;;
+    esac
+}
+
 # The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
 # caller's diagnostic may never say "the body is not JSON") is documented there. It moved out of
 # this file in card#6426: the same 2xx reaches every tool that reads through kb_api, so one owner
@@ -1686,13 +1896,40 @@ cmd_unlink() {
 # diagnostic still names the verb the caller typed. Returns 1 with that diagnostic and no
 # stdout; the caller propagates it (rc 1 is what a failed write already returns there).
 _kbc_write_echo() {
-    local verb="$1" subject="$2" resp="$3" extra="${4:-}" out
+    local verb="$1" subject="$2" resp="$3" extra="${4:-}" expect_stage="${5:-}" out
     out="$(kb_parse_resp "$resp" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if has(\"payload\") then {payload} else {} end)")"
-    [[ -n "$out" ]] || {
-        echo "kbcard: $verb $subject: the write returned success but no card could be read out of its body — the write is UNCONFIRMED (nothing was read back)" >&2
-        return 1
-    }
+    [[ -n "$out" ]] || _kbc_unverified "$verb" "$subject" || return $?
+    _kbc_confirm_stage "$verb" "$subject" "$out" "$expect_stage" || return 1
     printf '%s\n' "$out"
+}
+
+# _kbc_confirm_stage <verb> <subject> <echo-json> <expected-stage>: the echo's own
+# workflow_stage_id against the stage this call ASKED for. A no-op when <expected-stage> is
+# empty — a call that named no column is making no claim about one.
+#
+# WHAT THIS IS AND IS NOT, because the difference decides how far it can be trusted. The echo
+# is the server's post-write TaskResource, not what this tool sent — `update` returns the model
+# the mutator persisted and the `_action` path returns `$task->fresh()` — so it IS a statement
+# about what the server now holds. What was missing at these three sites was never the read; it
+# was the COMPARISON. It is still not an independent second request: a server that echoed a
+# transaction it then failed to commit would satisfy this and not satisfy a re-read. That
+# residual is stated rather than closed, because closing it costs a GET on every create, patch
+# and move — a cost decision, not this file's to take unasked.
+#
+# ONLY workflow_stage_id is compared, and the narrowness is deliberate rather than partial
+# work: the stage is an INTEGER this file resolved itself and the server stores verbatim, so a
+# disagreement is a real disagreement. name / tags / external_id / payload are echoed through
+# the server's own normalization (a decorated --pr rides as a string, --dl is canonicalized, the
+# tag list is replaced wholesale) and comparing them byte-wise would manufacture a HARD FAILURE
+# on a write that landed exactly as asked — which is a false claim in the other direction, and
+# a worse one. Widening this needs those round-trips MEASURED first; card#8556 records it.
+_kbc_confirm_stage() {
+    local verb="$1" subject="$2" out="$3" expect="${4:-}" got
+    [[ -n "$expect" ]] || return 0
+    got="$(jq -r '.workflow_stage_id // "null"' <<<"$out")"
+    [[ "$got" == "$expect" ]] && return 0
+    echo "kbcard: $verb $subject: HARD FAILURE — the write answered 2xx and the card the server echoed back is in stage $got, not the stage $expect this call asked for. The status is not the move; the read-back is." >&2
+    return 1
 }
 
 # _kbc_annotate_card <task-json>: the task with `stage` populated from
@@ -1789,10 +2026,30 @@ cmd_comment() {
     # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
     # kb_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
     cid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
-    [[ -n "$cid" ]] || {
-        echo "kbcard: comment on task $task returned success with no comment id — the write is UNVERIFIED (a comment does not bump the card's updated_at, so that id is the only confirmation)" >&2
+    [[ -n "$cid" ]] || _kbc_unverified comment "on task $task" "A comment does not bump the card's updated_at, so the echoed id is the only confirmation there is." || return $?
+
+    # READ IT BACK ON THE CARD. The echoed id is the POST's own answer; the card's `comments`
+    # array is the audit trail a reader actually sees, and it is the ONLY read surface a comment
+    # has (`GET` on the comments path is 405, POST-only — card#6051's measurement, which is also
+    # why `kbcard comments` projects this same array). It is complete rather than a first page
+    # (60 posted, 60 returned, ascending, no cap in the server's own hasMany), so a posted id
+    # missing from it is a real absence and not a paging artifact. A soft-deleted comment is
+    # excluded from the array — a comment deleted between the POST and this read therefore reads
+    # as an absence, which is the honest answer: it is not there.
+    if ! kb_is_uint "$cid"; then
+        _kbc_unverified comment "on task $task" "The write echoed a comment id of '$cid', which is not an id this tool can look for on the card, so the comment's presence is UNMEASURED."
+        return $?
+    fi
+    local crc=0
+    _kbc_confirm_card "$task" "([.card.comments[]? | select((.id|tostring) == \"$cid\")] | length) > 0" >/dev/null || crc=$?
+    if [[ "$crc" -eq "$KBC_RC_UNVERIFIED" ]]; then
+        _kbc_unverified comment "on task $task" "The POST answered 2xx and echoed comment id $cid; the confirming read produced no measurement (its cause is on the line above), so whether the comment is on it is UNMEASURED."
+        return $?
+    fi
+    if [[ "$crc" -ne 0 ]]; then
+        echo "kbcard: comment on task $task: HARD FAILURE — the POST answered 2xx and echoed comment id $cid, and that comment is not in card $task's comments on a re-read. The status is not the comment; the read-back is." >&2
         return 1
-    }
+    fi
     printf '%s\n' "$cid"
 }
 
@@ -2173,7 +2430,26 @@ cmd_archive() {
 
     kb_api PATCH "/tasks/$task.json" '{"_action":"archive"}' >/dev/null \
         || { echo "kbcard: archive failed for task $task" >&2; return 1; }
-    echo "kbcard: task $task archived (off-board, recoverable; live row — stable id + DL ref kept)"
+
+    # The PATCH's status is the server saying it accepted the request; `archived_at` on a
+    # re-read is the card being off the board. This verb's whole claim — "off-board, live row,
+    # DL ref kept" — is a claim about a state, so it is made from a read of that state.
+    local w
+    local rc=0
+    w="$(_kbc_confirm_card "$task" '.state == "present" and .card.archived_at != null')" || rc=$?
+    if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
+        _kbc_unverified archive "on task $task" "Whether card $task is off the board is UNKNOWN; re-read it before deciding whether to re-run."
+        return $?
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        if [[ "$(jq -r '.state' <<<"$w")" == "absent" ]]; then
+            echo "kbcard: archive on task $task: the PATCH answered 2xx and the server does not know card $task at all on a ?trashed=1 re-read — this verb archives, it does not delete, so that is not the state it asked for." >&2
+        else
+            echo "kbcard: archive on task $task: HARD FAILURE — the PATCH answered 2xx and card $task is STILL ON THE BOARD (archived_at is null on the re-read). The status is not the archive; the read-back is." >&2
+        fi
+        return 1
+    fi
+    echo "kbcard: task $task archived (off-board, recoverable; live row — stable id + DL ref kept) — re-read after the PATCH and archived_at is stamped"
 }
 
 # Remove a card. Default is a soft delete (PATCH _action:delete) — trashed, but
@@ -2219,13 +2495,52 @@ cmd_delete() {
 
     kb_api PATCH "/tasks/$task.json" '{"_action":"delete"}' >/dev/null \
         || { echo "kbcard: soft-delete failed for task $task" >&2; return 1; }
+
+    # THE SOFT LEG'S READ-BACK — and under --hard it is also the force-delete's PRECONDITION,
+    # which is why it is not skipped there to save a request: force-delete 422s unless the card
+    # is already trashed, so a soft leg this run could not confirm is not a leg to send an
+    # IRREVERSIBLE request behind.
+    local w
+    local rc=0
+    w="$(_kbc_confirm_card "$task" '.state == "present" and .card.deleted_at != null')" || rc=$?
+    if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
+        _kbc_unverified delete "on task $task" "Whether task $task is in the trash is UNKNOWN.${hard:+ NO force-delete was sent: this tool does not send an irreversible request behind a precondition it could not read. Re-read the card, then re-run --hard.}"
+        return $?
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        # Two different boards, and the operator acts differently on each, so each says which
+        # it is. `absent` here is NOT a success spelled oddly: the caller asked for a
+        # RECOVERABLE delete and the row is gone, which is the one outcome a soft delete
+        # promises cannot happen.
+        if [[ "$(jq -r '.state' <<<"$w")" == "absent" ]]; then
+            echo "kbcard: delete on task $task: the soft-delete answered 2xx and the server does not know card $task AT ALL — 404 on a ?trashed=1 read, which DOES return trashed cards, so the row is GONE rather than in the trash. There is nothing to restore.${hard:+ NO force-delete was sent.}" >&2
+        else
+            echo "kbcard: delete on task $task: HARD FAILURE — the soft-delete answered 2xx and card $task is STILL LIVE (deleted_at is null on the re-read). The status is not the deletion; the read-back is.${hard:+ NO force-delete was sent.}" >&2
+        fi
+        return 1
+    fi
     if [[ -z "$hard" ]]; then
-        echo "kbcard: task $task soft-deleted (recoverable within the retention window; DL ref RETAINED — use --hard to release it)"
+        echo "kbcard: task $task soft-deleted (recoverable within the retention window; DL ref RETAINED — use --hard to release it) — re-read after the PATCH and deleted_at is stamped"
         return 0
     fi
     kb_api POST "/tasks/$task/force-delete.json" '' >/dev/null \
         || { echo "kbcard: force-delete failed for task $task (needs task.delete / admin). The card is now SOFT-DELETED (in the trash, recoverable) — retry --hard with an admin token, or restore it." >&2; return 1; }
-    echo "kbcard: task $task HARD-deleted (permanent; DL ref released)"
+
+    # THE READ-BACK THIS WHOLE SECTION EXISTS FOR. A false success here does not stop at one
+    # bad print: it tells the operator the DL ref is RELEASED, and that release is an input to
+    # the next DL mint (docs/DL-COUNTER-RECOVERY.md § Why it strands), so the wrong answer
+    # propagates into the numbering. The 204 is the server saying it acted; it is not the purge.
+    rc=0
+    w="$(_kbc_confirm_card "$task" '.state == "absent"')" || rc=$?
+    if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
+        _kbc_unverified "delete --hard" "on task $task" "Do NOT treat the DL ref as released on the strength of the 204: a release that did not happen is the input to the next DL mint, so the wrong answer would propagate into the numbering rather than stopping here."
+        return $?
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        echo "kbcard: delete --hard on task $task: HARD FAILURE — the force-delete answered 2xx and card $task is STILL READABLE on a ?trashed=1 re-read. It is in the trash, NOT purged, and its DL ref is NOT released. Evidence, that card's own lifecycle stamps: $(jq -c '.card | {id, archived_at, deleted_at}' <<<"$w")" >&2
+        return 1
+    fi
+    echo "kbcard: task $task HARD-deleted (permanent; DL ref released) — re-read after the force-delete and ABSENT (404 on a ?trashed=1 read, which DOES return trashed cards, so this is a purge and not a soft delete)"
 }
 
 # --- field verb: per-board custom-field schema read + lifecycle --------------
@@ -2460,15 +2775,31 @@ _kbc_field_set_options() {
     if ! result="$(kb_api PATCH "/custom_fields/$fid.json" "$body")"; then
         return 1
     fi
-    echo "kbcard: field '$fkey' options reconciled: [$(jq -r 'join(", ")' <<<"$current")] -> [$(jq -r 'join(", ")' <<<"$desired")]" >&2
-    # The reconcile PATCH already landed (kb_api said 2xx), so this refusal is about the ECHO,
-    # not the write — and the reconciled line above has already been printed. Say which it is.
     local row
     row="$(kb_parse_resp "$result" ".data | $_KBC_FIELD_ROW")"
-    [[ -n "$row" ]] || {
-        echo "kbcard: field '$fkey': the options write returned success but no field could be read out of its body — the reconcile is UNCONFIRMED (nothing was read back)" >&2
-        return 1
+    [[ -n "$row" ]] || _kbc_unverified "field set-options" "'$fkey'" "The reconcile PATCH answered 2xx; which option set the board now holds is UNKNOWN." || return $?
+
+    # THE OPTION SET IS READ BACK OFF THE BOARD INDEX, not off the PATCH's own echo — the same
+    # surface, and the same argument, as `field delete`'s confirming re-read (the board index is
+    # the ONLY read surface a custom field has; there is no per-field GET). This verb's claim is
+    # a converge-to-set: "the options are now EXACTLY this list, in this order". That is a claim
+    # about the board, so it is made from a read of the board.
+    local after fld2 now
+    after="$(_kbc_fetch_fields)" || {
+        _kbc_unverified "field set-options" "'$fkey'" "The reconcile PATCH answered 2xx and the board's field set could not be re-read, so the converged option set is UNMEASURED."
+        return $?
     }
+    fld2="$(jq -c --argjson id "$fid" 'first(.[]? | select(.id == $id)) // empty' <<<"$after")"
+    if [[ -z "$fld2" ]]; then
+        echo "kbcard: field set-options '$fkey': HARD FAILURE — the reconcile answered 2xx and field id $fid is no longer defined on board $KB_BOARD_ID at all. The status is not the reconcile; the read-back is." >&2
+        return 1
+    fi
+    now="$(jq -c '(.options // []) | map(.value)' <<<"$fld2")"
+    if [[ "$now" != "$desired" ]]; then
+        echo "kbcard: field set-options '$fkey': HARD FAILURE — the reconcile answered 2xx and the board now holds $now, not the $desired this call converged to (membership AND order are the target). The status is not the reconcile; the read-back is." >&2
+        return 1
+    fi
+    echo "kbcard: field '$fkey' options reconciled: [$(jq -r 'join(", ")' <<<"$current")] -> [$(jq -r 'join(", ")' <<<"$desired")] — re-read off the board's field index and equal" >&2
     printf '%s\n' "$row"
 }
 
@@ -2505,8 +2836,19 @@ _kbc_field_create_call() {
     # parse; that is the SAME "success with no confirmed id" state as a JSON body with
     # no id, so it falls into the arm below rather than dying at jq's raw parse error.
     fid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
-    [[ -n "$fid" ]] || {
-        echo "kbcard: field create '$key' returned success with no field id — the write is UNVERIFIED" >&2
+    [[ -n "$fid" ]] || _kbc_unverified "field create" "'$key'" "The 201 echoes the whole definition, id first, so a success carrying no id confirms nothing." || return $?
+
+    # And read the DEFINITION back off the board index — the mirror of what the delete primitive
+    # below does, on the same and only read surface a custom field has. The id in the 201 is the
+    # write's own answer; the index is the board. A create reported as done but not defined is a
+    # board every later `field` call then acts on as though the key were there.
+    local after
+    after="$(_kbc_fetch_fields)" || {
+        _kbc_unverified "field create" "'$key'" "The POST echoed field id $fid and the board's field set could not be re-read, so the definition's presence is UNMEASURED (treat it as LANDED: the server reported success)."
+        return $?
+    }
+    jq -e --arg id "$fid" 'any(.[]?; (.id|tostring) == $id)' <<<"$after" >/dev/null 2>&1 || {
+        echo "kbcard: field create '$key': HARD FAILURE — the POST answered success with field id $fid and board $KB_BOARD_ID does not define it on a re-read. The status is not the definition; the read-back is." >&2
         return 1
     }
     printf '%s' "$fid"
@@ -2521,11 +2863,12 @@ _kbc_field_create_call() {
 #
 # THE RC IS THE BOARD STATE: the three failure arms are three DIFFERENT boards, and
 # each one SAYS which it is in its own words. The rc is what a caller that wants to
-# branch on them reads; the one caller in this file does not branch — `_kbc_field_delete`
-# collapses all three to rc 1, because every one of them is "the delete did not verify"
-# at the verb's boundary and the operator's discriminator there is the message, not the
-# status. Distinguishing them is the primitive's contract regardless: a caller that
-# folded them together before printing would be describing a board it never read.
+# branch on them reads, and the one caller in this file DOES branch — `_kbc_field_delete`
+# maps 3 to rc 3 (UNVERIFIED) and folds 1 and 4 together into rc 1, because those two are
+# both KNOWN boards while 3 is the one nobody read. It used to collapse all three to rc 1,
+# which reads as "the delete did not happen" and is false for exactly one of them.
+# Distinguishing them is the primitive's contract regardless: a caller that folded them
+# together before printing would be describing a board it never read.
 #
 #   1 — the DELETE itself was refused. The definition stands; the board is INTACT.
 #   3 — the DELETE returned 2xx and the confirming re-read failed. The definition is
@@ -2666,8 +3009,13 @@ _kbc_field_create() {
         return 2
     fi
 
+    # PROPAGATE the primitive's rc verbatim. Collapsing it to 1 would re-merge the two
+    # outcomes it exists to separate: its rc 3 is a write that WAS SENT and could not be
+    # confirmed, and reporting that as "the create failed" is a claim about a board nobody read.
     local fid
-    fid="$(_kbc_field_create_call "$key" "$label" "$type" "$opts")" || return 1
+    local crc=0
+    fid="$(_kbc_field_create_call "$key" "$label" "$type" "$opts")" || crc=$?
+    [[ "$crc" -eq 0 ]] || return "$crc"
     echo "kbcard: field '$key' created on board $KB_BOARD_ID as type '$type' (id $fid)" >&2
     printf '%s\n' "$fid"
 }
@@ -2705,7 +3053,16 @@ _kbc_field_delete() {
         echo "kbcard: ⚠ --orphan-values: deleting '$fkey' ORPHANS $n card value(s) — they stay in tasks.payload, undefined and never revalidated — and PURGES the search index for '$fkey', so DSL filters on that key will match ZERO cards until each card's key is rewritten." >&2
     fi
 
-    _kbc_field_delete_call "$fid" "$fkey" || return 1
+    # The primitive already distinguishes three boards; this used to collapse all three to
+    # rc 1, which reads as "the delete did not happen" and is FALSE for one of them. Its rc 3
+    # is a 2xx whose confirming re-read failed — the definition is gone as far as anything can
+    # tell — and that is the UNVERIFIED outcome, not a failure. rc 1 (the DELETE was refused,
+    # board INTACT) and rc 4 (2xx and the field is STILL defined) are both KNOWN, so both stay
+    # rc 1. The primitive has already said which in its own words.
+    local drc=0
+    _kbc_field_delete_call "$fid" "$fkey" || drc=$?
+    [[ "$drc" -eq 3 ]] && return "$KBC_RC_UNVERIFIED"
+    [[ "$drc" -eq 0 ]] || return 1
     echo "kbcard: field '$fkey' (id $fid) deleted from board $KB_BOARD_ID" >&2
 }
 
@@ -3345,7 +3702,31 @@ _kbc_field_retype() {
         # answer at all. It also hands an EMPTY restamp predicate, so with --restamp-dl
         # this arm names the pass and that one does not — deliberately, since it reports a
         # response and holds no opinion about a pass only a 2xx reaches.
-        echo "kbcard: field '$fkey': the conversion returned success (HTTP $http) but nothing could be read out of its body — the conversion is UNCONFIRMED (this run cannot say what the definition now is). $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl" 1 "$ftype" "$to")" >&2
+        _kbc_unverified "field retype" "'$fkey'" "The conversion returned HTTP $http and nothing could be read out of its body, so this run cannot say what the definition now is. $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl" 1 "$ftype" "$to")"
+        return $?
+    fi
+
+    # THE CONVERSION IS READ BACK OFF THE BOARD INDEX — the same surface `field delete` and
+    # `field set-options` confirm on, and for the same reason: the index is the only read
+    # surface a custom field has, and the echo is the write's own answer rather than the
+    # board's. It matters more here than at either of them: a conversion that did not take
+    # leaves every DSL filter on the key matching the OLD JSON type while `field list` is
+    # never consulted, so the failure is invisible from every surface an operator looks at.
+    # It runs BEFORE --restamp-dl: a canonicalization pass over a definition this run has not
+    # confirmed converted would be rewriting card values against a type it guessed.
+    local after fld_after now_t
+    after="$(_kbc_fetch_fields)" || {
+        _kbc_unverified "field retype" "'$fkey'" "The conversion answered HTTP $http and the board's field set could not be re-read, so the definition's type is UNMEASURED. Treat the conversion as LANDED — the server does not answer 2xx for a refusal — and re-read with 'field list' before running --restamp-dl."
+        return $?
+    }
+    fld_after="$(jq -c --argjson id "$fid" 'first(.[]? | select(.id == $id)) // empty' <<<"$after")"
+    if [[ -z "$fld_after" ]]; then
+        echo "kbcard: field retype '$fkey': HARD FAILURE — the conversion answered HTTP $http and field id $fid is no longer defined on board $KB_BOARD_ID at all. The status is not the conversion; the read-back is." >&2
+        return 1
+    fi
+    now_t="$(jq -r '.type // "null"' <<<"$fld_after")"
+    if [[ "$now_t" != "$to" ]]; then
+        echo "kbcard: field retype '$fkey': HARD FAILURE — the conversion answered HTTP $http and the board still declares '$fkey' as type '$now_t', not the '$to' this call asked for. Every DSL filter on that key is matching the OLD type. The status is not the conversion; the read-back is." >&2
         return 1
     fi
     # The server answers a target type equal to the current one as an explicit no-op:

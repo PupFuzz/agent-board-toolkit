@@ -235,8 +235,21 @@ main() {
         issue_url="$(_ata_issue_url "$repo" "$req_issue")"
         stamp_args+=(--issue "$req_issue" --issue-url "$issue_url")
     fi
-    "$_ATA_BINDIR/kbcard" --board "$board_name" "${stamp_args[@]}" >/dev/null \
-        || { echo "adopt-to-dl: the atomic stamp (kbcard patch) FAILED for card #$card_id (DL-$dl_int${req_issue:+, issue #$req_issue}) — card not adopted" >&2; exit 1; }
+    # kbcard's rc 3 is UNVERIFIED — the PATCH went out and its outcome could not be read — and
+    # it is NOT rc 1's "did not land". Both abort here (this run cannot go on to claim an
+    # adoption either way, and the DL is already claimed), but they get DIFFERENT sentences:
+    # "card not adopted" is a claim about the board, and on rc 3 nobody read the board. Saying
+    # it there sends the operator to re-adopt a card that may already carry the stamp.
+    local stamp_rc=0
+    "$_ATA_BINDIR/kbcard" --board "$board_name" "${stamp_args[@]}" >/dev/null || stamp_rc=$?
+    if [[ "$stamp_rc" -eq 3 ]]; then
+        echo "adopt-to-dl: the atomic stamp (kbcard patch) for card #$card_id (DL-$dl_int${req_issue:+, issue #$req_issue}) is UNVERIFIED — the PATCH was sent and kbcard could not read its outcome back, so whether the card carries the stamp is UNKNOWN. DL-$dl_int is already claimed; do NOT mint another. Re-read the card, then re-run this exact command with --dl $dl_int (the stamp is idempotent)." >&2
+        exit 1
+    fi
+    if [[ "$stamp_rc" -ne 0 ]]; then
+        echo "adopt-to-dl: the atomic stamp (kbcard patch) FAILED for card #$card_id (DL-$dl_int${req_issue:+, issue #$req_issue}) — card not adopted" >&2
+        exit 1
+    fi
 
     # 5. fail-loud verify — the same repo-qualified by-ref correlation the writeback/reconcile use.
     # The card's stored source is the LOWERCASED repo (server canonicalizeSource), so lowercase the
