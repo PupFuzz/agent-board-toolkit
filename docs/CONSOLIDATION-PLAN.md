@@ -512,6 +512,18 @@ the lib and **exits 1 if it cannot extract `host_ok`** — so a rename or remova
 the build rather than silently reducing coverage. The mirror is *guarded duplication*, which is the
 outcome this stage chose over consolidation.
 
+**And "guarded" is now the whole set, not the host guard alone (card#8529).** The `require_value`
+mirror — which this section names in the same breath as `host_ok` — was held by its comment and by
+nothing else, in **four** standalone tools rather than the one this paragraph implies
+(`promote-released-cards`, `release-pr-body`, `release-artifacts-check`, `release-tag-check`), as was
+the `require_resolvable` pair the two release movers share. `tests/mirror-pair-parity-selftest.sh`
+drives each against the lib's original over one corpus and **derives the copy set from the tree**, so
+the fifth standalone to grow one is compared on the day it lands rather than on the day somebody
+remembers. `tests/mirror-pair-census.sh` beside it re-derives the whole mirror-candidate population
+and prints a per-copy verdict — run it rather than quoting a count from this document, which is a
+measurement with a date on it. Choosing guarded duplication is only a defensible ruling while the
+guard exists for every mirror the ruling covers; that is what this closes.
+
 **If it is ever revived,** the § Stage D revival checklist above still applies in full (the literal
 `source "$KB_LIB"`, the INSTALL.md §6b / ADOPTION.md group split, the UPGRADE.md entry, and the
 framework's `templates/release/` mirror).
@@ -691,12 +703,19 @@ finding with no owner is abandoned, not filed.
   function's TEXT, which is exactly what `_fn_src` returns; all three are migrated, one line each,
   with the suite byte-identical either side. A reason that outlives the change that falsified it
   leaves copies in place waiting on a primitive that is not missing.
-  The shape that IS left: sites that locate a **one-line** function, whose source has no `^}` line
+  The shape that WAS left: sites that locate a **one-line** function, whose source has no `^}` line
   for `_fn_src`'s range to stop at. ⛔ **It used to run on to the next function's closing brace and
   hand that function's whole body back at rc 0** (`_fn_src bin/next-dl max_int` ⇒ 129 lines,
   two further definitions inside) — a silent wrong answer from a primitive whose docblock promised
-  "text, or exit 1". It now REFUSES, naming what the range would have swallowed, so the bound is
-  loud like the other one; what it owes those sites is a one-line MODE before they can migrate.
+  "text, or exit 1". It was made to REFUSE, naming what the range would have swallowed, so the
+  bound was loud like the other one — and **card#8529 then gave it the one-line MODE it owed**,
+  because pinning the `require_value` mirror across four standalone tools needed it and no
+  hand-spelling of that extraction was going to be the right answer. It needed the spacing bound
+  relaxed in the same change: `uint_ok()     {` is refused on its SPELLING as well as its shape,
+  so freeing either alone freed nothing. `promote-pagination-selftest.sh` migrated onto it; the
+  three sites still hand-spelled are held there by a DIFFERENT constraint (two names in one read,
+  or a there-is-exactly-one COUNT an extractor answering one function cannot assert), and their
+  dispositions say so rather than still naming the one-line mode.
   Other derived sites are anchors but not extractions at all — a definition-line LOCATE that must
   not stop at the first hit, a `sed` `i` mutation planter, and a locate in a NON-SHELL file where
   the definition is not at column zero — and are dispositioned as such.

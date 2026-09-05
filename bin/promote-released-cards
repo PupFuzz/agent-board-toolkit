@@ -188,9 +188,11 @@ for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; don
 # sentinel. Also catches a trailing flag with no argument at all, which `set -u` would
 # otherwise report as an unbound-variable error naming no flag.
 # Mirrors kb_require_value in _kb-board-lib.sh (card#5146) — this script is vendored
-# standalone into consumer repos and MUST NOT source that lib, so the guard is duplicated;
-# keep the two in sync, as with host_ok and numlist. release-pr-body carries the third copy
-# for the same reason.
+# standalone into consumer repos and MUST NOT source that lib, so the guard is duplicated, as
+# host_ok and numlist are; release-pr-body, release-artifacts-check and release-tag-check carry
+# the same copy for the same reason. THE AGREEMENT IS CHECKED, NOT ASKED FOR (card#8529):
+# `tests/mirror-pair-parity-selftest.sh` drives EVERY copy against the lib's over one corpus
+# and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.
@@ -207,9 +209,26 @@ in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return
 # released_stage_id / --shipped-stages / meta.total carrying one passed a check whose
 # message says "numeric". Writing the class out longhand also works; LC_ALL=C is used
 # because it is one mechanism for both the digit and CSV shapes. `local` scopes it to the
-# call and restores it on return. Mirrors kb_ere_match/kb_is_uint in _kb-board-lib.sh —
-# this script is vendored standalone into consumer repos and MUST NOT source that lib, so
-# the guard is duplicated; keep the two in sync, as with require_value and host_ok.
+# call and restores it on return.
+#
+# ⛔ WHAT IS SHARED WITH `kb_is_uint` IN `_kb-board-lib.sh`, AND WHAT IS NOT. This comment used to
+# say "keep the two in sync, as with require_value and host_ok", and that claim was FALSE on the
+# accept set and had been since both were written — `kb_is_uint` is `^(0|[1-9][0-9]*)$` and REFUSES
+# a leading zero, this glob ACCEPTS one, so `007` was a board id here and not there. What the two
+# genuinely share is the LC_ALL=C pin above and nothing else; `require_value` and `host_ok` really
+# are copy-for-copy mirrors, and citing them here read as a claim of the same relationship.
+#
+# THE DIVERGENCE IS LEFT STANDING, NOT RULED ON HERE — closing it would narrow what this tool
+# ACCEPTS, which is its own decision. Its direction is stated rather than waved at: a leading zero
+# reaching these guards fails toward REFUSING, never toward a wrong promotion. `--shipped-stages
+# 007` is admitted here and then matches no card, because `in_shipped_stage` compares it as text
+# against the numeric `workflow_stage_id` the board returns, so the source-stage guard holds every
+# card back and says so; `.promote.board_id` / `.promote.released_stage_id` with one are admitted
+# and then addressed as written, against a board that answers or does not. What IS fixed is the
+# CLAIM: the divergence is pinned as a value rather than asserted in prose.
+# `tests/mirror-pair-parity-selftest.sh` § 3 drives both over one corpus, agrees row for row and
+# names the two leading-zero rows on which they may differ, so a third divergence reds.
+# `tests/locale-range-guard-selftest.sh` owns the LOCALE leg and drives both under both locales.
 uint_ok()     { local LC_ALL=C; case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; }
 uint_csv_ok() { local LC_ALL=C; case "${1:-}" in ''|*[!0-9,]*|,*|*,|*,,*) return 1 ;; esac; }
 
@@ -343,10 +362,13 @@ merge_commit_tip() {
 # Mirrors require_resolvable in bin/release-pr-body (card#7525) — that tool met the same class
 # one release bin over. This script is vendored standalone into consumer repos and MUST NOT
 # source _kb-board-lib.sh, so the predicate is duplicated, as host_ok / require_value / numlist
-# already are; keep the two in sync. The MESSAGES diverge on purpose: each names what its own
-# tool does with a dead range, which is the half an operator acts on. What must not diverge is
-# the `^{commit}` peel, and the guard against that is behavioural rather than textual — each
-# tool's selftest carries a hex-sha arm that reds if its own copy loses the peel.
+# already are. The MESSAGES diverge on purpose: each names what its own tool does with a dead
+# range, which is the half an operator acts on. What must not diverge is the VERDICT, and since
+# card#8529 that is checked directly rather than asked for: tests/mirror-pair-parity-selftest.sh
+# extracts BOTH copies and runs one corpus of refs — a live sha, HEAD, an annotated tag, a 40-hex
+# non-object, a missing ref, an empty ref — through each, and reds when they disagree. Each tool's
+# own selftest keeps its hex-sha arm, which reds if THAT copy loses the peel; the pair test is what
+# reds when a NEW input class is handled differently by each.
 require_resolvable() { # <flag> <ref>
   git rev-parse --verify -q "$2^{commit}" >/dev/null \
     || die "$1 '$2' does not resolve to a commit in this repo — a range built from it walks NOTHING, which this tool would report as 'no shipped refs in range — nothing to do' at rc 0: a promotion that promoted nothing and called it success. Check the spelling, or fetch the ref before passing it"
