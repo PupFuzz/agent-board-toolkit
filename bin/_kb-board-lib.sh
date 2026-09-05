@@ -732,8 +732,11 @@ kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 # It also converts a trailing flag with no argument at all — `kbcard patch --task 5 --dl` —
 # from a bare `set -u` unbound-variable error naming nothing into a diagnostic naming the flag.
 #
-# (promote-released-cards carries an inline mirror of this — it is vendored standalone and
-# must not source this lib; keep the two in sync, as with kb_require_https_host.)
+# (promote-released-cards carries an inline mirror of this, as do release-pr-body,
+# release-artifacts-check and release-tag-check — each is vendored standalone and must not source
+# this lib. As with kb_require_https_host the agreement is CHECKED rather than asked for:
+# tests/mirror-pair-parity-selftest.sh derives the copy set from the tree and drives every copy
+# against this one over one corpus, so a fifth is compared on the day it lands.)
 kb_require_value() {
     [[ -n "${2:-}" ]] && return 0
     echo "$(_kb_prog): $1 requires a non-empty value" >&2

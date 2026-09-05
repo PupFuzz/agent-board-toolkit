@@ -32,11 +32,11 @@ _adopt_fn "$PRC" fetch_whole_board
 # keeps this exercising the shipped numeric check (which matches under LC_ALL=C, because a
 # bare `*[!0-9]*` glob range is a COLLATION range — card#5409). An UNLIFTED helper does not
 # fail loudly: the call returns 127, the census silently no-ops, and the only tell is a
-# "command not found" on a stream some cases don't read — so the extraction is asserted.
-uint_src="$(grep -E '^uint_ok\(\)' "$PRC" || true)"   # `|| true`: under set -e a no-match
-                                                     # grep kills the run before the message
-[[ -n "$uint_src" ]] || { echo "selftest: could not extract uint_ok from $PRC — did it get renamed?" >&2; exit 1; }
-eval "$uint_src"
+# "command not found" on a stream some cases don't read — so the extraction must exit 1, which
+# is what `_adopt_fn` does. This site was hand-spelled until card#8529 gave `_fn_src` a one-line
+# mode and a space-run anchor: `uint_ok()     {` needed BOTH — five spaces before the brace, and
+# a whole body on the definition line — which is why relaxing either one alone had freed nothing.
+_adopt_fn "$PRC" uint_ok
 
 _mktmp_scratch
 

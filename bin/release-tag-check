@@ -134,7 +134,10 @@ die() { echo "release-tag-check: $*" >&2; exit 2; }
 command -v git >/dev/null || die "git is required"
 
 # Mirrors kb_require_value in _kb-board-lib.sh. Like its release siblings this script is
-# deliberately self-contained and does not source that lib; keep them in sync.
+# deliberately self-contained and does not source that lib. THE AGREEMENT IS CHECKED, NOT ASKED
+# FOR (card#8529):
+# `tests/mirror-pair-parity-selftest.sh` drives EVERY copy against the lib's over one corpus
+# and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 require_uint()  { case "${2:-}" in ''|*[!0-9]*) die "$1 requires a non-negative integer";; esac; }
 # --interval takes this one, not require_uint: `--interval 0` is accepted by every

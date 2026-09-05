@@ -70,7 +70,9 @@ command -v git >/dev/null || die "git is required"
 # converts a trailing flag with no argument from a bare `set -u` unbound-variable error into
 # one naming the flag. Mirrors kb_require_value in _kb-board-lib.sh — like the sibling
 # mover, this script is self-contained and does not source that lib, so the guard is
-# duplicated; keep the two in sync.
+# duplicated. THE AGREEMENT IS CHECKED, NOT ASKED FOR (card#8529):
+# `tests/mirror-pair-parity-selftest.sh` drives EVERY copy against the lib's over one corpus
+# and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0
@@ -322,6 +324,11 @@ fi
 #
 # NOT reached by `--tag`, which returns above: that mode builds no range, and `release-tag-check`
 # asks it inside a CI job with no guarantee the range's refs are present at all.
+#
+# `bin/promote-released-cards` carries the same predicate under its own message (card#7525). The
+# two are compared directly since card#8529 — tests/mirror-pair-parity-selftest.sh extracts both
+# and runs one corpus of refs through each — so a divergence reds rather than waiting for a class
+# of input only one of them meets.
 require_resolvable() { # <flag> <ref>
   git rev-parse --verify -q "$2^{commit}" >/dev/null \
     || die "$1 '$2' does not resolve to a commit in this repo — an explicit $1 is the caller's override and skips its leg's fetch, so nothing else ever looks the ref up, and a range built from it walks NOTHING — indistinguishable from a genuinely empty release; check the spelling, or fetch the ref before passing it"

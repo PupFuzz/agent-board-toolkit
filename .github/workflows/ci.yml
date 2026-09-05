@@ -178,6 +178,7 @@ jobs:
           - kbcard-selftest
           - lib-set-derivation-selftest
           - locale-range-guard-selftest
+          - mirror-pair-parity-selftest
           - next-dl-selftest
           - no-task-wrapper-selftest
           - path-link-recipe-selftest

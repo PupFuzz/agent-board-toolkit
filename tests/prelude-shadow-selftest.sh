@@ -241,13 +241,14 @@ echo "== the helper this class was minted on is still derived =="
 EXTRACTORS=(
   "tests/_selftest-prelude.sh|1|THE OWNER. \`_fn_src\`'s \`sed\` range is the one sanctioned spelling in the suite; \`_adopt_fn\` is that plus an \`eval\`. Every other entry below is a residual measured against it."
   "tests/locale-range-guard-selftest.sh|1|RESIDUAL, OUT OF \`_fn_src\`'S REACH ENTIRELY: A NON-SHELL FILE, AND NOT AT COLUMN ZERO. It locates \`version_ok()\` inside \`.github/workflows/auto-tag-version.yml\`'s \`run:\` block — indented, with no \`^}\` line to stop at — then strips the indent and evals the one line. \`_fn_src\` anchors at column zero in a shell file and can express neither half. DERIVED ONLY SINCE THE DELIMITER SET STOPPED BEING A LIST: the \`[[:space:]]*\` between the \`^\` and the name made it invisible to the predicate this leg shipped with."
-  "tests/next-dl-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^(max_int|max_dl)\\(\\) \\{'\` lifts BOTH of next-dl's one-line primitives in one read and asserts it got exactly two lines. \`_fn_src\` now REFUSES a one-liner by name rather than handing back the next function's body with it, so this cannot migrate until the primitive has a one-line mode — and it wants two names at once, which it also does not have. DERIVED ONLY SINCE THE ANCHOR STOPPED BEING AN INCLUSION LIST: the alternation group hid it. \`reader-ref-canon-selftest.sh\` below is the same site's sibling, on \`max_int\` alone."
-  "tests/promote-source-qualify-selftest.sh|2|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. Both anchors address \`_ata_canon_source\`, whose whole body is on its definition line. \`_fn_src\` REFUSES it, naming what the range would have swallowed (\`_ata_adopt_decision\`), so the blocker is the missing one-line MODE and not a silent wrong answer. One occurrence counts the fold; the other takes the single line as source text."
-  "tests/promote-pagination-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^uint_ok\\(\\)'\` over another one-line function — and one \`_fn_src\` cannot even ADDRESS: \`uint_ok()\` is followed by five spaces before its \`{\`, outside the single-space spelling the primitive recognises, so it exits 1 on the name rather than on the one-line shape. Both bounds are stated in its docblock. PR #323 named this site as a seventh extraction under a different mechanism and left it out of scope; it is why this leg's anchor stopped taking only \`/\`."
-  "tests/reader-ref-canon-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: A ONE-LINE RANGE. \`grep -E '^max_int\\(\\) \\{'\` over next-dl's one-line \`max_int\`. Same shape and same blocker as the two entries above."
+  "tests/next-dl-selftest.sh|1|RESIDUAL, MISSING PRIMITIVE: TWO NAMES IN ONE READ. \`grep -E '^(max_int|max_dl)\\(\\) \\{'\` lifts BOTH of next-dl's one-line primitives at once and asserts it got exactly two lines. The ONE-LINE blocker is gone since card#8529 — \`_fn_src\` has a one-line mode — but it takes ONE name and answers ONE function, so it can express neither the alternation nor the exactly-two COUNT this leg asserts. \`reader-ref-canon-selftest.sh\` below is the same site's sibling, on \`max_int\` alone."
+  "tests/promote-source-qualify-selftest.sh|2|RESIDUAL, NOT AN EXTRACTION AT EITHER SITE. Both anchors address \`_ata_canon_source\`, and card#8529's one-line mode would now extract it — but neither site wants the extraction \`_fn_src\` performs: one COUNTS the definition lines carrying the fold (a there-is-exactly-one property an extractor answering one function cannot assert), the other takes the definition line as SOURCE TEXT to eval under a renamed fold in a control. Migrating either would change what the leg asserts."
+  "tests/reader-ref-canon-selftest.sh|1|RESIDUAL, NOT AN EXTRACTION: A COUNT. \`grep -E '^max_int\\(\\) \\{'\` over next-dl's one-line \`max_int\`, whose result is asserted to be exactly ONE line before it is evalled — the same there-is-exactly-one property as the two entries above, and the reason card#8529's one-line mode does not absorb it."
   "tests/promote-ref-canon-selftest.sh|1|A LOCATE, NOT AN EXTRACTION. It collects the DEFINITION LINES so its leg can assert there is EXACTLY ONE — an extraction that silently concatenated two definitions is the failure it exists to catch, so it must not stop at the first."
   "tests/url-userinfo-render-selftest.sh|1|A MUTATION PLANTER. \`sed\` \`i\` INSERTS a new line BEFORE the definition; the anchor addresses the site, nothing is read out of it. Migrating it to \`_fn_src\` is not expressible and would not mean anything."
   "tests/readback-before-success-census.sh|1|RESIDUAL, OUT OF \`_fn_src\`'S REACH BY SHAPE: IT ASKS THE INVERSE QUESTION. \`_fn_src\` extracts a function GIVEN ITS NAME; this file has a LINE NUMBER in another repo file and needs the name and bounds of whatever function ENCLOSES it — there is no name to pass. The anchors locate every definition line in a \`bin/\` file so the last one at or above the call site can be selected, and it is not a selftest (it does not source the prelude at all, by the same design decision that keeps it out of the \`*-selftest.sh\` glob). A \`_fn_at_line\` primitive would absorb it; nothing else in the suite has wanted one."
+  "tests/mirror-pair-census.sh|5|RESIDUAL, OUT OF \`_fn_src\`'S REACH BY SHAPE: IT NEEDS A LINE NUMBER, NOT SOURCE TEXT. Five \`_ctl_line\` anchors, one per control leg, each addressing ONE real \`bin/\` definition so the classifier can be driven over it — and asserted to match EXACTLY ONCE, because a control that silently addressed the first of several matches would pin a line nobody chose. \`_fn_src\` answers with TEXT and has no line-number mode, and this census classifies a definition whether or not it is extractable at all. Nothing is read out of the function. Same shape as the readback census above."
+  "tests/mirror-pair-parity-selftest.sh|1|A LOCATE, NOT AN EXTRACTION. \`^require_value[[:space:]]*\\(\\)\` over each shipped shell file answers WHICH FILES DEFINE the guard — that file's denominator, derived rather than listed so a fifth standalone copy is driven on the day it lands. The extraction itself is \`_fn_src\`, on the next line. \`_fn_src\` cannot express this: it is handed one file and asked for one function, and the question here is which files have one."
   "tests/token-duplication-selftest.sh|1|A MUTATION PLANTER. An \`awk\` rule that copies the lib and injects an unmirrored \`_kb_expand_home\` call after \`kb_resolve_env\`'s definition line — the NEGATIVE control for card#8548's call-graph pin. Nothing is extracted; the anchor names where to insert."
 )
 
@@ -256,6 +257,15 @@ EXTRACTORS=(
 # `_EX_NAME` finds the function name inside the literal that anchor opened. The census total, the
 # per-file counts and the fixture controls all read THIS FUNCTION, so a spelling one of them
 # learned and another did not cannot exist.
+#
+# ⛔ THE NAME MAY BE FOLLOWED BY A BRACKET EXPRESSION, NOT ONLY BY LITERAL SPACES (card#8529).
+# `_EX_NAME` admitted `name *()` — the space-run spelling — and NOT `name[[:space:]]*()`, so the
+# second spelling was a hole exactly where the next author reaches. It was walked into by accident:
+# rewriting `_fn_src`'s OWN anchor in bracket-expression form made THE OWNER's anchor invisible to
+# the gate that polices anchors, and this leg then reported the owner's disposition as STALE rather
+# than reporting a new spelling — the wrong end of the same fact. Both spellings are admitted now.
+# Widening moved no existing per-file count (measured on the tree that day), which is what says it
+# added detection rather than noise.
 #
 # ⛔ THE DELIMITER IS TAKEN FROM THE LINE, NOT FROM A SET. `_EX_ANCHOR` accepts any non-word,
 # non-space character before the `^`, and the character it matched is then used as the CLOSING
@@ -275,7 +285,7 @@ EXTRACTORS=(
 # Measured: it did exactly that, loudly (`awk: warning: escape sequence …`) but at rc 0 per file.
 # `ENVIRON[]` is handed over verbatim.
 _EX_ANCHOR='[^A-Za-z0-9_ ]\^'
-_EX_NAME='[A-Za-z_$][A-Za-z0-9_${}]*\\?\)?[ *]*\\?\(\\?\)'
+_EX_NAME='[A-Za-z_$][A-Za-z0-9_${}]*(\[\[:space:\]\]\*)?\\?\)?[ *]*\\?\(\\?\)'
 _extract_anchors() {
     _EX_ANCHOR="$_EX_ANCHOR" _EX_NAME="$_EX_NAME" awk '
         $0 ~ /^[[:space:]]*#/ { next }          # a header narrating the idiom is prose

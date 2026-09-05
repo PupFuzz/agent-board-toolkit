@@ -192,32 +192,43 @@ _need() {
 #     inside a pipeline) gets "" and must red on its own floor — `board-snapshot-selftest.sh`'s
 #     `[[ "$early_exits" -ge 4 ]]` is that floor. `_adopt_fn` propagates explicitly.
 #
-# ⚑ BOUND: this recognises `^name() {` … `^}` and nothing else — ONE space before the brace. A
-# function defined as `name ()`, `function name {`, or `name()` with two or more spaces before the
-# `{` is NOT extracted; it exits 1 naming the function, so the bound is loud rather than silent.
-# That last spelling is live here (`bin/promote-released-cards`'s `uint_ok`,
-# `bin/release-tag-check`'s `require_uint`/`require_pint`, six more): every one of them is a
-# one-line function, so they are refused either way and widening the spelling would buy nothing
-# until the one-line MODE below exists. Stated because "what every bin here uses" is not true of
-# them, and a bound that overstates its reach is what card#8548 is about.
+# ⚑ BOUND: this recognises a definition at COLUMN ZERO spelled `name()` — any run of spaces is
+# allowed between the name and the `()`, and between the `()` and the `{`. `function name {` and an
+# INDENTED definition are still NOT extracted; it exits 1 naming the function, so the bound is loud
+# rather than silent. (`bin/next-dl`'s nested `unusable()` is the one indented definition in `bin/`,
+# and it is file-local to a subshell.) The spacing was pinned to exactly ONE space until card#8529,
+# which refused `bin/promote-released-cards`'s `uint_ok()     {` on its SPELLING while the caller
+# that wanted it also needed the one-line MODE below — two bounds reported as one, so relaxing
+# either alone would have changed nothing at any live site.
 #
-# ⚑ BOUND: A ONE-LINE FUNCTION IS REFUSED, NOT GUESSED AT — and that refusal is the second half of
-# the `exit 1` above, not a separate policy. `max_int() { …; }` carries no `^}` line of its own, so
-# the range runs on to the NEXT function's closing brace and hands that function's whole body back
-# with it: `_fn_src bin/next-dl max_int` returned 129 lines carrying two further definitions, at
-# rc 0. A caller reading "the source text of one shell function, or exit 1" then evals or greps a
-# plausible-looking wrong answer — the one failure shape this docblock already promises not to
-# have. So the extracted text is checked for a SECOND top-level definition line, and finding one
-# is a refusal that names what got swallowed. What the primitive still owes is a one-line MODE;
-# until it has one the sites needing it stay hand-spelled, dispositioned by name in
-# `prelude-shadow-selftest.sh`'s `EXTRACTORS`.
+# ⚑ ONE-LINE MODE (card#8529). A definition whose whole body sits on its own line — `max_int() {
+# …; }` — carries no `^}` line, so the `^}` range runs on to the NEXT function's closing brace and
+# would hand that function's body back with it: `_fn_src bin/next-dl max_int` returned 129 lines
+# carrying two further definitions, at rc 0. The FIRST line of the range is therefore tested for the
+# one-line spelling and returned ALONE when it matches. That spelling is the line ENDING in `; }` or
+# `;}`, NOT a bare trailing `}`: `${x}` and `"$*"$'\n'` end a great many opening lines, and a
+# predicate they satisfy would truncate a multi-line function to its first line — a plausible-looking
+# wrong answer, which is the one failure shape this docblock promises not to have.
+#   ⚑ BOUND: a MULTI-line function whose OPENING line ended in `; }` would still be truncated. No
+#     such spelling exists in `bin/` — and the way to see that is to re-run the enumeration rather
+#     than to trust this note, which is a measurement with a date on it:
+#     `command grep -rnE '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{.*;[[:space:]]*\}[[:space:]]*$' bin/`
+#     listed 57 hits on the day this landed, every one a whole function on one line.
+#
+# ⚑ THE SWALLOW REFUSAL SURVIVES the one-line mode, for the case it was minted on: a MULTI-line
+# extraction whose range ran past its own end. A second top-level definition inside the extracted
+# text is still a refusal that names what got swallowed.
 _fn_src() {
-    local src swallowed
-    src="$(sed -n "/^$2() {/,/^}/p" "$1")"
+    local src first swallowed
+    src="$(sed -n "/^$2 *() *{/,/^}/p" "$1")"
     [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
-    swallowed="$(printf '%s\n' "$src" | sed -nE '/^[A-Za-z_][A-Za-z0-9_]*\(\) \{/p' | tail -n +2 | tr '\n' ' ')"
+    first="${src%%$'\n'*}"
+    case "$first" in
+        *'; }'|*';}') printf '%s\n' "$first"; return 0 ;;
+    esac
+    swallowed="$(printf '%s\n' "$src" | sed -nE '/^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/p' | tail -n +2 | tr '\n' ' ')"
     [[ -z "$swallowed" ]] || {
-        printf 'selftest: %s in %s is a ONE-LINE function — the range ran past it and swallowed: %s— _fn_src has no one-line mode, so extract it by hand and disposition the site\n' \
+        printf 'selftest: %s in %s opens a body whose range ran past its own end and swallowed: %s— extract it by hand and disposition the site in prelude-shadow-selftest.sh\n' \
             "$2" "$1" "$swallowed" >&2
         exit 1
     }
