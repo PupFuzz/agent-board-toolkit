@@ -228,15 +228,21 @@ done
 # carry a path segment, a query parameter or a URL authority. This is a refusal, not a
 # sanitiser: a value that does not match is reported by name and nothing is requested.
 #
-# ⛔ EVERY SHAPE TEST BELOW GOES THROUGH `kb_ere_match`, WHICH PINS `LC_ALL=C` — never a bare
-# `[[ … =~ [0-9] ]]`. A bracket range in a bash pattern is a COLLATION range: under a UTF-8
-# locale `^[0-9]+$` matches U+0663 ARABIC-INDIC DIGIT THREE and `^[A-Za-z0-9._-]+$` matches
-# U+00E9 (measured on the reference host, card#5409). These three guards decide what may be
+# ⛔ EVERY SHAPE TEST BELOW GOES THROUGH A LIB PREDICATE (`kb_is_repo_slug` / `kb_is_uint` /
+# `kb_ere_match`), EACH OF WHICH PINS `LC_ALL=C` — never a bare `[[ … =~ [0-9] ]]`. A bracket
+# range in a bash pattern is a COLLATION range: under a UTF-8 locale `^[0-9]+$` matches U+0663
+# ARABIC-INDIC DIGIT THREE and `^[A-Za-z0-9._-]+$` matches U+00E9 (measured on the reference
+# host, card#5409). These three guards decide what may be
 # interpolated into a REQUEST PATH, so a locale-widened accept-set is precisely the wrong
 # direction to be wrong in.
 [[ -n "$REPO" ]] || die "--repo is required"
 [[ -n "$PR"   ]] || die "--pr is required"
-kb_ere_match "$REPO" '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || die "--repo must be 'owner/name', got '$REPO'"
+# ONE accept predicate for a repo slug, in the lib (card#8421) — this site used to re-spell the
+# shape+charset regex, which is how the third copy of it came to differ from the other two. It
+# also NARROWS what this flag takes: `owner/name.git` was accepted here and is now refused, and
+# that is the correct direction — the value is interpolated into a `repos/<slug>/…` request
+# path, where a `.git` suffix names no repository GitHub will answer for.
+kb_is_repo_slug "$REPO" || die "--repo must be a bare 'owner/name' with no '.git' suffix, got '$REPO'"
 if ! kb_is_uint "$PR" || [[ "$PR" -eq 0 ]]; then die "--pr must be a positive integer, got '$PR'"; fi
 [[ -z "$REF" ]] || kb_ere_match "$REF" '^[A-Za-z0-9._/-]+$' \
     || die "--ref carries a character this tool will not put in a request path, got '$REF'"

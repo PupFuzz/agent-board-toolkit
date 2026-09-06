@@ -1484,13 +1484,41 @@ echo "== Advisory legs are bounded in WALL-CLOCK, not just in exit code =="
 #
 # BSC_ADVISORY_TIMEOUT is overridden to 1s here for exactly one reason: to test the bound
 # without making this suite wait out the real 60s budget. The real default is asserted below.
-printf '%s\n' '#!/bin/sh' 'sleep 30' 'echo "never reached"' > "$DRTOOL"; chmod +x "$DRTOOL"
-_t0=$SECONDS
+#
+# THE CLOCK STARTS WHEN THE DELEGATE DOES, NOT WHEN THE RITUAL DOES (card#8533). `_t0` used to
+# be a `SECONDS` set before `run_dr_leg`, so the whole close — its own startup and every leg
+# ahead of this one — was inside the interval the 1s budget is judged by, and a loaded box
+# reddens the cell for a bound that fired exactly on time. The fixture stamps the instant it is
+# launched instead (`_since_stamp`/`_stamp_taken`, the prelude's pair — the same reader
+# `release-tag-check-selftest`'s hung-read window uses); the window is then the budget plus the
+# ritual's remaining work, and nothing that runs before the leg under test.
+#
+# THE BOUND IS 5 BECAUSE THE WINDOW IS NOW ~1s, AND THE ⚠ CELL CANNOT COVER FOR IT. The
+# `KILLED after 1s` assertion below reads the budget off `_bsc_advisory_leg`'s own `$budget`
+# variable, never off the measured duration, so it is green for a bound the helper announced
+# and then failed to apply. This cell is that regression's only witness, and the 15 it
+# inherited — chosen when the whole close sat inside the window — left it green. Measured 1s on
+# three consecutive runs at load ~8; 5 is 5x that, and it is watched red against a leg that
+# runs 8s while still announcing `KILLED after 1s`.
+DRSTAMP="$TMP/dr-hang.launched"; rm -f "$DRSTAMP"
+cat > "$DRTOOL" <<EOF
+#!/bin/sh
+date +%s > "$DRSTAMP"
+sleep 30
+echo "never reached"
+EOF
+chmod +x "$DRTOOL"
 rc="$(BSC_ADVISORY_TIMEOUT=1 run_dr_leg "$goodhook")"
-_elapsed=$((SECONDS - _t0))
+_elapsed="$(_since_stamp "$DRSTAMP")"
 eq "a hanging leg does NOT hang the close — it still exits 0" "0" "$rc"
-eq "…and the ritual returns in about the budget, not the delegate's own runtime" "true" \
-   "$([ "$_elapsed" -lt 15 ] && echo true || echo false)"
+# The fixture's own precondition, asserted rather than assumed: the window below is "from the
+# delegate's launch", so a run that never reached the delegate would time an interval that
+# never happened — and without this cell that surfaces only as a wrong number.
+eq "…the hanging delegate was actually LAUNCHED (the window below is its own)" "true" \
+   "$(_stamp_taken "$DRSTAMP")"
+[ "$_elapsed" -lt 5 ] \
+  && ok "…and the ritual returns in about the budget, not the delegate's own runtime (${_elapsed}s from its launch < its 30s runtime)" \
+  || bad "…the ritual took ${_elapsed}s from the delegate's launch — the 1s budget is not what ended it"
 eq "…with a ⚠ naming the kill and the budget that caused it" "true" \
    "$(has 'dependabot-deploy-reconcile was KILLED after 1s' "$(cat "$ERRF")")"
 eq "…said as an INCOMPLETE partial answer, not as a finished one" "true" \

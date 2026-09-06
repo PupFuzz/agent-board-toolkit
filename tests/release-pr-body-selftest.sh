@@ -659,6 +659,72 @@ rc=0; body8="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" || rc=$?
 eq "control: matching range exits 0"         "0"     "$rc"
 eq "control: footer names the shipped token" "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$body8")"
 
+echo "== an EMPTY manifest over a NON-EMPTY range is a FINDING, not silence (card#8538) =="
+# WHAT WAS SILENT. The two arms directly above pin that a no-match range still exits 0 and
+# "simply carries no manifest footer" — correct, and exactly the hole: an omitted footer and a
+# footer whose range legitimately had nothing to say are the SAME bytes to every reader of this
+# body. Measured on a real release: a consumer whose `card_token_regex` was absent got 0
+# `shipped-cards` lines over a range carrying eight card ids, at rc 0, under a `## Card
+# coverage` section reading "All shipped refs have a tracking card" (card#8423). The body now
+# says which of the two it is. It still exits 0 — this tool GENERATES the release PR body, and
+# a non-zero would block the very PR the finding is written for.
+gapcfg() { printf '%s\n' "$1" > "$W/.release-pr.json"; }
+gapbody() { rc=0; GAPBODY="$( (cd "$W" && "$BIN" --version 0.3.0) 2>"$T/gap.err" )" || rc=$?; GAPERR="$(cat "$T/gap.err")"; }
+
+# A: BOTH keys declared, only one yields — the half-empty case, and the one the card names.
+gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "a declared key matching nothing still exits 0"   "0"     "$rc"
+eq "…and the body carries a Correlation gaps section" "true" "$(has '## Correlation gaps' "$GAPBODY")"
+eq "…naming the key that matched nothing"            "true"  "$(has '`card_token_regex` is declared' "$GAPBODY")"
+eq "…and saying WHICH manifest is empty"             "true"  "$(has 'The `shipped-cards` manifest is EMPTY' "$GAPBODY")"
+eq "…while the key that DID yield is not named"      "false" "$(has '`ref_token_regex` is declared (`DL-[0-9]+`) and matched no' "$GAPBODY")"
+eq "…the strong headline does NOT fire (one key yielded)" "false" "$(has 'NOTHING in' "$GAPBODY")"
+eq "…and the finding reaches stderr too"             "true"  "$(has 'card_token_regex' "$GAPERR")"
+eq "…the shipped-refs footer is still emitted"       "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$GAPBODY")"
+
+# B: NEITHER key yields — the strong shape. Both manifests empty, so the run correlates
+# nothing at all, and an UNDECLARED key becomes a finding too (it is not one when the other
+# key yields — a repo that uses one spelling is not owed a warning about the other).
+gapcfg '{ "ref_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "nothing correlated → still rc 0"                 "0"     "$rc"
+eq "…the headline names the range and its size"      "true"  "$(has 'NOTHING in' "$GAPBODY")"
+eq "…the DECLARED key that matched nothing is named" "true"  "$(has '`ref_token_regex` is declared' "$GAPBODY")"
+eq "…and the UNDECLARED one is named as undeclared"  "true"  "$(has '`card_token_regex` is not declared' "$GAPBODY")"
+
+# C: NEITHER key declared at all — the shape `release-artifacts-check` reds a promoting config
+# for, seen from the range's side. A repo with no `.promote` block is outside that check's
+# population, so this body is the only surface that can say it.
+gapcfg '{ "tag_format": "release-{{version}}" }'
+gapbody
+eq "neither key declared → still rc 0"               "0"     "$rc"
+eq "…both keys are named as undeclared"              "true"  \
+   "$( [ "$(has '`ref_token_regex` is not declared' "$GAPBODY")" = true ] \
+       && [ "$(has '`card_token_regex` is not declared' "$GAPBODY")" = true ] && echo true || echo false )"
+eq "…and the body is otherwise complete"             "true"  "$(has '## Bundled' "$GAPBODY")"
+
+# NEGATIVE CONTROL 1 — both declared, both yield: NO section at all. Without it every arm above
+# is satisfied by a tool that prints the section unconditionally.
+# The fixture is NOT mutated to produce this arm: the range's head is resolved from
+# `origin/dev`, so a local commit would not enter it, and pushing one would move the commit
+# count every later case asserts. The range's one subject is
+# `feat: new work for cycle two (#3) DL-2`, so a second key spelled `#[0-9]+` yields `3` off
+# the same commit — two keys, two id spaces, both non-empty, which is all this control needs.
+gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "#[0-9]+", "tag_format": "release-{{version}}" }'
+gapbody
+eq "control: both keys yielding → rc 0"              "0"     "$rc"
+eq "control: …and NO Correlation gaps section"       "false" "$(has '## Correlation gaps' "$GAPBODY")"
+eq "control: …both footers present"                  "true"  \
+   "$( [ "$(has 'shipped-refs=DL-2' "$GAPBODY")" = true ] && [ "$(has 'shipped-cards=3' "$GAPBODY")" = true ] && echo true || echo false )"
+
+# NEGATIVE CONTROL 2 — an EMPTY range says nothing. "No tokens over zero commits" is not a
+# finding, and a section that fired there would cry wolf on every no-op range.
+gapcfg '{ "ref_token_regex": "ZZZ-[0-9]+", "card_token_regex": "QQQ#[0-9]+", "tag_format": "release-{{version}}" }'
+rc=0; emptyrange="$( (cd "$W" && "$BIN" --version 0.3.0 --base HEAD --head HEAD) 2>/dev/null )" || rc=$?
+eq "control: an empty range → rc 0"                  "0"     "$rc"
+eq "control: …and no Correlation gaps section"       "false" "$(has '## Correlation gaps' "$emptyrange")"
+
 echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) =="
 # WHAT WAS BROKEN. `card_coverage_section` computed its manifest from `ref_token_regex` only,
 # and short-circuited on an empty one with a confident `_No shipped DL refs in range._`. This
@@ -697,7 +763,7 @@ cat > "$CR/.release-pr.json" <<'EOF'
 {
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
-  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" }
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "*" }
 }
 EOF
 
@@ -735,6 +801,71 @@ EOF
 covok="$(coverage_body)"
 eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
 eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+
+echo "== a card that EXISTS but carries no by-ref source is NOT reported as cardless (card#8421) =="
+# THE DEFECT, END TO END ACROSS THE TWO BINS. Under a repo-qualified `.promote.source`,
+# promote-released-cards will not MOVE a ref-matched card whose by-ref source it cannot derive
+# — but that card EXISTS and carries the ref. Its DL used to fall into the one `matched NO
+# card` WARNING line this section greps, so a release PR body told its author to "Create (or
+# correct) a board card" for a card already on the board. The remedy is the opposite one:
+# stamp the card that is there. Measured on the pre-fix pair, on exactly this fixture.
+#
+# EVERY BLOCK ABOVE RUNS UNDER `"source": "*"`, where no card can be unsourced — which is why
+# nothing here covered it. This block gets its OWN repo and config so that fixture is untouched.
+QC="$COV/qrepo"
+g init -q "$QC"
+echo one > "$QC/f"; g -C "$QC" add f; g -C "$QC" commit -qm "chore: init"; g -C "$QC" tag v0.1.0
+echo two > "$QC/f"; g -C "$QC" commit -qam "feat: a tracked thing (DL-77) (#43)"
+echo three > "$QC/f"; g -C "$QC" commit -qam "feat: an untracked thing (DL-99) (#44)"
+cat > "$QC/.release-pr.json" <<'EOF'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "acme/widget" }
+}
+EOF
+# The board holds card #42 for DL-77 with NO source-yielding field at all. DL-99 is on no card.
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-77"}}],"meta":{"last_page":1,"total":1}}
+EOF
+qbody() {  # <head-ref> — the body for v0.1.0..<head-ref> of the qualified fixture repo
+  ( cd "$QC" \
+    && PATH="$COV/bin:$HERE/../bin:$PATH" \
+       KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+       "$BIN" --version 0.2.0 --base v0.1.0 --head "$1" 2>/dev/null )
+}
+# ONLY the unsourced ref is shipped, so a body that still says "no tracking card" anywhere is
+# the defect, and there is no cardless ref to make the phrase legitimately appear.
+qonly="$(qbody HEAD~1)"
+eq "the coverage section MEASURED (qualified)"        "true"  "$(has '## Card coverage' "$qonly")"
+eq "the unsourced ref is NOT called cardless"         "false" "$(has 'no tracking card' "$qonly")"
+eq "…so the author is NOT told to create a card"      "false" "$(has 'Create (or correct) a board card' "$qonly")"
+eq "…it is reported as a card lacking a SOURCE"       "true"  "$(has 'no by-ref source' "$qonly")"
+eq "…naming the ref"                                  "true"  "$(has 'DL-77' "$qonly")"
+eq "…and the remedy is to STAMP the existing card"    "true"  "$(has 'kbcard patch --pr-url' "$qonly")"
+eq "…and it does not read as all-clear either"        "false" "$(has 'All shipped refs have a tracking card' "$qonly")"
+# BOTH kinds at once: the two reports are independent lines, each carrying only its own ref.
+qboth="$(qbody HEAD)"
+eq "both: the cardless DL-99 IS reported cardless"    "true"  "$(has '**Shipped refs with no tracking card:** DL-99' "$qboth")"
+eq "both: …and the unsourced DL-77 is not in it"      "false" "$(has 'no tracking card:** DL-77' "$qboth")"
+eq "both: the unsourced line names DL-77"             "true"  "$(has 'no by-ref source:** DL-77' "$qboth")"
+eq "both: …and the create-a-card advice IS present"   "true"  "$(has 'Create (or correct) a board card' "$qboth")"
+# CONTROL — the SAME repo, the SAME range, the SAME board, under the single-repo DECLARATION.
+# Card #42 is attributable there, so DL-77 is simply covered and no second line exists: the
+# split above is repo qualification acting, not this fixture being unusual.
+# The key is flipped in the repo's OWN config, not handed over as a sibling --config:
+# `card_coverage_section` invokes the promoter with no --config at all, so the promoter reads
+# `.release-pr.json` from the CWD and a sibling file would leave this control re-running the
+# qualified case (observed — it failed for that reason before this line existed).
+jq '.promote.source = "*"' "$QC/.release-pr.json" > "$COV/qstar.json"
+cp "$COV/qstar.json" "$QC/.release-pr.json"
+qstar="$(qbody HEAD~1)"
+eq "control: under '*' the same ref reports clean"    "true"  "$(has 'All shipped refs have a tracking card' "$qstar")"
+eq "control: …with no unsourced line at all"          "false" "$(has 'no by-ref source' "$qstar")"
+# restore the board the blocks below read
+cat > "$BOARD_FILE" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}},
+         {"id":9999,"workflow_stage_id":51,"payload":{}}],"meta":{"last_page":1,"total":2}}
+EOF
 
 echo "== the coverage section is EMITTED ONLY when it carries a measurement (card#7038) =="
 # WHAT CHANGED. The section used to render unconditionally, and when it could not check

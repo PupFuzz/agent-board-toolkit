@@ -1453,6 +1453,69 @@ expect_rc "a decimal is not a uint"                          1 kb_is_uint "1.0"
 expect_rc "leading whitespace refused"                       1 kb_is_uint " 5"
 expect_rc "trailing whitespace refused"                      1 kb_is_uint "5 "
 
+echo "== kb_is_repo_slug — the bare <owner>/<name> predicate (card#8421) =="
+# ⛔ A SHAPE TEST ALONE CANNOT DO THIS JOB, which is why the shape-only rows below are not the
+# whole accept set. The value this predicate gates is spent TWICE, on both sides of ONE
+# comparison: `bin/adopt-to-dl` interpolates it into the placeholder `pr_url` the card is
+# STAMPED with, AND into the `source=` of the step-5 by-ref VERIFY. A spelling that survives
+# here therefore derives the SAME garbage on both sides, so the verify passes VACUOUSLY and
+# "adopted => correlatable" is certified by a check that could not have failed (canon #9) —
+# while the bridge writeback and the reconcile, which derive the source through the server's
+# own repoFromGitHubUrl, correlate the card to nothing.
+#   * `git@github.com:acme/widget` — one slash, two non-empty parts, no whitespace, so a SHAPE
+#     test alone accepts it (measured). It stamps `github.com/git@github.com:acme/widget/pull/0`,
+#     whose capture is `git@github.com:acme/widget`; the verify then queries that same string.
+#   * `acme/*` — same story, and the stored source is a literal `*` that names no repo.
+#   * `acme/widget.git` — the one spelling that does NOT pass vacuously, and it is worse than a
+#     refusal rather than better: repoFromGitHubUrl TRIMS the `.git`, so the card's derived
+#     source is `acme/widget` while the verify queries `acme/widget.git` — it fails LOUD, AFTER
+#     the card has already been stamped. Refusing before the write leaves nothing half-applied.
+# The pair asserted here is the one `bin/promote-released-cards` applies to `.promote.source`
+# (`src_charset_ok` plus its shape `case`) — the same value at the other end of the same
+# correlation. That tool is a vendored standalone that must not source this lib, so the copy
+# stands and the two must be kept in sync.
+expect_rc "owner/name valid"          0 kb_is_repo_slug "owner/name"
+expect_rc "mixed-case owner valid"    0 kb_is_repo_slug "AIMLA-org/platform"
+expect_rc "no slash rejected"         1 kb_is_repo_slug "owner"
+expect_rc "two slashes rejected"      1 kb_is_repo_slug "owner/name/extra"
+expect_rc "full URL rejected"         1 kb_is_repo_slug "https://github.com/owner/name"
+expect_rc "whitespace rejected"       1 kb_is_repo_slug "owner /name"
+expect_rc "empty rejected"            1 kb_is_repo_slug ""
+expect_rc "no argument at all rejected" 1 kb_is_repo_slug
+expect_rc "empty owner rejected"      1 kb_is_repo_slug "/name"
+expect_rc "empty name rejected"       1 kb_is_repo_slug "owner/"
+expect_rc "scp-style remote rejected" 1 kb_is_repo_slug "git@github.com:acme/widget"
+expect_rc "a .git suffix rejected"    1 kb_is_repo_slug "acme/widget.git"
+# THE SUFFIX ARM IS CASE-INSENSITIVE, and the uppercase spellings are not a curiosity — they are
+# the one input on which this predicate DISAGREED with its declared duplicate. `.git` is refused
+# because the two derivations disagree about it (see the arm's own comment in the lib), and that
+# disagreement is a property of the SUFFIX, not of its casing: GitHub's `<owner>/<name>` is
+# case-insensitive, `repoFromGitHubUrl` is `/i` and trims `.GIT` too, so `acme/widget.GIT` stamps
+# a card whose derived source is `acme/widget` and then verifies against `acme/widget.git` —
+# LOUD, but only AFTER the counter is consumed and the card stamped, which is the exact
+# half-applied write the arm exists to prevent. `bin/promote-released-cards`' copy lowercases
+# before its own `case`, so it refused these all along; this predicate accepted them until
+# card#8421's third review round, and § 3c of tests/promote-source-qualify-selftest.sh is what
+# now holds the two accept sets to each other rather than leaving it to two files' comments to
+# agree.
+expect_rc "a .GIT suffix rejected"    1 kb_is_repo_slug "acme/widget.GIT"
+expect_rc "a .Git suffix rejected"    1 kb_is_repo_slug "acme/widget.Git"
+expect_rc "a glob is not a repo"      1 kb_is_repo_slug "acme/*"
+expect_rc "a URL scheme rejected"     1 kb_is_repo_slug "ssh://git@github.com/acme/widget"
+expect_rc "a colon is not in the set" 1 kb_is_repo_slug "acme:x/widget"
+# CONTROLS — without these a predicate that refused EVERYTHING would pass every row above.
+# Each is a spelling a real adoption or coverage read uses and must keep accepting.
+expect_rc "control: a plain repo passes"    0 kb_is_repo_slug "acme/widget"
+expect_rc "control: a dot inside a name"    0 kb_is_repo_slug "acme/widget.js"
+expect_rc "control: underscore + hyphen"    0 kb_is_repo_slug "acme_org/my-repo"
+expect_rc "control: digits either side"     0 kb_is_repo_slug "acme2/widget3"
+# `.git` is refused by its own arm and NOT by the charset, so the two must stay distinguishable:
+# a name that merely CONTAINS `.git` is legal and must still pass, or the suffix arm has quietly
+# become a substring ban.
+expect_rc "control: '.git' inside a name is not the suffix" 0 kb_is_repo_slug "acme/widget.gitignore"
+expect_rc "control: '.GIT' inside a name is not the suffix" 0 kb_is_repo_slug "acme/widget.GITIGNORE"
+expect_rc "control: an owner may end in .git-ish text"      0 kb_is_repo_slug "acme.github/widget"
+
 echo "== kb_dl_num — strict (rejects non-DL loudly) =="
 expect_out "bare int"                   "42"  kb_dl_num "42"
 expect_out "DL-093 -> 93"               "93"  kb_dl_num "DL-093"

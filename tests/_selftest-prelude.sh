@@ -5,10 +5,25 @@
 #     HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 #     source "$HERE/_selftest-prelude.sh"
 #
-# It carries only the harness the selftests all shared verbatim — the assertion
-# helpers (ok/bad/fails, eq, expect_rc/expect_out, has), the required-bin guard, the
-# temp-dir+trap[+scratch-HOME] setup, and the PASS/FAIL summary. It defines no test
-# cases and asserts nothing; the fixtures and cases stay in each selftest.
+# It carries the harness for the suite: assertion and reporting helpers, guards, scratch
+# setup, and shared extractors. It defines no test cases and asserts nothing; the fixtures
+# and cases stay in each selftest.
+#
+# ⛔ WHAT IS IN HERE IS NOT ENUMERATED HERE, AND THAT IS THE FIX RATHER THAN AN OMISSION. This
+# docblock used to list the contents ("ok/bad/fails, eq, expect_rc/expect_out, has, the
+# required-bin guard, the temp-dir setup, the summary") and the list went stale on EVERY
+# addition — `has_line`, `expect_value_flags`, `_value_flags`, `_adopt_fn`, `_since_stamp` and
+# `_stamp_taken` all landed without it, and it named `fails` (a counter VARIABLE) as if it were
+# a helper. Three separate rounds appended one missing name and left the next addition to
+# re-mint the drift; card#8548 ruled the restatement itself the defect. The contents are
+# DERIVED instead: `tests/prelude-shadow-selftest.sh` extracts them from this file on every run
+# and prints them as its denominator, so `bash tests/prelude-shadow-selftest.sh` is the current
+# list and cannot disagree with the file. Nothing here needs editing when a helper is added.
+#
+# ⛔ NOR IS THE ADMISSION RULE "shared verbatim by every selftest" — that sentence was also here
+# and is also false: `_adopt_fn` arrived with ONE caller. What earns a place is that a SECOND
+# hand-spelling of one behaviour would otherwise exist in the suite (canon #5), which is a
+# statement about the class, not about the caller count.
 #
 # It deliberately does NOT run `set` — each selftest keeps its own shell options
 # (board-snapshot omits -e on purpose). A selftest that needs a variant helper simply
@@ -21,6 +36,23 @@
 # selftest spawns, rather than at each heredoc. `bin-artifact-hygiene-selftest.sh` deliberately
 # clears it again per probe — its mutants have to be able to write, or they measure nothing.
 export PYTHONDONTWRITEBYTECODE=1
+
+# $GITHUB_REPOSITORY IS REMOVED FOR THE WHOLE SUITE, and this is a floor rather than a tidy-up.
+# Actions sets it to the repository the workflow is running in, and since card#8538
+# `bin/promote-released-cards` REFUSES a resolved `.promote.source` that is not it. Several
+# files drive that bin with a fixture source (`acme/widget`) while asking about something else
+# entirely — the charset guard, the unsourced-card report, the coverage section — and every one
+# of them would then refuse for the WRONG reason IN CI while passing on a laptop. No count is
+# written here, because one in a comment rots: reproduce it by deleting this line, exporting
+# GITHUB_REPOSITORY to this repo's own slug, and running promote-source-qualify-selftest,
+# release-pr-body-selftest and locale-range-guard-selftest — all three red, all three green
+# locally, which is the whole hazard.
+#
+# The floor is HERE and not at each call site on purpose: a per-site scrub is a hand-kept list,
+# and the site it misses is a CI-ONLY red — the most expensive kind to diagnose. A file for
+# which the variable IS the subject sets it EXPLICITLY per arm instead
+# (`promote-source-qualify-selftest.sh` § 7 is the one that does, and asserts this floor holds).
+unset GITHUB_REPOSITORY
 
 fails=0
 # `checks` counts every assertion that ran, passed or failed. `fails` alone cannot tell a suite
@@ -141,6 +173,86 @@ _need() {
     [[ "$have" -eq 0 ]] || { printf 'selftest: %s not found\n' "$label" >&2; exit 1; }
 }
 
+# _fn_src <src> <name> — the SOURCE TEXT of one shell function in <src>, on stdout; exits 1
+# naming it if <src> does not define it. `_adopt_fn` below is this plus an `eval`, so there is
+# ONE definition of "where does that function's text start and stop" for both the callers that
+# want to RUN the function and the callers that want to READ it (`board-snapshot-selftest.sh`
+# counts early-exit arms inside `board_report`; `token-duplication-selftest.sh` counts
+# `_kb_expand_home` call sites inside the mirrored lib function). A text-returning sibling is
+# what those readers used to hand-spell, so it is here rather than in one of them.
+#
+# ⛔ THE `exit 1` IS THE POINT, not defensive padding. An extraction that silently answered ""
+# would `eval` nothing, leave the caller's later invocations to fail as "command not found" in a
+# subshell, and — where the caller compares two outputs — retire the comparison rather than red
+# it. A rename in the bin must red the build, which is the same rule the population-glob and
+# `require_value` derivations in this file are built on.
+#   ⚑ A CALLER THAT CAPTURES IT MUST PROPAGATE THE STATUS. `x="$(_fn_src …)"` runs the exit in a
+#     SUBSHELL: the message reaches stderr but the exit does not leave the caller's shell. Under
+#     `set -e` the failed assignment ends the script; a caller that omits `set -e` (or captures
+#     inside a pipeline) gets "" and must red on its own floor — `board-snapshot-selftest.sh`'s
+#     `[[ "$early_exits" -ge 4 ]]` is that floor. `_adopt_fn` propagates explicitly.
+#
+# ⚑ BOUND: this recognises a definition at COLUMN ZERO spelled `name()` — any run of spaces is
+# allowed between the name and the `()`, and between the `()` and the `{`. `function name {` and an
+# INDENTED definition are still NOT extracted; it exits 1 naming the function, so the bound is loud
+# rather than silent. (`bin/next-dl`'s nested `unusable()` is the one indented definition in `bin/`,
+# and it is file-local to a subshell.) The spacing was pinned to exactly ONE space until card#8529,
+# which refused `bin/promote-released-cards`'s `uint_ok()     {` on its SPELLING while the caller
+# that wanted it also needed the one-line MODE below — two bounds reported as one, so relaxing
+# either alone would have changed nothing at any live site.
+#
+# ⚑ ONE-LINE MODE (card#8529). A definition whose whole body sits on its own line — `max_int() {
+# …; }` — carries no `^}` line, so the `^}` range runs on to the NEXT function's closing brace and
+# would hand that function's body back with it: `_fn_src bin/next-dl max_int` returned 129 lines
+# carrying two further definitions, at rc 0. The FIRST line of the range is therefore tested for the
+# one-line spelling and returned ALONE when it matches. That spelling is the line ENDING in `; }` or
+# `;}`, NOT a bare trailing `}`: `${x}` and `"$*"$'\n'` end a great many opening lines, and a
+# predicate they satisfy would truncate a multi-line function to its first line — a plausible-looking
+# wrong answer, which is the one failure shape this docblock promises not to have.
+#   ⚑ BOUND: a MULTI-line function whose OPENING line ended in `; }` would still be truncated. No
+#     such spelling exists in `bin/` — and the way to see that is to re-run the enumeration rather
+#     than to trust this note, which is a measurement with a date on it:
+#     `command grep -rnE '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{.*;[[:space:]]*\}[[:space:]]*$' bin/`
+#     listed 57 hits on the day this landed, every one a whole function on one line.
+#
+# ⚑ THE SWALLOW REFUSAL SURVIVES the one-line mode, for the case it was minted on: a MULTI-line
+# extraction whose range ran past its own end. A second top-level definition inside the extracted
+# text is still a refusal that names what got swallowed.
+_fn_src() {
+    local src first swallowed
+    src="$(sed -n "/^$2 *() *{/,/^}/p" "$1")"
+    [[ -n "$src" ]] || { printf 'selftest: could not extract %s from %s — did it get renamed?\n' "$2" "$1" >&2; exit 1; }
+    first="${src%%$'\n'*}"
+    case "$first" in
+        *'; }'|*';}') printf '%s\n' "$first"; return 0 ;;
+    esac
+    swallowed="$(printf '%s\n' "$src" | sed -nE '/^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/p' | tail -n +2 | tr '\n' ' ')"
+    [[ -z "$swallowed" ]] || {
+        printf 'selftest: %s in %s opens a body whose range ran past its own end and swallowed: %s— extract it by hand and disposition the site in prelude-shadow-selftest.sh\n' \
+            "$2" "$1" "$swallowed" >&2
+        exit 1
+    }
+    printf '%s\n' "$src"
+}
+
+# _adopt_fn <src> <name> — eval one shell function out of <src>, by name, into THIS shell, and
+# exit 1 naming it if <src> does not define it. The one spelling of "borrow a function from the
+# tool under test", for the tests that drive a bin's internal function directly rather than the
+# bin's CLI (`token-duplication-selftest.sh` adopts five out of
+# `bin/agent-board-toolkit-runtime-check`: the digest that defines its needle, and the four
+# `_kb-board-lib.sh` mirrors its parity block drives row-by-row).
+#
+# ⚑ OTHER SITES IN THE SUITE STILL HAND-SPELL THIS EXTRACTION, and the count is NOT written here
+# — a number in a comment is a quoted authority that outlives the edit that falsifies it, which
+# is how "five hand-spellings" survived two more being added. `prelude-shadow-selftest.sh`
+# derives the live population every run, prints it as a denominator and REDS on one its
+# disposition list does not carry; its list is where each residual site's reason lives.
+_adopt_fn() {
+    local src
+    src="$(_fn_src "$1" "$2")" || exit 1
+    eval "$src"
+}
+
 # _mktmp_scratch [--home] — set TMP to a fresh temp dir + an EXIT trap that removes it.
 # With --home, also export a scratch HOME=$TMP so no real ~/.kanban-* file taints a result.
 _mktmp_scratch() {
@@ -151,6 +263,44 @@ _mktmp_scratch() {
         mkdir -p "$HOME"
     fi
 }
+
+# ── a window measured from a stamp the FIXTURE wrote (card#8533) ─────────────────────────────
+#
+# WHY A SHARED PAIR RATHER THAN TWO LOCAL COPIES. A selftest that bounds elapsed time around a
+# tool must not start its clock in the TEST: the tool's own startup then sits inside the window
+# and a loaded box reds the cell for a defect the tool does not have. The fix is that the
+# fixture stamps the instant its subject began — `release-tag-check-selftest`'s `ext::` remote
+# helper stamps the read it is about to hang, `board-session-close-selftest`'s hanging delegate
+# stamps its own launch — and the test measures from there. The WRITERS are properly different
+# (a git remote helper vs a `/bin/sh` delegate); the READER is one behaviour, and it arrived in
+# two near-verbatim copies in a single commit. Extracted at that second caller.
+#
+# ⛔ THE TWO ARE A PAIR, AND USING `_since_stamp` WITHOUT `_stamp_taken` IS THE TRAP. A stamp
+# that was never written reads as epoch 0, so `_since_stamp` answers the seconds since 1970 —
+# a number no bound passes, which LOOKS like the bound firing. The failure text then blames the
+# subject for an interval that never happened. Assert `_stamp_taken` first, as its own cell, so
+# a fixture that was never reached is reported as a fixture that was never reached.
+
+# _since_stamp <stamp-file> — whole seconds from the epoch second in <stamp-file> until now.
+# A stamp that yields NO epoch second counts from 0 (see the pairing rule above), and that is
+# THREE states, not two: absent, unreadable, and — the one the writers actually produce —
+# PRESENT BUT EMPTY. `date +%s > stamp` opens the redirect before it execs `date`, so a fixture
+# killed in that window leaves a real zero-byte file, which `cat` then reads SUCCESSFULLY as
+# nothing. `${s:-0}` is what covers that third state; without it the arithmetic is
+# `$(( now -  ))` — a syntax error, so the reader fails instead of the subject, and in a
+# `set -e` selftest the whole file aborts at this call, ahead of the `_stamp_taken` cell that
+# exists to name exactly this. The `|| echo 0` is kept as well as `${s:-0}`, not replaced by
+# it: it is what makes the absent/unreadable states independent of `inherit_errexit`, which no
+# file here sets today and nothing stops a consumer setting tomorrow.
+_since_stamp() { local s; s="$(cat "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - ${s:-0} )); }
+
+# _stamp_taken <stamp-file> — true/false: did the fixture actually write the stamp? The
+# precondition cell for every `_since_stamp` window; answers a STRING for `eq <label> true …`,
+# the same contract as `has`/`has_line`.
+# `-s`, not `-e`, and that is the half that pairs with the third state above: the zero-byte
+# stamp is a file that EXISTS, so `-e` would answer `true` for a fixture that never wrote and
+# hand the window a start it never had — the wrong diagnosis this pair exists to prevent.
+_stamp_taken() { [[ -s "$1" ]] && echo true || echo false; }
 
 # _summary <name> — the trailing PASS/FAIL block: fail loud on stderr + exit 1, else pass.
 _summary() {

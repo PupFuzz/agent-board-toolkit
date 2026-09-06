@@ -570,6 +570,12 @@ eq "no --repo"            "2/empty" "$(_bad --pr 7)"
 eq "no --pr"              "2/empty" "$(_bad --repo o/n)"
 eq "--repo not owner/name" "2/empty" "$(_bad --repo notaslug --pr 7)"
 eq "--repo carrying a query" "2/empty" "$(_bad --repo 'o/n?x=1' --pr 7)"
+# ⚠ A NARROWING, recorded as one (card#8421): `o/n.git` was ACCEPTED here until this flag was
+# moved onto the shared `kb_is_repo_slug`, which refuses a `.git` suffix. The narrowing is the
+# correct direction — the value goes into a `repos/<slug>/…` request path, and `repos/o/n.git`
+# names no repository GitHub will answer for, so what used to happen was a 404 reported as an
+# unreadable endpoint instead of a refusal naming the operator's own spelling.
+eq "--repo with a .git suffix (narrowed)" "2/empty" "$(_bad --repo 'o/n.git' --pr 7)"
 eq "--pr not an integer"  "2/empty" "$(_bad --repo o/n --pr twelve)"
 eq "--pr zero"            "2/empty" "$(_bad --repo o/n --pr 0)"
 eq "--ref with a space"   "2/empty" "$(_bad --repo o/n --pr 7 --ref 'a b')"

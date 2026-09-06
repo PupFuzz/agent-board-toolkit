@@ -103,9 +103,10 @@ eq "extra-fields arg composes (patch echo)" '"abc"' "$(jq -c '.description' <<<"
 # and returns 1 — never a plausible-looking projection of nothing.
 rc=0; r="$(we '<html>502</html>' 2>/dev/null)" || rc=$?
 e="$(we '<html>502</html>' 2>&1 >/dev/null || true)"
-eq "a body that is not JSON → rc 1"          "1" "$rc"
+eq "a body that is not JSON → rc 3 (UNVERIFIED WRITE)" "3" "$rc"
 eq "…and nothing on stdout"                  ""  "$r"
 eq "…refuses in kbcard's words, naming the verb" "true" "$(has 'kbcard: patch on task 1' "$e")"
+eq "…and names it an UNVERIFIED WRITE"       "true" "$(has 'UNVERIFIED WRITE' "$e")"
 eq "…and does NOT claim the body could not be parsed" "false" "$(has 'could not be parsed' "$e")"
 unset -f we; unset e
 
@@ -1077,6 +1078,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
                     --content          # driven with an empty value at the comment verb, below
+                    --link-id --on     # driven empty at the unlink verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
                     --content-file --description-file --name-file
                     --field --from --to --relation --key --label)
@@ -1199,7 +1201,13 @@ kb_stub_install
 NOT_FOUND_BODY='{"message":"The route api/v3/tasks/505/comments could not be found.","exception":"Symfony\\Component\\HttpKernel\\Exception\\NotFoundHttpException","file":"/app/vendor/laravel/framework/src/Illuminate/Routing/AbstractRouteCollection.php","line":44,"trace":[{"function":"handleMatchedRoute"}]}'
 # The 201 body the real API echoes for a created comment, verbatim in shape (measured).
 KB_STUB_CREATED='{"data":{"id":13,"task_id":505,"user_id":2238,"content":"x","deleted_at":null,"created_at":"2026-08-12T23:40:36+00:00","updated_at":"2026-08-12T23:40:36+00:00"}}'
-export NOT_FOUND_BODY KB_STUB_CREATED
+# The DEFAULT card's comments array — it CARRIES the comment the POST arm echoes (id 13),
+# because `comment`'s write read-back reads this same card. Held in a variable rather than
+# inline in the `${…:-…}` default: the first unescaped `}` closes a parameter expansion, so a
+# JSON default written there is silently truncated mid-object (measured — it produced a body
+# missing one brace, and every leg in the section read it as an unreadable 2xx).
+KB_STUB_CARD_COMMENTS='[{"id":13,"task_id":505,"user_id":2238,"content":"x","deleted_at":null,"created_at":"t","updated_at":"t"}]'
+export NOT_FOUND_BODY KB_STUB_CREATED KB_STUB_CARD_COMMENTS
 kb_stub_route() {
     local method="$1" url="$2"
     case "$method $url" in
@@ -1208,12 +1216,18 @@ kb_stub_route() {
                 "${KB_STUB_POST_BODY:-$KB_STUB_CREATED}" ;;
         "GET "*/tasks/search.json*)
             printf '200\n{"data":[{"id":505}]}' ;;
-        "GET "*/tasks/*.json)
+        # The trailing `*` is load-bearing: `comment`'s write read-back asks for
+        # /tasks/505.json?trashed=1, and an arm without it leaves that request UNROUTED (599),
+        # which every leg below would then see as an unverified write rather than as itself.
+        "GET "*/tasks/*.json*)
             if [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
                 printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "$KB_STUB_GET_BODY"
             else
+                # The DEFAULT card carries the comment the POST arm echoes (id 13), because the
+                # default is what every happy-path leg reads back through. A leg that wants an
+                # empty or a different array names it, as the read-side legs below do.
                 printf '%s\n{"data":{"id":505,"name":"probe","comments":%s}}' \
-                    "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_COMMENTS:-[]}"
+                    "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_COMMENTS:-$KB_STUB_CARD_COMMENTS}"
             fi ;;
     esac
 }
@@ -1225,7 +1239,8 @@ echo "-- comment: path, method, and the MEASURED flat body key --"
 kbc comment --task 505 --content 'hello there'
 eq "comment → rc 0"                              "0" "$rc"
 eq "comment → exactly one POST to the .json comments path" "1" "$(kb_stub_count POST "$CPATH")"
-eq "comment → and no other request at all"       "1" "$(kb_stub_total)"
+eq "comment → and exactly one read-back of the card"       "1" "$(kb_stub_count GET '/tasks/505.json?trashed=1')"
+eq "comment → and no other request at all"       "2" "$(kb_stub_total)"
 # The body's key set is asserted as an EQUALITY, not a contains: the wrapped
 # {"comment":{"content":…}} form the API refuses (422, measured) would still "contain" the
 # text, and only a key-set equality can see that regression.
@@ -1350,6 +1365,24 @@ eq "comment without --task → rc 2"               "2" "$rc"
 kbc comment --task 505 --content x
 eq "control: a valid comment DOES reach the POST" "1" "$(kb_stub_count POST "$CPATH")"
 
+echo "-- comment: the echoed id is READ BACK in the card's own comments array --"
+# The `comments` array the task detail carries is the only read surface a comment has (a GET on
+# the comments path is 405) and it is complete rather than a first page — which is what lets an
+# absence there be a real absence. A 201 echoing an id for a comment the card does not carry is
+# the class this whole section is about, and it used to print that id at rc 0.
+KB_STUB_GET_COMMENTS='[]' kbc comment --task 505 --content x
+eq "posted id absent from the card's comments → rc 1" "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+eq "…and never prints the id it could not confirm" "" "$out"
+# A card that could not be re-read is UNVERIFIED, not a denial: the comment may well be there.
+KB_STUB_GET_HTTP=403 kbc comment --task 505 --content x
+eq "card unreadable after the POST → rc 3"       "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and prints no id"                           "" "$out"
+KB_STUB_GET_BODY='<html>502</html>' kbc comment --task 505 --content x
+eq "card re-read is a 2xx carrying no card → rc 3" "3" "$rc"
+eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+
 echo "-- comment: an HTTP failure carries the status AND the error body --"
 KB_STUB_POST_HTTP=422 \
 KB_STUB_POST_BODY='{"message":"The content field is required.","errors":{"content":["The content field is required."]}}' \
@@ -1371,9 +1404,11 @@ eq "404 → nothing on stdout"                     "" "$out"
 # write UNVERIFIED (the card's updated_at does not move), so it must fail loudly rather than
 # print a plausible-looking `null`.
 KB_STUB_POST_HTTP=201 KB_STUB_POST_BODY='{"data":{}}' kbc comment --task 505 --content x
-eq "2xx with no comment id → rc 1"               "1" "$rc"
-eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "2xx with no comment id → rc 3 (UNVERIFIED WRITE)" "3" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
 eq "…and never prints a bare null as an id"      "" "$out"
+eq "…and does NOT go on to read a card back for an id it never got" "0" \
+   "$(kb_stub_count GET '/tasks/505.json?trashed=1')"
 # Same state, one step earlier: a 2xx whose body is not JSON AT ALL (a proxy's HTML error page,
 # a truncated read). kb_api has already said success on the status class, so this is still "the
 # write is unconfirmed" — but the id extraction is where it lands, and an unguarded `jq` there
@@ -1381,8 +1416,8 @@ eq "…and never prints a bare null as an id"      "" "$out"
 # only diagnostic. The refusal must be this verb's own, at its own documented rc.
 KB_STUB_POST_HTTP=200 KB_STUB_POST_BODY='<html><body>502 Bad Gateway</body></html>' \
     kbc comment --task 505 --content x
-eq "2xx with a NON-JSON body → rc 1, not jq's rc 5" "1" "$rc"
-eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED' "$err")"
+eq "2xx with a NON-JSON body → rc 3, not jq's rc 5" "3" "$rc"
+eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
 eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
 eq "…and never prints anything as an id"         "" "$out"
 
@@ -1541,26 +1576,54 @@ kb_stub_install
 
 NONJSON='<html><body>502 Bad Gateway</body></html>'
 SEARCH_BODY='{"data":[{"id":505}]}'
-CARD_BODY='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep-me"]}}'
+# `linked_tasks` rides the default card because `link`'s read-back reads it off this same body
+# (the create half of the shape `unlink` already had). `linked_tasks_truncated` is the flag the
+# witness reads; a card without it would make every link read-back report an unmeasured list.
+CARD_BODY='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep-me"],"linked_tasks":[{"id":506,"task_link_id":9,"relation_type":"blocks","direction":"outgoing"}],"linked_tasks_truncated":false,"linked_tasks_count":{"outgoing":1,"incoming":0}}}'
 LINK_BODY='{"data":{"id":9,"relation_type":"blocks"}}'
 FIELDS_BODY='{"data":[{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"}]}]}'
 # The custom-field WRITE echoes ONE field object, not the board's array — two distinct shapes
 # behind two distinct routes, so the read arm's fixture cannot stand in for the write arm's.
 FIELD_ROW_BODY='{"data":{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"},{"value":"b","label":"b"}]}}'
-export NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY
+# The board index AFTER a converge to `a,b` — what `set-options`' confirming re-read must find.
+FIELDS_BODY_AFTER='{"data":[{"id":7,"key":"stage","label":"Stage","type":"enum","options":[{"value":"a","label":"a"},{"value":"b","label":"b"}]}]}'
+export NONJSON SEARCH_BODY CARD_BODY LINK_BODY FIELDS_BODY FIELD_ROW_BODY FIELDS_BODY_AFTER
 # One knob per ROUTE, so exactly one leg is failed at a time and every other request in the
 # same run still answers normally — a run that fails every route cannot tell which projection
 # refused.
 kb_stub_route() {
-    local method="$1" url="$2"
+    local method="$1" url="$2" body="${3:-}" route_n="${4:-1}"
     case "$method $url" in
         "GET "*/tasks/search.json*)  printf '%s\n%s' "${KB_STUB_SEARCH_HTTP:-200}" \
                                         "${KB_STUB_SEARCH_BODY:-$SEARCH_BODY}" ;;
         "POST "*/tasks.json)         printf '%s\n%s' "${KB_STUB_POST_HTTP:-201}" "${KB_STUB_POST_BODY:-$CARD_BODY}" ;;
         "POST "*/task_links.json)    printf '%s\n%s' "${KB_STUB_LINK_HTTP:-201}" "${KB_STUB_LINK_BODY:-$LINK_BODY}" ;;
-        "PATCH "*/tasks/*.json)      printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" "${KB_STUB_PATCH_BODY:-$CARD_BODY}" ;;
-        "GET "*/tasks/*.json)        printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_BODY:-$CARD_BODY}" ;;
-        "GET "*/custom_fields.json)  printf '%s\n%s' "${KB_STUB_CF_HTTP:-200}" "${KB_STUB_CF_BODY:-$FIELDS_BODY}" ;;
+        # The echo carries the stage the REQUEST asked for, as the real server's does
+        # (`update` returns the persisted model). Without that the stage compare would red every
+        # move in this section for a reason that is the FIXTURE's, not the tool's — and with a
+        # fixed stage baked in, the compare could never be exercised in the disagreeing
+        # direction either. KB_STUB_ECHO_STAGE forces a DIFFERENT stage, which is that direction.
+        "PATCH "*/tasks/*.json)
+            if [[ -n "${KB_STUB_PATCH_BODY:-}" ]]; then
+                printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" "$KB_STUB_PATCH_BODY"
+            else
+                local st="${KB_STUB_ECHO_STAGE:-}"
+                [[ -n "$st" ]] || st="$(jq -r '.workflow_stage_id // empty' <<<"$body" 2>/dev/null || true)"
+                [[ -n "$st" ]] || st=48
+                printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" \
+                    "$(jq -c --argjson st "$st" '.data.workflow_stage_id = $st' <<<"$CARD_BODY")"
+            fi ;;
+        "GET "*/tasks/*.json*)       printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "${KB_STUB_GET_BODY:-$CARD_BODY}" ;;
+        # The board index is read TWICE by `set-options` — once to resolve the field, once to
+        # confirm the converge — so the arm answers per read: the second one shows the board as
+        # the reconcile left it, which is what a server does. KB_STUB_CF_STALE keeps it
+        # UNCHANGED, i.e. a PATCH that answered 2xx and did not converge.
+        "GET "*/custom_fields.json)
+            if [[ -n "${KB_STUB_CF_BODY:-}" || -n "${KB_STUB_CF_STALE:-}" || "$route_n" -lt 2 ]]; then
+                printf '%s\n%s' "${KB_STUB_CF_HTTP:-200}" "${KB_STUB_CF_BODY:-$FIELDS_BODY}"
+            else
+                printf '%s\n%s' "${KB_STUB_CF_HTTP:-200}" "$FIELDS_BODY_AFTER"
+            fi ;;
         "PATCH "*/custom_fields/*)   printf '%s\n%s' "${KB_STUB_CFW_HTTP:-200}" "${KB_STUB_CFW_BODY:-$FIELD_ROW_BODY}" ;;
     esac
 }
@@ -1589,18 +1652,18 @@ eq "no line of the rendered help is a bare comment marker" "0" \
    "$(/usr/bin/grep -c '^#' <<<"$out" || true)"
 
 echo "-- create-card / move / patch: a write whose echo is unreadable --"
-KB_STUB_POST_BODY="$NONJSON" nonjson_leg "create-card" 1 "create-card" \
+KB_STUB_POST_BODY="$NONJSON" nonjson_leg "create-card" 3 "create-card" \
     create-card --type fr --name probe
 kbc create-card --type fr --name probe
 eq "control: create-card on a well-formed echo → rc 0" "0" "$rc"
 eq "control: …and prints the created card"       "505" "$(jq -r '.id' <<<"$out")"
 
-KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "move" 1 "move" move --task 505 --column in_progress
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "move" 3 "move" move --task 505 --column in_progress
 kbc move --task 505 --column in_progress
 eq "control: move on a well-formed echo → rc 0"  "0" "$rc"
 eq "control: …and prints the moved card"         "505" "$(jq -r '.id' <<<"$out")"
 
-KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 1 "patch" patch --task 505 --pr 12
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 3 "patch" patch --task 505 --pr 12
 kbc patch --task 505 --pr 12
 eq "control: patch on a well-formed echo → rc 0" "0" "$rc"
 eq "control: …and prints the patched card"       "505" "$(jq -r '.id' <<<"$out")"
@@ -1738,7 +1801,7 @@ eq "…with the caller's own list"      '["a","b"]'   "$(kb_stub_bodies PATCH '/
 eq "…and never GETs the card at all"  "0"           "$(kb_stub_count GET '/tasks/505.json')"
 
 echo "-- link: the relation echo --"
-KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 1 "link" link --from 505 --to 506 --relation blocks
+KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 3 "link" link --from 505 --to 506 --relation blocks
 kbc link --from 505 --to 506 --relation blocks
 eq "control: link on a well-formed echo → rc 0"  "0" "$rc"
 eq "control: …and prints the created link"       "9" "$(jq -r '.id' <<<"$out")"
@@ -1788,12 +1851,74 @@ eq "control: field list emits that same single line"                 "1" \
    "$(/usr/bin/grep -c '^kbcard: ' <<<"$err" || true)"
 # The WRITE echo: the reconcile PATCH already landed (2xx), so this refusal is about the echo,
 # not the write — and it must still not print jq's rc 5.
-KB_STUB_CFW_BODY="$NONJSON" nonjson_leg "field set-options (write echo)" 1 "field" \
+KB_STUB_CFW_BODY="$NONJSON" nonjson_leg "field set-options (write echo)" 3 "field" \
     field set-options --field stage --options a,b
 kbc field set-options --field stage --options a,b
 eq "control: set-options on a well-formed echo → rc 0" "0" "$rc"
+eq "control: …and re-read the board's field index to confirm the converge" "2" \
+   "$(kb_stub_count GET '/custom_fields.json')"
 eq "control: …and projects the reconciled option set" '["a","b"]' \
    "$(jq -c '[.options[].value]' <<<"$out")"
+
+echo "-- set-options: a 2xx that did NOT converge is a HARD FAILURE, not a reconcile --"
+# The claim this verb makes is about the BOARD ("the options are now exactly this list, in this
+# order"), so it is made from a read of the board and not from the PATCH's own echo. With the
+# index left stale the echo still says a,b and the board still says a — the exact shape a
+# reconcile reported off its echo cannot see.
+KB_STUB_CF_STALE=1 kbc field set-options --field stage --options a,b
+eq "set-options over a stale board → rc 1"       "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+eq "…and does NOT print the reconciled line"     "false" "$(has 'options reconciled' "$err")"
+eq "…and prints nothing on stdout"               "" "$out"
+
+echo "-- the write ECHO is COMPARED to the intent, not merely read --"
+# create-card / move / patch --column all route through one owner. Each asks for a stage and
+# each is answered with a DIFFERENT one; a verb that only checked the echo was READABLE prints
+# a success here. Both directions are exercised, because a compare that always fails is as
+# useless as one that never does.
+kbc move --task 505 --column in_progress
+eq "control: move whose echo agrees → rc 0"      "0" "$rc"
+eq "control: …and the echoed stage is the asked one" "49" "$(jq -r '.workflow_stage_id' <<<"$out")"
+KB_STUB_ECHO_STAGE=99 kbc move --task 505 --column in_progress
+eq "move whose echo is a DIFFERENT stage → rc 1" "1" "$rc"
+eq "…named as a HARD FAILURE naming both stages" "true" "$(has 'is in stage 99, not the stage 49' "$err")"
+eq "…and prints nothing on stdout"               "" "$out"
+
+KB_STUB_ECHO_STAGE=99 kbc patch --task 505 --column in_progress
+eq "patch --column whose echo disagrees → rc 1"  "1" "$rc"
+eq "…through the same owner, naming patch"       "true" "$(has 'kbcard: patch on task 505: HARD FAILURE' "$err")"
+kbc patch --task 505 --pr 12
+eq "control: a patch that names NO column makes no stage claim → rc 0" "0" "$rc"
+
+# create-card's POST arm echoes stage 48 unconditionally, so asking for in_progress (49) is the
+# disagreeing direction and asking for backlog (48) is the agreeing one.
+kbc create-card --type fr --name probe --column in_progress
+eq "create-card whose echo is a different stage → rc 1" "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'kbcard: create-card on board 42: HARD FAILURE' "$err")"
+kbc create-card --type fr --name probe --column backlog
+eq "control: create-card whose echo agrees → rc 0" "0" "$rc"
+
+echo "-- link: the link is read back ON THE CARD, the create half of unlink's shape --"
+kbc link --from 505 --to 506 --relation blocks
+eq "control: a link the from-card carries → rc 0" "0" "$rc"
+eq "control: …and the card WAS re-read"          "1" "$(kb_stub_count GET '/tasks/505.json')"
+# The from-card's linked_tasks carries 506/blocks and nothing else, so this asks for a link the
+# board does not hold while the POST still answers 201 with a link object — the class exactly.
+kbc link --from 505 --to 507 --relation blocks
+eq "link the from-card does NOT carry → rc 1"    "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+eq "…and prints no link on stdout"               "" "$out"
+# A card that cannot be re-read is UNVERIFIED, never a success and never a denial: the link may
+# well be there.
+KB_STUB_GET_HTTP=403 kbc link --from 505 --to 506 --relation blocks
+eq "link whose from-card cannot be re-read → rc 3" "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
+# A TRUNCATED list cannot prove an absence, so it is UNVERIFIED rather than a HARD FAILURE —
+# the same rule `unlink` applies to its own re-reads.
+KB_STUB_GET_BODY='{"data":{"id":505,"linked_tasks":[],"linked_tasks_truncated":true}}' \
+    kbc link --from 505 --to 506 --relation blocks
+eq "link whose from-card reports a TRUNCATED list → rc 3" "3" "$rc"
+eq "…says the presence is UNMEASURED"            "true" "$(has 'UNMEASURED' "$err")"
 
 echo "-- archive: the safety gate must fail CLOSED, and quietly --"
 # The gate already refuses on an unreadable card (its `||` arm catches jq's death), so the rc
@@ -2545,6 +2670,542 @@ eq "control: …in the unknown-command words, which the stages verb never took" 
    "$(has "unknown command 'stagez'" "$err")"
 
 unset -f kb_stub_route
+
+# ---------------------------------------------------------------------------
+echo "== unlink — the removal is the READ-BACK, never the status (card#8545) =="
+# THE GAP: `link` shipped without its inverse, so a mislinked relation was PERMANENT with the
+# shipped toolkit — the reported case is a `blocks` link that cannot be discharged by the work
+# it blocks, which makes every gate count derived from links wrong by one, forever.
+#
+# ⭐ THE PROPERTY UNDER TEST, and the reason a `204` fixture is not enough on its own: a
+# DELETE that answers 204 is the SERVER'S CLAIM, and this verb's whole contract is that it
+# reports a removal only when it has READ the link's absence back — on BOTH ends, because a
+# cross-board link projects onto both boards and one end is half a measurement. Every leg
+# below is therefore paired with the request log, which nothing under test can truncate: a
+# refusal that says the right words while still issuing the DELETE is the failure this file
+# exists to catch, and only the log can tell the two apart.
+#
+# ⛔ THE FIXTURE'S SHARPEST EDGE, and it is a claim this section RESTS on rather than tests: a
+# `linked_tasks` entry's `id` is the OTHER TASK and the link id is `task_link_id`. Every leg below
+# measures the TOOL against a fixture built to that claim, never the claim against the API — so
+# what state the claim is in is load-bearing here and is NOT restated here. `bin/kbcard`'s `unlink`
+# header is the one place that says what has been measured and what has not; card#8545 owns the
+# measurements and the run still owed. Read it there and do not re-derive the condition from this
+# comment. Taking the claim as given: both are integers, both address real rows, and a tool reading
+# the wrong one DELETEs a link belonging to some other pair of cards — which 204s, and reads back
+# as gone from the card that was never linked by it. The entries below carry the two as DIFFERENT
+# numbers (task 506, link 9) precisely so that confusion cannot pass, and the leg that names
+# 506 as a `--link-id` is what holds it.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_board_config other 77 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+# u_card <card-id> <linked_tasks-array-json> <truncated:true|false> — a task-detail body in the
+# shape the live API returns, counts derived from the array so the fixture cannot state a count
+# its own list contradicts.
+u_card() {
+    jq -nc --argjson id "$1" --argjson l "$2" --argjson t "$3" '{data: {
+        id: $id, name: "probe", workflow_stage_id: 48, board_id: 42,
+        linked_tasks: $l,
+        linked_tasks_count: {outgoing: ($l | map(select(.direction == "outgoing")) | length),
+                             incoming: ($l | map(select(.direction == "incoming")) | length)},
+        linked_tasks_truncated: $t}}'
+}
+# link 9: card 505 --blocks--> card 506, seen from 505 (outgoing) and its mirror seen from 505
+# as the TO end (incoming, i.e. 506 --blocks--> 505). Link 12 is a SECOND link over the same
+# pair and relation — the ambiguity the --from/--to/--relation form must refuse to guess at.
+U_OUT9='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"outgoing","created_at":"2026-09-01T00:00:00+00:00","task_link_id":9}'
+U_IN9='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"incoming","created_at":"2026-09-01T00:00:00+00:00","task_link_id":9}'
+U_OUT12='{"id":506,"board_id":42,"name":"the other card","relation_type":"blocks","direction":"outgoing","created_at":"2026-09-01T00:00:00+00:00","task_link_id":12}'
+U_FROM_PRE="$(u_card 505 "[$U_OUT9]" false)"
+U_FROM_POST="$(u_card 505 '[]' false)"
+U_TO="$(u_card 506 '[]' false)"
+export U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO
+
+# ROUTE_N is what separates the PRE-witness read of the from-card from the POST-witness one:
+# they are the same method and the same URL, and the whole verb is the difference between
+# them. Every knob defaults to the happy path so exactly one thing is failed per leg.
+kb_stub_route() {
+    local method="$1" url="$2" route_n="$4"
+    case "$method $url" in
+        "DELETE "*/task_links/*)    printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "GET "*/tasks/505.json)     if [[ "$route_n" == 1 ]]; then
+                                        printf '%s\n%s' "${U_PRE_HTTP:-200}" "$U_FROM_PRE"
+                                    else
+                                        printf '%s\n%s' "${U_POST_HTTP:-200}" "$U_FROM_POST"
+                                    fi ;;
+        "GET "*/tasks/506.json)     printf '%s\n%s' "${U_TO_HTTP:-200}" "$U_TO" ;;
+    esac
+}
+export -f kb_stub_route
+
+echo "-- unlink --link-id: the happy path, and what it had to READ to say so --"
+kbc unlink --link-id 9 --on 505
+eq "unlink: a witnessed link, a 204 and an absent re-read on both ends → rc 0" "0" "$rc"
+eq "unlink: stdout is the removed link, in the same three keys \`link\` POSTs" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+eq "unlink: exactly ONE DELETE, addressed by task_link_id" "1" "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink: …and no other link was touched at all"         "1" "$(kb_stub_count_any '/task_links/')"
+eq "unlink: the from-card is read TWICE — once to witness, once to prove" "2" \
+   "$(kb_stub_count GET '/tasks/505.json')"
+eq "unlink: the TO end is read as well — one end is half a measurement" "1" \
+   "$(kb_stub_count GET '/tasks/506.json')"
+eq "unlink: four requests and no more (two witnesses, one delete, one far end)" "4" "$(kb_stub_total)"
+eq "unlink: the success line says the proof was taken on both ends" "true" \
+   "$(has 'is GONE — re-read on BOTH ends' "$err")"
+
+echo "-- ⭐ THE LOAD-BEARING LEG: a 204 alone is NEVER the removal --"
+# The server says success and the link is still on the card. There is no reading of the HTTP
+# response that can detect this — only the read-back can — which is why this is the leg the
+# mutant in the PR body is run against.
+U_FROM_POST="$(u_card 505 "[$U_OUT9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: 204 + the link STILL on the from-card → rc 1, not success" "1" "$rc"
+eq "unlink: …and nothing on stdout that could be mistaken for a removal" "" "$out"
+eq "unlink: …named as a hard failure, not a warning"        "true" "$(has 'HARD FAILURE' "$err")"
+eq "unlink: …naming the card it is still on"                "true" "$(has 'STILL on card 505' "$err")"
+eq "unlink: …saying outright that the status is not the removal" "true" \
+   "$(has 'The status is not the removal; the read-back is' "$err")"
+eq "unlink: …and printing the card's OWN entry as the evidence" "true" \
+   "$(has '"task_link_id":9' "$err")"
+eq "unlink: control — the DELETE really was issued on this leg" "1" \
+   "$(kb_stub_count DELETE '/task_links/9.json')"
+# The FAR end is the half a single-end check would miss: the from-card is clean and the link
+# survives on the to-card. A verb that stopped at the near end reports this as a success.
+U_TO="$(u_card 506 "[$U_IN9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: 204 + the link still on the TO end → rc 1"      "1" "$rc"
+eq "unlink: …naming the far card, not the near one"         "true" "$(has 'STILL on card 506' "$err")"
+eq "unlink: …and nothing on stdout"                         "" "$out"
+
+echo "-- a re-read that came back TRUNCATED is UNMEASURED, which is not a success --"
+U_TO="$(u_card 506 '[]' true)" kbc unlink --link-id 9 --on 505
+eq "unlink: a truncated post-witness → rc 1"                "1" "$rc"
+eq "unlink: …says the list was TRUNCATED"                   "true" "$(has 'TRUNCATED' "$err")"
+eq "unlink: …and calls the absence UNMEASURED by name"      "true" \
+   "$(has 'ABSENCE of link 9 there is UNMEASURED' "$err")"
+eq "unlink: …explicitly not a success"                      "true" "$(has 'which is not a success' "$err")"
+eq "unlink: …and prints no removal object"                  "" "$out"
+
+echo "-- an end that cannot be RE-READ is UNVERIFIED at that end, and the other is still read --"
+U_TO_HTTP=500 kbc unlink --link-id 9 --on 505
+eq "unlink: an unreadable far end → rc 1"                   "1" "$rc"
+eq "unlink: …named as unverified rather than assumed gone"  "true" \
+   "$(has 'the removal is UNVERIFIED at that end' "$err")"
+eq "unlink: …and the NEAR end was still proven (both ends, always)" "2" \
+   "$(kb_stub_count GET '/tasks/505.json')"
+eq "unlink: …with nothing on stdout"                        "" "$out"
+# ⭐ THE CROSS-BOARD CASE THE USAGE BLOCK NAMES, and the verb's motivating one: the far board
+# refuses THIS board's token on the RE-READ — a policy status, not a transport fault, and on a
+# request made AFTER the DELETE was already answered. It must land as a statement about the
+# MEASUREMENT (unverified at that end) and never as the 401/403 arm's "the link is UNCHANGED",
+# which would be false: the DELETE went out.
+U_TO_HTTP=403 kbc unlink --link-id 9 --on 505
+eq "unlink: a far end this token may not READ → rc 1"       "1" "$rc"
+eq "unlink: …named UNVERIFIED at that end"                  "true" \
+   "$(has 'the removal is UNVERIFIED at that end' "$err")"
+eq "unlink: …and NOT as the DELETE's policy arm, which claims the link is unchanged" "false" \
+   "$(has 'The link is UNCHANGED' "$err")"
+eq "unlink: …with the DELETE already issued — which is why it is unverified, not undone" "1" \
+   "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink: …and nothing on stdout"                         "" "$out"
+
+echo "-- nothing is deleted that was not first READ --"
+kbc unlink --link-id 12 --on 505
+eq "unlink: an id that is not on the named card → rc 2"     "2" "$rc"
+eq "unlink: …naming the card AND the id"                    "true" \
+   "$(has 'link 12 is not among card 505' "$err")"
+eq "unlink: ⭐ …and issuing NO DELETE AT ALL"               "0" "$(kb_stub_count_any '/task_links/')"
+# ⭐ The `id`-vs-`task_link_id` leg. 506 is the OTHER TASK's id, sitting right there in the
+# same entry; a tool reading `id` as the link id would find a match here and DELETE link 506.
+kbc unlink --link-id 506 --on 505
+eq "unlink: the other TASK's id is not the LINK's id → rc 2" "2" "$rc"
+eq "unlink: …and no DELETE was addressed to it"             "0" "$(kb_stub_count_any '/task_links/')"
+# A truncated PRE-witness cannot say the link is absent — only that it was not in what came
+# back. That is a different sentence from "it is not there", and a different one from a match.
+U_FROM_PRE="$(u_card 505 '[]' true)" kbc unlink --link-id 9 --on 505
+eq "unlink: a truncated pre-witness with no match → rc 2"   "2" "$rc"
+eq "unlink: …says UNMEASURED, not 'not on this card'"       "true" "$(has 'is UNMEASURED' "$err")"
+eq "unlink: …and does not claim the link is absent"         "false" "$(has 'is not among' "$err")"
+eq "unlink: …with no DELETE"                                "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the DELETE's failures are NAMED, each one differently --"
+U_DEL_HTTP=403 U_DEL_BODY='{"message":"This board is read-only."}' kbc unlink --link-id 9 --on 505
+eq "unlink: a 403 → rc 1"                                   "1" "$rc"
+eq "unlink: …named as POLICY, not as a transport or address fault" "true" \
+   "$(has 'HTTP 403 — POLICY' "$err")"
+eq "unlink: …naming the condition: a read-only or trashed board at EITHER end" "true" \
+   "$(has 'read-only or trashed board at either end refuses' "$err")"
+eq "unlink: …and stating the link is unchanged"             "true" "$(has 'The link is UNCHANGED' "$err")"
+eq "unlink: …carrying the server's own message"             "true" "$(has 'This board is read-only.' "$err")"
+eq "unlink: …and taking NO post-witness read of the far end" "0" "$(kb_stub_count GET '/tasks/506.json')"
+# A policy refusal routinely carries NO body, and `$()` strips the trailing newline off the
+# status line — so an unguarded "everything after the newline" quotes the STATUS back as
+# though the server had said it. Asserted as the absence of a quoted-message line at all.
+U_DEL_HTTP=403 U_DEL_BODY='' kbc unlink --link-id 9 --on 505
+eq "unlink: a 403 with an EMPTY body still → rc 1"          "1" "$rc"
+eq "unlink: …and invents no 'server said' line for a body that does not exist" "false" \
+   "$(has 'server said' "$err")"
+eq "unlink: …while still naming the policy refusal"         "true" "$(has 'HTTP 403 — POLICY' "$err")"
+U_DEL_HTTP=401 kbc unlink --link-id 9 --on 505
+eq "unlink: a 401 takes the same policy arm → rc 1"         "1" "$rc"
+eq "unlink: …and says POLICY there too"                     "true" "$(has 'HTTP 401 — POLICY' "$err")"
+U_DEL_HTTP=404 kbc unlink --link-id 9 --on 505
+eq "unlink: a 404 → rc 1"                                   "1" "$rc"
+eq "unlink: …says the server does not know the link"        "true" \
+   "$(has 'does not know link 9 (HTTP 404)' "$err")"
+eq "unlink: …and is NOT worded as the policy refusal"       "false" "$(has 'POLICY' "$err")"
+U_DEL_HTTP='!curl 7' kbc unlink --link-id 9 --on 505
+eq "unlink: a request that never completed → rc 1"          "1" "$rc"
+eq "unlink: …says DID NOT COMPLETE, with no HTTP status"    "true" "$(has 'DID NOT COMPLETE' "$err")"
+eq "unlink: …and claims no outcome in either direction"     "true" \
+   "$(has 'claims an outcome in either direction' "$err")"
+eq "unlink: …taking no post-witness read"                   "0" "$(kb_stub_count GET '/tasks/506.json')"
+U_DEL_HTTP=500 U_DEL_BODY='{"message":"boom"}' kbc unlink --link-id 9 --on 505
+eq "unlink: an unclassified failure → rc 1"                 "1" "$rc"
+eq "unlink: …calls the outcome UNKNOWN rather than picking one" "true" \
+   "$(has 'Whether anything was removed is UNKNOWN' "$err")"
+
+echo "-- which end is FROM comes from the card's own \`direction\`, never from the flag --"
+# --on takes EITHER end, so a verb that inferred from/to from the flag would print a reversed
+# relation for half its invocations. Same card named, same link id, opposite direction.
+U_FROM_PRE="$(u_card 505 "[$U_IN9]" false)" kbc unlink --link-id 9 --on 505
+eq "unlink: an INCOMING link named from its TO end → rc 0"  "0" "$rc"
+eq "unlink: …reports 506 → 505, the direction the CARD declares" \
+   '{"task_link_id":9,"from_task_id":506,"to_task_id":505,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+eq "unlink: …and still proves it on both ends"              "1" "$(kb_stub_count GET '/tasks/506.json')"
+U_FROM_PRE="$(u_card 505 '[{"id":506,"relation_type":"blocks","direction":"sideways","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: a direction that is neither → rc 2"             "2" "$rc"
+eq "unlink: …says it cannot tell which end is which"        "true" \
+   "$(has "declares direction 'sideways'" "$err")"
+eq "unlink: …and deletes nothing on a shape it cannot read" "0" "$(kb_stub_count_any '/task_links/')"
+# The other end's id is server data that becomes a URL PATH. ⚠ IT DOES NOT SELF-REPORT: an
+# entry with no `id` yields the STRING `null`, which is valid JSON text, so the `--argjson`
+# that later carries this value takes it at rc 0 (`jq -nc --argjson t null '{t:$t}'` →
+# `{"t":null}`) — and no `--argjson` input in this verb can be non-JSON in the first place, since
+# every one is either kb_is_uint-validated or resolve_task-derived. Left unchecked the run
+# therefore goes on QUIETLY: the DELETE is sent and the post-witness addresses
+# `GET /tasks/null.json`. So what the guard buys is the URL path and the no-DELETE contract,
+# and those are what the legs below assert — an "it would have crashed" leg would be a
+# decoration that no mutation of this guard can red.
+U_FROM_PRE="$(u_card 505 '[{"relation_type":"blocks","direction":"outgoing","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: an entry naming no other end → rc 2"            "2" "$rc"
+eq "unlink: …says that end could not be re-read"            "true" \
+   "$(has 'which is not a task id' "$err")"
+eq "unlink: …addressing NO read to the literal /tasks/null.json" "0" \
+   "$(kb_stub_count GET '/tasks/null.json')"
+eq "unlink: …and deletes nothing"                           "0" "$(kb_stub_count_any '/task_links/')"
+# The success object is advertised as machine-readable in the spelling `link` POSTs, so it may
+# not INVENT a value: `jq -r` on an absent key yields the four-character string "null", which a
+# consumer round-tripping into `link --relation` would turn into a relation literally named
+# null. An absent relation is JSON null — a value a reader can test for. The removal itself is
+# unaffected: relation_type is a report field and nothing branches on it.
+U_FROM_PRE="$(u_card 505 '[{"id":506,"board_id":42,"direction":"outgoing","task_link_id":9}]' false)" \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: an entry carrying no relation_type still removes the link → rc 0" "0" "$rc"
+eq "unlink: ⭐ …reporting relation_type as JSON null, never the STRING \"null\"" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":null}' "$(jq -c . <<<"$out")"
+
+echo "-- a 2xx no linked_tasks LIST can be read out of is UNMEASURED, never 'no links' --"
+U_PRE_HTTP=200 U_FROM_PRE='<html><body>502 Bad Gateway</body></html>' kbc unlink --link-id 9 --on 505
+eq "unlink: a 2xx that is not JSON at all → rc 1, not jq's rc 5" "1" "$rc"
+eq "unlink: …in kbcard's words"                             "true" "$(has 'kbcard: unlink' "$err")"
+eq "unlink: …leaking no raw jq parse error"                 "false" "$(has 'parse error' "$err")"
+eq "unlink: …and no DELETE"                                 "0" "$(kb_stub_count_any '/task_links/')"
+# `false` is the shape a `// []` default turns into an empty list — i.e. into "this card has
+# no links", which would make an unmeasured end a green one.
+U_FROM_PRE='{"data":{"id":505,"linked_tasks":false,"linked_tasks_truncated":false}}' \
+    kbc unlink --link-id 9 --on 505
+eq "unlink: a linked_tasks of \`false\` → rc 1"             "1" "$rc"
+eq "unlink: …reported as UNMEASURED, never as 'no such link'" "true" \
+   "$(has 'no linked_tasks LIST that could be read' "$err")"
+eq "unlink: …and no DELETE"                                 "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the --from/--to/--relation convenience form resolves ONE link or refuses --"
+kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: exactly one match → rc 0"           "0" "$rc"
+eq "unlink by relation: …DELETEs the id it resolved"        "1" "$(kb_stub_count DELETE '/task_links/9.json')"
+eq "unlink by relation: …and reports the same object the id form does" \
+   '{"task_link_id":9,"from_task_id":505,"to_task_id":506,"relation_type":"blocks"}' "$(jq -c . <<<"$out")"
+kbc unlink --from 505 --to 506 --relation caused
+eq "unlink by relation: no match → rc 2"                    "2" "$rc"
+eq "unlink by relation: …naming both cards and the relation" "true" \
+   "$(has "no 'caused' link from card 505 to card 506" "$err")"
+eq "unlink by relation: …with no DELETE"                    "0" "$(kb_stub_count_any '/task_links/')"
+U_FROM_PRE="$(u_card 505 "[$U_OUT9,$U_OUT12]" false)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: TWO matches → rc 2, refusing to pick" "2" "$rc"
+eq "unlink by relation: …says how many matched"             "true" "$(has '2 links match' "$err")"
+eq "unlink by relation: …lists their ids so one can be named" "true" "$(has 'Their ids: 9, 12' "$err")"
+eq "unlink by relation: …and issues NO DELETE"              "0" "$(kb_stub_count_any '/task_links/')"
+# The direction is part of the selection: `--from 505 --to 506` names a link running THAT way,
+# and the mirror link (506 → 505) is a different link, not a looser match for this one.
+U_FROM_PRE="$(u_card 505 "[$U_IN9]" false)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: an INCOMING link does not satisfy --from/--to → rc 2" "2" "$rc"
+eq "unlink by relation: …and deletes nothing"               "0" "$(kb_stub_count_any '/task_links/')"
+U_FROM_PRE="$(u_card 505 "[$U_OUT9]" true)" kbc unlink --from 505 --to 506 --relation blocks
+eq "unlink by relation: a TRUNCATED list cannot say EXACTLY ONE → rc 2" "2" "$rc"
+eq "unlink by relation: …says a second match may be in what was not returned" "true" \
+   "$(has 'may be in the part that was not returned' "$err")"
+eq "unlink by relation: …points at the --link-id form"      "true" "$(has 'name the link directly with --link-id' "$err")"
+eq "unlink by relation: …and deletes nothing"               "0" "$(kb_stub_count_any '/task_links/')"
+
+echo "-- the refusals decided OFFLINE, each costing no traffic at all --"
+kbc unlink
+eq "unlink with no flags → rc 2"                            "2" "$rc"
+eq "unlink with no flags names both forms"                  "true" "$(has 'or --from <task> --to <task> --relation' "$err")"
+eq "unlink with no flags issues no request"                 "0" "$(kb_stub_total)"
+kbc unlink --link-id 9
+eq "unlink --link-id with no --on → rc 2"                   "2" "$rc"
+eq "…names --on as the missing half"                        "true" "$(has 'requires --on <id-or-ext>' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --on 505
+eq "unlink --on with no --link-id → rc 2"                   "2" "$rc"
+eq "…names --link-id, not the flag that WAS passed"         "true" "$(has 'but not WHICH link' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --link-id 9 --on 505 --relation blocks
+eq "unlink mixing the two forms → rc 2"                     "2" "$rc"
+eq "…refuses rather than giving one form precedence"        "true" "$(has 'never both' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+kbc unlink --from 505 --to 506
+eq "unlink --from/--to without --relation → rc 2"           "2" "$rc"
+eq "…says all three are one form"                           "true" "$(has 'is ONE form' "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+for bad in abc 0 -1 9.5 " 9"; do
+    kbc unlink --link-id "$bad" --on 505
+    eq "unlink --link-id '$bad' → rc 2"                     "2" "$rc"
+    eq "unlink --link-id '$bad' names the rule"             "true" \
+       "$(has 'must be a positive integer' "$err")"
+    eq "unlink --link-id '$bad' issues no request"          "0" "$(kb_stub_total)"
+done
+# The empty-value guard, on this verb's own two flags (registered in GUARDED_NOT_DRIVEN above).
+for f in --link-id --on; do
+    kbc unlink "$f" "" --on 505
+    eq "unlink $f \"\" → rc 2"                              "2" "$rc"
+    eq "unlink $f \"\" names the flag"                      "true" "$(has "$f requires a non-empty value" "$err")"
+    eq "unlink $f \"\" issues no request"                   "0" "$(kb_stub_total)"
+done
+kbc unlink --link-id 9 --on 505 --frobnicate
+eq "unlink with an unknown arg → rc 2"                      "2" "$rc"
+eq "…names the argument"                                    "true" "$(has "unknown arg '--frobnicate'" "$err")"
+eq "…and issues no request"                                 "0" "$(kb_stub_total)"
+
+echo "-- the global --board selects the board through the SAME resolution \`link\` uses --"
+# There is no second board-resolution path: the ref lookup this verb does is resolve_task's,
+# so the board reaches the wire in the one place it always did. Asserted as a DIFFERENT board
+# id on the wire, not merely as a run that succeeded.
+kbc unlink --link-id 9 --on ext-abc
+eq "unlink: an external ref resolves through the board's own search" "0" "$rc"
+eq "unlink: …carrying the DEFAULT board's id"               "true" \
+   "$(has 'board_id%3D42' "$(kb_stub_lines GET '/tasks/search.json')")"
+kbc --board other unlink --link-id 9 --on ext-abc
+eq "--board other unlink: rc 0"                             "0" "$rc"
+eq "--board other unlink: the OTHER board's id is what goes on the wire" "true" \
+   "$(has 'board_id%3D77' "$(kb_stub_lines GET '/tasks/search.json')")"
+eq "--board other unlink: …and the default board's id does not"  "false" \
+   "$(has 'board_id%3D42' "$(kb_stub_lines GET '/tasks/search.json')")"
+
+unset -f kb_stub_route u_card
+unset U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO bad f
+
+# ---------------------------------------------------------------------------
+echo "== delete / archive: the mutation is REPORTED from a read-back, never from the status =="
+# THE CLASS (card#8556): a mutating verb reports success it never read back. The verb issues
+# its write, the status class says 2xx, and it prints a success built out of what it SENT — so
+# a mutation the server did not apply reaches the caller as applied. `delete --hard` is the
+# severe member: a false success there tells the operator the DL ref is RELEASED, and that
+# release is an input to the next DL mint (docs/DL-COUNTER-RECOVERY.md § Why it strands), so
+# the wrong answer propagates into the numbering rather than stopping at one bad print.
+#
+# ⚠ THE ROUTE TABLE BELOW MODELS THE SERVER'S OWN TRASHED-VISIBILITY RULE, and that is the
+# whole design of this block rather than a detail of it: `GET /tasks/{task}.json` binds
+# `->withTrashed()` but 404s a trashed card unless the caller passes `?trashed=1`
+# (routes/api.php + TasksController::guardTrashedVisibility). So a bare re-read answers 404 for
+# a merely SOFT-deleted card exactly as it does for a purged one — and a `--hard` read-back
+# built on it would confirm "permanently deleted, DL ref released" for a card still sitting in
+# the trash pinning the allocation floor. Modelling the rule (rather than asserting the query
+# string as a string) is what makes that a RED here: drop `?trashed=1` from _kbc_card_witness
+# and the still-trashed leg below stops failing and starts reporting a purge.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42
+kb_stub_install
+
+# The card as the three lifecycle reads see it. `deleted_at` / `archived_at` are the stamps the
+# verbs rule on; both are on the live TaskResource (asserted against a real board read).
+D_LIVE='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"archived_at":null,"deleted_at":null}}'
+D_TRASHED='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"archived_at":null,"deleted_at":"2026-09-03T00:00:00+00:00"}}'
+D_ARCHIVED='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"archived_at":"2026-09-03T00:00:00+00:00","deleted_at":null}}'
+export D_LIVE D_TRASHED D_ARCHIVED
+
+# KB_STUB_STATE — a comma list, one entry per re-read of card 505 IN ORDER (ROUTE_N indexes it),
+# each `live` | `trashed` | `archived` | `gone` | `403` | `!curl` | `nojson`. Spelled as the
+# card's STATE rather than as a status code because the server's answer to a re-read is derived
+# from the state and from the query string TOGETHER, which is the rule under test.
+kb_stub_route() {
+    local method="$1" url="$2" route_n="$4" state
+    case "$method $url" in
+        "PATCH "*/tasks/505.json)              printf '%s\n%s' "${KB_STUB_PATCH_HTTP:-200}" "$D_TRASHED" ;;
+        "POST "*/tasks/505/force-delete.json)  printf '%s\n' "${KB_STUB_FORCE_HTTP:-204}" ;;
+        "GET "*/tasks/505.json*)
+            state="$(printf '%s' "${KB_STUB_STATE:-trashed}" | cut -d, -f"$route_n")"
+            [[ -n "$state" ]] || state="$(printf '%s' "${KB_STUB_STATE:-trashed}" | cut -d, -f1)"
+            case "$state" in
+                '!curl')  printf '!curl 7\n' ;;
+                403)      printf '403\n{"message":"This action is unauthorized."}' ;;
+                nojson)   printf '200\n<html>502 Bad Gateway</html>' ;;
+                gone)     printf '404\n{"message":"Not Found"}' ;;
+                # THE SERVER'S RULE, modelled: a trashed card is 404 to a re-read that did not
+                # ask for it. `archived` is deliberately NOT gated — archiving hides a card from
+                # the board, not from a card read.
+                trashed)  if [[ "$url" == *"trashed=1"* ]]; then printf '200\n%s' "$D_TRASHED"
+                          else printf '404\n{"message":"Not Found"}'; fi ;;
+                archived) printf '200\n%s' "$D_ARCHIVED" ;;
+                *)        printf '200\n%s' "$D_LIVE" ;;
+            esac ;;
+    esac
+}
+export -f kb_stub_route
+
+echo "-- delete --hard: the happy path is a CONFIRMED absence, not a 204 --"
+KB_STUB_STATE='trashed,gone' kbc delete --task 505 --hard --yes
+eq "delete --hard confirmed → rc 0"                    "0" "$rc"
+eq "…says the read-back, not the status, is the proof" "true" "$(has 'ABSENT' "$out")"
+eq "…and still says the DL ref is released"            "true" "$(has 'DL ref released' "$out")"
+eq "…four requests: soft PATCH, re-read, force-delete, re-read" "4" "$(kb_stub_total)"
+eq "…the soft PATCH went"                              "1" "$(kb_stub_count PATCH '/tasks/505.json')"
+eq "…the force-delete went"                            "1" "$(kb_stub_count POST '/tasks/505/force-delete.json')"
+eq "…BOTH re-reads asked for the trash"                "2" "$(kb_stub_count GET '/tasks/505.json?trashed=1')"
+
+echo "-- delete --hard: a 204 over a card STILL IN THE TRASH is a HARD FAILURE, not a success --"
+# The leg the whole class is about, and the one that only fires because the re-read passes
+# `?trashed=1`: without it this card answers 404 and the run reports a purge that did not happen.
+KB_STUB_STATE='trashed,trashed' kbc delete --task 505 --hard --yes
+eq "still trashed after the force-delete → rc 1"       "1" "$rc"
+eq "…named as a HARD FAILURE"                          "true" "$(has 'HARD FAILURE' "$err")"
+eq "…says the DL ref is NOT released"                  "true" "$(has 'DL ref is NOT released' "$err")"
+eq "…quotes the card's own lifecycle stamps"           "true" "$(has '"deleted_at":"2026-09-03' "$err")"
+eq "…and prints NO success line"                       "false" "$(has 'HARD-deleted' "$out")"
+
+echo "-- delete --hard: an unreadable re-read is UNVERIFIED (rc 3), never a success --"
+KB_STUB_STATE='trashed,403' kbc delete --task 505 --hard --yes
+eq "re-read refused 403 → rc 3 (UNVERIFIED WRITE)"     "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"                     "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…tells the caller not to treat the DL ref as released" "true" \
+   "$(has 'Do NOT treat the DL ref as released' "$err")"
+eq "…says a policy refusal is not evidence the card is gone" "true" \
+   "$(has 'not evidence the card is gone' "$err")"
+eq "…and prints NO success line"                       "false" "$(has 'HARD-deleted' "$out")"
+
+KB_STUB_STATE='trashed,!curl' kbc delete --task 505 --hard --yes
+eq "re-read did not complete → rc 3"                   "3" "$rc"
+eq "…and says the state is UNMEASURED"                 "true" "$(has 'UNMEASURED' "$err")"
+
+KB_STUB_STATE='trashed,nojson' kbc delete --task 505 --hard --yes
+eq "re-read 2xx that carries no card → rc 3"           "3" "$rc"
+eq "…in kbcard's words, not jq's"                      "false" "$(has 'parse error' "$err")"
+
+echo "-- delete --hard: an UNREAD soft leg sends NO force-delete --"
+# --hard's force-delete is IRREVERSIBLE and 422s unless the card is already trashed, so the
+# soft read-back is its precondition. An unread precondition is not one to send it behind.
+KB_STUB_STATE='403' kbc delete --task 505 --hard --yes
+eq "soft re-read refused → rc 3"                       "3" "$rc"
+eq "…and NO force-delete was sent"                     "0" "$(kb_stub_count POST '/tasks/505/force-delete.json')"
+eq "…says so by name"                                  "true" "$(has 'NO force-delete was sent' "$err")"
+
+KB_STUB_STATE='live' kbc delete --task 505 --hard --yes
+eq "soft-delete answered 2xx but the card is STILL LIVE → rc 1" "1" "$rc"
+eq "…named as a HARD FAILURE"                          "true" "$(has 'STILL LIVE' "$err")"
+eq "…and NO force-delete was sent"                     "0" "$(kb_stub_count POST '/tasks/505/force-delete.json')"
+
+echo "-- delete (soft): the same rule, and its own two failures --"
+KB_STUB_STATE='trashed' kbc delete --task 505
+eq "soft delete confirmed → rc 0"                      "0" "$rc"
+eq "…says deleted_at was read back"                    "true" "$(has 'deleted_at is stamped' "$out")"
+eq "…and still says the DL ref is RETAINED"            "true" "$(has 'DL ref RETAINED' "$out")"
+eq "…two requests: the PATCH and its re-read"          "2" "$(kb_stub_total)"
+eq "…and it sent no force-delete"                      "0" "$(kb_stub_count POST '/tasks/505/force-delete.json')"
+
+KB_STUB_STATE='gone' kbc delete --task 505
+eq "soft delete over a row that is GONE → rc 1"        "1" "$rc"
+eq "…is not reported as a recoverable delete"          "true" "$(has 'GONE rather than in the trash' "$err")"
+
+KB_STUB_STATE='live' kbc delete --task 505
+eq "soft delete that did not take → rc 1"              "1" "$rc"
+eq "…named as a HARD FAILURE"                          "true" "$(has 'HARD FAILURE' "$err")"
+
+echo "-- archive: archived_at read back, never the PATCH's status --"
+KB_STUB_STATE='archived' kbc archive --task 505 --force
+eq "archive confirmed → rc 0"                          "0" "$rc"
+eq "…says archived_at was read back"                   "true" "$(has 'archived_at is stamped' "$out")"
+eq "…one archive PATCH"                                "1" "$(kb_stub_count PATCH '/tasks/505.json')"
+# ONE re-read, counted on the trash-asking URL so the archive GATE's own card read (which
+# --force still makes, and which is a plain /tasks/505.json) cannot be mistaken for it.
+eq "…and exactly one trash-asking re-read after it"    "1" "$(kb_stub_count GET '/tasks/505.json?trashed=1')"
+
+KB_STUB_STATE='live' kbc archive --task 505 --force
+eq "archive that did not take → rc 1"                  "1" "$rc"
+eq "…named as a HARD FAILURE"                          "true" "$(has 'HARD FAILURE' "$err")"
+eq "…and prints NO success line"                       "false" "$(has 'archived (off-board' "$out")"
+
+KB_STUB_STATE='!curl' kbc archive --task 505 --force
+eq "archive whose re-read did not complete → rc 3"     "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"                     "true" "$(has 'UNVERIFIED WRITE' "$err")"
+
+echo "-- the write that was REFUSED is still rc 1: rc 3 did not widen over it --"
+# rc 3 is a THIRD outcome, not a rename of rc 1. A refused write is KNOWN not to have landed
+# and stays exactly where it was — asserted, because an rc-3 arm that swallowed this case would
+# turn every definite failure into "we cannot say", which is the opposite of the fix.
+KB_STUB_PATCH_HTTP=403 KB_STUB_STATE='live' kbc delete --task 505
+eq "soft-delete REFUSED by the server → rc 1"          "1" "$rc"
+eq "…and no re-read was even attempted"                "0" "$(kb_stub_count GET '/tasks/505.json?trashed=1')"
+KB_STUB_FORCE_HTTP=403 KB_STUB_STATE='trashed' kbc delete --task 505 --hard --yes
+eq "force-delete REFUSED by the server → rc 1"         "1" "$rc"
+eq "…and says the card is left soft-deleted"           "true" "$(has 'now SOFT-DELETED' "$err")"
+
+unset -f kb_stub_route
+unset D_LIVE D_TRASHED D_ARCHIVED
+
+echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
+# rc 1 under this file's contract is an ASSERTION — "NOT APPLIED, and KNOWN" — and every caller
+# above prints it as HARD FAILURE quoting the board. `jq -e` answers 1 for a filter that RAN and
+# came out false, and 4/5 for one that never ran at all; only the first is a measurement, so the
+# second must not borrow the first's certainty. A predicate that cannot run measured NOTHING,
+# which is rc 3.
+#
+# ⚠ DRIVEN AS A DIRECT CALL, not through a verb, and that is not a shortcut. The four shipped
+# predicates are LITERALS in `bin/kbcard`, so no invocation a caller can type reaches the fault
+# arm — a leg driven through the CLI would certify the split without ever exercising it. The
+# witness is stubbed so the read is unambiguously fine and the only thing left to fail is the
+# filter. Top level of a fresh subprocess, as `_lane_child` above and for the same reason: an
+# in-process capture suspends errexit for the code under test.
+_conf_child='set -euo pipefail; source "'"$BIN"'";
+  _kbc_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
+  _kbc_confirm_card 505 "$1" >/dev/null'
+conf() { rc=0; err="$(bash -c "$_conf_child" _ "$1" 2>&1 >/dev/null)" || rc=$?; }
+
+conf '.state == "present"'
+eq "confirm_card: a predicate that RAN and HOLDS → rc 0"     "0" "$rc"
+eq "…and says nothing (the verb owns the words)"             ""  "$err"
+conf '.state == "absent"'
+eq "confirm_card: a predicate that RAN and is FALSE → rc 1"  "1" "$rc"
+eq "…and still says nothing"                                 ""  "$err"
+# The mutation that makes this a measurement: collapse the case back to `|| return 1` and the
+# next three legs red — rc 3 becomes rc 1 and the diagnostic disappears.
+conf '.state ==== "present"'
+eq "confirm_card: a predicate that CANNOT RUN → rc 3, not rc 1" "3" "$rc"
+eq "…names kbcard's own filter as the fault"                 "true" \
+   "$(has "it is kbcard's own filter that is at fault" "$err")"
+eq "…and claims NOTHING about the write"                     "true" \
+   "$(has 'no claim in either direction' "$err")"
+unset -f conf
+unset _conf_child
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

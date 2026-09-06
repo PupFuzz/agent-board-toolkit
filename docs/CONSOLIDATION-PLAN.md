@@ -218,10 +218,14 @@ than restating it (a hardcoded list would be this program's own defect again), a
 sanctioned variants by name so adding a shadow costs an explicit edit, and fails if an allow-list
 entry outlives the shadow it excuses.
 
-**Weakest property, stated so it is not over-cited:** that guard compares **names**, not behaviour.
+**Weakest property, stated so it is not over-cited:** that leg compares **names**, not behaviour.
 It catches a re-declared helper; it cannot catch a selftest that hand-rolls the same logic inline
 under a different name, and it says nothing about whether the prelude's argument order is the right
 one. It closes the copy channel that actually minted the bug — not every conceivable one.
+⚑ **That file has since grown a SECOND leg over a hand-spelled idiom (card#8548), and its exact
+reach is stated in its own header — read there rather than here.** This paragraph describes the
+name leg only, and is left standing because that leg's bound is what Stage B's argument turns on;
+a doc that restates a guard's whole predicate in its own words is how this class went wrong twice.
 
 ---
 
@@ -508,6 +512,18 @@ the lib and **exits 1 if it cannot extract `host_ok`** — so a rename or remova
 the build rather than silently reducing coverage. The mirror is *guarded duplication*, which is the
 outcome this stage chose over consolidation.
 
+**And "guarded" is now the whole set, not the host guard alone (card#8529).** The `require_value`
+mirror — which this section names in the same breath as `host_ok` — was held by its comment and by
+nothing else, in **four** standalone tools rather than the one this paragraph implies
+(`promote-released-cards`, `release-pr-body`, `release-artifacts-check`, `release-tag-check`), as was
+the `require_resolvable` pair the two release movers share. `tests/mirror-pair-parity-selftest.sh`
+drives each against the lib's original over one corpus and **derives the copy set from the tree**, so
+the fifth standalone to grow one is compared on the day it lands rather than on the day somebody
+remembers. `tests/mirror-pair-census.sh` beside it re-derives the whole mirror-candidate population
+and prints a per-copy verdict — run it rather than quoting a count from this document, which is a
+measurement with a date on it. Choosing guarded duplication is only a defensible ruling while the
+guard exists for every mirror the ruling covers; that is what this closes.
+
 **If it is ever revived,** the § Stage D revival checklist above still applies in full (the literal
 `source "$KB_LIB"`, the INSTALL.md §6b / ADOPTION.md group split, the UPGRADE.md entry, and the
 framework's `templates/release/` mirror).
@@ -599,6 +615,170 @@ Duplications found *after* the program closed, in the shapes it named. Parked he
 tracker: this document already owns the reasoning for every consolidation in this repo, and a
 finding with no owner is abandoned, not filed.
 
+- **The coord-store token rung, MIRRORED into `agent-board-toolkit-runtime-check`** (card#8376) —
+  **DUPLICATED ON PURPOSE, GUARDED, on Stage D's terms.** The duplicate-kanban-token leg has to
+  resolve a token file exactly as the tools do, and that resolution lives in `_kb-board-lib.sh`
+  (`kb_coord_store_token_file` + `_kb_expand_home` + `_kb_looks_like_pasted_secret`, plus
+  `kb_resolve_env`'s host-then-board sourced read). `runtime-check` **cannot source the lib** — it
+  JUDGES the lib, and a stale or broken lib must not take the judge down with it — so four
+  `_rc_*` mirrors ship inside it. That is the same trade this program settled for
+  `promote-released-cards`' `host_ok`, and it is pinned the same way:
+  `tests/token-duplication-selftest.sh` extracts all four with `sed` and drives them **row-by-row
+  against the lib's originals** over a shared case table, and **exits 1 if it cannot extract one**,
+  so a rename reds the build rather than retiring the comparison. **The table's size is not
+  written here:** the selftest counts the rows as it runs them and prints them on its own
+  `== the parity table this run actually drove ==` line, because the figure that stood in this
+  spot (`16 store shapes`) was 15 on the day it was typed and had relayed intact ever since. ⚑
+  **The board-env row is pinned against `kb_resolve_env`, not `kb_board_env_get`** — the
+  single-file read cannot express a board env whose token path interpolates a variable the HOST
+  env sets, so a mirror sourcing the board env alone answered a different path than the tools do,
+  and the parity block could not see it (found in review of card#8376). ⛔ **Why a drifted mirror is worse here than
+  a disagreement:** it would resolve a DIFFERENT file than the tools do, and the leg would then
+  report a duplicate credential that is not there, or miss the one that is — a security finding
+  invented or lost, either way against a file nobody is looking at. ⚠ **Do not read this as a
+  Stage D revival case.** The alternative is not "source the lib" (forbidden here) but "make the
+  lib callable out-of-process", which would give the judge a runtime dependency on the artifact
+  under judgement. The mirror is the smaller cost, and this entry exists so the next author meets
+  the decision instead of re-deriving it — or worse, "fixing" it by adding a `source`.
+- **A DEFINITION duplicated into the test that guards it, and a parity block whose population is
+  FUNCTIONS rather than USES** (card#8376, found in review at R2 and again at R3) — **the class,
+  not the two instances.** The entry above pins the mirrored *functions*; neither instance below
+  was a mirrored function, and that is the whole point.
+  **Instance 1 — the needle.** `_rc_digest` defines what "the same credential" MEANS: the file's
+  content **as its readers see it**, i.e. with trailing newlines stripped, because every reader
+  takes a token through `$(cat …)`. `tests/token-duplication-selftest.sh` re-spelled that rule as
+  `printf '%s\n' "$FAKE" | sha256sum` to build the needle its canon #20 absence assertions search
+  the tool's whole output for. When R2 corrected the definition in the bin, the copy in the test
+  stayed on RAW BYTES — so both absence rows searched for a string the tool **cannot emit on any
+  input**, and their positive controls proved only that the search function works. Measured: a
+  mutant interpolating the compared digest into the `✗` message leaked it with the suite at rc 0
+  and 0 FAIL, while a mutant emitting `$(cat …)` reds — the VALUE half live, the sha256 half dead,
+  on the one instrument in this repo that resolves two credentials at once. Fixed by **adopting
+  `_rc_digest` out of the bin** (`_adopt_fn`, the same `sed`-extract-or-exit-1 the mirror block
+  uses, now one spelling shared by both callers) and deriving the needle from it.
+  ⚑ **`_adopt_fn` itself now lives in `tests/_selftest-prelude.sh`, and that is not tidying.**
+  Minted local to this one selftest it was one more hand-spelling of a `sed` range this suite
+  already carried several of — i.e. this entry's own rule re-minted in the act of closing it.
+  (The list of files that carried the others was written out here and went stale within one
+  release, twice over; it is derived now, see below.) In the prelude it is one
+  definition every selftest already sources.
+  ⛔ **AND THE GATE THAT SENTENCE PROMISED DID NOT EXIST — corrected here rather than quietly
+  rewritten, because the wrong version is the one a future author would have trusted to have
+  closed this** (card#8548). This entry, `docs/CHANGELOG.md` and PR #323's body all said
+  `prelude-shadow-selftest.sh` *"reds on the seventh copy"*. That guard compared NAMES: it red
+  only on a copy called `_adopt_fn`, and a seventh hand-spelling under any other name left it at
+  **rc 0** — which is the exact shape of every residual site listed below, so the doc promised
+  the guard covered the drift this very paragraph says remains. It was not hypothetical:
+  measured on `dev` at `52125a6`, two further copies had already been minted in
+  `promote-source-qualify-selftest.sh`, spelled in `awk` instead of `sed`, with the suite green
+  — and PR #323's own out-of-scope note had already named a third spelling, a
+  `grep -E '^uint_ok\(\)'`, that no name comparison could see either.
+  `prelude-shadow-selftest.sh` now carries a **second leg** whose population is the IDIOM —
+  every regex literal anchoring a shell function's definition at column zero, whatever tool
+  consumes it and whatever DELIMITER it is written in — dispositioned per file with a count, so a
+  new spelling reds wherever and however it is written. ⛔ **The delimiter was the same defect one
+  level down, and it shipped:** the first cut of this leg took `/`, the second took `/ ' "`, and
+  both were inclusion lists a keystroke wide. Measured on this tree, the three-delimiter version
+  was blind to two hand-spelled copies that were live at the time — one with a character class
+  between the `^` and the name, one with an alternation group — so the delimiter is now taken from
+  the line and the name is sought inside the literal that delimiter opened. Both copies are
+  dispositioned. The leg's file population is `tests/_shipped-shell-lib.sh`'s, not a fourth
+  hand-copy of `ci.yml`'s `find` (card#6911 owns that derivation), and it asserts
+  `_ci_shellcheck_drift` so a narrowed workflow cannot leave it scanning a set CI no longer has.
+  ⚑ **What that guard covers is stated in its own header and is not restated
+  here or in the changelog**: three surfaces describing one predicate in their own words is how
+  this got wrong in the first place.
+  ⚑ **NO COUNT OF THE RESIDUAL IS WRITTEN HERE EITHER.** "Five hand-spellings" was true when it
+  was typed and was two short within one release — a number in prose is a quoted authority that
+  outlives the edit that falsifies it. `prelude-shadow-selftest.sh` derives the live population
+  every run and prints it as a denominator; its `EXTRACTORS` list is where each remaining site's
+  reason lives, one line per file, and a site that leaves the list reds as a stale disposition.
+  **What is left is ONE shape, and the shape it is NOT is recorded here rather than quietly
+  dropped, because the wrong version is the one a future author would have acted on.** This entry
+  filed a second shape as a design call: `kb-host-guard-selftest.sh` (×2) and
+  `kb-positional-guard-selftest.sh` eval the extracted source **through a rename**
+  (`${src/host_ok() \{/host_ok_prc() \{}`), so — it said — they need an **alias parameter**
+  neither `_fn_src` nor `_adopt_fn` has. **That was false the moment `_fn_src` landed.** Those
+  sites apply the rename themselves, in their own `${var/…}` expansion, and need only the
+  function's TEXT, which is exactly what `_fn_src` returns; all three are migrated, one line each,
+  with the suite byte-identical either side. A reason that outlives the change that falsified it
+  leaves copies in place waiting on a primitive that is not missing.
+  The shape that WAS left: sites that locate a **one-line** function, whose source has no `^}` line
+  for `_fn_src`'s range to stop at. ⛔ **It used to run on to the next function's closing brace and
+  hand that function's whole body back at rc 0** (`_fn_src bin/next-dl max_int` ⇒ 129 lines,
+  two further definitions inside) — a silent wrong answer from a primitive whose docblock promised
+  "text, or exit 1". It was made to REFUSE, naming what the range would have swallowed, so the
+  bound was loud like the other one — and **card#8529 then gave it the one-line MODE it owed**,
+  because pinning the `require_value` mirror across four standalone tools needed it and no
+  hand-spelling of that extraction was going to be the right answer. It needed the spacing bound
+  relaxed in the same change: `uint_ok()     {` is refused on its SPELLING as well as its shape,
+  so freeing either alone freed nothing. `promote-pagination-selftest.sh` migrated onto it; the
+  three sites still hand-spelled are held there by a DIFFERENT constraint (two names in one read,
+  or a there-is-exactly-one COUNT an extractor answering one function cannot assert), and their
+  dispositions say so rather than still naming the one-line mode.
+  Other derived sites are anchors but not extractions at all — a definition-line LOCATE that must
+  not stop at the first hit, a `sed` `i` mutation planter, and a locate in a NON-SHELL file where
+  the definition is not at column zero — and are dispositioned as such.
+  **Which files are in each shape, and how many, is in `EXTRACTORS` and not here**;
+  writing the file list out is exactly what went stale twice. Each guards its
+  own extraction, so none can silently retire a comparison — the residual is duplication, not a
+  dead guard. The sites that needed only the **text-returning sibling** are migrated onto it:
+  `_fn_src` is that sibling, and `_adopt_fn` is now `_fn_src` plus an `eval`, so there is one
+  spelling of "where does this function's text start and stop" for readers and runners alike.
+  **Instance 2 — the call graph.** The parity block drives each mirrored function against its
+  original, which cannot see a divergence in **which sites call it**: `_kb_expand_home` has ONE
+  call site in the lib (inside `kb_coord_store_token_file`), and `_rc_expand_home` had THREE, so a
+  board env spelling `KBCARD_TOKEN_FILE="~/tok"` was literal to every tool (`kb_resolve_env` rc 5)
+  and expanded here. Fixed by dropping the two extra expansions and driving the shape **through
+  `kb_resolve_env`**, not through the mirrored function.
+  ⛔ **AND THAT BEHAVIOURAL ROW PINNED ONE OF THE TWO SITES, WHILE THIS ENTRY AND THE PR BOTH
+  SAID IT PINNED BOTH — corrected here rather than quietly rewritten, because the wrong version
+  is the one a future author would have trusted to have retired this.** Measured, twice each:
+  restoring `_rc_add_source`'s expansion reds that row (**2 FAIL**); restoring the precedence
+  `eff` expansion — the one-line pre-fix restore, on the arm that tells an operator to DELETE a
+  file — left the whole selftest at **rc 0, 0 FAIL**. A scenario row per call site is the wrong
+  shape in any case: **the divergence is in the CALL GRAPH**, so the call graph is what is
+  asserted now — derived from each file (occurrences outside comment lines and outside the
+  definition line) behind a positive control, because an equality between two derivations that
+  both broke and answered 0 measures nothing.
+  ⛔ **AND THE FIRST CUT OF THAT PIN COUPLED THE GUARD TO AN UNRELATED POPULATION — corrected
+  here for the same reason, at card#8548.** It compared `_rc_expand_home` call sites in the bin
+  against `_kb_expand_home` call sites **anywhere in the lib**, and this entry recorded *"planting
+  a second call in the LIB ⇒ 1 FAIL, `expected '2' got '1'`"* as one of its four seen-to-fail
+  arms. That arm was the DEFECT, certified as a feature: the lib is a far larger surface than the
+  four functions runtime-check mirrors, so a legitimate new expansion in an unmirrored lib
+  function (measured: `kb_resolve_env`) red the guard with **no mirror drift at all** — and
+  because the failure named an expected-vs-got count, the remedy it invited was to add a matching
+  call to the mirror, which is the opposite of correct. **The population is now the mirrored
+  region, in two legs**: (A) every `_rc_expand_home` call in the bin is INSIDE the store-pointer
+  mirror — the bin has no business expanding `~` anywhere else, and both dropped sites were
+  outside it, as is every future one whatever it is called; (B) inside that mirror it expands as
+  often as `kb_coord_store_token_file` does, which is the only leg that reads the lib and it
+  reads one function of it. Each failure **names the drift, the direction and the remedy** rather
+  than a count, and says outright which side must NOT be changed to match.
+  Seen to fail, each on a copy of the tree: restoring `_rc_add_source`'s expansion ⇒ leg A reds,
+  naming the line; removing the mirror's one remaining call ⇒ leg B reds *"MISSING an expansion
+  its original performs"*, with the behavioural rows and the positive control beside it; a second
+  expansion inside the mirror ⇒ leg B reds *"expands MORE often … DROP the extra call in the
+  mirror"*. And the **negative** control is shipped in the file rather than only measured: a
+  planted `_kb_expand_home` in an unmirrored lib function leaves the derivation unchanged, which
+  the old pin red on (re-measured at `52125a6`: old ⇒ 1 FAIL, new ⇒ 0 FAIL). The behavioural row
+  stays as the witness — leg B compares HOW MANY, never WHICH.
+  **The sibling audit of instance 2, and its disposition.** The other three mirrors were counted
+  against the lib's call graph at this change: `_rc_declared_token_file` matches
+  (`kb_resolve_env` reads the host env and the board env, and so does this), `_rc_store_pointer`
+  matches, and `_rc_looks_like_pasted_secret` DIVERGES — two sites here against the lib's one,
+  the extra one in `_rc_add_source`. **Accepted, on the record, not carried as a finding:** the
+  lib refuses a credential-shaped *store pointer*, while the extra call here refuses to render a
+  credential-shaped *declared value* into a message, which is canon #20 on an instrument that
+  resolves two credentials at once. It cannot move a verdict — a value of that shape is not a
+  readable file, so the source drops out of the population either way — it only replaces silence
+  with an UNJUDGED warn.
+  ⛔ **The rule this entry exists to state: a duplicated DEFINITION is not covered by a guard over
+  duplicated FUNCTIONS.** Extraction is cheap here — the whole mechanism is one `sed` range — so
+  the disposition for a rule the test needs to know is **adopt it from the bin**, never re-spell
+  it. A re-spelling in a *test* is the worst place for one: it does not fail loudly when it
+  drifts, it disarms the assertion that was supposed to notice.
 - **A driver that reads the invoking user's `$HOME` measures the box, not the tool** (card#6911) —
   recorded here because it is a shape, not a one-off: `tests/verdict-through-truncating-reader-selftest.sh`
   drove `bin/kbcard` with no arguments, which prints usage at rc 0 on a configured box and exits **2
@@ -631,6 +811,31 @@ finding with no owner is abandoned, not filed.
   fire. ⚠ **Do not over-cite this:** it dedupes the DERIVATION, not the per-gate ROLL of
   dispositions — a new bin still costs one edit per gate, by design, and the stale-roll blocker that
   prompted the extraction is not something this lib would have caught.
+- **The repo-slug predicate, in three bins with THREE spellings** (card#8421) — **EXTRACTED to
+  `kb_is_repo_slug` in `bin/_kb-board-lib.sh`; two of the three adopted, the third is a documented
+  standalone.** One accept-set — a bare GitHub `<owner>/<name>` — was written three ways:
+  `bin/adopt-to-dl`'s `_ata_validate_repo` hand-rolled it as three `case` steps under a local
+  `LC_ALL=C`; `bin/run-coverage-check` re-spelled it as a bare regex through `kb_ere_match`;
+  `bin/promote-released-cards` spells it as `src_charset_ok` plus a shape `case`. **The divergence
+  is the entry, not the count:** the three did not agree. `run-coverage-check --repo` accepted
+  `owner/name.git`, which the other two refuse — and the `.git` arm is the one with a stated
+  reason (the server's source canonicalizer does not trim a `.git` while `repoFromGitHubUrl` does,
+  so the two derivations disagree and a stamped card verifies against a source no card can
+  carry). A third copy is where the narrow rule quietly fails to arrive, exactly as the card#7207
+  entry above records. **`promote-released-cards` keeps its copy and that is not an oversight** —
+  it is vendored standalone into consumer repos and must not source the lib (the same constraint
+  that duplicates `host_ok` and `require_value`), so the two are bound by the single accept/reject
+  corpus in § 3c of `tests/promote-source-qualify-selftest.sh`, which drives BOTH ends from one row
+  set — the lib predicate called directly, `promote-released-cards` run end-to-end — and pins
+  the two declared divergences in both directions.
+  **Consequence recorded rather than discovered later:** adopting the shared predicate NARROWS
+  `run-coverage-check --repo`, which now refuses `owner/name.git` at rc 2 instead of putting it
+  into a `repos/<slug>/…` request path GitHub answers 404 for; the narrowing carries its own arm
+  in `tests/run-coverage-check-selftest.sh`. The predicate's arms moved WITH it, from
+  `tests/adopt-to-dl-selftest.sh` to `tests/kb-board-lib-selftest.sh`, and the caller's selftest
+  keeps an end-to-end arm for the WIRING — a lib unit test cannot tell whether its caller still
+  calls it.
+
 - **The GitHub Actions file population, in three gates with TWO predicates** (card#7207) —
   **EXTRACTED, all three adopted in the same PR.** `ci-matrix-parity-selftest.sh` and
   `shellcheck-pin-selftest.sh` each globbed `*.yml` **and** `*.yaml` inside their own python
@@ -1755,6 +1960,165 @@ finding with no owner is abandoned, not filed.
   three working installs inspected declare them `string`, `enum`, `string` and `url` respectively,
   which is an observation of what works and not a statement of what is required, and no run of
   anything has tested the alternatives.
+
+- **The `curl` stub that drives `promote-released-cards` end to end, in three selftests**
+  (card#8421) — **EXTRACTED at the second real caller; one adoption still owed, and it is a
+  DECISION, not a chore.** `bin/promote-released-cards` runs its whole subject at top level in a
+  standalone that must not be sourced, so a fake `curl` on `$PATH` is the only way to exercise the
+  correlation, the guards, the reports and the exit policy at all — which is why the fixture that
+  decides what "the board said" means had already been hand-rolled twice
+  (`promote-stage-guard-selftest.sh`, `promote-ref-canon-selftest.sh`) with a third about to land.
+  `tests/_promote-curl-stub.sh` now owns it; the stage-guard file and the new
+  `promote-source-qualify-selftest.sh` are its two callers, byte-identical stub content.
+  ⛔ **`promote-ref-canon-selftest.sh` was deliberately NOT adopted, and the reason is not
+  file scope.** Its own stub logs the PATCH **url alone**, and its `moved()` asserts whole-LINE
+  equality against that log via the prelude's `has_line`. The shared stub logs `<url>\t<body>` —
+  which the stage-guard file needs, since it asserts on the request BODY — so adopting it there
+  means rewriting a deliberately strict assertion into a substring one. That is a change to a
+  test's STRENGTH, in the file that pins the card#7587 ref-canon rule, and it belongs to whoever
+  is willing to argue it on its own. The alternative that costs nothing — a second log channel in
+  the shared stub — is worse: two ways to spell one observation is the shape being consolidated.
+
+- **The source-derivation rule, expressed in a FOURTH runtime as jq** (card#8421) — **NOT
+  consolidated onto the server, and the reason is what the server ENDPOINT can answer, not
+  effort.** `bin/promote-released-cards` mirrors the kanban `ExternalReferenceNormalizer`
+  (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
+  bridge PHP and `kanban_common._derive_card_source`. The obvious consolidation is to stop
+  mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
+  <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
+  with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
+  `->where('source', $source)` — a strict equality — so a card whose source is a *different* repo
+  and a card whose source is *null* are both simply **absent** from the answer, indistinguishable
+  from "no card carries this ref". Those two rows **are** the report: the `⊘` lines are the only
+  evidence the guard fired, and the unsourced one is the only thing that tells an operator to
+  **stamp** a card rather than mint one. An endpoint that answers the qualification by *deleting*
+  the rows the qualification rejected cannot report on them.
+  Two further costs, both measured rather than assumed: `external_references` is
+  `whenLoaded`-gated on `TaskResource` and `tasks/search.json` eager-loads only
+  `lastStageMoveChangelog`, so the **paged board read this tool already makes carries no
+  `source` at all** — adopting by-ref means one request per `(system, ref)` in place of one
+  paginated scan, and that scan is also where `workflow_stage_id` (idempotence, the
+  `--shipped-stages` guard) comes from; and the `--cards` leg correlates on a card's own **id**,
+  which is not an external-reference system, so it has no by-ref query in the first place.
+  **Revisit if** the by-ref endpoint grows a way to return the rejected rows (an
+  `include_unqualified`, or a per-row `source` on the answer), or `tasks/search.json` gains an
+  opt-in `external_references` include — the second alone would remove the mirror, because the
+  derivation would no longer need re-expressing to read a value the board already handed over.
+  The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
+- **The single-card read and its "was anything actually read?" refusal — SEVEN spellings in
+  `bin/kbcard`, and they do not agree on what a card IS** (raised as **m7** and again as **m11** in the review of
+  card#8545, the `unlink` verb, and reported-not-minted on that card's instruction; the finding
+  was EJECTED from card#8556 on purpose — that card's class is *a
+  mutating verb reports success it never read back*, and this is duplication, so it had no owner
+  until this entry). `_kbc_link_witness` is the sixth and `_kbc_card_witness` — minted by
+  card#8556 itself, after this entry was written — is the seventh. The shape every one of them spells is the
+  same three steps: `kb_api GET "/tasks/<id>.json"`, pull the card out of the 2xx body with
+  `kb_parse_resp`, then test the result for emptiness and refuse with a "nothing was read"
+  diagnostic — because a 2xx whose body carries no card is not an empty card, which is this
+  program's own *empty vs absent* trap (§ *Diagnosis*, item 1) at the read boundary. **The population, re-derived rather than quoted:**
+  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard` returns 7 — `_kbc_patch_tags`,
+  `_kbc_link_witness`, `_kbc_card_witness`, `cmd_show`, `cmd_comments`, `_kbc_archive_decision`
+  and `_kbc_field_restamp_dl`'s verify loop — plus two more outside this bin that the count
+  deliberately excludes (repo-wide the same grep over `bin/` returns 9): `bin/adopt-to-dl`'s and
+  `bin/board-card-start`'s, each a different bin with its own refusal vocabulary, and hoisting
+  across that boundary is a separate call. Re-run the grep; do not trust the seven.
+  ⛔ **THE `kb_api\(_status\)\?` ALTERNATION IS THE LOAD-BEARING PART OF THAT PATTERN, and it is
+  here because the narrower one FAILED.** This entry originally derived on `kb_api GET
+  "/tasks/\$` — and `_kbc_card_witness`, the seventh spelling, reads through **`kb_api_status`**,
+  so the narrow grep returned 6 both before and after the commit that minted it. The trigger this
+  entry exists to arm was therefore standing on a count that could not move. An instrument that
+  greps a NAME answers about the NAME, and a population derived BEFORE an edit cannot see what
+  the edit ADDS: re-run the derivation AFTER writing, not before. The `\$` at the end is equally
+  load-bearing in the other direction — dropping it admits `GET "/tasks/search.json` (line 633),
+  which is the board search, not a single-card read, and the count silently becomes 8.
+  ⚑ **The cost is not the line count, it is that the seven spellings DISAGREE, and the disagreement
+  is invisible at every call site.** Five of them qualify the read — `.data | select(type ==
+  "object")`, or a projection that can only come off an object — so a 2xx whose `.data` is a
+  scalar is refused. **Two take `.data` bare:** `cmd_show`, which hands the result
+  straight to `_kbc_annotate_card`, and `_kbc_archive_decision`, which tests only for
+  the literal `null` and empty before deciding whether the archive gate may run. Measured, by
+  driving `kb_parse_resp` (it is `jq "$@" <<<"$resp" 2>/dev/null || true`) over four bodies:
+  `{"data":"a string"}`, `{"data":5}` and `{"data":true}` all yield a NON-EMPTY result through
+  the bare spelling and are refused by the guarded one; `{"data":{"id":1}}` passes both. So the
+  same malformed body is a refusal in five verbs and a readable card in two — and in
+  `_kbc_archive_decision` the two arms are a fail-closed `noprimitive` verdict versus reaching
+  the shim, which is this repo's own "empty vs absent" axis re-minted one layer down.
+  ⚠ **Reachability is UNMEASURED and is not claimed.** Whether the board ever answers a task GET
+  with a non-object `.data` is a property of the server, not of this repo, and nobody has
+  observed it. What is measured is the divergence between the spellings, which is the thing a
+  hoist would remove; the entry is filed on the duplication, per this section's own bar, not on
+  an incident.
+  **What a hoist has to carry, which is why this is filed rather than done in passing:** the seven
+  refusals are not interchangeable text. They differ in RETURN POSTURE (`return 1` in four;
+  `_kbc_archive_decision` prints a tab-separated `noprimitive` verdict and returns 0 so the gate
+  fails closed without aborting its caller; the backfill loop pushes onto `unread` and
+  `continue`s so one bad row cannot abort a batch; `_kbc_card_witness` returns 1 only for
+  UNMEASURED and answers **rc 0 with `{"state":"absent"}` on a 404** — the one spelling of the
+  seven for which *the card is not there* is an ANSWER rather than a failure) and in the NOUN the
+  diagnostic names ("its links are UNMEASURED", "refusing to replace this card's tags with a list
+  built from nothing", "cannot verify archive safety"). A primitive that returns the card and lets
+  each caller own its own refusal keeps all four postures; one that owns the refusal too would
+  flatten them, and the flattening is exactly what turns `_kbc_archive_decision`'s deliberate
+  fail-closed into an abort. **Do NOT collapse the diagnostics** — Stage A's rule that
+  consolidating a guard deletes it silently applies here in full.
+  ⛔ **AND `_kbc_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
+  hoist would silently lose.** It is the only one of the seven that reads through
+  **`kb_api_status`** rather than `kb_api` — because a 404 and a 403 are two different answers
+  there and `kb_api` collapses both to rc 1 with `KB_HTTP` stranded in a subshell — and the only
+  one that sends **`?trashed=1`**, without which a merely SOFT-deleted card answers 404 exactly as
+  a purged one does and a `--hard` read-back reports a DL ref released that is still pinning the
+  allocation floor (`docs/DL-COUNTER-RECOVERY.md` § *Why it strands*). A hoist that unified the
+  seven on `kb_api GET "/tasks/$id.json"` would be re-minting card#8556's own defect inside the
+  primitive built to prevent it. **The seventh is a member of this class, not a duplicate of it:
+  it is here to be counted, and it is here with the reason it cannot simply be folded in.**
+- **A window measured from a fixture's stamp — the READER shipped twice in one commit, and it is
+  now the prelude's** (card#8533, found in review at R1) — **hoisted, not recorded, because the
+  second caller is what this document's own rule waits for.** Re-basing three elapsed-time bounds
+  off the tool's startup gave `release-tag-check-selftest` and `board-session-close-selftest` the
+  same two-line reader — *now minus the epoch second the fixture wrote*, and *is the stamp
+  non-empty* — in near-verbatim copies, in a single commit. The WRITERS legitimately differ (a git
+  `ext::` remote helper stamping the read it is about to hang; a `/bin/sh` delegate stamping its
+  own launch) and are not consolidated; the reader is one behaviour, and it is the half that can
+  drift. `_since_stamp` / `_stamp_taken` therefore live in `tests/_selftest-prelude.sh`, per
+  § Stage B's binding rule — *a helper used by more than one selftest lives there and is sourced,
+  never re-declared* — and `prelude-shadow-selftest.sh`, which derives its helper set FROM the
+  prelude, guards the pair from the next run with no edit of its own.
+  ⚑ **The two are shipped as a PAIR, and that is the reason they are one entry rather than one
+  helper.** An unwritten stamp reads as epoch 0, so `_since_stamp` answers the seconds since 1970
+  — a number no bound passes, which reads exactly like the bound firing while the interval it
+  names never happened. `_stamp_taken` is the precondition cell that turns that into "the fixture
+  was never reached". A future caller taking the measurement without the precondition re-mints the
+  wrong-diagnosis half of the defect, so the pairing rule is stated in the prelude beside them
+  rather than left to be re-derived.
+  ⚠ **"Unwritten" is THREE states, and the reader was total over only two — found at R2, fixed
+  before merge.** `date +%s > stamp` opens its redirect *before* it execs `date`, so a fixture
+  killed in that window leaves a zero-byte file that EXISTS: `cat` succeeds, prints nothing, and
+  the reader's `|| echo 0` never fires. The arithmetic was then `$(( now -  ))` — a syntax error,
+  so the READER failed rather than the subject. Driven rather than read, with the hung-read
+  fixture made to open its stamp redirect and not reach `date` before the tool's 1s read bound
+  expires — the observed regime, reproduced: `release-tag-check-selftest`
+  is `set -e` and evaluates `_since_stamp` one cell AHEAD of the `_stamp_taken` cell written to
+  diagnose exactly this, so the file aborted there — **44 of its 142 assertions went unrun, with
+  no FAIL line and no `_summary`.** Fixed with `${s:-0}` kept *beside* the existing `|| echo 0`
+  rather than replacing it, so the absent/unreadable states stay independent of
+  `inherit_errexit`. The docblock's stated states now equal the states the code handles: the
+  header had been a completeness claim enumerating two of three — this document's own recurring
+  defect shape, sitting in a code comment.
+  ⚑ **Disposition — the saturation regime this pair now SURFACES is the design working, not a
+  residual flake, and is not tracked further.** At artificial CPU saturation the hung-read arm can
+  red as `…the read ran <epoch-sized>s from its own start`: read 1 never began inside the tool's
+  1s bound, so no stamp exists and the window is measured from epoch 0. The `5`-vs-`10` bound is
+  irrelevant to that number — no bound passes it — and `_stamp_taken` reds one cell earlier with
+  "the hung read was actually TAKEN" false, which is the pair converting a wrong number into a
+  named cause. Recorded so a later reader does not re-open it as a defect in the bound.
+  ⛔ **What this does NOT close, stated so it is not over-cited:** `prelude-shadow-selftest.sh`'s
+  name leg compares NAMES, and its idiom leg (card#8548) covers function-EXTRACTION anchors only.
+  A third selftest that hand-spells `$(( $(date +%s) - $(cat …) ))` inline under no function name
+  at all is invisible to both — the same bound that section already states for `has`. The population is a derivation rather than a figure: `command grep -rn 'date +%s'
+  tests/` re-runs it, and at this change it answers THREE — the prelude's one reader, plus the
+  two fixture WRITERS, which are the deliberately-unconsolidated half. Those two writers are
+  also this derivation's positive control: a run that returns none of them is a broken grep, not
+  a clean tree.
 
 ---
 

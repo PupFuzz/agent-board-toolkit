@@ -32,8 +32,7 @@ KB_PROG="kb-host-guard-selftest"
 # so lift just host_ok out of it — the same extract-and-exercise pattern the promote-action
 # selftest uses on the composite action's run block. This keeps the vendored mirror honest
 # rather than trusting the "keep the two in sync" comment.
-prc_src="$(sed -n '/^host_ok() {/,/^}/p' "$PRC")"
-[[ -n "$prc_src" ]] || { echo "selftest: could not extract host_ok from $PRC — did it get renamed?" >&2; exit 1; }
+prc_src="$(_fn_src "$PRC" host_ok)"
 eval "${prc_src/host_ok() \{/host_ok_prc() \{}"
 
 export KANBAN_EXPECTED_HOST="kanban.victim.corp"
@@ -266,8 +265,7 @@ echo "== kb_redact_url_userinfo — the SECOND sync-paired copy, same two-copy d
 # and a redactor cutting at the last '@' anywhere would rewrite those refusals to name
 # `kanban.victim.corp` as the base being contacted, i.e. print the protected host as the
 # destination in the exact message that exists to say it is not.
-prc_red_src="$(sed -n '/^redact_userinfo() {/,/^}/p' "$PRC")"
-[[ -n "$prc_red_src" ]] || { echo "selftest: could not extract redact_userinfo from $PRC — did it get renamed?" >&2; exit 1; }
+prc_red_src="$(_fn_src "$PRC" redact_userinfo)"
 eval "${prc_red_src/redact_userinfo() \{/redact_userinfo_prc() \{}"
 
 # red <url> <expected> <label> — assert BOTH copies produce <expected>, spelled as a literal.
