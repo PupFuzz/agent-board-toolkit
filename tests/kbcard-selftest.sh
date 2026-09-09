@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kbcard-selftest.sh — deterministic, network-free unit checks for kbcard's pure
-# mapping logic: stage_name (the KB_STAGE_* reverse lookup) and _kbc_annotate_card
-# (show's stage/column population). The rule under test is omit-don't-null (card
+# mapping logic: stage_name (the KB_STAGE_* reverse lookup), _kbc_user_name (the
+# KB_USER_* one) and _kbc_annotate_card (show's stage/column/assignee population). The rule under test is omit-don't-null (card
 # #4387): a `"stage": null` emitted for a card that IS in a stage reads as "no
 # stage" and caused a false "auto-move is broken" escalation. Sources the bin
 # (main-guarded) and asserts on its pure functions. Matches the toolkit's
@@ -32,6 +32,11 @@ kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(ca
 # keys) — scrub every KB_STAGE_* so no live board id can fake a pass or a fail.
 # shellcheck disable=SC2086
 unset ${!KB_STAGE_@}
+# KB_USER_* joins them for exactly the same reason (card#9169): a seat whose board env is
+# sourced in this shell would otherwise supply a seat→id mapping no assertion here declared,
+# and the assignment legs would pass or fail on the operator's own roster.
+# shellcheck disable=SC2086
+unset ${!KB_USER_@}
 
 # ---------------------------------------------------------------------------
 echo "== stage_name — KB_STAGE_* reverse lookup =="
@@ -83,6 +88,41 @@ eq "no workflow_stage_id ⇒ no column key" "false" "$(annot '{"id":1}' 'has("co
 
 # Everything else in the task passes through untouched.
 eq "other fields pass through" '"card"' "$(annot '{"id":1,"workflow_stage_id":48,"name":"card"}' '.name')"
+
+# --- assignee: the SAME omit-don't-null rule, over the KB_USER_* map (card#9169) ---
+# An emitted `"assignee": null` on a card that IS assigned reads as "nobody is working this",
+# which is the exact claim the field exists to make readable — the #4387 defect, one field over.
+export KB_USER_KANBAN_SOLO=7 KB_USER_SOLA_PM=9
+eq "known id resolves to its seat name"          "kanban_solo" "$(_kbc_user_name 7)"
+eq "a second seat resolves to ITS name"          "sola_pm"     "$(_kbc_user_name 9)"
+rc=0; out="$(_kbc_user_name 555)" || rc=$?
+eq "an unmapped id → rc 1"                       "1"  "$rc"
+eq "an unmapped id → no output (never a guess)"  ""   "$out"
+# A `000` placeholder from a copied board-env template maps NOTHING, in both directions: the
+# write side refuses it by name and the render side must not mint a seat called after it.
+export KB_USER_NOT_SET_YET=000
+rc=0; _kbc_user_name 000 >/dev/null || rc=$?
+eq "a 000 placeholder maps no id"                "1"  "$rc"
+eq "…and is not in the render map"               '{"7":"kanban_solo","9":"sola_pm"}' "$(_kbc_user_map)"
+unset KB_USER_NOT_SET_YET
+# The round-trip property the hyphen fold rests on: what a render PRINTS is a name --assign
+# accepts back, so the underscored spelling is usable rather than merely deterministic.
+eq "the rendered name resolves back to the same id" "7" "$(_kbc_user_id "$(_kbc_user_name 7)")"
+eq "…and so does the hyphenated spelling"           "7" "$(_kbc_user_id kanban-solo)"
+
+eq "assignee resolved from KB_USER_* env"    '"kanban_solo"' "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":7}' '.assignee')"
+# The RAW id is what a reader falls back to, so an unmapped assignee costs a NAME, not an
+# answer: the key is omitted and assigned_user_id is still on the card.
+eq "an UNMAPPED assignee ⇒ assignee key OMITTED"  "false" "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":555}' 'has("assignee")')"
+eq "…and the raw id still rides the card"        "555"   "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":555}' '.assigned_user_id')"
+eq "an UNASSIGNED card ⇒ no assignee key"        "false" "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":null}' 'has("assignee")')"
+eq "a card with no such field ⇒ no assignee key" "false" "$(annot '{"id":1,"workflow_stage_id":48}' 'has("assignee")')"
+# A serializer that emits its own null assignee is CORRECTED the same way `column` is.
+eq "serializer null assignee resolved when the env maps it" '"sola_pm"' \
+   "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":9,"assignee":null}' '.assignee')"
+eq "serializer null assignee DELETED when unresolvable"     "false" \
+   "$(annot '{"id":1,"workflow_stage_id":48,"assigned_user_id":555,"assignee":null}' 'has("assignee")')"
+unset KB_USER_KANBAN_SOLO KB_USER_SOLA_PM
 
 unset KB_STAGE_BACKLOG KB_STAGE_SHIPPED_TO_DEV
 
@@ -474,7 +514,7 @@ PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"external_id
 pproj() { printf '%s' "$PCARDS" | _kbc_list_project '' '' '' ''; }
 
 eq "row key set is EXACTLY the documented projection" \
-   '["id","name","stage","type","swimlane_id","swimlane","external_id","tags","dl","pr"]' \
+   '["id","name","stage","type","swimlane_id","swimlane","external_id","tags","assigned_user_id","assignee","dl","pr"]' \
    "$(pproj | jq -c '.[0] | keys_unsorted')"
 eq "tags ride every row verbatim"   '["id:dep:acme#200","triaged"]' "$(pproj | jq -c '.[0].tags')"
 eq "external_id rides every row"    "990"  "$(pproj | jq -c '.[0].external_id')"
@@ -488,6 +528,27 @@ eq "a downstream prefix grep for the provenance tag finds the card" "1" \
 # null for external_id (matching dl/pr, whose absence has always projected null).
 eq "a card with no tags projects []"          "[]"   "$(pproj | jq -c '.[1].tags')"
 eq "a card with no external_id projects null" "null" "$(pproj | jq -c '.[1].external_id')"
+# The assignment pair (card#9169): the board's own id ALWAYS, and the seat name only where
+# this install's KB_USER_* vars map it. `list` is the read a second seat uses to find out that
+# a card in backlog is already being worked, so a row that dropped the id would answer that
+# question with silence — which is the state the whole card exists to remove.
+export KB_USER_KANBAN_SOLO=7
+eq "a mapped assignee projects BOTH the id and the seat name" '[7,"kanban_solo"]' \
+   "$(printf '%s' '[{"id":4,"payload":{},"assigned_user_id":7}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '[.[0].assigned_user_id, .[0].assignee]')"
+eq "an UNMAPPED assignee keeps the raw id and renders name null" '[555,null]' \
+   "$(printf '%s' '[{"id":5,"payload":{},"assigned_user_id":555}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '[.[0].assigned_user_id, .[0].assignee]')"
+eq "an UNASSIGNED card projects the pair as null,null" '[null,null]' \
+   "$(printf '%s' '[{"id":6,"payload":{}}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '[.[0].assigned_user_id, .[0].assignee]')"
+unset KB_USER_KANBAN_SOLO
+# …and with NO seats declared at all the id still rides every row: the name is the ornament,
+# the id is the answer.
+eq "no KB_USER_* declared ⇒ id still projected, name null" '[7,null]' \
+   "$(printf '%s' '[{"id":7,"payload":{},"assigned_user_id":7}]' \
+      | _kbc_list_project '' '' '' '' | jq -c '[.[0].assigned_user_id, .[0].assignee]')"
+
 # description stays OUT by design — unbounded free text on every row of a whole-board
 # read. This assertion is the bound; `show` is where a description is read.
 eq "description is NOT projected, even when the card carries one" "false" \
@@ -1073,7 +1134,7 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
 # either list without an explicit edit here, which is the review moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
-             --name --tags --type --external-id --origin --task)
+             --name --tags --type --external-id --origin --task --assign)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1084,7 +1145,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --type --external-id --origin; do
+         --name --tags --type --external-id --origin --assign; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -3226,6 +3287,204 @@ eq "…and claims NOTHING about the write"                     "true" \
    "$(has 'no claim in either direction' "$err")"
 unset -f conf
 unset _conf_child
+
+# ---------------------------------------------------------------------------
+echo "== patch --assign / --unassign — the collision detector, and the terminal clear (card#9169) =="
+# THE GAP (roundtable #443): a card whose STAGE never moved is indistinguishable from an
+# unclaimed one, so two seats pull the same work and neither finds out. The board has a native
+# field that answers it — assigned_user_id — and nothing in the fleet wrote it. Writing it is
+# only half an answer, though: a writer that silently overwrote whatever was there would leave
+# the same board state either way. THE REFUSAL is the detector, so it is what this block is
+# mostly about.
+#
+# WHY THIS BLOCK DRIVES THE BIN AS A PROCESS. Two of the properties are properties of code a
+# stubbed `kb_api` shell function REPLACES: that a refusal issues NO PATCH (asserted off the
+# request log, not off a body file a stub happened not to write), and that a 401/403 on an
+# assignment write is named as an install fault — which reads KB_HTTP, a global the real kb_api
+# sets and a stub never does. So the seam sits below the lib, as the comment/delete blocks' do.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# The seat→id map is THIS BOARD'S OWN ENV, the KB_STAGE_*/KB_TYPE_* shape — which is what lets
+# a seat with no other product installed resolve a name at all. Declared here as a board env
+# line for that reason: if it were read from anywhere else, this call would not need it.
+kb_stub_board_config dev 42 \
+    'export KB_USER_KANBAN_SOLO=7' \
+    'export KB_USER_SOLA_PM=9' \
+    'export KB_STAGE_IN_REVIEW=50' \
+    'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_STAGE_WONT_DO=60'
+kb_stub_install
+
+# The route table. KB_STUB_HOLDER is what the card's assignment READ answers (`null`, or an id);
+# KB_STUB_READ swaps that read for the two ways it can fail to be a MEASUREMENT; the PATCH echo
+# is the request MERGED onto the card, which is what a post-write TaskResource is, so the stage
+# compare in _kbc_confirm_stage sees the stage the call asked for.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3" http
+    case "$method $url" in
+        "GET "*/tasks/505.json*)
+            case "${KB_STUB_READ:-ok}" in
+                403)    printf '403\n{"message":"This action is unauthorized."}' ;;
+                nojson) printf '200\n<html>502 Bad Gateway</html>' ;;
+                nocard) printf '200\n{"ok":true}' ;;
+                *)      printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":48,"assigned_user_id":%s}}' "${KB_STUB_HOLDER:-null}" ;;
+            esac ;;
+        "PATCH "*/tasks/505.json)
+            http="${KB_STUB_PATCH_HTTP:-200}"
+            printf '%s\n' "$http"
+            case "$http" in
+                2*) jq -cn --argjson b "$body" \
+                        '{data: ({id:505,name:"probe",workflow_stage_id:48,assigned_user_id:null} + $b)}' ;;
+                *)  printf '{"message":"This action is unauthorized."}' ;;
+            esac ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP
+
+# pbody — the assignment field of the PATCH this run issued, as [has,value]. `has` matters as
+# much as the value: an OMITTED key and an explicit `null` are different writes (the API merges
+# per-key), and a test reading only the value cannot tell "cleared" from "left alone".
+pbody() { kb_stub_bodies PATCH /tasks/505.json | jq -c '[has("assigned_user_id"), .assigned_user_id]'; }
+
+# --- the offline preflight: a config gap costs NO request ------------------------------
+kbc patch --task 505 --assign no-such-seat
+eq "unknown seat → rc 2"                          "2" "$rc"
+eq "unknown seat → NOT ONE request was issued"    "0" "$(kb_stub_total)"
+eq "unknown seat names the var to declare"        "true" "$(has 'KB_USER_NO_SUCH_SEAT' "$err")"
+eq "…and enumerates what this board DOES define"  "true" "$(has 'KB_USER_KANBAN_SOLO=7' "$err")"
+
+kbc patch --task 505 --assign kanban-solo --unassign
+eq "--assign + --unassign → rc 2"                 "2" "$rc"
+eq "…and no request"                              "0" "$(kb_stub_total)"
+eq "…names them as mutually exclusive"            "true" "$(has 'mutually exclusive' "$err")"
+
+kbc patch --task 505 --steal
+eq "--steal with neither direction → rc 2"        "2" "$rc"
+eq "…and no request"                              "0" "$(kb_stub_total)"
+eq "…says what --steal is FOR"                    "true" "$(has "overwrite ANOTHER seat's claim" "$err")"
+
+kbc patch --task 505 --assign 0
+eq "--assign 0 → rc 2 in its own words"           "2" "$rc"
+eq "…and does not blame a board-env line"         "true" "$(has 'ids are positive integers' "$err")"
+
+# --- the happy path: an UNHELD card ----------------------------------------------------
+KB_STUB_HOLDER=null kbc patch --task 505 --assign kanban-solo
+eq "assigning an unheld card → rc 0"              "0" "$rc"
+eq "…writes the SEAT'S id, resolved from the board env" '[true,7]' "$(pbody)"
+eq "…and READ the card before writing it"         "1" "$(kb_stub_count GET /tasks/505.json)"
+eq "…the echo carries what the server recorded"   "7" "$(jq -c '.assigned_user_id' <<<"$out")"
+# A numeric id needs no map at all — the map is for NAMES, and a board that declares none can
+# still assign.
+KB_STUB_HOLDER=null kbc patch --task 505 --assign 12345
+eq "a numeric --assign passes through unmapped"   '[true,12345]' "$(pbody)"
+
+# --- ⭐ THE REFUSAL, which is the collision detector -----------------------------------
+KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+eq "assigning over ANOTHER seat's claim → rc 1"   "1" "$rc"
+eq "⭐ …and issues NO PATCH AT ALL"                "0" "$(kb_stub_count PATCH /tasks/505.json)"
+eq "…names the seat that HOLDS it"                "true" "$(has 'already held by sola_pm (user 9)' "$err")"
+eq "…names the seat it would have gone to"        "true" "$(has 'kanban_solo (user 7)' "$err")"
+eq "…says outright that nothing was written"      "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+eq "…and names the way out"                       "true" "$(has '--steal' "$err")"
+# The holder's id is the answer even where no name exists for it — a refusal that could not
+# render a name must still say WHOSE it is, or it has not detected anything.
+KB_STUB_HOLDER=555 kbc patch --task 505 --assign kanban-solo
+eq "an UNMAPPED holder is still named, by raw id" "true" "$(has 'already held by user 555' "$err")"
+eq "…and no name is invented for it"              "false" "$(has 'user 555)' "$err")"
+eq "…still no PATCH"                              "0" "$(kb_stub_count PATCH /tasks/505.json)"
+
+# --steal: the same call, opted in — and it must SAY whose claim it took.
+KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo --steal
+eq "--steal over a held card → rc 0"              "0" "$rc"
+eq "…and the write happens"                       '[true,7]' "$(pbody)"
+eq "…naming who it was taken FROM"                "true" "$(has 'TAKING the card from sola_pm (user 9)' "$err")"
+eq "…and who it went to"                          "true" "$(has 'assigning it to kanban_solo (user 7)' "$err")"
+eq "…and that the previous holder is not told"    "true" "$(has 'NOT notified' "$err")"
+
+# Assigning the seat that ALREADY holds it is not a collision: same id in, same id out, and no
+# refusal — otherwise a re-run of an interrupted take would need --steal to finish itself.
+KB_STUB_HOLDER=7 kbc patch --task 505 --assign kanban-solo
+eq "re-assigning the CURRENT holder → rc 0"       "0" "$rc"
+eq "…writes the same id"                          '[true,7]' "$(pbody)"
+eq "…and refuses nothing"                         "false" "$(has 'REFUSING' "$err")"
+
+# --- --unassign: not gated, but never silent ------------------------------------------
+KB_STUB_HOLDER=9 kbc patch --task 505 --unassign
+eq "--unassign over ANOTHER seat's claim → rc 0"  "0" "$rc"
+eq "…writes an explicit null (the API's clear)"   '[true,null]' "$(pbody)"
+eq "…and NAMES the holder it released"            "true" "$(has "RELEASING sola_pm (user 9)'s assignment" "$err")"
+KB_STUB_HOLDER=null kbc patch --task 505 --unassign
+eq "--unassign on an unheld card is a quiet no-op" "false" "$(has 'RELEASING' "$err")"
+eq "…and still writes the clear"                  '[true,null]' "$(pbody)"
+
+# --- the read is a MEASUREMENT or it is a refusal --------------------------------------
+# A 403 on the read and a 2xx no card can be read out of are the two ways "who holds this card"
+# can come back unanswered. Both look exactly like "nobody holds it" to a filter that projects
+# the field alone — which is why the guard tests the CARD's readability first.
+KB_STUB_READ=403 kbc patch --task 505 --assign kanban-solo
+eq "an UNREADABLE assignment (403) → rc 1"        "1" "$rc"
+eq "…and NO PATCH is issued"                      "0" "$(kb_stub_count PATCH /tasks/505.json)"
+eq "…saying the check could not be made"          "true" "$(has 'could NOT be read' "$err")"
+KB_STUB_READ=nocard kbc patch --task 505 --assign kanban-solo
+eq "a 2xx carrying no card → rc 1"                "1" "$rc"
+eq "…and NO PATCH is issued"                      "0" "$(kb_stub_count PATCH /tasks/505.json)"
+eq "…and says nothing was read"                   "true" "$(has 'no card could be read out of its body' "$err")"
+# --steal is the opt-out of the CHECK, so it proceeds — and says what it could not see.
+KB_STUB_READ=403 kbc patch --task 505 --assign kanban-solo --steal
+eq "--steal past an unreadable card → rc 0"       "0" "$rc"
+eq "…the write happens"                           '[true,7]' "$(pbody)"
+eq "…and it says the holder went unread"          "true" "$(has 'never saw' "$err")"
+
+# --- ⚠ the write the board's TOKEN may not be allowed to make --------------------------
+# assigned_user_id is a write this toolkit did not previously make, so a role that never
+# needed `task.update` is only found out about HERE. A bare `HTTP 403` reads as a card problem
+# and gets retried forever; this names it as the install fault it is.
+KB_STUB_HOLDER=null KB_STUB_PATCH_HTTP=403 kbc patch --task 505 --assign kanban-solo
+eq "a 403 on the assignment write is non-zero"    "1" "$rc"
+eq "⚠ …and is named as an INSTALL FAULT"           "true" "$(has 'INSTALL FAULT' "$err")"
+eq "…naming the permission it needs"              "true" "$(has 'task.update' "$err")"
+eq "…and that retrying cannot help"               "true" "$(has 'every time' "$err")"
+# THE NEGATIVE CONTROL that makes the line attributable: the same 403 on a patch carrying NO
+# assignment says nothing of the sort — the diagnostic is about this write, not about 403s.
+KB_STUB_PATCH_HTTP=403 kbc patch --task 505 --dl DL-7
+eq "the same 403 on a non-assigning patch is still non-zero" "1" "$rc"
+eq "…and does NOT claim an assignment install fault"         "false" "$(has 'INSTALL FAULT' "$err")"
+
+# --- ⭐ the terminal clear, in the ONE primitive both verbs write through ---------------
+# A finished card that still names a holder is the stale claim this whole field exists to make
+# readable. The rule belongs to the WRITE, not to each mover: `move` and `patch --column` are
+# two callers of one primitive, so neither can be the one that forgot.
+kbc move --task 505 --column shipped_to_dev
+eq "move → shipped_to_dev clears the assignment" '[true,null]' "$(pbody)"
+eq "…and says so"                                "true" "$(has 'cleared the card' "$err")"
+eq "…naming it as the terminal-column rule"      "true" "$(has 'terminal column' "$err")"
+kbc move --task 505 --column wont_do
+eq "move → wont_do clears it too"                '[true,null]' "$(pbody)"
+eq "…alongside the correlation-stamp clear"      '[true,null]' \
+   "$(kb_stub_bodies PATCH /tasks/505.json | jq -c '[(.payload|has("pr_url")), .payload.pr_url]')"
+# THE NEGATIVE CONTROL: a non-terminal move must not touch the field at all. An omitted key and
+# an explicit null are different writes — this is the assertion that says the clear is the
+# TERMINAL rule and not something every move does.
+kbc move --task 505 --column in_review
+eq "a NON-terminal move leaves the key absent"   '[false,null]' "$(pbody)"
+eq "…and says nothing about an assignment"       "false" "$(has 'assignment' "$err")"
+# The second caller of the same primitive.
+kbc patch --task 505 --column shipped_to_dev
+eq "patch --column shipped_to_dev clears it too" '[true,null]' "$(pbody)"
+kbc patch --task 505 --column in_review
+eq "…and patch --column in_review does not"      '[false,null]' "$(pbody)"
+# Explicit beats hygiene — the same rule the decline-stamp clear follows — and the notice says
+# which of the two happened rather than claiming a clear this call did not make.
+KB_STUB_HOLDER=null kbc patch --task 505 --column shipped_to_dev --assign sola-pm
+eq "an explicit --assign WINS over the terminal clear" '[true,9]' "$(pbody)"
+eq "…and the notice says the explicit value won"       "true" "$(has 'explicit value wins' "$err")"
+eq "…rather than claiming a clear"                     "false" "$(has 'cleared the card' "$err")"
+
+unset -f pbody kb_stub_route
+unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
