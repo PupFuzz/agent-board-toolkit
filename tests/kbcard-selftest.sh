@@ -2624,6 +2624,8 @@ unset KB_STAGE_UNSET_ON_THIS_BOARD
 unset ${!KB_STAGE_@}
 rc=0; out="$(cmd_stages 2>/dev/null)" || rc=$?
 err="$(cmd_stages 2>&1 >/dev/null || true)"
+eq "  …and the LOCAL-NAMES declaration is NOT emitted (there are no rows to declare)" "false" \
+   "$(has 'NAMES ARE LOCAL' "$err")"
 eq "stages: a board env mapping NO stage → rc 1"     "1" "$rc"
 eq "  …with nothing on stdout (never an empty array)" "" "$out"
 eq "  …and says it is a board-env gap, not a board with no columns" "true" \
@@ -2649,7 +2651,25 @@ eq "stages: through the bin → rc 0"                  "0" "$rc"
 eq "stages: NO request is issued — it is a read of local config" "0" "$(kb_stub_total)"
 eq "stages: the board env's own pairs come back"     '[{"id":48,"name":"backlog"},{"id":51,"name":"shipped_to_dev"}]' \
    "$(jq -c . <<<"$out")"
-eq "stages: nothing on stderr"                       "" "$err"
+# ⭐ THE PROVENANCE LINE (rt#442). This assertion REPLACED an `err == ""` leg, which certified
+# whatever happened to replace it: the verb prints local config in the shape of a board read, a
+# consumer piping the JSON never opens the help that says so, and a seat wrote a board-resolved
+# sprint filter in these local names. So the declaration is asserted by CONTENT, on the one
+# channel a piping consumer still sees.
+eq "stages: stderr DECLARES the names are local, not a board read" "true" \
+   "$(has 'NAMES ARE LOCAL' "$err")"
+eq "  …naming KB_STAGE_* as where they come from"    "true" "$(has 'KB_STAGE_' "$err")"
+eq "  …and the board whose env was read"             "true" "$(has 'board 42' "$err")"
+eq "  …and that nothing was requested"               "true" "$(has 'no request was issued' "$err")"
+# ⛔ AND NOTHING ELSE RIDES IT. The legs above are PRESENCE assertions, and a presence-only
+# assertion certifies whatever arrives alongside it — the inverse of the absence-only leg they
+# replaced. A later debug echo, or a helper's warning leaking through, would red nothing on the
+# one channel this declaration's entire value now rides. Asserted as a LINE COUNT so the leg
+# fails on an addition rather than on a rewording of the line itself.
+eq "  …and it is the ONLY line on the success path's stderr" "1" "$(grep -c . <<<"$err")"
+eq "  …while STDOUT is unchanged — the declaration is not a row key" '["id","name"]' \
+   "$(jq -c '.[0] | keys' <<<"$out")"
+eq "  …and no part of it leaks onto stdout"          "false" "$(has 'NAMES ARE LOCAL' "$out")"
 # --board actually selects WHICH env is read — the ids are per-install, which is the whole
 # argument for reading them at run time, so a verb that ignored --board would be worse than
 # useless. Asserted as a DIFFERENT answer, not merely a non-empty one.
