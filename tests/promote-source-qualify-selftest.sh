@@ -459,7 +459,7 @@ _fold_census() {
 #   * bin/_shellcheck-pinned x1 — folds `uname -s` into a release-asset name;
 #   * bin/release-artifacts-check x1 — folds a CHANGELOG heading for its section selector.
 #
-# ADMITTED AND NOT A LOWERCASE FOLD AT ALL — 10. This is the price of the polarity, paid openly:
+# ADMITTED AND NOT A LOWERCASE FOLD AT ALL — 11. This is the price of the polarity, paid openly:
 #   * bin/_kb-board-lib.sh x2 and bin/agent-board-toolkit-runtime-check x2 — `local v="${1-}" lc`
 #     and the `case "$lc" in` that reads it: a VARIABLE NAMED `lc`, in the two files that
 #     genuinely fold beside it. Admitted rather than excluded, because narrowing `lc` to a
@@ -469,6 +469,11 @@ _fold_census() {
 #     cheap way to tell an upper fold from a lower one that a lower fold cannot then be written
 #     to evade;
 #   * bin/gitignore-secret-family-check x2 — the words `LOWER BOUND` in two report strings;
+#   * bin/kbcard x1 — the word `lowercased` in the `stages` provenance line's report string.
+#     That line tells a consumer the names it prints are a KB_STAGE_* variable's SUFFIX,
+#     LOWERCASED — describing a fold that happens in `stage_name`, on a different line,
+#     which the mirrors group already counts. Rewording it to dodge this predicate would
+#     be weakening the check to go green, so it is admitted and declared instead;
 #   * bin/_kbc-stale-blocker.py x1 — `answered lower down` in the module docstring.
 #
 # ⛔ NO LANGUAGE CENSUS ANY MORE, AND THAT IS A DELETION, NOT AN OMISSION. The predecessor
@@ -490,7 +495,7 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
                                        'agent-board-toolkit-runtime-check=5' \
-                                       'gitignore-secret-family-check=2' 'kbcard=2' \
+                                       'gitignore-secret-family-check=2' 'kbcard=3' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
@@ -499,7 +504,7 @@ eq "every line under bin/ this predicate admits, attributed per file" \
 # 9 other real folds, 10 lines that are not lowercase folds — and prose does not red on its own,
 # so a file added to the block above without a line added to the declaration would ship a census
 # that describes fewer lines than it counts. This arm is the arithmetic that binds the two.
-eq "the declared groups account for every admitted line (3 + 9 + 10)" "22" \
+eq "the declared groups account for every admitted line (3 + 9 + 11)" "23" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
