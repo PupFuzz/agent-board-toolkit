@@ -61,17 +61,31 @@ command -v kbcard    # -> /home/<you>/.local/bin/kbcard  (a symlink into ~/agent
 > tool, and unlike the case above it is **loud at first use** (the `PATH` entry is a directory, so
 > the command does not run) rather than silent forever.
 >
-> **The framework's own install arm (`install-linked-bin.sh`) closes only the DESTINATION end — do
-> not read this recipe as merely restating it.** Its destination guard refuses a `~/.local/bin/<tool>`
-> that is a directory or a symlink-to-directory, and it links with `ln -sfn`; but its source glob is
-> **unguarded** (`items=("$srcabs"/*)`, no `[ -f ]`), so a directory in `bin/` is **linked onto
-> `PATH` on run 1 at rc 0** and then, on run 2, that same destination guard sees the symlink-to-
-> directory it just created and **hard-fails the whole install** (`RESULT=NOT_INSTALLED …
-> #install-arm-failed rc=1`). Measured on GNU coreutils 9.4 with a `__pycache__/` in the source
-> `bin/`. This recipe therefore guards a shape the framework arm does not; the source-end gap is
-> filed against the coord plugin (card#7234), not worked around here. **Anything in `bin/` that is
-> not a regular file is not installed** — today that set is empty (every `bin/` entry is a regular
-> file), so on a clean checkout this loop installs exactly the same tools the unguarded one did.
+> **The framework's own install arm (`install-linked-bin.sh` — what `/coord:init` and
+> `/coord:update` run against this same `bin/`) guards BOTH ends, as of coord plugin `v0.50.0`, read
+> on 2026-09-09.** Its destination guard refuses a `~/.local/bin/<tool>` that is a directory or a
+> symlink-to-directory and it links with `ln -sfn`; and its source glob carries the same `[ -f ]`
+> filter this loop does, naming every skipped entry on stderr — a comment block above it records the
+> decision and names `__pycache__/` as the case it was written for, i.e. exactly the case measured
+> below.
+>
+> **That is a CHANGE, and the history is what makes the guard above legible rather than decorative.**
+> That source glob was once unguarded (`items=("$srcabs"/*)`, no `[ -f ]`), so a directory in `bin/`
+> was **linked onto `PATH` on run 1 at rc 0** and then, on run 2, that same destination guard fired
+> on the symlink-to-directory run 1 had itself planted and **hard-failed the whole install**
+> (`RESULT=NOT_INSTALLED … #install-arm-failed rc=1`) — measured on GNU coreutils 9.4 with a
+> `__pycache__/` in the source `bin/`. The gap was fixed upstream in the plugin, and `card#7234`,
+> which tracked it from here, is closed.
+>
+> **So `[ -f "$t" ]` above is no longer covering a shape the framework arm misses — it is the only
+> guard on its OWN path, which is the reason to keep it.** This block is run BY HAND and inherits
+> nothing from that arm: a reader running it on a seat with an older coord plugin, or with no coord
+> plugin at all, gets whatever this loop does and nothing else. **The version pin is deliberate** —
+> the claim this passage replaces was written in flat present tense about another project's code, so
+> it went stale silently when that project fixed it, and a reader had no way to tell a current claim
+> from a retired one without re-deriving it. **Anything in `bin/` that is not a regular file is not
+> installed** — today that set is empty (every `bin/` entry is a regular file), so on a clean
+> checkout both paths install exactly the same tools.
 
 > **⚠ Windows / MSYS / Git-Bash: `ln -s` silently produces COPIES, not symlinks** (native
 > mingw64 has no default symlink capability), and any manual `cp` install has the same
