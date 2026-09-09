@@ -134,7 +134,10 @@
 #     variables of ~/.kanban-<board>-board.env (selected by the global --board flag), and
 #     no request is issued. So these ids are PER-INSTALL, which is the argument for reading
 #     them at run time rather than baking them in, and a `name` here is this install's word
-#     for the column rather than the board's own label. A board env mapping NO stage is
+#     for the column rather than the board's own label. ⭐ THAT SENTENCE ALSO RIDES THE
+#     COMMAND'S OWN STDERR, on every successful call, because a consumer piping the JSON
+#     never reads this help — and one that did not read it wrote a board-resolved config in
+#     these local names (rt#442). stdout is unchanged. A board env mapping NO stage is
 #     rc 1 with nothing on stdout — every column this tool can address needs a KB_STAGE_*
 #     var, so an empty map is a config fault, not a board with no columns — and a
 #     KB_STAGE_* whose value is not a stage id is NAMED on stderr rather than dropped,
@@ -1320,6 +1323,9 @@ _kbc_list_project() {
 # claim this verb makes to its consumer — the name here is the name `show` will print — would
 # stop being a property of the code and become something a reader has to re-verify.
 #
+# Every successful call also declares on stderr that the names are local aliases — see the
+# provenance line in the body for why that is stderr and not a row key.
+#
 # A value that is not a stage id is NAMED on stderr and left off, rather than dropped or emitted
 # as a string: `list`'s `stage` is a JSON number, so one row typed differently from the rest is a
 # join that silently misses, and a silent miss is the defect this verb exists to close.
@@ -1343,6 +1349,17 @@ cmd_stages() {
         echo "kbcard: no KB_STAGE_* variable is defined for board $KB_BOARD_ID — that is a board-env gap, not a board with no columns (docs/INSTALL.md §3b)" >&2
         return 1
     }
+    # ⭐ THE PROVENANCE LINE, and why stderr. Everything below is local configuration wearing
+    # the exact shape of a board read — {id, name} pairs from a verb named `stages` — and the
+    # help text that says so is the one surface a consumer piping the JSON never opens. A seat
+    # did exactly that and wrote a board-resolved sprint filter in these names, which are this
+    # install's KB_STAGE_* variable suffixes and have no causal connection to the board's own
+    # labels (rt#442). So the declaration goes where the output goes. It rides STDERR rather
+    # than a third key on the row because stdout's contract is the join `list --column`/`show`
+    # depend on — one {id, name} object and no other key — and widening it to carry a caveat
+    # would break every consumer to warn the one that never reads. This is the same channel
+    # `list` uses for the denominator its own stdout cannot carry.
+    echo "kbcard: stages: these NAMES ARE LOCAL — they are the KB_STAGE_* variable names of this install's board env for board ${KB_BOARD_ID:-?}, not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
     # unique_by drops the duplicate rows a duplicated id produces (both resolve through
     # stage_name to the same name, so the pair is identical); sort_by(.name) is jq's codepoint
     # order, i.e. deterministic and locale-free — and NOT the board's column order, which
