@@ -131,13 +131,15 @@
 #     board sweep on the wrong key and read `0` over a real backlog (card#7694). Both
 #     answers were confident and wrong, which is what a hardcoded id buys you.
 #     ⚠ IT READS THIS CALLER'S OWN CONFIG, NOT THE SERVER — the pairs are the KB_STAGE_*
-#     variables of ~/.kanban-<board>-board.env (selected by the global --board flag), and
-#     no request is issued. So these ids are PER-INSTALL, which is the argument for reading
-#     them at run time rather than baking them in, and a `name` here is this install's word
-#     for the column rather than the board's own label. ⭐ THAT SENTENCE ALSO RIDES THE
-#     COMMAND'S OWN STDERR, on every successful call, because a consumer piping the JSON
-#     never reads this help — and one that did not read it wrote a board-resolved config in
-#     these local names (rt#442). stdout is unchanged. A board env mapping NO stage is
+#     variables VISIBLE TO THIS PROCESS (~/.kanban-<board>-board.env, selected by the global
+#     --board flag, PLUS any KB_STAGE_* the calling shell exported: kb_resolve_env sources
+#     the board env and does not clear pre-existing ones), and no request is issued. So these
+#     ids are PER-INSTALL, which is the argument for reading them at run time rather than
+#     baking them in, and a `name` here is a KB_STAGE_* variable's SUFFIX, LOWERCASED — this
+#     install's word for the column rather than the board's own label. ⭐ THAT CLAIM ALSO
+#     RIDES THE COMMAND'S OWN STDERR, on every successful call, because a consumer piping the
+#     JSON never reads this help — and one that did not read it wrote a board-resolved config
+#     in these local names (rt#442). stdout is unchanged. A board env mapping NO stage is
 #     rc 1 with nothing on stdout — every column this tool can address needs a KB_STAGE_*
 #     var, so an empty map is a config fault, not a board with no columns — and a
 #     KB_STAGE_* whose value is not a stage id is NAMED on stderr rather than dropped,
@@ -1308,10 +1310,13 @@ _kbc_list_project() {
                 dl: .payload.dl_number, pr: .payload.pr_number})'
 }
 
-# cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are this caller's
-# own KB_STAGE_* board-env vars, which is exactly why the read is worth having: the ids are
-# per-install, so a consumer that hardcodes one is guaranteed wrong on somebody else's box, and
-# `list` projects `stage` as one of those numbers while every write flag takes a name.
+# cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are the KB_STAGE_*
+# vars VISIBLE TO THIS PROCESS (the board env, plus any the calling shell exported: kb_resolve_env
+# clears KB_TOKEN_FILE/KB_BOARD_ENV and the two KBCARD_* ambients, never KB_STAGE_*, and
+# tests/kbcard-selftest.sh scrubs ${!KB_STAGE_@} for exactly that reason). Which is why the read
+# is worth having: the ids are per-install, so a consumer that hardcodes one is guaranteed wrong
+# on somebody else's box, and `list` projects `stage` as one of those numbers while every write
+# flag takes a name.
 #
 # ⭐ IT CALLS stage_name AND BUILDS NO MAP OF ITS OWN. That is the whole point of the verb: this
 # output is BY CONSTRUCTION the set of pairs (id, stage_name(id)), so it cannot answer anything
@@ -1359,7 +1364,7 @@ cmd_stages() {
     # depend on — one {id, name} object and no other key — and widening it to carry a caveat
     # would break every consumer to warn the one that never reads. This is the same channel
     # `list` uses for the denominator its own stdout cannot carry.
-    echo "kbcard: stages: these NAMES ARE LOCAL — they are the KB_STAGE_* variable names of this install's board env for board ${KB_BOARD_ID:-?}, not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
+    echo "kbcard: stages: these NAMES ARE LOCAL — each is a KB_STAGE_* variable's suffix, lowercased, over the KB_STAGE_* variables VISIBLE TO THIS PROCESS (this install's board env for board ${KB_BOARD_ID:-?}, plus any you exported in your own shell), not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
     # unique_by drops the duplicate rows a duplicated id produces (both resolve through
     # stage_name to the same name, so the pair is identical); sort_by(.name) is jq's codepoint
     # order, i.e. deterministic and locale-free — and NOT the board's column order, which

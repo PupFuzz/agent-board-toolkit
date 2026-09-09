@@ -2661,6 +2661,12 @@ eq "stages: stderr DECLARES the names are local, not a board read" "true" \
 eq "  …naming KB_STAGE_* as where they come from"    "true" "$(has 'KB_STAGE_' "$err")"
 eq "  …and the board whose env was read"             "true" "$(has 'board 42' "$err")"
 eq "  …and that nothing was requested"               "true" "$(has 'no request was issued' "$err")"
+# ⛔ AND NOTHING ELSE RIDES IT. The legs above are PRESENCE assertions, and a presence-only
+# assertion certifies whatever arrives alongside it — the inverse of the absence-only leg they
+# replaced. A later debug echo, or a helper's warning leaking through, would red nothing on the
+# one channel this declaration's entire value now rides. Asserted as a LINE COUNT so the leg
+# fails on an addition rather than on a rewording of the line itself.
+eq "  …and it is the ONLY line on the success path's stderr" "1" "$(grep -c . <<<"$err")"
 eq "  …while STDOUT is unchanged — the declaration is not a row key" '["id","name"]' \
    "$(jq -c '.[0] | keys' <<<"$out")"
 eq "  …and no part of it leaks onto stdout"          "false" "$(has 'NAMES ARE LOCAL' "$out")"
