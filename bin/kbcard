@@ -55,8 +55,15 @@
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
+#     ⭐ A TERMINAL move ALSO CLEARS THE CARD'S ASSIGNMENT (assigned_user_id) in the same
+#     PATCH — shipped_to_dev and wont_do — so a finished card never holds a stale claim on
+#     a seat that has moved on. `patch --column` does it too: both verbs write through ONE
+#     primitive that owns the rule, rather than each mover remembering it. The clear is
+#     announced on stderr. released_to_main is deliberately NOT in that set: a card reaches
+#     it from shipped_to_dev, which already cleared.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--dl DL-NNN] [--triaged] [--keep-refs] \
-#                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>]
+#                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
+#                [--assign <seat|user-id> [--steal]] [--unassign]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -74,6 +81,30 @@
 #     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
 #     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
 #     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
+#     --assign / --unassign write the board's NATIVE assigned_user_id — the field that answers
+#     WHICH SEAT IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
+#     precisely the state two seats pull the same work in (a card sitting in backlog is
+#     indistinguishable from an unclaimed one). A <seat> resolves through KB_USER_<SEAT> in
+#     THIS board's env — the same config-driven shape as KB_STAGE_* / KB_TYPE_*, so nothing
+#     here reads another product's config and a seat with no bridge installed works the same;
+#     a numeric user id passes through. ⚠ AN UNKNOWN SEAT NAME IS rc 2 BEFORE ANY REQUEST,
+#     naming the KB_USER_* vars this board env does define: an unresolvable name is a config
+#     gap, and doing something other than what the caller believed is the failure this verb
+#     exists to remove, so it is never a silent no-op and never a guessed id.
+#     ⭐ ASSIGNING OVER ANOTHER SEAT'S CLAIM IS REFUSED — rc 1, the holder NAMED, and NO
+#     WRITE. That refusal IS the collision detector: the second seat is told whose work it
+#     was about to redo, and it works exactly where the stage cannot answer. --steal is the
+#     opt-out and says loudly whose assignment it took. Assigning the seat that already holds
+#     the card is not a conflict (it writes the same id it read).
+#     --unassign is deliberately NOT gated the same way. kbcard has no notion of WHICH seat is
+#     running it — the map resolves names to ids, never "me" — so it cannot tell a seat
+#     releasing its OWN card (the ordinary case) from one clearing somebody else's, and gating
+#     it would make --steal routine, which is the one thing that would stop the loud line
+#     meaning anything. It NAMES the holder it released instead, so nothing is lost silently.
+#     ⚠ A 401/403 on a write carrying assigned_user_id is called out as an INSTALL FAULT by
+#     name — the board TOKEN'S ROLE (a role without `task.update` cannot write an assignee) or
+#     a board that is read-only to it — rather than as a generic HTTP line: it is permanent for
+#     that token, so no retry and no card edit changes it.
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
@@ -103,7 +134,8 @@
 #     is a URL and rides there, unaffected.
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
-#     external_id, tags, dl, pr per card — and nothing else, so a downstream grep/jq
+#     external_id, tags, assigned_user_id, assignee, dl, pr per card — and nothing
+#     else, so a downstream grep/jq
 #     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
 #     no matter what the board holds. `show` returns a card whole; use it for the rest —
 #     and use `search` to hunt a card BY its body, which is the question a grep over this
@@ -112,6 +144,11 @@
 #     a mixed board's tag-typed cards), where the type rides `tags` as `type:<alias>`.
 #     So select on `tags` there, not on `type`: `--type <alias>` matches those cards but
 #     their projected `type` is null, and a filter keyed on it returns a confident 0.
+#     `assigned_user_id` is the board's own field and is ALWAYS the raw id (null when the
+#     card is unassigned); `assignee` is the seat NAME for it where this board env's
+#     KB_USER_<SEAT> vars map that id, and null where they do not — the id is the answer,
+#     the name is an ornament this install may not be able to supply, so an unmapped id
+#     renders raw rather than failing or guessing.
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
@@ -238,6 +275,11 @@
 #     projected off the card's own entry, so an entry carrying no such key reports JSON `null`
 #     rather than the string "null" a consumer could round-trip back into `link --relation`.
 #   kbcard show --task ID-OR-EXT
+#     The card WHOLE, plus this tool's own annotations resolved from the board env: `stage` /
+#     `column` (the column name for the stage id) and `assignee` (the KB_USER_<SEAT> name for
+#     assigned_user_id). An annotation this install cannot resolve is OMITTED, never emitted
+#     null — the raw assigned_user_id is on the card either way, so an unmapped seat costs a
+#     name, not an answer.
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
 #     stdout. That id is the write verification: adding a comment does NOT bump the card's
@@ -541,14 +583,123 @@ stage_name() {
 # or KB_TYPING_MODE=tags forces tag mode. NEVER fails: a board with no native types
 # (all-tag) or only some (mixed) is a supported shape, not an error. This
 # generalizes the BR-3.3 field-skip (version_target) from custom fields to types.
+# _kbc_env_var <KIND> <name>: the board-env VARIABLE NAME a config-driven <name> resolves
+# through — KB_TYPE_<ALIAS> for a card type, KB_USER_<SEAT> for a seat. ONE owner for that
+# spelling (upcase; hyphen → underscore, because an env-var suffix cannot hold a hyphen while
+# a seat name routinely does), extracted at the second real caller — which is what --assign
+# made it. Two lookups of one shape folding a name two different ways is the divergence this
+# removes, not a style preference.
+_kbc_env_var() {
+    printf 'KB_%s_%s' "$1" "$(printf '%s' "$2" | tr '[:lower:]-' '[:upper:]_')"
+}
+
 native_type_id() {
     [[ "${KB_TYPING_MODE:-}" == "tags" ]] && return 0   # forced tag mode → no native id
     local var id
-    var="KB_TYPE_$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
+    var="$(_kbc_env_var TYPE "$1")"
     id="${!var:-}"
     # A real native id is a positive integer; "", "0", "000", non-numeric ⇒ tag fallback.
     kb_is_uint "$id" && [[ "$id" -gt 0 ]] && printf '%s' "$id"
     return 0
+}
+
+# --- assignment: the board's native assigned_user_id ------------------------------------
+# ⭐ THE SEAT→ID MAP IS THIS INSTALL'S OWN BOARD ENV — KB_USER_<SEAT>=<kanban user id>, the
+# same config-driven shape as KB_STAGE_* / KB_TYPE_*. Deliberately NOT another product's agent
+# config: kbcard is a standalone CLI, and reaching into a file it does not own would make it
+# depend on a product that need not be installed on this seat at all.
+# ⭐ AND NO FLEET-WIDE TABLE IS NEEDED ANYWHERE, which is what keeps this free of cross-repo
+# drift: a WRITER resolves only the one seat it was told to write, and a READER needs the map
+# only to put a NAME on an id it can already print raw. The value on the wire is the same board
+# fact either way — a numeric kanban user id — so there is nothing here for two products to
+# disagree about.
+
+# _kbc_user_id <seat|id>: the numeric kanban user id to WRITE. A numeric arg passes through
+# unvalidated (the caller named a concrete id — the same rule swimlane_id's numeric arm
+# follows). A NAME resolves through KB_USER_<SEAT>, and an unmapped one is rc 2 with the vars
+# this board env DOES define enumerated — never a silent no-op and never a plausible wrong id,
+# because "the tool did something other than what the operator believed" is the failure the
+# whole verb exists to remove. A var present but not holding a positive integer is the same
+# refusal as an absent one: `000` is what a copied board-env template still carries.
+_kbc_user_id() {
+    local arg="$1" var val
+    kb_is_uint "$arg" && [[ "$arg" -gt 0 ]] && { printf '%s' "$arg"; return 0; }
+    # A numeric arg that is not a positive id is refused in its OWN words: falling through to
+    # the name lookup would answer `--assign 0` with "seat '0' is not defined", which points
+    # the operator at a board-env line that was never the problem.
+    kb_is_uint "$arg" && { echo "kbcard: --assign '$arg' is not a kanban user id — ids are positive integers, and 0 names nobody" >&2; return 2; }
+    var="$(_kbc_env_var USER "$arg")"
+    val="${!var:-}"
+    if kb_is_uint "$val" && [[ "$val" -gt 0 ]]; then printf '%s' "$val"; return 0; fi
+    echo "kbcard: seat '$arg' is not defined on this board — $var is unset or does not hold a kanban user id (\`000\` is the not-yet-configured placeholder)" >&2
+    local seats; seats="$(_kbc_user_vars)"
+    if [[ -n "$seats" ]]; then
+        echo "kbcard:   this board env defines: $seats" >&2
+    else
+        echo "kbcard:   this board env defines NO seats at all — add one per seat that takes cards, e.g. export KB_USER_KANBAN_SOLO=7 (examples/kanban-board.env.example)" >&2
+    fi
+    return 2
+}
+
+# _kbc_user_vars: the KB_USER_* declarations this board env carries, as `VAR=id` pairs, for the
+# refusal above. It prints the VARIABLE NAMES rather than folded seat names on purpose: the
+# operator's next action is to add or fix a line in that file, and the var name IS that line.
+_kbc_user_vars() {
+    local var out=""
+    for var in "${!KB_USER_@}"; do
+        [[ -n "${!var}" ]] || continue
+        out="${out:+$out, }$var=${!var}"
+    done
+    printf '%s' "$out"
+}
+
+# _kbc_user_name <id>: the SEAT NAME for a kanban user id — the reverse lookup, and the exact
+# sibling of stage_name. Prints the lowercased KB_USER_ suffix; rc 1 and NO output when nothing
+# maps the id, which is the case every render falls back to the raw id in. Names expand sorted,
+# so a duplicate id resolves to the alphabetically-first var — deterministic, and a duplicate is
+# a board-env bug rather than a shape to support.
+# ⚠ A seat whose name carries a HYPHEN renders with UNDERSCORES (`kanban-solo` is declared
+# KB_USER_KANBAN_SOLO and renders `kanban_solo`) — an env-var suffix cannot hold a hyphen. That
+# is not lossy for a caller: _kbc_env_var folds `-` and `_` onto the SAME var, so the name this
+# prints is always accepted back by `--assign`.
+_kbc_user_name() {
+    local var val
+    for var in "${!KB_USER_@}"; do
+        val="${!var}"
+        # The same validity test the WRITE side applies, so the two halves cannot disagree
+        # about which declarations are real: a `000` placeholder maps no id in either
+        # direction, and never reaches the render map as a seat named after it.
+        kb_is_uint "$val" && [[ "$val" -gt 0 ]] || continue
+        [[ "$val" == "$1" ]] || continue
+        printf '%s' "${var#KB_USER_}" | tr '[:upper:]' '[:lower:]'
+        return 0
+    done
+    return 1
+}
+
+# _kbc_user_render <id>: how a holder is NAMED in a message — `<seat> (user <id>)` where this
+# board env maps the id, `user <id>` where it does not. Never fails and never guesses: the raw
+# id is in the line either way, so a seat missing from the map costs a name, not an answer.
+_kbc_user_render() {
+    local name; name="$(_kbc_user_name "$1" || true)"
+    if [[ -n "$name" ]]; then printf '%s (user %s)' "$name" "$1"; else printf 'user %s' "$1"; fi
+}
+
+# _kbc_user_map: the id→seat-name object the `list` projection renders `assignee` from. The KEY
+# is the id (a JSON object key, hence a string) and the VALUE is the seat — the inverse of how
+# the var is written, because the render asks "who is user 7". The name comes from
+# _kbc_user_name rather than being folded again here, so this map cannot disagree with what
+# `show` and every refusal print. `{}` when the board env declares no seats: every row then
+# renders `assignee` null beside its raw `assigned_user_id`, which is truthful.
+_kbc_user_map() {
+    local var obj='{}' name
+    for var in "${!KB_USER_@}"; do
+        [[ -n "${!var}" ]] || continue
+        name="$(_kbc_user_name "${!var}" || true)"
+        [[ -n "$name" ]] || continue
+        obj="$(jq -c --arg k "${!var}" --arg v "$name" '. + {($k): $v}' <<<"$obj")"
+    done
+    printf '%s' "$obj"
 }
 
 # Swimlane id→name map for the `list` projection, as a JSON object built from the
@@ -891,7 +1042,7 @@ _kbc_text_arg() {
     printf -v "$_ta_out" '%s' "$_ta_val"
 }
 
-# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json>:
+# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json> [assign_set] [assign_json]:
 # assemble the OPTIONAL top-level task-object fields shared by create-card and patch, as a JSON
 # object carrying ONLY the keys whose argument was supplied. Each caller then adds the keys IT
 # requires — create-card `board_id` + `workflow_stage_id`, patch the stage of a `--column`.
@@ -908,9 +1059,16 @@ _kbc_task_fields() {
     # NB: not `${4:-null}` / `${8:-{\}}` — bash ends a `${x:-{}}` expansion at the FIRST `}`,
     # mangling a supplied argument (see _kbc_decline_nulls).
     local name="$1" type_id="$2" desc="$3" tags_json="${4:-}" ext_id="$5" swim_set="$6" swim_json="${7:-}" payload_json="${8:-}"
+    # assigned_user_id rides the same set-flag/value pair swimlane_id does, and for the same
+    # reason: `null` is a REAL value here (the un-assign form), so "was the flag passed" cannot
+    # be read off the value. Trailing + defaulted, so create-card's 8-argument call is
+    # untouched — it has no assign flag of its own, and this is the one place a NEXT one would
+    # be wired for both callers at once.
+    local assign_set="${9:-}" assign_json="${10:-}"
     [[ -n "$tags_json" ]] || tags_json='null'
     [[ -n "$swim_json" ]] || swim_json='null'
     [[ -n "$payload_json" ]] || payload_json='{}'
+    [[ -n "$assign_json" ]] || assign_json='null'
     jq -n \
         --arg name "$name" \
         --arg type_id "$type_id" \
@@ -919,6 +1077,8 @@ _kbc_task_fields() {
         --arg ext_id "$ext_id" \
         --arg swim_set "$swim_set" \
         --argjson swim "$swim_json" \
+        --arg assign_set "$assign_set" \
+        --argjson assign "$assign_json" \
         --argjson payload "$payload_json" \
         '{}
          + (if $name    != "" then {name: $name} else {} end)
@@ -927,6 +1087,7 @@ _kbc_task_fields() {
          + (if $tags    != null then {tags: $tags} else {} end)
          + (if $ext_id  != "" then {external_id: ($ext_id | tonumber)} else {} end)
          + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
+         + (if $assign_set != "" then {assigned_user_id: $assign} else {} end)
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)'
 }
 
@@ -1087,6 +1248,133 @@ cmd_create_card() {
         "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage"
 }
 
+# --- the ONE task PATCH both stage-writing verbs go through -----------------------------
+
+# _kbc_terminal_column <column>: is this column TERMINAL — the card is finished, so nobody is
+# working it any more? shipped_to_dev and wont_do are the two, and they are the two the
+# operator asked for. released_to_main is deliberately NOT here: a card reaches it FROM
+# shipped_to_dev, which already cleared the assignment, and widening what a write DOES is not
+# a call to take unasked (a direct backlog→released_to_main move is the one path it leaves).
+_kbc_terminal_column() {
+    [[ "$1" == "shipped_to_dev" || "$1" == "wont_do" ]]
+}
+
+# _kbc_stage_patch <verb> <task> <column> <body>: the task PATCH `move` and `patch` BOTH issue,
+# and the one owner of the invariants that belong to the WRITE rather than to either caller.
+# Both verbs assembled their own body and then wrote it themselves; the rules below would
+# otherwise be the same block copied into each, which is how one copy comes to differ from the
+# other (canon #5). <column> is "" for a patch that names no column, which is a call making no
+# claim about a stage and gets no stage-derived behaviour.
+#
+#   TERMINAL ⇒ THE ASSIGNMENT IS CLEARED IN THE SAME PATCH. A finished card that still names a
+#   holder is exactly the stale claim `--assign` exists to make readable, and the alternative
+#   is every mover — here and in whatever calls kbcard next — remembering to unassign.
+#   An assignment named EXPLICITLY in the same call WINS and is left alone, the same "explicit
+#   beats hygiene" rule the decline-stamp clear follows; the stderr line then says which of the
+#   two happened, because a notice that claimed a clear this call did not make would be false.
+#
+#   ⚠ THE CLEAR PUTS assigned_user_id ON A WRITE THAT DID NOT CARRY IT BEFORE — so on a board
+#   where that FIELD is permissioned separately from the task update itself, a terminal move
+#   that used to succeed would start answering 403. Nothing here can decide that: the permission
+#   model is the server's, and it was not measured (the card's own framing is `task.update`,
+#   which every move already needs, in which case there is no new requirement at all). It is
+#   named rather than guarded against, and _kbc_write_fault is what makes the failure legible
+#   if it ever happens rather than reading as a broken move.
+#
+#   A POLICY REFUSAL OF AN ASSIGNMENT WRITE IS NAMED (see _kbc_write_fault). That naming lives
+#   HERE rather than at either caller because it needs KB_HTTP, which kb_api sets inside the
+#   command substitution the caller captures the response with — where the caller can no longer
+#   read it. This function runs in that same subshell, so it can.
+#
+# Response on stdout, kb_api's rc returned unchanged, so both callers' existing arms are intact.
+_kbc_stage_patch() {
+    local verb="$1" task="$2" column="$3" body="$4" rc=0
+    if _kbc_terminal_column "$column"; then
+        if jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1; then
+            echo "kbcard: $column is a terminal column, but this call names an assignee explicitly — the explicit value wins and the card stays assigned" >&2
+        else
+            body="$(jq -c -n --argjson b "$body" '{assigned_user_id: null} + $b')"
+            echo "kbcard: cleared the card's assignment (assigned_user_id) — $column is a terminal column and a finished card holds nobody's claim" >&2
+        fi
+    fi
+    kb_api PATCH "/tasks/$task.json" "$body" || {
+        rc=$?
+        _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
+        return "$rc"
+    }
+}
+
+# _kbc_write_fault <verb> <task> <body> <http>: name the ONE failure this file's newest write
+# can hit that no retry and no card edit will ever clear. Writing assigned_user_id is a write
+# the toolkit did not make before, and it needs the board token to be PERMITTED to make it — a
+# role without `task.update` (or a board that is read-only to this token) answers 401/403 to
+# every such write, forever. Reported as kb_api's bare status line it reads as a bad card or a
+# flake, and the operator retries. Silent on every other status and on any body that carries no
+# assignment: kb_api has already printed the status, and a second generic line about a write
+# this function knows nothing about would be noise.
+_kbc_write_fault() {
+    local verb="$1" task="$2" body="$3" http="$4"
+    case "$http" in 401|403) : ;; *) return 0 ;; esac
+    jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1 || return 0
+    echo "kbcard: $verb on task $task: HTTP $http is a POLICY refusal and this write carries assigned_user_id — an INSTALL FAULT, not a card problem. Writing an assignee needs the board token's role to carry \`task.update\` (and the board not to be read-only to it); a token without it gets this answer every time, so retrying and editing the card change nothing. Fix the role/token for this board (docs/INSTALL.md §3b)." >&2
+    return 0
+}
+
+# _kbc_assign_guard <task> <target-json> <steal>: rule, from a READ of what the card holds NOW,
+# on whether this call may write assigned_user_id=<target-json>. rc 1 refuses (no write); rc 0
+# proceeds, having said on stderr what it is about to overwrite.
+#
+# ⭐ THE REFUSAL IS THE COLLISION DETECTOR THE FIELD EXISTS FOR, and it answers exactly in the
+# case that motivated it: a card whose STAGE never moved is indistinguishable from an unclaimed
+# one, so two seats pull the same work and neither finds out. Assigning over a DIFFERENT seat's
+# id is rc 1 with the holder NAMED and NO write — the second seat learns whose work it was
+# about to redo. Assigning the seat that already holds it is not a conflict; it writes the id
+# it just read.
+#
+# --unassign (<target-json> `null`) is deliberately NOT gated the same way, and the reason is a
+# fact about this tool rather than a policy preference: kbcard has no notion of WHICH seat is
+# running it — the map resolves names to ids, never "me" — so it cannot tell a seat releasing
+# its OWN card, the ordinary case, from one clearing somebody else's. Gating it would make
+# --steal routine, and a loud line nobody can avoid stops being loud. It NAMES the holder it
+# released instead, so the fact is on the record rather than gone.
+#
+# THE READ FAILING IS A REFUSAL, not an empty answer: a body no card can be read out of would
+# otherwise be indistinguishable from an unassigned card, and this whole guard exists to keep
+# those two apart. --steal is the opt-out of the CHECK, so it proceeds — saying plainly that
+# what it is overwriting went unread.
+_kbc_assign_guard() {
+    local task="$1" target="$2" steal="$3" resp data holder
+    if ! resp="$(kb_api GET "/tasks/$task.json")"; then
+        [[ "$target" == "null" ]] && { echo "kbcard: --unassign on task $task: the card's current assignment could not be READ, so this run cannot say whose claim it is clearing — clearing it anyway (an unassign takes nothing for itself)" >&2; return 0; }
+        [[ -n "$steal" ]] && { echo "kbcard: --steal on task $task: the card's current assignment could not be READ, so nothing here can name the holder it is taking from — overwriting an assignment this run never saw" >&2; return 0; }
+        echo "kbcard: patch on task $task: the card's current assignment could NOT be read, so nothing here can say whether this write would take another seat's claim — refusing before the write. Re-run when the board reads, or pass --steal to overwrite regardless." >&2
+        return 1
+    fi
+    # Two steps, not `.data.assigned_user_id // empty`: an unreadable body and an UNASSIGNED
+    # card both project empty through that filter, and they are opposite answers here — the
+    # first must refuse, the second must proceed.
+    data="$(kb_parse_resp "$resp" -c '.data | select(type == "object")')"
+    if [[ -z "$data" ]]; then
+        [[ "$target" == "null" ]] && { echo "kbcard: --unassign on task $task: the read returned success but no card could be read out of its body, so the holder being cleared is unknown — clearing it anyway (an unassign takes nothing for itself)" >&2; return 0; }
+        [[ -n "$steal" ]] && { echo "kbcard: --steal on task $task: the read returned success but no card could be read out of its body — overwriting an assignment this run never saw" >&2; return 0; }
+        echo "kbcard: patch on task $task: the assignment read returned success but no card could be read out of its body — nothing was read, so this run cannot say whether the write would take another seat's claim, and refuses before the write." >&2
+        return 1
+    fi
+    holder="$(jq -r '.assigned_user_id // empty' <<<"$data")"
+    [[ -n "$holder" && "$holder" != "null" ]] || return 0   # unheld — nothing to collide with
+    if [[ "$target" == "null" ]]; then
+        echo "kbcard: --unassign on task $task: RELEASING $(_kbc_user_render "$holder")'s assignment" >&2
+        return 0
+    fi
+    [[ "$holder" == "$target" ]] && return 0                # already this seat's — idempotent
+    if [[ -n "$steal" ]]; then
+        echo "kbcard: --steal on task $task: TAKING the card from $(_kbc_user_render "$holder") and assigning it to $(_kbc_user_render "$target"). The previous holder is NOT notified and may still be working it." >&2
+        return 0
+    fi
+    echo "kbcard: patch on task $task: REFUSING to assign — this card is already held by $(_kbc_user_render "$holder"), and this call would give it to $(_kbc_user_render "$target"). NOTHING WAS WRITTEN. That seat may be working it right now (a card whose column never moved looks unclaimed and is not). Talk to them, or pass --steal to take it anyway." >&2
+    return 1
+}
+
 cmd_move() {
     local task_ref="" column="" keep_refs=""
     while [[ $# -gt 0 ]]; do
@@ -1115,7 +1403,7 @@ cmd_move() {
     # when the serializer sent it, and this verb has never emitted it. Same refusal, its own
     # field set — widening a verb's stdout is a change to what its consumers parse.
     local resp echo_out
-    resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
+    resp="$(_kbc_stage_patch move "$task" "$column" "$body")" || return 1
     echo_out="$(kb_parse_resp "$resp" '.data | {id, name, workflow_stage_id}')"
     [[ -n "$echo_out" ]] || _kbc_unverified move "on task $task" || return $?
     # The whole point of this verb is the stage, so the stage is what it checks. Same owner as
@@ -1128,6 +1416,7 @@ cmd_move() {
 cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin=""
+    local assign="" unassign="" steal=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -1147,6 +1436,9 @@ cmd_patch() {
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
+            --assign) kb_require_value "$1" "${2:-}" || return 2; assign="$2"; shift 2 ;;
+            --unassign) unassign=1; shift ;;
+            --steal) steal=1; shift ;;
             --triaged) triaged=1; shift ;;
             --keep-refs) keep_refs=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
@@ -1170,6 +1462,26 @@ cmd_patch() {
     # null, else resolve) is shared with create-card in _kbc_swimlane_value.
     local swim_json=""
     if [[ -n "$swimlane" ]]; then swim_json="$(_kbc_swimlane_value "$swimlane")" || return 2; fi
+    # The assignment resolves in that same offline preflight, for the same reason: an unknown
+    # SEAT NAME is a config gap, and a config gap must cost no request at all. The two
+    # directions are mutually exclusive — a call naming both says nothing about what the card
+    # should end up holding, and silently picking one is the quiet-wrong this verb removes —
+    # and --steal means nothing without one of them, so it is refused rather than ignored (a
+    # flag accepted and not acted on reads as a flag that worked).
+    local assign_set="" assign_json=""
+    if [[ -n "$assign" && -n "$unassign" ]]; then
+        echo "kbcard: --assign and --unassign are mutually exclusive — pass exactly one" >&2; return 2
+    fi
+    if [[ -n "$steal" && -z "$assign" && -z "$unassign" ]]; then
+        echo "kbcard: --steal is the opt-in to overwrite ANOTHER seat's claim — it does nothing without --assign (or --unassign), so pass one of them or drop it" >&2; return 2
+    fi
+    if [[ -n "$assign" ]]; then
+        assign_json="$(_kbc_user_id "$assign")" || return 2
+        assign_set=1
+    elif [[ -n "$unassign" ]]; then
+        assign_json="null"
+        assign_set=1
+    fi
 
     # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
     # ORDER IS LOAD-BEARING: this sits with the no-network preflight, ABOVE resolve_task,
@@ -1195,6 +1507,16 @@ cmd_patch() {
     fi
 
     local task; task="$(resolve_task "$task_ref")"
+    # The collision check is a READ, so it sits BELOW the offline preflight and ABOVE every
+    # write — it refuses at rc 1 (the write did not happen and this run KNOWS it did not),
+    # never at rc 2, which in this file means a bad invocation that cost no traffic.
+    # It is its OWN read, not folded into the tag read below: --assign + --tags/--type/--triaged
+    # therefore costs two GETs. Deliberate — the tag read is a read-merge-WRITE whose result
+    # becomes the body, and merging a refusal that must happen BEFORE any write into it would
+    # tie one verb's refusal to whether another flag was passed.
+    if [[ -n "$assign_set" ]]; then
+        _kbc_assign_guard "$task" "$assign_json" "$steal" || return 1
+    fi
     # Empty when the board has no native card type for the alias — _kbc_patch_tags then
     # writes the `type:<alias>` tag instead, exactly as create-card does at birth.
     local type_id=""
@@ -1212,7 +1534,7 @@ cmd_patch() {
     # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
     # `tags` is the documented exception — the API replaces that list wholesale.
     local body
-    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json")" || return 2
+    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json" "$assign_set" "$assign_json")" || return 2
     if [[ -n "$column" ]]; then
         body="$(jq -n --argjson cur "$body" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
@@ -1224,8 +1546,17 @@ cmd_patch() {
     [[ -n "$tags_json" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
     [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
     [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
+    # assigned_user_id rides the echo whenever this call set it — including the terminal-column
+    # clear, which sets it without a flag — so the caller SEES what the server recorded. It is
+    # surfaced, NOT compared: _kbc_confirm_stage's narrowness is deliberate (only a field this
+    # file resolved itself and the server stores verbatim is safe to compare byte-wise), and
+    # this field's round-trip has not been measured against a live board, so a compare here
+    # could only manufacture a HARD FAILURE on a write that landed exactly as asked.
+    if [[ -n "$assign_set" ]] || _kbc_terminal_column "$column"; then
+        echo_extra="$echo_extra, assigned_user_id: (.assigned_user_id // null)"
+    fi
     local resp
-    resp="$(kb_api PATCH "/tasks/$task.json" "$body")" || return 1
+    resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
     _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage"
 }
@@ -1293,15 +1624,19 @@ _kbc_card_filter() {
 #   never disagree about what a card is tagged.
 _kbc_list_project() {
     local swmap; swmap="$(_kbc_swimlane_map)"
+    local umap; umap="$(_kbc_user_map)"
     _kbc_card_filter "$1" "$2" "$3" "$4" \
       | jq \
         --argjson swmap "$swmap" \
+        --argjson umap "$umap" \
         'map(.payload = (if (.payload | type) == "object" then .payload else {} end))
          | map({id, name, stage: .workflow_stage_id, type: .card_type_id,
                 swimlane_id: (.swimlane_id // null),
                 swimlane: ($swmap[((.swimlane_id // null) | tostring)] // null),
                 external_id: (.external_id // null),
                 tags: (.tags // []),
+                assigned_user_id: (.assigned_user_id // null),
+                assignee: ($umap[((.assigned_user_id // null) | tostring)] // null),
                 dl: .payload.dl_number, pr: .payload.pr_number})'
 }
 
@@ -1940,14 +2275,23 @@ _kbc_confirm_stage() {
 # broken" escalation (card #4387). Deleting also scrubs a serializer-provided
 # null stage/column, so the rule holds regardless of the API's response shape.
 _kbc_annotate_card() {
-    local data="$1" sid col=""
+    local data="$1" sid col="" uid seat=""
     sid="$(printf '%s' "$data" | jq -r '.workflow_stage_id // empty')"
     if [[ -n "$sid" ]]; then
         col="$(stage_name "$sid" || true)"
     fi
-    printf '%s' "$data" | jq --arg col "$col" '
+    # `assignee` follows the SAME omit-don't-null rule, for the same reason: an emitted
+    # "assignee": null on a card that IS assigned reads as "nobody is working this", which is
+    # the claim this whole field exists to make readable. The raw assigned_user_id is on the
+    # card either way, so an id this board env does not map costs a NAME, not an answer.
+    uid="$(printf '%s' "$data" | jq -r '.assigned_user_id // empty')"
+    if [[ -n "$uid" ]]; then
+        seat="$(_kbc_user_name "$uid" || true)"
+    fi
+    printf '%s' "$data" | jq --arg col "$col" --arg seat "$seat" '
         (if .workflow_stage_id != null then .stage = .workflow_stage_id else del(.stage) end)
-        | (if $col != "" then .column = $col else del(.column) end)'
+        | (if $col != "" then .column = $col else del(.column) end)
+        | (if $seat != "" then .assignee = $seat else del(.assignee) end)'
 }
 
 cmd_show() {
