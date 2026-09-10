@@ -25,7 +25,11 @@
 #   verbatim, TRAILING newlines trimmed, CRLF normalized to LF (a file written on Windows/Git-Bash
 #   would otherwise send a literal \r, which a reader renders as `?` at the end of every line);
 #   a LONE \r is not a line ending and is left alone. --content applies all of that to its INLINE
-#   value too; --name/--description send an inline value verbatim, exactly as they always have.
+#   value too, and so does --block-reason: a pair with no shipped inline contract to preserve
+#   gets ONE rule across both halves, so its INLINE value is CRLF-folded, trailing-newline-trimmed
+#   and blank-checked exactly as its file value is. --name/--description are the exception, not
+#   the rule: they send an inline value verbatim and unchecked, exactly as they always have,
+#   because narrowing what an already-shipped flag accepts is an acceptance change.
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -116,17 +120,36 @@
 #     ⛔ --unblock IS THE CLEARER AND IS NOT OPTIONAL DRESSING. A reason that can be set and not
 #     unset goes stale in a structured field, which is the exact failure `_kbc-stale-blocker.py`
 #     exists to report — a card still asserting a constraint that was true when written. It
-#     writes an EXPLICIT JSON null, not an empty string, and the reason is the API's PER-KEY
-#     MERGE rather than any claim about a renderer: an omitted key leaves the field alone, a null
-#     CLEARS it, and "" is a third stored state that is neither — a column the board reads as SET,
-#     to something that is not a blocker. The two are mutually exclusive — a call
+#     writes an EXPLICIT JSON null, not an empty string. The distinction that is REAL is the
+#     API's PER-KEY MERGE: an omitted key leaves the field alone, a null CLEARS it. "" is a third
+#     thing ON THE WIRE and is NOT a third stored state — the board runs Laravel's TrimStrings
+#     then ConvertEmptyStringsToNull over JSON bodies, so "" (and any all-whitespace value)
+#     reaches the controller as null and stores NULL, collapsing into the clear. Sending null
+#     explicitly is therefore the spelling that does not DEPEND on that: it asks for the clear
+#     rather than being rewritten into one.
+#     ⚠ THAT LAST PART IS A CLAIM ABOUT ANOTHER REPO, AND NOTHING HERE CAN CHECK IT. Read at the
+#     kanban-board declaring end (its bootstrap leaves the global stack's TrimStrings /
+#     ConvertEmptyStringsToNull in place, TransformsRequest::clean covers a JSON body, and the
+#     board's own test header states the rewrite in its own words) and MEASURED against the live
+#     board — a whitespace-only reason sent by a build without the refusal below returned rc 0
+#     and stored null. A board that excepted that middleware would make "" a stored value again
+#     with this file's suite unmoved, so it is named here rather than assumed.
+#     The two are mutually exclusive — a call
 #     naming both says nothing about what the card should end up holding — and that is rc 2
 #     before any request, as is naming both halves of the --block-reason/--block-reason-file
 #     pair. An omitted flag leaves the field exactly as it was.
+#     ⚠ SETTING A REASON ALSO PINS THE CARD AGAINST AUTO-MOVE. bin/board-card-start treats a
+#     non-empty block_reason as an opt-out (with the `no-automove` tag) and REFUSES the
+#     post-checkout stage move for that card, loudly. That predates this flag and is coherent —
+#     a blocked card should not be dragged forward by a checkout — but until now nothing could
+#     set the field, so nothing could trip it. --unblock releases the pin.
 #     ⛔ A WHITESPACE-ONLY REASON IS REFUSED — rc 2 before any request, on BOTH halves of the pair
-#     alike. " " is a blocker that is set and says nothing: the card reads as blocked and the
-#     report has nothing to show for it, which is the blank-cell failure this flag exists to
-#     remove, re-minted on the write side. --name / --description accept one, for a reason that
+#     alike — and what it prevents is a SILENT NO-OP, not a blank-looking blocker. Measured: the
+#     same call without this refusal is rc 0, and the board stores NULL (the normalization above),
+#     so the card ends up NOT BLOCKED while the caller was told the write landed. The echo was
+#     already printing that null; the exit status said success, and automation reads the status.
+#     That is the readback-before-success shape this repo has a name for.
+#     --name / --description accept one, for a reason that
 #     does not apply here: their inline spelling predates its file twin, so tightening it would
 #     change a shipped acceptance (see _kbc_text_arg's knobs).
 #     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
@@ -988,12 +1011,12 @@ _kbc_require_ref_int() {
     return 0
 }
 
-# _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file> [inline-verbatim]: resolve a free-TEXT argument from
-# its two mutually-exclusive sources — the inline `--<flag>` and its `--<flag>-file` twin — into
-# <outvar>. Returns 2, with a diagnostic naming the flag the CALLER passed, when both sources were
-# given, when a required pair got neither, when the file is `-`, missing or unreadable, or when
-# the file's text is blank. Every one of those is decided with no network at all, so a bad
-# invocation can never half-write.
+# _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file> [inline-verbatim]:
+# resolve a free-TEXT argument from its two mutually-exclusive sources — the inline `--<flag>`
+# and its `--<flag>-file` twin — into <outvar>. Returns 2, with a diagnostic naming the flag the
+# CALLER passed, when both sources were given, when a required pair got neither, when the file is
+# `-`, missing or unreadable, or when the file's text is blank. Every one of those is decided
+# with no network at all, so a bad invocation can never half-write.
 #
 # WHY THE FILE FORM IS THE CONVENTION FOR TEXT THIS AGENT DID NOT AUTHOR. An inline value is
 # expanded by the CALLER's shell before kbcard is even started, so a `$(…)` or a backtick inside

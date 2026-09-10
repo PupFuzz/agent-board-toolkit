@@ -2189,6 +2189,12 @@ for _verb in create-card patch; do
     ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
     eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
        "$(ta_wire "$_field")"
+    # The THIRD observable property of the carve-out, and the one nothing asserted: an inline
+    # value's TRAILING newlines are not trimmed either. The file half trims them, so this is the
+    # leg that distinguishes "the carve-out applies" from "the file rules leaked into the inline
+    # path" — a distinction the other two legs cannot draw on their own.
+    ta "$_verb" "$_field" "$_f" $'nm\n\n'
+    eq "$_verb $_f trailing newlines → ride UNTRIMMED" '"nm\n\n"' "$(ta_wire "$_field")"
   done
 done
 unset _verb _field _f _ff _L
@@ -3499,10 +3505,18 @@ echo "== patch --block-reason / --unblock — the blocker a burn-down can render
 # stale in a structured field — precisely the failure `bin/_kbc-stale-blocker.py` exists to
 # report — so a setter shipped alone would mint the defect the feature is justified by. The API
 # rule is `nullable` and its per-key merge makes an OMITTED key "leave alone" and an explicit
-# `null` "clear"; an empty STRING is a third thing, and a renderer that prints what it is given
-# would print an empty blocker as a set one. So every assertion below reads `[has, value]` and
-# the clear additionally asserts the JSON TYPE, which is the one reading that separates `null`
-# from `""`.
+# `null` "clear". So every assertion below reads `[has, value]`: a value-only test cannot tell an
+# absent key from a null, and those are the two states this flag turns on.
+#
+# ⚠ WHAT THE `| type` ASSERTION DOES AND DOES NOT CLAIM. It pins the WIRE form — that the clear
+# sends a JSON null and not `""`. It is NOT a claim that `""` would be a third STORED state: the
+# board runs Laravel's TrimStrings then ConvertEmptyStringsToNull over JSON bodies, so `""` and
+# any all-whitespace value reach the controller as null and store NULL, collapsing into the
+# clear. That is read at the kanban-board declaring end and measured against the live board, and
+# nothing in THIS repo can check it stays true — which is exactly why the assertion is scoped to
+# the wire, the one end this suite owns. Sending null explicitly is the spelling that does not
+# depend on the far end's normalization: it asks for the clear rather than being rewritten into
+# one.
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -3617,10 +3631,15 @@ eq "…named as holding no text"                    "true" "$(has 'holds no bloc
 eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 
 # ═══ ⛔ THE TWO HALVES OF THE PAIR RULE THE SAME WAY ON THE SAME INPUT ═══
-# A whitespace-only reason is a blocker that is SET and says nothing: the card reads as blocked
-# and the report has nothing to show for it. That is the blank-cell failure this flag exists to
-# remove, re-minted on the write side — and the inline half accepted it at rc 0 while the file
-# half refused the identical bytes, because `_kbc_text_arg` carved out an optional setter's
+# What a whitespace-only reason costs is a SILENT NO-OP, not a blank-looking blocker. Measured
+# against the live board with the pre-fix build: rc 0, and the stored value is NULL — the board
+# trims and then converts an empty string to null before its controller sees it — so the card
+# ends up NOT BLOCKED while the caller was told the write landed. The echo was already printing
+# that null; the exit STATUS said success, and automation reads the status. That is the
+# readback-before-success shape, reported as success.
+#
+# The inline half accepted it at rc 0 while the file half refused the identical bytes, because
+# `_kbc_text_arg` carved out an optional setter's
 # inline value. That carve-out was written to preserve the SHIPPED acceptance of a flag whose
 # inline spelling predates its file twin. This pair has none to preserve: both halves land in
 # one commit, so it was never a decision, only an inheritance.
