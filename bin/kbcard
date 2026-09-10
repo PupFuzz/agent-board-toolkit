@@ -176,11 +176,14 @@
 #     install's word for the column rather than the board's own label. ⭐ THAT CLAIM ALSO
 #     RIDES THE COMMAND'S OWN STDERR, on every successful call, because a consumer piping the
 #     JSON never reads this help — and one that did not read it wrote a board-resolved config
-#     in these local names (rt#442). stdout is unchanged. A board env mapping NO stage is
-#     rc 1 with nothing on stdout — every column this tool can address needs a KB_STAGE_*
-#     var, so an empty map is a config fault, not a board with no columns — and a
-#     KB_STAGE_* whose value is not a stage id is NAMED on stderr rather than dropped,
-#     which includes the `000` placeholder a copied board-env template still carries.
+#     in these local names (rt#442). stdout is unchanged — which is exactly why `stages` IS NOT
+#     SAFE TO RUN WITH STDERR MERGED INTO IT: `kbcard stages 2>&1 | jq .` dies at `jq: parse
+#     error` on line 1, so redirect stderr separately (`2>/dev/null`, or to a file) when you
+#     pipe the JSON. A board env mapping NO stage is rc 1 with nothing on stdout — every column
+#     this tool can address needs a KB_STAGE_* var, so an empty map is a config fault, not a
+#     board with no columns — and a KB_STAGE_* whose value is not a stage id is NAMED on stderr
+#     rather than dropped, which includes the `000` placeholder a copied board-env template
+#     still carries.
 #     THERE IS NO ORDINAL FIELD, deliberately: nothing this read can see carries the
 #     board's column ORDER (the env is an unordered set of name=id pairs), so an ordinal
 #     would be a plausible-looking sequence with no source. Rows are emitted sorted by
@@ -1665,6 +1668,14 @@ _kbc_list_project() {
 #
 # Every successful call also declares on stderr that the names are local aliases — see the
 # provenance line in the body for why that is stderr and not a row key.
+#
+# ⛔ THIS CONTRACT IS STATED TWICE MORE, ON SURFACES NEITHER OF WHICH CAN BE REPLACED BY A
+# POINTER TO THE OTHER — the `Usage:` header above (read at a terminal, possibly with no
+# browser) and README.md § `kbcard stages` (read before the tool is installed). The duplication
+# is GUARDED rather than removed: `tests/kbcard-stages-contract-selftest.sh` observes each fact
+# by RUNNING this verb and reds when either surface stops saying what the run showed. Change the
+# behaviour here and expect it red until both are updated — that is the guard working, and it is
+# there because card#9171's change landed on one surface and not the other (card#9173).
 #
 # A value that is not a stage id is NAMED on stderr and left off, rather than dropped or emitted
 # as a string: `list`'s `stage` is a JSON number, so one row typed differently from the rest is a

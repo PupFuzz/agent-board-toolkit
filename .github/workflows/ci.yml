@@ -176,6 +176,7 @@ jobs:
           - kbc-stale-blocker-selftest
           - kbcard-field-selftest
           - kbcard-selftest
+          - kbcard-stages-contract-selftest
           - lib-set-derivation-selftest
           - locale-range-guard-selftest
           - mirror-pair-parity-selftest

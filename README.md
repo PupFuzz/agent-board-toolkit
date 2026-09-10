@@ -115,6 +115,13 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
 
 **Two opt-in projections, and the block form stays the default.** A handful of hits on a large board is tens of KB of bodies, so a caller who cannot afford that falls back to `list` + a title match — which is *structurally incapable* of answering a body question and hands back a candidate set dressed as a derived population. `--brief` prints the **header lines only**, and they are the **same bytes** the block form's header already carries (one renderer owns that line, so nothing downstream needs a second parser and the two cannot drift). `--count` prints **one line and no bodies** — the `<M> of <N>` denominator above, in the same words, on **stdout** because with that flag the count *is* the requested output; it also replaces the zero-result prose, so `0 of 0` and `0 of N` are what separate *nothing matched* from *the filter removed everything*. Neither flag changes **which** cards match, so the filter flags and the stderr denominator are untouched. **Forgetting a flag costs you too much output, never a silent truncation** — which is why the two together are **rc 2 before any request** rather than one silently winning: they answer different questions, and handing back a number where header lines were asked for is the shape both exist to prevent.
 
+<!-- The contract stated in this section is ALSO stated in bin/kbcard's `Usage:` header, and
+     neither copy can be replaced by a pointer to the other: this one is read before the tool
+     is installed, that one at a terminal with no browser. The duplication is guarded, not
+     tolerated — tests/kbcard-stages-contract-selftest.sh observes each fact by running the
+     verb and reds when either surface stops saying what the run showed (card#9173). Edit
+     this section and run it. -->
+
 ## `kbcard stages` — the stage id → column name map
 
 **`kbcard --board <key> stages`** — the id → column-name pairs as JSON, symmetric with `field list`: one `{"id": <n>, "name": "<column>"}` object per mapped stage, and no other key. This is the join `list` needs. It exists because nothing read the map out, so every consumer hardcoded or **inferred** it — and both failure modes are a confident wrong number rather than an error: one seat inferred a stage id from the ordering of the `--column` enum, another filtered a board sweep on the wrong key and read `0` over a real backlog, twice.
