@@ -1529,7 +1529,10 @@ cmd_patch() {
     # not readable off the value. Both directions are decided offline — a call naming the setter
     # AND the clearer states no end state at all, and silently picking one is the quiet-wrong
     # this field exists to remove. The value is built with jq rather than spliced, so a reason
-    # carrying a quote or a backslash is a string and not a broken body.
+    # carrying a quote or a backslash is a string and not a broken body — and that build is
+    # guarded, unlike the neighbouring jq assignments, because an EMPTY block_json here would not
+    # fail: `_kbc_task_fields` reads it as `null` while block_set still says a flag was passed,
+    # so a failure at this one line would silently INVERT a set into a clear.
     local block_set="" block_json=""
     if [[ -n "$block" && -n "$unblock" ]]; then
         echo "kbcard: --block-reason and --unblock are mutually exclusive — pass exactly one (--unblock is the clear)" >&2; return 2
