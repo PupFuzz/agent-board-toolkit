@@ -9,9 +9,10 @@
 # (card#7316) — a path an operator wrote in their own store, never one baked in here.
 #
 # Usage:
-#   THE THREE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the
-#   caller may have written it: --name/--name-file, --description/--description-file and
-#   --content/--content-file. Pass exactly one of a pair — both is rc 2.
+#   THE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the
+#   caller may have written it: --name/--name-file, --description/--description-file,
+#   --block-reason/--block-reason-file and --content/--content-file. Pass exactly one of a
+#   pair — both is rc 2.
 #   USE THE FILE FORM FOR ANY TEXT YOU DID NOT WRITE YOURSELF — a description authored by someone
 #   else, a report, a pasted log, a review comment. The inline form is expanded by YOUR shell
 #   before kbcard is even started, so a $(...) or a backtick anywhere in that text RUNS as a
@@ -63,7 +64,8 @@
 #     it from shipped_to_dev, which already cleared.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
-#                [--assign <seat|user-id> [--steal]] [--unassign]
+#                [--assign <seat|user-id> [--steal]] [--unassign] \
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -105,6 +107,28 @@
 #     name — the board TOKEN'S ROLE (a role without `task.update` cannot write an assignee) or
 #     a board that is read-only to it — rather than as a generic HTTP line: it is permanent for
 #     that token, so no retry and no card edit changes it.
+#     --block-reason / --unblock write the board's own top-level block_reason — the field a
+#     sprint burn-down RENDERS as its "Blocker / next action" column. Nothing on any product
+#     surface wrote it before this flag: not this CLI, not the board's web UI. So that column
+#     read empty on every row of every board, and an operator reading it concluded nothing was
+#     blocked — a false answer produced by a working renderer with no writer. A blocker recorded
+#     in a card COMMENT, the only place an agent had, is not readable there.
+#     ⛔ --unblock IS THE CLEARER AND IS NOT OPTIONAL DRESSING. A reason that can be set and not
+#     unset goes stale in a structured field, which is the exact failure `_kbc-stale-blocker.py`
+#     exists to report — a card still asserting a constraint that was true when written. It
+#     writes an EXPLICIT JSON null, not an empty string: the API merges task fields per key, so
+#     an omitted key leaves the field alone and a null clears it, while "" is a third state a
+#     renderer would print as a set-but-blank blocker. The two are mutually exclusive — a call
+#     naming both says nothing about what the card should end up holding — and that is rc 2
+#     before any request, as is naming both halves of the --block-reason/--block-reason-file
+#     pair. An omitted flag leaves the field exactly as it was.
+#     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
+#     this column and refuses a longer value itself, naming it; kbcard sends what it was given
+#     and NEVER TRUNCATES (a silently shortened blocker is a different sentence from the one the
+#     caller wrote, stored under an rc 0 that says it landed). Copying that number into this
+#     file would be a second copy of the board's own rule with nothing comparing the two, so a
+#     board that widened the column would be refused by its own CLI — the same call --pr already
+#     makes about the board's declared field type (see above).
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
@@ -1047,7 +1071,7 @@ _kbc_text_arg() {
     printf -v "$_ta_out" '%s' "$_ta_val"
 }
 
-# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json> [assign_set] [assign_json]:
+# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json> [assign_set] [assign_json] [block_set] [block_json]:
 # assemble the OPTIONAL top-level task-object fields shared by create-card and patch, as a JSON
 # object carrying ONLY the keys whose argument was supplied. Each caller then adds the keys IT
 # requires — create-card `board_id` + `workflow_stage_id`, patch the stage of a `--column`.
@@ -1070,10 +1094,14 @@ _kbc_task_fields() {
     # untouched — it has no assign flag of its own, and this is the one place a NEXT one would
     # be wired for both callers at once.
     local assign_set="${9:-}" assign_json="${10:-}"
+    # block_reason joins on those same trailing+defaulted terms, for the same reason again: its
+    # --unblock form is a real null.
+    local block_set="${11:-}" block_json="${12:-}"
     [[ -n "$tags_json" ]] || tags_json='null'
     [[ -n "$swim_json" ]] || swim_json='null'
     [[ -n "$payload_json" ]] || payload_json='{}'
     [[ -n "$assign_json" ]] || assign_json='null'
+    [[ -n "$block_json" ]] || block_json='null'
     jq -n \
         --arg name "$name" \
         --arg type_id "$type_id" \
@@ -1084,6 +1112,8 @@ _kbc_task_fields() {
         --argjson swim "$swim_json" \
         --arg assign_set "$assign_set" \
         --argjson assign "$assign_json" \
+        --arg block_set "$block_set" \
+        --argjson block "$block_json" \
         --argjson payload "$payload_json" \
         '{}
          + (if $name    != "" then {name: $name} else {} end)
@@ -1093,6 +1123,7 @@ _kbc_task_fields() {
          + (if $ext_id  != "" then {external_id: ($ext_id | tonumber)} else {} end)
          + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
          + (if $assign_set != "" then {assigned_user_id: $assign} else {} end)
+         + (if $block_set != "" then {block_reason: $block} else {} end)
          + (if ($payload | length) > 0 then {payload: $payload} else {} end)'
 }
 
@@ -1422,6 +1453,7 @@ cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin=""
     local assign="" unassign="" steal=""
+    local block="" block_file="" unblock=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -1442,6 +1474,9 @@ cmd_patch() {
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
             --assign) kb_require_value "$1" "${2:-}" || return 2; assign="$2"; shift 2 ;;
+            --block-reason) kb_require_value "$1" "${2:-}" || return 2; block="$2"; shift 2 ;;
+            --block-reason-file) kb_require_value "$1" "${2:-}" || return 2; block_file="$2"; shift 2 ;;
+            --unblock) unblock=1; shift ;;
             --unassign) unassign=1; shift ;;
             --steal) steal=1; shift ;;
             --triaged) triaged=1; shift ;;
@@ -1458,6 +1493,7 @@ cmd_patch() {
     # invocation, and a bad invocation must cost no traffic.
     _kbc_text_arg name name "" "$name" "$name_file" || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" || return 2
+    _kbc_text_arg block block-reason "" "$block" "$block_file" || return 2
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
@@ -1486,6 +1522,24 @@ cmd_patch() {
     elif [[ -n "$unassign" ]]; then
         assign_json="null"
         assign_set=1
+    fi
+
+    # block_reason rides the SAME set-flag/value pair swimlane_id and assigned_user_id do, for
+    # the same reason: null is a REAL value here (the --unblock form), so "was a flag passed" is
+    # not readable off the value. Both directions are decided offline — a call naming the setter
+    # AND the clearer states no end state at all, and silently picking one is the quiet-wrong
+    # this field exists to remove. The value is built with jq rather than spliced, so a reason
+    # carrying a quote or a backslash is a string and not a broken body.
+    local block_set="" block_json=""
+    if [[ -n "$block" && -n "$unblock" ]]; then
+        echo "kbcard: --block-reason and --unblock are mutually exclusive — pass exactly one (--unblock is the clear)" >&2; return 2
+    fi
+    if [[ -n "$block" ]]; then
+        block_json="$(jq -n --arg v "$block" '$v')" || return 2
+        block_set=1
+    elif [[ -n "$unblock" ]]; then
+        block_json="null"
+        block_set=1
     fi
 
     # Assemble task.payload from the card-metadata flags (shared with cmd_create_card).
@@ -1539,7 +1593,7 @@ cmd_patch() {
     # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
     # `tags` is the documented exception — the API replaces that list wholesale.
     local body
-    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json" "$assign_set" "$assign_json")" || return 2
+    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json" "$assign_set" "$assign_json" "$block_set" "$block_json")" || return 2
     if [[ -n "$column" ]]; then
         body="$(jq -n --argjson cur "$body" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
@@ -1560,6 +1614,10 @@ cmd_patch() {
     if [[ -n "$assign_set" ]] || _kbc_terminal_column "$column"; then
         echo_extra="$echo_extra, assigned_user_id: (.assigned_user_id // null)"
     fi
+    # Surfaced on BOTH directions, and with no `// null` fallback in front of it: the clear's
+    # whole claim is that the server now holds null, and a caller who cannot see that in the
+    # echo has to re-read the card to learn whether the unblock took.
+    [[ -n "$block_set" ]] && echo_extra="$echo_extra, block_reason: .block_reason"
     local resp
     resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
