@@ -2180,7 +2180,9 @@ for _verb in create-card patch; do
     # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
     # blank-checked (a whitespace value has always been accepted and written) and not rewritten
     # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
-    # these two legs red on a later "harmonization" that makes one silently.
+    # these two legs red on a later "harmonization" that makes one silently. The carve-out is
+    # an explicit `<inline-verbatim>` argument at the call site as of card#9213, rather than a
+    # side effect of the requiredness knob — these legs are what red if it is dropped there.
     ta "$_verb" "$_field" "$_f" '   '
     eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
     eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
@@ -3595,6 +3597,10 @@ eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 
 kbc patch --task 606 --block-reason-file "$TMP/no-such-file"
 eq "--block-reason-file missing → rc 2"           "2" "$rc"
+# ⛔ THE LEG THAT MAKES THE rc ATTRIBUTABLE. An unknown flag is rc 2 with zero requests too, so
+# the two assertions around this one pass unchanged on a binary that never heard of the pair —
+# they are a control for nothing without a diagnostic naming the refusal that actually fired.
+eq "…named as the unreadable file it is"          "true" "$(has 'is not readable' "$err")"
 eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 
 # --- the file form is the shipped prose-pair contract, not a second implementation -----
@@ -3607,7 +3613,45 @@ eq "…CRLF folded and the trailing newline trimmed" '[true,"blocked on the host
 printf '   \n\n' > "$TMP/blank.txt"
 kbc patch --task 606 --block-reason-file "$TMP/blank.txt"
 eq "a whitespace-only --block-reason-file → rc 2" "2" "$rc"
+eq "…named as holding no text"                    "true" "$(has 'holds no block-reason text' "$err")"
 eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
+
+# ═══ ⛔ THE TWO HALVES OF THE PAIR RULE THE SAME WAY ON THE SAME INPUT ═══
+# A whitespace-only reason is a blocker that is SET and says nothing: the card reads as blocked
+# and the report has nothing to show for it. That is the blank-cell failure this flag exists to
+# remove, re-minted on the write side — and the inline half accepted it at rc 0 while the file
+# half refused the identical bytes, because `_kbc_text_arg` carved out an optional setter's
+# inline value. That carve-out was written to preserve the SHIPPED acceptance of a flag whose
+# inline spelling predates its file twin. This pair has none to preserve: both halves land in
+# one commit, so it was never a decision, only an inheritance.
+for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')"; do
+    kbc patch --task 606 --block-reason "$_ws"
+    eq "a whitespace-only --block-reason → rc 2"  "2" "$rc"
+    eq "…named as holding no text"                "true" "$(has 'holds no block-reason text' "$err")"
+    eq "…and cost no traffic"                     "0" "$(kb_stub_total)"
+done
+# The property stated directly, rather than left to be inferred from two rc's sitting near each
+# other: the SAME bytes decide the SAME way through either half.
+printf ' \t \n' > "$TMP/ws.txt"
+kbc patch --task 606 --block-reason-file "$TMP/ws.txt"; _ws_file_rc="$rc"
+kbc patch --task 606 --block-reason "$(printf ' \t ')"; _ws_inline_rc="$rc"
+eq "inline and file halves agree on whitespace-only" "$_ws_file_rc" "$_ws_inline_rc"
+# The positive control that keeps the agreement above from being two failures agreeing: a reason
+# with real text in it is accepted through BOTH halves.
+printf '  leading space is CONTENT, not blankness\n' > "$TMP/real.txt"
+kbc patch --task 606 --block-reason-file "$TMP/real.txt"
+eq "…and both accept a reason that HAS text (control)" '[true,"  leading space is CONTENT, not blankness"]' "$(bbody)"
+
+# --- the value is BUILT with jq, and that is now driven rather than asserted in a comment ---
+# A naive `"\"$block\""` splice passes every other assertion in this section: the reasons they
+# use carry no quote and no backslash, so the two builds are byte-identical over that corpus.
+QREASON='blocked: the check greps "\bfoo\b" and dies on a \ in the path — see "notes"'
+kbc patch --task 606 --block-reason "$QREASON"
+eq "a reason carrying quotes and backslashes → rc 0" "0" "$rc"
+eq "…rides as ONE JSON string, byte-exact"           "$QREASON" \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -r '.block_reason')"
+eq "…and the body is still parseable, that key only" '["block_reason"]' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c 'keys')"
 
 # --- the length cap is the BOARD's, and this CLI neither restates nor enforces it ------
 # The API declares the limit and refuses a longer value itself. kbcard sends what it was given:
@@ -3623,7 +3667,7 @@ eq "…and rides UNTRUNCATED, at its own length"     "300" \
    "$(kb_stub_bodies PATCH /tasks/606.json | jq -c '.block_reason | length')"
 
 unset -f bbody kb_stub_route
-unset REASON LONG
+unset REASON LONG QREASON _ws _ws_file_rc _ws_inline_rc
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

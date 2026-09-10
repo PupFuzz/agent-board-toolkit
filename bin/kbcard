@@ -116,12 +116,19 @@
 #     ⛔ --unblock IS THE CLEARER AND IS NOT OPTIONAL DRESSING. A reason that can be set and not
 #     unset goes stale in a structured field, which is the exact failure `_kbc-stale-blocker.py`
 #     exists to report — a card still asserting a constraint that was true when written. It
-#     writes an EXPLICIT JSON null, not an empty string: the API merges task fields per key, so
-#     an omitted key leaves the field alone and a null clears it, while "" is a third state a
-#     renderer would print as a set-but-blank blocker. The two are mutually exclusive — a call
+#     writes an EXPLICIT JSON null, not an empty string, and the reason is the API's PER-KEY
+#     MERGE rather than any claim about a renderer: an omitted key leaves the field alone, a null
+#     CLEARS it, and "" is a third stored state that is neither — a column the board reads as SET,
+#     to something that is not a blocker. The two are mutually exclusive — a call
 #     naming both says nothing about what the card should end up holding — and that is rc 2
 #     before any request, as is naming both halves of the --block-reason/--block-reason-file
 #     pair. An omitted flag leaves the field exactly as it was.
+#     ⛔ A WHITESPACE-ONLY REASON IS REFUSED — rc 2 before any request, on BOTH halves of the pair
+#     alike. " " is a blocker that is set and says nothing: the card reads as blocked and the
+#     report has nothing to show for it, which is the blank-cell failure this flag exists to
+#     remove, re-minted on the write side. --name / --description accept one, for a reason that
+#     does not apply here: their inline spelling predates its file twin, so tightening it would
+#     change a shipped acceptance (see _kbc_text_arg's knobs).
 #     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
 #     this column and refuses a longer value itself, naming it; kbcard sends what it was given
 #     and NEVER TRUNCATES (a silently shortened blocker is a different sentence from the one the
@@ -981,7 +988,7 @@ _kbc_require_ref_int() {
     return 0
 }
 
-# _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file>: resolve a free-TEXT argument from
+# _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file> [inline-verbatim]: resolve a free-TEXT argument from
 # its two mutually-exclusive sources — the inline `--<flag>` and its `--<flag>-file` twin — into
 # <outvar>. Returns 2, with a diagnostic naming the flag the CALLER passed, when both sources were
 # given, when a required pair got neither, when the file is `-`, missing or unreadable, or when
@@ -998,16 +1005,26 @@ _kbc_require_ref_int() {
 # The claim is about the TOKEN, not about the descriptor — a caller who genuinely wants stdin passes
 # the path `/dev/stdin`, which is a readable path like any other and works.
 #
-# <require-verb> IS THE POLICY KNOB (ground rule 5 of docs/CONSOLIDATION-PLAN.md — mechanism in
-# the primitive, policy at the caller), and it decides two things at once:
-#   * NON-EMPTY — the verb's own name, e.g. `comment`: this text IS the request. Neither source
-#     given is rc 2 naming that verb, and the INLINE value is normalized and blank-checked exactly
-#     as the file's is. That is `comment`'s shipped contract, carried over byte for byte.
-#   * EMPTY — the pair is an OPTIONAL FIELD SETTER (`--name`, `--description`). Neither source
-#     given is the ordinary case and stays silent, and the inline value — a flag that predates its
-#     file twin — is passed through VERBATIM. Blank-checking it, or rewriting its bytes, would
-#     change what an already-shipped flag accepts and what it puts on the wire; that is an
-#     acceptance change, ask-gated, and not this consolidation's to make.
+# THE POLICY KNOBS (ground rule 5 of docs/CONSOLIDATION-PLAN.md — mechanism in the primitive,
+# policy at the caller) ARE TWO ARGUMENTS BECAUSE THEY ARE TWO PROPERTIES. They were one argument
+# deciding both until card#9213, and that is exactly why they are separate now: the combination a
+# new pair needed — OPTIONAL, but with its inline value checked — was the one a two-setting knob
+# could not spell, so the new pair silently inherited a carve-out written for somebody else's
+# shipped contract, and shipped an inline half that accepted what its own file half refused.
+#   * <require-verb> decides whether the pair is REQUIRED. NON-EMPTY — the verb's own name, e.g.
+#     `comment`: this text IS the request, so neither source given is rc 2 naming that verb.
+#     EMPTY — an optional field setter, where neither source given is the ordinary case and is
+#     silent.
+#   * <inline-verbatim> decides whether the INLINE value skips the normalization and the blank
+#     check below. NON-EMPTY — it rides through unread and unrewritten. The FILE half is never
+#     affected either way: it is always normalized and always checked.
+#     ⚠ THIS IS A CARVE-OUT FOR SHIPPED ACCEPTANCE, NOT A DEFAULT. It exists for a pair whose
+#     INLINE flag PREDATES its file twin, where blank-checking the value or rewriting its bytes
+#     would change what an already-shipped flag accepts — an acceptance change, ask-gated, and
+#     not this file's to make unasked. The call sites passing it ARE that population; there is
+#     nothing else to enumerate and nothing to keep in sync. A pair with no shipped inline
+#     contract passes nothing here and gets ONE emptiness rule across both its halves, which is
+#     what a caller reading "the file form is the safe route" already believes is true.
 #
 # What a NORMALIZED value loses and keeps: interior newlines and leading whitespace ride verbatim
 # (a comment's own indentation is content), TRAILING newlines are trimmed, and CRLF is folded to
@@ -1015,7 +1032,7 @@ _kbc_require_ref_int() {
 # does README — and it is applied here rather than left to the caller's command substitution, so
 # the contract lives in the code that owns it.
 _kbc_text_arg() {
-    local _ta_out="$1" _ta_flag="$2" _ta_verb="$3" _ta_val="$4" _ta_file="$5"
+    local _ta_out="$1" _ta_flag="$2" _ta_verb="$3" _ta_val="$4" _ta_file="$5" _ta_verbatim="${6:-}"
     # The noun the "holds no … text" refusals read with: the verb where there is one (so
     # `comment` keeps saying "no comment text"), the field name otherwise.
     local _ta_noun="${_ta_verb:-$_ta_flag}"
@@ -1043,8 +1060,9 @@ _kbc_text_arg() {
         # read is still a failed read (with `;` the substitution would carry printf's rc 0).
         _ta_val="$(cat -- "$_ta_file" && printf x)" || { echo "kbcard: --$_ta_flag-file could not be read: $_ta_file" >&2; return 2; }
         _ta_val="${_ta_val%x}"
-    elif [[ -z "$_ta_verb" ]]; then
-        # An optional setter's inline value: verbatim, see the knob above.
+    elif [[ -n "$_ta_verbatim" ]]; then
+        # The shipped-acceptance carve-out; see the knob above. Everything else — including every
+        # pair added after it — falls through to the ONE normalization and the ONE blank check.
         printf -v "$_ta_out" '%s' "$_ta_val"
         return 0
     fi
@@ -1234,8 +1252,8 @@ cmd_create_card() {
     # Both text pairs resolve BEFORE any other check, and long before the POST: a `-`, an absent
     # or an unreadable file must cost no request at all, and --name's requirement below is a
     # question about the RESOLVED name, not about which of the two flags carried it.
-    _kbc_text_arg name name "" "$name" "$name_file" || return 2
-    _kbc_text_arg desc description "" "$desc" "$desc_file" || return 2
+    _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
+    _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
     [[ -z "$name" ]] && { echo "kbcard: --name or --name-file required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
@@ -1491,8 +1509,8 @@ cmd_patch() {
     # not even the tag read below, and never a half-applied PATCH. The two text pairs belong
     # in that set for the same reason: a `-`, an absent or an unreadable file is a bad
     # invocation, and a bad invocation must cost no traffic.
-    _kbc_text_arg name name "" "$name" "$name_file" || return 2
-    _kbc_text_arg desc description "" "$desc" "$desc_file" || return 2
+    _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
+    _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
     _kbc_text_arg block block-reason "" "$block" "$block_file" || return 2
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
@@ -1617,9 +1635,9 @@ cmd_patch() {
     if [[ -n "$assign_set" ]] || _kbc_terminal_column "$column"; then
         echo_extra="$echo_extra, assigned_user_id: (.assigned_user_id // null)"
     fi
-    # Surfaced on BOTH directions, and with no `// null` fallback in front of it: the clear's
-    # whole claim is that the server now holds null, and a caller who cannot see that in the
-    # echo has to re-read the card to learn whether the unblock took.
+    # Surfaced on BOTH directions, the clear included: its whole claim is that the server now
+    # holds null, and a caller who cannot see that in the echo has to re-read the card to learn
+    # whether the unblock took.
     [[ -n "$block_set" ]] && echo_extra="$echo_extra, block_reason: .block_reason"
     local resp
     resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
