@@ -161,7 +161,20 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
 
 **Reading it back:** `show` returns the field with the rest of the card. `list` does **not** project it — that projection is a fixed field set, so a `list`-based grep for a blocker answers `0` whatever the board holds; use `show`.
 
-⚠ **Setting a reason also pins the card against auto-move.** [`bin/board-card-start`](bin/board-card-start) treats a non-empty `block_reason` as an opt-out — alongside the `no-automove` tag — and **refuses the `post-checkout` stage move** for that card, loudly. That behaviour predates this flag and is coherent (a blocked card should not be dragged forward by a checkout), but until now nothing could *set* the field, so nothing could trip it. **`--unblock` releases the pin.**
+### ⚠ Setting a reason pins the card against the whole `post-checkout` hook — not just its stage move
+
+[`bin/board-card-start`](bin/board-card-start) treats a non-empty `block_reason` as an opt-out — alongside the `no-automove` tag — and **`exit`s at that guard**. The stage move is the visible half. The half that costs more is below it: the hook's **`payload.dl_number` stamp never runs**, and the file says so in its own words — *a hands-off card gets no automated write at all*, which is why the stamp sits after the guard rather than before it.
+
+**The sequence that costs a release:**
+
+1. `kbcard patch --task X --block-reason "…"`.
+2. Someone checks out a branch naming card X **and** a DL. The hook fires, hits the pin, and exits.
+3. `payload.dl_number` is **never stamped** on card X.
+4. At release, the DL-correlated movers (bridge writeback, release promote) **no-op on that card** — it is simply missing from the promotion, with nothing failing.
+
+⛔ **`--unblock` releases the pin but does not backfill the missed stamp.** The hook only fires on checkout, so a card unblocked afterwards stays unstamped until someone checks that branch out again. If a card was pinned while its branch was being worked, re-check-out the branch (or stamp it with `kbcard patch --task X --dl DL-NNN`) after unblocking.
+
+The coupling itself predates this flag and is coherent — a blocked card should not be dragged forward by a checkout — but nothing could *set* `block_reason` before, so nothing could trip it. This is the first release in which it is reachable.
 
 **Out of scope, deliberately:** `_kbc-stale-blocker.py` still greps card **prose** for `blocked behind card#N`. That leg has to keep working for every card written before this writer existed, and switching it to the structured field is a separate change with its own denominator.
 

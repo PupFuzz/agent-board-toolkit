@@ -3624,6 +3624,16 @@ kbc patch --task 606 --block-reason-file "$TMP/reason.txt"
 eq "--block-reason-file → rc 0"                   "0" "$rc"
 eq "…CRLF folded and the trailing newline trimmed" '[true,"blocked on the host provisioning ticket"]' "$(bbody)"
 
+# The inline half of THIS pair is NORMALIZED too, not merely blank-checked — the property the
+# carve-out withholds from --name/--description, and the one nothing pinned for any non-verbatim
+# pair (not --content either). Both user-facing surfaces now claim it, so both legs exist: a
+# refactor moving the normalization inside the `if [[ -n "$_ta_file" ]]` branch would leave the
+# suite green and both docs false.
+kbc patch --task 606 --block-reason "$(printf 'i1\r\ni2')"
+eq "an INLINE --block-reason folds CRLF to LF"    '[true,"i1\ni2"]' "$(bbody)"
+kbc patch --task 606 --block-reason $'trailing newlines are trimmed\n\n'
+eq "…and trims its trailing newlines"             '[true,"trailing newlines are trimmed"]' "$(bbody)"
+
 printf '   \n\n' > "$TMP/blank.txt"
 kbc patch --task 606 --block-reason-file "$TMP/blank.txt"
 eq "a whitespace-only --block-reason-file → rc 2" "2" "$rc"

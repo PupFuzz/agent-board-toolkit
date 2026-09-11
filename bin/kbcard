@@ -134,24 +134,22 @@
 #     board — a whitespace-only reason sent by a build without the refusal below returned rc 0
 #     and stored null. A board that excepted that middleware would make "" a stored value again
 #     with this file's suite unmoved, so it is named here rather than assumed.
-#     The two are mutually exclusive — a call
-#     naming both says nothing about what the card should end up holding — and that is rc 2
-#     before any request, as is naming both halves of the --block-reason/--block-reason-file
-#     pair. An omitted flag leaves the field exactly as it was.
-#     ⚠ SETTING A REASON ALSO PINS THE CARD AGAINST AUTO-MOVE. bin/board-card-start treats a
-#     non-empty block_reason as an opt-out (with the `no-automove` tag) and REFUSES the
-#     post-checkout stage move for that card, loudly. That predates this flag and is coherent —
-#     a blocked card should not be dragged forward by a checkout — but until now nothing could
-#     set the field, so nothing could trip it. --unblock releases the pin.
+#     The two are mutually exclusive — a call naming both says nothing about what the card should
+#     end up holding — and that is rc 2 before any request, as is naming both halves of the
+#     --block-reason/--block-reason-file pair. An omitted flag leaves the field exactly as it was.
+#     ⚠ SETTING A REASON PINS THE CARD AGAINST THE WHOLE post-checkout HOOK, NOT JUST ITS MOVE:
+#     bin/board-card-start EXITS at the pin, so the payload.dl_number stamp that sits below the
+#     move is skipped as well, and an unstamped card is one a release promote later no-ops on.
+#     --unblock releases the pin but does NOT backfill the missed stamp — only another checkout
+#     runs that hook. README's `kbcard patch --block-reason` section owns this; not restated here.
 #     ⛔ A WHITESPACE-ONLY REASON IS REFUSED — rc 2 before any request, on BOTH halves of the pair
 #     alike — and what it prevents is a SILENT NO-OP, not a blank-looking blocker. Measured: the
 #     same call without this refusal is rc 0, and the board stores NULL (the normalization above),
 #     so the card ends up NOT BLOCKED while the caller was told the write landed. The echo was
 #     already printing that null; the exit status said success, and automation reads the status.
-#     That is the readback-before-success shape this repo has a name for.
-#     --name / --description accept one, for a reason that
-#     does not apply here: their inline spelling predates its file twin, so tightening it would
-#     change a shipped acceptance (see _kbc_text_arg's knobs).
+#     That is the readback-before-success shape this repo has a name for. --name / --description
+#     accept one, for a reason that does not apply here: their inline spelling predates its file
+#     twin, so tightening it would change a shipped acceptance (see _kbc_text_arg's knobs).
 #     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
 #     this column and refuses a longer value itself, naming it; kbcard sends what it was given
 #     and NEVER TRUNCATES (a silently shortened blocker is a different sentence from the one the
