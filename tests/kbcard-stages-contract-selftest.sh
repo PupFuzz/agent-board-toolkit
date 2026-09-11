@@ -64,6 +64,19 @@
 # asserting the fixture still discriminates — a witness reds when a later tidy-up flattens the
 # fixture, which is the move that silently turns a live fact into a decoration.
 #
+# ⛔ HOW TO RUN THE MUTATION THAT ANSWERS THAT QUESTION — the interactive shape is UNSAFE on an
+# agent seat. A mutate-measure-restore run by hand leaves the tree mutated whenever the measure
+# step is cancelled mid-flight, and on an agent seat a context clear does exactly that: the
+# in-flight call dies (rc 137) with the edit applied and the restore never reached, so the next
+# thing to read `bin/kbcard` reads the MUTANT and every conclusion drawn from it is about code
+# nobody shipped. It happened twice while this file was being written. The safe shape:
+#   * put the mutation, the measurement AND the restore in one script, restore in a trap so it
+#     runs on any exit path — never as a later step someone still has to reach;
+#   * run that script DETACHED (`nohup … &`), so a cancelled foreground call cannot orphan it;
+#   * afterwards assert the tree is clean — `git diff --quiet -- bin/kbcard` — rather than
+#     trusting that the restore ran. A mutation you cannot prove you reverted is a mutation you
+#     have to assume is still there.
+#
 # Beyond that span question: a rewrite of either surface that preserves every needle while
 # changing the meaning around it passes; a needle present for an unrelated reason satisfies its
 # fact; the two surfaces are not required to state the same SET of claims; and the ordinal fact

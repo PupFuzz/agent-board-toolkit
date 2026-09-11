@@ -2630,7 +2630,10 @@ KB_BOARD_ID=42
 # `sort_by(.name)` already in ID order, and with `sort_by(.name)` removed that id order is what
 # ships. Proven in isolation: `[{id:20,name:"alpha"},{id:10,name:"zebra"}] | unique_by(.id)`
 # yields `["zebra","alpha"]`. So a discriminating fixture needs its IDS to disagree with its
-# NAMES — an env-ordering argument cannot supply one.
+# NAMES — an env-ordering argument cannot supply one. Before re-running that mutation to see
+# this leg red: do it detached, with the restore in the same script, and assert the tree clean
+# afterwards — `kbcard-stages-contract-selftest.sh`'s header says why the interactive shape is
+# unsafe on an agent seat.
 export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77 KB_STAGE_ALPHA=90
 ST_ROWS="$(cmd_stages)"
 eq "stages: emits a JSON array"                      "array" "$(jq -r 'type' <<<"$ST_ROWS")"
