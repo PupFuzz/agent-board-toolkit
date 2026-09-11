@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-# kbcard-stages-contract-selftest.sh — the drift pin for the `kbcard stages` interface contract,
-# which is stated on TWO reader-facing surfaces and was held together by nothing (card#9173).
+# kbcard-contract-selftest.sh — the drift pin for those `kbcard` interface contracts that are
+# stated on TWO reader-facing surfaces and were held together by nothing (card#9173).
 #
-# THE TWO SURFACES, AND WHY NEITHER CAN BE DELETED. The contract is stated in `bin/kbcard`'s
-# `Usage:` header — which IS the rendered help, printed by a bare `kbcard` — and again in
-# `README.md` § `kbcard stages`. Canon #16 allows a restatement to be DELETED in favour of a
+# ⭐ THE POPULATION IS THE CONTRACTS TABLED BELOW, and it is named rather than implied: today
+# `stages`' output contract, and `list`'s ROW PROJECTION. It is not "every kbcard verb" and this
+# file does not pretend to derive one; the second member was added because the FIRST member's own
+# defect shape was found live on it — README published `list`'s projection as a fixed, exhaustive
+# TEN-key list while the verb emits TWELVE (see that section's header). A third member belongs
+# here rather than in a third file: the authority model, the extractor refusals and the control
+# discipline below are the same for any two-surface contract, and a second file holding a second
+# copy of them would be the divergent-implementation defect this repo files as canon #5.
+#
+# THE TWO SURFACES, AND WHY NEITHER CAN BE DELETED. Each contract is stated in `bin/kbcard`'s
+# `Usage:` header — which IS the rendered help, printed by a bare `kbcard` — and again in its own
+# `README.md` span. Canon #16 allows a restatement to be DELETED in favour of a
 # pointer only where the consumer can FOLLOW the pointer, and here neither consumer can:
 #   * the help block is read at a TERMINAL, by someone who may have no browser and no network,
 #     so it cannot be replaced by "see README";
@@ -47,7 +56,8 @@
 #     from bash, and this file does not pretend otherwise.
 #   * NOTHING about the two surfaces stating the SAME set of claims. It requires each tabled
 #     fact on both; a claim only one surface makes is invisible here (see the bound below).
-#   * NOTHING about any OTHER verb's help/README pair. The population of this file is `stages`.
+#   * NOTHING about any verb's help/README pair that is not TABLED here. The population is named
+#     at the top of this file; a verb absent from it is guarded by nothing.
 #
 # ⛔ THE BOUND, STATED AS A PROPERTY AND NOT AS A LIST OF EXCEPTIONS. It was a list once, and the
 # list was wrong twice over in one sentence: it named `sorted by name` as the single doc-side-only
@@ -76,6 +86,13 @@
 #   * afterwards assert the tree is clean — `git diff --quiet -- bin/kbcard` — rather than
 #     trusting that the restore ran. A mutation you cannot prove you reverted is a mutation you
 #     have to assume is still there.
+#   * ⚠ AND COMMIT YOUR OWN EDITS TO THAT FILE FIRST. The restore is `git checkout -- <file>`,
+#     which restores from the INDEX — so it silently DISCARDS any uncommitted legitimate edit to
+#     the same file, and the clean-tree assertion above then reports CLEAN precisely BECAUSE your
+#     work was reverted. Measured, in card#9173's own fifth round: a one-line comment fix to
+#     `bin/kbcard` was made, verified present, wiped by a later mutation run's trap, and the
+#     "tree clean" check confirmed the loss instead of catching it. A safety assertion that
+#     passes because of the damage it was meant to detect is worse than no assertion.
 #
 # Beyond that span question: a rewrite of either surface that preserves every needle while
 # changing the meaning around it passes; a needle present for an unrelated reason satisfies its
@@ -125,14 +142,17 @@ source "$BIN"   # main-guarded — defines cmd_stages/stage_name without running
 # (an empty span answers `false` to every present-needle fact, i.e. it reds — but it reds
 # blaming the docs for a broken extractor). The controls below drive both directions.
 
-# _help_span <rendered-help-text> — the `kbcard stages` block of the RENDERED help. Rendered, not
+# _help_span <rendered-help-text> <verb> — that verb's block of the RENDERED help. Rendered, not
 # read out of the source file: what a terminal user sees is the thing under contract, and the
 # renderer strips one leading `# `, so this also proves the block is reachable in the output.
+# The anchor is a PREFIX match, not the whole-line one `stages` alone could use: `list`'s verb
+# line carries its flags, and an anchor that required a bare verb line would silently return an
+# empty span for every verb that takes one.
 _help_span() {
-    awk '
-        /^  kbcard stages$/           { inside = 1; print; next }
-        inside && /^  kbcard [a-z]/   { exit }
-        inside                        { print }
+    awk -v verb="$2" '
+        $0 ~ "^  kbcard " verb "([ \t]|$)" { inside = 1; print; next }
+        inside && /^  kbcard [a-z]/         { exit }
+        inside                              { print }
     ' <<<"$1"
 }
 
@@ -154,12 +174,12 @@ _readme_span() {
 _require_span() {
     [[ -n "$2" ]] && return 0
     bad "the $1 span came out EMPTY — its anchor moved; fix the extractor in $(basename "${BASH_SOURCE[0]}")"
-    _summary "kbcard-stages-contract-selftest"
+    _summary "kbcard-contract-selftest"
 }
 
 echo "== the two surfaces are extractable, bounded, and refuse an empty span =="
 HELP_TEXT="$("$BIN")"
-HELP_SPAN="$(_help_span "$HELP_TEXT")"
+HELP_SPAN="$(_help_span "$HELP_TEXT" stages)"
 README_SPAN="$(_readme_span "$README")"
 _require_span "rendered --help" "$HELP_SPAN"
 _require_span "README" "$README_SPAN"
@@ -176,7 +196,7 @@ eq "the README span stops before the next section" "false" "$(has 'kbcard patch 
 # returned "" would let every fact below pass or fail for a reason that has nothing to do with
 # the docs.
 rc=0
-( _require_span "x" "$(_help_span "$(sed 's/^  kbcard stages$/  kbcard stagez/' <<<"$HELP_TEXT")")" ) \
+( _require_span "x" "$(_help_span "$(sed 's/^  kbcard stages$/  kbcard stagez/' <<<"$HELP_TEXT")" stages)" ) \
     >/dev/null 2>&1 || rc=$?
 eq "control: a renamed --help verb line empties the span AND is refused" "1" "$rc"
 sed 's/^## `kbcard stages`.*/## `kbcard stagez` — renamed/' "$README" >"$TMP/readme-mut.md"
@@ -360,4 +380,117 @@ assert_fact "the no-request claim" "no request is issued" \
    "$([[ "$_reqs" == 0 ]] && echo true || echo false)"
 unset -f kb_stub_route
 
-_summary "kbcard-stages-contract-selftest"
+# ═══════════ `list`'s ROW PROJECTION — one authority, and no copy of it in this file ═════════
+#
+# ⛔ WHY THIS FACT IS NOT A ROW IN THE TABLE ABOVE, i.e. why per-key `assert_fact` calls would be
+# a check that cannot fail. The stages row-key fact can go needle-per-key because its keys are
+# quoted JSON on both surfaces (`"id"`), and a quoted needle is specific. `list`'s projection is
+# published as PROSE — `id`, `name`, `swimlane_id`, `assigned_user_id`, … — and `_norm` strips the
+# backticks, so a bare `id` needle matches inside `swimlane_id`, `external_id` AND
+# `assigned_user_id`: every key would read as "present" on any surface that named any key at all.
+#
+# ⭐ SO THE INSTRUMENT IS AN ORDERED SEQUENCE COMPARISON, AND THE AUTHORITY IS THE EXECUTABLE.
+# The emitted key order is read out of a LIVE projection at assert time; both prose copies are
+# PARSED rather than restated here, and each must equal that sequence exactly. Nothing in this
+# file — and, since card#9173's fifth round, nothing in `tests/kbcard-selftest.sh` either — types
+# the key set, so there is no further copy left to drift: a key added to the projection reds both
+# document legs until both documents name it, in the position the projection emits it.
+#
+# ⛔ THE DEFECT THIS WAS WRITTEN FOR WAS ALREADY LIVE, on the surface a reader meets FIRST.
+# README published the projection as a **fixed** exhaustive list of TEN keys while the verb
+# emitted TWELVE: `assigned_user_id` and `assignee` arrived with card#9169 and reached neither the
+# prose nor any guard. The in-bin help WAS correct, and README's own § `kbcard patch --assign`
+# said the opposite of its § `list` in the same file — so the wrong half was the half a consumer
+# hits first, and what it told them was that the projection cannot answer "is this card already
+# being worked", which is the exact question those two keys were added to answer.
+#
+# ⚠ ONE FAIL-CLOSED EDGE, NAMED SO IT IS NOT DIAGNOSED AS A BUG IN THIS FILE. If the rows ever
+# carry DIFFERENT key sequences, the sequence leg below reds first and says so plainly, and the
+# two document legs then red too — comparing against the concatenation of the distinct sequences,
+# which is a confusing message for a correct refusal. That is the same intended shape as the
+# ordinal fact above: the FIRST red names the cause, and nothing is permitted to pass.
+#
+# ORDER IS PART OF THE COMPARISON, deliberately, and it is the one coverage the widening round
+# dropped: the pre-widening unit assertion compared `keys_unsorted` against an ordered literal and
+# so pinned order too, while its replacement (`| keys | unique`) sorted both sides. Both documents
+# publish the list in emission order, so requiring the sequence restores that pin — and restores
+# it DERIVED, which a literal in a test file could never be.
+echo "== \`list\`'s row projection — the emitted key sequence, and the two prose copies of it =="
+
+# _help_projection_keys / _readme_projection_keys — the published list, one key per line. Each is
+# a comma-separated run between two markers in its own surface's own words. Neither parse is
+# trusted: `_require_keylist` refuses anything that did not come out as key NAMES, because a
+# marker that moved leaves `sed` returning the whole sentence, and a sentence split on commas is
+# a plausible-looking list of garbage — measuring that would be worse than not measuring.
+_help_projection_keys() {
+    tr '\n' ' ' <<<"$1" | tr -s ' ' | sed 's/.*projecting //; s/ per card.*//' \
+        | tr -d '`' | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d'
+}
+_readme_projection_keys() {
+    sed 's/.*row projection — //; s/ —.*//' <<<"$1" \
+        | tr -d '`' | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d'
+}
+# _joined <newline-list> — the same list on ONE line. The per-line form is what the token regex
+# and the drop-a-key control need; the joined form is what the FAILURE MESSAGE needs, and a red
+# nobody can read is a red nobody acts on.
+_joined() { tr '\n' ' ' <<<"$1" | sed 's/ *$//'; }
+
+_require_keylist() {
+    local offenders
+    offenders="$(command grep -cvE '^[a-z_][a-z0-9_]*$' <<<"$2" || true)"
+    [[ -n "$2" && "$offenders" == 0 ]] && return 0
+    bad "the $1 key list did not parse as key names — its marker moved; fix the extractor in $(basename "${BASH_SOURCE[0]}")"
+    _summary "kbcard-contract-selftest"
+}
+
+# THE AUTHORITY. The projection is a pure function of its stdin, so it is driven directly; the
+# curl stand-in installed at the top of this file stays on PATH as a backstop either way.
+_PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"payload":{"dl_number":"DL-0007"}},
+          {"id":2,"name":"b","workflow_stage_id":48,"payload":{}}]'
+_PROJ="$(printf '%s' "$_PCARDS" | _kbc_list_project '' '' '' '')"
+eq "observation precondition: the projection emitted more than one row to observe" "true" \
+   "$([[ "$(jq 'length' <<<"$_PROJ")" -gt 1 ]] && echo true || echo false)"
+# ⭐ NO `.[0]`. One derivation answers both questions at once — how many DISTINCT key sequences
+# the rows carry (which must be exactly one, or "the order the projection emits" names nothing),
+# and what that sequence is. Reading row 0 alone would span a population of one, which is the
+# defect this card exists to close and which recurred inside the block that closed it.
+eq "every row emits the SAME key sequence (so 'the order' names something)" "1" \
+   "$(jq '[.[] | keys_unsorted] | unique | length' <<<"$_PROJ")"
+EMITTED="$(jq -r '[.[] | keys_unsorted] | unique | add | .[]' <<<"$_PROJ")"
+
+LIST_SPAN="$(_help_span "$HELP_TEXT" list)"
+_require_span "rendered --help \`list\`" "$LIST_SPAN"
+eq "the --help \`list\` span stops before the next verb" "false" "$(has 'kbcard show' "$LIST_SPAN")"
+HELP_KEYS="$(_help_projection_keys "$LIST_SPAN")"
+_require_keylist "rendered --help \`list\`" "$HELP_KEYS"
+
+# README publishes it in a BULLET rather than a `## ` section, so the anchor is the bullet's own
+# words. Exactly one is required: a second copy would make the parse pick one arbitrarily, which
+# is how a guard ends up certifying whichever copy happens to be first.
+README_BULLET="$(command grep 'row projection —' "$README" || true)"
+_require_span "README \`list\` projection bullet" "$README_BULLET"
+eq "README publishes the projection in exactly ONE place" "1" \
+   "$(command grep -c 'row projection —' "$README")"
+README_KEYS="$(_readme_projection_keys "$README_BULLET")"
+_require_keylist "README \`list\` projection bullet" "$README_KEYS"
+
+eq "the rendered --help publishes EXACTLY the emitted key sequence, in order" \
+   "$(_joined "$EMITTED")" "$(_joined "$HELP_KEYS")"
+eq "README publishes EXACTLY the emitted key sequence, in order" \
+   "$(_joined "$EMITTED")" "$(_joined "$README_KEYS")"
+
+# CONTROLS — three, because three different things could make the two legs above pass for no
+# reason: a parse that silently returns garbage, a parse that silently returns nothing, and an
+# equality that is not actually load-bearing.
+rc=0
+( _require_keylist "x" "$(_help_projection_keys "$(sed 's/ projecting / projectng /' <<<"$LIST_SPAN")")" ) \
+    >/dev/null 2>&1 || rc=$?
+eq "control: a moved --help marker is REFUSED, not parsed into a plausible wrong list" "1" "$rc"
+rc=0
+( _require_keylist "x" "$(_readme_projection_keys "$(sed 's/row projection —/row projektion —/' <<<"$README_BULLET")")" ) \
+    >/dev/null 2>&1 || rc=$?
+eq "control: a moved README marker is REFUSED the same way" "1" "$rc"
+eq "control: a published list missing ONE key no longer matches the emitted sequence" "false" \
+   "$([[ "$(_joined "$(command grep -v '^assignee$' <<<"$README_KEYS")")" == "$(_joined "$EMITTED")" ]] && echo true || echo false)"
+
+_summary "kbcard-contract-selftest"

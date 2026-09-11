@@ -1772,7 +1772,7 @@ _kbc_list_project() {
 # ⛔ THIS CONTRACT IS STATED TWICE MORE, ON SURFACES NEITHER OF WHICH CAN BE REPLACED BY A
 # POINTER TO THE OTHER — the `Usage:` header above (read at a terminal, possibly with no
 # browser) and README.md § `kbcard stages` (read before the tool is installed). The duplication
-# is GUARDED rather than removed: `tests/kbcard-stages-contract-selftest.sh` observes each fact
+# is GUARDED rather than removed: `tests/kbcard-contract-selftest.sh` observes each fact
 # by RUNNING this verb and reds when either surface stops saying what the run showed. Change the
 # behaviour here and expect it red until both are updated — that is the guard working, and it is
 # there because card#9171's change landed on one surface and not the other (card#9173).

@@ -506,30 +506,39 @@ echo "== _kbc_list_project — the PROJECTED FIELD SET is the filterable surface
 # concluded "745 cards, 0 dependabot cards" while the `id:<sid>` provenance tag was on
 # the card the whole time (`show` returned it). The key set is asserted as an EQUALITY,
 # not a contains: a key silently dropped IS the defect, and a contains-check cannot see
-# it. RED-when-reverted — reverting the projection to its old key set reds FOUR of the
-# assertions below (row key set, tags-per-row, external_id-per-row, prefix-grep), measured
-# not assumed. Fewer named assertions than before this file widened its span (five), not a
-# weaker check: the two absent-key facts ("a card with no tags/external_id projects
-# []/null") were folded into the per-row loops below rather than kept as a second, narrower
-# copy of the same fact — a card with no tags is now just another row the loop already
-# covers.
+# it. RED-when-reverted, stated as a PROPERTY and not as a figure: reverting the projection
+# to its old key set reds every leg below that reads a projected key. The figure that
+# sentence used to carry was a count of the legs in this block, i.e. a restatement of this
+# block with a maintenance schedule — add one leg and it is wrong, with nothing to red. To
+# RE-DERIVE it, delete the `external_id:` and `tags:` lines from `_kbc_list_project` in
+# `bin/kbcard` and run this file; the reds it prints are the answer. (Do that the safe way
+# — see `kbcard-contract-selftest.sh`'s header on why the interactive shape orphans a
+# mutant on an agent seat.)
 PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"external_id":990,
           "tags":["id:dep:acme#200","triaged"],"payload":{"dl_number":"DL-0007","pr_number":12}},
          {"id":2,"name":"b","workflow_stage_id":48,"payload":{}}]'
 pproj() { printf '%s' "$PCARDS" | _kbc_list_project '' '' '' ''; }
 PROJ="$(pproj)"
 
-# ⭐ THE KEY SET, UNION OVER EVERY ROW — not `.[0] | keys_unsorted`. The name's claim is
-# global ("the documented projection", singular), and the property under test — omit-
-# don't-null (card#4387) — is that every row carries this exact shape regardless of what
-# the source card had. Applying this branch's own span question (card#9173) to this
-# file's own population found the same gap the review found in the stages contract
-# guard: reading row 0 alone spans a population of one, so a key added to — or dropped
-# from — any row OTHER than the first ships silently.
-eq "row key set is EXACTLY the documented projection, on every row" \
-   '["assigned_user_id","assignee","dl","external_id","id","name","pr","stage","swimlane","swimlane_id","tags","type"]' \
-   "$(jq -c '[.[] | keys] | add | unique' <<<"$PROJ")"
-eq "  …over more than one row (witness: the union had more than one row to unify)" "true" \
+# ⛔ THE KEY SET IS DELIBERATELY NOT TYPED HERE, AND THAT IS THE WHOLE POINT (card#9173).
+# This leg used to carry a literal list of the twelve keys under the name "row key set is
+# EXACTLY the documented projection" — while reading no document at all. A check that
+# hand-types the contract it claims to compare against the documentation cannot fail in
+# the direction it was written for; it is canon #9's decoration. Worse, the literal was
+# the FOURTH copy of one list — `bin/kbcard`'s object literal (the authority), the in-bin
+# help, README, and this test — and README's copy was already wrong by two keys
+# (`assigned_user_id`, `assignee`, live since card#9169) with nothing anywhere to notice.
+#
+# ⭐ SO THE SET NOW HAS ONE OWNER AND NO COPY LIVES HERE. `tests/kbcard-contract-selftest.sh`
+# reads the emitted key sequence out of a LIVE projection and requires both prose surfaces
+# to publish exactly it, in order — so a key added to the projection reds there until both
+# documents name it. What stays here is the property that file cannot see, because it holds
+# one fixture and this one holds a SPARSE row: that the shape is identical on EVERY row
+# regardless of what the source card carried, which is what omit-don't-null (card#4387)
+# actually claims. A key added to one row and not another reds here and nowhere else.
+eq "every row emits the SAME key set (omit-don't-null: the shape does not vary with the source)" "1" \
+   "$(jq '[.[] | keys] | unique | length' <<<"$PROJ")"
+eq "  …over more than one row (witness: the comparison had more than one row to compare)" "true" \
    "$([[ "$(jq 'length' <<<"$PROJ")" -gt 1 ]] && echo true || echo false)"
 
 # ⭐ TAGS AND EXTERNAL_ID, EACH ROW AGAINST ITS OWN SOURCE — not "verbatim" alone. Row 2
@@ -552,6 +561,17 @@ eq "a row's tags equal its source's tags — verbatim when present, [] when abse
    "" "$LP_BAD_TAGS"
 eq "a row's external_id equals its source's external_id — verbatim when present, null when absent — every row" \
    "" "$LP_BAD_EXT"
+# ⭐ THE WITNESS THE WIDENING OWED AND DID NOT PAY. Both loops compare each row to its OWN
+# source, so they are satisfied by ANY fixture — including one with no sparse card in it at
+# all. The two legs they replaced (`a card with no tags projects []`, `…external_id projects
+# null`) compared against a hardcoded `[]`/`null`, so they ALSO pinned that this fixture
+# still contains a card carrying neither. Retiring them dropped that pin silently: measured,
+# giving row `id:2` a `tags` and an `external_id` reds nothing at all here, while it reded
+# two legs before the widening. Without this witness the omit-don't-null property rests on
+# an unasserted fixture shape, and the next person to fill in row 2 — the assignment pair is
+# the obvious next addition to this block — takes it away with the suite green.
+eq "  …over a fixture that still contains a card carrying NEITHER (witness: the defaults are exercised)" "true" \
+   "$(jq 'any(.[]; (has("tags") | not) and (has("external_id") | not))' <<<"$PCARDS")"
 
 # The measured consumer query itself: a PREFIX grep over the output for a provenance
 # namespace. Exactly what answered 0 before, so it is asserted end-to-end and not as
@@ -2662,14 +2682,19 @@ KB_BOARD_ID=42
 # yields `["zebra","alpha"]`. So a discriminating fixture needs its IDS to disagree with its
 # NAMES — an env-ordering argument cannot supply one. Before re-running that mutation to see
 # this leg red: do it detached, with the restore in the same script, and assert the tree clean
-# afterwards — `kbcard-stages-contract-selftest.sh`'s header says why the interactive shape is
+# afterwards — `kbcard-contract-selftest.sh`'s header says why the interactive shape is
 # unsafe on an agent seat.
 export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77 KB_STAGE_ALPHA=90
 ST_ROWS="$(cmd_stages)"
 eq "stages: emits a JSON array"                      "array" "$(jq -r 'type' <<<"$ST_ROWS")"
 eq "stages: one row per mapped stage"                "4"     "$(jq 'length' <<<"$ST_ROWS")"
-eq "stages: a row is {id, name} and nothing else"    '["id","name"]' \
-   "$(jq -c '.[0] | keys' <<<"$ST_ROWS")"
+# ⭐ THE DISTINCT KEY SETS ACROSS EVERY ROW, not `.[0] | keys`. `ST_ROWS` holds four rows and
+# this read spanned one of them, so a key emitted on any row but the first satisfied it — the
+# exact spelling card#9173 fixed twice elsewhere, surviving here in the file that claimed to
+# have audited itself. `unique` collapsing to a single member IS the "and nothing else" claim
+# and the "every row" claim at once: a second distinct shape makes it two members.
+eq "stages: EVERY row is {id, name} and nothing else" '[["id","name"]]' \
+   "$(jq -c '[.[] | keys] | unique' <<<"$ST_ROWS")"
 eq "stages: the id is a NUMBER, so it joins list's stage projection without a cast" "number" \
    "$(jq -r '.[0].id | type' <<<"$ST_ROWS")"
 eq "stages: a board's OWN taxonomy resolves, not just the eight --column aliases" "77" \
@@ -2789,8 +2814,8 @@ eq "  …and that nothing was requested"               "true" "$(has 'no request
 # one channel this declaration's entire value now rides. Asserted as a LINE COUNT so the leg
 # fails on an addition rather than on a rewording of the line itself.
 eq "  …and it is the ONLY line on the success path's stderr" "1" "$(grep -c . <<<"$err")"
-eq "  …while STDOUT is unchanged — the declaration is not a row key" '["id","name"]' \
-   "$(jq -c '.[0] | keys' <<<"$out")"
+eq "  …while STDOUT is unchanged — the declaration is not a row key, on ANY row" '[["id","name"]]' \
+   "$(jq -c '[.[] | keys] | unique' <<<"$out")"
 eq "  …and no part of it leaks onto stdout"          "false" "$(has 'NAMES ARE LOCAL' "$out")"
 # --board actually selects WHICH env is read — the ids are per-install, which is the whole
 # argument for reading them at run time, so a verb that ignored --board would be worse than
