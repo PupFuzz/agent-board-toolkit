@@ -506,28 +506,58 @@ echo "== _kbc_list_project — the PROJECTED FIELD SET is the filterable surface
 # concluded "745 cards, 0 dependabot cards" while the `id:<sid>` provenance tag was on
 # the card the whole time (`show` returned it). The key set is asserted as an EQUALITY,
 # not a contains: a key silently dropped IS the defect, and a contains-check cannot see
-# it. RED-when-reverted — reverting the projection to its old key set reds five of the
-# assertions below, the prefix-grep one among them (measured, not assumed).
+# it. RED-when-reverted — reverting the projection to its old key set reds FOUR of the
+# assertions below (row key set, tags-per-row, external_id-per-row, prefix-grep), measured
+# not assumed. Fewer named assertions than before this file widened its span (five), not a
+# weaker check: the two absent-key facts ("a card with no tags/external_id projects
+# []/null") were folded into the per-row loops below rather than kept as a second, narrower
+# copy of the same fact — a card with no tags is now just another row the loop already
+# covers.
 PCARDS='[{"id":1,"name":"a","workflow_stage_id":48,"card_type_id":7,"external_id":990,
           "tags":["id:dep:acme#200","triaged"],"payload":{"dl_number":"DL-0007","pr_number":12}},
          {"id":2,"name":"b","workflow_stage_id":48,"payload":{}}]'
 pproj() { printf '%s' "$PCARDS" | _kbc_list_project '' '' '' ''; }
+PROJ="$(pproj)"
 
-eq "row key set is EXACTLY the documented projection" \
-   '["id","name","stage","type","swimlane_id","swimlane","external_id","tags","assigned_user_id","assignee","dl","pr"]' \
-   "$(pproj | jq -c '.[0] | keys_unsorted')"
-eq "tags ride every row verbatim"   '["id:dep:acme#200","triaged"]' "$(pproj | jq -c '.[0].tags')"
-eq "external_id rides every row"    "990"  "$(pproj | jq -c '.[0].external_id')"
+# ⭐ THE KEY SET, UNION OVER EVERY ROW — not `.[0] | keys_unsorted`. The name's claim is
+# global ("the documented projection", singular), and the property under test — omit-
+# don't-null (card#4387) — is that every row carries this exact shape regardless of what
+# the source card had. Applying this branch's own span question (card#9173) to this
+# file's own population found the same gap the review found in the stages contract
+# guard: reading row 0 alone spans a population of one, so a key added to — or dropped
+# from — any row OTHER than the first ships silently.
+eq "row key set is EXACTLY the documented projection, on every row" \
+   '["assigned_user_id","assignee","dl","external_id","id","name","pr","stage","swimlane","swimlane_id","tags","type"]' \
+   "$(jq -c '[.[] | keys] | add | unique' <<<"$PROJ")"
+eq "  …over more than one row (witness: the union had more than one row to unify)" "true" \
+   "$([[ "$(jq 'length' <<<"$PROJ")" -gt 1 ]] && echo true || echo false)"
+
+# ⭐ TAGS AND EXTERNAL_ID, EACH ROW AGAINST ITS OWN SOURCE — not "verbatim" alone. Row 2
+# below is the SPARSE card, and it does NOT carry its tags or external_id verbatim — it
+# has none to carry. "Rides every row verbatim", checked only on row 0, was true of row 0
+# and untested on row 2; the honest property spanning every row is conditional on the
+# source (verbatim when present, the omit-don't-null default when absent), not a single
+# constant. Checked against the primitive itself — the source card, matched by id — the
+# same discipline as the stage_name reuse leg below.
+LP_BAD_TAGS=""
+LP_BAD_EXT=""
+while IFS=$'\t' read -r _id _want_tags _want_ext; do
+    [[ -n "$_id" ]] || continue
+    _got_tags="$(jq -c --arg id "$_id" '.[] | select((.id|tostring) == $id) | .tags' <<<"$PROJ")"
+    _got_ext="$(jq -c --arg id "$_id" '.[] | select((.id|tostring) == $id) | .external_id' <<<"$PROJ")"
+    [[ "$_got_tags" == "$_want_tags" ]] || LP_BAD_TAGS+="id=$_id got=$_got_tags want=$_want_tags; "
+    [[ "$_got_ext" == "$_want_ext" ]]  || LP_BAD_EXT+="id=$_id got=$_got_ext want=$_want_ext; "
+done < <(jq -r '.[] | [(.id|tostring), ((.tags // []) | tojson), ((.external_id // null) | tojson)] | @tsv' <<<"$PCARDS")
+eq "a row's tags equal its source's tags — verbatim when present, [] when absent — every row" \
+   "" "$LP_BAD_TAGS"
+eq "a row's external_id equals its source's external_id — verbatim when present, null when absent — every row" \
+   "" "$LP_BAD_EXT"
+
 # The measured consumer query itself: a PREFIX grep over the output for a provenance
 # namespace. Exactly what answered 0 before, so it is asserted end-to-end and not as
 # "the key exists" — the tag namespace is queried by prefix, not by exact value.
 eq "a downstream prefix grep for the provenance tag finds the card" "1" \
    "$(pproj | grep -c 'id:dep:')"
-# Absent-key normalization: [] for tags (the same normalization the type FILTER above
-# applies, so the filter and the emitted value can never disagree about a card's tags),
-# null for external_id (matching dl/pr, whose absence has always projected null).
-eq "a card with no tags projects []"          "[]"   "$(pproj | jq -c '.[1].tags')"
-eq "a card with no external_id projects null" "null" "$(pproj | jq -c '.[1].external_id')"
 # The assignment pair (card#9169): the board's own id ALWAYS, and the seat name only where
 # this install's KB_USER_* vars map it. `list` is the read a second seat uses to find out that
 # a card in backlog is already being worked, so a row that dropped the id would answer that
