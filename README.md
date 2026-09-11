@@ -119,8 +119,9 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
      neither copy can be replaced by a pointer to the other: this one is read before the tool
      is installed, that one at a terminal with no browser. The duplication is guarded, not
      tolerated — tests/kbcard-stages-contract-selftest.sh observes each fact by running the
-     verb and reds when either surface stops saying what the run showed (card#9173). Edit
-     this section and run it. -->
+     verb and reds when either surface stops saying what the run showed (card#9173). This
+     note sits ABOVE the heading so it stays outside the span that test extracts — edit the
+     `kbcard stages` section below, then run that test. -->
 
 ## `kbcard stages` — the stage id → column name map
 

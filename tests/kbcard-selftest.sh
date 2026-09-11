@@ -2618,10 +2618,23 @@ echo "== stages — the stage id → column name map, read out of the caller's O
 unset ${!KB_STAGE_@}
 export KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"
 KB_BOARD_ID=42
-export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77
+# ⛔ KB_STAGE_ALPHA's ID IS THE LARGEST WHILE ITS NAME SORTS FIRST, AND THAT IS THE WHOLE POINT
+# OF IT (card#9173). Before it, every fixture id ascended in the same order as its name, so the
+# `rows are sorted by name` leg below was TRUE OF THE UNSORTED OUTPUT TOO and passed over a
+# `cmd_stages` with `sort_by(.name)` deleted — measured, rc 0, that leg printing `ok`.
+#
+# ⭐ AND THE MECHANISM IS NOT THE ONE A READER WOULD GUESS, which is why the hole survived a
+# review that looked at the env. It is NOT that bash hands back `${!KB_STAGE_@}` in name order
+# (it does — `KB_STAGE_ALPHA KB_STAGE_ZEBRA` — but that is not what decides the output). It is
+# `unique_by(.id)` on the emit line: jq's `unique_by` SORTS BY ITS KEY, so the rows reach
+# `sort_by(.name)` already in ID order, and with `sort_by(.name)` removed that id order is what
+# ships. Proven in isolation: `[{id:20,name:"alpha"},{id:10,name:"zebra"}] | unique_by(.id)`
+# yields `["zebra","alpha"]`. So a discriminating fixture needs its IDS to disagree with its
+# NAMES — an env-ordering argument cannot supply one.
+export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77 KB_STAGE_ALPHA=90
 ST_ROWS="$(cmd_stages)"
 eq "stages: emits a JSON array"                      "array" "$(jq -r 'type' <<<"$ST_ROWS")"
-eq "stages: one row per mapped stage"                "3"     "$(jq 'length' <<<"$ST_ROWS")"
+eq "stages: one row per mapped stage"                "4"     "$(jq 'length' <<<"$ST_ROWS")"
 eq "stages: a row is {id, name} and nothing else"    '["id","name"]' \
    "$(jq -c '.[0] | keys' <<<"$ST_ROWS")"
 eq "stages: the id is a NUMBER, so it joins list's stage projection without a cast" "number" \
@@ -2638,6 +2651,13 @@ eq "stages: NO ordinal key is invented on any row" "true" \
 # Rows come out sorted by NAME — deterministic, and visibly not a board order.
 eq "stages: rows are sorted by name" "true" \
    "$(jq -r '. == (. | sort_by(.name))' <<<"$ST_ROWS")"
+# …and the WITNESS that makes the leg above capable of failing, the same discipline as the reuse
+# loop's below. Without it the assertion is satisfied by ANY order the fixture happens to produce,
+# which is exactly how it passed with `sort_by(.name)` deleted. It asserts a property of the
+# FIXTURE, not of the verb, so it stays true under that mutation and reds only if a later edit
+# makes the ids ascend with the names again.
+eq "  …over a fixture that can answer NO (its id order disagrees with its name order)" "false" \
+   "$(jq -r '[.[].id] == ([.[].id] | sort)' <<<"$(jq -c 'sort_by(.name)' <<<"$ST_ROWS")")"
 
 # ⭐ THE REUSE LEG. Every row must BE stage_name's answer, checked row by row against the
 # primitive itself rather than against a re-typed expectation.
@@ -2668,7 +2688,7 @@ ST_ROWS2="$(cmd_stages 2>/dev/null)"
 eq "stages: a non-numeric KB_STAGE_* value is reported on stderr" "true" \
    "$(has "KB_STAGE_JUNK='not-an-id' is not a native stage id" "$ST_ERR")"
 eq "  …and does not appear on stdout in any form"    "false" "$(has 'not-an-id' "$ST_ROWS2")"
-eq "  …while the usable rows are still emitted"      "3" "$(jq 'length' <<<"$ST_ROWS2")"
+eq "  …while the usable rows are still emitted"      "4" "$(jq 'length' <<<"$ST_ROWS2")"
 unset KB_STAGE_JUNK
 # `000` IS that case on a real box, not a synthetic one: it is what
 # examples/kanban-board.env.example ships as the not-yet-configured placeholder, and it is not a
@@ -2680,11 +2700,11 @@ eq "stages: the shipped 000 template placeholder is reported, not listed" "true"
    "$(has "KB_STAGE_UNCONFIGURED='000' is not a native stage id" "$ST_ERR")"
 eq "  …and the message names it as the template placeholder" "true" \
    "$(has 'not-yet-configured placeholder' "$ST_ERR")"
-eq "  …so the row count is unchanged"                "3" "$(cmd_stages 2>/dev/null | jq 'length')"
+eq "  …so the row count is unchanged"                "4" "$(cmd_stages 2>/dev/null | jq 'length')"
 unset KB_STAGE_UNCONFIGURED
 # An EMPTY-valued var maps nothing (stage_name can never return it), so it is not a row either.
 export KB_STAGE_UNSET_ON_THIS_BOARD=""
-eq "stages: an empty-valued KB_STAGE_* is not a row" "3" "$(cmd_stages | jq 'length')"
+eq "stages: an empty-valued KB_STAGE_* is not a row" "4" "$(cmd_stages | jq 'length')"
 unset KB_STAGE_UNSET_ON_THIS_BOARD
 
 # rc 1, never `[]`: an empty array reads as "this board has no columns", and a board with no

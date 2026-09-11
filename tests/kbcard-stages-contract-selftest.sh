@@ -49,15 +49,27 @@
 #     fact on both; a claim only one surface makes is invisible here (see the bound below).
 #   * NOTHING about any OTHER verb's help/README pair. The population of this file is `stages`.
 #
-# ⛔ THE BOUND, stated so a green run is not read as more than it is. A rewrite of either surface
-# that preserves every needle while changing the meaning around it passes. A needle that appears
-# in the span for an unrelated reason satisfies its fact. `sorted by name` is pinned to an
-# observation the env expansion makes true incidentally (bash sorts `${!KB_STAGE_@}`), so that
-# one fact's polarity cannot currently be flipped by a real code change — it is the doc-side
-# half only, and `kbcard-selftest.sh` owns the behaviour-side leg. And the ordinal fact is blunt
-# in the ADD direction: growing an ordinal key makes fact `row keys` require `"ordinal"` while
-# fact `ordinal` requires it absent, so the pair is guaranteed to red — loudly and for a
-# confusing reason, which is the intended fail-closed outcome, not a diagnosis.
+# ⛔ THE BOUND, STATED AS A PROPERTY AND NOT AS A LIST OF EXCEPTIONS. It was a list once, and the
+# list was wrong twice over in one sentence: it named `sorted by name` as the single doc-side-only
+# fact when two others were as weak, and it blamed a mechanism (`bash sorts ${!KB_STAGE_@}`) that
+# the same mutation disproves — bash does hand back name order, and the mutant still emits ID
+# order, because `unique_by(.id)` on the emit line sorts by its key before `sort_by(.name)` ever
+# runs. A maintainer acting on that sentence would have looked at the env and found nothing.
+#
+# ⭐ THE PROPERTY, which is what to check instead: A FACT IS ONLY AS STRONG AS THE SPAN OF ITS
+# OBSERVATION. `assert_fact`'s controls prove the NEEDLE is load-bearing; they say nothing about
+# whether the OBSERVATION could have come out the other way. So for each fact ask: could this
+# probe have produced the opposite value against some reachable code change? Where the answer
+# turns on the FIXTURE rather than on the call, the probe carries an explicit WITNESS below
+# asserting the fixture still discriminates — a witness reds when a later tidy-up flattens the
+# fixture, which is the move that silently turns a live fact into a decoration.
+#
+# Beyond that span question: a rewrite of either surface that preserves every needle while
+# changing the meaning around it passes; a needle present for an unrelated reason satisfies its
+# fact; the two surfaces are not required to state the same SET of claims; and the ordinal fact
+# is blunt in the ADD direction — growing an ordinal key makes fact `row keys` require
+# `"ordinal"` while fact `ordinal` requires it absent, so the pair is guaranteed to red, loudly
+# and for a confusing reason, which is the intended fail-closed outcome and not a diagnosis.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -120,13 +132,16 @@ _readme_span() {
     ' "$1"
 }
 
-# _require_span <what> <text> — the extractor refusal. `exit 1`, not `return`: an empty span
-# means the anchor moved, and every fact downstream would then measure the empty string.
+# _require_span <what> <text> — the extractor refusal. It does NOT return: an empty span means the
+# anchor moved, and every fact downstream would then measure the empty string. It reports through
+# `bad` + `_summary` rather than a bare `printf`+`exit`, so a refusal prints the same
+# `N check(s) FAILED` trailer every other failure here does — a run that dies on a different line
+# shape reads as a harness crash rather than as this file saying no. `_summary` exits 1 on a
+# non-zero `fails`, which is why nothing follows it.
 _require_span() {
     [[ -n "$2" ]] && return 0
-    printf 'selftest: the %s span came out EMPTY — its anchor moved; fix the extractor in %s\n' \
-        "$1" "$(basename "${BASH_SOURCE[0]}")" >&2
-    exit 1
+    bad "the $1 span came out EMPTY — its anchor moved; fix the extractor in $(basename "${BASH_SOURCE[0]}")"
+    _summary "kbcard-stages-contract-selftest"
 }
 
 echo "== the two surfaces are extractable, bounded, and refuse an empty span =="
@@ -204,13 +219,25 @@ assert_fact() {
 
 echo "== the contract, observed from the running verb and required on both surfaces =="
 export KB_BOARD_ID=42
-export KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77
+# ⛔ THE FIXTURE IS SHAPED BY WHAT THE OBSERVATIONS HAVE TO SPAN, not by what is tidy.
+#   * KB_STAGE_ALPHA's id is the LARGEST while its name sorts FIRST, so the row-order probe can
+#     answer NO. With ids ascending in name order it could not, and the `sorted by name` fact was
+#     a decoration — `sort_by(.name)` deleted from `cmd_stages` left this file green.
+#   * KB_STAGE_IN_PROGRESS is MULTI-TOKEN, so the name-derivation probe spans the whole claim
+#     ("suffix, lowercased") and not just the lowercasing: a fold that also rewrote `_` would
+#     make both surfaces false, and a single-token probe cannot see it.
+export KB_BOARD_ID=42 KB_STAGE_BACKLOG=48 KB_STAGE_IN_PROGRESS=49 KB_STAGE_TESTING=77 KB_STAGE_ALPHA=90
 ROWS="$(cmd_stages 2>/dev/null)"
-eq "observation precondition: the verb emitted rows to observe" "3" "$(jq 'length' <<<"$ROWS")"
+eq "observation precondition: the verb emitted rows to observe" "4" "$(jq 'length' <<<"$ROWS")"
 
 # FACT — THE ROW KEY SET. Derived per key: whatever keys the verb actually emits must be NAMED
 # on both surfaces, so a key added to stdout cannot ship undocumented on either.
-KEYS="$(jq -r '.[0] | keys[]' <<<"$ROWS")"
+# ⭐ THE UNION OVER EVERY ROW, not `.[0] | keys`. Applying this file's own span question to its own
+# facts — the review's finding was a CLASS, so the audit is owed here too (canon #7) — turned up
+# this one: the surfaces claim the shape of EVERY row ("one {id, name} object per mapped stage,
+# and no other key"), while reading row 0 alone spans a population of one. A key emitted on some
+# rows and not the first is exactly the shape `list`'s consumers join on, and it escaped.
+KEYS="$(jq -r '[.[] | keys] | add | unique | .[]' <<<"$ROWS")"
 eq "observed: the row key set" "id name" "$(tr '\n' ' ' <<<"$KEYS" | sed 's/ $//')"
 while read -r _k; do
     [[ -n "$_k" ]] || continue
@@ -220,9 +247,17 @@ done <<<"$KEYS"
 # FACT — THE STDERR PROVENANCE LINE, on EVERY successful call. This is card#9171's own claim and
 # the one the drift dropped: README described the pre-change output contract, so a consumer read
 # the happy path as writing nothing to stderr.
+# ⭐ OBSERVED BY CONTENT, NOT BY NON-EMPTINESS. What both surfaces claim is that the LOCAL-ALIAS
+# CAVEAT rides stderr on every success — not that stderr is non-empty. Replacing the declaration
+# with any other line (`kbcard: stages: read complete.`) satisfies a `-n "$ERR"` probe while both
+# surfaces go false, so that probe spanned deletion only and was half-live. The needle is the
+# declaration's own words, the same ones `kbcard-selftest.sh` pins the message by — deliberately
+# the same, because an observation narrower than the claim is the defect being closed here.
 ERR="$(cmd_stages 2>&1 >/dev/null)"
-_writes_stderr="$([[ -n "$ERR" ]] && echo true || echo false)"
-eq "observed: a successful call writes to stderr" "true" "$_writes_stderr"
+_writes_stderr="$(has 'NAMES ARE LOCAL' "$ERR")"
+eq "observed: a successful call puts the LOCAL-ALIAS DECLARATION on stderr" "true" "$_writes_stderr"
+eq "  control: a non-empty stderr alone does NOT satisfy that probe" "false" \
+   "$(has 'NAMES ARE LOCAL' 'kbcard: stages: read complete.')"
 assert_fact "the provenance line on success" "every successful call" "$_writes_stderr"
 
 # FACT — THE MERGE HAZARD that provenance line creates. Observed by actually merging the streams
@@ -240,9 +275,14 @@ assert_fact "the 2>&1 merge hazard" "2>&1" \
 
 # FACT — THE NAME HALF IS THE VARIABLE SUFFIX, LOWERCASED. `KB_STAGE_TESTING` is deliberately not
 # one of the eight `--column` aliases, so a row named `testing` can only have come from the
-# variable's own suffix.
-_suffix_rule="$(jq -r '(.[] | select(.id == 77) | .name) == "testing"' <<<"$ROWS")"
-eq "observed: a row's name is its KB_STAGE_* suffix, lowercased" "true" "$_suffix_rule"
+# variable's own suffix. ⭐ BOTH SUFFIX SHAPES ARE OBSERVED, because the claim has two halves and
+# a single-token probe spans only one: `stage_name`'s fold widened from `tr '[:upper:]'
+# '[:lower:]'` to `tr '[:upper:]_' '[:lower:]-'` prints `shipped-to-dev`, which makes both
+# surfaces false while a `testing`-only probe stays true.
+_suffix_rule="$(jq -r '((.[] | select(.id == 77) | .name) == "testing")
+                   and ((.[] | select(.id == 49) | .name) == "in_progress")' <<<"$ROWS")"
+eq "observed: a row's name is its KB_STAGE_* suffix, lowercased — single- AND multi-token" \
+   "true" "$_suffix_rule"
 assert_fact "the name derivation" "suffix, lowercased" "$_suffix_rule"
 
 # FACT — NO ORDINAL. The absence is deliberate and documented as such, so the polarity is the
@@ -251,9 +291,15 @@ _no_ordinal="$(jq -r 'map(has("ordinal") or has("position") or has("order")) | a
 eq "observed: no row carries an ordinal/position/order key" "true" "$_no_ordinal"
 assert_fact "the deliberate absence of an ordinal" "ordinal" "$_no_ordinal"
 
-# FACT — ROW ORDER. Doc-side only; see the bound in the header.
+# FACT — ROW ORDER. No longer doc-side only: the fixture's ids disagree with its names, so this
+# probe can answer NO. The behaviour pin proper lives in `kbcard-selftest.sh` (one owner); what is
+# owed HERE is only that the polarity is live, so the witness below asserts the FIXTURE's
+# discriminating power rather than re-pinning the verb. It is computed over the name-sorted
+# projection, so it stays true under the very mutation it exists to make visible.
 _sorted="$(jq -r '. == (. | sort_by(.name))' <<<"$ROWS")"
 eq "observed: rows come out sorted by name" "true" "$_sorted"
+eq "  …over a fixture that can answer NO (its id order disagrees with its name order)" "false" \
+   "$(jq -r '[.[].id] == ([.[].id] | sort)' <<<"$(jq -c 'sort_by(.name)' <<<"$ROWS")")"
 assert_fact "the row order" "sorted by name" "$_sorted"
 
 # FACT — A VALUE THAT IS NOT A STAGE ID IS NAMED, NOT DROPPED, and `000` is that case on a real
@@ -263,7 +309,7 @@ export KB_STAGE_UNCONFIGURED=000
 _ERR_000="$(cmd_stages 2>&1 >/dev/null)"
 _names_000="$(has "KB_STAGE_UNCONFIGURED='000'" "$_ERR_000")"
 eq "observed: the 000 placeholder is named on stderr" "true" "$_names_000"
-eq "  …and is not listed as a row"                    "3" "$(cmd_stages 2>/dev/null | jq 'length')"
+eq "  …and is not listed as a row"                    "4" "$(cmd_stages 2>/dev/null | jq 'length')"
 assert_fact "the 000 placeholder" "000" "$_names_000"
 unset KB_STAGE_UNCONFIGURED
 
