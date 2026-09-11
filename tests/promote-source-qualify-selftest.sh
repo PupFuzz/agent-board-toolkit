@@ -436,10 +436,15 @@ _fold_census() {
   done < <(find "$d" ! -type d) | LC_ALL=C sort
 }
 
-# ── EVERY ADMISSION, DECLARED — 23 lines, 10 files ───────────────────────────────────────────
+# ── EVERY ADMISSION, DECLARED ────────────────────────────────────────────────────────────────
 # An over-broad predicate owes an account of what it over-admits, and this is it. Nothing here
-# is subtracted from the census: leg 2 pins the whole 23, so an admission that disappears reds
-# just as loudly as one that appears.
+# is subtracted from the census: leg 2 pins the WHOLE population, so an admission that disappears
+# reds just as loudly as one that appears.
+# ⛔ NO TOTAL IS WRITTEN IN THIS PROSE, DELIBERATELY. Two were ("23 lines" here, a 3/9/10 group
+# split below), and BOTH drifted in one release while every assertion in this file stayed green —
+# a count in a comment is a restatement of whatever it counted, with nothing to re-derive it. The
+# figure lives in leg 2's arithmetic, which recomputes it from `_FOLD_CENSUS_EXPECTED` on every
+# run. Read it there, or run this file; do not copy it back up here.
 #
 # THE MIRROR SET — 3, and legs 1 and 3 pin which function each of them lives in:
 #   * bin/adopt-to-dl x1            `_ata_canon_source`
@@ -503,11 +508,11 @@ _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
    "$_FOLD_CENSUS_EXPECTED" "$(_fold_census "$BINDIR")"
-# …and the DECLARATION above accounts for every one of them. The groups are prose — 3 mirrors,
-# 9 other real folds, 10 lines that are not lowercase folds — and prose does not red on its own,
-# so a file added to the block above without a line added to the declaration would ship a census
-# that describes fewer lines than it counts. This arm is the arithmetic that binds the two.
-eq "the declared groups account for every admitted line (3 + 10 + 11)" "24" \
+# …and this is the arithmetic that pins the census TOTAL: it sums the per-file expectations above
+# and compares them against one number, so a file added to leg 2 without that number moving reds
+# here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
+# does not red on its own — which is exactly why no group figures are written up there any more.
+eq "the per-file census sums to the declared total" "24" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
