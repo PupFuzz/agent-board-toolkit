@@ -1134,18 +1134,18 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
 # either list without an explicit edit here, which is the review moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
-             --name --tags --type --external-id --origin --task --assign)
+             --name --tags --type --external-id --origin --task --assign --block-reason)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
                     --content          # driven with an empty value at the comment verb, below
                     --link-id --on     # driven empty at the unlink verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
-                    --content-file --description-file --name-file
+                    --content-file --description-file --name-file --block-reason-file
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --type --external-id --origin --assign; do
+         --name --tags --type --external-id --origin --assign --block-reason; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -2180,13 +2180,21 @@ for _verb in create-card patch; do
     # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
     # blank-checked (a whitespace value has always been accepted and written) and not rewritten
     # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
-    # these two legs red on a later "harmonization" that makes one silently.
+    # these two legs red on a later "harmonization" that makes one silently. The carve-out is
+    # an explicit `<inline-verbatim>` argument at the call site as of card#9213, rather than a
+    # side effect of the requiredness knob — these legs are what red if it is dropped there.
     ta "$_verb" "$_field" "$_f" '   '
     eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
     eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
     ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
     eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
        "$(ta_wire "$_field")"
+    # The THIRD observable property of the carve-out, and the one nothing asserted: an inline
+    # value's TRAILING newlines are not trimmed either. The file half trims them, so this is the
+    # leg that distinguishes "the carve-out applies" from "the file rules leaked into the inline
+    # path" — a distinction the other two legs cannot draw on their own.
+    ta "$_verb" "$_field" "$_f" $'nm\n\n'
+    eq "$_verb $_f trailing newlines → ride UNTRIMMED" '"nm\n\n"' "$(ta_wire "$_field")"
   done
 done
 unset _verb _field _f _ff _L
@@ -3485,6 +3493,210 @@ eq "…rather than claiming a clear"                     "false" "$(has 'cleared
 
 unset -f pbody kb_stub_route
 unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP
+
+echo "== patch --block-reason / --unblock — the blocker a burn-down can render (card#9213) =="
+# THE GAP (roundtable #459). `sprint-burndown.py` renders a "Blocker / next action" column out of
+# the board's native `block_reason`, and NOTHING on any product surface wrote that field — not
+# this CLI, not the web UI. So the column read empty on every row of every board, and an operator
+# reading it concluded nothing was blocked. A blocker recorded in a card COMMENT is not readable
+# there. The field was reachable only by a hand-rolled API call.
+#
+# WHY THE CLEARER IS ASSERTED AS HARD AS THE SETTER. A reason that can be set and not unset goes
+# stale in a structured field — precisely the failure `bin/_kbc-stale-blocker.py` exists to
+# report — so a setter shipped alone would mint the defect the feature is justified by. The API
+# rule is `nullable` and its per-key merge makes an OMITTED key "leave alone" and an explicit
+# `null` "clear". So every assertion below reads `[has, value]`: a value-only test cannot tell an
+# absent key from a null, and those are the two states this flag turns on.
+#
+# ⚠ WHAT THE `| type` ASSERTION DOES AND DOES NOT CLAIM. It pins the WIRE form — that the clear
+# sends a JSON null and not `""`. It is NOT a claim that `""` would be a third STORED state: the
+# board runs Laravel's TrimStrings then ConvertEmptyStringsToNull over JSON bodies, so `""` and
+# any all-whitespace value reach the controller as null and store NULL, collapsing into the
+# clear. That is read at the kanban-board declaring end and measured against the live board, and
+# nothing in THIS repo can check it stays true — which is exactly why the assertion is scoped to
+# the wire, the one end this suite owns. Sending null explicitly is the spelling that does not
+# depend on the far end's normalization: it asks for the clear rather than being rewritten into
+# one.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 \
+    'export KB_STAGE_BACKLOG=48' \
+    'export KB_STAGE_IN_REVIEW=50'
+kb_stub_install
+
+# The PATCH echo is the request MERGED onto a card that ALREADY CARRIES a reason, so a patch
+# that leaves the field alone is distinguishable from one that clears it in the echo as well as
+# on the wire.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "PATCH "*/tasks/606.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" \
+                '{data: ({id:606,name:"probe",workflow_stage_id:48,tags:["type:task"],block_reason:"OLD REASON"} + $b)}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+
+# bbody — the block_reason field of the PATCH this run issued, as [has, value]. `has` carries as
+# much as the value: an omitted key and an explicit null are DIFFERENT WRITES under a per-key
+# merge, and a test reading only the value cannot tell "cleared" from "left alone".
+bbody() { kb_stub_bodies PATCH /tasks/606.json | jq -c '[has("block_reason"), .block_reason]'; }
+
+REASON='blocked behind card#8300 — the D2 surface it needs does not exist yet'
+
+# --- the setter: the content itself, not merely a non-empty field ----------------------
+kbc patch --task 606 --block-reason "$REASON"
+eq "patch --block-reason → rc 0"                  "0" "$rc"
+eq "…the WIRE carries the reason verbatim"        "[true,\"$REASON\"]" "$(bbody)"
+eq "…and the echo carries what the server recorded" "\"$REASON\"" "$(jq -c '.block_reason' <<<"$out")"
+
+# --- ⛔ the clearer, and the null/empty-string distinction it turns on -----------------
+kbc patch --task 606 --unblock
+eq "patch --unblock → rc 0"                       "0" "$rc"
+eq "…writes the key PRESENT and null"             '[true,null]' "$(bbody)"
+eq "…and it is a JSON null, NOT an empty string"  '"null"' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c '.block_reason | type')"
+eq "…and the ECHO shows it cleared, key present"  '[true,null]' \
+   "$(jq -c '[has("block_reason"), .block_reason]' <<<"$out")"
+
+# --- the negative control that makes both of the above attributable -------------------
+# An omitted flag leaves its field ALONE. This is the assertion that says the writes above are
+# the FLAG's doing and not something every patch does — and it is the property `--tags` does
+# NOT have, which is why it is asserted rather than assumed.
+kbc patch --task 606 --dl DL-7
+eq "a patch naming NEITHER flag leaves the key absent" '[false,null]' "$(bbody)"
+# …and the echo keeps its shape: a field rides the write echo only when THIS CALL set it (the
+# projection rule every other corrective setter follows), so an unrelated patch neither claims
+# a blocker nor prints a `null` that would read as one.
+eq "…and the echo does not mention block_reason at all" "false" \
+   "$(jq -c 'has("block_reason")' <<<"$out")"
+
+# --- nothing else is perturbed --------------------------------------------------------
+# The whole body, by KEYS: a block_reason patch must not carry tags (which the API replaces
+# WHOLESALE), name, workflow_stage_id, swimlane_id, assigned_user_id or a payload object.
+kbc patch --task 606 --block-reason "$REASON"
+eq "a block_reason patch sends that key and NOTHING else" '["block_reason"]' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c 'keys')"
+kbc patch --task 606 --unblock
+eq "…and so does the clear"                       '["block_reason"]' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c 'keys')"
+# It is a TOP-LEVEL column, not a payload key — the same shape swimlane_id has.
+kbc patch --task 606 --block-reason "$REASON" --dl DL-7
+eq "block_reason rides the task object, never task.payload" "false" \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c '(.payload // {}) | has("block_reason")')"
+eq "…and a co-passed --dl still stamps"           '"DL-0007"' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c '.payload.dl_number')"
+
+# --- the refusals, all of them BEFORE any request -------------------------------------
+kbc patch --task 606 --block-reason "$REASON" --unblock
+eq "--block-reason + --unblock → rc 2"            "2" "$rc"
+eq "…NOT ONE request was issued"                  "0" "$(kb_stub_total)"
+eq "…and it names both spellings"                 "true" "$(has '--block-reason and --unblock' "$err")"
+
+# The exclusivity check reads the RESOLVED text, so it has to fire for the file form too — the
+# leg that would silently pass if the check sat above `_kbc_text_arg` instead of below it.
+printf 'blocked on something\n' > "$TMP/excl.txt"
+kbc patch --task 606 --block-reason-file "$TMP/excl.txt" --unblock
+eq "--block-reason-file + --unblock → rc 2"       "2" "$rc"
+eq "…named as the same exclusion"                 "true" "$(has '--block-reason and --unblock' "$err")"
+eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
+
+kbc patch --task 606 --block-reason "$REASON" --block-reason-file /dev/null
+eq "--block-reason + --block-reason-file → rc 2"  "2" "$rc"
+eq "…mutually exclusive, by name"                 "true" "$(has '--block-reason and --block-reason-file are mutually exclusive' "$err")"
+eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
+
+kbc patch --task 606 --block-reason-file "$TMP/no-such-file"
+eq "--block-reason-file missing → rc 2"           "2" "$rc"
+# ⛔ THE LEG THAT MAKES THE rc ATTRIBUTABLE. An unknown flag is rc 2 with zero requests too, so
+# the two assertions around this one pass unchanged on a binary that never heard of the pair —
+# they are a control for nothing without a diagnostic naming the refusal that actually fired.
+eq "…named as the unreadable file it is"          "true" "$(has 'is not readable' "$err")"
+eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
+
+# --- the file form is the shipped prose-pair contract, not a second implementation -----
+# CRLF folded, trailing newline trimmed — the normalization `_kbc_text_arg` owns for every pair.
+printf 'blocked on the host provisioning ticket\r\n' > "$TMP/reason.txt"
+kbc patch --task 606 --block-reason-file "$TMP/reason.txt"
+eq "--block-reason-file → rc 0"                   "0" "$rc"
+eq "…CRLF folded and the trailing newline trimmed" '[true,"blocked on the host provisioning ticket"]' "$(bbody)"
+
+# The inline half of THIS pair is NORMALIZED too, not merely blank-checked — the property the
+# carve-out withholds from --name/--description, and the one nothing pinned for any non-verbatim
+# pair (not --content either). Both user-facing surfaces now claim it, so both legs exist: a
+# refactor moving the normalization inside the `if [[ -n "$_ta_file" ]]` branch would leave the
+# suite green and both docs false.
+kbc patch --task 606 --block-reason "$(printf 'i1\r\ni2')"
+eq "an INLINE --block-reason folds CRLF to LF"    '[true,"i1\ni2"]' "$(bbody)"
+kbc patch --task 606 --block-reason $'trailing newlines are trimmed\n\n'
+eq "…and trims its trailing newlines"             '[true,"trailing newlines are trimmed"]' "$(bbody)"
+
+printf '   \n\n' > "$TMP/blank.txt"
+kbc patch --task 606 --block-reason-file "$TMP/blank.txt"
+eq "a whitespace-only --block-reason-file → rc 2" "2" "$rc"
+eq "…named as holding no text"                    "true" "$(has 'holds no block-reason text' "$err")"
+eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
+
+# ═══ ⛔ THE TWO HALVES OF THE PAIR RULE THE SAME WAY ON THE SAME INPUT ═══
+# What a whitespace-only reason costs is a SILENT NO-OP, not a blank-looking blocker. Measured
+# against the live board with the pre-fix build: rc 0, and the stored value is NULL — the board
+# trims and then converts an empty string to null before its controller sees it — so the card
+# ends up NOT BLOCKED while the caller was told the write landed. The echo was already printing
+# that null; the exit STATUS said success, and automation reads the status. That is the
+# readback-before-success shape, reported as success.
+#
+# The inline half accepted it at rc 0 while the file half refused the identical bytes, because
+# `_kbc_text_arg` carved out an optional setter's
+# inline value. That carve-out was written to preserve the SHIPPED acceptance of a flag whose
+# inline spelling predates its file twin. This pair has none to preserve: both halves land in
+# one commit, so it was never a decision, only an inheritance.
+for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')"; do
+    kbc patch --task 606 --block-reason "$_ws"
+    eq "a whitespace-only --block-reason → rc 2"  "2" "$rc"
+    eq "…named as holding no text"                "true" "$(has 'holds no block-reason text' "$err")"
+    eq "…and cost no traffic"                     "0" "$(kb_stub_total)"
+done
+# The property stated directly, rather than left to be inferred from two rc's sitting near each
+# other: the SAME bytes decide the SAME way through either half.
+printf ' \t \n' > "$TMP/ws.txt"
+kbc patch --task 606 --block-reason-file "$TMP/ws.txt"; _ws_file_rc="$rc"
+kbc patch --task 606 --block-reason "$(printf ' \t ')"; _ws_inline_rc="$rc"
+eq "inline and file halves agree on whitespace-only" "$_ws_file_rc" "$_ws_inline_rc"
+# The positive control that keeps the agreement above from being two failures agreeing: a reason
+# with real text in it is accepted through BOTH halves.
+printf '  leading space is CONTENT, not blankness\n' > "$TMP/real.txt"
+kbc patch --task 606 --block-reason-file "$TMP/real.txt"
+eq "…and both accept a reason that HAS text (control)" '[true,"  leading space is CONTENT, not blankness"]' "$(bbody)"
+
+# --- the value is BUILT with jq, and that is now driven rather than asserted in a comment ---
+# A naive `"\"$block\""` splice passes every other assertion in this section: the reasons they
+# use carry no quote and no backslash, so the two builds are byte-identical over that corpus.
+QREASON='blocked: the check greps "\bfoo\b" and dies on a \ in the path — see "notes"'
+kbc patch --task 606 --block-reason "$QREASON"
+eq "a reason carrying quotes and backslashes → rc 0" "0" "$rc"
+eq "…rides as ONE JSON string, byte-exact"           "$QREASON" \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -r '.block_reason')"
+eq "…and the body is still parseable, that key only" '["block_reason"]' \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c 'keys')"
+
+# --- the length cap is the BOARD's, and this CLI neither restates nor enforces it ------
+# The API declares the limit and refuses a longer value itself. kbcard sends what it was given:
+# a client-side copy of that number would be a second copy of the board's rule with nothing
+# comparing them, so a board that widened the column would be refused by its own CLI — the same
+# call `--pr` already makes about the board's declared field type. ⛔ AND IT NEVER TRUNCATES: a
+# silently shortened blocker is a DIFFERENT SENTENCE from the one the caller wrote, stored under
+# a rc 0 that says it landed.
+LONG="$(printf 'x%.0s' $(seq 1 300))"
+kbc patch --task 606 --block-reason "$LONG"
+eq "an over-cap reason is not refused by the CLI"  "0" "$rc"
+eq "…and rides UNTRUNCATED, at its own length"     "300" \
+   "$(kb_stub_bodies PATCH /tasks/606.json | jq -c '.block_reason | length')"
+
+unset -f bbody kb_stub_route
+unset REASON LONG QREASON _ws _ws_file_rc _ws_inline_rc
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
