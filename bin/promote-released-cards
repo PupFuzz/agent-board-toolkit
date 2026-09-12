@@ -105,6 +105,14 @@
 #     => FAIL before any read: the declaration is false of the repo it is made in.
 #   - A ref-matched card belonging to ANOTHER repo, or to NO derivable repo, is named
 #     individually and counted — never silently promoted, and never silently dropped.
+#   - A REFUSED card move, and a refused board read, name the HTTP STATUS and carry a bounded,
+#     secret-masked excerpt of the SERVER'S OWN body (card#9301). `api()` used to be
+#     `curl -fsS`, and `-f` DISCARDS the HTTP error body — so a 401 (token expired), a 403 (the
+#     role lacks `task.update`), a 409 (the card moved under us) and a 422 (wrong stage id for
+#     this board) all reached the operator as the one sentence `✗ <ref> (#<id>): move failed
+#     (left in place)`, with the released cards left in the wrong column and the next action a
+#     guess. What did NOT change is which answers count as success: `-f` failed at 400 and
+#     above, and that boundary is reproduced exactly, 3xx included (see api() below).
 #   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
 #     ref-derivation was COMPLETE, so the refs are genuinely cardless => WARN (exit 0); a
@@ -743,8 +751,166 @@ DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_I
 # --retry-connrefused) a refused connection — never a 4xx, so a genuine 401/404
 # still fails fast. Bounded by --retry-max-time so a truly-down prod still exits.
 # Card moves are idempotent (set stage N) and a 503 applies nothing, so retrying
-# a PATCH is safe.
-api() { curl -fsS --retry 5 --retry-connrefused --retry-max-time 60 -H @- -H "Accept: application/json" "$@" <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")"; }
+# a PATCH is safe. THAT REASONING SURVIVES card#9301 UNCHANGED AND IS MEASURED, NOT
+# INHERITED: `--retry` keys off the response status, not off `-f`, so dropping `-f`
+# below does not disarm it — measured against a server answering 503, 503, 200 on one
+# path, which took THREE server hits and returned the 200 body, while a 401 and a 422
+# each took exactly ONE. ⚠ NO STUB CAN RE-MEASURE THAT — `--retry` is curl's own internal
+# loop, so a stubbed curl IS the thing that would have to retry — which is why
+# tests/promote-refusal-detail-selftest.sh § 4 pins the FLAG LINE (and the absence of `-f`)
+# and carries the real-curl reproduction in its own text rather than faking the behaviour.
+
+# --- THE api() FAILURE DETAIL (card#9301) --------------------------------------------------
+# THE BOUND on a rendered excerpt of a server's error body, as a NAMED CONSTANT so a guard can
+# pin it rather than a magic number: 400 bytes carries a whole validation envelope
+# (`{"message":…,"errors":{…}}`) and is small enough that a proxy's branded HTML 502 cannot
+# flood one per-card log line. tests/promote-refusal-detail-selftest.sh § 3 asserts BOTH
+# directions against this name — a body under it is rendered whole, one over it is cut to
+# exactly this many bytes and says so.
+API_ERR_EXCERPT_MAX=400
+
+# TWO FILES, NOT TWO VARIABLES, and the reason is shell scoping rather than taste. The
+# dominant caller shape in this tool is `resp="$(api …)"` — a COMMAND SUBSTITUTION, i.e. a
+# SUBSHELL — so anything api() assigns to a global there dies with the subshell and the
+# parent's `die` never sees it. A file crosses that boundary; a variable cannot. The other
+# caller (`if api -X PATCH … >/dev/null`) does run api() in the current shell, but throws
+# stdout away, so a marker carried ON stdout cannot reach it either. One file serves both.
+#   $API_BODY_FILE  curl's `-o` target, i.e. the response body verbatim.
+#   $API_ERR_FILE   line 1 = the HTTP status the last api() call received, or `000` meaning
+#                   NO answer was read at all; lines 2+ = that answer's body. Written on the
+#                   FAILURE path only, and read only through resp_detail below.
+API_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/promote-api-body.XXXXXX")" \
+  || die "cannot create a temporary file for the api response body"
+API_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/promote-api-detail.XXXXXX")" \
+  || die "cannot create a temporary file for the api failure detail"
+trap 'rm -f "$API_BODY_FILE" "$API_ERR_FILE"' EXIT
+
+# api — the one request seam. Prints the response body on stdout and returns 0 when the call
+# SUCCEEDED; on any failure prints nothing on stdout, records the status and the server's own
+# body in $API_ERR_FILE for resp_detail, and returns non-zero.
+#
+# ⛔ `-f` IS GONE ON PURPOSE, AND THAT IS THE WHOLE CARD. `curl -f` DISCARDS an HTTP error
+# body, so by the time the move loop wanted to report a refusal there was nothing left to
+# report: a 401 (token expired), a 403 (the role lacks `task.update`), a 409 (the card moved
+# under us) and a 422 (wrong stage id for this board) all reached the operator as one
+# sentence, and the one fact that separates them — the server's own explanation — had already
+# been thrown away (card#9301).
+#
+# ⛔ AND DROPPING IT FLIPS curl's rc, WHICH IS THE HAZARD THE REST OF THIS FUNCTION EXISTS TO
+# NEUTRALISE. Both callers gate on the rc (`resp="$(api …)" || die` and `if api -X PATCH …`),
+# and WITHOUT `-f` curl exits 0 on a 401 — every one of those gates would have read a refusal
+# as a SUCCESS. So the rc is re-derived here from the status, and it is reproduced EXACTLY,
+# not merely "still non-zero". MEASURED on curl 8.5.0, `curl -fsS` against every status class:
+#
+#     100  rc 1  (transport: HTTP/0.9 not allowed)   400  rc 22    500  rc 22
+#     200  rc 0   201 rc 0   204 rc 0                401  rc 22    503  rc 22
+#     301  rc 0   302 rc 0   304 rc 0                403  rc 22
+#     307  rc 0   399 rc 0                           409  rc 22    422  rc 22
+#
+# ⚠ SO THE SHIPPED SUCCESS BOUNDARY IS 400, NOT 200 — `-f` fails at 400 and above and passes
+# EVERY 3xx through as a success, body and all. `[123]??` below reproduces that, deliberately:
+# a `2??` arm would be a NARROWING, turning a redirect (an http→https or trailing-slash proxy
+# redirect is the ordinary way to meet one) from a success into a failure, i.e. a change to
+# what this tool accepts — which is not this card's to make. It is not a silent hazard either:
+# a 3xx body carries no card array, so on page 1 it reaches the ZERO-CARDS die below and on a
+# later page the no-readable-card-array die — both refuse, neither promotes. ⚠ The page-1
+# message is then WRONG ABOUT THE CAUSE (it names board membership), which is the already-known
+# accepted collapse recorded at that arm for card#6630; a redirect is one more input that lands
+# on it. The 3xx-reads-as-success question is REPORTED rather than closed here.
+#
+# ⛔ `-o FILE` RATHER THAN CAPTURING curl's STDOUT, and this is not a style choice either.
+# With the body left on stdout, `--retry` CONCATENATES: measured against a server answering
+# 503, 503, 200, the captured stdout held all THREE bodies back to back, which is not JSON and
+# which `fetch_whole_board` would have fed to jq as a board. curl truncates its `-o` target at
+# the start of each attempt, so the file holds the LAST answer only (measured: 139 bytes, the
+# 200's body alone). That is also why `-f` could be dropped safely at all — it was `-f` that
+# used to suppress the intermediate error bodies.
+api() {
+  local status rc=0
+  # Truncate BOTH before the call. curl truncates its own `-o` target, but a curl that dies
+  # before it opens a connection never gets there and would leave the PREVIOUS call's body
+  # behind — so resp_detail would render one card's body under another card's status.
+  : > "$API_BODY_FILE"; : > "$API_ERR_FILE"
+  status="$(curl -sS --retry 5 --retry-connrefused --retry-max-time 60 \
+                 -o "$API_BODY_FILE" -w '%{http_code}' \
+                 -H @- -H "Accept: application/json" "$@" \
+                 <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")")" || rc=$?
+  # THE REQUEST DID NOT COMPLETE: curl's own rc is propagated verbatim (7 refused, 28 timeout,
+  # 35 TLS …), byte-identical to the pre-card#9301 behaviour, and curl's `-sS` message has
+  # already gone to stderr. `000` is the status sentinel the lib's kb_api uses for the same
+  # state, and it means the outcome of a WRITE is UNKNOWN — not that nothing was written.
+  if [ "$rc" -ne 0 ]; then printf '000\n' > "$API_ERR_FILE"; return "$rc"; fi
+  case "$status" in
+    [123]??) cat "$API_BODY_FILE"; return 0 ;;
+  esac
+  # The server ANSWERED and refused. rc 22 is curl's own `-f` rc for this state, kept so that
+  # even a caller reading the NUMBER (none does today) is unaffected.
+  { printf '%s\n' "$status"; cat "$API_BODY_FILE"; } > "$API_ERR_FILE"
+  return 22
+}
+
+# resp_detail — THE ONLY SPELLING OF A RENDERABLE api() FAILURE. Prints one line: the HTTP
+# status the server answered with, plus a bounded, secret-masked excerpt of the server's OWN
+# body. Every message that reports an api() failure interpolates THIS and nothing else, for
+# exactly the reason $API_SHOWN is the only renderable spelling of the resolved base
+# (card#7500): the next error path somebody adds in this tool then inherits the mask and the
+# bound instead of having to remember them at a new call site.
+#
+# ⛔ THE MASK RUNS BEFORE THE BOUND, and the order is load-bearing. Cutting first can split a
+# credential, and half a token no longer EQUALS $TOKEN — so the literal-match mask then finds
+# nothing and the surviving prefix is printed. Scrub, then cut.
+#
+# ⛔ WHAT IS MASKED IS $TOKEN, AND NOT THE URL USERINFO — a measured decision, not an omission.
+# The bearer token is the one secret a response body can actually come to contain: it goes out
+# in a header, and a server rendering debug output echoes request headers into its own error
+# page. MEASURED against a header-echoing server: the 422 body came back carrying
+# `"Authorization": "Bearer <the token>"` verbatim. The api_base's userinfo cannot arrive by
+# that route — curl does not put userinfo on the wire, and with api()'s explicit
+# `-H "Authorization: Bearer …"` it does not convert it into a Basic header either (measured:
+# the request line was `GET /tasks/1.json` and the only Authorization header the server saw
+# was the Bearer one), so the server cannot echo a credential it never received.
+# `redact_userinfo` is ALSO the wrong instrument for a body: it is an RFC 3986 AUTHORITY
+# parser, so handed `{"a":"b@c"}` it returns `***@c"}` — it would mangle JSON while protecting
+# nothing. The base itself is still rendered only as $API_SHOWN, unchanged.
+resp_detail() {
+  # LC_ALL=C pins the bound to BYTES, and the pin is MEASURED to work from inside the function
+  # rather than assumed: `${#s}` and `${s:0:n}` are CHARACTER operations, so a 5-character
+  # 15-byte body reads as 5 under an ambient en_US.UTF-8 and as 15 with this `local` in scope
+  # (measured, bash 5.2.21) — without it $API_ERR_EXCERPT_MAX stops being one number and the
+  # excerpt cuts at a different place per runner locale. Same class
+  # tests/locale-range-guard-selftest.sh owns, same reason uint_ok carries its own pin.
+  local LC_ALL=C all status body
+  # ONE read, AND IT KEEPS ITS OWN OUTCOME. A `$(… 2>/dev/null || true)` here would collapse
+  # "the server sent no body" into "this tool could not read back its own record" — which is
+  # the read-outcome-collapse class (tests/read-outcome-collapse-selftest.sh), and it is the
+  # SAME defect this card fixes one layer up, so re-minting it inside the fix would be absurd.
+  # The status and the body are then split by parameter expansion, not by a second reader.
+  all="$(cat "$API_ERR_FILE" 2>&1)" || {
+    printf 'this tool could not read back its own record of the response (%s)' "$all"
+    return 0
+  }
+  [ -n "$all" ] || { printf 'no HTTP outcome was recorded for this call'; return 0; }
+  status="${all%%$'\n'*}"
+  if [ "$status" = "000" ]; then
+    printf 'the request DID NOT COMPLETE, so no HTTP status came back at all and whether the server received it is UNKNOWN (curl reported the transport error above)'
+    return 0
+  fi
+  # A file holding ONLY the status line leaves status == all, i.e. the server sent no body.
+  if [ "$status" = "$all" ]; then body=""; else body="${all#*$'\n'}"; fi
+  body="${body//"$TOKEN"/***}"
+  # One log LINE: newlines/tabs to spaces, C0/C1 controls dropped, runs squeezed. Non-ASCII is
+  # left alone — a server's message may legitimately be localised, and dropping it would
+  # replace the explanation this card exists to surface with mojibake.
+  body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+  body="${body# }"; body="${body% }"
+  if [ -z "$body" ]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
+  if [ "${#body}" -gt "$API_ERR_EXCERPT_MAX" ]; then
+    printf 'HTTP %s, server said: %s… [truncated at %s bytes]' \
+      "$status" "${body:0:$API_ERR_EXCERPT_MAX}" "$API_ERR_EXCERPT_MAX"
+    return 0
+  fi
+  printf 'HTTP %s, server said: %s' "$status" "$body"
+}
 
 # fetch_whole_board — read every card on $BOARD via paged search.json and CENSUS the
 # result against the server's own meta.total, so a short read can't silently promote
@@ -760,7 +926,7 @@ fetch_whole_board() {
   local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page=''
   while :; do
     resp="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
-      || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API_SHOWN)"
+      || die "board $BOARD read failed — $(resp_detail) — check the token and api_base ($API_SHOWN)"
     if [ "$page" -eq 1 ]; then
       # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
       # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically
@@ -1130,7 +1296,7 @@ while IFS= read -r row; do
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
     echo "  ✓ $ref (#$id): moved $cur → $STAGE"; moved=$((moved + 1))
   else
-    echo "  ✗ $ref (#$id): move failed (left in place)" >&2; failed=$((failed + 1))
+    echo "  ✗ $ref (#$id): move failed (left in place) — $(resp_detail)" >&2; failed=$((failed + 1))
   fi
 done <<< "$(printf '%s' "$PLAN" | jq -c '.[]')"
 
