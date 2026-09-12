@@ -1672,7 +1672,7 @@ cmd_patch() {
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure
 # client-side SELECT over a card array on STDIN — the cards that pass, WHOLE and
 # unprojected. Each filter arg is "" for absent, and an all-absent call passes every card through.
-# Extracted at the SECOND caller (canon #5): `list` projects its ten fields off it and
+# Extracted at the SECOND caller (canon #5): `list` projects its row fields off it and
 # `search` renders the description off it, and a divergence between two copies of these
 # clauses would be a card matching one verb's --type and not the other's.
 #   --type resolves per alias by board capability: a NATIVE id ($type != null)
@@ -1739,6 +1739,15 @@ _kbc_card_filter() {
 # sequence, IN ORDER. Add, drop or reorder a key here and expect it red until both documents
 # name it — that is the guard working. It is there because README published this projection as
 # a fixed TEN-key list while this function emitted TWELVE, and nothing noticed (card#9173).
+#
+# ⛔ THE GUARD'S UNIQUENESS LEG IS NOT THE SAME WIDTH ON BOTH SURFACES, and the narrow side is
+# named rather than left to be assumed from the sentence above. On README it refuses a second
+# copy of the key list's anchor phrase ANYWHERE IN THE FILE; on the rendered help it refuses one
+# only INSIDE THIS VERB'S OWN BLOCK, so a third statement planted in another verb's help block
+# — `search`'s, `show`'s — ships green (measured). That scope is deliberate and stays: the help
+# anchor is the ordinary English word `projecting`, so a help-wide count would red on any
+# unrelated verb whose block happened to use it, under a message blaming THIS key list — a
+# check that fails for a reason other than its own claim. The comment is scoped to the code.
 _kbc_list_project() {
     local swmap; swmap="$(_kbc_swimlane_map)"
     local umap; umap="$(_kbc_user_map)"

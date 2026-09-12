@@ -6,7 +6,8 @@
 # `stages`' output contract, and `list`'s ROW PROJECTION. It is not "every kbcard verb" and this
 # file does not pretend to derive one; the second member was added because the FIRST member's own
 # defect shape was found live on it — README published `list`'s projection as a fixed, exhaustive
-# TEN-key list while the verb emits TWELVE (see that section's header). A third member belongs
+# TEN-key list while the verb emitted more (see that section's header; the live set is read off
+# the projection at assert time and is pinned in no prose here). A third member belongs
 # here rather than in a third file: the authority model, the extractor refusals and the control
 # discipline below are the same for any two-surface contract, and a second file holding a second
 # copy of them would be the divergent-implementation defect this repo files as canon #5.
@@ -142,28 +143,54 @@ source "$BIN"   # main-guarded — defines cmd_stages/stage_name without running
 # (an empty span answers `false` to every present-needle fact, i.e. it reds — but it reds
 # blaming the docs for a broken extractor). The controls below drive both directions.
 
+# THE BLOCK-OPENING LINE of each surface, declared ONCE because two questions need the same
+# string: a block STARTS on it, which is exactly why the block before it ENDS on it. The
+# extractors below terminate on it and `_block_opens` counts it back inside the extracted span,
+# so "where the span stops" and "the check that it stopped" cannot drift apart — they are one
+# declaration read twice, not two statements to keep in step.
+HELP_BLOCK_OPEN='^  kbcard [a-z]'
+README_BLOCK_OPEN='^## '
+
 # _help_span <rendered-help-text> <verb> — that verb's block of the RENDERED help. Rendered, not
 # read out of the source file: what a terminal user sees is the thing under contract, and the
 # renderer strips one leading `# `, so this also proves the block is reachable in the output.
-# The anchor is a PREFIX match, not the whole-line one `stages` alone could use: `list`'s verb
-# line carries its flags, and an anchor that required a bare verb line would silently return an
-# empty span for every verb that takes one.
+# The START anchor is a PREFIX match, not the whole-line one `stages` alone could use: `list`'s
+# verb line carries its flags, and an anchor that required a bare verb line would silently
+# return an empty span for every verb that takes one.
 _help_span() {
-    awk -v verb="$2" '
+    awk -v verb="$2" -v open="$HELP_BLOCK_OPEN" '
         $0 ~ "^  kbcard " verb "([ \t]|$)" { inside = 1; print; next }
-        inside && /^  kbcard [a-z]/         { exit }
+        inside && $0 ~ open                 { exit }
         inside                              { print }
     ' <<<"$1"
 }
 
 # _readme_span <path> — the `## `kbcard stages`` section of a README, to the next `## `.
 _readme_span() {
-    awk '
+    awk -v open="$README_BLOCK_OPEN" '
         /^## `kbcard stages`/ { inside = 1; print; next }
-        inside && /^## /      { exit }
+        inside && $0 ~ open   { exit }
         inside                { print }
     ' "$1"
 }
+
+# _block_opens <span> <block-opening-regex> — how many block-OPENING lines the extracted span
+# carries. A span whose terminator fired carries exactly ONE: its own. That is the BOUNDED leg
+# for every surface here, and it is DERIVED — it counts the very pattern the extractor stops on,
+# so no second constant exists to keep in step with the documents. `1` is not a per-site figure
+# either: it is the same structural invariant at every call, and it is a PRECONDITION of the
+# extractor rather than a house style — a block that grew a second opening line would have its
+# span TRUNCATED at that line, which is a red worth having.
+#
+# ⛔ WHY NOT "the span does not contain <the next block's name>", which is what all three call
+# sites below used to say: that names a NEIGHBOUR, and a neighbour is a hand-typed constant that
+# goes stale in silence. One of the three was typed five blocks too far — `list`'s leg asserted
+# the span stops before `kbcard show` when `list`'s actual neighbour is `kbcard stages` — so it
+# could only fail on a FIVE-block overrun, and a ONE-block overrun shipped `all checks passed`
+# at rc 0 (measured on the commit that introduced it, and again before this replacement).
+# Counting openings reds on a one-block overrun, on every surface, and names nothing that would
+# ever have to be told about a document again.
+_block_opens() { command grep -cE -- "$2" <<<"$1" || true; }
 
 # _require_span <what> <text> — the extractor refusal. It does NOT return: an empty span means the
 # anchor moved, and every fact downstream would then measure the empty string. It reports through
@@ -187,9 +214,12 @@ _require_span "README" "$README_SPAN"
 eq "the --help span starts at the verb line"  "  kbcard stages" "$(head -n1 <<<"$HELP_SPAN")"
 eq "the README span starts at the heading"    "true" \
    "$(has '## `kbcard stages`' "$(head -n1 <<<"$README_SPAN")")"
-# BOUNDED, both — the terminator fired, so neither span carries the NEXT section's prose.
-eq "the --help span stops before the next verb"   "false" "$(has 'kbcard search' "$HELP_SPAN")"
-eq "the README span stops before the next section" "false" "$(has 'kbcard patch --assign' "$README_SPAN")"
+# BOUNDED, both — the terminator fired, so neither span carries the NEXT block. Asked as a
+# count of block-OPENING lines rather than as the absence of a named neighbour; see `_block_opens`.
+eq "the --help \`stages\` span carries exactly ONE verb line — its own"       "1" \
+   "$(_block_opens "$HELP_SPAN" "$HELP_BLOCK_OPEN")"
+eq "the README \`stages\` span carries exactly ONE \`## \` heading — its own" "1" \
+   "$(_block_opens "$README_SPAN" "$README_BLOCK_OPEN")"
 
 # CONTROL — each extractor watched to go empty, and the refusal watched to fire, on the one
 # mutation that breaks it. Without this the extractors are decorations: a pair that silently
@@ -489,6 +519,18 @@ _projection_keys() {
 # nobody can read is a red nobody acts on.
 _joined() { tr '\n' ' ' <<<"$1" | sed 's/ *$//'; }
 
+# _require_keylist <what> <newline-list> — the parse refusal. ONE arm, reached two ways: a list
+# that came out EMPTY, and a list carrying something that is not a key name. They print the same
+# message; what differs is the upstream failure driving each.
+#
+# ⛔ `-n "$2"` CANNOT CHANGE THE OUTCOME FOR ANY INPUT, and is kept deliberately rather than
+# deleted as dead. `<<<` feeds grep one EMPTY LINE for an empty list, and that line is itself an
+# offender, so the offenders half already refuses empty — measured over empty / valid / invalid
+# input, no value of `$2` makes the two spellings differ. Deleting the conjunct would leave the
+# empty case riding on that here-string newline: swap `<<<"$2"` for a pipe and `grep -cv`
+# answers 0 offenders on empty input, i.e. the guard would PASS an empty key list (measured).
+# It stays as the explicit statement of the predicate, so an input-shape change cannot silently
+# open the guard — NOT because the two halves are separately reachable. They are not.
 _require_keylist() {
     local offenders
     offenders="$(command grep -cvE '^[a-z_][a-z0-9_]*$' <<<"$2" || true)"
@@ -514,7 +556,8 @@ EMITTED="$(jq -r '[.[] | keys_unsorted] | unique | add | .[]' <<<"$_PROJ")"
 
 LIST_SPAN="$(_help_span "$HELP_TEXT" list)"
 _require_span "rendered --help \`list\`" "$LIST_SPAN"
-eq "the --help \`list\` span stops before the next verb" "false" "$(has 'kbcard show' "$LIST_SPAN")"
+eq "the --help \`list\` span carries exactly ONE verb line — its own" "1" \
+   "$(_block_opens "$LIST_SPAN" "$HELP_BLOCK_OPEN")"
 HELP_LINE="$(_one_line "$LIST_SPAN")"
 _require_unique_marker "rendered --help \`list\`" "$HELP_LINE" "$HELP_MARKER"
 HELP_KEYS="$(_projection_keys "$HELP_LINE" "$HELP_MARKER" "$HELP_TAIL")"
@@ -551,10 +594,11 @@ rc=0
 ( _require_keylist "x" "$(_projection_keys "$(_one_line "$(sed 's/row projection — /row projektion — /g' <<<"$README_BULLET")")" "$README_MARKER" "$README_TAIL")" ) \
     >/dev/null 2>&1 || rc=$?
 eq "control: a moved README marker is REFUSED the same way" "1" "$rc"
-# …and the OTHER arm of that same refusal, which the anchored parse would otherwise retire
-# silently: a moved HEAD marker now yields NOTHING (awk skips the line) rather than a sentence,
-# so `_require_keylist`'s not-key-names half needs a mutation that leaves the head marker alone
-# and moves the TAIL, running the parse on past the key list.
+# …and the OTHER CAUSE that reaches that same one refusal, which the anchored parse would
+# otherwise retire silently: a moved HEAD marker now yields NOTHING (awk skips the line) rather
+# than a sentence, so driving `_require_keylist` on NOT-KEY-NAMES needs a mutation that leaves
+# the head marker alone and moves the TAIL, running the parse on past the key list. Both causes
+# land on the same arm and the same message — see `_require_keylist`'s own note.
 rc=0
 ( _require_keylist "x" "$(_projection_keys "$HELP_LINE" "$HELP_MARKER" ' per crad')" ) \
     >/dev/null 2>&1 || rc=$?
