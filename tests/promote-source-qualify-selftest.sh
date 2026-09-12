@@ -436,16 +436,21 @@ _fold_census() {
   done < <(find "$d" ! -type d) | LC_ALL=C sort
 }
 
-# ── EVERY ADMISSION, DECLARED — 22 lines, 10 files ───────────────────────────────────────────
+# ── EVERY ADMISSION, DECLARED ────────────────────────────────────────────────────────────────
 # An over-broad predicate owes an account of what it over-admits, and this is it. Nothing here
-# is subtracted from the census: leg 2 pins the whole 22, so an admission that disappears reds
-# just as loudly as one that appears.
+# is subtracted from the census: leg 2 pins the WHOLE population, so an admission that disappears
+# reds just as loudly as one that appears.
+# ⛔ NO TOTAL IS WRITTEN IN THIS PROSE, DELIBERATELY. Two were ("23 lines" here, a 3/9/10 group
+# split below), and BOTH drifted in one release while every assertion in this file stayed green —
+# a count in a comment is a restatement of whatever it counted, with nothing to re-derive it. The
+# figure lives in leg 2's arithmetic, which recomputes it from `_FOLD_CENSUS_EXPECTED` on every
+# run. Read it there, or run this file; do not copy it back up here.
 #
 # THE MIRROR SET — 3, and legs 1 and 3 pin which function each of them lives in:
 #   * bin/adopt-to-dl x1            `_ata_canon_source`
 #   * bin/promote-released-cards x2 `src_canon` (shell) and the jq `canon_source`
 #
-# REAL FOLDS THAT ARE NOT MIRRORS — 9. None of them takes a repo slug:
+# REAL FOLDS THAT ARE NOT MIRRORS — 10. None of them takes a repo slug:
 #   * bin/_kb-board-lib.sh x3 — `_kb_looks_like_pasted_secret` folds a candidate TOKEN before
 #     matching known credential prefixes, and its awk env-file parser folds a KEY NAME twice for
 #     the case-insensitive lookup;
@@ -455,20 +460,28 @@ _fold_census() {
 #     § Post-program dispositions owns the reasoning (the bin JUDGES the lib, so it must not
 #     source it) and `tests/token-duplication-selftest.sh` drives both copies against each other
 #     row by row — so it is not a finding to re-raise here;
-#   * bin/kbcard x1 — `stage_name` folds a `KB_STAGE_*` VARIABLE NAME, not a repo slug;
+#   * bin/kbcard x2 — `stage_name` folds a `KB_STAGE_*` VARIABLE NAME and `_kbc_user_name` folds
+#     a `KB_USER_*` one (card#9169: the seat→id map behind `patch --assign`, same shape and same
+#     reverse-lookup job as the stage map). Neither takes a repo slug;
 #   * bin/_shellcheck-pinned x1 — folds `uname -s` into a release-asset name;
 #   * bin/release-artifacts-check x1 — folds a CHANGELOG heading for its section selector.
 #
-# ADMITTED AND NOT A LOWERCASE FOLD AT ALL — 10. This is the price of the polarity, paid openly:
+# ADMITTED AND NOT A LOWERCASE FOLD AT ALL — 11. This is the price of the polarity, paid openly:
 #   * bin/_kb-board-lib.sh x2 and bin/agent-board-toolkit-runtime-check x2 — `local v="${1-}" lc`
 #     and the `case "$lc" in` that reads it: a VARIABLE NAMED `lc`, in the two files that
 #     genuinely fold beside it. Admitted rather than excluded, because narrowing `lc` to a
 #     command position is how `perl -pe '$_=lc'` escaped the predecessor;
-#   * bin/kbcard x1 and bin/release-pr-body x2 — `tr '[:lower:]' '[:upper:]'`, the UPPER
+#   * bin/kbcard x1 (`_kbc_env_var`, the one owner of the alias→KB_<KIND>_<NAME> spelling) and
+#     bin/release-pr-body x2 — `tr '[:lower:]' '[:upper:]'`, the UPPER
 #     direction. The NAMED disjunct sees `lower` on either side of the arrow, and there is no
 #     cheap way to tell an upper fold from a lower one that a lower fold cannot then be written
 #     to evade;
 #   * bin/gitignore-secret-family-check x2 — the words `LOWER BOUND` in two report strings;
+#   * bin/kbcard x1 — the word `lowercased` in the `stages` provenance line's report string.
+#     That line tells a consumer the names it prints are a KB_STAGE_* variable's SUFFIX,
+#     LOWERCASED — describing a fold that happens in `stage_name`, on a different line,
+#     which the mirrors group already counts. Rewording it to dodge this predicate would
+#     be weakening the check to go green, so it is admitted and declared instead;
 #   * bin/_kbc-stale-blocker.py x1 — `answered lower down` in the module docstring.
 #
 # ⛔ NO LANGUAGE CENSUS ANY MORE, AND THAT IS A DELETION, NOT AN OMISSION. The predecessor
@@ -490,16 +503,16 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
                                        'agent-board-toolkit-runtime-check=5' \
-                                       'gitignore-secret-family-check=2' 'kbcard=2' \
+                                       'gitignore-secret-family-check=2' 'kbcard=4' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
    "$_FOLD_CENSUS_EXPECTED" "$(_fold_census "$BINDIR")"
-# …and the DECLARATION above accounts for every one of them. The groups are prose — 3 mirrors,
-# 9 other real folds, 10 lines that are not lowercase folds — and prose does not red on its own,
-# so a file added to the block above without a line added to the declaration would ship a census
-# that describes fewer lines than it counts. This arm is the arithmetic that binds the two.
-eq "the declared groups account for every admitted line (3 + 9 + 10)" "22" \
+# …and this is the arithmetic that pins the census TOTAL: it sums the per-file expectations above
+# and compares them against one number, so a file added to leg 2 without that number moving reds
+# here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
+# does not red on its own — which is exactly why no group figures are written up there any more.
+eq "the per-file census sums to the declared total" "24" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
