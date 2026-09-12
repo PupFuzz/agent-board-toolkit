@@ -24,12 +24,14 @@
 #   costs no traffic. What a file puts on the wire: interior newlines and leading whitespace
 #   verbatim, TRAILING newlines trimmed, CRLF normalized to LF (a file written on Windows/Git-Bash
 #   would otherwise send a literal \r, which a reader renders as `?` at the end of every line);
-#   a LONE \r is not a line ending and is left alone. --content applies all of that to its INLINE
-#   value too, and so does --block-reason: a pair with no shipped inline contract to preserve
-#   gets ONE rule across both halves, so its INLINE value is CRLF-folded, trailing-newline-trimmed
-#   and blank-checked exactly as its file value is. --name/--description are the exception, not
-#   the rule: they send an inline value verbatim and unchecked, exactly as they always have,
-#   because narrowing what an already-shipped flag accepts is an acceptance change.
+#   a LONE \r is not a line ending and is left alone. THE TEXT-FREE REFUSAL IS THE ONE RULE EVERY
+#   PAIR OBEYS THROUGH BOTH HALVES: an empty or whitespace-only value is rc 2 before any request
+#   whether it arrived inline or in a file, on every free-text flag here. --content and
+#   --block-reason are CRLF-folded and trailing-newline-trimmed inline as well. --name and
+#   --description are the one exception and only on the BYTES: their inline spelling predates its
+#   file twin, so an inline value still reaches the wire exactly as typed (a CRLF one included) —
+#   rewriting it would narrow what an already-shipped flag accepts, which is an acceptance change
+#   nobody has asked for. Blank-checking it was one, and it was asked and granted (card#9222).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -147,9 +149,9 @@
 #     same call without this refusal is rc 0, and the board stores NULL (the normalization above),
 #     so the card ends up NOT BLOCKED while the caller was told the write landed. The echo was
 #     already printing that null; the exit status said success, and automation reads the status.
-#     That is the readback-before-success shape this repo has a name for. --name / --description
-#     accept one, for a reason that does not apply here: their inline spelling predates its file
-#     twin, so tightening it would change a shipped acceptance (see _kbc_text_arg's knobs).
+#     That is the readback-before-success shape this repo has a name for. It is not special to
+#     this pair: every free-text flag here refuses a text-free value through either half (the
+#     free-text convention at the top of this file owns that rule and states it once).
 #     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
 #     this column and refuses a longer value itself, naming it; kbcard sends what it was given
 #     and NEVER TRUNCATES (a silently shortened blocker is a different sentence from the one the
@@ -1039,16 +1041,21 @@ _kbc_require_ref_int() {
 #     `comment`: this text IS the request, so neither source given is rc 2 naming that verb.
 #     EMPTY — an optional field setter, where neither source given is the ordinary case and is
 #     silent.
-#   * <inline-verbatim> decides whether the INLINE value skips the normalization and the blank
-#     check below. NON-EMPTY — it rides through unread and unrewritten. The FILE half is never
-#     affected either way: it is always normalized and always checked.
-#     ⚠ THIS IS A CARVE-OUT FOR SHIPPED ACCEPTANCE, NOT A DEFAULT. It exists for a pair whose
-#     INLINE flag PREDATES its file twin, where blank-checking the value or rewriting its bytes
-#     would change what an already-shipped flag accepts — an acceptance change, ask-gated, and
-#     not this file's to make unasked. The call sites passing it ARE that population; there is
-#     nothing else to enumerate and nothing to keep in sync. A pair with no shipped inline
-#     contract passes nothing here and gets ONE emptiness rule across both its halves, which is
-#     what a caller reading "the file form is the safe route" already believes is true.
+#   * <inline-verbatim> decides whether the INLINE value's BYTES are rewritten — and that is ALL
+#     it decides. NON-EMPTY — the value goes on the wire exactly as typed, CRLF and trailing
+#     newlines included. The FILE half is never affected either way: it is always normalized.
+#     ⛔ IT DOES NOT, AND MUST NOT, CARVE OUT THE BLANK CHECK. It did until card#9222, and that
+#     is the defect that card closed: the two are independent properties and one argument was
+#     deciding both, so `--name "   "` was accepted at rc 0 and written while `--name-file` on
+#     the identical bytes was rc 2 — one product refusing at one door and accepting at the other.
+#     A card named "   " is unreadable in a column and unfindable by name, and no caller meant
+#     one. Narrowing what a shipped flag accepts IS an acceptance change and was ask-gated, not
+#     taken here unasked: asked and GRANTED for `--name`/`--description` on 2026-09-12, on the
+#     ground that the newly-refused set is values that are VISUALLY BLANK. What survives is the
+#     bytes-only half — rewriting an inline value's line endings is a separate acceptance change
+#     that has NOT been asked, which is why this argument still exists.
+#     The call sites passing it ARE that population; there is nothing else to enumerate and
+#     nothing to keep in sync.
 #
 # What a NORMALIZED value loses and keeps: interior newlines and leading whitespace ride verbatim
 # (a comment's own indentation is content), TRAILING newlines are trimmed, and CRLF is folded to
@@ -1072,6 +1079,10 @@ _kbc_text_arg() {
         printf -v "$_ta_out" '%s' ""
         return 0
     fi
+    # Whether the value's BYTES get rewritten below. A file's always are. An inline value's are
+    # unless this pair carries the shipped-acceptance carve-out — which is a carve-out from the
+    # REWRITE only, never from the blank check: see the knob above.
+    local _ta_rewrite=1
     if [[ -n "$_ta_file" ]]; then
         [[ "$_ta_file" != "-" ]] || {
             echo "kbcard: --$_ta_flag-file takes a PATH and '-' is not a stdin token here — pass a path (/dev/stdin if you mean stdin)" >&2
@@ -1085,10 +1096,9 @@ _kbc_text_arg() {
         _ta_val="$(cat -- "$_ta_file" && printf x)" || { echo "kbcard: --$_ta_flag-file could not be read: $_ta_file" >&2; return 2; }
         _ta_val="${_ta_val%x}"
     elif [[ -n "$_ta_verbatim" ]]; then
-        # The shipped-acceptance carve-out; see the knob above. Everything else — including every
-        # pair added after it — falls through to the ONE normalization and the ONE blank check.
-        printf -v "$_ta_out" '%s' "$_ta_val"
-        return 0
+        # The shipped-acceptance carve-out; see the knob above. It skips the REWRITE below and
+        # nothing else: the blank check is reached by every source and every spelling alike.
+        _ta_rewrite=""
     fi
     # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
     # install target, so a --…-file written there arrives CRLF-terminated and an unnormalized
@@ -1096,12 +1106,20 @@ _kbc_text_arg() {
     # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
     # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
     # for that sanitizer rather than silently rewriting content here.
-    _ta_val="${_ta_val//$'\r'$'\n'/$'\n'}"
-    while [[ "$_ta_val" == *$'\n' ]]; do _ta_val="${_ta_val%$'\n'}"; done
-    # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the comment server trims
-    # before it validates, so a whitespace-only body is a 422 there — a refusal that costs a round
-    # trip and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes
-    # on the wire keeps its leading whitespace and its interior newlines.
+    if [[ -n "$_ta_rewrite" ]]; then
+        _ta_val="${_ta_val//$'\r'$'\n'/$'\n'}"
+        while [[ "$_ta_val" == *$'\n' ]]; do _ta_val="${_ta_val%$'\n'}"; done
+    fi
+    # ONE emptiness owner for BOTH sources AND both spellings — no source reaches the wire without
+    # passing it, which is what the name claims and what the carve-out above used to make false.
+    # The test strips every space character rather than reading the trimmed value, so it decides
+    # the same way on a value the rewrite did not touch: a carve-out value carrying only CRLFs or
+    # trailing newlines is as blank to a reader as one carrying only spaces. Rationale for
+    # refusing at all: the comment server trims before it validates, so a whitespace-only body is
+    # a 422 there — a refusal that costs a round trip and arrives as rc 1 instead of the rc 2 this
+    # class is; and for the optional setters, a board that trims-then-nulls stores NULL under an
+    # rc 0 that said the write landed, or a name no reader can read. Only the CHECK sees the
+    # stripped copy: what goes on the wire keeps its leading whitespace and its interior newlines.
     if [[ -z "${_ta_val//[[:space:]]/}" ]]; then
         if [[ -n "$_ta_file" ]]; then
             echo "kbcard: --$_ta_flag-file holds no $_ta_noun text: $_ta_file" >&2

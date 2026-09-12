@@ -2226,25 +2226,50 @@ for _verb in create-card patch; do
     ta "$_verb" "$_field" "$_ff" "$TMP/crlf.txt"
     eq "$_L → CRLF is normalized to LF, no \\r on the wire" '"c1\nc2"' "$(ta_wire "$_field")"
 
-    # THE INLINE FLAG'S SHIPPED BEHAVIOUR IS UNCHANGED — the control that keeps this an ADDITION.
-    # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
-    # blank-checked (a whitespace value has always been accepted and written) and not rewritten
-    # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
-    # these two legs red on a later "harmonization" that makes one silently. The carve-out is
-    # an explicit `<inline-verbatim>` argument at the call site as of card#9213, rather than a
-    # side effect of the requiredness knob — these legs are what red if it is dropped there.
+    # ⛔ THE TWO HALVES RULE THE SAME WAY ON A TEXT-FREE VALUE (card#9222). Until that card the
+    # inline half accepted a whitespace-only value at rc 0 and WROTE it, while the file half
+    # refused the identical bytes at rc 2 — one product answering two ways at two doors. What
+    # that cost is not a cosmetic row: a card named "   " cannot be read in a column, cannot be
+    # searched for by name, and cannot be told apart from a card whose name failed to render.
+    # Tightening it narrowed a SHIPPED acceptance (`--name`/`--description` predate their file
+    # twins) and was ask-gated; asked and granted on the ground that the newly-refused set is
+    # values that are VISUALLY BLANK, which no caller can have meant.
     ta "$_verb" "$_field" "$_f" '   '
-    eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
-    eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
+    eq "$_verb $_f whitespace-only → rc 2"            "2" "$rc"
+    eq "$_verb $_f whitespace-only → names the field's text" "true" \
+       "$(has "holds no $_field text" "$err")"
+    eq "$_verb $_f whitespace-only → issues no request" "0" "$(kb_stub_total)"
+    # The leg that puts the check on the INLINE side of the rewrite rather than after it. These
+    # bytes are never rewritten for this pair (see below), so a check reading only a
+    # CRLF-folded, trailing-newline-trimmed value would have to see them as content. Visually
+    # blank is visually blank whichever spelling arrived.
+    ta "$_verb" "$_field" "$_f" $'\r\n\r\n'
+    eq "$_verb $_f CRLF-only → rc 2, same refusal"    "2" "$rc"
+    eq "$_verb $_f CRLF-only → issues no request"     "0" "$(kb_stub_total)"
+
+    # ⭐ THE CARVE-OUT THAT SURVIVES, AND ITS BOUND. `--name`/`--description` predate their file
+    # twins, so the inline value's BYTES still ride to the wire exactly as typed — rewriting
+    # them is a SEPARATE acceptance change and nobody has asked for it. These legs are what red
+    # if a later "harmonization" makes it silently, and what red if the `<inline-verbatim>`
+    # argument is dropped at the call sites instead of the blank check being fixed in the
+    # primitive. They are also the positive control that keeps the three rc 2's above a
+    # measurement: the same door accepts, at rc 0, every inline value that HAS text.
     ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
     eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
        "$(ta_wire "$_field")"
-    # The THIRD observable property of the carve-out, and the one nothing asserted: an inline
-    # value's TRAILING newlines are not trimmed either. The file half trims them, so this is the
-    # leg that distinguishes "the carve-out applies" from "the file rules leaked into the inline
-    # path" — a distinction the other two legs cannot draw on their own.
+    # The other observable property of the carve-out: an inline value's TRAILING newlines are not
+    # trimmed either. The file half trims them, so this is the leg that distinguishes "the
+    # carve-out applies" from "the file rules leaked into the inline path" — a distinction the
+    # CRLF leg cannot draw on its own.
     ta "$_verb" "$_field" "$_f" $'nm\n\n'
     eq "$_verb $_f trailing newlines → ride UNTRIMMED" '"nm\n\n"' "$(ta_wire "$_field")"
+    # LEADING AND TRAILING SPACES ARE CONTENT when there is any text at all — the leg that
+    # separates "the blank check decides on a space-stripped COPY" from "the value is trimmed",
+    # which the refusals above cannot tell apart on their own.
+    ta "$_verb" "$_field" "$_f" '  padded  '
+    eq "$_verb $_f padded text → rc 0"                "0" "$rc"
+    eq "$_verb $_f padded text → its padding is CONTENT, on the wire" '"  padded  "' \
+       "$(ta_wire "$_field")"
   done
 done
 unset _verb _field _f _ff _L
@@ -3726,11 +3751,13 @@ eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 # that null; the exit STATUS said success, and automation reads the status. That is the
 # readback-before-success shape, reported as success.
 #
-# The inline half accepted it at rc 0 while the file half refused the identical bytes, because
-# `_kbc_text_arg` carved out an optional setter's
-# inline value. That carve-out was written to preserve the SHIPPED acceptance of a flag whose
-# inline spelling predates its file twin. This pair has none to preserve: both halves land in
-# one commit, so it was never a decision, only an inheritance.
+# Until card#9213 the inline half accepted it at rc 0 while the file half refused the identical
+# bytes, because `_kbc_text_arg` carved an optional setter's inline value out of the blank check
+# to preserve the SHIPPED acceptance of a flag whose inline spelling predates its file twin. This
+# pair has none to preserve: both halves land in one commit, so it was never a decision, only an
+# inheritance. ⭐ No pair is carved out of the blank check any more — card#9222 retired that half
+# for `--name`/`--description` too, under the operator gate the acceptance change needed; what
+# remains of the carve-out is the BYTES (see this file's `--name-file` section).
 for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')"; do
     kbc patch --task 606 --block-reason "$_ws"
     eq "a whitespace-only --block-reason → rc 2"  "2" "$rc"
