@@ -1730,6 +1730,15 @@ _kbc_card_filter() {
 #   a whole board's free text on stdout. Absent tags project as [] (not null) — the same
 #   normalization the type filter applies, so the filter and the emitted value can
 #   never disagree about what a card is tagged.
+#
+# ⛔ THE PROJECTED KEY SET IS STATED TWICE MORE, ON SURFACES NEITHER OF WHICH CAN BE REPLACED BY
+# A POINTER TO THE OTHER — the `Usage:` header above (read at a terminal, possibly with no
+# browser) and README.md's `list` projection bullet (read before the tool is installed). The
+# duplication is GUARDED rather than removed: `tests/kbcard-contract-selftest.sh` reads the key
+# sequence out of a LIVE call to this function and requires both copies to publish exactly that
+# sequence, IN ORDER. Add, drop or reorder a key here and expect it red until both documents
+# name it — that is the guard working. It is there because README published this projection as
+# a fixed TEN-key list while this function emitted TWELVE, and nothing noticed (card#9173).
 _kbc_list_project() {
     local swmap; swmap="$(_kbc_swimlane_map)"
     local umap; umap="$(_kbc_user_map)"

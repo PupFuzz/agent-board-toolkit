@@ -271,6 +271,14 @@ eq "observation precondition: the verb emitted rows to observe" "4" "$(jq 'lengt
 # and no other key"), while reading row 0 alone spans a population of one. A key emitted on some
 # rows and not the first is exactly the shape `list`'s consumers join on, and it escaped.
 KEYS="$(jq -r '[.[] | keys] | add | unique | .[]' <<<"$ROWS")"
+# ⚑ THE LITERAL IS DELIBERATE AND IS NOT `list`'s defect in a second dress (ruled in card#9173's
+# sixth round, on the record rather than left to the next reviewer to re-find). `list`'s
+# hand-typed copy was the AUTHORITY a comparison against the DOCUMENTS ran against, so both
+# documents could agree with a stale literal while a new key shipped undocumented at rc 0. This
+# one authorises nothing — the doc legs below derive from `$KEYS` — it only asserts the fixture
+# produced the shape they derive FROM, so a key-set change reds HERE, naming its cause, rather
+# than as a handful of confusing doc reds. Nor can it drift silently against
+# `tests/kbcard-selftest.sh`'s pin of the same set: a behaviour change reds both, loudly.
 eq "observed: the row key set" "id name" "$(tr '\n' ' ' <<<"$KEYS" | sed 's/ $//')"
 while read -r _k; do
     [[ -n "$_k" ]] || continue
@@ -417,17 +425,63 @@ unset -f kb_stub_route
 # it DERIVED, which a literal in a test file could never be.
 echo "== \`list\`'s row projection — the emitted key sequence, and the two prose copies of it =="
 
-# _help_projection_keys / _readme_projection_keys — the published list, one key per line. Each is
-# a comma-separated run between two markers in its own surface's own words. Neither parse is
-# trusted: `_require_keylist` refuses anything that did not come out as key NAMES, because a
-# marker that moved leaves `sed` returning the whole sentence, and a sentence split on commas is
-# a plausible-looking list of garbage — measuring that would be worse than not measuring.
-_help_projection_keys() {
-    tr '\n' ' ' <<<"$1" | tr -s ' ' | sed 's/.*projecting //; s/ per card.*//' \
-        | tr -d '`' | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d'
+# ── the two published copies, the ONE occurrence each is read at, and the parse ──────────────
+#
+# Each surface states the projection as a comma-separated run between two markers written in its
+# own register. What is required of that, in order, each leg carrying its own refusal:
+#   * the marker occurs EXACTLY ONCE          — `_require_unique_marker`
+#   * the parse selects THAT occurrence       — `_projection_keys`, anchored rather than greedy
+#   * what comes out are key NAMES            — `_require_keylist`
+# The last one alone is not enough, and that gap is what card#9173's sixth round is: a marker
+# that MOVED leaves a parse returning a whole sentence, which is loud; a marker that was COPIED
+# leaves a parse returning a real-looking key list read off the wrong copy, which is silent.
+HELP_MARKER=' projecting '
+HELP_TAIL=' per card'
+README_MARKER='row projection — '
+README_TAIL=' —'
+
+# _one_line <text> — the surface flattened to one line, runs of whitespace squeezed. The COUNT
+# and the PARSE both read this, deliberately the same bytes: a count taken over text the parse
+# does not read certifies nothing about what the parse selected.
+_one_line() { tr '\n' ' ' <<<"$1" | tr -s ' ' | sed 's/^ *//; s/ *$//'; }
+
+# _require_unique_marker <what> <text> <marker> — the marker occurs EXACTLY ONCE in <text>.
+#
+# ⛔ OCCURRENCES, NOT LINES, and that distinction IS the check rather than a detail of it.
+# `grep -c` counts MATCHING LINES, and README publishes the whole projection inside ONE ~2 kB
+# bullet on a single line — so a second copy planted in that line is `grep -c` 1, and the
+# assertion built on it reported `ok` while the claim it was NAMED for ("in exactly ONE place")
+# was false. That is this file's own recurring defect shape: the NAME spanned places, the
+# PREDICATE spanned lines. The controls below pin both numbers over the same bytes, so this
+# paragraph cannot go stale without a red.
+#
+# ⛔ AND IT RUNS BEFORE THE PARSE, not as a tidy-up after it. A second copy does not BREAK the
+# parse — it makes the parse pick one silently, and the guard then certifies that one while the
+# other copy publishes whatever it likes. A false green is strictly worse than a red here,
+# because the surface a reader meets first is the one left unguarded.
+_require_unique_marker() {
+    local n
+    n="$({ command grep -oF -- "$3" <<<"$2" || true; } | wc -l | tr -d '[:space:]')"
+    [[ "$n" == 1 ]] && return 0
+    bad "the $1 marker '$3' occurs $n time(s), not exactly once — the key list needs ONE published copy or this guard certifies whichever copy it happened to parse; fix the SURFACE, not $(basename "${BASH_SOURCE[0]}")"
+    _summary "kbcard-contract-selftest"
 }
-_readme_projection_keys() {
-    sed 's/.*row projection — //; s/ —.*//' <<<"$1" \
+
+# _projection_keys <one-line-text> <marker> <tail> — the comma-separated run between the two
+# markers, one key per line. ONE parse for BOTH surfaces: the pair this replaced differed only
+# in its two marker strings, and that second divergent copy is how the help side came to ship
+# with no uniqueness leg at all while the README side carried one that was false.
+#
+# ⛔ `index`/`substr` ON THE FIRST OCCURRENCE — never `sed 's/.*<marker> //'`. sed's `.*` is
+# leftmost-LONGEST, so that spelling silently selects the LAST occurrence: measured, a stale
+# copy placed ABOVE the live one was invisible while the same copy placed BELOW it red. `index`
+# is also LITERAL, so a marker carrying a regex metacharacter cannot quietly match elsewhere.
+_projection_keys() {
+    awk -v m="$2" -v t="$3" '
+        { i = index($0, m); if (!i) next
+          s = substr($0, i + length(m))
+          j = index(s, t); if (j) s = substr(s, 1, j - 1)
+          print s }' <<<"$1" \
         | tr -d '`' | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d'
 }
 # _joined <newline-list> — the same list on ONE line. The per-line form is what the token regex
@@ -461,17 +515,21 @@ EMITTED="$(jq -r '[.[] | keys_unsorted] | unique | add | .[]' <<<"$_PROJ")"
 LIST_SPAN="$(_help_span "$HELP_TEXT" list)"
 _require_span "rendered --help \`list\`" "$LIST_SPAN"
 eq "the --help \`list\` span stops before the next verb" "false" "$(has 'kbcard show' "$LIST_SPAN")"
-HELP_KEYS="$(_help_projection_keys "$LIST_SPAN")"
+HELP_LINE="$(_one_line "$LIST_SPAN")"
+_require_unique_marker "rendered --help \`list\`" "$HELP_LINE" "$HELP_MARKER"
+HELP_KEYS="$(_projection_keys "$HELP_LINE" "$HELP_MARKER" "$HELP_TAIL")"
 _require_keylist "rendered --help \`list\`" "$HELP_KEYS"
 
 # README publishes it in a BULLET rather than a `## ` section, so the anchor is the bullet's own
-# words. Exactly one is required: a second copy would make the parse pick one arbitrarily, which
-# is how a guard ends up certifying whichever copy happens to be first.
-README_BULLET="$(command grep 'row projection —' "$README" || true)"
+# words — and EVERY line carrying them is collected, never the first. Two different second
+# copies have to reach the uniqueness leg and each is hidden by a different shortcut: a copy on
+# ANOTHER line is hidden by `head -1`, and a copy WITHIN this one line is hidden by counting
+# lines. Flattening first is what makes one count cover both.
+README_BULLET="$(command grep -F -- "$README_MARKER" "$README" || true)"
 _require_span "README \`list\` projection bullet" "$README_BULLET"
-eq "README publishes the projection in exactly ONE place" "1" \
-   "$(command grep -c 'row projection —' "$README")"
-README_KEYS="$(_readme_projection_keys "$README_BULLET")"
+README_LINE="$(_one_line "$README_BULLET")"
+_require_unique_marker "README \`list\` projection bullet" "$README_LINE" "$README_MARKER"
+README_KEYS="$(_projection_keys "$README_LINE" "$README_MARKER" "$README_TAIL")"
 _require_keylist "README \`list\` projection bullet" "$README_KEYS"
 
 eq "the rendered --help publishes EXACTLY the emitted key sequence, in order" \
@@ -479,18 +537,46 @@ eq "the rendered --help publishes EXACTLY the emitted key sequence, in order" \
 eq "README publishes EXACTLY the emitted key sequence, in order" \
    "$(_joined "$EMITTED")" "$(_joined "$README_KEYS")"
 
-# CONTROLS — three, because three different things could make the two legs above pass for no
-# reason: a parse that silently returns garbage, a parse that silently returns nothing, and an
-# equality that is not actually load-bearing.
+# CONTROLS — one per way the legs above could pass for no reason, and the list is the block
+# below rather than a number here. For the parse: garbage in, nothing in, and an equality that
+# is not load-bearing. For the copy those could not see: a SECOND marker on each surface, plus
+# the line-vs-occurrence discriminator that says WHY `grep -c` was the wrong instrument for it.
+# Every one is watched to fire — a refusal nobody has seen fire is the decoration this round
+# exists to stop shipping.
 rc=0
-( _require_keylist "x" "$(_help_projection_keys "$(sed 's/ projecting / projectng /' <<<"$LIST_SPAN")")" ) \
+( _require_keylist "x" "$(_projection_keys "$(_one_line "$(sed 's/ projecting / projectng /g' <<<"$LIST_SPAN")")" "$HELP_MARKER" "$HELP_TAIL")" ) \
     >/dev/null 2>&1 || rc=$?
 eq "control: a moved --help marker is REFUSED, not parsed into a plausible wrong list" "1" "$rc"
 rc=0
-( _require_keylist "x" "$(_readme_projection_keys "$(sed 's/row projection —/row projektion —/' <<<"$README_BULLET")")" ) \
+( _require_keylist "x" "$(_projection_keys "$(_one_line "$(sed 's/row projection — /row projektion — /g' <<<"$README_BULLET")")" "$README_MARKER" "$README_TAIL")" ) \
     >/dev/null 2>&1 || rc=$?
 eq "control: a moved README marker is REFUSED the same way" "1" "$rc"
+# …and the OTHER arm of that same refusal, which the anchored parse would otherwise retire
+# silently: a moved HEAD marker now yields NOTHING (awk skips the line) rather than a sentence,
+# so `_require_keylist`'s not-key-names half needs a mutation that leaves the head marker alone
+# and moves the TAIL, running the parse on past the key list.
+rc=0
+( _require_keylist "x" "$(_projection_keys "$HELP_LINE" "$HELP_MARKER" ' per crad')" ) \
+    >/dev/null 2>&1 || rc=$?
+eq "control: a moved --help TAIL marker runs the parse past the list and is REFUSED as not-key-names" "1" "$rc"
 eq "control: a published list missing ONE key no longer matches the emitted sequence" "false" \
    "$([[ "$(_joined "$(command grep -v '^assignee$' <<<"$README_KEYS")")" == "$(_joined "$EMITTED")" ]] && echo true || echo false)"
+
+# A SECOND COPY, planted the way each surface would really acquire one. The help plant is a
+# stale sentence ABOVE the live one — the placement the old greedy parse skipped in silence —
+# and the README plant is inside the bullet's SINGLE line, the placement a line count cannot
+# see. Both are measured here rather than asserted in prose.
+_HELP_TWO="$(printf '%s\n%s' "    Before card#9169 this was a JSON array projecting id, name, stage per card." "$LIST_SPAN")"
+rc=0
+( _require_unique_marker "x" "$(_one_line "$_HELP_TWO")" "$HELP_MARKER" ) >/dev/null 2>&1 || rc=$?
+eq "control: a SECOND projecting-sentence in the --help \`list\` block is REFUSED — even placed ABOVE the live one" "1" "$rc"
+_README_TWO="$(sed 's/$/ (Before card#9169 the row projection — id, name, stage — was shorter.)/' <<<"$README_BULLET")"
+rc=0
+( _require_unique_marker "x" "$(_one_line "$_README_TWO")" "$README_MARKER" ) >/dev/null 2>&1 || rc=$?
+eq "control: a SECOND copy INSIDE README's single bullet line is REFUSED" "1" "$rc"
+eq "control: …and \`grep -c\` answers 1 over those very bytes — the line count that reported ok" "1" \
+   "$(command grep -cF -- "$README_MARKER" <<<"$_README_TWO")"
+eq "control: …while the OCCURRENCE count over the same bytes answers 2 — the discriminator" "2" \
+   "$({ command grep -oF -- "$README_MARKER" <<<"$_README_TWO" || true; } | wc -l | tr -d '[:space:]')"
 
 _summary "kbcard-contract-selftest"
