@@ -2252,7 +2252,7 @@ for _verb in create-card patch; do
     # them is a SEPARATE acceptance change and nobody has asked for it. These legs are what red
     # if a later "harmonization" makes it silently, and what red if the `<inline-verbatim>`
     # argument is dropped at the call sites instead of the blank check being fixed in the
-    # primitive. They are also the positive control that keeps the three rc 2's above a
+    # primitive. They are also the positive control that keeps the refusals above a
     # measurement: the same door accepts, at rc 0, every inline value that HAS text.
     ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
     eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
