@@ -2136,6 +2136,8 @@ printf 'c1\r\nc2\r\n'   > "$TMP/crlf.txt"
 printf ' \t\n \n'       > "$TMP/blank.txt"
 : >                       "$TMP/empty.txt"
 mkdir -p "$TMP/adir"
+TA_EM3=$'\xe2\x80\x83'                              # U+2003 EM SPACE
+TA_EM3_JSON="$(jq -cn --arg s "$TA_EM3" '$s')"
 
 # ta <verb> <field> <args…> — drive create-card or patch with the arguments that verb REQUIRES
 # plus the text flags under test, on a fresh request log, recording where that verb's write lands.
@@ -2227,11 +2229,19 @@ for _verb in create-card patch; do
     eq "$_L → CRLF is normalized to LF, no \\r on the wire" '"c1\nc2"' "$(ta_wire "$_field")"
 
     # ⛔ THE TWO HALVES RULE THE SAME WAY ON A TEXT-FREE VALUE (card#9222). Until that card the
-    # inline half accepted a whitespace-only value at rc 0 and WROTE it, while the file half
-    # refused the identical bytes at rc 2 — one product answering two ways at two doors. What
-    # that cost is not a cosmetic row: a card named "   " cannot be read in a column, cannot be
-    # searched for by name, and cannot be told apart from a card whose name failed to render.
-    # Tightening it narrowed a SHIPPED acceptance (`--name`/`--description` predate their file
+    # file half refused a whitespace-only value at rc 2 while the inline half SENT it — one
+    # product answering two ways at two doors.
+    # ⚠ WHAT THE SENT VALUE THEN COST IS NOT THE SAME ON THE TWO FLAGS, and neither of them is
+    # "a blank card was written" — measured against the live board, not inferred from this stub:
+    #   * `--name "   "` came back HTTP 422 — `name` is not nullable, and the board's TrimStrings
+    #     → ConvertEmptyStringsToNull had already made it null — so the caller paid a round trip
+    #     for an rc 1 worded by the server, naming neither the flag nor the real problem.
+    #   * `--description "   "` came back 200 and CLEARED the field, at rc 0. That is the
+    #     quiet-wrong: `--description "$BODY"` with a $BODY that expanded to padding WIPED a
+    #     card's body while reporting success — and it was also the only route this CLI had to
+    #     clear the field, which is why `--clear-description` lands in the same change (its own
+    #     section at the end of this file).
+    # Tightening this narrowed a SHIPPED acceptance (`--name`/`--description` predate their file
     # twins) and was ask-gated; asked and granted on the ground that the newly-refused set is
     # values that are VISUALLY BLANK, which no caller can have meant.
     ta "$_verb" "$_field" "$_f" '   '
@@ -2270,9 +2280,22 @@ for _verb in create-card patch; do
     eq "$_verb $_f padded text → rc 0"                "0" "$rc"
     eq "$_verb $_f padded text → its padding is CONTENT, on the wire" '"  padded  "' \
        "$(ta_wire "$_field")"
+    # ⭐ THE REFUSED SET IS FOUR ASCII CHARACTERS, AND THE VERDICT IS THE BYTES' — not the
+    # caller's environment. This check used to read `${v//[[:space:]]/}`, and `[[:space:]]` in a
+    # bash pattern is a LOCALE class: measured on the reference host, it strips U+2003 EM SPACE
+    # under en_US.UTF-8 and KEEPS it under LC_ALL=C, so one product answered two ways on one
+    # input depending on the environment it was started in — the very class this card closed,
+    # relocated from the door axis to the locale axis. `_kbc_text_is_blank` pins the window and
+    # spells the set out; this leg reaches that decision through the SHIPPED CLI and reds if the
+    # pin is dropped while the runner has a collation-wide UTF-8 locale (this box does).
+    # tests/locale-range-guard-selftest.sh is what asserts the two locales AGREE, and says so
+    # loudly when the runner cannot exercise the UTF-8 half at all.
+    ta "$_verb" "$_field" "$_f" "$TA_EM3"
+    eq "$_verb $_f U+2003-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_verb $_f U+2003-only → rides to the wire verbatim" "$TA_EM3_JSON" "$(ta_wire "$_field")"
   done
 done
-unset _verb _field _f _ff _L
+unset _verb _field _f _ff _L TA_EM3 TA_EM3_JSON
 
 # NEITHER SOURCE GIVEN is the ordinary case for an optional setter and must stay silent — the
 # half of the requiredness parameter that `comment` (where neither is rc 2) cannot exercise.
@@ -3802,6 +3825,95 @@ eq "…and rides UNTRUNCATED, at its own length"     "300" \
 
 unset -f bbody kb_stub_route
 unset REASON LONG QREASON _ws _ws_file_rc _ws_inline_rc
+
+# ---------------------------------------------------------------------------
+echo "== patch --clear-description — the clearer the blank refusal made necessary (card#9222) =="
+# WHY THIS FLAG EXISTS, where the next maintainer will look for it. Refusing a blank
+# `--description` REMOVED A CAPABILITY. Measured against the live board: a whitespace-only value
+# reached it, and the board trims then converts an empty string to null (TrimStrings →
+# ConvertEmptyStringsToNull), so `--description "  "` came back 200 and CLEARED the field at
+# rc 0 — and that was the ONLY route this CLI had to clear it. A field a tool can SET and cannot
+# UNSET goes stale in place, which is the argument `--unblock` shipped on one card earlier, so
+# this flag is deliberately --unblock's SHAPE: an explicit JSON null, mutually exclusive with the
+# setter, rc 2 before any request. Shipping the refusal without it would have closed a door and
+# left no other.
+#
+# ⚠ THE `| type` LEG PINS THE WIRE, NOT A STORED STATE — the same scoping the --unblock block
+# above states, for the same reason. `""` and a null collapse to one stored NULL at the board, so
+# what an EXPLICIT null buys is that the clear does not DEPEND on another repo's middleware: it
+# asks for the clear rather than being rewritten into one. This suite owns the wire.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+# The echo is the request MERGED onto a card that ALREADY CARRIES a body, so "cleared" and "left
+# alone" are distinguishable in the echo as well as on the wire.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "PATCH "*/tasks/707.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" \
+                '{data: ({id:707,name:"probe",workflow_stage_id:48,tags:["type:task"],description:"OLD BODY"} + $b)}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+
+# dbody — [has, value], for the reason bbody is: under a per-key merge an ABSENT key and an
+# explicit null are two different writes, and a value-only read cannot tell them apart.
+dbody() { kb_stub_bodies PATCH /tasks/707.json | jq -c '[has("description"), .description]'; }
+
+kbc patch --task 707 --clear-description
+eq "patch --clear-description → rc 0"              "0" "$rc"
+eq "…writes the key PRESENT and null"              '[true,null]' "$(dbody)"
+eq "…and it is a JSON null, NOT an empty string"   '"null"' \
+   "$(kb_stub_bodies PATCH /tasks/707.json | jq -c '.description | type')"
+eq "…sends that key and NOTHING else"              '["description"]' \
+   "$(kb_stub_bodies PATCH /tasks/707.json | jq -c 'keys')"
+# The echo shows the RAW field on this call: the default projection is `.description // ""`,
+# which renders the very null this flag exists to write as an empty string — indistinguishable,
+# to a reader, from a description the call never touched.
+eq "…and the ECHO shows the null, key present"     '[true,null]' \
+   "$(jq -c '[has("description"), .description]' <<<"$out")"
+
+# --- the controls that make the clear ATTRIBUTABLE --------------------------------------
+# The setter still sets, through the same assembler…
+kbc patch --task 707 --description 'a body that is really there'
+eq "patch --description still writes its text"     '[true,"a body that is really there"]' "$(dbody)"
+eq "…and its echo still carries the field"         "true" \
+   "$(jq -c 'has("description")' <<<"$out")"
+# …and a patch naming NEITHER leaves the key absent, which is what makes "clears" mean anything.
+kbc patch --task 707 --dl DL-7
+eq "a patch naming neither leaves the key ABSENT"  '[false,null]' "$(dbody)"
+
+# --- the refusals, every one decided offline --------------------------------------------
+kbc patch --task 707 --description 'text' --clear-description
+eq "--description + --clear-description → rc 2"    "2" "$rc"
+eq "…names both spellings"                         "true" \
+   "$(has '--description and --clear-description are mutually exclusive' "$err")"
+eq "…and NOT ONE request was issued"               "0" "$(kb_stub_total)"
+# The exclusion reads the RESOLVED value, so the FILE half trips it too — the leg that would
+# silently pass if the check sat above `_kbc_text_arg` instead of below it. It also pins the
+# diagnostic to the half the caller ACTUALLY passed: a message naming the inline flag to someone
+# who never typed it sends them hunting a flag that is not on their command line.
+printf 'a body from a file\n' > "$TMP/desc.txt"
+kbc patch --task 707 --description-file "$TMP/desc.txt" --clear-description
+eq "--description-file + --clear-description → rc 2" "2" "$rc"
+eq "…named as the FILE half, which is what was passed" "true" \
+   "$(has '--description-file and --clear-description are mutually exclusive' "$err")"
+eq "…and cost no traffic"                          "0" "$(kb_stub_total)"
+# create-card does NOT take it: there is nothing to clear at birth, and a flag accepted there and
+# quietly ignored reads as a flag that worked.
+kbc create-card --type fr --name probe --clear-description
+eq "create-card --clear-description → rc 2"        "2" "$rc"
+eq "…refused BY NAME as an unknown arg"            "true" \
+   "$(has "unknown arg '--clear-description'" "$err")"
+eq "…and cost no traffic"                          "0" "$(kb_stub_total)"
+
+unset -f dbody kb_stub_route
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
