@@ -76,7 +76,7 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 
 ## 6. Version-specific upgrade actions
 
-§1–§5 are the mechanics (pull, re-vendor, drift-check). This section is the **content**: the changes across `v0.4.1 → v0.31.0` that require an upgrader to **do** something (set a var, add a file, re-run a loop, deploy in a particular order, or knowingly accept a changed behavior). Feature additions that need no action are omitted from an entry's bullets. **Find your installed version (`cat ~/agent-board-toolkit/VERSION`) and walk forward from the next entry — each entry is cumulative.**
+§1–§5 are the mechanics (pull, re-vendor, drift-check). This section is the **content**: the changes that require an upgrader to **do** something (set a var, add a file, re-run a loop, deploy in a particular order, or knowingly accept a changed behavior), from the coverage floor named in this section's **Coverage floor** note below through its last `### v…` heading. Feature additions that need no action are omitted from an entry's bullets. **Find your installed version (`cat ~/agent-board-toolkit/VERSION`) and walk forward from the next entry — each entry is cumulative.**
 
 > **Every release has an entry; a release that asks nothing of you says so.** A release requiring no action carries a **No upgrade action** line rather than being left out, so a gap in this walk can only ever mean a doc defect — never "nothing was required". *No upgrade action* means nothing **beyond** the routine mechanics above: §2's `git pull` on the host, and §3's re-vendor + drift-check in any repo that vendored a tool which changed in that release. Keeping this section complete is a release-time obligation, not a courtesy — `VERSIONING.md` § The §6 upgrade-action rule owns it, and the release-artifact gate asserts it.
 
@@ -86,7 +86,7 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 - **[vendor]** — a product repo that copied a `bin/` tool into its own tree (INSTALL §6b / §3 above).
 - **[release-CI]** — a repo whose CI runs the promote workflow (via a vendored copy or the §6a composite action; the tool is usually `promote-released-cards`).
 
-> Coverage floor is **v0.4.1**. **v0.4.0** was the first tag and has no earlier release to upgrade from, so it has no entry. Releases **v0.4.x–v0.8.1** predate `docs/CHANGELOG.md` (which starts at [0.8.2]); the actions below were reconstructed from the git history (release commits + PR titles/bodies) and verified against the actual script source at each tag. Where the history did not record an operator action for a change, that is stated rather than invented.
+> **Coverage floor** is **v0.4.1**. **v0.4.0** was the first tag and has no earlier release to upgrade from, so it has no entry. Releases **v0.4.x–v0.8.1** predate `docs/CHANGELOG.md` (which starts at [0.8.2]); the actions below were reconstructed from the git history (release commits + PR titles/bodies) and verified against the actual script source at each tag. Where the history did not record an operator action for a change, that is stated rather than invented.
 
 ### v0.4.1
 
