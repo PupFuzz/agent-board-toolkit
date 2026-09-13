@@ -11,6 +11,22 @@
 # under LC_ALL=C. GNU `grep -E` does NOT widen `[0-9]` in either locale, which is what
 # identifies bash's engine rather than the pattern as the cause.
 #
+# ⛔ A POSIX CHARACTER CLASS IS A THIRD SPELLING OF THE SAME DEFECT, AND THIS FILE'S SCOPE
+# NAME ("range") DOES NOT COVER IT — so it is named here rather than left to be inferred.
+# `[[:space:]]`, `[[:alpha:]]`, `[[:punct:]]` are DEFINED BY THE LOCALE, which is the whole
+# point of them: measured on the reference host, `${v//[[:space:]]/}` strips U+2003 EM SPACE
+# under en_US.UTF-8 and KEEPS it under LC_ALL=C. kbcard's free-text blank check was exactly
+# that expression and answered two ways on one input (card#9222); it now carries a window pin
+# and spells its four ASCII members out, and it has BEHAVIOUR CASES below.
+# ⚠ WHAT IS NOT COVERED, stated so the citation cannot mislead the next author: the STATIC
+# BACKSTOP at the end of this file scans for bracket RANGES only — a hyphenated pair — in both
+# the regex and glob spellings. It does NOT scan for POSIX classes, so a NEW unpinned
+# `[[:space:]]` guard is born with nothing watching it, exactly as an unpinned glob range was
+# before card#8421. Widening the matcher is its own change: the existing class users in bin/
+# and hooks/ have to be triaged first (most are `${x//[[:space:]]/}` trims and `[[:blank:]]`
+# splits where the locale answer is harmless or wanted), and a backstop that reds on all of
+# them on day one is a backstop nobody keeps green.
+#
 # WHAT WAS AND WAS NOT WRONG — the claim this file makes is deliberately narrow. The
 # widened guards still rejected the characters they were written to reject (a comma and a
 # space were measured rejected under en_US.UTF-8 too), so this was NOT a CSV-corruption
@@ -140,6 +156,42 @@ both "kb_dl_num rejects a bare U+0663"     "REJECT" "$AI3"      "$DLNUM"
 both "kb_dl_num rejects DL-<U+0663>"       "REJECT" "DL-$AI3"   "$DLNUM"
 both "kb_dl_num accepts DL-093 → 93 (posctl)" "93"  "DL-093"    "$DLNUM"
 both "kb_dl_num accepts a bare 93 (posctl)"   "93"  "93"        "$DLNUM"
+
+# ---------------------------------------------------------------------------
+echo "== kbcard's free-text BLANK check — _kbc_text_is_blank (bin/kbcard; card#9222) =="
+# The predicate behind "a text-free --name / --description / --block-reason / --content is rc 2
+# before any request". It used to be `[[ -z "${v//[[:space:]]/}" ]]`, i.e. the POSIX-class
+# spelling of this file's defect, and it answered two ways on identical bytes: U+2003 EM SPACE
+# was BLANK (refused) under en_US.UTF-8 and CONTENT (accepted) under LC_ALL=C. A refusal whose
+# verdict depends on the caller's environment is the same one-product-two-answers class the
+# refusal itself was added to close, so the fix is a window pin plus an ASCII set spelled out in
+# four literal characters rather than a class name.
+#
+# THESE ARE THE STABILITY CASES: `both` asserts the SAME verdict under every live locale, so a
+# dropped pin reds here the moment the runner has a collation-wide UTF-8 locale (and says so
+# loudly when it does not, via the precondition above). tests/kbcard-selftest.sh reaches the same
+# decision through the SHIPPED CLI — that is where the flag-level rc and wire body are pinned;
+# what is pinned HERE is that the answer does not move with the environment.
+#
+# The non-ASCII fixtures are the RESIDUE the ruling made explicit and documented: U+00A0, U+2003
+# and U+3000 are CONTENT. That is asserted rather than merely tolerated, because it is the half a
+# later "let's just use [[:space:]], it reads better" would silently reverse under a UTF-8 locale.
+NBSP=$'\xc2\xa0'        # U+00A0 NO-BREAK SPACE
+EMSP=$'\xe2\x80\x83'    # U+2003 EM SPACE
+IDSP=$'\xe3\x80\x80'    # U+3000 IDEOGRAPHIC SPACE
+BLANK='source "$BIN/kbcard" 2>/dev/null || true
+       _kbc_text_is_blank "$IN" && echo BLANK || echo CONTENT'
+both "blank check: the four ASCII members are BLANK" "BLANK"   $' \t\r\n' "$BLANK"
+both "blank check: a lone space is BLANK"            "BLANK"   " "         "$BLANK"
+both "blank check: empty is BLANK"                   "BLANK"   ""          "$BLANK"
+both "blank check: U+00A0 is CONTENT"                "CONTENT" "$NBSP"     "$BLANK"
+both "blank check: U+2003 is CONTENT"                "CONTENT" "$EMSP"     "$BLANK"
+both "blank check: U+3000 is CONTENT"                "CONTENT" "$IDSP"     "$BLANK"
+# The positive controls, in both directions: a value with real text must be CONTENT (or the
+# predicate has been narrowed into refusing everything), and padded text must be CONTENT too —
+# the property that separates "decides on a stripped COPY" from "trims the value".
+both "blank check: real text is CONTENT (posctl)"    "CONTENT" "hello"     "$BLANK"
+both "blank check: padded text is CONTENT (posctl)"  "CONTENT" "  hi  "    "$BLANK"
 
 # ---------------------------------------------------------------------------
 echo "== kbcard --type — the tag-safety guard (bin/kbcard; card#5409 SITE 1) =="
