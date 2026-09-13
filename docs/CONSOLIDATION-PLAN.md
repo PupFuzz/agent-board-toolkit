@@ -1979,6 +1979,23 @@ finding with no owner is abandoned, not filed.
   is willing to argue it on its own. The alternative that costs nothing — a second log channel in
   the shared stub — is worse: two ways to spell one observation is the shape being consolidated.
 
+  ⚑ **APPENDED card#9301 — the un-adopted copies have since GROWN A SHARED BLOCK, which moves this
+  from "one adoption owed" to "one adoption owed and a second-order duplicate already live".**
+  `promote-released-cards`' `api()` changed wire shape — the body now goes to curl's `-o` target
+  and the HTTP status comes back through `-w` — so a stub that writes the body to stdout hands the
+  tool an empty board and a status made of JSON. Every stub standing in for this tool had to learn
+  that, and the **`-o`/`-w` argument-parsing loop plus its `emit` exit path** is now written out in
+  `tests/_promote-curl-stub.sh`, `tests/promote-ref-canon-selftest.sh` and
+  `tests/release-pr-body-selftest.sh`. ⛔ **Deliberately NOT refactored in the card#9301 PR**, and
+  the reason is the same one that blocked the adoption above: the two copies exist precisely
+  because their callers assert something the shared stub cannot express (whole-LINE equality on a
+  url-only log; a dry-run path where any write is an error), so hoisting the block means either
+  re-opening those assertions or inventing a parameterisation nobody has argued for — a change to
+  test STRENGTH, in a PR about a tool's refusal reporting. **What the append changes is the
+  ranking**: adopting the shared stub in `promote-ref-canon-selftest.sh` would now retire a
+  duplicated *parser*, not only a duplicated fixture, and the copy that tipped it is the one that says the
+  next wire change gets edited in every copy or silently missed in the ones nobody remembered.
+
 - **The source-derivation rule, expressed in a FOURTH runtime as jq** (card#8421) — **NOT
   consolidated onto the server, and the reason is what the server ENDPOINT can answer, not
   effort.** `bin/promote-released-cards` mirrors the kanban `ExternalReferenceNormalizer`

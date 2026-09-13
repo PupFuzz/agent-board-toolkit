@@ -752,10 +752,26 @@ mkdir -p "$COV/bin"
 # `curl` stand-in: serves $BOARD_FILE on the paged GET. A PATCH must never happen on this path
 # (--dry-run), so it exits non-zero rather than succeeding quietly — a move here would otherwise
 # be invisible to a section that only reads the report.
+#
+# ⚠ IT HONOURS `-o` AND `-w`: `promote-released-cards`' api() no longer leaves the response body
+# on stdout (card#9301 — `curl -f` discarded the HTTP error body, so a refusal was unreportable).
+# The body now goes to curl's `-o` target and the HTTP status is returned through `-w`, so a stub
+# writing to stdout hands the tool an EMPTY board and a status made of JSON — which reds this
+# whole section for a reason that has nothing to do with card coverage.
 cat > "$COV/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-for a in "$@"; do case "$a" in -X) echo "selftest curl stub: unexpected write on a dry-run path" >&2; exit 9 ;; esac; done
-cat "$BOARD_FILE"
+ofile=""; wfmt=""; want=""
+for a in "$@"; do
+  case "$want" in ofile) ofile="$a"; want=""; continue ;; wfmt) wfmt="$a"; want=""; continue ;; esac
+  case "$a" in
+    -X) echo "selftest curl stub: unexpected write on a dry-run path" >&2; exit 9 ;;
+    -o|--output) want=ofile ;;
+    -w|--write-out) want=wfmt ;;
+  esac
+done
+if [ -n "$ofile" ]; then cat "$BOARD_FILE" > "$ofile"; else cat "$BOARD_FILE"; fi
+[ -n "$wfmt" ] && printf '%s' "${wfmt//'%{http_code}'/200}"
+exit 0
 STUB
 chmod +x "$COV/bin/curl"
 

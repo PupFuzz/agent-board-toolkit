@@ -193,21 +193,34 @@ eq "mint site: '4<U+0663>' is accepted (control)"    "true" "$(kbc_accepts "4$AI
 # ---------------------------------------------------------------------------
 # --- the tool as a process: fake curl on PATH, PATCH set observable ------------------------
 # Same harness shape as promote-stage-guard-selftest.sh: a PATCH is a card move, anything else
-# is the paged board GET.
+# is the paged board GET. This copy stays url-ONLY (see tests/_promote-curl-stub.sh's header
+# for why): `moved()` below asserts whole-LINE equality against the logged url.
+#
+# ⚠ IT HONOURS `-o` AND `-w` because api()'s WIRE SHAPE changed at card#9301 — the response
+# body now goes to curl's `-o` target and the HTTP status is returned through `-w`, so a stub
+# writing the body to stdout hands the tool an empty board and a status made of JSON.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-method=GET; url=""; want_data=0
+method=GET; url=""; ofile=""; wfmt=""; want=""
 for a in "$@"; do
-  if [ "$want_data" = 1 ]; then want_data=0; continue; fi
+  case "$want" in data|ofile|wfmt) [ "$want" = ofile ] && ofile="$a"; [ "$want" = wfmt ] && wfmt="$a"; want=""; continue ;; esac
   case "$a" in
     -X) method=_next ;;
     PATCH|GET|POST) [ "$method" = _next ] && method="$a" ;;
-    -d) want_data=1 ;;
+    -d|--data) want=data ;;
+    -o|--output) want=ofile ;;
+    -w|--write-out) want=wfmt ;;
     http://*|https://*) url="$a" ;;
   esac
 done
-if [ "$method" = PATCH ]; then printf '%s\n' "$url" >> "$PATCH_LOG"; printf '{"data":{"id":0}}'; else cat "$BOARD_FILE"; fi
+emit() { # <status> <body>
+  if [ -n "$ofile" ]; then printf '%s' "$2" > "$ofile"; else printf '%s' "$2"; fi
+  [ -n "$wfmt" ] && printf '%s' "${wfmt//'%{http_code}'/$1}"
+  exit 0
+}
+if [ "$method" = PATCH ]; then printf '%s\n' "$url" >> "$PATCH_LOG"; emit 200 '{"data":{"id":0}}'; fi
+emit 200 "$(cat "$BOARD_FILE")"
 STUB
 chmod +x "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH"
