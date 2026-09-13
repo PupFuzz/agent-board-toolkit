@@ -930,8 +930,58 @@ stats() {
 # still. Each clock-derived field is replaced by a placeholder rather than deleted, so a
 # field that moved or vanished still reds — and the age's marker is kept OUTSIDE the
 # placeholder, because whether it carries one is exactly what is under test.
+#
+# ⛔ THE MARKER IS GROUPED BEFORE IT IS MADE OPTIONAL — `(≥)?`, never `(≥?)`. `≥` is three
+# bytes, and under a C/POSIX locale sed matches BYTES: `?` then binds to the last byte alone,
+# so the group stops being able to match empty and the UNMARKED age is left un-normalized.
+# Measured both ways: `oldest 254.1d` normalizes under en_US.UTF-8 and does NOT under LC_ALL=C.
+# That is a different mechanism from the bracket-RANGE widening tests/locale-range-guard-selftest.sh
+# watches (sed does not widen; it stops decoding), which is why that file's scan does not reach
+# this line. The behaviour case below pins both locales so the byte spelling cannot come back.
 _declock() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g;
-                     s/oldest (≥?)[0-9]+(\.[0-9]+)?d/oldest \1<AGE>d/g'; }
+                     s/oldest (≥)?[0-9]+(\.[0-9]+)?d/oldest \1<AGE>d/g'; }
+
+echo "== _declock normalizes the age under BOTH locales (the render equalities depend on it) =="
+# The two full-render equalities below compare a declocked report against a literal. Under a
+# C locale a `_declock` that silently stopped normalizing left the real age in the actual side
+# and reported it as a report DIFFERENCE — a red naming board-stats for a defect in this file.
+#
+# ⚠ A SUBSHELL, not a `LC_ALL=C _declock` prefix: bash keeps a variable assignment that
+# prefixes a FUNCTION call in the calling shell afterwards, so that spelling would silently
+# re-locale every check below this point.
+_declock_under() { ( export LC_ALL="$1"; printf '%s' "$2" | _declock ); }
+# THE PROBE IS THE DEFECT ITSELF, which is what stops either half passing vacuously: the OLD
+# byte-spelling `(≥?)` leaves a bare age alone exactly when sed is matching bytes. So the same
+# one-liner establishes the C baseline is honest AND finds a locale that really decodes — no
+# separate `locale -a` existence check, whose failure mode is not measured here.
+_bytes_not_decoded() { ( export LC_ALL="$1"; printf 'oldest 7d' \
+    | sed -E 's/oldest (≥?)[0-9]+(\.[0-9]+)?d/HIT/' ) ; }
+if [[ "$(_bytes_not_decoded C)" == HIT ]]; then
+    bad "LC_ALL=C decoded ≥ as one character — the C-locale baseline is not what it claims, so the case below proves nothing"
+else
+    ok "LC_ALL=C matches BYTES: the old (≥?) spelling does NOT normalize a bare age (baseline honest)"
+fi
+_DECLOCK_LOCALES=(C)
+_UTF8=""
+for _cand in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+    if [[ "$(_bytes_not_decoded "$_cand")" == HIT ]]; then _UTF8="$_cand"; break; fi
+done
+if [[ -n "$_UTF8" ]]; then
+    _DECLOCK_LOCALES+=("$_UTF8")
+    ok "a multibyte-DECODING locale is present ($_UTF8) — the UTF-8 half is really exercised"
+else
+    printf '  SKIP  no multibyte-decoding locale on this box — the UTF-8 half of the case\n' >&2
+    printf '        below is NOT RUN. `locale -a` offers: %s\n' \
+        "$(locale -a 2>/dev/null | tr '\n' ' ' | head -c 200)" >&2
+fi
+for _loc in "${_DECLOCK_LOCALES[@]}"; do
+    eq "LC_ALL=$_loc: an UNMARKED age normalizes"  "oldest <AGE>d (#11)" \
+       "$(_declock_under "$_loc" 'oldest 254.1d (#11)')"
+    # The marked spelling passed even with the defective pattern, so on its own it proves
+    # nothing — it is here as the control that the marker still survives the fix.
+    eq "LC_ALL=$_loc: CONTROL a MARKED age keeps its marker" "oldest ≥<AGE>d (#11)" \
+       "$(_declock_under "$_loc" 'oldest ≥254.1d (#11)')"
+done
 # The stock section only: the ⚠ lines sit above it and the flow counts below, and a marker
 # in one says nothing about the other.
 _stock_section() { printf '%s\n' "$1" | awk '/^  stock/{f=1} /^  flow/{f=0} f'; }
