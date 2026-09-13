@@ -50,6 +50,14 @@
 #   $STUB_PATCH_STATUS / $STUB_PATCH_BODY  what a PATCH answers with. Defaults 200 and
 #                   `{"data":{"id":0}}`, so a caller that sets neither sees the pre-card#9301
 #                   behaviour. A >=400 status here is how a REFUSED CARD MOVE is driven.
+#   $STUB_PATCH_TRANSPORT  the WRITE-side twin of $STUB_GET_TRANSPORT: the PATCH exits with THIS
+#                   curl rc having written no body and no status. ⚠ IT IS A DIFFERENT CLAIM FROM
+#                   A REFUSAL, not a variant of one — a reset AFTER the server applied the PATCH
+#                   is indistinguishable here from one before it, so the card may well have
+#                   MOVED. The url is still appended to $PATCH_LOG (the request was issued);
+#                   what is unknown is what the far end did with it. Without this knob the whole
+#                   transport branch of the MOVE loop is undriven, which is how a message
+#                   asserting the card was "left in place" survived on it.
 #
 # ⛔ THERE IS DELIBERATELY NO "FLAKY 503 THEN SUCCEED" KNOB, and the reason belongs here rather
 # than in the caller that wanted one. `--retry` is curl's OWN internal loop, and this stub IS
@@ -97,6 +105,9 @@ emit() {
 
 if [ "$method" = PATCH ]; then
   printf '%s\t%s\n' "$url" "$data" >> "$PATCH_LOG"
+  # Logged BEFORE the transport exit on purpose: the request went out either way, and a caller
+  # asserting "the move really was attempted" must still be able to see it.
+  [ -n "${STUB_PATCH_TRANSPORT:-}" ] && exit "$STUB_PATCH_TRANSPORT"
   pbody='{"data":{"id":0}}'
   emit "${STUB_PATCH_STATUS:-200}" "${STUB_PATCH_BODY:-$pbody}"
 fi

@@ -122,6 +122,43 @@ eq "control: …with no refusal line at all"               "false" "$(has 'move 
 eq "control: …and no HTTP status anywhere"                "false" "$(has 'HTTP ' "$err$out")"
 eq "control: …and no body excerpt anywhere"               "false" "$(has 'server said' "$err$out")"
 
+# ⛔ THE WRITE THAT NEVER GOT AN ANSWER — A THIRD OUTCOME, AND A DIFFERENT CLAIM. Every row above
+# drives a COMPLETED non-2xx, where `(left in place)` is a fact: the server read the PATCH and
+# applied nothing. When the request does not complete, that parenthetical is a FALSE STATEMENT
+# the tool is in no position to make — curl's connection can die AFTER the server applied the
+# write, so the card may already have moved — and the old single line asserted `(left in place)`
+# and `whether the server received it is UNKNOWN` in the same breath. An operator reading the
+# first half re-runs or hand-moves a card that is possibly already moved.
+# ⚑ THE STATE WAS UNDRIVEN UNTIL NOW: the stub had $STUB_GET_TRANSPORT and no PATCH twin, so the
+# only transport case in this file was on the READ, which never reaches the move loop at all.
+export STUB_PATCH_TRANSPORT=7
+run_promote
+eq "PATCH transport → the move is still reported with ✗"  "true"  "$(has '✗ DL-100 (#1):' "$err")"
+eq "PATCH transport → it does NOT claim the card was left in place" "false" "$(has 'left in place' "$err")"
+eq "PATCH transport → it says the move is NOT CONFIRMED"  "true"  "$(has 'move NOT CONFIRMED' "$err")"
+eq "PATCH transport → and keeps the ambiguity sentence"   "true"  "$(has 'whether the server received it is UNKNOWN' "$err")"
+# ⚠ NOT `has 'HTTP '` — THAT PREDICATE IS SATISFIED BY THE TRANSPORT SENTENCE ITSELF ("no HTTP
+# status came back at all"), so it reds on the correct output. Written that way first and watched
+# doing exactly that. resp_detail renders a status in exactly two shapes, and both are asserted
+# absent by their OWN trailing text rather than by the bare protocol name: `HTTP %s, server said:`
+# and `HTTP %s, and the server sent no body`.
+eq "PATCH transport → renders no body excerpt"            "false" "$(has 'server said' "$err")"
+eq "PATCH transport → nor the empty-body form of a status" "false" "$(has 'the server sent no body' "$err")"
+eq "PATCH transport → the PATCH really was issued"        "true"  "$(has '/tasks/1.json' "$patched")"
+eq "PATCH transport → and it counts as one failure"       "true"  "$(has '0 moved, 0 already-released, 0 no-card, 1 failed' "$out")"
+unset STUB_PATCH_TRANSPORT
+# ⛔ THE DISCRIMINATOR, AS A PAIR RATHER THAN AS FOUR ABSENCES. Each row above is satisfiable by a
+# tool that simply stopped printing `left in place` — or stopped rendering a status at all —
+# anywhere. These require the SAME run shape to say DIFFERENT things depending only on whether an
+# answer came back, which is also the positive control for the two absence predicates above.
+STUB_PATCH_STATUS=422 run_promote
+eq "…while a COMPLETED refusal still says left in place"  "true"  "$(has 'move failed (left in place)' "$err")"
+eq "…and does NOT borrow the not-confirmed wording"       "false" "$(has 'NOT CONFIRMED' "$err")"
+eq "CONTROL: …and the excerpt predicate SEES that render" "true"  "$(has 'server said' "$err")"
+# WITNESS that the transport switch is off again — without it the ✓ rows later could pass dead.
+run_promote
+eq "the PATCH transport switch is OFF again (witness)"    "true"  "$(has '✓ DL-100 (#1): moved' "$out")"
+
 # ═════════════════════════════════════════════════════════════════════════════════════════
 echo "== § 2 — THE OTHER CALL SITE: THE BOARD READ, ACROSS A COMMAND-SUBSTITUTION SUBSHELL =="
 # ═════════════════════════════════════════════════════════════════════════════════════════
@@ -200,16 +237,63 @@ excerpt="${got#*server said: }"; excerpt="${excerpt%…*}"
 eq "a multi-byte body is cut at the bound in BYTES"      "$MAX"  "$(printf '%s' "$excerpt" | LC_ALL=C wc -c | tr -d ' ')"
 # CONTROL — the same function with the pin REMOVED must cut MORE bytes, or the row above is
 # green for a reason that has nothing to do with the pin. Run over the real artifact's text.
+#
+# ⛔ THE CONTROL HAS TO CHOOSE ITS OWN LOCALE RATHER THAN INHERIT THE RUNNER'S, and that is not a
+# convenience. What the pin defends against is the AMBIENT locale, so with the pin removed the
+# copy cuts more bytes only where the ambient locale is multi-byte-aware. Under `LC_ALL=C` it cuts
+# exactly $MAX too — correctly — and this control then RED, reporting an ENVIRONMENT as a defect
+# (measured on this tree before the fix: rc 0 under `LANG=en_US.UTF-8`, rc 1 under `LC_ALL=C`, the
+# only failure being this row; `ci-gate` would have gone red on a runner, with the code innocent).
+# Deleting the control was not available — it is the only thing that makes the row above mean
+# anything — and neither was loosening the assertion, which is the same green-by-weakening the
+# whole file exists to refuse. So the discriminating case runs under a PROBED locale in a CHILD
+# process, the shape tests/locale-range-guard-selftest.sh already owns, and the box that has none
+# gets a stated SKIP instead of a false accusation.
+#
+# THE PROBE IS THE AVAILABILITY TEST, and it asks for exactly the property the case needs —
+# `${#s}` counting a 3-byte character as ONE — with a bare parameter expansion in a subprocess,
+# deliberately NOT through the function under test. An uninstalled locale falls back to C
+# behaviour and so fails the probe; no separate `locale -a` existence check is written, because
+# its failure mode was not measured.
+UTF8_LOCALE=""
+for cand in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+    if [ "$(LC_ALL="$cand" IN=$'\xe2\x82\xac' bash -c 'printf %s "${#IN}"' 2>/dev/null)" = 1 ]; then
+        UTF8_LOCALE="$cand"; break
+    fi
+done
 unpinned="$(_fn_src "$PRC" resp_detail)"
 unpinned="${unpinned/resp_detail() \{/resp_detail_unpinned() \{}"
 unpinned="${unpinned/  local LC_ALL=C all status body/  local all status body}"
-eval "$unpinned"
-got_u="$(printf '%s\n%s' 500 "$mb" > "$API_ERR_FILE"; resp_detail_unpinned)"
-exc_u="${got_u#*server said: }"; exc_u="${exc_u%…*}"
-bytes_u="$(printf '%s' "$exc_u" | LC_ALL=C wc -c | tr -d ' ')"
-[ "$bytes_u" -gt "$MAX" ] \
-  && ok "CONTROL: with the pin removed the same body cuts $bytes_u bytes, not $MAX" \
-  || bad "CONTROL: the unpinned copy cut $bytes_u bytes too — this runner's locale cannot see the pin, so the row above proves nothing"
+eq "the pin really is the ONE line the control removes"  "true"  "$(has 'local all status body' "$unpinned")"
+if [ -n "$UTF8_LOCALE" ]; then
+    ok "a multi-byte-aware locale is available for the control ($UTF8_LOCALE reads a 3-byte character as 1)"
+    printf '%s\n' "$unpinned" > "$TMP/unpinned-resp-detail.sh"
+    printf '%s\n%s' 500 "$mb" > "$API_ERR_FILE"
+    # The pinned and the unpinned copy are run in the SAME child under the SAME locale, so the
+    # comparison is one variable — the `local LC_ALL=C` line — and not two ambient environments.
+    _cut_bytes() { # <function-name> — bytes of the rendered excerpt, measured in the child
+        LC_ALL="$UTF8_LOCALE" API_ERR_FILE="$API_ERR_FILE" API_ERR_EXCERPT_MAX="$MAX" \
+        TOKEN="$TOKEN_VALUE" bash -c '
+            . "$1"; . "$2"
+            got="$('"$1"')"; exc="${got#*server said: }"; exc="${exc%…*}"; printf %s "$exc"
+        ' _ "$TMP/unpinned-resp-detail.sh" "$TMP/pinned-resp-detail.sh" \
+          | LC_ALL=C wc -c | tr -d ' '
+    }
+    _fn_src "$PRC" resp_detail > "$TMP/pinned-resp-detail.sh"
+    bytes_p="$(_cut_bytes resp_detail)"
+    bytes_u="$(_cut_bytes resp_detail_unpinned)"
+    eq "under $UTF8_LOCALE the SHIPPED copy still cuts the bound in bytes" "$MAX" "$bytes_p"
+    [ "$bytes_u" -gt "$MAX" ] \
+      && ok "CONTROL: under $UTF8_LOCALE the copy with the pin removed cuts $bytes_u bytes, not $MAX" \
+      || bad "CONTROL: the unpinned copy cut $bytes_u bytes under $UTF8_LOCALE — a locale this file PROVED is multi-byte-aware, so the pin is not what the row above is measuring"
+else
+    printf '  SKIP  no multi-byte-aware locale on this box, so the LC_ALL=C pin CANNOT be\n' >&2
+    printf '        discriminated here: with the ambient locale already byte-oriented, the\n' >&2
+    printf '        pinned and unpinned copies cut the same %s bytes and the row above is\n' "$MAX" >&2
+    printf '        green for a reason that is not the pin. `locale -a` offers: %s\n' \
+        "$(locale -a 2>/dev/null | tr '\n' ' ' | head -c 200)" >&2
+    printf '        Install en_US.UTF-8 (or run under one) to exercise it.\n' >&2
+fi
 
 # A BODY WITH NO CONTENT AT ALL is its own answer: a 401 with an empty body must not render as
 # `server said: ` with nothing after it, which reads as a truncation bug rather than a fact.
@@ -332,7 +416,11 @@ echo "== § 5 — THE CLASSIFICATION IS BYTE-IDENTICAL: THE SUCCESS BOUNDARY IS 
 # one as an applied move is a real (reported) defect — but narrowing to 2xx changes what this
 # tool accepts, which is a decision this card does not get to make silently. If that narrowing
 # is ever ruled on, THESE are the rows that must be flipped deliberately.
-for st in 200 201 204 301 302 307 399; do
+# ⚑ `101` IS IN THIS LOOP BECAUSE THE TABLE IT MIRRORS HAS A 1xx ROW, and the `1` in `[123]??`
+# has to be driven by something or it is an arm nobody measured. It is the ONLY reachable 1xx:
+# an interim `100 Continue` is never what `%{http_code}` reports (measured — curl reports the
+# FINAL status, 200), so the bin's table records `101` and this row is it.
+for st in 101 200 201 204 301 302 307 399; do
     STUB_PATCH_STATUS="$st" run_promote
     eq "HTTP $st is a SUCCESS (as it was under curl -f)"  "true"  "$(has '✓ DL-100 (#1): moved' "$out")"
     eq "…and is not reported as a failure"                "false" "$(has 'move failed' "$err")"
