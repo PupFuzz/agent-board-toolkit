@@ -74,7 +74,7 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
-#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
 #     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
@@ -94,6 +94,21 @@
 #     primitive that owns the rule, rather than each mover remembering it. The clear is
 #     announced on stderr. released_to_main is deliberately NOT in that set: a card reaches
 #     it from shipped_to_dev, which already cleared.
+#     ⭐ THE SAME TERMINAL MOVE REMOVES EVERY OWNER TAG (`owner:*`) in that PATCH, and keeps
+#     every other tag. The API replaces `tags` wholesale, so the card's tags are READ first
+#     (or taken from the list this call already sends); if they cannot be read, NO tag list is
+#     sent — never one built from nothing — the card still moves, and stderr says the owner tag
+#     was not cleared. A card with no owner tag gets no `tags` key at all.
+#     --stamp-owner is the card-START stamp the toolkit's card-start hooks use: it adds this
+#     seat's `owner:<project>/<seat>` tag in the same PATCH as the move. <project> is the
+#     `project` of the coord config $COORD_CONFIG names; <seat> is $COORD_AGENT, which must be
+#     one of that config's roster[].name. Nothing is guessed: an unset/unreadable config, an
+#     empty project, or a COORD_AGENT outside the roster sends NO tags and says why on stderr,
+#     and the card STILL MOVES. So does an unreadable tag list. A card already carrying an owner
+#     tag for a DIFFERENT project/seat is NOT overwritten and gets no second owner tag — stderr
+#     names the holder, the card still moves, and there is no steal flag (a takeover is a
+#     deliberate tag edit). The same owner already present writes no tags. rc is the move's.
+#     Beside a terminal --column it is rc 2 before any request.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
@@ -131,8 +146,11 @@
 #     write echo shows the RAW `description` for this call, so the caller SEES the null rather
 #     than having to re-read the card. create-card does not take it: there is nothing to clear
 #     at birth, and an omitted pair already leaves the field unset.
+#     --assign SETS THE KANBAN ASSIGNEE, NOT THE SEAT OWNER: seats commonly share one kanban
+#     user, so the seat working a card is the `owner:<project>/<seat>` tag (see move
+#     --stamp-owner above), and --assign neither reads nor writes that tag.
 #     --assign / --unassign write the board's NATIVE assigned_user_id — the field that answers
-#     WHICH SEAT IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
+#     WHICH KANBAN USER IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
 #     precisely the state two seats pull the same work in (a card sitting in backlog is
 #     indistinguishable from an unclaimed one). A <seat> resolves through KB_USER_<SEAT> in
 #     THIS board's env — the same config-driven shape as KB_STAGE_* / KB_TYPE_*, so nothing
@@ -1295,43 +1313,15 @@ _kbc_patch_tags() {
         # card carried. Refuse instead — the caller turns this rc into its own rc 2, before any
         # PATCH is issued.
         #
-        # The `.data` OBJECT TEST is what makes that refusal reach the whole class. A tolerant
-        # parse only yields empty when jq FAULTS, and a body that parses perfectly well while
-        # carrying no card does not fault: on `{"ok":true}` or `{"data":null}`, `.data.tags //
-        # []` supplies the string `[]`, which is non-empty, so the arm below passes and the tag
-        # wipe happens THROUGH the guard. Requiring `.data` to be an object routes those into
-        # the same refusal, at the same rc, before the wire. It is deliberately scoped to this
-        # one read: audited across the toolkit, it is the only read whose OWN result becomes the
-        # body of a wholesale-replacement write. (`field set-options` also PATCHes a
-        # replace-wholesale array, but that array is built from the caller's --options, not from
-        # the read; an unreadable read there cannot produce a write built from nothing.) So this
-        # is a dedicated path for one named harm, not a widened guard — no read verb's
-        # acceptance changes with it.
-        #
-        # The CONTAINER test on `tags` closes the same refusal's second half. `.data` being an
-        # object says nothing about the value actually re-sent. A `tags` that is a SCALAR passes
-        # the wrapper test and then faults inside the merge below, so the caller's whole
-        # diagnostic is jq's, with no kbcard line at all — bad, but no tag is lost.
-        #
-        # AN OBJECT DOES NOT FAULT, which is why this is not a wording fix. jq's `map`
-        # iterates an OBJECT's values, so a `tags` object degrades into a plausible list: with
-        # --type (map-first), `{"tags":{"0":"keep-me"}}` merged cleanly and PATCHed
-        # `["keep-me","type:fr"]` at rc 0, replacing every tag the card actually held. That is the
-        # same wipe this guard exists to stop, reached one level deeper. --triaged alone never got
-        # there (object + array faults), which is what made it look diagnostic-only.
-        # Deliberately CONTAINER type only: what the list CONTAINS is a separate,
-        # acceptance-changing question and is not decided here.
-        #
-        # THE SHAPE TEST RUNS ON THE NEAR SIDE OF THE DEFAULT, and that ordering is the whole
-        # point. jq's `//` yields its right-hand side for `false` as well as for `null`, so
-        # `(.tags // []) | select(type == "array")` handed the container test the DEFAULT
-        # whenever `tags` was `false` — the test was on the far side of the very substitution it
-        # exists to police, and `{"tags":false}` + --triaged PATCHed `{"tags":["triaged"]}` at
-        # rc 0. `has("tags") and .tags != null` decides absent-or-null explicitly instead, so
-        # `false` reaches `select(type == "array")` as itself and refuses.
+        # What counts as "no tag list could be read" is kb_card_tags' rule (_kb-board-lib.sh), the
+        # one owner of the shape tests every read-before-replace of `tags` goes through — this one,
+        # and the owner-tag stamp and clear in _kbc_stage_patch. What differs is the POLICY: this
+        # read is the base of a list the CALLER asked to write, so an unreadable one aborts the
+        # whole patch; the owner-tag reads ride a stage move that must still happen, so theirs
+        # drops only the tag list.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_parse_resp "$resp" '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")')"
+        base="$(kb_card_tags "$resp")"
         [[ -n "$base" ]] || {
             echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
             return 1
@@ -1436,7 +1426,7 @@ _kbc_terminal_column() {
     [[ "$1" == "shipped_to_dev" || "$1" == "wont_do" ]]
 }
 
-# _kbc_stage_patch <verb> <task> <column> <body>: the task PATCH `move` and `patch` BOTH issue,
+# _kbc_stage_patch <verb> <task> <column> <body> [stamp_owner]: the task PATCH `move` and `patch` BOTH issue,
 # and the one owner of the invariants that belong to the WRITE rather than to either caller.
 # Both verbs assembled their own body and then wrote it themselves; the rules below would
 # otherwise be the same block copied into each, which is how one copy comes to differ from the
@@ -1458,6 +1448,19 @@ _kbc_terminal_column() {
 #   named rather than guarded against, and _kbc_write_fault is what makes the failure legible
 #   if it ever happens rather than reading as a broken move.
 #
+#   TERMINAL ⇒ EVERY OWNER TAG (`owner:*`) IS REMOVED IN THE SAME PATCH, for the same reason as the
+#   assignment: the owner tag names the seat working the card, and a finished card is worked by
+#   nobody. The API replaces `tags` wholesale, so the list sent is the card's own list minus the
+#   owner tags — taken from this body when the call already carries one (it was read or given
+#   above), else READ here. An unreadable list sends NO tags and says so; the move still happens.
+#   A card carrying no owner tag gets no `tags` key at all.
+#
+#   [stamp_owner] non-empty ⇒ the card-START stamp (kb_owner_stamp, _kb-board-lib.sh): this seat's
+#   `owner:<project>/<seat>` tag is added in the same PATCH, unless the owner cannot be resolved,
+#   the tags cannot be read, or another seat already holds the card — each of which sends no tags,
+#   says why on stderr, and still moves the card. `move` refuses it beside a terminal column, so
+#   the two tag rules never meet in one call.
+#
 #   A POLICY REFUSAL OF AN ASSIGNMENT WRITE IS NAMED (see _kbc_write_fault). That naming lives
 #   HERE rather than at either caller because it needs KB_HTTP, which kb_api sets inside the
 #   command substitution the caller captures the response with — where the caller can no longer
@@ -1465,7 +1468,7 @@ _kbc_terminal_column() {
 #
 # Response on stdout, kb_api's rc returned unchanged, so both callers' existing arms are intact.
 _kbc_stage_patch() {
-    local verb="$1" task="$2" column="$3" body="$4" rc=0
+    local verb="$1" task="$2" column="$3" body="$4" stamp_owner="${5:-}" rc=0 stamped=""
     if _kbc_terminal_column "$column"; then
         if jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1; then
             echo "kbcard: $column is a terminal column, but this call names an assignee explicitly — the explicit value wins and the card stays assigned" >&2
@@ -1473,12 +1476,42 @@ _kbc_stage_patch() {
             body="$(jq -c -n --argjson b "$body" '{assigned_user_id: null} + $b')"
             echo "kbcard: cleared the card's assignment (assigned_user_id) — $column is a terminal column and a finished card holds nobody's claim" >&2
         fi
+        body="$(_kbc_owner_clear "$task" "$column" "$body")"
+    elif [[ -n "$stamp_owner" ]]; then
+        kb_owner_stamp "task $task" kb_api GET "/tasks/$task.json"
+        [[ -n "$KB_OWNER_NOTE" ]] && printf '%s\n' "$KB_OWNER_NOTE" >&2
+        if [[ -n "$KB_OWNER_TAGS" ]]; then
+            body="$(jq -c -n --argjson b "$body" --argjson t "$KB_OWNER_TAGS" '$b + {tags: $t}')"
+            stamped=1
+        fi
     fi
     kb_api PATCH "/tasks/$task.json" "$body" || {
         rc=$?
         _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
         return "$rc"
     }
+    [[ -z "$stamped" ]] || echo "kbcard: owner tag $KB_OWNER_TAG stamped on task $task" >&2
+}
+
+# _kbc_owner_clear <task> <column> <body>: <body> with every owner tag removed from the tag list it
+# sends — the terminal-column half of _kbc_stage_patch's owner rule, which owns the why. Prints the
+# body unchanged when there is no owner tag to remove, or when the card's tags could not be read.
+_kbc_owner_clear() {
+    local task="$1" column="$2" body="$3" tags resp cleared
+    if jq -e 'has("tags")' <<<"$body" >/dev/null 2>&1; then
+        tags="$(jq -c '.tags' <<<"$body")"
+    else
+        resp="$(kb_api GET "/tasks/$task.json")" || resp=""
+        tags="$(kb_card_tags "$resp")"
+        if [[ -z "$tags" ]]; then
+            echo "kbcard: owner tags NOT cleared on task $task — $column is a terminal column, but the card's current tags could not be read, and the board replaces the tag list wholesale, so no tag list is sent rather than one built from nothing. The card is still moved; remove any owner: tag by hand." >&2
+            printf '%s' "$body"; return 0
+        fi
+    fi
+    cleared="$(kb_owner_strip "$tags")"
+    [[ -n "$cleared" ]] || { printf '%s' "$body"; return 0; }
+    echo "kbcard: removed owner tag(s) $(kb_owner_list "$tags") — $column is a terminal column and a finished card holds nobody's claim" >&2
+    jq -c -n --argjson b "$body" --argjson t "$cleared" '$b + {tags: $t}'
 }
 
 # _kbc_write_fault <verb> <task> <body> <http>: name the ONE failure this file's newest write
@@ -1553,16 +1586,21 @@ _kbc_assign_guard() {
 }
 
 cmd_move() {
-    local task_ref="" column="" keep_refs=""
+    local task_ref="" column="" keep_refs="" stamp_owner=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
+            --stamp-owner) stamp_owner=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
     [[ -z "$task_ref" || -z "$column" ]] && { echo "kbcard: --task and --column required" >&2; return 2; }
+    if [[ -n "$stamp_owner" ]] && _kbc_terminal_column "$column"; then
+        echo "kbcard: --stamp-owner claims the card for this seat, and $column is a terminal column, whose move removes every owner tag — pass one or the other" >&2
+        return 2
+    fi
     local task stage body
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
@@ -1580,7 +1618,7 @@ cmd_move() {
     # when the serializer sent it, and this verb has never emitted it. Same refusal, its own
     # field set — widening a verb's stdout is a change to what its consumers parse.
     local resp echo_out
-    resp="$(_kbc_stage_patch move "$task" "$column" "$body")" || return 1
+    resp="$(_kbc_stage_patch move "$task" "$column" "$body" "$stamp_owner")" || return 1
     echo_out="$(kb_parse_resp "$resp" '.data | {id, name, workflow_stage_id}')"
     [[ -n "$echo_out" ]] || _kbc_unverified move "on task $task" || return $?
     # The whole point of this verb is the stage, so the stage is what it checks. Same owner as

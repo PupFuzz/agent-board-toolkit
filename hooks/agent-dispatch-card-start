@@ -20,8 +20,16 @@
 # MECHANICS: Claude Code delivers the PreToolUse event as a JSON object on STDIN (never env
 # vars). For an Agent-tool dispatch the prompt is at `.tool_input.prompt`. This hook parses
 # stdin, scans the prompt for markers, and for each resolved marker invokes the existing
-# primitive `kbcard --board <key> move --task <id> --column in_progress` (kbcard is on PATH;
-# it owns board-env/token resolution — the hook does not hand-roll curl).
+# primitive `kbcard --board <key> move --task <id> --column in_progress --stamp-owner` (kbcard is
+# on PATH; it owns board-env/token resolution — the hook does not hand-roll curl).
+#
+# OWNER TAG: --stamp-owner adds this seat's `owner:<project>/<seat>` tag in the move's own PATCH
+# (<project> = `project` of $COORD_CONFIG, <seat> = $COORD_AGENT, a roster[].name). kbcard owns the
+# rules — see its `move --stamp-owner` usage. Whatever kbcard says about the owner tag (stamped, or
+# NOT stamped and why — including a card another seat already holds) is relayed to this hook's
+# stderr; the rest of kbcard's output stays suppressed. There is no steal path here: a hook has no
+# human at hand to make a takeover deliberate. A kbcard older than --stamp-owner refuses the flag
+# and the move with it (reported as a failed move below), so upgrade kbcard with this hook.
 #
 # FAIL-SOFT, ALWAYS: the hook must never block or materially delay a dispatch. It exits 0 on
 # EVERY path (unparseable stdin, no marker, unknown board key, kbcard missing, API error),
@@ -87,9 +95,12 @@ while IFS= read -r line; do
             _kbads_diag "kbcard not on PATH; skipping $token"
             continue
         fi
-        if ! timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress >/dev/null 2>&1; then
+        if ! kberr="$(timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress --stamp-owner 2>&1 >/dev/null)"; then
             _kbads_diag "kbcard move failed for $token (fail-soft; dispatch unaffected)"
         fi
+        while IFS= read -r kbline; do
+            case "$kbline" in "kbcard: owner tag"*) _kbads_diag "$kbline" ;; esac
+        done <<< "$kberr"
     fi
 done <<< "$prompt"
 

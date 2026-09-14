@@ -68,6 +68,8 @@ eq "single marker → exactly one call"      "1" "$(recn)"
 eq "call selects the board"                "true" "$(has '--board toolkit' "$(recall)")"
 eq "call moves the right task to in_progress" "true" \
    "$(has 'move --task 4945 --column in_progress' "$(recall)")"
+eq "call asks kbcard to stamp the seat owner tag" "true" \
+   "$(has 'move --task 4945 --column in_progress --stamp-owner' "$(recall)")"
 
 # ---------------------------------------------------------------------------
 echo "== no marker → no call, exit 0 =="
@@ -139,5 +141,55 @@ run_prompt "BOARD-CARD: toolkit#4945"
 eq "kbcard failure exits hook 0"            "0" "$RC"
 eq "kbcard failure records the call"        "1" "$(recn)"
 eq "kbcard failure writes diagnostic"       "true" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== kbcard's owner-tag lines are relayed; the rest of its output stays suppressed =="
+cat > "$TMP/bin/kbcard" <<'STUB_OWNER'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+echo "kbcard: HTTP 200 noise that must stay suppressed" >&2
+echo "kbcard: owner tag owner:acme/builder NOT stamped on task 4945 — the card is already held by owner:other/reviewer." >&2
+echo '{"id":4945}'
+exit 0
+STUB_OWNER
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "owner relay exits 0"                         "0" "$RC"
+eq "the owner-tag refusal reaches the hook's stderr, naming the holder" "true" \
+   "$(has 'agent-dispatch-card-start: kbcard: owner tag owner:acme/builder NOT stamped on task 4945 — the card is already held by owner:other/reviewer.' "$ERR")"
+eq "…the other kbcard stderr does not"           "false" "$(has 'noise that must stay suppressed' "$ERR")"
+eq "…nor does kbcard's stdout"                   "false" "$(has '"id":4945' "$ERR")"
+eq "…and it is not reported as a failed move"    "false" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== end to end: the REAL kbcard against a faked kanban API stamps the owner tag =="
+# The shim above proves the relay; this proves the hook's argv drives the real primitive to the
+# PATCH the owner rule promises. Only `curl` is faked.
+# shellcheck source=/dev/null
+source "$HERE/_kb-api-stub.sh"
+kb_stub_scrub_env
+kb_stub_board_config toolkit 42 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_install
+ln -sf "$(readlink -f "$HERE/../bin/kbcard")" "$TMP/bin/kbcard"
+printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$TMP/coordination.config.json"
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":48,"tags":["fr"]}}' ;;
+        "PATCH "*/tasks/4945.json) printf '200\n'; jq -cn --argjson b "$3" '{data: ({id:4945,name:"probe"} + $b)}' ;;
+        *) printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+kb_stub_reset
+COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
+eq "end to end exits 0"                          "0" "$RC"
+eq "…ONE PATCH carries the move and the card's tags plus the owner tag" \
+   '{"tags":["fr","owner:acme/builder"],"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
+eq "…and the hook relays that it stamped"        "true" "$(has 'kbcard: owner tag owner:acme/builder stamped on task 4945' "$ERR")"
+kb_stub_reset
+COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=ghost run_prompt "BOARD-CARD: toolkit#4945"
+eq "an unresolvable seat still MOVES the card"   '{"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
+eq "…and the hook relays why it did not stamp"   "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$ERR")"
+unset -f kb_stub_route
 
 _summary "agent-dispatch-card-start-selftest"

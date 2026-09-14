@@ -12,6 +12,7 @@ A recurring board-drift cause is forgetting to move a card to **In Progress** wh
    - a `DL-NNN` present but resolving to nothing with **no card-id fallback** → a loud no-op (a high-value miss), never silent.
 2. resolves the card (board id from a repo-local `git config kanban.board-id`, else the repo's committed `.release-pr.json` `promote.board_id` — the `git config` value wins if both are set; API base from `.release-pr.json` or `~/.kanban-host.env`; in-progress stage from your `~/.kanban-<name>-board.env`), and verifies it is **on the repo's configured board** (so a stray number can't move an unrelated task; this is also the board-scope guard for the card-id fallback),
 3. moves it to In Progress — from **Backlog or Prioritized** on any branch checkout, or from **Held** *only on a genuine branch creation* (`git switch -c`; a re-checkout of an existing branch won't un-park a Held card — the re-fire protection). A card already In Progress / In Review / Shipped / Released / Won't-Do is never touched.
+4. stamps the seat owner tag `owner:<project>/<seat>` in the same write as that move (`<project>` from `$COORD_CONFIG`, `<seat>` = `$COORD_AGENT`). A card held by a **different** owner, an owner that cannot be resolved, or tags that cannot be read all still move the card, send no tags, and log why. The rules are in [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat).
 
 A **pinned** card is never auto-moved regardless of stage: a non-empty `block_reason` **or** a `no-automove` tag makes the move refuse (loudly). Held detection uses the branch's reflog creation entry (`branch: Created from …`, ≤ ~15s old, overridable via `KB_HELD_CREATE_MAX_AGE`); a clone or an unparsable/missing reflog is treated as *not* a creation. This implements the cross-mover contract (agent-board-framework PR #113) shared with the bridge's branch-create `started` mover.
 
@@ -76,11 +77,15 @@ Claude Code delivers the event as a **JSON object on stdin** (never env vars —
 marker invokes the existing primitive:
 
 ```
-kbcard --board <key> move --task <card-id> --column in_progress
+kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner
 ```
 
 `kbcard` (on PATH at `~/.local/bin`) owns board-env/token resolution — the hook does not hand-roll
-`curl`.
+`curl`. `--stamp-owner` adds the seat owner tag in the same write, under the rules in
+[README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). The hook relays
+kbcard's owner-tag lines to its own stderr (stamped, or not stamped and why, including who holds the
+card), and keeps the rest of kbcard's output suppressed. **Upgrade `kbcard` with this hook:** a `kbcard`
+older than `--stamp-owner` refuses the flag, so the move fails too, and the hook reports a failed move.
 
 ### Fail-soft, always
 
@@ -276,4 +281,5 @@ An argument the tool cannot act on is **refused by name, with no move** — an *
 
 - Correlates on a `DL-NNN` token (matches the kbcard/writeback convention) **or** a card-id token (`card#2950` / `#2950` / `card-2950` / a typed branch's leading id like `feat/2950-…`), try-in-order-with-fallback: a resolving DL wins; a DL that tracks no card falls through to the card-id token (and stamps `dl_number` on it). A branch with neither token is a no-op. The card-id path only moves a card that lives on the repo's own board.
 - **Diagnostics (fail-soft but not silent).** The hook always `exit 0`s (it must never block a checkout), but when a branch carries a DL/card token and the move *didn't* happen for an infrastructure reason — no resolvable board id, an unloadable token/host, an untrusted `api_base`, unresolved stage ids, an unreachable board, a `card#N` that doesn't exist, or a pinned card — it prints a one-line reason to stderr **and appends it to `~/.cache/agent-board-toolkit/board-card-start.log`** (`KB_BCS_LOG` overrides the path). Because the installed hook wrapper discards stderr, that log is the durable record: check it if a card you expected to move didn't. Where a line names the api base, any **userinfo is masked to `***`** — an api_base may legitimately carry `user:password@`, and this log outlives the run on disk — so `https://***@board.example.com/api/v3` in the log means the base carried a credential, not that it is malformed. A branch with **no** token, a card already **past** the move stages, or a card-id number that lives on **another** board stays silent — those are genuine no-ops, not failures.
+- **The owner tag's refusals are logged the same way, but they are not failed moves.** When the card moves and the owner tag is **not** stamped (another seat holds the card, `COORD_CONFIG`/`COORD_AGENT` do not resolve, or the tags could not be read), that line goes to stderr and the same log. A checkout from a shell that does not carry `COORD_CONFIG` and `COORD_AGENT` (for example, a human terminal) logs the unresolved-owner line on every move it makes.
 - This is the **local** half of the codification. The durable, multi-agent half is the bridge moving the card on the branch-create / first-push webhook (derive-from-artifact) — tracked separately.

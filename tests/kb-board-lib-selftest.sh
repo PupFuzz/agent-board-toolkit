@@ -1578,4 +1578,90 @@ rc=0; kb_require_value --dl " " >/dev/null 2>&1 || rc=$?
 eq "whitespace-only value → rc 0 (not this guard's call)" "0" "$rc"
 
 # ---------------------------------------------------------------------------
+echo "== kb_owner_resolve — owner:<project>/<seat> from COORD_CONFIG + COORD_AGENT, never guessed =="
+# Every refusal is paired with the reason it must NAME, and the happy case is the witness that the
+# resolver resolves at all — without it, a resolver that refused everything would pass every row.
+_oc="$TMP/owner-cfg"; mkdir -p "$_oc"
+printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"}]}\n' > "$_oc/ok.json"
+printf '{"roster":[{"name":"builder"}]}\n'                    > "$_oc/no-project.json"
+printf '{"project":"","roster":[{"name":"builder"}]}\n'       > "$_oc/empty-project.json"
+printf '{"project":" \\t","roster":[{"name":"builder"}]}\n'   > "$_oc/blank-project.json"
+printf '{"project":7,"roster":[{"name":"builder"}]}\n'        > "$_oc/number-project.json"
+printf '{"project":"acme","roster":{"name":"builder"}}\n'     > "$_oc/roster-object.json"
+printf '{"project":"acme"}\n'                                 > "$_oc/no-roster.json"
+printf 'not json\n'                                           > "$_oc/not-json.json"
+
+# owner_case <label> <expected-rc> <expected-tag> <why-needle> <COORD_CONFIG or -unset> <COORD_AGENT or -unset>
+owner_case() {
+    local label="$1" want_rc="$2" want_tag="$3" needle="$4" cfg="$5" seat="$6" got_rc=0
+    if [[ "$cfg" == -unset ]]; then unset COORD_CONFIG; else export COORD_CONFIG="$cfg"; fi
+    if [[ "$seat" == -unset ]]; then unset COORD_AGENT; else export COORD_AGENT="$seat"; fi
+    kb_owner_resolve || got_rc=$?
+    eq "$label → rc $want_rc"      "$want_rc"  "$got_rc"
+    eq "$label → tag '$want_tag'"  "$want_tag" "$KB_OWNER_TAG"
+    if [[ -n "$needle" ]]; then
+        eq "$label → names why"    "true" "$(has "$needle" "$KB_OWNER_WHY")"
+    else
+        eq "$label → no reason"    "" "$KB_OWNER_WHY"
+    fi
+}
+owner_case "a roster seat (witness)"     0 "owner:acme/builder"  ""                          "$_oc/ok.json" builder
+owner_case "another roster seat"         0 "owner:acme/reviewer" ""                          "$_oc/ok.json" reviewer
+owner_case "COORD_CONFIG unset"          1 "" "COORD_CONFIG is unset"                          -unset builder
+owner_case "COORD_CONFIG empty"          1 "" "COORD_CONFIG is unset"                          ""     builder
+owner_case "COORD_CONFIG missing file"   1 "" "is not a readable file"                         "$_oc/absent.json" builder
+owner_case "COORD_CONFIG a directory"    1 "" "is not a readable file"                         "$_oc" builder
+owner_case "COORD_CONFIG not JSON"       1 "" "is not a JSON object"                           "$_oc/not-json.json" builder
+owner_case "project absent"              1 "" 'has no non-empty `project`'                     "$_oc/no-project.json" builder
+owner_case "project empty"               1 "" 'has no non-empty `project`'                     "$_oc/empty-project.json" builder
+owner_case "project whitespace-only"     1 "" 'has no non-empty `project`'                     "$_oc/blank-project.json" builder
+owner_case "project not a string"        1 "" 'has no non-empty `project`'                     "$_oc/number-project.json" builder
+owner_case "COORD_AGENT unset"           1 "" "COORD_AGENT is unset"                           "$_oc/ok.json" -unset
+owner_case "COORD_AGENT outside roster"  1 "" "COORD_AGENT 'ghost' is not a roster[].name"     "$_oc/ok.json" ghost
+owner_case "roster not an array"         1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/roster-object.json" builder
+owner_case "roster absent"               1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/no-roster.json" builder
+
+echo "== kb_card_tags / kb_owner_stamp / kb_owner_strip — the tag decisions =="
+eq "kb_card_tags: a list"               '["a","b"]' "$(kb_card_tags '{"data":{"tags":["a","b"]}}')"
+eq "kb_card_tags: no tags key is []"    '[]'        "$(kb_card_tags '{"data":{"id":1}}')"
+eq "kb_card_tags: null tags is []"      '[]'        "$(kb_card_tags '{"data":{"tags":null}}')"
+for _body in '{"ok":true}' '{"data":null}' '{"data":{"tags":false}}' '{"data":{"tags":{"0":"x"}}}' '{"data":{"tags":"x"}}' '<html>'; do
+    eq "kb_card_tags: $_body is UNREADABLE (nothing)" "" "$(kb_card_tags "$_body")"
+done
+
+export COORD_CONFIG="$_oc/ok.json" COORD_AGENT=builder
+stamp() { kb_owner_stamp "task 1" printf '%s' "$1"; }
+stamp '{"data":{"tags":["x"]}}'
+eq "stamp: an unowned card → its tags plus the owner tag" '["x","owner:acme/builder"]' "$KB_OWNER_TAGS"
+eq "stamp: …with no notice"                               "" "$KB_OWNER_NOTE"
+stamp '{"data":{"tags":["owner:acme/builder","x"]}}'
+eq "stamp: the same owner → nothing to send"              "" "$KB_OWNER_TAGS"
+eq "stamp: …silently"                                     "" "$KB_OWNER_NOTE"
+stamp '{"data":{"tags":["owner:acme/builder","owner:other/reviewer"]}}'
+eq "stamp: this owner AND another → a conflict, nothing sent" "" "$KB_OWNER_TAGS"
+eq "stamp: …naming only the OTHER holder"                 "true" "$(has 'already held by owner:other/reviewer.' "$KB_OWNER_NOTE")"
+stamp '{"data":{"tags":{"0":"x"}}}'
+eq "stamp: unreadable tags → nothing sent"                "" "$KB_OWNER_TAGS"
+eq "stamp: …loudly"                                       "true" "$(has 'current tags could not be read' "$KB_OWNER_NOTE")"
+_stamp_reader_ran=""
+_reader() { _stamp_reader_ran=1; printf '{"data":{"tags":[]}}'; }
+export COORD_AGENT=ghost
+kb_owner_stamp "task 1" _reader
+eq "stamp: an unresolvable owner → nothing sent"          "" "$KB_OWNER_TAGS"
+eq "stamp: …the reader is never run"                      "" "$_stamp_reader_ran"
+eq "stamp: …and the notice carries the resolver's reason" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$KB_OWNER_NOTE")"
+export COORD_AGENT=builder
+kb_owner_stamp "task 1" false
+eq "stamp: a reader that FAILS is an unreadable list"     "" "$KB_OWNER_TAGS"
+eq "stamp: …loudly"                                       "true" "$(has 'current tags could not be read' "$KB_OWNER_NOTE")"
+
+eq "strip: every owner tag goes, the rest stay in order"  '["a","b"]' "$(kb_owner_strip '["a","owner:p/s","b","owner:q/t"]')"
+eq "strip: a list with no owner tag → nothing (no write)" ""          "$(kb_owner_strip '["a","b"]')"
+eq "strip: a list of only owner tags → []"                '[]'        "$(kb_owner_strip '["owner:p/s"]')"
+eq "strip: a tag merely CONTAINING owner: stays"          '["x-owner:p/s"]' "$(kb_owner_strip '["x-owner:p/s","owner:p/s"]')"
+eq "list: names the owner tags"                           "owner:p/s, owner:q/t" "$(kb_owner_list '["a","owner:p/s","owner:q/t"]')"
+unset -f owner_case stamp _reader
+unset COORD_CONFIG COORD_AGENT _oc _body _stamp_reader_ran
+
+# ---------------------------------------------------------------------------
 _summary "kb-board-lib-selftest"

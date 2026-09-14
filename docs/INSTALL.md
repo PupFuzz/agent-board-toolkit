@@ -187,6 +187,21 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 >
 > Without one of these, a bare `kbcard` on a non-`dev` box exits `2` with `board env file not readable: …/.kanban-dev-board.env` — the error names these fixes and lists the `~/.kanban-*-board.env` files it did find, so a fresh box on a non-`dev` board isn't left reverse-engineering the default.
 
+## 3c. Seat identity for the owner tag (agent seats)
+
+The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` when they move a card to In Progress ([README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat)). They read these environment variables, which a coord-installed seat already carries:
+
+- **`COORD_CONFIG`** — the absolute path to the seat's `coordination.config.json`. Its `project` value is `<project>`, and it must be non-empty.
+- **`COORD_AGENT`** — the seat name. It is `<seat>`, and it must equal one of that config's `roster[].name`.
+
+Nothing is defaulted. If either is missing, or the seat is not in the roster, the card still moves and the hook prints why the owner tag was not stamped. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
+
+To check a seat, run this from the environment the hooks run in:
+
+```bash
+jq -r --arg s "$COORD_AGENT" '"owner:\(.project)/\($s)  in roster: \(any(.roster[]?; .name == $s))"' "$COORD_CONFIG"
+```
+
 ## 4. Per-repo release config (only for repos that cut releases)
 
 `promote-released-cards`, `release-pr-body` and `release-artifacts-check` read `<repo>/.release-pr.json`:
