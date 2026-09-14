@@ -34,11 +34,18 @@
 #   measured here. Named rather than hidden — see _kbc_text_is_blank for why the set is spelled
 #   out as four literal characters instead of as a class.
 #   --content and --block-reason are CRLF-folded and trailing-newline-trimmed inline as well.
-#   --name and --description are the one exception and only on the BYTES: their inline spelling
-#   predates its file twin, so an inline value still reaches the wire exactly as typed (a CRLF one
-#   included) — rewriting it would narrow what an already-shipped flag accepts, which is an
-#   acceptance change nobody has asked for. Blank-checking it was one, and it was asked and
-#   granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
+#   Among the pairs, --name and --description are the one exception and only on the BYTES: their
+#   inline spelling predates its file twin, so an inline value still reaches the wire exactly as
+#   typed (a CRLF one included) — rewriting it would narrow what an already-shipped flag accepts,
+#   which is an acceptance change nobody has asked for. Blank-checking it was one, and it was asked
+#   and granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
+#   THE PAYLOAD TEXT FLAGS — --pr-url, --issue-url, --version and --origin, on create-card and
+#   patch — have no file twin and take the same text-free refusal, rc 2 before any request, with
+#   the same four-character blank set; a value with any text is sent exactly as typed, padding
+#   included. A blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0
+#   (measured on --origin); a blank --pr-url / --issue-url can also detach the card from its repo.
+#   Refusing it was an acceptance change, asked and granted (card#9338). ⚠ None of the four has a
+#   clearer, so this CLI can no longer empty one on purpose (a wont_do decline still nulls pr_url).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -187,6 +194,8 @@
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
+#     A visually blank --pr-url / --issue-url is rc 2 before any request, as is a blank --version
+#     or --origin: the payload-text-flag paragraph of the free-text convention at the top owns it.
 #     --pr / --issue MUST NAME ONE POSITIVE INTEGER, optionally decorated (178, #178, PR-178).
 #     A value carrying no digits, or SEVERAL digit runs (1.5, 2026-08-23, "PR 12 of 34"), is
 #     rc 2 before any request, on both create-card and patch — as is a NEGATIVE value (-5) and
@@ -896,7 +905,8 @@ resolve_task() {
 # the task.payload object shared by create-card and patch from the optional card-metadata
 # flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
-# that is not ONE POSITIVE decorated integer (_kbc_require_ref_int). Both callers assemble the payload
+# that is not ONE POSITIVE decorated integer (_kbc_require_ref_int) — or on a visually blank
+# --pr-url / --issue-url / --version / --origin (_kbc_text_arg). Both callers assemble the payload
 # BEFORE they resolve the task ref, so those refusals cost no request at all. Numeric-looking
 # values are coerced to JSON numbers so number-typed custom fields (e.g. pr_number,
 # issue_number) don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
@@ -926,6 +936,16 @@ _kbc_decline_nulls() {
 _kbc_build_payload() {
     local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
     local payload_args=()
+    # The free-text payload values take the blank refusal every free-text flag takes, from the
+    # same resolver — single-source (no --…-file twin), bytes verbatim. A visually blank one used
+    # to be SENT, and the board's trim-then-null rewrite turned it into a CLEAR of the stored
+    # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`. It sits
+    # above the version_target branch on purpose: a blank --version is a malformed invocation
+    # whether or not this board would have written it.
+    _kbc_text_arg pr_url pr-url "" "$pr_url" "" verbatim || return 2
+    _kbc_text_arg issue_url issue-url "" "$issue_url" "" verbatim || return 2
+    _kbc_text_arg version version "" "$version" "" verbatim || return 2
+    _kbc_text_arg origin origin "" "$origin" "" verbatim || return 2
     if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
     if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; payload_args+=("pr_number=$pr"); fi
     [[ -n "$pr_url" ]]    && payload_args+=("pr_url=$pr_url")       # sets the by-ref `source` (owner/repo); pr_number does not
@@ -1073,6 +1093,8 @@ _kbc_text_is_blank() {
 # CALLER passed, when both sources were given, when a required pair got neither, when the file is
 # `-`, missing or unreadable, or when the file's text is blank. Every one of those is decided
 # with no network at all, so a bad invocation can never half-write.
+# A free-text flag with NO file twin passes "" as <file>: it then gets the blank check and, with
+# <inline-verbatim>, nothing else — its value comes back byte-identical or is refused.
 #
 # WHY THE FILE FORM IS THE CONVENTION FOR TEXT THIS AGENT DID NOT AUTHOR. An inline value is
 # expanded by the CALLER's shell before kbcard is even started, so a `$(…)` or a backtick inside

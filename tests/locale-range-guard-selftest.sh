@@ -159,10 +159,10 @@ both "kb_dl_num accepts a bare 93 (posctl)"   "93"  "93"        "$DLNUM"
 
 # ---------------------------------------------------------------------------
 echo "== kbcard's free-text BLANK check — _kbc_text_is_blank (bin/kbcard; card#9222) =="
-# The predicate behind "a text-free --name / --description / --block-reason / --content is rc 2
-# before any request". It used to be `[[ -z "${v//[[:space:]]/}" ]]`, i.e. the POSIX-class
-# spelling of this file's defect, and it answered two ways on identical bytes: U+2003 EM SPACE
-# was BLANK (refused) under en_US.UTF-8 and CONTENT (accepted) under LC_ALL=C. A refusal whose
+# The predicate behind every kbcard free-text flag's "a text-free value is rc 2 before any
+# request" (the flags themselves are driven in tests/kbcard-selftest.sh). It used to be
+# `[[ -z "${v//[[:space:]]/}" ]]`, i.e. the POSIX-class spelling of this file's defect, and it
+# answered two ways on identical bytes: U+2003 EM SPACE was BLANK (refused) under en_US.UTF-8 and CONTENT (accepted) under LC_ALL=C. A refusal whose
 # verdict depends on the caller's environment is the same one-product-two-answers class the
 # refusal itself was added to close, so the fix is a window pin plus an ASCII set spelled out in
 # four literal characters rather than a class name.

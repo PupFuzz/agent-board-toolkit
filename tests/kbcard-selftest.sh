@@ -3916,4 +3916,131 @@ eq "…and cost no traffic"                          "0" "$(kb_stub_total)"
 unset -f dbody kb_stub_route
 
 # ---------------------------------------------------------------------------
+echo "== payload free-text flags — a visually blank value is refused, not sent (card#9338) =="
+# THE DEFECT. `--origin` / `--version` / `--pr-url` / `--issue-url` took `kb_require_value` only,
+# which refuses an EMPTY value and passes a whitespace-only one, and then rode straight into
+# task.payload. Measured against the live board on a real card (and restored): `patch --origin
+# "   "` over a card holding `origin: "preemptive"` was rc 0, and a re-read returned `origin: null`
+# — the board's TrimStrings → ConvertEmptyStringsToNull turned the padding into a CLEAR, and the
+# caller was told the write landed. `--pr-url` / `--issue-url` cost more: those keys set the
+# card's by-ref `source`, so a blank one detaches the card from its repo and a release promote
+# then skips it. Narrowing four shipped flags is an acceptance change; asked and granted.
+#
+# THE POPULATION IS DERIVED, NOT TYPED. `_payload_flags` reads each verb's own
+# `_kbc_build_payload` call and resolves every variable it passes back to the case arm that sets
+# it. The two lists below are the CLASSIFICATION of that set — free text, or a correlation ref
+# with a dedicated validator — and the parity leg reds in both directions, so a payload flag
+# added to either verb cannot land without being classified (and so driven) here.
+# ⚠ What it cannot see: a payload key written by some route other than `_kbc_build_payload`.
+PAYLOAD_TEXT_FLAGS=(--issue-url --origin --pr-url --version)
+PAYLOAD_REF_FLAGS=(--dl --issue --pr)   # each has its own validator, driven in the ref blocks above
+
+# _payload_flags <bin> <function> — the flags whose values <function> hands to _kbc_build_payload.
+_payload_flags() {
+    awk -v fn="$2" '
+    $0 ~ "^" fn "[(][)] [{]" { inside = 1; next }
+    inside && /^}/ { inside = 0 }
+    !inside || /^[[:space:]]*#/ { next }
+    /^[[:space:]]+--[a-z-]+[)] kb_require_value / && match($0, /[a-z_]+="[$]2"/) {
+        f = $0; sub(/^[[:space:]]+/, "", f); sub(/[)].*$/, "", f)
+        v = substr($0, RSTART, RLENGTH); sub(/=.*$/, "", v)
+        flag[v] = f
+    }
+    /_kbc_build_payload "/ { call = $0 }
+    END {
+        s = call
+        while (match(s, /"[$][a-z_]+"/)) {
+            v = substr(s, RSTART + 2, RLENGTH - 3); s = substr(s, RSTART + RLENGTH)
+            print ((v in flag) ? flag[v] : "UNRESOLVED:" v)
+        }
+    }' "$1" | LC_ALL=C sort
+}
+_pf_classified="$(printf '%s\n' "${PAYLOAD_TEXT_FLAGS[@]}" "${PAYLOAD_REF_FLAGS[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+for _verb in create-card patch; do
+    _pf_derived="$(_payload_flags "$BIN" "cmd_${_verb//-/_}" | tr '\n' ' ')"
+    # Positive control FIRST: an empty derivation would make every loop below drive nothing.
+    eq "$_verb: the payload-flag derivation carries real data (positive control)" "false" \
+       "$([[ -z "$_pf_derived" ]] && echo true || echo false)"
+    eq "$_verb: every payload flag is classified, and nothing classified is gone" \
+       "$_pf_classified" "$_pf_derived"
+done
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_CF_VERSION_TARGET=77'
+kb_stub_board_config nover 43 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+PF_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+export PF_CARD
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json)        printf '201\n%s' "$PF_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$PF_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$PF_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# pf <verb> <args…> — drive a verb with only what it REQUIRES plus the flags under test.
+pf() {
+    local verb="$1"; shift
+    case "$verb" in
+        create-card) PF_METHOD=POST;  PF_PATH='/tasks.json';     kbc create-card --type fr --name probe "$@" ;;
+        patch)       PF_METHOD=PATCH; PF_PATH='/tasks/505.json'; kbc patch --task 505 "$@" ;;
+    esac
+}
+# pf_values — every value the last write put in task.payload, as a JSON array. Keyless on
+# purpose: the property is that the typed bytes are the ONLY payload value, whichever key the
+# flag writes (--version writes `version_target`).
+pf_values() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '[(.payload // {})[]]'; }
+
+PF_NBSP=$'\xc2\xa0'
+PF_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ')
+for _verb in create-card patch; do
+  for _flag in "${PAYLOAD_TEXT_FLAGS[@]}"; do
+    _L="$_verb $_flag"
+    for _b in "${PF_BLANKS[@]}"; do
+        _bn="$(jq -cn --arg s "$_b" '$s')"
+        pf "$_verb" "$_flag" "$_b"
+        eq "$_L $_bn → rc 2"                              "2" "$rc"
+        eq "$_L $_bn → refused as holding no text, by flag" "true" "$(has "$_flag holds no" "$err")"
+        eq "$_L $_bn → issues NO request"                  "0" "$(kb_stub_total)"
+    done
+    # The positive controls that make the zeros above a measurement: the same door accepts any
+    # value with text, and sends its bytes as typed — padding is content, never trimmed.
+    pf "$_verb" "$_flag" $'  padded\ttext  '
+    eq "$_L padded text → rc 0"                          "0" "$rc"
+    eq "$_L padded text → on the wire byte-identical"    "$(jq -cn --arg s $'  padded\ttext  ' '[$s]')" "$(pf_values)"
+    # The documented residue: blank is four ASCII characters, so U+00A0 is content and is sent.
+    pf "$_verb" "$_flag" "$PF_NBSP"
+    eq "$_L U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_L U+00A0-only → sent verbatim"                 "$(jq -cn --arg s "$PF_NBSP" '[$s]')" "$(pf_values)"
+  done
+  # The correlation refs already refuse through their own validators; held here so "no payload
+  # flag accepts a visually blank value" is a claim about the derived set, not about four of it.
+  for _flag in "${PAYLOAD_REF_FLAGS[@]}"; do
+    pf "$_verb" "$_flag" '   '
+    eq "$_verb $_flag whitespace-only → rc 2"            "2" "$rc"
+    eq "$_verb $_flag whitespace-only → issues NO request" "0" "$(kb_stub_total)"
+  done
+done
+
+# A blank --version is a MALFORMED INVOCATION whether or not this board would have used it: the
+# refusal sits ahead of the KB_CF_VERSION_TARGET branch. The control proves that branch is live
+# on this board (a real value is ignored with its warning), so the rc 2 is the blank check's.
+kbc --board nover patch --task 505 --version '   '
+eq "--version blank on a board with no version field → rc 2" "2" "$rc"
+eq "…refused as holding no text"                     "true" "$(has '--version holds no' "$err")"
+eq "…and issues NO request"                          "0" "$(kb_stub_total)"
+kbc --board nover patch --task 505 --version v1.2.3 --dl DL-7
+eq "control: a real --version there is ignored, not refused" "true" "$(has '--version ignored' "$err")"
+eq "…and the call still lands"                       "0" "$rc"
+
+unset -f pf pf_values kb_stub_route _payload_flags
+unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS
+unset _verb _flag _L _b _bn _pf_classified _pf_derived
+
+# ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
