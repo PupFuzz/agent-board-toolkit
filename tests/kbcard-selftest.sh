@@ -4286,6 +4286,15 @@ eq "wont_do + --clear pr-url → pr_url null once, no conflict" \
 kbc patch --task 505 --column wont_do --keep-refs --clear pr-url
 eq "wont_do --keep-refs + --clear pr-url → the explicit clear still rides" \
    '{"assigned_user_id":null,"payload":{"pr_url":null},"workflow_stage_id":60}' "$(cl_body)"
+# The --keep-refs notice lists what it RETAINED, so a key this call cleared must not be in it: the
+# line is still printed (presence) and names only the stamps that survived (content).
+eq "…and the retained notice names only the stamps NOT cleared" \
+   "kbcard: --keep-refs — correlation stamps (dl_number, pr_number) retained" \
+   "$(command grep 'retained' <<<"$err")"
+kbc patch --task 505 --column wont_do --keep-refs --clear origin
+eq "wont_do --keep-refs + --clear origin → the notice still names every correlation stamp" \
+   "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" \
+   "$(command grep 'retained' <<<"$err")"
 
 unset -f _clr_fields cl_body kb_stub_route
 unset CL_HELD _f _k _all _accepted _bad _bn

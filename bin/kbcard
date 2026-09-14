@@ -122,15 +122,17 @@
 #     (the setter flag's spelling; `_kbc_clearable` is the one declaration, and an unknown field is
 #     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
 #     payload key (version → version_target): the API merges payload per key, so an omitted key is
-#     untouched and a null REMOVES it — and for pr-url / issue-url that also drops the by-ref
-#     `source` those keys set. Several fields are ONE comma list (`--clear origin,version`), the
+#     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
+#     the board re-derives it from what remains, falling back to payload.repo, the other URL keys
+#     and a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
 #     spelling --tags uses; a second --clear is rc 2 rather than a silent last-wins that would drop
 #     a clear. No padding is trimmed and an empty member is an unknown field. Naming a field AND its
 #     setter (`--pr-url X --clear pr-url`) is rc 2 before any request, naming the flag passed. The
 #     write echo shows every cleared key RAW under `payload`, so a removed one reads `null`. On a
 #     board with no version_target field, `--clear version` is ignored with the same warning
 #     --version gets. Beside --column wont_do an explicit clear composes with the decline nulls
-#     (both write null), and — like an explicit ref flag — it wins over --keep-refs. create-card
+#     (both write null), and — like an explicit ref flag — it wins over --keep-refs, whose notice
+#     then leaves the cleared key out of what it retained. create-card
 #     does not take it: there is nothing to clear at birth.
 #     ⛔ --clear-description IS THE DESCRIPTION'S CLEARER — the shape --unblock is for
 #     block_reason, and for the same reason: a field this tool can SET must be unsettable by it,
@@ -930,7 +932,7 @@ resolve_task() {
     echo "$id"
 }
 
-# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin]: assemble
+# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin] [clear]: assemble
 # the task.payload object shared by create-card and patch from the optional card-metadata
 # flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
@@ -1799,7 +1801,10 @@ cmd_patch() {
         payload_json="$(_kbc_decline_nulls "$payload_json")"
         echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
     elif [[ "$column" == "wont_do" ]]; then
-        echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
+        # Retained = the decline's stamps minus what --clear removed in this same call.
+        local retained
+        retained="$(_kbc_decline_nulls | jq -r --argjson c "$cleared_json" 'keys_unsorted - $c | join(", ")')"
+        echo "kbcard: --keep-refs — correlation stamps ($retained) retained" >&2
     fi
 
     local task; task="$(resolve_task "$task_ref")"
