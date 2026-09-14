@@ -265,7 +265,7 @@ eq "declared divergence: …and on the mirror"                 "accept" "$(_uv 0
 # ═══════════════════════ 4 — the owner-tag clear: promote ↔ the lib's tag rules ═══════════════
 #
 # promote-released-cards removes the seat owner tags from a card it releases, and may not source
-# the lib, so it carries its own copies of the three tag rules the lib's `kb_owner_tag_write clear`
+# the lib, so it carries its own copies of the tag rules the lib's `kb_owner_tag_write clear`
 # goes through: which tag list a card read carries (`kb_card_tags`), the list without its owner
 # tags (`kb_owner_strip`), and the owner tags named (`kb_owner_list`). A disagreement is a tag wipe
 # (a read one copy calls unreadable and the other calls `[]`) or a tag the two clear differently.

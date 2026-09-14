@@ -4275,7 +4275,8 @@ printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"}]}\n' 
 # KB_STUB_READ swaps that read for a refusal or a 2xx no card can be read out of.
 # KB_STUB_TAGS_PATCH answers any PATCH carrying `tags` with that status (the server's update
 # authorization / tag validation), while a PATCH without `tags` still moves; KB_STUB_MOVE refuses
-# the move itself.
+# the move itself. KB_STUB_ECHO_STAGE makes a 2xx echo name that stage instead of the requested
+# one — a move the server answered but did not confirm.
 kb_stub_route() {
     local method="$1" url="$2" body="$3"
     case "$method $url" in
@@ -4295,13 +4296,14 @@ kb_stub_route() {
                 printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
             else
                 printf '200\n'
-                jq -cn --argjson b "$body" '{data: ({id:606,name:"probe",workflow_stage_id:48} + $b)}'
+                jq -cn --argjson b "$body" '{data: ({id:606,name:"probe",workflow_stage_id:48} + $b)}
+                    | if $ENV.KB_STUB_ECHO_STAGE then .data.workflow_stage_id = ($ENV.KB_STUB_ECHO_STAGE | tonumber) else . end'
             fi ;;
         *)  printf '404\n{"message":"unrouted"}' ;;
     esac
 }
 export -f kb_stub_route
-unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE
 
 # own <env-assignments…> -- <kbcard args…>: run kbcard with a seat declared (or not) in the env.
 own() {
@@ -4348,6 +4350,12 @@ KB_STUB_MOVE=403 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task
 eq "a REFUSED move → rc 1"                             "1" "$rc"
 eq "…and no owner tag is written for a move that did not happen" "$MOVE49" "$(obodies)"
 eq "…nor is the card read for one"                     "0" "$(kb_stub_count GET /tasks/606.json)"
+# A 2xx is not the confirmation: the echo's stage is. A move answered with ANOTHER stage is one
+# this tool cannot vouch for, so no stamp may follow it.
+KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ a move whose echo names ANOTHER stage → rc 1"    "1" "$rc"
+eq "…no owner tag is written for a move that was not confirmed" "$MOVE49" "$(obodies)"
+eq "…nor is the card read for one (unconfirmed)"       "0" "$(kb_stub_count GET /tasks/606.json)"
 
 # --- ⭐ refuse on conflict: never overwrite, never a second owner tag, the card still moves ---
 KB_STUB_CARD="$(card '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
@@ -4413,6 +4421,10 @@ KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --c
 eq "patch --column shipped_to_dev clears it too"       '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column released_to_main
 eq "patch --column released_to_main clears it too"     '{"assigned_user_id":null,"workflow_stage_id":52}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
+eq "⭐ patch --column shipped_to_dev whose echo names ANOTHER stage → rc 1" "1" "$rc"
+eq "…the patch alone: no owner clear follows an unconfirmed move" '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
+eq "…and no card read for one"                         "0" "$(kb_stub_count GET /tasks/606.json)"
 # A call that carries its own tag list sends it with the patch as asked; the owner clear is still
 # its own fresh read and write after the move.
 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev --triaged
@@ -4441,7 +4453,7 @@ KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --c
 eq "…nor does patch --column in_review"                '{"workflow_stage_id":50}' "$(obodies)"
 
 unset -f own obodies card kb_stub_route
-unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE OWN_CFG SEAT MOVE49 _r _tp _tc
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE OWN_CFG SEAT MOVE49 _r _tp _tc
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
