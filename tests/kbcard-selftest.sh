@@ -192,6 +192,22 @@ eq "null .data → board fetch NOT reached"   ""            "$(cat "$_FBC_SENTIN
 unset -f kb_api fetch_board_cards
 rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
 
+echo "== _kbc_archive_decision — a card body carrying two JSON texts fails closed before the board fetch =="
+# The card and the board share one stdin stream into the gate's jq, so a second card text would be
+# read as the first BOARD text. Refused where the null card is, before anything is fetched.
+_FBC_SENTINEL="$(mktemp)"; : > "$_FBC_SENTINEL"
+KB_API="https://kanban.test/api/v3" KB_TOKEN="stub-token" KB_BOARD_ID=42
+kb_api() { printf '{"data":{"id":42}}{"data":{"id":43}}'; }
+fetch_board_cards() { echo REACHED > "$_FBC_SENTINEL"; printf '[]'; }
+python3() { echo REACHED-SHIM > "$_FBC_SENTINEL"; }
+_dec="$(_kbc_archive_decision 42)" || true
+eq "two card texts → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
+eq "…naming why"                               "true" "$(has 'more than one JSON text' "$_dec")"
+eq "…with neither the board fetch nor the shim reached" "" "$(cat "$_FBC_SENTINEL")"
+unset -f kb_api fetch_board_cards python3
+unset KB_API KB_TOKEN KB_BOARD_ID
+rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
+
 echo "== _kbc_archive_decision — a card over MAX_ARG_STRLEN still reaches the gate =="
 # Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 131072 B) whatever ARG_MAX is, and a
 # card grows past that by accreting comments. The card must reach jq on stdin: carried as an
@@ -1542,6 +1558,14 @@ KB_STUB_GET_BODY_FILE="$TMP/big-card.json" KB_STUB_POST_BODY='{"data":{"id":99}}
     kbc comment --task 505 --content x
 eq "a >131072 B card NOT carrying the posted id → rc 1 (a measurement, not rc 3)" "1" "$rc"
 eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+# A 2xx body carrying TWO JSON texts is not one card. Selected on stdin, each text yields its own
+# witness line, and `jq -e` over that stream rules on the LAST — so a second text carrying the
+# posted id would confirm a comment the first says is absent. The witness must refuse it outright.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[{"id":13}]}}' \
+    kbc comment --task 505 --content x
+eq "a re-read body carrying two JSON texts → rc 3 (not one card, so nothing was measured)" "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and prints no id"                           "" "$out"
 
 echo "-- comment: an HTTP failure carries the status AND the error body --"
 KB_STUB_POST_HTTP=422 \

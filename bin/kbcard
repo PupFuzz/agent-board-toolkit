@@ -3051,6 +3051,9 @@ _kbc_archive_decision() {
     # false `ok` that archives a live-and-untwinned card), the mirror of the board
     # input's safe `[]` default above — so fail closed here, never reach the shim.
     [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
+    # More than one JSON text is not one card: on the shared stdin stream below, the second would
+    # be read as the first board text.
+    [[ "$card" == *$'\n'* ]] && { printf 'noprimitive\tcard %s fetch returned more than one JSON text — cannot verify archive safety' "$task"; return 0; }
     # Capture the board array regardless of the paginator's rc — a partial or EMPTY
     # census only removes twins (more conservative), never invents one. The `|| true`
     # keeps EVERY non-zero paginator rc — 1, 2, 3 and 4 — from aborting this function
