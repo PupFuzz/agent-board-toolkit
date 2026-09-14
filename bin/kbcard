@@ -41,16 +41,17 @@
 #   and granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
 #   THE PAYLOAD TEXT FLAGS — --pr-url, --issue-url, --version and --origin, on create-card and
 #   patch — have no file twin and take the same text-free refusal, rc 2 before any request, with
-#   the same six-character blank set. A value with any text is sent exactly as it was before
-#   that refusal existed — which is NOT as typed: the payload assembler splits values into k=v
-#   LINES (an interior newline truncates the value, a CR before it survives, and a line shaped
-#   `key=value` becomes an extra payload key) and COERCES each value through jq's `tonumber`
-#   (" 123 " and "1.10" go out as numbers, "nan" as null). Both rewrites are unchanged here and
-#   tracked separately. A blank one used to be SENT, and the board stored it as a CLEAR of the
-#   field at rc 0 (measured on --origin); a blank --pr-url / --issue-url can also detach the card
-#   from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
+#   the same six-character blank set. A value with any text is sent AS TYPED, as a JSON string:
+#   padding, CR and newlines included, never re-typed (" 123 ", "1.10" and "nan" stay strings)
+#   and never split (a newline cannot end the value or add a payload key). Until card#9423 the
+#   assembler split values into k=v lines and coerced each through jq's `tonumber`; retiring that
+#   was an acceptance change, asked and granted. Only --pr / --issue are sent as JSON numbers
+#   (a numeric spelling — "178", "00123", or one padded with spaces, tabs, CRs or newlines —
+#   goes out as a number; a decorated one such as "#178" as the string, exactly as passed). A
+#   blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0 (measured
+#   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
 #   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
-#   (a wont_do decline still nulls pr_url; the coercion above can null a value by accident).
+#   (a wont_do decline still nulls pr_url).
 #   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
 #   with the same six-character blank set, decided on the RAW value (before create-card appends
 #   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
@@ -921,17 +922,25 @@ resolve_task() {
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
 # that is not ONE POSITIVE decorated integer (_kbc_require_ref_int) — or on a visually blank
 # --pr-url / --issue-url / --version / --origin (_kbc_text_arg). Both callers assemble the payload
-# BEFORE they resolve the task ref, so those refusals cost no request at all. Numeric-looking
-# values are coerced to JSON numbers so number-typed custom fields (e.g. pr_number,
-# issue_number) don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
+# BEFORE they resolve the task ref, so those refusals cost no request at all.
+# EACH KEY IS SERIALIZED ON ITS OWN, with its JSON type fixed by the key's contract rather than
+# guessed from the value: the text keys (dl_number, pr_url, issue_url, version_target, origin) go
+# out as JSON strings, byte-for-byte as the validators left them; only pr_number/issue_number —
+# declared `number` on the board (docs/INSTALL.md §3b) — pass through a padding-trimmed
+# `tonumber? // .` (the same result on every jq; see the note at the jq call), and only
+# after _kbc_require_ref_int accepted them, so a decorated spelling ("#178") still travels as the
+# string it has always been. A text value is therefore never re-typed ("1.10" is not 1.1, "nan"
+# is not null) and never split: a newline inside it is a character of that value, not the start
+# of another key. (Values used to be joined as `k=v` LINES and each coerced through tonumber,
+# which let an interior newline truncate a value, a leading one send "", and a `key=value` line
+# inject a key the caller never named — card#9423.) issue_number/issue_url mirror pr_number/pr_url
 # exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
 # alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
 # callers, so patch passes exactly that prefix; origin trails because it was create-card-only
 # until card#5776 made it patchable, and keeping it last left every existing call site
-# untouched. Everything rides the SAME coercion path — a value must flow through this single
-# merge rather than be appended by the caller, which would re-duplicate the merge jq this
-# helper exists to unify.
+# untouched. A value must flow through this single assembler rather than be appended by the
+# caller, which would re-duplicate the per-key typing this helper exists to own.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
 # dl_number/pr_number left on a declined card can later match a recycled DL/PR and
 # resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
@@ -949,10 +958,9 @@ _kbc_decline_nulls() {
 
 _kbc_build_payload() {
     local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
-    local payload_args=()
     # The free-text payload values take the blank refusal every free-text flag takes, from the
     # same resolver — single-source (no --…-file twin), and `verbatim` so this check rewrites
-    # nothing: what the merge below does to a value is unchanged by it. A visually blank one used
+    # nothing: the value it accepts is the value the assembler below sends. A visually blank one used
     # to be SENT, and the board's trim-then-null rewrite turned it into a CLEAR of the stored
     # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`. It sits
     # above the version_target branch on purpose: a blank --version is a malformed invocation
@@ -961,31 +969,40 @@ _kbc_build_payload() {
     _kbc_text_arg issue_url issue-url "" "$issue_url" "" verbatim || return 2
     _kbc_text_arg version version "" "$version" "" verbatim || return 2
     _kbc_text_arg origin origin "" "$origin" "" verbatim || return 2
-    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
-    if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; payload_args+=("pr_number=$pr"); fi
-    [[ -n "$pr_url" ]]    && payload_args+=("pr_url=$pr_url")       # sets the by-ref `source` (owner/repo); pr_number does not
-    if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; payload_args+=("issue_number=$issue"); fi
-    [[ -n "$issue_url" ]] && payload_args+=("issue_url=$issue_url") # sets the by-ref `source` (owner/repo); issue_number does not
+    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; fi
+    if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; fi
+    if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; fi
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
     # 422s (kanban gates payload keys to registered fields). Warn, don't drop
     # silently, so a misconfigured board surfaces instead of vanishing the value.
-    if [[ -n "$version" ]]; then
-        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
-            payload_args+=("version_target=$version")
-        else
-            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
-        fi
+    if [[ -n "$version" ]] && [[ -z "${KB_CF_VERSION_TARGET:-}" || "${KB_CF_VERSION_TARGET}" == "000" ]]; then
+        echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        version=""
     fi
-    [[ -n "$origin" ]]  && payload_args+=("origin=$origin")
 
-    # Build payload as a JSON object. Coerce numeric strings to JSON numbers so
-    # number-typed custom fields (e.g. pr_number) don't 422 with "Must be a number".
-    local payload_json="{}"
-    if [[ ${#payload_args[@]} -gt 0 ]]; then
-        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
-    fi
-    printf '%s' "$payload_json"
+    # An empty value is an unset flag (every validator above refuses a blank one), so it is
+    # omitted. The ref keys are trimmed of space/tab/CR/LF for the number attempt ONLY: jq-1.7's
+    # tonumber accepts exactly that padding and jq-1.8 refuses it, so an untrimmed attempt makes
+    # " 123 " a number or a string by jq version. `sub`, not `trim` (jq-1.7.1+). A value that is
+    # still not a number after the trim is sent as passed, padding included. pr_url / issue_url
+    # set the by-ref `source` (owner/repo); pr_number / issue_number do not.
+    jq -nc \
+        --arg dl_number "$dl" \
+        --arg pr_number "$pr" \
+        --arg pr_url "$pr_url" \
+        --arg issue_number "$issue" \
+        --arg issue_url "$issue_url" \
+        --arg version_target "$version" \
+        --arg origin "$origin" \
+        '{dl_number: $dl_number, pr_number: $pr_number, pr_url: $pr_url,
+          issue_number: $issue_number, issue_url: $issue_url,
+          version_target: $version_target, origin: $origin}
+         | with_entries(select(.value != ""))
+         | with_entries(if .key == "pr_number" or .key == "issue_number"
+                        then .value |= ((sub("^[ \t\n\r]+"; "") | sub("[ \t\n\r]+$"; "")
+                                         | tonumber?) // .)
+                        else . end)'
 }
 
 # _kbc_require_type_alias <alias>: a --type alias must be tag-safe, because on a board
