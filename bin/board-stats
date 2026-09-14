@@ -400,7 +400,7 @@ _bs_since_epoch() {
     # the shape an unexpanded shell variable arrives in. The caller's kb_require_value already
     # refuses `--since ""` at the flag, so this is the same invariant re-asserted where the
     # value is USED rather than trusted from one call site.
-    if [[ -z "${spec//[[:space:]]/}" ]]; then
+    if kb_is_blank "$spec"; then
         echo "$KB_PROG: --since needs a window (an unexpanded variable?) — <N>h, <N>d, or an ISO-8601 instant" >&2
         return 2
     fi

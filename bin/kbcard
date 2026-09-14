@@ -26,13 +26,13 @@
 #   would otherwise send a literal \r, which a reader renders as `?` at the end of every line);
 #   a LONE \r is not a line ending and is left alone. THE TEXT-FREE REFUSAL IS THE ONE RULE EVERY
 #   PAIR OBEYS THROUGH BOTH HALVES: an empty or whitespace-only value is rc 2 before any request
-#   whether it arrived inline or in a file, on every free-text flag here. BLANK MEANS EXACTLY FOUR
-#   ASCII CHARACTERS — space, tab, CR, LF — decided under an LC_ALL=C pin, so identical bytes get
-#   the identical verdict whatever locale the caller runs in. Anything else is CONTENT and is
-#   ACCEPTED: that includes the non-ASCII blanks (U+00A0, U+2003, U+3000) and \v / \f, so a name
+#   whether it arrived inline or in a file, on every free-text flag here. BLANK MEANS EXACTLY SIX
+#   ASCII CHARACTERS — space, tab, CR, LF, VT (\v), FF (\f) — decided under an LC_ALL=C pin, so
+#   identical bytes get the identical verdict whatever locale the caller runs in. Anything else is
+#   CONTENT and is ACCEPTED: that includes the non-ASCII blanks (U+00A0, U+2003, U+3000), so a name
 #   made only of those is SENT. What the board then does with it is the board's rule and is NOT
-#   measured here. Named rather than hidden — see _kbc_text_is_blank for why the set is spelled
-#   out as four literal characters instead of as a class.
+#   measured here. Named rather than hidden — see kb_is_blank in _kb-board-lib.sh for why the set
+#   is spelled out as six literal characters instead of as a class.
 #   --content and --block-reason are CRLF-folded and trailing-newline-trimmed inline as well.
 #   Among the pairs, --name and --description are the one exception and only on the BYTES: their
 #   inline spelling predates its file twin, so an inline value still reaches the wire exactly as
@@ -41,7 +41,7 @@
 #   and granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
 #   THE PAYLOAD TEXT FLAGS — --pr-url, --issue-url, --version and --origin, on create-card and
 #   patch — have no file twin and take the same text-free refusal, rc 2 before any request, with
-#   the same four-character blank set. A value with any text is sent exactly as it was before
+#   the same six-character blank set. A value with any text is sent exactly as it was before
 #   that refusal existed — which is NOT as typed: the payload assembler splits values into k=v
 #   LINES (an interior newline truncates the value, a CR before it survives, and a line shaped
 #   `key=value` becomes an extra payload key) and COERCES each value through jq's `tonumber`
@@ -52,7 +52,7 @@
 #   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
 #   (a wont_do decline still nulls pr_url; the coercion above can null a value by accident).
 #   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
-#   with the same four-character blank set, decided on the RAW value (before create-card appends
+#   with the same six-character blank set, decided on the RAW value (before create-card appends
 #   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
 #   blank MEMBER ("a, ,b", "a,") is not refused and still reaches the wire. A blank one used to be
 #   SENT as its own element, beside any `type:` / `triaged` the call appends: rc 0 wherever the
@@ -1073,35 +1073,6 @@ _kbc_require_ref_int() {
     return 0
 }
 
-# _kbc_text_is_blank <value>: TRUE when the value carries no text a READER could see — it is
-# empty once every ASCII space, tab, CR and LF is removed. The one owner of "visually blank"
-# for every free-text flag; `_kbc_text_arg` is its only caller and the reason it is a function
-# rather than a line is the pin below, which has to be scoped to the test and nothing else.
-#
-# ⛔ THE `LC_ALL=C` WINDOW IS THE PREDICATE, NOT DRESSING — card#9222, and the class
-# tests/locale-range-guard-selftest.sh exists for (card#5409). This test used to read
-# `${v//[[:space:]]/}`, and `[[:space:]]` in a bash pattern is a LOCALE class, not an ASCII one.
-# Measured on the reference host, on the identical bytes: U+2003 EM SPACE is STRIPPED under
-# en_US.UTF-8 (so `--name "<U+2003>"` was refused) and KEPT under LC_ALL=C (so the same call was
-# accepted and SENT). One product, two verdicts, chosen by the caller's environment — which is
-# the very defect class this refusal was added to close, relocated from the door axis to the
-# locale axis. The window makes the verdict a property of the bytes.
-#
-# ⭐ THE REFUSED SET IS SPELLED OUT AND IS EXACTLY FOUR CHARACTERS: ASCII space, tab, CR, LF.
-# Not a class name — a class name is a set this file does not own, and it moves. Everything else
-# is CONTENT, including the non-ASCII blanks (U+00A0 NO-BREAK SPACE, U+2003 EM SPACE, U+3000
-# IDEOGRAPHIC SPACE) and the two remaining C0 spacing controls (\v, \f). That residue is
-# DELIBERATE and DOCUMENTED rather than hidden: an explicit Unicode-blank list would drift with
-# every Unicode revision and cannot be re-derived from anything in this repo, whereas these four
-# are what README and this file's own free-text convention already claim — so the narrow set is
-# what makes a SHIPPED claim true rather than a new claim to keep in sync. A caller who needs
-# U+00A0 refused is asking for a different, wider contract; that is an acceptance change and it
-# has not been asked for.
-_kbc_text_is_blank() {
-    local LC_ALL=C _tb_val="$1" _tb_blank=$' \t\r\n'
-    [[ -z "${_tb_val//[$_tb_blank]/}" ]]
-}
-
 # _kbc_text_arg <outvar> <flag> <require-verb> <inline> <file> [inline-verbatim]:
 # resolve a free-TEXT argument from its two mutually-exclusive sources — the inline `--<flag>`
 # and its `--<flag>-file` twin — into <outvar>. Returns 2, with a diagnostic naming the flag the
@@ -1212,15 +1183,15 @@ _kbc_text_arg() {
     # passing it, which is what the name claims and what the carve-out above used to make false.
     # The test reads a STRIPPED COPY rather than the trimmed value, so it decides the same way on
     # a value the rewrite did not touch: a carve-out value carrying only CRLFs or trailing
-    # newlines is as blank to a reader as one carrying only spaces. What counts as blank — four
-    # ASCII characters, under a locale pin — belongs to _kbc_text_is_blank and is stated there.
+    # newlines is as blank to a reader as one carrying only spaces. What counts as blank — six
+    # ASCII characters, under a locale pin — belongs to kb_is_blank in the lib and is stated there.
     # Rationale for refusing at all: the comment server trims before it validates, so a
     # whitespace-only body is a 422 there — a refusal that costs a round trip and arrives as rc 1
     # instead of the rc 2 this class is; and for the optional setters, a board that trims-then-
     # nulls stores NULL under an rc 0 that said the write landed, or a name no reader can read.
     # Only the CHECK sees the stripped copy: what goes on the wire keeps its leading whitespace
     # and its interior newlines.
-    if _kbc_text_is_blank "$_ta_val"; then
+    if kb_is_blank "$_ta_val"; then
         if [[ -n "$_ta_file" ]]; then
             echo "kbcard: --$_ta_flag-file holds no $_ta_noun text: $_ta_file" >&2
         else
@@ -2877,10 +2848,10 @@ cmd_search() {
     # finds no token in it, and answers the WHOLE BOARD — which this verb would then print as
     # matches, every description included. Refused here and not in the paginator, which cannot
     # know whether its caller meant to read a board or to search one. Costs no request.
-    [[ -n "${query//[[:space:]]/}" ]] || {
+    if kb_is_blank "$query"; then
         echo "kbcard: search query holds no text — a blank query matches every card on the board, which is not a search" >&2
         return 2
-    }
+    fi
     # The same two client-side filters `list` offers, resolved by the same owners (a bad
     # --column/--type exits 2 loudly under set -e). They narrow the SERVER's match set; the
     # query itself is the server's job and is passed through untouched.

@@ -15,17 +15,17 @@
 # NAME ("range") DOES NOT COVER IT — so it is named here rather than left to be inferred.
 # `[[:space:]]`, `[[:alpha:]]`, `[[:punct:]]` are DEFINED BY THE LOCALE, which is the whole
 # point of them: measured on the reference host, `${v//[[:space:]]/}` strips U+2003 EM SPACE
-# under en_US.UTF-8 and KEEPS it under LC_ALL=C. kbcard's free-text blank check was exactly
-# that expression and answered two ways on one input (card#9222); it now carries a window pin
-# and spells its four ASCII members out, and it has BEHAVIOUR CASES below.
-# ⚠ WHAT IS NOT COVERED, stated so the citation cannot mislead the next author: the STATIC
-# BACKSTOP at the end of this file scans for bracket RANGES only — a hyphenated pair — in both
-# the regex and glob spellings. It does NOT scan for POSIX classes, so a NEW unpinned
-# `[[:space:]]` guard is born with nothing watching it, exactly as an unpinned glob range was
-# before card#8421. Widening the matcher is its own change: the existing class users in bin/
-# and hooks/ have to be triaged first (most are `${x//[[:space:]]/}` trims and `[[:blank:]]`
-# splits where the locale answer is harmless or wanted), and a backstop that reds on all of
-# them on day one is a backstop nobody keeps green.
+# under en_US.UTF-8 and KEEPS it under LC_ALL=C. Every lib-sourcing tool's BLANK VERDICT now asks
+# one lib predicate, `kb_is_blank`, which carries a window pin and spells its six ASCII members out
+# (card#9222 fixed kbcard's free-text check; card#9337 hoisted it and migrated the other
+# verdicts); the standalone bin/release-artifacts-check keeps a file-pinned equivalent. The
+# predicate, each adopter and that equivalent have BEHAVIOUR CASES below.
+# ⚠ WHAT THE STATIC BACKSTOP COVERS, stated so the citation cannot mislead the next author: it
+# scans for bracket RANGES (a hyphenated pair, regex and glob spellings) and for the POSIX-class
+# BLANK VERDICT — a `[[:space:]]`/`[[:blank:]]` deletion inside a `-z`/`-n` test, or an
+# `=~ ^[[:space:]]*$` match. It does NOT flag every POSIX class: the remaining users in bin/ and
+# hooks/ are strips (`name="${name//[[:space:]]/}"`), splits and quoted grep/sed/jq patterns,
+# where the class is not deciding whether a value is blank.
 #
 # WHAT WAS AND WAS NOT WRONG — the claim this file makes is deliberately narrow. The
 # widened guards still rejected the characters they were written to reject (a comma and a
@@ -158,40 +158,98 @@ both "kb_dl_num accepts DL-093 → 93 (posctl)" "93"  "DL-093"    "$DLNUM"
 both "kb_dl_num accepts a bare 93 (posctl)"   "93"  "93"        "$DLNUM"
 
 # ---------------------------------------------------------------------------
-echo "== kbcard's free-text BLANK check — _kbc_text_is_blank (bin/kbcard; card#9222) =="
-# The predicate behind every kbcard free-text flag's "a text-free value is rc 2 before any
-# request" (the flags themselves are driven in tests/kbcard-selftest.sh). It used to be
-# `[[ -z "${v//[[:space:]]/}" ]]`, i.e. the POSIX-class spelling of this file's defect, and it
-# answered two ways on identical bytes: U+2003 EM SPACE was BLANK (refused) under en_US.UTF-8
-# and CONTENT (accepted) under LC_ALL=C. A refusal whose verdict depends on the caller's environment is the same one-product-two-answers class the
-# refusal itself was added to close, so the fix is a window pin plus an ASCII set spelled out in
-# four literal characters rather than a class name.
+echo "== kb_is_blank — THE blank predicate (bin/_kb-board-lib.sh; card#9222, card#9337) =="
+# Every blank verdict in bin/ asks this. It used to be `[[ -z "${v//[[:space:]]/}" ]]` at each
+# site, i.e. the POSIX-class spelling of this file's defect, and it answered two ways on identical
+# bytes: U+2003 EM SPACE and U+3000 IDEOGRAPHIC SPACE were BLANK (refused) under en_US.UTF-8 and
+# CONTENT (accepted) under LC_ALL=C. The fix is a window pin plus the six ASCII members spelled as
+# literal characters — exactly what `[[:space:]]` means under the C locale.
 #
 # THESE ARE THE STABILITY CASES: `both` asserts the SAME verdict under every live locale, so a
 # dropped pin reds here the moment the runner has a collation-wide UTF-8 locale (and says so
-# loudly when it does not, via the precondition above). tests/kbcard-selftest.sh reaches the same
-# decision through the SHIPPED CLI — that is where the flag-level rc and wire body are pinned;
-# what is pinned HERE is that the answer does not move with the environment.
+# loudly when it does not, via the precondition above). The flag-level rc and wire body are
+# pinned in the adopters' own selftests; what is pinned HERE is that the answer does not move
+# with the environment.
 #
-# The non-ASCII fixtures are the RESIDUE the ruling made explicit and documented: U+00A0, U+2003
-# and U+3000 are CONTENT. That is asserted rather than merely tolerated, because it is the half a
-# later "let's just use [[:space:]], it reads better" would silently reverse under a UTF-8 locale.
+# The non-ASCII fixtures are the RESIDUE the ruling made explicit: U+00A0, U+2003 and U+3000 are
+# CONTENT. That is asserted rather than merely tolerated, because it is the half a later "let's
+# just use [[:space:]], it reads better" would silently reverse under a UTF-8 locale.
 NBSP=$'\xc2\xa0'        # U+00A0 NO-BREAK SPACE
 EMSP=$'\xe2\x80\x83'    # U+2003 EM SPACE
 IDSP=$'\xe3\x80\x80'    # U+3000 IDEOGRAPHIC SPACE
-BLANK='source "$BIN/kbcard" 2>/dev/null || true
-       _kbc_text_is_blank "$IN" && echo BLANK || echo CONTENT'
-both "blank check: the four ASCII members are BLANK" "BLANK"   $' \t\r\n' "$BLANK"
-both "blank check: a lone space is BLANK"            "BLANK"   " "         "$BLANK"
-both "blank check: empty is BLANK"                   "BLANK"   ""          "$BLANK"
-both "blank check: U+00A0 is CONTENT"                "CONTENT" "$NBSP"     "$BLANK"
-both "blank check: U+2003 is CONTENT"                "CONTENT" "$EMSP"     "$BLANK"
-both "blank check: U+3000 is CONTENT"                "CONTENT" "$IDSP"     "$BLANK"
+BLANK='source "$BIN/_kb-board-lib.sh"; kb_is_blank "$IN" && echo BLANK || echo CONTENT'
+both "kb_is_blank: a lone space is BLANK"        "BLANK"   " "          "$BLANK"
+both "kb_is_blank: a lone TAB is BLANK"          "BLANK"   $'\t'        "$BLANK"
+both "kb_is_blank: a lone CR is BLANK"           "BLANK"   $'\r'        "$BLANK"
+both "kb_is_blank: a lone LF is BLANK"           "BLANK"   $'\n'        "$BLANK"
+both "kb_is_blank: a lone VT is BLANK"           "BLANK"   $'\v'        "$BLANK"
+both "kb_is_blank: a lone FF is BLANK"           "BLANK"   $'\f'        "$BLANK"
+both "kb_is_blank: all six mixed are BLANK"      "BLANK"   $' \t\r\n\v\f ' "$BLANK"
+both "kb_is_blank: empty is BLANK"               "BLANK"   ""           "$BLANK"
+both "kb_is_blank: U+00A0 is CONTENT"            "CONTENT" "$NBSP"      "$BLANK"
+both "kb_is_blank: U+2003 is CONTENT"            "CONTENT" "$EMSP"      "$BLANK"
+both "kb_is_blank: U+3000 is CONTENT"            "CONTENT" "$IDSP"      "$BLANK"
+both "kb_is_blank: U+2003 among ASCII blanks is CONTENT" "CONTENT" $' \t'"$EMSP"$'\v' "$BLANK"
 # The positive controls, in both directions: a value with real text must be CONTENT (or the
 # predicate has been narrowed into refusing everything), and padded text must be CONTENT too —
 # the property that separates "decides on a stripped COPY" from "trims the value".
-both "blank check: real text is CONTENT (posctl)"    "CONTENT" "hello"     "$BLANK"
-both "blank check: padded text is CONTENT (posctl)"  "CONTENT" "  hi  "    "$BLANK"
+both "kb_is_blank: real text is CONTENT (posctl)"   "CONTENT" "hello"     "$BLANK"
+both "kb_is_blank: padded text is CONTENT (posctl)" "CONTENT" $' \v hi \f ' "$BLANK"
+both "kb_is_blank does not leak LC_ALL to its caller" "restored" "x" \
+     'source "$BIN/_kb-board-lib.sh"; before="${LC_ALL-unset}"; kb_is_blank " "
+      [[ "${LC_ALL-unset}" == "$before" ]] && echo restored || echo LEAKED'
+
+# ---------------------------------------------------------------------------
+echo "== kb_is_blank's adopters, reached through each tool's own entry point =="
+# One verdict per adopter under both locales, over the two inputs that separate the old spelling
+# from the new one on SOME seat: U+2003 (the UTF-8 seat's widening) and VT (the C0 member the
+# pre-card#9337 kbcard set did not hold). Each PAST-GUARD is the tool's NEXT stop, recognised by
+# its own wording rather than a `*)` catch-all, so a guard that stops being reached reads OTHER.
+TEXTARG='source "$BIN/kbcard" 2>/dev/null || true
+         rc=0; out="$(_kbc_text_arg o name "" "$IN" "" 1 2>&1)" || rc=$?
+         case "$out" in *"--name holds no name text"*) echo BLANK ;; *) [ "$rc" = 0 ] && echo PAST-GUARD || echo OTHER ;; esac'
+SEARCH='source "$BIN/kbcard" 2>/dev/null || true
+        kb_api() { printf "%s" "{\"data\":[]}"; }; export KB_BOARD_ID=1
+        out="$(cmd_search "$IN" 2>&1 </dev/null)" || true
+        case "$out" in *"search query holds no text"*) echo BLANK ;;
+                       *"did not return a complete card list"*) echo PAST-GUARD ;; *) echo OTHER ;; esac'
+BSTATS='source "$BIN/board-stats" 2>/dev/null || true
+        out="$(_bs_since_epoch "$IN" 1000000000 2>&1 || true)"
+        case "$out" in *"--since needs a window"*) echo BLANK ;;
+                       *"is not an accepted window"*) echo PAST-GUARD ;; *) echo OTHER ;; esac'
+mkdir -p "$TMP/ghstub"; printf '#!/bin/sh\nexit 1\n' > "$TMP/ghstub/gh"; chmod +x "$TMP/ghstub/gh"
+export TMP
+GCS='out="$(PATH="$TMP/ghstub:$PATH" "$BIN/gh-code-search" "$IN" 2>&1 || true)"
+     case "$out" in *"<query> is only whitespace"*) echo BLANK ;;
+                    *"ERROR "*"results=WITHHELD"*) echo PAST-GUARD ;; *) echo OTHER ;; esac'
+# release-artifacts-check is STANDALONE (it is vendored alone and does not source the lib), so its
+# `promote.source` emptiness test is NOT a kb_is_blank call: it is `${v//[[:space:]]/}` under the
+# file's own top-level `export LC_ALL=C`, which is the same six-character set by construction.
+# That equivalence is what these cases measure, through the shipped script on a real fixture
+# repo — the config is read from the head COMMIT, so each value is committed before the run.
+RAC_REPO="$TMP/rac"; mkdir -p "$RAC_REPO"
+( cd "$RAC_REPO" && git init -q && echo 0.1.0 > VERSION \
+  && jq -n '{version_file:"VERSION",version_regex:"[0-9]+\\.[0-9]+\\.[0-9]+",artifacts:["VERSION"],
+             ref_token_regex:"DL-[0-9]+",card_token_regex:"card#[0-9]+",
+             promote:{board_id:"12",released_stage_id:1,api_base:"https://h/api/v3",source:"o/r"}}' > .release-pr.json \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base && git tag base \
+  && git checkout -qb head && echo 0.2.0 > VERSION && git -c user.email=t@t -c user.name=t commit -qam head ) >/dev/null 2>&1 \
+  || bad "release-artifacts-check fixture could not be built"
+export RAC_REPO
+RAC='cd "$RAC_REPO"; jq --arg s "$IN" ".promote.source=\$s" .release-pr.json > cfg.json
+     git add cfg.json && git -c user.email=t@t -c user.name=t commit -qm c >/dev/null 2>&1
+     out="$("$BIN/release-artifacts-check" --base base --head head --config cfg.json 2>&1 || true)"
+     case "$out" in *"promote.source set to"*"empty or whitespace only"*) echo BLANK ;;
+                    *"all 1 declared artifact member(s) moved"*) echo PAST-GUARD ;; *) echo OTHER ;; esac'
+for _ad in TEXTARG SEARCH BSTATS GCS RAC; do
+    both "$_ad: a VT-only value is BLANK"          "BLANK"      $'\v'   "${!_ad}"
+    both "$_ad: an FF-only value is BLANK"         "BLANK"      $'\f'   "${!_ad}"
+    both "$_ad: a space-only value is BLANK"       "BLANK"      "   "   "${!_ad}"
+    both "$_ad: a U+2003-only value is CONTENT"    "PAST-GUARD" "$EMSP" "${!_ad}"
+    both "$_ad: a U+3000-only value is CONTENT"    "PAST-GUARD" "$IDSP" "${!_ad}"
+    both "$_ad: text passes the guard (posctl)"    "PAST-GUARD" "x"     "${!_ad}"
+done
+unset _ad
 
 # ---------------------------------------------------------------------------
 echo "== kbcard --type — the tag-safety guard (bin/kbcard; card#5409 SITE 1) =="
@@ -486,12 +544,22 @@ echo "== static backstop: no bare bash bracket-RANGE left in bin/ or hooks/ =="
 # The matcher is an awk REGEX LITERAL, not a -v string: awk processes backslash escapes in
 # a -v assignment, so `\[` would arrive as a bare `[` and the pattern would silently match
 # nothing — the failure mode the positive control below exists to catch (it did).
-scan_ranges() {
-    local dir="$1"
+#
+# <mode> selects WHICH spelling is a hit — `range` (above) or `blank`, the POSIX-class BLANK
+# VERDICT (card#9337): a `${x//[[:space:]]/}` / `[[:blank:]]` deletion inside a `-z`/`-n` test,
+# or an `=~ ^[[:space:]]*$` match. Only the hit predicate differs; the comment skip and BOTH pin
+# exemptions are one rule shared by the two modes, so a pinned site is legitimate in each for the
+# same reason. The blank mode's file-pin arm is load-bearing, not hypothetical:
+# bin/release-artifacts-check is standalone (it does not source the lib) and its `promote.source`
+# emptiness test is exactly this spelling under a top-level `export LC_ALL=C`, which is the same
+# six-character set kb_is_blank spells out — its cross-locale agreement is a behaviour case above.
+# A STRIP (`name="${name//[[:space:]]/}"`) is not a verdict and is deliberately not a hit.
+scan_sites() {
+    local dir="$1" mode="$2"
     local files=()
     while IFS= read -r f; do files+=("$f"); done < <(find "$dir" -maxdepth 1 -type f | sort)
     [[ ${#files[@]} -gt 0 ]] || return 0
-    awk '
+    awk -v mode="$mode" '
         FNR == 1 { p1 = ""; p2 = ""; incase = 0; filepin = 0 }
         {
             line = $0
@@ -505,9 +573,14 @@ scan_ranges() {
             gsub(/\047[^\047]*\047/, "", bare)
             gsub(/"[^"]*"/, "", bare)
             hit = 0
-            if ($0 ~ /=~[^#]*\[\^?[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
-            if ((incase || bare ~ /case[[:space:]].*[[:space:]]in([[:space:]]|$)/) &&
-                bare ~ /\[[!^]?[^]]*[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
+            if (mode == "range") {
+                if ($0 ~ /=~[^#]*\[\^?[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
+                if ((incase || bare ~ /case[[:space:]].*[[:space:]]in([[:space:]]|$)/) &&
+                    bare ~ /\[[!^]?[^]]*[A-Za-z0-9]-[A-Za-z0-9]/) hit = 1
+            } else {
+                if ($0 ~ /-[zn][[:space:]]+"?\$\{[A-Za-z0-9_]+\/\/\[\[:(space|blank):\]\]\/?\}/) hit = 1
+                if ($0 ~ /=~[[:space:]]*["\047]?\^\[\[:(space|blank):\]\]\*\$/) hit = 1
+            }
             if (hit && !filepin && ($0 p1 p2) !~ /LC_ALL=C/)
                 printf "%s:%d:%s\n", FILENAME, FNR, $0
             if (bare ~ /case[[:space:]].*[[:space:]]in([[:space:]]|$)/) incase = 1
@@ -517,11 +590,16 @@ scan_ranges() {
     ' "${files[@]}" 2>/dev/null || true
     return 0
 }
+scan_ranges()         { scan_sites "$1" range; }
+scan_blank_verdicts() { scan_sites "$1" blank; }
 n_hits() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
 for d in "$BIN" "$ROOT/hooks"; do
     hits="$(scan_ranges "$d")"
     eq "no unscoped bracket-range regex in ${d##*/}/" "0" "$(n_hits "$hits")"
+    [[ -n "$hits" ]] && printf '  offending lines:\n%s\n' "$hits" >&2
+    hits="$(scan_blank_verdicts "$d")"
+    eq "no unscoped POSIX-class blank verdict in ${d##*/}/ (use kb_is_blank)" "0" "$(n_hits "$hits")"
     [[ -n "$hits" ]] && printf '  offending lines:\n%s\n' "$hits" >&2
 done
 
@@ -584,6 +662,33 @@ case "$pos_hits" in *reminted-lookalike:*) ok "unscoped look-alike flagged";; *)
 case "$pos_hits" in *benign-comment:*) bad "a comment was flagged (filter too broad)";;   *) ok "comment not flagged";; esac
 case "$pos_hits" in *benign-adopter:*) bad "an adopter was flagged (filter too broad)";;  *) ok "adopter not flagged";; esac
 case "$pos_hits" in *benign-scoped:*)  bad "an LC_ALL=C-scoped range was flagged";;       *) ok "LC_ALL=C-scoped range not flagged";; esac
+
+echo "== positive control: the blank-verdict scanner FLAGS a re-introduced POSIX-class verdict =="
+bpos="$TMP/bpos"; mkdir -p "$bpos"
+printf '%s\n' '    if [[ -z "${spec//[[:space:]]/}" ]]; then return 2; fi'      > "$bpos/reminted-z"
+printf '%s\n' '  if [ -n "${v//[[:blank:]]/}" ]; then :; fi'                   > "$bpos/reminted-n-blank"
+printf '%s\n' '[[ -n "${1//[[:space:]]}" ]] || die "blank"'                    > "$bpos/reminted-noslash"
+printf '%s\n' '[[ $q =~ ^[[:space:]]*$ ]] && die "blank"'                      > "$bpos/reminted-regex"
+# BENIGN, each ruling out one way the matcher could be too wide: a STRIP followed by a plain
+# emptiness test (the roster parsers' shape — not a verdict on the class), a comment, an adopter,
+# both pin exemptions, and a pinned ERE whose `[[:space:]]` is not a blank verdict at all.
+printf '%s\n' 'name="${name//[[:space:]]/}"' '[[ -z "$name" ]] && continue'   > "$bpos/benign-strip"
+printf '%s\n' '# [[ -z "${v//[[:space:]]/}" ]] — described, not code'          > "$bpos/benign-comment"
+printf '%s\n' 'if kb_is_blank "$v"; then die "blank"; fi'                     > "$bpos/benign-adopter"
+printf '%s\n' '#!/usr/bin/env bash' 'export LC_ALL=C' \
+    '  if [ -z "${v//[[:space:]]/}" ]; then printf empty; fi'                    > "$bpos/benign-filepin"
+printf '%s\n' 'f() {' '    local LC_ALL=C' '    [[ -z "${1//[[:space:]]/}" ]]' '}' > "$bpos/benign-window"
+printf '%s\n' 'if kb_ere_match "$2" '"'"'^[[:space:]]*-'"'"'; then :; fi'      > "$bpos/benign-ere"
+bpos_hits="$(scan_blank_verdicts "$bpos")"
+eq "blank scanner flags exactly the four re-minted files" "4" "$(n_hits "$bpos_hits")"
+for f in reminted-z reminted-n-blank reminted-noslash reminted-regex; do
+    case "$bpos_hits" in *"$f:"*) ok "blank verdict flagged: $f";; *) bad "blank verdict NOT flagged: $f";; esac
+done
+for f in benign-strip benign-comment benign-adopter benign-filepin benign-window benign-ere; do
+    case "$bpos_hits" in *"$f:"*) bad "benign line flagged: $f";; *) ok "not flagged: $f";; esac
+done
+# And the range scanner must not have started answering the blank question (the modes are distinct).
+eq "range scanner ignores the blank-verdict fixtures" "0" "$(n_hits "$(scan_ranges "$bpos")")"
 
 # Re-emit the degraded-coverage banner IMMEDIATELY before the verdict: a green summary is
 # what a reader takes away, and half these cases did not run.
