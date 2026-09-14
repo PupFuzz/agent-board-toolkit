@@ -1578,18 +1578,26 @@ rc=0; kb_require_value --dl " " >/dev/null 2>&1 || rc=$?
 eq "whitespace-only value → rc 0 (not this guard's call)" "0" "$rc"
 
 # ---------------------------------------------------------------------------
-echo "== kb_owner_resolve — owner:<project>/<seat> from COORD_CONFIG + COORD_AGENT, never guessed =="
+echo "== kb_owner_resolve — owner:<project>/<seat> from the coord config + COORD_AGENT, never guessed =="
 # Every refusal is paired with the reason it must NAME, and the happy case is the witness that the
 # resolver resolves at all — without it, a resolver that refused everything would pass every row.
 _oc="$TMP/owner-cfg"; mkdir -p "$_oc"
-printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"}]}\n' > "$_oc/ok.json"
+printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"},{"name":"a/b"}]}\n' > "$_oc/ok.json"
 printf '{"roster":[{"name":"builder"}]}\n'                    > "$_oc/no-project.json"
 printf '{"project":"","roster":[{"name":"builder"}]}\n'       > "$_oc/empty-project.json"
 printf '{"project":" \\t","roster":[{"name":"builder"}]}\n'   > "$_oc/blank-project.json"
 printf '{"project":7,"roster":[{"name":"builder"}]}\n'        > "$_oc/number-project.json"
+printf '{"project":"acme/x","roster":[{"name":"builder"}]}\n' > "$_oc/slash-project.json"
 printf '{"project":"acme","roster":{"name":"builder"}}\n'     > "$_oc/roster-object.json"
 printf '{"project":"acme"}\n'                                 > "$_oc/no-roster.json"
 printf 'not json\n'                                           > "$_oc/not-json.json"
+# The tag limit is the server's `tags.*` max:64, counted in CHARACTERS — pinned here as the literal,
+# not read back from the lib's constant, so a wrong constant reds. The seat lengths are derived
+# from it: _at fills the tag to exactly the limit with project `acme`, _over is one past it, and
+# _mb is _at in a two-byte character, far over the limit in BYTES and exactly at it in characters.
+_pre="owner:acme/"; _n=$(( 64 - ${#_pre} ))
+_at="$(printf 'b%.0s' $(seq 1 "$_n"))"; _over="${_at}b"; _mb="$(printf 'é%.0s' $(seq 1 "$_n"))"
+jq -cn --arg a "$_at" --arg b "$_over" --arg c "$_mb" '{project:"acme",roster:[{name:$a},{name:$b},{name:$c}]}' > "$_oc/long.json"
 
 # owner_case <label> <expected-rc> <expected-tag> <why-needle> <COORD_CONFIG or -unset> <COORD_AGENT or -unset>
 owner_case() {
@@ -1607,8 +1615,8 @@ owner_case() {
 }
 owner_case "a roster seat (witness)"     0 "owner:acme/builder"  ""                          "$_oc/ok.json" builder
 owner_case "another roster seat"         0 "owner:acme/reviewer" ""                          "$_oc/ok.json" reviewer
-owner_case "COORD_CONFIG unset"          1 "" "COORD_CONFIG is unset"                          -unset builder
-owner_case "COORD_CONFIG empty"          1 "" "COORD_CONFIG is unset"                          ""     builder
+owner_case "COORD_CONFIG unset, no default file" 1 "" "COORD_CONFIG is unset and there is no readable coord config at the default path ($HOME/.config/coord/coordination.config.json)" -unset builder
+owner_case "COORD_CONFIG empty, no default file" 1 "" "COORD_CONFIG is unset and there is no readable coord config at the default path" "" builder
 owner_case "COORD_CONFIG missing file"   1 "" "is not a readable file"                         "$_oc/absent.json" builder
 owner_case "COORD_CONFIG a directory"    1 "" "is not a readable file"                         "$_oc" builder
 owner_case "COORD_CONFIG not JSON"       1 "" "is not a JSON object"                           "$_oc/not-json.json" builder
@@ -1616,52 +1624,104 @@ owner_case "project absent"              1 "" 'has no non-empty `project`'      
 owner_case "project empty"               1 "" 'has no non-empty `project`'                     "$_oc/empty-project.json" builder
 owner_case "project whitespace-only"     1 "" 'has no non-empty `project`'                     "$_oc/blank-project.json" builder
 owner_case "project not a string"        1 "" 'has no non-empty `project`'                     "$_oc/number-project.json" builder
+owner_case "project carrying a /"        1 "" "\`project\` ('acme/x') contains '/'"            "$_oc/slash-project.json" builder
 owner_case "COORD_AGENT unset"           1 "" "COORD_AGENT is unset"                           "$_oc/ok.json" -unset
+owner_case "COORD_AGENT carrying a / (even one in the roster)" 1 "" "COORD_AGENT ('a/b') contains '/'" "$_oc/ok.json" "a/b"
 owner_case "COORD_AGENT outside roster"  1 "" "COORD_AGENT 'ghost' is not a roster[].name"     "$_oc/ok.json" ghost
 owner_case "roster not an array"         1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/roster-object.json" builder
 owner_case "roster absent"               1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/no-roster.json" builder
+owner_case "a tag of exactly the limit (witness)" 0 "$_pre$_at" ""                              "$_oc/long.json" "$_at"
+owner_case "a tag one character over the limit"   1 "" "is longer than the board's 64-character tag limit" "$_oc/long.json" "$_over"
+owner_case "a multi-byte tag at the limit counts CHARACTERS" 0 "$_pre$_mb" ""                   "$_oc/long.json" "$_mb"
 
-echo "== kb_card_tags / kb_owner_stamp / kb_owner_strip — the tag decisions =="
+echo "== kb_coord_config_path — the ONE fallback, shared with kbcard's board→repo read =="
+eq "COORD_CONFIG set → that path" "/x/y.json" "$(COORD_CONFIG=/x/y.json kb_coord_config_path)"
+eq "COORD_CONFIG unset → the coord default" "$HOME/.config/coord/coordination.config.json" "$(unset COORD_CONFIG; kb_coord_config_path)"
+mkdir -p "$HOME/.config/coord"; cp "$_oc/ok.json" "$HOME/.config/coord/coordination.config.json"
+owner_case "COORD_CONFIG unset, the default file present → resolves" 0 "owner:acme/builder" "" -unset builder
+rm -f "$HOME/.config/coord/coordination.config.json"
+eq "the board→repo read uses the same resolver" "true" \
+   "$(has 'cfg="$(kb_coord_config_path)"' "$(_fn_src "$HERE/../bin/kbcard" _kbc_board_repo)")"
+
+echo "== kb_card_tags / kb_owner_strip / kb_owner_list — the tag decisions =="
 eq "kb_card_tags: a list"               '["a","b"]' "$(kb_card_tags '{"data":{"tags":["a","b"]}}')"
 eq "kb_card_tags: no tags key is []"    '[]'        "$(kb_card_tags '{"data":{"id":1}}')"
 eq "kb_card_tags: null tags is []"      '[]'        "$(kb_card_tags '{"data":{"tags":null}}')"
 for _body in '{"ok":true}' '{"data":null}' '{"data":{"tags":false}}' '{"data":{"tags":{"0":"x"}}}' '{"data":{"tags":"x"}}' '<html>'; do
     eq "kb_card_tags: $_body is UNREADABLE (nothing)" "" "$(kb_card_tags "$_body")"
 done
-
-export COORD_CONFIG="$_oc/ok.json" COORD_AGENT=builder
-stamp() { kb_owner_stamp "task 1" printf '%s' "$1"; }
-stamp '{"data":{"tags":["x"]}}'
-eq "stamp: an unowned card → its tags plus the owner tag" '["x","owner:acme/builder"]' "$KB_OWNER_TAGS"
-eq "stamp: …with no notice"                               "" "$KB_OWNER_NOTE"
-stamp '{"data":{"tags":["owner:acme/builder","x"]}}'
-eq "stamp: the same owner → nothing to send"              "" "$KB_OWNER_TAGS"
-eq "stamp: …silently"                                     "" "$KB_OWNER_NOTE"
-stamp '{"data":{"tags":["owner:acme/builder","owner:other/reviewer"]}}'
-eq "stamp: this owner AND another → a conflict, nothing sent" "" "$KB_OWNER_TAGS"
-eq "stamp: …naming only the OTHER holder"                 "true" "$(has 'already held by owner:other/reviewer.' "$KB_OWNER_NOTE")"
-stamp '{"data":{"tags":{"0":"x"}}}'
-eq "stamp: unreadable tags → nothing sent"                "" "$KB_OWNER_TAGS"
-eq "stamp: …loudly"                                       "true" "$(has 'current tags could not be read' "$KB_OWNER_NOTE")"
-_stamp_reader_ran=""
-_reader() { _stamp_reader_ran=1; printf '{"data":{"tags":[]}}'; }
-export COORD_AGENT=ghost
-kb_owner_stamp "task 1" _reader
-eq "stamp: an unresolvable owner → nothing sent"          "" "$KB_OWNER_TAGS"
-eq "stamp: …the reader is never run"                      "" "$_stamp_reader_ran"
-eq "stamp: …and the notice carries the resolver's reason" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$KB_OWNER_NOTE")"
-export COORD_AGENT=builder
-kb_owner_stamp "task 1" false
-eq "stamp: a reader that FAILS is an unreadable list"     "" "$KB_OWNER_TAGS"
-eq "stamp: …loudly"                                       "true" "$(has 'current tags could not be read' "$KB_OWNER_NOTE")"
-
 eq "strip: every owner tag goes, the rest stay in order"  '["a","b"]' "$(kb_owner_strip '["a","owner:p/s","b","owner:q/t"]')"
 eq "strip: a list with no owner tag → nothing (no write)" ""          "$(kb_owner_strip '["a","b"]')"
 eq "strip: a list of only owner tags → []"                '[]'        "$(kb_owner_strip '["owner:p/s"]')"
 eq "strip: a tag merely CONTAINING owner: stays"          '["x-owner:p/s"]' "$(kb_owner_strip '["x-owner:p/s","owner:p/s"]')"
 eq "list: names the owner tags"                           "owner:p/s, owner:q/t" "$(kb_owner_list '["a","owner:p/s","owner:q/t"]')"
-unset -f owner_case stamp _reader
-unset COORD_CONFIG COORD_AGENT _oc _body _stamp_reader_ran
+
+echo "== kb_owner_tag_write — a SEPARATE {tags} write after the move, never a list built from nothing =="
+# kb_api_status is replaced by a recorder for this block only (restored below): the helper's whole
+# contract is WHICH requests it issues with WHICH bodies, and what it says about each outcome.
+# Installed by renaming a copy rather than by a second `kb_api_status() {` in this file: the
+# analyser would read that definition as the one every earlier call in this file reaches.
+eval "_real_$(declare -f kb_api_status)"
+_ow_log="$TMP/owner-write.log"
+_ow_stub() {
+    printf '%s %s %s\n' "$1" "$2" "${3:-}" >> "$_ow_log"
+    case "$1" in
+        GET)   printf '%s\n%s' "${OW_GET_HTTP:-200}" "${OW_CARD:-}" ;;
+        PATCH) printf '%s\n%s' "${OW_PATCH_HTTP:-200}" "${OW_PATCH_BODY:-{\"data\":{\"id\":1\}\}}" ;;
+    esac
+}
+eval "$(declare -f _ow_stub | sed '1s/^_ow_stub/kb_api_status/')"
+# ow <mode> — run the helper against task 1; sets _ow_reqs (the request log) and prints nothing.
+ow() { : > "$_ow_log"; kb_owner_tag_write "$1" 1 "task 1"; _ow_reqs="$(cat "$_ow_log")"; }
+export COORD_CONFIG="$_oc/ok.json" COORD_AGENT=builder
+
+OW_CARD='{"data":{"tags":["x"]}}' ow stamp
+eq "stamp: an unowned card → one GET, then PATCH {tags} ALONE with the owner added" \
+   $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":["x","owner:acme/builder"]}' "$_ow_reqs"
+eq "stamp: …and says it stamped"                          "true" "$(has 'owner tag owner:acme/builder stamped on task 1' "$KB_OWNER_NOTE")"
+OW_CARD='{"data":{"tags":["owner:acme/builder","x"]}}' ow stamp
+eq "stamp: the same owner → the read only, no write"      "GET /tasks/1.json " "$_ow_reqs"
+eq "stamp: …silently"                                     "" "$KB_OWNER_NOTE"
+OW_CARD='{"data":{"tags":["owner:acme/builder","owner:other/reviewer"]}}' ow stamp
+eq "stamp: this owner AND another → a conflict, no write" "GET /tasks/1.json " "$_ow_reqs"
+eq "stamp: …naming only the OTHER holder"                 "true" "$(has 'already held by owner:other/reviewer.' "$KB_OWNER_NOTE")"
+for _body in '{"data":{"tags":{"0":"x"}}}' '{"ok":true}'; do
+    OW_CARD="$_body" ow stamp
+    eq "stamp: unreadable tags $_body → no write"         "GET /tasks/1.json " "$_ow_reqs"
+    eq "stamp: …loudly"                                   "true" "$(has 'current tags could not be read (HTTP 200)' "$KB_OWNER_NOTE")"
+done
+OW_GET_HTTP=403 OW_CARD='{"data":{"tags":["x"]}}' ow stamp
+eq "stamp: a REFUSED read is unreadable, whatever its body" "GET /tasks/1.json " "$_ow_reqs"
+eq "stamp: …naming the status"                            "true" "$(has 'could not be read (HTTP 403)' "$KB_OWNER_NOTE")"
+COORD_AGENT=ghost OW_CARD='{"data":{"tags":[]}}' ow stamp
+eq "stamp: an unresolvable owner → no request at all"     "" "$_ow_reqs"
+eq "stamp: …and the notice carries the resolver's reason" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$KB_OWNER_NOTE")"
+OW_PATCH_HTTP=403 OW_PATCH_BODY='{"message":"This action is unauthorized."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
+eq "stamp: a refused tag write → NOT stamped, the status and the server's reason" "true" \
+   "$(has 'owner tag owner:acme/builder NOT stamped on task 1 — HTTP 403, server said: This action is unauthorized.' "$KB_OWNER_NOTE")"
+OW_PATCH_HTTP=422 OW_PATCH_BODY=$'{"message":"The tags.1 field must not be\\ngreater than 64 characters."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
+eq "stamp: a 422 carries its reason, flattened to one line" "true" \
+   "$(has 'HTTP 422, server said: The tags.1 field must not be greater than 64 characters.' "$KB_OWNER_NOTE")"
+OW_PATCH_HTTP=000 OW_PATCH_BODY='' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
+eq "stamp: a tag write that never completed is UNKNOWN, not refused" "true" "$(has 'DID NOT COMPLETE' "$KB_OWNER_NOTE")"
+
+OW_CARD='{"data":{"tags":["a","owner:p/s","b"]}}' ow clear
+eq "clear: one GET, then PATCH {tags} ALONE without the owner tags" \
+   $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":["a","b"]}' "$_ow_reqs"
+eq "clear: …naming what it removed"                       "true" "$(has 'removed owner tag(s) owner:p/s from task 1' "$KB_OWNER_NOTE")"
+COORD_AGENT=ghost OW_CARD='{"data":{"tags":["owner:p/s"]}}' ow clear
+eq "clear: needs no resolvable owner of its own"          $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":[]}' "$_ow_reqs"
+OW_CARD='{"data":{"tags":["a"]}}' ow clear
+eq "clear: no owner tag → the read only, silently"        "GET /tasks/1.json |" "$_ow_reqs|$KB_OWNER_NOTE"
+OW_CARD='{"data":null}' ow clear
+eq "clear: unreadable tags → no write"                    "GET /tasks/1.json " "$_ow_reqs"
+eq "clear: …loudly"                                       "true" "$(has 'owner tags NOT cleared on task 1 — the card' "$KB_OWNER_NOTE")"
+OW_PATCH_HTTP=403 OW_CARD='{"data":{"tags":["owner:p/s"]}}' ow clear
+eq "clear: a refused tag write says NOT cleared, with the status" "true" "$(has 'owner tags NOT cleared on task 1 — HTTP 403' "$KB_OWNER_NOTE")"
+
+eval "$(declare -f _real_kb_api_status | sed '1s/^_real_//')"
+unset -f owner_case ow _ow_stub _real_kb_api_status
+unset COORD_CONFIG COORD_AGENT _oc _body _ow_log _ow_reqs _pre _n _at _over _mb
 
 # ---------------------------------------------------------------------------
 _summary "kb-board-lib-selftest"

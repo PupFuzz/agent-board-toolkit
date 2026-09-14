@@ -36,12 +36,10 @@
 #     tag refuses the move (loud), regardless of stage.
 #   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
 #
-# OWNER TAG: the move to In Progress also stamps this seat's `owner:<project>/<seat>` tag in the
-# SAME PATCH (<project> = `project` of $COORD_CONFIG, <seat> = $COORD_AGENT, which must be one of
-# its roster[].name). The rules are kb_owner_stamp's in _kb-board-lib.sh — the one owner shared
-# with `kbcard move --stamp-owner` — and every refusal there (config unresolvable, tags unreadable,
-# a DIFFERENT owner already on the card) still moves the card, sends no tags, and is written to
-# stderr AND the durable log below. A card this hook does not move is not stamped.
+# OWNER TAG: once the move to In Progress has succeeded, this seat's owner tag is stamped by a
+# separate tag write (kb_owner_tag_write in _kb-board-lib.sh, shared with `kbcard move
+# --stamp-owner`). Its rules are README.md § The seat owner tag. Whatever it reports goes to stderr
+# AND the durable log below. A card this hook does not move is not stamped.
 set -uo pipefail
 
 # Shared toolkit lib (DL canon, whole-board pagination, token read). Fail-soft:
@@ -563,14 +561,13 @@ case "$cur" in
     *) exit 0 ;;
 esac
 
-# The owner tag rides the move's own PATCH, decided off the card read above (see the header).
-kb_owner_stamp "card #$cid ($label)" printf '%s' "$card"
-[ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE"
-move_json="$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')"
-move_ok="board-card-start: card #$cid ($label) → In Progress"
-if [ -n "$KB_OWNER_TAGS" ]; then
-    move_json="$(jq -nc --argjson s "$inprog" --argjson t "$KB_OWNER_TAGS" '{workflow_stage_id: $s, tags: $t}')"
-    move_ok="$move_ok, owner tag $KB_OWNER_TAG stamped"
-fi
-_bcs_patch "$cid" "$move_json" "$move_ok" "card #$cid ($label) → In Progress move failed"
+_bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" \
+    "board-card-start: card #$cid ($label) → In Progress" \
+    "card #$cid ($label) → In Progress move failed"
+# _bcs_patch is fail-soft (rc 0 either way); kb_api left the move's status in KB_HTTP, in this
+# shell, and only a move that landed gets an owner tag (see the header).
+case "${KB_HTTP:-}" in
+    2*) kb_owner_tag_write stamp "$cid" "card #$cid ($label)"
+        [ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE" ;;
+esac
 exit 0

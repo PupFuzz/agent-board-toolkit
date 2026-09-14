@@ -189,18 +189,15 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 
 ## 3c. Seat identity for the owner tag (agent seats)
 
-The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` when they move a card to In Progress ([README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat)). They read these environment variables, which a coord-installed seat already carries:
+The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` after they move a card to In Progress. What they read, and every case in which they do not stamp, is [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). A coord-installed seat already carries `COORD_AGENT`, and `COORD_CONFIG` too when its config is not at the default path. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
 
-- **`COORD_CONFIG`** — the absolute path to the seat's `coordination.config.json`. Its `project` value is `<project>`, and it must be non-empty.
-- **`COORD_AGENT`** — the seat name. It is `<seat>`, and it must equal one of that config's `roster[].name`.
-
-Nothing is defaulted. If either is missing, or the seat is not in the roster, the card still moves and the hook prints why the owner tag was not stamped. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
-
-To check a seat, run this from the environment the hooks run in:
+To check a seat, run this from the environment the hooks run in. It calls the resolver the hooks themselves use, so it prints the tag they would stamp, or the reason they would give for not stamping:
 
 ```bash
-jq -r --arg s "$COORD_AGENT" '"owner:\(.project)/\($s)  in roster: \(any(.roster[]?; .name == $s))"' "$COORD_CONFIG"
+bash -c '. ~/.local/bin/_kb-board-lib.sh && if kb_owner_resolve; then echo "$KB_OWNER_TAG"; else echo "NOT RESOLVED: $KB_OWNER_WHY"; fi'
 ```
+
+It prints either the tag, such as `owner:acme/builder`, or the refusal, such as `NOT RESOLVED: COORD_AGENT is unset, so this process names no seat`.
 
 ## 4. Per-repo release config (only for repos that cut releases)
 

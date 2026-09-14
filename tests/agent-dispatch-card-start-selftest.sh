@@ -141,6 +141,26 @@ run_prompt "BOARD-CARD: toolkit#4945"
 eq "kbcard failure exits hook 0"            "0" "$RC"
 eq "kbcard failure records the call"        "1" "$(recn)"
 eq "kbcard failure writes diagnostic"       "true" "$(has 'kbcard move failed' "$ERR")"
+eq "…and a failure that is NOT the old-kbcard refusal is not retried" "false" "$(has 'predates --stamp-owner' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== a kbcard older than --stamp-owner: say so, and move the card without it =="
+# The same refusal an older kbcard really prints for an arg it does not know (its `*)` arm), at rc 2.
+cat > "$TMP/bin/kbcard" <<'STUB_OLD'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+for a in "$@"; do
+    [[ "$a" == --stamp-owner ]] && { echo "kbcard: unknown arg '--stamp-owner'" >&2; exit 2; }
+done
+exit 0
+STUB_OLD
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "old kbcard: exits 0"                         "0" "$RC"
+eq "old kbcard: the move is retried once, without the flag" \
+   $'--board toolkit move --task 4945 --column in_progress --stamp-owner\n--board toolkit move --task 4945 --column in_progress' "$(recall)"
+eq "old kbcard: the seat is told to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 is moved WITHOUT the seat owner tag — update kbcard' "$ERR")"
+eq "old kbcard: …and the retried move is not reported failed" "false" "$(has 'kbcard move failed' "$ERR")"
 
 # ---------------------------------------------------------------------------
 echo "== kbcard's owner-tag lines are relayed; the rest of its output stays suppressed =="
@@ -183,8 +203,8 @@ export -f kb_stub_route
 kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
 eq "end to end exits 0"                          "0" "$RC"
-eq "…ONE PATCH carries the move and the card's tags plus the owner tag" \
-   '{"tags":["fr","owner:acme/builder"],"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
+eq "…the stage-only move, then a separate PATCH with the card's tags plus the owner tag" \
+   '{"workflow_stage_id":49}'$'\n''{"tags":["fr","owner:acme/builder"]}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
 eq "…and the hook relays that it stamped"        "true" "$(has 'kbcard: owner tag owner:acme/builder stamped on task 4945' "$ERR")"
 kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=ghost run_prompt "BOARD-CARD: toolkit#4945"

@@ -1215,87 +1215,65 @@ kb_card_tags() {
 
 # --- the seat owner tag -----------------------------------------------------
 #
-# The owner of a card that is being worked is the agent SEAT, recorded as ONE tag:
-#     owner:<project>/<seat>
-# <project> is the `project` value of the coord config `$COORD_CONFIG` names, and <seat> is
-# `$COORD_AGENT`, which must equal one of that config's `roster[].name`. It is a tag and not the
-# board's `assigned_user_id` because seats commonly share one kanban user, so a user id cannot tell
-# seats apart; it is PROJECT-qualified because seat names repeat across installs that work one
-# board, and a bare `owner:<seat>` would compare equal across them. Nothing else in the config is
-# read: a roundtable handle or any other identity is a different namespace and never the owner.
-#
+# The owner of a card that is being worked is the agent SEAT, recorded as ONE tag,
+# `owner:<project>/<seat>`. What it is, who writes it, when it is refused and when it is removed
+# are stated ONCE, in README.md § The seat owner tag; the comments below say only how this code
+# carries that out.
+
+# kb_coord_config_path: the coord config this process reads — $COORD_CONFIG, else the coord
+# install's default location. The ONE spelling of that fallback, for every reader of the file.
+kb_coord_config_path() { printf '%s' "${COORD_CONFIG:-$HOME/.config/coord/coordination.config.json}"; }
+
+# The server's per-tag limit (kanban `TaskWriteRules`: `tags.*` => `string|max:64`, counted in
+# characters). A tag over it makes the whole tag write 422, so the resolver refuses it first.
+KB_OWNER_TAG_MAX=64
+
 # kb_owner_resolve: KB_OWNER_TAG=owner:<project>/<seat> at rc 0; or KB_OWNER_TAG="" and
-# KB_OWNER_WHY=<the reason, naming the missing piece> at rc 1. It NEVER GUESSES — there is no
-# default config path and no fallback seat, because a wrong owner tag makes a card look held by a
-# seat that is not working it, which is worse than an unstamped card. Call it directly, not in a
-# `$(…)`: the answer is carried in those globals.
+# KB_OWNER_WHY=<the reason, naming the missing piece> at rc 1. Call it directly, not in a `$(…)`:
+# the answer is carried in those globals.
 kb_owner_resolve() {
     KB_OWNER_TAG=""; KB_OWNER_WHY=""
-    local cfg="${COORD_CONFIG:-}" seat="${COORD_AGENT:-}" project
-    if kb_is_blank "$cfg"; then
-        KB_OWNER_WHY="COORD_CONFIG is unset, so no coord config names this install's project"; return 1
-    fi
+    local cfg seat="${COORD_AGENT:-}" project tag
+    cfg="$(kb_coord_config_path)"
     if [[ ! -f "$cfg" || ! -r "$cfg" ]]; then
-        KB_OWNER_WHY="COORD_CONFIG ($cfg) is not a readable file"; return 1
+        if [[ -z "${COORD_CONFIG:-}" ]]; then
+            KB_OWNER_WHY="COORD_CONFIG is unset and there is no readable coord config at the default path ($cfg)"
+        else
+            KB_OWNER_WHY="COORD_CONFIG ($cfg) is not a readable file"
+        fi
+        return 1
     fi
     if ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
-        KB_OWNER_WHY="COORD_CONFIG ($cfg) is not a JSON object"; return 1
+        KB_OWNER_WHY="the coord config ($cfg) is not a JSON object"; return 1
     fi
     project="$(jq -r '.project | select(type == "string")' "$cfg" 2>/dev/null)"
     if kb_is_blank "$project"; then
-        KB_OWNER_WHY="COORD_CONFIG ($cfg) has no non-empty \`project\`"; return 1
+        KB_OWNER_WHY="the coord config ($cfg) has no non-empty \`project\`"; return 1
+    fi
+    if [[ "$project" == */* ]]; then
+        KB_OWNER_WHY="the coord config's \`project\` ('$project') contains '/', which is the separator between <project> and <seat> in the owner tag"; return 1
     fi
     if kb_is_blank "$seat"; then
         KB_OWNER_WHY="COORD_AGENT is unset, so this process names no seat"; return 1
     fi
+    if [[ "$seat" == */* ]]; then
+        KB_OWNER_WHY="COORD_AGENT ('$seat') contains '/', which is the separator between <project> and <seat> in the owner tag"; return 1
+    fi
     if ! jq -e --arg s "$seat" \
         'any((.roster | if type == "array" then .[] else empty end); type == "object" and .name == $s)' \
         "$cfg" >/dev/null 2>&1; then
-        KB_OWNER_WHY="COORD_AGENT '$seat' is not a roster[].name in COORD_CONFIG ($cfg)"; return 1
+        KB_OWNER_WHY="COORD_AGENT '$seat' is not a roster[].name in the coord config ($cfg)"; return 1
     fi
-    KB_OWNER_TAG="owner:$project/$seat"
+    tag="owner:$project/$seat"
+    if [[ "$(jq -rn --arg t "$tag" '$t | length')" -gt "$KB_OWNER_TAG_MAX" ]]; then
+        KB_OWNER_WHY="the owner tag '$tag' is longer than the board's $KB_OWNER_TAG_MAX-character tag limit"; return 1
+    fi
+    KB_OWNER_TAG="$tag"
 }
 
 # The ONE spelling of "is this tag an owner tag", shared by the stamp and the clear so the two
 # cannot disagree about which tags they are talking about.
 KB_JQ_OWNER='def is_owner: type == "string" and startswith("owner:");'
-
-# kb_owner_stamp <label> <reader> [reader-args…]: decide the tag list a card-START move carries.
-# <label> names the card in the notice ("task 505", "card #505 (#505)"); <reader…> is run only
-# once the owner resolved, and must print the card's `GET /tasks/<id>.json` response body.
-# Sets these globals and always returns 0 — the move goes ahead whatever this decides:
-#   KB_OWNER_TAGS  the WHOLE tag list to send with the move (JSON array), or "" to send NO tags.
-#   KB_OWNER_NOTE  one line the caller must print where an operator will see it, or "".
-# The outcomes:
-#   * the owner cannot be resolved (kb_owner_resolve's reasons) → no tags, loud;
-#   * the tags cannot be read → no tags, loud: a list built from nothing would wipe the card's tags;
-#   * the card already carries an owner tag for a DIFFERENT project/seat → no tags, loud, naming
-#     the holder. It is never overwritten and no second owner tag is added: the other seat may be
-#     working the card right now, and a hook has no human at hand to make a takeover deliberate;
-#   * the card already carries THIS owner tag and no other → no tags, silent (nothing to write);
-#   * otherwise → the card's tags plus this owner tag.
-kb_owner_stamp() {
-    local label="$1"; shift
-    KB_OWNER_TAGS=""; KB_OWNER_NOTE=""
-    if ! kb_owner_resolve; then
-        KB_OWNER_NOTE="$(_kb_prog): owner tag NOT stamped on $label — $KB_OWNER_WHY. The card is still moved; no owner was guessed."
-        return 0
-    fi
-    local resp tags holders
-    resp="$("$@")" || resp=""
-    tags="$(kb_card_tags "$resp")"
-    if [[ -z "$tags" ]]; then
-        KB_OWNER_NOTE="$(_kb_prog): owner tag $KB_OWNER_TAG NOT stamped on $label — the card's current tags could not be read, and the board replaces the tag list wholesale, so no tag list is sent rather than one built from nothing. The card is still moved."
-        return 0
-    fi
-    holders="$(jq -r --arg me "$KB_OWNER_TAG" "$KB_JQ_OWNER"'[.[] | select(is_owner and . != $me)] | join(", ")' <<<"$tags")"
-    if [[ -n "$holders" ]]; then
-        KB_OWNER_NOTE="$(_kb_prog): owner tag $KB_OWNER_TAG NOT stamped on $label — the card is already held by $holders. That tag is left untouched and no second owner tag is added; the card is still moved. The holder may be working it now: talk to that seat, or change the tag by hand to take the card over."
-        return 0
-    fi
-    jq -e --arg me "$KB_OWNER_TAG" 'any(.[]; . == $me)' <<<"$tags" >/dev/null && return 0
-    KB_OWNER_TAGS="$(jq -c --arg me "$KB_OWNER_TAG" '. + [$me]' <<<"$tags")"
-}
 
 # kb_owner_strip <tags-json>: the list with every owner tag removed, as compact JSON — or NOTHING
 # when the list carries no owner tag, so a caller sends no tags at all rather than re-sending an
@@ -1307,6 +1285,67 @@ kb_owner_strip() {
 # kb_owner_list <tags-json>: the owner tags the list carries, comma-joined (for a notice).
 kb_owner_list() {
     jq -r "$KB_JQ_OWNER"'[.[] | select(is_owner)] | join(", ")' <<<"$1" 2>/dev/null || true
+}
+
+# kb_owner_tag_write <stamp|clear> <task-id> <label>: the owner-tag write that FOLLOWS a confirmed
+# stage move — its own `PATCH {tags}` and never a key on the move. A PATCH carrying only
+# `workflow_stage_id` is authorized as a MOVE; one carrying any other key needs the full task
+# update permission and is validated as an edit, so a `tags` key on the move would let a refused or
+# invalid tag write refuse the move with it. <label> names the card in the notice.
+#   stamp — this seat's tag added to the card's tags (kb_owner_resolve's owner);
+#   clear — every owner tag removed, every other tag kept.
+# Reads KB_API / KB_TOKEN like every kb_api caller. Always rc 0: the move has already happened.
+# Sets KB_OWNER_NOTE — the one line the caller must print where an operator will see it, or ""
+# when there was nothing to write (the same owner already present; no owner tag to remove).
+kb_owner_tag_write() {
+    local mode="$1" task="$2" label="$3" got http body tags new holders done_msg not_msg reason
+    KB_OWNER_NOTE=""
+    if [[ "$mode" == stamp ]]; then
+        if ! kb_owner_resolve; then
+            KB_OWNER_NOTE="$(_kb_prog): owner tag NOT stamped on $label — $KB_OWNER_WHY. The card was moved; no owner was guessed."
+            return 0
+        fi
+        not_msg="owner tag $KB_OWNER_TAG NOT stamped on $label"
+    else
+        not_msg="owner tags NOT cleared on $label"
+    fi
+    # kb_api_status, not kb_api: the status is the report, and kb_api strands it in a subshell.
+    got="$(kb_api_status GET "/tasks/$task.json")"
+    http="${got%%$'\n'*}"; body=""
+    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    tags=""
+    [[ "$http" == 2* ]] && tags="$(kb_card_tags "$body")"
+    if [[ -z "$tags" ]]; then
+        KB_OWNER_NOTE="$(_kb_prog): $not_msg — the card's current tags could not be read (HTTP $http), and the board replaces the tag list wholesale, so no tag list is sent rather than one built from nothing. The card was moved."
+        return 0
+    fi
+    if [[ "$mode" == stamp ]]; then
+        holders="$(jq -r --arg me "$KB_OWNER_TAG" "$KB_JQ_OWNER"'[.[] | select(is_owner and . != $me)] | join(", ")' <<<"$tags")"
+        if [[ -n "$holders" ]]; then
+            KB_OWNER_NOTE="$(_kb_prog): $not_msg — the card is already held by $holders. That tag is left untouched and no second owner tag is added; the card was moved. The holder may be working it now: talk to that seat, or change the tag by hand to take the card over."
+            return 0
+        fi
+        jq -e --arg me "$KB_OWNER_TAG" 'any(.[]; . == $me)' <<<"$tags" >/dev/null && return 0
+        new="$(jq -c --arg me "$KB_OWNER_TAG" '. + [$me]' <<<"$tags")"
+        done_msg="owner tag $KB_OWNER_TAG stamped on $label"
+    else
+        new="$(kb_owner_strip "$tags")"
+        [[ -n "$new" ]] || return 0
+        done_msg="removed owner tag(s) $(kb_owner_list "$tags") from $label — a finished card holds nobody's claim"
+    fi
+    got="$(kb_api_status PATCH "/tasks/$task.json" "$(jq -cn --argjson t "$new" '{tags: $t}')")"
+    http="${got%%$'\n'*}"; body=""
+    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    case "$http" in
+        2*)  KB_OWNER_NOTE="$(_kb_prog): $done_msg" ;;
+        000) KB_OWNER_NOTE="$(_kb_prog): $not_msg — the tag write DID NOT COMPLETE (no HTTP status came back), so whether it landed is UNKNOWN. The card was moved." ;;
+        *)
+            # The server's own one-line reason, bounded and flattened: a 403 and a 422 need
+            # opposite fixes (the token's role / the tag itself), and the status alone does not say.
+            reason="$(kb_parse_resp "$body" -r '.message | select(type == "string") | [explode[] | if . < 32 or . == 127 then 32 else . end] | implode | .[0:300]')"
+            KB_OWNER_NOTE="$(_kb_prog): $not_msg — HTTP $http${reason:+, server said: $reason}. The card was moved; its tags are unchanged."
+            ;;
+    esac
 }
 
 # --- whole-board pagination -------------------------------------------------

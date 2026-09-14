@@ -58,6 +58,12 @@
 #                   what is unknown is what the far end did with it. Without this knob the whole
 #                   transport branch of the MOVE loop is undriven, which is how a message
 #                   asserting the card was "left in place" survived on it.
+#   $STUB_CARD_BODY  what a single-card GET (`/tasks/<id>.json`, the owner-tag clear's fresh read
+#                   after a move) answers, at $STUB_CARD_STATUS (default 200). Default: a card
+#                   carrying no tags, so a caller that sets neither sees no owner-tag write.
+#   $STUB_TAGS_PATCH_STATUS / $STUB_TAGS_PATCH_BODY  when the status is set, a PATCH whose body
+#                   carries `"tags"` answers with it, while a stage-only PATCH keeps
+#                   $STUB_PATCH_STATUS — the server's move-vs-update authorization split.
 #
 # ⛔ THERE IS DELIBERATELY NO "FLAKY 503 THEN SUCCEED" KNOB, and the reason belongs here rather
 # than in the caller that wanted one. `--retry` is curl's OWN internal loop, and this stub IS
@@ -108,11 +114,18 @@ if [ "$method" = PATCH ]; then
   # Logged BEFORE the transport exit on purpose: the request went out either way, and a caller
   # asserting "the move really was attempted" must still be able to see it.
   [ -n "${STUB_PATCH_TRANSPORT:-}" ] && exit "$STUB_PATCH_TRANSPORT"
+  case "$data" in
+    *'"tags"'*) tbody='{"message":"This action is unauthorized."}'
+                [ -n "${STUB_TAGS_PATCH_STATUS:-}" ] && emit "$STUB_TAGS_PATCH_STATUS" "${STUB_TAGS_PATCH_BODY:-$tbody}" ;;
+  esac
   pbody='{"data":{"id":0}}'
   emit "${STUB_PATCH_STATUS:-200}" "${STUB_PATCH_BODY:-$pbody}"
 fi
 
 [ -n "${GET_LOG:-}" ] && printf '%s\n' "$url" >> "$GET_LOG"
+case "$url" in
+  */tasks/[0-9]*.json) cbody='{"data":{"tags":[]}}'; emit "${STUB_CARD_STATUS:-200}" "${STUB_CARD_BODY:-$cbody}" ;;
+esac
 # A GET that never reached a server at all: no status, no body, curl's own rc.
 [ -n "${STUB_GET_TRANSPORT:-}" ] && exit "$STUB_GET_TRANSPORT"
 # A GET the server ANSWERED and refused (card#7500's render path, card#9301's status path).

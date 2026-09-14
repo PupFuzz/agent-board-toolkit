@@ -635,12 +635,12 @@ else
     echo "  skip (git not on PATH)"
 fi
 
-echo "== the owner tag rides the In Progress move (process, faked kanban API) =="
+echo "== the owner tag follows the In Progress move as its own write (process, faked kanban API) =="
 # The whole hook, run as the post-checkout path runs it (no arguments, the fixture repo's branch),
-# against a `curl` stand-in. Every leg asserts the ENTIRE PATCH body: the API replaces `tags`
-# wholesale, so a stamp that lost the card's other tags, or any tags key on a refusal, only shows
-# in the whole body. Every refusal must also reach the DURABLE log — the installed wrapper discards
-# this hook's stderr, so the log is the only place an operator can read it.
+# against a `curl` stand-in. Every leg asserts the WHOLE PATCH sequence: the move must be exactly
+# `{workflow_stage_id}` (a stage-only PATCH is a MOVE to the server; any other key needs the update
+# permission), and the owner tag, when written, is a SEPARATE `{tags}` PATCH after it. Every
+# refusal must also reach the DURABLE log — the installed wrapper discards this hook's stderr.
 if command -v git >/dev/null 2>&1; then
     _mktmp_scratch --home
     # shellcheck source=/dev/null
@@ -658,12 +658,21 @@ if command -v git >/dev/null 2>&1; then
     _olog="$TMP/bcs-owner.log"
 
     # KB_STUB_TAGS is the card's `tags` value, spliced raw so a leg can hand it a non-list.
+    # KB_STUB_TAGS_PATCH answers a PATCH carrying `tags` with that status; KB_STUB_MOVE refuses the
+    # stage-only move.
     kb_stub_route() {
-        local method="$1" url="$2"
+        local method="$1" url="$2" body="$3"
         case "$method $url" in
             "GET "*/tasks/4242.json*)
                 printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":%s}}' "${KB_STUB_TAGS:-[]}" ;;
-            "PATCH "*/tasks/4242.json) printf '200\n{"data":{"id":4242}}' ;;
+            "PATCH "*/tasks/4242.json)
+                if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
+                    printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
+                elif [[ -n "${KB_STUB_MOVE:-}" ]]; then
+                    printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
+                else
+                    printf '200\n{"data":{"id":4242}}'
+                fi ;;
             *) printf '404\n{"message":"unrouted"}' ;;
         esac
     }
@@ -677,37 +686,53 @@ if command -v git >/dev/null 2>&1; then
         _ologtxt="$(cat "$_olog" 2>/dev/null || true)"
         _obody="$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
     }
+    _move='{"workflow_stage_id":84}'
 
     KB_STUB_TAGS='["fr"]' _own_run builder
     eq "stamp: rc 0"                                     "0" "$_rc"
-    eq "stamp: ONE PATCH carries the move and the card's tags plus the owner tag" \
-       '{"tags":["fr","owner:acme/builder"],"workflow_stage_id":84}' "$_obody"
-    eq "stamp: …and says so"                             "true" "$(has 'In Progress, owner tag owner:acme/builder stamped' "$_out")"
+    eq "stamp: the stage-only move, THEN a separate PATCH with the card's tags plus the owner tag" \
+       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
+    eq "stamp: …the owner write re-reads the card after the move" "2" "$(kb_stub_count GET /tasks/4242.json)"
+    eq "stamp: …and says so"                             "true" "$(has 'owner tag owner:acme/builder stamped on card #4242' "$_out")"
+
+    for _tp in 403 422; do
+        KB_STUB_TAGS_PATCH=$_tp KB_STUB_TAGS='["fr"]' _own_run builder
+        eq "tag write $_tp: rc 0"                        "0" "$_rc"
+        eq "tag write $_tp: the move is exactly {workflow_stage_id} and still happened" \
+           "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
+        eq "tag write $_tp: the move is reported"        "true" "$(has 'card #4242 (#4242) → In Progress' "$_out")"
+        eq "tag write $_tp: the durable log says NOT stamped, with the status and reason" "true" \
+           "$(has "NOT stamped on card #4242 (#4242) — HTTP $_tp, server said: tag write refused by the stub" "$_ologtxt")"
+        eq "tag write $_tp: …not worded as a failed move" "false" "$(has 'the move did not happen' "$_ologtxt")"
+    done
+
+    KB_STUB_MOVE=403 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "a refused move: no owner tag is written for it"  "$_move" "$_obody"
+    eq "a refused move: …and the card is not re-read for one" "1" "$(kb_stub_count GET /tasks/4242.json)"
 
     KB_STUB_TAGS='["owner:acme/builder","fr"]' _own_run builder
-    eq "same owner: the move alone (no tags write)"      '{"workflow_stage_id":84}' "$_obody"
+    eq "same owner: the move alone (no tags write)"      "$_move" "$_obody"
     eq "same owner: nothing logged"                      "" "$_ologtxt"
 
     KB_STUB_TAGS='["fr","owner:other/reviewer"]' _own_run builder
     eq "conflict: rc 0"                                  "0" "$_rc"
-    eq "conflict: the move STILL happens, the holder's tag untouched, no second owner" \
-       '{"workflow_stage_id":84}' "$_obody"
+    eq "conflict: the move STILL happens, the holder's tag untouched, no second owner" "$_move" "$_obody"
     eq "conflict: the durable log names the holder"      "true" "$(has 'already held by owner:other/reviewer' "$_ologtxt")"
 
     KB_STUB_TAGS='["fr"]' _own_run ghost
-    eq "seat outside the roster: the move alone"         '{"workflow_stage_id":84}' "$_obody"
+    eq "seat outside the roster: the move alone"         "$_move" "$_obody"
     eq "seat outside the roster: the durable log says why" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$_ologtxt")"
     KB_STUB_TAGS='["fr"]' _own_run -unset
-    eq "COORD_AGENT unset: the move alone"               '{"workflow_stage_id":84}' "$_obody"
+    eq "COORD_AGENT unset: the move alone"               "$_move" "$_obody"
     eq "COORD_AGENT unset: the durable log says why"     "true" "$(has 'COORD_AGENT is unset' "$_ologtxt")"
     eq "…and it is not worded as a failed move"          "false" "$(has 'the move did not happen' "$_ologtxt")"
 
     KB_STUB_TAGS='{"0":"keep-me"}' _own_run builder
-    eq "unreadable tags: the move alone, no tags key"    '{"workflow_stage_id":84}' "$_obody"
+    eq "unreadable tags: the move alone, no tag write"   "$_move" "$_obody"
     eq "unreadable tags: the durable log says so"        "true" "$(has 'current tags could not be read' "$_ologtxt")"
 
     unset -f _own_run kb_stub_route
-    unset KB_STUB_TAGS _orepo _olog _ologtxt _obody
+    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp
 else
     echo "  skip (git not on PATH)"
 fi
