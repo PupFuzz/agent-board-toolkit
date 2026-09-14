@@ -665,9 +665,11 @@ echo "== an EMPTY manifest over a NON-EMPTY range is a FINDING, not silence (car
 # footer whose range legitimately had nothing to say are the SAME bytes to every reader of this
 # body. Measured on a real release: a consumer whose `card_token_regex` was absent got 0
 # `shipped-cards` lines over a range carrying eight card ids, at rc 0, under a `## Card
-# coverage` section reading "All shipped refs have a tracking card" (card#8423). The body now
-# says which of the two it is. It still exits 0 — this tool GENERATES the release PR body, and
-# a non-zero would block the very PR the finding is written for.
+# coverage` section reading "All shipped refs have a tracking card" (card#8423). The run now
+# says which of the two it is — on STDERR, as `release-pr-body: correlation gap:` lines, since
+# DL-224 moved builder diagnostics out of the installer-facing body (card#9248). It still exits
+# 0 — this tool GENERATES the release PR body, and a non-zero would block the very PR the
+# finding is written for.
 gapcfg() { printf '%s\n' "$1" > "$W/.release-pr.json"; }
 gapbody() { rc=0; GAPBODY="$( (cd "$W" && "$BIN" --version 0.3.0) 2>"$T/gap.err" )" || rc=$?; GAPERR="$(cat "$T/gap.err")"; }
 
@@ -675,12 +677,12 @@ gapbody() { rc=0; GAPBODY="$( (cd "$W" && "$BIN" --version 0.3.0) 2>"$T/gap.err"
 gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
 gapbody
 eq "a declared key matching nothing still exits 0"   "0"     "$rc"
-eq "…and the body carries a Correlation gaps section" "true" "$(has '## Correlation gaps' "$GAPBODY")"
-eq "…naming the key that matched nothing"            "true"  "$(has '`card_token_regex` is declared' "$GAPBODY")"
-eq "…and saying WHICH manifest is empty"             "true"  "$(has 'The `shipped-cards` manifest is EMPTY' "$GAPBODY")"
-eq "…while the key that DID yield is not named"      "false" "$(has '`ref_token_regex` is declared (`DL-[0-9]+`) and matched no' "$GAPBODY")"
-eq "…the strong headline does NOT fire (one key yielded)" "false" "$(has 'NOTHING in' "$GAPBODY")"
-eq "…and the finding reaches stderr too"             "true"  "$(has 'card_token_regex' "$GAPERR")"
+eq "…and stderr carries a correlation-gap report"   "true"  "$(has 'release-pr-body: correlation gap: ' "$GAPERR")"
+eq "…naming the key that matched nothing"            "true"  "$(has '`card_token_regex` is declared' "$GAPERR")"
+eq "…and saying WHICH manifest is empty"             "true"  "$(has 'The `shipped-cards` manifest is EMPTY' "$GAPERR")"
+eq "…while the key that DID yield is not named"      "false" "$(has '`ref_token_regex` is declared (`DL-[0-9]+`) and matched no' "$GAPERR")"
+eq "…the strong headline does NOT fire (one key yielded)" "false" "$(has 'NOTHING in' "$GAPERR")"
+eq "…and the BODY carries none of it"                "false" "$(has 'card_token_regex' "$GAPBODY")"
 eq "…the shipped-refs footer is still emitted"       "true"  "$(has 'release-manifest:shipped-refs=DL-2' "$GAPBODY")"
 
 # B: NEITHER key yields — the strong shape. Both manifests empty, so the run correlates
@@ -689,9 +691,19 @@ eq "…the shipped-refs footer is still emitted"       "true"  "$(has 'release-m
 gapcfg '{ "ref_token_regex": "card#[0-9]+", "tag_format": "release-{{version}}" }'
 gapbody
 eq "nothing correlated → still rc 0"                 "0"     "$rc"
-eq "…the headline names the range and its size"      "true"  "$(has 'NOTHING in' "$GAPBODY")"
-eq "…the DECLARED key that matched nothing is named" "true"  "$(has '`ref_token_regex` is declared' "$GAPBODY")"
-eq "…and the UNDECLARED one is named as undeclared"  "true"  "$(has '`card_token_regex` is not declared' "$GAPBODY")"
+eq "…the headline names the range and its size"      "true"  "$(has 'NOTHING in' "$GAPERR")"
+eq "…the DECLARED key that matched nothing is named" "true"  "$(has '`ref_token_regex` is declared' "$GAPERR")"
+eq "…and the UNDECLARED one is named as undeclared"  "true"  "$(has '`card_token_regex` is not declared' "$GAPERR")"
+# THE HEADLINE USED TO ASSERT ANOTHER TOOL'S BEHAVIOUR, FALSELY (card#9248). It said "no card can
+# be promoted from this release" — but `bin/promote-released-cards`, in this same repo, derives
+# its shipped refs from `git log <base>..<head>` and never reads a manifest, so cards ARE promoted
+# from a range this headline called unpromotable. It now says only what this generator
+# establishes. ABSENCE on BOTH streams, plus a PRESENCE witness for the replacement — an
+# absence-only arm is satisfied by deleting the headline outright.
+eq "…the false promotion claim is gone from stderr"  "false" "$(has 'can be promoted' "$GAPERR")"
+eq "…and from the body"                              "false" "$(has 'can be promoted' "$GAPBODY")"
+eq "…replaced by what THIS generator establishes"    "true"  "$(has 'the body carries no `release-manifest` footer, and card coverage was not measured here' "$GAPERR")"
+eq "…naming what it does NOT establish"              "true"  "$(has 'What a card promoter does with this range is not established here' "$GAPERR")"
 
 # C: NEITHER key declared at all — the shape `release-artifacts-check` reds a promoting config
 # for, seen from the range's side. A repo with no `.promote` block is outside that check's
@@ -700,8 +712,8 @@ gapcfg '{ "tag_format": "release-{{version}}" }'
 gapbody
 eq "neither key declared → still rc 0"               "0"     "$rc"
 eq "…both keys are named as undeclared"              "true"  \
-   "$( [ "$(has '`ref_token_regex` is not declared' "$GAPBODY")" = true ] \
-       && [ "$(has '`card_token_regex` is not declared' "$GAPBODY")" = true ] && echo true || echo false )"
+   "$( [ "$(has '`ref_token_regex` is not declared' "$GAPERR")" = true ] \
+       && [ "$(has '`card_token_regex` is not declared' "$GAPERR")" = true ] && echo true || echo false )"
 eq "…and the body is otherwise complete"             "true"  "$(has '## Bundled' "$GAPBODY")"
 
 # NEGATIVE CONTROL 1 — both declared, both yield: NO section at all. Without it every arm above
@@ -714,16 +726,16 @@ eq "…and the body is otherwise complete"             "true"  "$(has '## Bundle
 gapcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "#[0-9]+", "tag_format": "release-{{version}}" }'
 gapbody
 eq "control: both keys yielding → rc 0"              "0"     "$rc"
-eq "control: …and NO Correlation gaps section"       "false" "$(has '## Correlation gaps' "$GAPBODY")"
+eq "control: …and NO correlation-gap report"         "false" "$(has 'correlation gap:' "$GAPERR")"
 eq "control: …both footers present"                  "true"  \
    "$( [ "$(has 'shipped-refs=DL-2' "$GAPBODY")" = true ] && [ "$(has 'shipped-cards=3' "$GAPBODY")" = true ] && echo true || echo false )"
 
 # NEGATIVE CONTROL 2 — an EMPTY range says nothing. "No tokens over zero commits" is not a
 # finding, and a section that fired there would cry wolf on every no-op range.
 gapcfg '{ "ref_token_regex": "ZZZ-[0-9]+", "card_token_regex": "QQQ#[0-9]+", "tag_format": "release-{{version}}" }'
-rc=0; emptyrange="$( (cd "$W" && "$BIN" --version 0.3.0 --base HEAD --head HEAD) 2>/dev/null )" || rc=$?
+rc=0; (cd "$W" && "$BIN" --version 0.3.0 --base HEAD --head HEAD) >/dev/null 2>"$T/emptyrange.err" || rc=$?
 eq "control: an empty range → rc 0"                  "0"     "$rc"
-eq "control: …and no Correlation gaps section"       "false" "$(has '## Correlation gaps' "$emptyrange")"
+eq "control: …and no correlation-gap report"         "false" "$(has 'correlation gap:' "$(cat "$T/emptyrange.err")")"
 
 echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) =="
 # WHAT WAS BROKEN. `card_coverage_section` computed its manifest from `ref_token_regex` only,
@@ -732,7 +744,7 @@ echo "== the card-coverage gate can FIRE on a card#-spelled range (card#5877) ==
 # manifest was unconditionally empty and the section rendered clean WITHOUT CHECKING — the
 # canon-#9 shape, a check that cannot fail. Nothing here exercised it: every case above runs
 # without a board token, so before card#7038 they all rendered the "_Not checked here_"
-# placeholder branch — and now render no coverage section at all (see the block below).
+# placeholder branch — and now print no coverage report at all (see the block below).
 #
 # WHY NOT JUST RE-SPELL ref_token_regex. Measured, not argued: promote-released-cards reads the
 # SAME key and matches the token's NUMERIC part against `payload.dl_number`, so a `card#`
@@ -784,29 +796,31 @@ cat > "$CR/.release-pr.json" <<'EOF'
 EOF
 
 export BOARD_FILE="$COV/board.json"
-# coverage_body — the whole body, generated with the real promote tool reachable on PATH.
+# coverage_body — the whole body on stdout, generated with the real promote tool reachable on
+# PATH. The run's stderr — where the coverage report lives since card#9248 — is left in
+# $COV/cov.err, because a command substitution cannot hand a second stream back to its caller.
 coverage_body() {
   ( cd "$CR" \
     && PATH="$COV/bin:$HERE/../bin:$PATH" \
        KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-       "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )
+       "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$COV/cov.err" )
 }
 
 # PROVE-IT-CAN-FAIL: card#9999 is shipped in the range and the board holds no such card.
 cat > "$BOARD_FILE" <<'EOF'
 {"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}}],"meta":{"last_page":1,"total":1}}
 EOF
-covmiss="$(coverage_body)"
-eq "an uncarded card# ref is REPORTED"                "true"  "$(has '**Shipped refs with no tracking card:** card#9999' "$covmiss")"
-# The presence of the heading is now itself the claim that a measurement ran (card#7038), so
-# that is what this arm asserts. It replaces a `has 'Not checked here'` == false line: that
+covmiss="$(coverage_body)"; covmisserr="$(cat "$COV/cov.err")"
+eq "an uncarded card# ref is REPORTED"                "true"  "$(has '**Shipped refs with no tracking card:** card#9999' "$covmisserr")"
+# The presence of the report is itself the claim that a measurement ran (card#7038), so that is
+# what this arm asserts — on stderr, where the report lives since card#9248. It replaces a `has 'Not checked here'` == false line: that
 # string no longer exists anywhere in the tool, and this arm supplies a board token, so it
 # could not have failed in either direction — a decoration, not a check.
-eq "…and the section is there because it MEASURED"    "true"  "$(has '## Card coverage' "$covmiss")"
-eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipped refs in range' "$covmiss")"
+eq "…and the report is there because it MEASURED"     "true"  "$(has 'release-pr-body: card coverage: ' "$covmisserr")"
+eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipped refs in range' "$covmisserr")"
 # The id-space confusion the second key exists to prevent, asserted rather than described: the
 # board's only card carries DL-42, and 42 is NOT what card#9999 asks about.
-eq "the unrelated DL-42 card is not read as coverage" "false" "$(has 'card#42' "$covmiss")"
+eq "the unrelated DL-42 card is not read as coverage" "false" "$(has 'card#42' "$covmisserr")"
 
 # CONTROL: same tool, same range, same config — the board now holds card 9999. Without this the
 # assertions above are satisfied by a section that reports every ref unconditionally.
@@ -814,9 +828,9 @@ cat > "$BOARD_FILE" <<'EOF'
 {"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}},
          {"id":9999,"workflow_stage_id":51,"payload":{}}],"meta":{"last_page":1,"total":2}}
 EOF
-covok="$(coverage_body)"
-eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covok")"
-eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covok")"
+covok="$(coverage_body)"; covokerr="$(cat "$COV/cov.err")"
+eq "control: a carded ref reports clean"              "true"  "$(has 'All shipped refs have a tracking card' "$covokerr")"
+eq "control: nothing is reported missing"             "false" "$(has 'no tracking card' "$covokerr")"
 
 echo "== a card that EXISTS but carries no by-ref source is NOT reported as cardless (card#8421) =="
 # THE DEFECT, END TO END ACROSS THE TWO BINS. Under a repo-qualified `.promote.source`,
@@ -843,16 +857,16 @@ EOF
 cat > "$BOARD_FILE" <<'EOF'
 {"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-77"}}],"meta":{"last_page":1,"total":1}}
 EOF
-qbody() {  # <head-ref> — the body for v0.1.0..<head-ref> of the qualified fixture repo
+qbody() {  # <head-ref> — the STDERR (where the coverage report lives) for v0.1.0..<head-ref> of the qualified fixture repo
   ( cd "$QC" \
     && PATH="$COV/bin:$HERE/../bin:$PATH" \
        KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-       "$BIN" --version 0.2.0 --base v0.1.0 --head "$1" 2>/dev/null )
+       "$BIN" --version 0.2.0 --base v0.1.0 --head "$1" 2>&1 >/dev/null )
 }
 # ONLY the unsourced ref is shipped, so a body that still says "no tracking card" anywhere is
 # the defect, and there is no cardless ref to make the phrase legitimately appear.
 qonly="$(qbody HEAD~1)"
-eq "the coverage section MEASURED (qualified)"        "true"  "$(has '## Card coverage' "$qonly")"
+eq "the coverage report MEASURED (qualified)"         "true"  "$(has 'release-pr-body: card coverage: ' "$qonly")"
 eq "the unsourced ref is NOT called cardless"         "false" "$(has 'no tracking card' "$qonly")"
 eq "…so the author is NOT told to create a card"      "false" "$(has 'Create (or correct) a board card' "$qonly")"
 eq "…it is reported as a card lacking a SOURCE"       "true"  "$(has 'no by-ref source' "$qonly")"
@@ -869,7 +883,7 @@ eq "both: …and the create-a-card advice IS present"   "true"  "$(has 'Create (
 # Card #42 is attributable there, so DL-77 is simply covered and no second line exists: the
 # split above is repo qualification acting, not this fixture being unusual.
 # The key is flipped in the repo's OWN config, not handed over as a sibling --config:
-# `card_coverage_section` invokes the promoter with no --config at all, so the promoter reads
+# `card_coverage_report` invokes the promoter with no --config at all, so the promoter reads
 # `.release-pr.json` from the CWD and a sibling file would leave this control re-running the
 # qualified case (observed — it failed for that reason before this line existed).
 jq '.promote.source = "*"' "$QC/.release-pr.json" > "$COV/qstar.json"
@@ -883,7 +897,7 @@ cat > "$BOARD_FILE" <<'EOF'
          {"id":9999,"workflow_stage_id":51,"payload":{}}],"meta":{"last_page":1,"total":2}}
 EOF
 
-echo "== the coverage section is EMITTED ONLY when it carries a measurement (card#7038) =="
+echo "== the coverage report is EMITTED ONLY when it carries a measurement (card#7038) =="
 # WHAT CHANGED. The section used to render unconditionally, and when it could not check
 # anything it SAID so — a heading whose entire content was "not checked here, go run another
 # tool". That is a placeholder, not a measurement: it tells the merger nothing about what the
@@ -896,8 +910,8 @@ echo "== the coverage section is EMITTED ONLY when it carries a measurement (car
 # Each arm removes exactly ONE leg of the can-we-measure guard and holds the range, the commit
 # subjects and the token keys constant. `$covok` above — same fixture, every leg present — is
 # the positive control: it DOES emit the section, carrying a verdict.
-eq "control: every leg present ⇒ the section IS emitted" "true" "$(has '## Card coverage' "$covok")"
-eq "control: …carrying a verdict, not a placeholder"     "true" "$(has 'All shipped refs have a tracking card' "$covok")"
+eq "control: every leg present ⇒ the report IS emitted" "true" "$(has 'release-pr-body: card coverage: ' "$covokerr")"
+eq "control: …carrying a verdict, not a placeholder"    "true" "$(has 'All shipped refs have a tracking card' "$covokerr")"
 
 # LEG 1 — no board token. This is the historical case, not a hypothetical: every other block in
 # this file runs without one, which is why they all used to render the placeholder branch.
@@ -912,11 +926,11 @@ eq "precondition: no board token reaches the arm" "" \
        sh -c 'printf %s "${KANBAN_WRITEBACK_TOKEN-}"' )"
 rc=0; notoken="$( cd "$CR" \
   && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN= KANBAN_EXPECTED_HOST=kanban.test \
-     "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+     "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$COV/notoken.err" )" || rc=$?
 eq "no board token → still rc 0"                  "0"     "$rc"
 eq "…body is still complete (no token)"           "true"  "$(has '## Bundled' "$notoken")"
-eq "…and NO coverage section is emitted (no token)"       "false" "$(has '## Card coverage' "$notoken")"
-eq "…nor the placeholder it used to carry"        "false" "$(has 'Not checked here' "$notoken")"
+eq "…and NO coverage report is emitted (no token)"        "false" "$(has 'card coverage:' "$(cat "$COV/notoken.err")")"
+eq "…nor the placeholder it used to carry"        "false" "$(has 'Not checked here' "$notoken$(cat "$COV/notoken.err")")"
 
 # LEG 2 — the promote tool is unreachable. The bin is run from a directory of its own, so
 # neither `command -v` nor the `dirname "$0"` sibling lookup finds a promoter; the board token
@@ -944,26 +958,26 @@ eq "precondition: no promoter on the derived PATH" "" \
 mkdir -p "$COV/lonebin"; cp "$BIN" "$COV/lonebin/release-pr-body"
 rc=0; nopromote="$( cd "$CR" \
   && PATH="$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$COV/nopromote.err" )" || rc=$?
 eq "no promote tool → still rc 0"                 "0"     "$rc"
 eq "…body is still complete (no promoter)"        "true"  "$(has '## Bundled' "$nopromote")"
-eq "…and NO coverage section is emitted (no promoter)"    "false" "$(has '## Card coverage' "$nopromote")"
+eq "…and NO coverage report is emitted (no promoter)"     "false" "$(has 'card coverage:' "$(cat "$COV/nopromote.err")")"
 # CONTROL for this leg: the SAME lone copy with the promoter back on PATH does emit — so the
 # absence above is the missing promoter, not "a copy outside bin/ cannot check anything".
 withpromote="$( cd "$CR" \
   && PATH="$HERE/../bin:$NOPROM_PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )"
-eq "control: the same copy WITH a promoter emits" "true"  "$(has '## Card coverage' "$withpromote")"
+     "$COV/lonebin/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>&1 >/dev/null )"
+eq "control: the same copy WITH a promoter emits" "true"  "$(has 'card coverage:' "$withpromote")"
 
 # LEG 3 — no `.promote` config. Handed over as a sibling --config so the fixture repo's own
 # config, which every later block reads, is left exactly as it is.
 jq 'del(.promote)' "$CR/.release-pr.json" > "$COV/nopromote.json"
 rc=0; nocfg="$( cd "$CR" \
   && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-     "$BIN" --config "$COV/nopromote.json" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null )" || rc=$?
+     "$BIN" --config "$COV/nopromote.json" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$COV/nocfg.err" )" || rc=$?
 eq "no .promote config → still rc 0"              "0"     "$rc"
 eq "…body is still complete (no .promote)"        "true"  "$(has '## Bundled' "$nocfg")"
-eq "…and NO coverage section is emitted (no .promote)"    "false" "$(has '## Card coverage' "$nocfg")"
+eq "…and NO coverage report is emitted (no .promote)"     "false" "$(has 'card coverage:' "$(cat "$COV/nocfg.err")")"
 
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
@@ -1023,7 +1037,7 @@ EOF
 rc=0; notok="$(coverage_body)" || rc=$?
 eq "no token keys → still rc 0"                  "0"     "$rc"
 eq "…body is complete"                           "true"  "$(has '## Bundled' "$notok")"
-eq "…and the coverage section is omitted whole"  "false" "$(has '## Card coverage' "$notok")"
+eq "…and the coverage report is omitted whole"   "false" "$(has 'card coverage:' "$(cat "$COV/cov.err")")"
 unset BOARD_FILE
 
 echo "== the artifacts checklist RENDERS, with {{version}} expanded (card#7038 instance 3) =="
@@ -1065,6 +1079,118 @@ rc=0; noarts="$( (cd "$CR" && "$BIN" --config "$COV/noartifacts.json" \
 eq "control: no artifacts key → rc 0"             "0"     "$rc"
 eq "control: …body is still complete"             "true"  "$(has '## Bundled' "$noarts")"
 eq "control: …and NO artifacts section is emitted" "false" "$(has '## Release artifacts' "$noarts")"
+
+echo "== the BODY is installer content only; builder diagnostics MOVE to stderr, kept (DL-224, card#9248) =="
+# THE DEFECT. `## Correlation gaps` and `## Card coverage` were H2 sections of the body: builder
+# diagnostics about manifests and promotion, not content for the person installing the release.
+# Reported on card#9248: the framework's PR-body lint reds on both and admits `## Release
+# artifacts`, so every generated release body was hand-edited at every cut. DL-224 ruled the body to the scope line,
+# `## Highlights`, `## Bundled`, `## Release artifacts` (when `artifacts` is configured) and the
+# machine lines — and the two diagnostics to STDERR, kept, beside an `announce:begin`…`announce:end`
+# block a release tool lifts instead of re-deriving.
+#
+# ONE RUN, BOTH STREAMS, BOTH DIRECTIONS. A body-only assertion passes on an implementation that
+# DELETED the diagnostics — so the same invocation that is asserted to carry no stray H2 on stdout
+# is asserted to carry both diagnostics and the block on stderr. The fixture makes every emitter
+# fire at once: `artifacts` configured (the conditional H2 is PRESENT, so the allow-list is
+# exercised rather than vacuous), `ref_token_regex` matching nothing (a correlation gap), and a
+# promote config whose board lacks card#9999 (a measured coverage finding). An integration tip one
+# commit AHEAD of the head makes the not-included list non-empty, so every announce field the
+# contract declares is emitted and the declared-vs-emitted comparison below runs over the whole set.
+SPL="$COV/split"; mkdir -p "$SPL"
+cat > "$CR/.release-pr.json" <<'EOF'
+{
+  "ref_token_regex": "DL-[0-9]+",
+  "card_token_regex": "card#[0-9]+",
+  "artifacts": [ "VERSION → {{version}}" ],
+  "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "*" }
+}
+EOF
+cat > "$SPL/board.json" <<'EOF'
+{"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}}],"meta":{"last_page":1,"total":1}}
+EOF
+g -C "$CR" commit -q --allow-empty -m "feat: later work not in this release (card#10001) (#44)"
+g -C "$CR" update-ref refs/remotes/origin/dev HEAD
+SPL_HEAD="$(g -C "$CR" rev-parse HEAD~1)"; SPL_BASE="$(g -C "$CR" rev-parse 'v0.1.0^{commit}')"
+SPL_TIP="$(g -C "$CR" rev-parse HEAD)"
+rc=0
+( cd "$CR" && PATH="$COV/bin:$HERE/../bin:$PATH" BOARD_FILE="$SPL/board.json" \
+    KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
+    "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 ) >"$SPL/out" 2>"$SPL/err" || rc=$?
+SPL_OUT="$(cat "$SPL/out")"; SPL_ERR="$(cat "$SPL/err")"
+eq "split run → rc 0"                                   "0"     "$rc"
+
+# stdout: the H2 allow-list, as a set difference over the H2 lines actually emitted.
+SPL_STRAY="$(printf '%s\n' "$SPL_OUT" | awk '
+  /^## / && $0 != "## Highlights" && $0 != "## Bundled (generated — do not hand-edit)" && $0 != "## Release artifacts"')"
+eq "the body carries NO H2 outside the ruled set"       ""      "$SPL_STRAY"
+eq "…presence: ## Highlights"                           "true"  "$(has_line '## Highlights' "$SPL_OUT")"
+eq "…presence: ## Bundled"                              "true"  "$(has_line '## Bundled (generated — do not hand-edit)' "$SPL_OUT")"
+eq "…presence: ## Release artifacts (configured here)"  "true"  "$(has_line '## Release artifacts' "$SPL_OUT")"
+eq "…presence: the shipped-cards footer"                "true"  "$(has_line '<!-- release-manifest:shipped-cards=9999 -->' "$SPL_OUT")"
+eq "…and no announce line leaks into the body"          "false" "$(has 'announce:' "$SPL_OUT")"
+
+# stderr: the diagnostics are PRESENT — the half a deletion would fail.
+eq "stderr carries the correlation gap"                 "true"  "$(has 'release-pr-body: correlation gap: ⚠ **`ref_token_regex` is declared' "$SPL_ERR")"
+eq "stderr carries the measured coverage finding"       "true"  "$(has 'release-pr-body: card coverage: ⚠ **Shipped refs with no tracking card:** card#9999' "$SPL_ERR")"
+eq "…and no stderr line is an H2 (a 2>&1 merge adds none)" "" "$(printf '%s\n' "$SPL_ERR" | awk '/^## /')"
+
+# stderr: the announce block — once, whole, last.
+SPL_BLOCK="$(printf '%s\n' "$SPL_ERR" | sed -n '/^announce:begin$/,/^announce:end$/p')"
+eq "announce:begin appears exactly once"                "1"     "$(printf '%s\n' "$SPL_ERR" | awk '$0=="announce:begin"{n++} END{print n+0}')"
+eq "announce:end appears exactly once"                  "1"     "$(printf '%s\n' "$SPL_ERR" | awk '$0=="announce:end"{n++} END{print n+0}')"
+eq "…and it is the LAST line of stderr"                 "announce:end" "$(printf '%s\n' "$SPL_ERR" | tail -n 1)"
+eq "block: format"                                      "true"  "$(has_line 'format: 1' "$SPL_BLOCK")"
+eq "block: version"                                     "true"  "$(has_line 'version: 0.2.0' "$SPL_BLOCK")"
+eq "block: range pinned by sha"                         "true"  "$(has_line "range: $SPL_BASE..$SPL_HEAD" "$SPL_BLOCK")"
+eq "block: the range re-prints as a git command"        "true"  "$(has_line "range-cmd: git log --no-merges --format=%s $SPL_BASE..$SPL_HEAD" "$SPL_BLOCK")"
+eq "block: shipped cards, as the manifest has them"     "true"  "$(has_line 'shipped-cards: 9999' "$SPL_BLOCK")"
+eq "block: …and the command that re-prints them"        "true"  "$(has_line "shipped-cards-cmd: release-pr-body --card-manifest --version 0.2.0 --base $SPL_BASE --head $SPL_HEAD" "$SPL_BLOCK")"
+eq "block: a declared key that matched nothing is present-and-empty" "true" "$(has_line 'shipped-refs: ' "$SPL_BLOCK")"
+eq "block: not-included was measured against the tip"   "true"  "$(has "not-included: measured $SPL_TIP" "$SPL_BLOCK")"
+eq "block: …the command that re-prints the list"        "true"  "$(has_line "not-included-cmd: git log --no-merges --format='%h %s' $SPL_HEAD..$SPL_TIP" "$SPL_BLOCK")"
+eq "block: …and the commit the range leaves out"        "true"  "$(has 'not-included-commit: ' "$SPL_BLOCK")"
+eq "block: …named by its subject"                       "true"  "$(has 'later work not in this release (card#10001)' "$SPL_BLOCK")"
+eq "block: …which is NOT in the body"                   "false" "$(has 'later work not in this release' "$SPL_OUT")"
+# THE DERIVATIONS ARE REAL: each *-cmd, run as printed, re-prints the value beside it.
+SPL_CARDS_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^shipped-cards-cmd: //p')"
+eq "shipped-cards-cmd re-prints shipped-cards"          "9999"  "$( cd "$CR" && PATH="$HERE/../bin:$PATH" bash -c "$SPL_CARDS_CMD" 2>/dev/null )"
+SPL_NI_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^not-included-cmd: //p')"
+eq "not-included-cmd re-prints the not-included commit" "$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^not-included-commit: //p')" \
+   "$( cd "$CR" && bash -c "$SPL_NI_CMD" )"
+
+SPL_RANGE_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^range-cmd: //p')"
+eq "range-cmd re-prints the bundled subject"            "feat: a thing (card#9999) (#42)" "$( cd "$CR" && bash -c "$SPL_RANGE_CMD" )"
+SPL_REFS_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^shipped-refs-cmd: //p')"
+rc=0; SPL_REFS="$( cd "$CR" && PATH="$HERE/../bin:$PATH" bash -c "$SPL_REFS_CMD" 2>/dev/null )" || rc=$?
+eq "shipped-refs-cmd runs (rc 0)…"                      "0"     "$rc"
+eq "…and re-prints shipped-refs (empty here)"           "$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^shipped-refs: //p')" "$SPL_REFS"
+
+# DECLARE ↔ EMIT, both ways and IN ORDER (canon #7 — the declaring end checks its declaration is
+# TRUE OF ITS OWN CODE). The declared field list is read from the usage header, which `--help`
+# prints and a consumer outside this repo reads; the emitted list from the block above, with a
+# repeated key collapsed to its first appearance. An ordered comparison, because the header
+# declares the order.
+SPL_DECLARED="$("$BIN" --help | sed -n '/^#     announce:begin$/,/^#     announce:end$/p' \
+  | sed -e '1d;$d' -e 's/^#     //' -e 's/:.*//' | awk '!seen[$0]++')"
+SPL_EMITTED="$(printf '%s\n' "$SPL_BLOCK" | sed -e '1d;$d' -e 's/:.*//' | awk '!seen[$0]++')"
+eq "precondition: the header declares a field list"     "true"  "$(has_line 'not-included-commit' "$SPL_DECLARED")"
+eq "every DECLARED field is emitted, in order, and nothing else" "$SPL_DECLARED" "$SPL_EMITTED"
+
+# CONTROL — a query mode is not a body run: it prints no diagnostics and no block.
+rc=0; ( cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 --card-manifest ) >/dev/null 2>"$SPL/q.err" || rc=$?
+eq "control: --card-manifest → rc 0"                    "0"     "$rc"
+eq "control: …and emits no announce block"              "false" "$(has 'announce:begin' "$(cat "$SPL/q.err")")"
+
+# UNMEASURED IS SAID BY NAME. With no integration tip in the checkout and an explicit --head (which
+# does not fetch), the not-included list cannot be derived — the block says so instead of
+# emitting an empty list that would read as "nothing left out".
+g -C "$CR" update-ref -d refs/remotes/origin/dev
+rc=0; ( cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 ) >/dev/null 2>"$SPL/nt.err" || rc=$?
+eq "no integration tip → rc 0"                          "0"     "$rc"
+eq "…not-included is UNMEASURED, by name"               "true"  "$(has 'not-included: unmeasured ' "$(cat "$SPL/nt.err")")"
+eq "…with no list and no command"                       "false" "$(has 'not-included-c' "$(cat "$SPL/nt.err")")"
+g -C "$CR" reset -q --hard HEAD~1
 
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact

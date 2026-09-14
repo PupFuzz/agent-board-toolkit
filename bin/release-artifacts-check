@@ -585,8 +585,8 @@ if [ "$CLASSIFY_ONLY" -eq 0 ]; then
       esac
     done <<'ROWS'
 promote.source|bin/promote-released-cards|qualify a matched card against the repo this release ships (dl_number/pr_number are REPO-SCOPED counters, so an unqualified match promotes another repo's cards into a terminal stage)|Absent, that tool REFUSES AT RC 2 rather than going quiet — the key is required there with no default — so acknowledging it here silences THIS check and not that refusal: your post-merge promote job still reds.
-ref_token_regex|bin/release-pr-body (and bin/promote-released-cards)|build the shipped-refs manifest and the ## Card coverage section, correlated against a card's payload.dl_number|Absent, none of that happens SILENTLY, at rc 0: the manifest footer is simply omitted, which reads exactly like a range that legitimately had nothing to say.
-card_token_regex|bin/release-pr-body|build the shipped-cards manifest and the ## Card coverage section, correlated against the card's own id|Absent, none of that happens SILENTLY, at rc 0: the body emits a 0-id manifest under the line "All shipped refs have a tracking card", asserting coverage nothing measured.
+ref_token_regex|bin/release-pr-body (and bin/promote-released-cards)|build the shipped-refs manifest and the card-coverage report, correlated against a card's payload.dl_number|Absent, none of that happens SILENTLY, at rc 0: the manifest footer is simply omitted, which reads exactly like a range that legitimately had nothing to say.
+card_token_regex|bin/release-pr-body|build the shipped-cards manifest and the card-coverage report, correlated against the card's own id|Absent, none of that happens SILENTLY, at rc 0: no shipped-cards footer is emitted while the card-coverage report can still read "All shipped refs have a tracking card", asserting coverage nothing measured.
 ROWS
   fi
 fi
