@@ -210,7 +210,7 @@ python3() { jq -c '{id: .card.id, dlen: (.card.description | length), surviving:
 _BIG_ERR_FILE="$(mktemp)"
 _dec="$(_kbc_archive_decision 42 2>"$_BIG_ERR_FILE")" || true
 eq "a >131072 B card reaches the gate whole, beside the board" \
-   '{"id":42,"dlen":140000,"surviving":2}' "${_dec%%$'\t'*}"
+   '{"id":42,"dlen":140000,"surviving":2}' "${_dec%%$'\n'*}"
 eq "…and jq never fails on its argument list" "false" \
    "$(has 'Argument list too long' "$(cat "$_BIG_ERR_FILE")")"
 unset -f kb_api fetch_board_cards python3

@@ -3068,8 +3068,7 @@ _kbc_archive_decision() {
     # leaves the shim an empty stdin, which it refuses as a card-less request. The card is
     # the FIRST text on the stream; `inputs` then yields one object per board text, exactly
     # as a board-only stdin did.
-    { printf '%s\n' "$card"; printf '%s' "$board"; } \
-        | jq -c -n --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
+    { printf '%s\n' "$card"; printf '%s' "$board"; } | jq -c -n --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
             'input as $card | inputs | {card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
         | python3 "$shim"
 }
