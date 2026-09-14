@@ -173,7 +173,8 @@ _bcs_card_id() {
 # stdout (source: `hostlocal` | `committed`), or nothing. Run from inside the work tree: the
 # repo-local UNCOMMITTED `git config kanban.board-id` wins, else the committed
 # .promote.board_id — the mover's full reasoning for that order sits at its call site below.
-# Nothing is printed when jq is absent and only the committed file could have answered.
+# Nothing is printed when jq is absent and only the committed file could have answered, or when
+# the committed value is not a plain integer (`"42abc"`, `-42`, `42.0`, `["42"]`).
 _bcs_board_id() {
     local cfg="${1:-}" board
     board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
@@ -217,13 +218,13 @@ _bcs_card_id_floor_warning() {
     id="$(_bcs_card_id "$branch")"
     [ -n "$id" ] || return 0
     if [ -z "$board" ]; then
-        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to no board — no 'git config kanban.board-id', and no .promote.board_id read from .release-pr.json (absent, unreadable, or jq not on PATH) — so whether %s is a card id or a GitHub issue/PR number cannot be judged; %s.\n" \
+        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to no board — no 'git config kanban.board-id', and no .promote.board_id read from .release-pr.json (absent, unreadable, not a plain integer, or jq not on PATH) — so whether %s is a card id or a GitHub issue/PR number cannot be judged; %s.\n" \
             "$branch" "$id" "$id" "$_bcs_id_space_rule"
     elif [ -z "$envf" ]; then
         printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to board %s, but no ~/.kanban-*-board.env has KB_BOARD_ID=%s, so there is no floor to consult; %s.\n" \
             "$branch" "$id" "$board" "$board" "$_bcs_id_space_rule"
     elif [ -z "$floor" ]; then
-        printf "card-id floor not seeded for board %s — add 'export KB_CARD_ID_FLOOR=<lowest card id on the board>' to %s (docs/INSTALL.md §3b); until then branch '%s' (card %s) cannot be told apart from a GitHub issue/PR number; %s.\n" \
+        printf "card-id floor not seeded for board %s — add 'export KB_CARD_ID_FLOOR=<at or below the board's lowest card id, archived cards included>' to %s (docs/INSTALL.md §3b); until then branch '%s' (card %s) cannot be told apart from a GitHub issue/PR number; %s.\n" \
             "$board" "$envf" "$branch" "$id" "$_bcs_id_space_rule"
     elif ! kb_is_uint "$floor"; then
         printf "card-id floor NOT CHECKED for branch '%s' (card %s): KB_CARD_ID_FLOOR='%s' in %s is not an unsigned integer without leading zeros (docs/INSTALL.md §3b); %s.\n" \

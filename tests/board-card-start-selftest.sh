@@ -198,7 +198,31 @@ if command -v git >/dev/null 2>&1; then
         grep -q "BELOW board 42's card-id floor 1000" <<< "$_fout" \
             && ok "committed .promote.board_id selects the floor's board env" \
             || bad "committed board id did not reach the floor: $_fout"
+        # A committed value that is not a plain integer maps to no board, and the line's cause list
+        # names that case rather than only absent / unreadable / jq missing.
+        for _bj in '"42abc"' '-42' '42.0' '["42"]'; do
+            printf '{"promote":{"board_id":%s}}\n' "$_bj" > "$_frepo/.release-pr.json"
+            _flint "fix/card-712-foo"
+            grep -q "card-id floor NOT CHECKED .*maps to no board .*(absent, unreadable, not a plain integer, or jq not on PATH)" <<< "$_fout" \
+                && ok "committed board_id $_bj: NOT CHECKED, naming 'not a plain integer'" \
+                || bad "committed board_id $_bj: cause list wrong: $_fout"
+        done
     fi
+    # 5. A branch with nothing to judge reads NO config: a board env that records being sourced stays
+    # untouched for a docs or DL-only branch. The card branch is the positive control — without it,
+    # a marker that could never be written would make both absence checks pass vacuously.
+    rm -f "$_frepo/.release-pr.json"
+    git -C "$_frepo" config kanban.board-id 42
+    printf 'touch %q\nexport KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' "$_ft/sourced" > "$_fhome/.kanban-t-board.env"
+    for _nb in "docs/adoption-guide" "feature/dl212-event-gated"; do
+        rm -f "$_ft/sourced"; _flint "$_nb"
+        [[ ! -e "$_ft/sourced" ]] && ok "no card id ($_nb): no board env sourced" \
+            || bad "no card id ($_nb): --lint sourced a board env for a branch with nothing to judge"
+        [[ -z "$_fout" ]] && ok "no card id ($_nb): silent" || bad "no card id ($_nb): spoke: $_fout"
+    done
+    rm -f "$_ft/sourced"; _flint "fix/card-712-foo"
+    [[ -e "$_ft/sourced" ]] && ok "card id (control): the board env IS sourced, so the marker can fire" \
+        || bad "card id (control): board env never sourced — the marker probe cannot fire"
     rm -rf "$_ft"
 fi
 
@@ -853,6 +877,23 @@ if command -v git >/dev/null 2>&1; then
     KB_STUB_TAGS='{"0":"keep-me"}' _own_run builder
     eq "unreadable tags: the move alone, no tag write"   "$_move" "$_obody"
     eq "unreadable tags: the durable log says so"        "true" "$(has 'current tags could not be read' "$_ologtxt")"
+
+    # A card id the board answers 404 for: LOUD only when the branch NAMED the card explicitly
+    # (`card-712`), SILENT for a typed leading id (`fix/712-…`, often a foreign ticket number). Both
+    # legs assert the GET happened, so the silent one is a measured miss, not a run that never read.
+    git -C "$_orepo" checkout -q -b fix/card-712-x
+    _own_run builder
+    eq "explicit id 404: rc 0"                            "0" "$_rc"
+    eq "explicit id 404: the card WAS read"               "1" "$(kb_stub_count GET /tasks/712.json)"
+    eq "explicit id 404: the durable log says it does not exist" "true" "$(has 'card #712 named in the branch does not exist' "$_ologtxt")"
+    eq "explicit id 404: nothing written"                 "" "$(kb_stub_bodies PATCH /tasks/712.json)"
+    git -C "$_orepo" checkout -q -b fix/712-x
+    _own_run builder
+    eq "typed id 404: rc 0"                               "0" "$_rc"
+    eq "typed id 404: the card WAS read"                  "1" "$(kb_stub_count GET /tasks/712.json)"
+    eq "typed id 404: SILENT — nothing in the durable log" "" "$_ologtxt"
+    eq "typed id 404: SILENT — nothing on stderr"         "" "$_out"
+    git -C "$_orepo" checkout -q fix/card-4242-x
 
     unset -f _own_run kb_stub_route
     unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp
