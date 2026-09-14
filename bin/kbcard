@@ -55,8 +55,8 @@
 #   with the same four-character blank set, decided on the RAW value (before create-card appends
 #   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
 #   blank MEMBER ("a, ,b", "a,") is not refused and still reaches the wire. A blank one used to be
-#   SENT as a one-element list: rc 0 wherever the board accepted it, and on patch that REPLACES
-#   the card's whole tag list. What the board does with it is NOT measured here. Refusing it was
+#   SENT as its own element, beside any `type:` / `triaged` the call appends: rc 0 wherever the
+#   board accepted it, and on patch that REPLACES the card's whole tag list. What the board does with it is NOT measured here. Refusing it was
 #   an acceptance change, asked and granted (card#9421).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \

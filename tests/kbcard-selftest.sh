@@ -4058,12 +4058,13 @@ unset _verb _flag _L _b _bn _pf_classified _pf_derived
 
 # ---------------------------------------------------------------------------
 echo "== --tags — a visually blank value is refused, not sent (card#9421) =="
-# THE DEFECT. `--tags` took `kb_require_value` only, so `"   "` was split into `["   "]` and sent
-# (rc 0 against this stub) — and `patch --tags` REPLACES the card's whole tag list, so wherever
-# the board accepts that write, a $TAGS that expanded to padding wipes `triaged`, `type:*` and
-# every addressing tag. What the live board does with it is not measured here. Narrowing a shipped flag is an
-# acceptance change; asked and granted. Only the WHOLE value is in the ruling: a blank MEMBER is
-# still sent, and the member legs below pin that rather than endorse it.
+# THE DEFECT. `--tags` took `kb_require_value` only, so `"   "` was sent as its own element, beside
+# any `type:` / `triaged` the call appends (rc 0 against this stub) — and `patch --tags` REPLACES
+# the card's whole tag list, so wherever the board accepts that write, a $TAGS that expanded to
+# padding wipes every tag the call does not re-append. What the live board does with it is not
+# measured here. Narrowing a shipped flag is an acceptance change; asked and granted. Only the
+# WHOLE value is in the ruling: a blank MEMBER is still sent, and the member legs below pin that
+# rather than endorse it.
 #
 # THE POPULATION IS DERIVED: every verb whose own case block carries a `--tags)` arm. The parity
 # leg reds in both directions, so a verb gaining `--tags` cannot land undriven here.
