@@ -1134,15 +1134,86 @@ eq "…and --tag resolves it from version_file" "release-0.9.9"   "$( (cd "$W" &
 echo "== the query modes are mutually exclusive, COUNTED not pairwise =="
 # Each mode replaces the whole output with one answer, so any two means one is silently lost.
 # The check was a single `--manifest && --card-manifest` test; with a third mode a pairwise
-# test admits exactly the combination nobody wrote down.
-for pair in "--tag --manifest" "--tag --card-manifest" "--manifest --card-manifest"; do
-  # shellcheck disable=SC2086  # the pair IS two arguments
-  rc=0; err="$( (cd "$W" && "$BIN" $pair --version 0.3.0) 2>&1 )" || rc=$?
-  eq "$pair → rc 2"                          "2"                "$rc"
-  eq "…naming both modes"                    "true"             "$(has 'mutually exclusive query modes' "$err")"
+# test admits exactly the combination nobody wrote down. The modes are DERIVED from the bin's
+# own `query_mode` registrations and every pair is driven, so a mode added there is covered here
+# the day it lands; the two named witnesses keep an empty derivation from passing.
+mapfile -t QMODES < <(command grep -oE '^query_mode "\$[A-Z_]+"[[:space:]]+--[a-z-]+' "$BIN" | awk '{print $NF}')
+eq "derivation witness: --tag is a query mode"          "true" "$(has_line --tag "$(printf '%s\n' "${QMODES[@]}")")"
+eq "derivation witness: --tool-version is a query mode" "true" "$(has_line --tool-version "$(printf '%s\n' "${QMODES[@]}")")"
+for ((i = 0; i < ${#QMODES[@]}; i++)); do
+  for ((j = i + 1; j < ${#QMODES[@]}; j++)); do
+    pair="${QMODES[i]} ${QMODES[j]}"
+    rc=0; err="$( (cd "$W" && "$BIN" "${QMODES[i]}" "${QMODES[j]}" --version 0.3.0) 2>&1 )" || rc=$?
+    eq "$pair → rc 2"                          "2"                "$rc"
+    eq "…naming both modes"                    "true"             "$(has "${QMODES[i]}, ${QMODES[j]} are mutually exclusive query modes" "$err")"
+  done
 done
 # CONTROL — one mode alone is accepted, so the refusal above is about the COMBINATION.
 rc=0; (cd "$W" && "$BIN" --tag --version 0.3.0) >/dev/null 2>&1 || rc=$?
 eq "control: one mode alone is fine"         "0"                "$rc"
+
+echo "== --tool-version prints the toolkit version this FILE is — from a copy, with no checkout =="
+# `--version` is an INPUT naming the release; `--tool-version` asks the tool what it is. The
+# answer must come from the file itself: a seat's copy under ~/.local/bin has no checkout, no
+# VERSION beside it and no config, and every one of those is absent or a DECOY below.
+TOOLKIT_VERSION="$(tr -d '\n' < "$HERE/../VERSION")"
+printf '%s\n' "$TOOLKIT_VERSION" > "$T/tv-want"
+SEAT="$T/seat"; mkdir -p "$SEAT/bin" "$SEAT/cwd"
+cp "$BIN" "$SEAT/bin/release-pr-body"
+if git -C "$SEAT/cwd" rev-parse --git-dir >/dev/null 2>&1; then
+  bad "fixture broken: the copy's cwd is inside a git work tree"
+else
+  ok "the copy runs outside every git work tree"
+fi
+if [ -L "$SEAT/bin/release-pr-body" ] || [ -e "$SEAT/VERSION" ] || [ -e "$SEAT/cwd/.release-pr.json" ]; then
+  bad "fixture broken: the copy is a symlink or has a VERSION/config beside it"
+else
+  ok "the copy is a plain file with no VERSION or config beside it"
+fi
+
+# _tv <dir> <bin> <args...> — run from <dir>; stdout/stderr to tv-out/tv-err, rc to TV_RC.
+_tv() { local d="$1"; shift; TV_RC=0; (cd "$d" && "$@") >"$T/tv-out" 2>"$T/tv-err" || TV_RC=$?; }
+
+_tv "$SEAT/cwd" "$SEAT/bin/release-pr-body" --tool-version
+eq "copy: --tool-version → rc 0"                   "0"    "$TV_RC"
+eq "copy: stdout is exactly VERSION and a newline" "true" "$(cmp -s "$T/tv-out" "$T/tv-want" && echo true || echo false)"
+eq "copy: stderr is silent"                        ""     "$(cat "$T/tv-err")"
+
+# DECOYS — a VERSION where a path-relative read would look (beside bin/, and in the cwd) and a
+# config naming a different release. An implementation reading any of them prints 6.6.6.
+printf '6.6.6\n' > "$SEAT/VERSION"; printf '6.6.6\n' > "$SEAT/cwd/VERSION"
+printf '{ "version_file": "VERSION", "version_regex": "[0-9.]+" }\n' > "$SEAT/cwd/.release-pr.json"
+_tv "$SEAT/cwd" "$SEAT/bin/release-pr-body" --tool-version
+eq "decoys: still exactly the toolkit version"     "true" "$(cmp -s "$T/tv-out" "$T/tv-want" && echo true || echo false)"
+eq "decoys: control — the release version IS 6.6.6 here" "v6.6.6" "$( (cd "$SEAT/cwd" && "$SEAT/bin/release-pr-body" --tag) 2>&1 )"
+
+echo "== --version keeps its meaning: the RELEASE version, an input =="
+# Presence witnesses, green before and after: the flag the card could not repurpose still names
+# the release and still demands a value.
+eq "--tag --version maps the RELEASE version"      "release-3.4.5" "$( (cd "$W" && "$BIN" --tag --version 3.4.5) 2>&1 )"
+_tv "$W" "$BIN" --version
+eq "bare --version → rc 2"                         "2"    "$TV_RC"
+eq "…still asking for the release version's value" "true" "$(has '--version requires a non-empty value' "$(cat "$T/tv-err")")"
+eq "…and prints nothing on stdout"                 ""     "$(cat "$T/tv-out")"
+
+echo "== --tool-version with other arguments =="
+# Inputs are ignored: the answer needs no config, no range and no release version, so neither a
+# missing config nor unresolvable refs are consulted. Another QUERY mode is refused (the pairs
+# above); a malformed argument is still refused, wherever it sits.
+_tv "$W" "$BIN" --tool-version --version 3.4.5 --config "$T/no-such.json" --base no-such-ref --head no-such-ref
+eq "with every input flag → rc 0"                  "0"    "$TV_RC"
+eq "…printing the TOOL version, not 3.4.5 or 0.9.9" "true" "$(cmp -s "$T/tv-out" "$T/tv-want" && echo true || echo false)"
+_tv "$W" "$BIN" --version 3.4.5 --tool-version
+eq "flag order does not matter"                    "true" "$(cmp -s "$T/tv-out" "$T/tv-want" && echo true || echo false)"
+_tv "$W" "$BIN" --tool-version --no-such-flag
+eq "an unknown argument after it → rc 2"           "2"    "$TV_RC"
+eq "…named"                                        "true" "$(has "unknown arg '--no-such-flag'" "$(cat "$T/tv-err")")"
+eq "…and no version printed"                       ""     "$(cat "$T/tv-out")"
+_tv "$W" "$BIN" --tool-version --base
+eq "a value flag missing its value → rc 2"         "2"    "$TV_RC"
+eq "…named"                                        "true" "$(has '--base requires a non-empty value' "$(cat "$T/tv-err")")"
+
+echo "== --help lists --tool-version =="
+eq "usage names the flag"                          "true" "$(has_line '#   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit' "$("$BIN" --help)")"
 
 _summary "release-pr-body-selftest"

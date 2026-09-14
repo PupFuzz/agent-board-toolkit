@@ -14,6 +14,17 @@
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
 #   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
+#   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit
+#
+# TWO VERSIONS, TWO FLAGS. `--version X.Y.Z` is an INPUT: the version of the release the body
+# describes. `--tool-version` is a QUERY about the tool: the toolkit release this file was stamped
+# at, from the `ABTK_TOOL_VERSION` line below. The stamp is EMBEDDED so that a per-seat copy
+# away from any checkout answers from itself; tests/tool-version-stamp-selftest.sh holds it equal
+# to the toolkit's VERSION file. Its resolution is the RELEASE: a copy taken from `dev` between
+# releases reports the last release stamped. It needs no config, no repo and no network, and is
+# counted with the other query modes below. BOOTSTRAP BOUND: only a copy new enough to carry the
+# flag can answer. Every earlier revision of this file refuses `--tool-version` as `unknown arg`
+# at rc 2 — that refusal means "older than the flag", never a version.
 #
 # `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). `.release-pr.json`'s
 # `tag_format` is read here and nowhere else; `bin/release-tag-check` needs the same answer to
@@ -58,6 +69,8 @@
 # are otherwise indistinguishable to every reader of this body (card#8538).
 set -euo pipefail
 
+ABTK_TOOL_VERSION='0.33.0'
+
 die() { echo "release-pr-body: $*" >&2; exit 2; }
 command -v jq  >/dev/null || die "jq is required"
 command -v git >/dev/null || die "git is required"
@@ -75,7 +88,7 @@ command -v git >/dev/null || die "git is required"
 # and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
@@ -85,6 +98,7 @@ while [ $# -gt 0 ]; do
     --tag)      TAG_ONLY=1; shift;;
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
     # `sed -n '2,20p'` happened to print all of the header it was written against, and would
     # have started truncating silently at the first header line added. No line COUNT is
@@ -109,8 +123,15 @@ query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODE
 query_mode "$TAG_ONLY"           --tag
 query_mode "$MANIFEST_ONLY"      --manifest
 query_mode "$CARD_MANIFEST_ONLY" --card-manifest
+query_mode "$TOOL_VERSION_ONLY"  --tool-version
 if [ "$QUERY_COUNT" -gt 1 ]; then
   die "$QUERY_MODES are mutually exclusive query modes (each prints a different answer — run the tool once per question)"
+fi
+
+# Before the config read: a copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
 fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
