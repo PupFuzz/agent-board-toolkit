@@ -95,10 +95,10 @@
 #     primitive that owns the rule, rather than each mover remembering it. The clear is
 #     announced on stderr. released_to_main is deliberately NOT in that set: a card reaches
 #     it from shipped_to_dev, which already cleared.
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--clear FIELD[,FIELD...]] [--dl DL-NNN] [--triaged] [--keep-refs] \
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
