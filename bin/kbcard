@@ -2518,12 +2518,17 @@ _kbc_card_witness() {
         *)   echo "kbcard: the re-read of card $task failed (HTTP $http) — its state is UNMEASURED" >&2
              return 1 ;;
     esac
-    data="$(kb_parse_resp "$body" -c '.data | select(type == "object")')"
-    [[ -n "$data" ]] || {
+    # The card is wrapped in the SAME stdin read that selects it, never handed back to jq as an
+    # argument: one argv string is capped at MAX_ARG_STRLEN (131072 B on Linux) whatever ARG_MAX
+    # is, a card crosses that by accreting comments, and exec failing there would report a
+    # perfectly readable card as UNMEASURED — rc 3 for a write that landed. A body carrying more
+    # than one JSON text yields one line per text, which is not ONE card, so it stays refused.
+    data="$(kb_parse_resp "$body" -c --arg h "$http" '.data | select(type == "object") | {state: "present", http: $h, card: .}')"
+    [[ -n "$data" && "$data" != *$'\n'* ]] || {
         echo "kbcard: the re-read of card $task returned success but no card could be read out of its body — its state is UNMEASURED (nothing was read)" >&2
         return 1
     }
-    jq -c --arg h "$http" --argjson c "$data" -n '{state: "present", http: $h, card: $c}'
+    printf '%s\n' "$data"
 }
 
 # _kbc_confirm_card <task> <predicate>: re-read card <task> and RULE on <predicate>, a jq
@@ -3057,14 +3062,15 @@ _kbc_archive_decision() {
     board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true
-    # The board array can be ~200KB — it must reach jq via STDIN, never argv
-    # (--argjson would trip "Argument list too long" over MAX_ARG_STRLEN, the
-    # #3091/#3362 class; a silently-empty jq would then feed the shim {} and
-    # mis-read the card as source-less → a FALSE ok). Only the single target card
-    # (small) rides --argjson.
-    printf '%s' "$board" | jq -c --argjson card "$card" \
-           --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
-        '{card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
+    # The board array (~200KB) AND the card both reach jq via STDIN, never argv: one argv
+    # string is capped at MAX_ARG_STRLEN (131072 B) and a single card crosses that by
+    # accreting comments, so neither is "small" (the #3091/#3362 class). A failed exec
+    # leaves the shim an empty stdin, which it refuses as a card-less request. The card is
+    # the FIRST text on the stream; `inputs` then yields one object per board text, exactly
+    # as a board-only stdin did.
+    { printf '%s\n' "$card"; printf '%s' "$board"; } \
+        | jq -c -n --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
+            'input as $card | inputs | {card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
         | python3 "$shim"
 }
 
