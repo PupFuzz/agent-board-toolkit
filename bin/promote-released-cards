@@ -33,7 +33,7 @@
 # card also needing a matching `dl_number` stamp; for an id it is not — the id IS the
 # match, so a passing mention would relocate an unrelated card. Deriving ids from subjects
 # is therefore left to the caller, and the one caller that does it (release-pr-body's
-# read-only coverage section) passes them with --dry-run, where the worst outcome is a
+# read-only coverage report) passes them with --dry-run, where the worst outcome is a
 # coverage line that reads "covered". Do not "complete" this by adding a
 # `card_token_regex` read to the derive path below.
 #
@@ -73,7 +73,7 @@
 #   card, not the guard: stamp a repo-qualified `payload.pr_url`
 #   (`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>`) and it correlates.
 #   Its shipped ref is NOT reported as "no card" — that would send `bin/release-pr-body`'s
-#   `## Card coverage` section to tell the author to CREATE a card that is already on the board.
+#   card-coverage report to tell the author to CREATE a card that is already on the board.
 #   It gets its own report line, and that section renders it as "card exists but carries no
 #   by-ref source — stamp it". See THE NO-CARD REPORT, below the correlation.
 #
@@ -1225,7 +1225,7 @@ PLAN="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="match")]')"
 # bumps, release commits), so warning on them is cry-wolf noise.
 #
 # THE NO-CARD REPORT IS EXACTLY TWO LINES, and which refs go on which is the contract
-# release-pr-body's `card_coverage_section` is written against — it greps BOTH, by their
+# release-pr-body's `card_coverage_report` is written against — it greps BOTH, by their
 # leading phrases. A THIRD kind may not be added here without teaching that function to read
 # it, or the body silently half-reads a report it believes is whole.
 #   line 1, "matched NO card"  — a shipped ref no card of this repo carries. `foreign` refs

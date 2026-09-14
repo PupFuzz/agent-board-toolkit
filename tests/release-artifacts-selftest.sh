@@ -1672,9 +1672,9 @@ eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares
 # version_file is a CONFIG error"), so this fix narrows nothing.
 
 echo "== correlation keys: a .promote-declaring config that correlates NOTHING is refused (card#8538) =="
-# WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent ⇒ `release-pr-body` emits a 0-id
-# `shipped-cards` manifest AT RC 0 under the line "All shipped refs have a tracking card" — a
-# clean assertion about coverage that was never measured. It shipped on the consumer repos
+# WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent fails silently downstream, as a clean
+# card-coverage line over card ids nothing measured (docs/INSTALL.md §4's `unset_correlation_keys`
+# note owns the exact shape). It shipped on the consumer repos
 # card#8423 enumerates (that card owns the list; no count is restated here) precisely because
 # nothing read the key: this file's subject used to say so in its own header ("promote.*,
 # ref_token_regex, card_token_regex stay head-read and unguarded").
@@ -1925,7 +1925,11 @@ run base-0.1.0 head-good --config corr-ack.json
 eq "an acknowledged absence passes"          "0"     "$RC"
 eq "…and is LOGGED, not silent"              "true"  "$(has 'UNSET: card_token_regex' "$OUT")"
 eq "…naming the reader that goes quiet"      "true"  "$(has 'bin/release-pr-body' "$OUT")"
-eq "…and stating what the absence DOES (silence)" "true" "$(has 'none of that happens SILENTLY' "$OUT")"
+eq "…and stating what the absence DOES (silence)" "true" "$(has 'none of that happens SILENTLY, at rc 0' "$OUT")"
+# The shape of that silence has ONE owner, and the refusal row points at it rather than carrying a
+# copy nothing guards: the pointer is present and the owner's line is not restated here.
+eq "…pointing at the one owner of what that looks like" "true" "$(has 'docs/INSTALL.md §4 (the unset_correlation_keys note)' "$OUT")"
+eq "…without restating the owner's coverage line" "false" "$(has 'All shipped refs have a tracking card' "$OUT")"
 # THE CONSEQUENCE IS PER KEY, and asserting only the shared half would let one sentence stand
 # for all three while being FALSE of one: `promote.source` absent makes promote-released-cards
 # REFUSE at rc 2, not go quiet, so an operator acknowledging it must be told the acknowledgement
