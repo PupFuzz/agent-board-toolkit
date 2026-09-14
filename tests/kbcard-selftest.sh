@@ -4151,8 +4151,9 @@ unset _verb _flag _L _b _bn _pf_classified _pf_derived _pf_expect
 # ---------------------------------------------------------------------------
 echo "== patch --clear <field> — the payload fields' clearer the blank refusal made necessary (card#9420) =="
 # WHY THIS FLAG EXISTS. card#9338 refused a visually blank --origin / --version / --pr-url /
-# --issue-url, and a blank value was the ONLY route this CLI had to empty one of them: the board
-# turned it into a clear. A field a tool can set and not unset goes stale in place — and a wrong
+# --issue-url, and a blank value was the only DELIBERATE route this CLI had to empty one of them
+# (a wont_do decline also nulls pr_url, as a side effect of declining): the board turned it into a
+# clear. A field a tool can set and not unset goes stale in place — and a wrong
 # pr_url / issue_url keeps the card correlated to that repo's by-ref `source`. The operator's
 # ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
 # issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
@@ -4172,6 +4173,18 @@ kb_stub_scrub_env
 kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_WONT_DO=60' 'export KB_CF_VERSION_TARGET=77'
 kb_stub_board_config nover 43 'export KB_STAGE_BACKLOG=48'
 kb_stub_install
+
+# The usage block restates the set as operator help text (a program prints it, so it cannot point
+# at `_kbc_clearable`). The pin above does not read it; this does, over the rendered usage, so a
+# member added to or dropped from the declaration without the help text reds here.
+kbc
+eq "no-arg usage → rc 0" "0" "$rc"
+eq "the usage block's --clear list names exactly the _kbc_clearable fields" \
+   "$(_clr_fields | sort | paste -sd' ' -)" \
+   "$(printf '%s\n' "$out" | tr '\n' ' ' \
+      | sed -n -E "s/.*--clear FIELD\[,FIELD\.\.\.\] IS THE PAYLOAD FIELDS' CLEARER — ([^(]*)\(the setter.*/\1/p" \
+      | tr ',' '\n' | awk 'NF {print $1}' | sort | paste -sd' ' -)"
+
 # 505 answers the way the board does: the request's payload MERGED onto a card that already holds
 # every clearable key, a null REMOVING its key. 506 answers with the card UNCHANGED — a server that
 # did not clear — so the echo's raw projection can be shown to report a held value, not a
