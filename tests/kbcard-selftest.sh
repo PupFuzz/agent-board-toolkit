@@ -190,8 +190,49 @@ _dec="$(_kbc_archive_decision 42)"
 eq "null .data → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
 eq "null .data → board fetch NOT reached"   ""            "$(cat "$_FBC_SENTINEL")"
 unset -f kb_api fetch_board_cards
+rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
+
+echo "== _kbc_archive_decision — a card body carrying two JSON texts fails closed before the board fetch =="
+# The card and the board share one stdin stream into the gate's jq, so a second card text would be
+# read as the first BOARD text. Refused where the null card is, before anything is fetched.
+_FBC_SENTINEL="$(mktemp)"; : > "$_FBC_SENTINEL"
+KB_API="https://kanban.test/api/v3" KB_TOKEN="stub-token" KB_BOARD_ID=42
+kb_api() { printf '{"data":{"id":42}}{"data":{"id":43}}'; }
+fetch_board_cards() { echo REACHED > "$_FBC_SENTINEL"; printf '[]'; }
+python3() { echo REACHED-SHIM > "$_FBC_SENTINEL"; }
+_dec="$(_kbc_archive_decision 42)" || true
+eq "two card texts → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
+eq "…naming why"                               "true" "$(has 'more than one JSON text' "$_dec")"
+eq "…with neither the board fetch nor the shim reached" "" "$(cat "$_FBC_SENTINEL")"
+unset -f kb_api fetch_board_cards python3
+unset KB_API KB_TOKEN KB_BOARD_ID
+rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
+
+echo "== _kbc_archive_decision — a card over MAX_ARG_STRLEN still reaches the gate =="
+# Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 131072 B) whatever ARG_MAX is, and a
+# card grows past that by accreting comments. The card must reach jq on stdin: carried as an
+# argument, exec fails E2BIG, the shim reads an empty stdin, and a card that is merely LONG is
+# refused as unverifiable — or, under --force, archived with no decision at all.
+# `python3` is stubbed with a projection so the assertion reads what the shim WOULD have read,
+# without depending on the framework primitive being resolvable on this host.
+_BIG_CARD_FILE="$(mktemp)"
+jq -nc '{data: {id: 42, name: "probe", description: ("x" * 140000)}}' > "$_BIG_CARD_FILE"
+eq "fixture: the card body is over MAX_ARG_STRLEN (witness: the cap is actually crossed)" "true" \
+   "$([[ "$(wc -c < "$_BIG_CARD_FILE")" -gt 131072 ]] && echo true || echo false)"
+KB_API="https://kanban.test/api/v3" KB_TOKEN="stub-token" KB_BOARD_ID=42
+kb_api() { cat "$_BIG_CARD_FILE"; }
+fetch_board_cards() { printf '[{"id":7},{"id":8}]'; }
+python3() { jq -c '{id: .card.id, dlen: (.card.description | length), surviving: (.surviving_cards | length)}'; printf '\tstub'; }
+_BIG_ERR_FILE="$(mktemp)"
+_dec="$(_kbc_archive_decision 42 2>"$_BIG_ERR_FILE")" || true
+eq "a >131072 B card reaches the gate whole, beside the board" \
+   '{"id":42,"dlen":140000,"surviving":2}' "${_dec%%$'\n'*}"
+eq "…and jq never fails on its argument list" "false" \
+   "$(has 'Argument list too long' "$(cat "$_BIG_ERR_FILE")")"
+unset -f kb_api fetch_board_cards python3
+unset KB_API KB_TOKEN KB_BOARD_ID
 [[ -n "$_saved_fbc" ]] && eval "$_saved_fbc"
-rm -f "$_FBC_SENTINEL"; unset _saved_fbc _FBC_SENTINEL _dec
+rm -f "$_BIG_CARD_FILE" "$_BIG_ERR_FILE"; unset _saved_fbc _BIG_CARD_FILE _BIG_ERR_FILE _dec
 
 # ---------------------------------------------------------------------------
 echo "== cmd_archive — may_archive gate wiring (roundtable #39) =="
@@ -1331,7 +1372,9 @@ kb_stub_route() {
         # /tasks/505.json?trashed=1, and an arm without it leaves that request UNROUTED (599),
         # which every leg below would then see as an unverified write rather than as itself.
         "GET "*/tasks/*.json*)
-            if [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
+            if [[ -n "${KB_STUB_GET_BODY_FILE:-}" ]]; then
+                printf '%s\n' "${KB_STUB_GET_HTTP:-200}"; cat "$KB_STUB_GET_BODY_FILE"
+            elif [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
                 printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "$KB_STUB_GET_BODY"
             else
                 # The DEFAULT card carries the comment the POST arm echoes (id 13), because the
@@ -1496,6 +1539,33 @@ eq "…and prints no id"                           "" "$out"
 KB_STUB_GET_BODY='<html>502</html>' kbc comment --task 505 --content x
 eq "card re-read is a 2xx carrying no card → rc 3" "3" "$rc"
 eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+# A card that has GROWN past MAX_ARG_STRLEN (131072 B for one argv string on Linux) is still a
+# readable card. The witness used to hand the whole card to jq as one argument, so exec failed
+# E2BIG and a comment that landed was reported as an UNVERIFIED WRITE — the answer a caller
+# re-posts on. Read from a FILE: an exported variable that size would itself be an exec argument
+# too large for the stub process to start.
+jq -nc --argjson c "$KB_STUB_CARD_COMMENTS" '{data: {id: 505, name: "probe", comments: $c, description: ("x" * 140000)}}' \
+    > "$TMP/big-card.json"
+eq "fixture: the re-read card is over MAX_ARG_STRLEN (witness: the cap is actually crossed)" "true" \
+   "$([[ "$(wc -c < "$TMP/big-card.json")" -gt 131072 ]] && echo true || echo false)"
+KB_STUB_GET_BODY_FILE="$TMP/big-card.json" kbc comment --task 505 --content x
+eq "a landed comment on a >131072 B card → rc 0, not UNVERIFIED" "0" "$rc"
+eq "…prints the confirmed comment id"            "13" "$out"
+eq "…and says nothing about an UNVERIFIED WRITE" "false" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and jq never fails on its argument list"    "false" "$(has 'Argument list too long' "$err")"
+# The other direction through the same large card: the predicate still rules on what it read.
+KB_STUB_GET_BODY_FILE="$TMP/big-card.json" KB_STUB_POST_BODY='{"data":{"id":99}}' \
+    kbc comment --task 505 --content x
+eq "a >131072 B card NOT carrying the posted id → rc 1 (a measurement, not rc 3)" "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+# A 2xx body carrying TWO JSON texts is not one card. Selected on stdin, each text yields its own
+# witness line, and `jq -e` over that stream rules on the LAST — so a second text carrying the
+# posted id would confirm a comment the first says is absent. The witness must refuse it outright.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[{"id":13}]}}' \
+    kbc comment --task 505 --content x
+eq "a re-read body carrying two JSON texts → rc 3 (not one card, so nothing was measured)" "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and prints no id"                           "" "$out"
 
 echo "-- comment: an HTTP failure carries the status AND the error body --"
 KB_STUB_POST_HTTP=422 \
