@@ -11,6 +11,9 @@
 # cards tracked only by PR (no DL) are promoted too — AND, for the two REF fields, its
 # by-ref `source` qualifies against `.promote.source` (see REPO QUALIFICATION below).
 # Idempotent (skips a card already at target), best-effort per card.
+# A card it moves has every seat owner tag (`owner:*`) removed by a SEPARATE tag write after the
+# move (the rule is agent-board-toolkit README.md § The seat owner tag); that write's outcome is
+# printed and never changes the move's report, the counts, or the exit code.
 # With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
 # Shipped-class source stage is skipped, not moved (promotion never resurrects a
 # declined/backlog card carrying a stale/recycled stamp); see the Usage note below.
@@ -1313,6 +1316,46 @@ if [ -n "$QUALIFY_SRC" ]; then
   fi
 fi
 
+# --- the seat owner tag on a card this run released -----------------------------
+# MIRRORS the lib's clear — kb_card_tags, kb_owner_strip and `kb_owner_tag_write clear` in
+# _kb-board-lib.sh — because this script is vendored standalone and must not source that lib.
+# tests/mirror-pair-parity-selftest.sh drives owner_card_tags, owner_strip and owner_list beside
+# their lib twins.
+# owner_card_tags <GET body>: the card's tag list as compact JSON, or NOTHING when none can be read.
+owner_card_tags() { jq -c '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")' <<<"$1" 2>/dev/null || true; }
+# owner_strip <tags>: the list without its owner tags, or NOTHING when it carries none (no write).
+owner_strip() { jq -c 'def is_owner: type == "string" and startswith("owner:"); if any(.[]; is_owner) then map(select(is_owner | not)) else empty end' <<<"$1" 2>/dev/null || true; }
+# owner_list <tags>: the owner tags the list carries, comma-joined (for the report line).
+owner_list() { jq -r 'def is_owner: type == "string" and startswith("owner:"); [.[] | select(is_owner)] | join(", ")' <<<"$1" 2>/dev/null || true; }
+
+# owner_clear <card id> <ref>: read the card fresh, then PATCH `{tags}` alone without its owner
+# tags. Always returns 0 — the card has already moved.
+owner_clear() {
+  local id="$1" ref="$2" resp tags kept gone rc=0
+  resp="$(api "$API/tasks/$id.json")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  ⚠ $ref (#$id): owner tags NOT cleared — the card's tags could not be read, $(resp_detail); the card was moved" >&2
+    return 0
+  fi
+  tags="$(owner_card_tags "$resp")"
+  if [ -z "$tags" ]; then
+    echo "  ⚠ $ref (#$id): owner tags NOT cleared — the card read succeeded but no tag list could be read out of it, and the board replaces the tag list wholesale, so none is sent; the card was moved" >&2
+    return 0
+  fi
+  kept="$(owner_strip "$tags")"
+  [ -n "$kept" ] || return 0
+  gone="$(owner_list "$tags")"
+  api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson t "$kept" '{tags: $t}')" "$API/tasks/$id.json" >/dev/null || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "  ✓ $ref (#$id): removed owner tag(s) $gone — a released card holds nobody's claim"
+  elif [ "$rc" = "$API_RC_REFUSED" ]; then
+    echo "  ⚠ $ref (#$id): owner tags NOT cleared — $(resp_detail); the card was moved and its tags are unchanged" >&2
+  else
+    echo "  ⚠ $ref (#$id): owner tag clear NOT CONFIRMED — $(resp_detail); the card was moved" >&2
+  fi
+  return 0
+}
+
 # --- move --------------------------------------------------------------------
 moved=0; skipped=0; failed=0; guarded=0
 while IFS= read -r row; do
@@ -1333,6 +1376,7 @@ while IFS= read -r row; do
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
     echo "  ✓ $ref (#$id): moved $cur → $STAGE"; moved=$((moved + 1))
+    owner_clear "$id" "$ref"
   else
     move_rc=$?
     # ⛔ TWO OUTCOMES, TWO CLAIMS — and `(left in place)` is only true of ONE of them. A completed
