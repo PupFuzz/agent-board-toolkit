@@ -254,7 +254,7 @@ eq "unresolvable --head --manifest → rc 2"         "2"     "$rc"
 eq "…rather than an empty list at rc 0"            "true"  "$(has "--head '$badhead'" "$bhm")"
 rc=0; bhc="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0 --head "$badhead" --card-manifest) 2>&1 )" || rc=$?
 eq "unresolvable --head --card-manifest → rc 2"    "2"     "$rc"
-eq "…rather than a manifest that promotes nothing" "true"  "$(has "--head '$badhead'" "$bhc")"
+eq "…rather than an empty card manifest at rc 0"   "true"  "$(has "--head '$badhead'" "$bhc")"
 
 # A FULL-LENGTH HEX NAMING NO OBJECT — the arm that reds if the `^{commit}` peel is dropped.
 # `git rev-parse --verify -q <40-hex>` exits 0 on it (it verifies the SPELLING can become a raw
@@ -1094,9 +1094,9 @@ echo "== the BODY is installer content only; builder diagnostics MOVE to stderr,
 # is asserted to carry both diagnostics and the block on stderr. The fixture makes every emitter
 # fire at once: `artifacts` configured (the conditional H2 is PRESENT, so the allow-list is
 # exercised rather than vacuous), `ref_token_regex` matching nothing (a correlation gap), and a
-# promote config whose board lacks card#9999 (a measured coverage finding). An integration tip one
-# commit AHEAD of the head makes the not-included list non-empty, so every announce field the
-# contract declares is emitted and the declared-vs-emitted comparison below runs over the whole set.
+# promote config whose board lacks card#9999 (a measured coverage finding). Both token keys are
+# declared, so every announce field the contract declares is emitted and the declared-vs-emitted
+# comparison below runs over the whole set.
 SPL="$COV/split"; mkdir -p "$SPL"
 cat > "$CR/.release-pr.json" <<'EOF'
 {
@@ -1109,14 +1109,11 @@ EOF
 cat > "$SPL/board.json" <<'EOF'
 {"data":[{"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-42"}}],"meta":{"last_page":1,"total":1}}
 EOF
-g -C "$CR" commit -q --allow-empty -m "feat: later work not in this release (card#10001) (#44)"
-g -C "$CR" update-ref refs/remotes/origin/dev HEAD
-SPL_HEAD="$(g -C "$CR" rev-parse HEAD~1)"; SPL_BASE="$(g -C "$CR" rev-parse 'v0.1.0^{commit}')"
-SPL_TIP="$(g -C "$CR" rev-parse HEAD)"
+SPL_HEAD="$(g -C "$CR" rev-parse HEAD)"; SPL_BASE="$(g -C "$CR" rev-parse 'v0.1.0^{commit}')"
 rc=0
 ( cd "$CR" && PATH="$COV/bin:$HERE/../bin:$PATH" BOARD_FILE="$SPL/board.json" \
     KANBAN_WRITEBACK_TOKEN=tkn KANBAN_EXPECTED_HOST=kanban.test \
-    "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 ) >"$SPL/out" 2>"$SPL/err" || rc=$?
+    "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD ) >"$SPL/out" 2>"$SPL/err" || rc=$?
 SPL_OUT="$(cat "$SPL/out")"; SPL_ERR="$(cat "$SPL/err")"
 eq "split run → rc 0"                                   "0"     "$rc"
 
@@ -1129,6 +1126,18 @@ eq "…presence: ## Bundled"                              "true"  "$(has_line '#
 eq "…presence: ## Release artifacts (configured here)"  "true"  "$(has_line '## Release artifacts' "$SPL_OUT")"
 eq "…presence: the shipped-cards footer"                "true"  "$(has_line '<!-- release-manifest:shipped-cards=9999 -->' "$SPL_OUT")"
 eq "…and no announce line leaks into the body"          "false" "$(has 'announce:' "$SPL_OUT")"
+# The H2 allow-list cannot see a diagnostic that leaks into the body WITHOUT a heading. So the
+# tail is pinned too: after the last ruled section's own lines (here, the `## Release artifacts`
+# checklist), every non-blank stdout line is a `release-manifest` footer — nothing else may
+# follow. The two phrases below are the coverage finding's own words, asserted absent from the
+# body in the same run that asserts them present on stderr.
+SPL_TAIL="$(printf '%s\n' "$SPL_OUT" | awk '
+  $0 == "## Release artifacts" { s = 1; next }
+  s == 1 && /^- \[ \] / { next }
+  s >= 1 { s = 2; if (NF && $0 !~ /^<!-- release-manifest:[a-z-]+=[^ ]* -->$/) print }')"
+eq "…after the last ruled section, only manifest footers" ""    "$SPL_TAIL"
+eq "…the coverage finding is NOT in the body"           "false" "$(has 'Shipped refs with no tracking card' "$SPL_OUT")"
+eq "…nor its remedy line"                               "false" "$(has 'Create (or correct)' "$SPL_OUT")"
 
 # stderr: the diagnostics are PRESENT — the half a deletion would fail.
 eq "stderr carries the correlation gap"                 "true"  "$(has 'release-pr-body: correlation gap: ⚠ **`ref_token_regex` is declared' "$SPL_ERR")"
@@ -1147,18 +1156,9 @@ eq "block: the range re-prints as a git command"        "true"  "$(has_line "ran
 eq "block: shipped cards, as the manifest has them"     "true"  "$(has_line 'shipped-cards: 9999' "$SPL_BLOCK")"
 eq "block: …and the command that re-prints them"        "true"  "$(has_line "shipped-cards-cmd: release-pr-body --card-manifest --version 0.2.0 --base $SPL_BASE --head $SPL_HEAD" "$SPL_BLOCK")"
 eq "block: a declared key that matched nothing is present-and-empty" "true" "$(has_line 'shipped-refs: ' "$SPL_BLOCK")"
-eq "block: not-included was measured against the tip"   "true"  "$(has "not-included: measured $SPL_TIP" "$SPL_BLOCK")"
-eq "block: …the command that re-prints the list"        "true"  "$(has_line "not-included-cmd: git log --no-merges --format='%h %s' $SPL_HEAD..$SPL_TIP" "$SPL_BLOCK")"
-eq "block: …and the commit the range leaves out"        "true"  "$(has 'not-included-commit: ' "$SPL_BLOCK")"
-eq "block: …named by its subject"                       "true"  "$(has 'later work not in this release (card#10001)' "$SPL_BLOCK")"
-eq "block: …which is NOT in the body"                   "false" "$(has 'later work not in this release' "$SPL_OUT")"
 # THE DERIVATIONS ARE REAL: each *-cmd, run as printed, re-prints the value beside it.
 SPL_CARDS_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^shipped-cards-cmd: //p')"
 eq "shipped-cards-cmd re-prints shipped-cards"          "9999"  "$( cd "$CR" && PATH="$HERE/../bin:$PATH" bash -c "$SPL_CARDS_CMD" 2>/dev/null )"
-SPL_NI_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^not-included-cmd: //p')"
-eq "not-included-cmd re-prints the not-included commit" "$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^not-included-commit: //p')" \
-   "$( cd "$CR" && bash -c "$SPL_NI_CMD" )"
-
 SPL_RANGE_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^range-cmd: //p')"
 eq "range-cmd re-prints the bundled subject"            "feat: a thing (card#9999) (#42)" "$( cd "$CR" && bash -c "$SPL_RANGE_CMD" )"
 SPL_REFS_CMD="$(printf '%s\n' "$SPL_BLOCK" | sed -n 's/^shipped-refs-cmd: //p')"
@@ -1174,23 +1174,13 @@ eq "…and re-prints shipped-refs (empty here)"           "$(printf '%s\n' "$SPL
 SPL_DECLARED="$("$BIN" --help | sed -n '/^#     announce:begin$/,/^#     announce:end$/p' \
   | sed -e '1d;$d' -e 's/^#     //' -e 's/:.*//' | awk '!seen[$0]++')"
 SPL_EMITTED="$(printf '%s\n' "$SPL_BLOCK" | sed -e '1d;$d' -e 's/:.*//' | awk '!seen[$0]++')"
-eq "precondition: the header declares a field list"     "true"  "$(has_line 'not-included-commit' "$SPL_DECLARED")"
+eq "precondition: the header declares a field list"     "true"  "$(has_line 'shipped-cards-cmd' "$SPL_DECLARED")"
 eq "every DECLARED field is emitted, in order, and nothing else" "$SPL_DECLARED" "$SPL_EMITTED"
 
 # CONTROL — a query mode is not a body run: it prints no diagnostics and no block.
-rc=0; ( cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 --card-manifest ) >/dev/null 2>"$SPL/q.err" || rc=$?
+rc=0; ( cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest ) >/dev/null 2>"$SPL/q.err" || rc=$?
 eq "control: --card-manifest → rc 0"                    "0"     "$rc"
 eq "control: …and emits no announce block"              "false" "$(has 'announce:begin' "$(cat "$SPL/q.err")")"
-
-# UNMEASURED IS SAID BY NAME. With no integration tip in the checkout and an explicit --head (which
-# does not fetch), the not-included list cannot be derived — the block says so instead of
-# emitting an empty list that would read as "nothing left out".
-g -C "$CR" update-ref -d refs/remotes/origin/dev
-rc=0; ( cd "$CR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD~1 ) >/dev/null 2>"$SPL/nt.err" || rc=$?
-eq "no integration tip → rc 0"                          "0"     "$rc"
-eq "…not-included is UNMEASURED, by name"               "true"  "$(has 'not-included: unmeasured ' "$(cat "$SPL/nt.err")")"
-eq "…with no list and no command"                       "false" "$(has 'not-included-c' "$(cat "$SPL/nt.err")")"
-g -C "$CR" reset -q --hard HEAD~1
 
 echo "== value-taking flags reject an EMPTY value (card#5146) =="
 # `--base ""` previously fell through to deriving the baseline from LOCAL tags — the exact

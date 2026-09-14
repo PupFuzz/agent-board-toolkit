@@ -30,10 +30,10 @@
 #     cannot be pre-planted against a member that is still declared.
 # The CORRELATION keys are head-read too, but they are no longer unguarded (card#8538): a
 # config that declares a `.promote` block must declare `promote.source`, `ref_token_regex` and
-# `card_token_regex`, or name the missing one in a `unset_correlation_keys` array. Absent, they
-# fail SILENTLY downstream — `release-pr-body` emits a 0-id `shipped-cards` manifest at rc 0
-# under the line "All shipped refs have a tracking card" — and a silent zero is the one shape a
-# release gate must not have. Head-read and NOT fork-point-read, for the reason stated at the
+# `card_token_regex`, or name the missing one in a `unset_correlation_keys` array. Absent, the
+# two token keys fail SILENTLY downstream (docs/INSTALL.md §4, the `unset_correlation_keys` note,
+# owns what that looks like; the `card_token_regex` row below is its inline copy) — and a silent
+# zero is the one shape a release gate must not have. Head-read and NOT fork-point-read, for the reason stated at the
 # leg. Everything else in the config (`promote.board_id`, `api_base`, branch names) still
 # stays head-read and unguarded: none of it decides a verdict here.
 #
@@ -315,10 +315,10 @@ esac
 # the post-merge promote run, correlate to anything at all — and until this leg they were
 # exactly what this file's header (above) still called "head-read and unguarded: none of it
 # decides a verdict". That was true of THIS tool and false of the release: a config that omits
-# `card_token_regex` makes `release-pr-body` emit a 0-id `shipped-cards` manifest AT RC 0 and
-# print "All shipped refs have a tracking card" — a clean line asserting coverage that was
-# never measured (it shipped on the consumer repos card#8423 enumerates — that card owns the
-# list, and no count of them is restated here). A silent zero is the one failure shape a
+# `card_token_regex` fails silently downstream, as a clean card-coverage line over card ids
+# nothing measured (docs/INSTALL.md §4's `unset_correlation_keys` note owns the exact shape; it
+# shipped on the consumer repos card#8423 enumerates — that card owns the list, and no count of
+# them is restated here). A silent zero is the one failure shape a
 # release gate must not have.
 #
 # THE TRIGGER IS `.promote`, NOT `artifacts`. A repo that declares a `promote` block has
@@ -460,7 +460,7 @@ _key_usability() {
   if [ -z "${v//[[:space:]]/}" ]; then printf 'empty'; return 0; fi
   case "$key" in
     # The two token keys are handed STRAIGHT to `grep -oiE` by their readers, under a `|| true`
-    # that turns a compile failure into an empty match set — i.e. into the same silent 0-id
+    # that turns a compile failure into an empty match set — i.e. into the same silent empty
     # manifest this leg exists to catch, from a key that is present and looks set. Compiled with
     # the readers' own flags. `printf ''` feeds no input, so this asks the one question it means
     # to: rc >1 is a bad regex, rc 1 is "compiled, matched nothing", and rc 1 is usable.
@@ -586,7 +586,7 @@ if [ "$CLASSIFY_ONLY" -eq 0 ]; then
     done <<'ROWS'
 promote.source|bin/promote-released-cards|qualify a matched card against the repo this release ships (dl_number/pr_number are REPO-SCOPED counters, so an unqualified match promotes another repo's cards into a terminal stage)|Absent, that tool REFUSES AT RC 2 rather than going quiet — the key is required there with no default — so acknowledging it here silences THIS check and not that refusal: your post-merge promote job still reds.
 ref_token_regex|bin/release-pr-body (and bin/promote-released-cards)|build the shipped-refs manifest and the card-coverage report, correlated against a card's payload.dl_number|Absent, none of that happens SILENTLY, at rc 0: the manifest footer is simply omitted, which reads exactly like a range that legitimately had nothing to say.
-card_token_regex|bin/release-pr-body|build the shipped-cards manifest and the card-coverage report, correlated against the card's own id|Absent, none of that happens SILENTLY, at rc 0: no shipped-cards footer is emitted while the card-coverage report can still read "All shipped refs have a tracking card", asserting coverage nothing measured.
+card_token_regex|bin/release-pr-body|build the shipped-cards manifest and the card-coverage report, correlated against the card's own id|Absent, none of that happens SILENTLY, at rc 0: no shipped-cards footer is emitted, and when ref_token_regex still matches something no correlation-gap line fires and the card-coverage report can read "All shipped refs have a tracking card" — a clean line about coverage the range's card ids never received.
 ROWS
   fi
 fi

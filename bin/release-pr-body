@@ -44,17 +44,12 @@
 #     shipped-refs-cmd: <the release-pr-body --manifest command that re-prints them>
 #     shipped-cards: <bare card ids, comma-separated, as the shipped-cards footer has them>
 #     shipped-cards-cmd: <the release-pr-body --card-manifest command that re-prints them>
-#     not-included: measured <integration-tip-sha> <how that tip was read> | unmeasured <reason>
-#     not-included-cmd: <a git log command listing integration-branch commits the range leaves out>
-#     not-included-commit: <short-sha> <subject>
 #     announce:end
 # STABILITY, format 1. `announce:begin` and `announce:end` are whole lines; every line between is
 # `<key>: <value>`, and a value may be empty. Keys appear in the order above. `shipped-refs*` are
 # present only when `ref_token_regex` is declared and `shipped-cards*` only when
 # `card_token_regex` is — a declared key that matched nothing is PRESENT with an empty value.
-# `not-included-cmd` and `not-included-commit` are present only when `not-included` is
-# `measured`; `not-included-commit` repeats, once per commit, and is absent when none is left
-# out. Within format 1 keys are only ever ADDED, so a reader must ignore a key it does not know;
+# Within format 1 keys are only ever ADDED, so a reader must ignore a key it does not know;
 # renaming or removing one, or changing what a value means, bumps `format`. NO FIELD IS A COUNT:
 # a list is given with the command that re-prints it. Every `*-cmd` is shell-quoted, runs from the
 # repo root, names this tool by its PATH name and pins each resolved range end by SHA, so it
@@ -363,10 +358,10 @@ fi
 # three lines ABOVE a `die` whose own words say a local ref "is NOT a usable
 # fallback". Measured at the v0.30.0 cut: local dev one commit behind origin/dev
 # produced 38 rows instead of 39, no `#298`, and a `shipped-cards` manifest missing
-# the SECURITY fix's card. A
-# short range is WELL-FORMED, so nothing downstream can notice: the body renders,
-# the count looks plausible, the manifest is valid and simply missing its newest
-# entries. Do not re-introduce the asymmetry; the two ends feed ONE range.
+# the SECURITY fix's card. A short range is WELL-FORMED, so nothing downstream can
+# notice: the body renders, the count looks plausible, the manifest is valid and
+# simply missing its newest entries. Do not re-introduce the asymmetry; the two ends
+# feed ONE range.
 #
 # AN EXPLICIT LEG IS STILL CHECKED FOR RESOLVABILITY — not for freshness (card#7525).
 # Honouring the handed-in ref verbatim is the point of the override, and this does NOT
@@ -442,7 +437,6 @@ if [ -z "$HEAD_REF" ]; then
       || die "fetched origin '$DEV_BRANCH' but cannot resolve its tip"
   fi
   HEAD_TIP="$(git rev-parse "$HEAD_REF")"
-  INTEGRATION_TIP="$HEAD_TIP"; INTEGRATION_READ="origin/$DEV_BRANCH, fetched by this run"
   # The baseline's divergence note, at the other end: say why the body lists work the
   # reader's own checkout does not have.
   LOCAL_DEV="$(git rev-parse --verify -q "refs/heads/$DEV_BRANCH" || true)"
@@ -468,7 +462,6 @@ else
   # unresolvable --head used to switch OFF the one diagnostic this path has.
   require_resolvable --head "$HEAD_REF"
   REMOTE_DEV="$(git rev-parse --verify -q "refs/remotes/origin/$DEV_BRANCH" || true)"
-  INTEGRATION_TIP="$REMOTE_DEV"; INTEGRATION_READ="origin/$DEV_BRANCH, the local remote-tracking ref (an explicit --head does not fetch)"
   if [ -n "$REMOTE_DEV" ] && git merge-base --is-ancestor "$HEAD_REF" "$REMOTE_DEV" 2>/dev/null; then
     BEHIND="$(git rev-list --count "$HEAD_REF..$REMOTE_DEV")"
     if [ "$BEHIND" -gt 0 ]; then
@@ -562,7 +555,8 @@ bundle_lines() {
 # IT IS A STDERR REPORT, NOT A BODY SECTION (DL-224). It is a diagnostic for whoever builds the
 # release, not content for whoever installs it: it was a `## Card coverage` H2 until DL-224
 # (card#9248 reports the framework's PR-body lint redding on it, so every generated release body
-# was hand-edited at the cut). The information is unchanged; only its home moved. See the header's STDOUT/STDERR contract.
+# was hand-edited at the cut). The information is unchanged; only its home moved. See the
+# header's STDOUT/STDERR contract.
 #
 # The report is emitted ONLY when the check could actually run — it needs the promote tool
 # + a board token + a `.promote` config, and where any of those is missing there is NO
@@ -758,13 +752,6 @@ announce_block() {
     if [ -n "$CARD_TOKEN_REGEX" ]; then
       printf 'shipped-cards: %s\n' "$(emit_card_ids | paste -sd, -)"
       printf 'shipped-cards-cmd: release-pr-body --card-manifest%s\n' "$q"
-    fi
-    if [ -n "$INTEGRATION_TIP" ]; then
-      printf 'not-included: measured %s %s\n' "$INTEGRATION_TIP" "$INTEGRATION_READ"
-      printf "not-included-cmd: git log --no-merges --format='%%h %%s' %s..%s\n" "$head_sha" "$INTEGRATION_TIP"
-      git log --no-merges --format='not-included-commit: %h %s' "$head_sha..$INTEGRATION_TIP"
-    else
-      printf 'not-included: unmeasured refs/remotes/origin/%s is not in this checkout, and an explicit --head does not fetch it\n' "$DEV_BRANCH"
     fi
     echo "announce:end"
   } >&2

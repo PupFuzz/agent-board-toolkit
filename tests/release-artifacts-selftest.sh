@@ -1672,9 +1672,9 @@ eq "control: …and claims nothing about its artifacts" "false" "$(has 'declares
 # version_file is a CONFIG error"), so this fix narrows nothing.
 
 echo "== correlation keys: a .promote-declaring config that correlates NOTHING is refused (card#8538) =="
-# WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent ⇒ `release-pr-body` emits a 0-id
-# `shipped-cards` manifest AT RC 0 under the line "All shipped refs have a tracking card" — a
-# clean assertion about coverage that was never measured. It shipped on the consumer repos
+# WHAT WENT WRONG WITHOUT THIS. `card_token_regex` absent fails silently downstream, as a clean
+# card-coverage line over card ids nothing measured (docs/INSTALL.md §4's `unset_correlation_keys`
+# note owns the exact shape). It shipped on the consumer repos
 # card#8423 enumerates (that card owns the list; no count is restated here) precisely because
 # nothing read the key: this file's subject used to say so in its own header ("promote.*,
 # ref_token_regex, card_token_regex stay head-read and unguarded").

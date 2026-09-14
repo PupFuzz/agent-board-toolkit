@@ -55,9 +55,13 @@ description: >-
   `promote.source`, `ref_token_regex` and `card_token_regex`, or name the
   missing one in an `unset_correlation_keys` array at head (logged as an
   `UNSET:` line instead of failing; a key both declared and listed, or a name
-  that is not one of the three, is a config error). Absent, each of them fails
-  SILENTLY downstream — `release-pr-body` emits a 0-id `shipped-cards` manifest
-  at rc 0 under the line "All shipped refs have a tracking card". A key that is
+  that is not one of the three, is a config error). A missing promote.source is
+  refused at rc 2 by promote-released-cards, but the two token keys fail
+  SILENTLY downstream: with card_token_regex absent, `release-pr-body` emits no
+  `shipped-cards` footer at rc 0, and when ref_token_regex still matches
+  something no correlation-gap line fires and the card-coverage report can read
+  "All shipped refs have a tracking card" — a clean line about coverage the
+  range's card ids never received (docs/INSTALL.md §4 owns this). A key that is
   present but empty/whitespace-only, or a token regex `grep -E` cannot compile,
   is the same silent zero and is refused too. Read at HEAD only, run BEFORE the
   empty-`artifacts` opt-out (a repo that declares no artifacts still promotes),
