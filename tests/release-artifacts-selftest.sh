@@ -1925,7 +1925,11 @@ run base-0.1.0 head-good --config corr-ack.json
 eq "an acknowledged absence passes"          "0"     "$RC"
 eq "…and is LOGGED, not silent"              "true"  "$(has 'UNSET: card_token_regex' "$OUT")"
 eq "…naming the reader that goes quiet"      "true"  "$(has 'bin/release-pr-body' "$OUT")"
-eq "…and stating what the absence DOES (silence)" "true" "$(has 'none of that happens SILENTLY' "$OUT")"
+eq "…and stating what the absence DOES (silence)" "true" "$(has 'none of that happens SILENTLY, at rc 0' "$OUT")"
+# The shape of that silence has ONE owner, and the refusal row points at it rather than carrying a
+# copy nothing guards: the pointer is present and the owner's line is not restated here.
+eq "…pointing at the one owner of what that looks like" "true" "$(has 'docs/INSTALL.md §4 (the unset_correlation_keys note)' "$OUT")"
+eq "…without restating the owner's coverage line" "false" "$(has 'All shipped refs have a tracking card' "$OUT")"
 # THE CONSEQUENCE IS PER KEY, and asserting only the shared half would let one sentence stand
 # for all three while being FALSE of one: `promote.source` absent makes promote-released-cards
 # REFUSE at rc 2, not go quiet, so an operator acknowledging it must be told the acknowledgement

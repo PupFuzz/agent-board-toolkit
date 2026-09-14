@@ -26,7 +26,9 @@
 #                                          check could run, so NO such line means it did not run
 #   release-pr-body: note: ...             a local ref disagrees with the remote the range used
 # No line this tool writes to stderr begins with `## `. Keep the streams apart: `2>&1` into a body
-# file writes builder diagnostics into the release PR.
+# file writes builder diagnostics into the release PR. And keep stderr OPEN: under `set -e` a
+# closed stderr (`2>&-`) fails the run at rc 1 on its first stderr write — at the latest the
+# announce block, so such a run can exit 1 with a complete body already on stdout.
 #
 # THE ANNOUNCE BLOCK — a stable, machine-readable stderr contract, for a release tool to LIFT
 # rather than re-derive. A body run that exits 0 ends its stderr with exactly one block. Its
@@ -55,6 +57,8 @@
 # repo root, names this tool by its PATH name and pins each resolved range end by SHA, so it
 # answers about the same range later (a first release has no base to pin). The block is never
 # emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--tool-version`) or a refusal.
+# "Not included" (the scope a release deferred) is not a field of this block: git cannot derive
+# deferred scope, so it stays with the release-pr skill, which reports it outside the body.
 #
 # TWO VERSIONS, TWO FLAGS. `--version X.Y.Z` is an INPUT: the version of the release the body
 # describes. `--tool-version` is a QUERY about the tool: the toolkit release this file was stamped

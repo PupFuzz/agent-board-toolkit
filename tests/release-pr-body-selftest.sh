@@ -704,6 +704,8 @@ eq "…the false promotion claim is gone from stderr"  "false" "$(has 'can be pr
 eq "…and from the body"                              "false" "$(has 'can be promoted' "$GAPBODY")"
 eq "…replaced by what THIS generator establishes"    "true"  "$(has 'the body carries no `release-manifest` footer, and card coverage was not measured here' "$GAPERR")"
 eq "…naming what it does NOT establish"              "true"  "$(has 'What a card promoter does with this range is not established here' "$GAPERR")"
+eq "…and the headline is NOT in the body"            "false" "$(has 'NOTHING in' "$GAPBODY")"
+eq "…nor its 'correlates' wording"                  "false" "$(has 'correlates' "$GAPBODY")"
 
 # C: NEITHER key declared at all — the shape `release-artifacts-check` reds a promoting config
 # for, seen from the range's side. A repo with no `.promote` block is outside that check's
@@ -715,6 +717,9 @@ eq "…both keys are named as undeclared"              "true"  \
    "$( [ "$(has '`ref_token_regex` is not declared' "$GAPERR")" = true ] \
        && [ "$(has '`card_token_regex` is not declared' "$GAPERR")" = true ] && echo true || echo false )"
 eq "…and the body is otherwise complete"             "true"  "$(has '## Bundled' "$GAPBODY")"
+eq "…the headline fires on stderr"                   "true"  "$(has 'NOTHING in' "$GAPERR")"
+eq "…and NOT in the body"                            "false" "$(has 'NOTHING in' "$GAPBODY")"
+eq "…nor its 'correlates' wording"                  "false" "$(has 'correlates' "$GAPBODY")"
 
 # NEGATIVE CONTROL 1 — both declared, both yield: NO section at all. Without it every arm above
 # is satisfied by a tool that prints the section unconditionally.
