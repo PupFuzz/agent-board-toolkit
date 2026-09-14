@@ -175,17 +175,17 @@ _bcs_card_id() {
 # .promote.board_id — the mover's full reasoning for that order sits at its call site below.
 # Nothing is printed when jq is absent and only the committed file could have answered.
 _bcs_board_id() {
-    local cfg="${1:-}" id
-    id="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-    if [ -n "$id" ]; then
-        printf '%s hostlocal\n' "$id"
+    local cfg="${1:-}" board
+    board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    if [ -n "$board" ]; then
+        printf '%s hostlocal\n' "$board"
         return 0
     fi
     [ -r "$cfg" ] || return 0
     # Anchored ^[0-9]+$ (not a substring scan): this value is committed and PR-editable, and it
     # keys the board-env lookup.
-    id="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null | grep -oE '^[0-9]+$' | head -1 || true)"
-    [ -z "$id" ] || printf '%s committed\n' "$id"
+    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null | grep -oE '^[0-9]+$' | head -1 || true)"
+    [ -z "$board" ] || printf '%s committed\n' "$board"
     return 0
 }
 
