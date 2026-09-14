@@ -1140,6 +1140,10 @@ echo "== the query modes are mutually exclusive, COUNTED not pairwise =="
 mapfile -t QMODES < <(command grep -oE '^query_mode "\$[A-Z_]+"[[:space:]]+--[a-z-]+' "$BIN" | awk '{print $NF}')
 eq "derivation witness: --tag is a query mode"          "true" "$(has_line --tag "$(printf '%s\n' "${QMODES[@]}")")"
 eq "derivation witness: --tool-version is a query mode" "true" "$(has_line --tool-version "$(printf '%s\n' "${QMODES[@]}")")"
+# Completeness: a registration spelled in a shape the pattern above misses would otherwise drop
+# its pairs silently. Every `query_mode` call line must have been derived.
+eq "derivation covers every query_mode registration line" \
+   "$(command grep -cE '^[[:space:]]*query_mode[[:space:]]' "$BIN")" "${#QMODES[@]}"
 for ((i = 0; i < ${#QMODES[@]}; i++)); do
   for ((j = i + 1; j < ${#QMODES[@]}; j++)); do
     pair="${QMODES[i]} ${QMODES[j]}"

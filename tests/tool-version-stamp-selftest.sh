@@ -11,20 +11,26 @@
 #
 # THE POPULATION IS DERIVED, never listed: every file in bin/ with a line-initial
 # `ABTK_TOOL_VERSION=`, UNION every file in bin/ naming `--tool-version` on a line before any `#`.
-# The second half is what stops a bin answering the flag some other way — most likely by reading
-# a VERSION file relative to itself, which is right in a checkout and wrong in every copy. The
-# PRESENCE witness is `release-pr-body`: an empty derivation cannot pass.
+# The second half makes a bin that answers the flag WITHOUT a stamp a member, so it reds for
+# carrying none. The PRESENCE witness is `release-pr-body`: an empty derivation cannot pass.
 #
 # PER MEMBER, each a separate violation:
 #   * exactly one stamp line, spelled `ABTK_TOOL_VERSION='<value>'`;
 #   * <value> equal to VERSION (trailing newline stripped, as VERSIONING.md tells consumers to);
 #   * the file names `--tool-version` (a stamp nothing prints is not a surface);
-#   * `<bin> --tool-version`, run from a directory that is not a repo, exits 0 with stdout
-#     exactly `<VERSION>\n` and stderr empty.
+#   * `--tool-version`, run on a COPY of the member file alone — in a scratch box outside every git
+#     work tree, with a decoy VERSION beside the copy's bin/ and in the directory it runs from —
+#     exits 0 with stdout exactly `<VERSION>\n` and stderr empty. The decoy is VERSION with a
+#     suffix, so it can never equal VERSION. Run in place instead, a stamped bin that reads
+#     `$(dirname "$0")/../VERSION` before its stamp prints the right answer from the checkout and
+#     the wrong one from every copy; from the box, that read reds.
 #
 # WHAT A GREEN RUN PROVES — and no more: that every member's stamp and answer equal VERSION on
-# THIS tree. Nothing about copies already in the field, which carry whatever they were stamped
-# with (or, older than the flag, nothing at all).
+# THIS tree, and that the answer does not come from a VERSION file beside the file or in its cwd.
+# The copy carries only the member, so a member must answer before loading anything beside it.
+# A read from an absolute path (a toolkit checkout under $HOME, say) is NOT ruled out. Nothing
+# about copies already in the field, which carry whatever they were stamped with (or, older than
+# the flag, nothing at all).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -33,7 +39,6 @@ source "$HERE/_selftest-prelude.sh"
 
 ROOT="$(cd "$HERE/.." && pwd)"
 _mktmp_scratch
-mkdir -p "$TMP/nowhere"
 
 # _members <root> — the derived population, one bin/ basename per line.
 _members() {
@@ -48,9 +53,15 @@ _members() {
 }
 
 # _violations <root> — one line per violation, naming the file. Prints nothing when clean.
+# Every answer is taken from a copy in a fresh box under $TMP whose VERSION files hold a decoy.
 _violations() {
-  local root="$1" want name f stamps val rc
+  local root="$1" want decoy box name f stamps val rc
   want="$(tr -d '\n' < "$root/VERSION")"
+  decoy="$want-decoy"
+  box="$(mktemp -d "$TMP/box.XXXXXX")"
+  mkdir -p "$box/bin" "$box/cwd"
+  printf '%s\n' "$decoy" > "$box/VERSION"
+  printf '%s\n' "$decoy" > "$box/cwd/VERSION"
   while IFS= read -r name; do
     f="$root/bin/$name"
     stamps="$(command grep -cE '^ABTK_TOOL_VERSION=' "$f" || true)"
@@ -67,7 +78,8 @@ _violations() {
     fi
     command grep -qE -- '^[^#]*--tool-version' "$f" \
       || printf '%s: stamped, but names no --tool-version flag\n' "$name"
-    rc=0; (cd "$TMP/nowhere" && "$f" --tool-version) >"$TMP/out" 2>"$TMP/err" || rc=$?
+    cp "$f" "$box/bin/$name"
+    rc=0; (cd "$box/cwd" && "$box/bin/$name" --tool-version) >"$TMP/out" 2>"$TMP/err" || rc=$?
     [ "$rc" = 0 ] || printf '%s: --tool-version exited %s\n' "$name" "$rc"
     printf '%s\n' "$want" > "$TMP/want"
     cmp -s "$TMP/out" "$TMP/want" \
@@ -85,8 +97,8 @@ _fixture() {
   printf '%s' "$fx"
 }
 
-echo "== precondition: the probe directory is not inside a git work tree =="
-if git -C "$TMP/nowhere" rev-parse --git-dir >/dev/null 2>&1; then
+echo "== precondition: the scratch dir holding every copy is not inside a git work tree =="
+if git -C "$TMP" rev-parse --git-dir >/dev/null 2>&1; then
   bad "scratch dir resolves to a git repo — the 'no checkout' leg would not measure a copy"
 else
   ok "scratch dir is outside every git work tree"
@@ -127,7 +139,19 @@ case "${1:-}" in --tool-version) tr -d '\n' < "$(dirname "$0")/../VERSION"; echo
 SH
 chmod +x "$fx/bin/reads-a-path"
 eq "derived as a member"              "true" "$(has_line reads-a-path "$(_members "$fx")")"
-eq "reds for carrying no stamp"       "true" "$(has 'reads-a-path: carries 0 ABTK_TOOL_VERSION= lines' "$(_violations "$fx")")"
+v="$(_violations "$fx")"
+eq "reds for carrying no stamp"       "true" "$(has 'reads-a-path: carries 0 ABTK_TOOL_VERSION= lines' "$v")"
+eq "…and for answering from the decoy" "true" "$(has "reads-a-path: --tool-version printed '$(tr -d '\n' < "$ROOT/VERSION")-decoy'" "$v")"
+
+echo "== CONTROL: a STAMPED bin that answers from a VERSION beside itself before its stamp =="
+# Right in a checkout, wrong in every copy: the shape only a run from a copy can see.
+fx="$(_fixture path-first)"
+INJ='  [ -f "$(dirname "$0")/../VERSION" ] && { tr -d '"'\\n'"' < "$(dirname "$0")/../VERSION"; echo; exit 0; }' \
+  awk '{ print } /^if \[ "\$TOOL_VERSION_ONLY" = 1 \]; then$/ { print ENVIRON["INJ"]; n++ } END { exit n != 1 }' \
+  "$ROOT/bin/release-pr-body" > "$fx/bin/release-pr-body" && rc=0 || rc=$?
+eq "premise: the relative read was injected exactly once" "0" "$rc"
+eq "premise: in place, the mutant prints VERSION"  "$(tr -d '\n' < "$ROOT/VERSION")" "$( (cd "$TMP" && "$fx/bin/release-pr-body" --tool-version) 2>&1 )"
+eq "from a copy, reds naming the member and the decoy" "true" "$(has "release-pr-body: --tool-version printed '$(tr -d '\n' < "$ROOT/VERSION")-decoy'" "$(_violations "$fx")")"
 
 echo "== CONTROL: a stamp nothing prints, and an answer that is not the stamp =="
 fx="$(_fixture stamp-only)"
