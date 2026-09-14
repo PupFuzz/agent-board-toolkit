@@ -262,4 +262,41 @@ eq "declared divergence: …and on the mirror"                 "accept" "$(_uv 0
 # The divergence set is CLOSED over the corpus above: exactly two inputs may differ, and both are
 # leading-zero forms. A third would land in the agreement rows and red there.
 
+# ═══════════════════════ 4 — the owner-tag clear: promote ↔ the lib's tag rules ═══════════════
+#
+# promote-released-cards removes the seat owner tags from a card it releases, and may not source
+# the lib, so it carries its own copies of the tag rules the lib's `kb_owner_tag_write clear`
+# goes through: which tag list a card read carries (`kb_card_tags`), the list without its owner
+# tags (`kb_owner_strip`), and the owner tags named (`kb_owner_list`). A disagreement is a tag wipe
+# (a read one copy calls unreadable and the other calls `[]`) or a tag the two clear differently.
+echo "== owner tags: promote's owner_card_tags / owner_strip / owner_list agree with the lib, row by row =="
+_adopt_fn "$PRC" owner_card_tags
+_adopt_fn "$PRC" owner_strip
+_adopt_fn "$PRC" owner_list
+for _b in '{"data":{"tags":["a","owner:p/s"]}}' '{"data":{"id":1}}' '{"data":{"tags":null}}' '{"data":{"tags":[]}}' \
+          '{"ok":true}' '{"data":null}' '{"data":[]}' '{"data":{"tags":false}}' '{"data":{"tags":{"0":"owner:p/s"}}}' \
+          '{"data":{"tags":"owner:p/s"}}' '<html>' ''; do
+    eq "card tags agree on [$_b]" "$(kb_card_tags "$_b")" "$(owner_card_tags "$_b")"
+done
+for _t in '["a","owner:p/s","b","owner:q/t"]' '["a","b"]' '["ownership","owner:p/s"]' '["owner:p/s"]' '[]' '["x-owner:p/s","owner:p/s"]' \
+          '["Owner:p/s"]' '["owner:"]' '[1,"owner:p/s",null]'; do
+    eq "strip agrees on [$_t]" "$(kb_owner_strip "$_t")" "$(owner_strip "$_t")"
+    eq "list agrees on [$_t]"  "$(kb_owner_list "$_t")"  "$(owner_list "$_t")"
+done
+# A witness that the corpus exercises both arms of each rule — rows that were all empty on both
+# sides would agree about nothing.
+eq "witness: a readable list and an unreadable read are both in the corpus" "true|true" \
+   "$([[ -n "$(owner_card_tags '{"data":{"tags":[]}}')" ]] && echo true)|$([[ -z "$(owner_card_tags '{"ok":true}')" ]] && echo true)"
+eq "witness: a strip that writes and one that does not are both in the corpus" "true|true" \
+   "$([[ -n "$(owner_strip '["owner:p/s"]')" ]] && echo true)|$([[ -z "$(owner_strip '["a"]')" ]] && echo true)"
+echo "== control: a promote copy that reads a card with the naive default is caught =="
+_naive="$(_fn_src "$PRC" owner_card_tags | sed 's/(if has("tags") and .tags != null then .tags else \[\] end) | select(type == "array")/(.tags \/\/ [])/')"
+eq "control: the mutation applied" "false" "$(has 'has("tags")' "$_naive")"
+eval "$_naive"
+eq "control: the naive copy now DISAGREES with the lib on a non-list tags value" "false" \
+   "$([[ "$(kb_card_tags '{"data":{"tags":false}}')" == "$(owner_card_tags '{"data":{"tags":false}}')" ]] && echo true || echo false)"
+_adopt_fn "$PRC" owner_card_tags
+unset -f owner_card_tags owner_strip owner_list
+unset _b _t _naive
+
 _summary "mirror-pair-parity-selftest"
