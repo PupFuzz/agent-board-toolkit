@@ -3992,8 +3992,8 @@ pf() {
     esac
 }
 # pf_values — every value the last write put in task.payload, as a JSON array. Keyless on
-# purpose: the property is that the typed bytes are the ONLY payload value, whichever key the
-# flag writes (--version writes `version_target`).
+# purpose: the property is the value that reached the payload, whichever key the flag writes
+# (--version writes `version_target`).
 pf_values() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '[(.payload // {})[]]'; }
 
 PF_NBSP=$'\xc2\xa0'
@@ -4009,14 +4009,28 @@ for _verb in create-card patch; do
         eq "$_L $_bn → issues NO request"                  "0" "$(kb_stub_total)"
     done
     # The positive controls that make the zeros above a measurement: the same door accepts any
-    # value with text, and sends its bytes as typed — padding is content, never trimmed.
+    # value with text, and the refusal rewrites none of it — padding is not trimmed by it.
     pf "$_verb" "$_flag" $'  padded\ttext  '
     eq "$_L padded text → rc 0"                          "0" "$rc"
-    eq "$_L padded text → on the wire byte-identical"    "$(jq -cn --arg s $'  padded\ttext  ' '[$s]')" "$(pf_values)"
+    eq "$_L padded text → padding survives to the wire"  "$(jq -cn --arg s $'  padded\ttext  ' '[$s]')" "$(pf_values)"
     # The documented residue: blank is four ASCII characters, so U+00A0 is content and is sent.
     pf "$_verb" "$_flag" "$PF_NBSP"
     eq "$_L U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
     eq "$_L U+00A0-only → sent verbatim"                 "$(jq -cn --arg s "$PF_NBSP" '[$s]')" "$(pf_values)"
+    # ⚠ THE CR LEGS PIN WHAT THE WIRE CARRIES TODAY, NOT WHAT IT SHOULD. The check passes
+    # `verbatim`, so it must not fold CRLF or trim a trailing newline — and without these legs a
+    # refusal that did both passed the whole suite while changing the bytes sent. The expected
+    # values are the payload assembler's own k=v LINE-SPLITTING (the value ends at the first LF;
+    # the CR before it survives), which predates this refusal and is tracked separately: a fix to
+    # that serialization changes these expectations on purpose.
+    pf "$_verb" "$_flag" $'a\r\nb'
+    eq "$_L interior CRLF → rc 0"                        "0" "$rc"
+    eq "$_L interior CRLF → not folded by the check (the assembler's split leaves \"a\\r\")" \
+       '["a\r"]' "$(pf_values)"
+    pf "$_verb" "$_flag" $'x\r\n'
+    eq "$_L trailing CRLF → rc 0"                        "0" "$rc"
+    eq "$_L trailing CRLF → not trimmed by the check (\"x\\r\" reaches the wire)" \
+       '["x\r"]' "$(pf_values)"
   done
   # The correlation refs already refuse through their own validators; held here so "no payload
   # flag accepts a visually blank value" is a claim about the derived set, not about four of it.

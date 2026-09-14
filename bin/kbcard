@@ -41,11 +41,16 @@
 #   and granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
 #   THE PAYLOAD TEXT FLAGS — --pr-url, --issue-url, --version and --origin, on create-card and
 #   patch — have no file twin and take the same text-free refusal, rc 2 before any request, with
-#   the same four-character blank set; a value with any text is sent exactly as typed, padding
-#   included. A blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0
-#   (measured on --origin); a blank --pr-url / --issue-url can also detach the card from its repo.
-#   Refusing it was an acceptance change, asked and granted (card#9338). ⚠ None of the four has a
-#   clearer, so this CLI can no longer empty one on purpose (a wont_do decline still nulls pr_url).
+#   the same four-character blank set. A value with any text is sent exactly as it was before
+#   that refusal existed — which is NOT as typed: the payload assembler splits values into k=v
+#   LINES (an interior newline truncates the value, a CR before it survives, and a line shaped
+#   `key=value` becomes an extra payload key) and COERCES each value through jq's `tonumber`
+#   (" 123 " and "1.10" go out as numbers, "nan" as null). Both rewrites are unchanged here and
+#   tracked separately. A blank one used to be SENT, and the board stored it as a CLEAR of the
+#   field at rc 0 (measured on --origin); a blank --pr-url / --issue-url can also detach the card
+#   from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
+#   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
+#   (a wont_do decline still nulls pr_url; the coercion above can null a value by accident).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -937,7 +942,8 @@ _kbc_build_payload() {
     local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
     local payload_args=()
     # The free-text payload values take the blank refusal every free-text flag takes, from the
-    # same resolver — single-source (no --…-file twin), bytes verbatim. A visually blank one used
+    # same resolver — single-source (no --…-file twin), and `verbatim` so this check rewrites
+    # nothing: what the merge below does to a value is unchanged by it. A visually blank one used
     # to be SENT, and the board's trim-then-null rewrite turned it into a CLEAR of the stored
     # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`. It sits
     # above the version_target branch on purpose: a blank --version is a malformed invocation
