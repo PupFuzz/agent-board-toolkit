@@ -187,6 +187,18 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 >
 > Without one of these, a bare `kbcard` on a non-`dev` box exits `2` with `board env file not readable: …/.kanban-dev-board.env` — the error names these fixes and lists the `~/.kanban-*-board.env` files it did find, so a fresh box on a non-`dev` board isn't left reverse-engineering the default.
 
+## 3c. Seat identity for the owner tag (agent seats)
+
+The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` after they move a card to In Progress. What they read, and every case in which they do not stamp, is [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). A coord-installed seat already carries `COORD_AGENT`, and `COORD_CONFIG` too when its config is not at the default path. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
+
+To check a seat, run this from the environment the hooks run in. It calls the resolver the hooks themselves use, so it prints the tag they would stamp, or the reason they would give for not stamping:
+
+```bash
+bash -c '. ~/.local/bin/_kb-board-lib.sh && if kb_owner_resolve; then echo "$KB_OWNER_TAG"; else echo "NOT RESOLVED: $KB_OWNER_WHY"; fi'
+```
+
+It prints either the tag, such as `owner:acme/builder`, or the refusal, such as `NOT RESOLVED: COORD_AGENT is unset, so this process names no seat`.
+
 ## 4. Per-repo release config (only for repos that cut releases)
 
 `promote-released-cards`, `release-pr-body` and `release-artifacts-check` read `<repo>/.release-pr.json`:

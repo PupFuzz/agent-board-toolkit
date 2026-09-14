@@ -35,6 +35,11 @@
 #   - PINNED cards are never auto-moved: a non-empty block_reason or a `no-automove`
 #     tag refuses the move (loud), regardless of stage.
 #   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
+#
+# OWNER TAG: once the move to In Progress has succeeded, this seat's owner tag is stamped by a
+# separate tag write (kb_owner_tag_write in _kb-board-lib.sh, shared with `kbcard move
+# --stamp-owner`). Its rules are README.md § The seat owner tag. Whatever it reports goes to stderr
+# AND the durable log below. A card this hook does not move is not stamped.
 set -uo pipefail
 
 # Shared toolkit lib (DL canon, whole-board pagination, token read). Fail-soft:
@@ -74,8 +79,13 @@ _bcs_is_placeholder_host() {
 # (which must exit 0, never blocking a checkout). A manual `board-card-start` run still sees stderr.
 kb_bcs_log() {
     local reason="${1:-unspecified}"
-    local br="${branch:-?}"
-    local msg="board-card-start: branch '$br' carries a DL/card token but the move did not happen — $reason"
+    kb_bcs_note "board-card-start: branch '${branch:-?}' carries a DL/card token but the move did not happen — $reason"
+}
+
+# kb_bcs_note <line>: the stderr + durable-log write kb_bcs_log words for a failed move, for a line
+# that is NOT about a failed move (the owner-tag refusals, where the move itself still happens).
+kb_bcs_note() {
+    local msg="${1:-}"
     printf '%s\n' "$msg" >&2
     local logf="${KB_BCS_LOG:-${HOME:-/tmp}/.cache/agent-board-toolkit/board-card-start.log}"
     local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '?')"
@@ -554,4 +564,10 @@ esac
 _bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" \
     "board-card-start: card #$cid ($label) → In Progress" \
     "card #$cid ($label) → In Progress move failed"
+# _bcs_patch is fail-soft (rc 0 either way); kb_api left the move's status in KB_HTTP, in this
+# shell, and only a move that landed gets an owner tag (see the header).
+case "${KB_HTTP:-}" in
+    2*) kb_owner_tag_write stamp "$cid" "card #$cid ($label)"
+        [ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE" ;;
+esac
 exit 0
