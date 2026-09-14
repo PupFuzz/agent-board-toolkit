@@ -109,15 +109,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The two query modes are mutually exclusive: each replaces the body with one list, so a
-# caller passing both gets one of them and silently loses the other. This repo has already
+# Query modes are mutually exclusive: each replaces the body with its own answer, so a caller
+# passing two gets one of them and silently loses the other. This repo has already
 # ruled on that shape once (card#5429 — drift-check read two positionals and dropped the
 # rest at rc 0), and a query whose answer is about a different question than the one asked
 # is worse here than in a body generator, because the output is machine-read.
 # COUNTED, NOT PAIRWISE. Each query mode replaces the whole output with one answer, so any two
 # of them means one is silently lost — and a pairwise test is the shape that admits exactly the
-# combination nobody remembered to write down (with three modes there are three pairs; with the
-# next one, six). The count is derived from the flags that were actually seen.
+# combination nobody remembered to write down (n modes make n(n-1)/2 pairs, so every added mode
+# adds more pairs than the last). The count is derived from the flags that were actually seen.
 QUERY_MODES=""; QUERY_COUNT=0
 query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODES, }$2"; QUERY_COUNT=$((QUERY_COUNT + 1)); }
 query_mode "$TAG_ONLY"           --tag

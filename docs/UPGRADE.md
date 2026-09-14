@@ -42,6 +42,8 @@ git commit -m "chore: bump vendored agent-board-toolkit to $(cat ~/agent-board-t
 # open a PR per the repo's normal flow; CI re-runs the drift-check as a guard.
 ```
 
+> **A stamped bin changes on EVERY release, so re-copy it on every bump.** A bin carrying a line-initial `ABTK_TOOL_VERSION=` is re-stamped with each release's version, so its bytes differ from any other release's even when nothing else in it changed, and the drift-check reports it as `DRIFT` until it is re-copied. Name the set for the version you are vendoring: `grep -l '^ABTK_TOOL_VERSION=' ~/agent-board-toolkit/bin/*`.
+
 > **Which bins need `_kb-board-lib.sh` beside them is DERIVED, never listed here.** Name the set for the version you are actually vendoring:
 > ```bash
 > grep -lE '^[[:space:]]*source "\$KB_LIB"' ~/agent-board-toolkit/bin/*
