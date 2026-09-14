@@ -159,14 +159,91 @@ _bcs_branch_lint_warning() {
     printf "branch '%s' looks like it references card %s, but the board auto-move grammar won't recognize this spelling — the card will NOT move to In Progress on checkout. Rename it e.g. 'fix/card-%s-slug' (or 'fix/%s-slug').\n" "$branch" "$id" "$id" "$id"
 }
 
+# _bcs_card_id <branch>: the id the card-id path moves on — the explicit named-card grammar
+# first, else a typed-branch leading id. Echoes the id, or nothing. The mover and the card-id
+# floor leg of the lint both read this, so they cannot disagree about WHICH number is judged.
+_bcs_card_id() {
+    local id
+    id="$(_bcs_explicit_card_id "${1:-}")"
+    [ -n "$id" ] || id="$(_bcs_typed_card_id "${1:-}")"
+    printf '%s' "$id"
+}
+
+# _bcs_board_id <path-to-.release-pr.json>: the board this repo maps to, as "<id> <source>" on
+# stdout (source: `hostlocal` | `committed`), or nothing. Run from inside the work tree: the
+# repo-local UNCOMMITTED `git config kanban.board-id` wins, else the committed
+# .promote.board_id — the mover's full reasoning for that order sits at its call site below.
+# Nothing is printed when jq is absent and only the committed file could have answered, or when
+# the committed value is not a plain integer (`"42abc"`, `-42`, `42.0`, `["42"]`).
+_bcs_board_id() {
+    local cfg="${1:-}" board
+    board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    if [ -n "$board" ]; then
+        printf '%s hostlocal\n' "$board"
+        return 0
+    fi
+    [ -r "$cfg" ] || return 0
+    # Anchored ^[0-9]+$ (not a substring scan): this value is committed and PR-editable, and it
+    # keys the board-env lookup.
+    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null | grep -oE '^[0-9]+$' | head -1 || true)"
+    [ -z "$board" ] || printf '%s committed\n' "$board"
+    return 0
+}
+
+# _bcs_uint_lt <a> <b>: true when a < b, both canonical unsigned decimals (no leading zero).
+# Compared as DIGIT STRINGS, never arithmetically: a branch name can carry more digits than bash
+# integers hold: past 2^63-1 `[ -lt ]` errors and `(( ))` wraps, so neither answers the
+# comparison — and a wrapped one can accuse.
+_bcs_uint_lt() {
+    local LC_ALL=C
+    [ "${#1}" -lt "${#2}" ] || { [ "${#1}" -eq "${#2}" ] && [[ "$1" < "$2" ]]; }
+}
+
+_bcs_id_space_rule="card ids and GitHub issue/PR numbers are separate id spaces — cut the branch from the CARD id ('fix/card-<card-id>-slug'), never from an issue/PR number: a wrong number moves no card on checkout, and since the branch beats the PR title at merge, closes none"
+
+# _bcs_card_id_floor_warning <branch> <board-id> <board-env> <floor>: the card-id FLOOR leg of
+# the pre-push lint (DL-223) — a second, independent predicate beside _bcs_branch_lint_warning.
+# That one catches a spelling the grammar REJECTS; this one catches a spelling the grammar
+# ACCEPTS carrying a number from the wrong id space (a GitHub issue/PR number), which correlates
+# to no card, or to the wrong one. Pure: the caller resolves the three config inputs (empty =
+# could not be resolved) and nothing here reads a board.
+#
+# Silent only when the branch carries no card id, or its id is at/above a seeded floor. Every
+# input it could not judge SPEAKS, naming the missing piece: a floor that cannot be consulted is
+# indistinguishable from a clean branch if it stays quiet. The floor is a MAGNITUDE heuristic
+# whose bound is documented where it is seeded (docs/INSTALL.md §3b); within that bound its
+# failure mode is a false clean, and the wording hedges ("most likely") for the rest.
+_bcs_card_id_floor_warning() {
+    local branch="${1:-}" board="${2:-}" envf="${3:-}" floor="${4:-}" id
+    id="$(_bcs_card_id "$branch")"
+    [ -n "$id" ] || return 0
+    if [ -z "$board" ]; then
+        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to no board — no 'git config kanban.board-id', and no .promote.board_id read from .release-pr.json (absent, unreadable, not a plain integer, or jq not on PATH) — so whether %s is a card id or a GitHub issue/PR number cannot be judged; %s.\n" \
+            "$branch" "$id" "$id" "$_bcs_id_space_rule"
+    elif [ -z "$envf" ]; then
+        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to board %s, but no ~/.kanban-*-board.env has KB_BOARD_ID=%s, so there is no floor to consult; %s.\n" \
+            "$branch" "$id" "$board" "$board" "$_bcs_id_space_rule"
+    elif [ -z "$floor" ]; then
+        printf "card-id floor not seeded for board %s — add 'export KB_CARD_ID_FLOOR=<at or below the board's lowest card id, archived cards included>' to %s (docs/INSTALL.md §3b); until then branch '%s' (card %s) cannot be told apart from a GitHub issue/PR number; %s.\n" \
+            "$board" "$envf" "$branch" "$id" "$_bcs_id_space_rule"
+    elif ! kb_is_uint "$floor"; then
+        printf "card-id floor NOT CHECKED for branch '%s' (card %s): KB_CARD_ID_FLOOR='%s' in %s is not an unsigned integer without leading zeros (docs/INSTALL.md §3b); %s.\n" \
+            "$branch" "$id" "$floor" "$envf" "$_bcs_id_space_rule"
+    elif _bcs_uint_lt "$id" "$floor"; then
+        printf "branch '%s' names card %s, which is BELOW board %s's card-id floor %s (KB_CARD_ID_FLOOR in %s) — %s is most likely a GitHub issue/PR number, not a card id; %s.\n" \
+            "$branch" "$id" "$board" "$floor" "$envf" "$id" "$_bcs_id_space_rule"
+    fi
+    return 0
+}
+
 # When sourced (tests/board-card-start-selftest.sh), expose only the pure helpers above and
 # stop here — sourcing must not run the checkout mover.
 (return 0 2>/dev/null) && return 0
 
 # Argument surface: `[--lint] [-h|--help] [--] [<branch-name>]`. `--lint` is the pre-push
-# advisory path — print the branch-name warning (if any) and exit, without any board/network
-# work; no branch argument is the post-checkout path (the hook passes none), which targets the
-# CURRENT branch. `-h`/`--help` prints the usage line to STDOUT at rc 0 and does nothing else:
+# advisory path — print the branch-name findings (if any) and exit, moving nothing and issuing no
+# request (its only reads are host-local config, for the card-id floor leg); no branch argument
+# is the post-checkout path (the hook passes none), which targets the CURRENT branch. `-h`/`--help` prints the usage line to STDOUT at rc 0 and does nothing else:
 # before it existed, a hand-typed `--help` fell to the `-*` arm, whose remedy line reads as
 # advice to run `board-card-start -- --help` — which would target a BRANCH named `--help`
 # (card#5354). The refusal text is deliberately unchanged: it is phrased conditionally ("for a
@@ -243,6 +320,21 @@ done
 if [ "$lint_mode" = 1 ]; then
     warning="$(_bcs_branch_lint_warning "$branch")"
     [ -n "$warning" ] && printf 'board-branch-lint: %s\n' "$warning" >&2
+    # The card-id floor leg reads HOST-LOCAL config only — the repo's board id and that board's
+    # env — and never the board itself: an unreadable API answer is not an empty one, and a lint
+    # that reached for the network would have to choose which of those to report as clean.
+    # Resolved only when the branch carries a card id, so a branch with nothing to judge costs
+    # no board-env source. The floor is not a credential, so a COMMITTED board id may select the
+    # env it is read from; the hostlocal-only gate below bounds the token, not this.
+    if [ -n "$(_bcs_card_id "$branch")" ]; then
+        root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        board=""; board_envf=""; floor=""
+        [ -z "$root" ] || read -r board _ <<<"$(_bcs_board_id "$root/.release-pr.json")"
+        [ -z "$board" ] || board_envf="$(kb_board_env_for "$board" || true)"
+        [ -z "$board_envf" ] || IFS= read -r floor <<<"$(kb_board_env_get "$board_envf" KB_CARD_ID_FLOOR)"
+        warning="$(_bcs_card_id_floor_warning "$branch" "$board" "$board_envf" "$floor")"
+        [ -n "$warning" ] && printf 'board-branch-lint: %s\n' "$warning" >&2
+    fi
     exit 0
 fi
 
@@ -260,9 +352,8 @@ dl=""
 # a 2-digit version, or a `dl-189` token can't match), so it never mis-reads a DL as
 # a card id. See _bcs_explicit_card_id / _bcs_typed_card_id for the two tiers.
 cid_explicit=0
-cid_token="$(_bcs_explicit_card_id "$branch")"
-[ -n "$cid_token" ] && cid_explicit=1   # matched the explicit card#N / #N grammar (a named card)
-[ -n "$cid_token" ] || cid_token="$(_bcs_typed_card_id "$branch")"
+cid_token="$(_bcs_card_id "$branch")"
+[ -n "$(_bcs_explicit_card_id "$branch")" ] && cid_explicit=1   # matched the explicit card#N / #N grammar (a named card)
 
 [ -n "$dl" ] || [ -n "$cid_token" ] || exit 0
 
@@ -290,15 +381,7 @@ root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 cfg="$root/.release-pr.json"
 board=""; committed_api=""; board_src=""
 [ -r "$cfg" ] && committed_api="$(jq -r '.promote.api_base // empty' "$cfg" 2>/dev/null)"
-board="$(git config --get kanban.board-id 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-if [ -n "$board" ]; then
-    board_src="hostlocal"
-elif [ -r "$cfg" ]; then
-    # Anchored ^[0-9]+$ (not a substring scan): this value is committed and PR-editable, and it
-    # keys the board-env lookup below.
-    board="$(jq -r '.promote.board_id // empty' "$cfg" 2>/dev/null | grep -oE '^[0-9]+$' | head -1 || true)"
-    [ -n "$board" ] && board_src="committed"
-fi
+read -r board board_src <<<"$(_bcs_board_id "$cfg")"
 [ -n "$board" ] || bcs_skip "no board_id — run 'git config kanban.board-id <id>' in this repo, or set .promote.board_id in .release-pr.json (docs/INSTALL.md)"
 
 # Host env → KB_API + KB_HOST_TOKEN_FILE (the host-level token default). Cannot fail; the
