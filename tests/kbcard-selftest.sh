@@ -667,7 +667,7 @@ echo "== _kbc_build_payload — shared create/patch payload assembly (card-4511,
 # Single home for the payload-merge jq + version_target guard + DL-canon + pr
 # appends that create-card and patch both need. RED-when-reverted: these pin the
 # exact merged object, so a helper that diverged from either original (dropped a
-# field, lost the numeric coercion, skipped the DL canon) FAILS here.
+# field, lost pr_number/issue_number's numeric typing, skipped the DL canon) FAILS here.
 unset KB_CF_VERSION_TARGET 2>/dev/null || true
 export KB_CF_VERSION_TARGET=99   # board HAS the version_target custom field
 
@@ -677,14 +677,14 @@ eq "full flag set → exact merged payload" \
    '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","version_target":"v0.9.2"}' \
    "$(_kbc_build_payload DL-93 178 https://github.com/o/r/pull/0 v0.9.2 | jq -Sc .)"
 
-# origin (trailing 7th arg, create-only) rides the same coercion path and is appended.
-eq "origin arg included, coerced like the rest" \
+# origin (trailing 7th arg, create-only) rides the same assembler and is sent as a string.
+eq "origin arg included, sent as a string" \
    '{"dl_number":"DL-0001","origin":"preemptive"}' \
    "$(_kbc_build_payload 1 '' '' '' '' '' preemptive | jq -Sc .)"
 
 # issue_number / issue_url mirror pr_number / pr_url — issue_number NUMERIC-coerced (a JSON
 # number, not "300"), issue_url a string, both INDEPENDENT of the pr_* pair. RED-when-reverted:
-# drop the coercion (the `tonumber? // .` in the merge jq) and issue_number becomes a string.
+# drop issue_number from the assembler's numeric keys and issue_number becomes a string.
 eq "issue_number coerced to a JSON number + issue_url string" \
    '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' \
    "$(_kbc_build_payload '' '' '' '' 300 https://github.com/o/r/issues/300 | jq -Sc .)"
@@ -4031,20 +4031,19 @@ for _verb in create-card patch; do
     pf "$_verb" "$_flag" "$PF_NBSP"
     eq "$_L U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
     eq "$_L U+00A0-only → sent verbatim"                 "$(jq -cn --arg s "$PF_NBSP" '[$s]')" "$(pf_values)"
-    # ⚠ THE CR LEGS PIN WHAT THE WIRE CARRIES TODAY, NOT WHAT IT SHOULD. The check passes
-    # `verbatim`, so it must not fold CRLF or trim a trailing newline — and without these legs a
-    # refusal that did both passed the whole suite while changing the bytes sent. The expected
-    # values are the payload assembler's own k=v LINE-SPLITTING (the value ends at the first LF;
-    # the CR before it survives), which predates this refusal and is tracked separately: a fix to
-    # that serialization changes these expectations on purpose.
+    # THE CR LEGS: the check passes `verbatim`, so it must not fold CRLF or trim a trailing
+    # newline — and without these legs a refusal that did both passed the whole suite while
+    # changing the bytes sent. The expectation is the value exactly as passed. (Until card#9423 it
+    # was "a\r" / "x\r": the assembler's k=v line-split ended the value at the first LF. That
+    # serialization is retired, and these pins moved with it deliberately.)
     pf "$_verb" "$_flag" $'a\r\nb'
     eq "$_L interior CRLF → rc 0"                        "0" "$rc"
-    eq "$_L interior CRLF → not folded by the check (the assembler's split leaves \"a\\r\")" \
-       '["a\r"]' "$(pf_values)"
+    eq "$_L interior CRLF → not folded by the check (\"a\\r\\nb\" reaches the wire)" \
+       '["a\r\nb"]' "$(pf_values)"
     pf "$_verb" "$_flag" $'x\r\n'
     eq "$_L trailing CRLF → rc 0"                        "0" "$rc"
-    eq "$_L trailing CRLF → not trimmed by the check (\"x\\r\" reaches the wire)" \
-       '["x\r"]' "$(pf_values)"
+    eq "$_L trailing CRLF → not trimmed by the check (\"x\\r\\n\" reaches the wire)" \
+       '["x\r\n"]' "$(pf_values)"
   done
   # The correlation refs already refuse through their own validators; held here so "no payload
   # flag accepts a visually blank value" is a claim about the derived set, not about four of it.
@@ -4065,6 +4064,81 @@ eq "…and issues NO request"                          "0" "$(kb_stub_total)"
 kbc --board nover patch --task 505 --version v1.2.3 --dl DL-7
 eq "control: a real --version there is ignored, not refused" "true" "$(has '--version ignored' "$err")"
 eq "…and the call still lands"                       "0" "$rc"
+
+echo "== payload keys are serialized per key, typed by contract (card#9423) =="
+# THE DEFECT. The assembler joined the payload values as `k=v` LINES and ran every one through
+# jq's `tonumber? // .`, so a value with text was rewritten before it was sent: "1.10" went out as
+# a JSON number, "nan" as null (an explicit CLEAR at rc 0), " 123 " / "00123" / "1e3" / "inf" as
+# numbers; a leading newline sent "" (which the board trims to null — a clear), an interior one
+# truncated the value, and a line shaped `key=value` WROTE a payload key the caller never named.
+# Each key is now serialized on its own: the four text flags go out as JSON strings, exactly as
+# passed, and only pr_number / issue_number keep `tonumber? // .`. An acceptance change; asked
+# and granted.
+#
+# The population is PAYLOAD_TEXT_FLAGS, derived above from each verb's own call. Every leg
+# asserts the WHOLE payload object, so an extra key (the injection) reds as surely as a re-typed
+# or truncated value.
+_pk_key() {
+    case "$1" in
+        --origin) echo origin ;; --version) echo version_target ;;
+        --pr-url) echo pr_url ;; --issue-url) echo issue_url ;;
+        *) echo "UNMAPPED:$1" ;;
+    esac
+}
+pf_payload() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '.payload'; }
+PK_VALUES=('1.10' ' 123 ' '00123' '1e3' 'nan' 'inf' 'null' 'true' $'\nfoo' $'foo\nversion_target=evil'
+           $'foo\npr_url=https://github.com/evil/r/pull/1' $'a\r\nb' $'x\r\n' $'  padded\ttext  '
+           'https://github.com/o/r/pull/7')
+for _verb in create-card patch; do
+  for _flag in "${PAYLOAD_TEXT_FLAGS[@]}"; do
+    for _v in "${PK_VALUES[@]}"; do
+        _vn="$(jq -cn --arg s "$_v" '$s')"
+        pf "$_verb" "$_flag" "$_v"
+        eq "$_verb $_flag $_vn → rc 0" "0" "$rc"
+        eq "$_verb $_flag $_vn → the one key, a JSON string, verbatim" \
+           "$(jq -cn --arg k "$(_pk_key "$_flag")" --arg s "$_v" '{($k): $s}')" "$(pf_payload)"
+    done
+  done
+  # THE NUMERIC-BY-CONTRACT KEYS. pr_number / issue_number are declared `number`, and every
+  # expectation here is what origin/dev sent for the same value on jq-1.7 (measured against this
+  # stub): a numeric spelling goes out as a JSON number, a decorated one as the string it always
+  # was. The padded legs are the jq-version pins: jq-1.7's tonumber accepts surrounding space, tab,
+  # CR and LF and jq-1.8 refuses them, so the assembler trims exactly that set before the attempt.
+  # Without the trim these legs pass on 1.7 and red on 1.8 — run this file under both.
+  for _ref in --pr:pr_number --issue:issue_number; do
+    _flag="${_ref%%:*}"; _k="${_ref#*:}"
+    pf "$_verb" "$_flag" 178
+    eq "$_verb $_flag 178 → a JSON number"                 "{\"$_k\":178}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" '00123'
+    eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" ' 123 '
+    eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" $'178\n'
+    eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pf_payload)"
+    # The trim feeds only the number attempt: a value that is not a number after it is sent
+    # exactly as passed, padding included.
+    pf "$_verb" "$_flag" ' #178 '
+    eq "$_verb $_flag ' #178 ' → the untrimmed string, as on dev" "{\"$_k\":\" #178 \"}" "$(pf_payload)"
+    pf "$_verb" "$_flag" '#178'
+    eq "$_verb $_flag '#178' → the decorated string, as on dev" "{\"$_k\":\"#178\"}" "$(pf_payload)"
+    # A ref value is decorated-integer-validated, and decoration may contain a newline: the
+    # injection shape reaches this key too, and must stay inside its value.
+    pf "$_verb" "$_flag" $'#178\nversion_target=evil'
+    eq "$_verb $_flag with an embedded key=value line → no key injected" \
+       "$(jq -cn --arg k "$_k" --arg s $'#178\nversion_target=evil' '{($k): $s}')" "$(pf_payload)"
+  done
+  pf "$_verb" --dl DL-12
+  eq "$_verb --dl DL-12 → the canonical DL string, as on dev" '{"dl_number":"DL-0012"}' "$(pf_payload)"
+  # The full set, in dev's key order — the order is part of the wire bytes.
+  pf "$_verb" --dl DL-93 --pr 178 --pr-url https://github.com/o/r/pull/0 --version v0.9.2 \
+     --issue 300 --issue-url https://github.com/o/r/issues/300 --origin preemptive
+  eq "$_verb every payload flag → dev's exact object and key order" \
+     '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","issue_number":300,"issue_url":"https://github.com/o/r/issues/300","version_target":"v0.9.2","origin":"preemptive"}' \
+     "$(pf_payload)"
+done
+
+unset -f _pk_key pf_payload
+unset PK_VALUES _v _vn _ref _k
 
 unset -f pf pf_values kb_stub_route _payload_flags
 unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS

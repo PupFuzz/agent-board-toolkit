@@ -204,6 +204,7 @@ jobs:
           - runtime-check-selftest
           - shellcheck-pin-selftest
           - token-duplication-selftest
+          - tool-version-stamp-selftest
           - url-userinfo-render-selftest
           - value-flag-derivation-selftest
           - verdict-through-truncating-reader-selftest
