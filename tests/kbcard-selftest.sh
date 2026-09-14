@@ -4100,8 +4100,11 @@ for _verb in create-card patch; do
     done
   done
   # THE NUMERIC-BY-CONTRACT KEYS. pr_number / issue_number are declared `number`, and every
-  # expectation here is what origin/dev sent for the same value (measured against this stub): a
-  # numeric spelling goes out as a JSON number, a decorated one as the string it always was.
+  # expectation here is what origin/dev sent for the same value on jq-1.7 (measured against this
+  # stub): a numeric spelling goes out as a JSON number, a decorated one as the string it always
+  # was. The padded legs are the jq-version pins: jq-1.7's tonumber accepts surrounding space, tab,
+  # CR and LF and jq-1.8 refuses them, so the assembler trims exactly that set before the attempt.
+  # Without the trim these legs pass on 1.7 and red on 1.8 — run this file under both.
   for _ref in --pr:pr_number --issue:issue_number; do
     _flag="${_ref%%:*}"; _k="${_ref#*:}"
     pf "$_verb" "$_flag" 178
@@ -4110,6 +4113,12 @@ for _verb in create-card patch; do
     eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pf_payload)"
     pf "$_verb" "$_flag" ' 123 '
     eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" $'178\n'
+    eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pf_payload)"
+    # The trim feeds only the number attempt: a value that is not a number after it is sent
+    # exactly as passed, padding included.
+    pf "$_verb" "$_flag" ' #178 '
+    eq "$_verb $_flag ' #178 ' → the untrimmed string, as on dev" "{\"$_k\":\" #178 \"}" "$(pf_payload)"
     pf "$_verb" "$_flag" '#178'
     eq "$_verb $_flag '#178' → the decorated string, as on dev" "{\"$_k\":\"#178\"}" "$(pf_payload)"
     # A ref value is decorated-integer-validated, and decoration may contain a newline: the

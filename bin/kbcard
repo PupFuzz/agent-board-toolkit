@@ -46,10 +46,10 @@
 #   and never split (a newline cannot end the value or add a payload key). Until card#9423 the
 #   assembler split values into k=v lines and coerced each through jq's `tonumber`; retiring that
 #   was an acceptance change, asked and granted. Only --pr / --issue are sent as JSON numbers
-#   (a numeric spelling — "178", "00123" — goes out as a number; a decorated one such as "#178"
-#   as the string). A blank one used to be SENT, and the board stored it as a CLEAR of the
-#   field at rc 0 (measured on --origin); a blank --pr-url / --issue-url can also detach the card
-#   from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
+#   (a numeric spelling — "178", "00123", or one padded with spaces, tabs, CRs or newlines —
+#   goes out as a number; a decorated one such as "#178" as the string, exactly as passed). A
+#   blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0 (measured
+#   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
 #   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
 #   (a wont_do decline still nulls pr_url).
 #   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
@@ -926,7 +926,8 @@ resolve_task() {
 # EACH KEY IS SERIALIZED ON ITS OWN, with its JSON type fixed by the key's contract rather than
 # guessed from the value: the text keys (dl_number, pr_url, issue_url, version_target, origin) go
 # out as JSON strings, byte-for-byte as the validators left them; only pr_number/issue_number —
-# declared `number` on the board (docs/INSTALL.md §3b) — pass through `tonumber? // .`, and only
+# declared `number` on the board (docs/INSTALL.md §3b) — pass through a padding-trimmed
+# `tonumber? // .` (the same result on every jq; see the note at the jq call), and only
 # after _kbc_require_ref_int accepted them, so a decorated spelling ("#178") still travels as the
 # string it has always been. A text value is therefore never re-typed ("1.10" is not 1.1, "nan"
 # is not null) and never split: a newline inside it is a character of that value, not the start
@@ -981,8 +982,11 @@ _kbc_build_payload() {
     fi
 
     # An empty value is an unset flag (every validator above refuses a blank one), so it is
-    # omitted. pr_url / issue_url set the by-ref `source` (owner/repo); pr_number / issue_number
-    # do not.
+    # omitted. The ref keys are trimmed of space/tab/CR/LF for the number attempt ONLY: jq-1.7's
+    # tonumber accepts exactly that padding and jq-1.8 refuses it, so an untrimmed attempt makes
+    # " 123 " a number or a string by jq version. `sub`, not `trim` (jq-1.7.1+). A value that is
+    # still not a number after the trim is sent as passed, padding included. pr_url / issue_url
+    # set the by-ref `source` (owner/repo); pr_number / issue_number do not.
     jq -nc \
         --arg dl_number "$dl" \
         --arg pr_number "$pr" \
@@ -996,7 +1000,9 @@ _kbc_build_payload() {
           version_target: $version_target, origin: $origin}
          | with_entries(select(.value != ""))
          | with_entries(if .key == "pr_number" or .key == "issue_number"
-                        then .value |= (tonumber? // .) else . end)'
+                        then .value |= ((sub("^[ \t\n\r]+"; "") | sub("[ \t\n\r]+$"; "")
+                                         | tonumber?) // .)
+                        else . end)'
 }
 
 # _kbc_require_type_alias <alias>: a --type alias must be tag-safe, because on a board
