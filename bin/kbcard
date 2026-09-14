@@ -50,8 +50,8 @@
 #   goes out as a number; a decorated one such as "#178" as the string, exactly as passed). A
 #   blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0 (measured
 #   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
-#   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
-#   (a wont_do decline still nulls pr_url).
+#   Emptying one ON PURPOSE is said, not spelled as a blank value: `patch --clear <field>` (see
+#   patch below) — card#9420.
 #   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
 #   with the same six-character blank set, decided on the RAW value (before create-card appends
 #   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
@@ -102,7 +102,7 @@
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -122,6 +122,22 @@
 #     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
 #     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
 #     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
+#     --clear FIELD[,FIELD...] IS THE PAYLOAD FIELDS' CLEARER — origin, version, pr-url, issue-url
+#     (the setter flag's spelling; `_kbc_clearable` is the one declaration, and an unknown field is
+#     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
+#     payload key (version → version_target): the API merges payload per key, so an omitted key is
+#     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
+#     the board re-derives it from what remains, falling back to payload.repo, the other URL keys
+#     and a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
+#     spelling --tags uses; a second --clear is rc 2 rather than a silent last-wins that would drop
+#     a clear. No padding is trimmed and an empty member is an unknown field. Naming a field AND its
+#     setter (`--pr-url X --clear pr-url`) is rc 2 before any request, naming the flag passed. The
+#     write echo shows every cleared key RAW under `payload`, so a removed one reads `null`. On a
+#     board with no version_target field, `--clear version` is ignored with the same warning
+#     --version gets. Beside --column wont_do an explicit clear composes with the decline nulls
+#     (both write null), and — like an explicit ref flag — it wins over --keep-refs, whose notice
+#     then leaves the cleared key out of what it retained. create-card
+#     does not take it: there is nothing to clear at birth.
 #     ⛔ --clear-description IS THE DESCRIPTION'S CLEARER — the shape --unblock is for
 #     block_reason, and for the same reason: a field this tool can SET must be unsettable by it,
 #     or a body written once outlives what it described with no way to retract it. It writes an
@@ -923,7 +939,7 @@ resolve_task() {
     echo "$id"
 }
 
-# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin]: assemble
+# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin] [clear]: assemble
 # the task.payload object shared by create-card and patch from the optional card-metadata
 # flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
@@ -946,8 +962,9 @@ resolve_task() {
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
 # callers, so patch passes exactly that prefix; origin trails because it was create-card-only
 # until card#5776 made it patchable, and keeping it last left every existing call site
-# untouched. A value must flow through this single assembler rather than be appended by the
-# caller, which would re-duplicate the per-key typing this helper exists to own.
+# untouched. <clear> trails origin for the same reason: it is patch's raw --clear comma list, and
+# create-card has no such flag. A value must flow through this single assembler rather than be
+# appended by the caller, which would re-duplicate the per-key typing this helper exists to own.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
 # dl_number/pr_number left on a declined card can later match a recycled DL/PR and
 # resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
@@ -963,8 +980,17 @@ _kbc_decline_nulls() {
     jq -n --argjson p "$p" '{dl_number: null, pr_number: null, pr_url: null} + $p'
 }
 
+# _kbc_clearable: THE ONE DECLARATION of the payload fields `patch --clear` may null — one
+# `<field> <payload key>` line each, <field> spelled as its setter flag without the `--`. Both the
+# key a clear writes and the accepted set a refusal prints are read from here. A field added here
+# must reach _kbc_build_payload as a local named <field> with `-` as `_`: the setter exclusion
+# reads the setter's value by that name.
+_kbc_clearable() {
+    printf '%s\n' 'origin origin' 'version version_target' 'pr-url pr_url' 'issue-url issue_url'
+}
+
 _kbc_build_payload() {
-    local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
+    local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}" clear="${8:-}"
     # The free-text payload values take the blank refusal every free-text flag takes, from the
     # same resolver — single-source (no --…-file twin), and `verbatim` so this check rewrites
     # nothing: the value it accepts is the value the assembler below sends. A visually blank one used
@@ -976,6 +1002,33 @@ _kbc_build_payload() {
     _kbc_text_arg issue_url issue-url "" "$issue_url" "" verbatim || return 2
     _kbc_text_arg version version "" "$version" "" verbatim || return 2
     _kbc_text_arg origin origin "" "$origin" "" verbatim || return 2
+    # <clear> resolves here, beside the setters it excludes, so its refusals are rc 2 before any
+    # request exactly as the validators above are. A member is matched EXACTLY — " origin" and the
+    # empty member of "origin," are unknown fields, not near-misses quietly taken — and a member
+    # repeated in the list is one clear. The setter check runs above the version_target branch for
+    # the reason the blank check does: naming both is malformed whatever this board would write.
+    local clear_keys="" rest member field key pkey accepted=""
+    if [[ -n "$clear" ]]; then
+        rest="$clear,"
+        while [[ -n "$rest" ]]; do
+            member="${rest%%,*}"; rest="${rest#*,}"
+            pkey=""
+            while read -r field key; do
+                if [[ "$field" == "$member" ]]; then pkey="$key"; fi
+            done < <(_kbc_clearable)
+            if [[ -z "$pkey" ]]; then
+                while read -r field key; do accepted="${accepted:+$accepted, }$field"; done < <(_kbc_clearable)
+                echo "kbcard: --clear: '$member' is not a clearable field — accepted: $accepted (several go in one comma list)" >&2
+                return 2
+            fi
+            field="${member//-/_}"
+            if [[ -n "${!field}" ]]; then
+                echo "kbcard: --$member and --clear $member are mutually exclusive — pass exactly one (--clear $member is the clear)" >&2
+                return 2
+            fi
+            [[ " $clear_keys " == *" $pkey "* ]] || clear_keys="${clear_keys:+$clear_keys }$pkey"
+        done
+    fi
     if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; fi
     if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; fi
     if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; fi
@@ -987,13 +1040,19 @@ _kbc_build_payload() {
         echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
         version=""
     fi
+    # A clear is a write of the key too, so the same gate holds it — with the same warning.
+    if [[ " $clear_keys " == *" version_target "* ]] && [[ -z "${KB_CF_VERSION_TARGET:-}" || "${KB_CF_VERSION_TARGET}" == "000" ]]; then
+        echo "kbcard: --clear version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        clear_keys=" $clear_keys "; clear_keys="${clear_keys/ version_target / }"
+    fi
 
     # An empty value is an unset flag (every validator above refuses a blank one), so it is
     # omitted. The ref keys are trimmed of space/tab/CR/LF for the number attempt ONLY: jq-1.7's
     # tonumber accepts exactly that padding and jq-1.8 refuses it, so an untrimmed attempt makes
     # " 123 " a number or a string by jq version. `sub`, not `trim` (jq-1.7.1+). A value that is
     # still not a number after the trim is sent as passed, padding included. pr_url / issue_url
-    # set the by-ref `source` (owner/repo); pr_number / issue_number do not.
+    # set the by-ref `source` (owner/repo); pr_number / issue_number do not. A cleared key is added
+    # last, as an explicit null; the setter exclusion above means it never meets a value here.
     jq -nc \
         --arg dl_number "$dl" \
         --arg pr_number "$pr" \
@@ -1002,6 +1061,7 @@ _kbc_build_payload() {
         --arg issue_url "$issue_url" \
         --arg version_target "$version" \
         --arg origin "$origin" \
+        --arg clear_keys "$clear_keys" \
         '{dl_number: $dl_number, pr_number: $pr_number, pr_url: $pr_url,
           issue_number: $issue_number, issue_url: $issue_url,
           version_target: $version_target, origin: $origin}
@@ -1009,7 +1069,8 @@ _kbc_build_payload() {
          | with_entries(if .key == "pr_number" or .key == "issue_number"
                         then .value |= ((sub("^[ \t\n\r]+"; "") | sub("[ \t\n\r]+$"; "")
                                          | tonumber?) // .)
-                        else . end)'
+                        else . end)
+         | . + ($clear_keys | split(" ") | map(select(. != "") | {(.): null}) | add // {})'
 }
 
 # _kbc_require_type_alias <alias>: a --type alias must be tag-safe, because on a board
@@ -1611,7 +1672,7 @@ cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" desc_clear="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin=""
     local assign="" unassign="" steal=""
-    local block="" block_file="" unblock=""
+    local block="" block_file="" unblock="" clear=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -1625,6 +1686,7 @@ cmd_patch() {
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
             --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
             --clear-description) desc_clear=1; shift ;;
+            --clear) kb_require_value "$1" "${2:-}" || return 2; [[ -z "$clear" ]] || { echo "kbcard: --clear was passed twice — name every field in ONE comma list (--clear origin,version)" >&2; return 2; }; clear="$2"; shift 2 ;;
             --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
             --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
@@ -1727,7 +1789,11 @@ cmd_patch() {
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
     local payload_json
-    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin")" || return 2
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin" "$clear")" || return 2
+    # The keys this call CLEARS, read BEFORE the decline merge below adds nulls of its own: the
+    # assembler omits an unset flag and never nulls a value, so every null it emits is a --clear.
+    local cleared_json
+    cleared_json="$(jq -c '[to_entries[] | select(.value == null) | .key]' <<<"$payload_json")"
 
     # patch --column wont_do is the SECOND decline call-site — same hygiene as move
     # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win.
@@ -1735,7 +1801,10 @@ cmd_patch() {
         payload_json="$(_kbc_decline_nulls "$payload_json")"
         echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
     elif [[ "$column" == "wont_do" ]]; then
-        echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
+        # Retained = the decline's stamps minus what --clear removed in this same call.
+        local retained
+        retained="$(_kbc_decline_nulls | jq -r --argjson c "$cleared_json" 'keys_unsorted - $c | join(", ")')"
+        echo "kbcard: --keep-refs — correlation stamps ($retained) retained" >&2
     fi
 
     local task; task="$(resolve_task "$task_ref")"
@@ -1799,7 +1868,7 @@ cmd_patch() {
     local resp
     resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
-    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" || return $?
+    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" "$cleared_json" || return $?
     _kbc_owner_after_move "$task" "$column" ""
 }
 
@@ -2508,6 +2577,11 @@ _kbc_confirm_card() {
 # payload rides ONLY when the serializer sent the key (fabricating `payload: null` asserts "no
 # payload" where the truth is "key absent", #4390); a server-sent null passes through unaltered.
 # <extra-fields> is extra jq object fields (e.g. description truncation), defaults to none.
+# [cleared-keys] is a JSON array of payload keys this call CLEARED (patch --clear). Those keys ride
+# RAW under `payload` even when the server's echo omits them: the board REMOVES a cleared key
+# rather than storing a null, so absence is what a landed clear looks like, and rendering it as
+# `null` for the keys the caller named is what lets them SEE the clear (a key still held shows its
+# value). It is scoped to those keys, so #4390's rule stands for every other payload read.
 #
 # IT OWNS ITS OWN REFUSAL, and that is why it takes the response rather than reading stdin. Both
 # write verbs project the echo through this one filter, so both meet an unreadable 2xx here —
@@ -2516,8 +2590,8 @@ _kbc_confirm_card() {
 # diagnostic still names the verb the caller typed. Returns 1 with that diagnostic and no
 # stdout; the caller propagates it (rc 1 is what a failed write already returns there).
 _kbc_write_echo() {
-    local verb="$1" subject="$2" resp="$3" extra="${4:-}" expect_stage="${5:-}" out
-    out="$(kb_parse_resp "$resp" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if has(\"payload\") then {payload} else {} end)")"
+    local verb="$1" subject="$2" resp="$3" extra="${4:-}" expect_stage="${5:-}" cleared="${6:-[]}" out
+    out="$(kb_parse_resp "$resp" --argjson cleared "$cleared" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if (\$cleared | length) > 0 then {payload: (reduce \$cleared[] as \$k ((.payload // {}); .[\$k] = .[\$k]))} elif has(\"payload\") then {payload} else {} end)")"
     [[ -n "$out" ]] || _kbc_unverified "$verb" "$subject" || return $?
     _kbc_confirm_stage "$verb" "$subject" "$out" "$expect_stage" || return 1
     printf '%s\n' "$out"
