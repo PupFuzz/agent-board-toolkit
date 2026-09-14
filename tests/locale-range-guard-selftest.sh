@@ -21,11 +21,16 @@
 # verdicts); the standalone bin/release-artifacts-check keeps a file-pinned equivalent. The
 # predicate, each adopter and that equivalent have BEHAVIOUR CASES below.
 # ⚠ WHAT THE STATIC BACKSTOP COVERS, stated so the citation cannot mislead the next author: it
-# scans for bracket RANGES (a hyphenated pair, regex and glob spellings) and for the POSIX-class
-# BLANK VERDICT — a `[[:space:]]`/`[[:blank:]]` deletion inside a `-z`/`-n` test, or an
-# `=~ ^[[:space:]]*$` match. It does NOT flag every POSIX class: the remaining users in bin/ and
-# hooks/ are strips (`name="${name//[[:space:]]/}"`), splits and quoted grep/sed/jq patterns,
-# where the class is not deciding whether a value is blank.
+# scans for bracket RANGES (a hyphenated pair, regex and glob spellings) and for EXACTLY TWO
+# spellings of a POSIX-class blank verdict — `-z`/`-n` over `${name//[[:space:]]/}` (or
+# `[[:blank:]]`), and `=~ ^[[:space:]]*$`. ⛔ ANY OTHER SPELLING OF A BLANK VERDICT IS NOT CAUGHT.
+# For example, each of these passes it unflagged: `=~ ^[[:space:]]+$`, a negated
+# `=~ [^[:space:]]`, `[ "${v//[[:space:]]/}" = "" ]`, an array element `${a[0]//…}`, extglob
+# `*([[:space:]])`, and a strip on one line tested with `-z` on the next. It is a tripwire for the spelling this repo actually used, not a
+# proof that no hand-rolled verdict exists. Its pin exemption is TEXTUAL — `LC_ALL=C` on the line or
+# the two above it — so that text inside a nearby comment exempts a line too. It does NOT flag
+# every POSIX class either: the remaining users in bin/ and hooks/ are strips
+# (`name="${name//[[:space:]]/}"`), splits and quoted grep/sed/jq patterns.
 #
 # WHAT WAS AND WAS NOT WRONG — the claim this file makes is deliberately narrow. The
 # widened guards still rejected the characters they were written to reject (a comma and a
@@ -159,7 +164,7 @@ both "kb_dl_num accepts a bare 93 (posctl)"   "93"  "93"        "$DLNUM"
 
 # ---------------------------------------------------------------------------
 echo "== kb_is_blank — THE blank predicate (bin/_kb-board-lib.sh; card#9222, card#9337) =="
-# Every blank verdict in bin/ asks this. It used to be `[[ -z "${v//[[:space:]]/}" ]]` at each
+# Every lib-sourcing tool's blank verdict asks this. It used to be `[[ -z "${v//[[:space:]]/}" ]]` at each
 # site, i.e. the POSIX-class spelling of this file's defect, and it answered two ways on identical
 # bytes: U+2003 EM SPACE and U+3000 IDEOGRAPHIC SPACE were BLANK (refused) under en_US.UTF-8 and
 # CONTENT (accepted) under LC_ALL=C. The fix is a window pin plus the six ASCII members spelled as
@@ -545,9 +550,10 @@ echo "== static backstop: no bare bash bracket-RANGE left in bin/ or hooks/ =="
 # a -v assignment, so `\[` would arrive as a bare `[` and the pattern would silently match
 # nothing — the failure mode the positive control below exists to catch (it did).
 #
-# <mode> selects WHICH spelling is a hit — `range` (above) or `blank`, the POSIX-class BLANK
-# VERDICT (card#9337): a `${x//[[:space:]]/}` / `[[:blank:]]` deletion inside a `-z`/`-n` test,
-# or an `=~ ^[[:space:]]*$` match. Only the hit predicate differs; the comment skip and BOTH pin
+# <mode> selects WHICH spelling is a hit — `range` (above) or `blank` (card#9337), which matches
+# ONLY two spellings of a POSIX-class blank verdict: a `${x//[[:space:]]/}` / `[[:blank:]]`
+# deletion inside a `-z`/`-n` test, or an `=~ ^[[:space:]]*$` match. Other spellings are not
+# caught; this file's header lists the measured misses. Only the hit predicate differs; the comment skip and BOTH pin
 # exemptions are one rule shared by the two modes, so a pinned site is legitimate in each for the
 # same reason. The blank mode's file-pin arm is load-bearing, not hypothetical:
 # bin/release-artifacts-check is standalone (it does not source the lib) and its `promote.source`

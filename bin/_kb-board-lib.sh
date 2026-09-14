@@ -107,10 +107,12 @@ kb_ere_match() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }
 
 # kb_is_blank <string>: TRUE when the string carries no text a reader could see — it is empty
 # once every ASCII space, tab, CR, LF, VT (\v) and FF (\f) is removed. THE one definition of
-# "visually blank" in this toolkit: every lib-sourcing tool's blank verdict asks this, and
-# tests/locale-range-guard-selftest.sh's static backstop reds a new unpinned hand-rolled one (the
+# "visually blank" in this toolkit: every lib-sourcing tool's blank verdict asks this (the
 # standalone bin/release-artifacts-check cannot source this file; its file-pinned equivalent is
-# measured against this set in that selftest).
+# measured against this set in tests/locale-range-guard-selftest.sh). That selftest's static
+# backstop reds a new unpinned hand-rolled verdict in TWO spellings only — `-z`/`-n` over
+# `${name//[[:space:]]/}` (or `[[:blank:]]`), and `=~ ^[[:space:]]*$`. Other spellings are NOT
+# caught; the selftest's header names the measured misses.
 #
 # ⛔ THE SET IS SIX LITERAL CHARACTERS INSIDE AN `LC_ALL=C` WINDOW, NOT `[[:space:]]` (card#9337).
 # `${v//[[:space:]]/}` asks bash for a LOCALE class, so on identical bytes it answered two ways:
