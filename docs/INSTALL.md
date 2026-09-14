@@ -187,6 +187,15 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 >
 > Without one of these, a bare `kbcard` on a non-`dev` box exits `2` with `board env file not readable: …/.kanban-dev-board.env` — the error names these fixes and lists the `~/.kanban-*-board.env` files it did find, so a fresh box on a non-`dev` board isn't left reverse-engineering the default.
 
+> **The card-id floor — `KB_CARD_ID_FLOOR`, one per board env.** The `pre-push` lint (`board-card-start --lint`, [HOOKS.md § The card-id floor leg](HOOKS.md#the-card-id-floor-leg-dl-223)) reports a branch whose card id is **below** this value, because such a number is most likely a GitHub issue/PR number rather than a card id — and a branch carrying one moves no card on checkout and closes none at merge. **Until a board sets it, every push of a branch carrying a card id prints `card-id floor not seeded`** on that repo; that line is the lint telling you it cannot judge, not a fault. Seed it with the **lowest card id on the whole board, terminal columns included**. Deriving it reads the board, so it is an explicit operator step — the lint itself never reads the board:
+>
+> ```bash
+> kbcard --board <name> list | jq 'map(.id) | min'     # an unfiltered list reads every column, terminal ones included
+> echo 'export KB_CARD_ID_FLOOR=<that number>' >> ~/.kanban-<name>-board.env
+> ```
+>
+> ⚠ **It is a MAGNITUDE heuristic, not a namespace check.** It separates the two id spaces only because issue/PR numbers are, today, far below card ids — and PR numbers climb. As the ranges converge, a wrong-space number at or above the floor passes. **Its failure mode is a false CLEAN, never a false accusation — and that holds only while the seed is too LOW, never too high.** So never round it up: a card archived off the board, or moved onto it later from another board, can carry a lower id than anything the read above returned; if a branch could legitimately name such a card, seed below it. When in doubt, lower. `0` makes the leg silent for every id.
+
 ## 3c. Seat identity for the owner tag (agent seats)
 
 The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` after they move a card to In Progress. What they read, and every case in which they do not stamp, is [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). A coord-installed seat already carries `COORD_AGENT`, and `COORD_CONFIG` too when its config is not at the default path. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
