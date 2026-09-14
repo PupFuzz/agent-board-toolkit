@@ -105,6 +105,30 @@ _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
 # return; BASH_REMATCH is deliberately NOT local, so a caller's captures survive.
 kb_ere_match() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }
 
+# kb_is_blank <string>: TRUE when the string carries no text a reader could see — it is empty
+# once every ASCII space, tab, CR, LF, VT (\v) and FF (\f) is removed. THE one definition of
+# "visually blank" in this toolkit: every lib-sourcing tool's blank verdict asks this (the
+# standalone bin/release-artifacts-check cannot source this file; its file-pinned equivalent is
+# measured against this set in tests/locale-range-guard-selftest.sh). That selftest's static
+# backstop reds a new unpinned hand-rolled verdict in TWO spellings only — `-z`/`-n` over
+# `${name//[[:space:]]/}` (or `[[:blank:]]`), and `=~ ^[[:space:]]*$`. Other spellings are NOT
+# caught; the selftest's header names the measured misses.
+#
+# ⛔ THE SET IS SIX LITERAL CHARACTERS INSIDE AN `LC_ALL=C` WINDOW, NOT `[[:space:]]` (card#9337).
+# `${v//[[:space:]]/}` asks bash for a LOCALE class, so on identical bytes it answered two ways:
+# measured on the reference host, U+2003 EM SPACE and U+3000 IDEOGRAPHIC SPACE are stripped under
+# en_US.UTF-8 (the value reads BLANK and is refused) and kept under LC_ALL=C (CONTENT, accepted).
+# These six are exactly what `[[:space:]]` means under the C locale, so on a C-locale seat every
+# verdict that spelling gave is unchanged; what moves is the UTF-8 seat, where a value made only of
+# Unicode blanks is now CONTENT — the one widening, and the one that makes the verdict a property
+# of the bytes. Spelled out rather than named because a class name is a set this file does not own.
+# U+00A0 is CONTENT under both locales either way. An explicit Unicode-blank list
+# would drift with every Unicode revision and cannot be re-derived from anything in this repo.
+kb_is_blank() {
+    local LC_ALL=C _kib_blank=$' \t\r\n\v\f'
+    [[ -z "${1//[$_kib_blank]/}" ]]
+}
+
 # kb_is_uint <string>: true iff the string is the CANONICAL decimal spelling of a
 # non-negative integer — `0`, or a run of ASCII digits that does not start with one.
 # A leading zero is REFUSED: `0`, `1`, `42` accept; `00`, `08`, `010`, `007` refuse.

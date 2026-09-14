@@ -106,6 +106,8 @@ expect_rc "an unknown suffix is refused"          2 _bs_since_epoch 24x "$NOW"
 expect_rc "a bare number is refused"              2 _bs_since_epoch 24 "$NOW"
 expect_rc "an empty spec is refused"              2 _bs_since_epoch "" "$NOW"
 expect_rc "a whitespace-only spec is refused"     2 _bs_since_epoch " " "$NOW"
+eq "a VT/FF-only spec is refused as BLANK (kb_is_blank's set)" "true" \
+   "$(has 'needs a window' "$(_bs_since_epoch $'\v\f' "$NOW" 2>&1 >/dev/null || true)")"
 # The SHAPE gate, asserted where date(1) would otherwise answer. Each of these parses on a GNU
 # box — `7` as 07:00 today, `tomorrow`/`next monday` as a future instant, `2026-08-01 UTC` as a
 # real instant in a spelling the contract does not accept — and each answered at rc 0 with a

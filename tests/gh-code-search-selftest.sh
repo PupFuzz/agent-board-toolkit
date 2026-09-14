@@ -769,6 +769,7 @@ _usage_rc() { run "$@"; printf '%s' "$RC"; }
 eq "no query at all"                    "2" "$(_usage_rc)"
 eq "an empty query"                     "2" "$(_usage_rc '')"
 eq "a whitespace-only query"            "2" "$(_usage_rc '   ')"
+eq "a VT/FF-only query (kb_is_blank's set)" "true" "$(run $'\v\f'; has 'only whitespace' "$ERR")"
 eq "…refused BEFORE any request"        "0" "$(run '   '; wc -c < "$ARGV" | tr -d ' ')"
 eq "a second positional"                "2" "$(_usage_rc "$Q" 'extra')"
 eq "an unknown flag"                    "2" "$(_usage_rc --bogus "$Q")"

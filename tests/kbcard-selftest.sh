@@ -1463,6 +1463,9 @@ kbc comment --task 505 --content '   '
 eq "--content of only whitespace → rc 2"         "2" "$rc"
 eq "…says it holds no comment text"              "true" "$(has 'holds no comment text' "$err")"
 eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content $'\v\f'
+eq "--content of only VT/FF → rc 2 (kb_is_blank's set)" "2" "$rc"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
 # The other side of the trim: only the CHECK is trimmed. Content that merely BEGINS with
 # whitespace is real content and must reach the wire with its indentation intact.
 kbc comment --task 505 --content '  indented body'
@@ -2280,12 +2283,12 @@ for _verb in create-card patch; do
     eq "$_verb $_f padded text → rc 0"                "0" "$rc"
     eq "$_verb $_f padded text → its padding is CONTENT, on the wire" '"  padded  "' \
        "$(ta_wire "$_field")"
-    # ⭐ THE REFUSED SET IS FOUR ASCII CHARACTERS, AND THE VERDICT IS THE BYTES' — not the
+    # ⭐ THE REFUSED SET IS SIX ASCII CHARACTERS, AND THE VERDICT IS THE BYTES' — not the
     # caller's environment. This check used to read `${v//[[:space:]]/}`, and `[[:space:]]` in a
     # bash pattern is a LOCALE class: measured on the reference host, it strips U+2003 EM SPACE
     # under en_US.UTF-8 and KEEPS it under LC_ALL=C, so one product answered two ways on one
     # input depending on the environment it was started in — the very class this card closed,
-    # relocated from the door axis to the locale axis. `_kbc_text_is_blank` pins the window and
+    # relocated from the door axis to the locale axis. The lib's `kb_is_blank` pins the window and
     # spells the set out; this leg reaches that decision through the SHIPPED CLI and reds if the
     # pin is dropped while the runner has a collation-wide UTF-8 locale (this box does).
     # tests/locale-range-guard-selftest.sh is what asserts the two locales AGREE, and says so
@@ -2293,9 +2296,17 @@ for _verb in create-card patch; do
     ta "$_verb" "$_field" "$_f" "$TA_EM3"
     eq "$_verb $_f U+2003-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
     eq "$_verb $_f U+2003-only → rides to the wire verbatim" "$TA_EM3_JSON" "$(ta_wire "$_field")"
+    # VT and FF are members of the set (card#9337): each alone is visually blank and refused.
+    for _vf in $'\v' $'\f'; do
+      _vfn="$(jq -cn --arg s "$_vf" '$s')"
+      ta "$_verb" "$_field" "$_f" "$_vf"
+      eq "$_verb $_f $_vfn-only → rc 2"                "2" "$rc"
+      eq "$_verb $_f $_vfn-only → names the field's text" "true" "$(has "holds no $_field text" "$err")"
+      eq "$_verb $_f $_vfn-only → issues no request"   "0" "$(kb_stub_total)"
+    done
   done
 done
-unset _verb _field _f _ff _L TA_EM3 TA_EM3_JSON
+unset _verb _field _f _ff _L _vf _vfn TA_EM3 TA_EM3_JSON
 
 # NEITHER SOURCE GIVEN is the ordinary case for an optional setter and must stay silent — the
 # half of the requiredness parameter that `comment` (where neither is rc 2) cannot exercise.
@@ -2528,6 +2539,9 @@ eq "…and issues no request"                          "0" "$(kb_stub_total)"
 kbc search '   '
 eq "a whitespace-only query → rc 2"                  "2" "$rc"
 eq "…says why (it would match every card)"           "true" "$(has 'matches every card' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search $'\v\f'
+eq "a VT/FF-only query → rc 2 (kb_is_blank's set)"   "2" "$rc"
 eq "…and issues no request"                          "0" "$(kb_stub_total)"
 kbc search one two
 eq "a second positional → rc 2"                      "2" "$rc"
@@ -3781,7 +3795,7 @@ eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 # inheritance. ⭐ No pair is carved out of the blank check any more — card#9222 retired that half
 # for `--name`/`--description` too, under the operator gate the acceptance change needed; what
 # remains of the carve-out is the BYTES (see this file's `--name-file` section).
-for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')"; do
+for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')" $'\v' $'\f'; do
     kbc patch --task 606 --block-reason "$_ws"
     eq "a whitespace-only --block-reason → rc 2"  "2" "$rc"
     eq "…named as holding no text"                "true" "$(has 'holds no block-reason text' "$err")"
@@ -3997,7 +4011,7 @@ pf() {
 pf_values() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '[(.payload // {})[]]'; }
 
 PF_NBSP=$'\xc2\xa0'
-PF_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ')
+PF_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ' $'\v' $'\f' $' \v\f ')
 for _verb in create-card patch; do
   for _flag in "${PAYLOAD_TEXT_FLAGS[@]}"; do
     _L="$_verb $_flag"
@@ -4013,7 +4027,7 @@ for _verb in create-card patch; do
     pf "$_verb" "$_flag" $'  padded\ttext  '
     eq "$_L padded text → rc 0"                          "0" "$rc"
     eq "$_L padded text → padding survives to the wire"  "$(jq -cn --arg s $'  padded\ttext  ' '[$s]')" "$(pf_values)"
-    # The documented residue: blank is four ASCII characters, so U+00A0 is content and is sent.
+    # The documented residue: blank is six ASCII characters, so U+00A0 is content and is sent.
     pf "$_verb" "$_flag" "$PF_NBSP"
     eq "$_L U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
     eq "$_L U+00A0-only → sent verbatim"                 "$(jq -cn --arg s "$PF_NBSP" '[$s]')" "$(pf_values)"
@@ -4119,7 +4133,7 @@ tg_tags() { kb_stub_bodies "$TG_METHOD" "$TG_PATH" | jq -c '.tags'; }
 # appends the tag-typed alias; patch --tags sends the members alone.
 tg_expect() { jq -c --arg v "$1" 'if $v == "create-card" then . + ["type:fr"] else . end' <<<"$2"; }
 
-TG_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ')
+TG_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ' $'\v' $'\f' $' \v\f ')
 for _verb in "${TAGS_VERBS[@]}"; do
     for _b in "${TG_BLANKS[@]}"; do
         _bn="$(jq -cn --arg s "$_b" '$s')"
@@ -4139,7 +4153,7 @@ for _verb in "${TAGS_VERBS[@]}"; do
     eq "$_verb --tags interior CRLF → rc 0"                    "0" "$rc"
     eq "$_verb --tags interior CRLF → not folded by the check" \
        "$(tg_expect "$_verb" '["a\r\nb"]')" "$(tg_tags)"
-    # The documented residue: blank is four ASCII characters, so U+00A0 is content and is sent.
+    # The documented residue: blank is six ASCII characters, so U+00A0 is content and is sent.
     tg "$_verb" --tags $'\xc2\xa0'
     eq "$_verb --tags U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
     eq "$_verb --tags U+00A0-only → sent verbatim" \

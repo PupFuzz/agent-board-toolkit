@@ -336,7 +336,7 @@ done
 # A whitespace-only query is refused BEFORE any request: the endpoint answers a 422 for it,
 # which would be reported as ERROR — a true statement about a call that never needed making,
 # and one that spends a search-API request out of a 10/minute budget to learn nothing.
-[[ -n "${QUERY//[[:space:]]/}" ]] || die '<query> is only whitespace'
+if kb_is_blank "$QUERY"; then die '<query> is only whitespace'; fi
 # ⛔ ONE RULE, STATED ONCE AND APPLIED AT BOTH ENTRY POINTS: a value that will reach a bash
 # ARITHMETIC context must be a plain decimal-integer STRING before it gets there. Bash reads a
 # leading zero as base 8, which is not a formatting quirk here — it inverted this tool's stated
