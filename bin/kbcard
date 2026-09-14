@@ -51,6 +51,13 @@
 #   from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
 #   ⚠ None of the four has an INTENDED clearer, so this CLI can no longer empty one on purpose
 #   (a wont_do decline still nulls pr_url; the coercion above can null a value by accident).
+#   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
+#   with the same four-character blank set, decided on the RAW value (before create-card appends
+#   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
+#   blank MEMBER ("a, ,b", "a,") is not refused and still reaches the wire. A blank one used to be
+#   SENT as its own element, beside any `type:` / `triaged` the call appends: rc 0 wherever the
+#   board accepted it, and on patch that REPLACES the card's whole tag list. What the board does with it is NOT measured here. Refusing it was
+#   an acceptance change, asked and granted (card#9421).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -99,6 +106,8 @@
 #     --tags REPLACES the whole tag list (the API stores it as one list and replaces it
 #     wholesale); to add a tag, pass the full intended set. --triaged still appends to what
 #     the card already carries, and composes with --tags (given set, then `triaged`).
+#     A visually blank --tags is rc 2 before any request: the --tags paragraph of the free-text
+#     convention at the top owns it.
 #     --type re-types the card: it writes the board's native card_type_id for the alias, or
 #     the `type:<alias>` tag on a board with no native type for it — and either way DROPS any
 #     `type:*` tag the card was carrying, so a retyped card never reads as two types at once.
@@ -1395,6 +1404,8 @@ cmd_create_card() {
     # question about the RESOLVED name, not about which of the two flags carried it.
     _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
+    # --tags is checked RAW, here: the `type:` / `triaged` appends below make it non-blank.
+    _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     [[ -z "$name" ]] && { echo "kbcard: --name or --name-file required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
@@ -1648,12 +1659,14 @@ cmd_patch() {
 
     # Everything resolvable WITHOUT the network is resolved first, so a typo'd --type /
     # --external-id / --column / --swimlane fails rc 2 having issued no request at all —
-    # not even the tag read below, and never a half-applied PATCH. The two text pairs belong
+    # not even the tag read below, and never a half-applied PATCH. The text flags belong
     # in that set for the same reason: a `-`, an absent or an unreadable file is a bad
     # invocation, and a bad invocation must cost no traffic.
     _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
     _kbc_text_arg block block-reason "" "$block" "$block_file" || return 2
+    # Here and not in _kbc_patch_tags, which runs after resolve_task's lookup.
+    _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
