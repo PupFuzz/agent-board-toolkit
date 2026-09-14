@@ -1184,7 +1184,7 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
 # either list without an explicit edit here, which is the review moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
-             --name --tags --type --external-id --origin --task --assign --block-reason)
+             --name --tags --type --external-id --origin --task --assign --block-reason --clear)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1195,7 +1195,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --type --external-id --origin --assign --block-reason; do
+         --name --tags --type --external-id --origin --assign --block-reason --clear; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -3948,6 +3948,7 @@ echo "== payload free-text flags — a visually blank value is refused, not sent
 # ⚠ What it cannot see: a payload key written by some route other than `_kbc_build_payload`.
 PAYLOAD_TEXT_FLAGS=(--issue-url --origin --pr-url --version)
 PAYLOAD_REF_FLAGS=(--dl --issue --pr)   # each has its own validator, driven in the ref blocks above
+PAYLOAD_CLEAR_FLAGS=(--clear)           # patch ONLY — the clearer, driven in the card#9420 block below
 
 # _payload_flags <bin> <function> — the flags whose values <function> hands to _kbc_build_payload.
 _payload_flags() {
@@ -3972,11 +3973,14 @@ _payload_flags() {
 _pf_classified="$(printf '%s\n' "${PAYLOAD_TEXT_FLAGS[@]}" "${PAYLOAD_REF_FLAGS[@]}" | LC_ALL=C sort | tr '\n' ' ')"
 for _verb in create-card patch; do
     _pf_derived="$(_payload_flags "$BIN" "cmd_${_verb//-/_}" | tr '\n' ' ')"
+    _pf_expect="$_pf_classified"
+    [[ "$_verb" == patch ]] && _pf_expect="$(printf '%s\n' "${PAYLOAD_TEXT_FLAGS[@]}" "${PAYLOAD_REF_FLAGS[@]}" \
+        "${PAYLOAD_CLEAR_FLAGS[@]}" | LC_ALL=C sort | tr '\n' ' ')"
     # Positive control FIRST: an empty derivation would make every loop below drive nothing.
     eq "$_verb: the payload-flag derivation carries real data (positive control)" "false" \
        "$([[ -z "$_pf_derived" ]] && echo true || echo false)"
     eq "$_verb: every payload flag is classified, and nothing classified is gone" \
-       "$_pf_classified" "$_pf_derived"
+       "$_pf_expect" "$_pf_derived"
 done
 
 rm -rf "$TMP"
@@ -4141,8 +4145,150 @@ unset -f _pk_key pf_payload
 unset PK_VALUES _v _vn _ref _k
 
 unset -f pf pf_values kb_stub_route _payload_flags
-unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS
-unset _verb _flag _L _b _bn _pf_classified _pf_derived
+unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS PAYLOAD_CLEAR_FLAGS
+unset _verb _flag _L _b _bn _pf_classified _pf_derived _pf_expect
+
+# ---------------------------------------------------------------------------
+echo "== patch --clear <field> — the payload fields' clearer the blank refusal made necessary (card#9420) =="
+# WHY THIS FLAG EXISTS. card#9338 refused a visually blank --origin / --version / --pr-url /
+# --issue-url, and a blank value was the ONLY route this CLI had to empty one of them: the board
+# turned it into a clear. A field a tool can set and not unset goes stale in place — and a wrong
+# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`. The operator's
+# ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
+# issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
+# sent as null (kanban-board TaskMutator::update) and leaves an omitted one alone.
+#
+# THE POPULATION IS `_kbc_clearable`, the bin's one declaration; every per-field leg loops over
+# it. The pin below is the ruling itself: widening the set is an acceptance change, so it reds.
+# Every write leg asserts the WHOLE request body, so a stray key reds as surely as a missing null.
+_clr_fields() { _kbc_clearable | awk '{print $1}'; }
+eq "the clearable set is the ruled set, field → payload key" \
+   "origin:origin version:version_target pr-url:pr_url issue-url:issue_url" \
+   "$(_kbc_clearable | awk '{printf "%s%s:%s", (NR > 1 ? " " : ""), $1, $2}')"
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_WONT_DO=60' 'export KB_CF_VERSION_TARGET=77'
+kb_stub_board_config nover 43 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+# 505 answers the way the board does: the request's payload MERGED onto a card that already holds
+# every clearable key, a null REMOVING its key. 506 answers with the card UNCHANGED — a server that
+# did not clear — so the echo's raw projection can be shown to report a held value, not a
+# fabricated null.
+CL_HELD='{"dl_number":"DL-0001","origin":"preemptive","version_target":"v1","pr_url":"https://github.com/o/r/pull/1","issue_url":"https://github.com/o/r/issues/1"}'
+export CL_HELD
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "PATCH "*/tasks/505.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" --argjson held "$CL_HELD" \
+                '($held + ($b.payload // {}) | with_entries(select(.value != null))) as $p
+                 | {data: ({id:505,name:"probe",workflow_stage_id:48} + ($b | del(.payload))
+                           + (if ($p | length) > 0 then {payload: $p} else {} end))}' ;;
+        "PATCH "*/tasks/506.json)
+            printf '200\n'
+            jq -cn --argjson held "$CL_HELD" '{data: {id:506,name:"probe",workflow_stage_id:48,payload:$held}}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+cl_body() { kb_stub_bodies PATCH "/tasks/${1:-505}.json" | jq -c .; }
+
+while read -r _f _k; do
+    kbc patch --task 505 --clear "$_f"
+    eq "--clear $_f → rc 0"                                   "0" "$rc"
+    eq "--clear $_f → the whole body is {payload: {$_k: null}}" \
+       "$(jq -cn --arg k "$_k" '{payload: {($k): null}}')" "$(cl_body)"
+    eq "--clear $_f → a JSON null, NOT an empty string"      '"null"' \
+       "$(cl_body | jq -c --arg k "$_k" '.payload[$k] | type')"
+    eq "--clear $_f → the echo SHOWS the null under payload" '[true,null]' \
+       "$(jq -c --arg k "$_k" '[(.payload | has($k)), .payload[$k]]' <<<"$out")"
+    # The setter exclusion, in both argument orders, decided before any request and naming the
+    # flag the caller passed.
+    kbc patch --task 505 "--$_f" 'a-value' --clear "$_f"
+    eq "--$_f + --clear $_f → rc 2"                           "2" "$rc"
+    eq "…names the setter passed and the clear" "true" \
+       "$(has "--$_f and --clear $_f are mutually exclusive" "$err")"
+    eq "…and NOT ONE request was issued"                      "0" "$(kb_stub_total)"
+    kbc patch --task 505 --clear "$_f" "--$_f" 'a-value'
+    eq "--clear $_f + --$_f (reversed) → rc 2"                "2" "$rc"
+    eq "…and cost no traffic"                                 "0" "$(kb_stub_total)"
+    # create-card does not take it: nothing to clear at birth.
+    kbc create-card --type fr --name probe --clear "$_f"
+    eq "create-card --clear $_f → rc 2, unknown arg"         "true" \
+       "$([[ "$rc" == 2 ]] && has "unknown arg '--clear'" "$err")"
+    eq "…and cost no traffic"                                 "0" "$(kb_stub_total)"
+done < <(_kbc_clearable)
+
+# Several fields are ONE comma list; the order is the caller's, a repeated member is one clear.
+_all="$(_clr_fields | paste -sd, -)"
+kbc patch --task 505 --clear "$_all"
+eq "--clear <every field> → rc 0"                             "0" "$rc"
+eq "…every key null, nothing else in the body" \
+   '{"payload":{"origin":null,"version_target":null,"pr_url":null,"issue_url":null}}' "$(cl_body)"
+eq "…and the echo shows each null, the untouched key still held" \
+   '{"dl_number":"DL-0001","origin":null,"version_target":null,"pr_url":null,"issue_url":null}' \
+   "$(jq -c '.payload' <<<"$out")"
+kbc patch --task 505 --clear origin,origin
+eq "--clear origin,origin → one clear"                        '{"payload":{"origin":null}}' "$(cl_body)"
+# Clearing one field and setting ANOTHER is not an exclusion.
+kbc patch --task 505 --clear origin --pr-url https://github.com/o/r/pull/9
+eq "--clear origin + --pr-url → rc 0"                         "0" "$rc"
+eq "…sets the one and nulls the other" \
+   '{"payload":{"pr_url":"https://github.com/o/r/pull/9","origin":null}}' "$(cl_body)"
+
+# --- the controls that make "the echo shows the null" a measurement ----------------------
+kbc patch --task 506 --clear origin
+eq "a server that did NOT clear → the echo shows the value it holds, not a null" \
+   '"preemptive"' "$(jq -c '.payload.origin' <<<"$out")"
+kbc patch --task 505 --dl DL-7
+eq "a patch with no --clear → the body carries no null" '{"payload":{"dl_number":"DL-0007"}}' "$(cl_body)"
+eq "…and its echo payload is the server's, no key added" \
+   '{"dl_number":"DL-0007","origin":"preemptive","version_target":"v1","pr_url":"https://github.com/o/r/pull/1","issue_url":"https://github.com/o/r/issues/1"}' \
+   "$(jq -c '.payload' <<<"$out")"
+
+# --- the refusals, every one decided offline ----------------------------------------------
+_accepted="$(_clr_fields | paste -sd, - | sed 's/,/, /g')"
+for _bad in description pr_url version_target --origin ' origin' 'origin ' 'origin,' ',origin' ',' $'origin\nversion' 'ORIGIN'; do
+    _bn="$(jq -cn --arg s "$_bad" '$s')"
+    kbc patch --task 505 --clear "$_bad"
+    eq "--clear $_bn → rc 2"                                  "2" "$rc"
+    eq "--clear $_bn → names the accepted set"                "true" "$(has "accepted: $_accepted" "$err")"
+    eq "--clear $_bn → issues NO request"                     "0" "$(kb_stub_total)"
+done
+kbc patch --task 505 --clear origin --clear version
+eq "a second --clear → rc 2"                                  "2" "$rc"
+eq "…pointing at the comma list"                              "true" "$(has '--clear was passed twice' "$err")"
+eq "…and cost no traffic"                                     "0" "$(kb_stub_total)"
+
+# --- the version_target gate, which holds a clear exactly as it holds a set -----------------
+kbc --board nover patch --task 505 --clear version --dl DL-7
+eq "--clear version on a board with no version field → rc 0" "0" "$rc"
+eq "…warns that it is ignored"                                "true" "$(has '--clear version ignored' "$err")"
+eq "…and sends no version_target key"                         '{"payload":{"dl_number":"DL-0007"}}' "$(cl_body)"
+kbc --board nover patch --task 505 --clear version,origin
+eq "…and a list keeps its other members"                      '{"payload":{"origin":null}}' "$(cl_body)"
+kbc --board nover patch --task 505 --clear version --version v2
+eq "--clear version + --version on that board → still rc 2"   "2" "$rc"
+eq "…and cost no traffic"                                     "0" "$(kb_stub_total)"
+
+# --- beside a decline: an explicit clear composes with the decline nulls, and wins over --keep-refs
+kbc patch --task 505 --column wont_do --clear origin
+eq "wont_do + --clear origin → decline nulls AND the clear, in one body" \
+   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null,"origin":null},"workflow_stage_id":60}' \
+   "$(cl_body)"
+kbc patch --task 505 --column wont_do --clear pr-url
+eq "wont_do + --clear pr-url → pr_url null once, no conflict" \
+   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}' \
+   "$(cl_body)"
+kbc patch --task 505 --column wont_do --keep-refs --clear pr-url
+eq "wont_do --keep-refs + --clear pr-url → the explicit clear still rides" \
+   '{"assigned_user_id":null,"payload":{"pr_url":null},"workflow_stage_id":60}' "$(cl_body)"
+
+unset -f _clr_fields cl_body kb_stub_route
+unset CL_HELD _f _k _all _accepted _bad _bn
 
 # ---------------------------------------------------------------------------
 echo "== --tags — a visually blank value is refused, not sent (card#9421) =="
