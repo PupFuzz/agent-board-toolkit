@@ -4057,4 +4057,111 @@ unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF
 unset _verb _flag _L _b _bn _pf_classified _pf_derived
 
 # ---------------------------------------------------------------------------
+echo "== --tags — a visually blank value is refused, not sent (card#9421) =="
+# THE DEFECT. `--tags` took `kb_require_value` only, so `"   "` was split into `["   "]` and sent
+# (rc 0 against this stub) — and `patch --tags` REPLACES the card's whole tag list, so wherever
+# the board accepts that write, a $TAGS that expanded to padding wipes `triaged`, `type:*` and
+# every addressing tag. What the live board does with it is not measured here. Narrowing a shipped flag is an
+# acceptance change; asked and granted. Only the WHOLE value is in the ruling: a blank MEMBER is
+# still sent, and the member legs below pin that rather than endorse it.
+#
+# THE POPULATION IS DERIVED: every verb whose own case block carries a `--tags)` arm. The parity
+# leg reds in both directions, so a verb gaining `--tags` cannot land undriven here.
+TAGS_VERBS=(create-card patch)
+
+# _tags_verbs <bin> — the verbs (cmd_<verb> functions) that parse a --tags flag.
+_tags_verbs() {
+    awk '
+    /^cmd_[a-z_]+[(][)] [{]/ { fn = $1; sub(/[(][)].*$/, "", fn); next }
+    /^}/ { fn = "" }
+    fn != "" && /^[[:space:]]+--tags[)] / { sub(/^cmd_/, "", fn); gsub(/_/, "-", fn); print fn }
+    ' "$1" | LC_ALL=C sort -u
+}
+_tv_derived="$(_tags_verbs "$BIN" | tr '\n' ' ')"
+eq "--tags verb derivation carries real data (positive control)" "false" \
+   "$([[ -z "$_tv_derived" ]] && echo true || echo false)"
+eq "every verb taking --tags is driven here, and nothing driven is gone" \
+   "$(printf '%s\n' "${TAGS_VERBS[@]}" | LC_ALL=C sort | tr '\n' ' ')" "$_tv_derived"
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# No KB_TYPE_FR: `--type fr` is tag-typed here, so create-card APPENDS `type:fr` to the list. That
+# is what makes the create-card refusals discriminate: a check reading the value AFTER the append
+# would see `   ,type:fr` and pass it.
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+TG_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep"]}}'
+export TG_CARD
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json)        printf '201\n%s' "$TG_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$TG_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$TG_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# tg <verb> <args…> — drive a verb with only what it REQUIRES plus the flags under test. patch
+# takes an EXTERNAL-ID ref on purpose: resolving it costs a lookup request, so the zero-request
+# legs also red a check placed after resolve_task (e.g. inside _kbc_patch_tags).
+tg() {
+    local verb="$1"; shift
+    case "$verb" in
+        create-card) TG_METHOD=POST;  TG_PATH='/tasks.json';     kbc create-card --type fr --name probe "$@" ;;
+        patch)       TG_METHOD=PATCH; TG_PATH='/tasks/505.json'; kbc patch --task ext-505 "$@" ;;
+    esac
+}
+tg_tags() { kb_stub_bodies "$TG_METHOD" "$TG_PATH" | jq -c '.tags'; }
+# tg_expect <verb> <members-json> — the list <verb> sends for those split members: create-card
+# appends the tag-typed alias; patch --tags sends the members alone.
+tg_expect() { jq -c --arg v "$1" 'if $v == "create-card" then . + ["type:fr"] else . end' <<<"$2"; }
+
+TG_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ')
+for _verb in "${TAGS_VERBS[@]}"; do
+    for _b in "${TG_BLANKS[@]}"; do
+        _bn="$(jq -cn --arg s "$_b" '$s')"
+        tg "$_verb" --tags "$_b"
+        eq "$_verb --tags $_bn → rc 2"                         "2"    "$rc"
+        eq "$_verb --tags $_bn → refused as holding no text"   "true" "$(has '--tags holds no' "$err")"
+        eq "$_verb --tags $_bn → issues NO request"            "0"    "$(kb_stub_total)"
+    done
+    # POSITIVE CONTROLS — they make the zeros above a measurement, and each expectation is the
+    # list origin/dev sent for the same value (measured against this stub): the check rewrites
+    # nothing, trims no padding, and leaves the comma split exactly as it was.
+    tg "$_verb" --tags '  padded , x '
+    eq "$_verb --tags padded text → rc 0"                      "0" "$rc"
+    eq "$_verb --tags padded text → padding survives the split" \
+       "$(tg_expect "$_verb" '["  padded "," x "]')" "$(tg_tags)"
+    tg "$_verb" --tags $'a\r\nb'
+    eq "$_verb --tags interior CRLF → rc 0"                    "0" "$rc"
+    eq "$_verb --tags interior CRLF → not folded by the check" \
+       "$(tg_expect "$_verb" '["a\r\nb"]')" "$(tg_tags)"
+    # The documented residue: blank is four ASCII characters, so U+00A0 is content and is sent.
+    tg "$_verb" --tags $'\xc2\xa0'
+    eq "$_verb --tags U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_verb --tags U+00A0-only → sent verbatim" \
+       "$(tg_expect "$_verb" "$(jq -cn --arg s $'\xc2\xa0' '[$s]')")" "$(tg_tags)"
+    # ⚠ A BLANK MEMBER IS NOT IN THE RULING, and these legs pin what the wire carries TODAY, not
+    # what it should: refusing or dropping one is a wider acceptance change that has not been asked.
+    tg "$_verb" --tags 'a, ,b'
+    eq "$_verb --tags 'a, ,b' → rc 0"                          "0" "$rc"
+    eq "$_verb --tags 'a, ,b' → the blank member is still sent" \
+       "$(tg_expect "$_verb" '["a"," ","b"]')" "$(tg_tags)"
+    tg "$_verb" --tags 'a,'
+    eq "$_verb --tags 'a,' → rc 0"                             "0" "$rc"
+    eq "$_verb --tags 'a,' → the empty trailing member is still sent" \
+       "$(tg_expect "$_verb" '["a",""]')" "$(tg_tags)"
+    tg "$_verb" --tags ',a'
+    eq "$_verb --tags ',a' → rc 0"                             "0" "$rc"
+    eq "$_verb --tags ',a' → the empty leading member is still sent" \
+       "$(tg_expect "$_verb" '["","a"]')" "$(tg_tags)"
+done
+
+unset -f tg tg_tags tg_expect kb_stub_route _tags_verbs
+unset TG_CARD TG_METHOD TG_PATH TG_BLANKS TAGS_VERBS
+unset _verb _b _bn _tv_derived
+
+# ---------------------------------------------------------------------------
 _summary "kbcard-selftest"
