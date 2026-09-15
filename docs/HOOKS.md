@@ -18,11 +18,13 @@ A **pinned** card is never auto-moved regardless of stage: a non-empty `block_re
 
 **Un-parking a pinned card is bridge-owned (push-path only), by design.** The bridge's `started` mover can *override* a pin and promote a pinned card from an opt-in stage set on a branch-cut (`unpark_from_stages`), emitting a **durable** compensating "overrode a human hold" alert so the override is never silent. This hook deliberately does **not** mirror that override: a `post-checkout` hook's only surface is `stderr` — which is effectively silent when an agent drives `git switch -c` and is never persisted — so it has no durable place to record the override, the property that makes reversing the pin safe. So a locally-cut branch for a pinned card leaves it parked; the bridge un-parks it (from a configured stage, with the alert) once the branch is **pushed**. The pin-refuse above is the *shared* half of the contract; the un-park override is intentionally bridge-only.
 
-It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it does nothing and never blocks the checkout) and **idempotent**.
+It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id token in the branch → it moves nothing and never blocks the checkout) and **idempotent**.
+
+**It records what the board said, for the `pre-push` lint (DL-225).** Every run on a named branch leaves that branch's board verdict in a local record — `resolved`, `absent` (not a card on this repo's board: a 404, or a card on another board) or `not_checked` with its reason — on the arms that stay silent on stderr and in the log as well as on the loud ones, and whether or not a card moved. [§ The board verdict leg](#the-board-verdict-leg-dl-225) owns the record and what the lint makes of it.
 
 ## Branch-name advisory (`pre-push`, card-4621)
 
-`hooks/pre-push` → `board-card-start --lint -- <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**) with **two independent legs**, each printing its finding as one `board-branch-lint:` line on stderr: the **malformed-spelling** leg — a branch name that **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize, so the card would silently never move to In Progress — and the **card-id floor** leg ([below](#the-card-id-floor-leg-dl-223)) — a spelling the grammar **accepts**, carrying a number from the wrong id space. Both reuse the *exact* card-id matchers `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree **about the grammar**.
+`hooks/pre-push` → `board-card-start --lint -- <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**) and prints each finding as one `board-branch-lint:` line on stderr. Its **malformed-spelling** leg catches a branch name that **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize, so the card would silently never move to In Progress. For a spelling the grammar **accepts**, the **id-space** question — is that number a card on this repo's board at all? — is answered by the [board verdict](#the-board-verdict-leg-dl-225) the mover recorded at checkout, and only when there is no current verdict by the [card-id floor](#the-card-id-floor-leg-dl-223), a magnitude guess. Both reuse the *exact* card-id matchers `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree **about the grammar**.
 
 The `--` is load-bearing, not boilerplate. git **accepts** a branch whose name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0 and `git update-ref` creates it — only the `git branch` *porcelain* refuses the name), and this hook is fed whatever is being pushed. Passed bare, such a name reads as an unknown option and the lint refuses it, while the mover still moves that branch's card — `post-checkout` passes **no** arguments, so it resolves `HEAD` and never enters the argument parser. The shared matchers are what make the two agree on the *grammar*; the **argument surface** is the one place left where they could still disagree, and the terminator is what closes it.
 
@@ -34,15 +36,47 @@ auto-move grammar won't recognize this spelling — the card will NOT move to In
 checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug').
 ```
 
+### The board verdict leg (DL-225)
+
+On every checkout the mover asks the board about the branch's card id, and records the answer. `board-card-start --lint` repeats that answer at push: it reads the branch's record and nothing else, and issues no request. A branch the board said is not a card here:
+
+```
+board-branch-lint: branch 'fix/card-712-foo' names card 712, which is NOT a card on board 42 — the board said so when the
+branch was checked out (card #712: HTTP 404; recorded 2026-09-14T12:00:00Z); card ids and GitHub issue/PR numbers are
+separate id spaces — cut the branch from the CARD id …
+```
+
+What the lint says for a branch carrying a card id (a branch with none is silent and reads no record):
+
+| The branch's record | At push |
+| --- | --- |
+| `resolved` — the card is on this repo's board, whether or not it moved (a pinned card, or one past the move stages, is still resolved) | silent |
+| `absent` — the card read answered HTTP 404, or the card is on another board | the line above, with DL-223's id-space rule |
+| `not_checked` — the checkout got no answer about the id: no board mapped, no board env, no token, the read refused or unreachable, a body with no stage or no board, the DL search failed, a DL-matched card whose read then failed, … | `board verdict NOT CHECKED … — <the recorded reason>` |
+| none | `board verdict NOT RECORDED …` — the branch was created without a checkout (`git branch`, `git update-ref`, a fetch), last checked out before this version or without the hook, or its record could not be written (the mover's durable log says so) |
+| stale — see below | `board verdict … is STALE — <why>` |
+| a file that is not a record for this branch | `board verdict record … is UNREADABLE` |
+
+**Precedence — the board verdict wins over the card-id floor.** `resolved` and `absent` decide the branch and the floor is not consulted, so a real card below the floor is never accused and a wrong number above it is still reported. Every other row leaves the branch undecided and names the fix — check the branch out again; `git checkout <branch>` re-fires `post-checkout` even when that branch is already checked out (measured on git 2.43) — and only then is the [floor leg](#the-card-id-floor-leg-dl-223) consulted, its finding riding on the **same** line after `Meanwhile the card-id floor leg (a magnitude guess, which a recorded verdict overrides):`. A push prints at most one id-space line per branch.
+
+- **Location.** `$(git rev-parse --git-common-dir)/agent-board-toolkit/board-verdict/<key>`, where `<key>` is `printf '%s' <branch> | git hash-object --stdin`. The common git dir is the one every linked worktree of a repository shares — branches belong to the repository, not to a worktree — git tracks nothing inside it, and the records go when the repository does. Hashing the name keeps a long name, or `fix` beside `fix/x`, from colliding as a path; the record's own `branch=` line is checked when it is read.
+- **Format.** Line 1 is `abtk-board-verdict 1`; then one `key=value` per line — `branch`, `card` (the id the name yields), `dl`, `board`, `verdict` (`resolved`, `absent` or `not_checked`), `subject` (the resolved card), `reason`, `recorded_at` (unix seconds) and `recorded_utc`. No value carries a line break.
+- **The latest checkout wins.** Every checkout rewrites the branch's record atomically — a temp file in the record's directory, renamed over the old one — so a reader sees the previous record or the new one, never a torn one. A write that fails is logged to the mover's durable log and never fails the checkout, and it removes the previous record wherever the directory still allows, so the lint says `NOT RECORDED` rather than repeating an older checkout's answer.
+- **How staleness shows.** The lint reports a record `STALE`, and does not repeat its verdict, when the branch was created after the record was written — deleted and re-created without a checkout since (the branch reflog's `branch: Created from` entry is newer than `recorded_at`); when the repo now maps to another board, or to none; or when the id this version reads from the name is not the recorded `card`. **Not detectable without reading the board:** a card created, moved to another board or deleted after the checkout, or a DL stamped onto a different card — the next checkout re-records. A re-creation is also invisible when the branch's reflog has no creation entry (`core.logAllRefUpdates=false`, an expired reflog) or when it lands in the same second as the record.
+- **Not pruned.** A deleted branch's record stays until the repository goes; the reflog rule above keeps a re-created name from inheriting it.
+
 ### The card-id floor leg (DL-223)
 
-The malformed-spelling leg cannot see the opposite mistake: a **well-formed** token carrying a GitHub issue or PR number instead of a card id. `fix/card-712-foo`, where 712 is the PR that was in front of whoever cut the branch, lints clean under that leg; on checkout the mover finds no card of this board's at 712 and moves nothing — noting it in its durable log at most, and silently when 712 is another board's card; and at merge the **branch beats the PR title** for card correlation, so the card's terminal move is refused as well. The floor leg judges the id the mover would use — the explicit token, else a typed leading id (`_bcs_card_id`, shared by both) — against the board's seeded `KB_CARD_ID_FLOOR`, and a lower id is reported:
+The malformed-spelling leg cannot see the opposite mistake: a **well-formed** token carrying a GitHub issue or PR number instead of a card id. `fix/card-712-foo`, where 712 is the PR that was in front of whoever cut the branch, lints clean under that leg; on checkout the mover finds no card of this board's at 712 and moves nothing — noting it in its durable log at most, and silently when 712 is another board's card; and at merge the **branch beats the PR title** for card correlation, so the card's terminal move is refused as well. The floor leg judges the id the mover would use — the explicit token, else a typed leading id (`_bcs_card_id`, shared by both) — against the board's seeded `KB_CARD_ID_FLOOR`, and — when no current board verdict decides the branch — a lower id is reported on the verdict leg's line:
 
 ```
-board-branch-lint: branch 'fix/card-712-foo' names card 712, which is BELOW board 42's card-id floor 1000
-(KB_CARD_ID_FLOOR in ~/.kanban-myproject-board.env) — 712 is most likely a GitHub issue/PR number, not a
-card id; card ids and GitHub issue/PR numbers are separate id spaces — cut the branch from the CARD id …
+board-branch-lint: board verdict NOT RECORDED for branch 'fix/card-712-foo' (card 712): … Meanwhile the card-id
+floor leg (a magnitude guess, which a recorded verdict overrides): branch 'fix/card-712-foo' names card 712, which
+is BELOW board 42's card-id floor 1000 (KB_CARD_ID_FLOOR in ~/.kanban-myproject-board.env) — 712 is most likely a
+GitHub issue/PR number, not a card id; card ids and GitHub issue/PR numbers are separate id spaces — cut the branch …
 ```
+
+- **A fallback, not a peer.** It is consulted only when the [board verdict](#the-board-verdict-leg-dl-225) leaves the branch undecided: a branch the board resolved is never accused by the floor, and one the board said is not a card here is reported from that answer.
 
 - **Network-free.** It reads host-local config only: which board this repo maps to — resolved by the same function the mover uses (`_bcs_board_id`: `git config kanban.board-id`, else `.release-pr.json`'s `.promote.board_id`) — and that board's `~/.kanban-*-board.env`. It never reads the board: an unreadable API answer is not an empty one. A committed board id is enough to select the env here, because the floor is not a credential; the per-board **token** stays gated to a host-local board id on the mover path, exactly as before.
 - **Silent only when there is nothing to judge, or the id passes.** A branch with no card id (`docs/…`, a DL-only branch, a malformed spelling) is silent, and so is an id at or above a seeded floor. **Every input it cannot consult speaks instead**, naming the missing piece — a check that cannot fire and stays quiet is indistinguishable from a clean branch:
@@ -55,7 +89,7 @@ card id; card ids and GitHub issue/PR numbers are separate id spaces — cut the
 
 How to seed the floor, and the bound on what it can tell you — it is a magnitude heuristic, not a namespace check — are documented where the seed is configured: [INSTALL.md §3b](INSTALL.md#3b-per-board-config--token).
 
-The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md); the floor leg, once that version carries it **and** the board env is seeded.
+The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md); the floor leg, once that version carries it **and** the board env is seeded. The board verdict leg speaks for a branch carrying a card id once that version carries it, and repeats the board's answer once the branch has been checked out through `post-checkout` with that version on `PATH` — until then the branch reads `NOT RECORDED`.
 
 ## Agent-dispatch card-start (`hooks/agent-dispatch-card-start`, card-4945)
 

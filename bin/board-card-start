@@ -35,6 +35,9 @@
 #   - PINNED cards are never auto-moved: a non-empty block_reason or a `no-automove`
 #     tag refuses the move (loud), regardless of stage.
 #   - BOARD-SCOPED: the resolved card must be on the repo's configured board.
+#   - RECORDED: every mover run on a named branch leaves the board's verdict on that branch in a
+#     local record, which the pre-push `--lint` repeats without a request (the record's contract
+#     sits above _bcs_verdict_write).
 #
 # OWNER TAG: once the move to In Progress has succeeded, this seat's owner tag is stamped by a
 # separate tag write (kb_owner_tag_write in _kb-board-lib.sh, shared with `kbcard move
@@ -95,7 +98,17 @@ kb_bcs_note() {
 # bcs_skip <reason>: record the attempted-but-failed reason (kb_bcs_log), then exit 0 — the
 # hook is fail-soft and must never block a checkout. Only ever called PAST the token-presence
 # gate below, so a token IS present: a genuine no-op (no token) stays silent and never reaches here.
-bcs_skip() { kb_bcs_log "$1"; exit 0; }
+# The same reason becomes the branch's `not_checked` board verdict, unless an arm already set one.
+bcs_skip() { _bcs_verdict not_checked "" "$1"; kb_bcs_log "$1"; exit 0; }
+
+# _bcs_verdict <verdict> <subject> <reason>: set this run's board verdict for the branch — the
+# FIRST call wins, so an arm that knows the verdict (a card the board says is not on it) keeps it
+# through the bcs_skip it then calls, and a refusal after a resolved card (a pinned one) does not
+# turn "resolved" into "not checked". The mover's EXIT trap writes it (_bcs_verdict_write).
+_bcs_verdict() {
+    [ -z "${bcs_verdict:-}" ] || return 0
+    bcs_verdict="$1"; bcs_verdict_subject="$2"; bcs_verdict_reason="$3"
+}
 
 # _bcs_patch <cid> <json> <success-msg> <fail-reason>: PATCH the resolved card via the shared
 # kb_api, which captures the HTTP status in KB_HTTP (the status-capture the hand-rolled
@@ -160,8 +173,9 @@ _bcs_branch_lint_warning() {
 }
 
 # _bcs_card_id <branch>: the id the card-id path moves on — the explicit named-card grammar
-# first, else a typed-branch leading id. Echoes the id, or nothing. The mover and the card-id
-# floor leg of the lint both read this, so they cannot disagree about WHICH number is judged.
+# first, else a typed-branch leading id. Echoes the id, or nothing. The mover, the board verdict
+# record and both id-space legs of the lint read this, so they cannot disagree about WHICH number
+# is judged.
 _bcs_card_id() {
     local id
     id="$(_bcs_explicit_card_id "${1:-}")"
@@ -236,13 +250,154 @@ _bcs_card_id_floor_warning() {
     return 0
 }
 
+# --- the board verdict record (DL-225) --------------------------------------------------------
+#
+# The mover records what the board said about a branch at checkout, and `--lint` repeats it at push
+# without reading the board. One file per branch, under the repo's COMMON git dir
+# (`git rev-parse --git-common-dir`): branches belong to the repository rather than to a worktree,
+# so every linked worktree reads and writes the same record; git never tracks anything there; and
+# the records go away with the repository. The file is named by the branch name's blob hash, not
+# by the name: a name can outgrow a file name, and `fix` beside `fix/x` would collide as a file
+# and a directory. The name itself is the record's `branch=` line, and a reader checks it.
+#
+# Format — line 1 is `abtk-board-verdict 1`, then one `key=value` per line:
+#   branch        the branch name
+#   card          the id _bcs_card_id derived from that name when the record was written
+#   dl            the DL number the name carries, if any
+#   board         the board id the repo mapped to at checkout (empty: none resolved)
+#   verdict       resolved | absent | not_checked
+#   subject       the card the branch resolved to (resolved only)
+#   reason        one line: what the board said, or why it was not asked
+#   recorded_at   unix seconds;  recorded_utc — the same instant, for humans
+# No value can carry a line break: git refuses control characters in a ref name, and the writer
+# flattens them out of the reason.
+#
+# A record describes ONE checkout. It goes stale when the branch is re-created without a checkout
+# (git branch / git update-ref after a delete), when the repo is re-mapped to another board, or
+# when a toolkit with a different card-id grammar wrote it; _bcs_board_verdict_warning reports each
+# of those as STALE. A card created, moved or deleted on the board after the checkout is NOT
+# detectable without reading the board, which the lint never does: the next checkout re-records.
+_BCS_VERDICT_HEADER="abtk-board-verdict 1"
+
+# _bcs_verdict_file <branch>: the ABSOLUTE record path for <branch> in the repo around the current
+# directory; rc 1 (nothing printed) outside a repository.
+_bcs_verdict_file() {
+    local common key
+    common="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$common" ] || return 1
+    common="$(cd "$common" 2>/dev/null && pwd -P)" || return 1
+    key="$(printf '%s' "${1:-}" | git hash-object --stdin 2>/dev/null)" && [ -n "$key" ] || return 1
+    printf '%s/agent-board-toolkit/board-verdict/%s\n' "$common" "$key"
+}
+
+# _bcs_verdict_write <branch> <verdict> <dl> <board> <subject> <reason>: replace <branch>'s record
+# ATOMICALLY — a temp file in the record's own directory, renamed over the old one — so a reader
+# sees the previous record or the new one, never a torn one. rc 1 on any failure, with no temp
+# file left behind and, wherever the directory still allows it, no previous record either; what a
+# failed write is worth is the caller's call.
+_bcs_verdict_write() {
+    local branch="${1:-}" verdict="${2:-}" dl="${3:-}" board="${4:-}" subject="${5:-}" reason="${6:-}"
+    local f dir tmp
+    f="$(_bcs_verdict_file "$branch")" || return 1
+    dir="${f%/*}"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    if tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" \
+        && printf '%s\nbranch=%s\ncard=%s\ndl=%s\nboard=%s\nverdict=%s\nsubject=%s\nreason=%s\nrecorded_at=%s\nrecorded_utc=%s\n' \
+            "$_BCS_VERDICT_HEADER" "$branch" "$(_bcs_card_id "$branch")" "$dl" "$board" "$verdict" "$subject" \
+            "${reason//[$'\n\r']/ }" "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null \
+        && mv -f "$tmp" "$f" 2>/dev/null; then
+        return 0
+    fi
+    # This checkout's verdict is lost, so the previous one must not stand in for it (latest
+    # checkout wins). Best-effort: a directory that refused the write can refuse this too, and the
+    # lint then still judges whatever record is left for staleness.
+    rm -f ${tmp:+"$tmp"} "$f" 2>/dev/null
+    return 1
+}
+
+# _bcs_branch_created_at <branch>: the unix time git logged <branch>'s creation at, or nothing. A
+# branch reflog lists newest first, so its creation entry (`branch: Created from …`) is the LAST
+# line for as long as it survives; nothing is printed when the last line is anything else — a
+# clone, an expired reflog, reflogs turned off — or when the branch has no reflog at all.
+_bcs_branch_created_at() {
+    local last
+    last="$(git reflog show --date=unix "refs/heads/${1:-}" -- 2>/dev/null | tail -1)"
+    # Herestring for the reason _bcs_is_placeholder_host states (card#7175).
+    grep -q 'branch: Created from' <<< "$last" || return 0
+    printf '%s' "$last" | grep -oE '@\{[0-9]+\}' | tr -d '@{}'
+}
+
+# _bcs_board_verdict_warning <branch> <record-file> <board-now> <created-at>: the board-verdict leg
+# of the pre-push lint. Prints its finding, or nothing, and answers whether the record DECIDES the
+# branch:
+#   rc 0 — decided: the branch carries no card id (silent); the board resolved it (silent); or the
+#          board said the id is not a card on this repo's board (loud, teaching the id-space rule).
+#   rc 1 — undecided: no record, an unreadable one, a stale one, or a checkout that never got an
+#          answer from the board. Each speaks, by name. Only then is the card-id floor consulted.
+# <board-now> is the board the repo maps to at push (_bcs_board_id); <created-at> is
+# _bcs_branch_created_at's answer. Reads the record file and nothing else.
+_bcs_board_verdict_warning() {
+    local branch="${1:-}" f="${2:-}" board_now="${3:-}" created="${4:-}" id again
+    id="$(_bcs_card_id "$branch")"
+    [ -n "$id" ] || return 0
+    again="check the branch out again ('git checkout $branch') to record a current verdict"
+    if [ -z "$f" ] || [ ! -e "$f" ]; then
+        printf "board verdict NOT RECORDED for branch '%s' (card %s): no checkout of it recorded what the board said — it was created without a checkout (git branch / fetch / update-ref), checked out without a post-checkout hook that records verdicts, or the record could not be written (the mover's durable log says so); %s.\n" \
+            "$branch" "$id" "$again"
+        return 1
+    fi
+    local hdr="" line k r_branch="" r_card="" r_board="" r_verdict="" r_reason="" r_at="" r_utc=""
+    {
+        IFS= read -r hdr
+        while IFS= read -r line; do
+            k="${line%%=*}"
+            case "$k" in
+                branch)       r_branch="${line#*=}" ;;
+                card)         r_card="${line#*=}" ;;
+                board)        r_board="${line#*=}" ;;
+                verdict)      r_verdict="${line#*=}" ;;
+                reason)       r_reason="${line#*=}" ;;
+                recorded_at)  r_at="${line#*=}" ;;
+                recorded_utc) r_utc="${line#*=}" ;;
+            esac
+        done
+    } 2>/dev/null < "$f"
+    case "$r_verdict" in resolved|absent|not_checked) ;; *) r_verdict="" ;; esac
+    if [ "$hdr" != "$_BCS_VERDICT_HEADER" ] || [ "$r_branch" != "$branch" ] || [ -z "$r_verdict" ]; then
+        printf "board verdict record for branch '%s' (card %s) is UNREADABLE — %s is not a '%s' record for this branch with a known verdict; %s.\n" \
+            "$branch" "$id" "$f" "$_BCS_VERDICT_HEADER" "$again"
+        return 1
+    fi
+    local stale=""
+    if [ "$r_card" != "$id" ]; then
+        stale="it was recorded for card ${r_card:-<none>}, but this branch name yields card $id to this board-card-start (a toolkit with a different card-id grammar wrote it)"
+    elif [ "$r_board" != "$board_now" ]; then
+        stale="it was recorded against ${r_board:+board }${r_board:-no board}, but this repo now maps to ${board_now:+board }${board_now:-no board}"
+    elif kb_is_uint "$created" && kb_is_uint "$r_at" && _bcs_uint_lt "$r_at" "$created"; then
+        stale="it was recorded at $r_utc, before a branch of this name was created (reflog: unix time $created) — the branch was deleted and re-created without a checkout since"
+    fi
+    if [ -n "$stale" ]; then
+        printf "board verdict for branch '%s' (card %s) is STALE — %s; %s.\n" "$branch" "$id" "$stale" "$again"
+        return 1
+    fi
+    case "$r_verdict" in
+        resolved) return 0 ;;
+        absent)
+            printf "branch '%s' names card %s, which is NOT a card on board %s — the board said so when the branch was checked out (%s; recorded %s); %s.\n" \
+                "$branch" "$id" "$r_board" "$r_reason" "$r_utc" "$_bcs_id_space_rule"
+            return 0 ;;
+    esac
+    printf "board verdict NOT CHECKED for branch '%s' (card %s): its last checkout (%s) got no answer from the board — %s; once that is fixed, %s.\n" \
+        "$branch" "$id" "$r_utc" "$r_reason" "$again"
+    return 1
+}
+
 # When sourced (tests/board-card-start-selftest.sh), expose only the pure helpers above and
 # stop here — sourcing must not run the checkout mover.
 (return 0 2>/dev/null) && return 0
 
 # Argument surface: `[--lint] [-h|--help] [--] [<branch-name>]`. `--lint` is the pre-push
 # advisory path — print the branch-name findings (if any) and exit, moving nothing and issuing no
-# request (its only reads are host-local config, for the card-id floor leg); no branch argument
+# request (its only reads are host-local: the board verdict record and config); no branch argument
 # is the post-checkout path (the hook passes none), which targets the CURRENT branch. `-h`/`--help` prints the usage line to STDOUT at rc 0 and does nothing else:
 # before it existed, a hand-typed `--help` fell to the `-*` arm, whose remedy line reads as
 # advice to run `board-card-start -- --help` — which would target a BRANCH named `--help`
@@ -320,23 +475,48 @@ done
 if [ "$lint_mode" = 1 ]; then
     warning="$(_bcs_branch_lint_warning "$branch")"
     [ -n "$warning" ] && printf 'board-branch-lint: %s\n' "$warning" >&2
-    # The card-id floor leg reads HOST-LOCAL config only — the repo's board id and that board's
-    # env — and never the board itself: an unreadable API answer is not an empty one, and a lint
-    # that reached for the network would have to choose which of those to report as clean.
-    # Resolved only when the branch carries a card id, so a branch with nothing to judge costs
-    # no board-env source. The floor is not a credential, so a COMMITTED board id may select the
-    # env it is read from; the hostlocal-only gate below bounds the token, not this.
+    # A branch carrying a card id gets ONE id-space line at most. The BOARD VERDICT the mover
+    # recorded at checkout decides it when there is a current one (silent when the board resolved
+    # the id, loud when the board said it is not a card here); the card-id floor — a magnitude
+    # guess — is consulted only when no current verdict exists, and its finding rides on the same
+    # line as the reason there is none. Both legs read host-local state only — the record under
+    # the git dir, the repo's board id, that board's env — never the board: an unreadable API
+    # answer is not an empty one, and a lint that reached for the network would have to choose
+    # which of those to report as clean. A branch with no card id reads none of it. The floor is
+    # not a credential, so a COMMITTED board id may select the env it is read from; the
+    # hostlocal-only gate below bounds the token, not this.
     if [ -n "$(_bcs_card_id "$branch")" ]; then
         root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
         board=""; board_envf=""; floor=""
         [ -z "$root" ] || read -r board _ <<<"$(_bcs_board_id "$root/.release-pr.json")"
-        [ -z "$board" ] || board_envf="$(kb_board_env_for "$board" || true)"
-        [ -z "$board_envf" ] || IFS= read -r floor <<<"$(kb_board_env_get "$board_envf" KB_CARD_ID_FLOOR)"
-        warning="$(_bcs_card_id_floor_warning "$branch" "$board" "$board_envf" "$floor")"
-        [ -n "$warning" ] && printf 'board-branch-lint: %s\n' "$warning" >&2
+        verdict_file="$(_bcs_verdict_file "$branch" || true)"
+        if warning="$(_bcs_board_verdict_warning "$branch" "$verdict_file" "$board" "$(_bcs_branch_created_at "$branch")")"; then
+            [ -z "$warning" ] || printf 'board-branch-lint: %s\n' "$warning" >&2
+        else
+            [ -z "$board" ] || board_envf="$(kb_board_env_for "$board" || true)"
+            [ -z "$board_envf" ] || IFS= read -r floor <<<"$(kb_board_env_get "$board_envf" KB_CARD_ID_FLOOR)"
+            floor_warning="$(_bcs_card_id_floor_warning "$branch" "$board" "$board_envf" "$floor")"
+            printf 'board-branch-lint: %s%s\n' "$warning" \
+                "${floor_warning:+ Meanwhile the card-id floor leg (a magnitude guess, which a recorded verdict overrides): $floor_warning}" >&2
+        fi
     fi
     exit 0
 fi
+
+# The board verdict record (DL-225, _bcs_verdict_write above). From here on EVERY exit writes one
+# for this branch, from the EXIT trap, so no arm — including one added later — can leave the
+# previous checkout's verdict standing: an arm that knows the verdict sets it (_bcs_verdict),
+# bcs_skip sets `not_checked` with its own reason, and an exit that set nothing is recorded as
+# exactly that. A write that fails is logged and changes nothing else: the exit status is the
+# `exit` that fired the trap, never the trap's own.
+bcs_verdict=""; bcs_verdict_subject=""; bcs_verdict_reason=""
+_bcs_verdict_flush() {
+    _bcs_verdict not_checked "" "board-card-start exited without reaching a board verdict"
+    _bcs_verdict_write "$branch" "$bcs_verdict" "${dl:-}" "${board:-}" "$bcs_verdict_subject" "$bcs_verdict_reason" \
+        || kb_bcs_note "board-card-start: the board verdict for branch '$branch' ($bcs_verdict) could not be recorded under this repository's git dir — the pre-push lint will report the branch as NOT RECORDED"
+    return 0
+}
+trap _bcs_verdict_flush EXIT
 
 # DL token from the branch name (case-insensitive); kb_dl_num strips zeros and
 # rejects a non-DL, so a malformed token degrades to the card-id path below.
@@ -355,7 +535,7 @@ cid_explicit=0
 cid_token="$(_bcs_card_id "$branch")"
 [ -n "$(_bcs_explicit_card_id "$branch")" ] && cid_explicit=1   # matched the explicit card#N / #N grammar (a named card)
 
-[ -n "$dl" ] || [ -n "$cid_token" ] || exit 0
+[ -n "$dl" ] || [ -n "$cid_token" ] || { _bcs_verdict not_checked "" "the branch name carries no DL or card-id token"; exit 0; }
 
 command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || bcs_skip "curl and jq are both required but not both on PATH"
 
@@ -481,11 +661,8 @@ fi
 # landing on an existing branch logs `clone: …`, which does not match — so cloning
 # can't un-park. Fail-soft: no reflog / unparsable timestamp → NOT a creation.
 branch_just_created() {
-    local last ts age
-    last="$(git reflog show --date=unix "$branch" 2>/dev/null | tail -1)" || return 1
-    # Herestring for the reason _bcs_is_placeholder_host states (card#7175).
-    grep -q 'branch: Created from' <<< "$last" || return 1
-    ts="$(printf '%s' "$last" | grep -oE '@\{[0-9]+\}' | tr -d '@{}')"
+    local ts age
+    ts="$(_bcs_branch_created_at "$branch")"
     [ -n "$ts" ] || return 1
     age=$(( $(date +%s) - ts ))
     [ "$age" -ge 0 ] && [ "$age" -le "${KB_HELD_CREATE_MAX_AGE:-15}" ]
@@ -540,6 +717,7 @@ if [ -n "$dl" ]; then
     else
         # (4) DL present, unresolved, no card-id fallback → a high-value miss (a
         # decision-logged-but-unstamped card). Loud, never a silent no-op.
+        _bcs_verdict absent "" "DL-$dl matches no card on board $board, and the branch names no card id to fall back to"
         bcs_skip "branch names DL-$dl but no card carries that dl_number and there is no card-id fallback token"
     fi
 else
@@ -574,6 +752,18 @@ if [ -z "$cur" ]; then
     # the branch's number is not a card. Loud ONLY when the branch NAMED a card explicitly
     # (card#N / #N) — a genuine miss; the implicit typed-branch leading id (often a foreign
     # ticket number, a routine false positive) is silent.
+    # The RECORD is stricter than that log line on two inputs. Only a 404 is the board saying "no
+    # such card": a 200 whose body carries no stage is an answer nothing could be read out of. And
+    # a record judges the branch's OWN card id: a card the DL search matched that then fails its
+    # read says nothing about that id. Both are recorded as not checked, so the lint never repeats
+    # them as a confirmed absence.
+    if [ "$via_cardid" != 1 ]; then
+        _bcs_verdict not_checked "" "DL-$dl matched card #$cid on the board search, but its read answered HTTP $http with no workflow stage — the branch's own card id was not judged"
+    elif [ "$http" = 404 ]; then
+        _bcs_verdict absent "" "card #$cid: HTTP 404"
+    else
+        _bcs_verdict not_checked "" "the board answered HTTP $http for card #$cid, but no workflow stage could be read from the body — the card was NOT confirmed missing"
+    fi
     [ "${cid_explicit:-0}" = 1 ] && bcs_skip "card #$cid named in the branch does not exist"
     exit 0
 fi
@@ -581,8 +771,18 @@ if [ "$cbd" != "$board" ]; then
     # Designed SILENT scope guard (see header): a card-id number that lives on ANOTHER board is
     # a deliberate no-op — a stray number must not promote an unrelated task. A routine correct
     # outcome, never a failure, so never loud (that would train agents to ignore hook output).
+    # Silent HERE; the record still says the id is not a card on this board, for the lint — when
+    # the id is the branch's own (a DL-matched card is not, as above).
+    if [ "$via_cardid" != 1 ]; then
+        _bcs_verdict not_checked "" "DL-$dl matched card #$cid on the search of board $board, but its read names board ${cbd:-<none>} — the branch's own card id was not judged"
+    elif [ -n "$cbd" ]; then
+        _bcs_verdict absent "" "card #$cid is a card on board $cbd"
+    else
+        _bcs_verdict not_checked "" "the board answered for card #$cid, but no board id could be read from the body — the card was NOT confirmed to be on another board"
+    fi
     exit 0
 fi
+_bcs_verdict resolved "$cid" "card #$cid ($label)"
 
 # Opt-out (framework contract, agent-board-framework PR #113): a card a human has
 # pinned — a non-empty block_reason OR a `no-automove` tag — is NEVER auto-moved,
