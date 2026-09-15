@@ -190,8 +190,49 @@ _dec="$(_kbc_archive_decision 42)"
 eq "null .data → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
 eq "null .data → board fetch NOT reached"   ""            "$(cat "$_FBC_SENTINEL")"
 unset -f kb_api fetch_board_cards
+rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
+
+echo "== _kbc_archive_decision — a card body carrying two JSON texts fails closed before the board fetch =="
+# The card and the board share one stdin stream into the gate's jq, so a second card text would be
+# read as the first BOARD text. Refused where the null card is, before anything is fetched.
+_FBC_SENTINEL="$(mktemp)"; : > "$_FBC_SENTINEL"
+KB_API="https://kanban.test/api/v3" KB_TOKEN="stub-token" KB_BOARD_ID=42
+kb_api() { printf '{"data":{"id":42}}{"data":{"id":43}}'; }
+fetch_board_cards() { echo REACHED > "$_FBC_SENTINEL"; printf '[]'; }
+python3() { echo REACHED-SHIM > "$_FBC_SENTINEL"; }
+_dec="$(_kbc_archive_decision 42)" || true
+eq "two card texts → noprimitive token"        "noprimitive" "${_dec%%$'\t'*}"
+eq "…naming why"                               "true" "$(has 'more than one JSON text' "$_dec")"
+eq "…with neither the board fetch nor the shim reached" "" "$(cat "$_FBC_SENTINEL")"
+unset -f kb_api fetch_board_cards python3
+unset KB_API KB_TOKEN KB_BOARD_ID
+rm -f "$_FBC_SENTINEL"; unset _FBC_SENTINEL _dec
+
+echo "== _kbc_archive_decision — a card over MAX_ARG_STRLEN still reaches the gate =="
+# Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 131072 B) whatever ARG_MAX is, and a
+# card grows past that by accreting comments. The card must reach jq on stdin: carried as an
+# argument, exec fails E2BIG, the shim reads an empty stdin, and a card that is merely LONG is
+# refused as unverifiable — or, under --force, archived with no decision at all.
+# `python3` is stubbed with a projection so the assertion reads what the shim WOULD have read,
+# without depending on the framework primitive being resolvable on this host.
+_BIG_CARD_FILE="$(mktemp)"
+jq -nc '{data: {id: 42, name: "probe", description: ("x" * 140000)}}' > "$_BIG_CARD_FILE"
+eq "fixture: the card body is over MAX_ARG_STRLEN (witness: the cap is actually crossed)" "true" \
+   "$([[ "$(wc -c < "$_BIG_CARD_FILE")" -gt 131072 ]] && echo true || echo false)"
+KB_API="https://kanban.test/api/v3" KB_TOKEN="stub-token" KB_BOARD_ID=42
+kb_api() { cat "$_BIG_CARD_FILE"; }
+fetch_board_cards() { printf '[{"id":7},{"id":8}]'; }
+python3() { jq -c '{id: .card.id, dlen: (.card.description | length), surviving: (.surviving_cards | length)}'; printf '\tstub'; }
+_BIG_ERR_FILE="$(mktemp)"
+_dec="$(_kbc_archive_decision 42 2>"$_BIG_ERR_FILE")" || true
+eq "a >131072 B card reaches the gate whole, beside the board" \
+   '{"id":42,"dlen":140000,"surviving":2}' "${_dec%%$'\n'*}"
+eq "…and jq never fails on its argument list" "false" \
+   "$(has 'Argument list too long' "$(cat "$_BIG_ERR_FILE")")"
+unset -f kb_api fetch_board_cards python3
+unset KB_API KB_TOKEN KB_BOARD_ID
 [[ -n "$_saved_fbc" ]] && eval "$_saved_fbc"
-rm -f "$_FBC_SENTINEL"; unset _saved_fbc _FBC_SENTINEL _dec
+rm -f "$_BIG_CARD_FILE" "$_BIG_ERR_FILE"; unset _saved_fbc _BIG_CARD_FILE _BIG_ERR_FILE _dec
 
 # ---------------------------------------------------------------------------
 echo "== cmd_archive — may_archive gate wiring (roundtable #39) =="
@@ -667,7 +708,7 @@ echo "== _kbc_build_payload — shared create/patch payload assembly (card-4511,
 # Single home for the payload-merge jq + version_target guard + DL-canon + pr
 # appends that create-card and patch both need. RED-when-reverted: these pin the
 # exact merged object, so a helper that diverged from either original (dropped a
-# field, lost the numeric coercion, skipped the DL canon) FAILS here.
+# field, lost pr_number/issue_number's numeric typing, skipped the DL canon) FAILS here.
 unset KB_CF_VERSION_TARGET 2>/dev/null || true
 export KB_CF_VERSION_TARGET=99   # board HAS the version_target custom field
 
@@ -677,14 +718,14 @@ eq "full flag set → exact merged payload" \
    '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","version_target":"v0.9.2"}' \
    "$(_kbc_build_payload DL-93 178 https://github.com/o/r/pull/0 v0.9.2 | jq -Sc .)"
 
-# origin (trailing 7th arg, create-only) rides the same coercion path and is appended.
-eq "origin arg included, coerced like the rest" \
+# origin (trailing 7th arg, create-only) rides the same assembler and is sent as a string.
+eq "origin arg included, sent as a string" \
    '{"dl_number":"DL-0001","origin":"preemptive"}' \
    "$(_kbc_build_payload 1 '' '' '' '' '' preemptive | jq -Sc .)"
 
 # issue_number / issue_url mirror pr_number / pr_url — issue_number NUMERIC-coerced (a JSON
 # number, not "300"), issue_url a string, both INDEPENDENT of the pr_* pair. RED-when-reverted:
-# drop the coercion (the `tonumber? // .` in the merge jq) and issue_number becomes a string.
+# drop issue_number from the assembler's numeric keys and issue_number becomes a string.
 eq "issue_number coerced to a JSON number + issue_url string" \
    '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' \
    "$(_kbc_build_payload '' '' '' '' 300 https://github.com/o/r/issues/300 | jq -Sc .)"
@@ -1184,7 +1225,7 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
 # either list without an explicit edit here, which is the review moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
-             --name --tags --type --external-id --origin --task --assign --block-reason)
+             --name --tags --type --external-id --origin --task --assign --block-reason --clear)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1195,7 +1236,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --type --external-id --origin --assign --block-reason; do
+         --name --tags --type --external-id --origin --assign --block-reason --clear; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -1331,7 +1372,9 @@ kb_stub_route() {
         # /tasks/505.json?trashed=1, and an arm without it leaves that request UNROUTED (599),
         # which every leg below would then see as an unverified write rather than as itself.
         "GET "*/tasks/*.json*)
-            if [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
+            if [[ -n "${KB_STUB_GET_BODY_FILE:-}" ]]; then
+                printf '%s\n' "${KB_STUB_GET_HTTP:-200}"; cat "$KB_STUB_GET_BODY_FILE"
+            elif [[ -n "${KB_STUB_GET_BODY:-}" ]]; then
                 printf '%s\n%s' "${KB_STUB_GET_HTTP:-200}" "$KB_STUB_GET_BODY"
             else
                 # The DEFAULT card carries the comment the POST arm echoes (id 13), because the
@@ -1463,6 +1506,9 @@ kbc comment --task 505 --content '   '
 eq "--content of only whitespace → rc 2"         "2" "$rc"
 eq "…says it holds no comment text"              "true" "$(has 'holds no comment text' "$err")"
 eq "…and issues no request"                      "0" "$(kb_stub_total)"
+kbc comment --task 505 --content $'\v\f'
+eq "--content of only VT/FF → rc 2 (kb_is_blank's set)" "2" "$rc"
+eq "…and issues no request"                      "0" "$(kb_stub_total)"
 # The other side of the trim: only the CHECK is trimmed. Content that merely BEGINS with
 # whitespace is real content and must reach the wire with its indentation intact.
 kbc comment --task 505 --content '  indented body'
@@ -1493,6 +1539,33 @@ eq "…and prints no id"                           "" "$out"
 KB_STUB_GET_BODY='<html>502</html>' kbc comment --task 505 --content x
 eq "card re-read is a 2xx carrying no card → rc 3" "3" "$rc"
 eq "…and leaks no raw jq parse error"            "false" "$(has 'parse error' "$err")"
+# A card that has GROWN past MAX_ARG_STRLEN (131072 B for one argv string on Linux) is still a
+# readable card. The witness used to hand the whole card to jq as one argument, so exec failed
+# E2BIG and a comment that landed was reported as an UNVERIFIED WRITE — the answer a caller
+# re-posts on. Read from a FILE: an exported variable that size would itself be an exec argument
+# too large for the stub process to start.
+jq -nc --argjson c "$KB_STUB_CARD_COMMENTS" '{data: {id: 505, name: "probe", comments: $c, description: ("x" * 140000)}}' \
+    > "$TMP/big-card.json"
+eq "fixture: the re-read card is over MAX_ARG_STRLEN (witness: the cap is actually crossed)" "true" \
+   "$([[ "$(wc -c < "$TMP/big-card.json")" -gt 131072 ]] && echo true || echo false)"
+KB_STUB_GET_BODY_FILE="$TMP/big-card.json" kbc comment --task 505 --content x
+eq "a landed comment on a >131072 B card → rc 0, not UNVERIFIED" "0" "$rc"
+eq "…prints the confirmed comment id"            "13" "$out"
+eq "…and says nothing about an UNVERIFIED WRITE" "false" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and jq never fails on its argument list"    "false" "$(has 'Argument list too long' "$err")"
+# The other direction through the same large card: the predicate still rules on what it read.
+KB_STUB_GET_BODY_FILE="$TMP/big-card.json" KB_STUB_POST_BODY='{"data":{"id":99}}' \
+    kbc comment --task 505 --content x
+eq "a >131072 B card NOT carrying the posted id → rc 1 (a measurement, not rc 3)" "1" "$rc"
+eq "…named as a HARD FAILURE"                    "true" "$(has 'HARD FAILURE' "$err")"
+# A 2xx body carrying TWO JSON texts is not one card. Selected on stdin, each text yields its own
+# witness line, and `jq -e` over that stream rules on the LAST — so a second text carrying the
+# posted id would confirm a comment the first says is absent. The witness must refuse it outright.
+KB_STUB_GET_BODY='{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[{"id":13}]}}' \
+    kbc comment --task 505 --content x
+eq "a re-read body carrying two JSON texts → rc 3 (not one card, so nothing was measured)" "3" "$rc"
+eq "…named as an UNVERIFIED WRITE"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…and prints no id"                           "" "$out"
 
 echo "-- comment: an HTTP failure carries the status AND the error body --"
 KB_STUB_POST_HTTP=422 \
@@ -2136,6 +2209,8 @@ printf 'c1\r\nc2\r\n'   > "$TMP/crlf.txt"
 printf ' \t\n \n'       > "$TMP/blank.txt"
 : >                       "$TMP/empty.txt"
 mkdir -p "$TMP/adir"
+TA_EM3=$'\xe2\x80\x83'                              # U+2003 EM SPACE
+TA_EM3_JSON="$(jq -cn --arg s "$TA_EM3" '$s')"
 
 # ta <verb> <field> <args…> — drive create-card or patch with the arguments that verb REQUIRES
 # plus the text flags under test, on a fresh request log, recording where that verb's write lands.
@@ -2226,28 +2301,82 @@ for _verb in create-card patch; do
     ta "$_verb" "$_field" "$_ff" "$TMP/crlf.txt"
     eq "$_L → CRLF is normalized to LF, no \\r on the wire" '"c1\nc2"' "$(ta_wire "$_field")"
 
-    # THE INLINE FLAG'S SHIPPED BEHAVIOUR IS UNCHANGED — the control that keeps this an ADDITION.
-    # `--description`/`--name` predate their file twins, so their value still rides verbatim: not
-    # blank-checked (a whitespace value has always been accepted and written) and not rewritten
-    # (a CRLF one still reaches the wire as typed). Narrowing either is an acceptance change, and
-    # these two legs red on a later "harmonization" that makes one silently. The carve-out is
-    # an explicit `<inline-verbatim>` argument at the call site as of card#9213, rather than a
-    # side effect of the requiredness knob — these legs are what red if it is dropped there.
+    # ⛔ THE TWO HALVES RULE THE SAME WAY ON A TEXT-FREE VALUE (card#9222). Until that card the
+    # file half refused a whitespace-only value at rc 2 while the inline half SENT it — one
+    # product answering two ways at two doors.
+    # ⚠ WHAT THE SENT VALUE THEN COST IS NOT THE SAME ON THE TWO FLAGS, and neither of them is
+    # "a blank card was written" — measured against the live board, not inferred from this stub:
+    #   * `--name "   "` came back HTTP 422 — `name` is not nullable, and the board's TrimStrings
+    #     → ConvertEmptyStringsToNull had already made it null — so the caller paid a round trip
+    #     for an rc 1 worded by the server, naming neither the flag nor the real problem.
+    #   * `--description "   "` came back 200 and CLEARED the field, at rc 0. That is the
+    #     quiet-wrong: `--description "$BODY"` with a $BODY that expanded to padding WIPED a
+    #     card's body while reporting success — and it was also the only route this CLI had to
+    #     clear the field, which is why `--clear-description` lands in the same change (its own
+    #     section at the end of this file).
+    # Tightening this narrowed a SHIPPED acceptance (`--name`/`--description` predate their file
+    # twins) and was ask-gated; asked and granted on the ground that the newly-refused set is
+    # values that are VISUALLY BLANK, which no caller can have meant.
     ta "$_verb" "$_field" "$_f" '   '
-    eq "$_verb $_f whitespace → still rc 0, as it always has" "0" "$rc"
-    eq "$_verb $_f whitespace → …and reaches the wire verbatim" '"   "' "$(ta_wire "$_field")"
+    eq "$_verb $_f whitespace-only → rc 2"            "2" "$rc"
+    eq "$_verb $_f whitespace-only → names the field's text" "true" \
+       "$(has "holds no $_field text" "$err")"
+    eq "$_verb $_f whitespace-only → issues no request" "0" "$(kb_stub_total)"
+    # The leg that puts the check on the INLINE side of the rewrite rather than after it. These
+    # bytes are never rewritten for this pair (see below), so a check reading only a
+    # CRLF-folded, trailing-newline-trimmed value would have to see them as content. Visually
+    # blank is visually blank whichever spelling arrived.
+    ta "$_verb" "$_field" "$_f" $'\r\n\r\n'
+    eq "$_verb $_f CRLF-only → rc 2, same refusal"    "2" "$rc"
+    eq "$_verb $_f CRLF-only → issues no request"     "0" "$(kb_stub_total)"
+
+    # ⭐ THE CARVE-OUT THAT SURVIVES, AND ITS BOUND. `--name`/`--description` predate their file
+    # twins, so the inline value's BYTES still ride to the wire exactly as typed — rewriting
+    # them is a SEPARATE acceptance change and nobody has asked for it. These legs are what red
+    # if a later "harmonization" makes it silently, and what red if the `<inline-verbatim>`
+    # argument is dropped at the call sites instead of the blank check being fixed in the
+    # primitive. They are also the positive control that keeps the refusals above a
+    # measurement: the same door accepts, at rc 0, every inline value that HAS text.
     ta "$_verb" "$_field" "$_f" "$(printf 'i1\r\ni2')"
     eq "$_verb $_f CRLF → reaches the wire verbatim, unnormalized" '"i1\r\ni2"' \
        "$(ta_wire "$_field")"
-    # The THIRD observable property of the carve-out, and the one nothing asserted: an inline
-    # value's TRAILING newlines are not trimmed either. The file half trims them, so this is the
-    # leg that distinguishes "the carve-out applies" from "the file rules leaked into the inline
-    # path" — a distinction the other two legs cannot draw on their own.
+    # The other observable property of the carve-out: an inline value's TRAILING newlines are not
+    # trimmed either. The file half trims them, so this is the leg that distinguishes "the
+    # carve-out applies" from "the file rules leaked into the inline path" — a distinction the
+    # CRLF leg cannot draw on its own.
     ta "$_verb" "$_field" "$_f" $'nm\n\n'
     eq "$_verb $_f trailing newlines → ride UNTRIMMED" '"nm\n\n"' "$(ta_wire "$_field")"
+    # LEADING AND TRAILING SPACES ARE CONTENT when there is any text at all — the leg that
+    # separates "the blank check decides on a space-stripped COPY" from "the value is trimmed",
+    # which the refusals above cannot tell apart on their own.
+    ta "$_verb" "$_field" "$_f" '  padded  '
+    eq "$_verb $_f padded text → rc 0"                "0" "$rc"
+    eq "$_verb $_f padded text → its padding is CONTENT, on the wire" '"  padded  "' \
+       "$(ta_wire "$_field")"
+    # ⭐ THE REFUSED SET IS SIX ASCII CHARACTERS, AND THE VERDICT IS THE BYTES' — not the
+    # caller's environment. This check used to read `${v//[[:space:]]/}`, and `[[:space:]]` in a
+    # bash pattern is a LOCALE class: measured on the reference host, it strips U+2003 EM SPACE
+    # under en_US.UTF-8 and KEEPS it under LC_ALL=C, so one product answered two ways on one
+    # input depending on the environment it was started in — the very class this card closed,
+    # relocated from the door axis to the locale axis. The lib's `kb_is_blank` pins the window and
+    # spells the set out; this leg reaches that decision through the SHIPPED CLI and reds if the
+    # pin is dropped while the runner has a collation-wide UTF-8 locale (this box does).
+    # tests/locale-range-guard-selftest.sh is what asserts the two locales AGREE, and says so
+    # loudly when the runner cannot exercise the UTF-8 half at all.
+    ta "$_verb" "$_field" "$_f" "$TA_EM3"
+    eq "$_verb $_f U+2003-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_verb $_f U+2003-only → rides to the wire verbatim" "$TA_EM3_JSON" "$(ta_wire "$_field")"
+    # VT and FF are members of the set (card#9337): each alone is visually blank and refused.
+    for _vf in $'\v' $'\f'; do
+      _vfn="$(jq -cn --arg s "$_vf" '$s')"
+      ta "$_verb" "$_field" "$_f" "$_vf"
+      eq "$_verb $_f $_vfn-only → rc 2"                "2" "$rc"
+      eq "$_verb $_f $_vfn-only → names the field's text" "true" "$(has "holds no $_field text" "$err")"
+      eq "$_verb $_f $_vfn-only → issues no request"   "0" "$(kb_stub_total)"
+    done
   done
 done
-unset _verb _field _f _ff _L
+unset _verb _field _f _ff _L _vf _vfn TA_EM3 TA_EM3_JSON
 
 # NEITHER SOURCE GIVEN is the ordinary case for an optional setter and must stay silent — the
 # half of the requiredness parameter that `comment` (where neither is rc 2) cannot exercise.
@@ -2480,6 +2609,9 @@ eq "…and issues no request"                          "0" "$(kb_stub_total)"
 kbc search '   '
 eq "a whitespace-only query → rc 2"                  "2" "$rc"
 eq "…says why (it would match every card)"           "true" "$(has 'matches every card' "$err")"
+eq "…and issues no request"                          "0" "$(kb_stub_total)"
+kbc search $'\v\f'
+eq "a VT/FF-only query → rc 2 (kb_is_blank's set)"   "2" "$rc"
 eq "…and issues no request"                          "0" "$(kb_stub_total)"
 kbc search one two
 eq "a second positional → rc 2"                      "2" "$rc"
@@ -3726,12 +3858,14 @@ eq "…and cost no traffic"                         "0" "$(kb_stub_total)"
 # that null; the exit STATUS said success, and automation reads the status. That is the
 # readback-before-success shape, reported as success.
 #
-# The inline half accepted it at rc 0 while the file half refused the identical bytes, because
-# `_kbc_text_arg` carved out an optional setter's
-# inline value. That carve-out was written to preserve the SHIPPED acceptance of a flag whose
-# inline spelling predates its file twin. This pair has none to preserve: both halves land in
-# one commit, so it was never a decision, only an inheritance.
-for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')"; do
+# Until card#9213 the inline half accepted it at rc 0 while the file half refused the identical
+# bytes, because `_kbc_text_arg` carved an optional setter's inline value out of the blank check
+# to preserve the SHIPPED acceptance of a flag whose inline spelling predates its file twin. This
+# pair has none to preserve: both halves land in one commit, so it was never a decision, only an
+# inheritance. ⭐ No pair is carved out of the blank check any more — card#9222 retired that half
+# for `--name`/`--description` too, under the operator gate the acceptance change needed; what
+# remains of the carve-out is the BYTES (see this file's `--name-file` section).
+for _ws in " " "$(printf '\t\t')" "$(printf ' \n ')" $'\v' $'\f'; do
     kbc patch --task 606 --block-reason "$_ws"
     eq "a whitespace-only --block-reason → rc 2"  "2" "$rc"
     eq "…named as holding no text"                "true" "$(has 'holds no block-reason text' "$err")"
@@ -3775,6 +3909,789 @@ eq "…and rides UNTRUNCATED, at its own length"     "300" \
 
 unset -f bbody kb_stub_route
 unset REASON LONG QREASON _ws _ws_file_rc _ws_inline_rc
+
+# ---------------------------------------------------------------------------
+echo "== patch --clear-description — the clearer the blank refusal made necessary (card#9222) =="
+# WHY THIS FLAG EXISTS, where the next maintainer will look for it. Refusing a blank
+# `--description` REMOVED A CAPABILITY. Measured against the live board: a whitespace-only value
+# reached it, and the board trims then converts an empty string to null (TrimStrings →
+# ConvertEmptyStringsToNull), so `--description "  "` came back 200 and CLEARED the field at
+# rc 0 — and that was the ONLY route this CLI had to clear it. A field a tool can SET and cannot
+# UNSET goes stale in place, which is the argument `--unblock` shipped on one card earlier, so
+# this flag is deliberately --unblock's SHAPE: an explicit JSON null, mutually exclusive with the
+# setter, rc 2 before any request. Shipping the refusal without it would have closed a door and
+# left no other.
+#
+# ⚠ THE `| type` LEG PINS THE WIRE, NOT A STORED STATE — the same scoping the --unblock block
+# above states, for the same reason. `""` and a null collapse to one stored NULL at the board, so
+# what an EXPLICIT null buys is that the clear does not DEPEND on another repo's middleware: it
+# asks for the clear rather than being rewritten into one. This suite owns the wire.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+# The echo is the request MERGED onto a card that ALREADY CARRIES a body, so "cleared" and "left
+# alone" are distinguishable in the echo as well as on the wire.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "PATCH "*/tasks/707.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" \
+                '{data: ({id:707,name:"probe",workflow_stage_id:48,tags:["type:task"],description:"OLD BODY"} + $b)}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+
+# dbody — [has, value], for the reason bbody is: under a per-key merge an ABSENT key and an
+# explicit null are two different writes, and a value-only read cannot tell them apart.
+dbody() { kb_stub_bodies PATCH /tasks/707.json | jq -c '[has("description"), .description]'; }
+
+kbc patch --task 707 --clear-description
+eq "patch --clear-description → rc 0"              "0" "$rc"
+eq "…writes the key PRESENT and null"              '[true,null]' "$(dbody)"
+eq "…and it is a JSON null, NOT an empty string"   '"null"' \
+   "$(kb_stub_bodies PATCH /tasks/707.json | jq -c '.description | type')"
+eq "…sends that key and NOTHING else"              '["description"]' \
+   "$(kb_stub_bodies PATCH /tasks/707.json | jq -c 'keys')"
+# The echo shows the RAW field on this call: the default projection is `.description // ""`,
+# which renders the very null this flag exists to write as an empty string — indistinguishable,
+# to a reader, from a description the call never touched.
+eq "…and the ECHO shows the null, key present"     '[true,null]' \
+   "$(jq -c '[has("description"), .description]' <<<"$out")"
+
+# --- the controls that make the clear ATTRIBUTABLE --------------------------------------
+# The setter still sets, through the same assembler…
+kbc patch --task 707 --description 'a body that is really there'
+eq "patch --description still writes its text"     '[true,"a body that is really there"]' "$(dbody)"
+eq "…and its echo still carries the field"         "true" \
+   "$(jq -c 'has("description")' <<<"$out")"
+# …and a patch naming NEITHER leaves the key absent, which is what makes "clears" mean anything.
+kbc patch --task 707 --dl DL-7
+eq "a patch naming neither leaves the key ABSENT"  '[false,null]' "$(dbody)"
+
+# --- the refusals, every one decided offline --------------------------------------------
+kbc patch --task 707 --description 'text' --clear-description
+eq "--description + --clear-description → rc 2"    "2" "$rc"
+eq "…names both spellings"                         "true" \
+   "$(has '--description and --clear-description are mutually exclusive' "$err")"
+eq "…and NOT ONE request was issued"               "0" "$(kb_stub_total)"
+# The exclusion reads the RESOLVED value, so the FILE half trips it too — the leg that would
+# silently pass if the check sat above `_kbc_text_arg` instead of below it. It also pins the
+# diagnostic to the half the caller ACTUALLY passed: a message naming the inline flag to someone
+# who never typed it sends them hunting a flag that is not on their command line.
+printf 'a body from a file\n' > "$TMP/desc.txt"
+kbc patch --task 707 --description-file "$TMP/desc.txt" --clear-description
+eq "--description-file + --clear-description → rc 2" "2" "$rc"
+eq "…named as the FILE half, which is what was passed" "true" \
+   "$(has '--description-file and --clear-description are mutually exclusive' "$err")"
+eq "…and cost no traffic"                          "0" "$(kb_stub_total)"
+# create-card does NOT take it: there is nothing to clear at birth, and a flag accepted there and
+# quietly ignored reads as a flag that worked.
+kbc create-card --type fr --name probe --clear-description
+eq "create-card --clear-description → rc 2"        "2" "$rc"
+eq "…refused BY NAME as an unknown arg"            "true" \
+   "$(has "unknown arg '--clear-description'" "$err")"
+eq "…and cost no traffic"                          "0" "$(kb_stub_total)"
+
+unset -f dbody kb_stub_route
+
+# ---------------------------------------------------------------------------
+echo "== payload free-text flags — a visually blank value is refused, not sent (card#9338) =="
+# THE DEFECT. `--origin` / `--version` / `--pr-url` / `--issue-url` took `kb_require_value` only,
+# which refuses an EMPTY value and passes a whitespace-only one, and then rode straight into
+# task.payload. Measured against the live board on a real card (and restored): `patch --origin
+# "   "` over a card holding `origin: "preemptive"` was rc 0, and a re-read returned `origin: null`
+# — the board's TrimStrings → ConvertEmptyStringsToNull turned the padding into a CLEAR, and the
+# caller was told the write landed. `--pr-url` / `--issue-url` cost more: those keys set the
+# card's by-ref `source`, so a blank one detaches the card from its repo and a release promote
+# then skips it. Narrowing four shipped flags is an acceptance change; asked and granted.
+#
+# THE POPULATION IS DERIVED, NOT TYPED. `_payload_flags` reads each verb's own
+# `_kbc_build_payload` call and resolves every variable it passes back to the case arm that sets
+# it. The two lists below are the CLASSIFICATION of that set — free text, or a correlation ref
+# with a dedicated validator — and the parity leg reds in both directions, so a payload flag
+# added to either verb cannot land without being classified (and so driven) here.
+# ⚠ What it cannot see: a payload key written by some route other than `_kbc_build_payload`.
+PAYLOAD_TEXT_FLAGS=(--issue-url --origin --pr-url --version)
+PAYLOAD_REF_FLAGS=(--dl --issue --pr)   # each has its own validator, driven in the ref blocks above
+PAYLOAD_CLEAR_FLAGS=(--clear)           # patch ONLY — the clearer, driven in the card#9420 block below
+
+# _payload_flags <bin> <function> — the flags whose values <function> hands to _kbc_build_payload.
+_payload_flags() {
+    awk -v fn="$2" '
+    $0 ~ "^" fn "[(][)] [{]" { inside = 1; next }
+    inside && /^}/ { inside = 0 }
+    !inside || /^[[:space:]]*#/ { next }
+    /^[[:space:]]+--[a-z-]+[)] kb_require_value / && match($0, /[a-z_]+="[$]2"/) {
+        f = $0; sub(/^[[:space:]]+/, "", f); sub(/[)].*$/, "", f)
+        v = substr($0, RSTART, RLENGTH); sub(/=.*$/, "", v)
+        flag[v] = f
+    }
+    /_kbc_build_payload "/ { call = $0 }
+    END {
+        s = call
+        while (match(s, /"[$][a-z_]+"/)) {
+            v = substr(s, RSTART + 2, RLENGTH - 3); s = substr(s, RSTART + RLENGTH)
+            print ((v in flag) ? flag[v] : "UNRESOLVED:" v)
+        }
+    }' "$1" | LC_ALL=C sort
+}
+_pf_classified="$(printf '%s\n' "${PAYLOAD_TEXT_FLAGS[@]}" "${PAYLOAD_REF_FLAGS[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+for _verb in create-card patch; do
+    _pf_derived="$(_payload_flags "$BIN" "cmd_${_verb//-/_}" | tr '\n' ' ')"
+    _pf_expect="$_pf_classified"
+    [[ "$_verb" == patch ]] && _pf_expect="$(printf '%s\n' "${PAYLOAD_TEXT_FLAGS[@]}" "${PAYLOAD_REF_FLAGS[@]}" \
+        "${PAYLOAD_CLEAR_FLAGS[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+    # Positive control FIRST: an empty derivation would make every loop below drive nothing.
+    eq "$_verb: the payload-flag derivation carries real data (positive control)" "false" \
+       "$([[ -z "$_pf_derived" ]] && echo true || echo false)"
+    eq "$_verb: every payload flag is classified, and nothing classified is gone" \
+       "$_pf_expect" "$_pf_derived"
+done
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_CF_VERSION_TARGET=77'
+kb_stub_board_config nover 43 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+PF_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+export PF_CARD
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json)        printf '201\n%s' "$PF_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$PF_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$PF_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# pf <verb> <args…> — drive a verb with only what it REQUIRES plus the flags under test.
+pf() {
+    local verb="$1"; shift
+    case "$verb" in
+        create-card) PF_METHOD=POST;  PF_PATH='/tasks.json';     kbc create-card --type fr --name probe "$@" ;;
+        patch)       PF_METHOD=PATCH; PF_PATH='/tasks/505.json'; kbc patch --task 505 "$@" ;;
+    esac
+}
+# pf_values — every value the last write put in task.payload, as a JSON array. Keyless on
+# purpose: the property is the value that reached the payload, whichever key the flag writes
+# (--version writes `version_target`).
+pf_values() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '[(.payload // {})[]]'; }
+
+PF_NBSP=$'\xc2\xa0'
+PF_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ' $'\v' $'\f' $' \v\f ')
+for _verb in create-card patch; do
+  for _flag in "${PAYLOAD_TEXT_FLAGS[@]}"; do
+    _L="$_verb $_flag"
+    for _b in "${PF_BLANKS[@]}"; do
+        _bn="$(jq -cn --arg s "$_b" '$s')"
+        pf "$_verb" "$_flag" "$_b"
+        eq "$_L $_bn → rc 2"                              "2" "$rc"
+        eq "$_L $_bn → refused as holding no text, by flag" "true" "$(has "$_flag holds no" "$err")"
+        eq "$_L $_bn → issues NO request"                  "0" "$(kb_stub_total)"
+    done
+    # The positive controls that make the zeros above a measurement: the same door accepts any
+    # value with text, and the refusal rewrites none of it — padding is not trimmed by it.
+    pf "$_verb" "$_flag" $'  padded\ttext  '
+    eq "$_L padded text → rc 0"                          "0" "$rc"
+    eq "$_L padded text → padding survives to the wire"  "$(jq -cn --arg s $'  padded\ttext  ' '[$s]')" "$(pf_values)"
+    # The documented residue: blank is six ASCII characters, so U+00A0 is content and is sent.
+    pf "$_verb" "$_flag" "$PF_NBSP"
+    eq "$_L U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_L U+00A0-only → sent verbatim"                 "$(jq -cn --arg s "$PF_NBSP" '[$s]')" "$(pf_values)"
+    # THE CR LEGS: the check passes `verbatim`, so it must not fold CRLF or trim a trailing
+    # newline — and without these legs a refusal that did both passed the whole suite while
+    # changing the bytes sent. The expectation is the value exactly as passed. (Until card#9423 it
+    # was "a\r" / "x\r": the assembler's k=v line-split ended the value at the first LF. That
+    # serialization is retired, and these pins moved with it deliberately.)
+    pf "$_verb" "$_flag" $'a\r\nb'
+    eq "$_L interior CRLF → rc 0"                        "0" "$rc"
+    eq "$_L interior CRLF → not folded by the check (\"a\\r\\nb\" reaches the wire)" \
+       '["a\r\nb"]' "$(pf_values)"
+    pf "$_verb" "$_flag" $'x\r\n'
+    eq "$_L trailing CRLF → rc 0"                        "0" "$rc"
+    eq "$_L trailing CRLF → not trimmed by the check (\"x\\r\\n\" reaches the wire)" \
+       '["x\r\n"]' "$(pf_values)"
+  done
+  # The correlation refs already refuse through their own validators; held here so "no payload
+  # flag accepts a visually blank value" is a claim about the derived set, not about four of it.
+  for _flag in "${PAYLOAD_REF_FLAGS[@]}"; do
+    pf "$_verb" "$_flag" '   '
+    eq "$_verb $_flag whitespace-only → rc 2"            "2" "$rc"
+    eq "$_verb $_flag whitespace-only → issues NO request" "0" "$(kb_stub_total)"
+  done
+done
+
+# A blank --version is a MALFORMED INVOCATION whether or not this board would have used it: the
+# refusal sits ahead of the KB_CF_VERSION_TARGET branch. The control proves that branch is live
+# on this board (a real value is ignored with its warning), so the rc 2 is the blank check's.
+kbc --board nover patch --task 505 --version '   '
+eq "--version blank on a board with no version field → rc 2" "2" "$rc"
+eq "…refused as holding no text"                     "true" "$(has '--version holds no' "$err")"
+eq "…and issues NO request"                          "0" "$(kb_stub_total)"
+kbc --board nover patch --task 505 --version v1.2.3 --dl DL-7
+eq "control: a real --version there is ignored, not refused" "true" "$(has '--version ignored' "$err")"
+eq "…and the call still lands"                       "0" "$rc"
+
+echo "== payload keys are serialized per key, typed by contract (card#9423) =="
+# THE DEFECT. The assembler joined the payload values as `k=v` LINES and ran every one through
+# jq's `tonumber? // .`, so a value with text was rewritten before it was sent: "1.10" went out as
+# a JSON number, "nan" as null (an explicit CLEAR at rc 0), " 123 " / "00123" / "1e3" / "inf" as
+# numbers; a leading newline sent "" (which the board trims to null — a clear), an interior one
+# truncated the value, and a line shaped `key=value` WROTE a payload key the caller never named.
+# Each key is now serialized on its own: the four text flags go out as JSON strings, exactly as
+# passed, and only pr_number / issue_number keep `tonumber? // .`. An acceptance change; asked
+# and granted.
+#
+# The population is PAYLOAD_TEXT_FLAGS, derived above from each verb's own call. Every leg
+# asserts the WHOLE payload object, so an extra key (the injection) reds as surely as a re-typed
+# or truncated value.
+_pk_key() {
+    case "$1" in
+        --origin) echo origin ;; --version) echo version_target ;;
+        --pr-url) echo pr_url ;; --issue-url) echo issue_url ;;
+        *) echo "UNMAPPED:$1" ;;
+    esac
+}
+pf_payload() { kb_stub_bodies "$PF_METHOD" "$PF_PATH" | jq -c '.payload'; }
+PK_VALUES=('1.10' ' 123 ' '00123' '1e3' 'nan' 'inf' 'null' 'true' $'\nfoo' $'foo\nversion_target=evil'
+           $'foo\npr_url=https://github.com/evil/r/pull/1' $'a\r\nb' $'x\r\n' $'  padded\ttext  '
+           'https://github.com/o/r/pull/7')
+for _verb in create-card patch; do
+  for _flag in "${PAYLOAD_TEXT_FLAGS[@]}"; do
+    for _v in "${PK_VALUES[@]}"; do
+        _vn="$(jq -cn --arg s "$_v" '$s')"
+        pf "$_verb" "$_flag" "$_v"
+        eq "$_verb $_flag $_vn → rc 0" "0" "$rc"
+        eq "$_verb $_flag $_vn → the one key, a JSON string, verbatim" \
+           "$(jq -cn --arg k "$(_pk_key "$_flag")" --arg s "$_v" '{($k): $s}')" "$(pf_payload)"
+    done
+  done
+  # THE NUMERIC-BY-CONTRACT KEYS. pr_number / issue_number are declared `number`, and every
+  # expectation here is what origin/dev sent for the same value on jq-1.7 (measured against this
+  # stub): a numeric spelling goes out as a JSON number, a decorated one as the string it always
+  # was. The padded legs are the jq-version pins: jq-1.7's tonumber accepts surrounding space, tab,
+  # CR and LF and jq-1.8 refuses them, so the assembler trims exactly that set before the attempt.
+  # Without the trim these legs pass on 1.7 and red on 1.8 — run this file under both.
+  for _ref in --pr:pr_number --issue:issue_number; do
+    _flag="${_ref%%:*}"; _k="${_ref#*:}"
+    pf "$_verb" "$_flag" 178
+    eq "$_verb $_flag 178 → a JSON number"                 "{\"$_k\":178}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" '00123'
+    eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" ' 123 '
+    eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" $'178\n'
+    eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pf_payload)"
+    # The trim feeds only the number attempt: a value that is not a number after it is sent
+    # exactly as passed, padding included.
+    pf "$_verb" "$_flag" ' #178 '
+    eq "$_verb $_flag ' #178 ' → the untrimmed string, as on dev" "{\"$_k\":\" #178 \"}" "$(pf_payload)"
+    pf "$_verb" "$_flag" '#178'
+    eq "$_verb $_flag '#178' → the decorated string, as on dev" "{\"$_k\":\"#178\"}" "$(pf_payload)"
+    # A ref value is decorated-integer-validated, and decoration may contain a newline: the
+    # injection shape reaches this key too, and must stay inside its value.
+    pf "$_verb" "$_flag" $'#178\nversion_target=evil'
+    eq "$_verb $_flag with an embedded key=value line → no key injected" \
+       "$(jq -cn --arg k "$_k" --arg s $'#178\nversion_target=evil' '{($k): $s}')" "$(pf_payload)"
+  done
+  pf "$_verb" --dl DL-12
+  eq "$_verb --dl DL-12 → the canonical DL string, as on dev" '{"dl_number":"DL-0012"}' "$(pf_payload)"
+  # The full set, in dev's key order — the order is part of the wire bytes.
+  pf "$_verb" --dl DL-93 --pr 178 --pr-url https://github.com/o/r/pull/0 --version v0.9.2 \
+     --issue 300 --issue-url https://github.com/o/r/issues/300 --origin preemptive
+  eq "$_verb every payload flag → dev's exact object and key order" \
+     '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","issue_number":300,"issue_url":"https://github.com/o/r/issues/300","version_target":"v0.9.2","origin":"preemptive"}' \
+     "$(pf_payload)"
+done
+
+unset -f _pk_key pf_payload
+unset PK_VALUES _v _vn _ref _k
+
+unset -f pf pf_values kb_stub_route _payload_flags
+unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS PAYLOAD_CLEAR_FLAGS
+unset _verb _flag _L _b _bn _pf_classified _pf_derived _pf_expect
+
+# ---------------------------------------------------------------------------
+echo "== patch --clear <field> — the payload fields' clearer the blank refusal made necessary (card#9420) =="
+# WHY THIS FLAG EXISTS. card#9338 refused a visually blank --origin / --version / --pr-url /
+# --issue-url, and a blank value was the only DELIBERATE route this CLI had to empty one of them
+# (a wont_do decline also nulls pr_url, as a side effect of declining): the board turned it into a
+# clear. A field a tool can set and not unset goes stale in place — and a wrong
+# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`. The operator's
+# ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
+# issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
+# sent as null (kanban-board TaskMutator::update) and leaves an omitted one alone.
+#
+# THE POPULATION IS `_kbc_clearable`, the bin's one declaration; every per-field leg loops over
+# it. The pin below is the ruling itself: widening the set is an acceptance change, so it reds.
+# Every write leg asserts the WHOLE request body, so a stray key reds as surely as a missing null.
+_clr_fields() { _kbc_clearable | awk '{print $1}'; }
+eq "the clearable set is the ruled set, field → payload key" \
+   "origin:origin version:version_target pr-url:pr_url issue-url:issue_url" \
+   "$(_kbc_clearable | awk '{printf "%s%s:%s", (NR > 1 ? " " : ""), $1, $2}')"
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_WONT_DO=60' 'export KB_CF_VERSION_TARGET=77'
+kb_stub_board_config nover 43 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+
+# The usage block restates the set as operator help text (a program prints it, so it cannot point
+# at `_kbc_clearable`). The pin above does not read it; this does, over the rendered usage, so a
+# member added to or dropped from the declaration without the help text reds here.
+kbc
+eq "no-arg usage → rc 0" "0" "$rc"
+eq "the usage block's --clear list names exactly the _kbc_clearable fields" \
+   "$(_clr_fields | sort | paste -sd' ' -)" \
+   "$(printf '%s\n' "$out" | tr '\n' ' ' \
+      | sed -n -E "s/.*--clear FIELD\[,FIELD\.\.\.\] IS THE PAYLOAD FIELDS' CLEARER — ([^(]*)\(the setter.*/\1/p" \
+      | tr ',' '\n' | awk 'NF {print $1}' | sort | paste -sd' ' -)"
+
+# 505 answers the way the board does: the request's payload MERGED onto a card that already holds
+# every clearable key, a null REMOVING its key. 506 answers with the card UNCHANGED — a server that
+# did not clear — so the echo's raw projection can be shown to report a held value, not a
+# fabricated null.
+CL_HELD='{"dl_number":"DL-0001","origin":"preemptive","version_target":"v1","pr_url":"https://github.com/o/r/pull/1","issue_url":"https://github.com/o/r/issues/1"}'
+export CL_HELD
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "PATCH "*/tasks/505.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" --argjson held "$CL_HELD" \
+                '($held + ($b.payload // {}) | with_entries(select(.value != null))) as $p
+                 | {data: ({id:505,name:"probe",workflow_stage_id:48} + ($b | del(.payload))
+                           + (if ($p | length) > 0 then {payload: $p} else {} end))}' ;;
+        "PATCH "*/tasks/506.json)
+            printf '200\n'
+            jq -cn --argjson held "$CL_HELD" '{data: {id:506,name:"probe",workflow_stage_id:48,payload:$held}}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+cl_body() { kb_stub_bodies PATCH "/tasks/${1:-505}.json" | jq -c .; }
+
+while read -r _f _k; do
+    kbc patch --task 505 --clear "$_f"
+    eq "--clear $_f → rc 0"                                   "0" "$rc"
+    eq "--clear $_f → the whole body is {payload: {$_k: null}}" \
+       "$(jq -cn --arg k "$_k" '{payload: {($k): null}}')" "$(cl_body)"
+    eq "--clear $_f → a JSON null, NOT an empty string"      '"null"' \
+       "$(cl_body | jq -c --arg k "$_k" '.payload[$k] | type')"
+    eq "--clear $_f → the echo SHOWS the null under payload" '[true,null]' \
+       "$(jq -c --arg k "$_k" '[(.payload | has($k)), .payload[$k]]' <<<"$out")"
+    # The setter exclusion, in both argument orders, decided before any request and naming the
+    # flag the caller passed.
+    kbc patch --task 505 "--$_f" 'a-value' --clear "$_f"
+    eq "--$_f + --clear $_f → rc 2"                           "2" "$rc"
+    eq "…names the setter passed and the clear" "true" \
+       "$(has "--$_f and --clear $_f are mutually exclusive" "$err")"
+    eq "…and NOT ONE request was issued"                      "0" "$(kb_stub_total)"
+    kbc patch --task 505 --clear "$_f" "--$_f" 'a-value'
+    eq "--clear $_f + --$_f (reversed) → rc 2"                "2" "$rc"
+    eq "…and cost no traffic"                                 "0" "$(kb_stub_total)"
+    # create-card does not take it: nothing to clear at birth.
+    kbc create-card --type fr --name probe --clear "$_f"
+    eq "create-card --clear $_f → rc 2, unknown arg"         "true" \
+       "$([[ "$rc" == 2 ]] && has "unknown arg '--clear'" "$err")"
+    eq "…and cost no traffic"                                 "0" "$(kb_stub_total)"
+done < <(_kbc_clearable)
+
+# Several fields are ONE comma list; the order is the caller's, a repeated member is one clear.
+_all="$(_clr_fields | paste -sd, -)"
+kbc patch --task 505 --clear "$_all"
+eq "--clear <every field> → rc 0"                             "0" "$rc"
+eq "…every key null, nothing else in the body" \
+   '{"payload":{"origin":null,"version_target":null,"pr_url":null,"issue_url":null}}' "$(cl_body)"
+eq "…and the echo shows each null, the untouched key still held" \
+   '{"dl_number":"DL-0001","origin":null,"version_target":null,"pr_url":null,"issue_url":null}' \
+   "$(jq -c '.payload' <<<"$out")"
+kbc patch --task 505 --clear origin,origin
+eq "--clear origin,origin → one clear"                        '{"payload":{"origin":null}}' "$(cl_body)"
+# Clearing one field and setting ANOTHER is not an exclusion.
+kbc patch --task 505 --clear origin --pr-url https://github.com/o/r/pull/9
+eq "--clear origin + --pr-url → rc 0"                         "0" "$rc"
+eq "…sets the one and nulls the other" \
+   '{"payload":{"pr_url":"https://github.com/o/r/pull/9","origin":null}}' "$(cl_body)"
+
+# --- the controls that make "the echo shows the null" a measurement ----------------------
+kbc patch --task 506 --clear origin
+eq "a server that did NOT clear → the echo shows the value it holds, not a null" \
+   '"preemptive"' "$(jq -c '.payload.origin' <<<"$out")"
+kbc patch --task 505 --dl DL-7
+eq "a patch with no --clear → the body carries no null" '{"payload":{"dl_number":"DL-0007"}}' "$(cl_body)"
+eq "…and its echo payload is the server's, no key added" \
+   '{"dl_number":"DL-0007","origin":"preemptive","version_target":"v1","pr_url":"https://github.com/o/r/pull/1","issue_url":"https://github.com/o/r/issues/1"}' \
+   "$(jq -c '.payload' <<<"$out")"
+
+# --- the refusals, every one decided offline ----------------------------------------------
+_accepted="$(_clr_fields | paste -sd, - | sed 's/,/, /g')"
+for _bad in description pr_url version_target --origin ' origin' 'origin ' 'origin,' ',origin' ',' $'origin\nversion' 'ORIGIN'; do
+    _bn="$(jq -cn --arg s "$_bad" '$s')"
+    kbc patch --task 505 --clear "$_bad"
+    eq "--clear $_bn → rc 2"                                  "2" "$rc"
+    eq "--clear $_bn → names the accepted set"                "true" "$(has "accepted: $_accepted" "$err")"
+    eq "--clear $_bn → issues NO request"                     "0" "$(kb_stub_total)"
+done
+kbc patch --task 505 --clear origin --clear version
+eq "a second --clear → rc 2"                                  "2" "$rc"
+eq "…pointing at the comma list"                              "true" "$(has '--clear was passed twice' "$err")"
+eq "…and cost no traffic"                                     "0" "$(kb_stub_total)"
+
+# --- the version_target gate, which holds a clear exactly as it holds a set -----------------
+kbc --board nover patch --task 505 --clear version --dl DL-7
+eq "--clear version on a board with no version field → rc 0" "0" "$rc"
+eq "…warns that it is ignored"                                "true" "$(has '--clear version ignored' "$err")"
+eq "…and sends no version_target key"                         '{"payload":{"dl_number":"DL-0007"}}' "$(cl_body)"
+kbc --board nover patch --task 505 --clear version,origin
+eq "…and a list keeps its other members"                      '{"payload":{"origin":null}}' "$(cl_body)"
+kbc --board nover patch --task 505 --clear version --version v2
+eq "--clear version + --version on that board → still rc 2"   "2" "$rc"
+eq "…and cost no traffic"                                     "0" "$(kb_stub_total)"
+
+# --- beside a decline: an explicit clear composes with the decline nulls, and wins over --keep-refs
+kbc patch --task 505 --column wont_do --clear origin
+eq "wont_do + --clear origin → decline nulls AND the clear, in one body" \
+   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null,"origin":null},"workflow_stage_id":60}' \
+   "$(cl_body)"
+kbc patch --task 505 --column wont_do --clear pr-url
+eq "wont_do + --clear pr-url → pr_url null once, no conflict" \
+   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}' \
+   "$(cl_body)"
+kbc patch --task 505 --column wont_do --keep-refs --clear pr-url
+eq "wont_do --keep-refs + --clear pr-url → the explicit clear still rides" \
+   '{"assigned_user_id":null,"payload":{"pr_url":null},"workflow_stage_id":60}' "$(cl_body)"
+# The --keep-refs notice lists what it RETAINED, so a key this call cleared must not be in it: the
+# line is still printed (presence) and names only the stamps that survived (content).
+eq "…and the retained notice names only the stamps NOT cleared" \
+   "kbcard: --keep-refs — correlation stamps (dl_number, pr_number) retained" \
+   "$(command grep 'retained' <<<"$err")"
+kbc patch --task 505 --column wont_do --keep-refs --clear origin
+eq "wont_do --keep-refs + --clear origin → the notice still names every correlation stamp" \
+   "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" \
+   "$(command grep 'retained' <<<"$err")"
+
+unset -f _clr_fields cl_body kb_stub_route
+unset CL_HELD _f _k _all _accepted _bad _bn
+
+# ---------------------------------------------------------------------------
+echo "== --tags — a visually blank value is refused, not sent (card#9421) =="
+# THE DEFECT. `--tags` took `kb_require_value` only, so `"   "` was sent as its own element, beside
+# any `type:` / `triaged` the call appends (rc 0 against this stub) — and `patch --tags` REPLACES
+# the card's whole tag list, so wherever the board accepts that write, a $TAGS that expanded to
+# padding wipes every tag the call does not re-append. What the live board does with it is not
+# measured here. Narrowing a shipped flag is an acceptance change; asked and granted. Only the
+# WHOLE value is in the ruling: a blank MEMBER is still sent, and the member legs below pin that
+# rather than endorse it.
+#
+# THE POPULATION IS DERIVED: every verb whose own case block carries a `--tags)` arm. The parity
+# leg reds in both directions, so a verb gaining `--tags` cannot land undriven here.
+TAGS_VERBS=(create-card patch)
+
+# _tags_verbs <bin> — the verbs (cmd_<verb> functions) that parse a --tags flag.
+_tags_verbs() {
+    awk '
+    /^cmd_[a-z_]+[(][)] [{]/ { fn = $1; sub(/[(][)].*$/, "", fn); next }
+    /^}/ { fn = "" }
+    fn != "" && /^[[:space:]]+--tags[)] / { sub(/^cmd_/, "", fn); gsub(/_/, "-", fn); print fn }
+    ' "$1" | LC_ALL=C sort -u
+}
+_tv_derived="$(_tags_verbs "$BIN" | tr '\n' ' ')"
+eq "--tags verb derivation carries real data (positive control)" "false" \
+   "$([[ -z "$_tv_derived" ]] && echo true || echo false)"
+eq "every verb taking --tags is driven here, and nothing driven is gone" \
+   "$(printf '%s\n' "${TAGS_VERBS[@]}" | LC_ALL=C sort | tr '\n' ' ')" "$_tv_derived"
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# No KB_TYPE_FR: `--type fr` is tag-typed here, so create-card APPENDS `type:fr` to the list. That
+# is what makes the create-card refusals discriminate: a check reading the value AFTER the append
+# would see `   ,type:fr` and pass it.
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_install
+TG_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":["keep"]}}'
+export TG_CARD
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json)        printf '201\n%s' "$TG_CARD" ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '200\n%s' "$TG_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "$TG_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+
+# tg <verb> <args…> — drive a verb with only what it REQUIRES plus the flags under test. patch
+# takes an EXTERNAL-ID ref on purpose: resolving it costs a lookup request, so the zero-request
+# legs also red a check placed after resolve_task (e.g. inside _kbc_patch_tags).
+tg() {
+    local verb="$1"; shift
+    case "$verb" in
+        create-card) TG_METHOD=POST;  TG_PATH='/tasks.json';     kbc create-card --type fr --name probe "$@" ;;
+        patch)       TG_METHOD=PATCH; TG_PATH='/tasks/505.json'; kbc patch --task ext-505 "$@" ;;
+    esac
+}
+tg_tags() { kb_stub_bodies "$TG_METHOD" "$TG_PATH" | jq -c '.tags'; }
+# tg_expect <verb> <members-json> — the list <verb> sends for those split members: create-card
+# appends the tag-typed alias; patch --tags sends the members alone.
+tg_expect() { jq -c --arg v "$1" 'if $v == "create-card" then . + ["type:fr"] else . end' <<<"$2"; }
+
+TG_BLANKS=('   ' $'\t' $'\r\n' $' \t\r\n ' $'\v' $'\f' $' \v\f ')
+for _verb in "${TAGS_VERBS[@]}"; do
+    for _b in "${TG_BLANKS[@]}"; do
+        _bn="$(jq -cn --arg s "$_b" '$s')"
+        tg "$_verb" --tags "$_b"
+        eq "$_verb --tags $_bn → rc 2"                         "2"    "$rc"
+        eq "$_verb --tags $_bn → refused as holding no text"   "true" "$(has '--tags holds no' "$err")"
+        eq "$_verb --tags $_bn → issues NO request"            "0"    "$(kb_stub_total)"
+    done
+    # POSITIVE CONTROLS — they make the zeros above a measurement, and each expectation is the
+    # list origin/dev sent for the same value (measured against this stub): the check rewrites
+    # nothing, trims no padding, and leaves the comma split exactly as it was.
+    tg "$_verb" --tags '  padded , x '
+    eq "$_verb --tags padded text → rc 0"                      "0" "$rc"
+    eq "$_verb --tags padded text → padding survives the split" \
+       "$(tg_expect "$_verb" '["  padded "," x "]')" "$(tg_tags)"
+    tg "$_verb" --tags $'a\r\nb'
+    eq "$_verb --tags interior CRLF → rc 0"                    "0" "$rc"
+    eq "$_verb --tags interior CRLF → not folded by the check" \
+       "$(tg_expect "$_verb" '["a\r\nb"]')" "$(tg_tags)"
+    # The documented residue: blank is six ASCII characters, so U+00A0 is content and is sent.
+    tg "$_verb" --tags $'\xc2\xa0'
+    eq "$_verb --tags U+00A0-only → rc 0, a non-ASCII blank is CONTENT" "0" "$rc"
+    eq "$_verb --tags U+00A0-only → sent verbatim" \
+       "$(tg_expect "$_verb" "$(jq -cn --arg s $'\xc2\xa0' '[$s]')")" "$(tg_tags)"
+    # ⚠ A BLANK MEMBER IS NOT IN THE RULING, and these legs pin what the wire carries TODAY, not
+    # what it should: refusing or dropping one is a wider acceptance change that has not been asked.
+    tg "$_verb" --tags 'a, ,b'
+    eq "$_verb --tags 'a, ,b' → rc 0"                          "0" "$rc"
+    eq "$_verb --tags 'a, ,b' → the blank member is still sent" \
+       "$(tg_expect "$_verb" '["a"," ","b"]')" "$(tg_tags)"
+    tg "$_verb" --tags 'a,'
+    eq "$_verb --tags 'a,' → rc 0"                             "0" "$rc"
+    eq "$_verb --tags 'a,' → the empty trailing member is still sent" \
+       "$(tg_expect "$_verb" '["a",""]')" "$(tg_tags)"
+    tg "$_verb" --tags ',a'
+    eq "$_verb --tags ',a' → rc 0"                             "0" "$rc"
+    eq "$_verb --tags ',a' → the empty leading member is still sent" \
+       "$(tg_expect "$_verb" '["","a"]')" "$(tg_tags)"
+done
+
+unset -f tg tg_tags tg_expect kb_stub_route _tags_verbs
+unset TG_CARD TG_METHOD TG_PATH TG_BLANKS TAGS_VERBS
+unset _verb _b _bn _tv_derived
+
+echo "== move --stamp-owner, and the terminal owner-tag clear — the seat owner tag =="
+# The seat working a card is the tag `owner:<project>/<seat>` (README.md § The seat owner tag). It
+# is written by its OWN `PATCH {tags}` after a confirmed move — never a key on the move, because
+# the server authorizes a stage-only PATCH as a MOVE and anything else as an UPDATE, so a `tags`
+# key would let a refused or invalid tag write refuse the move with it. Every leg therefore asserts
+# the WHOLE request sequence: the move body exactly, then the tag body exactly (or its absence).
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 \
+    'export KB_STAGE_IN_PROGRESS=49' \
+    'export KB_STAGE_IN_REVIEW=50' \
+    'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_STAGE_RELEASED_TO_MAIN=52' \
+    'export KB_STAGE_WONT_DO=60'
+kb_stub_install
+OWN_CFG="$TMP/coordination.config.json"
+printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"}]}\n' > "$OWN_CFG"
+
+# KB_STUB_CARD is the `.data` the card read answers (so a leg sets the card's tags exactly);
+# KB_STUB_READ swaps that read for a refusal or a 2xx no card can be read out of.
+# KB_STUB_TAGS_PATCH answers any PATCH carrying `tags` with that status (the server's update
+# authorization / tag validation), while a PATCH without `tags` still moves; KB_STUB_MOVE refuses
+# the move itself. KB_STUB_ECHO_STAGE makes a 2xx echo name that stage instead of the requested
+# one — a move the server answered but did not confirm.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "GET "*/tasks/606.json*)
+            case "${KB_STUB_READ:-ok}" in
+                403)    printf '403\n{"message":"This action is unauthorized."}' ;;
+                nocard) printf '200\n{"ok":true}' ;;
+                *)      printf '200\n{"data":%s}' "${KB_STUB_CARD:-{\"id\":606\}}" ;;
+            esac ;;
+        "PATCH "*/tasks/606.json)
+            if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
+                case "$KB_STUB_TAGS_PATCH" in
+                    403) printf '403\n{"message":"This action is unauthorized."}' ;;
+                    422) printf '422\n{"message":"The tags.1 field must not be greater than 64 characters.","errors":{"tags.1":["x"]}}' ;;
+                esac
+            elif [[ -n "${KB_STUB_MOVE:-}" ]] && jq -e 'has("workflow_stage_id")' <<<"$body" >/dev/null; then
+                printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
+            else
+                printf '200\n'
+                jq -cn --argjson b "$body" '{data: ({id:606,name:"probe",workflow_stage_id:48} + $b)}
+                    | if $ENV.KB_STUB_ECHO_STAGE then .data.workflow_stage_id = ($ENV.KB_STUB_ECHO_STAGE | tonumber) else . end'
+            fi ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE
+
+# own <env-assignments…> -- <kbcard args…>: run kbcard with a seat declared (or not) in the env.
+own() {
+    local envs=()
+    while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done
+    shift
+    kb_stub_reset; rc=0
+    out="$(env "${envs[@]}" "$BIN" "$@" 2>"$TMP/e")" || rc=$?
+    err="$(cat "$TMP/e")"
+}
+SEAT=(COORD_CONFIG="$OWN_CFG" COORD_AGENT=builder)
+# obodies: every PATCH body to the card, in order, key-sorted — line 1 the move, line 2 the tags.
+obodies() { kb_stub_bodies PATCH /tasks/606.json | jq -cS .; }
+card() { printf '{"id":606,"workflow_stage_id":48,"tags":%s}' "$1"; }
+MOVE49='{"workflow_stage_id":49}'
+
+# --- the stamp ----------------------------------------------------------------------------
+KB_STUB_CARD="$(card '["fr","triaged"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "stamp on an unowned card → rc 0"                   "0" "$rc"
+eq "⭐ …the MOVE is stage-only, THEN a separate PATCH carries the card's tags plus the owner tag" \
+   "$MOVE49"$'\n''{"tags":["fr","triaged","owner:acme/builder"]}' "$(obodies)"
+eq "…after exactly one card read"                      "1" "$(kb_stub_count GET /tasks/606.json)"
+eq "…and says it stamped, naming the tag"              "true" "$(has 'owner tag owner:acme/builder stamped on task 606' "$err")"
+eq "…with the move's own echo on stdout"               "true" "$(has '"workflow_stage_id": 49' "$out")"
+KB_STUB_CARD='{"id":606,"workflow_stage_id":48}' own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a card with no tags key gets the owner tag alone"  "$MOVE49"$'\n''{"tags":["owner:acme/builder"]}' "$(obodies)"
+
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "the SAME owner already present → rc 0"             "0" "$rc"
+eq "…the move alone (no tags write)"                   "$MOVE49" "$(obodies)"
+eq "…and nothing is refused"                           "false" "$(has 'NOT stamped' "$err")"
+
+# --- ⭐ BLOCKER: a tag write the server REFUSES never refuses the move ------------------------
+for _tp in 403 422; do
+    KB_STUB_TAGS_PATCH=$_tp KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+    eq "⭐ tag write $_tp → rc 0 (the move is the verb)"   "0" "$rc"
+    eq "⭐ tag write $_tp → the move body is exactly {workflow_stage_id}, and the tag write followed it" \
+       "$MOVE49"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(obodies)"
+    eq "tag write $_tp → the card moved (the echo is on stdout)" "true" "$(has '"workflow_stage_id": 49' "$out")"
+    eq "tag write $_tp → NOT stamped, with the status"   "true" "$(has "owner tag owner:acme/builder NOT stamped on task 606 — HTTP $_tp, server said: " "$err")"
+done
+eq "…a 422 carries the server's own reason"            "true" "$(has 'must not be greater than 64 characters' "$err")"
+KB_STUB_MOVE=403 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a REFUSED move → rc 1"                             "1" "$rc"
+eq "…and no owner tag is written for a move that did not happen" "$MOVE49" "$(obodies)"
+eq "…nor is the card read for one"                     "0" "$(kb_stub_count GET /tasks/606.json)"
+# A 2xx is not the confirmation: the echo's stage is. A move answered with ANOTHER stage is one
+# this tool cannot vouch for, so no stamp may follow it.
+KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ a move whose echo names ANOTHER stage → rc 1"    "1" "$rc"
+eq "…no owner tag is written for a move that was not confirmed" "$MOVE49" "$(obodies)"
+eq "…nor is the card read for one (unconfirmed)"       "0" "$(kb_stub_count GET /tasks/606.json)"
+
+# --- ⭐ refuse on conflict: never overwrite, never a second owner tag, the card still moves ---
+KB_STUB_CARD="$(card '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a card held by ANOTHER seat → rc 0 (the move is the verb)" "0" "$rc"
+eq "⭐ …the move alone: the holder's tag untouched, no second owner" "$MOVE49" "$(obodies)"
+eq "…naming the holder"                                "true" "$(has 'already held by owner:other/reviewer' "$err")"
+eq "…and this seat's tag"                              "true" "$(has 'owner tag owner:acme/builder NOT stamped on task 606' "$err")"
+# The project qualifier is what makes this a conflict: the SAME seat name on another install.
+KB_STUB_CARD="$(card '["owner:elsewhere/builder"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "the same seat NAME under another project is a different owner" "$MOVE49" "$(obodies)"
+eq "…and is named as the holder"                       "true" "$(has 'already held by owner:elsewhere/builder' "$err")"
+
+# --- an owner that cannot be resolved: the move, no stamp, loud, and no read ---------------
+KB_STUB_CARD="$(card '["fr"]')" own "COORD_CONFIG=$OWN_CFG" COORD_AGENT=ghost -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_AGENT outside the roster → rc 0"             "0" "$rc"
+eq "…the move alone"                                   "$MOVE49" "$(obodies)"
+eq "…says why, naming the seat"                        "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$err")"
+eq "…and never reads the card for a stamp it cannot make" "0" "$(kb_stub_count GET /tasks/606.json)"
+KB_STUB_CARD="$(card '["fr"]')" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_CONFIG unset and no default config → the move alone" "$MOVE49" "$(obodies)"
+eq "…says so"                                          "true" "$(has 'COORD_CONFIG is unset and there is no readable coord config at the default path' "$err")"
+mkdir -p "$HOME/.config/coord"; cp "$OWN_CFG" "$HOME/.config/coord/coordination.config.json"
+KB_STUB_CARD="$(card '["fr"]')" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_CONFIG unset, the coord default present → stamps from it" "$MOVE49"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(obodies)"
+rm -f "$HOME/.config/coord/coordination.config.json"
+printf '{"project":"  ","roster":[{"name":"builder"}]}\n' > "$TMP/blank-project.json"
+KB_STUB_CARD="$(card '["fr"]')" own "COORD_CONFIG=$TMP/blank-project.json" COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
+eq "a blank project → the move alone"                  "$MOVE49" "$(obodies)"
+eq "…says so"                                          "true" "$(has 'has no non-empty `project`' "$err")"
+
+# --- the tags cannot be read: NEVER a list built from nothing -----------------------------
+for _r in 403 nocard; do
+    KB_STUB_READ=$_r own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+    eq "tag read $_r → rc 0"                           "0" "$rc"
+    eq "tag read $_r → the move alone, no tag write"   "$MOVE49" "$(obodies)"
+    eq "tag read $_r → says the tags could not be read" "true" "$(has 'current tags could not be read' "$err")"
+done
+KB_STUB_CARD='{"id":606,"tags":{"0":"keep-me"}}' own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a tags OBJECT is unreadable, not a list"           "$MOVE49" "$(obodies)"
+
+# --- a plain move is not a writer, and a claim beside a terminal column is refused ---------
+KB_STUB_CARD="$(card '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress
+eq "a move WITHOUT --stamp-owner sends the move alone" "$MOVE49" "$(obodies)"
+eq "…and reads nothing"                                "0" "$(kb_stub_count GET /tasks/606.json)"
+for _tc in shipped_to_dev released_to_main wont_do; do
+    own "${SEAT[@]}" -- move --task 606 --column "$_tc" --stamp-owner
+    eq "--stamp-owner beside terminal $_tc → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+done
+
+# --- ⭐ the terminal clear: every owner tag goes, every other tag stays, after the move -------
+KB_STUB_CARD="$(card '["fr","owner:acme/builder","triaged","owner:other/reviewer"]')" own -- move --task 606 --column shipped_to_dev
+eq "move → shipped_to_dev → rc 0"                      "0" "$rc"
+eq "⭐ …the move carries no tags; a separate PATCH removes EVERY owner tag and keeps the rest" \
+   '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr","triaged"]}' "$(obodies)"
+eq "…naming what it removed"                           "true" "$(has 'removed owner tag(s) owner:acme/builder, owner:other/reviewer from task 606' "$err")"
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column released_to_main
+eq "⭐ move → released_to_main is terminal: the assignment and the owner tag are cleared" \
+   '{"assigned_user_id":null,"workflow_stage_id":52}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column wont_do
+eq "move → wont_do clears it too, after the decline stamps" \
+   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
+eq "patch --column shipped_to_dev clears it too"       '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column released_to_main
+eq "patch --column released_to_main clears it too"     '{"assigned_user_id":null,"workflow_stage_id":52}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
+eq "⭐ patch --column shipped_to_dev whose echo names ANOTHER stage → rc 1" "1" "$rc"
+eq "…the patch alone: no owner clear follows an unconfirmed move" '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
+eq "…and no card read for one"                         "0" "$(kb_stub_count GET /tasks/606.json)"
+# A call that carries its own tag list sends it with the patch as asked; the owner clear is still
+# its own fresh read and write after the move.
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev --triaged
+eq "patch --column shipped_to_dev --triaged: the patch as asked, then the owner clear" \
+   '{"assigned_user_id":null,"tags":["fr","owner:acme/builder","triaged"],"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
+KB_STUB_CARD="$(card '["fr"]')" own -- move --task 606 --column shipped_to_dev
+eq "a terminal move of a card with NO owner tag sends no tag write" \
+   '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
+eq "…and says nothing about an owner"                  "false" "$(has 'owner tag' "$err")"
+KB_STUB_READ=403 own -- move --task 606 --column shipped_to_dev
+eq "a terminal move whose tags cannot be read → rc 0"  "0" "$rc"
+eq "…moves, with no tag write (never a list built from nothing)" \
+   '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
+eq "…and says the owner tag was NOT cleared"           "true" "$(has 'owner tags NOT cleared on task 606' "$err")"
+KB_STUB_TAGS_PATCH=403 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column shipped_to_dev
+eq "a terminal move whose tag write is REFUSED → rc 0" "0" "$rc"
+eq "…the move landed and the clear was attempted after it" \
+   '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
+eq "…and says NOT cleared, with the status"            "true" "$(has 'owner tags NOT cleared on task 606 — HTTP 403' "$err")"
+
+# THE NEGATIVE CONTROL: a non-terminal move keeps the owner — no tag write, and no read for one.
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column in_review
+eq "a NON-terminal move keeps the owner tag (no tag write)" '{"workflow_stage_id":50}' "$(obodies)"
+eq "…and reads no tags"                                "0" "$(kb_stub_count GET /tasks/606.json)"
+KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column in_review
+eq "…nor does patch --column in_review"                '{"workflow_stage_id":50}' "$(obodies)"
+
+unset -f own obodies card kb_stub_route
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE OWN_CFG SEAT MOVE49 _r _tp _tc
 
 # ---------------------------------------------------------------------------
 _summary "kbcard-selftest"

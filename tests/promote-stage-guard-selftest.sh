@@ -21,12 +21,14 @@
 # entry, so a rename moves the reported check name `selftest (promote-stage-guard-selftest)`.
 #
 # ⚠ THIS PARAGRAPH USED TO SAY that check name "is a required status check", and that a rename
-# would leave the context permanently unreported. Read live for card#8261,
-# `branches/{main,dev}/protection` answer `required_status_checks: null` — nothing is required, so
-# no matrix entry's name has been load-bearing on a merge. It is not going to become load-bearing
-# either: the required context is the single `ci-gate` job, which `needs:` the whole matrix and
-# survives any entry being renamed. That is what the aggregator is FOR. The rename is still
-# avoided, for the reading reason above; the settings reason is retired.
+# would leave the context permanently unreported — and then, for card#8261, that
+# `required_status_checks` answered `null` and nothing was required at all. Both were true when
+# written; neither is now. What holds across all three states is the only thing this file needs:
+# NO MATRIX ENTRY'S NAME IS REQUIRED, because the gate in front of the matrix is the aggregating
+# `ci-gate` job, which `needs:` the whole matrix and survives any entry being renamed — that is
+# what the aggregator is FOR. `tests/ci-gate-selftest.sh` declares the required set and carries the
+# command that re-prints it live; this file states no status and no name list, which is what keeps
+# it from going stale a third time. The rename is still avoided, for the reading reason above.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

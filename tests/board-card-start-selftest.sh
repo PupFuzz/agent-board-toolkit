@@ -74,12 +74,157 @@ lint_silent "embedded 'card' (discard_42) → silent" "feature/discard_42-x"
 lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
 
 echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
-# --lint short-circuits before any board/network work; exercises the real arg path + exit code.
+# --lint moves nothing and issues no request; exercises the real arg path + exit code. The
+# malformed spelling carries no ACCEPTED card id, so the card-id floor leg has nothing to judge
+# and this run is independent of the host's config. The compliant-spelling silence is asserted
+# in the floor fixture below, because a compliant id is now judged against a floor, and whether
+# that is silent depends on a seeded board env rather than on the spelling alone.
 _lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
 [[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
 grep -q "board-branch-lint:.*card 4524" <<< "$_lout" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
-_lout="$(bash "$BCS" --lint "fix/card-4524-x" 2>&1 || true)"
-[[ -z "$_lout" ]] && ok "--lint silent on the compliant spelling" || bad "--lint wrongly warned: $_lout"
+
+echo "== _bcs_card_id — the id both the mover and the floor leg judge (explicit first, else typed) =="
+expect_out "explicit card-N"                        "4524" _bcs_card_id "fix/card-4524-x"
+expect_out "typed leading id"                       "712"  _bcs_card_id "fix/712-foo"
+expect_out "explicit beats a typed leading id"      "4524" _bcs_card_id "fix/712/card-4524"
+expect_out "a DL-only branch carries no card id"    ""     _bcs_card_id "feature/dl212-event-gated"
+expect_out "a malformed spelling carries no card id" ""    _bcs_card_id "fix/card_4524-x"
+
+echo "== _bcs_uint_lt — a digit-string compare that cannot wrap (DL-223) =="
+expect_rc "712 < 1000"                                  0 _bcs_uint_lt 712 1000
+expect_rc "1234 < 1235 (boundary, same length)"         0 _bcs_uint_lt 1234 1235
+expect_rc "999 < 1000 (fewer digits)"                   0 _bcs_uint_lt 999 1000
+expect_rc "1000 is NOT < 1000 (at the floor)"           1 _bcs_uint_lt 1000 1000
+expect_rc "4524 is NOT < 1000"                          1 _bcs_uint_lt 4524 1000
+expect_rc "10000 is NOT < 9999 (length decides first)"  1 _bcs_uint_lt 10000 9999
+# 2^64 + 1: `[ … -lt … ]` errors on it (rc 2) and `(( … ))` wraps it to 1 — an arithmetic compare
+# answers neither case.
+expect_rc "a 20-digit id is NOT below a 4-digit floor"  1 _bcs_uint_lt 18446744073709551617 1000
+expect_rc "a 4-digit id IS below a 20-digit floor"      0 _bcs_uint_lt 1000 18446744073709551617
+
+echo "== _bcs_card_id_floor_warning — the card-id floor leg, a second independent predicate (DL-223) =="
+floor_has() { # <label> <needle-ERE> <branch> <board> <envf> <floor> — a line matching the needle
+    local label="$1" needle="$2"; shift 2
+    local got; got="$(_bcs_card_id_floor_warning "$@" 2>/dev/null || true)"
+    grep -qE -- "$needle" <<< "$got" && ok "$label" || bad "$label: expected /$needle/, got '$got'"
+}
+floor_silent() { # <label> <branch> <board> <envf> <floor>
+    local label="$1"; shift
+    expect_out "$label" "" _bcs_card_id_floor_warning "$@"
+}
+_fe="/h/.kanban-t-board.env"
+# PRESENCE — each unjudgeable input speaks, naming the piece that is missing.
+floor_has    "below the floor → warns, naming the id and the floor" \
+             "names card 712, which is BELOW board 42's card-id floor 1000" "fix/card-712-foo" 42 "$_fe" 1000
+floor_has    "below the floor → names BOTH id spaces" \
+             "card ids and GitHub issue/PR numbers are separate id spaces"  "fix/card-712-foo" 42 "$_fe" 1000
+floor_has    "below the floor → teaches the branch-cut rule" \
+             "cut the branch from the CARD id"                              "fix/card-712-foo" 42 "$_fe" 1000
+floor_has    "a TYPED leading id below the floor warns too (the mover moves on it)" \
+             "names card 712, which is BELOW"                               "fix/712-foo"      42 "$_fe" 1000
+floor_has    "one below the floor warns (boundary)" \
+             "names card 999, which is BELOW"                              "fix/card-999-x"  42 "$_fe" 1000
+floor_has    "unseeded floor → SPEAKS, naming the key and the file" \
+             "card-id floor not seeded for board 42 — add 'export KB_CARD_ID_FLOOR=.*' to $_fe" \
+                                                                            "fix/card-712-foo" 42 "$_fe" ""
+floor_has    "unseeded floor speaks for an id that would have PASSED, too" \
+             "card-id floor not seeded"                                     "fix/card-4524-x"  42 "$_fe" ""
+floor_has    "no board mapping → SPEAKS (not checked), never silent" \
+             "card-id floor NOT CHECKED .*this repo maps to no board"       "fix/card-712-foo" "" "" ""
+floor_has    "board resolved but no board env → SPEAKS, naming the board id" \
+             "NOT CHECKED .*no ~/.kanban-\\*-board.env has KB_BOARD_ID=42"  "fix/card-712-foo" 42 "" ""
+floor_has    "a leading-zero floor is refused by name, not silently compared" \
+             "NOT CHECKED .*KB_CARD_ID_FLOOR='01000'"                       "fix/card-712-foo" 42 "$_fe" 01000
+floor_has    "a non-numeric floor is refused by name" \
+             "NOT CHECKED .*KB_CARD_ID_FLOOR='abc'"                         "fix/card-712-foo" 42 "$_fe" abc
+# ABSENCE — each witness shares its input with a presence case above but for ONE variable.
+floor_silent "AT the floor → silent"                     "fix/card-1000-x"  42 "$_fe" 1000
+floor_silent "above the floor → silent"                  "fix/card-4524-x"  42 "$_fe" 1000
+floor_silent "a floor of 0 is silent for every id"        "fix/card-712-foo" 42 "$_fe" 0
+floor_silent "a 20-digit id is not accused (no wrap)"    "fix/card-18446744073709551617-x" 42 "$_fe" 1000
+floor_silent "no card id → nothing to judge, even unseeded and unmapped" "docs/adoption-guide" "" "" ""
+floor_silent "a DL-only branch → nothing to judge"       "feature/dl212-event-gated" "" "" ""
+# INDEPENDENCE — the two legs never answer for each other: the malformed spelling is the other
+# leg's finding and carries no accepted id, so this leg is silent on it, and vice versa.
+floor_silent "the malformed-spelling case is not this leg's" "fix/card_4524-x" "" "" ""
+expect_out "a below-floor id is not the malformed-spelling leg's" "" _bcs_branch_lint_warning "fix/card-712-foo"
+
+echo "== board-card-start --lint — the card-id floor leg, end to end (subprocess, fixture HOME + repo) =="
+# The real argument path and the real config resolution (git config board id → board env →
+# KB_CARD_ID_FLOOR), in a scratch HOME so no operator board env is read. Network-free by
+# construction: no host env and emptied ambient KBCARD_*, so nothing here could name a host.
+if command -v git >/dev/null 2>&1; then
+    _ft="$(mktemp -d)"
+    _frepo="$_ft/repo"; _fhome="$_ft/home"; mkdir -p "$_fhome"
+    git init -q "$_frepo"
+    _flint() {  # <branch> — lint it from inside the fixture repo; sets _frc/_fout
+        _frc=0
+        _fout="$(cd "$_frepo" && HOME="$_fhome" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_ft/bcs.log" \
+                 bash "$BCS" --lint -- "$1" 2>&1)" || _frc=$?
+    }
+    # 1. No board mapping at all.
+    _flint "fix/card-712-foo"
+    [[ "$_frc" -eq 0 ]] && ok "unmapped repo: exits 0" || bad "unmapped repo: expected rc=0 got $_frc"
+    grep -q "board-branch-lint: card-id floor NOT CHECKED .*maps to no board" <<< "$_fout" \
+        && ok "unmapped repo: speaks (not checked)" || bad "unmapped repo: silent or wrong: $_fout"
+    # 2. Mapped, board env present, floor NOT seeded.
+    git -C "$_frepo" config kanban.board-id 42
+    printf 'export KB_BOARD_ID=42\n' > "$_fhome/.kanban-t-board.env"
+    _flint "fix/card-712-foo"
+    grep -q "board-branch-lint: card-id floor not seeded for board 42" <<< "$_fout" \
+        && ok "unseeded: the not-seeded line appears" || bad "unseeded: no not-seeded line: $_fout"
+    # 3. Seeded — the same repo and env, one key added.
+    printf 'export KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' > "$_fhome/.kanban-t-board.env"
+    _flint "fix/card-712-foo"
+    [[ "$_frc" -eq 0 ]] && ok "below floor: exits 0 (a finding is a LINE, never a block)" \
+        || bad "below floor: expected rc=0 got $_frc"
+    grep -q "board-branch-lint: branch 'fix/card-712-foo' names card 712, which is BELOW board 42's card-id floor 1000" <<< "$_fout" \
+        && ok "below floor: the floor line appears" || bad "below floor: no floor line: $_fout"
+    grep -q "not seeded" <<< "$_fout" \
+        && bad "seeded: still reports not seeded: $_fout" || ok "seeded: the not-seeded line is gone"
+    [[ -s "$_ft/bcs.log" ]] \
+        && bad "below floor: --lint wrote the mover's durable log: $(cat "$_ft/bcs.log")" \
+        || ok "below floor: no move attempted (durable log untouched)"
+    _flint "fix/card-4524-x"
+    [[ -z "$_fout" ]] && ok "--lint silent on the compliant spelling at/above a seeded floor" \
+        || bad "--lint wrongly warned on a compliant, above-floor branch: $_fout"
+    _flint "fix/card-1000-x"
+    [[ -z "$_fout" ]] && ok "--lint silent AT the seeded floor" || bad "--lint warned at the floor: $_fout"
+    # 4. The committed board id is enough for the floor (it is not a credential).
+    git -C "$_frepo" config --unset kanban.board-id
+    printf '{"promote":{"board_id":42}}\n' > "$_frepo/.release-pr.json"
+    _flint "fix/card-712-foo"
+    if command -v jq >/dev/null 2>&1; then
+        grep -q "BELOW board 42's card-id floor 1000" <<< "$_fout" \
+            && ok "committed .promote.board_id selects the floor's board env" \
+            || bad "committed board id did not reach the floor: $_fout"
+        # A committed value that is not a plain integer maps to no board, and the line's cause list
+        # names that case rather than only absent / unreadable / jq missing.
+        for _bj in '"42abc"' '-42' '42.0' '["42"]'; do
+            printf '{"promote":{"board_id":%s}}\n' "$_bj" > "$_frepo/.release-pr.json"
+            _flint "fix/card-712-foo"
+            grep -q "card-id floor NOT CHECKED .*maps to no board .*(absent, unreadable, not a plain integer, or jq not on PATH)" <<< "$_fout" \
+                && ok "committed board_id $_bj: NOT CHECKED, naming 'not a plain integer'" \
+                || bad "committed board_id $_bj: cause list wrong: $_fout"
+        done
+    fi
+    # 5. A branch with nothing to judge reads NO config: a board env that records being sourced stays
+    # untouched for a docs or DL-only branch. The card branch is the positive control — without it,
+    # a marker that could never be written would make both absence checks pass vacuously.
+    rm -f "$_frepo/.release-pr.json"
+    git -C "$_frepo" config kanban.board-id 42
+    printf 'touch %q\nexport KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' "$_ft/sourced" > "$_fhome/.kanban-t-board.env"
+    for _nb in "docs/adoption-guide" "feature/dl212-event-gated"; do
+        rm -f "$_ft/sourced"; _flint "$_nb"
+        [[ ! -e "$_ft/sourced" ]] && ok "no card id ($_nb): no board env sourced" \
+            || bad "no card id ($_nb): --lint sourced a board env for a branch with nothing to judge"
+        [[ -z "$_fout" ]] && ok "no card id ($_nb): silent" || bad "no card id ($_nb): spoke: $_fout"
+    done
+    rm -f "$_ft/sourced"; _flint "fix/card-712-foo"
+    [[ -e "$_ft/sourced" ]] && ok "card id (control): the board env IS sourced, so the marker can fire" \
+        || bad "card id (control): board env never sourced — the marker probe cannot fire"
+    rm -rf "$_ft"
+fi
 
 echo "== board-card-start argument surface — flag position, empty positional, HEAD default (card#5333) =="
 # Exercises the REAL argument path in a subprocess, network-free: a fixture repo whose branch
@@ -114,7 +259,9 @@ if command -v git >/dev/null 2>&1; then
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
-        [[ -s "$_log" ]] || grep -q "fix/card-4242-x" <<< "$_out"
+        # The mover's own sentence, not the branch name: --lint's card-id floor leg names the
+        # branch too, and its line is a lint finding, not a move attempt.
+        [[ -s "$_log" ]] || grep -q "carries a DL/card token but the move did not happen" <<< "$_out"
     }
 
     # ZERO ARGS → the current branch. hooks/post-checkout passes NO arguments at all, so this is
@@ -631,6 +778,125 @@ if command -v git >/dev/null 2>&1; then
         && ok "sub-directory argument still prints the canonical <root>/.git/hooks" \
         || bad "sub-directory argument printed a non-canonical target: $_out"
     rm -rf "$_t"
+else
+    echo "  skip (git not on PATH)"
+fi
+
+echo "== the owner tag follows the In Progress move as its own write (process, faked kanban API) =="
+# The whole hook, run as the post-checkout path runs it (no arguments, the fixture repo's branch),
+# against a `curl` stand-in. Every leg asserts the WHOLE PATCH sequence: the move must be exactly
+# `{workflow_stage_id}` (a stage-only PATCH is a MOVE to the server; any other key needs the update
+# permission), and the owner tag, when written, is a SEPARATE `{tags}` PATCH after it. Every
+# refusal must also reach the DURABLE log — the installed wrapper discards this hook's stderr.
+if command -v git >/dev/null 2>&1; then
+    _mktmp_scratch --home
+    # shellcheck source=/dev/null
+    source "$HERE/_kb-api-stub.sh"
+    kb_stub_scrub_env
+    kb_stub_board_config t 42 \
+        'export KB_STAGE_IN_PROGRESS=84' 'export KB_STAGE_BACKLOG=81' 'export KB_STAGE_PRIORITIZED=82'
+    kb_stub_install
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    _orepo="$TMP/repo"
+    git init -q "$_orepo"
+    ( cd "$_orepo" && echo a > a && git add a && git commit -qm a && git checkout -q -b fix/card-4242-x )
+    git -C "$_orepo" config kanban.board-id 42
+    printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$TMP/coordination.config.json"
+    _olog="$TMP/bcs-owner.log"
+
+    # KB_STUB_TAGS is the card's `tags` value, spliced raw so a leg can hand it a non-list.
+    # KB_STUB_TAGS_PATCH answers a PATCH carrying `tags` with that status; KB_STUB_MOVE refuses the
+    # stage-only move.
+    kb_stub_route() {
+        local method="$1" url="$2" body="$3"
+        case "$method $url" in
+            "GET "*/tasks/4242.json*)
+                printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":%s}}' "${KB_STUB_TAGS:-[]}" ;;
+            "PATCH "*/tasks/4242.json)
+                if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
+                    printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
+                elif [[ -n "${KB_STUB_MOVE:-}" ]]; then
+                    printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
+                else
+                    printf '200\n{"data":{"id":4242}}'
+                fi ;;
+            *) printf '404\n{"message":"unrouted"}' ;;
+        esac
+    }
+    export -f kb_stub_route
+
+    _own_run() {  # <COORD_AGENT or -unset> — run the hook; sets _rc/_out/_ologtxt/_obody
+        kb_stub_reset; rm -f "$_olog"; _rc=0
+        local envs=(COORD_CONFIG="$TMP/coordination.config.json")
+        [[ "$1" == -unset ]] || envs+=(COORD_AGENT="$1")
+        _out="$(cd "$_orepo" && env "${envs[@]}" KB_BCS_LOG="$_olog" bash "$BCS" 2>&1)" || _rc=$?
+        _ologtxt="$(cat "$_olog" 2>/dev/null || true)"
+        _obody="$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
+    }
+    _move='{"workflow_stage_id":84}'
+
+    KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "stamp: rc 0"                                     "0" "$_rc"
+    eq "stamp: the stage-only move, THEN a separate PATCH with the card's tags plus the owner tag" \
+       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
+    eq "stamp: …the owner write re-reads the card after the move" "2" "$(kb_stub_count GET /tasks/4242.json)"
+    eq "stamp: …and says so"                             "true" "$(has 'owner tag owner:acme/builder stamped on card #4242' "$_out")"
+
+    for _tp in 403 422; do
+        KB_STUB_TAGS_PATCH=$_tp KB_STUB_TAGS='["fr"]' _own_run builder
+        eq "tag write $_tp: rc 0"                        "0" "$_rc"
+        eq "tag write $_tp: the move is exactly {workflow_stage_id} and still happened" \
+           "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
+        eq "tag write $_tp: the move is reported"        "true" "$(has 'card #4242 (#4242) → In Progress' "$_out")"
+        eq "tag write $_tp: the durable log says NOT stamped, with the status and reason" "true" \
+           "$(has "NOT stamped on card #4242 (#4242) — HTTP $_tp, server said: tag write refused by the stub" "$_ologtxt")"
+        eq "tag write $_tp: …not worded as a failed move" "false" "$(has 'the move did not happen' "$_ologtxt")"
+    done
+
+    KB_STUB_MOVE=403 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "a refused move: no owner tag is written for it"  "$_move" "$_obody"
+    eq "a refused move: …and the card is not re-read for one" "1" "$(kb_stub_count GET /tasks/4242.json)"
+
+    KB_STUB_TAGS='["owner:acme/builder","fr"]' _own_run builder
+    eq "same owner: the move alone (no tags write)"      "$_move" "$_obody"
+    eq "same owner: nothing logged"                      "" "$_ologtxt"
+
+    KB_STUB_TAGS='["fr","owner:other/reviewer"]' _own_run builder
+    eq "conflict: rc 0"                                  "0" "$_rc"
+    eq "conflict: the move STILL happens, the holder's tag untouched, no second owner" "$_move" "$_obody"
+    eq "conflict: the durable log names the holder"      "true" "$(has 'already held by owner:other/reviewer' "$_ologtxt")"
+
+    KB_STUB_TAGS='["fr"]' _own_run ghost
+    eq "seat outside the roster: the move alone"         "$_move" "$_obody"
+    eq "seat outside the roster: the durable log says why" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$_ologtxt")"
+    KB_STUB_TAGS='["fr"]' _own_run -unset
+    eq "COORD_AGENT unset: the move alone"               "$_move" "$_obody"
+    eq "COORD_AGENT unset: the durable log says why"     "true" "$(has 'COORD_AGENT is unset' "$_ologtxt")"
+    eq "…and it is not worded as a failed move"          "false" "$(has 'the move did not happen' "$_ologtxt")"
+
+    KB_STUB_TAGS='{"0":"keep-me"}' _own_run builder
+    eq "unreadable tags: the move alone, no tag write"   "$_move" "$_obody"
+    eq "unreadable tags: the durable log says so"        "true" "$(has 'current tags could not be read' "$_ologtxt")"
+
+    # A card id the board answers 404 for: LOUD only when the branch NAMED the card explicitly
+    # (`card-712`), SILENT for a typed leading id (`fix/712-…`, often a foreign ticket number). Both
+    # legs assert the GET happened, so the silent one is a measured miss, not a run that never read.
+    git -C "$_orepo" checkout -q -b fix/card-712-x
+    _own_run builder
+    eq "explicit id 404: rc 0"                            "0" "$_rc"
+    eq "explicit id 404: the card WAS read"               "1" "$(kb_stub_count GET /tasks/712.json)"
+    eq "explicit id 404: the durable log says it does not exist" "true" "$(has 'card #712 named in the branch does not exist' "$_ologtxt")"
+    eq "explicit id 404: nothing written"                 "" "$(kb_stub_bodies PATCH /tasks/712.json)"
+    git -C "$_orepo" checkout -q -b fix/712-x
+    _own_run builder
+    eq "typed id 404: rc 0"                               "0" "$_rc"
+    eq "typed id 404: the card WAS read"                  "1" "$(kb_stub_count GET /tasks/712.json)"
+    eq "typed id 404: SILENT — nothing in the durable log" "" "$_ologtxt"
+    eq "typed id 404: SILENT — nothing on stderr"         "" "$_out"
+    git -C "$_orepo" checkout -q fix/card-4242-x
+
+    unset -f _own_run kb_stub_route
+    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp
 else
     echo "  skip (git not on PATH)"
 fi

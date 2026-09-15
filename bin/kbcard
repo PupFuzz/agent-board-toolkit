@@ -24,12 +24,41 @@
 #   costs no traffic. What a file puts on the wire: interior newlines and leading whitespace
 #   verbatim, TRAILING newlines trimmed, CRLF normalized to LF (a file written on Windows/Git-Bash
 #   would otherwise send a literal \r, which a reader renders as `?` at the end of every line);
-#   a LONE \r is not a line ending and is left alone. --content applies all of that to its INLINE
-#   value too, and so does --block-reason: a pair with no shipped inline contract to preserve
-#   gets ONE rule across both halves, so its INLINE value is CRLF-folded, trailing-newline-trimmed
-#   and blank-checked exactly as its file value is. --name/--description are the exception, not
-#   the rule: they send an inline value verbatim and unchecked, exactly as they always have,
-#   because narrowing what an already-shipped flag accepts is an acceptance change.
+#   a LONE \r is not a line ending and is left alone. THE TEXT-FREE REFUSAL IS THE ONE RULE EVERY
+#   PAIR OBEYS THROUGH BOTH HALVES: an empty or whitespace-only value is rc 2 before any request
+#   whether it arrived inline or in a file, on every free-text flag here. BLANK MEANS EXACTLY SIX
+#   ASCII CHARACTERS — space, tab, CR, LF, VT (\v), FF (\f) — decided under an LC_ALL=C pin, so
+#   identical bytes get the identical verdict whatever locale the caller runs in. Anything else is
+#   CONTENT and is ACCEPTED: that includes the non-ASCII blanks (U+00A0, U+2003, U+3000), so a name
+#   made only of those is SENT. What the board then does with it is the board's rule and is NOT
+#   measured here. Named rather than hidden — see kb_is_blank in _kb-board-lib.sh for why the set
+#   is spelled out as six literal characters instead of as a class.
+#   --content and --block-reason are CRLF-folded and trailing-newline-trimmed inline as well.
+#   Among the pairs, --name and --description are the one exception and only on the BYTES: their
+#   inline spelling predates its file twin, so an inline value still reaches the wire exactly as
+#   typed (a CRLF one included) — rewriting it would narrow what an already-shipped flag accepts,
+#   which is an acceptance change nobody has asked for. Blank-checking it was one, and it was asked
+#   and granted (card#9222); patch --clear-description is the clearer that refusal made necessary.
+#   THE PAYLOAD TEXT FLAGS — --pr-url, --issue-url, --version and --origin, on create-card and
+#   patch — have no file twin and take the same text-free refusal, rc 2 before any request, with
+#   the same six-character blank set. A value with any text is sent AS TYPED, as a JSON string:
+#   padding, CR and newlines included, never re-typed (" 123 ", "1.10" and "nan" stay strings)
+#   and never split (a newline cannot end the value or add a payload key). Until card#9423 the
+#   assembler split values into k=v lines and coerced each through jq's `tonumber`; retiring that
+#   was an acceptance change, asked and granted. Only --pr / --issue are sent as JSON numbers
+#   (a numeric spelling — "178", "00123", or one padded with spaces, tabs, CRs or newlines —
+#   goes out as a number; a decorated one such as "#178" as the string, exactly as passed). A
+#   blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0 (measured
+#   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
+#   Emptying one ON PURPOSE is said, not spelled as a blank value: `patch --clear <field>` (see
+#   patch below) — card#9420.
+#   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
+#   with the same six-character blank set, decided on the RAW value (before create-card appends
+#   `type:<alias>` / `triaged`). A value with any text is split on commas exactly as before — a
+#   blank MEMBER ("a, ,b", "a,") is not refused and still reaches the wire. A blank one used to be
+#   SENT as its own element, beside any `type:` / `triaged` the call appends: rc 0 wherever the
+#   board accepted it, and on patch that REPLACES the card's whole tag list. What the board does with it is NOT measured here. Refusing it was
+#   an acceptance change, asked and granted (card#9421).
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column backlog|prioritized|in_progress|in_review|held|shipped_to_dev|released_to_main|wont_do \
@@ -46,7 +75,7 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
-#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
 #     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
@@ -61,15 +90,19 @@
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
 #     ⭐ A TERMINAL move ALSO CLEARS THE CARD'S ASSIGNMENT (assigned_user_id) in the same
-#     PATCH — shipped_to_dev and wont_do — so a finished card never holds a stale claim on
-#     a seat that has moved on. `patch --column` does it too: both verbs write through ONE
-#     primitive that owns the rule, rather than each mover remembering it. The clear is
-#     announced on stderr. released_to_main is deliberately NOT in that set: a card reaches
-#     it from shipped_to_dev, which already cleared.
-#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--dl DL-NNN] [--triaged] [--keep-refs] \
+#     PATCH — the terminal columns are the ones README.md § The seat owner tag names — so a
+#     finished card never holds a stale claim on a seat that has moved on. `patch --column`
+#     does it too: both verbs write through ONE primitive that owns the rule, rather than each
+#     mover remembering it. The clear is announced on stderr.
+#     ⭐ THE SAME TERMINAL MOVE THEN REMOVES THE SEAT OWNER TAG, and --stamp-owner stamps it once
+#     a non-terminal move is confirmed. Both are a SEPARATE tag write after the move, never a
+#     key on it; rc is the move's. The rules — refusals, the terminal set, what is printed — are
+#     README.md § The seat owner tag. --stamp-owner beside a terminal --column is rc 2 before any
+#     request.
+#   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -78,6 +111,8 @@
 #     --tags REPLACES the whole tag list (the API stores it as one list and replaces it
 #     wholesale); to add a tag, pass the full intended set. --triaged still appends to what
 #     the card already carries, and composes with --tags (given set, then `triaged`).
+#     A visually blank --tags is rc 2 before any request: the --tags paragraph of the free-text
+#     convention at the top owns it.
 #     --type re-types the card: it writes the board's native card_type_id for the alias, or
 #     the `type:<alias>` tag on a board with no native type for it — and either way DROPS any
 #     `type:*` tag the card was carrying, so a retyped card never reads as two types at once.
@@ -87,8 +122,41 @@
 #     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
 #     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
 #     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
+#     --clear FIELD[,FIELD...] IS THE PAYLOAD FIELDS' CLEARER — origin, version, pr-url, issue-url
+#     (the setter flag's spelling; `_kbc_clearable` is the one declaration, and an unknown field is
+#     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
+#     payload key (version → version_target): the API merges payload per key, so an omitted key is
+#     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
+#     the board re-derives it from what remains, falling back to payload.repo, the other URL keys
+#     and a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
+#     spelling --tags uses; a second --clear is rc 2 rather than a silent last-wins that would drop
+#     a clear. No padding is trimmed and an empty member is an unknown field. Naming a field AND its
+#     setter (`--pr-url X --clear pr-url`) is rc 2 before any request, naming the flag passed. The
+#     write echo shows every cleared key RAW under `payload`, so a removed one reads `null`. On a
+#     board with no version_target field, `--clear version` is ignored with the same warning
+#     --version gets. Beside --column wont_do an explicit clear composes with the decline nulls
+#     (both write null), and — like an explicit ref flag — it wins over --keep-refs, whose notice
+#     then leaves the cleared key out of what it retained. create-card
+#     does not take it: there is nothing to clear at birth.
+#     ⛔ --clear-description IS THE DESCRIPTION'S CLEARER — the shape --unblock is for
+#     block_reason, and for the same reason: a field this tool can SET must be unsettable by it,
+#     or a body written once outlives what it described with no way to retract it. It writes an
+#     EXPLICIT JSON null: the API MERGES per key, so an omitted key leaves the field alone and a
+#     null CLEARS it. Explicit rather than leaning on the board's TrimStrings /
+#     ConvertEmptyStringsToNull rewriting a blank value into one — a clear that DEPENDS on
+#     another repo's middleware is a clear that repo can withdraw. That inferred route is gone
+#     regardless: a blank --description is rc 2 before any request (the free-text convention at
+#     the top of this file), so clearing is now SAID rather than spelled as a value that means
+#     nothing. Mutually exclusive with --description AND --description-file — rc 2 before any
+#     request, a call naming the setter and the clearer states no end state at all — and the
+#     write echo shows the RAW `description` for this call, so the caller SEES the null rather
+#     than having to re-read the card. create-card does not take it: there is nothing to clear
+#     at birth, and an omitted pair already leaves the field unset.
+#     --assign SETS THE KANBAN ASSIGNEE, NOT THE SEAT OWNER: seats commonly share one kanban
+#     user, so the seat working a card is the `owner:<project>/<seat>` tag (README.md § The
+#     seat owner tag), and --assign neither reads nor writes that tag.
 #     --assign / --unassign write the board's NATIVE assigned_user_id — the field that answers
-#     WHICH SEAT IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
+#     WHICH KANBAN USER IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
 #     precisely the state two seats pull the same work in (a card sitting in backlog is
 #     indistinguishable from an unclaimed one). A <seat> resolves through KB_USER_<SEAT> in
 #     THIS board's env — the same config-driven shape as KB_STAGE_* / KB_TYPE_*, so nothing
@@ -147,9 +215,9 @@
 #     same call without this refusal is rc 0, and the board stores NULL (the normalization above),
 #     so the card ends up NOT BLOCKED while the caller was told the write landed. The echo was
 #     already printing that null; the exit status said success, and automation reads the status.
-#     That is the readback-before-success shape this repo has a name for. --name / --description
-#     accept one, for a reason that does not apply here: their inline spelling predates its file
-#     twin, so tightening it would change a shipped acceptance (see _kbc_text_arg's knobs).
+#     That is the readback-before-success shape this repo has a name for. It is not special to
+#     this pair: every free-text flag here refuses a text-free value through either half (the
+#     free-text convention at the top of this file owns that rule and states it once).
 #     ⚠ THE LENGTH CAP IS THE BOARD'S AND IS NOT RESTATED HERE. The API declares a maximum for
 #     this column and refuses a longer value itself, naming it; kbcard sends what it was given
 #     and NEVER TRUNCATES (a silently shortened blocker is a different sentence from the one the
@@ -164,6 +232,8 @@
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
+#     A visually blank --pr-url / --issue-url is rc 2 before any request, as is a blank --version
+#     or --origin: the payload-text-flag paragraph of the free-text convention at the top owns it.
 #     --pr / --issue MUST NAME ONE POSITIVE INTEGER, optionally decorated (178, #178, PR-178).
 #     A value carrying no digits, or SEVERAL digit runs (1.5, 2026-08-23, "PR 12 of 34"), is
 #     rc 2 before any request, on both create-card and patch — as is a NEGATIVE value (-5) and
@@ -351,10 +421,13 @@
 #     is 405), which is complete rather than a first page. Absent there is rc 1 HARD FAILURE;
 #     a card that could not be re-read is rc 3.
 #     Text sourcing is the shared free-text contract at the top of this block, with the one
-#     difference that block states: this pair is REQUIRED (neither source is rc 2, not a no-op,
-#     because the text IS the request) and BOTH its sources are normalized and blank-checked,
-#     so `--content "  "` is rc 2 exactly as an all-whitespace --content-file is. A comment's
-#     own indentation is content and survives; only trailing newlines are trimmed.
+#     difference that block states: this pair is REQUIRED — neither source given is rc 2, not a
+#     silent no-op, because the text IS the request. Its INLINE half is NORMALIZED like its file
+#     half (CRLF folded, trailing newlines trimmed); THAT is what distinguishes this pair from
+#     --name/--description, and blank-checking is no longer a difference at all — every
+#     free-text pair refuses a text-free value through both halves — so `--content "  "` is rc 2
+#     exactly as an all-whitespace --content-file is. A comment's own indentation is content and
+#     survives; only trailing newlines are trimmed.
 #   kbcard comments --task ID-OR-EXT
 #     READ the card's comments, one block each: `comment <id> · user <user_id> · <created_at>`
 #     followed by the content indented. The author is a bare user id because that is the only
@@ -866,22 +939,32 @@ resolve_task() {
     echo "$id"
 }
 
-# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin]: assemble
+# _kbc_build_payload <dl> <pr> <pr_url> <version> <issue> <issue_url> [origin] [clear]: assemble
 # the task.payload object shared by create-card and patch from the optional card-metadata
 # flags. Prints a JSON object (`{}` when nothing is set) on stdout; returns 2, before any
 # output, on a malformed correlation value — a --dl kb_dl_canon refuses, or a --pr / --issue
-# that is not ONE POSITIVE decorated integer (_kbc_require_ref_int). Both callers assemble the payload
-# BEFORE they resolve the task ref, so those refusals cost no request at all. Numeric-looking
-# values are coerced to JSON numbers so number-typed custom fields (e.g. pr_number,
-# issue_number) don't 422 with "Must be a number". issue_number/issue_url mirror pr_number/pr_url
+# that is not ONE POSITIVE decorated integer (_kbc_require_ref_int) — or on a visually blank
+# --pr-url / --issue-url / --version / --origin (_kbc_text_arg). Both callers assemble the payload
+# BEFORE they resolve the task ref, so those refusals cost no request at all.
+# EACH KEY IS SERIALIZED ON ITS OWN, with its JSON type fixed by the key's contract rather than
+# guessed from the value: the text keys (dl_number, pr_url, issue_url, version_target, origin) go
+# out as JSON strings, byte-for-byte as the validators left them; only pr_number/issue_number —
+# declared `number` on the board (docs/INSTALL.md §3b) — pass through a padding-trimmed
+# `tonumber? // .` (the same result on every jq; see the note at the jq call), and only
+# after _kbc_require_ref_int accepted them, so a decorated spelling ("#178") still travels as the
+# string it has always been. A text value is therefore never re-typed ("1.10" is not 1.1, "nan"
+# is not null) and never split: a newline inside it is a character of that value, not the start
+# of another key. (Values used to be joined as `k=v` LINES and each coerced through tonumber,
+# which let an interior newline truncate a value, a leading one send "", and a `key=value` line
+# inject a key the caller never named — card#9423.) issue_number/issue_url mirror pr_number/pr_url
 # exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
 # alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
 # callers, so patch passes exactly that prefix; origin trails because it was create-card-only
 # until card#5776 made it patchable, and keeping it last left every existing call site
-# untouched. Everything rides the SAME coercion path — a value must flow through this single
-# merge rather than be appended by the caller, which would re-duplicate the merge jq this
-# helper exists to unify.
+# untouched. <clear> trails origin for the same reason: it is patch's raw --clear comma list, and
+# create-card has no such flag. A value must flow through this single assembler rather than be
+# appended by the caller, which would re-duplicate the per-key typing this helper exists to own.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
 # dl_number/pr_number left on a declined card can later match a recycled DL/PR and
 # resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
@@ -897,34 +980,97 @@ _kbc_decline_nulls() {
     jq -n --argjson p "$p" '{dl_number: null, pr_number: null, pr_url: null} + $p'
 }
 
+# _kbc_clearable: THE ONE DECLARATION of the payload fields `patch --clear` may null — one
+# `<field> <payload key>` line each, <field> spelled as its setter flag without the `--`. Both the
+# key a clear writes and the accepted set a refusal prints are read from here. A field added here
+# must reach _kbc_build_payload as a local named <field> with `-` as `_`: the setter exclusion
+# reads the setter's value by that name.
+_kbc_clearable() {
+    printf '%s\n' 'origin origin' 'version version_target' 'pr-url pr_url' 'issue-url issue_url'
+}
+
 _kbc_build_payload() {
-    local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}"
-    local payload_args=()
-    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; payload_args+=("dl_number=$dl"); fi
-    if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; payload_args+=("pr_number=$pr"); fi
-    [[ -n "$pr_url" ]]    && payload_args+=("pr_url=$pr_url")       # sets the by-ref `source` (owner/repo); pr_number does not
-    if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; payload_args+=("issue_number=$issue"); fi
-    [[ -n "$issue_url" ]] && payload_args+=("issue_url=$issue_url") # sets the by-ref `source` (owner/repo); issue_number does not
+    local dl="$1" pr="$2" pr_url="$3" version="$4" issue="${5:-}" issue_url="${6:-}" origin="${7:-}" clear="${8:-}"
+    # The free-text payload values take the blank refusal every free-text flag takes, from the
+    # same resolver — single-source (no --…-file twin), and `verbatim` so this check rewrites
+    # nothing: the value it accepts is the value the assembler below sends. A visually blank one used
+    # to be SENT, and the board's trim-then-null rewrite turned it into a CLEAR of the stored
+    # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`. It sits
+    # above the version_target branch on purpose: a blank --version is a malformed invocation
+    # whether or not this board would have written it.
+    _kbc_text_arg pr_url pr-url "" "$pr_url" "" verbatim || return 2
+    _kbc_text_arg issue_url issue-url "" "$issue_url" "" verbatim || return 2
+    _kbc_text_arg version version "" "$version" "" verbatim || return 2
+    _kbc_text_arg origin origin "" "$origin" "" verbatim || return 2
+    # <clear> resolves here, beside the setters it excludes, so its refusals are rc 2 before any
+    # request exactly as the validators above are. A member is matched EXACTLY — " origin" and the
+    # empty member of "origin," are unknown fields, not near-misses quietly taken — and a member
+    # repeated in the list is one clear. The setter check runs above the version_target branch for
+    # the reason the blank check does: naming both is malformed whatever this board would write.
+    local clear_keys="" rest member field key pkey accepted=""
+    if [[ -n "$clear" ]]; then
+        rest="$clear,"
+        while [[ -n "$rest" ]]; do
+            member="${rest%%,*}"; rest="${rest#*,}"
+            pkey=""
+            while read -r field key; do
+                if [[ "$field" == "$member" ]]; then pkey="$key"; fi
+            done < <(_kbc_clearable)
+            if [[ -z "$pkey" ]]; then
+                while read -r field key; do accepted="${accepted:+$accepted, }$field"; done < <(_kbc_clearable)
+                echo "kbcard: --clear: '$member' is not a clearable field — accepted: $accepted (several go in one comma list)" >&2
+                return 2
+            fi
+            field="${member//-/_}"
+            if [[ -n "${!field}" ]]; then
+                echo "kbcard: --$member and --clear $member are mutually exclusive — pass exactly one (--clear $member is the clear)" >&2
+                return 2
+            fi
+            [[ " $clear_keys " == *" $pkey "* ]] || clear_keys="${clear_keys:+$clear_keys }$pkey"
+        done
+    fi
+    if [[ -n "$dl" ]]; then dl="$(kb_dl_canon "$dl")" || return 2; fi
+    if [[ -n "$pr" ]]; then _kbc_require_ref_int --pr "$pr" || return 2; fi
+    if [[ -n "$issue" ]]; then _kbc_require_ref_int --issue "$issue" || return 2; fi
     # BR-3.3: only write version_target if the board actually has that custom field
     # (its id declared as KB_CF_VERSION_TARGET in the board env) — else the write
     # 422s (kanban gates payload keys to registered fields). Warn, don't drop
     # silently, so a misconfigured board surfaces instead of vanishing the value.
-    if [[ -n "$version" ]]; then
-        if [[ -n "${KB_CF_VERSION_TARGET:-}" && "${KB_CF_VERSION_TARGET}" != "000" ]]; then
-            payload_args+=("version_target=$version")
-        else
-            echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
-        fi
+    if [[ -n "$version" ]] && [[ -z "${KB_CF_VERSION_TARGET:-}" || "${KB_CF_VERSION_TARGET}" == "000" ]]; then
+        echo "kbcard: --version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        version=""
     fi
-    [[ -n "$origin" ]]  && payload_args+=("origin=$origin")
+    # A clear is a write of the key too, so the same gate holds it — with the same warning.
+    if [[ " $clear_keys " == *" version_target "* ]] && [[ -z "${KB_CF_VERSION_TARGET:-}" || "${KB_CF_VERSION_TARGET}" == "000" ]]; then
+        echo "kbcard: --clear version ignored — this board has no version_target field (declare KB_CF_VERSION_TARGET in its board env to enable)" >&2
+        clear_keys=" $clear_keys "; clear_keys="${clear_keys/ version_target / }"
+    fi
 
-    # Build payload as a JSON object. Coerce numeric strings to JSON numbers so
-    # number-typed custom fields (e.g. pr_number) don't 422 with "Must be a number".
-    local payload_json="{}"
-    if [[ ${#payload_args[@]} -gt 0 ]]; then
-        payload_json="$(printf '%s\n' "${payload_args[@]}" | jq -R 'capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): (.v | tonumber? // .)}' | jq -s 'add')"
-    fi
-    printf '%s' "$payload_json"
+    # An empty value is an unset flag (every validator above refuses a blank one), so it is
+    # omitted. The ref keys are trimmed of space/tab/CR/LF for the number attempt ONLY: jq-1.7's
+    # tonumber accepts exactly that padding and jq-1.8 refuses it, so an untrimmed attempt makes
+    # " 123 " a number or a string by jq version. `sub`, not `trim` (jq-1.7.1+). A value that is
+    # still not a number after the trim is sent as passed, padding included. pr_url / issue_url
+    # set the by-ref `source` (owner/repo); pr_number / issue_number do not. A cleared key is added
+    # last, as an explicit null; the setter exclusion above means it never meets a value here.
+    jq -nc \
+        --arg dl_number "$dl" \
+        --arg pr_number "$pr" \
+        --arg pr_url "$pr_url" \
+        --arg issue_number "$issue" \
+        --arg issue_url "$issue_url" \
+        --arg version_target "$version" \
+        --arg origin "$origin" \
+        --arg clear_keys "$clear_keys" \
+        '{dl_number: $dl_number, pr_number: $pr_number, pr_url: $pr_url,
+          issue_number: $issue_number, issue_url: $issue_url,
+          version_target: $version_target, origin: $origin}
+         | with_entries(select(.value != ""))
+         | with_entries(if .key == "pr_number" or .key == "issue_number"
+                        then .value |= ((sub("^[ \t\n\r]+"; "") | sub("[ \t\n\r]+$"; "")
+                                         | tonumber?) // .)
+                        else . end)
+         | . + ($clear_keys | split(" ") | map(select(. != "") | {(.): null}) | add // {})'
 }
 
 # _kbc_require_type_alias <alias>: a --type alias must be tag-safe, because on a board
@@ -1018,6 +1164,8 @@ _kbc_require_ref_int() {
 # CALLER passed, when both sources were given, when a required pair got neither, when the file is
 # `-`, missing or unreadable, or when the file's text is blank. Every one of those is decided
 # with no network at all, so a bad invocation can never half-write.
+# A free-text flag with NO file twin passes "" as <file>: it then gets the blank check and, with
+# <inline-verbatim>, nothing else — its value comes back byte-identical or is refused.
 #
 # WHY THE FILE FORM IS THE CONVENTION FOR TEXT THIS AGENT DID NOT AUTHOR. An inline value is
 # expanded by the CALLER's shell before kbcard is even started, so a `$(…)` or a backtick inside
@@ -1039,16 +1187,29 @@ _kbc_require_ref_int() {
 #     `comment`: this text IS the request, so neither source given is rc 2 naming that verb.
 #     EMPTY — an optional field setter, where neither source given is the ordinary case and is
 #     silent.
-#   * <inline-verbatim> decides whether the INLINE value skips the normalization and the blank
-#     check below. NON-EMPTY — it rides through unread and unrewritten. The FILE half is never
-#     affected either way: it is always normalized and always checked.
-#     ⚠ THIS IS A CARVE-OUT FOR SHIPPED ACCEPTANCE, NOT A DEFAULT. It exists for a pair whose
-#     INLINE flag PREDATES its file twin, where blank-checking the value or rewriting its bytes
-#     would change what an already-shipped flag accepts — an acceptance change, ask-gated, and
-#     not this file's to make unasked. The call sites passing it ARE that population; there is
-#     nothing else to enumerate and nothing to keep in sync. A pair with no shipped inline
-#     contract passes nothing here and gets ONE emptiness rule across both its halves, which is
-#     what a caller reading "the file form is the safe route" already believes is true.
+#   * <inline-verbatim> decides whether the INLINE value's BYTES are rewritten — and that is ALL
+#     it decides. NON-EMPTY — the value goes on the wire exactly as typed, CRLF and trailing
+#     newlines included. The FILE half is never affected either way: it is always normalized.
+#     ⛔ IT DOES NOT, AND MUST NOT, CARVE OUT THE BLANK CHECK. It did until card#9222, and that
+#     is the defect that card closed: the two are independent properties and one argument was
+#     deciding both, so a whitespace-only inline value was SENT while `--name-file` on the
+#     identical bytes was rc 2 — one product refusing at one door and passing at the other.
+#     ⚠ WHAT THE SENT VALUE THEN DID IS NOT THE SAME ON THE TWO FLAGS, and neither of them is
+#     "a blank card was written" — measured against the live board, not inferred here:
+#       * `--name "   "` came back HTTP 422 (`name` is not nullable, and the board's TrimStrings
+#         → ConvertEmptyStringsToNull had already made it null), i.e. rc 1 after a wasted round
+#         trip, under the server's wording, naming neither the flag nor the real problem.
+#       * `--description "   "` came back 200 and CLEARED the field, at rc 0. That is the
+#         quiet-wrong: `--description "$BODY"` with a $BODY that expanded to padding WIPED a
+#         card's body while reporting success, and it was also the only route to clear it —
+#         which is why `patch --clear-description` lands in the same change rather than after.
+#     Narrowing what a shipped flag accepts IS an acceptance change and was ask-gated, not taken
+#     here unasked: asked and GRANTED for `--name`/`--description` on 2026-09-12, on the ground
+#     that the newly-refused set is values that are VISUALLY BLANK. What survives is the
+#     bytes-only half — rewriting an inline value's line endings is a separate acceptance change
+#     that has NOT been asked, which is why this argument still exists.
+#     The call sites passing it ARE that population; there is nothing else to enumerate and
+#     nothing to keep in sync.
 #
 # What a NORMALIZED value loses and keeps: interior newlines and leading whitespace ride verbatim
 # (a comment's own indentation is content), TRAILING newlines are trimmed, and CRLF is folded to
@@ -1072,6 +1233,10 @@ _kbc_text_arg() {
         printf -v "$_ta_out" '%s' ""
         return 0
     fi
+    # Whether the value's BYTES get rewritten below. A file's always are. An inline value's are
+    # unless this pair carries the shipped-acceptance carve-out — which is a carve-out from the
+    # REWRITE only, never from the blank check: see the knob above.
+    local _ta_rewrite=1
     if [[ -n "$_ta_file" ]]; then
         [[ "$_ta_file" != "-" ]] || {
             echo "kbcard: --$_ta_flag-file takes a PATH and '-' is not a stdin token here — pass a path (/dev/stdin if you mean stdin)" >&2
@@ -1085,10 +1250,9 @@ _kbc_text_arg() {
         _ta_val="$(cat -- "$_ta_file" && printf x)" || { echo "kbcard: --$_ta_flag-file could not be read: $_ta_file" >&2; return 2; }
         _ta_val="${_ta_val%x}"
     elif [[ -n "$_ta_verbatim" ]]; then
-        # The shipped-acceptance carve-out; see the knob above. Everything else — including every
-        # pair added after it — falls through to the ONE normalization and the ONE blank check.
-        printf -v "$_ta_out" '%s' "$_ta_val"
-        return 0
+        # The shipped-acceptance carve-out; see the knob above. It skips the REWRITE below and
+        # nothing else: the blank check is reached by every source and every spelling alike.
+        _ta_rewrite=""
     fi
     # CRLF → LF, at the ONE write site both sources pass through. Windows/Git-Bash is a documented
     # install target, so a --…-file written there arrives CRLF-terminated and an unnormalized
@@ -1096,13 +1260,23 @@ _kbc_text_arg() {
     # so each line comes back ending in one. Only a CR immediately followed by LF is a line ending;
     # a LONE \r (classic-Mac, or mid-line) is a control character, not a line break, so it is left
     # for that sanitizer rather than silently rewriting content here.
-    _ta_val="${_ta_val//$'\r'$'\n'/$'\n'}"
-    while [[ "$_ta_val" == *$'\n' ]]; do _ta_val="${_ta_val%$'\n'}"; done
-    # ONE emptiness owner for BOTH sources, tested on the TRIMMED value: the comment server trims
-    # before it validates, so a whitespace-only body is a 422 there — a refusal that costs a round
-    # trip and arrives as rc 1 instead of the rc 2 this class is. Only the CHECK trims: what goes
-    # on the wire keeps its leading whitespace and its interior newlines.
-    if [[ -z "${_ta_val//[[:space:]]/}" ]]; then
+    if [[ -n "$_ta_rewrite" ]]; then
+        _ta_val="${_ta_val//$'\r'$'\n'/$'\n'}"
+        while [[ "$_ta_val" == *$'\n' ]]; do _ta_val="${_ta_val%$'\n'}"; done
+    fi
+    # ONE emptiness owner for BOTH sources AND both spellings — no source reaches the wire without
+    # passing it, which is what the name claims and what the carve-out above used to make false.
+    # The test reads a STRIPPED COPY rather than the trimmed value, so it decides the same way on
+    # a value the rewrite did not touch: a carve-out value carrying only CRLFs or trailing
+    # newlines is as blank to a reader as one carrying only spaces. What counts as blank — six
+    # ASCII characters, under a locale pin — belongs to kb_is_blank in the lib and is stated there.
+    # Rationale for refusing at all: the comment server trims before it validates, so a
+    # whitespace-only body is a 422 there — a refusal that costs a round trip and arrives as rc 1
+    # instead of the rc 2 this class is; and for the optional setters, a board that trims-then-
+    # nulls stores NULL under an rc 0 that said the write landed, or a name no reader can read.
+    # Only the CHECK sees the stripped copy: what goes on the wire keeps its leading whitespace
+    # and its interior newlines.
+    if kb_is_blank "$_ta_val"; then
         if [[ -n "$_ta_file" ]]; then
             echo "kbcard: --$_ta_flag-file holds no $_ta_noun text: $_ta_file" >&2
         else
@@ -1113,7 +1287,7 @@ _kbc_text_arg() {
     printf -v "$_ta_out" '%s' "$_ta_val"
 }
 
-# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json> [assign_set] [assign_json] [block_set] [block_json]:
+# _kbc_task_fields <name> <type_id> <desc> <tags_json> <ext_id> <swim_set> <swim_json> <payload_json> [assign_set] [assign_json] [block_set] [block_json] [desc_clear]:
 # assemble the OPTIONAL top-level task-object fields shared by create-card and patch, as a JSON
 # object carrying ONLY the keys whose argument was supplied. Each caller then adds the keys IT
 # requires — create-card `board_id` + `workflow_stage_id`, patch the stage of a `--column`.
@@ -1139,6 +1313,12 @@ _kbc_task_fields() {
     # block_reason joins on those same trailing+defaulted terms, for the same reason again: its
     # --unblock form is a real null.
     local block_set="${11:-}" block_json="${12:-}"
+    # description's clearer needs a FLAG and not a set/value PAIR, which is the one way it differs
+    # from the three above: `description` already has an argument of its own, and the value a
+    # clear writes is always the same JSON null, so a second slot would carry no information.
+    # Non-empty means --clear-description was passed; its caller has already refused it alongside
+    # a <desc>, so the two cannot both be non-empty here.
+    local desc_clear="${13:-}"
     [[ -n "$tags_json" ]] || tags_json='null'
     [[ -n "$swim_json" ]] || swim_json='null'
     [[ -n "$payload_json" ]] || payload_json='{}'
@@ -1156,11 +1336,13 @@ _kbc_task_fields() {
         --argjson assign "$assign_json" \
         --arg block_set "$block_set" \
         --argjson block "$block_json" \
+        --arg desc_clear "$desc_clear" \
         --argjson payload "$payload_json" \
         '{}
          + (if $name    != "" then {name: $name} else {} end)
          + (if $type_id != "" then {card_type_id: ($type_id | tonumber)} else {} end)
-         + (if $desc    != "" then {description: $desc} else {} end)
+         + (if $desc_clear != "" then {description: null}
+            elif $desc      != "" then {description: $desc} else {} end)
          + (if $tags    != null then {tags: $tags} else {} end)
          + (if $ext_id  != "" then {external_id: ($ext_id | tonumber)} else {} end)
          + (if $swim_set != "" then {swimlane_id: $swim} else {} end)
@@ -1198,43 +1380,15 @@ _kbc_patch_tags() {
         # card carried. Refuse instead — the caller turns this rc into its own rc 2, before any
         # PATCH is issued.
         #
-        # The `.data` OBJECT TEST is what makes that refusal reach the whole class. A tolerant
-        # parse only yields empty when jq FAULTS, and a body that parses perfectly well while
-        # carrying no card does not fault: on `{"ok":true}` or `{"data":null}`, `.data.tags //
-        # []` supplies the string `[]`, which is non-empty, so the arm below passes and the tag
-        # wipe happens THROUGH the guard. Requiring `.data` to be an object routes those into
-        # the same refusal, at the same rc, before the wire. It is deliberately scoped to this
-        # one read: audited across the toolkit, it is the only read whose OWN result becomes the
-        # body of a wholesale-replacement write. (`field set-options` also PATCHes a
-        # replace-wholesale array, but that array is built from the caller's --options, not from
-        # the read; an unreadable read there cannot produce a write built from nothing.) So this
-        # is a dedicated path for one named harm, not a widened guard — no read verb's
-        # acceptance changes with it.
-        #
-        # The CONTAINER test on `tags` closes the same refusal's second half. `.data` being an
-        # object says nothing about the value actually re-sent. A `tags` that is a SCALAR passes
-        # the wrapper test and then faults inside the merge below, so the caller's whole
-        # diagnostic is jq's, with no kbcard line at all — bad, but no tag is lost.
-        #
-        # AN OBJECT DOES NOT FAULT, which is why this is not a wording fix. jq's `map`
-        # iterates an OBJECT's values, so a `tags` object degrades into a plausible list: with
-        # --type (map-first), `{"tags":{"0":"keep-me"}}` merged cleanly and PATCHed
-        # `["keep-me","type:fr"]` at rc 0, replacing every tag the card actually held. That is the
-        # same wipe this guard exists to stop, reached one level deeper. --triaged alone never got
-        # there (object + array faults), which is what made it look diagnostic-only.
-        # Deliberately CONTAINER type only: what the list CONTAINS is a separate,
-        # acceptance-changing question and is not decided here.
-        #
-        # THE SHAPE TEST RUNS ON THE NEAR SIDE OF THE DEFAULT, and that ordering is the whole
-        # point. jq's `//` yields its right-hand side for `false` as well as for `null`, so
-        # `(.tags // []) | select(type == "array")` handed the container test the DEFAULT
-        # whenever `tags` was `false` — the test was on the far side of the very substitution it
-        # exists to police, and `{"tags":false}` + --triaged PATCHed `{"tags":["triaged"]}` at
-        # rc 0. `has("tags") and .tags != null` decides absent-or-null explicitly instead, so
-        # `false` reaches `select(type == "array")` as itself and refuses.
+        # What counts as "no tag list could be read" is kb_card_tags' rule (_kb-board-lib.sh), the
+        # one owner of the shape tests every read-before-replace of `tags` goes through — this one,
+        # and the owner-tag write in kb_owner_tag_write. What differs is the POLICY: this read is
+        # the base of a list the CALLER asked to write, so an unreadable one aborts the whole
+        # patch; the owner-tag write follows a move that has already happened, so an unreadable
+        # read there skips only the tag write.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_parse_resp "$resp" '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")')"
+        base="$(kb_card_tags "$resp")"
         [[ -n "$base" ]] || {
             echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
             return 1
@@ -1278,6 +1432,8 @@ cmd_create_card() {
     # question about the RESOLVED name, not about which of the two flags carried it.
     _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
+    # --tags is checked RAW, here: the `type:` / `triaged` appends below make it non-blank.
+    _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     [[ -z "$name" ]] && { echo "kbcard: --name or --name-file required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
@@ -1328,13 +1484,11 @@ cmd_create_card() {
 
 # --- the ONE task PATCH both stage-writing verbs go through -----------------------------
 
-# _kbc_terminal_column <column>: is this column TERMINAL — the card is finished, so nobody is
-# working it any more? shipped_to_dev and wont_do are the two, and they are the two the
-# operator asked for. released_to_main is deliberately NOT here: a card reaches it FROM
-# shipped_to_dev, which already cleared the assignment, and widening what a write DOES is not
-# a call to take unasked (a direct backlog→released_to_main move is the one path it leaves).
+# _kbc_terminal_column <column>: is this column TERMINAL — the card's work is finished, so nobody
+# is working it any more? The set is README.md § The seat owner tag's; this is its one spelling
+# in code, and it decides both the assignment clear and the owner-tag clear.
 _kbc_terminal_column() {
-    [[ "$1" == "shipped_to_dev" || "$1" == "wont_do" ]]
+    [[ "$1" == "shipped_to_dev" || "$1" == "released_to_main" || "$1" == "wont_do" ]]
 }
 
 # _kbc_stage_patch <verb> <task> <column> <body>: the task PATCH `move` and `patch` BOTH issue,
@@ -1351,13 +1505,14 @@ _kbc_terminal_column() {
 #   beats hygiene" rule the decline-stamp clear follows; the stderr line then says which of the
 #   two happened, because a notice that claimed a clear this call did not make would be false.
 #
-#   ⚠ THE CLEAR PUTS assigned_user_id ON A WRITE THAT DID NOT CARRY IT BEFORE — so on a board
-#   where that FIELD is permissioned separately from the task update itself, a terminal move
-#   that used to succeed would start answering 403. Nothing here can decide that: the permission
-#   model is the server's, and it was not measured (the card's own framing is `task.update`,
-#   which every move already needs, in which case there is no new requirement at all). It is
-#   named rather than guarded against, and _kbc_write_fault is what makes the failure legible
-#   if it ever happens rather than reading as a broken move.
+#   ⚠ THE CLEAR PUTS assigned_user_id ON THE MOVE, AND THAT RAISES THE PERMISSION THE MOVE NEEDS.
+#   The kanban server authorizes a PATCH whose ONLY key is `workflow_stage_id` as a move, and any
+#   other key as a task update (`TaskMutator`), so a terminal move needs `task.update` where a
+#   stage-only move would not. _kbc_write_fault is what makes that refusal legible rather than
+#   reading as a broken move.
+#
+#   THE OWNER TAG IS NOT WRITTEN HERE. It is its own tag write after the move is confirmed
+#   (_kbc_owner_after_move), so no owner-tag outcome can refuse the move.
 #
 #   A POLICY REFUSAL OF AN ASSIGNMENT WRITE IS NAMED (see _kbc_write_fault). That naming lives
 #   HERE rather than at either caller because it needs KB_HTTP, which kb_api sets inside the
@@ -1380,6 +1535,22 @@ _kbc_stage_patch() {
         _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
         return "$rc"
     }
+}
+
+# _kbc_owner_after_move <task> <column> <stamp_owner>: the seat owner tag, written AFTER a move
+# this call has CONFIRMED — removed when <column> is terminal, stamped when <stamp_owner> is
+# non-empty, otherwise nothing. The write and its rules are kb_owner_tag_write's
+# (_kb-board-lib.sh); whatever it reports goes to stderr, and the verb's rc stays the move's.
+_kbc_owner_after_move() {
+    local task="$1" column="$2" stamp_owner="$3"
+    if _kbc_terminal_column "$column"; then
+        kb_owner_tag_write clear "$task" "task $task"
+    elif [[ -n "$stamp_owner" ]]; then
+        kb_owner_tag_write stamp "$task" "task $task"
+    else
+        return 0
+    fi
+    [[ -z "$KB_OWNER_NOTE" ]] || printf '%s\n' "$KB_OWNER_NOTE" >&2
 }
 
 # _kbc_write_fault <verb> <task> <body> <http>: name the ONE failure this file's newest write
@@ -1454,16 +1625,21 @@ _kbc_assign_guard() {
 }
 
 cmd_move() {
-    local task_ref="" column="" keep_refs=""
+    local task_ref="" column="" keep_refs="" stamp_owner=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
+            --stamp-owner) stamp_owner=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
     [[ -z "$task_ref" || -z "$column" ]] && { echo "kbcard: --task and --column required" >&2; return 2; }
+    if [[ -n "$stamp_owner" ]] && _kbc_terminal_column "$column"; then
+        echo "kbcard: --stamp-owner claims the card for this seat, and $column is a terminal column, whose move removes every owner tag — pass one or the other" >&2
+        return 2
+    fi
     local task stage body
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
@@ -1488,14 +1664,15 @@ cmd_move() {
     # create-card's and patch's, per its own header rule: the PROJECTION differs here, the
     # outcome contract does not.
     _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
+    _kbc_owner_after_move "$task" "$column" "$stamp_owner"
     printf '%s\n' "$echo_out"
 }
 
 cmd_patch() {
-    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" dl="" triaged="" swimlane="" keep_refs=""
+    local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" desc_clear="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin=""
     local assign="" unassign="" steal=""
-    local block="" block_file="" unblock=""
+    local block="" block_file="" unblock="" clear=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -1508,6 +1685,8 @@ cmd_patch() {
             --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
             --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
+            --clear-description) desc_clear=1; shift ;;
+            --clear) kb_require_value "$1" "${2:-}" || return 2; [[ -z "$clear" ]] || { echo "kbcard: --clear was passed twice — name every field in ONE comma list (--clear origin,version)" >&2; return 2; }; clear="$2"; shift 2 ;;
             --dl) kb_require_value "$1" "${2:-}" || return 2; dl="$2"; shift 2 ;;
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
             --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
@@ -1530,12 +1709,14 @@ cmd_patch() {
 
     # Everything resolvable WITHOUT the network is resolved first, so a typo'd --type /
     # --external-id / --column / --swimlane fails rc 2 having issued no request at all —
-    # not even the tag read below, and never a half-applied PATCH. The two text pairs belong
+    # not even the tag read below, and never a half-applied PATCH. The text flags belong
     # in that set for the same reason: a `-`, an absent or an unreadable file is a bad
     # invocation, and a bad invocation must cost no traffic.
     _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
     _kbc_text_arg block block-reason "" "$block" "$block_file" || return 2
+    # Here and not in _kbc_patch_tags, which runs after resolve_task's lookup.
+    _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
@@ -1575,6 +1756,15 @@ cmd_patch() {
     # guarded, unlike the neighbouring jq assignments, because an EMPTY block_json here would not
     # fail: `_kbc_task_fields` reads it as `null` while block_set still says a flag was passed,
     # so a failure at this one line would silently INVERT a set into a clear.
+    # --clear-description is --unblock's shape on `description`, decided in the same offline
+    # preflight and refused the same way: a call naming the setter AND the clearer states no end
+    # state at all, and silently picking one is the quiet-wrong both pairs exist to remove. The
+    # message names the half the caller actually passed — `$desc` here already holds whichever of
+    # the two the resolver above read, so ONE check covers both halves of the pair.
+    if [[ -n "$desc" && -n "$desc_clear" ]]; then
+        echo "kbcard: --description${desc_file:+-file} and --clear-description are mutually exclusive — pass exactly one (--clear-description is the clear)" >&2; return 2
+    fi
+
     local block_set="" block_json=""
     if [[ -n "$block" && -n "$unblock" ]]; then
         echo "kbcard: --block-reason and --unblock are mutually exclusive — pass exactly one (--unblock is the clear)" >&2; return 2
@@ -1599,7 +1789,11 @@ cmd_patch() {
     # multi-repo board; pr_number alone does NOT set source. Pre-PR placeholder form is
     # .../pull/0 (the repo segment is what matters; the poll reconciler overwrites the URL).
     local payload_json
-    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin")" || return 2
+    payload_json="$(_kbc_build_payload "$dl" "$pr" "$pr_url" "$version" "$issue" "$issue_url" "$origin" "$clear")" || return 2
+    # The keys this call CLEARS, read BEFORE the decline merge below adds nulls of its own: the
+    # assembler omits an unset flag and never nulls a value, so every null it emits is a --clear.
+    local cleared_json
+    cleared_json="$(jq -c '[to_entries[] | select(.value == null) | .key]' <<<"$payload_json")"
 
     # patch --column wont_do is the SECOND decline call-site — same hygiene as move
     # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win.
@@ -1607,7 +1801,10 @@ cmd_patch() {
         payload_json="$(_kbc_decline_nulls "$payload_json")"
         echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
     elif [[ "$column" == "wont_do" ]]; then
-        echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
+        # Retained = the decline's stamps minus what --clear removed in this same call.
+        local retained
+        retained="$(_kbc_decline_nulls | jq -r --argjson c "$cleared_json" 'keys_unsorted - $c | join(", ")')"
+        echo "kbcard: --keep-refs — correlation stamps ($retained) retained" >&2
     fi
 
     local task; task="$(resolve_task "$task_ref")"
@@ -1638,7 +1835,7 @@ cmd_patch() {
     # it with our stale pre-PATCH read (the lost-update guarantee #2180 adds).
     # `tags` is the documented exception — the API replaces that list wholesale.
     local body
-    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json" "$assign_set" "$assign_json" "$block_set" "$block_json")" || return 2
+    body="$(_kbc_task_fields "$name" "$type_id" "$desc" "$tags_json" "$ext_id" "${swimlane:+1}" "$swim_json" "$payload_json" "$assign_set" "$assign_json" "$block_set" "$block_json" "$desc_clear")" || return 2
     if [[ -n "$column" ]]; then
         body="$(jq -n --argjson cur "$body" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
@@ -1646,6 +1843,11 @@ cmd_patch() {
     # the server actually recorded (the whole point of a corrective patch) without changing
     # the echo shape of every other patch. `name` already rides _kbc_write_echo's projection.
     local echo_extra='description: (.description // "" | .[0:80])'
+    # The clearer's whole claim is that the server now holds NULL, and the default projection
+    # coerces a null to "" — in the echo, indistinguishable from a description this call never
+    # touched. So the one call that means to see a null gets the RAW field, exactly as --unblock's
+    # block_reason does. Untruncated on purpose: there is nothing to truncate.
+    [[ -n "$desc_clear" ]] && echo_extra='description: .description'
     [[ -n "$swimlane" ]] && echo_extra="$echo_extra, swimlane_id: (.swimlane_id // null)"
     [[ -n "$tags_json" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
     [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
@@ -1666,7 +1868,8 @@ cmd_patch() {
     local resp
     resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
-    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage"
+    _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" "$cleared_json" || return $?
+    _kbc_owner_after_move "$task" "$column" ""
 }
 
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure
@@ -2315,12 +2518,17 @@ _kbc_card_witness() {
         *)   echo "kbcard: the re-read of card $task failed (HTTP $http) — its state is UNMEASURED" >&2
              return 1 ;;
     esac
-    data="$(kb_parse_resp "$body" -c '.data | select(type == "object")')"
-    [[ -n "$data" ]] || {
+    # The card is wrapped in the SAME stdin read that selects it, never handed back to jq as an
+    # argument: one argv string is capped at MAX_ARG_STRLEN (131072 B on Linux) whatever ARG_MAX
+    # is, a card crosses that by accreting comments, and exec failing there would report a
+    # perfectly readable card as UNMEASURED — rc 3 for a write that landed. A body carrying more
+    # than one JSON text yields one line per text, which is not ONE card, so it stays refused.
+    data="$(kb_parse_resp "$body" -c --arg h "$http" '.data | select(type == "object") | {state: "present", http: $h, card: .}')"
+    [[ -n "$data" && "$data" != *$'\n'* ]] || {
         echo "kbcard: the re-read of card $task returned success but no card could be read out of its body — its state is UNMEASURED (nothing was read)" >&2
         return 1
     }
-    jq -c --arg h "$http" --argjson c "$data" -n '{state: "present", http: $h, card: $c}'
+    printf '%s\n' "$data"
 }
 
 # _kbc_confirm_card <task> <predicate>: re-read card <task> and RULE on <predicate>, a jq
@@ -2374,6 +2582,11 @@ _kbc_confirm_card() {
 # payload rides ONLY when the serializer sent the key (fabricating `payload: null` asserts "no
 # payload" where the truth is "key absent", #4390); a server-sent null passes through unaltered.
 # <extra-fields> is extra jq object fields (e.g. description truncation), defaults to none.
+# [cleared-keys] is a JSON array of payload keys this call CLEARED (patch --clear). Those keys ride
+# RAW under `payload` even when the server's echo omits them: the board REMOVES a cleared key
+# rather than storing a null, so absence is what a landed clear looks like, and rendering it as
+# `null` for the keys the caller named is what lets them SEE the clear (a key still held shows its
+# value). It is scoped to those keys, so #4390's rule stands for every other payload read.
 #
 # IT OWNS ITS OWN REFUSAL, and that is why it takes the response rather than reading stdin. Both
 # write verbs project the echo through this one filter, so both meet an unreadable 2xx here —
@@ -2382,8 +2595,8 @@ _kbc_confirm_card() {
 # diagnostic still names the verb the caller typed. Returns 1 with that diagnostic and no
 # stdout; the caller propagates it (rc 1 is what a failed write already returns there).
 _kbc_write_echo() {
-    local verb="$1" subject="$2" resp="$3" extra="${4:-}" expect_stage="${5:-}" out
-    out="$(kb_parse_resp "$resp" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if has(\"payload\") then {payload} else {} end)")"
+    local verb="$1" subject="$2" resp="$3" extra="${4:-}" expect_stage="${5:-}" cleared="${6:-[]}" out
+    out="$(kb_parse_resp "$resp" --argjson cleared "$cleared" ".data | {id, name, workflow_stage_id${extra:+, $extra}} + (if (\$cleared | length) > 0 then {payload: (reduce \$cleared[] as \$k ((.payload // {}); .[\$k] = .[\$k]))} elif has(\"payload\") then {payload} else {} end)")"
     [[ -n "$out" ]] || _kbc_unverified "$verb" "$subject" || return $?
     _kbc_confirm_stage "$verb" "$subject" "$out" "$expect_stage" || return 1
     printf '%s\n' "$out"
@@ -2732,10 +2945,10 @@ cmd_search() {
     # finds no token in it, and answers the WHOLE BOARD — which this verb would then print as
     # matches, every description included. Refused here and not in the paginator, which cannot
     # know whether its caller meant to read a board or to search one. Costs no request.
-    [[ -n "${query//[[:space:]]/}" ]] || {
+    if kb_is_blank "$query"; then
         echo "kbcard: search query holds no text — a blank query matches every card on the board, which is not a search" >&2
         return 2
-    }
+    fi
     # The same two client-side filters `list` offers, resolved by the same owners (a bad
     # --column/--type exits 2 loudly under set -e). They narrow the SERVER's match set; the
     # query itself is the server's job and is passed through untouched.
@@ -2803,7 +3016,8 @@ cmd_search() {
 # absent or the board isn't declared (the shim then falls back to the card's own
 # pr_url/issue_url source, and finally to fail-closed). No network.
 _kbc_board_repo() {
-    local cfg="${COORD_CONFIG:-$HOME/.config/coord/coordination.config.json}"
+    local cfg
+    cfg="$(kb_coord_config_path)"
     [[ -r "$cfg" ]] || return 0
     jq -r --arg id "$KB_BOARD_ID" '
         ((.kanban.boards // [])[] | select((.board_id|tostring) == $id) | .repo) // empty
@@ -2837,6 +3051,9 @@ _kbc_archive_decision() {
     # false `ok` that archives a live-and-untwinned card), the mirror of the board
     # input's safe `[]` default above — so fail closed here, never reach the shim.
     [[ "$card" == "null" || -z "$card" ]] && { printf 'noprimitive\tcard %s fetch returned null .data — cannot verify archive safety' "$task"; return 0; }
+    # More than one JSON text is not one card: on the shared stdin stream below, the second would
+    # be read as the first board text.
+    [[ "$card" == *$'\n'* ]] && { printf 'noprimitive\tcard %s fetch returned more than one JSON text — cannot verify archive safety' "$task"; return 0; }
     # Capture the board array regardless of the paginator's rc — a partial or EMPTY
     # census only removes twins (more conservative), never invents one. The `|| true`
     # keeps EVERY non-zero paginator rc — 1, 2, 3 and 4 — from aborting this function
@@ -2848,14 +3065,14 @@ _kbc_archive_decision() {
     board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true
-    # The board array can be ~200KB — it must reach jq via STDIN, never argv
-    # (--argjson would trip "Argument list too long" over MAX_ARG_STRLEN, the
-    # #3091/#3362 class; a silently-empty jq would then feed the shim {} and
-    # mis-read the card as source-less → a FALSE ok). Only the single target card
-    # (small) rides --argjson.
-    printf '%s' "$board" | jq -c --argjson card "$card" \
-           --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
-        '{card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
+    # The board array (~200KB) AND the card both reach jq via STDIN, never argv: one argv
+    # string is capped at MAX_ARG_STRLEN (131072 B) and a single card crosses that by
+    # accreting comments, so neither is "small" (the #3091/#3362 class). A failed exec
+    # leaves the shim an empty stdin, which it refuses as a card-less request. The card is
+    # the FIRST text on the stream; `inputs` then yields one object per board text, exactly
+    # as a board-only stdin did.
+    { printf '%s\n' "$card"; printf '%s' "$board"; } | jq -c -n --arg repo "$repo" --arg board_id "$KB_BOARD_ID" \
+            'input as $card | inputs | {card:$card, surviving_cards:., repo:$repo, board_id:$board_id}' \
         | python3 "$shim"
 }
 

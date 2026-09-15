@@ -93,11 +93,13 @@ jobs:
     # complements, not duplicates — the fixture test ADDS the two dead legs, it does not
     # replace this job.
     #
-    # ⚠ THIS COMMENT USED TO SAY this job's name "is also a required status check on `main`". It
-    # was true when written and is NOT true now — `branches/main/protection` answers
-    # `required_status_checks: null` (read live, card#8261); the fleet branch-protection model
-    # applied on 2026-08-30 replaced the whole protection object without carrying the contexts
-    # over. The one name branch protection pins is `ci-gate` below, which depends on this job.
+    # ⚠ THIS COMMENT USED TO SAY this job's name "is also a required status check on `main`", and
+    # then that `required_status_checks` answered `null`. Both were true when written and NEITHER is
+    # now: the 2026-08-30 fleet model dropped the contexts (card#8261), and they have since been
+    # set again — to the aggregating gates, not to this job's name. `tests/ci-gate-selftest.sh`
+    # declares that set and carries the command that re-prints it live; this comment deliberately
+    # does not restate either the names or a status, because a comment cannot hold a repository
+    # SETTING. What is load-bearing here is only that `ci-gate` below `needs:` this job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -188,6 +190,7 @@ jobs:
           - prelude-shadow-selftest
           - promote-pagination-selftest
           - promote-ref-canon-selftest
+          - promote-refusal-detail-selftest
           - promote-source-qualify-selftest
           - promote-stage-guard-selftest
           - python-syntax-gate-selftest
@@ -201,6 +204,7 @@ jobs:
           - runtime-check-selftest
           - shellcheck-pin-selftest
           - token-duplication-selftest
+          - tool-version-stamp-selftest
           - url-userinfo-render-selftest
           - value-flag-derivation-selftest
           - verdict-through-truncating-reader-selftest
@@ -466,11 +470,15 @@ jobs:
           [ "$REFUSE_OUTCOME" = "failure" ] || { echo "::error::release-tag-check action reported '$REFUSE_OUTCOME' on an unclassifiable range — the wrapper is swallowing the script's refusal, which would make every release look tagged"; exit 1; }
 
   ci-gate:
-    # ⭐ THE ONE REQUIRED STATUS CONTEXT for this repository (card#8261). Every other job in this
-    # file is a leaf. `main` and `dev` carry the whole fleet branch-protection model —
-    # `enforce_admins`, blocked force-pushes and deletions, the merge-method rulesets — with
-    # `required_status_checks` at **`null`**, so the repo reads as protected on every surface an
-    # operator inspects while NO CI result is required to merge.
+    # ⭐ THE REQUIRED STATUS CONTEXT THAT STANDS IN FRONT OF THIS WHOLE FILE (card#8261). Every
+    # other job here is a leaf. It is one member of the required set and not the whole of it — two
+    # PR-triggered gates live in sibling workflows that `needs:` cannot reach, so they are required
+    # by name beside it; `tests/ci-gate-selftest.sh` declares that set, holds it level with the
+    # workflow directory, and carries the command that re-prints the LIVE set. ⚠ THIS COMMENT USED
+    # TO SAY `required_status_checks` was **`null`** on `main` and `dev`, with the repo reading as
+    # protected while no CI result was required to merge. That was the state card#8261 was minted
+    # against and it is NOT the state now — the contexts have been set. Neither the names nor a
+    # status is restated here: it is a repository SETTING, so no comment can hold it (canon #16).
     #
     # WHY THE OBVIOUS FIX IS NOT AVAILABLE. A protection `contexts` list is a hand-maintained
     # registry of check names, and the `selftest` matrix above is edited by ordinary pull
@@ -540,7 +548,7 @@ jobs:
 
           needs = json.loads(os.environ["NEEDS"])
 
-          # CONTROL, and not a hypothetical: this job IS the required context, so an aggregator
+          # CONTROL, and not a hypothetical: this job IS a required context, so an aggregator
           # that needs nothing would report a green tick standing in front of an unmeasured
           # suite — the exact false-confidence this whole job exists to remove.
           if not needs:

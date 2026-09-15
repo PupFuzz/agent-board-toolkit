@@ -14,6 +14,61 @@
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
 #   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
+#   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit
+#
+# STDOUT IS THE BODY, AND ONLY THE BODY (DL-224). It is written for the person installing the
+# release: the scope line, `## Highlights`, `## Bundled`, `## Release artifacts` (only when
+# `artifacts` is configured) and the machine lines (the `<!-- release-manifest:... -->` footers).
+# No other H2 is ever emitted there. Builder diagnostics go to STDERR — kept, not dropped — one
+# line per finding, each carrying a fixed prefix so a reader can lift them by grep:
+#   release-pr-body: correlation gap: ...  an empty manifest over a non-empty range (card#8538)
+#   release-pr-body: card coverage: ...    the promote dry-run's verdict. Emitted ONLY when the
+#                                          check could run, so NO such line means it did not run
+#   release-pr-body: note: ...             a local ref disagrees with the remote the range used
+# No line this tool writes to stderr begins with `## `. Keep the streams apart: `2>&1` into a body
+# file writes builder diagnostics into the release PR. And keep stderr OPEN: under `set -e` a
+# closed stderr (`2>&-`) fails the run at rc 1 on its first stderr write — at the latest the
+# announce block, so such a run can exit 1 with a complete body already on stdout.
+#
+# THE ANNOUNCE BLOCK — a stable, machine-readable stderr contract, for a release tool to LIFT
+# rather than re-derive. A body run that exits 0 ends its stderr with exactly one block. Its
+# field list, in emission order, is DECLARED here, and tests/release-pr-body-selftest.sh compares
+# this declaration against what the tool emits, both ways and in order:
+#     announce:begin
+#     format: 1
+#     version: <the release version this body describes>
+#     tag: <the tag that version maps to under tag_format>
+#     base: <the base ref as resolved; empty for a first release>
+#     head: <the head ref as resolved>
+#     range: <base-sha>..<head-sha>, or <head-sha> alone when there is no base
+#     range-cmd: <a git log command that re-prints the bundled commit subjects>
+#     shipped-refs: <DL tokens, comma-separated, as the shipped-refs footer has them>
+#     shipped-refs-cmd: <the release-pr-body --manifest command that re-prints them>
+#     shipped-cards: <bare card ids, comma-separated, as the shipped-cards footer has them>
+#     shipped-cards-cmd: <the release-pr-body --card-manifest command that re-prints them>
+#     announce:end
+# STABILITY, format 1. `announce:begin` and `announce:end` are whole lines; every line between is
+# `<key>: <value>`, and a value may be empty. Keys appear in the order above. `shipped-refs*` are
+# present only when `ref_token_regex` is declared and `shipped-cards*` only when
+# `card_token_regex` is — a declared key that matched nothing is PRESENT with an empty value.
+# Within format 1 keys are only ever ADDED, so a reader must ignore a key it does not know;
+# renaming or removing one, or changing what a value means, bumps `format`. NO FIELD IS A COUNT:
+# a list is given with the command that re-prints it. Every `*-cmd` is shell-quoted, runs from the
+# repo root, names this tool by its PATH name and pins each resolved range end by SHA, so it
+# answers about the same range later (a first release has no base to pin). The block is never
+# emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--tool-version`) or a refusal.
+# "Not included" (the scope a release deferred) is not a field of this block: git cannot derive
+# deferred scope, so it stays with the release-pr skill, which reports it outside the body.
+#
+# TWO VERSIONS, TWO FLAGS. `--version X.Y.Z` is an INPUT: the version of the release the body
+# describes. `--tool-version` is a QUERY about the tool: the toolkit release this file was stamped
+# at, from the `ABTK_TOOL_VERSION` line below. The stamp is EMBEDDED so that a per-seat copy
+# away from any checkout answers from itself; tests/tool-version-stamp-selftest.sh holds it equal
+# to the toolkit's VERSION file. Its resolution is the RELEASE: a copy taken from `dev` between
+# releases reports the last release stamped. It needs no config, no repo and no network, and is
+# counted with the other query modes below. BOOTSTRAP BOUND: only a copy new enough to carry the
+# flag can answer. Every earlier revision of this file refuses `--tool-version` as `unknown arg`
+# at rc 2 — that refusal means "older than the flag", never a version.
 #
 # `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). `.release-pr.json`'s
 # `tag_format` is read here and nowhere else; `bin/release-tag-check` needs the same answer to
@@ -40,9 +95,9 @@
 # fetched first — a fetch failure is fatal, never a silent fall-back to the local
 # ref. A stale local ref is wrong in both directions and silent in both: a stale
 # baseline reports already-shipped PRs as new, and a stale head DROPS PRs from the
-# bundled table and from the `shipped-cards` manifest that decides which cards get
-# promoted (card#7517). Each leg's explicit flag is that leg's override and skips
-# that leg's fetch, so an offline run passes BOTH: `--base <tag> --head <ref>`.
+# bundled table and from the `shipped-cards` manifest footer (card#7517). Each leg's
+# explicit flag is that leg's override and skips that leg's fetch, so an offline run
+# passes BOTH: `--base <tag> --head <ref>`.
 # AN EXPLICIT REF MUST STILL RESOLVE HERE (card#7525) — the flag says WHICH ref to
 # use, never that a ref this repo does not have should be read as an empty range;
 # skipping the fetch is precisely why nothing else would catch it.
@@ -53,10 +108,12 @@
 # range that matches neither token spelling: that omits the optional manifest
 # footers, and still exits 0. It is no longer SILENT, though: over a NON-EMPTY
 # range, a declared token key that matched nothing (and the case where neither
-# key is declared at all) is reported in a `## Correlation gaps` section of the
-# body and on stderr, because an omitted footer and a footer with nothing to say
-# are otherwise indistinguishable to every reader of this body (card#8538).
+# key is declared at all) is reported as a `correlation gap` on stderr, because an
+# omitted footer and a footer with nothing to say are otherwise indistinguishable
+# to every reader of this body (card#8538).
 set -euo pipefail
+
+ABTK_TOOL_VERSION='0.34.0'
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
 command -v jq  >/dev/null || die "jq is required"
@@ -75,7 +132,7 @@ command -v git >/dev/null || die "git is required"
 # and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
@@ -85,6 +142,7 @@ while [ $# -gt 0 ]; do
     --tag)      TAG_ONLY=1; shift;;
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
     # `sed -n '2,20p'` happened to print all of the header it was written against, and would
     # have started truncating silently at the first header line added. No line COUNT is
@@ -95,22 +153,29 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The two query modes are mutually exclusive: each replaces the body with one list, so a
-# caller passing both gets one of them and silently loses the other. This repo has already
+# Query modes are mutually exclusive: each replaces the body with its own answer, so a caller
+# passing two gets one of them and silently loses the other. This repo has already
 # ruled on that shape once (card#5429 — drift-check read two positionals and dropped the
 # rest at rc 0), and a query whose answer is about a different question than the one asked
 # is worse here than in a body generator, because the output is machine-read.
 # COUNTED, NOT PAIRWISE. Each query mode replaces the whole output with one answer, so any two
 # of them means one is silently lost — and a pairwise test is the shape that admits exactly the
-# combination nobody remembered to write down (with three modes there are three pairs; with the
-# next one, six). The count is derived from the flags that were actually seen.
+# combination nobody remembered to write down (n modes make n(n-1)/2 pairs, so every added mode
+# adds more pairs than the last). The count is derived from the flags that were actually seen.
 QUERY_MODES=""; QUERY_COUNT=0
 query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODES, }$2"; QUERY_COUNT=$((QUERY_COUNT + 1)); }
 query_mode "$TAG_ONLY"           --tag
 query_mode "$MANIFEST_ONLY"      --manifest
 query_mode "$CARD_MANIFEST_ONLY" --card-manifest
+query_mode "$TOOL_VERSION_ONLY"  --tool-version
 if [ "$QUERY_COUNT" -gt 1 ]; then
   die "$QUERY_MODES are mutually exclusive query modes (each prints a different answer — run the tool once per question)"
+fi
+
+# Before the config read: a copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
 fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
@@ -297,10 +362,10 @@ fi
 # three lines ABOVE a `die` whose own words say a local ref "is NOT a usable
 # fallback". Measured at the v0.30.0 cut: local dev one commit behind origin/dev
 # produced 38 rows instead of 39, no `#298`, and a `shipped-cards` manifest missing
-# the SECURITY fix's card — which `promote-released-cards` then never promoted. A
-# short range is WELL-FORMED, so nothing downstream can notice: the body renders,
-# the count looks plausible, the manifest is valid and simply missing its newest
-# entries. Do not re-introduce the asymmetry; the two ends feed ONE range.
+# the SECURITY fix's card. A short range is WELL-FORMED, so nothing downstream can
+# notice: the body renders, the count looks plausible, the manifest is valid and
+# simply missing its newest entries. Do not re-introduce the asymmetry; the two ends
+# feed ONE range.
 #
 # AN EXPLICIT LEG IS STILL CHECKED FOR RESOLVABILITY — not for freshness (card#7525).
 # Honouring the handed-in ref verbatim is the point of the override, and this does NOT
@@ -308,8 +373,8 @@ fi
 # only whether the named ref EXISTS here, because skipping the fetch means nothing else ever
 # looks it up. `git log "$RANGE"` runs under `2>/dev/null` at four sites below, so a typo'd or
 # deleted ref is silent in every one of them: the two query modes (`--manifest`,
-# `--card-manifest`) print an EMPTY list at rc 0 — the machine-read surfaces, and the second is
-# what decides which cards `promote-released-cards` promotes — and the full body path aborts at
+# `--card-manifest`) print an EMPTY list at rc 0 — the machine-read surfaces, whose consumers
+# cannot tell that from a range with nothing in it — and the full body path aborts at
 # the `COUNT=` pipeline (pipefail + errexit) with rc 128 and NOT ONE BYTE on either stream,
 # naming neither the ref nor the flag. All three are "a typo is indistinguishable from a
 # genuinely empty range". Refusing by name replaces all three.
@@ -368,7 +433,7 @@ fi
 
 if [ -z "$HEAD_REF" ]; then
   git fetch --quiet origin "$DEV_BRANCH" \
-    || die "cannot fetch origin/'$DEV_BRANCH' — the shipped range's head is resolved against the remote (the local '$DEV_BRANCH' ref lags every merge that lands after a release worktree is cut, and a short range silently drops PRs from the bundled table AND from the shipped-cards manifest that promotes their cards); fix network/remote access or pass an explicit --head <ref>"
+    || die "cannot fetch origin/'$DEV_BRANCH' — the shipped range's head is resolved against the remote (the local '$DEV_BRANCH' ref lags every merge that lands after a release worktree is cut, and a short range silently drops PRs from the bundled table AND from the shipped-cards manifest); fix network/remote access or pass an explicit --head <ref>"
   if git rev-parse --verify -q "refs/remotes/origin/$DEV_BRANCH" >/dev/null; then
     HEAD_REF="origin/$DEV_BRANCH"      # the readable spelling, when the refspec produced it
   else
@@ -433,7 +498,7 @@ emit_manifest() {
 # not be `card#…`: a prefix that itself contains digits (`PROJ2-card#77`) makes the
 # stream-grep yield TWO ids, `2` and `77`, and `2` is a real id belonging to some other
 # card. Erring toward DROPPING an id is the right side of that asymmetry here — a token
-# whose id is not trailing yields nothing and the coverage section says so, whereas a
+# whose id is not trailing yields nothing and the coverage report says so, whereas a
 # minted id silently reports an unrelated card as covered.
 emit_card_ids() {
   [ -n "$CARD_TOKEN_REGEX" ] || return 0
@@ -485,24 +550,29 @@ bundle_lines() {
   [ "$found" = 1 ] || echo "_(no non-merge commits in \`$RANGE\`)_"
 }
 
-# Shift-left card coverage: surface, IN THE RELEASE PR, any shipped ref that has no
-# board tracking card — so the gap is caught at release-prep (cheap to fix) instead of
-# only on the post-merge promote run (a red check needing manual board surgery). Reuses
+# Shift-left card coverage: surface, AT RELEASE PREP, any shipped ref that has no board
+# tracking card — so the gap is caught while it is cheap to fix instead of only on the
+# post-merge promote run (a red check needing manual board surgery). Reuses
 # `promote-released-cards --dls/--cards <manifest> --dry-run` (an explicit ref set → no
 # squash/parent-count branch, just the cardless report).
 #
-# The section is emitted ONLY when the check could actually run — it needs the promote tool
-# + a board token + a `.promote` config, and where any of those is missing the body carries
-# NO section at all. It used to emit the heading unconditionally and, in that case, a
-# placeholder saying "not checked here, run `promote-released-cards --dry-run` before
-# merge": a section whose entire content is "this was not measured" tells the merger nothing
-# about what the merge contains, and it was struck by hand from a real release PR body —
-# which does not hold, because the next release re-emits it. Making the presence conditional
-# is what holds. The `--dry-run`-before-merge obligation did not go away; it is stated in the
-# release doc a reader consults for release process (this repo's `VERSIONING.md` § Release
-# flow; `docs/INSTALL.md` §4 for a consumer setting the keys up), not narrated per release.
-# So: the heading now MEANS coverage was measured. A run that was attempted and failed still
-# says so — that is a fact about this release, not a placeholder.
+# IT IS A STDERR REPORT, NOT A BODY SECTION (DL-224). It is a diagnostic for whoever builds the
+# release, not content for whoever installs it: it was a `## Card coverage` H2 until DL-224
+# (card#9248 reports the framework's PR-body lint redding on it, so every generated release body
+# was hand-edited at the cut). The information is unchanged; only its home moved. See the
+# header's STDOUT/STDERR contract.
+#
+# The report is emitted ONLY when the check could actually run — it needs the promote tool
+# + a board token + a `.promote` config, and where any of those is missing there is NO
+# `card coverage:` line at all. It used to emit a heading unconditionally and, in that case, a
+# placeholder saying "not checked here, run `promote-released-cards --dry-run` before merge":
+# a report whose entire content is "this was not measured" says nothing about the release, and
+# it was struck by hand from a real release PR body — which does not hold, because the next
+# release re-emits it. The `--dry-run`-before-merge obligation did not go away; it is stated in
+# the release doc a reader consults for release process (this repo's `VERSIONING.md` § Release
+# flow; `docs/INSTALL.md` §4 for a consumer setting the keys up). So: a `card coverage:` line
+# MEANS coverage was measured. A run that was attempted and failed still says so — that is a
+# fact about this release, not a placeholder.
 #
 # The two legs are passed SEPARATELY because they correlate against different card
 # fields (see the header): DL tokens against `payload.dl_number`, card ids against the
@@ -511,7 +581,8 @@ bundle_lines() {
 # make a coverage line read "covered". promote-released-cards deliberately does NOT
 # derive ids from subjects for its MOVE path, where the same mention would relocate an
 # unrelated card.
-card_coverage_section() {
+coverage_line() { printf 'release-pr-body: card coverage: %s\n' "$1" >&2; }
+card_coverage_report() {
   [ -n "$REF_TOKEN_REGEX" ] || [ -n "$CARD_TOKEN_REGEX" ] || return 0
   local board promote
   board="$(cfg_opt '.promote.board_id')"
@@ -520,23 +591,22 @@ card_coverage_section() {
     local d; d="$(dirname "$0")"
     [ -x "$d/promote-released-cards" ] && promote="$d/promote-released-cards"
   fi
-  # Nothing to measure with ⇒ nothing to say. The return is BEFORE the heading is printed, so
-  # the body gains no empty section either.
+  # Nothing to measure with ⇒ nothing to say. The return is BEFORE any line is printed, so an
+  # unmeasured run emits no coverage line at all.
   if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:-}" ] || [ -z "$promote" ]; then
     return 0
   fi
-  echo ""; echo "## Card coverage"
   local dl_manifest card_manifest
   dl_manifest="$(emit_manifest | paste -sd, -)"
   card_manifest="$(emit_card_ids | paste -sd, -)"
   if [ -z "$dl_manifest" ] && [ -z "$card_manifest" ]; then
-    # Named with the range's commit COUNT, and pointing at the section above when there is one.
-    # "No shipped refs in range" over thirty commits is true and reads like "nothing to do";
-    # the reader needs to know the range was not empty (card#8538).
+    # Named with the range's commit COUNT, and pointing at the correlation-gap lines when there
+    # are any. "No shipped refs in range" over thirty commits is true and reads like "nothing to
+    # do"; the reader needs to know the range was not empty (card#8538).
     if [ "${COUNT:-0}" -gt 0 ]; then
-      echo "_No shipped ref or card id matched in \`$RANGE\` ($COUNT commit(s)) — there is nothing to check coverage against; see § Correlation gaps above._"
+      coverage_line "_No shipped ref or card id matched in \`$RANGE\` ($COUNT commit(s)) — there is nothing to check coverage against; see the correlation gap lines above._"
     else
-      echo "_No shipped refs in range._"
+      coverage_line "_No shipped refs in range._"
     fi
     return 0
   fi
@@ -552,14 +622,14 @@ card_coverage_section() {
   local out rc
   out="$("$promote" "${args[@]}" 2>&1)" && rc=0 || rc=$?
   if [ "${rc:-0}" -ne 0 ]; then
-    echo "_Coverage check could not run (\`promote-released-cards\` exited ${rc}). Run it manually before merge._"
+    coverage_line "_Coverage check could not run (\`promote-released-cards\` exited ${rc}). Run it manually before merge._"
     return 0
   fi
   # THE PROMOTE TOOL'S NO-CARD REPORT IS TWO LINES, and both are read here (card#8421). They
   # are not two spellings of one finding — they carry OPPOSITE remedies, so reading only the
   # first told an author to CREATE a board card for a card that was already on the board and
   # merely needed a stamp. `promote-released-cards` owns the contract in a block named THE
-  # NO-CARD REPORT; a third kind added there needs a third read HERE, or this section
+  # NO-CARD REPORT; a third kind added there needs a third read HERE, or this report
   # silently half-reads a report it presents as whole.
   #
   # Each `sed` cuts at the FIRST colon of the matched text, which is why `grep -oE` anchors on a
@@ -568,22 +638,17 @@ card_coverage_section() {
   miss="$(printf '%s\n' "$out" | grep -oE 'matched NO card[^:]*: .*' | sed 's/[^:]*: //' || true)"
   stranded="$(printf '%s\n' "$out" | grep -oE 'matched ONLY an unsourced card[^:]*: .*' | sed 's/[^:]*: //' || true)"
   if [ -n "$miss" ]; then
-    echo "⚠ **Shipped refs with no tracking card:** $miss"
-    echo ""
-    echo "Create (or correct) a board card for each before merging — a cardless *feature* ref is a tracking gap; a cardless *docs* ref is acceptable but better carded. A \`card#NNNN\` naming no card on this board is usually a typo or a card belonging to a different board. Otherwise the post-merge promote step reports them as no-card."
+    coverage_line "⚠ **Shipped refs with no tracking card:** $miss"
+    coverage_line "Create (or correct) a board card for each before merging — a cardless *feature* ref is a tracking gap; a cardless *docs* ref is acceptable but better carded. A \`card#NNNN\` naming no card on this board is usually a typo or a card belonging to a different board. Otherwise the post-merge promote step reports them as no-card."
     said=1
   fi
   if [ -n "$stranded" ]; then
-    # A blank line only BETWEEN the two blocks — a plain `if`, not a trailing test, per the
-    # card#5874 rule this file already states above.
-    if [ "$said" = 1 ]; then echo ""; fi
-    echo "⚠ **Shipped refs whose card carries no by-ref source:** $stranded"
-    echo ""
-    echo "**Do not create a card for these — the card already exists** and carries the ref. What it lacks is a repo-qualified source, so a repo-qualified promote (\`.promote.source\` set to an \`<owner>/<repo>\`) cannot tell whose card it is and will NOT move it. Stamp the card that is there — \`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>\` — or promote it by hand after merge."
+    coverage_line "⚠ **Shipped refs whose card carries no by-ref source:** $stranded"
+    coverage_line "**Do not create a card for these — the card already exists** and carries the ref. What it lacks is a repo-qualified source, so a repo-qualified promote (\`.promote.source\` set to an \`<owner>/<repo>\`) cannot tell whose card it is and will NOT move it. Stamp the card that is there — \`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>\` — or promote it by hand after merge."
     said=1
   fi
   if [ "$said" = 0 ]; then
-    echo "_All shipped refs have a tracking card._"
+    coverage_line "_All shipped refs have a tracking card._"
   fi
 }
 
@@ -592,17 +657,26 @@ COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')
 # --- correlation gaps: an EMPTY manifest over a NON-EMPTY range is a finding (card#8538) ---
 # THE FAILURE THIS CLOSES IS A CLEAN LINE, NOT AN ERROR. With `card_token_regex` absent — or
 # present and matching nothing — `emit_card_ids` yields nothing, the `shipped-cards` footer is
-# simply omitted, and `## Card coverage` reports "All shipped refs have a tracking card" off
+# simply omitted, and the coverage report says "All shipped refs have a tracking card" off
 # whatever the OTHER key happened to see. Measured on a real release: 0 `shipped-cards` lines
-# over a range carrying eight card ids, rc 0, and a coverage section reading clean (card#8423).
+# over a range carrying eight card ids, rc 0, and a coverage report reading clean (card#8423).
 # An omitted footer and a footer that legitimately has nothing to say are indistinguishable to
 # every reader of this body, so the body has to say which one it is.
 #
-# WHY IT IS ITS OWN SECTION AND NOT PART OF `## Card coverage`. That section needs the promote
-# tool, a board id and a writeback token, and renders nothing when any is missing — its
-# presence IS the claim that coverage was measured. This finding needs none of them: it is a
-# fact about git and the config, so it must not inherit that section's preconditions, or the
-# repos least able to measure coverage would also be the ones told nothing about why.
+# WHY IT IS ITS OWN REPORT AND NOT PART OF THE COVERAGE ONE. That report needs the promote tool,
+# a board id and a writeback token, and prints nothing when any is missing — its presence IS the
+# claim that coverage was measured. This finding needs none of them: it is a fact about git and
+# the config, so it must not inherit that report's preconditions, or the repos least able to
+# measure coverage would also be the ones told nothing about why.
+#
+# ON STDERR ONLY (DL-224). It was a `## Correlation gaps` body section, echoed to stderr as well;
+# it is a builder diagnostic, so the body copy is gone and the stderr lines are the report.
+#
+# IT STATES ONLY WHAT THIS GENERATOR ESTABLISHES (card#9248). The strong headline used to say
+# "no card can be promoted from this release" — false about `bin/promote-released-cards` in this
+# same repo, which derives its shipped refs from `git log <base>..<head>` and reads no manifest.
+# What any promoter does with the range is the far end's behaviour, not a fact this end can
+# measure; the headline says that by name instead of guessing.
 #
 # THE RULE, one predicate over both keys, so there is no second answer to one question:
 #   * a key that IS declared and matched NOTHING over a non-empty range — its manifest is empty
@@ -618,9 +692,8 @@ COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')
 #
 # It never changes the exit status. This tool GENERATES a body — a non-zero here would block
 # the release PR it is being written for, and the finding belongs in front of the person
-# reviewing that PR, not in a runner's rc. The same lines go to stderr so a CI log carries them
-# too (the body may be redirected to a file the log never shows).
-correlation_gap_section() {
+# preparing that PR, not in a runner's rc.
+correlation_gap_report() {
   [ "${COUNT:-0}" -gt 0 ] || return 0
   local ref_yield="" card_yield=""
   if [ -n "$REF_TOKEN_REGEX" ];  then ref_yield="$(emit_manifest | paste -sd, -)"; fi
@@ -638,21 +711,54 @@ correlation_gap_section() {
       *)                re="$CARD_TOKEN_REGEX"; yield="$card_yield"; manifest="shipped-cards"; field="the card's own \`id\`";;
     esac
     if [ -n "$re" ] && [ -z "$yield" ]; then
-      gaps+=("⚠ **\`$key\` is declared (\`$re\`) and matched no commit subject in \`$RANGE\` ($COUNT commit(s)).** The \`$manifest\` manifest is EMPTY, so nothing here is correlated against $field — check the regex against the subjects this range actually carries before reading a coverage section as clean.")
+      gaps+=("⚠ **\`$key\` is declared (\`$re\`) and matched no commit subject in \`$RANGE\` ($COUNT commit(s)).** The \`$manifest\` manifest is EMPTY, so nothing here is correlated against $field — check the regex against the subjects this range actually carries before reading a coverage report as clean.")
     elif [ -z "$re" ] && [ "$zero_total" = 1 ]; then
       gaps+=("⚠ **\`$key\` is not declared in \`$CONFIG\`.** The \`$manifest\` manifest is absent, so nothing here is correlated against $field. Declare it if your commit subjects carry that spelling — the two keys are two id spaces, so do not re-spell the other one as this one.")
     fi
   done
   [ "${#gaps[@]}" -gt 0 ] || return 0
-  echo ""; echo "## Correlation gaps"
   if [ "$zero_total" = 1 ]; then
-    gaps=("⚠ **NOTHING in \`$RANGE\` ($COUNT commit(s)) correlates to a board card.** Both manifests are empty, so no card can be promoted from this release and no coverage was measured — a body with no manifest footer reads exactly like one whose range legitimately had nothing to say." "${gaps[@]}")
+    gaps=("⚠ **NOTHING in \`$RANGE\` ($COUNT commit(s)) correlates to a board card through this config.** Both manifests are empty: the body carries no \`release-manifest\` footer, and card coverage was not measured here — a body with no manifest footer reads exactly like one whose range legitimately had nothing to say. What a card promoter does with this range is not established here." "${gaps[@]}")
   fi
   local g
   for g in "${gaps[@]}"; do
-    echo ""; echo "$g"
-    printf 'release-pr-body: %s\n' "$g" >&2
+    printf 'release-pr-body: correlation gap: %s\n' "$g" >&2
   done
+}
+
+# The announce block (contract in the header). Written LAST, so it is the tail of stderr. Every
+# list is printed beside the command that re-prints it, with both range ends pinned by SHA: a
+# ref such as `origin/dev` moves, and a derivation that answers about a different range later
+# is a restatement with a maintenance schedule.
+announce_block() {
+  local base_sha="" head_sha range_pinned
+  if [ -n "$BASE" ]; then base_sha="$(git rev-parse --verify -q "$BASE^{commit}")"; fi
+  head_sha="$(git rev-parse --verify -q "$HEAD_REF^{commit}")"
+  range_pinned="${base_sha:+$base_sha..}$head_sha"
+  local -a query=(--version "$VERSION")
+  if [ -n "$base_sha" ]; then query+=(--base "$base_sha"); fi
+  query+=(--head "$head_sha")
+  if [ "$CONFIG" != ".release-pr.json" ]; then query+=(--config "$CONFIG"); fi
+  local q; q="$(printf ' %q' "${query[@]}")"
+  {
+    echo "announce:begin"
+    echo "format: 1"
+    printf 'version: %s\n' "$VERSION"
+    printf 'tag: %s\n' "$THIS_TAG"
+    printf 'base: %s\n' "$BASE"
+    printf 'head: %s\n' "$HEAD_REF"
+    printf 'range: %s\n' "$range_pinned"
+    printf 'range-cmd: git log --no-merges --format=%%s %s\n' "$range_pinned"
+    if [ -n "$REF_TOKEN_REGEX" ]; then
+      printf 'shipped-refs: %s\n' "$(emit_manifest | paste -sd, -)"
+      printf 'shipped-refs-cmd: release-pr-body --manifest%s\n' "$q"
+    fi
+    if [ -n "$CARD_TOKEN_REGEX" ]; then
+      printf 'shipped-cards: %s\n' "$(emit_card_ids | paste -sd, -)"
+      printf 'shipped-cards-cmd: release-pr-body --card-manifest%s\n' "$q"
+    fi
+    echo "announce:end"
+  } >&2
 }
 
 
@@ -676,9 +782,6 @@ if jq -e '.artifacts | type == "array"' "$CONFIG" >/dev/null 2>&1; then
   done
 fi
 
-correlation_gap_section
-card_coverage_section
-
 # Machine-readable manifest of shipped refs — a deterministic footer a downstream
 # consumer (e.g. a bridge classifier) can parse instead of the prose above. The two id
 # spaces get two SEPARATE keys rather than one merged list: a consumer has to know which
@@ -697,6 +800,10 @@ if [ -n "$CARD_TOKEN_REGEX" ]; then
     printf '\n<!-- release-manifest:shipped-cards=%s -->\n' "$CARD_MANIFEST"
   fi
 fi
+
+correlation_gap_report
+card_coverage_report
+announce_block
 
 # Reaching here means the body was generated: under `set -e` every real failure has already
 # aborted, and a no-token range is valid by contract. Say so explicitly rather than inheriting

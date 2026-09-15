@@ -24,13 +24,14 @@
 # matching name would read as that job's script and is not. The JOB is what keeps its name —
 # the same reason the #137 CI dedup renamed no required check.
 #
-# ⚠ THIS PARAGRAPH USED TO SAY that job "is a required status check on `main`". It was true when
-# written and is NOT true now: `branches/main/protection` answers `required_status_checks: null`
-# (read live, card#8261) — the fleet branch-protection model applied on 2026-08-30 replaced the
-# whole protection object and did not carry the contexts over. The rename hazard is real and is
-# now a property of ONE name rather than of this job: `ci-gate` in `.github/workflows/ci.yml`.
-# `tests/ci-gate-selftest.sh` owns which contexts are required and is the only place that is
-# stated, so this file does not restate it.
+# ⚠ THIS PARAGRAPH USED TO SAY that job "is a required status check on `main`", and then that
+# `branches/main/protection` answered `required_status_checks: null` (card#8261 — the 2026-08-30
+# fleet model replaced the protection object without carrying the contexts over). Both were true
+# when written; neither is now, the contexts having since been set. The rename hazard is real and
+# is a property of the AGGREGATING names rather than of this job. `tests/ci-gate-selftest.sh`
+# declares which contexts are required and carries the command that re-prints the live set; this
+# file restates neither a name list nor a status — which is the whole reason the sentence above
+# needed correcting twice.
 #
 # THE BIN HAS NO MAIN-GUARD, so it is exercised as a PROCESS. Sourcing it would run its
 # argument guards and `exit` inside this shell.

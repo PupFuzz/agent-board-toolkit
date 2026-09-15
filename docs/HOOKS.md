@@ -12,6 +12,7 @@ A recurring board-drift cause is forgetting to move a card to **In Progress** wh
    - a `DL-NNN` present but resolving to nothing with **no card-id fallback** → a loud no-op (a high-value miss), never silent.
 2. resolves the card (board id from a repo-local `git config kanban.board-id`, else the repo's committed `.release-pr.json` `promote.board_id` — the `git config` value wins if both are set; API base from `.release-pr.json` or `~/.kanban-host.env`; in-progress stage from your `~/.kanban-<name>-board.env`), and verifies it is **on the repo's configured board** (so a stray number can't move an unrelated task; this is also the board-scope guard for the card-id fallback),
 3. moves it to In Progress — from **Backlog or Prioritized** on any branch checkout, or from **Held** *only on a genuine branch creation* (`git switch -c`; a re-checkout of an existing branch won't un-park a Held card — the re-fire protection). A card already In Progress / In Review / Shipped / Released / Won't-Do is never touched.
+4. once that move has succeeded, stamps the seat owner tag `owner:<project>/<seat>` in a separate write. When it is stamped, when it is not, and what is logged are [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat); a tag that is not stamped never undoes or fails the move.
 
 A **pinned** card is never auto-moved regardless of stage: a non-empty `block_reason` **or** a `no-automove` tag makes the move refuse (loudly). Held detection uses the branch's reflog creation entry (`branch: Created from …`, ≤ ~15s old, overridable via `KB_HELD_CREATE_MAX_AGE`); a clone or an unparsable/missing reflog is treated as *not* a creation. This implements the cross-mover contract (agent-board-framework PR #113) shared with the bridge's branch-create `started` mover.
 
@@ -21,11 +22,11 @@ It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id t
 
 ## Branch-name advisory (`pre-push`, card-4621)
 
-`hooks/pre-push` → `board-card-start --lint -- <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**): it warns, on stderr, only when a branch name **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize — so the card would silently never move to In Progress. It reuses the *exact* card-id matcher `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree **about the grammar**.
+`hooks/pre-push` → `board-card-start --lint -- <branch>` for each pushed branch. It is a **fail-soft advisory** (it always exits 0 and **never blocks a push**) with **two independent legs**, each printing its finding as one `board-branch-lint:` line on stderr: the **malformed-spelling** leg — a branch name that **looks like** it references a card but in a spelling the auto-move grammar **won't** recognize, so the card would silently never move to In Progress — and the **card-id floor** leg ([below](#the-card-id-floor-leg-dl-223)) — a spelling the grammar **accepts**, carrying a number from the wrong id space. Both reuse the *exact* card-id matchers `board-card-start` moves on (`_bcs_explicit_card_id` / `_bcs_typed_card_id`), so the lint and the mover can never disagree **about the grammar**.
 
 The `--` is load-bearing, not boilerplate. git **accepts** a branch whose name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0 and `git update-ref` creates it — only the `git branch` *porcelain* refuses the name), and this hook is fed whatever is being pushed. Passed bare, such a name reads as an unknown option and the lint refuses it, while the mover still moves that branch's card — `post-checkout` passes **no** arguments, so it resolves `HEAD` and never enters the argument parser. The shared matchers are what make the two agree on the *grammar*; the **argument surface** is the one place left where they could still disagree, and the terminator is what closes it.
 
-It is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling:
+The malformed-spelling leg is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling:
 
 ```
 board-branch-lint: branch 'fix/card_4524-x' looks like it references card 4524, but the board
@@ -33,7 +34,28 @@ auto-move grammar won't recognize this spelling — the card will NOT move to In
 checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug').
 ```
 
-The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md).
+### The card-id floor leg (DL-223)
+
+The malformed-spelling leg cannot see the opposite mistake: a **well-formed** token carrying a GitHub issue or PR number instead of a card id. `fix/card-712-foo`, where 712 is the PR that was in front of whoever cut the branch, lints clean under that leg; on checkout the mover finds no card of this board's at 712 and moves nothing — noting it in its durable log at most, and silently when 712 is another board's card; and at merge the **branch beats the PR title** for card correlation, so the card's terminal move is refused as well. The floor leg judges the id the mover would use — the explicit token, else a typed leading id (`_bcs_card_id`, shared by both) — against the board's seeded `KB_CARD_ID_FLOOR`, and a lower id is reported:
+
+```
+board-branch-lint: branch 'fix/card-712-foo' names card 712, which is BELOW board 42's card-id floor 1000
+(KB_CARD_ID_FLOOR in ~/.kanban-myproject-board.env) — 712 is most likely a GitHub issue/PR number, not a
+card id; card ids and GitHub issue/PR numbers are separate id spaces — cut the branch from the CARD id …
+```
+
+- **Network-free.** It reads host-local config only: which board this repo maps to — resolved by the same function the mover uses (`_bcs_board_id`: `git config kanban.board-id`, else `.release-pr.json`'s `.promote.board_id`) — and that board's `~/.kanban-*-board.env`. It never reads the board: an unreadable API answer is not an empty one. A committed board id is enough to select the env here, because the floor is not a credential; the per-board **token** stays gated to a host-local board id on the mover path, exactly as before.
+- **Silent only when there is nothing to judge, or the id passes.** A branch with no card id (`docs/…`, a DL-only branch, a malformed spelling) is silent, and so is an id at or above a seeded floor. **Every input it cannot consult speaks instead**, naming the missing piece — a check that cannot fire and stays quiet is indistinguishable from a clean branch:
+  - `card-id floor not seeded for board N` — the board env has no `KB_CARD_ID_FLOOR`; the line names the file and the key to add.
+  - `card-id floor NOT CHECKED … this repo maps to no board` — no board id resolves: no git config, and no `.promote.board_id` read from `.release-pr.json` (absent, unreadable, not a plain integer, or `jq` not on `PATH`), or `--lint` was run outside a work tree.
+  - `card-id floor NOT CHECKED … no ~/.kanban-*-board.env has KB_BOARD_ID=N` — the repo names a board this host has no env for.
+  - `card-id floor NOT CHECKED … KB_CARD_ID_FLOOR='…' … is not an unsigned integer` — a malformed seed is refused by name, never compared.
+- **Never a block.** A finding is a line; the exit status is 0 whatever either leg finds.
+- **Independent of the malformed-spelling leg.** A malformed spelling carries no accepted id, so this leg has nothing to judge on it, and an accepted spelling is silent to the other leg. Neither predicate was widened into the other.
+
+How to seed the floor, and the bound on what it can tell you — it is a magnitude heuristic, not a namespace check — are documented where the seed is configured: [INSTALL.md §3b](INSTALL.md#3b-per-board-config--token).
+
+The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md); the floor leg, once that version carries it **and** the board env is seeded.
 
 ## Agent-dispatch card-start (`hooks/agent-dispatch-card-start`, card-4945)
 
@@ -76,11 +98,16 @@ Claude Code delivers the event as a **JSON object on stdin** (never env vars —
 marker invokes the existing primitive:
 
 ```
-kbcard --board <key> move --task <card-id> --column in_progress
+kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner
 ```
 
 `kbcard` (on PATH at `~/.local/bin`) owns board-env/token resolution — the hook does not hand-roll
-`curl`.
+`curl`. `--stamp-owner` has kbcard stamp the seat owner tag after the move, under the rules in
+[README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). The hook relays
+kbcard's `owner tag` lines to its own stderr and keeps the rest of kbcard's output suppressed.
+**Upgrade `kbcard` with this hook:** a `kbcard` older than `--stamp-owner` refuses the flag as an
+unknown arg. The hook then says the seat's `kbcard` needs updating and retries the move once without
+the flag, so the card still moves, unstamped.
 
 ### Fail-soft, always
 
@@ -261,7 +288,7 @@ Every bound above is pinned by a fixture, so this disclosure and the behaviour c
 ```bash
 board-card-start                     # current branch — move the correlated card to In Progress
 board-card-start feature/dl156-foo   # a specific branch name
-board-card-start --lint <branch>     # advisory only: print the branch-name warning (if any), no move
+board-card-start --lint <branch>     # advisory only: print the branch-name findings (if any), no move
 board-card-start <branch> --lint     # same — the flag is honoured in ANY position
 board-card-start -- -foo             # a branch name starting with '-' — after the -- terminator
 ```
@@ -276,4 +303,5 @@ An argument the tool cannot act on is **refused by name, with no move** — an *
 
 - Correlates on a `DL-NNN` token (matches the kbcard/writeback convention) **or** a card-id token (`card#2950` / `#2950` / `card-2950` / a typed branch's leading id like `feat/2950-…`), try-in-order-with-fallback: a resolving DL wins; a DL that tracks no card falls through to the card-id token (and stamps `dl_number` on it). A branch with neither token is a no-op. The card-id path only moves a card that lives on the repo's own board.
 - **Diagnostics (fail-soft but not silent).** The hook always `exit 0`s (it must never block a checkout), but when a branch carries a DL/card token and the move *didn't* happen for an infrastructure reason — no resolvable board id, an unloadable token/host, an untrusted `api_base`, unresolved stage ids, an unreachable board, a `card#N` that doesn't exist, or a pinned card — it prints a one-line reason to stderr **and appends it to `~/.cache/agent-board-toolkit/board-card-start.log`** (`KB_BCS_LOG` overrides the path). Because the installed hook wrapper discards stderr, that log is the durable record: check it if a card you expected to move didn't. Where a line names the api base, any **userinfo is masked to `***`** — an api_base may legitimately carry `user:password@`, and this log outlives the run on disk — so `https://***@board.example.com/api/v3` in the log means the base carried a credential, not that it is malformed. A branch with **no** token, a card already **past** the move stages, or a card-id number that lives on **another** board stays silent — those are genuine no-ops, not failures.
+- **The owner tag's lines are logged the same way, but they are not failed moves.** When the card moves and the owner tag is not stamped, for any reason in [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat), that line goes to stderr and the same log. A checkout from a shell that does not carry `COORD_AGENT` (for example, a human terminal) logs the unresolved-owner line on every move it makes.
 - This is the **local** half of the codification. The durable, multi-agent half is the bridge moving the card on the branch-create / first-push webhook (derive-from-artifact) — tracked separately.

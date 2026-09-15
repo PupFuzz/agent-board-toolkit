@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# ci-gate-selftest.sh — the `ci-gate` job is the repository's ONE required status context, so
-# the two things that make it a gate rather than a decoration are asserted here: it depends on
-# EVERY job in its workflow, and its verdict step really reds on every non-success result.
+# ci-gate-selftest.sh — `ci-gate` is the required status context that stands in front of its
+# WHOLE workflow, so the two things that make it a gate rather than a decoration are asserted
+# here: it depends on EVERY job in its workflow, and its verdict step really reds on every
+# non-success result. It is one member of the required set, not the whole of it — the set is
+# declared once, below, in `REQUIRE_BESIDE_CI_GATE`, and that declaration is the only in-tree
+# statement of it.
 #
-# WHY THIS FILE EXISTS (card#8261). `main` and `dev` carry the whole fleet branch-protection
+# WHY THIS FILE EXISTS (card#8261). `main` and `dev` carried the whole fleet branch-protection
 # model — `enforce_admins`, blocked force-pushes and deletions, the merge-method rulesets — with
-# `required_status_checks` at **`null`**. The repo therefore reads as protected on every surface
-# an operator inspects while **no CI result is required to merge at all**. The obvious repair —
+# `required_status_checks` at **`null`**, so the repo read as protected on every surface an
+# operator inspects while **no CI result was required to merge at all**. ⚠ THAT IS THE PAST TENSE
+# NOW: the contexts have since been set, and the command that re-prints them is below, beside the
+# declaration — run it rather than trusting any sentence here, since it is a repository SETTING
+# and no file in this tree can hold it. The obvious repair at the time —
 # fill in the `contexts` list — is a hand-maintained registry of check names standing in front of
 # a `selftest` matrix that ORDINARY PULL REQUESTS EDIT (`run-coverage-check-selftest` was added
 # three PRs before this one), and such a list rots in both directions: a name dropped from the
 # matrix never reports again and deadlocks every PR (loud), while a name ADDED to it is required
 # by nothing (silent, and the direction that matters). `ci-gate` is the one context that does not
 # move when the matrix does — and everything that gate is worth then rests on the two properties
-# below.
+# below. ⚑ WHAT WAS EVENTUALLY SET IS NOT A COUNTER-EXAMPLE TO THAT ARGUMENT: the names now
+# required are the AGGREGATING / sibling-workflow gates — `ci-gate` plus the declaration below —
+# none of which moves when the matrix does. No matrix entry's name is required, which is what keeps
+# an ordinary PR able to add one.
 #
 # ⛔ AN AGGREGATOR OBSERVED ONLY GREEN IS A DECORATION, and this one stands in front of the whole
 # merge gate. Two failure shapes are specifically what leg 4 drives, because both are silent:
@@ -56,9 +65,13 @@
 #     `ci-gate`, required by name beside it, or explicitly declared not-PR-gating), never that
 #     the disposition is the right one; a job moved from a PR trigger to a push trigger would
 #     stay green here. That is a partition, not a trigger check, and it is the cheap half.
-#   * Nothing here reads live branch protection. Whether the operator ACTUALLY set these contexts
-#     is a fact about the repository settings, not about this tree, and a test that cannot see it
-#     must not imply it. It is what the card's own closing step verifies, live.
+#   * Nothing here reads live branch protection — DELIBERATELY. Whether the operator ACTUALLY set
+#     these contexts is a fact about the repository SETTINGS, not about this tree, and a test that
+#     cannot see it must not imply it. That is the condition this file cannot establish, named
+#     rather than papered over, and the DERIVATION is what stands in for it — run the command
+#     beside the declaration below. Read live 2026-09-12, both branches answered the declared set
+#     exactly; a sentence in a comment restating that would be a figure with a maintenance
+#     schedule (canon #16), which is why the command is written and the answer is not.
 #   * `strict` (require branches up to date before merging) is not this file's business either.
 set -euo pipefail
 
@@ -78,7 +91,24 @@ _mktmp_scratch
 
 # THE ONE DECLARATION of which check contexts must be required BESIDE `ci-gate`, and of which
 # jobs are not PR gates at all. Leg 3 holds both level with the workflow directory, in both
-# directions, so neither can quietly shrink.
+# directions, so neither can quietly shrink. `ci-gate` plus this array IS the required set as this
+# tree declares it; no other file restates the names, and every other surface that needs them
+# points here.
+#
+# ⛔ THE LIVE SET IS A SETTING, AND THIS IS THE COMMAND THAT PRINTS IT — never a list in a comment.
+# A figure written into prose stops living in the loop that could falsify it and starts being
+# quoted (canon #16), and this one was: selftest headers across `tests/` and comments in `ci.yml`
+# went on asserting `required_status_checks: null` long after the contexts had been set — each of
+# them true on the day it was written, which is the only way this happens:
+#
+#     for b in main dev; do gh api \
+#     "repos/$(gh repo view --json nameWithOwner -q .nameWithOwner)/branches/$b/protection" \
+#     --jq '.required_status_checks.contexts'; done
+#
+# What the DECLARATION above is for is the other direction — that a job added anywhere in the
+# workflow directory gets DISPOSED of rather than silently gated by nothing (leg 3). Agreement
+# between the two is the operator's to establish with that command; this file cannot, and says so
+# in the BOUNDS note above.
 #
 # ⚑ These are CHECK-RUN NAMES. A job reports under its `name:` when it has one and under its job
 # id otherwise — leg 2 asserts no job in this repo carries a `name:`, which is what makes reading
@@ -287,7 +317,7 @@ eq "MIXED failures ⇒ non-zero" "true" "$([[ "$VRC" -ne 0 ]] && echo true || ec
 eq "  … and BOTH are reported" "true" \
    "$(has '2 of 3 needed job(s) did not succeed' "$(cat "$TMP/verdict.out")")"
 
-# ⛔ THE CONTROL, and not a hypothetical: this job IS the required context, so an aggregator that
+# ⛔ THE CONTROL, and not a hypothetical: this job IS a required context, so an aggregator that
 # needs nothing is a green tick standing in front of an unmeasured suite. `{}` is what
 # `toJSON(needs)` renders for a job whose `needs:` was emptied — the cheapest possible way to
 # disable the entire merge gate while every surface still shows a passing required check.
