@@ -101,13 +101,14 @@ kb_bcs_note() {
 # The same reason becomes the branch's `not_checked` board verdict, unless an arm already set one.
 bcs_skip() { _bcs_verdict not_checked "" "$1"; kb_bcs_log "$1"; exit 0; }
 
-# _bcs_verdict <verdict> <subject> <reason>: set this run's board verdict for the branch — the
+# _bcs_verdict <verdict> <subject> <reason> [<remedy>]: set this run's board verdict for the branch — the
 # FIRST call wins, so an arm that knows the verdict (a card the board says is not on it) keeps it
 # through the bcs_skip it then calls, and a refusal after a resolved card (a pinned one) does not
 # turn "resolved" into "not checked". The mover's EXIT trap writes it (_bcs_verdict_write).
+# <remedy> is the fix --lint names for a not_checked verdict that a re-checkout would only re-record.
 _bcs_verdict() {
     [ -z "${bcs_verdict:-}" ] || return 0
-    bcs_verdict="$1"; bcs_verdict_subject="$2"; bcs_verdict_reason="$3"
+    bcs_verdict="$1"; bcs_verdict_subject="$2"; bcs_verdict_reason="$3"; bcs_verdict_remedy="${4:-}"
 }
 
 # _bcs_patch <cid> <json> <success-msg> <fail-reason>: PATCH the resolved card via the shared
@@ -268,14 +269,18 @@ _bcs_card_id_floor_warning() {
 #   verdict       resolved | absent | not_checked
 #   subject       the card the branch resolved to (resolved only)
 #   reason        one line: what the board said, or why it was not asked
+#   remedy        the fix --lint names for a not_checked verdict a re-checkout would only re-record
+#                 (empty: the lint names the re-checkout)
 #   recorded_at   unix seconds;  recorded_utc — the same instant, for humans
 # No value carries a control character: the writer scrubs every value it is given (_bcs_scrub), and
 # the lint scrubs a record's values again as it prints them, so an older or hand-edited record cannot
 # write to the terminal either.
 #
-# A record describes ONE checkout. _bcs_board_verdict_warning reports it STALE when the repo is
-# re-mapped to another board, when a toolkit with a different card-id grammar wrote it, and when the
-# branch was re-created without a checkout in a way its reflog logs as a creation — `git branch`,
+# A record describes ONE checkout. _bcs_board_verdict_warning reports it STALE when the board it
+# names is not the one the repo maps to now (a record naming no board, from a checkout that stopped
+# before resolving one, is never stale against one), when a toolkit with a different card-id
+# grammar wrote it, and when the branch was re-created without a checkout in a way its reflog logs
+# as a creation — `git branch`,
 # whose `branch: Created from` entry is what _bcs_branch_created_at reads. A re-creation logged
 # under any other message is NOT detected, and the older verdict reads as current: `git update-ref`
 # (an empty message) and `git fetch . <src>:refs/heads/<branch>` (`fetch …: storing ref`), measured
@@ -305,22 +310,22 @@ _bcs_scrub() {
     printf '%s' "${v//$'\xc2'[$'\x80'-$'\x9f']/}"
 }
 
-# _bcs_verdict_write <branch> <verdict> <dl> <board> <subject> <reason>: replace <branch>'s record
+# _bcs_verdict_write <branch> <verdict> <dl> <board> <subject> <reason> [<remedy>]: replace <branch>'s record
 # ATOMICALLY — a temp file in the record's own directory, renamed over the old one — so a reader
 # sees the previous record or the new one, never a torn one. rc 1 on any failure, with no temp
 # file left behind and, wherever the directory still allows it, no previous record either; what a
 # failed write is worth is the caller's call. Every value given is scrubbed (_bcs_scrub): the board id
 # and the reasons carry text from an API body.
 _bcs_verdict_write() {
-    local branch="${1:-}" verdict="${2:-}" dl="${3:-}" board="${4:-}" subject="${5:-}" reason="${6:-}"
+    local branch="${1:-}" verdict="${2:-}" dl="${3:-}" board="${4:-}" subject="${5:-}" reason="${6:-}" remedy="${7:-}"
     local f dir tmp
     f="$(_bcs_verdict_file "$branch")" || return 1
     dir="${f%/*}"
     mkdir -p "$dir" 2>/dev/null || return 1
     if tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" \
-        && printf '%s\nbranch=%s\ncard=%s\ndl=%s\nboard=%s\nverdict=%s\nsubject=%s\nreason=%s\nrecorded_at=%s\nrecorded_utc=%s\n' \
+        && printf '%s\nbranch=%s\ncard=%s\ndl=%s\nboard=%s\nverdict=%s\nsubject=%s\nreason=%s\nremedy=%s\nrecorded_at=%s\nrecorded_utc=%s\n' \
             "$_BCS_VERDICT_HEADER" "$(_bcs_scrub "$branch")" "$(_bcs_card_id "$branch")" "$(_bcs_scrub "$dl")" \
-            "$(_bcs_scrub "$board")" "$(_bcs_scrub "$verdict")" "$(_bcs_scrub "$subject")" "$(_bcs_scrub "$reason")" \
+            "$(_bcs_scrub "$board")" "$(_bcs_scrub "$verdict")" "$(_bcs_scrub "$subject")" "$(_bcs_scrub "$reason")" "$(_bcs_scrub "$remedy")" \
             "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null \
         && mv -f "$tmp" "$f" 2>/dev/null; then
         return 0
@@ -363,7 +368,7 @@ _bcs_board_verdict_warning() {
             "$branch" "$id" "$again"
         return 1
     fi
-    local hdr="" line k r_branch="" r_card="" r_board="" r_verdict="" r_reason="" r_at="" r_utc=""
+    local hdr="" line k r_branch="" r_card="" r_board="" r_verdict="" r_reason="" r_remedy="" r_at="" r_utc=""
     {
         IFS= read -r hdr
         while IFS= read -r line; do
@@ -374,6 +379,7 @@ _bcs_board_verdict_warning() {
                 board)        r_board="${line#*=}" ;;
                 verdict)      r_verdict="${line#*=}" ;;
                 reason)       r_reason="${line#*=}" ;;
+                remedy)       r_remedy="${line#*=}" ;;
                 recorded_at)  r_at="${line#*=}" ;;
                 recorded_utc) r_utc="${line#*=}" ;;
             esac
@@ -389,10 +395,12 @@ _bcs_board_verdict_warning() {
     # not write to the terminal.
     local s_card s_board stale=""
     s_card="$(_bcs_scrub "$r_card")"; s_board="$(_bcs_scrub "$r_board")"
-    r_reason="$(_bcs_scrub "$r_reason")"; r_utc="$(_bcs_scrub "$r_utc")"
+    r_reason="$(_bcs_scrub "$r_reason")"; r_remedy="$(_bcs_scrub "$r_remedy")"; r_utc="$(_bcs_scrub "$r_utc")"
     if [ "$r_card" != "$id" ]; then
         stale="it was recorded for card ${s_card:-<none>}, but this branch name yields card $id to this board-card-start (a toolkit with a different card-id grammar wrote it)"
-    elif [ "$r_board" != "$board_now" ]; then
+    # A record naming no board stopped before resolving one (curl or jq not on PATH): a re-checkout
+    # writes the same record, so its own reason, not a staleness, is the finding.
+    elif [ -n "$r_board" ] && [ "$r_board" != "$board_now" ]; then
         stale="it was recorded against ${s_board:+board }${s_board:-no board}, but this repo now maps to ${board_now:+board }${board_now:-no board}"
     elif kb_is_uint "$created" && kb_is_uint "$r_at" && _bcs_uint_lt "$r_at" "$created"; then
         stale="it was recorded at $r_utc, before a branch of this name was created (reflog: unix time $created) — the branch was deleted and re-created without a checkout since"
@@ -408,8 +416,8 @@ _bcs_board_verdict_warning() {
                 "$branch" "$id" "$s_board" "$r_reason" "$r_utc" "$_bcs_id_space_rule"
             return 0 ;;
     esac
-    printf "board verdict NOT CHECKED for branch '%s' (card %s): its last checkout (%s) got no board answer on that card id — %s; once that is fixed, %s.\n" \
-        "$branch" "$id" "$r_utc" "$r_reason" "$again"
+    printf "board verdict NOT CHECKED for branch '%s' (card %s): its last checkout (%s) got no board answer on that card id — %s; %s.\n" \
+        "$branch" "$id" "$r_utc" "$r_reason" "${r_remedy:-once that is fixed, $again}"
     return 1
 }
 
@@ -531,10 +539,10 @@ fi
 # bcs_skip sets `not_checked` with its own reason, and an exit that set nothing is recorded as
 # exactly that. A write that fails is logged and changes nothing else: the exit status is the
 # `exit` that fired the trap, never the trap's own.
-bcs_verdict=""; bcs_verdict_subject=""; bcs_verdict_reason=""
+bcs_verdict=""; bcs_verdict_subject=""; bcs_verdict_reason=""; bcs_verdict_remedy=""
 _bcs_verdict_flush() {
     _bcs_verdict not_checked "" "board-card-start exited without reaching a board verdict"
-    _bcs_verdict_write "$branch" "$bcs_verdict" "${dl:-}" "${board:-}" "$bcs_verdict_subject" "$bcs_verdict_reason" \
+    _bcs_verdict_write "$branch" "$bcs_verdict" "${dl:-}" "${board:-}" "$bcs_verdict_subject" "$bcs_verdict_reason" "$bcs_verdict_remedy" \
         || kb_bcs_note "board-card-start: the board verdict for branch '$branch' ($bcs_verdict) could not be recorded under this repository's git dir — the pre-push lint will report the branch as NOT RECORDED"
     return 0
 }
@@ -736,7 +744,8 @@ if [ -n "$dl" ]; then
             # wins over the DL (docs/HOOKS.md § The board verdict leg), so `resolved` would silence the
             # lint on the card the merge acts on. A typed leading id is outside the bridge's grammar.
             [ "$cid_explicit" = 1 ] \
-                && _bcs_verdict not_checked "" "DL-$dl resolved card #$cid; the branch's own card #$cid_token was not judged — at merge the bridge treats a card token that is not one of the DL's cards as authoritative"
+                && _bcs_verdict not_checked "" "DL-$dl resolved card #$cid; the branch's own card #$cid_token was not judged — at merge the bridge treats a card token that is not one of the DL's cards as authoritative" \
+                    "rename the branch so its DL and its card token name the same card, or accept that the bridge acts on card #$cid_token at merge — checking the branch out again records this same verdict"
         fi
     elif [ -n "$cid_token" ]; then
         # (2) DL tracks no card yet (the unstamped-card class) → fall through to the

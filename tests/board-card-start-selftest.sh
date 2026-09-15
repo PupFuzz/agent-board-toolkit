@@ -234,6 +234,13 @@ if command -v git >/dev/null 2>&1; then
     eq "not checked: rc 1 (undecided)" "1" "$_vrc"
     eq "not checked: names the reason it was not checked" "true" "$(has "board verdict NOT CHECKED for branch 'fix/card-713-x' (card 713)" "$_vout")"
     eq "not checked: …carrying the recorded reason"      "true" "$(has "line one line two" "$_vout")"
+    eq "not checked, no remedy recorded: names the re-checkout (witness)" "true" \
+       "$(has "; once that is fixed, check the branch out again ('git checkout fix/card-713-x')" "$_vout")"
+    # A verdict a re-checkout would only re-record carries its own remedy, printed in place of that advice.
+    _vrec fix/card-731-x not_checked 89 42 "" "the reason" "rename the branch, the remedy"
+    _vwarn fix/card-731-x 42
+    eq "not checked with a recorded remedy: rc 1, the remedy replaces the re-checkout advice" "1|true|false" \
+       "$_vrc|$(has "— the reason; rename the branch, the remedy." "$_vout")|$(has "check the branch out again" "$_vout")"
     # A branch with no card id is silent and decided, record or none.
     _vwarn docs/adoption-guide ""
     eq "no card id: rc 0, silent, no record needed" "0|" "$_vrc|$_vout"
@@ -262,6 +269,12 @@ if command -v git >/dev/null 2>&1; then
        "$(has "is STALE — it was recorded against board 42, but this repo now maps to board 43" "$_vout")"
     _vwarn fix/card-712-x ""
     eq "now unmapped: STALE, naming 'no board'" "true" "$(has "but this repo now maps to no board" "$_vout")"
+    # A record naming NO board (its checkout stopped before resolving one: curl or jq not on PATH) is not
+    # stale against the board the repo maps to: its own reason is the finding.
+    _vrec fix/card-732-x not_checked "" "" "" "curl and jq are both required but not both on PATH"
+    _vwarn fix/card-732-x 42
+    eq "record naming no board, repo mapped: NOT CHECKED with its own reason, not STALE" "1|true|true|false" \
+       "$_vrc|$(has "board verdict NOT CHECKED for branch 'fix/card-732-x' (card 732)" "$_vout")|$(has "curl and jq are both required" "$_vout")|$(has "STALE" "$_vout")"
     _at="$(_vfield fix/card-712-x recorded_at)"
     _vwarn fix/card-712-x 42 "$((_at + 1))"
     eq "branch created AFTER the record (deleted and re-created without a checkout): rc 1" "1" "$_vrc"
@@ -1181,7 +1194,6 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     git -C "$_rrepo" checkout -q -B fix/card-4242-x; rm -f "$_rlog"; _rc=0
     _out="$(cd "$_rrepo" && PATH="$_nojq" KB_BCS_LOG="$_rlog" bash "$BCS" 2>&1)" || _rc=$?
     _varm "jq not on PATH"                  fix/card-4242-x not_checked "curl and jq are both required"
-    rm -rf "$_nojq"
 
     # A write that cannot land never fails the checkout, is logged, and the lint then says NOT RECORDED.
     _vrdir="$(cd "$_rrepo" && cd "$(git rev-parse --git-common-dir)" && pwd -P)/agent-board-toolkit"
@@ -1233,6 +1245,8 @@ EOF
     _push "$_rrepo" feature/dl-89-card-712-x
     eq "pre-push, DL resolved another card: NOT CHECKED + the floor fallback, one line" "0|1|true|true" \
        "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'feature/dl-89-card-712-x' (card 712)" "$_out")|$(has "names card 712, which is BELOW board 42's card-id floor 5000" "$_out")"
+    eq "pre-push, DL resolved another card: names the rename remedy, not a re-checkout" "true|false" \
+       "$(has "rename the branch so its DL and its card token name the same card, or accept that the bridge acts on card #712 at merge" "$_out")|$(has "check the branch out again" "$_out")"
     KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-4242-x
     _push "$_rrepo" feature/dl-89-card-4242-x
     eq "pre-push, DL resolved the same card: silent" "0|" "$_rc|$_out"
@@ -1243,6 +1257,15 @@ EOF
     _push "$_rrepo" fix/card-5556-x
     eq "pre-push, board id not a plain integer: NOT CHECKED, no control character printed" "true|false" \
        "$(has "board verdict NOT CHECKED for branch 'fix/card-5556-x'" "$_out")|$(_ctl "$_out")"
+    # curl or jq missing at checkout, in a repo mapped by git config: the record names no board, and the
+    # push line repeats that reason rather than a STALE that every later checkout would write again.
+    PATH="$_nojq" _git "$_rrepo" checkout -q -b fix/card-4247-x
+    eq "hook, jq not on PATH: post-checkout recorded not_checked, naming curl and jq, against no board" "not_checked|true|" \
+       "$(_vget fix/card-4247-x verdict)|$(has "curl and jq are both required" "$(_vget fix/card-4247-x reason)")|$(_vget fix/card-4247-x board)"
+    _push "$_rrepo" fix/card-4247-x
+    eq "pre-push, jq was not on PATH at checkout (repo mapped by git config): NOT CHECKED with that reason, not STALE, one line" "0|1|true|true|false" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'fix/card-4247-x' (card 4247)" "$_out")|$(has "curl and jq are both required" "$_out")|$(has "STALE" "$_out")"
+    rm -rf "$_nojq"
     # A real card, cut from a linked worktree, read back from the main one — below a floor that would accuse it.
     git -C "$_rrepo" worktree add -q --detach "$TMP/vwt"
     _git "$TMP/vwt" switch -q -c fix/card-4242-x
