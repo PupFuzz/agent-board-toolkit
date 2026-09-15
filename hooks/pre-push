@@ -2,9 +2,8 @@
 # agent-board-toolkit pre-push hook.
 # Fail-soft ADVISORY: warn when a branch being pushed looks like it names a card in a
 # spelling the board auto-move grammar won't recognize (card-4621), or names a well-formed
-# card id the board said at checkout is not a card on this repo's board (DL-225) — or, with no
-# current board verdict recorded, one below the board's seeded card-id floor (DL-223) — most
-# likely a GitHub issue/PR number; either way a card that would silently never move
+# card id the board said at checkout is not a card on this repo's board (DL-225) — most likely a
+# GitHub issue/PR number; either way a card that would silently never move
 # (docs/HOOKS.md). This hook NEVER blocks a push: it always exits 0, whatever the advisory finds.
 #
 # Install with: bin/install-board-hooks <repo>   (symlinks this file into .git/hooks)
