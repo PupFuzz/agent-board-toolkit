@@ -175,8 +175,8 @@ _bcs_branch_lint_warning() {
 
 # _bcs_card_id <branch>: the id the card-id path moves on — the explicit named-card grammar
 # first, else a typed-branch leading id. Echoes the id, or nothing. The mover, the board verdict
-# record and both id-space legs of the lint read this, so they cannot disagree about WHICH number
-# is judged.
+# record and the lint's board-verdict leg read this, so they cannot disagree about WHICH number is
+# judged.
 _bcs_card_id() {
     local id
     id="$(_bcs_explicit_card_id "${1:-}")"
@@ -215,41 +215,6 @@ _bcs_uint_lt() {
 }
 
 _bcs_id_space_rule="card ids and GitHub issue/PR numbers are separate id spaces — cut the branch from the CARD id ('fix/card-<card-id>-slug'), never from an issue/PR number: a wrong number moves no card on checkout, and since the branch beats the PR title at merge, closes none"
-
-# _bcs_card_id_floor_warning <branch> <board-id> <board-env> <floor>: the card-id FLOOR leg of
-# the pre-push lint (DL-223) — a second, independent predicate beside _bcs_branch_lint_warning.
-# That one catches a spelling the grammar REJECTS; this one catches a spelling the grammar
-# ACCEPTS carrying a number from the wrong id space (a GitHub issue/PR number), which correlates
-# to no card, or to the wrong one. Pure: the caller resolves the three config inputs (empty =
-# could not be resolved) and nothing here reads a board.
-#
-# Silent only when the branch carries no card id, or its id is at/above a seeded floor. Every
-# input it could not judge SPEAKS, naming the missing piece: a floor that cannot be consulted is
-# indistinguishable from a clean branch if it stays quiet. The floor is a MAGNITUDE heuristic
-# whose bound is documented where it is seeded (docs/INSTALL.md §3b); within that bound its
-# failure mode is a false clean, and the wording hedges ("most likely") for the rest.
-_bcs_card_id_floor_warning() {
-    local branch="${1:-}" board="${2:-}" envf="${3:-}" floor="${4:-}" id
-    id="$(_bcs_card_id "$branch")"
-    [ -n "$id" ] || return 0
-    if [ -z "$board" ]; then
-        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to no board — no 'git config kanban.board-id', and no .promote.board_id read from .release-pr.json (absent, unreadable, not a plain integer, or jq not on PATH) — so whether %s is a card id or a GitHub issue/PR number cannot be judged; %s.\n" \
-            "$branch" "$id" "$id" "$_bcs_id_space_rule"
-    elif [ -z "$envf" ]; then
-        printf "card-id floor NOT CHECKED for branch '%s' (card %s): this repo maps to board %s, but no ~/.kanban-*-board.env has KB_BOARD_ID=%s, so there is no floor to consult; %s.\n" \
-            "$branch" "$id" "$board" "$board" "$_bcs_id_space_rule"
-    elif [ -z "$floor" ]; then
-        printf "card-id floor not seeded for board %s — add 'export KB_CARD_ID_FLOOR=<at or below the board's lowest card id, archived cards included>' to %s (docs/INSTALL.md §3b); until then branch '%s' (card %s) cannot be told apart from a GitHub issue/PR number; %s.\n" \
-            "$board" "$envf" "$branch" "$id" "$_bcs_id_space_rule"
-    elif ! kb_is_uint "$floor"; then
-        printf "card-id floor NOT CHECKED for branch '%s' (card %s): KB_CARD_ID_FLOOR='%s' in %s is not an unsigned integer without leading zeros (docs/INSTALL.md §3b); %s.\n" \
-            "$branch" "$id" "$floor" "$envf" "$_bcs_id_space_rule"
-    elif _bcs_uint_lt "$id" "$floor"; then
-        printf "branch '%s' names card %s, which is BELOW board %s's card-id floor %s (KB_CARD_ID_FLOOR in %s) — %s is most likely a GitHub issue/PR number, not a card id; %s.\n" \
-            "$branch" "$id" "$board" "$floor" "$envf" "$id" "$_bcs_id_space_rule"
-    fi
-    return 0
-}
 
 # --- the board verdict record (DL-225) --------------------------------------------------------
 #
@@ -355,7 +320,7 @@ _bcs_branch_created_at() {
 #   rc 0 — decided: the branch carries no card id (silent); the board resolved it (silent); or the
 #          board said the id is not a card on this repo's board (loud, teaching the id-space rule).
 #   rc 1 — undecided: no record, an unreadable one, a stale one, or a checkout that never got an
-#          answer from the board. Each speaks, by name. Only then is the card-id floor consulted.
+#          answer from the board. Each speaks, by name.
 # <board-now> is the board the repo maps to at push (_bcs_board_id); <created-at> is
 # _bcs_branch_created_at's answer. Reads the record file and nothing else.
 _bcs_board_verdict_warning() {
@@ -505,30 +470,19 @@ done
 if [ "$lint_mode" = 1 ]; then
     warning="$(_bcs_branch_lint_warning "$branch")"
     [ -n "$warning" ] && printf 'board-branch-lint: %s\n' "$warning" >&2
-    # A branch carrying a card id gets ONE id-space line at most. The BOARD VERDICT the mover
-    # recorded at checkout decides it when there is a current one (silent when the board resolved
-    # the id, loud when the board said it is not a card here); the card-id floor — a magnitude
-    # guess — is consulted only when no current verdict exists, and its finding rides on the same
-    # line as the reason there is none. Both legs read host-local state only — the record under
-    # the git dir, the repo's board id, that board's env — never the board: an unreadable API
-    # answer is not an empty one, and a lint that reached for the network would have to choose
-    # which of those to report as clean. A branch with no card id reads none of it. The floor is
-    # not a credential, so a COMMITTED board id may select the env it is read from; the
-    # hostlocal-only gate below bounds the token, not this.
+    # A branch carrying a card id gets ONE id-space line at most, from the BOARD VERDICT the mover
+    # recorded at checkout: silent when the board resolved the id, loud when the board said it is
+    # not a card here, and naming why when there is no current verdict. It reads host-local state
+    # only — the record under the git dir and the repo's board id — never the board: an unreadable
+    # API answer is not an empty one, and a lint that reached for the network would have to choose
+    # which of those to report as clean. A branch with no card id reads none of it.
     if [ -n "$(_bcs_card_id "$branch")" ]; then
         root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-        board=""; board_envf=""; floor=""
+        board=""
         [ -z "$root" ] || read -r board _ <<<"$(_bcs_board_id "$root/.release-pr.json")"
         verdict_file="$(_bcs_verdict_file "$branch" || true)"
-        if warning="$(_bcs_board_verdict_warning "$branch" "$verdict_file" "$board" "$(_bcs_branch_created_at "$branch")")"; then
-            [ -z "$warning" ] || printf 'board-branch-lint: %s\n' "$warning" >&2
-        else
-            [ -z "$board" ] || board_envf="$(kb_board_env_for "$board" || true)"
-            [ -z "$board_envf" ] || IFS= read -r floor <<<"$(kb_board_env_get "$board_envf" KB_CARD_ID_FLOOR)"
-            floor_warning="$(_bcs_card_id_floor_warning "$branch" "$board" "$board_envf" "$floor")"
-            printf 'board-branch-lint: %s%s\n' "$warning" \
-                "${floor_warning:+ Meanwhile the card-id floor leg (a magnitude guess, which a recorded verdict overrides): $floor_warning}" >&2
-        fi
+        warning="$(_bcs_board_verdict_warning "$branch" "$verdict_file" "$board" "$(_bcs_branch_created_at "$branch")")"
+        [ -z "$warning" ] || printf 'board-branch-lint: %s\n' "$warning" >&2
     fi
     exit 0
 fi

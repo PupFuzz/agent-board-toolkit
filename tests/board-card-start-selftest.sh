@@ -75,79 +75,31 @@ lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
 
 echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
 # --lint moves nothing and issues no request; exercises the real arg path + exit code. The
-# malformed spelling carries no ACCEPTED card id, so the card-id floor leg has nothing to judge
-# and this run is independent of the host's config. The compliant-spelling silence is asserted
-# in the floor fixture below, because a compliant id is now judged against a floor, and whether
-# that is silent depends on a seeded board env rather than on the spelling alone.
+# malformed spelling carries no ACCEPTED card id, so the board-verdict leg has nothing to judge
+# and this run is independent of the host's config and of any recorded verdict. A compliant id is
+# judged by that leg, whose lines are asserted in the fixtures below.
 _lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
 [[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
 grep -q "board-branch-lint:.*card 4524" <<< "$_lout" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
 
-echo "== _bcs_card_id — the id both the mover and the floor leg judge (explicit first, else typed) =="
+echo "== _bcs_card_id — the id the mover, the verdict record and the lint judge (explicit first, else typed) =="
 expect_out "explicit card-N"                        "4524" _bcs_card_id "fix/card-4524-x"
 expect_out "typed leading id"                       "712"  _bcs_card_id "fix/712-foo"
 expect_out "explicit beats a typed leading id"      "4524" _bcs_card_id "fix/712/card-4524"
 expect_out "a DL-only branch carries no card id"    ""     _bcs_card_id "feature/dl212-event-gated"
 expect_out "a malformed spelling carries no card id" ""    _bcs_card_id "fix/card_4524-x"
 
-echo "== _bcs_uint_lt — a digit-string compare that cannot wrap (DL-223) =="
+echo "== _bcs_uint_lt — a digit-string compare that cannot wrap (the verdict leg's staleness compare) =="
 expect_rc "712 < 1000"                                  0 _bcs_uint_lt 712 1000
 expect_rc "1234 < 1235 (boundary, same length)"         0 _bcs_uint_lt 1234 1235
 expect_rc "999 < 1000 (fewer digits)"                   0 _bcs_uint_lt 999 1000
-expect_rc "1000 is NOT < 1000 (at the floor)"           1 _bcs_uint_lt 1000 1000
+expect_rc "1000 is NOT < 1000 (equal)"                 1 _bcs_uint_lt 1000 1000
 expect_rc "4524 is NOT < 1000"                          1 _bcs_uint_lt 4524 1000
 expect_rc "10000 is NOT < 9999 (length decides first)"  1 _bcs_uint_lt 10000 9999
 # 2^64 + 1: `[ … -lt … ]` errors on it (rc 2) and `(( … ))` wraps it to 1 — an arithmetic compare
 # answers neither case.
-expect_rc "a 20-digit id is NOT below a 4-digit floor"  1 _bcs_uint_lt 18446744073709551617 1000
-expect_rc "a 4-digit id IS below a 20-digit floor"      0 _bcs_uint_lt 1000 18446744073709551617
-
-echo "== _bcs_card_id_floor_warning — the card-id floor leg, a second independent predicate (DL-223) =="
-floor_has() { # <label> <needle-ERE> <branch> <board> <envf> <floor> — a line matching the needle
-    local label="$1" needle="$2"; shift 2
-    local got; got="$(_bcs_card_id_floor_warning "$@" 2>/dev/null || true)"
-    grep -qE -- "$needle" <<< "$got" && ok "$label" || bad "$label: expected /$needle/, got '$got'"
-}
-floor_silent() { # <label> <branch> <board> <envf> <floor>
-    local label="$1"; shift
-    expect_out "$label" "" _bcs_card_id_floor_warning "$@"
-}
-_fe="/h/.kanban-t-board.env"
-# PRESENCE — each unjudgeable input speaks, naming the piece that is missing.
-floor_has    "below the floor → warns, naming the id and the floor" \
-             "names card 712, which is BELOW board 42's card-id floor 1000" "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "below the floor → names BOTH id spaces" \
-             "card ids and GitHub issue/PR numbers are separate id spaces"  "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "below the floor → teaches the branch-cut rule" \
-             "cut the branch from the CARD id"                              "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "a TYPED leading id below the floor warns too (the mover moves on it)" \
-             "names card 712, which is BELOW"                               "fix/712-foo"      42 "$_fe" 1000
-floor_has    "one below the floor warns (boundary)" \
-             "names card 999, which is BELOW"                              "fix/card-999-x"  42 "$_fe" 1000
-floor_has    "unseeded floor → SPEAKS, naming the key and the file" \
-             "card-id floor not seeded for board 42 — add 'export KB_CARD_ID_FLOOR=.*' to $_fe" \
-                                                                            "fix/card-712-foo" 42 "$_fe" ""
-floor_has    "unseeded floor speaks for an id that would have PASSED, too" \
-             "card-id floor not seeded"                                     "fix/card-4524-x"  42 "$_fe" ""
-floor_has    "no board mapping → SPEAKS (not checked), never silent" \
-             "card-id floor NOT CHECKED .*this repo maps to no board"       "fix/card-712-foo" "" "" ""
-floor_has    "board resolved but no board env → SPEAKS, naming the board id" \
-             "NOT CHECKED .*no ~/.kanban-\\*-board.env has KB_BOARD_ID=42"  "fix/card-712-foo" 42 "" ""
-floor_has    "a leading-zero floor is refused by name, not silently compared" \
-             "NOT CHECKED .*KB_CARD_ID_FLOOR='01000'"                       "fix/card-712-foo" 42 "$_fe" 01000
-floor_has    "a non-numeric floor is refused by name" \
-             "NOT CHECKED .*KB_CARD_ID_FLOOR='abc'"                         "fix/card-712-foo" 42 "$_fe" abc
-# ABSENCE — each witness shares its input with a presence case above but for ONE variable.
-floor_silent "AT the floor → silent"                     "fix/card-1000-x"  42 "$_fe" 1000
-floor_silent "above the floor → silent"                  "fix/card-4524-x"  42 "$_fe" 1000
-floor_silent "a floor of 0 is silent for every id"        "fix/card-712-foo" 42 "$_fe" 0
-floor_silent "a 20-digit id is not accused (no wrap)"    "fix/card-18446744073709551617-x" 42 "$_fe" 1000
-floor_silent "no card id → nothing to judge, even unseeded and unmapped" "docs/adoption-guide" "" "" ""
-floor_silent "a DL-only branch → nothing to judge"       "feature/dl212-event-gated" "" "" ""
-# INDEPENDENCE — the two legs never answer for each other: the malformed spelling is the other
-# leg's finding and carries no accepted id, so this leg is silent on it, and vice versa.
-floor_silent "the malformed-spelling case is not this leg's" "fix/card_4524-x" "" "" ""
-expect_out "a below-floor id is not the malformed-spelling leg's" "" _bcs_branch_lint_warning "fix/card-712-foo"
+expect_rc "a 20-digit value is NOT below a 4-digit one"  1 _bcs_uint_lt 18446744073709551617 1000
+expect_rc "a 4-digit value IS below a 20-digit one"      0 _bcs_uint_lt 1000 18446744073709551617
 
 echo "== the board verdict record — writer, reader, staleness (DL-225) =="
 # _ctl <string>: "true" when <string> holds a control character — C0 or DEL (`[[:cntrl:]]` under the C
@@ -214,7 +166,7 @@ if command -v git >/dev/null 2>&1; then
 
     # READER — a recorded ABSENCE is repeated loudly and DECIDES the branch.
     _vwarn fix/card-712-x 42
-    eq "absent: rc 0 (decided — the floor is not consulted)" "0" "$_vrc"
+    eq "absent: rc 0 (decided)" "0" "$_vrc"
     eq "absent: names the card and the board"    "true" "$(has "branch 'fix/card-712-x' names card 712, which is NOT a card on board 42" "$_vout")"
     eq "absent: carries what the board said"     "true" "$(has "card #712: HTTP 404" "$_vout")"
     eq "absent: names BOTH id spaces"            "true" "$(has "card ids and GitHub issue/PR numbers are separate id spaces" "$_vout")"
@@ -315,13 +267,13 @@ else
     echo "  skip (git not on PATH)"
 fi
 
-echo "== board-card-start --lint — the card-id floor leg, end to end (subprocess, fixture HOME + repo) =="
-# The real argument path and the real config resolution (git config board id → board env →
-# KB_CARD_ID_FLOOR), in a scratch HOME so no operator board env is read. Network-free by
-# construction: no host env and emptied ambient KBCARD_*, so nothing here could name a host.
-# No branch here was ever checked out, so no board verdict is recorded (DL-225): every card-id
-# branch speaks NOT RECORDED, and the floor leg is the fallback whose finding rides on that SAME
-# line. A recorded verdict overriding the floor is asserted with the mover, further down.
+echo "== board-card-start --lint — the board verdict leg, end to end (subprocess, fixture HOME + repo) =="
+# The real argument path and the real config resolution (git config, else .release-pr.json → the
+# board the verdict record is judged against), in a scratch HOME so no operator board env is read.
+# Network-free by construction: no host env and emptied ambient KBCARD_*, so nothing here could name
+# a host. The board env carries KB_CARD_ID_FLOOR, the key of the card-id floor leg DL-225 superseded
+# (card#9570): whatever it holds, no line mentions a floor — and each absence below is paired with
+# the verdict line that must still print on the same run.
 if command -v git >/dev/null 2>&1; then
     _ft="$(mktemp -d)"
     _frepo="$_ft/repo"; _fhome="$_ft/home"; mkdir -p "$_fhome"
@@ -331,69 +283,63 @@ if command -v git >/dev/null 2>&1; then
         _fout="$(cd "$_frepo" && HOME="$_fhome" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_ft/bcs.log" \
                  bash "$BCS" --lint -- "$1" 2>&1)" || _frc=$?
     }
-    # 1. No board mapping at all.
+    _flines() { printf '%s\n' "$_fout" | wc -l | tr -d ' '; }
+    _fnr="board-branch-lint: board verdict NOT RECORDED for branch 'fix/card-712-foo' (card 712)"
+    # 1. No board mapping at all, never checked out: NOT RECORDED, and nothing else.
     _flint "fix/card-712-foo"
-    [[ "$_frc" -eq 0 ]] && ok "unmapped repo: exits 0" || bad "unmapped repo: expected rc=0 got $_frc"
-    grep -q "board-branch-lint: board verdict NOT RECORDED .* Meanwhile the card-id floor leg .*: card-id floor NOT CHECKED .*maps to no board" <<< "$_fout" \
-        && ok "unmapped repo: speaks (not recorded, floor not checked) on one line" || bad "unmapped repo: silent or wrong: $_fout"
-    # 2. Mapped, board env present, floor NOT seeded.
+    eq "unmapped repo: rc 0, ONE line, NOT RECORDED, no floor text" "0|1|true|false" \
+       "$_frc|$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
+    # 2. Mapped, a board env without the key, then one still seeding a floor the id is BELOW.
     git -C "$_frepo" config kanban.board-id 42
     printf 'export KB_BOARD_ID=42\n' > "$_fhome/.kanban-t-board.env"
-    _flint "fix/card-712-foo"
-    grep -q "board-branch-lint: board verdict NOT RECORDED .*: card-id floor not seeded for board 42" <<< "$_fout" \
-        && ok "unseeded: the not-seeded line appears" || bad "unseeded: no not-seeded line: $_fout"
-    # 3. Seeded — the same repo and env, one key added.
+    _flint "fix/card-712-foo"; _funseeded="$_fout"
+    eq "board env without KB_CARD_ID_FLOOR: ONE NOT RECORDED line, no floor text" "1|true|false" \
+       "$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
     printf 'export KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' > "$_fhome/.kanban-t-board.env"
     _flint "fix/card-712-foo"
-    [[ "$_frc" -eq 0 ]] && ok "below floor: exits 0 (a finding is a LINE, never a block)" \
-        || bad "below floor: expected rc=0 got $_frc"
-    grep -q "board-branch-lint: board verdict NOT RECORDED .*: branch 'fix/card-712-foo' names card 712, which is BELOW board 42's card-id floor 1000" <<< "$_fout" \
-        && ok "below floor: the floor finding appears" || bad "below floor: no floor finding: $_fout"
-    eq "below floor: ONE line for the branch — the verdict and the floor fallback are not two diagnoses" \
-       "1" "$(printf '%s\n' "$_fout" | wc -l | tr -d ' ')"
-    grep -q "not seeded" <<< "$_fout" \
-        && bad "seeded: still reports not seeded: $_fout" || ok "seeded: the not-seeded line is gone"
+    eq "KB_CARD_ID_FLOOR=1000 left in the board env, card 712 below it: rc 0, ONE line, NOT RECORDED, no floor text" "0|1|true|false" \
+       "$_frc|$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
+    eq "…and that line is byte-identical to the one without the key: the key changes nothing" "$_funseeded" "$_fout"
     [[ -s "$_ft/bcs.log" ]] \
-        && bad "below floor: --lint wrote the mover's durable log: $(cat "$_ft/bcs.log")" \
-        || ok "below floor: no move attempted (durable log untouched)"
-    for _fb in "fix/card-4524-x" "fix/card-1000-x"; do
-        _flint "$_fb"
-        eq "above/at a seeded floor ($_fb): only the NOT RECORDED line — the floor has no finding to add" \
-           "true|false" "$(has "board verdict NOT RECORDED for branch '$_fb'" "$_fout")|$(has "card-id floor" "$_fout")"
-    done
-    # 4. The committed board id is enough for the floor (it is not a credential).
+        && bad "lint: --lint wrote the mover's durable log: $(cat "$_ft/bcs.log")" \
+        || ok "lint: no move attempted (durable log untouched)"
+    # 3. PRESENCE witness on the same branch and env: an `absent` record is repeated with the id-space rule.
+    ( cd "$_frepo" && _bcs_verdict_write fix/card-712-foo absent "" 42 "" "card #712: HTTP 404" ) \
+        || bad "fixture: could not write the absent record"
+    _flint "fix/card-712-foo"
+    eq "absent record, KB_CARD_ID_FLOOR still in the env: rc 0, ONE line, the board's answer + the id-space rule, no floor text" "0|1|true|true|false" \
+       "$_frc|$(_flines)|$(has "board-branch-lint: branch 'fix/card-712-foo' names card 712, which is NOT a card on board 42" "$_fout")|$(has "card ids and GitHub issue/PR numbers are separate id spaces" "$_fout")|$(has "floor" "$_fout")"
+    # 4. The committed board id is the board the record is judged against when no git config names one.
     git -C "$_frepo" config --unset kanban.board-id
     printf '{"promote":{"board_id":42}}\n' > "$_frepo/.release-pr.json"
     _flint "fix/card-712-foo"
     if command -v jq >/dev/null 2>&1; then
-        grep -q "BELOW board 42's card-id floor 1000" <<< "$_fout" \
-            && ok "committed .promote.board_id selects the floor's board env" \
-            || bad "committed board id did not reach the floor: $_fout"
-        # A committed value that is not a plain integer maps to no board, and the line's cause list
-        # names that case rather than only absent / unreadable / jq missing.
+        eq "committed .promote.board_id 42: the board-42 record is current, not STALE" "true|false" \
+           "$(has "which is NOT a card on board 42" "$_fout")|$(has "STALE" "$_fout")"
+        # A committed value that is not a plain integer maps to no board, so the board-42 record is stale.
         for _bj in '"42abc"' '-42' '42.0' '["42"]'; do
             printf '{"promote":{"board_id":%s}}\n' "$_bj" > "$_frepo/.release-pr.json"
             _flint "fix/card-712-foo"
-            grep -q "card-id floor NOT CHECKED .*maps to no board .*(absent, unreadable, not a plain integer, or jq not on PATH)" <<< "$_fout" \
-                && ok "committed board_id $_bj: NOT CHECKED, naming 'not a plain integer'" \
-                || bad "committed board_id $_bj: cause list wrong: $_fout"
+            eq "committed board_id $_bj: maps to no board, so the record is STALE, one line" "1|true" \
+               "$(_flines)|$(has "is STALE — it was recorded against board 42, but this repo now maps to no board" "$_fout")"
         done
     fi
-    # 5. A branch with nothing to judge reads NO config: a board env that records being sourced stays
-    # untouched for a docs or DL-only branch. The card branch is the positive control — without it,
-    # a marker that could never be written would make both absence checks pass vacuously.
+    # 5. The lint sources NO board env, for any branch — the floor leg was its only reader. The control
+    # sources that same env through the lib's own resolver, so the marker is proven able to fire.
     rm -f "$_frepo/.release-pr.json"
     git -C "$_frepo" config kanban.board-id 42
     printf 'touch %q\nexport KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' "$_ft/sourced" > "$_fhome/.kanban-t-board.env"
-    for _nb in "docs/adoption-guide" "feature/dl212-event-gated"; do
+    for _nb in "docs/adoption-guide" "feature/dl212-event-gated" "fix/card-712-foo" "fix/card-4244-x"; do
         rm -f "$_ft/sourced"; _flint "$_nb"
-        [[ ! -e "$_ft/sourced" ]] && ok "no card id ($_nb): no board env sourced" \
-            || bad "no card id ($_nb): --lint sourced a board env for a branch with nothing to judge"
-        [[ -z "$_fout" ]] && ok "no card id ($_nb): silent" || bad "no card id ($_nb): spoke: $_fout"
+        [[ ! -e "$_ft/sourced" ]] && ok "lint ($_nb): no board env sourced" \
+            || bad "lint ($_nb): --lint sourced a board env"
     done
-    rm -f "$_ft/sourced"; _flint "fix/card-712-foo"
-    [[ -e "$_ft/sourced" ]] && ok "card id (control): the board env IS sourced, so the marker can fire" \
-        || bad "card id (control): board env never sourced — the marker probe cannot fire"
+    _flint "docs/adoption-guide"
+    [[ -z "$_fout" ]] && ok "no card id (docs/adoption-guide): silent" || bad "no card id: spoke: $_fout"
+    rm -f "$_ft/sourced"; ( export HOME="$_fhome"; kb_board_env_for 42 >/dev/null )
+    [[ -e "$_ft/sourced" ]] && ok "control: kb_board_env_for 42 DOES source that env, so the marker can fire" \
+        || bad "control: the board env was never sourced — the marker probe cannot fire"
+    unset -f _flint _flines
     rm -rf "$_ft"
 fi
 
@@ -430,7 +376,7 @@ if command -v git >/dev/null 2>&1; then
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
-        # The mover's own sentence, not the branch name: --lint's card-id floor leg names the
+        # The mover's own sentence, not the branch name: --lint's board-verdict leg names the
         # branch too, and its line is a lint finding, not a move attempt.
         [[ -s "$_log" ]] || grep -q "carries a DL/card token but the move did not happen" <<< "$_out"
     }
@@ -1212,7 +1158,7 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$BCS" > "$_hbin/board-card-start"; chmod +x "$_hbin/board-card-start"
     cp "$HERE/../hooks/post-checkout" "$_rrepo/.git/hooks/post-checkout"; chmod +x "$_rrepo/.git/hooks/post-checkout"
     printf 'export KB_BOARD_ID=42\nexport KB_STAGE_IN_PROGRESS=84\nexport KB_STAGE_BACKLOG=81\nexport KB_STAGE_PRIORITIZED=82\nexport KB_CARD_ID_FLOOR=5000\n' \
-        > "$HOME/.kanban-t-board.env"
+        > "$HOME/.kanban-t-board.env"   # a key nothing reads since card#9570; no push line below may mention a floor
     _git() { ( cd "$1" && shift && PATH="$_hbin:$PATH" KB_BCS_LOG="$_rlog" git "$@" ); }
     _push() {  # <dir> <branch> — feed hooks/pre-push one pushed ref; sets _rc/_out
         _rc=0
@@ -1228,8 +1174,8 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     eq "hook: post-checkout recorded the 404 on a real switch -c" "absent" "$(_vget fix/card-712-x verdict)"
     eq "pre-push: rc 0 (never blocks a push)" "0" "$_rc"
     eq "pre-push: the board verdict is repeated" "true" "$(has "board-branch-lint: branch 'fix/card-712-x' names card 712, which is NOT a card on board 42" "$_out")"
-    eq "pre-push: ONE line, and the floor leg (which would say BELOW 5000) is not consulted" "1|false" \
-       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "card-id floor" "$_out")"
+    eq "pre-push: ONE line, and no floor text though the board env still sets KB_CARD_ID_FLOOR=5000" "1|false" \
+       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "floor" "$_out")"
     # One local branch pushed to two remote refs feeds pre-push two lines naming the same local ref.
     _rc=0
     _out="$(cd "$_rrepo" && PATH="$_hbin:$PATH" bash "$HERE/../hooks/pre-push" origin x 2>&1 <<EOF
@@ -1239,12 +1185,12 @@ EOF
 )" || _rc=$?
     eq "pre-push, one branch to two remote refs: linted ONCE" "0|1|true" \
        "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "names card 712, which is NOT a card on board 42" "$_out")"
-    # The DL-vs-token record speaks at push, and the floor (5000) is the fallback on the same line. Each
+    # The DL-vs-token record speaks at push, on one line. Each
     # branch is checked out through the real post-checkout first (the records above were removed).
     KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-712-x
     _push "$_rrepo" feature/dl-89-card-712-x
-    eq "pre-push, DL resolved another card: NOT CHECKED + the floor fallback, one line" "0|1|true|true" \
-       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'feature/dl-89-card-712-x' (card 712)" "$_out")|$(has "names card 712, which is BELOW board 42's card-id floor 5000" "$_out")"
+    eq "pre-push, DL resolved another card: NOT CHECKED, one line, no floor text" "0|1|true|false" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'feature/dl-89-card-712-x' (card 712)" "$_out")|$(has "floor" "$_out")"
     eq "pre-push, DL resolved another card: names the rename remedy, not a re-checkout" "true|false" \
        "$(has "rename the branch so its DL and its card token name the same card, or accept that the bridge acts on card #712 at merge" "$_out")|$(has "check the branch out again" "$_out")"
     KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-4242-x
@@ -1252,7 +1198,7 @@ EOF
     eq "pre-push, DL resolved the same card: silent" "0|" "$_rc|$_out"
     KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q fix/712-dl-89
     _push "$_rrepo" fix/712-dl-89
-    eq "pre-push, DL resolved + typed id: silent, though 712 is below the floor" "0|" "$_rc|$_out"
+    eq "pre-push, DL resolved + typed id: silent" "0|" "$_rc|$_out"
     _git "$_rrepo" checkout -q fix/card-5556-x
     _push "$_rrepo" fix/card-5556-x
     eq "pre-push, board id not a plain integer: NOT CHECKED, no control character printed" "true|false" \
@@ -1266,18 +1212,18 @@ EOF
     eq "pre-push, jq was not on PATH at checkout (repo mapped by git config): NOT CHECKED with that reason, not STALE, one line" "0|1|true|true|false" \
        "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'fix/card-4247-x' (card 4247)" "$_out")|$(has "curl and jq are both required" "$_out")|$(has "STALE" "$_out")"
     rm -rf "$_nojq"
-    # A real card, cut from a linked worktree, read back from the main one — below a floor that would accuse it.
+    # A real card, cut from a linked worktree, read back from the main one.
     git -C "$_rrepo" worktree add -q --detach "$TMP/vwt"
     _git "$TMP/vwt" switch -q -c fix/card-4242-x
     _push "$_rrepo" fix/card-4242-x
     eq "worktree: the record written in the linked worktree is read from the main one" "resolved" "$(_vget fix/card-4242-x verdict)"
-    eq "pre-push: a RESOLVED verdict is silent, though 4242 is below the floor (the board verdict wins)" "0|" "$_rc|$_out"
-    # A branch that was never checked out speaks, by name, with the floor fallback on the same line.
+    eq "pre-push: a RESOLVED verdict is silent" "0|" "$_rc|$_out"
+    # A branch that was never checked out speaks, by name, on one line.
     _git "$_rrepo" branch fix/card-4244-x
     _push "$_rrepo" fix/card-4244-x
     eq "never checked out: NOT RECORDED, by name" "true" "$(has "board verdict NOT RECORDED for branch 'fix/card-4244-x' (card 4244)" "$_out")"
-    eq "never checked out: the floor finding rides on the SAME line" "1|true" \
-       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "Meanwhile the card-id floor leg (a magnitude guess, which a recorded verdict overrides): branch 'fix/card-4244-x' names card 4244, which is BELOW board 42's card-id floor 5000" "$_out")"
+    eq "never checked out: ONE line, and no floor text" "1|false" \
+       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "floor" "$_out")"
     # Deleted and re-created WITHOUT a checkout: the old record is STALE, not borrowed…
     _git "$_rrepo" checkout -q fix/card-4244-x
     _git "$_rrepo" branch -q -D fix/card-712-x
