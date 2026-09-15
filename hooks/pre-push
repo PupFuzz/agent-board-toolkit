@@ -10,7 +10,7 @@
 # Install with: bin/install-board-hooks <repo>   (symlinks this file into .git/hooks)
 #
 # git feeds one "<local-ref> <local-sha> <remote-ref> <remote-sha>" line per pushed ref
-# on stdin. We lint each pushed local branch via `board-card-start --lint` (which reuses
+# on stdin. We lint each pushed local branch ONCE via `board-card-start --lint` (which reuses
 # the exact card-id grammar, so the lint and the auto-move never disagree about the GRAMMAR —
 # the argument surface is a separate question, which the `--` below is what settles).
 #
@@ -21,11 +21,19 @@
 # lint refuses it while the mover — which reaches HEAD through post-checkout's no-argument
 # call — still moves its card. The shared matchers make the two agree on the GRAMMAR; the
 # argument surface is the one place left where they could still disagree, and this closes it.
+#
+# ONCE: `git push r b:refs/heads/x b:refs/heads/y` feeds one line per refspec, each naming the same
+# local ref. A ref name cannot contain a space (git check-ref-format), so a space-delimited list of
+# the refs already linted is exact.
 command -v board-card-start >/dev/null 2>&1 || exit 0
 
+linted=" "
 while read -r local_ref _ _ _; do
     case "$local_ref" in
-        refs/heads/*) board-card-start --lint -- "${local_ref#refs/heads/}" || true ;;
+        refs/heads/*)
+            case "$linted" in *" $local_ref "*) continue ;; esac
+            linted="$linted$local_ref "
+            board-card-start --lint -- "${local_ref#refs/heads/}" || true ;;
     esac
 done
 

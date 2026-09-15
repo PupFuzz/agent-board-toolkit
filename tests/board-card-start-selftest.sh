@@ -150,6 +150,12 @@ floor_silent "the malformed-spelling case is not this leg's" "fix/card_4524-x" "
 expect_out "a below-floor id is not the malformed-spelling leg's" "" _bcs_branch_lint_warning "fix/card-712-foo"
 
 echo "== the board verdict record — writer, reader, staleness (DL-225) =="
+# _ctl <string>: "true" when <string> holds a control character — C0 or DEL (`[[:cntrl:]]` under the C
+# locale) or the UTF-8 spelling of a C1 control (bytes C2 80..C2 9F).
+_ctl() {
+    local LC_ALL=C
+    [[ "${1-}" == *[[:cntrl:]]* || "${1-}" == *$'\xc2'[$'\x80'-$'\x9f']* ]] && echo true || echo false
+}
 # The pure halves, sourced: the record the mover writes (_bcs_verdict_write) and the lint leg that
 # reads it (_bcs_board_verdict_warning). Every loud case is paired with a silent or undecided
 # witness that differs from it in ONE input, so no line here can pass by never firing.
@@ -183,6 +189,17 @@ if command -v git >/dev/null 2>&1; then
     eq "write: no temp file is left beside it" "" "$(find "${_vf%/*}" -name '.tmp.*')"
     _vrec fix/card-713-x not_checked "" 42 "" $'line one\nline two'
     eq "write: a line break in the reason is flattened — one key per line survives" "line one line two" "$(_vfield fix/card-713-x reason)"
+    # EVERY value handed to the writer is scrubbed, not only the reason: a board id read straight out of
+    # an API body carried ESC/BEL into the record, and from there to the terminal.
+    _cb=$'fix/card-716-x\e[31m'
+    _vrec "$_cb" not_checked $'8\a9' $'4\e[31m2' $'71\x7f6' $'r\e[31mRED\a\xc2\x9bX\ty'
+    eq "write: no control character in any field (C0, DEL, UTF-8 C1)" "false" "$(_ctl "$(tr -d '\n' < "$(_vfile "$_cb")")")"
+    eq "write: what is left of each field survives" "fix/card-716-x[31m|89|4[31m2|716|r[31mREDXy" \
+       "$(_vfield "$_cb" branch)|$(_vfield "$_cb" dl)|$(_vfield "$_cb" board)|$(_vfield "$_cb" subject)|$(_vfield "$_cb" reason)"
+    _cb=$'fix/card-717-n\nverdict=resolved'
+    _vrec "$_cb" absent "" 42 "" r
+    eq "write: a line break in the BRANCH cannot forge a second verdict line" "1|absent" \
+       "$(grep -c '^verdict=' "$(_vfile "$_cb")")|$(_vfield "$_cb" verdict)"
     # A write that cannot land returns non-zero and leaves nothing: the record dir's parent is a FILE.
     git init -q "$_vt/blocked"; : > "$_vt/blocked/.git/agent-board-toolkit"
     _brc=0; ( cd "$_vt/blocked" && _bcs_verdict_write fix/card-712-x absent "" 42 "" r ) || _brc=$?
@@ -222,6 +239,21 @@ if command -v git >/dev/null 2>&1; then
     eq "no card id: rc 0, silent, no record needed" "0|" "$_vrc|$_vout"
     _vwarn feature/dl212-event-gated 42
     eq "DL-only branch: rc 0, silent" "0|" "$_vrc|$_vout"
+    # A record written by an older writer, or by hand, is scrubbed again when the lint PRINTS it.
+    _vrec fix/card-718-x absent "" 42 "" "card #718: HTTP 404"
+    printf '%s\n' "$_BCS_VERDICT_HEADER" branch=fix/card-718-x card=718 dl= board=42 verdict=absent subject= \
+        $'reason=card #718\e[31m RED\a\xc2\x9b' recorded_at=1 $'recorded_utc=2026\e[2J' > "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited absent record: still repeated (rc 0), with no control character printed" "0|true|false" \
+       "$_vrc|$(has "which is NOT a card on board 42" "$_vout")|$(_ctl "$_vout")"
+    sed -i 's/^verdict=absent$/verdict=not_checked/' "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited not_checked record: NOT CHECKED, with no control character printed" "1|true|false" \
+       "$_vrc|$(has "board verdict NOT CHECKED for branch 'fix/card-718-x'" "$_vout")|$(_ctl "$_vout")"
+    sed -i $'s/^board=42$/board=4\x1b[2J2/' "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited board: STALE, with no control character printed" "1|true|false" \
+       "$_vrc|$(has "is STALE" "$_vout")|$(_ctl "$_vout")"
 
     # STALENESS — each against the resolved fix/card-712-x record, which the witness above showed silent.
     _vwarn fix/card-712-x 43
@@ -238,6 +270,19 @@ if command -v git >/dev/null 2>&1; then
     eq "branch created in the SAME second as the record (a switch -c): current, silent" "0|" "$_vrc|$_vout"
     _vwarn fix/card-712-x 42 "not-a-time"
     eq "an unreadable creation time is not compared: current, silent" "0|" "$_vrc|$_vout"
+    # What the reflog rule CANNOT see (docs/HOOKS.md § How staleness shows): a re-creation whose last
+    # reflog entry is not `branch: Created from` yields no creation time, so a record older than it
+    # is read as current. `git branch` is the control that does yield one.
+    _cat() { (cd "$_vt/repo" && _bcs_branch_created_at fix/card-719-a); }
+    git -C "$_vt/repo" branch fix/card-719-a
+    eq "created by git branch: a creation time, so STALE can fire (control)" "true" "$(kb_is_uint "$(_cat)" && echo true || echo false)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" update-ref refs/heads/fix/card-719-a HEAD
+    eq "re-created by git update-ref: no creation time — NOT detected" "" "$(_cat)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" fetch -q . HEAD:refs/heads/fix/card-719-a
+    eq "re-created by git fetch: no creation time — NOT detected" "" "$(_cat)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" -c core.logAllRefUpdates=false branch fix/card-719-a
+    eq "re-created with reflogs off: no creation time — NOT detected" "" "$(_cat)"
+    unset -f _cat
     sed -i 's/^card=712$/card=999/' "$(_vfile fix/card-712-x)"
     _vwarn fix/card-712-x 42
     eq "a record for another card id (a different grammar wrote it): STALE" "1|true" \
@@ -1034,6 +1079,7 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
             "GET "*/tasks/4242.json*) printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":[]}}' ;;
             "GET "*/tasks/4243.json*) printf '200\n{"data":{"id":4243,"board_id":42,"workflow_stage_id":81,"block_reason":"waiting on ops","tags":[]}}' ;;
             "GET "*/tasks/5555.json*) printf '200\n{"data":{"id":5555,"board_id":99,"workflow_stage_id":81}}' ;;
+            "GET "*/tasks/5556.json*) printf '200\n{"data":{"id":5556,"board_id":"99\\u001b[31mRED\\u0007","workflow_stage_id":81}}' ;;
             "GET "*/tasks/6000.json*) printf '%s\n{"message":"stub read answer"}' "${KB_STUB_READ:-403}" ;;
             "GET "*/tasks/6100.json*) printf '200\n{"data":{"id":6100}}' ;;
             "GET "*/tasks/search.json*) printf '%s\n{"data":%s,"meta":{"last_page":1,"total":%s}}' "${KB_STUB_SEARCH:-200}" "${KB_STUB_SEARCH_DATA:-[]}" "${KB_STUB_SEARCH_TOTAL:-0}" ;;
@@ -1073,6 +1119,11 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     _vrun fix/card-5555-x
     _varm "card on ANOTHER board"           fix/card-5555-x absent "card #5555 is a card on board 99"
     eq "another board: the mover itself stays SILENT (record only)" "|" "$_out|$_ologtxt"
+    # A board id that is not a plain integer (here with ESC/BEL in it) is no evidence of another board.
+    _vrun fix/card-5556-x
+    _varm "board id not a plain integer"    fix/card-5556-x not_checked "no plain-integer board id could be read"
+    eq "board id not a plain integer: the record holds no control character" "false" \
+       "$(_ctl "$(tr -d '\n' < "$(cd "$_rrepo" && _bcs_verdict_file fix/card-5556-x)")")"
     _vrun fix/card-6100-x
     _varm "HTTP 200 with no stage (unreadable, not an absence)" fix/card-6100-x not_checked "NOT confirmed missing"
     KB_STUB_READ=403 _vrun fix/card-6000-x
@@ -1086,12 +1137,31 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     KB_STUB_SEARCH_DATA='[{"id":4242,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-89"}}]' KB_STUB_SEARCH_TOTAL=1 \
         _vrun feature/dl-89-x
     _varm "DL matched a card on this board" feature/dl-89-x resolved "card #4242 (DL-89)"
+    # A DL that resolves wins the MOVE, but the branch's own EXPLICIT card token was never read — and at
+    # merge the bridge makes such a token authoritative over the DL (docs/HOOKS.md). Not resolved.
+    _d89='[{"id":4242,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-89"}}]'
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun feature/dl-89-card-712-x
+    _varm "DL resolved a card other than the explicit token" feature/dl-89-card-712-x not_checked \
+        "DL-89 resolved card #4242; the branch's own card #712 was not judged"
+    eq "DL vs explicit token: the mover is unchanged — DL wins, 4242 is moved, 712 is never read" "true|true|0" \
+       "$(has "DL wins; #712 ignored" "$_out")|$(grep -q $'^PATCH\t.*/tasks/4242\\.json' "$KB_STUB_LOG" && echo true || echo false)|$(grep -c '/tasks/712\.json' "$KB_STUB_LOG")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun feature/dl-89-card-4242-x
+    _varm "DL resolved the SAME card as the explicit token" feature/dl-89-card-4242-x resolved "card #4242 (DL-89)"
+    eq "same card: no conflict line" "false" "$(has "DL wins" "$_out")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun fix/712-dl-89
+    _varm "DL resolved, typed leading id differs (not in the bridge grammar)" fix/712-dl-89 resolved "card #4242 (DL-89)"
+    eq "typed id + DL: the subject is the DL's card" "4242|712" "$(_vget fix/712-dl-89 subject)|$(_vget fix/712-dl-89 card)"
     # A DL the search DID match whose card then reads 404: the branch's own id (712) was never asked
     # about, so the record must not call it absent — the lint would accuse a number nobody judged.
     KB_STUB_SEARCH_DATA='[{"id":6200,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-88"}}]' KB_STUB_SEARCH_TOTAL=1 \
         _vrun feature/dl-88-card-712-x
-    _varm "DL matched a card whose read then 404s" feature/dl-88-card-712-x not_checked "the branch's own card id was not judged"
+    # Its explicit 712 is not the DL's card, so the DL-vs-token verdict is set first and stands.
+    _varm "DL matched a card whose read then 404s" feature/dl-88-card-712-x not_checked "DL-88 resolved card #6200; the branch's own card #712 was not judged"
     eq "DL-matched card 404: the record still keys the branch's own card id" "712" "$(_vget feature/dl-88-card-712-x card)"
+    # A typed 712 is not that conflict, so the 404 of the DL's card is what the record says.
+    KB_STUB_SEARCH_DATA='[{"id":6200,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-88"}}]' KB_STUB_SEARCH_TOTAL=1 \
+        _vrun fix/712-dl-88
+    _varm "DL matched a card whose read then 404s (typed id)" fix/712-dl-88 not_checked "the branch's own card id was not judged"
     _vrun docs/adoption-guide
     _varm "no DL or card-id token"          docs/adoption-guide not_checked "no DL or card-id token"
     git -C "$_rrepo" config kanban.board-id 43
@@ -1148,6 +1218,31 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     eq "pre-push: the board verdict is repeated" "true" "$(has "board-branch-lint: branch 'fix/card-712-x' names card 712, which is NOT a card on board 42" "$_out")"
     eq "pre-push: ONE line, and the floor leg (which would say BELOW 5000) is not consulted" "1|false" \
        "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "card-id floor" "$_out")"
+    # One local branch pushed to two remote refs feeds pre-push two lines naming the same local ref.
+    _rc=0
+    _out="$(cd "$_rrepo" && PATH="$_hbin:$PATH" bash "$HERE/../hooks/pre-push" origin x 2>&1 <<EOF
+refs/heads/fix/card-712-x 1111111111111111111111111111111111111111 refs/heads/a 0000000000000000000000000000000000000000
+refs/heads/fix/card-712-x 1111111111111111111111111111111111111111 refs/heads/b 0000000000000000000000000000000000000000
+EOF
+)" || _rc=$?
+    eq "pre-push, one branch to two remote refs: linted ONCE" "0|1|true" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "names card 712, which is NOT a card on board 42" "$_out")"
+    # The DL-vs-token record speaks at push, and the floor (5000) is the fallback on the same line. Each
+    # branch is checked out through the real post-checkout first (the records above were removed).
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-712-x
+    _push "$_rrepo" feature/dl-89-card-712-x
+    eq "pre-push, DL resolved another card: NOT CHECKED + the floor fallback, one line" "0|1|true|true" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'feature/dl-89-card-712-x' (card 712)" "$_out")|$(has "names card 712, which is BELOW board 42's card-id floor 5000" "$_out")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-4242-x
+    _push "$_rrepo" feature/dl-89-card-4242-x
+    eq "pre-push, DL resolved the same card: silent" "0|" "$_rc|$_out"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q fix/712-dl-89
+    _push "$_rrepo" fix/712-dl-89
+    eq "pre-push, DL resolved + typed id: silent, though 712 is below the floor" "0|" "$_rc|$_out"
+    _git "$_rrepo" checkout -q fix/card-5556-x
+    _push "$_rrepo" fix/card-5556-x
+    eq "pre-push, board id not a plain integer: NOT CHECKED, no control character printed" "true|false" \
+       "$(has "board verdict NOT CHECKED for branch 'fix/card-5556-x'" "$_out")|$(_ctl "$_out")"
     # A real card, cut from a linked worktree, read back from the main one — below a floor that would accuse it.
     git -C "$_rrepo" worktree add -q --detach "$TMP/vwt"
     _git "$TMP/vwt" switch -q -c fix/card-4242-x
