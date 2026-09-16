@@ -929,6 +929,8 @@ if command -v git >/dev/null 2>&1; then
         case "$method $url" in
             "GET "*/tasks/4242.json*)
                 printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":%s}}' "${KB_STUB_TAGS:-[]}" ;;
+            "GET "*/tasks/4244.json*)
+                printf '200\n{"data":{"id":4244,"board_id":42,"workflow_stage_id":84,"tags":[]}}' ;;
             "PATCH "*/tasks/4242.json)
                 if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
                     printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
@@ -1010,6 +1012,15 @@ if command -v git >/dev/null 2>&1; then
     eq "typed id 404: the card WAS read"                  "1" "$(kb_stub_count GET /tasks/712.json)"
     eq "typed id 404: SILENT — nothing in the durable log" "" "$_ologtxt"
     eq "typed id 404: SILENT — nothing on stderr"         "" "$_out"
+    # ⭐ NO STAGE REGRESSION: a card already In Progress is LEFT ALONE — nothing written, nothing
+    # stamped, and silently, because that is a genuine no-op rather than a failure. This is the
+    # invariant `kbcard move --card-start` now shares with this mover through the lib (card#9556);
+    # the leg lives here because this is the caller that has always carried it and had no leg.
+    git -C "$_orepo" checkout -q -b fix/card-4244-x
+    _own_run builder
+    eq "a card past the move stages: rc 0"                 "0" "$_rc"
+    eq "⭐ a card past the move stages: NOTHING is written" "" "$(kb_stub_bodies PATCH /tasks/4244.json)"
+    eq "…and it is a genuine no-op, not a failure"         "" "$_ologtxt"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
     unset -f _own_run kb_stub_route

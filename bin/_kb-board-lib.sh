@@ -1213,6 +1213,70 @@ kb_card_tags() {
     kb_parse_resp "$1" -c '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")'
 }
 
+# --- the card-start invariants: ONE owner for both starters -----------------
+#
+# `bin/board-card-start` (post-checkout) and `hooks/agent-dispatch-card-start` (through
+# `kbcard move --card-start`) are two implementations of ONE behaviour — start a card — and the
+# two rules below are that behaviour's invariants. They lived in board-card-start alone, so the
+# dispatch hook moved a card to In Progress FROM ANY STAGE — Shipped / Released / Won't-Do
+# included — and over a human's pin: finished work then read as in flight and nothing announced
+# it (card#9556). The PREDICATES live here so the two starters cannot disagree about them; each
+# caller still WORDS its own refusal, because the surfaces differ (a durable log, a hook's
+# stderr, a CLI's stderr) and one shared sentence would fit none of them.
+#
+# The dispatch hook cannot call these directly — it is installed standalone and must not source
+# this lib — so it reaches them through `kbcard`, which can.
+
+# kb_card_pinned <response>: has a human parked this card — a non-empty `block_reason` OR a
+# `no-automove` tag? The framework contract's opt-out (agent-board-framework PR #113): a pinned
+# card is NEVER auto-moved, whatever its stage.
+#   rc 0  pinned
+#   rc 1  not pinned
+#   rc 2  no card could be read out of <response> — NO VERDICT, which is NOT "not pinned". An
+#         unreadable body and an unpinned card are opposite answers here, and a guard that folded
+#         them would move a card it never read. ⛔ THE TWO CALLERS ANSWER IT DIFFERENTLY, so this
+#         is not "a caller fails closed on it": `kbcard move --card-start` tests the rc and
+#         refuses, while `bin/board-card-start` spells the call `if kb_card_pinned "$card"`, which
+#         reads rc 2 as "not pinned" and proceeds. That is safe THERE, and only there, because it
+#         has already exited when no workflow stage could be read out of the same body — so by
+#         that line `.data` is a readable object and rc 2 cannot arise. A new caller without that
+#         upstream exit must test for 2 rather than copy the `if`.
+# The tag test iterates `.tags` exactly as the call site it was lifted from did, values and all,
+# so a `tags` OBJECT is read the way it has always been read: widening or narrowing that is a
+# change to what the guard ACCEPTS, and this extraction is not the place to make one.
+kb_card_pinned() {
+    local data
+    data="$(kb_parse_resp "$1" -c '.data | select(type == "object")')"
+    [[ -n "$data" ]] || return 2
+    jq -e '((.block_reason // "") | tostring | length > 0) or any((.tags // [])[]; . == "no-automove")' \
+        <<<"$data" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# kb_card_start_stage_verdict <current-stage-id> <backlog-id> <prioritized-id> <held-id>: the
+# promote-from policy (framework contract PR #113), as the ONE spelling of the partition.
+#   rc 0  PROMOTE — the card has never been worked (Backlog / Prioritized).
+#   rc 2  HELD — promotable only on a genuine work-start signal this function cannot see, because
+#         it is the CALLER's: bin/board-card-start reads the branch's own reflog for a real branch
+#         CREATION, and a dispatch has no branch at all, so `kbcard move --card-start` refuses.
+#         Its own rc rather than a boolean argument, so the caller that HAS the signal pays for
+#         reading it only when the answer turns on it.
+#   rc 1  ANYTHING ELSE is left alone — In Progress / In Review / Shipped / Released / Won't-Do,
+#         and any stage this board maps that is none of the three. That arm is the whole of
+#         card#9556: a finished card moved back to In Progress reads as work in flight, and no
+#         writer announces the regression.
+# An empty <current> matches no id and is left alone; an empty <held-id> (a board need not have
+# the column) is a pattern no non-empty stage id matches.
+kb_card_start_stage_verdict() {
+    local cur="$1" backlog="$2" prioritized="$3" held="$4"
+    [[ -n "$cur" ]] || return 1
+    case "$cur" in
+        "$backlog"|"$prioritized") return 0 ;;
+        "$held") return 2 ;;
+    esac
+    return 1
+}
+
 # --- the seat owner tag -----------------------------------------------------
 #
 # The owner of a card that is being worked is the agent SEAT, recorded as ONE tag,

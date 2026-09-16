@@ -1724,4 +1724,41 @@ unset -f owner_case ow _ow_stub _real_kb_api_status
 unset COORD_CONFIG COORD_AGENT _oc _body _ow_log _ow_reqs _pre _n _at _over _mb
 
 # ---------------------------------------------------------------------------
+echo "== kb_card_pinned / kb_card_start_stage_verdict — the card-start invariants (card#9556) =="
+# ONE owner for the two rules bin/board-card-start and `kbcard move --card-start` both apply, so
+# the post-checkout mover and the dispatch hook cannot disagree about them. The rcs ARE the
+# contract, so every one of them is driven here: pinned / not / NO VERDICT, and
+# promote / HELD / left-alone.
+_pin() { local rc=0; kb_card_pinned "$1" || rc=$?; echo "$rc"; }
+eq "a non-empty block_reason is PINNED"               "0" "$(_pin '{"data":{"id":1,"block_reason":"waiting on ops"}}')"
+eq "a no-automove TAG is PINNED"                      "0" "$(_pin '{"data":{"id":1,"tags":["fr","no-automove"]}}')"
+eq "both at once is PINNED"                           "0" "$(_pin '{"data":{"id":1,"block_reason":"x","tags":["no-automove"]}}')"
+eq "a plain card is NOT pinned"                       "1" "$(_pin '{"data":{"id":1,"tags":["fr","triaged"]}}')"
+eq "block_reason null is NOT pinned"                  "1" "$(_pin '{"data":{"id":1,"block_reason":null}}')"
+eq 'block_reason "" is NOT pinned'                    "1" "$(_pin '{"data":{"id":1,"block_reason":""}}')"
+eq "a card carrying no tags key is NOT pinned"        "1" "$(_pin '{"data":{"id":1}}')"
+eq "a tag that merely CONTAINS the word is not a pin" "1" "$(_pin '{"data":{"id":1,"tags":["no-automove-please"]}}')"
+# ⭐ THE THIRD STATE, and the reason it is not a boolean: an unreadable body is NOT "not pinned".
+# A guard that folded the two would move a card it never read.
+eq "a body with no .data object → NO VERDICT"         "2" "$(_pin '{"ok":true}')"
+eq "a null .data → NO VERDICT"                        "2" "$(_pin '{"data":null}')"
+eq "a .data that is not an object → NO VERDICT"       "2" "$(_pin '{"data":[1,2]}')"
+eq "an unparseable body → NO VERDICT"                 "2" "$(_pin '<html>502</html>')"
+eq "an empty body → NO VERDICT"                       "2" "$(_pin '')"
+
+_sv() { local rc=0; kb_card_start_stage_verdict "$@" || rc=$?; echo "$rc"; }
+#                                                          <cur> <backlog> <prioritized> <held>
+eq "Backlog → PROMOTE"                                "0" "$(_sv 81 81 82 83)"
+eq "Prioritized → PROMOTE"                            "0" "$(_sv 82 81 82 83)"
+eq "Held → the CALLER's own signal decides (rc 2)"    "2" "$(_sv 83 81 82 83)"
+eq "⭐ In Progress → LEFT ALONE"                       "1" "$(_sv 49 81 82 83)"
+eq "⭐ Shipped → LEFT ALONE (the card#9556 arm)"       "1" "$(_sv 51 81 82 83)"
+eq "⭐ Released → LEFT ALONE"                          "1" "$(_sv 52 81 82 83)"
+eq "⭐ Won't-Do → LEFT ALONE"                          "1" "$(_sv 60 81 82 83)"
+eq "a stage the policy does not name → LEFT ALONE"    "1" "$(_sv 999 81 82 83)"
+# A board need not have a Held column, and a card whose stage could not be read is not startable.
+eq "no held column: no card is ever HELD"             "1" "$(_sv 83 81 82 '')"
+eq "an empty current stage → LEFT ALONE"              "1" "$(_sv '' 81 82 83)"
+unset -f _pin _sv
+
 _summary "kb-board-lib-selftest"

@@ -20,14 +20,33 @@
 # MECHANICS: Claude Code delivers the PreToolUse event as a JSON object on STDIN (never env
 # vars). For an Agent-tool dispatch the prompt is at `.tool_input.prompt`. This hook parses
 # stdin, scans the prompt for markers, and for each resolved marker invokes the existing
-# primitive `kbcard --board <key> move --task <id> --column in_progress --stamp-owner` (kbcard is
-# on PATH; it owns board-env/token resolution — the hook does not hand-roll curl).
+# primitive `kbcard --board <key> move --task <id> --column in_progress --stamp-owner
+# --card-start` (kbcard is on PATH; it owns board-env/token resolution — the hook does not
+# hand-roll curl).
 #
 # OWNER TAG: --stamp-owner has kbcard stamp this seat's owner tag once the move is confirmed; the
 # rules are README.md § The seat owner tag. kbcard's `owner tag` lines are relayed to this hook's
 # stderr; the rest of kbcard's output stays suppressed. A kbcard older than --stamp-owner refuses
-# the flag as an unknown arg: the hook then says so and retries the move once without it, so the
-# card still moves (unstamped) on a seat that updated this hook before kbcard.
+# the flag as an unknown arg: the hook retries the move once without it, and reports the outcome
+# ONCE, after that retry has answered.
+# ⛔ THE RETRY STILL CARRIES --card-start, AND --stamp-owner SHIPPED FIRST — so a kbcard old enough
+# to refuse the tag flag is older than the guard flag too, the retry is refused as well, and the
+# card does NOT move. Only a kbcard knowing --card-start but not --stamp-owner would move it
+# unstamped, and no release is that. Nothing here may claim a move before the retry has resolved.
+#
+# THE WORK-START GUARD: --card-start has kbcard READ the card and REFUSE the move rather than
+# make it when the card is PINNED (block_reason / a `no-automove` tag) or is not in Backlog or
+# Prioritized. Without it this hook moved a card to In Progress from ANY stage — a dispatch
+# naming a card that had already SHIPPED pulled it back, so finished work read as in flight, and
+# a human's pin was overridden, with nothing announcing either (card#9556). kbcard's
+# `move --card-start` refusal lines are relayed to this hook's stderr like its owner-tag lines,
+# so a card that did NOT move says why. The rules are bin/_kb-board-lib.sh's, shared with
+# bin/board-card-start — which is the point: this hook is standalone and cannot source that lib,
+# so kbcard, which can, is how it reaches the same invariants instead of a third copy of them.
+# ⛔ A kbcard too old for the flag is NOT retried without it, unlike --stamp-owner above.
+# Dropping --stamp-owner costs a TAG; dropping this would cost the INVARIANT and move the card
+# anyway, which is the defect itself. Such a seat leaves the card WHERE IT IS, loudly, with the
+# upgrade named as the fix.
 #
 # FAIL-SOFT, ALWAYS: the hook must never block or materially delay a dispatch. It exits 0 on
 # EVERY path (unparseable stdin, no marker, unknown board key, kbcard missing, API error),
@@ -41,7 +60,12 @@
 # No `set -e`: every exit path is controlled explicitly so a failure can never escape as a
 # non-zero status that stalls the dispatch. The final line is `exit 0`.
 
-KBADS_TIMEOUT="${KBADS_TIMEOUT:-10}"   # per-move wall-clock bound (seconds)
+# Per-move wall-clock bound (seconds). ⚑ Since --card-start (card#9556) one bound covers up to
+# THREE requests per move where it covered two: the guard's READ of the card, the move PATCH, and
+# the owner-tag PATCH. A slow board that used to finish inside it can now be killed — `timeout`
+# exits 124, which reaches the operator as the generic "kbcard move failed" line — so a seat seeing
+# that on a board it knows is reachable should raise this before looking anywhere else.
+KBADS_TIMEOUT="${KBADS_TIMEOUT:-10}"
 
 _kbads_diag() { printf 'agent-dispatch-card-start: %s\n' "$*" >&2; }
 
@@ -94,18 +118,50 @@ while IFS= read -r line; do
             continue
         fi
         kbrc=0
-        kberr="$(timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress --stamp-owner 2>&1 >/dev/null)" || kbrc=$?
+        kberr="$(timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress --stamp-owner --card-start 2>&1 >/dev/null)" || kbrc=$?
+        retried_unstamped=""
         if [ "$kbrc" -ne 0 ] && [[ "$kberr" == *"unknown arg '--stamp-owner'"* ]]; then
-            _kbads_diag "the kbcard on PATH predates --stamp-owner, so $token is moved WITHOUT the seat owner tag — update kbcard to the toolkit version this hook came from"
+            # NOTHING IS CLAIMED ABOUT THE BOARD HERE, and that is the whole of this arm's change.
+            # The retry has not run yet, and on the only old kbcard that can exist it is refused
+            # too (--stamp-owner shipped BEFORE --card-start), so a line here saying the card "is
+            # moved WITHOUT the seat owner tag" asserted a write that never happened — and a seat
+            # reading it stopped there believing the card had advanced. The outcome is emitted
+            # once, below, after the retry has answered.
+            retried_unstamped=1
             kbrc=0
-            kberr="$(timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress 2>&1 >/dev/null)" || kbrc=$?
+            kberr="$(timeout "$KBADS_TIMEOUT" kbcard --board "$key" move --task "$id" --column in_progress --card-start 2>&1 >/dev/null)" || kbrc=$?
+        fi
+        # THE GUARD IS NOT DROPPED TO GET THE MOVE THROUGH (see the header): a kbcard that does
+        # not know --card-start cannot answer whether this move would pull a finished or pinned
+        # card back, so the card is left exactly where it is.
+        if [ "$kbrc" -ne 0 ] && [[ "$kberr" == *"unknown arg '--card-start'"* ]]; then
+            _kbads_diag "the kbcard on PATH predates --card-start, the guard that keeps this move from pulling a finished or pinned card back to In Progress, so $token was NOT moved — update kbcard to the toolkit version this hook came from"
+            continue
         fi
         if [ "$kbrc" -ne 0 ]; then
             _kbads_diag "kbcard move failed for $token (fail-soft; dispatch unaffected)"
         fi
         while IFS= read -r kbline; do
-            case "$kbline" in "kbcard: owner tag"*) _kbads_diag "$kbline" ;; esac
+            # kbcard's own refusal line is the ONLY record of a move that was correctly not
+            # made, so it is relayed beside the owner-tag lines; the rest stays suppressed.
+            # ⚑ ON A FAILED CALL every `kbcard:` line is relayed instead. The generic line above
+            # names no cause and kbcard's line does: a board env mapping no backlog/prioritized
+            # stage now refuses the move before any request, and `column 'backlog' is not defined
+            # on this board` is the only text that tells that seat which key to add. Suppressing
+            # noise is right for a call that SUCCEEDED, never for one whose sole other report is a
+            # sentence with nothing actionable in it.
+            case "$kbline" in
+                "kbcard: owner tag"*|"kbcard: move --card-start"*) _kbads_diag "$kbline" ;;
+                "kbcard: "*) if [ "$kbrc" -ne 0 ]; then _kbads_diag "$kbline"; fi ;;
+            esac
         done <<< "$kberr"
+        # The owner-tag outcome, emitted ONCE and only here: a move is claimed only after the retry
+        # has answered, and only when the answer IS a move. rc 0 carrying a `move --card-start`
+        # refusal is the guard declining — nothing was written, so there is nothing to call
+        # unstamped either.
+        if [ -n "$retried_unstamped" ] && [ "$kbrc" -eq 0 ] && [[ "$kberr" != *"kbcard: move --card-start"* ]]; then
+            _kbads_diag "the kbcard on PATH predates --stamp-owner, so $token was moved WITHOUT the seat owner tag — update kbcard to the toolkit version this hook came from"
+        fi
     fi
 done <<< "$prompt"
 

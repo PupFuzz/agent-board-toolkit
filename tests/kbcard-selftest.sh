@@ -4694,4 +4694,134 @@ unset -f own obodies card kb_stub_route
 unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE OWN_CFG SEAT MOVE49 _r _tp _tc
 
 # ---------------------------------------------------------------------------
+echo "== move --card-start — the work-start guard (card#9556) =="
+# hooks/agent-dispatch-card-start reaches the two card-start invariants through THIS flag, being
+# installed standalone and unable to source the lib bin/board-card-start calls directly. Every leg
+# asserts the WHOLE request sequence, because "refused" here means NOTHING was written — not a
+# write that happened to land on the stage the card was already in.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 \
+    'export KB_STAGE_BACKLOG=81' \
+    'export KB_STAGE_PRIORITIZED=82' \
+    'export KB_STAGE_HELD=83' \
+    'export KB_STAGE_IN_PROGRESS=49' \
+    'export KB_STAGE_IN_REVIEW=50' \
+    'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_STAGE_RELEASED_TO_MAIN=52' \
+    'export KB_STAGE_WONT_DO=60'
+# A second board that maps NO backlog/prioritized stage — the config a guard cannot be applied on.
+kb_stub_board_config nobacklog 43 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_install
+CS_CFG="$TMP/coordination.config.json"
+printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$CS_CFG"
+
+# KB_STUB_CARD is the `.data` the card read answers; KB_STUB_READ swaps that read for a refusal
+# or for a 2xx no card can be read out of.
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/707.json*)
+            case "${KB_STUB_READ:-ok}" in
+                403)    printf '403\n{"message":"This action is unauthorized."}' ;;
+                nocard) printf '200\n{"ok":true}' ;;
+                *)      printf '200\n{"data":%s}' "${KB_STUB_CARD:-{\"id\":707\}}" ;;
+            esac ;;
+        "PATCH "*/tasks/707.json)
+            printf '200\n'; jq -cn --argjson b "$3" '{data: ({id:707,name:"probe"} + $b)}' ;;
+        *) printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+unset KB_STUB_CARD KB_STUB_READ
+
+# cs <stage-id|card-json> [extra kbcard args…] — run the REAL bin on a card in that state.
+cs() {
+    local c="$1"; shift
+    case "$c" in
+        '{'*) KB_STUB_CARD="$c" ;;
+        *)    KB_STUB_CARD="{\"id\":707,\"workflow_stage_id\":$c,\"tags\":[\"fr\"]}" ;;
+    esac
+    kb_stub_reset; rc=0
+    out="$(env COORD_CONFIG="$CS_CFG" COORD_AGENT=builder KB_STUB_CARD="$KB_STUB_CARD" \
+        "$BIN" move --task 707 --column in_progress --card-start "$@" 2>"$TMP/e")" || rc=$?
+    err="$(cat "$TMP/e")"
+}
+csbodies() { kb_stub_bodies PATCH /tasks/707.json | jq -cS .; }
+CSMOVE='{"workflow_stage_id":49}'
+
+# --- a startable card: one READ, then exactly the move this verb always sent ------------------
+cs 81
+eq "Backlog → rc 0"                                     "0" "$rc"
+eq "⭐ Backlog → the card is READ once, then moved"      "1|$CSMOVE" "$(kb_stub_count GET /tasks/707.json)|$(csbodies)"
+eq "…with the move's own echo on stdout"                "true" "$(has '"workflow_stage_id": 49' "$out")"
+eq "…and nothing is refused"                            "false" "$(has 'NOTHING was written' "$err")"
+cs 82
+eq "Prioritized → moved"                                "$CSMOVE" "$(csbodies)"
+cs 81 --stamp-owner
+eq "…composes with --stamp-owner: the move, then the tag write" \
+   "$CSMOVE"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(csbodies)"
+
+# --- ⭐ THE DEFECT ITSELF: a started or finished card is REFUSED, and nothing is written -------
+for _st in 49:in_progress 50:in_review 51:shipped_to_dev 52:released_to_main 60:wont_do; do
+    cs "${_st%%:*}"
+    eq "⭐ ${_st##*:} → rc 0 (a correct refusal is not a failed move)" "0" "$rc"
+    eq "⭐ ${_st##*:} → NOTHING was written"                 "" "$(csbodies)"
+    eq "⭐ ${_st##*:} → no move echo on stdout"              "" "$out"
+    eq "⭐ ${_st##*:} → names the stage that refused it"     "true" \
+       "$(has "the card is in stage ${_st%%:*} (${_st##*:}), which is neither Backlog nor Prioritized" "$err")"
+done
+unset _st
+
+# A Held card needs a work-start signal the CALLER owns, and a dispatch has none.
+cs 83
+eq "Held → rc 0, nothing written"                       "0|" "$rc|$(csbodies)"
+eq "…and says a parked card needs a real branch creation" "true" "$(has 'the card is HELD (stage 83 (held))' "$err")"
+cs 999
+eq "a stage the policy does not name → nothing written" "" "$(csbodies)"
+
+# --- the PIN: the SECOND invariant, refused whatever the stage --------------------------------
+cs '{"id":707,"workflow_stage_id":81,"block_reason":"waiting on ops","tags":[]}'
+eq "⭐ pinned by block_reason → rc 0, NOTHING written"   "0|" "$rc|$(csbodies)"
+eq "…and names the pin"                                 "true" "$(has 'the card is PINNED' "$err")"
+cs '{"id":707,"workflow_stage_id":81,"tags":["fr","no-automove"]}'
+eq "⭐ pinned by a no-automove tag → NOTHING written"    "" "$(csbodies)"
+cs '{"id":707,"workflow_stage_id":81,"block_reason":"x","tags":[]}' --stamp-owner
+eq "a refused move is not stamped either"               "" "$(csbodies)"
+
+# --- ⭐ a card that could not be READ is the OTHER answer: rc 1, never a policy refusal --------
+for _r in 403 nocard; do
+    KB_STUB_READ=$_r cs 81
+    eq "read $_r → rc 1 (a failure to establish, not a policy call)" "1" "$rc"
+    eq "read $_r → NOTHING written"                     "" "$(csbodies)"
+done
+unset KB_STUB_READ _r
+cs '{"id":707,"tags":["fr"]}'
+eq "a 2xx card with no stage → rc 1, nothing written"   "1|" "$rc|$(csbodies)"
+eq "…and says the card was NOT confirmed startable"     "true" "$(has 'NOT confirmed startable' "$err")"
+
+# --- refusals that cost no request at all -----------------------------------------------------
+kb_stub_reset; rc=0
+"$BIN" move --task 707 --column in_review --card-start >/dev/null 2>"$TMP/e" || rc=$?
+eq "--card-start beside a column other than in_progress → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+eq "…naming the conflict"                               "true" "$(has 'has no policy to apply to a move to' "$(cat "$TMP/e")")"
+kb_stub_reset; rc=0
+"$BIN" --board nobacklog move --task 707 --column in_progress --card-start >/dev/null 2>"$TMP/e" || rc=$?
+eq "⭐ a board env mapping no backlog stage → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+eq "…naming the column it could not resolve"            "true" \
+   "$(has "column 'backlog' is not defined on this board" "$(cat "$TMP/e")")"
+
+# ⭐ THE NEGATIVE CONTROL, and the reason the flag is OPT-IN: without it the same finished card
+# still moves, unread — which is the behaviour card#9556 reported and the behaviour every
+# existing caller keeps.
+kb_stub_reset; rc=0
+out="$(env KB_STUB_CARD='{"id":707,"workflow_stage_id":51,"tags":["fr"]}' \
+    "$BIN" move --task 707 --column in_progress 2>"$TMP/e")" || rc=$?
+eq "⭐ WITHOUT --card-start a Shipped card is still moved (so the flag is load-bearing)" \
+   "0|$CSMOVE" "$rc|$(csbodies)"
+eq "…and the card is never read at all"                 "0" "$(kb_stub_count GET /tasks/707.json)"
+
+unset -f cs csbodies kb_stub_route
+unset KB_STUB_CARD KB_STUB_READ CS_CFG CSMOVE
+
 _summary "kbcard-selftest"

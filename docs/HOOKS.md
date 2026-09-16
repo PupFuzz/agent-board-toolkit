@@ -118,7 +118,7 @@ Claude Code delivers the event as a **JSON object on stdin** (never env vars —
 marker invokes the existing primitive:
 
 ```
-kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner
+kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner --card-start
 ```
 
 `kbcard` (on PATH at `~/.local/bin`) owns board-env/token resolution — the hook does not hand-roll
@@ -126,14 +126,24 @@ kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner
 [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). The hook relays
 kbcard's `owner tag` lines to its own stderr and keeps the rest of kbcard's output suppressed.
 **Upgrade `kbcard` with this hook:** a `kbcard` older than `--stamp-owner` refuses the flag as an
-unknown arg. The hook then says the seat's `kbcard` needs updating and retries the move once without
-the flag, so the card still moves, unstamped.
+unknown arg. The hook retries the move once without it — **still carrying `--card-start`** — and
+says what happened once that retry has answered, never before. ⛔ **On every `kbcard` that can
+actually exist the retry is refused too, and the card does NOT move:** `--stamp-owner` shipped
+first, so a `kbcard` old enough to refuse it is older than the guard flag as well, and the
+paragraph below is the outcome. The card moves unstamped only on a `kbcard` that knows
+`--card-start` but not `--stamp-owner`, which no release is. Either way the fix is the same:
+update `kbcard` together with this hook.
+
+**The work-start guard (`--card-start`, card#9556).** kbcard **reads the card** and **refuses the move** rather than making it when the card is **pinned** (a non-empty `block_reason` or a `no-automove` tag) or is **not in Backlog / Prioritized** — so a dispatch naming a card that has already shipped no longer pulls it back to In Progress, and a human's pin is not overridden. A **Held** card is refused too: it is promoted only by a genuine branch creation, which a dispatch is not. A refusal is **rc 0 with nothing written** (no move, no owner tag), and its reason is relayed to the hook's stderr, so a card that did not move says why. The predicate is the toolkit lib's, shared with [`bin/board-card-start`](../bin/board-card-start): the hook is installed standalone and cannot source that lib, so `kbcard` is how it reaches the same invariants instead of a third copy of them. ⛔ **Unlike `--stamp-owner`, the flag is never dropped to get the move through** — a `kbcard` that refuses it as an unknown arg leaves the card where it is, loudly, because dropping the guard would move the card anyway, which is the defect itself.
 
 ### Fail-soft, always
 
 The hook must never block or materially delay a dispatch. It **exits 0 on every path**
 (unparseable stdin, no marker, unknown board key, `kbcard` missing, API error), bounds each move
-with `timeout` (~10s; `KBADS_TIMEOUT` overrides), and writes a one-line diagnostic to **stderr** on
+with `timeout` (~10s; `KBADS_TIMEOUT` overrides — since `--card-start` that one bound covers
+**three** requests per move where it covered two: the guard's read of the card, then the move and
+owner-tag writes, so a slow board may need it raised; a kill reports as the generic
+`kbcard move failed` line), and writes a one-line diagnostic to **stderr** on
 failure (visible in hook debug, never fatal) — mirroring `post-checkout`'s posture.
 
 ### Registration is a MANUAL operator step (not auto-installed)
