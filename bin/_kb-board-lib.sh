@@ -1234,7 +1234,13 @@ kb_card_tags() {
 #   rc 1  not pinned
 #   rc 2  no card could be read out of <response> — NO VERDICT, which is NOT "not pinned". An
 #         unreadable body and an unpinned card are opposite answers here, and a guard that folded
-#         them would move a card it never read. A caller fails closed on this.
+#         them would move a card it never read. ⛔ THE TWO CALLERS ANSWER IT DIFFERENTLY, so this
+#         is not "a caller fails closed on it": `kbcard move --card-start` tests the rc and
+#         refuses, while `bin/board-card-start` spells the call `if kb_card_pinned "$card"`, which
+#         reads rc 2 as "not pinned" and proceeds. That is safe THERE, and only there, because it
+#         has already exited when no workflow stage could be read out of the same body — so by
+#         that line `.data` is a readable object and rc 2 cannot arise. A new caller without that
+#         upstream exit must test for 2 rather than copy the `if`.
 # The tag test iterates `.tags` exactly as the call site it was lifted from did, values and all,
 # so a `tags` OBJECT is read the way it has always been read: widening or narrowing that is a
 # change to what the guard ACCEPTS, and this extraction is not the place to make one.

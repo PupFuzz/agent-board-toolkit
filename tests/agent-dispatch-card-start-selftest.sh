@@ -151,7 +151,12 @@ eq "kbcard failure writes diagnostic"       "true" "$(has 'kbcard move failed' "
 eq "…and a failure that is NOT the old-kbcard refusal is not retried" "false" "$(has 'predates --stamp-owner' "$ERR")"
 
 # ---------------------------------------------------------------------------
-echo "== a kbcard older than --stamp-owner: say so, and move the card without it =="
+echo "== a kbcard older than --stamp-owner but knowing --card-start: retry, then say what happened =="
+# ⚑ SYNTHETIC BY CONSTRUCTION, and labelled so because it was once labelled "old kbcard" and read
+# as the field case: --stamp-owner shipped BEFORE --card-start, so NO release refuses the tag flag
+# while knowing the guard flag. This fixture isolates the leg where the retry SUCCEEDS — the only
+# configuration in which the card really does move unstamped. The configuration that exists in the
+# field (both flags refused) is the leg below, and it was the one missing.
 # The same refusal an older kbcard really prints for an arg it does not know (its `*)` arm), at rc 2.
 cat > "$TMP/bin/kbcard" <<'STUB_OLD'
 #!/usr/bin/env bash
@@ -166,7 +171,12 @@ run_prompt "BOARD-CARD: toolkit#4945"
 eq "old kbcard: exits 0"                         "0" "$RC"
 eq "old kbcard: the move is retried once without --stamp-owner — but WITH the guard" \
    $'--board toolkit move --task 4945 --column in_progress --stamp-owner --card-start\n--board toolkit move --task 4945 --column in_progress --card-start' "$(recall)"
-eq "old kbcard: the seat is told to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 is moved WITHOUT the seat owner tag — update kbcard' "$ERR")"
+# ⭐ PAST TENSE, AND ONCE, AFTER THE RETRY RESOLVED. The outcome is a claim about the BOARD, so it
+# is emitted only once the retry has actually answered — never before it runs, when the hook cannot
+# yet know whether anything was written (the leg below is where that mattered).
+eq "old kbcard: the seat is told the card moved unstamped, and to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 was moved WITHOUT the seat owner tag — update kbcard' "$ERR")"
+eq "old kbcard: …and that outcome is stated exactly once" "1" \
+   "$(command grep -c 'predates --stamp-owner' <<< "$ERR" || true)"
 eq "old kbcard: …and the retried move is not reported failed" "false" "$(has 'kbcard move failed' "$ERR")"
 
 # ---------------------------------------------------------------------------
@@ -192,6 +202,59 @@ eq "⭐ …and NO call was made without the guard"        "false" \
 eq "…the seat is told the guard is missing AND that the card did not move" "true" \
    "$(has 'predates --card-start, the guard that keeps this move from pulling a finished or pinned card back to In Progress, so toolkit#4945 was NOT moved' "$ERR")"
 eq "…and it is not reported as a failed move"         "false" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== ⭐ the kbcard that EXISTS IN THE FIELD: older than BOTH flags — no move, and no claim of one =="
+# ⛔ THE ONLY OLD-kbcard CONFIGURATION THAT CAN EXIST. --stamp-owner shipped before --card-start,
+# so every kbcard that refuses the tag flag ALSO refuses the guard flag. The hook therefore runs
+# BOTH arms above in sequence: it retries without the tag, and that retry is refused too. Nothing
+# was written — so the hook must not say the card "is moved WITHOUT the seat owner tag", which a
+# seat reads as "the card advanced, just unstamped" and stops there.
+cat > "$TMP/bin/kbcard" <<'STUB_OLD_BOTH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+for a in "$@"; do
+    [[ "$a" == --stamp-owner ]] && { echo "kbcard: unknown arg '--stamp-owner'" >&2; exit 2; }
+    [[ "$a" == --card-start ]] && { echo "kbcard: unknown arg '--card-start'" >&2; exit 2; }
+done
+exit 0
+STUB_OLD_BOTH
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "old-both kbcard: the hook still exits 0"          "0" "$RC"
+eq "old-both kbcard: the stamped call, then the retry that KEEPS the guard — and no third" \
+   $'--board toolkit move --task 4945 --column in_progress --stamp-owner --card-start\n--board toolkit move --task 4945 --column in_progress --card-start' "$(recall)"
+eq "⭐ …and no call was ever made without the guard"   "false" \
+   "$(has_line '--board toolkit move --task 4945 --column in_progress' "$(recall)")"
+eq "⭐ old-both kbcard: the seat is told the card did NOT move, and what to update" "true" \
+   "$(has 'predates --card-start, the guard that keeps this move from pulling a finished or pinned card back to In Progress, so toolkit#4945 was NOT moved — update kbcard' "$ERR")"
+eq "⛔ …and NOTHING claims the card moved — the retry was refused, so no write happened" "false" \
+   "$(has 'WITHOUT the seat owner tag' "$ERR")"
+eq "…and it is not reported as a failed move"         "false" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== ⭐ a board env mapping no backlog stage: kbcard's OWN cause reaches the operator =="
+# Since card#9556 `move --card-start` refuses at rc 2 BEFORE any request when the board env maps no
+# backlog/prioritized stage — so on such a board this hook stops moving cards it moved before, and
+# the seat has to be told what to add. kbcard names the missing column exactly; a relay carrying
+# only the owner-tag and guard-refusal lines dropped it, leaving the generic fail-soft line as the
+# operator's ENTIRE output, which names nothing to fix.
+cat > "$TMP/bin/kbcard" <<'STUB_NOSTAGE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+echo "kbcard: column 'backlog' is not defined on this board" >&2
+echo "some non-kbcard noise on stderr" >&2
+exit 2
+STUB_NOSTAGE
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "unresolvable stage: the hook still exits 0"       "0" "$RC"
+eq "unresolvable stage: the move is reported failed"  "true" \
+   "$(has 'kbcard move failed for toolkit#4945' "$ERR")"
+eq "⭐ …and kbcard's own cause is relayed, naming the column the board env must map" "true" \
+   "$(has "agent-dispatch-card-start: kbcard: column 'backlog' is not defined on this board" "$ERR")"
+eq "…and the relay is still kbcard's OWN lines only, not everything on its stderr" "false" \
+   "$(has 'non-kbcard noise' "$ERR")"
 
 # ---------------------------------------------------------------------------
 echo "== a move kbcard REFUSES by policy: the reason is relayed, not swallowed =="
