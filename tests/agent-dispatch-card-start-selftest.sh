@@ -8,6 +8,11 @@
 # files that exist are the ones this test creates. What it guards:
 #   - the marker `BOARD-CARD: <key>#<id>` anchored at line START drives exactly one
 #     `kbcard --board <key> move --task <id> --column in_progress` call (single hit);
+#   - that call carries --card-start, the work-start guard, and a kbcard too OLD for it leaves
+#     the card alone rather than being retried without it (card#9556) — the asymmetry with
+#     --stamp-owner, whose refusal IS answered by a retry, is asserted in both directions;
+#   - kbcard's own guard-refusal line is relayed to this hook's stderr, so a card that correctly
+#     did NOT move still says why;
 #   - a prompt with NO marker — including one that merely mentions `card#1234` in prose —
 #     makes NO call and exits 0 (the "not a bare number scan" contract);
 #   - malformed stdin JSON exits 0 with no call (fail-soft);
@@ -70,6 +75,8 @@ eq "call moves the right task to in_progress" "true" \
    "$(has 'move --task 4945 --column in_progress' "$(recall)")"
 eq "call asks kbcard to stamp the seat owner tag" "true" \
    "$(has 'move --task 4945 --column in_progress --stamp-owner' "$(recall)")"
+eq "⭐ …and to apply the work-start guard (card#9556)" "true" \
+   "$(has 'move --task 4945 --column in_progress --stamp-owner --card-start' "$(recall)")"
 
 # ---------------------------------------------------------------------------
 echo "== no marker → no call, exit 0 =="
@@ -157,10 +164,54 @@ STUB_OLD
 chmod +x "$TMP/bin/kbcard"
 run_prompt "BOARD-CARD: toolkit#4945"
 eq "old kbcard: exits 0"                         "0" "$RC"
-eq "old kbcard: the move is retried once, without the flag" \
-   $'--board toolkit move --task 4945 --column in_progress --stamp-owner\n--board toolkit move --task 4945 --column in_progress' "$(recall)"
+eq "old kbcard: the move is retried once without --stamp-owner — but WITH the guard" \
+   $'--board toolkit move --task 4945 --column in_progress --stamp-owner --card-start\n--board toolkit move --task 4945 --column in_progress --card-start' "$(recall)"
 eq "old kbcard: the seat is told to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 is moved WITHOUT the seat owner tag — update kbcard' "$ERR")"
 eq "old kbcard: …and the retried move is not reported failed" "false" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== ⭐ a kbcard older than --card-start: the card is NOT moved, and the seat is told why =="
+# ⛔ THE GUARD IS NEVER DROPPED TO GET THE MOVE THROUGH, and the asymmetry with --stamp-owner
+# above is the whole point: dropping that costs a TAG, while retrying without --card-start would
+# cost the INVARIANT and move the card anyway — which is card#9556's defect. So there is no
+# second call, and the card stays where it is.
+cat > "$TMP/bin/kbcard" <<'STUB_NOGUARD'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+for a in "$@"; do
+    [[ "$a" == --card-start ]] && { echo "kbcard: unknown arg '--card-start'" >&2; exit 2; }
+done
+exit 0
+STUB_NOGUARD
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "old-guard kbcard: the hook still exits 0"         "0" "$RC"
+eq "⭐ old-guard kbcard: ONE call, the refused one — no retry" "1" "$(recn)"
+eq "⭐ …and NO call was made without the guard"        "false" \
+   "$(has_line '--board toolkit move --task 4945 --column in_progress' "$(recall)")"
+eq "…the seat is told the guard is missing AND that the card did not move" "true" \
+   "$(has 'predates --card-start, the guard that keeps this move from pulling a finished or pinned card back to In Progress, so toolkit#4945 was NOT moved' "$ERR")"
+eq "…and it is not reported as a failed move"         "false" "$(has 'kbcard move failed' "$ERR")"
+
+# ---------------------------------------------------------------------------
+echo "== a move kbcard REFUSES by policy: the reason is relayed, not swallowed =="
+# A guard refusal is rc 0 with nothing written, so without the relay a card that correctly did
+# not move would be indistinguishable from one that did: silence either way.
+cat > "$TMP/bin/kbcard" <<'STUB_REFUSE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KBADS_REC"
+echo "kbcard: HTTP 200 noise that must stay suppressed" >&2
+echo "kbcard: move --card-start on task 4945: the card is in stage 51 (shipped_to_dev), which is neither Backlog nor Prioritized, so this work-start move would move an already-started or FINISHED card BACKWARD — refused, and NOTHING was written." >&2
+exit 0
+STUB_REFUSE
+chmod +x "$TMP/bin/kbcard"
+run_prompt "BOARD-CARD: toolkit#4945"
+eq "a policy refusal exits the hook 0"                "0" "$RC"
+eq "⭐ the refusal reaches the hook's stderr, naming the stage" "true" \
+   "$(has 'agent-dispatch-card-start: kbcard: move --card-start on task 4945: the card is in stage 51 (shipped_to_dev)' "$ERR")"
+eq "…the rest of kbcard's stderr still does not"      "false" "$(has 'noise that must stay suppressed' "$ERR")"
+eq "…and a refusal is not reported as a failed move"  "false" "$(has 'kbcard move failed' "$ERR")"
+
 
 # ---------------------------------------------------------------------------
 echo "== kbcard's owner-tag lines are relayed; the rest of its output stays suppressed =="
@@ -188,13 +239,15 @@ echo "== end to end: the REAL kbcard against a faked kanban API stamps the owner
 # shellcheck source=/dev/null
 source "$HERE/_kb-api-stub.sh"
 kb_stub_scrub_env
-kb_stub_board_config toolkit 42 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_board_config toolkit 42 'export KB_STAGE_IN_PROGRESS=49' \
+    'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_PRIORITIZED=47' 'export KB_STAGE_HELD=46' \
+    'export KB_STAGE_SHIPPED_TO_DEV=51'
 kb_stub_install
 ln -sf "$(readlink -f "$HERE/../bin/kbcard")" "$TMP/bin/kbcard"
 printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$TMP/coordination.config.json"
 kb_stub_route() {
     case "$1 $2" in
-        "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":48,"tags":["fr"]}}' ;;
+        "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":%s,"tags":["fr"]}}' "${KB_STUB_STAGE:-48}" ;;
         "PATCH "*/tasks/4945.json) printf '200\n'; jq -cn --argjson b "$3" '{data: ({id:4945,name:"probe"} + $b)}' ;;
         *) printf '404\n{"message":"unrouted"}' ;;
     esac
@@ -210,6 +263,17 @@ kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=ghost run_prompt "BOARD-CARD: toolkit#4945"
 eq "an unresolvable seat still MOVES the card"   '{"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
 eq "…and the hook relays why it did not stamp"   "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$ERR")"
+# ⭐ END TO END, THROUGH THE REAL kbcard: card#9556's own case. A dispatch naming a card that has
+# already SHIPPED must leave it exactly where it is — no move, no owner tag — and say so. This is
+# the one leg that exercises the whole hop the fix travels: hook → kbcard → the lib's predicate.
+kb_stub_reset
+KB_STUB_STAGE=51 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
+eq "a Shipped card: the hook exits 0"            "0" "$RC"
+eq "⭐ …and NOTHING is written — no move, no owner tag" "" "$(kb_stub_bodies PATCH /tasks/4945.json)"
+eq "⭐ …the card WAS read, so this is a verdict and not a run that never happened" "1" \
+   "$(kb_stub_count GET /tasks/4945.json)"
+eq "…and the hook says which stage refused it"   "true" \
+   "$(has 'the card is in stage 51 (shipped_to_dev), which is neither Backlog nor Prioritized' "$ERR")"
 unset -f kb_stub_route
 
 _summary "agent-dispatch-card-start-selftest"

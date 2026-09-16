@@ -353,7 +353,11 @@ MARKER='T="$(mktemp -d)"; export HOME="$T"; mkdir -p "$T/bin"; : > "$T/.kanban-t
         if [ -s "$KBADS_REC" ]; then sed -n "1p" "$KBADS_REC"; else echo NO-PARSE; fi
         rm -rf "$T"'
 both "marker does not parse a U+0663 card id" "NO-PARSE" "$AI3" "$MARKER"
-both "marker parses 4945 (posctl)" "--board toolkit move --task 4945 --column in_progress --stamp-owner" "4945" "$MARKER"
+# The EXPECTED value is the hook's actual argv, so it moves whenever the hook's invocation does
+# (it gained --card-start, the work-start guard, in card#9556). What this case measures is the
+# marker PARSE under each locale, not the flag set — but it compares the whole recorded line, so
+# it is the argv's second reader and has to be kept level with it.
+both "marker parses 4945 (posctl)" "--board toolkit move --task 4945 --column in_progress --stamp-owner --card-start" "4945" "$MARKER"
 
 MARKER_KEY='T="$(mktemp -d)"; export HOME="$T"; mkdir -p "$T/bin"
             : > "$T/.kanban-$IN-board.env"; : > "$T/.kanban-toolkit-board.env"

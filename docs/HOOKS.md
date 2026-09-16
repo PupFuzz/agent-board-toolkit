@@ -118,7 +118,7 @@ Claude Code delivers the event as a **JSON object on stdin** (never env vars —
 marker invokes the existing primitive:
 
 ```
-kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner
+kbcard --board <key> move --task <card-id> --column in_progress --stamp-owner --card-start
 ```
 
 `kbcard` (on PATH at `~/.local/bin`) owns board-env/token resolution — the hook does not hand-roll
@@ -128,6 +128,8 @@ kbcard's `owner tag` lines to its own stderr and keeps the rest of kbcard's outp
 **Upgrade `kbcard` with this hook:** a `kbcard` older than `--stamp-owner` refuses the flag as an
 unknown arg. The hook then says the seat's `kbcard` needs updating and retries the move once without
 the flag, so the card still moves, unstamped.
+
+**The work-start guard (`--card-start`, card#9556).** kbcard **reads the card** and **refuses the move** rather than making it when the card is **pinned** (a non-empty `block_reason` or a `no-automove` tag) or is **not in Backlog / Prioritized** — so a dispatch naming a card that has already shipped no longer pulls it back to In Progress, and a human's pin is not overridden. A **Held** card is refused too: it is promoted only by a genuine branch creation, which a dispatch is not. A refusal is **rc 0 with nothing written** (no move, no owner tag), and its reason is relayed to the hook's stderr, so a card that did not move says why. The predicate is the toolkit lib's, shared with [`bin/board-card-start`](../bin/board-card-start): the hook is installed standalone and cannot source that lib, so `kbcard` is how it reaches the same invariants instead of a third copy of them. ⛔ **Unlike `--stamp-owner`, the flag is never dropped to get the move through** — a `kbcard` that refuses it as an unknown arg leaves the card where it is, loudly, because dropping the guard would move the card anyway, which is the defect itself.
 
 ### Fail-soft, always
 
