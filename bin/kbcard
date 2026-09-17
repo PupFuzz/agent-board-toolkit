@@ -433,10 +433,10 @@
 #     name, not an answer.
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
-#     stdout. That id is the write verification: adding a comment does NOT bump the card's
-#     updated_at (measured on the sandbox instance, board 1162), so the echoed id is the only
-#     cheap signal that the write landed, and a success carrying no id is reported as an
-#     UNVERIFIED write (rc 3) rather than printed as a plausible-looking `null`.
+#     stdout. That id is the write verification — never a card timestamp: whether a comment
+#     moves the card's updated_at is the kanban API contract's to state (DL-269), and nothing
+#     here reads it. A success carrying no id is reported as an UNVERIFIED write (rc 3)
+#     rather than printed as a plausible-looking `null`.
 #     The id is then READ BACK on the card: the comment must be in the `comments` array the
 #     task-detail GET carries (the only read surface a comment has — GET on the comments path
 #     is 405), which is complete rather than a first page. Absent there is rc 1 HARD FAILURE;
@@ -2776,8 +2776,10 @@ cmd_show() {
 #     201s echoing the created row (id, task_id, user_id, content, created_at, updated_at).
 #     The wrapped {"comment":{"content":…}} form is 422 "The content field is required", so
 #     the flat shape here is a measurement rather than a guess.
-#   * Adding a comment does NOT bump the card's updated_at, so the echoed id is the ONLY
-#     cheap write verification — hence the loud refusal below on a success carrying no id.
+#   * The write is verified from the echoed id, NEVER from a card timestamp. Whether a comment
+#     moves the card's updated_at is the kanban API contract's to state
+#     (docs/api-stability-contract.md there, DL-269), not this file's; the verification below
+#     reads neither answer — hence the loud refusal on a success carrying no id.
 #   * There is no comment READ route: GET on the same path is 405 (POST only). The task
 #     detail GET already carries the whole `comments` array, so `comments` projects that.
 #     user_id is the only author field a row carries — there is no name to print.
@@ -2820,14 +2822,15 @@ cmd_comment() {
     body="$(jq -nc --arg c "$text" '{content: $c}')"
     resp="$(kb_api POST "/tasks/$task/comments.json" "$body")" || return 1
     # kb_api has already decided success on the status class (and printed the status + error
-    # body on a failure). What is left is the WRITE VERIFICATION: the card's updated_at does
-    # not move on a comment-add, so a success carrying no echoed id leaves the write
-    # unconfirmed — say so, rather than print a `null` that reads exactly like an id.
+    # body on a failure). What is left is the WRITE VERIFICATION, and the echoed id is the only
+    # confirmation this verb reads (never a card timestamp), so a success carrying no echoed
+    # id leaves the write unconfirmed — say so, rather than print a `null` that reads exactly
+    # like an id.
     # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the parse;
     # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
     # kb_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
     cid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
-    [[ -n "$cid" ]] || _kbc_unverified comment "on task $task" "A comment does not bump the card's updated_at, so the echoed id is the only confirmation there is." || return $?
+    [[ -n "$cid" ]] || _kbc_unverified comment "on task $task" "No comment id was echoed, and the echoed id is the only confirmation this verb reads." || return $?
 
     # READ IT BACK ON THE CARD. The echoed id is the POST's own answer; the card's `comments`
     # array is the audit trail a reader actually sees, and it is the ONLY read surface a comment
