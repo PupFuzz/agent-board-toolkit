@@ -786,9 +786,27 @@ _bcs_verdict resolved "$cid" "card #$cid ($label)"
 # the lib's kb_card_pinned, shared with `kbcard move --card-start` so this mover and
 # the dispatch hook cannot disagree about what "pinned" means (card#9556); the WORDING
 # stays here, because this hook's reader is a durable log rather than a terminal.
-if kb_card_pinned "$card"; then
-    bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused"
-fi
+#
+# ⛔ EVERY rc IS TESTED, not `if`-ed: an rc outside the lib's declared set is NO ANSWER, and nothing
+# is written on it — rc 127 is a _kb-board-lib.sh older than this hook, which lacks the function, and
+# an `if` read that as "not pinned" and stamped the card below (card#9756). rc 2 (no card in the
+# body) proceeds as it always has: it cannot arise here, the empty-stage exit above having left.
+# The stage verdict is asked HERE, before the dl_number stamp, for the same reason: it is pure, and
+# the stamp must not land when the verdict cannot be had.
+_bcs_unruled() {
+    bcs_skip "card #$cid ($label): $1 returned rc $2, which is not one of its answers (rc 127: the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written"
+}
+_bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
+case "$_bcs_pin" in
+    0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;
+    1|2) ;;
+    *) _bcs_unruled kb_card_pinned "$_bcs_pin" ;;
+esac
+_bcs_sv=0; kb_card_start_stage_verdict "$cur" "$backlog" "$prioritized" "$held" || _bcs_sv=$?
+case "$_bcs_sv" in
+    0|1|2) ;;
+    *) _bcs_unruled kb_card_start_stage_verdict "$_bcs_sv" ;;
+esac
 
 # Stamp the dl_number write-site (framework contract #112 step 2). When the card
 # was selected by native id AND the branch also names a DL, write payload.dl_number
@@ -822,7 +840,7 @@ if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     fi
 fi
 
-# Promote-from policy (contract PR #113), asked of the lib's kb_card_start_stage_verdict —
+# Promote-from policy (contract PR #113), answered by the lib's kb_card_start_stage_verdict above —
 # the ONE spelling of the partition, shared with `kbcard move --card-start` so this mover and
 # the dispatch hook cannot disagree about which stages a work-start may promote (card#9556):
 #   - Backlog / Prioritized (rc 0) → promote on any branch checkout (unchanged: a
@@ -834,7 +852,6 @@ fi
 #     branch's own reflog (fail-soft: no reflog / unparsable → not-a-creation).
 #   - Anything else (In Progress / In Review / Shipped / Released / Won't-Do) →
 #     never touched.
-kb_card_start_stage_verdict "$cur" "$backlog" "$prioritized" "$held"; _bcs_sv=$?
 case "$_bcs_sv" in
     0) ;;
     2) branch_just_created || exit 0 ;;
