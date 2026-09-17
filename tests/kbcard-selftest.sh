@@ -1260,8 +1260,9 @@ echo "== comment / comments — the card audit-trail verbs (card#6051) =="
 # hand-rolled the API call. The API semantics below were MEASURED against the sandbox instance
 # (board 1162) before any of this was written, and each measurement is what one assertion here
 # pins: the body is FLAT `{"content": …}` (the wrapped `{"comment":{…}}` form is 422), the POST
-# 201s echoing the created row, adding a comment does NOT bump the card's updated_at (so the
-# echoed id is the only cheap write verification), and there is NO comment read route at all —
+# 201s echoing the created row, the write is verified from that echoed id and never from a card
+# timestamp (whether a comment moves `updated_at` is the kanban API contract's to state, DL-269),
+# and there is NO comment read route at all —
 # GET on the comments path is 405, POST-only, which is why `comments` projects the array the
 # task detail GET already carries.
 #
@@ -1402,8 +1403,8 @@ eq "comment → body is FLAT, exactly {content}"   '["content"]' \
    "$(kb_stub_bodies POST "$CPATH" | jq -c 'keys')"
 eq "comment → body carries the text verbatim"    '"hello there"' \
    "$(kb_stub_bodies POST "$CPATH" | jq -c '.content')"
-# The write verification (the card's updated_at does not move on a comment-add, so this id is
-# the only confirmation the write landed).
+# The write verification (this echoed id is the only confirmation the verb reads — never a card
+# timestamp).
 eq "comment → prints the CREATED comment id on stdout" "13" "$out"
 
 echo "-- comment: --content-file reaches the body, multi-line included --"
@@ -1585,8 +1586,8 @@ eq "404 with parseable JSON → rc 1 (status, not shape)" "1" "$rc"
 eq "404 → the status is named"                   "true" "$(has 'HTTP 404' "$err")"
 eq "404 → nothing on stdout"                     "" "$out"
 # The other half of the same class, one layer in: a 2xx that carries no comment id leaves the
-# write UNVERIFIED (the card's updated_at does not move), so it must fail loudly rather than
-# print a plausible-looking `null`.
+# write UNVERIFIED (the echoed id is the only confirmation the verb reads), so it must fail
+# loudly rather than print a plausible-looking `null`.
 KB_STUB_POST_HTTP=201 KB_STUB_POST_BODY='{"data":{}}' kbc comment --task 505 --content x
 eq "2xx with no comment id → rc 3 (UNVERIFIED WRITE)" "3" "$rc"
 eq "…says the write is UNVERIFIED"               "true" "$(has 'UNVERIFIED WRITE' "$err")"
