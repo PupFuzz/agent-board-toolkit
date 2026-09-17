@@ -4745,7 +4745,7 @@ cs() {
     esac
     kb_stub_reset; rc=0
     out="$(env COORD_CONFIG="$CS_CFG" COORD_AGENT=builder KB_STUB_CARD="$KB_STUB_CARD" \
-        "$BIN" move --task 707 --column in_progress --card-start "$@" 2>"$TMP/e")" || rc=$?
+        "${CS_BIN:-$BIN}" move --task 707 --column in_progress --card-start "$@" 2>"$TMP/e")" || rc=$?
     err="$(cat "$TMP/e")"
 }
 csbodies() { kb_stub_bodies PATCH /tasks/707.json | jq -cS .; }
@@ -4764,7 +4764,7 @@ eq "…composes with --stamp-owner: the move, then the tag write" \
    "$CSMOVE"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(csbodies)"
 
 # --- ⭐ THE DEFECT ITSELF: a started or finished card is REFUSED, and nothing is written -------
-for _st in 49:in_progress 50:in_review 51:shipped_to_dev 52:released_to_main 60:wont_do; do
+for _st in 50:in_review 51:shipped_to_dev 52:released_to_main 60:wont_do; do
     cs "${_st%%:*}"
     eq "⭐ ${_st##*:} → rc 0 (a correct refusal is not a failed move)" "0" "$rc"
     eq "⭐ ${_st##*:} → NOTHING was written"                 "" "$(csbodies)"
@@ -4773,6 +4773,17 @@ for _st in 49:in_progress 50:in_review 51:shipped_to_dev 52:released_to_main 60:
        "$(has "the card is in stage ${_st%%:*} (${_st##*:}), which is neither Backlog nor Prioritized" "$err")"
 done
 unset _st
+
+# ⭐ An In Progress card is ALREADY started — a follow-up dispatch, or post-checkout fired first.
+# Same refusal (rc 0, nothing written), but its OWN reason: In Progress → In Progress is not a move
+# backward, and saying so sent the seat looking for a regression that never happened (card#9756).
+cs 49
+eq "⭐ In Progress → rc 0, NOTHING written, no move echo" "0||" "$rc|$(csbodies)|$out"
+eq "⭐ In Progress → says the card is already In Progress and was left where it is" "true" \
+   "$(has 'kbcard: move --card-start on task 707: the card is already In Progress (stage 49 (in_progress)), so it was left where it is and NOTHING was written' "$err")"
+eq "⭐ …and never that the move would take it BACKWARD" "false" "$(has 'BACKWARD' "$err")"
+cs 49 --stamp-owner
+eq "In Progress + --stamp-owner → rc 0, nothing written" "0|" "$rc|$(csbodies)"
 
 # A Held card needs a work-start signal the CALLER owns, and a dispatch has none.
 cs 83
@@ -4800,6 +4811,32 @@ unset KB_STUB_READ _r
 cs '{"id":707,"tags":["fr"]}'
 eq "a 2xx card with no stage → rc 1, nothing written"   "1|" "$rc|$(csbodies)"
 eq "…and says the card was NOT confirmed startable"     "true" "$(has 'NOT confirmed startable' "$err")"
+
+# --- ⭐ an rc outside the lib's declared set is NO ANSWER: rc 2, nothing written (card#9756) --------
+# A kbcard vendored beside a _kb-board-lib.sh that predates the card-start invariants gets rc 127
+# from each call. Read as an answer, that was "not pinned", then "neither Backlog nor Prioritized"
+# — a policy refusal naming a stage, for every card, which never said the lib was the cause.
+_csstale="$(_bin_beside_stale_lib "$TMP/stale-both" "$BIN" kb_card_pinned kb_card_start_stage_verdict)"
+for _st in 81 49 51; do
+    CS_BIN="$_csstale" cs "$_st"
+    eq "⭐ lib without either invariant, stage $_st → rc 2 (could not rule)"  "2" "$rc"
+    eq "⭐ …NOTHING written"                                                 "" "$(csbodies)"
+    eq "…the card WAS read, so this is the guard refusing and not a run that never started" "1" \
+       "$(kb_stub_count GET /tasks/707.json)"
+    eq "⭐ …the line names the function and the rc"                         "true" \
+       "$(has "kbcard: move --card-start on task 707: kb_card_pinned returned rc 127, which is not one of its answers" "$err")"
+    eq "…and it is never worded as a policy refusal"                       "false|false" \
+       "$(has 'BACKWARD' "$err")|$(has 'already In Progress' "$err")"
+done
+CS_BIN="$_csstale" cs 81 --stamp-owner
+eq "⭐ …with --stamp-owner: rc 2, and no move and no owner tag"            "2|" "$rc|$(csbodies)"
+_csstale="$(_bin_beside_stale_lib "$TMP/stale-verdict" "$BIN" kb_card_start_stage_verdict)"
+CS_BIN="$_csstale" cs 81
+eq "⭐ lib without the stage verdict only, Backlog → rc 2, NOTHING written" "2|" "$rc|$(csbodies)"
+eq "⭐ …the line names that function and the rc"                         "true" \
+   "$(has "kbcard: move --card-start on task 707: kb_card_start_stage_verdict returned rc 127, which is not one of its answers" "$err")"
+eq "…and it is never worded as a policy refusal"                         "false" "$(has 'BACKWARD' "$err")"
+unset _csstale _st
 
 # --- refusals that cost no request at all -----------------------------------------------------
 kb_stub_reset; rc=0

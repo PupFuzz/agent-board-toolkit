@@ -337,6 +337,25 @@ eq "⭐ …the card WAS read, so this is a verdict and not a run that never happ
    "$(kb_stub_count GET /tasks/4945.json)"
 eq "…and the hook says which stage refused it"   "true" \
    "$(has 'the card is in stage 51 (shipped_to_dev), which is neither Backlog nor Prioritized' "$ERR")"
+# ⭐ END TO END: a follow-up dispatch on a card ALREADY In Progress is left alone and told so in
+# kbcard's own words — relayed, because the relay keys on the `kbcard: move --card-start` prefix.
+kb_stub_reset
+KB_STUB_STAGE=49 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
+eq "an In Progress card: the hook exits 0, NOTHING written" "0|" "$RC|$(kb_stub_bodies PATCH /tasks/4945.json)"
+eq "⭐ …and the hook relays that it is already In Progress" "true" \
+   "$(has 'agent-dispatch-card-start: kbcard: move --card-start on task 4945: the card is already In Progress' "$ERR")"
+eq "⭐ …never that the move would take it BACKWARD"         "false" "$(has 'BACKWARD' "$ERR")"
+# ⭐ END TO END: a kbcard beside a lib that predates the card-start invariants (card#9756). The card
+# is not moved, the move is reported failed, and kbcard's line naming the function and rc reaches
+# the seat — not a policy refusal that blames the card's stage.
+ln -sf "$(_bin_beside_stale_lib "$TMP/stale-kbcard" "$HERE/../bin/kbcard" kb_card_pinned kb_card_start_stage_verdict)" "$TMP/bin/kbcard"
+kb_stub_reset
+COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
+eq "a stale lib: the hook exits 0, NOTHING written"         "0|" "$RC|$(kb_stub_bodies PATCH /tasks/4945.json)"
+eq "⭐ …the move is reported failed"                          "true" "$(has 'kbcard move failed for toolkit#4945' "$ERR")"
+eq "⭐ …and kbcard's line naming the function and rc is relayed" "true" \
+   "$(has 'agent-dispatch-card-start: kbcard: move --card-start on task 4945: kb_card_pinned returned rc 127' "$ERR")"
+eq "…never a policy refusal"                                 "false" "$(has 'BACKWARD' "$ERR")"
 unset -f kb_stub_route
 
 _summary "agent-dispatch-card-start-selftest"

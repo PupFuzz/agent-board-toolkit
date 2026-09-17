@@ -264,6 +264,19 @@ _mktmp_scratch() {
     fi
 }
 
+# _bin_beside_stale_lib <dir> <bin> <function>... — copy <bin> and the `_kb-board-lib.sh` beside it
+# into <dir>, with each named lib function undefined once the lib has been sourced, and print the
+# copied bin's path. That is what a bin newer than the lib vendored beside it runs against: the
+# bin's own code, and a lib lacking what that code calls (card#9756).
+_bin_beside_stale_lib() {
+    local dir="$1" bin="$2" src; shift 2
+    src="$(readlink -f "$bin")"
+    mkdir -p "$dir"
+    cp "$src" "$dir/" && cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/" || return 1
+    printf '\nunset -f %s\n' "$*" >> "$dir/_kb-board-lib.sh"
+    printf '%s' "$dir/$(basename "$src")"
+}
+
 # ── a window measured from a stamp the FIXTURE wrote (card#8533) ─────────────────────────────
 #
 # WHY A SHARED PAIR RATHER THAN TWO LOCAL COPIES. A selftest that bounds elapsed time around a

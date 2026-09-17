@@ -1062,7 +1062,7 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     _vrun() {  # <branch> — create/switch the fixture to it (no hook installed yet), run the mover; sets _rc/_out/_ologtxt
         git -C "$_rrepo" checkout -q -B "$1"
         kb_stub_reset; rm -f "$_rlog"; _rc=0
-        _out="$(cd "$_rrepo" && KB_BCS_LOG="$_rlog" bash "$BCS" 2>&1)" || _rc=$?
+        _out="$(cd "$_rrepo" && KB_BCS_LOG="$_rlog" bash "${BCS_RUN:-$BCS}" 2>&1)" || _rc=$?
         _ologtxt="$(cat "$_rlog" 2>/dev/null || true)"
     }
     _vget() {  # <branch> <key> — one field of the branch's record (empty when there is none)
@@ -1132,6 +1132,32 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     KB_STUB_SEARCH_DATA='[{"id":6200,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-88"}}]' KB_STUB_SEARCH_TOTAL=1 \
         _vrun fix/712-dl-88
     _varm "DL matched a card whose read then 404s (typed id)" fix/712-dl-88 not_checked "the branch's own card id was not judged"
+    # ⭐ AN rc OUTSIDE THE LIB'S DECLARED SET IS NO ANSWER (card#9756). Beside a _kb-board-lib.sh that
+    # predates the card-start invariants each call returns 127; read as "not pinned" that stamped
+    # dl_number onto a PINNED card before the stage verdict was ever asked. The DL matches no card, so
+    # the branch's own card id is used and the dl_number stamp is due — the control proves this
+    # fixture reaches that write, so the refusals below are measured and not a run that stopped early.
+    _vrun fix/card-4242-dl-77-x
+    eq "control, current lib: the dl_number stamp and the move are both written" \
+       '{"payload":{"dl_number":"DL-0077"}}'$'\n''{"workflow_stage_id":84}' \
+       "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS . | head -2)"
+    BCS_RUN="$(_bin_beside_stale_lib "$TMP/bcs-stale-both" "$BCS" kb_card_pinned kb_card_start_stage_verdict)"
+    for _sc in 4242 4243; do
+        _vrun "fix/card-$_sc-dl-77-x"
+        eq "⭐ lib without either invariant, card #$_sc: rc 0 (never blocks a checkout)" "0" "$_rc"
+        eq "⭐ …NOTHING written — no dl_number stamp, no move, no owner tag" "" "$(kb_stub_bodies PATCH "/tasks/$_sc.json")"
+        eq "⭐ …the durable log names the function and the rc" "true" \
+           "$(has "kb_card_pinned returned rc 127, which is not one of its answers" "$_ologtxt")"
+        eq "…and never reads the card as pinned" "false" "$(has 'is pinned' "$_ologtxt")"
+    done
+    BCS_RUN="$(_bin_beside_stale_lib "$TMP/bcs-stale-verdict" "$BCS" kb_card_start_stage_verdict)"
+    _vrun fix/card-4242-dl-77-x
+    eq "⭐ lib without the stage verdict only: NOTHING written — the stamp waits on the verdict too" "" \
+       "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ …the durable log names that function and the rc" "true" \
+       "$(has "kb_card_start_stage_verdict returned rc 127, which is not one of its answers" "$_ologtxt")"
+    unset BCS_RUN _sc
+
     _vrun docs/adoption-guide
     _varm "no DL or card-id token"          docs/adoption-guide not_checked "no DL or card-id token"
     git -C "$_rrepo" config kanban.board-id 43

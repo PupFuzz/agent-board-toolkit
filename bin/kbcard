@@ -113,7 +113,11 @@
 #     callers that pass this flag are fail-soft automation, and reporting a correct refusal as a
 #     failed move is how an operator learns to ignore the line. A card that could not be READ is
 #     the OTHER answer and never reads as a policy refusal: rc 1, nothing written, because an
-#     unreadable card and a startable one are opposite answers to a guard.
+#     unreadable card and a startable one are opposite answers to a guard. A card already IN
+#     PROGRESS is refused like any other started card, in its own words (it is left where it is,
+#     not moved backward). An invariant answering with an rc outside its declared set — 127 from a
+#     _kb-board-lib.sh that predates it — is a guard that cannot be applied: rc 2, nothing written,
+#     and the line names the function and the rc (card#9756).
 #     ONLY WITH --column in_progress (rc 2 otherwise, before any request): the policy is the
 #     promotion's, and there is none to apply to any other column. It costs ONE extra GET before
 #     the move, which is what makes the verdict a reading rather than an assumption.
@@ -1645,7 +1649,7 @@ _kbc_assign_guard() {
     return 1
 }
 
-# _kbc_card_start_guard <task> <backlog-id> <prioritized-id> <held-id>: what --card-start DOES
+# _kbc_card_start_guard <task> <backlog-id> <prioritized-id> <held-id> <in-progress-id>: what --card-start DOES
 # about the two card-start invariants — which it does NOT own. kb_card_pinned and
 # kb_card_start_stage_verdict in _kb-board-lib.sh own them, shared with bin/board-card-start
 # (card#9556); this owns only what kbcard does when they answer. The verdict is READ off the card
@@ -1653,8 +1657,10 @@ _kbc_assign_guard() {
 #   rc 0  proceed with the move
 #   rc 1  refused BY POLICY — the reason is on stderr and nothing was written
 #   rc 2  the card could not be READ, so there is no verdict to give
+#   rc 3  an invariant returned an rc outside its declared set — the lib could not rule (rc 127 is
+#         a _kb-board-lib.sh older than this kbcard, lacking the function), so neither could this
 _kbc_card_start_guard() {
-    local task="$1" backlog="$2" prioritized="$3" held="$4" got http body cur col where pinned=0 sv=0
+    local task="$1" backlog="$2" prioritized="$3" held="$4" inprog="$5" got http body cur col where pinned=0 sv=0
     # kb_api_status, not kb_api: the STATUS is half the diagnostic here, and kb_api strands it in
     # the command substitution the caller reads the body through.
     got="$(kb_api_status GET "/tasks/$task.json")"
@@ -1670,6 +1676,8 @@ _kbc_card_start_guard() {
            return 1 ;;
         2) echo "kbcard: move --card-start on task $task: the read returned success but no card could be read out of its body — nothing was read, so this run cannot rule on the move and refuses before the write." >&2
            return 2 ;;
+        1) ;;
+        *) _kbc_card_start_unruled "$task" kb_card_pinned "$pinned"; return 3 ;;
     esac
     cur="$(kb_parse_resp "$body" -r '.data.workflow_stage_id // empty')"
     if [[ -z "$cur" ]]; then
@@ -1677,15 +1685,30 @@ _kbc_card_start_guard() {
         return 2
     fi
     kb_card_start_stage_verdict "$cur" "$backlog" "$prioritized" "$held" || sv=$?
-    [[ "$sv" == 0 ]] && return 0
+    case "$sv" in
+        0) return 0 ;;
+        1|2) ;;
+        *) _kbc_card_start_unruled "$task" kb_card_start_stage_verdict "$sv"; return 3 ;;
+    esac
     col="$(stage_name "$cur" 2>/dev/null || true)"
     where="stage $cur${col:+ ($col)}"
+    if [[ "$cur" == "$inprog" ]]; then
+        echo "kbcard: move --card-start on task $task: the card is already In Progress ($where), so it was left where it is and NOTHING was written." >&2
+        return 1
+    fi
     if [[ "$sv" == 2 ]]; then
         echo "kbcard: move --card-start on task $task: the card is HELD ($where) — a parked card is promoted only by a genuine branch creation, which this call is not, so NOTHING was written." >&2
         return 1
     fi
     echo "kbcard: move --card-start on task $task: the card is in $where, which is neither Backlog nor Prioritized, so this work-start move would move an already-started or FINISHED card BACKWARD — refused, and NOTHING was written." >&2
     return 1
+}
+
+# _kbc_card_start_unruled <task> <function> <rc>: the line for an invariant that answered with none of
+# its declared rcs. Read as an answer, such an rc was "not pinned" and then a policy refusal naming
+# the card's stage — for every card, never naming the lib (card#9756).
+_kbc_card_start_unruled() {
+    echo "kbcard: move --card-start on task $1: $2 returned rc $3, which is not one of its answers — rc 127 means the _kb-board-lib.sh beside this kbcard predates it, so re-vendor the lib with this kbcard. This run cannot rule on the move and refuses before the write, so NOTHING was written." >&2
 }
 
 cmd_move() {
@@ -1726,13 +1749,16 @@ cmd_move() {
     stage="$(stage_id "$column")"
     if [[ -n "$card_start" ]]; then
         local csv=0
-        _kbc_card_start_guard "$task" "$cs_backlog" "$cs_prioritized" "$cs_held" || csv=$?
-        # 1 is a POLICY refusal — the guard worked, so the verb did not fail. Anything else is a
-        # card this run could not READ, which is a failure to establish and must never read as a
-        # policy call: the two need different operator actions.
+        _kbc_card_start_guard "$task" "$cs_backlog" "$cs_prioritized" "$cs_held" "$stage" || csv=$?
+        # 1 is a POLICY refusal — the guard worked, so the verb did not fail. 2 is a card this run
+        # could not READ, which is a failure to establish and must never read as a policy call: the
+        # two need different operator actions. 3 is a guard that could not be APPLIED (the lib gave
+        # no answer), which is rc 2 like the other guard-cannot-apply refusals above — re-running
+        # does not fix an install, where a board that did not read may answer next time.
         case "$csv" in
             0) ;;
             1) return 0 ;;
+            3) return 2 ;;
             *) return 1 ;;
         esac
     fi
