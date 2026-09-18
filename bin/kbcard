@@ -253,6 +253,15 @@
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it; required for the repo-qualified PR→card lookup on a multi-repo board (--pr alone
 #     sets pr_number, not source). Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
+#     ON patch, --pr WITHOUT --pr-url READS THE CARD FIRST and is rc 2, with NOTHING written, when
+#     the stored pr_url names a DIFFERENT pull request (compared after the same normalisation, so
+#     #178 and PR-178 are 178): the write would leave the card naming one PR by number and another
+#     by URL, still attributed to the URL's repo. Pass --pr-url with it. No pr_url, one naming the
+#     same number, and the .../pull/0 placeholder proceed unchanged; so do --pr with --pr-url,
+#     --clear pr-url and a wont_do decline without --keep-refs (each replaces or removes the URL,
+#     and none reads the card for it). A stored pr_url that is not a GitHub pull URL proceeds with
+#     a notice that the check could not be made; an unreadable card is rc 1, nothing written
+#     (card#9837, an acceptance change, operator-approved).
 #     --issue / --issue-url are the issue-lifecycle mirror of --pr / --pr-url: they write
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
 #     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
@@ -1649,6 +1658,65 @@ _kbc_assign_guard() {
     return 1
 }
 
+# _kbc_pr_url_guard <task> <pr>: refuse a `patch --pr` that would leave the card naming one pull
+# request by NUMBER and a different one by URL (card#9837). rc 0 proceed; rc 2 refused, nothing
+# written; rc 1 the card could not be read, nothing written.
+#
+# THE DEFECT IT CLOSES. The payload PATCH merges per key, so `--pr N` alone writes pr_number and
+# leaves a stored pr_url untouched. The board derives a card's by-ref `source` (owner/repo) from
+# pr_url and never from pr_number, so re-pointing a card at a PR in ANOTHER repo with `--pr` alone
+# left it attributed to the old repo, at rc 0, with nothing on the card to show the two keys
+# disagree. Refusing, operator-approved as an acceptance change (2026-09-18), is the one answer
+# that needs no guess: the old repo's URL cannot be rewritten into the new PR's URL without
+# knowing the new PR's repo, which `--pr` does not say.
+#
+# ITS CALLER DECIDES WHETHER IT RUNS: only when --pr is sent and pr_url is NOT a key of the same
+# PATCH. --pr-url sets it, `--clear pr-url` and the wont_do decline null it, and in each of those
+# the stored URL is replaced, so there is nothing left to diverge from.
+#
+# WHAT COUNTS AS A DIVERGENCE. The stored URL is read the way the promote side derives `source`
+# (bin/promote-released-cards: `github.com/<owner>/<repo>[.git]/pull/…`, case-insensitive,
+# unanchored), and the number after /pull/ is compared with --pr through KB_JQ_REF_CANON's
+# `norm`, so `#178`, `PR-178` and `0178` all name 178. Proceeds, unchanged: no pr_url (absent,
+# null, blank); a URL naming the SAME number; the pre-PR placeholder `.../pull/0` (in any
+# zero spelling), which stands for "no PR yet" rather than a PR.
+# A stored pr_url that is NOT a GitHub pull URL proceeds with a notice: there is no second PR
+# number in it to disagree with, so refusing would refuse on a divergence nobody can show — and
+# silence would claim a check that did not happen.
+_kbc_pr_url_guard() {
+    local task="$1" pr="$2" resp data verdict stored
+    if ! resp="$(kb_api GET "/tasks/$task.json")"; then
+        echo "kbcard: patch on task $task: the card could NOT be read, so nothing here can say whether --pr $pr diverges from the pr_url it already carries — refusing before the write. Re-run when the board reads, or pass --pr-url with --pr." >&2
+        return 1
+    fi
+    data="$(kb_parse_resp "$resp" -c '.data | select(type == "object")')"
+    if [[ -z "$data" ]]; then
+        echo "kbcard: patch on task $task: the read returned success but no card could be read out of its body — nothing was read, so this run cannot say whether --pr $pr diverges from the card's pr_url, and refuses before the write." >&2
+        return 1
+    fi
+    verdict="$(jq -r --arg pr "$pr" "$KB_JQ_REF_CANON"'
+        ((.payload // {}) | if type == "object" then .pr_url else null end) as $u
+        | if $u == null or ($u | type) == "string" and ($u | test("\\A\\s*\\z")) then "none"
+          elif ($u | type) != "string" then "unparsed"
+          else ([$u | capture("github[.]com/[^/]+/[^/]+?([.]git)?/pull/(?<n>[0-9]+)(?:[/?#]|\\z)"; "i")][0].n) as $n
+            | if $n == null then "unparsed"
+              elif ($n | test("\\A0+\\z")) then "placeholder"
+              elif ($n | norm) == ($pr | norm) then "same"
+              else "diff \($n | norm)" end
+          end' <<<"$data")"
+    case "$verdict" in
+        none|placeholder|same) return 0 ;;
+    esac
+    stored="$(jq -r '.payload.pr_url | tostring' <<<"$data")"
+    stored="$(kb_redact_url_userinfo "$stored")"
+    if [[ "$verdict" == unparsed ]]; then
+        echo "kbcard: patch on task $task: the card's pr_url ($stored) is not a GitHub pull-request URL, so whether --pr $pr diverges from it could not be checked — writing pr_number and leaving pr_url as it is (pass --pr-url to replace it)" >&2
+        return 0
+    fi
+    echo "kbcard: patch on task $task: REFUSING --pr $pr without --pr-url — the card's pr_url ($stored) names PR ${verdict#diff }, so this write would leave the card naming one PR by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo. Pass --pr-url with the new PR's URL alongside --pr. NOTHING WAS WRITTEN." >&2
+    return 2
+}
+
 # _kbc_card_start_guard <task> <backlog-id> <prioritized-id> <held-id> <in-progress-id>: what --card-start DOES
 # about the two card-start invariants — which it does NOT own. kb_card_pinned and
 # kb_card_start_stage_verdict in _kb-board-lib.sh own them, shared with bin/board-card-start
@@ -1929,13 +1997,19 @@ cmd_patch() {
     local task; task="$(resolve_task "$task_ref")"
     # The collision check is a READ, so it sits BELOW the offline preflight and ABOVE every
     # write — it refuses at rc 1 (the write did not happen and this run KNOWS it did not),
-    # never at rc 2, which in this file means a bad invocation that cost no traffic.
+    # never at rc 2, which in this file means a bad invocation (the --pr/pr_url refusal below is
+    # rc 2 AFTER a read: the call itself is wrong for this card, and only a read can say so).
     # It is its OWN read, not folded into the tag read below: --assign + --tags/--type/--triaged
     # therefore costs two GETs. Deliberate — the tag read is a read-merge-WRITE whose result
     # becomes the body, and merging a refusal that must happen BEFORE any write into it would
     # tie one verb's refusal to whether another flag was passed.
     if [[ -n "$assign_set" ]]; then
         _kbc_assign_guard "$task" "$assign_json" "$steal" || return 1
+    fi
+    # --pr without a pr_url write leaves the stored pr_url in place; its own read, for the reason
+    # the assignment read above is its own (card#9837). rc 2 is the refusal, rc 1 the unread card.
+    if [[ -n "$pr" ]] && jq -e 'has("pr_url") | not' <<<"$payload_json" >/dev/null; then
+        _kbc_pr_url_guard "$task" "$pr" || return $?
     fi
     # Empty when the board has no native card type for the alias — _kbc_patch_tags then
     # writes the `type:<alias>` tag instead, exactly as create-card does at birth.

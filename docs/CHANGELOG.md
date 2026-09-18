@@ -6,6 +6,11 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+- **card#9837** — ⚠ **ACCEPTANCE CHANGE, operator-approved 2026-09-18: `kbcard patch --pr N` without `--pr-url` is now `rc 2`, with nothing written, when the card's stored `pr_url` names a different pull request.** The payload PATCH merges per key, so `--pr` alone wrote `pr_number` and left the stored `pr_url` in place; the board derives the card's by-ref `source` (`owner/repo`) from that URL and never from the number, so re-pointing a card at a PR in another repo left it attributed to the old repo at `rc 0`. `patch` now reads the card before the write (one extra `GET`, only when `--pr` is sent and the same call neither sets nor clears `pr_url`) and refuses with a message naming `--pr-url`. `--pr` is compared after `KB_JQ_REF_CANON`'s normalisation, and the stored URL is read the way `promote-released-cards` derives `source` (case-insensitive host, `…/pull/<N>` with anything after it). Proceeds unchanged: no `pr_url` (absent, null, empty); the same number; the `…/pull/0` placeholder; `--pr` with `--pr-url`, `--clear pr-url`, or a `wont_do` decline without `--keep-refs`; every call without `--pr`. A stored `pr_url` that is not a GitHub pull URL proceeds with a notice that the check could not be made; a card that cannot be read is `rc 1`, nothing written. `create-card` is untouched.
+  - **[host]** A script that re-points a card with `kbcard patch --pr N` alone now fails `rc 2` where the card already carries another PR's URL: add `--pr-url https://github.com/<owner>/<repo>/pull/<N>`.
+  - **[vendor]** Re-vendor `bin/kbcard`. This change does not touch `bin/_kb-board-lib.sh`, but it calls `KB_JQ_REF_CANON` and `kb_redact_url_userinfo` from it, both already shipped.
+
 ## [0.35.0] - 2026-09-17
 
 ### Added

@@ -1137,11 +1137,16 @@ eq "sibling: --dl 0 was ALREADY refused"           "2" "$rc"
 echo "-- both verbs refuse it, and the refusal costs NO request --"
 _REF_LOG="$(mktemp)"
 trap 'rm -f "$_REF_LOG"' EXIT
-# GET answers the external-id search with a resolvable row; every other method echoes its
-# request body. The log is what turns "no request" into a measurement.
+# GET answers the external-id search with a resolvable row and the card read (a valid --pr
+# reads the card's pr_url before writing — card#9837) with a card carrying none; every other
+# method echoes its request body. The log is what turns "no request" into a measurement.
 kb_api() {
     printf '%s\n' "$1" >> "$_REF_LOG"
-    case "$1" in GET) printf '{"data":[{"id":99}]}' ;; *) printf '%s' "$3" ;; esac
+    case "$1 $2" in
+        "GET /tasks/search.json"*) printf '{"data":[{"id":99}]}' ;;
+        GET*) printf '{"data":{"id":99,"payload":{}}}' ;;
+        *) printf '%s' "$3" ;;
+    esac
 }
 _kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21
@@ -1159,7 +1164,7 @@ eq "create-card --issue 2026-08-23 -> NO card POSTed" "" "$(rreqs)"
 # Positive controls for those two empty results: the same probes DO reach the wire on a valid
 # value, so the empties measure the refusal and not a stub that never writes.
 : > "$_REF_LOG"; cmd_patch --task 99 --pr 178 >/dev/null 2>&1
-eq "control: a valid --pr reaches the PATCH"      "PATCH" "$(rreqs)"
+eq "control: a valid --pr reaches the PATCH (after the pr_url read)" "GET PATCH" "$(rreqs)"
 : > "$_REF_LOG"; cmd_create_card --type task --name x --issue 300 >/dev/null 2>&1
 eq "control: a valid --issue reaches the POST"    "POST"  "$(rreqs)"
 
@@ -1172,7 +1177,7 @@ rc=0; cmd_patch --task EXT-9 --pr 1.5 >/dev/null 2>&1 || rc=$?
 eq "patch --task EXT-9 --pr 1.5 -> rc 2"                    "2" "$rc"
 eq "…and NOT EVEN the external-id lookup was issued"        ""  "$(rreqs)"
 : > "$_REF_LOG"; cmd_patch --task EXT-9 --pr 178 >/dev/null 2>&1
-eq "control: the same ref DOES search, then PATCH, on a valid --pr" "GET PATCH" "$(rreqs)"
+eq "control: the same ref DOES search, read, then PATCH, on a valid --pr" "GET GET PATCH" "$(rreqs)"
 # The SIGN and ZERO arms ride the same assembler at the same point, and "rc 2 before any
 # request" is measured for them too rather than inherited by argument: they are new arms of an
 # existing guard, and a guard's ORDER is the property a later edit is most likely to move.
@@ -4861,5 +4866,112 @@ eq "…and the card is never read at all"                 "0" "$(kb_stub_count G
 
 unset -f cs csbodies kb_stub_route
 unset KB_STUB_CARD KB_STUB_READ CS_CFG CSMOVE
+
+echo "== patch --pr without --pr-url refuses to leave the card naming two PRs (card#9837) =="
+# THE DEFECT: the payload PATCH merges per key, so `--pr N` alone wrote pr_number and left a stored
+# pr_url naming a DIFFERENT pull request — and the board attributes the card (by-ref `source`)
+# from that URL's owner/repo, so a card re-pointed at another repo's PR stayed attributed to the
+# old one, at rc 0. Driven as a PROCESS for the reason the assignment block is: "NOTHING WAS
+# WRITTEN" is a claim about the request log, which a stubbed kb_api cannot measure.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_WONT_DO=60'
+kb_stub_install
+
+# KB_STUB_PAYLOAD is the card's stored payload (JSON); KB_STUB_READ swaps the read for a failure.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "GET "*/tasks/505.json*)
+            case "${KB_STUB_READ:-ok}" in
+                403)    printf '403\n{"message":"This action is unauthorized."}' ;;
+                nocard) printf '200\n{"ok":true}' ;;
+                *)      printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":48,"payload":%s}}' "${KB_STUB_PAYLOAD:-{\}}" ;;
+            esac ;;
+        "PATCH "*/tasks/505.json)
+            printf '200\n'
+            jq -cn --argjson b "$body" '{data: ({id:505,name:"probe",workflow_stage_id:48} + $b)}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+unset KB_STUB_PAYLOAD KB_STUB_READ
+PR178='{"pr_number":178,"pr_url":"https://github.com/acme/widget/pull/178"}'
+ppay() { kb_stub_bodies PATCH /tasks/505.json | jq -Sc '.payload'; }
+npatch() { kb_stub_count PATCH /tasks/505.json; }
+nget() { kb_stub_count GET /tasks/505.json; }
+
+# --- ⭐ the refusal ---------------------------------------------------------------------
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179
+eq "⭐ --pr 179 over a pr_url naming 178 → rc 2"            "2" "$rc"
+eq "⭐ …and issues NO PATCH AT ALL"                          "0" "$(npatch)"
+eq "…having READ the card to decide it"                     "1" "$(nget)"
+eq "…the refusal names --pr-url"                            "true" "$(has '--pr-url' "$err")"
+eq "…names the stored URL and the PR it names"              "true" \
+   "$(has "the card's pr_url (https://github.com/acme/widget/pull/178) names PR 178" "$err")"
+eq "…and says nothing was written"                          "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+eq "…and prints no write echo"                              ""  "$out"
+# --pr is compared through the tool's own normalisation, so a decorated spelling diverges or
+# agrees exactly as its bare number does.
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr '#179'
+eq "decorated --pr '#179' over 178 → rc 2, no PATCH"         "2|0" "$rc|$(npatch)"
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr PR-178
+eq "decorated --pr PR-178 over 178 → rc 0 (the same PR)"     "0|1" "$rc|$(npatch)"
+# The URL is read the way the promote side derives `source`: case-insensitive host, a trailing
+# path after the number, a `.git` repo suffix.
+KB_STUB_PAYLOAD='{"pr_url":"https://GitHub.com/acme/widget/pull/178/files"}' kbc patch --task 505 --pr 179
+eq "a /files URL with a mixed-case host naming 178 → rc 2"   "2|0" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
+eq "a zero-padded URL number is the same PR → rc 0"          "0|1" "$rc|$(npatch)"
+# --keep-refs on a decline RETAINS the stored pr_url, so the divergence is still there.
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do --keep-refs --pr 179
+eq "wont_do --keep-refs --pr 179 over 178 → rc 2, no PATCH"  "2|0" "$rc|$(npatch)"
+
+# --- everything else is unchanged: rc 0, the same PATCH, and nothing on stderr --------------
+for _p in '{}' '{"pr_url":null}' '{"pr_url":""}'; do
+    KB_STUB_PAYLOAD="$_p" kbc patch --task 505 --pr 179
+    eq "no pr_url ($_p) → rc 0"                             "0" "$rc"
+    eq "…the PATCH writes pr_number only"                   '{"pr_number":179}' "$(ppay)"
+    eq "…and says nothing"                                  ""  "$err"
+done
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 178
+eq "a pr_url naming the SAME number → rc 0"                 "0" "$rc"
+eq "…the PATCH writes pr_number only"                       '{"pr_number":178}' "$(ppay)"
+eq "…and says nothing"                                      ""  "$err"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0"}' kbc patch --task 505 --pr 179
+eq "the pre-PR placeholder .../pull/0 → rc 0"               "0" "$rc"
+eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
+eq "…and says nothing"                                      ""  "$err"
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179 --pr-url https://github.com/other/repo/pull/179
+eq "--pr WITH --pr-url → rc 0"                              "0" "$rc"
+eq "…writes both keys"                                      '{"pr_number":179,"pr_url":"https://github.com/other/repo/pull/179"}' "$(ppay)"
+eq "…and never reads the card (the URL is replaced)"        "0" "$(nget)"
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179 --clear pr-url
+eq "--pr with --clear pr-url → rc 0, no read (the URL is removed)" "0|0" "$rc|$(nget)"
+# The decline reads the card for reasons of its own, so "no read" is measured against the same
+# decline WITHOUT --pr rather than against zero.
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do
+_ng="$(nget)"
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do --pr 179
+eq "a wont_do decline with --pr → rc 0, no extra read (the decline nulls pr_url)" "0|$_ng" "$rc|$(nget)"
+eq "…and writes the new number over a nulled URL"           '{"dl_number":null,"pr_number":179,"pr_url":null}' "$(ppay)"
+KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --dl DL-7
+eq "a patch with no --pr → rc 0 and never reads the card"   "0|0" "$rc|$(nget)"
+
+# --- the stored value it cannot read as a pull URL: proceed, and say the check did not happen --
+KB_STUB_PAYLOAD='{"pr_url":"https://example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
+eq "a non-GitHub-pull pr_url → rc 0 (no second PR number to disagree with)" "0" "$rc"
+eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
+eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request URL' "$err")"
+
+# --- a card that cannot be read is no answer: rc 1, nothing written ----------------------
+for _r in 403 nocard; do
+    KB_STUB_READ=$_r kbc patch --task 505 --pr 179
+    eq "an unreadable card ($_r) → rc 1, no PATCH"           "1|0" "$rc|$(npatch)"
+done
+
+unset -f kb_stub_route ppay npatch nget
+unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng
 
 _summary "kbcard-selftest"
