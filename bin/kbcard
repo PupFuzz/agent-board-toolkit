@@ -75,7 +75,7 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
-#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
 #     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
@@ -99,6 +99,28 @@
 #     key on it; rc is the move's. The rules — refusals, the terminal set, what is printed — are
 #     README.md § The seat owner tag. --stamp-owner beside a terminal --column is rc 2 before any
 #     request.
+#     ⭐ --card-start IS THE WORK-START GUARD, and it is OPT-IN (card#9556). With it the move is
+#     REFUSED rather than made when the card is PINNED (a non-empty block_reason or a
+#     `no-automove` tag) or is not in Backlog / Prioritized — so an automated starter cannot pull
+#     a Shipped / Released / Won't-Do card back to In Progress, which is what a dispatch naming an
+#     already-finished card used to do. A HELD card is refused too: it is promoted only by a
+#     genuine branch creation, a signal this CLI does not have. The rules are the lib's
+#     (kb_card_pinned / kb_card_start_stage_verdict), shared with bin/board-card-start so the two
+#     starters cannot diverge again; hooks/agent-dispatch-card-start reaches them through this
+#     flag, being installed standalone and unable to source that lib.
+#     WHAT A REFUSAL IS: rc 0, NOTHING written, no owner tag, no move echo on stdout, and the
+#     reason on stderr naming the stage or the pin. rc 0 because the guard did its job — the
+#     callers that pass this flag are fail-soft automation, and reporting a correct refusal as a
+#     failed move is how an operator learns to ignore the line. A card that could not be READ is
+#     the OTHER answer and never reads as a policy refusal: rc 1, nothing written, because an
+#     unreadable card and a startable one are opposite answers to a guard. A card already IN
+#     PROGRESS is refused like any other started card, in its own words (it is left where it is,
+#     not moved backward). An invariant answering with an rc outside its declared set — 127 from a
+#     _kb-board-lib.sh that predates it — is a guard that cannot be applied: rc 2, nothing written,
+#     and the line names the function and the rc (card#9756).
+#     ONLY WITH --column in_progress (rc 2 otherwise, before any request): the policy is the
+#     promotion's, and there is none to apply to any other column. It costs ONE extra GET before
+#     the move, which is what makes the verdict a reading rather than an assumption.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
@@ -210,6 +232,9 @@
 #     move is skipped as well, and an unstamped card is one a release promote later no-ops on.
 #     --unblock releases the pin but does NOT backfill the missed stamp — only another checkout
 #     runs that hook. README's `kbcard patch --block-reason` section owns this; not restated here.
+#     ⚠ AND SINCE card#9556 IT PINS THE CARD ON THE DISPATCH PATH TOO: `move --card-start`
+#     (see move, above) refuses a pinned card outright, whatever its stage, so a reason set here
+#     parks the card against BOTH starters rather than only against the one at checkout.
 #     ⛔ A WHITESPACE-ONLY REASON IS REFUSED — rc 2 before any request, on BOTH halves of the pair
 #     alike — and what it prevents is a SILENT NO-OP, not a blank-looking blocker. Measured: the
 #     same call without this refusal is rc 0, and the board stores NULL (the normalization above),
@@ -412,10 +437,10 @@
 #     name, not an answer.
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
-#     stdout. That id is the write verification: adding a comment does NOT bump the card's
-#     updated_at (measured on the sandbox instance, board 1162), so the echoed id is the only
-#     cheap signal that the write landed, and a success carrying no id is reported as an
-#     UNVERIFIED write (rc 3) rather than printed as a plausible-looking `null`.
+#     stdout. That id is the write verification — never a card timestamp: whether a comment
+#     moves the card's updated_at is the kanban API contract's to state (DL-269), and nothing
+#     here reads it. A success carrying no id is reported as an UNVERIFIED write (rc 3)
+#     rather than printed as a plausible-looking `null`.
 #     The id is then READ BACK on the card: the comment must be in the `comments` array the
 #     task-detail GET carries (the only read surface a comment has — GET on the comments path
 #     is 405), which is complete rather than a first page. Absent there is rc 1 HARD FAILURE;
@@ -1624,14 +1649,77 @@ _kbc_assign_guard() {
     return 1
 }
 
+# _kbc_card_start_guard <task> <backlog-id> <prioritized-id> <held-id> <in-progress-id>: what --card-start DOES
+# about the two card-start invariants — which it does NOT own. kb_card_pinned and
+# kb_card_start_stage_verdict in _kb-board-lib.sh own them, shared with bin/board-card-start
+# (card#9556); this owns only what kbcard does when they answer. The verdict is READ off the card
+# immediately before the move, so nothing here assumes a stage.
+#   rc 0  proceed with the move
+#   rc 1  refused BY POLICY — the reason is on stderr and nothing was written
+#   rc 2  the card could not be READ, so there is no verdict to give
+#   rc 3  an invariant returned an rc outside its declared set — the lib could not rule (rc 127 is
+#         a _kb-board-lib.sh older than this kbcard, lacking the function), so neither could this
+_kbc_card_start_guard() {
+    local task="$1" backlog="$2" prioritized="$3" held="$4" inprog="$5" got http body cur col where pinned=0 sv=0
+    # kb_api_status, not kb_api: the STATUS is half the diagnostic here, and kb_api strands it in
+    # the command substitution the caller reads the body through.
+    got="$(kb_api_status GET "/tasks/$task.json")"
+    http="${got%%$'\n'*}"; body=""
+    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    if [[ "$http" != 2* ]]; then
+        echo "kbcard: move --card-start on task $task: the card could NOT be read (HTTP $http), so nothing here can say whether this move would pull a finished or pinned card back to In Progress — refusing before the write. Re-run when the board reads." >&2
+        return 2
+    fi
+    kb_card_pinned "$body" || pinned=$?
+    case "$pinned" in
+        0) echo "kbcard: move --card-start on task $task: the card is PINNED — a non-empty block_reason or a no-automove tag — so an automated work-start move is refused whatever its stage, and NOTHING was written. Clear the pin (kbcard patch --unblock, or drop the tag) to let it move." >&2
+           return 1 ;;
+        2) echo "kbcard: move --card-start on task $task: the read returned success but no card could be read out of its body — nothing was read, so this run cannot rule on the move and refuses before the write." >&2
+           return 2 ;;
+        1) ;;
+        *) _kbc_card_start_unruled "$task" kb_card_pinned "$pinned"; return 3 ;;
+    esac
+    cur="$(kb_parse_resp "$body" -r '.data.workflow_stage_id // empty')"
+    if [[ -z "$cur" ]]; then
+        echo "kbcard: move --card-start on task $task: the read returned success but no workflow stage could be read out of its body, so the card was NOT confirmed startable — refusing before the write." >&2
+        return 2
+    fi
+    kb_card_start_stage_verdict "$cur" "$backlog" "$prioritized" "$held" || sv=$?
+    case "$sv" in
+        0) return 0 ;;
+        1|2) ;;
+        *) _kbc_card_start_unruled "$task" kb_card_start_stage_verdict "$sv"; return 3 ;;
+    esac
+    col="$(stage_name "$cur" 2>/dev/null || true)"
+    where="stage $cur${col:+ ($col)}"
+    if [[ "$cur" == "$inprog" ]]; then
+        echo "kbcard: move --card-start on task $task: the card is already In Progress ($where), so it was left where it is and NOTHING was written." >&2
+        return 1
+    fi
+    if [[ "$sv" == 2 ]]; then
+        echo "kbcard: move --card-start on task $task: the card is HELD ($where) — a parked card is promoted only by a genuine branch creation, which this call is not, so NOTHING was written." >&2
+        return 1
+    fi
+    echo "kbcard: move --card-start on task $task: the card is in $where, which is neither Backlog nor Prioritized, so this work-start move would move an already-started or FINISHED card BACKWARD — refused, and NOTHING was written." >&2
+    return 1
+}
+
+# _kbc_card_start_unruled <task> <function> <rc>: the line for an invariant that answered with none of
+# its declared rcs. Read as an answer, such an rc was "not pinned" and then a policy refusal naming
+# the card's stage — for every card, never naming the lib (card#9756).
+_kbc_card_start_unruled() {
+    echo "kbcard: move --card-start on task $1: $2 returned rc $3, which is not one of its answers — rc 127 means the _kb-board-lib.sh beside this kbcard predates it, so re-vendor the lib with this kbcard. This run cannot rule on the move and refuses before the write, so NOTHING was written." >&2
+}
+
 cmd_move() {
-    local task_ref="" column="" keep_refs="" stamp_owner=""
+    local task_ref="" column="" keep_refs="" stamp_owner="" card_start=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
             --stamp-owner) stamp_owner=1; shift ;;
+            --card-start) card_start=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
@@ -1640,9 +1728,40 @@ cmd_move() {
         echo "kbcard: --stamp-owner claims the card for this seat, and $column is a terminal column, whose move removes every owner tag — pass one or the other" >&2
         return 2
     fi
+    # --card-start's stage ids come from the SAME board env every other column does, and they are
+    # resolved BEFORE the task ref so a board env missing them costs no request. A guard that
+    # cannot be applied REFUSES rather than falling through: falling through is precisely the
+    # unguarded move this flag exists to remove.
+    local cs_backlog="" cs_prioritized="" cs_held=""
+    if [[ -n "$card_start" ]]; then
+        if [[ "$column" != "in_progress" ]]; then
+            echo "kbcard: --card-start is the guard on the work-start promotion to in_progress, and has no policy to apply to a move to '$column' — pass one or the other" >&2
+            return 2
+        fi
+        cs_backlog="$(stage_id backlog)" || return 2
+        cs_prioritized="$(stage_id prioritized)" || return 2
+        # Held is OPTIONAL — a board need not have the column, and one that does not has no held
+        # cards for the verdict to reach.
+        cs_held="$(stage_id held 2>/dev/null)" || cs_held=""
+    fi
     local task stage body
     task="$(resolve_task "$task_ref")"
     stage="$(stage_id "$column")"
+    if [[ -n "$card_start" ]]; then
+        local csv=0
+        _kbc_card_start_guard "$task" "$cs_backlog" "$cs_prioritized" "$cs_held" "$stage" || csv=$?
+        # 1 is a POLICY refusal — the guard worked, so the verb did not fail. 2 is a card this run
+        # could not READ, which is a failure to establish and must never read as a policy call: the
+        # two need different operator actions. 3 is a guard that could not be APPLIED (the lib gave
+        # no answer), which is rc 2 like the other guard-cannot-apply refusals above — re-running
+        # does not fix an install, where a board that did not read may answer next time.
+        case "$csv" in
+            0) ;;
+            1) return 0 ;;
+            3) return 2 ;;
+            *) return 1 ;;
+        esac
+    fi
     # Decline hygiene lives in _kbc_decline_nulls (shared with patch --column wont_do).
     # --keep-refs opts out. Only wont_do clears — no other move touches the payload.
     if [[ "$column" == "wont_do" && -z "$keep_refs" ]]; then
@@ -2683,8 +2802,10 @@ cmd_show() {
 #     201s echoing the created row (id, task_id, user_id, content, created_at, updated_at).
 #     The wrapped {"comment":{"content":…}} form is 422 "The content field is required", so
 #     the flat shape here is a measurement rather than a guess.
-#   * Adding a comment does NOT bump the card's updated_at, so the echoed id is the ONLY
-#     cheap write verification — hence the loud refusal below on a success carrying no id.
+#   * The write is verified from the echoed id, NEVER from a card timestamp. Whether a comment
+#     moves the card's updated_at is the kanban API contract's to state
+#     (docs/api-stability-contract.md there, DL-269), not this file's; the verification below
+#     reads neither answer — hence the loud refusal on a success carrying no id.
 #   * There is no comment READ route: GET on the same path is 405 (POST only). The task
 #     detail GET already carries the whole `comments` array, so `comments` projects that.
 #     user_id is the only author field a row carries — there is no name to print.
@@ -2727,14 +2848,15 @@ cmd_comment() {
     body="$(jq -nc --arg c "$text" '{content: $c}')"
     resp="$(kb_api POST "/tasks/$task/comments.json" "$body")" || return 1
     # kb_api has already decided success on the status class (and printed the status + error
-    # body on a failure). What is left is the WRITE VERIFICATION: the card's updated_at does
-    # not move on a comment-add, so a success carrying no echoed id leaves the write
-    # unconfirmed — say so, rather than print a `null` that reads exactly like an id.
+    # body on a failure). What is left is the WRITE VERIFICATION, and the echoed id is the only
+    # confirmation this verb reads (never a card timestamp), so a success carrying no echoed
+    # id leaves the write unconfirmed — say so, rather than print a `null` that reads exactly
+    # like an id.
     # A 2xx whose body is not JSON at all (a proxy's HTML, a truncated read) fails the parse;
     # that is the SAME "success with no confirmed id" state as a JSON body with no id, so
     # kb_parse_resp lets it fall into the arm below rather than dying at jq's raw parse error.
     cid="$(kb_parse_resp "$resp" -r '.data.id // empty')"
-    [[ -n "$cid" ]] || _kbc_unverified comment "on task $task" "A comment does not bump the card's updated_at, so the echoed id is the only confirmation there is." || return $?
+    [[ -n "$cid" ]] || _kbc_unverified comment "on task $task" "No comment id was echoed, and the echoed id is the only confirmation this verb reads." || return $?
 
     # READ IT BACK ON THE CARD. The echoed id is the POST's own answer; the card's `comments`
     # array is the audit trail a reader actually sees, and it is the ONLY read surface a comment

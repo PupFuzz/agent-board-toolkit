@@ -75,84 +75,205 @@ lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
 
 echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
 # --lint moves nothing and issues no request; exercises the real arg path + exit code. The
-# malformed spelling carries no ACCEPTED card id, so the card-id floor leg has nothing to judge
-# and this run is independent of the host's config. The compliant-spelling silence is asserted
-# in the floor fixture below, because a compliant id is now judged against a floor, and whether
-# that is silent depends on a seeded board env rather than on the spelling alone.
+# malformed spelling carries no ACCEPTED card id, so the board-verdict leg has nothing to judge
+# and this run is independent of the host's config and of any recorded verdict. A compliant id is
+# judged by that leg, whose lines are asserted in the fixtures below.
 _lrc=0; _lout="$(bash "$BCS" --lint "fix/card_4524-x" 2>&1)" || _lrc=$?
 [[ "$_lrc" -eq 0 ]] && ok "--lint exits 0 (fail-soft)" || bad "--lint expected rc=0 got $_lrc"
 grep -q "board-branch-lint:.*card 4524" <<< "$_lout" && ok "--lint warns on the residual spelling" || bad "--lint did not warn: $_lout"
 
-echo "== _bcs_card_id — the id both the mover and the floor leg judge (explicit first, else typed) =="
+echo "== _bcs_card_id — the id the mover, the verdict record and the lint judge (explicit first, else typed) =="
 expect_out "explicit card-N"                        "4524" _bcs_card_id "fix/card-4524-x"
 expect_out "typed leading id"                       "712"  _bcs_card_id "fix/712-foo"
 expect_out "explicit beats a typed leading id"      "4524" _bcs_card_id "fix/712/card-4524"
 expect_out "a DL-only branch carries no card id"    ""     _bcs_card_id "feature/dl212-event-gated"
 expect_out "a malformed spelling carries no card id" ""    _bcs_card_id "fix/card_4524-x"
 
-echo "== _bcs_uint_lt — a digit-string compare that cannot wrap (DL-223) =="
+echo "== _bcs_uint_lt — a digit-string compare that cannot wrap (the verdict leg's staleness compare) =="
 expect_rc "712 < 1000"                                  0 _bcs_uint_lt 712 1000
 expect_rc "1234 < 1235 (boundary, same length)"         0 _bcs_uint_lt 1234 1235
 expect_rc "999 < 1000 (fewer digits)"                   0 _bcs_uint_lt 999 1000
-expect_rc "1000 is NOT < 1000 (at the floor)"           1 _bcs_uint_lt 1000 1000
+expect_rc "1000 is NOT < 1000 (equal)"                 1 _bcs_uint_lt 1000 1000
 expect_rc "4524 is NOT < 1000"                          1 _bcs_uint_lt 4524 1000
 expect_rc "10000 is NOT < 9999 (length decides first)"  1 _bcs_uint_lt 10000 9999
 # 2^64 + 1: `[ … -lt … ]` errors on it (rc 2) and `(( … ))` wraps it to 1 — an arithmetic compare
 # answers neither case.
-expect_rc "a 20-digit id is NOT below a 4-digit floor"  1 _bcs_uint_lt 18446744073709551617 1000
-expect_rc "a 4-digit id IS below a 20-digit floor"      0 _bcs_uint_lt 1000 18446744073709551617
+expect_rc "a 20-digit value is NOT below a 4-digit one"  1 _bcs_uint_lt 18446744073709551617 1000
+expect_rc "a 4-digit value IS below a 20-digit one"      0 _bcs_uint_lt 1000 18446744073709551617
 
-echo "== _bcs_card_id_floor_warning — the card-id floor leg, a second independent predicate (DL-223) =="
-floor_has() { # <label> <needle-ERE> <branch> <board> <envf> <floor> — a line matching the needle
-    local label="$1" needle="$2"; shift 2
-    local got; got="$(_bcs_card_id_floor_warning "$@" 2>/dev/null || true)"
-    grep -qE -- "$needle" <<< "$got" && ok "$label" || bad "$label: expected /$needle/, got '$got'"
+echo "== the board verdict record — writer, reader, staleness (DL-225) =="
+# _ctl <string>: "true" when <string> holds a control character — C0 or DEL (`[[:cntrl:]]` under the C
+# locale) or the UTF-8 spelling of a C1 control (bytes C2 80..C2 9F).
+_ctl() {
+    local LC_ALL=C
+    [[ "${1-}" == *[[:cntrl:]]* || "${1-}" == *$'\xc2'[$'\x80'-$'\x9f']* ]] && echo true || echo false
 }
-floor_silent() { # <label> <branch> <board> <envf> <floor>
-    local label="$1"; shift
-    expect_out "$label" "" _bcs_card_id_floor_warning "$@"
-}
-_fe="/h/.kanban-t-board.env"
-# PRESENCE — each unjudgeable input speaks, naming the piece that is missing.
-floor_has    "below the floor → warns, naming the id and the floor" \
-             "names card 712, which is BELOW board 42's card-id floor 1000" "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "below the floor → names BOTH id spaces" \
-             "card ids and GitHub issue/PR numbers are separate id spaces"  "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "below the floor → teaches the branch-cut rule" \
-             "cut the branch from the CARD id"                              "fix/card-712-foo" 42 "$_fe" 1000
-floor_has    "a TYPED leading id below the floor warns too (the mover moves on it)" \
-             "names card 712, which is BELOW"                               "fix/712-foo"      42 "$_fe" 1000
-floor_has    "one below the floor warns (boundary)" \
-             "names card 999, which is BELOW"                              "fix/card-999-x"  42 "$_fe" 1000
-floor_has    "unseeded floor → SPEAKS, naming the key and the file" \
-             "card-id floor not seeded for board 42 — add 'export KB_CARD_ID_FLOOR=.*' to $_fe" \
-                                                                            "fix/card-712-foo" 42 "$_fe" ""
-floor_has    "unseeded floor speaks for an id that would have PASSED, too" \
-             "card-id floor not seeded"                                     "fix/card-4524-x"  42 "$_fe" ""
-floor_has    "no board mapping → SPEAKS (not checked), never silent" \
-             "card-id floor NOT CHECKED .*this repo maps to no board"       "fix/card-712-foo" "" "" ""
-floor_has    "board resolved but no board env → SPEAKS, naming the board id" \
-             "NOT CHECKED .*no ~/.kanban-\\*-board.env has KB_BOARD_ID=42"  "fix/card-712-foo" 42 "" ""
-floor_has    "a leading-zero floor is refused by name, not silently compared" \
-             "NOT CHECKED .*KB_CARD_ID_FLOOR='01000'"                       "fix/card-712-foo" 42 "$_fe" 01000
-floor_has    "a non-numeric floor is refused by name" \
-             "NOT CHECKED .*KB_CARD_ID_FLOOR='abc'"                         "fix/card-712-foo" 42 "$_fe" abc
-# ABSENCE — each witness shares its input with a presence case above but for ONE variable.
-floor_silent "AT the floor → silent"                     "fix/card-1000-x"  42 "$_fe" 1000
-floor_silent "above the floor → silent"                  "fix/card-4524-x"  42 "$_fe" 1000
-floor_silent "a floor of 0 is silent for every id"        "fix/card-712-foo" 42 "$_fe" 0
-floor_silent "a 20-digit id is not accused (no wrap)"    "fix/card-18446744073709551617-x" 42 "$_fe" 1000
-floor_silent "no card id → nothing to judge, even unseeded and unmapped" "docs/adoption-guide" "" "" ""
-floor_silent "a DL-only branch → nothing to judge"       "feature/dl212-event-gated" "" "" ""
-# INDEPENDENCE — the two legs never answer for each other: the malformed spelling is the other
-# leg's finding and carries no accepted id, so this leg is silent on it, and vice versa.
-floor_silent "the malformed-spelling case is not this leg's" "fix/card_4524-x" "" "" ""
-expect_out "a below-floor id is not the malformed-spelling leg's" "" _bcs_branch_lint_warning "fix/card-712-foo"
+# The pure halves, sourced: the record the mover writes (_bcs_verdict_write) and the lint leg that
+# reads it (_bcs_board_verdict_warning). Every loud case is paired with a silent or undecided
+# witness that differs from it in ONE input, so no line here can pass by never firing.
+if command -v git >/dev/null 2>&1; then
+    _vt="$(mktemp -d)"
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git init -q "$_vt/repo"
+    ( cd "$_vt/repo" && echo a > a && git add a && git commit -qm a )
+    git -C "$_vt/repo" worktree add -q -b side "$_vt/wt"
+    _vrec() { ( cd "$_vt/repo" && _bcs_verdict_write "$@" ); }   # <branch> <verdict> <dl> <board> <subject> <reason>
+    _vwarn() {  # <branch> <board-now> [<created-at>] — sets _vrc/_vout
+        _vrc=0
+        _vout="$(cd "$_vt/repo" && _bcs_board_verdict_warning "$1" "$(_bcs_verdict_file "$1")" "$2" "${3:-}")" || _vrc=$?
+    }
+    _vfile() { (cd "$_vt/repo" && _bcs_verdict_file "$1"); }
+    _vfield() { sed -n "s/^$2=//p" "$(_vfile "$1")"; }            # <branch> <key>
 
-echo "== board-card-start --lint — the card-id floor leg, end to end (subprocess, fixture HOME + repo) =="
-# The real argument path and the real config resolution (git config board id → board env →
-# KB_CARD_ID_FLOOR), in a scratch HOME so no operator board env is read. Network-free by
-# construction: no host env and emptied ambient KBCARD_*, so nothing here could name a host.
+    # WRITER — the location, and that it is shared by a linked worktree.
+    _vrec fix/card-712-x absent "" 42 "" "card #712: HTTP 404"; _wrc=$?
+    eq "write: rc 0" "0" "$_wrc"
+    _vf="$(_vfile fix/card-712-x)"
+    eq "write: the record sits under the COMMON git dir, keyed by the branch name's blob hash" \
+       "$(cd "$_vt/repo" && cd "$(git rev-parse --git-common-dir)" && pwd -P)/agent-board-toolkit/board-verdict/$(printf '%s' fix/card-712-x | git hash-object --stdin)" "$_vf"
+    eq "write: the record exists" "true" "$([[ -s "$_vf" ]] && echo true || echo false)"
+    eq "write: a linked worktree resolves the SAME file" \
+       "$(readlink -f "$_vf")" "$(readlink -f "$(cd "$_vt/wt" && _bcs_verdict_file fix/card-712-x)")"
+    eq "write: git status sees nothing — the record can never be committed" "" "$(git -C "$_vt/repo" status --porcelain --ignored)"
+    eq "write: header, branch, the card id the name yields, board, verdict" \
+       "abtk-board-verdict 1|fix/card-712-x|712|42|absent" \
+       "$(head -1 "$_vf")|$(_vfield fix/card-712-x branch)|$(_vfield fix/card-712-x card)|$(_vfield fix/card-712-x board)|$(_vfield fix/card-712-x verdict)"
+    eq "write: no temp file is left beside it" "" "$(find "${_vf%/*}" -name '.tmp.*')"
+    _vrec fix/card-713-x not_checked "" 42 "" $'line one\nline two'
+    eq "write: a line break in the reason is flattened — one key per line survives" "line one line two" "$(_vfield fix/card-713-x reason)"
+    # EVERY value handed to the writer is scrubbed, not only the reason: a board id read straight out of
+    # an API body carried ESC/BEL into the record, and from there to the terminal.
+    _cb=$'fix/card-716-x\e[31m'
+    _vrec "$_cb" not_checked $'8\a9' $'4\e[31m2' $'71\x7f6' $'r\e[31mRED\a\xc2\x9bX\ty'
+    eq "write: no control character in any field (C0, DEL, UTF-8 C1)" "false" "$(_ctl "$(tr -d '\n' < "$(_vfile "$_cb")")")"
+    eq "write: what is left of each field survives" "fix/card-716-x[31m|89|4[31m2|716|r[31mREDXy" \
+       "$(_vfield "$_cb" branch)|$(_vfield "$_cb" dl)|$(_vfield "$_cb" board)|$(_vfield "$_cb" subject)|$(_vfield "$_cb" reason)"
+    _cb=$'fix/card-717-n\nverdict=resolved'
+    _vrec "$_cb" absent "" 42 "" r
+    eq "write: a line break in the BRANCH cannot forge a second verdict line" "1|absent" \
+       "$(grep -c '^verdict=' "$(_vfile "$_cb")")|$(_vfield "$_cb" verdict)"
+    # A write that cannot land returns non-zero and leaves nothing: the record dir's parent is a FILE.
+    git init -q "$_vt/blocked"; : > "$_vt/blocked/.git/agent-board-toolkit"
+    _brc=0; ( cd "$_vt/blocked" && _bcs_verdict_write fix/card-712-x absent "" 42 "" r ) || _brc=$?
+    eq "write failure: rc 1" "1" "$_brc"
+    eq "write failure: nothing written" "false" "$([[ -e "$_vt/blocked/.git/agent-board-toolkit/board-verdict" ]] && echo true || echo false)"
+    # A REWRITE that fails at the rename: the older checkout's record must not stand in for this one.
+    _vrec fix/card-715-x resolved "" 42 715 "card #715 (#715)"
+    eq "failed rewrite: the witness record exists first" "resolved" "$(_vfield fix/card-715-x verdict)"
+    _brc=0; ( cd "$_vt/repo" && mv() { return 1; } && _bcs_verdict_write fix/card-715-x absent "" 42 "" "card #715: HTTP 404" ) || _brc=$?
+    eq "failed rewrite: rc 1, the previous record is gone, no temp file left" "1|false|" \
+       "$_brc|$([[ -e "$(_vfile fix/card-715-x)" ]] && echo true || echo false)|$(find "${_vf%/*}" -name '.tmp.*')"
+
+    # READER — a recorded ABSENCE is repeated loudly and DECIDES the branch.
+    _vwarn fix/card-712-x 42
+    eq "absent: rc 0 (decided)" "0" "$_vrc"
+    eq "absent: names the card and the board"    "true" "$(has "branch 'fix/card-712-x' names card 712, which is NOT a card on board 42" "$_vout")"
+    eq "absent: carries what the board said"     "true" "$(has "card #712: HTTP 404" "$_vout")"
+    eq "absent: names BOTH id spaces"            "true" "$(has "card ids and GitHub issue/PR numbers are separate id spaces" "$_vout")"
+    eq "absent: teaches the branch-cut rule"     "true" "$(has "cut the branch from the CARD id" "$_vout")"
+    # …and a RESOLVED record — same branch, same board, one field different — is silent.
+    _vrec fix/card-712-x resolved "" 42 712 "card #712 (#712)"
+    _vwarn fix/card-712-x 42
+    eq "resolved: rc 0 (decided)" "0" "$_vrc"
+    eq "resolved: silent — and the rewrite replaced the absent verdict (latest checkout wins)" "" "$_vout"
+    # NO record: speaks, by name, and leaves the branch undecided.
+    _vwarn fix/card-714-x 42
+    eq "no record: rc 1 (undecided)" "1" "$_vrc"
+    eq "no record: names the branch and card" "true" "$(has "board verdict NOT RECORDED for branch 'fix/card-714-x' (card 714)" "$_vout")"
+    eq "no record: says how to record one"    "true" "$(has "check the branch out again" "$_vout")"
+    # NOT CHECKED: speaks with the recorded reason, undecided.
+    _vwarn fix/card-713-x 42
+    eq "not checked: rc 1 (undecided)" "1" "$_vrc"
+    eq "not checked: names the reason it was not checked" "true" "$(has "board verdict NOT CHECKED for branch 'fix/card-713-x' (card 713)" "$_vout")"
+    eq "not checked: …carrying the recorded reason"      "true" "$(has "line one line two" "$_vout")"
+    eq "not checked, no remedy recorded: names the re-checkout (witness)" "true" \
+       "$(has "; once that is fixed, check the branch out again ('git checkout fix/card-713-x')" "$_vout")"
+    # A verdict a re-checkout would only re-record carries its own remedy, printed in place of that advice.
+    _vrec fix/card-731-x not_checked 89 42 "" "the reason" "rename the branch, the remedy"
+    _vwarn fix/card-731-x 42
+    eq "not checked with a recorded remedy: rc 1, the remedy replaces the re-checkout advice" "1|true|false" \
+       "$_vrc|$(has "— the reason; rename the branch, the remedy." "$_vout")|$(has "check the branch out again" "$_vout")"
+    # A branch with no card id is silent and decided, record or none.
+    _vwarn docs/adoption-guide ""
+    eq "no card id: rc 0, silent, no record needed" "0|" "$_vrc|$_vout"
+    _vwarn feature/dl212-event-gated 42
+    eq "DL-only branch: rc 0, silent" "0|" "$_vrc|$_vout"
+    # A record written by an older writer, or by hand, is scrubbed again when the lint PRINTS it.
+    _vrec fix/card-718-x absent "" 42 "" "card #718: HTTP 404"
+    printf '%s\n' "$_BCS_VERDICT_HEADER" branch=fix/card-718-x card=718 dl= board=42 verdict=absent subject= \
+        $'reason=card #718\e[31m RED\a\xc2\x9b' recorded_at=1 $'recorded_utc=2026\e[2J' > "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited absent record: still repeated (rc 0), with no control character printed" "0|true|false" \
+       "$_vrc|$(has "which is NOT a card on board 42" "$_vout")|$(_ctl "$_vout")"
+    sed -i 's/^verdict=absent$/verdict=not_checked/' "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited not_checked record: NOT CHECKED, with no control character printed" "1|true|false" \
+       "$_vrc|$(has "board verdict NOT CHECKED for branch 'fix/card-718-x'" "$_vout")|$(_ctl "$_vout")"
+    sed -i $'s/^board=42$/board=4\x1b[2J2/' "$(_vfile fix/card-718-x)"
+    _vwarn fix/card-718-x 42
+    eq "hand-edited board: STALE, with no control character printed" "1|true|false" \
+       "$_vrc|$(has "is STALE" "$_vout")|$(_ctl "$_vout")"
+
+    # STALENESS — each against the resolved fix/card-712-x record, which the witness above showed silent.
+    _vwarn fix/card-712-x 43
+    eq "re-mapped board: rc 1" "1" "$_vrc"
+    eq "re-mapped board: STALE, naming both boards" "true" \
+       "$(has "is STALE — it was recorded against board 42, but this repo now maps to board 43" "$_vout")"
+    _vwarn fix/card-712-x ""
+    eq "now unmapped: STALE, naming 'no board'" "true" "$(has "but this repo now maps to no board" "$_vout")"
+    # A record naming NO board (its checkout stopped before resolving one: curl or jq not on PATH) is not
+    # stale against the board the repo maps to: its own reason is the finding.
+    _vrec fix/card-732-x not_checked "" "" "" "curl and jq are both required but not both on PATH"
+    _vwarn fix/card-732-x 42
+    eq "record naming no board, repo mapped: NOT CHECKED with its own reason, not STALE" "1|true|true|false" \
+       "$_vrc|$(has "board verdict NOT CHECKED for branch 'fix/card-732-x' (card 732)" "$_vout")|$(has "curl and jq are both required" "$_vout")|$(has "STALE" "$_vout")"
+    _at="$(_vfield fix/card-712-x recorded_at)"
+    _vwarn fix/card-712-x 42 "$((_at + 1))"
+    eq "branch created AFTER the record (deleted and re-created without a checkout): rc 1" "1" "$_vrc"
+    eq "…STALE, saying so" "true" "$(has "before a branch of this name was created" "$_vout")"
+    _vwarn fix/card-712-x 42 "$_at"
+    eq "branch created in the SAME second as the record (a switch -c): current, silent" "0|" "$_vrc|$_vout"
+    _vwarn fix/card-712-x 42 "not-a-time"
+    eq "an unreadable creation time is not compared: current, silent" "0|" "$_vrc|$_vout"
+    # What the reflog rule CANNOT see (docs/HOOKS.md § How staleness shows): a re-creation whose last
+    # reflog entry is not `branch: Created from` yields no creation time, so a record older than it
+    # is read as current. `git branch` is the control that does yield one.
+    _cat() { (cd "$_vt/repo" && _bcs_branch_created_at fix/card-719-a); }
+    git -C "$_vt/repo" branch fix/card-719-a
+    eq "created by git branch: a creation time, so STALE can fire (control)" "true" "$(kb_is_uint "$(_cat)" && echo true || echo false)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" update-ref refs/heads/fix/card-719-a HEAD
+    eq "re-created by git update-ref: no creation time — NOT detected" "" "$(_cat)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" fetch -q . HEAD:refs/heads/fix/card-719-a
+    eq "re-created by git fetch: no creation time — NOT detected" "" "$(_cat)"
+    git -C "$_vt/repo" branch -q -D fix/card-719-a; git -C "$_vt/repo" -c core.logAllRefUpdates=false branch fix/card-719-a
+    eq "re-created with reflogs off: no creation time — NOT detected" "" "$(_cat)"
+    unset -f _cat
+    sed -i 's/^card=712$/card=999/' "$(_vfile fix/card-712-x)"
+    _vwarn fix/card-712-x 42
+    eq "a record for another card id (a different grammar wrote it): STALE" "1|true" \
+       "$_vrc|$(has "it was recorded for card 999, but this branch name yields card 712" "$_vout")"
+
+    # UNREADABLE — a torn or foreign file never reads as a verdict.
+    printf 'garbage\n' > "$(_vfile fix/card-712-x)"
+    _vwarn fix/card-712-x 42
+    eq "garbage record: rc 1, UNREADABLE" "1|true" "$_vrc|$(has "is UNREADABLE" "$_vout")"
+    cp "$(_vfile fix/card-713-x)" "$(_vfile fix/card-712-x)"
+    _vwarn fix/card-712-x 42
+    eq "another branch's record at this path: UNREADABLE, never borrowed" "1|true" "$_vrc|$(has "is UNREADABLE" "$_vout")"
+
+    unset -f _vrec _vwarn _vfile _vfield
+    rm -rf "$_vt"
+else
+    echo "  skip (git not on PATH)"
+fi
+
+echo "== board-card-start --lint — the board verdict leg, end to end (subprocess, fixture HOME + repo) =="
+# The real argument path and the real config resolution (git config, else .release-pr.json → the
+# board the verdict record is judged against), in a scratch HOME so no operator board env is read.
+# Network-free by construction: no host env and emptied ambient KBCARD_*, so nothing here could name
+# a host. The board env carries KB_CARD_ID_FLOOR, the key of the card-id floor leg DL-225 superseded
+# (card#9570): whatever it holds, no line mentions a floor — and each absence below is paired with
+# the verdict line that must still print on the same run.
 if command -v git >/dev/null 2>&1; then
     _ft="$(mktemp -d)"
     _frepo="$_ft/repo"; _fhome="$_ft/home"; mkdir -p "$_fhome"
@@ -162,67 +283,63 @@ if command -v git >/dev/null 2>&1; then
         _fout="$(cd "$_frepo" && HOME="$_fhome" KBCARD_API='' KBCARD_TOKEN_FILE='' KB_BCS_LOG="$_ft/bcs.log" \
                  bash "$BCS" --lint -- "$1" 2>&1)" || _frc=$?
     }
-    # 1. No board mapping at all.
+    _flines() { printf '%s\n' "$_fout" | wc -l | tr -d ' '; }
+    _fnr="board-branch-lint: board verdict NOT RECORDED for branch 'fix/card-712-foo' (card 712)"
+    # 1. No board mapping at all, never checked out: NOT RECORDED, and nothing else.
     _flint "fix/card-712-foo"
-    [[ "$_frc" -eq 0 ]] && ok "unmapped repo: exits 0" || bad "unmapped repo: expected rc=0 got $_frc"
-    grep -q "board-branch-lint: card-id floor NOT CHECKED .*maps to no board" <<< "$_fout" \
-        && ok "unmapped repo: speaks (not checked)" || bad "unmapped repo: silent or wrong: $_fout"
-    # 2. Mapped, board env present, floor NOT seeded.
+    eq "unmapped repo: rc 0, ONE line, NOT RECORDED, no floor text" "0|1|true|false" \
+       "$_frc|$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
+    # 2. Mapped, a board env without the key, then one still seeding a floor the id is BELOW.
     git -C "$_frepo" config kanban.board-id 42
     printf 'export KB_BOARD_ID=42\n' > "$_fhome/.kanban-t-board.env"
-    _flint "fix/card-712-foo"
-    grep -q "board-branch-lint: card-id floor not seeded for board 42" <<< "$_fout" \
-        && ok "unseeded: the not-seeded line appears" || bad "unseeded: no not-seeded line: $_fout"
-    # 3. Seeded — the same repo and env, one key added.
+    _flint "fix/card-712-foo"; _funseeded="$_fout"
+    eq "board env without KB_CARD_ID_FLOOR: ONE NOT RECORDED line, no floor text" "1|true|false" \
+       "$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
     printf 'export KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' > "$_fhome/.kanban-t-board.env"
     _flint "fix/card-712-foo"
-    [[ "$_frc" -eq 0 ]] && ok "below floor: exits 0 (a finding is a LINE, never a block)" \
-        || bad "below floor: expected rc=0 got $_frc"
-    grep -q "board-branch-lint: branch 'fix/card-712-foo' names card 712, which is BELOW board 42's card-id floor 1000" <<< "$_fout" \
-        && ok "below floor: the floor line appears" || bad "below floor: no floor line: $_fout"
-    grep -q "not seeded" <<< "$_fout" \
-        && bad "seeded: still reports not seeded: $_fout" || ok "seeded: the not-seeded line is gone"
+    eq "KB_CARD_ID_FLOOR=1000 left in the board env, card 712 below it: rc 0, ONE line, NOT RECORDED, no floor text" "0|1|true|false" \
+       "$_frc|$(_flines)|$(has "$_fnr" "$_fout")|$(has "floor" "$_fout")"
+    eq "…and that line is byte-identical to the one without the key: the key changes nothing" "$_funseeded" "$_fout"
     [[ -s "$_ft/bcs.log" ]] \
-        && bad "below floor: --lint wrote the mover's durable log: $(cat "$_ft/bcs.log")" \
-        || ok "below floor: no move attempted (durable log untouched)"
-    _flint "fix/card-4524-x"
-    [[ -z "$_fout" ]] && ok "--lint silent on the compliant spelling at/above a seeded floor" \
-        || bad "--lint wrongly warned on a compliant, above-floor branch: $_fout"
-    _flint "fix/card-1000-x"
-    [[ -z "$_fout" ]] && ok "--lint silent AT the seeded floor" || bad "--lint warned at the floor: $_fout"
-    # 4. The committed board id is enough for the floor (it is not a credential).
+        && bad "lint: --lint wrote the mover's durable log: $(cat "$_ft/bcs.log")" \
+        || ok "lint: no move attempted (durable log untouched)"
+    # 3. PRESENCE witness on the same branch and env: an `absent` record is repeated with the id-space rule.
+    ( cd "$_frepo" && _bcs_verdict_write fix/card-712-foo absent "" 42 "" "card #712: HTTP 404" ) \
+        || bad "fixture: could not write the absent record"
+    _flint "fix/card-712-foo"
+    eq "absent record, KB_CARD_ID_FLOOR still in the env: rc 0, ONE line, the board's answer + the id-space rule, no floor text" "0|1|true|true|false" \
+       "$_frc|$(_flines)|$(has "board-branch-lint: branch 'fix/card-712-foo' names card 712, which is NOT a card on board 42" "$_fout")|$(has "card ids and GitHub issue/PR numbers are separate id spaces" "$_fout")|$(has "floor" "$_fout")"
+    # 4. The committed board id is the board the record is judged against when no git config names one.
     git -C "$_frepo" config --unset kanban.board-id
     printf '{"promote":{"board_id":42}}\n' > "$_frepo/.release-pr.json"
     _flint "fix/card-712-foo"
     if command -v jq >/dev/null 2>&1; then
-        grep -q "BELOW board 42's card-id floor 1000" <<< "$_fout" \
-            && ok "committed .promote.board_id selects the floor's board env" \
-            || bad "committed board id did not reach the floor: $_fout"
-        # A committed value that is not a plain integer maps to no board, and the line's cause list
-        # names that case rather than only absent / unreadable / jq missing.
+        eq "committed .promote.board_id 42: the board-42 record is current, not STALE" "true|false" \
+           "$(has "which is NOT a card on board 42" "$_fout")|$(has "STALE" "$_fout")"
+        # A committed value that is not a plain integer maps to no board, so the board-42 record is stale.
         for _bj in '"42abc"' '-42' '42.0' '["42"]'; do
             printf '{"promote":{"board_id":%s}}\n' "$_bj" > "$_frepo/.release-pr.json"
             _flint "fix/card-712-foo"
-            grep -q "card-id floor NOT CHECKED .*maps to no board .*(absent, unreadable, not a plain integer, or jq not on PATH)" <<< "$_fout" \
-                && ok "committed board_id $_bj: NOT CHECKED, naming 'not a plain integer'" \
-                || bad "committed board_id $_bj: cause list wrong: $_fout"
+            eq "committed board_id $_bj: maps to no board, so the record is STALE, one line" "1|true" \
+               "$(_flines)|$(has "is STALE — it was recorded against board 42, but this repo now maps to no board" "$_fout")"
         done
     fi
-    # 5. A branch with nothing to judge reads NO config: a board env that records being sourced stays
-    # untouched for a docs or DL-only branch. The card branch is the positive control — without it,
-    # a marker that could never be written would make both absence checks pass vacuously.
+    # 5. The lint sources NO board env, for any branch — the floor leg was its only reader. The control
+    # sources that same env through the lib's own resolver, so the marker is proven able to fire.
     rm -f "$_frepo/.release-pr.json"
     git -C "$_frepo" config kanban.board-id 42
     printf 'touch %q\nexport KB_BOARD_ID=42\nexport KB_CARD_ID_FLOOR=1000\n' "$_ft/sourced" > "$_fhome/.kanban-t-board.env"
-    for _nb in "docs/adoption-guide" "feature/dl212-event-gated"; do
+    for _nb in "docs/adoption-guide" "feature/dl212-event-gated" "fix/card-712-foo" "fix/card-4244-x"; do
         rm -f "$_ft/sourced"; _flint "$_nb"
-        [[ ! -e "$_ft/sourced" ]] && ok "no card id ($_nb): no board env sourced" \
-            || bad "no card id ($_nb): --lint sourced a board env for a branch with nothing to judge"
-        [[ -z "$_fout" ]] && ok "no card id ($_nb): silent" || bad "no card id ($_nb): spoke: $_fout"
+        [[ ! -e "$_ft/sourced" ]] && ok "lint ($_nb): no board env sourced" \
+            || bad "lint ($_nb): --lint sourced a board env"
     done
-    rm -f "$_ft/sourced"; _flint "fix/card-712-foo"
-    [[ -e "$_ft/sourced" ]] && ok "card id (control): the board env IS sourced, so the marker can fire" \
-        || bad "card id (control): board env never sourced — the marker probe cannot fire"
+    _flint "docs/adoption-guide"
+    [[ -z "$_fout" ]] && ok "no card id (docs/adoption-guide): silent" || bad "no card id: spoke: $_fout"
+    rm -f "$_ft/sourced"; ( export HOME="$_fhome"; kb_board_env_for 42 >/dev/null )
+    [[ -e "$_ft/sourced" ]] && ok "control: kb_board_env_for 42 DOES source that env, so the marker can fire" \
+        || bad "control: the board env was never sourced — the marker probe cannot fire"
+    unset -f _flint _flines
     rm -rf "$_ft"
 fi
 
@@ -259,7 +376,7 @@ if command -v git >/dev/null 2>&1; then
                 bash "$BCS" "$@" 2>&1)" || _rc=$?
     }
     _bcs_attempted_move() {   # did the run get past argument handling into board work?
-        # The mover's own sentence, not the branch name: --lint's card-id floor leg names the
+        # The mover's own sentence, not the branch name: --lint's board-verdict leg names the
         # branch too, and its line is a lint finding, not a move attempt.
         [[ -s "$_log" ]] || grep -q "carries a DL/card token but the move did not happen" <<< "$_out"
     }
@@ -812,6 +929,8 @@ if command -v git >/dev/null 2>&1; then
         case "$method $url" in
             "GET "*/tasks/4242.json*)
                 printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":%s}}' "${KB_STUB_TAGS:-[]}" ;;
+            "GET "*/tasks/4244.json*)
+                printf '200\n{"data":{"id":4244,"board_id":42,"workflow_stage_id":84,"tags":[]}}' ;;
             "PATCH "*/tasks/4242.json)
                 if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
                     printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
@@ -893,12 +1012,274 @@ if command -v git >/dev/null 2>&1; then
     eq "typed id 404: the card WAS read"                  "1" "$(kb_stub_count GET /tasks/712.json)"
     eq "typed id 404: SILENT — nothing in the durable log" "" "$_ologtxt"
     eq "typed id 404: SILENT — nothing on stderr"         "" "$_out"
+    # ⭐ NO STAGE REGRESSION: a card already In Progress is LEFT ALONE — nothing written, nothing
+    # stamped, and silently, because that is a genuine no-op rather than a failure. This is the
+    # invariant `kbcard move --card-start` now shares with this mover through the lib (card#9556);
+    # the leg lives here because this is the caller that has always carried it and had no leg.
+    git -C "$_orepo" checkout -q -b fix/card-4244-x
+    _own_run builder
+    eq "a card past the move stages: rc 0"                 "0" "$_rc"
+    eq "⭐ a card past the move stages: NOTHING is written" "" "$(kb_stub_bodies PATCH /tasks/4244.json)"
+    eq "…and it is a genuine no-op, not a failure"         "" "$_ologtxt"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
     unset -f _own_run kb_stub_route
     unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp
 else
     echo "  skip (git not on PATH)"
+fi
+
+echo "== the mover records its board verdict on every arm; pre-push repeats it (process, faked kanban API, DL-225) =="
+# Every arm is driven as post-checkout drives it (no arguments, the fixture repo's current branch),
+# against the `curl` stand-in installed above, and each asserts the RECORD — not the log, which
+# several arms keep silent on purpose. The arm list is derived from the mover: every
+# `_bcs_verdict` / `bcs_skip` call and the exits between the token gate and the resolved card.
+# Then the real hooks, on real checkouts: post-checkout writes, pre-push reads, from a linked
+# worktree too.
+if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-}" ]]; then
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    _rrepo="$TMP/vrepo"; _rlog="$TMP/bcs-verdict.log"
+    git init -q "$_rrepo"
+    ( cd "$_rrepo" && echo a > a && git add a && git commit -qm a )
+    git -C "$_rrepo" config kanban.board-id 42
+
+    kb_stub_route() {
+        local method="$1" url="$2"
+        case "$method $url" in
+            "GET "*/tasks/4242.json*) printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":[]}}' ;;
+            "GET "*/tasks/4243.json*) printf '200\n{"data":{"id":4243,"board_id":42,"workflow_stage_id":81,"block_reason":"waiting on ops","tags":[]}}' ;;
+            "GET "*/tasks/5555.json*) printf '200\n{"data":{"id":5555,"board_id":99,"workflow_stage_id":81}}' ;;
+            "GET "*/tasks/5556.json*) printf '200\n{"data":{"id":5556,"board_id":"99\\u001b[31mRED\\u0007","workflow_stage_id":81}}' ;;
+            "GET "*/tasks/6000.json*) printf '%s\n{"message":"stub read answer"}' "${KB_STUB_READ:-403}" ;;
+            "GET "*/tasks/6100.json*) printf '200\n{"data":{"id":6100}}' ;;
+            "GET "*/tasks/search.json*) printf '%s\n{"data":%s,"meta":{"last_page":1,"total":%s}}' "${KB_STUB_SEARCH:-200}" "${KB_STUB_SEARCH_DATA:-[]}" "${KB_STUB_SEARCH_TOTAL:-0}" ;;
+            "PATCH "*) printf '200\n{"data":{}}' ;;
+            *) printf '404\n{"message":"unrouted"}' ;;
+        esac
+    }
+    export -f kb_stub_route
+
+    _vrun() {  # <branch> — create/switch the fixture to it (no hook installed yet), run the mover; sets _rc/_out/_ologtxt
+        git -C "$_rrepo" checkout -q -B "$1"
+        kb_stub_reset; rm -f "$_rlog"; _rc=0
+        _out="$(cd "$_rrepo" && KB_BCS_LOG="$_rlog" bash "${BCS_RUN:-$BCS}" 2>&1)" || _rc=$?
+        _ologtxt="$(cat "$_rlog" 2>/dev/null || true)"
+    }
+    _vget() {  # <branch> <key> — one field of the branch's record (empty when there is none)
+        local f; f="$(cd "$_rrepo" && _bcs_verdict_file "$1")"
+        sed -n "s/^$2=//p" "$f" 2>/dev/null || true
+    }
+    _varm() {  # <label> <branch> <verdict> <reason-substring>
+        eq "$1: rc 0 (never blocks a checkout)" "0" "$_rc"
+        eq "$1: recorded verdict" "$3" "$(_vget "$2" verdict)"
+        eq "$1: recorded reason names the arm" "true" "$(has "$4" "$(_vget "$2" reason)")"
+    }
+
+    _vrun fix/card-4242-x
+    _varm "resolved (card on this board)"   fix/card-4242-x resolved "card #4242 (#4242)"
+    eq "resolved: the record names the board and the card" "42|4242" "$(_vget fix/card-4242-x board)|$(_vget fix/card-4242-x subject)"
+    _vrun fix/card-4243-x
+    _varm "resolved, then refused as pinned" fix/card-4243-x resolved "card #4243"
+    eq "pinned: the refusal still reaches the durable log" "true" "$(has "is pinned" "$_ologtxt")"
+    _vrun fix/card-712-x
+    _varm "explicit id, HTTP 404"           fix/card-712-x absent "card #712: HTTP 404"
+    _vrun fix/712-x
+    _varm "typed id, HTTP 404"              fix/712-x absent "card #712: HTTP 404"
+    eq "typed id 404: the mover itself stays SILENT (record only)" "|" "$_out|$_ologtxt"
+    _vrun fix/card-5555-x
+    _varm "card on ANOTHER board"           fix/card-5555-x absent "card #5555 is a card on board 99"
+    eq "another board: the mover itself stays SILENT (record only)" "|" "$_out|$_ologtxt"
+    # A board id that is not a plain integer (here with ESC/BEL in it) is no evidence of another board.
+    _vrun fix/card-5556-x
+    _varm "board id not a plain integer"    fix/card-5556-x not_checked "no plain-integer board id could be read"
+    eq "board id not a plain integer: the record holds no control character" "false" \
+       "$(_ctl "$(tr -d '\n' < "$(cd "$_rrepo" && _bcs_verdict_file fix/card-5556-x)")")"
+    _vrun fix/card-6100-x
+    _varm "HTTP 200 with no stage (unreadable, not an absence)" fix/card-6100-x not_checked "NOT confirmed missing"
+    KB_STUB_READ=403 _vrun fix/card-6000-x
+    _varm "card read refused (403)"         fix/card-6000-x not_checked "HTTP 403"
+    KB_STUB_READ='!curl 7' _vrun fix/card-6000-x
+    _varm "board unreachable (transport)"   fix/card-6000-x not_checked "unreachable"
+    _vrun feature/dl-77-x
+    _varm "DL matching no card, no card id" feature/dl-77-x absent "DL-77 matches no card on board 42"
+    KB_STUB_SEARCH=500 _vrun feature/dl-77-x
+    _varm "DL board read failed"            feature/dl-77-x not_checked "did not return a complete card list"
+    KB_STUB_SEARCH_DATA='[{"id":4242,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-89"}}]' KB_STUB_SEARCH_TOTAL=1 \
+        _vrun feature/dl-89-x
+    _varm "DL matched a card on this board" feature/dl-89-x resolved "card #4242 (DL-89)"
+    # A DL that resolves wins the MOVE, but the branch's own EXPLICIT card token was never read — and at
+    # merge the bridge makes such a token authoritative over the DL (docs/HOOKS.md). Not resolved.
+    _d89='[{"id":4242,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-89"}}]'
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun feature/dl-89-card-712-x
+    _varm "DL resolved a card other than the explicit token" feature/dl-89-card-712-x not_checked \
+        "DL-89 resolved card #4242; the branch's own card #712 was not judged"
+    eq "DL vs explicit token: the mover is unchanged — DL wins, 4242 is moved, 712 is never read" "true|true|0" \
+       "$(has "DL wins; #712 ignored" "$_out")|$(grep -q $'^PATCH\t.*/tasks/4242\\.json' "$KB_STUB_LOG" && echo true || echo false)|$(grep -c '/tasks/712\.json' "$KB_STUB_LOG")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun feature/dl-89-card-4242-x
+    _varm "DL resolved the SAME card as the explicit token" feature/dl-89-card-4242-x resolved "card #4242 (DL-89)"
+    eq "same card: no conflict line" "false" "$(has "DL wins" "$_out")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _vrun fix/712-dl-89
+    _varm "DL resolved, typed leading id differs (not in the bridge grammar)" fix/712-dl-89 resolved "card #4242 (DL-89)"
+    eq "typed id + DL: the subject is the DL's card" "4242|712" "$(_vget fix/712-dl-89 subject)|$(_vget fix/712-dl-89 card)"
+    # A DL the search DID match whose card then reads 404: the branch's own id (712) was never asked
+    # about, so the record must not call it absent — the lint would accuse a number nobody judged.
+    KB_STUB_SEARCH_DATA='[{"id":6200,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-88"}}]' KB_STUB_SEARCH_TOTAL=1 \
+        _vrun feature/dl-88-card-712-x
+    # Its explicit 712 is not the DL's card, so the DL-vs-token verdict is set first and stands.
+    _varm "DL matched a card whose read then 404s" feature/dl-88-card-712-x not_checked "DL-88 resolved card #6200; the branch's own card #712 was not judged"
+    eq "DL-matched card 404: the record still keys the branch's own card id" "712" "$(_vget feature/dl-88-card-712-x card)"
+    # A typed 712 is not that conflict, so the 404 of the DL's card is what the record says.
+    KB_STUB_SEARCH_DATA='[{"id":6200,"board_id":42,"workflow_stage_id":81,"payload":{"dl_number":"DL-88"}}]' KB_STUB_SEARCH_TOTAL=1 \
+        _vrun fix/712-dl-88
+    _varm "DL matched a card whose read then 404s (typed id)" fix/712-dl-88 not_checked "the branch's own card id was not judged"
+    # ⭐ AN rc OUTSIDE THE LIB'S DECLARED SET IS NO ANSWER (card#9756). Beside a _kb-board-lib.sh that
+    # predates the card-start invariants each call returns 127; read as "not pinned" that stamped
+    # dl_number onto a PINNED card before the stage verdict was ever asked. The DL matches no card, so
+    # the branch's own card id is used and the dl_number stamp is due — the control proves this
+    # fixture reaches that write, so the refusals below are measured and not a run that stopped early.
+    _vrun fix/card-4242-dl-77-x
+    eq "control, current lib: the dl_number stamp and the move are both written" \
+       '{"payload":{"dl_number":"DL-0077"}}'$'\n''{"workflow_stage_id":84}' \
+       "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS . | head -2)"
+    BCS_RUN="$(_bin_beside_stale_lib "$TMP/bcs-stale-both" "$BCS" kb_card_pinned kb_card_start_stage_verdict)"
+    for _sc in 4242 4243; do
+        _vrun "fix/card-$_sc-dl-77-x"
+        eq "⭐ lib without either invariant, card #$_sc: rc 0 (never blocks a checkout)" "0" "$_rc"
+        eq "⭐ …NOTHING written — no dl_number stamp, no move, no owner tag" "" "$(kb_stub_bodies PATCH "/tasks/$_sc.json")"
+        eq "⭐ …the durable log names the function and the rc" "true" \
+           "$(has "kb_card_pinned returned rc 127, which is not one of its answers" "$_ologtxt")"
+        eq "…and never reads the card as pinned" "false" "$(has 'is pinned' "$_ologtxt")"
+    done
+    BCS_RUN="$(_bin_beside_stale_lib "$TMP/bcs-stale-verdict" "$BCS" kb_card_start_stage_verdict)"
+    _vrun fix/card-4242-dl-77-x
+    eq "⭐ lib without the stage verdict only: NOTHING written — the stamp waits on the verdict too" "" \
+       "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ …the durable log names that function and the rc" "true" \
+       "$(has "kb_card_start_stage_verdict returned rc 127, which is not one of its answers" "$_ologtxt")"
+    unset BCS_RUN _sc
+
+    _vrun docs/adoption-guide
+    _varm "no DL or card-id token"          docs/adoption-guide not_checked "no DL or card-id token"
+    git -C "$_rrepo" config kanban.board-id 43
+    _vrun fix/card-4242-x
+    _varm "board with no board env (no stage ids)" fix/card-4242-x not_checked "KB_BOARD_ID=43"
+    git -C "$_rrepo" config --unset kanban.board-id
+    _vrun fix/card-4242-x
+    _varm "unmapped repo (no board id)"     fix/card-4242-x not_checked "no board_id"
+    eq "unmapped: the record's board is empty" "" "$(_vget fix/card-4242-x board)"
+    git -C "$_rrepo" config kanban.board-id 42
+    # curl and jq both required: a PATH of the tools the mover reaches before that gate, minus jq.
+    # A tool missing from this list makes the run stop at a different arm, which reds the reason check.
+    _nojq="$TMP/nojq-bin"; mkdir -p "$_nojq"
+    for _pn in bash git curl grep sed head tail cat date dirname readlink mkdir mktemp mv rm tr cut wc awk env; do
+        _pt="$(command -v "$_pn")" && ln -s "$_pt" "$_nojq/$_pn"
+    done
+    git -C "$_rrepo" checkout -q -B fix/card-4242-x; rm -f "$_rlog"; _rc=0
+    _out="$(cd "$_rrepo" && PATH="$_nojq" KB_BCS_LOG="$_rlog" bash "$BCS" 2>&1)" || _rc=$?
+    _varm "jq not on PATH"                  fix/card-4242-x not_checked "curl and jq are both required"
+
+    # A write that cannot land never fails the checkout, is logged, and the lint then says NOT RECORDED.
+    _vrdir="$(cd "$_rrepo" && cd "$(git rev-parse --git-common-dir)" && pwd -P)/agent-board-toolkit"
+    rm -rf "$_vrdir"; : > "$_vrdir"
+    _vrun fix/card-712-x
+    eq "unwritable record: rc 0" "0" "$_rc"
+    eq "unwritable record: the durable log says it could not be recorded" "true" \
+       "$(has "the board verdict for branch 'fix/card-712-x' (absent) could not be recorded" "$_ologtxt")"
+    _lrc=0; _lout="$(cd "$_rrepo" && bash "$BCS" --lint -- fix/card-712-x 2>&1)" || _lrc=$?
+    eq "unwritable record: --lint says NOT RECORDED for the branch the board DID answer" "0|true" \
+       "$_lrc|$(has "board verdict NOT RECORDED for branch 'fix/card-712-x'" "$_lout")"
+    rm -f "$_vrdir"
+
+    # ── the hooks themselves, on real checkouts ──────────────────────────────────────────────
+    _hbin="$TMP/hookbin"; mkdir -p "$_hbin"
+    printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$BCS" > "$_hbin/board-card-start"; chmod +x "$_hbin/board-card-start"
+    cp "$HERE/../hooks/post-checkout" "$_rrepo/.git/hooks/post-checkout"; chmod +x "$_rrepo/.git/hooks/post-checkout"
+    printf 'export KB_BOARD_ID=42\nexport KB_STAGE_IN_PROGRESS=84\nexport KB_STAGE_BACKLOG=81\nexport KB_STAGE_PRIORITIZED=82\nexport KB_CARD_ID_FLOOR=5000\n' \
+        > "$HOME/.kanban-t-board.env"   # a key nothing reads since card#9570; no push line below may mention a floor
+    _git() { ( cd "$1" && shift && PATH="$_hbin:$PATH" KB_BCS_LOG="$_rlog" git "$@" ); }
+    _push() {  # <dir> <branch> — feed hooks/pre-push one pushed ref; sets _rc/_out
+        _rc=0
+        _out="$(cd "$1" && PATH="$_hbin:$PATH" bash "$HERE/../hooks/pre-push" origin x \
+                <<<"refs/heads/$2 1111111111111111111111111111111111111111 refs/heads/$2 0000000000000000000000000000000000000000" 2>&1)" || _rc=$?
+    }
+    _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
+    _git "$_rrepo" branch -q -D fix/card-712-x fix/card-4242-x
+
+    # A branch cut from a wrong-space number: the board says no, and pre-push repeats it.
+    _git "$_rrepo" switch -q -c fix/card-712-x
+    _push "$_rrepo" fix/card-712-x
+    eq "hook: post-checkout recorded the 404 on a real switch -c" "absent" "$(_vget fix/card-712-x verdict)"
+    eq "pre-push: rc 0 (never blocks a push)" "0" "$_rc"
+    eq "pre-push: the board verdict is repeated" "true" "$(has "board-branch-lint: branch 'fix/card-712-x' names card 712, which is NOT a card on board 42" "$_out")"
+    eq "pre-push: ONE line, and no floor text though the board env still sets KB_CARD_ID_FLOOR=5000" "1|false" \
+       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "floor" "$_out")"
+    # One local branch pushed to two remote refs feeds pre-push two lines naming the same local ref.
+    _rc=0
+    _out="$(cd "$_rrepo" && PATH="$_hbin:$PATH" bash "$HERE/../hooks/pre-push" origin x 2>&1 <<EOF
+refs/heads/fix/card-712-x 1111111111111111111111111111111111111111 refs/heads/a 0000000000000000000000000000000000000000
+refs/heads/fix/card-712-x 1111111111111111111111111111111111111111 refs/heads/b 0000000000000000000000000000000000000000
+EOF
+)" || _rc=$?
+    eq "pre-push, one branch to two remote refs: linted ONCE" "0|1|true" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "names card 712, which is NOT a card on board 42" "$_out")"
+    # The DL-vs-token record speaks at push, on one line. Each
+    # branch is checked out through the real post-checkout first (the records above were removed).
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-712-x
+    _push "$_rrepo" feature/dl-89-card-712-x
+    eq "pre-push, DL resolved another card: NOT CHECKED, one line, no floor text" "0|1|true|false" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'feature/dl-89-card-712-x' (card 712)" "$_out")|$(has "floor" "$_out")"
+    eq "pre-push, DL resolved another card: names the rename remedy, not a re-checkout" "true|false" \
+       "$(has "rename the branch so its DL and its card token name the same card, or accept that the bridge acts on card #712 at merge" "$_out")|$(has "check the branch out again" "$_out")"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q feature/dl-89-card-4242-x
+    _push "$_rrepo" feature/dl-89-card-4242-x
+    eq "pre-push, DL resolved the same card: silent" "0|" "$_rc|$_out"
+    KB_STUB_SEARCH_DATA="$_d89" KB_STUB_SEARCH_TOTAL=1 _git "$_rrepo" checkout -q fix/712-dl-89
+    _push "$_rrepo" fix/712-dl-89
+    eq "pre-push, DL resolved + typed id: silent" "0|" "$_rc|$_out"
+    _git "$_rrepo" checkout -q fix/card-5556-x
+    _push "$_rrepo" fix/card-5556-x
+    eq "pre-push, board id not a plain integer: NOT CHECKED, no control character printed" "true|false" \
+       "$(has "board verdict NOT CHECKED for branch 'fix/card-5556-x'" "$_out")|$(_ctl "$_out")"
+    # curl or jq missing at checkout, in a repo mapped by git config: the record names no board, and the
+    # push line repeats that reason rather than a STALE that every later checkout would write again.
+    PATH="$_nojq" _git "$_rrepo" checkout -q -b fix/card-4247-x
+    eq "hook, jq not on PATH: post-checkout recorded not_checked, naming curl and jq, against no board" "not_checked|true|" \
+       "$(_vget fix/card-4247-x verdict)|$(has "curl and jq are both required" "$(_vget fix/card-4247-x reason)")|$(_vget fix/card-4247-x board)"
+    _push "$_rrepo" fix/card-4247-x
+    eq "pre-push, jq was not on PATH at checkout (repo mapped by git config): NOT CHECKED with that reason, not STALE, one line" "0|1|true|true|false" \
+       "$_rc|$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "board verdict NOT CHECKED for branch 'fix/card-4247-x' (card 4247)" "$_out")|$(has "curl and jq are both required" "$_out")|$(has "STALE" "$_out")"
+    rm -rf "$_nojq"
+    # A real card, cut from a linked worktree, read back from the main one.
+    git -C "$_rrepo" worktree add -q --detach "$TMP/vwt"
+    _git "$TMP/vwt" switch -q -c fix/card-4242-x
+    _push "$_rrepo" fix/card-4242-x
+    eq "worktree: the record written in the linked worktree is read from the main one" "resolved" "$(_vget fix/card-4242-x verdict)"
+    eq "pre-push: a RESOLVED verdict is silent" "0|" "$_rc|$_out"
+    # A branch that was never checked out speaks, by name, on one line.
+    _git "$_rrepo" branch fix/card-4244-x
+    _push "$_rrepo" fix/card-4244-x
+    eq "never checked out: NOT RECORDED, by name" "true" "$(has "board verdict NOT RECORDED for branch 'fix/card-4244-x' (card 4244)" "$_out")"
+    eq "never checked out: ONE line, and no floor text" "1|false" \
+       "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')|$(has "floor" "$_out")"
+    # Deleted and re-created WITHOUT a checkout: the old record is STALE, not borrowed…
+    _git "$_rrepo" checkout -q fix/card-4244-x
+    _git "$_rrepo" branch -q -D fix/card-712-x
+    sleep 1
+    _git "$_rrepo" branch fix/card-712-x
+    _push "$_rrepo" fix/card-712-x
+    eq "re-created without a checkout: STALE, not the old verdict" "true|false" \
+       "$(has "board verdict for branch 'fix/card-712-x' (card 712) is STALE" "$_out")|$(has "which is NOT a card on board 42" "$_out")"
+    # …and the next checkout records a current verdict again.
+    _git "$_rrepo" checkout -q fix/card-712-x
+    _push "$_rrepo" fix/card-712-x
+    eq "re-created, then checked out: the current verdict is repeated, not STALE" "true|false" \
+       "$(has "which is NOT a card on board 42" "$_out")|$(has "STALE" "$_out")"
+    _push "$_rrepo" docs/adoption-guide
+    eq "pre-push: a branch with no card id stays silent" "" "$_out"
+
+    unset -f kb_stub_route _vrun _vget _varm _git _push
+else
+    echo "  skip (git not on PATH, or no scratch HOME)"
 fi
 
 echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the captured status; always fail-soft (#4510) =="
