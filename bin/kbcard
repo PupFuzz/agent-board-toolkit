@@ -655,8 +655,9 @@
 #   1  NOT APPLIED, and KNOWN — the request was refused (the status and the server's own
 #      message say why), or the read-back is a MEASUREMENT and it says the mutation did not
 #      take. The second spelling is reported as HARD FAILURE and quotes what the board holds.
-#   2  BAD INVOCATION — nothing was sent. Everything this tool can decide offline is decided
-#      before the first request, so a typo'd flag costs no traffic.
+#   2  BAD INVOCATION — nothing was WRITTEN. Everything this tool can decide offline is decided
+#      before the first request, so a typo'd flag costs no traffic; the post-read exceptions are
+#      named below.
 #   3  UNVERIFIED WRITE — the request WAS SENT and its outcome could NOT be read: the
 #      confirming read did not complete, was refused (401/403 — a card this token cannot read
 #      is not a card that is gone), or answered a 2xx nothing could be read out of. Nothing
@@ -675,7 +676,9 @@
 # page-1 body carrying no card array at its own rc 1 and takes `list` to rc 1 with empty stdout
 # (card#6594) — and `patch --tags/--type/--triaged` refuses BEFORE the wire, rc 2 with no PATCH at
 # all, when the tag read it must re-send WHOLESALE yields no usable list (a card genuinely carrying
-# no `tags` key, or a null or empty one, is unaffected).
+# no `tags` key, or a null or empty one, is unaffected). `patch --pr` without --pr-url is the
+# other post-read rc 2: it reads the card and refuses, with no PATCH, when the stored pr_url names
+# a different PR (card#9837).
 # README.md § Reliability posture states in full what this covers and what it does not, and why —
 # including what a `[]` from `list` does and does not establish. It is the ONE owner of that
 # statement: this block deliberately does not restate it.
@@ -1677,9 +1680,14 @@ _kbc_assign_guard() {
 # WHAT COUNTS AS A DIVERGENCE. The stored URL is read the way the promote side derives `source`
 # (bin/promote-released-cards: `github.com/<owner>/<repo>[.git]/pull/…`, case-insensitive,
 # unanchored), and the number after /pull/ is compared with --pr through KB_JQ_REF_CANON's
-# `norm`, so `#178`, `PR-178` and `0178` all name 178. Proceeds, unchanged: no pr_url (absent,
-# null, blank); a URL naming the SAME number; the pre-PR placeholder `.../pull/0` (in any
-# zero spelling), which stands for "no PR yet" rather than a PR.
+# `norm`, so `#178`, `PR-178` and `0178` all name 178. UNANCHORED AT THE END TOO: the number is
+# the whole digit run and nothing after it is looked at, because promote's reading needs nothing
+# after /pull/ — so any suffix it still derives a source through (trailing whitespace from a
+# --pr-url sent as typed, `?query`, `#fragment`, `/files`) must still yield the number here, or
+# the guard reads the very divergent pair it exists to refuse as "not a pull URL". Trimming would
+# cover only the whitespace. Proceeds, unchanged: no pr_url (absent, null, blank); a URL naming
+# the SAME number; the pre-PR placeholder `.../pull/0` (in any zero spelling), which stands for
+# "no PR yet" rather than a PR.
 # A stored pr_url that is NOT a GitHub pull URL proceeds with a notice: there is no second PR
 # number in it to disagree with, so refusing would refuse on a divergence nobody can show — and
 # silence would claim a check that did not happen.
@@ -1698,7 +1706,7 @@ _kbc_pr_url_guard() {
         ((.payload // {}) | if type == "object" then .pr_url else null end) as $u
         | if $u == null or ($u | type) == "string" and ($u | test("\\A\\s*\\z")) then "none"
           elif ($u | type) != "string" then "unparsed"
-          else ([$u | capture("github[.]com/[^/]+/[^/]+?([.]git)?/pull/(?<n>[0-9]+)(?:[/?#]|\\z)"; "i")][0].n) as $n
+          else ([$u | capture("github[.]com/[^/]+/[^/]+?([.]git)?/pull/(?<n>[0-9]+)(?![0-9])"; "i")][0].n) as $n
             | if $n == null then "unparsed"
               elif ($n | test("\\A0+\\z")) then "placeholder"
               elif ($n | norm) == ($pr | norm) then "same"

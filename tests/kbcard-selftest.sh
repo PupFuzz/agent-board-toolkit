@@ -4922,6 +4922,23 @@ eq "decorated --pr PR-178 over 178 → rc 0 (the same PR)"     "0|1" "$rc|$(npat
 # path after the number, a `.git` repo suffix.
 KB_STUB_PAYLOAD='{"pr_url":"https://GitHub.com/acme/widget/pull/178/files"}' kbc patch --task 505 --pr 179
 eq "a /files URL with a mixed-case host naming 178 → rc 2"   "2|0" "$rc|$(npatch)"
+# ⭐ A stored URL with trailing whitespace (--pr-url is sent as typed) still names PR 178 to the
+# promote side, whose repo_from_gh_url is unanchored — so it must name 178 here too, not read as
+# "not a pull URL" and proceed into the very pair this guard refuses.
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178 "}' kbc patch --task 505 --pr 179
+eq "⭐ a pr_url with a trailing SPACE naming 178 → rc 2, no PATCH"   "2|0" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178\n"}' kbc patch --task 505 --pr 179
+eq "⭐ a pr_url with a trailing NEWLINE naming 178 → rc 2, no PATCH" "2|0" "$rc|$(npatch)"
+for _u in 'https://github.com/acme/widget/pull/178?w=1' 'https://github.com/acme/widget/pull/178#issuecomment-1' \
+          'https://github.com/acme/widget.git/pull/178'; do
+    KB_STUB_PAYLOAD="{\"pr_url\":\"$_u\"}" kbc patch --task 505 --pr 179
+    eq "$_u naming 178, --pr 179 → rc 2, no PATCH"          "2|0" "$rc|$(npatch)"
+done
+# The refusal quotes the stored URL, so a userinfo-bearing one must print masked.
+KB_STUB_PAYLOAD='{"pr_url":"https://user:TOKEN-9837@github.com/acme/widget/pull/178"}' kbc patch --task 505 --pr 179
+eq "a userinfo-bearing pr_url naming 178 → rc 2"            "2" "$rc"
+eq "⭐ …the refusal masks the userinfo"                      "true" "$(has '(https://***@github.com/acme/widget/pull/178)' "$err")"
+eq "⭐ …and never prints the token"                          "false" "$(has 'TOKEN-9837' "$err$out")"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
 eq "a zero-padded URL number is the same PR → rc 0"          "0|1" "$rc|$(npatch)"
 # --keep-refs on a decline RETAINS the stored pr_url, so the divergence is still there.
@@ -4965,6 +4982,11 @@ eq "a non-GitHub-pull pr_url → rc 0 (no second PR number to disagree with)" "0
 eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
 eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request URL' "$err")"
 
+# A non-string pr_url carries no URL to read a number from: the same notice, and the write goes.
+KB_STUB_PAYLOAD='{"pr_url":178}' kbc patch --task 505 --pr 179
+eq "a NON-STRING pr_url → rc 0, PATCH writes pr_number only" '0|{"pr_number":179}' "$rc|$(ppay)"
+eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request URL' "$err")"
+
 # --- a card that cannot be read is no answer: rc 1, nothing written ----------------------
 for _r in 403 nocard; do
     KB_STUB_READ=$_r kbc patch --task 505 --pr 179
@@ -4972,6 +4994,6 @@ for _r in 403 nocard; do
 done
 
 unset -f kb_stub_route ppay npatch nget
-unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng
+unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
 
 _summary "kbcard-selftest"
