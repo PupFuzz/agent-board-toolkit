@@ -679,6 +679,11 @@
 # no `tags` key, or a null or empty one, is unaffected). `patch --pr` without --pr-url is the
 # other post-read rc 2: it reads the card and refuses, with no PATCH, when the stored pr_url names
 # a different PR (card#9837).
+# THE RULE those share: a read whose result DECIDES a write refuses that write, with no PATCH, when
+# no card can be read out of it (non-2xx, or a 2xx whose `.data` is not an object) — it is never
+# taken as an answer. Each such read is its own helper and states its own rc there; today they are
+# the tag read (_kbc_patch_tags: rc 2 at the patch caller), the assignment read (_kbc_assign_guard:
+# rc 1; --unassign and --steal proceed and say so) and the pr_url read (_kbc_pr_url_guard: rc 1).
 # README.md § Reliability posture states in full what this covers and what it does not, and why —
 # including what a `[]` from `list` does and does not establish. It is the ONE owner of that
 # statement: this block deliberately does not restate it.
