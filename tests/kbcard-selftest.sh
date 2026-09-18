@@ -4909,7 +4909,7 @@ eq "⭐ …and issues NO PATCH AT ALL"                          "0" "$(npatch)"
 eq "…having READ the card to decide it"                     "1" "$(nget)"
 eq "…the refusal names --pr-url"                            "true" "$(has '--pr-url' "$err")"
 eq "…names the stored URL and the PR it names"              "true" \
-   "$(has "the card's pr_url (https://github.com/acme/widget/pull/178) names PR 178" "$err")"
+   "$(has "the card's pr_url names PR 178 in acme/widget" "$err")"
 eq "…and says nothing was written"                          "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
 eq "…and prints no write echo"                              ""  "$out"
 # --pr is compared through the tool's own normalisation, so a decorated spelling diverges or
@@ -4934,11 +4934,32 @@ for _u in 'https://github.com/acme/widget/pull/178?w=1' 'https://github.com/acme
     KB_STUB_PAYLOAD="{\"pr_url\":\"$_u\"}" kbc patch --task 505 --pr 179
     eq "$_u naming 178, --pr 179 → rc 2, no PATCH"          "2|0" "$rc|$(npatch)"
 done
-# The refusal quotes the stored URL, so a userinfo-bearing one must print masked.
-KB_STUB_PAYLOAD='{"pr_url":"https://user:TOKEN-9837@github.com/acme/widget/pull/178"}' kbc patch --task 505 --pr 179
-eq "a userinfo-bearing pr_url naming 178 → rc 2"            "2" "$rc"
-eq "⭐ …the refusal masks the userinfo"                      "true" "$(has '(https://***@github.com/acme/widget/pull/178)' "$err")"
-eq "⭐ …and never prints the token"                          "false" "$(has 'TOKEN-9837' "$err$out")"
+# A stored URL can carry userinfo, and the capture is unanchored, so the scheme need not sit at
+# byte 0 (leading blanks, any prefix) — where a URL redactor does not see one. The refusal
+# therefore prints only what the parse derived (owner/repo and number), never the stored text.
+for _u in 'https://user:TOKEN-9837@github.com/acme/widget/pull/178' \
+          ' https://user:TOKEN-9837@github.com/acme/widget/pull/178' \
+          '\thttps://user:TOKEN-9837@github.com/acme/widget/pull/178' \
+          'see https://user:TOKEN-9837@github.com/acme/widget/pull/178'; do
+    KB_STUB_PAYLOAD="{\"pr_url\":\"$_u\"}" kbc patch --task 505 --pr 179
+    eq "userinfo pr_url '$_u' naming 178 → rc 2"              "2" "$rc"
+    eq "⭐ …names the PR and repo it derived"                  "true" "$(has "names PR 178 in acme/widget" "$err")"
+    eq "⭐ …and never prints the token"                        "false" "$(has 'TOKEN-9837' "$err$out")"
+done
+# The unparsed notice does not echo the stored value either.
+KB_STUB_PAYLOAD='{"pr_url":" https://user:TOKEN-9837@example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
+eq "an unparsed userinfo pr_url → rc 0, and the notice never prints the token" "0|false" "$rc|$(has 'TOKEN-9837' "$err$out")"
+# /issues/<N> is the other numbered segment promote derives a source through, and GitHub numbers
+# issues and pull requests in ONE sequence — so it names a ref that can diverge from --pr.
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc patch --task 505 --pr 179
+eq "⭐ an /issues/178 pr_url, --pr 179 → rc 2, no PATCH"    "2|0" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc patch --task 505 --pr 178
+eq "an /issues/178 pr_url, --pr 178 → rc 0 (same number)"   "0|1" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/0"}' kbc patch --task 505 --pr 179
+eq "an /issues/0 pr_url is the placeholder → rc 0, silent"  "0|1|" "$rc|$(npatch)|$err"
+# commit / tree / blob carry no number: they proceed with the notice.
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/commit/178"}' kbc patch --task 505 --pr 179
+eq "a /commit/ pr_url → rc 0 with the not-checked notice"  "0|true" "$rc|$(has 'is not a GitHub pull-request or issue URL' "$err")"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
 eq "a zero-padded URL number is the same PR → rc 0"          "0|1" "$rc|$(npatch)"
 # --keep-refs on a decline RETAINS the stored pr_url, so the divergence is still there.
@@ -4980,12 +5001,12 @@ eq "a patch with no --pr → rc 0 and never reads the card"   "0|0" "$rc|$(nget)
 KB_STUB_PAYLOAD='{"pr_url":"https://example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
 eq "a non-GitHub-pull pr_url → rc 0 (no second PR number to disagree with)" "0" "$rc"
 eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
-eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request URL' "$err")"
+eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request or issue URL' "$err")"
 
 # A non-string pr_url carries no URL to read a number from: the same notice, and the write goes.
 KB_STUB_PAYLOAD='{"pr_url":178}' kbc patch --task 505 --pr 179
 eq "a NON-STRING pr_url → rc 0, PATCH writes pr_number only" '0|{"pr_number":179}' "$rc|$(ppay)"
-eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request URL' "$err")"
+eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request or issue URL' "$err")"
 
 # --- a card that cannot be read is no answer: rc 1, nothing written ----------------------
 for _r in 403 nocard; do
