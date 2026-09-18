@@ -120,6 +120,8 @@ REQUIRE_BESIDE_CI_GATE=(
 NOT_A_PR_GATE=(
     auto-tag                 # auto-tag-version.yml    — push: main only, post-merge
     promote                  # release-promote-cards.yml — push: main only, post-merge
+    pr-body-lint             # pr-body-lint.yml        — PR-triggered but REPORTING-ONLY
+                             #   (operator ruling 2026-09-18): must stay unrequired until blocking is decided
 )
 
 # _wf <projection> <workflow-path> [job] — one parser, five projections. Each is a fact about the
