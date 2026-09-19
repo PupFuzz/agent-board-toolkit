@@ -264,16 +264,25 @@ _mktmp_scratch() {
     fi
 }
 
-# _bin_beside_stale_lib <dir> <bin> <function>... — copy <bin> and the `_kb-board-lib.sh` beside it
-# into <dir>, with each named lib function undefined once the lib has been sourced, and print the
+# _bin_beside_stale_lib <dir> <bin> <symbol>... — copy <bin> and the `_kb-board-lib.sh` beside it
+# into <dir>, with each named lib symbol undefined once the lib has been sourced, and print the
 # copied bin's path. That is what a bin newer than the lib vendored beside it runs against: the
 # bin's own code, and a lib lacking what that code calls (card#9756).
+# A bare <symbol> is a FUNCTION (`unset -f`); `var:NAME` is a VARIABLE (`unset -v`) — the lib
+# exports jq program text as constants too, and a bin that dereferences one under `set -u` meets a
+# lib without it differently from a lib without a function: not rc 127 from a call, but the run
+# dying where the deref is (card#9918). A control that can only strip functions cannot express
+# that state, so a bin's lib-too-old contract over a constant would have no control behind it.
 _bin_beside_stale_lib() {
-    local dir="$1" bin="$2" src; shift 2
+    local dir="$1" bin="$2" src sym; local -a fns=() vars=(); shift 2
     src="$(readlink -f "$bin")"
     mkdir -p "$dir"
     cp "$src" "$dir/" && cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/" || return 1
-    printf '\nunset -f %s\n' "$*" >> "$dir/_kb-board-lib.sh"
+    for sym in "$@"; do
+        if [[ "$sym" == var:* ]]; then vars+=("${sym#var:}"); else fns+=("$sym"); fi
+    done
+    if (( ${#fns[@]} )); then printf '\nunset -f %s\n' "${fns[*]}" >> "$dir/_kb-board-lib.sh"; fi
+    if (( ${#vars[@]} )); then printf '\nunset -v %s\n' "${vars[*]}" >> "$dir/_kb-board-lib.sh"; fi
     printf '%s' "$dir/$(basename "$src")"
 }
 

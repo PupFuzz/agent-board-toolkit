@@ -5345,6 +5345,29 @@ for _args in "--task 505 --pr 179" "--task 505 --dl DL-7" "--task EXT-9846 --ass
     eq "⭐ …the line names that function as not defined, and the lib" "true|true" \
        "$(has "kb_ref_pair_verdicts is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 'NOTHING was written' "$err")"
 done
+# ⭐ …and so is the jq CONSTANT the guard dereferences, KB_JQ_PAYLOAD_REPO_IS_SOURCE (card#9918).
+# This is the lib of the release BEFORE this one — both functions present, the constant absent —
+# which is a state a consumer can hold, and the one state the function rows above cannot express
+# (the control strips it with `unset -v`, which is why it learned a variable mode). Outside the
+# preflight the bare deref under `set -u` does NOT refuse: measured against that lib, a patch WITH
+# a pair to check dies rc 1 inside the guard on bash's own `unbound variable` line, and a patch
+# with NO pair never reaches the deref and WRITES. Both halves are driven below.
+_psstale="$(_bin_beside_stale_lib "$TMP/stale-const" "$BIN" var:KB_JQ_PAYLOAD_REPO_IS_SOURCE)"
+for _args in "--task 505 --pr 179" "--task 505 --dl DL-7" "--task EXT-9846 --assign 7"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$(KB_STUB_PAYLOAD="$PR178" "$_psstale" patch $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without KB_JQ_PAYLOAD_REPO_IS_SOURCE: patch $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …the line names the CONSTANT, and it is a refusal and not a bash death" "true|true|false" \
+       "$(has "KB_JQ_PAYLOAD_REPO_IS_SOURCE is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 'NOTHING was written' "$err")|$(has 'unbound variable' "$err")"
+done
+# Control for the `var:` mode itself: the SAME copy tree with nothing stripped must NOT refuse, so
+# a mode that silently stripped nothing (or everything) cannot read as the rows above.
+_psfresh="$(_bin_beside_stale_lib "$TMP/fresh-const" "$BIN")"
+kb_stub_reset; rc=0
+out="$(KB_STUB_PAYLOAD="$PR178" "$_psfresh" patch --task 505 --dl DL-7 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "control: the same copied tree with NO symbol stripped → rc 0, ONE PATCH, and no lib line" "0|1|false" \
+   "$rc|$(npatch)|$(has 'KB_JQ_PAYLOAD_REPO_IS_SOURCE' "$err")"
 # Control for those zero counts: the SAME calls through the real kbcard do reach the wire.
 for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7"; do
     kb_stub_reset; rc=0
@@ -5353,7 +5376,7 @@ for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7"; do
     eq "control: with the real lib, patch $_args issues at least one request" "true" \
        "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 done
-unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args
+unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _psfresh _args
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
