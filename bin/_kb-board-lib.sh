@@ -1833,34 +1833,6 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
     else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
     end;'
 
-# KB_JQ_PAYLOAD_REPO_IS_SOURCE — THE OTHER HALF OF THE SAME RULE, and the half that OUTRANKS the
-# one above: whether the card's own `payload.repo` is what attributes it. A jq program fragment
-# defining `def payload_repo_is_source:` over a CARD object (the `.data` of a card read), true
-# when `payload.repo` is a string containing a `/`. Where it is true the URL rule never runs at
-# all, so whatever KB_JQ_REPO_FROM_GH_URL derives from that card's URLs is NOT its by-ref source
-# — which is why a caller reasoning from the URL's repo has to ask this first (card#9918).
-#
-# ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` spells this
-# predicate inline as the first arm of `def derive_source:` — `(($p.repo | type) == "string") and
-# ($p.repo | test("/"))` — and is a vendored standalone that must not source this lib. Unlike the
-# constant above, the two CANNOT be held identical line for line: the standalone's copy is an arm
-# of a larger def, not a def of its own. So `tests/mirror-pair-parity-selftest.sh` § 6 holds them
-# BEHAVIOURALLY — it extracts `derive_source` from the standalone and drives it beside this
-# fragment over one corpus, asking of every row whether payload.repo won, so neither can move
-# alone. Edit the standalone's arm and this constant together. The prose statement of the whole
-# rule is `docs/INSTALL.md` §4, the `promote.source` box.
-#
-# ⛔ A CALLER MAY TEST THIS AND MUST NOT PRINT THE VALUE. `payload.repo` is operator-supplied free
-# text, NOT a parse of the path after `github.com/`, so it can carry anything a URL can — the
-# `NOTHING HERE PRINTS A URL` rule below covers it for exactly that reason. Name it as "its
-# payload.repo" and point at `kbcard show --task N` for the value.
-#
-# USAGE — prepend as a separate shell word, like the two constants above:
-#     jq -e "$KB_JQ_PAYLOAD_REPO_IS_SOURCE"'payload_repo_is_source'
-# ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW (it is a single-quoted shell string).
-KB_JQ_PAYLOAD_REPO_IS_SOURCE='def payload_repo_is_source:
-    ((.payload // {}) | (((.repo | type) == "string") and (.repo | test("/"))));'
-
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
 # writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
 # card's stored other half would leave the card naming one ref by NUMBER and a different one by
@@ -1874,16 +1846,16 @@ KB_JQ_PAYLOAD_REPO_IS_SOURCE='def payload_repo_is_source:
 # (_kbc_ref_pair_guard) and `adopt-to-dl`, which must refuse BEFORE it mints a DL rather than have
 # kbcard refuse the stamp after it.
 #
-# THE URL — stored or given — ATTRIBUTES the card to the repo KB_JQ_REPO_FROM_GH_URL derives,
-# which is the promote side's own def (the constant's header says how the two are held together),
-# and <url-repo> is always that repo. ⚠ EXCEPT ON A CARD WHOSE `payload.repo` IS ITS SOURCE
-# (KB_JQ_PAYLOAD_REPO_IS_SOURCE — a string containing `/`), which outranks every URL: there no URL
-# attributes the card at all, <url-repo> is still the URL's repo and still the right thing to name,
-# but a CALLER'S MESSAGE may not tell an operator the board takes the card's source from it. The
-# verdicts below are unchanged either way — the pair still diverges — so this function does not ask
-# the question; `kbcard patch` asks it for its own wording (card#9918), and `docs/INSTALL.md` §4
-# states the whole derivation. Its NUMBER is read from a `pull` or `issues` segment — the
-# only two of promote's segments that carry one; GitHub numbers issues and pull requests in ONE
+# THE URL — stored or given — NAMES the repo KB_JQ_REPO_FROM_GH_URL derives, which is the promote
+# side's own def (the constant's header says how the two are held together), and <url-repo> is
+# always that repo. That repo is what ATTRIBUTES the card only where no `payload.repo` outranks
+# it: a `payload.repo` that is a string containing `/` wins over every URL (`docs/INSTALL.md` §4
+# states the whole derivation), so EVERY consequence this header draws from <url-repo> below —
+# who the card is attributed to, what a release there would promote — is the URL case and not a
+# universal. The verdicts do not turn on it (the pair diverges either way), which is why nothing
+# here asks the question and why a caller's MESSAGE states the divergence and not the consequence
+# (card#9918). Its NUMBER is read from a `pull` or `issues` segment — the only two of promote's
+# segments that carry one; GitHub numbers issues and pull requests in ONE
 # sequence, so BOTH are read for BOTH pairs — and compared with the pair's number through
 # KB_JQ_REF_CANON's `norm`, so `#178`, `PR-178` and `0178` all name 178. The number is the whole
 # digit run and NOTHING after it is looked at, because promote's reading needs nothing after the
@@ -1911,14 +1883,14 @@ KB_JQ_PAYLOAD_REPO_IS_SOURCE='def payload_repo_is_source:
 # stored real number; `unnumbered-given` / `unnumbered-stored` — a URL, given or STORED, that
 # names no number but still attributes the card to a repo (commit/tree/blob, a pull/issues segment
 # with no digits, or a number read out of a different repo's URL), under a real number on the
-# other side: the card would name that number under the URL's repo, so a release there shipping
-# it promotes the card (operator ruling "a", card#9846, for both sides). The `-given` kinds are why
-# the placeholder is exempt only where it is STORED: given, it says "no ref yet" about a card whose
-# number names one, and moves the card's by-ref source while that number stays (operator ruling,
-# card#9846). ⚠ Both of those last two reasons are the URL rule's, so both are FALSE of a card
-# whose `payload.repo` is its source (the ⚠ above): there the number still names a ref the URL
-# does not, which is why the verdict is the same, but nothing moves and no release in the URL's
-# repo promotes anything.
+# other side: the card would name that number while its URL names none (operator ruling "a",
+# card#9846, for both sides). The mis-promotion that ruling was argued from is NARROWER than the
+# verdict — promote correlates on `pr_number` and reads no issue key at all (card#9935), and only
+# where no `payload.repo` outranks the URL — which is why the verdict, not the consequence, is
+# what this function answers. The `-given` kinds are why the placeholder is exempt only where it
+# is STORED: given, it says "no ref yet" about a card whose number names one, and moves the
+# card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
+# card#9846).
 #
 # ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> are what the parse DERIVED from the path
 # after `github.com/`, which cannot hold a userinfo; a caller's message must print only those.

@@ -311,15 +311,7 @@ unset _b _t _naive
 # found the wrong lines cannot pass by comparing two empties.
 echo "== repo_from_gh_url: the lib constant IS the standalone's def, line for line =="
 _rfg_strip() { sed 's/^[[:space:]]*//'; }
-# _prc_jq_def <file> <name> — the TEXT of one `def <name>: … end;` jq definition in a standalone,
-# indentation stripped (the standalone's defs sit indented inside a larger program). Extracted at
-# top level, like `_fn_src` above and for the same reason: a rename must end the run at a witness
-# rather than compare two empties. § 6 below is the second caller.
-_prc_jq_def() {
-    awk -v n="$2" '$0 ~ "^[[:space:]]*def " n ":" {on=1} on {print} on && /^[[:space:]]*end;[[:space:]]*$/ {exit}' "$1" \
-        | _rfg_strip
-}
-_rfg_prc="$(_prc_jq_def "$PRC" repo_from_gh_url)"
+_rfg_prc="$(awk '/^[[:space:]]*def repo_from_gh_url:/ {on=1} on {print} on && /^[[:space:]]*end;[[:space:]]*$/ {exit}' "$PRC" | _rfg_strip)"
 eq "witness: the lib defines KB_JQ_REPO_FROM_GH_URL" "false" "$([[ -z "${KB_JQ_REPO_FROM_GH_URL:-}" ]] && echo true || echo false)"
 eq "witness: the extraction found the def's head and its close" "true|true" \
    "$(has 'def repo_from_gh_url:' "$_rfg_prc")|$([[ "${_rfg_prc##*$'\n'}" == "end;" ]] && echo true || echo false)"
@@ -346,88 +338,7 @@ eq "control: the line-for-line comparison reds on it" "false" \
    "$([[ "$(printf '%s\n' "$KB_JQ_REPO_FROM_GH_URL" | _rfg_strip)" == "$_rfg_mut" ]] && echo true || echo false)"
 eq "control: …and so does the corpus, on a /blob/ URL" "false" \
    "$([[ "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget/blob/main/x.md"')" == "$(_rfg "$_rfg_mut" '"https://github.com/acme/widget/blob/main/x.md"')" ]] && echo true || echo false)"
-unset -f _rfg
+unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
-
-# ═══════════════════ 6 — `payload.repo` as the source: promote ↔ KB_JQ_PAYLOAD_REPO_IS_SOURCE ══
-#
-# The OTHER half of "how a card gets its by-ref source", and the half that outranks § 5: a
-# `payload.repo` that is a string containing `/` IS the source, and no URL is consulted at all.
-# `promote-released-cards` spells that predicate inline as the first arm of `def derive_source:`;
-# `kbcard patch` asks the same question of the card it is about to refuse a write on, so its
-# refusal cannot tell an operator the board takes the source from a URL when it does not
-# (card#9918), and reaches it through the lib's KB_JQ_PAYLOAD_REPO_IS_SOURCE. Two copies again.
-#
-# ⚠ WHY THIS BLOCK IS BEHAVIOURAL WHERE § 5 IS LINE-FOR-LINE. The standalone's copy is an ARM of a
-# larger def, not a def of its own — there is no text to hold identical. So the two are driven
-# instead: each corpus row is a card whose URLs attribute it to acme/widget and whose payload.repo
-# is the row, and the question asked of both copies is the one the predicate decides — DID
-# payload.repo win? promote answers by running `derive_source` (a source that is not acme/widget
-# is payload.repo's), the lib by evaluating its fragment. A row where the two disagree is the
-# drift this block exists to red on.
-echo "== payload_repo_is_source: promote's derive_source and the lib fragment agree, row by row =="
-_ds_canon="$(_prc_jq_def "$PRC" canon_source)"
-_ds_rfg="$(_prc_jq_def "$PRC" repo_from_gh_url)"
-_ds_derive="$(_prc_jq_def "$PRC" derive_source)"
-_ds_prog="$_ds_canon$_ds_rfg$_ds_derive"
-eq "witness: all three defs extracted with a body" "true|true|true" \
-   "$(has 'ascii_downcase' "$_ds_canon")|$(has 'capture(' "$_ds_rfg")|$(has 'test(' "$_ds_derive")"
-eq "witness: the lib defines KB_JQ_PAYLOAD_REPO_IS_SOURCE" "false" \
-   "$([[ -z "${KB_JQ_PAYLOAD_REPO_IS_SOURCE:-}" ]] && echo true || echo false)"
-# _ds_card <repo-json-value|-> — a card whose pr_url attributes it to acme/widget, carrying that
-# payload.repo (or no repo key at all for `-`). The URL half is held constant so the ONLY thing
-# that can move derive_source's answer is the predicate under test.
-_ds_card() {
-    if [[ "$1" == - ]]; then jq -cn '{payload:{pr_url:"https://github.com/acme/widget/pull/1"}}'
-    else jq -cn --argjson r "$1" '{payload:{repo:$r, pr_url:"https://github.com/acme/widget/pull/1"}}'; fi
-}
-# promote's verdict: derive_source answering anything but the URL's repo means payload.repo won.
-_ds_promote() { # <card-json>
-    local src; src="$(jq -r "$_ds_prog"'derive_source // "«null»"' <<<"$1" 2>/dev/null)" || src='«error»'
-    [[ "$src" == "acme/widget" ]] && printf 'url' || printf 'payload'
-}
-# the lib's verdict, through the fragment exactly as kbcard calls it.
-_ds_lib() { # <frag> <card-json>
-    jq -e "$1"'payload_repo_is_source' >/dev/null 2>&1 <<<"$2" && printf 'payload' || printf 'url'
-}
-# The CONTROL BEFORE THE ROWS: with no payload.repo key the URL must win, or every row below would
-# read `url` for a reason that has nothing to do with the predicate.
-eq "control: no payload.repo at all → promote derives the URL's repo" "url" "$(_ds_promote "$(_ds_card -)")"
-eq "control: …and the lib agrees there is no payload.repo source"     "url" "$(_ds_lib "$KB_JQ_PAYLOAD_REPO_IS_SOURCE" "$(_ds_card -)")"
-# ⛔ NO ROW MAY CANONICALISE TO acme/widget — the oracle reads such a row as `url` whatever the
-# predicate said. Asserted below rather than left to care.
-_ds_corpus=('null' '""' '", "' '"norepo"' '"a/b"' '" a/b "' '"A/B"' '"/"' '"a/b/c"'
-    '"https://github.com/x/y/pull/1"' '5' 'true' '["a/b"]' '{"r":"a/b"}')
-_ds_collide=0
-for _v in "${_ds_corpus[@]}"; do
-    [[ "$(jq -rn --argjson v "$_v" "$_ds_canon"'($v | canon_source) // "«null»"')" == "acme/widget" ]] \
-        && _ds_collide=$((_ds_collide + 1))
-done
-eq "witness: no corpus row canonicalises to the URL's own repo" "0" "$_ds_collide"
-_ds_payload=0 _ds_url=0
-for _v in "${_ds_corpus[@]}"; do
-    _c="$(_ds_card "$_v")"
-    _want="$(_ds_promote "$_c")"
-    [[ "$_want" == payload ]] && _ds_payload=$((_ds_payload + 1)) || _ds_url=$((_ds_url + 1))
-    eq "payload.repo [$_v]: the lib fragment agrees with derive_source ($_want)" \
-       "$_want" "$(_ds_lib "$KB_JQ_PAYLOAD_REPO_IS_SOURCE" "$_c")"
-done
-# A corpus that only ever answered one way would agree with a fragment stuck on that answer.
-eq "witness: the corpus drives BOTH answers" "true|true" \
-   "$([[ "$_ds_payload" -gt 0 ]] && echo true)|$([[ "$_ds_url" -gt 0 ]] && echo true)"
-echo "== control: a lib fragment that tightens the predicate is caught by the same comparison =="
-# `[^/]*/[^/]*` requires EXACTLY one slash — the same tightening that would silently stop
-# `kbcard patch` naming payload.repo on a card promote attributes to it.
-_ds_mut="${KB_JQ_PAYLOAD_REPO_IS_SOURCE/test(\"\/\")/test(\"\\\\A[^\/]*\/[^\/]*\\\\z\")}"
-eq "control: the mutation changed the fragment" "false" \
-   "$([[ "$_ds_mut" == "$KB_JQ_PAYLOAD_REPO_IS_SOURCE" ]] && echo true || echo false)"
-_ds_dis=0
-for _v in "${_ds_corpus[@]}"; do
-    _c="$(_ds_card "$_v")"
-    [[ "$(_ds_lib "$_ds_mut" "$_c")" == "$(_ds_promote "$_c")" ]] || _ds_dis=$((_ds_dis + 1))
-done
-eq "control: the tightened fragment DISAGREES with derive_source (a/b/c and the URL row)" "2" "$_ds_dis"
-unset -f _ds_card _ds_promote _ds_lib _prc_jq_def _rfg_strip
-unset _ds_canon _ds_rfg _ds_derive _ds_prog _ds_corpus _ds_mut _ds_dis _ds_collide _ds_payload _ds_url _c _want _v
 
 _summary "mirror-pair-parity-selftest"

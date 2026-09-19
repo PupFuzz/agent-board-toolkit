@@ -233,11 +233,9 @@ main() {
     # 2b. correlation guard — BEFORE the mint, on every path (mint, use-requested, retry). The
     # stamp below is `kbcard patch --pr-url <placeholder>` without --pr, and kbcard refuses that
     # (rc 2, nothing written) when the card's stored pr_number names a real PR: the placeholder
-    # says "no PR yet" about a card that names one, and moves its by-ref source (card#9846) —
-    # moves it, that is, unless the card's `payload.repo` is what sets that source, which outranks
-    # every URL and leaves nothing to move (KB_JQ_PAYLOAD_REPO_IS_SOURCE, card#9918); the refusal
-    # is the same either way, because the number still names a PR the URL does not. A
-    # refusal THERE would land after next-dl has claimed a DL, orphaning it; so the same question
+    # says "no PR yet" about a card that names one (and, unless the card's `payload.repo` outranks
+    # every URL, moves its by-ref source too — card#9846, card#9918). A refusal THERE would land
+    # after next-dl has claimed a DL, orphaning it; so the same question
     # is asked HERE, of the card already read, through the one predicate kbcard asks it with
     # (kb_ref_pairs_alone / kb_ref_pair_verdicts in the lib) over the keys the stamp will write —
     # never a local restatement of what counts as "real". The issue pair is asked too and never
