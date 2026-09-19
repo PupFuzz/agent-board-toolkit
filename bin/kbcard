@@ -1701,8 +1701,9 @@ _kbc_assign_guard() {
 #
 # THE DEFECT IT CLOSES. The payload PATCH merges per key, so a call that writes one half of a
 # number/URL pair leaves the stored other half untouched. The board derives a card's by-ref
-# `source` (owner/repo) from a URL (payload.repo wins when set; else the first of pr_url, issue_url,
-# html_url, external_link yielding a repo) and never from the number, so:
+# `source` (owner/repo) from a URL — a payload.repo that is a string containing `/` wins outright
+# over every one of them; else the first of pr_url, issue_url, html_url, external_link yielding a
+# repo — and never from the number, so (the URL case; the messages below own the other one):
 #   --pr N / --issue N alone        re-points the number and leaves the card attributed to the
 #                                   OLD URL's repo;
 #   --pr-url U / --issue-url U alone moves the attribution to U's repo while the card still names
@@ -1720,9 +1721,9 @@ _kbc_assign_guard() {
 #
 # A STORED URL NAMING NO NUMBER is refused under a given number exactly as a given one is under a
 # stored number (operator ruling "A", card#9846): a commit/tree/blob URL, or a pull/issues segment
-# with no digits, still attributes the card to its repo, so --pr N alone would name PR N under that
-# repo whether or not PR N is there. Only a stored URL attributing the card to NO repo keeps the
-# notice.
+# with no digits, still attributes the card to its repo (a payload.repo source excepted, above), so
+# --pr N alone would name PR N under that repo whether or not PR N is there. Only a stored URL
+# attributing the card to NO repo keeps the notice.
 #
 # ⛔ NO MESSAGE ECHOES A URL, STORED OR GIVEN. It can carry userinfo, and because the capture is
 # unanchored the scheme need not sit at byte 0 (leading blanks, or any prefix at all), where
@@ -1760,14 +1761,36 @@ _kbc_ref_pair_guard() {
     fi
     verdicts="$(kb_ref_pair_verdicts "$data" "$payload" "$pairs")" || lrc=$?
     if (( lrc )); then _kbc_lib_unruled "patch on task $task" "the number/URL pairs" kb_ref_pair_verdicts "$lrc"; return 2; fi
-    # derive_source (promote-released-cards) lets a string payload.repo containing "/" win over
-    # every URL, so a refusal reasoning from the URL's repo must say when that is not the source.
-    local _kbc_src_note=""
-    if jq -e '.payload.repo | type == "string" and test("/")' >/dev/null 2>&1 <<<"$data"; then
-        _kbc_src_note=" (This card carries payload.repo, which sets its by-ref source ahead of any URL; promote still matches it on the number.)"
+    # WHERE THE CARD'S BY-REF SOURCE ACTUALLY COMES FROM, asked ONCE for the whole card. A
+    # payload.repo that is a string containing "/" IS the source and outranks every URL
+    # (derive_source, mirrored as the lib's KB_JQ_PAYLOAD_REPO_IS_SOURCE), so on such a card every
+    # clause below reasoning from the URL's repo is false — and appending a correction to a false
+    # clause leaves the message asserting both (card#9918). Each refusal therefore gives a
+    # DIFFERENT reason, not an extra sentence. ⛔ The value is never printed: unlike $repo it is
+    # operator-supplied free text rather than a parse of the path after github.com/, so the
+    # messages name it as "its payload.repo" and send the operator to `kbcard show`.
+    local src_payload=0 attr_diff attr_unnum hazard_stored hazard_given hazard_place srcp
+    if jq -e "$KB_JQ_PAYLOAD_REPO_IS_SOURCE"'payload_repo_is_source' >/dev/null 2>&1 <<<"$data"; then
+        src_payload=1
     fi
+    srcp="this card's by-ref source comes from its payload.repo, ahead of any URL — kbcard show --task $task prints the card"
     while IFS=$'\t' read -r r side disp kind num repo stored; do
         _kbc_ref_pair_names "$r" "$side"
+        # The reason each refusal gives, never the verdict it gives: what is refused, and the exit
+        # code, are the same whichever way the source is derived.
+        if (( src_payload )); then
+            attr_diff="and the URL is not what attributes the card either: $srcp"
+            attr_unnum="and does not attribute the card either ($srcp)"
+            hazard_stored="by number with no URL naming any $noun, under a by-ref source $repo has no part in"
+            hazard_given="$hazard_stored"
+            hazard_place="and its by-ref source would NOT move to $repo, because $srcp"
+        else
+            attr_diff="and the board attributes it (by-ref source) from the URL's owner/repo"
+            attr_unnum="but attributes the card to $repo"
+            hazard_stored="under $repo's by-ref source whether or not $noun $stored is in $repo, and a release there shipping $noun $stored would promote it"
+            hazard_given="under $repo's by-ref source, and a release there shipping $noun $stored would promote it"
+            hazard_place="and move its by-ref source to $repo"
+        fi
         case "$disp:$side:$kind" in
             ok:*) ;;
             notice:number:unparsed-url)
@@ -1777,15 +1800,15 @@ _kbc_ref_pair_guard() {
             notice:url:unparsed-number)
                 notices+=("kbcard: patch on task $task: the card's $nkey is not a $noun number (kbcard show --task $task prints it), so whether $given diverges from it could not be checked — writing $ukey and leaving $nkey as it is (pass $nflag to replace it)") ;;
             refuse:number:diff)
-                refusals+=("kbcard: patch on task $task: REFUSING $given without $uflag — the card's $ukey names $noun $num in $repo, so this write would leave the card naming one $noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo.${_kbc_src_note} Pass $uflag with the new $noun's URL alongside $nflag. NOTHING WAS WRITTEN.") ;;
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $uflag — the card's $ukey names $noun $num in $repo, so this write would leave the card naming one $noun by number and another by URL, $attr_diff. Pass $uflag with the new $noun's URL alongside $nflag. NOTHING WAS WRITTEN.") ;;
             refuse:url:diff)
-                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given names $noun $num in $repo but the card's $nkey is $noun $stored, so this write would leave the card naming one $noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo.${_kbc_src_note} Pass $nflag with the new $noun's number alongside $uflag. NOTHING WAS WRITTEN.") ;;
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given names $noun $num in $repo but the card's $nkey is $noun $stored, so this write would leave the card naming one $noun by number and another by URL, $attr_diff. Pass $nflag with the new $noun's number alongside $uflag. NOTHING WAS WRITTEN.") ;;
             refuse:number:unnumbered-stored)
-                refusals+=("kbcard: patch on task $task: REFUSING $given without $uflag — the card's $ukey names no $noun number but attributes the card to $repo, so this write would leave the card naming $noun $stored under $repo's by-ref source whether or not $noun $stored is in $repo, and a release there shipping $noun $stored would promote it.${_kbc_src_note} Pass $uflag with the $noun's URL alongside $nflag. NOTHING WAS WRITTEN.") ;;
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $uflag — the card's $ukey names no $noun number $attr_unnum, so this write would leave the card naming $noun $stored $hazard_stored. Pass $uflag with the $noun's URL alongside $nflag. NOTHING WAS WRITTEN.") ;;
             refuse:url:unnumbered-given)
-                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given names no $noun number but attributes the card to $repo, while the card's $nkey is $noun $stored, so this write would leave the card naming $noun $stored under $repo's by-ref source, and a release there shipping $noun $stored would promote it.${_kbc_src_note} Pass $nflag with $uflag to re-point both. NOTHING WAS WRITTEN.") ;;
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given names no $noun number $attr_unnum, while the card's $nkey is $noun $stored, so this write would leave the card naming $noun $stored $hazard_given. Pass $nflag with $uflag to re-point both. NOTHING WAS WRITTEN.") ;;
             refuse:url:placeholder-given)
-                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given is the pre-$noun placeholder (a .../0 URL, \"no $noun yet\") in $repo, but the card's $nkey is $noun $stored, so this write would leave the card naming $noun $stored by number while its URL says there is none, and move its by-ref source to $repo.${_kbc_src_note} Pass $nflag with $uflag to re-point both. NOTHING WAS WRITTEN.") ;;
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given is the pre-$noun placeholder (a .../0 URL, \"no $noun yet\") in $repo, but the card's $nkey is $noun $stored, so this write would leave the card naming $noun $stored by number while its URL says there is none, $hazard_place. Pass $nflag with $uflag to re-point both. NOTHING WAS WRITTEN.") ;;
             *)
                 # A verdict this case does not name is refused, not written: the lib owns the
                 # vocabulary, and a new refusal kind landing here must not ride through as rc 0.

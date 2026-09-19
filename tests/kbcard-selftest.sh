@@ -4971,15 +4971,6 @@ eq "…the refusal names --pr-url and the repo it derived"    "true" \
    "$(has "REFUSING --pr 179 without --pr-url — the card's pr_url names no PR number but attributes the card to acme/widget" "$err")"
 eq "…says nothing was written, and never prints the token"  "true|false" \
    "$(has 'NOTHING WAS WRITTEN' "$err")|$(has 'TOKEN-9846' "$err$out")"
-# A card carrying payload.repo takes its by-ref source from that, ahead of any URL (promote's
-# derive_source), so a refusal reasoning from the URL's repo says so — and only then (card#9918).
-KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","repo":"other/repo"}' kbc patch --task 505 --pr 179
-eq "⭐ payload.repo set: refused, and the refusal names payload.repo's precedence" "2|0|true" \
-   "$rc|$(npatch)|$(has 'This card carries payload.repo, which sets its by-ref source ahead of any URL' "$err")"
-KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178"}' kbc patch --task 505 --pr 179
-eq "⭐ no payload.repo: refused, with no payload.repo note" "2|false" "$rc|$(has 'payload.repo' "$err")"
-KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","repo":"norepo"}' kbc patch --task 505 --pr 179
-eq "a payload.repo with no '/' is not a source (derive_source's predicate) → no note" "2|false" "$rc|$(has 'payload.repo' "$err")"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
 eq "a zero-padded URL number is the same PR → rc 0"          "0|1" "$rc|$(npatch)"
 # --keep-refs on a decline RETAINS the stored pr_url, so the divergence is still there.
@@ -5230,6 +5221,72 @@ for _ref in pr issue; do
            "1|0|true" "$rc|$(npatch)|$(has "whether $_uf diverges from" "$err")"
     done
 done
+# --- ⭐ card#9918: a payload.repo SOURCE changes the reason EVERY refusal arm gives --------------
+# derive_source gives a payload.repo that is a string containing "/" precedence over every URL, so
+# on such a card each arm's URL-source clause is FALSE. The arms therefore give a different reason
+# there rather than appending one to the false clause — and the CHANGELOG's claim is about all
+# five, so all five are driven, on both pairs, in both directions: with a payload.repo source the
+# payload wording is present and the URL wording ABSENT, without one the exact opposite. The
+# absence rows are why the presence rows mean something: an arm that lost its payload clause to
+# whatever came next would satisfy a presence-only test (and a mutant stripping arms 2-5 passed
+# the whole suite before these rows existed).
+# ⛔ payload.repo is operator-supplied free text, not a parse of a URL path: the value may not be
+# printed, so the stub carries a token and every arm asserts it never appears.
+_p9918='repo-TOKEN-9918/secret'
+# _g9918 <label> <stored-payload-json> <url-clause> <payload-clause> <patch-args…>
+_g9918() {
+    local label="$1" stored="$2" uclause="$3" pclause="$4"; shift 4
+    local with; with="$(jq -cn --argjson s "$stored" --arg r "$_p9918" '$s + {repo: $r}')"
+    KB_STUB_PAYLOAD="$with" kbc patch --task 505 "$@"
+    eq "⭐ $label, payload.repo IS the source → rc 2, NO PATCH, the payload.repo reason" "2|0|true" \
+       "$rc|$(npatch)|$(has "$pclause" "$err")"
+    eq "…and NOT the URL-source clause it replaces, and never the value" "false|false" \
+       "$(has "$uclause" "$err")|$(has 'TOKEN-9918' "$err$out")"
+    KB_STUB_PAYLOAD="$stored" kbc patch --task 505 "$@"
+    eq "$label, no payload.repo → rc 2, NO PATCH, the URL-source reason, byte-identical" "2|0|true" \
+       "$rc|$(npatch)|$(has "$uclause" "$err")"
+    eq "…and no payload.repo wording at all" "false" "$(has 'payload.repo' "$err")"
+}
+for _ref in pr issue; do
+    if [[ "$_ref" == pr ]]; then _seg=pull _noun=PR; else _seg=issues _noun=issue; fi
+    _nf="--$_ref" _uf="--$_ref-url" _nk="${_ref}_number" _uk="${_ref}_url"
+    _srcp="this card's by-ref source comes from its payload.repo, ahead of any URL — kbcard show --task 505 prints the card"
+    _g9918 "refuse:$_ref:number:diff" "{\"$_uk\":\"https://github.com/acme/widget/$_seg/178\"}" \
+        "the card's $_uk names $_noun 178 in acme/widget, so this write would leave the card naming one $_noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo." \
+        "the card's $_uk names $_noun 178 in acme/widget, so this write would leave the card naming one $_noun by number and another by URL, and the URL is not what attributes the card either: $_srcp." \
+        "$_nf" 179
+    _g9918 "refuse:$_ref:url:diff" "{\"$_nk\":178}" \
+        "the $_uf given names $_noun 179 in other/repo but the card's $_nk is $_noun 178, so this write would leave the card naming one $_noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo." \
+        "the $_uf given names $_noun 179 in other/repo but the card's $_nk is $_noun 178, so this write would leave the card naming one $_noun by number and another by URL, and the URL is not what attributes the card either: $_srcp." \
+        "$_uf" "https://github.com/other/repo/$_seg/179"
+    _g9918 "refuse:$_ref:number:unnumbered-stored" "{\"$_uk\":\"https://github.com/acme/widget/commit/abc\"}" \
+        "the card's $_uk names no $_noun number but attributes the card to acme/widget, so this write would leave the card naming $_noun 179 under acme/widget's by-ref source whether or not $_noun 179 is in acme/widget, and a release there shipping $_noun 179 would promote it." \
+        "the card's $_uk names no $_noun number and does not attribute the card either ($_srcp), so this write would leave the card naming $_noun 179 by number with no URL naming any $_noun, under a by-ref source acme/widget has no part in." \
+        "$_nf" 179
+    _g9918 "refuse:$_ref:url:unnumbered-given" "{\"$_nk\":178}" \
+        "the $_uf given names no $_noun number but attributes the card to other/repo, while the card's $_nk is $_noun 178, so this write would leave the card naming $_noun 178 under other/repo's by-ref source, and a release there shipping $_noun 178 would promote it." \
+        "the $_uf given names no $_noun number and does not attribute the card either ($_srcp), while the card's $_nk is $_noun 178, so this write would leave the card naming $_noun 178 by number with no URL naming any $_noun, under a by-ref source other/repo has no part in." \
+        "$_uf" "https://github.com/other/repo/commit/abc"
+    _g9918 "refuse:$_ref:url:placeholder-given" "{\"$_nk\":178}" \
+        "so this write would leave the card naming $_noun 178 by number while its URL says there is none, and move its by-ref source to other/repo." \
+        "so this write would leave the card naming $_noun 178 by number while its URL says there is none, and its by-ref source would NOT move to other/repo, because $_srcp." \
+        "$_uf" "https://github.com/other/repo/$_seg/0"
+done
+# The predicate is derive_source's own and NOT "the card has a payload.repo key": a value that is
+# not a string containing "/" leaves the URL as the source, so the message must not move.
+for _r in '"norepo"' 'null' '5' 'true' '["a/b"]' '{"r":"a/b"}'; do
+    KB_STUB_PAYLOAD="$(jq -cn --argjson r "$_r" '{pr_url:"https://github.com/acme/widget/pull/178", repo:$r}')" \
+        kbc patch --task 505 --pr 179
+    eq "a payload.repo of $_r is no source (derive_source's predicate) → rc 2, the URL wording, no payload.repo" "2|true|false" \
+       "$rc|$(has 'the board attributes it (by-ref source) from the URL' "$err")|$(has 'payload.repo' "$err")"
+done
+# …and a card whose payload is null is ASKED the predicate too (the guard reads it before the
+# verdicts): it answers "not the source" rather than failing the patch.
+KB_STUB_PAYLOAD='null' kbc patch --task 505 --pr 179
+eq "control: a null payload → the predicate answers, rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
+unset -f _g9918
+unset _p9918 _srcp _r
+
 # A decline nulls pr_number (not issue_number), so --pr-url alone on a decline has nothing stored to
 # diverge from; "no read" is measured against the same decline without it.
 KB_STUB_PAYLOAD='{"pr_number":178}' kbc patch --task 505 --column wont_do
