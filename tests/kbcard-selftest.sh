@@ -5106,21 +5106,56 @@ for _ref in pr issue; do
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/$_seg/00"
     eq "⭐ a userinfo placeholder $_uf (…/00): rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-9846' "$err$out")"
     # …and the placeholder still proceeds where the card names no ref: nothing stored, or a 0.
-    for _p in '{}' "{\"$_nk\":null}" "{\"$_nk\":0}"; do
+    for _p in '{}' "{\"$_nk\":null}" "{\"$_nk\":0}" "{\"$_nk\":\"0\"}"; do
         KB_STUB_PAYLOAD="$_p" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/0"
         eq "the placeholder $_uf over no real $_nk ($_p) → rc 0, writes $_uk only, silent" \
            "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/0\"}|" "$rc|$(ppay)|$err"
     done
+    # ⭐ A stored number of 0 names no ref at all, so ANY URL written over it diverges from nothing —
+    # a real one, or one naming no number — exactly as adopt-to-dl adopts over it.
+    for _p in "{\"$_nk\":0}" "{\"$_nk\":\"0\"}" "{\"$_nk\":\"#000\"}"; do
+        KB_STUB_PAYLOAD="$_p" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+        eq "⭐ a stored $_nk of zero ($_p): $_uf …/179 → rc 0, writes $_uk only, silent" \
+           "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|" "$rc|$(ppay)|$err"
+        KB_STUB_PAYLOAD="$_p" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/abc"
+        eq "a stored $_nk of zero ($_p): a /commit/ $_uf → rc 0, writes $_uk only, silent" \
+           "0|{\"$_uk\":\"https://github.com/other/repo/commit/abc\"}|" "$rc|$(ppay)|$err"
+    done
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_nf" 179 "$_uf" "https://github.com/other/repo/$_seg/179"
     eq "$_uf WITH $_nf → rc 0, both written, NO read" \
        "0|{\"$_nk\":179,\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|0" "$rc|$(ppay)|$(nget)"
-    # the given URL carries no number: nothing to disagree with, and the notice never echoes it
+    # ⭐ The given URL names no number but still YIELDS A REPO the way promote-released-cards'
+    # repo_from_gh_url derives one (commit/tree/blob, or a pull/issues segment with no digits): the
+    # card would name 178 under that repo, so that repo's release shipping #178 promotes it
+    # (operator ruling "a", card#9846). Refused, naming the missing flag and echoing no URL.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/commit/179"
-    eq "a /commit/ $_uf over 178 → rc 0, with the not-checked notice" \
-       "0|true" "$rc|$(has "the $_uf given is not a GitHub pull-request or issue URL" "$err")"
-    # stderr only: stdout is the write echo, which reports the pr_url the server now holds —
-    # the caller's own value, echoed as every successful --pr-url write always has.
-    eq "…and the notice never prints the token"              "false" "$(has 'TOKEN-9846' "$err")"
+    eq "⭐ a /commit/ $_uf over a stored 178 → rc 2, NO PATCH"     "2|0" "$rc|$(npatch)"
+    eq "…the refusal names $_nf, the derived repo and the stored number" "true|true" \
+       "$(has "REFUSING $_uf without $_nf" "$err")|$(has "the $_uf given names no $_noun number but attributes the card to other/repo, while the card's $_nk is $_noun 178" "$err")"
+    eq "…says nothing was written, and never prints the token" "true|false" \
+       "$(has 'NOTHING WAS WRITTEN' "$err")|$(has 'TOKEN-9846' "$err$out")"
+    for _u in "https://github.com/other/repo/tree/main" "https://GitHub.com/other/repo.git/blob/main/x.md" \
+              "https://github.com/other/repo/$_seg/" "https://github.com/other/repo/$_seg/abc"; do
+        KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"
+        eq "⭐ $_uf '$_u' (a repo, no number) over 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
+           "$rc|$(npatch)|$(has 'attributes the card to other/repo' "$err")"
+    done
+    # …and over a stored number that names no one number, it is the not-checked notice, as before.
+    KB_STUB_PAYLOAD="{\"$_nk\":\"1.5\"}" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/abc"
+    eq "a /commit/ $_uf over a stored $_nk '1.5' → rc 0, writes, with the unparsed-number notice" "0|1|true" \
+       "$rc|$(npatch)|$(has "the card's $_nk is not a $_noun number" "$err")"
+    # A given URL that yields NO repo (not a GitHub URL the promote side derives a source from)
+    # attributes the card nowhere: nothing to disagree with, so it proceeds with the notice, which
+    # never echoes it.
+    for _u in "https://user:TOKEN-9846@example.com/other/repo/$_seg/179" "https://github.com/other/repo" \
+              "https://github.com/other/repo/wiki"; do
+        KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"
+        eq "a $_uf yielding no repo ('${_u/TOKEN-9846/…}') over 178 → rc 0, writes, with the not-checked notice" \
+           "0|1|true" "$rc|$(npatch)|$(has "the $_uf given is not a GitHub pull-request or issue URL" "$err")"
+        # stderr only: stdout is the write echo, which reports the URL the server now holds —
+        # the caller's own value, echoed as every successful URL write always has.
+        eq "…and the notice never prints the token"          "false" "$(has 'TOKEN-9846' "$err")"
+    done
     # a stored number that names no number: the same notice posture
     KB_STUB_PAYLOAD="{\"$_nk\":\"1.5\"}" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
     eq "a stored $_nk '1.5' (no one number) → rc 0, writes $_uk, with the notice" \
@@ -5153,7 +5188,31 @@ eq "one pair refusing and one noticing → rc 2, and only the refusal is printed
    "2|0|false" "$rc|$(npatch)|$(has 'could not be checked' "$err")"
 KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --dl DL-7 --version v1
 eq "a patch writing neither half of either pair → rc 0 and never reads the card" "0|0" "$rc|$(nget)"
-unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held
+
+# --- ⭐ a kbcard beside a lib that predates the pair check refuses EVERY patch (card#9756's rule) --
+# The pair check runs on every patch — it is what decides whether there is a pair to check — so a
+# lib without kb_ref_pairs_alone cannot say "no pair here" either. That is fail-closed on purpose,
+# and it answers the way --card-start's guard does beside an older lib: rc 2, nothing sent, and a
+# line naming the function and the rc, never a policy refusal and never a silent rc 1.
+_psstale="$(_bin_beside_stale_lib "$TMP/stale-pairs" "$BIN" kb_ref_pairs_alone kb_ref_pair_verdicts)"
+for _args in "--dl DL-7" "--version v1" "--pr 179"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$(KB_STUB_PAYLOAD="$PR178" "$_psstale" patch --task 505 $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without the pair check: patch $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …the line names the function and the rc" "true" \
+       "$(has "kbcard: patch on task 505: kb_ref_pairs_alone returned rc 127, which is not one of its answers" "$err")"
+    eq "…says re-vendor the lib, and that nothing was written" "true|true" \
+       "$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+done
+# The second function alone missing: the card IS read (there is a pair), and the verdict is no answer.
+_psstale="$(_bin_beside_stale_lib "$TMP/stale-verdicts" "$BIN" kb_ref_pair_verdicts)"
+kb_stub_reset; rc=0
+out="$(KB_STUB_PAYLOAD="$PR178" "$_psstale" patch --task 505 --pr 179 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_ref_pair_verdicts: --pr 179 → rc 2, the card read, NO PATCH" "2|1|0" "$rc|$(nget)|$(npatch)"
+eq "⭐ …the line names that function and the rc" "true" \
+   "$(has "kbcard: patch on task 505: kb_ref_pair_verdicts returned rc 127, which is not one of its answers" "$err")"
+unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u

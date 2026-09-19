@@ -1811,21 +1811,44 @@ kb_ref_pairs_alone() {
           else empty end | @tsv' <<<"$1"
 }
 
+# KB_JQ_REPO_FROM_GH_URL — THE RULE BY WHICH A GITHUB URL ATTRIBUTES A CARD TO A REPO (its by-ref
+# `source`), as a jq program fragment defining `def repo_from_gh_url:`: the `<owner>/<repo>` after
+# `github.com/` when a /pull|issues|commit|tree|blob/ segment follows it (case-insensitive,
+# unanchored, first match, a trailing `.git` trimmed), and null for anything else — a bare
+# `github.com/<owner>/<repo>`, a non-GitHub URL, a non-string.
+#
+# ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` carries this
+# def inline, and its header there owns the reasoning for each clause (the server's
+# repoFromGitHubUrl is the source of truth; the non-string arm is its `is_string`). It is a vendored
+# standalone that must not source this lib, so it cannot read this constant; the text here is its
+# text, and `tests/mirror-pair-parity-selftest.sh` § 5 holds the two identical line for line and
+# drives both over one corpus, so neither can move alone. Edit the standalone's def and this
+# constant together.
+#
+# USAGE — prepend as a separate shell word, like KB_JQ_REF_CANON:
+#     jq -r "$KB_JQ_REPO_FROM_GH_URL"'.payload.pr_url | repo_from_gh_url'
+# ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW (it is a single-quoted shell string).
+KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
+    if type != "string" then null
+    else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
+    end;'
+
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
 # writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
 # card's stored other half would leave the card naming one ref by NUMBER and a different one by
 # URL. <card-data-json> is the card object (`.data` of a card read). Prints one TSV line per pair:
 #     <ref> <side> <disposition> <kind> [<url-number> <url-repo> <stored-number>]
 # <disposition> is what a WRITER does with it — ok (write), notice (write, saying no check was
-# possible), refuse (write nothing); <kind> is why, for the message. Both callers act on the
-# disposition and neither restates it: `kbcard patch` (_kbc_ref_pair_guard) and `adopt-to-dl`,
+# possible), refuse (write nothing); <kind> is why, for the message. <url-number> is `-` where the
+# URL names none (a TSV field is never empty: `read` collapses adjacent tabs). Both callers act on
+# the disposition and neither restates it: `kbcard patch` (_kbc_ref_pair_guard) and `adopt-to-dl`,
 # which must refuse BEFORE it mints a DL rather than have kbcard refuse the stamp after it.
 #
-# THE URL — stored or given — is read the way the promote side derives `source`
-# (bin/promote-released-cards `repo_from_gh_url`: `github.com/<owner>/<repo>[.git]/` then one of
-# pull|issues|commit|tree|blob, case-insensitive, unanchored). Of those segments only `pull` and
-# `issues` carry a number, and GitHub numbers issues and pull requests in ONE sequence, so BOTH
-# are read for BOTH pairs; the number after either is compared with the pair's number through
+# THE URL — stored or given — ATTRIBUTES the card to the repo KB_JQ_REPO_FROM_GH_URL derives,
+# which is the promote side's own def (the constant's header says how the two are held together),
+# and <url-repo> is always that repo. Its NUMBER is read from a `pull` or `issues` segment — the
+# only two of promote's segments that carry one; GitHub numbers issues and pull requests in ONE
+# sequence, so BOTH are read for BOTH pairs — and compared with the pair's number through
 # KB_JQ_REF_CANON's `norm`, so `#178`, `PR-178` and `0178` all name 178. The number is the whole
 # digit run and NOTHING after it is looked at, because promote's reading needs nothing after the
 # segment: any suffix it still derives a source through (trailing whitespace, `?query`,
@@ -1834,34 +1857,43 @@ kb_ref_pairs_alone() {
 # THE KINDS. ok: `none` — no stored other half (absent, null, blank); `same` — the URL names the
 # same number; `placeholder` — the STORED URL is the pre-PR placeholder `.../pull/0` or
 # `.../issues/0` (any zero spelling), which stands for "no ref yet", so a number written over it
-# diverges from nothing. notice: `unparsed-url` — a URL naming no number (commit/tree/blob, a
-# non-GitHub URL, a non-string); `unparsed-number` — a stored number `norm` reads no number from.
-# There is no second number to disagree with, so refusing would refuse on a divergence nobody can
-# show, and silence would claim a check that did not happen. refuse: `diff` — two different
-# numbers; `placeholder-given` — a GIVEN placeholder URL over a stored real number. The placeholder
-# is exempt only where it is STORED: given, it says "no ref yet" about a card whose number names
-# one, and moves the card's by-ref source while that number stays (operator ruling, card#9846).
-# A stored number of 0 names no ref either, so it compares `same` with the placeholder.
+# diverges from nothing; `stored-zero` — the STORED number normalises to 0, which names no ref
+# either, so no URL written over it — a real one, the placeholder, one naming no number — diverges
+# from anything. notice: `unparsed-url` — a URL that attributes the card to NO repo (a non-GitHub
+# URL, a bare repo URL, a non-string), or a STORED URL naming no number (commit/tree/blob);
+# `unparsed-number` — a stored number `norm` reads no number from. There is no second number to
+# disagree with, so refusing would refuse on a divergence nobody can show, and silence would claim
+# a check that did not happen. refuse: `diff` — two different numbers; `placeholder-given` — a
+# GIVEN placeholder URL over a stored real number; `unnumbered-given` — a GIVEN URL that names no
+# number but still attributes the card to a repo (commit/tree/blob, or a pull/issues segment with
+# no digits), over a stored real number: the card would name that number under the URL's repo, so
+# a release there shipping it promotes the card (operator ruling "a", card#9846). The two
+# `-given` kinds are why the placeholder is exempt only where it is STORED: given, it says "no ref
+# yet" about a card whose number names one, and moves the card's by-ref source while that number
+# stays (operator ruling, card#9846).
 #
-# ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> come from a capture after
-# `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
+# ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> are what the parse DERIVED from the path
+# after `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
 kb_ref_pair_verdicts() {
-    jq -r --argjson req "$2" --arg pairs "$3" "$KB_JQ_REF_CANON"'
+    jq -r --argjson req "$2" --arg pairs "$3" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL"'
         ((.payload // {}) | if type == "object" then . else {} end) as $p
         | $pairs | split("\n")[] | select(. != "") | split("\t") as [$r, $side]
         | ($r + "_number") as $nk | ($r + "_url") as $uk
         | (if $side == "number" then {n: $req[$nk], u: $p[$uk], s: $p[$uk]}
            else {n: $p[$nk], u: $req[$uk], s: $p[$nk]} end) as $x
+        | ($x.u | repo_from_gh_url) as $repo
         | [$r, $side] + (
             if $x.s == null or ($x.s | type) == "string" and ($x.s | test("\\A\\s*\\z")) then ["ok", "none"]
-            elif ($x.u | type) != "string" then ["notice", "unparsed-url"]
+            elif $side == "url" and ($x.n | norm) == "0" then ["ok", "stored-zero"]
+            elif $repo == null then ["notice", "unparsed-url"]
             else [$x.u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues)/(?<n>[0-9]+)"; "i")][0] as $c
-              | if $c == null then ["notice", "unparsed-url"]
-                elif $side == "number" and ($c.n | test("\\A0+\\z")) then ["ok", "placeholder"]
+              | if $c == null and $side == "number" then ["notice", "unparsed-url"]
+                elif $c != null and $side == "number" and ($c.n | test("\\A0+\\z")) then ["ok", "placeholder"]
                 elif ($x.n | norm) == "" then ["notice", "unparsed-number"]
+                elif $c == null then ["refuse", "unnumbered-given", "-", $repo, ($x.n | norm)]
                 elif ($c.n | norm) == ($x.n | norm) then ["ok", "same"]
-                elif ($c.n | test("\\A0+\\z")) then ["refuse", "placeholder-given", "0", $c.r, ($x.n | norm)]
-                else ["refuse", "diff", ($c.n | norm), $c.r, ($x.n | norm)] end
+                elif ($c.n | test("\\A0+\\z")) then ["refuse", "placeholder-given", "0", $repo, ($x.n | norm)]
+                else ["refuse", "diff", ($c.n | norm), $repo, ($x.n | norm)] end
             end) | @tsv' <<<"$1"
 }
 

@@ -228,7 +228,7 @@ eq "…refused by adopt-to-dl, not by kbcard at the stamp" "true" "$(has 'alread
 # CONTROLS — the refusal is the stored PR number, not this path refusing everything.
 # "1.5" names no single number: kbcard writes over it with a notice, so adoption must not refuse it
 # either — a refusal here that kbcard would not make is a second, stricter predicate.
-for _p in '{}' '{"pr_number":null}' '{"pr_number":""}' '{"pr_number":0}' '{"pr_number":"1.5"}' '{"pr_url":"https://github.com/owner/name/pull/0"}'; do
+for _p in '{}' '{"pr_number":null}' '{"pr_number":""}' '{"pr_number":0}' '{"pr_number":"0"}' '{"pr_number":"1.5"}' '{"pr_url":"https://github.com/owner/name/pull/0"}'; do
     ata_run "$_p" 4242 --repo owner/name --board dev
     eq "control: no real pr_number ($_p) → adopts, rc 0, minted once, ONE PATCH" "0|1|1" "$_rc|$(nmint)|$(npatch)"
 done
@@ -249,7 +249,32 @@ _rc=0
 ATA_PAYLOAD="$REAL_PR" bash "$ATA_BIN/kbcard" --board dev patch --task 4242 --dl DL-0042 \
     --pr-url https://github.com/owner/name/pull/0 >/dev/null 2>&1 || _rc=$?
 eq "agreement: kbcard itself refuses that stamp over PR 178 — rc 2, no PATCH" "2|0" "$_rc|$(npatch)"
+# …and the controls agree the other way: a stored 0 (either type) names no PR, so kbcard writes the
+# very stamp adoption let through. Without this a stricter kbcard would orphan the DL adoption minted.
+for _p in '{"pr_number":0}' '{"pr_number":"0"}'; do
+    kb_stub_reset
+    _rc=0
+    ATA_PAYLOAD="$_p" bash "$ATA_BIN/kbcard" --board dev patch --task 4242 --dl DL-0042 \
+        --pr-url https://github.com/owner/name/pull/0 >/dev/null 2>&1 || _rc=$?
+    eq "agreement: kbcard writes that stamp over a stored pr_number of zero ($_p) — rc 0, ONE PATCH" "0|1" "$_rc|$(npatch)"
+done
+
+# ⭐ BESIDE A LIB THAT PREDATES THE PAIR CHECK, EVERY ADOPTION IS REFUSED before the mint — the check
+# runs on every adoption, so a lib without it cannot say "no pair here" either — and the line names
+# the function and its rc, so the cause is the install, not the card.
+ATA_STALE="$TMP/ata-stale"
+mkdir -p "$ATA_STALE"
+cp -pR "$ATA_BIN"/. "$ATA_STALE"/
+printf '\nunset -f kb_ref_pairs_alone kb_ref_pair_verdicts\n' >> "$ATA_STALE/_kb-board-lib.sh"
+kb_stub_reset; : > "$ATA_MINT_LOG"; _rc=0
+_err="$(ATA_PAYLOAD='{}' bash "$ATA_STALE/adopt-to-dl" 4242 --repo owner/name --board dev 2>&1 >/dev/null)" || _rc=$?
+eq "⭐ a lib without the pair check: an adoption of a card with NO pr_number → rc 1, not minted, no PATCH" \
+   "1|0|0" "$_rc|$(nmint)|$(npatch)"
+eq "⭐ …the line names the function and the rc" "true" \
+   "$(has "kb_ref_pairs_alone returned rc 127" "$_err")"
+eq "…and says to re-vendor the lib, and that no DL was minted" "true|true" \
+   "$(has 're-vendor the lib with this tool' "$_err")|$(has 'before any DL is minted' "$_err")"
 unset -f kb_stub_route ata_run nmint npatch
-unset ATA_BIN ATA_MINT_LOG REAL_PR _p
+unset ATA_BIN ATA_STALE ATA_MINT_LOG REAL_PR _p
 
 _summary "adopt-to-dl-selftest"

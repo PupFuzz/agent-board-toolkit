@@ -20,6 +20,9 @@
 #      kb_ref_pair_verdicts — the predicate kbcard itself refuses with — so a DL is never claimed
 #      for a stamp that will be refused. A card with no pr_number (absent, null, blank), a 0, or
 #      one naming no single number proceeds exactly as kbcard would let it. rc 1, nothing minted.
+#      Of the lib's refusal kinds only `placeholder-given` is reachable here: the stamp's pr_url
+#      is always the numbered `…/pull/0`, and --issue always rides with its --issue-url. A lib
+#      that predates the check (rc 127) refuses EVERY adoption, rc 1, naming the function.
 #   3. mint                — next-dl claims the next DL atomically, and the claimed N is ECHOED
 #      to the caller BEFORE the write, so a crash mid-seam is retried with `--dl N` (no orphan,
 #      no double-mint).
@@ -130,6 +133,13 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
+# _ata_lib_unruled <card-id> <function> <rc>: step 2b's refusal when the lib's pair check gives no
+# answer — kbcard's card#9756 line (_kbc_lib_unruled) in this tool's words, at this tool's rc 1.
+_ata_lib_unruled() {
+    echo "adopt-to-dl: card #$1's correlation keys could not be checked: $2 returned rc $3, which is not one of its answers — rc 127 means the _kb-board-lib.sh beside this tool predates it, so re-vendor the lib with this tool. Refusing before any DL is minted; nothing was written." >&2
+    exit 1
+}
+
 # Prints on STDOUT; the error arms redirect. The channel is the CALLER's to choose because the
 # two uses differ: an explicitly-requested `--help` is the requested OUTPUT (rc 0, pipeable,
 # pageable), while usage-after-a-bad-argument is diagnostic. Baking `>&2` in here made
@@ -227,17 +237,19 @@ main() {
     # (kb_ref_pairs_alone / kb_ref_pair_verdicts in the lib) over the keys the stamp will write —
     # never a local restatement of what counts as "real". The issue pair is asked too and never
     # refuses, because --issue always rides with its --issue-url, so neither half is written alone.
-    local pr_url issue_url="" probe pairs card_data verdicts r disp vrepo stored refused=""
+    local pr_url issue_url="" probe pairs card_data verdicts r disp vrepo stored refused="" lrc=0
     pr_url="$(_ata_pr_url "$repo")"
     [[ -z "$req_issue" ]] || issue_url="$(_ata_issue_url "$repo" "$req_issue")"
     probe="$(jq -cn --arg pu "$pr_url" --arg iss "$req_issue" --arg iu "$issue_url" \
         '{pr_url: $pu} + (if $iss == "" then {} else {issue_number: ($iss | tonumber), issue_url: $iu} end)')"
-    pairs="$(kb_ref_pairs_alone "$probe")" \
-        || { echo "adopt-to-dl: card #$card_id's correlation keys could not be checked (is _kb-board-lib.sh the version shipped with this tool?) — refusing before any DL is minted" >&2; exit 1; }
+    # A predicate that gives no answer refuses — on EVERY adoption, since the stamp always writes
+    # pr_url — naming the function and its rc (127: a lib older than this tool), as kbcard does.
+    pairs="$(kb_ref_pairs_alone "$probe")" || lrc=$?
+    (( lrc == 0 )) || _ata_lib_unruled "$card_id" kb_ref_pairs_alone "$lrc"
     if [[ -n "$pairs" ]]; then
         card_data="$(kb_parse_resp "$card" -c '.data | select(type == "object")')"
-        verdicts="$(kb_ref_pair_verdicts "$card_data" "$probe" "$pairs")" \
-            || { echo "adopt-to-dl: card #$card_id's correlation keys could not be checked — refusing before any DL is minted" >&2; exit 1; }
+        verdicts="$(kb_ref_pair_verdicts "$card_data" "$probe" "$pairs")" || lrc=$?
+        (( lrc == 0 )) || _ata_lib_unruled "$card_id" kb_ref_pair_verdicts "$lrc"
         while IFS=$'\t' read -r r _ disp _ _ vrepo stored; do
             [[ "$disp" == refuse ]] || continue
             refused=1
