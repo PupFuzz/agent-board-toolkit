@@ -299,4 +299,46 @@ _adopt_fn "$PRC" owner_card_tags
 unset -f owner_card_tags owner_strip owner_list
 unset _b _t _naive
 
+# ═══════════════════════ 5 — `repo_from_gh_url`: promote ↔ KB_JQ_REPO_FROM_GH_URL ══════════════
+#
+# The board attributes a card (by-ref `source`) from a GitHub URL through one rule, which
+# promote-released-cards mirrors in jq as `def repo_from_gh_url:`. `kbcard patch` and `adopt-to-dl`
+# ask the SAME question — does a URL written without its number still attribute the card to a
+# repo? (card#9846) — through the lib's `KB_JQ_REPO_FROM_GH_URL`, which is that def's text. The
+# standalone must not source the lib, so the def exists twice; what holds them together is THIS:
+# the two texts are identical line for line (indentation aside — the standalone's copy sits
+# indented inside a larger program), and both are driven over one corpus so an extraction that
+# found the wrong lines cannot pass by comparing two empties.
+echo "== repo_from_gh_url: the lib constant IS the standalone's def, line for line =="
+_rfg_strip() { sed 's/^[[:space:]]*//'; }
+_rfg_prc="$(awk '/^[[:space:]]*def repo_from_gh_url:/ {on=1} on {print} on && /^[[:space:]]*end;[[:space:]]*$/ {exit}' "$PRC" | _rfg_strip)"
+eq "witness: the lib defines KB_JQ_REPO_FROM_GH_URL" "false" "$([[ -z "${KB_JQ_REPO_FROM_GH_URL:-}" ]] && echo true || echo false)"
+eq "witness: the extraction found the def's head and its close" "true|true" \
+   "$(has 'def repo_from_gh_url:' "$_rfg_prc")|$([[ "${_rfg_prc##*$'\n'}" == "end;" ]] && echo true || echo false)"
+eq "⭐ the standalone's def IS KB_JQ_REPO_FROM_GH_URL, line for line" \
+   "$(printf '%s\n' "$KB_JQ_REPO_FROM_GH_URL" | _rfg_strip)" "$_rfg_prc"
+echo "== repo_from_gh_url: both copies agree over one corpus =="
+# _rfg <def-text> <json-value> — the def's answer for one payload value, `null` when none.
+_rfg() { jq -cn --argjson v "$2" "$1"' $v | repo_from_gh_url'; }
+_rfg_corpus=('"https://github.com/acme/widget/pull/1"' '"https://GitHub.com/acme/widget.git/commit/abc"'
+    '"https://github.com/acme/widget/tree/main"' '"https://github.com/acme/widget/blob/main/x.md"'
+    '"https://github.com/acme/widget/issues/"' '"https://user:t@github.com/acme/widget/pull/abc"'
+    '" see https://github.com/acme/widget/issues/9 "' '"https://github.com/acme/widget"'
+    '"https://github.com/acme/widget/wiki"' '"https://example.com/acme/widget/pull/1"' '""'
+    '{"u":"https://github.com/acme/widget/pull/1"}' '["https://github.com/acme/widget/pull/1"]' '42' 'null')
+for _v in "${_rfg_corpus[@]}"; do
+    eq "repo_from_gh_url agrees on [$_v]" "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" "$_v")" "$(_rfg "$_rfg_prc" "$_v")"
+done
+eq "witness: the corpus holds a URL that yields a repo and one that yields none" "acme/widget|null" \
+   "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget/tree/main"' | jq -r .)|$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget"')"
+echo "== control: a standalone copy that drops a segment is caught by both comparisons =="
+_rfg_mut="${_rfg_prc/|tree|blob/|tree}"
+eq "control: the mutation applied" "false" "$([[ "$_rfg_mut" == "$_rfg_prc" ]] && echo true || echo false)"
+eq "control: the line-for-line comparison reds on it" "false" \
+   "$([[ "$(printf '%s\n' "$KB_JQ_REPO_FROM_GH_URL" | _rfg_strip)" == "$_rfg_mut" ]] && echo true || echo false)"
+eq "control: …and so does the corpus, on a /blob/ URL" "false" \
+   "$([[ "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget/blob/main/x.md"')" == "$(_rfg "$_rfg_mut" '"https://github.com/acme/widget/blob/main/x.md"')" ]] && echo true || echo false)"
+unset -f _rfg _rfg_strip
+unset _rfg_prc _rfg_mut _rfg_corpus _v
+
 _summary "mirror-pair-parity-selftest"

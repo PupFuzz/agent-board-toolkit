@@ -2000,8 +2000,10 @@ finding with no owner is abandoned, not filed.
   consolidated onto the server, and the reason is what the server ENDPOINT can answer, not
   effort.** `bin/promote-released-cards` mirrors the kanban `ExternalReferenceNormalizer`
   (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
-  bridge PHP and `kanban_common._derive_card_source`. The obvious consolidation is to stop
-  mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
+  bridge PHP and `kanban_common._derive_card_source`; its `repo_from_gh_url` def is carried once more,
+  verbatim, by the lib as `KB_JQ_REPO_FROM_GH_URL` for the `kbcard patch` / `adopt-to-dl` pair check
+  (card#9846), held line for line to promote's by `tests/mirror-pair-parity-selftest.sh` § 5. The
+  obvious consolidation is to stop mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
   <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
   with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
   `->where('source', $source)` — a strict equality — so a card whose source is a *different* repo
