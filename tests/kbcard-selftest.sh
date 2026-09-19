@@ -4971,6 +4971,15 @@ eq "…the refusal names --pr-url and the repo it derived"    "true" \
    "$(has "REFUSING --pr 179 without --pr-url — the card's pr_url names no PR number but attributes the card to acme/widget" "$err")"
 eq "…says nothing was written, and never prints the token"  "true|false" \
    "$(has 'NOTHING WAS WRITTEN' "$err")|$(has 'TOKEN-9846' "$err$out")"
+# A card carrying payload.repo takes its by-ref source from that, ahead of any URL (promote's
+# derive_source), so a refusal reasoning from the URL's repo says so — and only then (card#9918).
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","repo":"other/repo"}' kbc patch --task 505 --pr 179
+eq "⭐ payload.repo set: refused, and the refusal names payload.repo's precedence" "2|0|true" \
+   "$rc|$(npatch)|$(has 'This card carries payload.repo, which sets its by-ref source ahead of any URL' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178"}' kbc patch --task 505 --pr 179
+eq "⭐ no payload.repo: refused, with no payload.repo note" "2|false" "$rc|$(has 'payload.repo' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","repo":"norepo"}' kbc patch --task 505 --pr 179
+eq "a payload.repo with no '/' is not a source (derive_source's predicate) → no note" "2|false" "$rc|$(has 'payload.repo' "$err")"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
 eq "a zero-padded URL number is the same PR → rc 0"          "0|1" "$rc|$(npatch)"
 # --keep-refs on a decline RETAINS the stored pr_url, so the divergence is still there.
