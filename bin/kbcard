@@ -262,8 +262,9 @@
 #     says that and what to pass — never where the card ends up attributed, which the pair does
 #     not decide (payload.repo above; card#9918). Pass both halves. Numbers compare after the
 #     same normalisation (#178 and PR-178 are 178); a URL's number is read from .../pull/<N> or
-#     .../issues/<N> for either pair (one number sequence). No stored other half, the same number, a STORED .../pull/0 or .../issues/0
-#     placeholder ("no PR yet") and a STORED number of 0 (either names no ref) proceed unchanged;
+#     .../issues/<N> for either pair (one number sequence). No stored other half, the same number,
+#     a STORED .../pull/0 or .../issues/0 placeholder ("no PR yet") and a STORED number of 0
+#     (either names no ref) proceed unchanged;
 #     so do both halves together, --clear pr-url / issue-url, and a wont_do decline without
 #     --keep-refs (which nulls pr_number and pr_url, not the issue pair) — each replaces or
 #     removes the other half, and none reads the card for it.
