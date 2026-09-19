@@ -4264,12 +4264,15 @@ eq "the usage block's --clear list names exactly the _kbc_clearable fields" \
 # 505 answers the way the board does: the request's payload MERGED onto a card that already holds
 # every clearable key, a null REMOVING its key. 506 answers with the card UNCHANGED — a server that
 # did not clear — so the echo's raw projection can be shown to report a held value, not a
-# fabricated null.
+# fabricated null. The GET serves 505 as held: --pr-url without --pr reads the card for a stored
+# pr_number it could diverge from (card#9846), and this card carries none.
 CL_HELD='{"dl_number":"DL-0001","origin":"preemptive","version_target":"v1","pr_url":"https://github.com/o/r/pull/1","issue_url":"https://github.com/o/r/issues/1"}'
 export CL_HELD
 kb_stub_route() {
     local method="$1" url="$2" body="$3"
     case "$method $url" in
+        "GET "*/tasks/505.json*)
+            printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":48,"payload":%s}}' "$CL_HELD" ;;
         "PATCH "*/tasks/505.json)
             printf '200\n'
             jq -cn --argjson b "$body" --argjson held "$CL_HELD" \
@@ -5013,6 +5016,129 @@ for _r in 403 nocard; do
     KB_STUB_READ=$_r kbc patch --task 505 --pr 179
     eq "an unreadable card ($_r) → rc 1, no PATCH"           "1|0" "$rc|$(npatch)"
 done
+
+echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
+# card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
+# stub and helpers above are reused. A URL-side write moves the card's by-ref `source` to the given
+# URL's repo while the stored number stays, so that repo's release shipping the old number promotes
+# the card — the mirror of the defect above.
+
+# --- member 2: --issue without --issue-url over a stored issue_url --------------------------
+ISS42='{"issue_number":42,"issue_url":"https://github.com/acme/widget/issues/42"}'
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --issue 43
+eq "⭐ --issue 43 over an issue_url naming 42 → rc 2"        "2" "$rc"
+eq "⭐ …and issues NO PATCH AT ALL"                          "0" "$(npatch)"
+eq "…having READ the card to decide it"                     "1" "$(nget)"
+eq "…the refusal names --issue-url"                         "true" "$(has 'REFUSING --issue 43 without --issue-url' "$err")"
+eq "…names the issue and repo it derived"                   "true" "$(has "the card's issue_url names issue 42 in acme/widget" "$err")"
+eq "…and says nothing was written"                          "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+eq "…and prints no write echo"                              ""  "$out"
+KB_STUB_PAYLOAD='{"issue_url":"https://github.com/acme/widget/pull/42"}' kbc patch --task 505 --issue 43
+eq "a /pull/42 issue_url (one number sequence), --issue 43 → rc 2, no PATCH" "2|0" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"issue_url":"https://user:TOKEN-9846@github.com/acme/widget/issues/42"}' kbc patch --task 505 --issue 43
+eq "⭐ a userinfo issue_url: rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-9846' "$err$out")"
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --column wont_do --issue 43
+eq "a wont_do decline does NOT null issue_url, so --issue 43 over 42 still → rc 2, no PATCH" "2|0" "$rc|$(npatch)"
+for _p in '{}' '{"issue_url":null}' '{"issue_url":""}' '{"issue_url":"https://github.com/acme/widget/issues/0"}'; do
+    KB_STUB_PAYLOAD="$_p" kbc patch --task 505 --issue 43
+    eq "no issue_url or the placeholder ($_p) → rc 0, writes issue_number only, silent" \
+       '0|{"issue_number":43}|' "$rc|$(ppay)|$err"
+done
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --issue '#42'
+eq "--issue '#42' over 42 → rc 0, silent (the same issue)"  '0|{"issue_number":"#42"}|' "$rc|$(ppay)|$err"
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --issue 43 --issue-url https://github.com/other/repo/issues/43
+eq "--issue WITH --issue-url → rc 0, both written, NO read" \
+   '0|{"issue_number":43,"issue_url":"https://github.com/other/repo/issues/43"}|0' "$rc|$(ppay)|$(nget)"
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --issue 43 --clear issue-url
+eq "--issue with --clear issue-url → rc 0, NO read (the URL is removed)" \
+   '0|{"issue_number":43,"issue_url":null}|0' "$rc|$(ppay)|$(nget)"
+KB_STUB_PAYLOAD='{"issue_url":"https://github.com/acme/widget/commit/42"}' kbc patch --task 505 --issue 43
+eq "a /commit/ issue_url → rc 0, writes issue_number, with the not-checked notice" \
+   '0|{"issue_number":43}|true' "$rc|$(ppay)|$(has "the card's issue_url is not a GitHub pull-request or issue URL" "$err")"
+KB_STUB_PAYLOAD='{"issue_url":42}' kbc patch --task 505 --issue 43
+eq "a NON-STRING issue_url → rc 0 with the notice" '0|true' "$rc|$(has 'could not be checked' "$err")"
+for _r in 403 nocard; do
+    KB_STUB_READ=$_r kbc patch --task 505 --issue 43
+    eq "--issue on an unreadable card ($_r) → rc 1, no PATCH, names the pair" \
+       '1|0|true' "$rc|$(npatch)|$(has 'whether --issue 43 diverges' "$err")"
+done
+
+# --- members 3 and 4: --pr-url / --issue-url WITHOUT the number, over a stored number -------
+for _ref in pr issue; do
+    if [[ "$_ref" == pr ]]; then _seg=pull _noun=PR; else _seg=issues _noun=issue; fi
+    _nf="--$_ref" _uf="--$_ref-url" _nk="${_ref}_number" _uk="${_ref}_url"
+    _held="{\"$_nk\":178}"
+    kb_stub_reset
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+    eq "⭐ $_uf …/179 over a stored $_nk of 178 → rc 2"               "2" "$rc"
+    eq "⭐ …and issues NO PATCH AT ALL"                        "0" "$(npatch)"
+    eq "…having READ the card to decide it"                   "1" "$(nget)"
+    eq "…the refusal names $_nf"                              "true" "$(has "REFUSING $_uf without $_nf" "$err")"
+    eq "…names what it derived from the URL and the stored number" "true" \
+       "$(has "the $_uf given names $_noun 179 in other/repo but the card's $_nk is $_noun 178" "$err")"
+    eq "…and says nothing was written"                        "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+    eq "…and prints no write echo"                            ""  "$out"
+    KB_STUB_PAYLOAD="{\"$_nk\":\"PR-178\"}" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+    eq "$_uf …/179 over a DECORATED stored $_nk PR-178 → rc 2, no PATCH" "2|0" "$rc|$(npatch)"
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/$_seg/179"
+    eq "⭐ a userinfo $_uf: rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-9846' "$err$out")"
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 --column wont_do --keep-refs "$_uf" "https://github.com/other/repo/$_seg/179"
+    eq "wont_do --keep-refs $_uf …/179 over 178 → rc 2, no PATCH (the number is retained)" "2|0" "$rc|$(npatch)"
+
+    # proceeds, unchanged
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/178"
+    eq "$_uf naming the SAME number 178 → rc 0, writes $_uk only, silent" \
+       "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/178\"}|" "$rc|$(ppay)|$err"
+    for _p in '{}' "{\"$_nk\":null}" "{\"$_nk\":\"\"}"; do
+        KB_STUB_PAYLOAD="$_p" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+        eq "no stored $_nk ($_p) → rc 0, writes $_uk only, silent" \
+           "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|" "$rc|$(ppay)|$err"
+    done
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/0"
+    eq "the placeholder $_uf …/$_seg/0 over 178 → rc 0, silent" '0|' "$rc|$err"
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_nf" 179 "$_uf" "https://github.com/other/repo/$_seg/179"
+    eq "$_uf WITH $_nf → rc 0, both written, NO read" \
+       "0|{\"$_nk\":179,\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|0" "$rc|$(ppay)|$(nget)"
+    # the given URL carries no number: nothing to disagree with, and the notice never echoes it
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/commit/179"
+    eq "a /commit/ $_uf over 178 → rc 0, with the not-checked notice" \
+       "0|true" "$rc|$(has "the $_uf given is not a GitHub pull-request or issue URL" "$err")"
+    # stderr only: stdout is the write echo, which reports the pr_url the server now holds —
+    # the caller's own value, echoed as every successful --pr-url write always has.
+    eq "…and the notice never prints the token"              "false" "$(has 'TOKEN-9846' "$err")"
+    # a stored number that names no number: the same notice posture
+    KB_STUB_PAYLOAD="{\"$_nk\":\"1.5\"}" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+    eq "a stored $_nk '1.5' (no one number) → rc 0, writes $_uk, with the notice" \
+       "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|true" \
+       "$rc|$(ppay)|$(has "the card's $_nk is not a $_noun number" "$err")"
+    for _r in 403 nocard; do
+        KB_STUB_READ=$_r kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
+        eq "$_uf on an unreadable card ($_r) → rc 1, no PATCH, names the pair" \
+           "1|0|true" "$rc|$(npatch)|$(has "whether $_uf diverges from" "$err")"
+    done
+done
+# A decline nulls pr_number (not issue_number), so --pr-url alone on a decline has nothing stored to
+# diverge from; "no read" is measured against the same decline without it.
+KB_STUB_PAYLOAD='{"pr_number":178}' kbc patch --task 505 --column wont_do
+_ng="$(nget)"
+KB_STUB_PAYLOAD='{"pr_number":178}' kbc patch --task 505 --column wont_do --pr-url https://github.com/other/repo/pull/179
+eq "a wont_do decline with --pr-url → rc 0, no extra read (the decline nulls pr_number)" "0|$_ng" "$rc|$(nget)"
+eq "…and writes the new URL over a nulled number" \
+   '{"dl_number":null,"pr_number":null,"pr_url":"https://github.com/other/repo/pull/179"}' "$(ppay)"
+
+# --- several pairs in one call: ONE read, and every refusal is named --------------------------
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","issue_number":42}' \
+    kbc patch --task 505 --pr 179 --issue-url https://github.com/acme/widget/issues/43
+eq "⭐ --pr 179 AND --issue-url …/43, both diverging → rc 2, no PATCH, ONE read" "2|0|1" "$rc|$(npatch)|$(nget)"
+eq "…naming both refusals" "true|true" \
+   "$(has 'REFUSING --pr 179 without --pr-url' "$err")|$(has 'REFUSING --issue-url without --issue' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/178","issue_url":"https://example.com/x"}' \
+    kbc patch --task 505 --pr 179 --issue 43
+eq "one pair refusing and one noticing → rc 2, and only the refusal is printed (nothing is written)" \
+   "2|0|false" "$rc|$(npatch)|$(has 'could not be checked' "$err")"
+KB_STUB_PAYLOAD="$ISS42" kbc patch --task 505 --dl DL-7 --version v1
+eq "a patch writing neither half of either pair → rc 0 and never reads the card" "0|0" "$rc|$(nget)"
+unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
