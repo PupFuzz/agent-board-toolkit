@@ -1701,7 +1701,8 @@ _kbc_assign_guard() {
 #
 # THE DEFECT IT CLOSES. The payload PATCH merges per key, so a call that writes one half of a
 # number/URL pair leaves the stored other half untouched. The board derives a card's by-ref
-# `source` (owner/repo) from the URL (pr_url, then issue_url) and never from the number, so:
+# `source` (owner/repo) from a URL (payload.repo wins when set; else the first of pr_url, issue_url,
+# html_url, external_link yielding a repo) and never from the number, so:
 #   --pr N / --issue N alone        re-points the number and leaves the card attributed to the
 #                                   OLD URL's repo;
 #   --pr-url U / --issue-url U alone moves the attribution to U's repo while the card still names
