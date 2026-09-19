@@ -21,7 +21,9 @@
 #      for a stamp that will be refused. A card with no pr_number (absent, null, blank), a 0, or
 #      one naming no single number proceeds exactly as kbcard would let it. rc 1, nothing minted.
 #      Of the lib's refusal kinds only `placeholder-given` is reachable here: the stamp's pr_url
-#      is always the numbered `…/pull/0`, and --issue always rides with its --issue-url. A lib
+#      is always the numbered `…/pull/0` of the one --repo slug, and --issue always rides with its
+#      --issue-url — so no pr_number or issue_number is ever written alone, and `unnumbered-stored`
+#      (a number written under a stored URL naming none) is unreachable. A lib
 #      that predates the check (rc 127) refuses EVERY adoption, rc 1, naming the function.
 #   3. mint                — next-dl claims the next DL atomically, and the claimed N is ECHOED
 #      to the caller BEFORE the write, so a crash mid-seam is retried with `--dl N` (no orphan,

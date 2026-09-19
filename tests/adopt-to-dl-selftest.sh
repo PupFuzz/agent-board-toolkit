@@ -228,7 +228,10 @@ eq "…refused by adopt-to-dl, not by kbcard at the stamp" "true" "$(has 'alread
 # CONTROLS — the refusal is the stored PR number, not this path refusing everything.
 # "1.5" names no single number: kbcard writes over it with a notice, so adoption must not refuse it
 # either — a refusal here that kbcard would not make is a second, stricter predicate.
-for _p in '{}' '{"pr_number":null}' '{"pr_number":""}' '{"pr_number":0}' '{"pr_number":"0"}' '{"pr_number":"1.5"}' '{"pr_url":"https://github.com/owner/name/pull/0"}'; do
+# A stored pr_url naming no number (…/commit/…) with no pr_number is in the list too: the stamp
+# REPLACES pr_url and never writes pr_number alone, so kbcard's stored-side refusal
+# (unnumbered-stored) cannot reach an adoption.
+for _p in '{}' '{"pr_number":null}' '{"pr_number":""}' '{"pr_number":0}' '{"pr_number":"0"}' '{"pr_number":"1.5"}' '{"pr_url":"https://github.com/owner/name/pull/0"}' '{"pr_url":"https://github.com/owner/name/commit/abc"}'; do
     ata_run "$_p" 4242 --repo owner/name --board dev
     eq "control: no real pr_number ($_p) → adopts, rc 0, minted once, ONE PATCH" "0|1|1" "$_rc|$(nmint)|$(npatch)"
 done
