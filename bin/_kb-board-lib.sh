@@ -1799,6 +1799,72 @@ kb_dl_int_lenient() {
 # two spellings. `[^0-9]` is a NEGATED set of ASCII bytes, so no locale collation widens it.
 KB_JQ_REF_CANON='def norm: (. // "")|tostring|if test("\\A[^0-9]*[0-9]+[^0-9]*\\z") then gsub("[^0-9]";"")|sub("^0+(?=.)";"") else "" end;'
 
+# kb_ref_pairs_alone <payload-json>: the correlation pairs a payload PATCH writes ONE half of,
+# one `<ref>\t<side>` line each (<ref> pr|issue, <side> number|url), nothing when there are none.
+# A pair is <ref>_number + <ref>_url. It is written by half when one key is set and the other is
+# NOT a key of the same payload at all — a key present as null (a --clear, or a wont_do decline's
+# null) replaces the stored half, so there is nothing left to diverge from.
+kb_ref_pairs_alone() {
+    jq -r '["pr", "issue"][] as $r | ($r + "_number") as $nk | ($r + "_url") as $uk
+        | if .[$nk] != null and (has($uk) | not) then [$r, "number"]
+          elif (.[$uk] | type) == "string" and (has($nk) | not) then [$r, "url"]
+          else empty end | @tsv' <<<"$1"
+}
+
+# kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
+# writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
+# card's stored other half would leave the card naming one ref by NUMBER and a different one by
+# URL. <card-data-json> is the card object (`.data` of a card read). Prints one TSV line per pair:
+#     <ref> <side> <disposition> <kind> [<url-number> <url-repo> <stored-number>]
+# <disposition> is what a WRITER does with it — ok (write), notice (write, saying no check was
+# possible), refuse (write nothing); <kind> is why, for the message. Both callers act on the
+# disposition and neither restates it: `kbcard patch` (_kbc_ref_pair_guard) and `adopt-to-dl`,
+# which must refuse BEFORE it mints a DL rather than have kbcard refuse the stamp after it.
+#
+# THE URL — stored or given — is read the way the promote side derives `source`
+# (bin/promote-released-cards `repo_from_gh_url`: `github.com/<owner>/<repo>[.git]/` then one of
+# pull|issues|commit|tree|blob, case-insensitive, unanchored). Of those segments only `pull` and
+# `issues` carry a number, and GitHub numbers issues and pull requests in ONE sequence, so BOTH
+# are read for BOTH pairs; the number after either is compared with the pair's number through
+# KB_JQ_REF_CANON's `norm`, so `#178`, `PR-178` and `0178` all name 178. The number is the whole
+# digit run and NOTHING after it is looked at, because promote's reading needs nothing after the
+# segment: any suffix it still derives a source through (trailing whitespace, `?query`,
+# `#fragment`, `/files`) yields the number here too.
+#
+# THE KINDS. ok: `none` — no stored other half (absent, null, blank); `same` — the URL names the
+# same number; `placeholder` — the STORED URL is the pre-PR placeholder `.../pull/0` or
+# `.../issues/0` (any zero spelling), which stands for "no ref yet", so a number written over it
+# diverges from nothing. notice: `unparsed-url` — a URL naming no number (commit/tree/blob, a
+# non-GitHub URL, a non-string); `unparsed-number` — a stored number `norm` reads no number from.
+# There is no second number to disagree with, so refusing would refuse on a divergence nobody can
+# show, and silence would claim a check that did not happen. refuse: `diff` — two different
+# numbers; `placeholder-given` — a GIVEN placeholder URL over a stored real number. The placeholder
+# is exempt only where it is STORED: given, it says "no ref yet" about a card whose number names
+# one, and moves the card's by-ref source while that number stays (operator ruling, card#9846).
+# A stored number of 0 names no ref either, so it compares `same` with the placeholder.
+#
+# ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> come from a capture after
+# `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
+kb_ref_pair_verdicts() {
+    jq -r --argjson req "$2" --arg pairs "$3" "$KB_JQ_REF_CANON"'
+        ((.payload // {}) | if type == "object" then . else {} end) as $p
+        | $pairs | split("\n")[] | select(. != "") | split("\t") as [$r, $side]
+        | ($r + "_number") as $nk | ($r + "_url") as $uk
+        | (if $side == "number" then {n: $req[$nk], u: $p[$uk], s: $p[$uk]}
+           else {n: $p[$nk], u: $req[$uk], s: $p[$nk]} end) as $x
+        | [$r, $side] + (
+            if $x.s == null or ($x.s | type) == "string" and ($x.s | test("\\A\\s*\\z")) then ["ok", "none"]
+            elif ($x.u | type) != "string" then ["notice", "unparsed-url"]
+            else [$x.u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues)/(?<n>[0-9]+)"; "i")][0] as $c
+              | if $c == null then ["notice", "unparsed-url"]
+                elif $side == "number" and ($c.n | test("\\A0+\\z")) then ["ok", "placeholder"]
+                elif ($x.n | norm) == "" then ["notice", "unparsed-number"]
+                elif ($c.n | norm) == ($x.n | norm) then ["ok", "same"]
+                elif ($c.n | test("\\A0+\\z")) then ["refuse", "placeholder-given", "0", $c.r, ($x.n | norm)]
+                else ["refuse", "diff", ($c.n | norm), $c.r, ($x.n | norm)] end
+            end) | @tsv' <<<"$1"
+}
+
 # kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
 # id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
 # envelope OR a bare top-level array — so every caller (adoption verify, field registration)

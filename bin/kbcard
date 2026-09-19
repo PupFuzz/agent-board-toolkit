@@ -260,10 +260,12 @@
 #     URL's repo (after --pr-url alone, the NEW repo, while it still names the old number). Pass
 #     both halves. Numbers compare after the same normalisation (#178 and PR-178 are 178); a
 #     URL's number is read from .../pull/<N> or .../issues/<N> for either pair (one number
-#     sequence). No stored other half, the same number, and a .../pull/0 or .../issues/0
-#     placeholder on either side proceed unchanged; so do both halves together, --clear pr-url /
+#     sequence). No stored other half, the same number, and a STORED .../pull/0 or .../issues/0
+#     placeholder ("no PR yet") proceed unchanged; so do both halves together, --clear pr-url /
 #     issue-url, and a wont_do decline without --keep-refs (which nulls pr_number and pr_url, not
 #     the issue pair) — each replaces or removes the other half, and none reads the card for it.
+#     A GIVEN placeholder is not exempt: --pr-url .../pull/0 (or --issue-url .../0) alone over a
+#     stored number naming a real ref is refused like any other divergence.
 #     A URL naming no number, or a stored number naming no one number, proceeds with a notice
 #     that the check could not be made; an unreadable card is rc 1, nothing written (card#9837,
 #     card#9846, acceptance changes, operator-approved).
@@ -292,7 +294,8 @@
 #     pr_number/issue_number field then refuses server-side (docs/INSTALL.md §3b). --dl has
 #     always been strict in the same way (kb_dl_canon, which refuses a sign and refuses 0);
 #     --pr-url / --issue-url are URLs and are not covered — the pre-PR placeholder .../pull/0
-#     is a URL and rides there, unaffected.
+#     is a URL and rides there, untouched by this shape check (the pair check above still
+#     applies to it on patch).
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
 #     external_id, tags, assigned_user_id, assignee, dl, pr per card — and nothing
@@ -1013,7 +1016,9 @@ resolve_task() {
 # appended by the caller, which would re-duplicate the per-key typing this helper exists to own.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
 # dl_number/pr_number left on a declined card can later match a recycled DL/PR and
-# resurrect it in a release-promote scan. The kanban v3 payload PATCH merges per-key —
+# resurrect it in a release-promote scan. issue_number/issue_url are deliberately NOT nulled:
+# bin/promote-released-cards never matches on issue_number, so a stale one resurrects nothing.
+# The kanban v3 payload PATCH merges per-key —
 # an explicit JSON null DELETES a key, an omitted key is untouched. Merge order makes an
 # explicitly-passed ref flag win over the null (right-hand precedence), so a caller who
 # stamps a ref while declining keeps what they explicitly set. Shared by BOTH decline
@@ -1689,27 +1694,10 @@ _kbc_assign_guard() {
 # to the whole class by card#9846), is the one answer that needs no guess: neither half can be
 # rewritten into the other without the value the call did not pass.
 #
-# THE PAIRS AND THE DIRECTIONS. One pair per ref (pr, issue): <ref>_number and <ref>_url, set by
-# --<ref> and --<ref>-url. A pair is checked in the direction of the half this call writes, and ONLY
-# when the other key is NOT in the same PATCH: --<ref>-url / --<ref> sets it, `--clear <ref>-url`
-# and the wont_do decline (without --keep-refs) null it, and in each of those the stored value is
-# replaced, so there is nothing left to diverge from. No pair to check ⇒ no read at all.
-#
-# WHAT COUNTS AS A DIVERGENCE. The URL — stored or given — is read the way the promote side derives
-# `source` (bin/promote-released-cards `repo_from_gh_url`: `github.com/<owner>/<repo>[.git]/` then
-# one of pull|issues|commit|tree|blob, case-insensitive, unanchored). Of those segments only `pull`
-# and `issues` carry a number, and GitHub numbers issues and pull requests in ONE sequence, so BOTH
-# are read for BOTH pairs; the number after either is compared with the pair's number through
-# KB_JQ_REF_CANON's `norm`, so `#178`, `PR-178` and `0178` all name 178. The number is the whole
-# digit run and NOTHING after it is looked at, because promote's reading needs nothing after the
-# segment: any suffix it still derives a source through (trailing whitespace from a URL sent as
-# typed, `?query`, `#fragment`, `/files`) yields the number here too.
-# Proceeds, unchanged: no stored counterpart (absent, null, blank); a URL naming the SAME number;
-# the pre-PR placeholder `.../pull/0` or `.../issues/0` (in any zero spelling), which stands for "no
-# PR yet". Any other URL — commit/tree/blob, which carry no number, a non-GitHub URL, a non-string —
-# and a stored number `norm` reads no number from, proceed with a notice: there is no second number
-# to disagree with, so refusing would refuse on a divergence nobody can show, and silence would
-# claim a check that did not happen.
+# WHICH PAIRS ARE CHECKED, AND WHAT COUNTS AS A DIVERGENCE, are NOT decided here: kb_ref_pairs_alone
+# and kb_ref_pair_verdicts in _kb-board-lib.sh own both, because adopt-to-dl must ask the same
+# question before it mints. This function owns the read, the messages and the exit code. No pair to
+# check ⇒ no read at all; several pairs cost ONE read, and every refusal is printed.
 #
 # ⛔ NO MESSAGE ECHOES A URL, STORED OR GIVEN. It can carry userinfo, and because the capture is
 # unanchored the scheme need not sit at byte 0 (leading blanks, or any prefix at all), where
@@ -1719,12 +1707,12 @@ _kbc_assign_guard() {
 # `kbcard show` for the stored value itself.
 _kbc_ref_pair_guard() {
     local task="$1" payload="$2" pr="$3" issue="$4" pairs resp data verdicts
-    local r side kind num repo stored nflag uflag nkey ukey noun given
+    local r side disp kind num repo stored nflag uflag nkey ukey noun given
     local refusals=() notices=()
-    pairs="$(jq -r '["pr", "issue"][] as $r | ($r + "_number") as $nk | ($r + "_url") as $uk
-        | if .[$nk] != null and (has($uk) | not) then [$r, "number"]
-          elif (.[$uk] | type) == "string" and (has($nk) | not) then [$r, "url"]
-          else empty end | @tsv' <<<"$payload")"
+    # A predicate that cannot run refuses (a bin vendored beside an older lib lacks it): an empty
+    # answer from it would otherwise read as "no pair to check" and skip the guard.
+    pairs="$(kb_ref_pairs_alone "$payload")" \
+        || { echo "kbcard: patch on task $task: the number/URL pair check could not run (is _kb-board-lib.sh the version shipped with this kbcard?) — refusing before the write." >&2; return 1; }
     [[ -n "$pairs" ]] || return 0
     if ! resp="$(kb_api GET "/tasks/$task.json")"; then
         while IFS=$'\t' read -r r side; do
@@ -1749,36 +1737,27 @@ _kbc_ref_pair_guard() {
         done <<<"$pairs"
         return 1
     fi
-    verdicts="$(jq -r --argjson req "$payload" --arg pairs "$pairs" "$KB_JQ_REF_CANON"'
-        ((.payload // {}) | if type == "object" then . else {} end) as $p
-        | $pairs | split("\n")[] | split("\t") as [$r, $side]
-        | ($r + "_number") as $nk | ($r + "_url") as $uk
-        | (if $side == "number" then {n: $req[$nk], u: $p[$uk], s: $p[$uk]}
-           else {n: $p[$nk], u: $req[$uk], s: $p[$nk]} end) as $x
-        | [$r, $side] + (
-            if $x.s == null or ($x.s | type) == "string" and ($x.s | test("\\A\\s*\\z")) then ["none"]
-            elif ($x.u | type) != "string" then ["unparsed-url"]
-            else [$x.u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues)/(?<n>[0-9]+)"; "i")][0] as $c
-              | if $c == null then ["unparsed-url"]
-                elif ($c.n | test("\\A0+\\z")) then ["placeholder"]
-                elif ($x.n | norm) == "" then ["unparsed-number"]
-                elif ($c.n | norm) == ($x.n | norm) then ["same"]
-                else ["diff", ($c.n | norm), $c.r, ($x.n | norm)] end
-            end) | @tsv' <<<"$data")" || return 1
-    while IFS=$'\t' read -r r side kind num repo stored; do
+    verdicts="$(kb_ref_pair_verdicts "$data" "$payload" "$pairs")" || return 1
+    while IFS=$'\t' read -r r side disp kind num repo stored; do
         _kbc_ref_pair_names "$r" "$side"
-        case "$side:$kind" in
-            *:none|*:placeholder|*:same) ;;
-            number:unparsed-url)
+        case "$disp:$side:$kind" in
+            ok:*) ;;
+            notice:number:unparsed-url)
                 notices+=("kbcard: patch on task $task: the card's $ukey is not a GitHub pull-request or issue URL (kbcard show --task $task prints it), so whether $given diverges from it could not be checked — writing $nkey and leaving $ukey as it is (pass $uflag to replace it)") ;;
-            url:unparsed-url)
+            notice:url:unparsed-url)
                 notices+=("kbcard: patch on task $task: the $uflag given is not a GitHub pull-request or issue URL, so whether it diverges from the card's $nkey could not be checked — writing $ukey and leaving $nkey as it is (pass $nflag to replace it)") ;;
-            url:unparsed-number)
+            notice:url:unparsed-number)
                 notices+=("kbcard: patch on task $task: the card's $nkey is not a $noun number (kbcard show --task $task prints it), so whether $given diverges from it could not be checked — writing $ukey and leaving $nkey as it is (pass $nflag to replace it)") ;;
-            number:diff)
+            refuse:number:diff)
                 refusals+=("kbcard: patch on task $task: REFUSING $given without $uflag — the card's $ukey names $noun $num in $repo, so this write would leave the card naming one $noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo. Pass $uflag with the new $noun's URL alongside $nflag. NOTHING WAS WRITTEN.") ;;
-            url:diff)
+            refuse:url:diff)
                 refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given names $noun $num in $repo but the card's $nkey is $noun $stored, so this write would leave the card naming one $noun by number and another by URL, and the board attributes it (by-ref source) from the URL's owner/repo. Pass $nflag with the new $noun's number alongside $uflag. NOTHING WAS WRITTEN.") ;;
+            refuse:url:placeholder-given)
+                refusals+=("kbcard: patch on task $task: REFUSING $given without $nflag — the $uflag given is the pre-$noun placeholder (a .../0 URL, \"no $noun yet\") in $repo, but the card's $nkey is $noun $stored, so this write would leave the card naming $noun $stored by number while its URL says there is none, and move its by-ref source to $repo. Pass $nflag with $uflag to re-point both. NOTHING WAS WRITTEN.") ;;
+            *)
+                # A verdict this case does not name is refused, not written: the lib owns the
+                # vocabulary, and a new refusal kind landing here must not ride through as rc 0.
+                refusals+=("kbcard: patch on task $task: REFUSING $given — the $r pair check returned '$disp:$kind', which this kbcard does not know how to act on. NOTHING WAS WRITTEN.") ;;
         esac
     done <<<"$verdicts"
     if (( ${#refusals[@]} )); then
@@ -2083,8 +2062,8 @@ cmd_patch() {
     local task; task="$(resolve_task "$task_ref")"
     # The collision check is a READ, so it sits BELOW the offline preflight and ABOVE every
     # write — it refuses at rc 1 (the write did not happen and this run KNOWS it did not),
-    # never at rc 2, which in this file means a bad invocation (the --pr/pr_url refusal below is
-    # rc 2 AFTER a read: the call itself is wrong for this card, and only a read can say so).
+    # never at rc 2, which in this file means a bad invocation (the number/URL pair refusal below
+    # is rc 2 AFTER a read: the call itself is wrong for this card, and only a read can say so).
     # It is its OWN read, not folded into the tag read below: --assign + --tags/--type/--triaged
     # therefore costs two GETs. Deliberate — the tag read is a read-merge-WRITE whose result
     # becomes the body, and merging a refusal that must happen BEFORE any write into it would

@@ -164,4 +164,92 @@ case "$_err" in *"no board id could be read out of its body"*|*"refusing to adop
 unset -f kb_stub_route
 unset CARD_OK_BODY
 
+# ---------------------------------------------------------------------------
+echo "== a card whose pr_number names a real PR is refused BEFORE the mint (card#9846) =="
+# The stamp is `kbcard patch --dl … --pr-url <…/pull/0>` without --pr, and kbcard refuses that
+# over a stored pr_number naming a real PR (the placeholder says "no PR yet" about a card that
+# names one). Refused THERE, the DL next-dl had already claimed would be orphaned, so adopt-to-dl
+# asks kbcard's own predicate first. Driven as a process from a scratch copy of bin/ whose next-dl
+# is a stand-in that LOGS each call and claims DL-0042 — so "not minted" is a measurement, not an
+# inference from the rc — and whose kbcard is the REAL one, so the success control and the
+# agreement arm below exercise the very stamp being guarded.
+ATA_BIN="$TMP/ata-bin"
+mkdir -p "$ATA_BIN"
+cp -pR "$HERE"/../bin/. "$ATA_BIN"/
+export ATA_MINT_LOG="$TMP/next-dl.calls"
+cat > "$ATA_BIN/next-dl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ATA_MINT_LOG"
+printf 'DL-0042\n'
+STUB
+chmod +x "$ATA_BIN/next-dl"
+# The card GET answers ATA_PAYLOAD; a PATCH answers the card with the request's payload merged in
+# (the board's per-key merge); the by-ref verifies answer a hit on the card.
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/by-ref.json*) printf '200\n{"data":[{"id":4242}]}' ;;
+        "GET "*/tasks/4242.json*)
+            printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":48,"payload":%s}}' "$ATA_PAYLOAD" ;;
+        "PATCH "*/tasks/4242.json)
+            printf '200\n'
+            jq -cn --argjson b "$3" --argjson p "$ATA_PAYLOAD" \
+                '{data: {id: 4242, board_id: 42, workflow_stage_id: 48, payload: ($p + ($b.payload // {}))}}' ;;
+    esac
+}
+export -f kb_stub_route
+ata_run() {   # ata_run <payload-json> <adopt-to-dl args…> → sets _rc/_err, fresh logs
+    kb_stub_reset; : > "$ATA_MINT_LOG"
+    _rc=0
+    _err="$(ATA_PAYLOAD="$1" bash "$ATA_BIN/adopt-to-dl" "${@:2}" 2>&1 >/dev/null)" || _rc=$?
+}
+nmint()  { wc -l < "$ATA_MINT_LOG" | tr -d ' '; }
+npatch() { kb_stub_count PATCH /tasks/4242.json; }
+
+REAL_PR='{"pr_number":178,"pr_url":"https://github.com/owner/name/pull/178"}'
+ata_run "$REAL_PR" 4242 --repo owner/name --board dev
+eq "⭐ a card whose pr_number is PR 178 → rc 1"                       "1" "$_rc"
+eq "⭐ …and next-dl was NOT invoked (no DL claimed)"                   "0" "$(nmint)"
+eq "…and nothing was written (no PATCH)"                              "0" "$(npatch)"
+# One request in all — the card read — so the stamp was never even attempted. This, not the rc, is
+# what separates a refusal HERE from kbcard refusing the stamp (which reads the card again).
+eq "…having issued ONE request (the card read): the stamp was never attempted" "1" "$(kb_stub_total)"
+eq "…the refusal names the correlation and the order" "true|true" \
+   "$(has 'already correlates to PR 178' "$_err")|$(has 'Refusing BEFORE minting' "$_err")"
+ata_run '{"pr_number":"PR-178"}' 4242 --repo owner/name --board dev
+eq "a DECORATED stored pr_number PR-178 (no pr_url) → rc 1, not minted, no PATCH" "1|0|0" "$_rc|$(nmint)|$(npatch)"
+# The --dl paths skip the mint, and must refuse too — rather than proceed and fail at the stamp.
+ata_run "$REAL_PR" 4242 --repo owner/name --board dev --dl 42
+eq "⭐ --dl 42 on an un-adopted card naming PR 178 (use-requested) → rc 1, no stamp attempted" "1|0|1" "$_rc|$(nmint)|$(kb_stub_total)"
+eq "…refused by adopt-to-dl, not by kbcard at the stamp" "true" "$(has 'already correlates to PR 178' "$_err")"
+ata_run '{"dl_number":"DL-0042","pr_number":178}' 4242 --repo owner/name --board dev --dl 42
+eq "⭐ --dl 42 crash-retry on a card naming PR 178 (retry) → rc 1, no stamp attempted" "1|0|1" "$_rc|$(nmint)|$(kb_stub_total)"
+eq "…refused by adopt-to-dl, not by kbcard at the stamp" "true" "$(has 'already correlates to PR 178' "$_err")"
+
+# CONTROLS — the refusal is the stored PR number, not this path refusing everything.
+# "1.5" names no single number: kbcard writes over it with a notice, so adoption must not refuse it
+# either — a refusal here that kbcard would not make is a second, stricter predicate.
+for _p in '{}' '{"pr_number":null}' '{"pr_number":""}' '{"pr_number":0}' '{"pr_number":"1.5"}' '{"pr_url":"https://github.com/owner/name/pull/0"}'; do
+    ata_run "$_p" 4242 --repo owner/name --board dev
+    eq "control: no real pr_number ($_p) → adopts, rc 0, minted once, ONE PATCH" "0|1|1" "$_rc|$(nmint)|$(npatch)"
+done
+eq "…stamping the DL and the placeholder in that one PATCH" \
+   '{"dl_number":"DL-0042","pr_url":"https://github.com/owner/name/pull/0"}' \
+   "$(kb_stub_bodies PATCH /tasks/4242.json | jq -Sc .payload)"
+# --issue rides WITH --issue-url, so the issue pair never refuses — even over a different stored
+# issue — and adoption is otherwise unchanged by it.
+ata_run '{"issue_number":7,"issue_url":"https://github.com/owner/name/issues/7"}' 4242 --repo owner/name --board dev --issue 9
+eq "control: --issue 9 over a stored issue 7 → adopts, rc 0, ONE PATCH carrying both issue halves" \
+   '0|1|{"dl_number":"DL-0042","issue_number":9,"issue_url":"https://github.com/owner/name/issues/9","pr_url":"https://github.com/owner/name/pull/0"}' \
+   "$_rc|$(npatch)|$(kb_stub_bodies PATCH /tasks/4242.json | jq -Sc .payload)"
+
+# THE AGREEMENT ARM: the stamp adopt-to-dl refuses to reach IS one the real kbcard refuses. Without
+# this, the pre-mint refusal could be guarding a stamp that would have succeeded.
+kb_stub_reset
+_rc=0
+ATA_PAYLOAD="$REAL_PR" bash "$ATA_BIN/kbcard" --board dev patch --task 4242 --dl DL-0042 \
+    --pr-url https://github.com/owner/name/pull/0 >/dev/null 2>&1 || _rc=$?
+eq "agreement: kbcard itself refuses that stamp over PR 178 — rc 2, no PATCH" "2|0" "$_rc|$(npatch)"
+unset -f kb_stub_route ata_run nmint npatch
+unset ATA_BIN ATA_MINT_LOG REAL_PR _p
+
 _summary "adopt-to-dl-selftest"

@@ -1137,9 +1137,10 @@ eq "sibling: --dl 0 was ALREADY refused"           "2" "$rc"
 echo "-- both verbs refuse it, and the refusal costs NO request --"
 _REF_LOG="$(mktemp)"
 trap 'rm -f "$_REF_LOG"' EXIT
-# GET answers the external-id search with a resolvable row and the card read (a valid --pr
-# reads the card's pr_url before writing — card#9837) with a card carrying none; every other
-# method echoes its request body. The log is what turns "no request" into a measurement.
+# GET answers the external-id search with a resolvable row and the card read (writing one half of a
+# pr / issue number–URL pair reads the card's other half before writing — card#9837, card#9846)
+# with a card carrying none; every other method echoes its request body. The log is what turns
+# "no request" into a measurement.
 kb_api() {
     printf '%s\n' "$1" >> "$_REF_LOG"
     case "$1 $2" in
@@ -1164,7 +1165,7 @@ eq "create-card --issue 2026-08-23 -> NO card POSTed" "" "$(rreqs)"
 # Positive controls for those two empty results: the same probes DO reach the wire on a valid
 # value, so the empties measure the refusal and not a stub that never writes.
 : > "$_REF_LOG"; cmd_patch --task 99 --pr 178 >/dev/null 2>&1
-eq "control: a valid --pr reaches the PATCH (after the pr_url read)" "GET PATCH" "$(rreqs)"
+eq "control: a valid --pr reaches the PATCH (after the pair read)" "GET PATCH" "$(rreqs)"
 : > "$_REF_LOG"; cmd_create_card --type task --name x --issue 300 >/dev/null 2>&1
 eq "control: a valid --issue reaches the POST"    "POST"  "$(rreqs)"
 
@@ -5094,8 +5095,22 @@ for _ref in pr issue; do
         eq "no stored $_nk ($_p) → rc 0, writes $_uk only, silent" \
            "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|" "$rc|$(ppay)|$err"
     done
+    # A GIVEN placeholder is NOT exempt (operator ruling on card#9846): it says "no ref yet" about
+    # a card whose number names one. Only a STORED placeholder is (member 1's legs, above).
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/0"
-    eq "the placeholder $_uf …/$_seg/0 over 178 → rc 0, silent" '0|' "$rc|$err"
+    eq "⭐ the placeholder $_uf …/$_seg/0 GIVEN over a stored 178 → rc 2, NO PATCH" "2|0" "$rc|$(npatch)"
+    eq "…the refusal names $_nf and the stored number"   "true|true" \
+       "$(has "REFUSING $_uf without $_nf" "$err")|$(has "the card's $_nk is $_noun 178" "$err")"
+    eq "…says it is the placeholder, and nothing was written" "true|true" \
+       "$(has "is the pre-$_noun placeholder" "$err")|$(has 'NOTHING WAS WRITTEN' "$err")"
+    KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/$_seg/00"
+    eq "⭐ a userinfo placeholder $_uf (…/00): rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-9846' "$err$out")"
+    # …and the placeholder still proceeds where the card names no ref: nothing stored, or a 0.
+    for _p in '{}' "{\"$_nk\":null}" "{\"$_nk\":0}"; do
+        KB_STUB_PAYLOAD="$_p" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/0"
+        eq "the placeholder $_uf over no real $_nk ($_p) → rc 0, writes $_uk only, silent" \
+           "0|{\"$_uk\":\"https://github.com/other/repo/$_seg/0\"}|" "$rc|$(ppay)|$err"
+    done
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_nf" 179 "$_uf" "https://github.com/other/repo/$_seg/179"
     eq "$_uf WITH $_nf → rc 0, both written, NO read" \
        "0|{\"$_nk\":179,\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|0" "$rc|$(ppay)|$(nget)"
