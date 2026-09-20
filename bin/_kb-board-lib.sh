@@ -1811,8 +1811,11 @@ kb_ref_pairs_alone() {
           else empty end | @tsv' <<<"$1"
 }
 
-# KB_JQ_REPO_FROM_GH_URL — THE RULE BY WHICH A GITHUB URL ATTRIBUTES A CARD TO A REPO (its by-ref
-# `source`), as a jq program fragment defining `def repo_from_gh_url:`: the `<owner>/<repo>` after
+# KB_JQ_REPO_FROM_GH_URL — THE RULE BY WHICH A GITHUB URL NAMES A REPO, which is the card's by-ref
+# `source` only where no `payload.repo` that is a string containing `/` outranks it
+# (`docs/INSTALL.md` §4 states the whole derivation; the usage header below says why every
+# consequence drawn from the URL's repo is the URL case and not a universal).
+# A jq program fragment defining `def repo_from_gh_url:`: the `<owner>/<repo>` after
 # `github.com/` when a /pull|issues|commit|tree|blob/ segment follows it (case-insensitive,
 # unanchored, first match, a trailing `.git` trimmed), and null for anything else — a bare
 # `github.com/<owner>/<repo>`, a non-GitHub URL, a non-string.

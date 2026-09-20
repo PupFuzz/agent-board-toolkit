@@ -301,7 +301,8 @@ unset _b _t _naive
 
 # ═══════════════════════ 5 — `repo_from_gh_url`: promote ↔ KB_JQ_REPO_FROM_GH_URL ══════════════
 #
-# The board attributes a card (by-ref `source`) from a GitHub URL through one rule, which
+# The board attributes a card (by-ref `source`) from a GitHub URL — where no `payload.repo`
+# that is a string containing `/` outranks it — through one rule, which
 # promote-released-cards mirrors in jq as `def repo_from_gh_url:`. `kbcard patch` and `adopt-to-dl`
 # ask the SAME question — does a URL written without its number still attribute the card to a
 # repo? (card#9846) — through the lib's `KB_JQ_REPO_FROM_GH_URL`, which is that def's text. The
