@@ -13,6 +13,18 @@
 #   2. already-adopted guard (roundtable #14 MUST-FIX-3) — refuse to re-mint over a card that
 #      already carries a dl_number (that would orphan the old DL and strand any branch/PR
 #      named for it). Only --dl <same N> re-stamps idempotently, for a crash-retry.
+#   2b. correlation guard (card#9846) — refuse, BEFORE the mint and on the --dl retry path too, a
+#      card whose stored pr_number names a real PR: the step-4 stamp writes the placeholder pr_url
+#      without --pr, and kbcard refuses exactly that (the placeholder says "no PR yet" about a card
+#      that names one). Asked here, of the card already read, through the lib's
+#      kb_ref_pair_verdicts — the predicate kbcard itself refuses with — so a DL is never claimed
+#      for a stamp that will be refused. A card with no pr_number (absent, null, blank), a 0, or
+#      one naming no single number proceeds exactly as kbcard would let it. rc 1, nothing minted.
+#      Of the lib's refusal kinds only `placeholder-given` is reachable here: the stamp's pr_url
+#      is always the numbered `…/pull/0` of the one --repo slug, and --issue always rides with its
+#      --issue-url — so no pr_number or issue_number is ever written alone, and `unnumbered-stored`
+#      (a number written under a stored URL naming none) is unreachable. A lib
+#      that predates the check (rc 127) refuses EVERY adoption, rc 1, naming the function.
 #   3. mint                — next-dl claims the next DL atomically, and the claimed N is ECHOED
 #      to the caller BEFORE the write, so a crash mid-seam is retried with `--dl N` (no orphan,
 #      no double-mint).
@@ -123,6 +135,13 @@ _ata_adopt_decision() {
     printf 'refuse-conflict'; return 0
 }
 
+# _ata_lib_unruled <card-id> <function> <rc>: step 2b's refusal when the lib's pair check gives no
+# answer — kbcard's card#9756 line (_kbc_lib_unruled) in this tool's words, at this tool's rc 1.
+_ata_lib_unruled() {
+    echo "adopt-to-dl: card #$1's correlation keys could not be checked: $2 returned rc $3, which is not one of its answers — rc 127 means the _kb-board-lib.sh beside this tool predates it, so re-vendor the lib with this tool. Refusing before any DL is minted; nothing was written." >&2
+    exit 1
+}
+
 # Prints on STDOUT; the error arms redirect. The channel is the CALLER's to choose because the
 # two uses differ: an explicitly-requested `--help` is the requested OUTPUT (rc 0, pipeable,
 # pageable), while usage-after-a-bad-argument is diagnostic. Baking `>&2` in here made
@@ -211,6 +230,37 @@ main() {
             exit 1 ;;
     esac
 
+    # 2b. correlation guard — BEFORE the mint, on every path (mint, use-requested, retry). The
+    # stamp below is `kbcard patch --pr-url <placeholder>` without --pr, and kbcard refuses that
+    # (rc 2, nothing written) when the card's stored pr_number names a real PR: the placeholder
+    # says "no PR yet" about a card that names one (and, unless the card's `payload.repo` outranks
+    # every URL, moves its by-ref source too — card#9846, card#9918). A refusal THERE would land
+    # after next-dl has claimed a DL, orphaning it; so the same question
+    # is asked HERE, of the card already read, through the one predicate kbcard asks it with
+    # (kb_ref_pairs_alone / kb_ref_pair_verdicts in the lib) over the keys the stamp will write —
+    # never a local restatement of what counts as "real". The issue pair is asked too and never
+    # refuses, because --issue always rides with its --issue-url, so neither half is written alone.
+    local pr_url issue_url="" probe pairs card_data verdicts r disp vrepo stored refused="" lrc=0
+    pr_url="$(_ata_pr_url "$repo")"
+    [[ -z "$req_issue" ]] || issue_url="$(_ata_issue_url "$repo" "$req_issue")"
+    probe="$(jq -cn --arg pu "$pr_url" --arg iss "$req_issue" --arg iu "$issue_url" \
+        '{pr_url: $pu} + (if $iss == "" then {} else {issue_number: ($iss | tonumber), issue_url: $iu} end)')"
+    # A predicate that gives no answer refuses — on EVERY adoption, since the stamp always writes
+    # pr_url — naming the function and its rc (127: a lib older than this tool), as kbcard does.
+    pairs="$(kb_ref_pairs_alone "$probe")" || lrc=$?
+    (( lrc == 0 )) || _ata_lib_unruled "$card_id" kb_ref_pairs_alone "$lrc"
+    if [[ -n "$pairs" ]]; then
+        card_data="$(kb_parse_resp "$card" -c '.data | select(type == "object")')"
+        verdicts="$(kb_ref_pair_verdicts "$card_data" "$probe" "$pairs")" || lrc=$?
+        (( lrc == 0 )) || _ata_lib_unruled "$card_id" kb_ref_pair_verdicts "$lrc"
+        while IFS=$'\t' read -r r _ disp _ _ vrepo stored; do
+            [[ "$disp" == refuse ]] || continue
+            refused=1
+            echo "adopt-to-dl: card #$card_id already correlates to ${r/pr/PR} $stored (its ${r}_number), and this adoption stamps the placeholder ${r}_url for $vrepo, which says there is none — the stamp would leave the card naming ${r/pr/PR} $stored by number and no ${r/pr/PR} by URL, and kbcard refuses it. Refusing BEFORE minting: no DL was claimed and nothing was written. Settle which ${r/pr/PR} the card belongs to first; a DL can be stamped without touching its ${r/pr/PR} correlation with next-dl + kbcard patch --dl." >&2
+        done <<<"$verdicts"
+        [[ -z "$refused" ]] || exit 1
+    fi
+
     # 3. mint (echo the claimed N BEFORE the write, for crash-retry) — or use the requested N
     local dl_int
     case "$decision" in
@@ -227,14 +277,10 @@ main() {
     # 4. atomic write — reuse kbcard's single-request dl_number+pr_url PATCH (#2180 per-key merge).
     # When --issue is given, the SAME request co-stamps issue_number + issue_url (independent
     # lifecycle keys) so the DL and issue correlation land together or not at all.
-    local dl_canon pr_url issue_url=""
+    local dl_canon
     dl_canon="$(kb_dl_canon "$dl_int")" || { echo "adopt-to-dl: could not canonicalize DL $dl_int" >&2; exit 1; }
-    pr_url="$(_ata_pr_url "$repo")"
     local stamp_args=(patch --task "$card_id" --dl "$dl_canon" --pr-url "$pr_url")
-    if [[ -n "$req_issue" ]]; then
-        issue_url="$(_ata_issue_url "$repo" "$req_issue")"
-        stamp_args+=(--issue "$req_issue" --issue-url "$issue_url")
-    fi
+    [[ -z "$req_issue" ]] || stamp_args+=(--issue "$req_issue" --issue-url "$issue_url")
     # kbcard's rc 3 is UNVERIFIED — the PATCH went out and its outcome could not be read — and
     # it is NOT rc 1's "did not land". Both abort here (this run cannot go on to claim an
     # adoption either way, and the DL is already claimed), but they get DIFFERENT sentences:
