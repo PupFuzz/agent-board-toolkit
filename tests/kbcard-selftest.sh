@@ -4968,7 +4968,7 @@ eq "an /issues/0 pr_url is the placeholder → rc 0, silent"  "0|1|" "$rc|$(npat
 KB_STUB_PAYLOAD='{"pr_url":"https://user:TOKEN-9846@github.com/acme/widget/commit/178"}' kbc patch --task 505 --pr 179
 eq "⭐ a /commit/ pr_url, --pr 179 → rc 2, NO PATCH"         "2|0" "$rc|$(npatch)"
 eq "…the refusal names --pr-url and the repo it derived"    "true" \
-   "$(has "REFUSING --pr 179 without --pr-url — the card's pr_url names no PR number but attributes the card to acme/widget" "$err")"
+   "$(has "REFUSING --pr 179 without --pr-url — the card's pr_url names no PR number, only the repo acme/widget" "$err")"
 eq "…says nothing was written, and never prints the token"  "true|false" \
    "$(has 'NOTHING WAS WRITTEN' "$err")|$(has 'TOKEN-9846' "$err$out")"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0178"}' kbc patch --task 505 --pr 178
@@ -5062,7 +5062,7 @@ eq "--issue with --clear issue-url → rc 0, NO read (the URL is removed)" \
    '0|{"issue_number":43,"issue_url":null}|0' "$rc|$(ppay)|$(nget)"
 KB_STUB_PAYLOAD='{"issue_url":"https://github.com/acme/widget/commit/42"}' kbc patch --task 505 --issue 43
 eq "⭐ a /commit/ issue_url, --issue 43 → rc 2, NO PATCH, names --issue-url and the repo" '2|0|true' \
-   "$rc|$(npatch)|$(has "REFUSING --issue 43 without --issue-url — the card's issue_url names no issue number but attributes the card to acme/widget" "$err")"
+   "$rc|$(npatch)|$(has "REFUSING --issue 43 without --issue-url — the card's issue_url names no issue number, only the repo acme/widget" "$err")"
 KB_STUB_PAYLOAD='{"issue_url":"https://example.com/acme/widget/issues/42"}' kbc patch --task 505 --issue 43
 eq "control: a non-GitHub issue_url (yields no repo) → rc 0, writes issue_number, with the not-checked notice" \
    '0|{"issue_number":43}|true' "$rc|$(ppay)|$(has "the card's issue_url is not a GitHub pull-request or issue URL" "$err")"
@@ -5088,7 +5088,7 @@ for _ref in pr issue; do
         KB_STUB_PAYLOAD="{\"$_uk\":\"$_u\"}" kbc patch --task 505 "$_nf" 179
         eq "⭐ a stored $_uk '$_u' (a repo, no number of its own), $_nf 179 → rc 2, NO PATCH" "2|0" "$rc|$(npatch)"
         eq "…names $_uf and acme/widget" "true" \
-           "$(has "REFUSING $_nf 179 without $_uf — the card's $_uk names no $_noun number but attributes the card to acme/widget" "$err")"
+           "$(has "REFUSING $_nf 179 without $_uf — the card's $_uk names no $_noun number, only the repo acme/widget" "$err")"
     done
     for _u in "https://example.com/acme/widget/$_seg/179" "https://github.com/acme/widget" "https://github.com/acme/widget/wiki"; do
         KB_STUB_PAYLOAD="{\"$_uk\":\"$_u\"}" kbc patch --task 505 "$_nf" 179
@@ -5168,26 +5168,26 @@ for _ref in pr issue; do
        "0|{\"$_nk\":179,\"$_uk\":\"https://github.com/other/repo/$_seg/179\"}|0" "$rc|$(ppay)|$(nget)"
     # ⭐ The given URL names no number but still YIELDS A REPO the way promote-released-cards'
     # repo_from_gh_url derives one (commit/tree/blob, or a pull/issues segment with no digits): the
-    # card would name 178 under that repo, so that repo's release shipping #178 promotes it
-    # (operator ruling "a", card#9846). Refused, naming the missing flag and echoing no URL.
+    # card would name 178 by number with a URL naming none (operator ruling "a", card#9846).
+    # Refused, naming the missing flag and the derived repo, and echoing no URL.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://user:TOKEN-9846@github.com/other/repo/commit/179"
     eq "⭐ a /commit/ $_uf over a stored 178 → rc 2, NO PATCH"     "2|0" "$rc|$(npatch)"
     eq "…the refusal names $_nf, the derived repo and the stored number" "true|true" \
-       "$(has "REFUSING $_uf without $_nf" "$err")|$(has "the $_uf given names no $_noun number but attributes the card to other/repo, while the card's $_nk is $_noun 178" "$err")"
+       "$(has "REFUSING $_uf without $_nf" "$err")|$(has "the $_uf given names no $_noun number, only the repo other/repo, while the card's $_nk is $_noun 178" "$err")"
     eq "…says nothing was written, and never prints the token" "true|false" \
        "$(has 'NOTHING WAS WRITTEN' "$err")|$(has 'TOKEN-9846' "$err$out")"
     for _u in "https://github.com/other/repo/tree/main" "https://GitHub.com/other/repo.git/blob/main/x.md" \
               "https://github.com/other/repo/$_seg/" "https://github.com/other/repo/$_seg/abc"; do
         KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"
         eq "⭐ $_uf '$_u' (a repo, no number) over 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
-           "$rc|$(npatch)|$(has 'attributes the card to other/repo' "$err")"
+           "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
     done
     # ⭐ A given value holding two GitHub URLs: the repo comes from the FIRST (other/repo) and a
     # number from the second (another/repo). promote attributes the card to other/repo, where 178 was
     # never read — so it is the unnumbered case, refused over a real stored number.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/another/repo/$_seg/178"
     eq "⭐ $_uf whose 178 is read from ANOTHER repo's URL, over a stored 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
-       "$rc|$(npatch)|$(has 'attributes the card to other/repo' "$err")"
+       "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/other/repo/$_seg/178"
     eq "control: …the same repo's URL naming 178, over 178 → rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
     # The repos are compared as spelled (no case fold — that would be another copy of the server's
@@ -5221,6 +5221,60 @@ for _ref in pr issue; do
            "1|0|true" "$rc|$(npatch)|$(has "whether $_uf diverges from" "$err")"
     done
 done
+# --- ⭐ card#9918: every refusal states the DIVERGENCE and the REMEDY — and NO consequence -----
+# Operator ruling (2026-09-19): a refusal says WHAT is refused and WHAT to pass. It does not say
+# who the card ends up attributed to, or what a release in that repo would promote. Those follow
+# from the card's by-ref SOURCE, which this pair cannot see — a payload.repo that is a string
+# containing "/" takes the source off the URL entirely (derive_source) — so a consequence written
+# from the URL's repo is false on such a card, and one written the other way is false on the
+# ordinary card whose payload.repo names the URL's OWN repo. The divergence is true on all of them.
+# Driven per arm, both pairs, as a PROCESS against the shipped bin. Each message is asserted WHOLE:
+# a `has` on a fragment passes on a message that still trails a consequence, and the dropped
+# vocabulary is asserted ABSENT beside it — the two legs red on opposite defects, a reason gone
+# missing and a reason come back.
+_c9918() { # <label> <stored-payload-json> <whole-message> <patch-args…>
+    local label="$1" stored="$2" want="$3"; shift 3
+    KB_STUB_PAYLOAD="$stored" kbc patch --task 505 "$@"
+    eq "⭐ $label → rc 2, NO PATCH, and the WHOLE message is the divergence + the remedy" "2|0|true" \
+       "$rc|$(npatch)|$(has "$want" "$err")"
+    eq "…and it states no consequence: no attribution, no promotion, no source move" "false|false|false" \
+       "$(has 'attributes' "$err")|$(has 'promote' "$err")|$(has 'by-ref source' "$err")"
+}
+for _ref in pr issue; do
+    if [[ "$_ref" == pr ]]; then _seg=pull _noun=PR; else _seg=issues _noun=issue; fi
+    _nf="--$_ref" _uf="--$_ref-url" _nk="${_ref}_number" _uk="${_ref}_url"
+    _w9918="kbcard: patch on task 505: REFUSING $_nf 179 without $_uf — the card's $_uk names $_noun 178 in acme/widget, so this write would leave the card naming one $_noun by number and another by URL. Pass $_uf with the new $_noun's URL alongside $_nf. NOTHING WAS WRITTEN."
+    _c9918 "refuse:$_ref:number:diff" "{\"$_uk\":\"https://github.com/acme/widget/$_seg/178\"}" "$_w9918" "$_nf" 179
+    _c9918 "refuse:$_ref:url:diff" "{\"$_nk\":178}" \
+        "kbcard: patch on task 505: REFUSING $_uf without $_nf — the $_uf given names $_noun 179 in other/repo but the card's $_nk is $_noun 178, so this write would leave the card naming one $_noun by number and another by URL. Pass $_nf with the new $_noun's number alongside $_uf. NOTHING WAS WRITTEN." \
+        "$_uf" "https://github.com/other/repo/$_seg/179"
+    _c9918 "refuse:$_ref:number:unnumbered-stored" "{\"$_uk\":\"https://github.com/acme/widget/commit/abc\"}" \
+        "kbcard: patch on task 505: REFUSING $_nf 179 without $_uf — the card's $_uk names no $_noun number, only the repo acme/widget, so this write would leave the card naming $_noun 179 by number and a URL naming no $_noun at all. Pass $_uf with the $_noun's URL alongside $_nf. NOTHING WAS WRITTEN." \
+        "$_nf" 179
+    _c9918 "refuse:$_ref:url:unnumbered-given" "{\"$_nk\":178}" \
+        "kbcard: patch on task 505: REFUSING $_uf without $_nf — the $_uf given names no $_noun number, only the repo other/repo, while the card's $_nk is $_noun 178, so this write would leave the card naming $_noun 178 by number and a URL naming no $_noun at all. Pass $_nf with $_uf to re-point both. NOTHING WAS WRITTEN." \
+        "$_uf" "https://github.com/other/repo/commit/abc"
+    _c9918 "refuse:$_ref:url:placeholder-given" "{\"$_nk\":178}" \
+        "kbcard: patch on task 505: REFUSING $_uf without $_nf — the $_uf given is the pre-$_noun placeholder (a .../0 URL, \"no $_noun yet\") in other/repo, but the card's $_nk is $_noun 178, so this write would leave the card naming $_noun 178 by number while its URL says there is none. Pass $_nf with $_uf to re-point both. NOTHING WAS WRITTEN." \
+        "$_uf" "https://github.com/other/repo/$_seg/0"
+    # ⭐ THE PROPERTY THE RULING BUYS, and the one a consequence clause could not have: the message
+    # does not depend on where the card's source comes from, so a payload.repo — the value that
+    # outranks every URL — moves nothing. Both classes that used to need their own branch are
+    # driven: one naming a DIFFERENT repo than the URL, one naming the SAME repo (the ordinary
+    # single-repo card), plus two values derive_source does NOT read as a source.
+    # ⛔ payload.repo is operator-supplied free text, not a parse of a URL path, so the
+    # different-repo row carries a token and every row asserts it never appears.
+    for _v in '"other-TOKEN-9918/secret"' '"acme/widget"' 'null' '"norepo"'; do
+        KB_STUB_PAYLOAD="$(jq -cn --argjson r "$_v" --arg k "$_uk" --arg u "https://github.com/acme/widget/$_seg/178" '{($k): $u, repo: $r}')" \
+            kbc patch --task 505 "$_nf" 179
+        eq "⭐ a payload.repo of $_v changes NOTHING: rc 2, NO PATCH, the same whole message" "2|0|true" \
+           "$rc|$(npatch)|$(has "$_w9918" "$err")"
+        eq "…and the payload.repo value is never printed" "false" "$(has 'TOKEN-9918' "$err$out")"
+    done
+done
+unset -f _c9918
+unset _w9918
+
 # A decline nulls pr_number (not issue_number), so --pr-url alone on a decline has nothing stored to
 # diverge from; "no read" is measured against the same decline without it.
 KB_STUB_PAYLOAD='{"pr_number":178}' kbc patch --task 505 --column wont_do
@@ -5287,7 +5341,7 @@ for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7"; do
     eq "control: with the real lib, patch $_args issues at least one request" "true" \
        "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 done
-unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args
+unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args _v
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
