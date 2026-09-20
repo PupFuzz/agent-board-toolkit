@@ -72,12 +72,14 @@ KB_PROG="adopt-to-dl"
 # name for one predicate is how a second predicate starts.
 
 # _ata_pr_url <repo>: the pre-PR placeholder pr_url whose repo segment yields the card's
-# by-ref `source`. The reconciler/writeback overwrite the URL when the real PR opens; only the
-# `<owner>/<name>` segment is load-bearing here.
+# by-ref `source` — where no `payload.repo` that is a string containing `/` outranks every URL
+# (the stamp comment below, and `docs/INSTALL.md` §4). The reconciler/writeback overwrite the
+# URL when the real PR opens; only the `<owner>/<name>` segment is load-bearing here.
 _ata_pr_url() { printf 'https://github.com/%s/pull/0' "$1"; }
 
 # _ata_issue_url <repo> <issue-n>: the issue_url whose repo segment yields the card's by-ref
-# `source` for the issue→card correlation (system=github_issue). Mirror of _ata_pr_url; unlike
+# `source` for the issue→card correlation (system=github_issue) — where no `payload.repo` that
+# is a string containing `/` outranks every URL, exactly as for _ata_pr_url above. Unlike
 # the pre-PR placeholder the issue number is known at adoption, so the real #N rides the URL —
 # but as with pr_url only the `<owner>/<name>` segment is load-bearing for `source`.
 _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }

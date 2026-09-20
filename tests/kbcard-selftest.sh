@@ -4014,8 +4014,10 @@ echo "== payload free-text flags — a visually blank value is refused, not sent
 # "   "` over a card holding `origin: "preemptive"` was rc 0, and a re-read returned `origin: null`
 # — the board's TrimStrings → ConvertEmptyStringsToNull turned the padding into a CLEAR, and the
 # caller was told the write landed. `--pr-url` / `--issue-url` cost more: those keys set the
-# card's by-ref `source`, so a blank one detaches the card from its repo and a release promote
-# then skips it. Narrowing four shipped flags is an acceptance change; asked and granted.
+# card's by-ref `source` unless a `payload.repo` that is a string containing `/` outranks them,
+# so a blank one detaches the card from its repo — on a card with no such payload.repo — and a
+# release promote then skips it. Narrowing four shipped flags is an acceptance change; asked and
+# granted.
 #
 # THE POPULATION IS DERIVED, NOT TYPED. `_payload_flags` reads each verb's own
 # `_kbc_build_payload` call and resolves every variable it passes back to the case arm that sets
@@ -4231,7 +4233,8 @@ echo "== patch --clear <field> — the payload fields' clearer the blank refusal
 # --issue-url, and a blank value was the only DELIBERATE route this CLI had to empty one of them
 # (a wont_do decline also nulls pr_url, as a side effect of declining): the board turned it into a
 # clear. A field a tool can set and not unset goes stale in place — and a wrong
-# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`. The operator's
+# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`, on a card whose
+# payload.repo does not outrank it (a string containing `/` does). The operator's
 # ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
 # issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
 # sent as null (kanban-board TaskMutator::update) and leaves an omitted one alone.
@@ -4874,9 +4877,10 @@ unset KB_STUB_CARD KB_STUB_READ CS_CFG CSMOVE
 echo "== patch --pr without --pr-url refuses to leave the card naming two PRs (card#9837) =="
 # THE DEFECT: the payload PATCH merges per key, so `--pr N` alone wrote pr_number and left a stored
 # pr_url naming a DIFFERENT pull request — and the board attributes the card (by-ref `source`)
-# from that URL's owner/repo, so a card re-pointed at another repo's PR stayed attributed to the
-# old one, at rc 0. Driven as a PROCESS for the reason the assignment block is: "NOTHING WAS
-# WRITTEN" is a claim about the request log, which a stubbed kb_api cannot measure.
+# from that URL's owner/repo, where no payload.repo string containing `/` outranks it, so a card
+# re-pointed at another repo's PR stayed attributed to the old one, at rc 0. Driven as a PROCESS
+# for the reason the assignment block is: "NOTHING WAS WRITTEN" is a claim about the request log,
+# which a stubbed kb_api cannot measure.
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -5028,8 +5032,11 @@ done
 echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
 # stub and helpers above are reused. A URL-side write moves the card's by-ref `source` to the given
-# URL's repo while the stored number stays, so that repo's release shipping the old number promotes
-# the card — the mirror of the defect above.
+# URL's repo — unless a payload.repo that is a string containing `/` outranks every URL, on which
+# card nothing moves — while the stored number stays. On the `pr` pair that repo's release
+# shipping the old number then promotes the card; the `issue` pair carries no such
+# consequence, because promote correlates on no issue key (card#9935). The mirror of the
+# defect above.
 
 # --- member 2: --issue without --issue-url over a stored issue_url --------------------------
 ISS42='{"issue_number":42,"issue_url":"https://github.com/acme/widget/issues/42"}'

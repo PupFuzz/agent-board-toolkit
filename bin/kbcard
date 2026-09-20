@@ -49,7 +49,10 @@
 #   (a numeric spelling — "178", "00123", or one padded with spaces, tabs, CRs or newlines —
 #   goes out as a number; a decorated one such as "#178" as the string, exactly as passed). A
 #   blank one used to be SENT, and the board stored it as a CLEAR of the field at rc 0 (measured
-#   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo. Refusing it was an acceptance change, asked and granted (card#9338).
+#   on --origin); a blank --pr-url / --issue-url can also detach the card from its repo — unless
+#   the card carries a payload.repo that is a string containing /, which outranks every URL, so
+#   its source survives the clear. Refusing it was an acceptance change, asked and granted
+#   (card#9338).
 #   Emptying one ON PURPOSE is said, not spelled as a blank value: `patch --clear <field>` (see
 #   patch below) — card#9420.
 #   --tags, ON create-card AND patch, takes the same text-free refusal, rc 2 before any request,
@@ -149,8 +152,9 @@
 #     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
 #     payload key (version → version_target): the API merges payload per key, so an omitted key is
 #     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
-#     the board re-derives it from what remains, falling back to payload.repo, the other URL keys
-#     and a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
+#     the board re-derives it from what remains — payload.repo OUTRANKS every URL when it is a
+#     string containing /, so on such a card clearing a URL cannot drop the source at all;
+#     otherwise the other URL keys, then a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
 #     spelling --tags uses; a second --clear is rc 2 rather than a silent last-wins that would drop
 #     a clear. No padding is trimmed and an empty member is an unknown field. Naming a field AND its
 #     setter (`--pr-url X --clear pr-url`) is rc 2 before any request, naming the flag passed. The
@@ -1066,7 +1070,8 @@ _kbc_build_payload() {
     # same resolver — single-source (no --…-file twin), and `verbatim` so this check rewrites
     # nothing: the value it accepts is the value the assembler below sends. A visually blank one used
     # to be SENT, and the board's trim-then-null rewrite turned it into a CLEAR of the stored
-    # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`. It sits
+    # field under rc 0; for pr_url / issue_url that can also drop the card's by-ref `source`, unless
+    # the card's payload.repo outranks it (_kbc_ref_pair_guard's header owns that rule). It sits
     # above the version_target branch on purpose: a blank --version is a malformed invocation
     # whether or not this board would have written it.
     _kbc_text_arg pr_url pr-url "" "$pr_url" "" verbatim || return 2
@@ -3348,7 +3353,8 @@ cmd_search() {
 # coord config's kanban.boards[] entry whose board_id matches this board — the same
 # board→repo map the reconcile hook uses. Best-effort: prints "" when the config is
 # absent or the board isn't declared (the shim then falls back to the card's own
-# pr_url/issue_url source, and finally to fail-closed). No network.
+# derived source — payload.repo outranks the URL keys, `docs/INSTALL.md` §4 states the
+# whole derivation — and finally to fail-closed). No network.
 _kbc_board_repo() {
     local cfg
     cfg="$(kb_coord_config_path)"
