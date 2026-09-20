@@ -39,11 +39,18 @@
 # changes NO count and NO exit code, which is a shipped, documented property of this tool
 # (README.md § The seat owner tag) and is asserted here rather than left to be assumed.
 #
+# § 6 is MORE THAN ONE CARD, and it is why §§ 1-4's rc rows were not enough on their own: their
+# board holds ONE card, so each of them ran in the single-card `moved == 0 && skipped == 0`
+# shape — the one configuration in which the shipped rc-1 rule happened to be true. A release
+# promotes many cards. That section drives the rc over the run shapes a multi-card release can
+# actually take, and says of each whether card#9938 MOVES that rc or PINS it.
+#
 # WEAKEST PROPERTY OF A GREEN RUN. Every row drives the real bin as a process against a stub
 # server, so it says nothing about a real kanban's behaviour — only about what this tool
 # concludes from an answer of a given shape. The stub's own fidelity (that it applies the writes
-# it says it applied) is `tests/_promote-curl-stub.sh`'s contract, and § 0 below asserts the two
-# halves of it this file depends on before any row is read.
+# it says it applied) is `tests/_promote-curl-stub.sh`'s contract, and it is asserted before the
+# rows that depend on it: § 0 for the whole-run knobs, and § 6's own first row for the per-card
+# ones, which have to produce ONE board holding two different outcomes.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -82,11 +89,14 @@ export KANBAN_EXPECTED_HOST=kanban.test
 export PATCH_LOG="$TMP/patches.log"
 export GET_LOG="$TMP/gets.log"
 
-# run_promote <extra-args…> — the real bin as a process, over the canned board.
+# run_promote <extra-args…> — the real bin as a process, over the canned board. $REFS is the
+# shipped-ref set it is given: a caller prefixes `REFS=…` (as it does `BOARD_FILE=…`) for the
+# multi-card rows, so the two fixtures share ONE runner rather than growing a second copy.
+REFS="DL-100"
 run_promote() {
     : > "$PATCH_LOG"; : > "$GET_LOG"
     rc=0
-    out="$(cd "$TMP" && bash "$PRC" --config "$TMP/release-pr.json" --dls "DL-100" "$@" 2>"$TMP/err")" || rc=$?
+    out="$(cd "$TMP" && bash "$PRC" --config "$TMP/release-pr.json" --dls "$REFS" "$@" 2>"$TMP/err")" || rc=$?
     err="$(cat "$TMP/err")"
     patched="$(cat "$PATCH_LOG")"
     gets="$(cat "$GET_LOG")"
@@ -126,7 +136,9 @@ eq "…and the card really was re-read"                     "1"     "$(card_read
 eq "⭐ NOTHING claims the card moved"                      "false" "$(has '✓ DL-100 (#1): moved' "$out$err")"
 eq "⭐ the run says NOT APPLIED, quoting what the board holds" "true" \
    "$(has '✗ DL-100 (#1): move NOT APPLIED — the PATCH answered success and the card reads back in stage 51, not 85. The status is not the move; the read-back is.' "$err")"
-eq "…counted as one failure and nothing else"             "true"  "$(has '0 moved, 0 already-released, 0 no-card, 1 failed.' "$out")"
+eq "…counted on its OWN field, not folded into failed"     "true"  "$(has '0 moved, 0 already-released, 0 no-card, 1 NOT APPLIED, 0 failed.' "$out")"
+eq "…and the run-level line says the board was READ and disagrees" "true" \
+   "$(has 'promote-released-cards: 1 stage PATCH(es) answered success and the card(s) READ BACK IN ANOTHER STAGE — NOT APPLIED (rc 1).' "$err")"
 eq "…and NOT as an unverified write (rc 1 is a CLAIM; rc 3 is the refusal to make one)" "false" \
    "$(has 'UNVERIFIED' "$out$err")"
 eq "⭐ the run exits 1 — the known-failure rc, not 0"      "1"     "$rc"
@@ -251,5 +263,132 @@ eq "…while the MOVE is unaffected"                        "true|0" "$(has '✓
 # no-readable-tag-list twin. The third, `owner tag clear NOT CONFIRMED` (a tags PATCH that never
 # completed), was already undriven before card#9938 and README.md § The seat owner tag says so.
 # Closing them needs a stub knob scoped to the Nth card read; that is recorded, not smuggled in.
+
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 6 — MORE THAN ONE CARD: the run shapes the exit policy actually rules on =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# ⛔ THE FIXTURE, NOT THE ASSERTION, BOUNDED WHAT §§ 1-4 COULD REACH. Their board holds ONE
+# card, so every row above asserting an rc runs in the single-card `moved == 0 && skipped == 0`
+# configuration. `⭐ the run exits 1 — the known-failure rc, not 0` was TRUE there and false of
+# every other shape: the NOT-APPLIED outcome was counted into `failed`, whose exit clause asks
+# "did this run promote NOTHING AT ALL?", so any run that promoted a card, or found one already
+# released, printed `✗ … move NOT APPLIED` and exited 0 (measured on the pre-fix bin). The
+# 2026-05-22 release was 28 for 28 un-applied, which that condition happens to catch; ONE card
+# landing is all it takes to lose it, and a release promotes many cards.
+#
+# A real release promotes MANY cards, so the population this section covers is derived from the
+# exit policy itself: for each outcome a card can end in — measured un-applied, unreadable,
+# visibly refused, applied — a run pairing it with each of the counters the exit clauses test
+# (`moved`, `skipped`), plus the run where every card is clean. Each row says which of the three
+# rcs it expects and whether this card MOVES that rc or PINS it. The per-card stub knobs (the
+# `*_IDS` family) exist for this and only this: a whole-run knob makes every card behave the
+# same way, which is the one thing a mixed run is not.
+cat > "$TMP/board-two.json" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-100"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-200"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+cat > "$TMP/board-two-one-done.json" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":85,"payload":{"dl_number":"DL-100"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-200"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+# ⚠ The two fixtures are spelled out at every call rather than held in an array: bash decides
+# what is an assignment PREFIX at parse time, so an expanded `"${ARR[@]}" run_promote` would try
+# to run `REFS=…` as a command.
+
+echo "-- 6§0: the per-card knob really produces ONE board holding TWO different outcomes"
+# § 0's leg for the new instrument: a knob that turned out to be whole-run after all would make
+# every row below test a uniform board while reading as a mixed one. Driven at the stub, without
+# the tool, so it is the FIXTURE being measured and not what the tool concluded from it.
+_two_now() { PATCH_LOG="$TMP/probe.log" BOARD_FILE="$TMP/board-two.json" STUB_STAGE_UNAPPLIED_IDS=2 \
+               curl -s -o "$TMP/probe.body" -w '%{http_code}' "https://kanban.test/api/v3/tasks/$1.json" >/dev/null
+             jq -r '.data.workflow_stage_id' "$TMP/probe.body"; }
+_two_patch() { PATCH_LOG="$TMP/probe.log" BOARD_FILE="$TMP/board-two.json" STUB_STAGE_UNAPPLIED_IDS=2 \
+                 curl -s -X PATCH -d '{"workflow_stage_id":85}' -o "$TMP/probe.body" -w '%{http_code}' \
+                 "https://kanban.test/api/v3/tasks/$1.json" >/dev/null; }
+: > "$TMP/probe.log"; _two_patch 1; _two_patch 2
+eq "⭐ card 1's 2xx APPLIED and card 2's did not, in one run" "85|51" "$(_two_now 1)|$(_two_now 2)"
+: > "$TMP/probe.log"
+unset -f _two_now _two_patch
+
+echo "-- 6a: one card MOVES and one is measured NOT APPLIED — the 2026-05-22 shape"
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_STAGE_UNAPPLIED_IDS=2 run_promote
+eq "the card that moved is reported from its read-back"   "true" \
+   "$(has '✓ DL-100 (#1): moved 51 → 85 (read back: the card is in stage 85)' "$out")"
+eq "…and the card that did not is named, quoting the board" "true" \
+   "$(has '✗ DL-200 (#2): move NOT APPLIED — the PATCH answered success and the card reads back in stage 51, not 85.' "$err")"
+eq "…both counted, each on its own field"                 "true" \
+   "$(has '1 moved, 0 already-released, 0 no-card, 1 NOT APPLIED, 0 failed.' "$out")"
+eq "⭐ THE RUN GATES: rc 1 with moved > 0 (it was rc 0 before)" "1" "$rc"
+
+echo "-- 6b: one card ALREADY RELEASED and one measured NOT APPLIED (moved == 0, skipped == 1)"
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two-one-done.json" STUB_STAGE_UNAPPLIED_IDS=2 run_promote
+eq "the released card is skipped, the other is NOT APPLIED" "true|true" \
+   "$(has '= DL-100 (#1): already released' "$out")|$(has '✗ DL-200 (#2): move NOT APPLIED' "$err")"
+eq "…counted"                                             "true" \
+   "$(has '0 moved, 1 already-released, 0 no-card, 1 NOT APPLIED, 0 failed.' "$out")"
+eq "⭐ THE RUN GATES: rc 1 with skipped > 0 (it was rc 0 before)" "1" "$rc"
+
+echo "-- 6c: one card moves and one read-back NEVER COMPLETES — rc 3, unchanged (a pin)"
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_CARD_TRANSPORT_IDS=2 run_promote
+eq "the moved card is reported, the other is UNVERIFIED"  "true|true" \
+   "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$(has '⚠ DL-200 (#2): move UNVERIFIED' "$err")"
+eq "…and nothing claims the unreadable card did NOT move" "false" "$(has 'NOT APPLIED' "$out$err")"
+eq "…counted"                                             "true" \
+   "$(has '1 moved, 0 already-released, 0 no-card, 1 UNVERIFIED, 0 failed.' "$out")"
+eq "⭐ rc 3 with moved > 0 — the rc the unverified arm already had" "3" "$rc"
+
+echo "-- 6d: every card moves — rc 0, and neither failure word is anywhere"
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" run_promote
+eq "both cards reported from their read-backs"            "true|true" \
+   "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$(has '✓ DL-200 (#2): moved 51 → 85' "$out")"
+eq "the summary is the byte-identical pre-card#9938 one"  "true" \
+   "$(has '2 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
+eq "…with NEITHER new field on it, on either stream"      "false|false" \
+   "$(has 'NOT APPLIED' "$out$err")|$(has 'UNVERIFIED' "$out$err")"
+eq "⭐ rc 0"                                               "0" "$rc"
+
+echo "-- 6e: BOTH read-back outcomes in ONE run — the measured one decides the rc"
+# The precedence is a ruling, so it is asserted rather than left to whichever clause runs first:
+# rc 3 says NOBODY KNOWS and rc 1 is a MEASUREMENT that the write did not take, so a run holding
+# both answers with the measurement. ⛔ AND THE LOSING OUTCOME KEEPS ITS LINE: the rc can carry
+# one verdict, the operator needs both, so neither run-level line may sit behind the other's exit.
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_STAGE_UNAPPLIED_IDS=1 STUB_CARD_TRANSPORT_IDS=2 run_promote
+eq "one card is measured un-applied, the other unreadable" "true|true" \
+   "$(has '✗ DL-100 (#1): move NOT APPLIED' "$err")|$(has '⚠ DL-200 (#2): move UNVERIFIED' "$err")"
+eq "…both counted, on their own fields"                   "true" \
+   "$(has '0 moved, 0 already-released, 0 no-card, 1 NOT APPLIED, 1 UNVERIFIED, 0 failed.' "$out")"
+eq "⭐ BOTH run-level lines are printed — neither outcome goes silent" "true|true" \
+   "$(has 'READ BACK IN ANOTHER STAGE — NOT APPLIED (rc 1).' "$err")|$(has 'could NOT be read back — UNVERIFIED WRITE (rc 3).' "$err")"
+eq "⭐ rc 1 — the MEASUREMENT outranks the absence of one"  "1" "$rc"
+
+echo "-- 6f: RESIDUAL — a VISIBLY refused move beside a skipped card still exits 0"
+# ⚠ Pinned, not endorsed. This is the acceptance card#9301 shipped: `failed`'s clause asks "did
+# this run promote nothing at all?", and a run with an already-released card has an answer that
+# is not "nothing". card#9938 opened the un-applied-2xx axis only, and widening this one changes
+# what the tool reports on runs it has always called green — its own decision to ask for. What
+# card#9938 owes is that docs/INSTALL.md §4 states the CONDITION rather than an unconditional
+# rc-1 rule, and this row is what makes that statement falsifiable.
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two-one-done.json" STUB_PATCH_STATUS=403 STUB_PATCH_BODY='{"message":"This action is unauthorized."}' run_promote
+eq "the refusal is reported, with the status and the body" "true" \
+   "$(has '✗ DL-200 (#2): move failed (left in place) — HTTP 403' "$err")"
+eq "…counted as a failure, and nothing is read back"      "true|false" \
+   "$(has '0 moved, 1 already-released, 0 no-card, 1 failed.' "$out")|$(has 'NOT APPLIED' "$out$err")"
+eq "⚠ RESIDUAL: the run exits 0"                          "0" "$rc"
+
+echo "-- 6g: RESIDUAL, the other half — a refused move beside a card that DID move exits 0"
+# The `moved == 0` term, driven the same way 6f drives `skipped == 0`. Both are asserted rather
+# than reasoned from the clause, because the whole finding this section answers was a clause
+# read correctly and never RUN in the shape that falsifies it.
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_PATCH_REFUSE_IDS=2 STUB_PATCH_BODY='{"message":"This action is unauthorized."}' run_promote
+eq "one card moved and one was refused"                   "true|true" \
+   "$(has '✓ DL-100 (#1): moved 51 → 85 (read back: the card is in stage 85)' "$out")|$(has '✗ DL-200 (#2): move failed (left in place) — HTTP 403' "$err")"
+eq "…and no read-back was issued for the refused one"     "false" "$(has 'DL-200 (#2): move NOT APPLIED' "$err")"
+eq "…counted"                                             "true" \
+   "$(has '1 moved, 0 already-released, 0 no-card, 1 failed.' "$out")"
+eq "⚠ RESIDUAL: the run exits 0"                          "0" "$rc"
 
 _summary "promote-move-readback-selftest"

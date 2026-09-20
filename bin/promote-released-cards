@@ -130,7 +130,11 @@
 #     and `workflow_stage_id` is RULED on, and that ruling is what the line and the counts say:
 #       moved        the read agrees with what was asked → `✓ … moved … (read back: …)`.
 #       NOT APPLIED  the read is a MEASUREMENT and it disagrees → `✗ … move NOT APPLIED`,
-#                    counted as failed. The 2026-05-22 state, said out loud.
+#                    counted on its own, and the RUN exits 1 WHATEVER ELSE SUCCEEDED. The
+#                    2026-05-22 state, said out loud — and the release that met it carried 28
+#                    cards, so an rc conditioned on `moved == 0` is rc 0 the moment ONE of
+#                    them lands: 27 promoted and one measured un-applied is the shape this
+#                    outcome exists to red, not a corner of it.
 #       UNVERIFIED   the read is not a measurement (it did not complete, was refused, or carried
 #                    no readable stage) → `⚠ … move UNVERIFIED`, counted separately, and the RUN
 #                    exits $RC_UNVERIFIED (3). Nothing says the card moved, nothing says it did
@@ -1406,6 +1410,13 @@ stage_verdict() {
 # _kb-board-lib.sh — because this script is vendored standalone and must not source that lib.
 # tests/mirror-pair-parity-selftest.sh drives owner_card_tags, owner_strip and owner_list beside
 # their lib twins.
+# ⚠ THE MIRROR IS NOT EXACT AS OF card#9938, and the divergence is on this file's side: the
+# report below is built from a READ-BACK, while `kb_owner_tag_write` still decides its
+# `stamped` / `removed owner tag(s)` line from `case "$http" in 2*)`. The parity test pins the
+# tag RULES (which tags are owner tags, what a strip leaves), not the clear's control flow, so
+# nothing mechanical holds these two together on this property — the same defect is live in the
+# lib, is NAMED in README § The seat owner tag and in the changelog entry, and needs its own
+# change: the lib function is shared with kbcard and board-card-start.
 # owner_card_tags <GET body>: the card's tag list as compact JSON, or NOTHING when none can be read.
 owner_card_tags() { jq -c '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")' <<<"$1" 2>/dev/null || true; }
 # owner_strip <tags>: the list without its owner tags, or NOTHING when it carries none (no write).
@@ -1473,7 +1484,7 @@ owner_clear() {
 }
 
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0; unverified=0
+moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
@@ -1509,8 +1520,15 @@ while IFS= read -r row; do
         # than an unverified one because the read IS a measurement: the board answered, the card
         # was read, and it is somewhere else. This is the 2026-05-22 state (28/28 PATCHed,
         # `updated_at` bumped, the field never changed) said out loud.
+        #
+        # ⛔ ITS OWN COUNTER, NOT `failed`. `failed` is consumed by the "did this run promote
+        # NOTHING AT ALL?" arm below, whose `moved == 0 && skipped == 0` terms are deliberate
+        # FOR THAT QUESTION — so folding this outcome in gave it that arm's condition, and any
+        # run that also promoted a card, or found one already released, printed this line and
+        # exited 0. The counter is separate so the outcome can be gated on its own,
+        # unconditionally, the way `unverified` already is.
         echo "  ✗ $ref (#$id): move NOT APPLIED — the PATCH answered success and the card reads back in stage $got, not $STAGE. The status is not the move; the read-back is." >&2
-        failed=$((failed + 1))
+        not_applied=$((not_applied + 1))
         ;;
       *)
         # SENT, AND UNREADABLE. The card may be in either stage; this run says NEITHER. The
@@ -1568,18 +1586,20 @@ fi
 # summary line (backward compatibility — a v0.21.0 fleet-adoption decision, asserted below by
 # tests/promote-stage-guard-selftest.sh).
 #
-# THE UNVERIFIED COUNT RIDES BY THE SAME RULE, and for the same reason (card#9938): it appears
-# only when there IS one, so every run that has always been possible keeps a byte-identical
-# summary line, and a run that grew the new outcome says so on the line an operator already
-# reads. It is not folded into `failed`: a failed move is a claim, an unverified one is the
-# refusal to make either claim, and a summary that added them would be asserting the thing the
-# outcome exists to withhold.
+# THE UNVERIFIED AND NOT-APPLIED COUNTS RIDE BY THE SAME RULE, and for the same reason
+# (card#9938): each appears only when there IS one, so every run that has always been possible
+# keeps a byte-identical summary line, and a run that grew one of the new outcomes says so on
+# the line an operator already reads. Neither is folded into `failed`: a failed move is a claim
+# about a request the server refused, an unverified one is the refusal to make either claim, and
+# a NOT-APPLIED one is a claim about what the BOARD HOLDS — three different things, and a
+# summary that added them would report a run as a kind of failure it is not.
 # A plain `if`, never `[ … ] && X=…`: under `set -e` that form EXITS the script on the false
 # branch (and it is the same trailing-test spelling card#5874 records leaking a false status out
 # of a sibling release bin).
-unv_txt=""
+unv_txt=""; na_txt=""
+if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -1606,15 +1626,65 @@ if [ -n "$QUALIFY_SRC" ]; then
 else
   echo "promote-released-cards: repo-qualification OFF — source '*' (from $SOURCE_SRC) DECLARES this board tracks exactly one repo, so a bare dl_number/pr_number is unambiguous on it. If it tracks several, set .promote.source to '<owner>/<repo>': those counters are repo-scoped and an unqualified match promotes another repo's cards." >&2
 fi
+# --- the run-level lines for the two READ-BACK outcomes, printed BEFORE any exit -------------
+# ⛔ BOTH, WHATEVER THE RC. A run can carry a measured-wrong card AND an unreadable one, and the
+# two ask for different things — "this card is in the wrong stage" and "go re-read these cards".
+# The exit status can only say one of them, so neither line may sit behind the other's `exit`:
+# printing them here, and deciding the rc below, is what keeps the losing outcome from going
+# silent on the one run where both are true. Each prints only when its count is non-zero, so no
+# run that was possible before card#9938 gains a line.
+if [ "$not_applied" -gt 0 ]; then
+  echo "promote-released-cards: $not_applied stage PATCH(es) answered success and the card(s) READ BACK IN ANOTHER STAGE — NOT APPLIED (rc 1). The board was read and it disagrees with the write: those cards are named above and are NOT released. Promote them by hand, or re-run this tool once the cause is fixed." >&2
+fi
+if [ "$unverified" -gt 0 ]; then
+  echo "promote-released-cards: $unverified stage PATCH(es) were SENT and answered success, and their outcome could NOT be read back — UNVERIFIED WRITE (rc $RC_UNVERIFIED). Nothing here says those cards moved and nothing says they did not; re-read the cards named above before acting either way (re-running this tool is safe: a card already at the target stage is skipped as already-released)." >&2
+fi
+
 # --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
+# A MEASURED un-applied write → exit 1, AND IT IS DECIDED FIRST (card#9938 round 2).
+#
+# ⛔ IT CARRIES NO RUN-SHAPE TERM, and that is the whole of this clause. The outcome was folded
+# into `failed` when it shipped, which handed it the arm below's `moved == 0 && skipped == 0`
+# condition — written for a different question — so a run that promoted ANY card, or found one
+# already released, printed `✗ … move NOT APPLIED` on stderr and exited 0, green release step
+# and all (measured: a two-card run, one moved and one un-applied, exits 0 on the pre-fix bin).
+# The 2026-05-22 release was 28 for 28 un-applied, which that condition happens to catch — one
+# card landing is all it takes to lose it, and a release promotes many cards. A card the board
+# has been READ and SAID is in the wrong stage is a failed promotion whatever else in the run
+# succeeded; the counts say what else happened, and the rc says the release is not clean.
+#
+# ⛔ IT OUTRANKS $RC_UNVERIFIED, deliberately, and the asymmetry is the argument: rc 3 exists to
+# say NOBODY KNOWS, and rc 1 is a MEASUREMENT that the write did not take. A run holding both
+# knows one of its cards is in the wrong stage, and answering `3` — documented as "not always a
+# failed one" — would hedge a question this run has already answered. The UNVERIFIED line is
+# still printed above, so nothing is lost but the rc, which can only carry one verdict.
+#
+# ⛔ AND IT IS DECIDED BEFORE THE COMPLETENESS DIE BELOW, for the reason the unverified arm
+# gives: that die's premise (the refs never got here) is FALSE on this run — they got here,
+# matched cards, and were PATCHed. rc 2 would send the operator at the wrong question.
+if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # Systemic move failure (a card matched but every PATCH errored) → exit 1.
 #
 # ⛔ `$unverified` IS IN THIS GUARD, and it is the card#8556 contract that puts it there: rc 1 is
 # NOT APPLIED **AND KNOWN**, and a run holding an unverified write does not know. An arm that
 # swallowed the unverified outcome into rc 1 "would be re-asserting the very thing the arm exists
-# to refuse to assert" (bin/kbcard, `_kbc_unverified`). So a run whose failures are all KNOWN
-# still exits 1, byte-identically to before — the only runs this clause moves are ones that could
-# not have reached here before card#9938, because every one of their writes used to be a `✓`.
+# to refuse to assert" (bin/kbcard, `_kbc_unverified`).
+#
+# ⚠ THIS ARM ANSWERS ONE QUESTION — "did this run promote NOTHING AT ALL?" — and its `moved == 0
+# && skipped == 0` terms are that question's, not a general failure policy. `$failed` now holds
+# ONLY the visibly-failed request (a refused PATCH, and the never-completed one recorded as a
+# residual at the move loop): card#9938's measured-wrong-stage outcome has its own counter and
+# its own unconditional clause ABOVE, because giving a new outcome an old counter gave it that
+# counter's run-shape condition too. This clause is byte-identical in behaviour to before
+# card#9938 for every run that could reach it then.
+#
+# ⚠ A NAMED RESIDUAL, on the SAME axis and deliberately not closed here: a VISIBLY refused or
+# never-completed move beside a card that DID move (or an already-released one) still exits 0 —
+# `moved == 0 && skipped == 0` is why. That is the acceptance card#9301 shipped, on a run shape
+# that predates card#9938; widening it changes what this tool reports on runs it has always
+# reported as green, which is its own decision to ask for and is not this card's. What card#9938
+# owes is that the DOCS say so, and `docs/INSTALL.md` §4 states the condition rather than the
+# unconditional rule that was true of neither half.
 if [ "$failed" -gt 0 ] && [ "$unverified" = 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
 # A WRITE WENT OUT AND NOBODY HERE CAN SAY WHAT IT DID → exit $RC_UNVERIFIED (card#9938).
 #
@@ -1627,10 +1697,9 @@ if [ "$failed" -gt 0 ] && [ "$unverified" = 0 ] && [ "$moved" = 0 ] && [ "$skipp
 # ⚠ AND IT FIRES WITH `moved` > 0 TOO. A release in which 27 cards read back moved and one did
 # not read back at all is not a clean release: the record is incomplete, and rc 0 is this tool
 # saying it is not. That is the whole of what card#9938 changes for a run that used to be green.
-if [ "$unverified" -gt 0 ]; then
-  echo "promote-released-cards: $unverified stage PATCH(es) were SENT and answered success, and their outcome could NOT be read back — UNVERIFIED WRITE (rc $RC_UNVERIFIED). Nothing here says those cards moved and nothing says they did not; re-read the cards named above before acting either way (re-running this tool is safe: a card already at the target stage is skipped as already-released)." >&2
-  exit "$RC_UNVERIFIED"
-fi
+# Its LINE is printed above rather than here, so a run that also carries a measured-wrong card
+# (which exits 1 first) still tells the operator which cards to go and re-read.
+if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # Newly promoted NOTHING (moved==0) despite a non-empty shipped-ref set (an empty set
 # already exited "nothing to do"). Two distinct causes, told apart by whether ref-
 # derivation was COMPLETE:
