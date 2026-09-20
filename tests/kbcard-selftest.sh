@@ -5033,8 +5033,10 @@ echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
 # stub and helpers above are reused. A URL-side write moves the card's by-ref `source` to the given
 # URL's repo — unless a payload.repo that is a string containing `/` outranks every URL, on which
-# card nothing moves — while the stored number stays, so that repo's release shipping the old
-# number promotes the card: the mirror of the defect above.
+# card nothing moves — while the stored number stays. On the `pr` pair that repo's release
+# shipping the old number then promotes the card; the `issue` pair carries no such
+# consequence, because promote correlates on no issue key (card#9935). The mirror of the
+# defect above.
 
 # --- member 2: --issue without --issue-url over a stored issue_url --------------------------
 ISS42='{"issue_number":42,"issue_url":"https://github.com/acme/widget/issues/42"}'
