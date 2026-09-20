@@ -1813,8 +1813,9 @@ kb_ref_pairs_alone() {
 
 # KB_JQ_REPO_FROM_GH_URL — THE RULE BY WHICH A GITHUB URL NAMES A REPO, which is the card's by-ref
 # `source` only where no `payload.repo` that is a string containing `/` outranks it
-# (`docs/INSTALL.md` §4 states the whole derivation; the usage header below says why every
-# consequence drawn from the URL's repo is the URL case and not a universal).
+# (`docs/INSTALL.md` §4 and `bin/promote-released-cards`'s `derive_source` header both state the
+# whole derivation; `kb_ref_pair_verdicts`' header says why every consequence drawn from the
+# URL's repo is the URL case and not a universal).
 # A jq program fragment defining `def repo_from_gh_url:`: the `<owner>/<repo>` after
 # `github.com/` when a /pull|issues|commit|tree|blob/ segment follows it (case-insensitive,
 # unanchored, first match, a trailing `.git` trimmed), and null for anything else — a bare
