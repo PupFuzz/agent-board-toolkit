@@ -96,8 +96,9 @@ def make_github_state_resolver(kc, card: dict, cfg_repo: "str | None" = None):
 
     `cfg_repo` is the caller's already-normalized (str-or-None) board/config repo,
     the authority for a single-repo board; a by-ref descriptor's own `repo` wins
-    over it, and the card's derived source (from pr_url / issue_url / payload.repo,
-    via the framework's server-mirroring normalizer) is the final fallback."""
+    over it, and the card's derived source (payload.repo first when it holds a `/`,
+    then pr_url / issue_url, via the framework's server-mirroring normalizer) is the
+    final fallback."""
     card_source = kc._derive_card_source(card)
 
     def resolve(src):

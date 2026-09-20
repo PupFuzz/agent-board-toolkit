@@ -4014,7 +4014,8 @@ echo "== payload free-text flags — a visually blank value is refused, not sent
 # "   "` over a card holding `origin: "preemptive"` was rc 0, and a re-read returned `origin: null`
 # — the board's TrimStrings → ConvertEmptyStringsToNull turned the padding into a CLEAR, and the
 # caller was told the write landed. `--pr-url` / `--issue-url` cost more: those keys set the
-# card's by-ref `source`, so a blank one detaches the card from its repo and a release promote
+# card's by-ref `source` unless a `payload.repo` holding a `/` outranks them, so a blank one
+# detaches the card from its repo — on a card with no such payload.repo — and a release promote
 # then skips it. Narrowing four shipped flags is an acceptance change; asked and granted.
 #
 # THE POPULATION IS DERIVED, NOT TYPED. `_payload_flags` reads each verb's own
