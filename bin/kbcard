@@ -284,7 +284,8 @@
 #     included — naming the missing function (card#9756's rule).
 #     --issue / --issue-url are the issue-lifecycle mirror of --pr / --pr-url: they write
 #     payload.issue_number (numeric-canonicalized) + payload.issue_url, and --issue-url likewise
-#     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board.
+#     drives the by-ref `source` (owner/repo) for the issue→card lookup on a multi-repo board,
+#     unless the card's payload.repo outranks it (_kbc_ref_pair_guard's header owns that rule).
 #     Independent of the pr_* pair — a card can carry both an issue ref and a PR ref at once.
 #     A visually blank --pr-url / --issue-url is rc 2 before any request, as is a blank --version
 #     or --origin: the payload-text-flag paragraph of the free-text convention at the top owns it.
@@ -1024,8 +1025,9 @@ resolve_task() {
 # of another key. (Values used to be joined as `k=v` LINES and each coerced through tonumber,
 # which let an interior newline truncate a value, a leading one send "", and a `key=value` line
 # inject a key the caller never named — card#9423.) issue_number/issue_url mirror pr_number/pr_url
-# exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards, issue_number
-# alone does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
+# exactly: issue_url sets the by-ref `source` (owner/repo) for multi-repo boards unless the card's
+# payload.repo outranks it (_kbc_ref_pair_guard's header owns that rule), issue_number alone
+# does not — and the two lifecycle keys are INDEPENDENT of the pr_* pair, so a card can
 # carry both. The positional contract: dl/pr/pr_url/version/issue/issue_url are common to both
 # callers, so patch passes exactly that prefix; origin trails because it was create-card-only
 # until card#5776 made it patchable, and keeping it last left every existing call site
@@ -1120,7 +1122,8 @@ _kbc_build_payload() {
     # tonumber accepts exactly that padding and jq-1.8 refuses it, so an untrimmed attempt makes
     # " 123 " a number or a string by jq version. `sub`, not `trim` (jq-1.7.1+). A value that is
     # still not a number after the trim is sent as passed, padding included. pr_url / issue_url
-    # set the by-ref `source` (owner/repo); pr_number / issue_number do not. A cleared key is added
+    # set the by-ref `source` (owner/repo) unless payload.repo outranks it (_kbc_ref_pair_guard's
+    # header owns that rule); pr_number / issue_number do not. A cleared key is added
     # last, as an explicit null; the setter exclusion above means it never meets a value here.
     jq -nc \
         --arg dl_number "$dl" \
