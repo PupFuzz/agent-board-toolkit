@@ -309,6 +309,8 @@ jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove th
 > ```
 >
 > `--dry-run` moves nothing; drop it only when you mean to promote. A run that refuses with `api_base '…' is not https:// on '…'` names, in the same line, which channel the offending value came from — fix that one.
+>
+> ⚠ **A red promote step is not always a failed one — `rc 3` means UNVERIFIED (card#9938).** Every move is reported from a re-read of the card, so the run separates three outcomes: `0` the cards read back in the released stage · `1` a move was refused, or a card read back in another stage (`move NOT APPLIED`, quoting what the board holds) · **`3`** a stage `PATCH` went out, answered success, and its outcome could not be read (refused, never completed, or a `2xx` carrying no readable stage). **Nothing in a `3` says those cards did not move, and nothing says they did** — the run names each one, and re-running the tool is safe (a card already at the target stage is skipped as already-released). The previous behaviour reported every `2xx` as a move and exited `0`, which is how a release once read as fully promoted with all 28 of its cards still in Shipped.
 
 ## 5. Verify (expected output shown)
 

@@ -109,7 +109,15 @@ MUT_RE='kb_api(_status)?[[:space:]]+(POST|PATCH|DELETE)|-X[[:space:]]+"?(POST|PA
 # The file-local read owners, by name. They are named rather than pattern-matched because each
 # one IS a read of the mutated subject: the card, the card's links, the board's field index, the
 # board's cards, the by-ref index.
-READ_RE='kb_api(_status)?[[:space:]]+GET|_kbc_card_witness|_kbc_link_witness|_kbc_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
+#
+# ⚠ THE LAST ALTERNATIVE IS THERE FOR THE SAME REASON MUT_RE ADMITS A WRAPPER (card#9938).
+# `bin/promote-released-cards` is vendored standalone, so its READS go through its own local
+# `api()` exactly as its WRITES do — `api "$API/tasks/$id.json"` — and a pattern that knew only
+# the lib's spelling reported the card mover's post-write re-read as absent, i.e. it scored the
+# tool that had just adopted the read-back as still owing one. It is the READ spelling only: a
+# write through the same wrapper carries `-X PATCH` between the two, so this cannot credit a
+# PATCH as its own confirmation.
+READ_RE='kb_api(_status)?[[:space:]]+GET|api "\$API/tasks/|_kbc_card_witness|_kbc_link_witness|_kbc_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
 
 # _classify <file> <line> — prints "<scope>\t<verdict>\t<emits>" for one call site.
 # <verdict> is CONFIRMED or CANDIDATE; <emits> is stdout / stderr-only / silent, the R3 attribute.
