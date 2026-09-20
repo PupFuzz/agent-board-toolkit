@@ -176,7 +176,8 @@ eq "⭐ the card is reported moved, quoting the stage it read back" "true" \
 eq "⭐ the run exits 0"                                    "0"     "$rc"
 eq "the summary counts it, and carries NO unverified field" "true|false" \
    "$(has '1 moved, 0 already-released, 0 no-card, 0 failed.' "$out")|$(has 'UNVERIFIED' "$out")"
-eq "…nothing is reported failed or unverified"            "false" "$(has 'NOT APPLIED' "$err")"
+eq "…and NEITHER failure word appears on either stream"   "false|false" \
+   "$(has 'NOT APPLIED' "$out$err")|$(has 'UNVERIFIED' "$out$err")"
 eq "the move PATCH is still the stage-only one it always was" "true" \
    "$(has_line $'https://kanban.test/api/v3/tasks/1.json\t{"workflow_stage_id":85}' "$patched")"
 eq "…and the card was read exactly ONCE (the clear's read is the move's, not a second)" "1" "$(card_reads)"
