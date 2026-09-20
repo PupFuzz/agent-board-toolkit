@@ -149,8 +149,9 @@
 #     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
 #     payload key (version → version_target): the API merges payload per key, so an omitted key is
 #     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
-#     the board re-derives it from what remains, falling back to payload.repo, the other URL keys
-#     and a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
+#     the board re-derives it from what remains — payload.repo OUTRANKS every URL when it is a
+#     string containing /, so on such a card clearing a URL cannot drop the source at all;
+#     otherwise the other URL keys, then a GitHub external_link. Several fields are ONE comma list (`--clear origin,version`), the
 #     spelling --tags uses; a second --clear is rc 2 rather than a silent last-wins that would drop
 #     a clear. No padding is trimmed and an empty member is an unknown field. Naming a field AND its
 #     setter (`--pr-url X --clear pr-url`) is rc 2 before any request, naming the flag passed. The
