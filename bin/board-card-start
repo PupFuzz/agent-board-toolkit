@@ -255,7 +255,7 @@ _bcs_id_space_rule="card ids and GitHub issue/PR numbers are separate id spaces 
 # (an empty message) and `git fetch . <src>:refs/heads/<branch>` (`fetch …: storing ref`), measured
 # on git 2.43; so is one with reflogs off or expired, or in the record's own second. A card created,
 # moved or deleted on the board after the checkout is NOT detectable without reading the board,
-# which the lint never does: the next checkout re-records.
+# which the lint never does: the next run of the mover re-records.
 _BCS_VERDICT_HEADER="abtk-board-verdict 1"
 
 # _bcs_verdict_file <branch>: the ABSOLUTE record path for <branch> in the repo around the current
