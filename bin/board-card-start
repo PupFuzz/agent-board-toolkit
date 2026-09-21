@@ -174,7 +174,7 @@ _bcs_branch_lint_warning() {
     local id
     id="$(printf '%s\n' "$branch" | grep -oiE '(^|[/_-])(card|#)[^a-z0-9/#-]0*[0-9]{2,}' | grep -oE '[0-9]+' | head -1 | sed 's/^0*//')"
     [ -n "$id" ] || return 0
-    printf "branch '%s' looks like it references card %s, but the board auto-move grammar won't recognize this spelling — the card will NOT move to In Progress on checkout. Rename it e.g. 'fix/card-%s-slug' (or 'fix/%s-slug').\n" "$branch" "$id" "$id" "$id"
+    printf "branch '%s' looks like it references card %s, but the board auto-move grammar won't recognize this spelling — the card will NOT move to In Progress on checkout. Rename it e.g. 'fix/card-%s-slug' (or 'fix/%s-slug') to fix the grammar; that alone still moves nothing unless this repo is ARMED for checkout auto-move ('git config kanban.automove-on-checkout true' — docs/HOOKS.md § Arm it per repo, card#9845).\n" "$branch" "$id" "$id" "$id"
 }
 
 # _bcs_card_id <branch>: the id the card-id path moves on — the explicit named-card grammar
@@ -331,9 +331,16 @@ _bcs_board_verdict_warning() {
     local branch="${1:-}" f="${2:-}" board_now="${3:-}" created="${4:-}" id again
     id="$(_bcs_card_id "$branch")"
     [ -n "$id" ] || return 0
-    again="check the branch out again ('git checkout $branch') to record a current verdict"
+    # ONE remedy string, printed by every undecided row below, so its precondition rides the
+    # string rather than any one row (card#9845): a row added later inherits it. A re-checkout
+    # records a verdict only by CALLING the mover, and `hooks/post-checkout` calls it only in an
+    # ARMED repo, so without the clause each of these rows would send an operator in an unarmed
+    # repo to a command that records nothing. The lint deliberately does NOT read the setting (it
+    # reads the record and nothing else, and issues no request), so this is stated as a
+    # precondition, never as a measured cause.
+    again="check the branch out again ('git checkout $branch') to record a current verdict — which records nothing at all unless this repo is ARMED for checkout auto-move ('git config kanban.automove-on-checkout true'; docs/HOOKS.md § Arm it per repo)"
     if [ -z "$f" ] || [ ! -e "$f" ]; then
-        printf "board verdict NOT RECORDED for branch '%s' (card %s): no checkout of it recorded what the board said — it was created without a checkout (git branch / fetch / update-ref), checked out without a post-checkout hook that records verdicts, or the record could not be written (the mover's durable log says so); %s.\n" \
+        printf "board verdict NOT RECORDED for branch '%s' (card %s): no checkout of it recorded what the board said — this repo may not have the checkout auto-move ARMED, or it was created without a checkout (git branch / fetch / update-ref), checked out without a post-checkout hook that records verdicts, or the record could not be written (the mover's durable log says so); %s.\n" \
             "$branch" "$id" "$again"
         return 1
     fi
