@@ -130,16 +130,17 @@
 #     and `workflow_stage_id` is RULED on, and that ruling is what the line and the counts say:
 #       moved        the read agrees with what was asked → `✓ … moved … (read back: …)`.
 #       NOT APPLIED  the read is a MEASUREMENT and it disagrees → `✗ … move NOT APPLIED`,
-#                    counted on its own, and the RUN exits 1 WHATEVER ELSE SUCCEEDED. The
-#                    2026-05-22 state, said out loud — and the release that met it carried 28
-#                    cards, so an rc conditioned on `moved == 0` is rc 0 the moment ONE of
-#                    them lands: 27 promoted and one measured un-applied is the shape this
-#                    outcome exists to red, not a corner of it.
+#                    counted on its own. The 2026-05-22 state, said out loud — and the release
+#                    that met it carried 28 cards, so an rc conditioned on `moved == 0` is rc 0
+#                    the moment ONE of them lands: 27 promoted and one measured un-applied is
+#                    the shape this outcome exists to red, not a corner of it.
 #       UNVERIFIED   the read is not a measurement (it did not complete, was refused, or carried
-#                    no readable stage) → `⚠ … move UNVERIFIED`, counted separately, and the RUN
-#                    exits $RC_UNVERIFIED (3). Nothing says the card moved, nothing says it did
-#                    not. This is card#8556's third outcome, adopted rather than re-spelled: the
-#                    rc, the word and the ladder are `bin/kbcard`'s.
+#                    no readable stage) → `⚠ … move UNVERIFIED`, counted separately. Nothing
+#                    says the card moved, nothing says it did not. This is card#8556's third
+#                    outcome, adopted rather than re-spelled: the rc, the word and the ladder
+#                    are `bin/kbcard`'s.
+#     The rc each of the three carries — and what each is CONDITIONAL on — is stated once, in
+#     EXIT CODES below, and deliberately not repeated here.
 #     The owner-tag clear is read back the same way; its outcome still changes no count and no
 #     exit code (see the paragraph above). The ONE extra request per moved card is the clear's
 #     own read-back — the FIRST read is shared, not added: the clear already re-read the card.
@@ -154,6 +155,66 @@
 #   - Assumes it fires on a RELEASE merge to a protected main (push==release-merge). A plain
 #     non-merge commit pushed directly to main whose range carries cardless DLs would fail
 #     loud by the same rule — intended, given the assumption.
+#
+# EXIT CODES — THE ONE STATEMENT OF THIS TOOL'S LADDER (card#9938).
+#   ⛔ EVERY OTHER SURFACE POINTS HERE INSTEAD OF RESTATING IT. The set of pointers is not listed
+#   — a list is a count of whatever it counted, and it goes stale the day a surface is added or
+#   renamed. RE-DERIVE it instead, from the repo root:
+#       command grep -rn 'EXIT CODES' README.md docs/ promote/ bin/promote-released-cards
+#   Round 2 of card#9938 changed the ladder and then made "the three published statements" true
+#   one by one; a fourth, `README.md`'s, was nobody's and stayed pre-round-2 — the defect was not
+#   that a sentence was missed, it was that NOBODY DERIVED THE SET. Restating the ladder in an
+#   N+1th place is how that happens again. Change it HERE, and leave the other surfaces pointing.
+#   `promote-released-cards --help` prints this block, so the contract ships inside the vendored
+#   copy and a consumer needs neither this repo nor its docs to read it.
+#   ⚠ WHAT "THE LADDER" MEANS HERE, because the scope is the whole claim: what each rc MEANS and
+#   what each is CONDITIONAL on. A `docs/CHANGELOG.md` entry still NAMES the codes a release moved
+#   — that is a record of a delta at a moment, not a live contract, and it is not a copy of this.
+#
+#   0  the run promoted what it says it promoted: no card was measured in another stage, and no
+#      write went unread. ⚠ NOT "every matched card is released" — a stage-guarded skip, a
+#      no-card or other-repo ref, and the refusal case below all live at 0.
+#   1  a KNOWN failure. TWO ROUTES REACH IT AND THEY ARE NOT CONDITIONAL ON THE SAME THING —
+#      the difference is the whole of what round 2 changed, so it is stated rather than implied:
+#        · a MEASURED un-applied move (`✗ … move NOT APPLIED`) — UNCONDITIONAL. Whatever else
+#          the run moved, skipped or could not read: the board was read and it disagrees with
+#          the write, so the release is not clean. 27 promoted beside one un-applied is rc 1.
+#        · a REFUSED or never-completed move (`✗ … move failed (left in place)` /
+#          `move NOT CONFIRMED`, the `<n> failed` count) — only on a run where NOTHING moved,
+#          NOTHING was already released and NOTHING is unverified. A refusal beside a promoted
+#          card exits 0, as it always has: that is the card#9301 acceptance, left standing
+#          deliberately (widening it changes runs this tool has always called green).
+#          ⛔ A GATE THAT MUST CATCH THAT ONE READS THE `<n> failed.` TAIL OF THE SUMMARY LINE,
+#          NOT THE RC.
+#   2  bad invocation, or a refusal this tool `die`s on before/instead of promoting — including
+#      the completeness die: 0 cards newly promoted behind a NON-MERGE release tip, where a
+#      squash/rebase merge may have dropped the per-PR refs. Both read-back clauses above are
+#      decided BEFORE that die, because on their runs the refs demonstrably arrived, matched
+#      cards and were PATCHed — sending the operator after dropped refs would be the wrong
+#      question at an rc that means bad invocation.
+#   3  $RC_UNVERIFIED — a stage PATCH WAS SENT, answered success, and its outcome could NOT be
+#      read. Nothing here says it landed and nothing says it did not; re-read before acting
+#      either way. It fires with `moved` > 0 too: 27 cards read back moved and one not read at
+#      all is an incomplete record, and rc 0 would be this tool saying otherwise.
+#      ⚠ A RED PROMOTE STEP IS NOT ALWAYS A FAILED ONE. Re-running is safe — a card already at
+#      the target stage is skipped as already-released.
+#   ⛔ 1 OUTRANKS 3 where one run carries both: 3 says NOBODY KNOWS, 1 is a MEASUREMENT that the
+#   write did not take, and a run that has measured one does not hedge. Both run-level lines are
+#   printed before the exit, so the cards to go and re-read are still named either way.
+#
+#   ⚠ WHAT THE `NOT APPLIED` RULING NEEDS FROM THE FAR END, AND CANNOT CHECK HERE. `not-applied`
+#   — the one outcome that reds a release unconditionally — is decided from ONE `GET
+#   /tasks/<id>.json` issued immediately after the PATCH, with no retry and no second look. That
+#   GET is a MEASUREMENT only if the board answers it READ-AFTER-WRITE CONSISTENTLY for a
+#   `workflow_stage_id` write. THAT IS A PROPERTY OF THE BOARD DEPLOYMENT, NOT OF THIS REPO, AND
+#   NOTHING HERE ESTABLISHES IT: every test of this tool drives a stubbed transport, so no check
+#   in this tree can reach the question. It is named rather than assumed either way. If a
+#   deployment serves that read from a lagging replica or a cache, rc 1 and `move NOT APPLIED`
+#   are reachable on a promotion that in fact landed, and the line's remedy ("promote them by
+#   hand") is then wrong — on such a board read rc 1 as "go and re-read these cards", not as
+#   "the move failed". `bin/kbcard`'s twin does NOT carry this precondition, and the asymmetry is
+#   exactly where the assumption enters: it rules on the server's own write ECHO, inside the same
+#   request, so it needs no second read to be consistent with the first.
 #
 # Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--dry-run] [--config PATH]
 #
@@ -817,11 +878,14 @@ API_RC_REFUSED=22
 # because it is PINNED: `tests/mirror-pair-parity-selftest.sh` § 6 extracts both assignments from
 # the two shipped files and reds when they differ, and drives this file's `stage_verdict` beside
 # kbcard's `_kbc_confirm_stage` over one corpus.
-#   0                the run promoted what it says it promoted (a read-back agreed).
-#   1                a KNOWN failure — refused, or the read-back says the card did not move.
-#   2                bad invocation / a refusal before any write (this tool's `die`).
-#   $RC_UNVERIFIED   a stage PATCH WAS SENT and its outcome could NOT be read. Nothing here says
-#                    it landed and nothing says it did not; re-read before acting either way.
+#
+# ⛔ THE LADDER IS NOT RESTATED HERE. It used to be — as `1  a KNOWN failure — refused, or the
+# read-back says the card did not move.` — and that sentence declared a condition this file does
+# not evaluate: a REFUSED move reaches rc 1 only on a run where nothing moved, nothing was already
+# released and nothing is unverified (the clause below the summary line), so a refusal beside a
+# promoted card exits 0 and the line said otherwise. This block owns the VALUE and why it is
+# duplicated; the header's EXIT CODES block (`--help`) owns what each rc MEANS and what it is
+# conditional on.
 RC_UNVERIFIED=3
 
 # TWO FILES, NOT TWO VARIABLES, and the reason is shell scoping rather than taste. The
@@ -1376,8 +1440,15 @@ fi
 # in this tool where that collapse is not the read-outcome-collapse defect: the caller's arm for
 # an empty answer makes NO CLAIM in either direction — it reports UNVERIFIED — so the two states
 # it merges are being treated as the one thing they genuinely share, "nothing was measured".
-# A body carrying more than one JSON text yields one line per text, which is not ONE card, so it
-# is refused rather than having its first line read as the card's stage.
+#
+# ⚠ THE MULTI-LINE REFUSAL IS STATED AT ITS ACTUAL PREDICATE, WHICH IS NARROWER THAN "one JSON
+# text". `jq -r` over a body carrying several JSON texts emits one line per SURVIVING projection,
+# so `*$'\n'*` refuses a body that yields TWO OR MORE STAGES — not ONE card, so it is refused
+# rather than having its first line read as the card's stage. A multi-text body in which only one
+# text survives both `select`s yields ONE line and is read: measured, `{"data":{"id":1}}` followed
+# by `{"data":{"workflow_stage_id":85}}` prints `85`. Left standing rather than narrowed, because
+# narrowing it changes what this tool ACCEPTS — its own decision to ask for — and this API is not
+# known to produce a multi-text body. What was wrong was the CLAIM, and the claim is what moved.
 card_stage() {
   local s
   s="$(jq -r '.data | select(type == "object") | .workflow_stage_id | select(type == "number" or type == "string") | tostring' <<<"$1" 2>/dev/null || true)"
@@ -1683,8 +1754,10 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # `moved == 0 && skipped == 0` is why. That is the acceptance card#9301 shipped, on a run shape
 # that predates card#9938; widening it changes what this tool reports on runs it has always
 # reported as green, which is its own decision to ask for and is not this card's. What card#9938
-# owes is that the DOCS say so, and `docs/INSTALL.md` §4 states the condition rather than the
-# unconditional rule that was true of neither half.
+# owes is that the DOCS say so, and they do in ONE place: the header's EXIT CODES block, which
+# `--help` prints and which states the condition rather than the unconditional rule that was true
+# of neither half. Every other surface points there rather than carrying a copy — that block
+# publishes the command that re-derives which surfaces those are.
 if [ "$failed" -gt 0 ] && [ "$unverified" = 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
 # A WRITE WENT OUT AND NOBODY HERE CAN SAY WHAT IT DID → exit $RC_UNVERIFIED (card#9938).
 #
