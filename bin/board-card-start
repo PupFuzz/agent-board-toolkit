@@ -331,9 +331,16 @@ _bcs_board_verdict_warning() {
     local branch="${1:-}" f="${2:-}" board_now="${3:-}" created="${4:-}" id again
     id="$(_bcs_card_id "$branch")"
     [ -n "$id" ] || return 0
-    again="check the branch out again ('git checkout $branch') to record a current verdict"
+    # ONE remedy string, printed by every undecided row below, so its precondition rides the
+    # string rather than any one row (card#9845): a row added later inherits it. A re-checkout
+    # records a verdict only by CALLING the mover, and `hooks/post-checkout` calls it only in an
+    # ARMED repo, so without the clause each of these rows would send an operator in an unarmed
+    # repo to a command that records nothing. The lint deliberately does NOT read the setting (it
+    # reads the record and nothing else, and issues no request), so this is stated as a
+    # precondition, never as a measured cause.
+    again="check the branch out again ('git checkout $branch') to record a current verdict — which records nothing at all unless this repo is ARMED for checkout auto-move ('git config kanban.automove-on-checkout true'; docs/HOOKS.md § Arm it per repo)"
     if [ -z "$f" ] || [ ! -e "$f" ]; then
-        printf "board verdict NOT RECORDED for branch '%s' (card %s): no checkout of it recorded what the board said — this repo may not have the checkout auto-move armed ('git config kanban.automove-on-checkout true'), which a re-checkout does NOT fix; or it was created without a checkout (git branch / fetch / update-ref), checked out without a post-checkout hook that records verdicts, or the record could not be written (the mover's durable log says so); %s.\n" \
+        printf "board verdict NOT RECORDED for branch '%s' (card %s): no checkout of it recorded what the board said — this repo may not have the checkout auto-move ARMED, or it was created without a checkout (git branch / fetch / update-ref), checked out without a post-checkout hook that records verdicts, or the record could not be written (the mover's durable log says so); %s.\n" \
             "$branch" "$id" "$again"
         return 1
     fi

@@ -219,7 +219,7 @@ Per-board custom fields define which keys a card's `tasks.payload` may carry (an
 **The sequence that costs a release:**
 
 1. `kbcard patch --task X --block-reason "…"`.
-2. Someone checks out a branch naming card X **and** a DL. The hook fires, hits the pin, and exits.
+2. Someone checks out a branch naming card X **and** a DL, in a repo **armed** with `git config kanban.automove-on-checkout true`. The hook fires, hits the pin, and exits. (An *unarmed* repo reaches step 3 by a shorter route — the hook never calls the mover at all, so the pin is never even read; same missing stamp, different cause.)
 3. `payload.dl_number` is **never stamped** on card X.
 4. At release, the DL-correlated movers (bridge writeback, release promote) **no-op on that card** — it is simply missing from the promotion, with nothing failing.
 

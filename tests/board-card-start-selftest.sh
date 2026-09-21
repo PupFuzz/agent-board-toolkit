@@ -275,6 +275,51 @@ if command -v git >/dev/null 2>&1; then
     _vwarn fix/card-712-x 42
     eq "another branch's record at this path: UNREADABLE, never borrowed" "1|true" "$_vrc|$(has "is UNREADABLE" "$_vout")"
 
+    # ── the re-checkout remedy states its own precondition, on EVERY row that prints it (card#9845)
+    # `$again` is ONE string printed by several rows (the population: every line that interpolates
+    # it — `grep -n '[$]again' bin/board-card-start | grep -v 'again='`; the unquoted pattern is
+    # load-bearing, since NOT CHECKED interpolates it inside `${r_remedy:-…}`).
+    # When the opt-in landed only the NOT RECORDED row was qualified; UNREADABLE, STALE and NOT
+    # CHECKED kept sending an operator to a command that records nothing in an unarmed repo. These
+    # legs drive each row of that population and assert the precondition rides the REMEDY, so a row
+    # added later inherits it — and a row added later needs a leg here.
+    #
+    # ⛔ Asserted on the PRINTED line of each row, not on the variable: a caller could stop using
+    # `$again` and this would still have to fail.
+    #
+    # Seen to fail: restore the pre-card#9845 remedy text and every leg below reds —
+    #   sed -i "s/ — which records nothing at all unless this repo is ARMED[^\"]*\"/\"/" bin/board-card-start
+    _armed_re="records nothing at all unless this repo is ARMED"
+    _vwarn fix/card-714-x 42        # no record at all      → NOT RECORDED
+    eq "⭐ NOT RECORDED: the re-checkout remedy names arming as its precondition" "true|true" \
+       "$(has "board verdict NOT RECORDED" "$_vout")|$(has "$_armed_re" "$_vout")"
+    eq "…and gives the exact config key, on the remedy itself" "true" \
+       "$(has "git config kanban.automove-on-checkout true" "$_vout")"
+    _vwarn fix/card-712-x 42        # garbage/foreign file  → UNREADABLE
+    eq "⭐ UNREADABLE: same remedy, same precondition" "true|true" \
+       "$(has "is UNREADABLE" "$_vout")|$(has "$_armed_re" "$_vout")"
+    _vrec fix/card-733-x resolved "" 42 733 "card #733"
+    _vwarn fix/card-733-x 43        # board re-mapped       → STALE
+    eq "⭐ STALE: same remedy, same precondition" "true|true" \
+       "$(has "is STALE" "$_vout")|$(has "$_armed_re" "$_vout")"
+    _vwarn fix/card-713-x 42        # no board answer, no recorded remedy → NOT CHECKED (default arm)
+    eq "⭐ NOT CHECKED (no recorded remedy): same remedy, same precondition" "true|true" \
+       "$(has "board verdict NOT CHECKED" "$_vout")|$(has "$_armed_re" "$_vout")"
+    # THE CONTROL for the arm above: a row whose record carries its OWN remedy must NOT gain the
+    # clause — the recorded remedy replaces the re-checkout advice entirely, so a precondition on a
+    # command that is no longer being suggested would be noise. Without this leg the four
+    # assertions above would also pass against a change that pasted the clause onto every row.
+    _vwarn fix/card-731-x 42
+    eq "control — a recorded remedy replaces the advice, so it carries NO arming clause" "true|false|false" \
+       "$(has "rename the branch, the remedy" "$_vout")|$(has "check the branch out again" "$_vout")|$(has "$_armed_re" "$_vout")"
+    # …and a row that is SILENT stays silent: the remedy string is built unconditionally, so a
+    # resolved branch must not start printing a config key at push.
+    _vrec fix/card-734-x resolved "" 42 734 "card #734"
+    _vwarn fix/card-734-x 42
+    eq "control — a resolved record is still silent, arming clause included" "0||false" \
+       "$_vrc|$_vout|$(has "$_armed_re" "$_vout")"
+    unset _armed_re
+
     unset -f _vrec _vwarn _vfile _vfield
     rm -rf "$_vt"
 else
@@ -1255,13 +1300,18 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     _push "$_rrepo" "$_hcard"
     eq "opt-in UNSET: pre-push says NOT RECORDED and still never blocks a push" "0|true" \
        "$_rc|$(has "board verdict NOT RECORDED for branch '$_hcard'" "$_out")"
-    # …and that line names the arming as a cause, because its own remedy — check the branch out
-    # again — does not work here: an unarmed repo records nothing on any number of re-checkouts,
-    # and a remedy that cannot work is worse than a cause too many. (It is not the ONLY such
-    # cause — an unwritable record survives a re-checkout too — so the message says "which",
-    # never "the one": a uniqueness claim there would be false.)
-    eq "opt-in UNSET: the NOT RECORDED line names the arming, as a cause a re-checkout will not fix" "true|true" \
-       "$(has "git config kanban.automove-on-checkout true" "$_out")|$(has "which a re-checkout does NOT fix" "$_out")"
+    # …and that line names the arming as a cause, AND its remedy — check the branch out again —
+    # carries the precondition that makes it honest: an unarmed repo records nothing on any number
+    # of re-checkouts, and a remedy that cannot work is worse than a cause too many. (It is not the
+    # ONLY such cause — an unwritable record survives a re-checkout too — so the cause clause says
+    # "may not", never "the one": a uniqueness claim there would be false.)
+    #
+    # ⛔ The precondition moved OFF this row and ONTO the shared `$again` remedy string, because
+    # the other rows that print that same remedy had not been qualified (card#9845). The end-to-end
+    # property asserted here is unchanged and now holds for every such row — the in-process legs
+    # above drive each one; this leg proves it survives the REAL pre-push path.
+    eq "opt-in UNSET: the NOT RECORDED line names the arming, and its remedy states the precondition" "true|true" \
+       "$(has "git config kanban.automove-on-checkout true" "$_out")|$(has "records nothing at all unless this repo is ARMED" "$_out")"
 
     # THE CONTROL: the same fixture, the same checkout, armed — the card DOES move. Without this
     # arm every assertion above would also pass against a fixture that can never move a card.
