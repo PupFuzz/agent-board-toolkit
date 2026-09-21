@@ -1543,8 +1543,8 @@ finding with no owner is abandoned, not filed.
   flag (`--type`); `--triaged` alone always faulted (`object + array`), which is why the first round
   read as diagnostic-only. Closed by testing the CONTAINER type of `tags` in the same filter, at the
   same refusal and the same rc. **This narrowed the accepted set by 8 rows**, re-derived in round 3
-  on a 184-row A/B matrix (23 body shapes x 8 flag combinations; see the `[Unreleased]` CHANGELOG
-  entry for the denominator), every one of them the object-valued-`tags` class. **The earlier
+  on a 184-row A/B matrix (23 body shapes x 8 flag combinations; see the card#6426 entry in
+  `docs/CHANGELOG.md` for the denominator), every one of them the object-valued-`tags` class. **The earlier
   decomposition of those 8 — "6 rows (3 bodies x 2 flag combinations) … and 2 where an empty object
   …" — was wrong and is corrected here:** the 8 are **2 bodies x 4 `--type` combinations**
   (`--type` in its tag-alias and native-id forms, each with and without `--triaged`) — 4 rows where

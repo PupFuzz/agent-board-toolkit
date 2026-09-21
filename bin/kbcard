@@ -234,8 +234,8 @@
 #     ⚠ SETTING A REASON PINS THE CARD AGAINST THE WHOLE post-checkout HOOK, NOT JUST ITS MOVE:
 #     bin/board-card-start EXITS at the pin, so the payload.dl_number stamp that sits below the
 #     move is skipped as well, and an unstamped card is one a release promote later no-ops on.
-#     --unblock releases the pin but does NOT backfill the missed stamp — only another checkout
-#     runs that hook. README's `kbcard patch --block-reason` section owns this; not restated here.
+#     What --unblock does and does not backfill is owned by README's `kbcard patch
+#     --block-reason` section; not restated here.
 #     ⚠ AND SINCE card#9556 IT PINS THE CARD ON THE DISPATCH PATH TOO: `move --card-start`
 #     (see move, above) refuses a pinned card outright, whatever its stage, so a reason set here
 #     parks the card against BOTH starters rather than only against the one at checkout.
