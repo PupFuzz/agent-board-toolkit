@@ -47,8 +47,10 @@
 # won't recognize; card-4621 — that advisory needs no arming, and in an UNARMED repo its
 # board-verdict leg reports NOT RECORDED for every branch, since the record is the mover's
 # write — as is the payload.dl_number stamp (framework contract #112 step 2), also skipped in
-# an unarmed repo, which is the release-grade cost, not just advisory noise; docs/HOOKS.md §
-# Arm it per repo owns all three).
+# an unarmed repo, which is the release-grade cost, not just advisory noise, and as is the seat
+# owner tag the mover stamps after a move that landed. An unarmed repo loses EVERY write the
+# mover makes, so this comment counts none of them; docs/HOOKS.md § Arm it per repo and § What
+# it does own that set between them).
 # HONORS core.hooksPath: when a repo sets it (gitleaks, the
 # pre-commit framework, Husky, many Windows setups), git dispatches hooks ONLY from there —
 # installing into .git/hooks would be a SILENT no-op (the symlink is created, install reports
