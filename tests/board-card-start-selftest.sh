@@ -72,6 +72,20 @@ lint_silent "a DL branch → silent"                 "feature/dl212-event-gated"
 lint_silent "no card-ish signal → silent"          "docs/adoption-guide"
 lint_silent "embedded 'card' (discard_42) → silent" "feature/discard_42-x"
 lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
+# card#9845: before that change, "rename it" was the WHOLE fix — every wired repo fired the
+# hook, so a compliant rename always correlated AND moved. Since the hook is opt-in, a rename
+# in an unarmed repo still moves nothing, so the advisory must not imply otherwise. This leg
+# reds against the PRE-FIX wording of this same line (the string this file's own git history
+# carries before this commit) — NOT against origin/dev's hook, since the defect is in this
+# advisory's TEXT, introduced by card#9845's change, not in the old hook's behavior:
+#   git show <pre-fix HEAD>:bin/board-card-start | grep -c 'ARMED for checkout auto-move'  # 0
+_lint_arm_warn="$(_bcs_branch_lint_warning "fix/card_4524-x")"
+grep -q "ARMED for checkout auto-move" <<< "$_lint_arm_warn" \
+    && ok "malformed-spelling advisory also names arming as a separate precondition" \
+    || bad "malformed-spelling advisory does not mention arming: $_lint_arm_warn"
+grep -q "kanban.automove-on-checkout" <<< "$_lint_arm_warn" \
+    && ok "…and gives the exact config key to check" \
+    || bad "malformed-spelling advisory omits the config key: $_lint_arm_warn"
 
 echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
 # --lint moves nothing and issues no request; exercises the real arg path + exit code. The
@@ -1204,6 +1218,92 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     }
     _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
     _git "$_rrepo" branch -q -D fix/card-712-x fix/card-4242-x
+
+    # ── the auto-move OPT-IN gate, on real checkouts (card#9845) ─────────────────────────────
+    # `hooks/post-checkout` called the mover on EVERY branch checkout, so reading a colleague's
+    # branch, bisecting or hopping back to `main` silently moved that branch's card to In
+    # Progress. `git config kanban.automove-on-checkout` now arms it, per repo, and UNSET IS OFF.
+    #
+    # ⛔ ASSERTED ON WHAT REACHED THE BOARD — the stub's request log — never on an exit code: the
+    # hook is fail-soft, so "moved the card" and "did nothing at all" are both rc 0, and an
+    # exit-code assertion would pass whatever this hook does. Card 4242 sits in BACKLOG (stage 81)
+    # in the stub, which is what makes BOTH answers reachable here: on a card already In Progress
+    # the mover writes nothing regardless, so that fixture could not fail and would prove nothing.
+    # Every arm is driven through a REAL `git switch -c` firing the REAL hook file, not by calling
+    # the hook by hand — the guard being tested is one git itself has to reach.
+    _hookcut() {  # <branch> — re-cut <branch> from scratch so post-checkout fires on a branch checkout
+        _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
+        _git "$_rrepo" branch -q -D "$1" >/dev/null 2>&1 || true
+        rm -f "$(cd "$_rrepo" && _bcs_verdict_file "$1")"
+        kb_stub_reset; rm -f "$_rlog"; _rc=0
+        _out="$(_git "$_rrepo" switch -q -c "$1" 2>&1)" || _rc=$?
+    }
+    _hmoved() { kb_stub_bodies PATCH /tasks/4242.json | jq -cS . 2>/dev/null | head -1; }
+    _hcard=fix/card-4242-x
+
+    _hookcut "$_hcard"
+    eq "⭐ opt-in UNSET: the card is NOT moved on a real branch checkout" "" "$(_hmoved)"
+    eq "⭐ opt-in UNSET: the card is not even READ — no request is issued at all" "0" \
+       "$(kb_stub_count_any /tasks/)"
+    eq "opt-in UNSET: the checkout itself succeeded and HEAD is the new branch" "0|$_hcard" \
+       "$_rc|$(git -C "$_rrepo" symbolic-ref --short HEAD)"
+    eq "opt-in UNSET: the hook prints nothing" "" "$_out"
+    # The cost of not calling the mover, pinned so it is a decision and not a surprise: the
+    # board-verdict record (DL-225) is the mover's write too, so a disarmed repo records none and
+    # `pre-push` then reports NOT RECORDED for such a branch.
+    eq "opt-in UNSET: no board verdict is recorded either" "" "$(_vget "$_hcard" verdict)"
+    _push "$_rrepo" "$_hcard"
+    eq "opt-in UNSET: pre-push says NOT RECORDED and still never blocks a push" "0|true" \
+       "$_rc|$(has "board verdict NOT RECORDED for branch '$_hcard'" "$_out")"
+    # …and that line names the arming as a cause, because its own remedy — check the branch out
+    # again — does not work here: an unarmed repo records nothing on any number of re-checkouts,
+    # and a remedy that cannot work is worse than a cause too many. (It is not the ONLY such
+    # cause — an unwritable record survives a re-checkout too — so the message says "which",
+    # never "the one": a uniqueness claim there would be false.)
+    eq "opt-in UNSET: the NOT RECORDED line names the arming, as a cause a re-checkout will not fix" "true|true" \
+       "$(has "git config kanban.automove-on-checkout true" "$_out")|$(has "which a re-checkout does NOT fix" "$_out")"
+
+    # THE CONTROL: the same fixture, the same checkout, armed — the card DOES move. Without this
+    # arm every assertion above would also pass against a fixture that can never move a card.
+    git -C "$_rrepo" config kanban.automove-on-checkout true
+    _hookcut "$_hcard"
+    eq "⭐ opt-in TRUE: the card moves to In Progress (stage-only PATCH)" '{"workflow_stage_id":84}' "$(_hmoved)"
+    eq "opt-in TRUE: the board verdict is recorded again" "resolved" "$(_vget "$_hcard" verdict)"
+
+    # git owns the SPELLING (`--bool`), not the hook: the arming values are git's, and everything
+    # else — including a value git refuses to read as a boolean — is OFF, silently and fail-soft.
+    for _hv in yes on 1; do
+        git -C "$_rrepo" config kanban.automove-on-checkout "$_hv"
+        _hookcut "$_hcard"
+        eq "opt-in '$_hv' (a git boolean TRUE): the card moves" '{"workflow_stage_id":84}' "$(_hmoved)"
+    done
+    for _hv in false off 0 "" not-a-boolean; do
+        git -C "$_rrepo" config kanban.automove-on-checkout "$_hv"
+        _hookcut "$_hcard"
+        eq "opt-in '$_hv' → OFF: nothing is read or written, the checkout succeeds, nothing is printed" "0|0||" \
+           "$_rc|$(kb_stub_count_any /tasks/)|$(_hmoved)|$_out"
+    done
+    unset _hv
+
+    # The branch-checkout guard is unchanged and still decides first: git passes $3=0 for a FILE
+    # checkout, and an ARMED repo must not move a card on one either. Driven by argv — that is the
+    # interface git uses, and it is the one way to reach flag 0 deterministically.
+    git -C "$_rrepo" config kanban.automove-on-checkout true
+    kb_stub_reset; _rc=0
+    _out="$( cd "$_rrepo" && PATH="$_hbin:$PATH" bash "$_rrepo/.git/hooks/post-checkout" \
+             1111111111111111111111111111111111111111 1111111111111111111111111111111111111111 0 2>&1 )" || _rc=$?
+    eq "armed, but \$3=0 (a file checkout): no request, rc 0, nothing printed" "0|0|" \
+       "$_rc|$(kb_stub_count_any /tasks/)|$_out"
+
+    # The rest of this block drives the hook's ARMED path (it is testing what post-checkout does
+    # once it decides to run), so the fixture stays opted in from here on, and is returned to the
+    # state the legs below expect: no `fix/card-4242-x`, no record for it, HEAD on the base branch.
+    _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
+    _git "$_rrepo" branch -q -D "$_hcard"
+    rm -f "$(cd "$_rrepo" && _bcs_verdict_file "$_hcard")"
+    kb_stub_reset
+    unset -f _hookcut _hmoved
+    unset _hcard
 
     # A branch cut from a wrong-space number: the board says no, and pre-push repeats it.
     _git "$_rrepo" switch -q -c fix/card-712-x

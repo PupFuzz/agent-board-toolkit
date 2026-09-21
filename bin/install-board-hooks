@@ -40,8 +40,15 @@
 # outcome that produces copies and reports what producing symlinks reports.
 #
 # Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
-# feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
-# name references a card in a spelling the auto-move grammar won't recognize; card-4621).
+# feature-branch checkout — but ONLY in a repo ARMED with `git config
+# kanban.automove-on-checkout true`, card#9845: installing WIRES the hook, it never arms it,
+# and unset means OFF, so an install alone moves nothing) and hooks/pre-push (a fail-soft
+# advisory warning when a branch name references a card in a spelling the auto-move grammar
+# won't recognize; card-4621 — that advisory needs no arming, and in an UNARMED repo its
+# board-verdict leg reports NOT RECORDED for every branch, since the record is the mover's
+# write — as is the payload.dl_number stamp (framework contract #112 step 2), also skipped in
+# an unarmed repo, which is the release-grade cost, not just advisory noise; docs/HOOKS.md §
+# Arm it per repo owns all three).
 # HONORS core.hooksPath: when a repo sets it (gitleaks, the
 # pre-commit framework, Husky, many Windows setups), git dispatches hooks ONLY from there —
 # installing into .git/hooks would be a SILENT no-op (the symlink is created, install reports
@@ -521,7 +528,9 @@ _ibh_main() {
     local toolkit
     toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
     # The full hook set the toolkit installs. post-checkout: auto-move the card to In
-    # Progress on branch checkout. pre-push: the fail-soft branch-name advisory (card-4621).
+    # Progress on branch checkout, in a repo armed with kanban.automove-on-checkout — this
+    # installer wires that hook and never arms it (card#9845). pre-push: the fail-soft
+    # branch-name advisory (card-4621).
     local hooks=(post-checkout pre-push)
     local hook
     for hook in "${hooks[@]}"; do

@@ -4,7 +4,11 @@
 # A Claude Code PreToolUse hook for the Agent (subagent-dispatch) tool. It moves a
 # kanban card to "In Progress" the moment a subagent build is dispatched — closing the
 # dispatch -> branch-creation latency window that hooks/post-checkout (-> board-card-start)
-# only closes at branch creation. It is a peer of that hook, not a replacement.
+# only closes at branch creation. It is a peer of that hook, not a replacement — and since
+# card#9845 that peer is OPT-IN per repo (`git config kanban.automove-on-checkout true`), so in a
+# repo that has not armed it this hook is the only starter. Both are opt-in, by the same
+# reasoning: each acts on an explicit signal (a marker line there, an armed repo here) rather
+# than on any branch checkout, which is not a work-start signal.
 #
 # MARKER CONVENTION (load-bearing, opt-in per dispatch): this hook acts ONLY on an
 # explicit marker line in the dispatch prompt, anchored at line start:

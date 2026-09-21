@@ -1,10 +1,24 @@
 # Git hooks — codify "work begun"
 
-A recurring board-drift cause is forgetting to move a card to **In Progress** when work actually starts. This hook removes the manual step: when you check out a feature branch, the correlated card is moved to In Progress automatically.
+A recurring board-drift cause is forgetting to move a card to **In Progress** when work actually starts. This hook removes the manual step: in a repo you have **armed**, checking out a feature branch moves the correlated card to In Progress.
+
+## Arm it per repo — unset means OFF (card#9845)
+
+```bash
+git config kanban.automove-on-checkout true     # in each repo whose cards you want moved at checkout
+```
+
+`hooks/post-checkout` calls the mover **only** where this is set to a git boolean true (`true`, `yes`, `on`, `1`); with it unset, `false`, empty or unreadable the hook exits without calling anything, silently. **The default is OFF because a checkout is not a work-start signal** — reading a colleague's branch, bisecting, or hopping back to `main` fires this hook too, and the mover is invoked with **no arguments**, byte-identically to a deliberate hand-run, so no layer below the hook can tell those apart (card#9845's measurement: three such moves inside five seconds, 2026-09-19). Arming is what supplies the missing signal, and it is the whole of it: an armed repo behaves exactly as every repo did before.
+
+`git config` writes repo-locally, which is the intended grain — the reader is git's ordinary cascade, so `--global` is available to a seat that deliberately wants every repo armed. It sits beside `kanban.board-id` (§ What it does, step 2), which the mover already reads.
+
+⚠ **Arming is also what writes the [board-verdict record](#the-board-verdict-leg-dl-225) — and what runs the `payload.dl_number` stamp (framework contract #112 step 2).** Both are the mover's writes, so an unarmed repo gets neither: no verdict is recorded, `pre-push` reports `NOT RECORDED` for every branch carrying a card id, and a branch that names both a card and a DL leaves `payload.dl_number` unstamped — so the DL-correlated movers (bridge writeback, release promote) silently no-op on that card at release, nothing failing. **This is the SAME release-grade cost [README § ⚠ Setting a reason pins the card](../README.md#-setting-a-reason-pins-the-card-against-the-whole-post-checkout-hook--not-just-its-stage-move) already documents for a pinned card** — an unarmed repo reaches it by a different route (the mover is never called at all, instead of being called and exiting at the pin).
+
+⚠ **Cross-repo seam, not fixed here: a wired-but-unarmed repo still satisfies a purely TEXTUAL "is the auto-move installed" check.** The Agent Board Framework's `board-mover-check.py` (`/coord:update` area 8) reads whether the dispatched `post-checkout` mentions `board-card-start` — a predicate this hook still satisfies whether or not `kanban.automove-on-checkout` is set, so such a check can report the mover live while an unarmed repo moves nothing. `board-mover-check.py` lives in the framework repo, a different seat's, so it isn't changed here.
 
 ## What it does
 
-`hooks/post-checkout` → calls `bin/board-card-start`, which:
+In an armed repo, `hooks/post-checkout` → calls `bin/board-card-start`, which:
 1. correlates the branch to a card — **try-in-order-with-fallback** (framework contract #112), on the *outcome* of a token not its presence:
    - a **`DL-NNN`** token (e.g. `feature/dl156-foo`) that **resolves** → the card whose `dl_number` is `DL-NNN` (a co-present card-id token is ignored, loudly); or
    - a `DL-NNN` that resolves to **no card** → **falls through** to a **card-id** token in the same branch (never dead-ends — the unstamped-card class). When the card is selected via the card-id path *and* the branch also named a DL, `payload.dl_number` is **stamped if empty** (never overwriting a differing stamp) so the downstream DL-correlated movers (bridge writeback, release promote) stop no-op'ing on the card; or
@@ -28,19 +42,21 @@ It is **fail-soft** (any missing config / unreachable board / no DL-or-card-id t
 
 The `--` is load-bearing, not boilerplate. git **accepts** a branch whose name starts with `-` (`git check-ref-format refs/heads/-foo` is rc 0 and `git update-ref` creates it — only the `git branch` *porcelain* refuses the name), and this hook is fed whatever is being pushed. Passed bare, such a name reads as an unknown option and the lint refuses it, while the mover still moves that branch's card — `post-checkout` passes **no** arguments, so it resolves `HEAD` and never enters the argument parser. The shared matchers are what make the two agree on the *grammar*; the **argument surface** is the one place left where they could still disagree, and the terminator is what closes it.
 
-The malformed-spelling leg is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling:
+The malformed-spelling leg is deliberately **narrow / high-precision** — it warns only on the residual after the grammar was widened (card-4621): the literal `card`/`#` at a token boundary followed by ≥2 digits through a separator the grammar does *not* accept, e.g. `card_4524` or `card.4524` (the accepted separators are `-`, `/`, `#`, or none). A branch that already correlates (`card-4524`, glued `card4524`, `feat/4524-…`, a `DL-NNN`) is silent, and a branch with no card-ish signal at all (`docs/adoption-guide`) is silent. The suggested fix names the compliant spelling — **and, since card#9845, also names arming as a separate precondition**: renaming fixes the *grammar*, but a rename alone still moves nothing in a repo that has not run `git config kanban.automove-on-checkout true` (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)), because there is nothing hook-side left to fire on a compliant rename in an unarmed repo either:
 
 ```
 board-branch-lint: branch 'fix/card_4524-x' looks like it references card 4524, but the board
 auto-move grammar won't recognize this spelling — the card will NOT move to In Progress on
-checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug').
+checkout. Rename it e.g. 'fix/card-4524-slug' (or 'fix/4524-slug') to fix the grammar; that
+alone still moves nothing unless this repo is ARMED for checkout auto-move ('git config
+kanban.automove-on-checkout true' — docs/HOOKS.md § Arm it per repo, card#9845).
 ```
 
 ### The board verdict leg (DL-225)
 
 The malformed-spelling leg cannot see the opposite mistake: a **well-formed** token carrying a GitHub issue or PR number instead of a card id. `fix/card-712-foo`, where 712 is the PR that was in front of whoever cut the branch, lints clean under that leg; on checkout the mover finds no card of this board's at 712 and moves nothing — noting it in its durable log at most, and silently when 712 is another board's card; and at merge the **branch beats the PR title** for card correlation, so the card's terminal move is refused as well.
 
-On every checkout the mover asks the board about the branch's card id — the explicit token, else a typed leading id (`_bcs_card_id`, which the lint shares) — and records the answer. `board-card-start --lint` repeats that answer at push: it reads the branch's record and nothing else, and issues no request. A branch the board said is not a card here:
+On every checkout **in an armed repo** (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845) — an unarmed one never calls the mover, so it records nothing) the mover asks the board about the branch's card id — the explicit token, else a typed leading id (`_bcs_card_id`, which the lint shares) — and records the answer. `board-card-start --lint` repeats that answer at push: it reads the branch's record and nothing else, and issues no request. A branch the board said is not a card here:
 
 ```
 board-branch-lint: branch 'fix/card-712-foo' names card 712, which is NOT a card on board 42 — the board said so when the
@@ -55,11 +71,11 @@ What the lint says for a branch carrying a card id (a branch with none is silent
 | `resolved` — the card is on this repo's board, whether or not it moved (a pinned card, or one past the move stages, is still resolved) | silent |
 | `absent` — the card read answered HTTP 404, or the card's body names another board by a plain-integer id | the line above, with the id-space rule |
 | `not_checked` — the checkout got no answer about the id: no board mapped, no board env, no token, the read refused or unreachable, a body with no stage or no plain-integer board id, the DL search failed, a DL-matched card whose read then failed, a DL that resolved a card other than the branch's explicit card token (see *A DL and an explicit card token* below), … | `board verdict NOT CHECKED … — <the recorded reason>` |
-| none | `board verdict NOT RECORDED …` — the branch was created without a checkout (`git branch`, `git update-ref`, a fetch) and no earlier branch of that name left a record, last checked out before this version or without the hook, or its record could not be written (the mover's durable log says so) |
+| none | `board verdict NOT RECORDED …` — **the repo is not armed** (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)), so no checkout has ever called the mover; or the branch was created without a checkout (`git branch`, `git update-ref`, a fetch) and no earlier branch of that name left a record; or it was last checked out before this version or without the hook; or its record could not be written (the mover's durable log says so) |
 | stale — see below | `board verdict … is STALE — <why>` |
 | a file that is not a record for this branch | `board verdict record … is UNREADABLE` |
 
-**Every row but `resolved` and `absent` names its fix** — check the branch out again; `git checkout <branch>` re-fires `post-checkout` even when that branch is already checked out (measured on git 2.43), except where a re-checkout would only record the same verdict (a DL beside a card token, below), which names its own fix. A push prints at most one id-space line per branch: `hooks/pre-push` lints each pushed local branch once, even when one push sends it to several remote refs (`git push r b:refs/heads/x b:refs/heads/y` feeds the hook one line per refspec).
+**Every row but `resolved` and `absent` names its fix** — check the branch out again; `git checkout <branch>` re-fires `post-checkout` even when that branch is already checked out (measured on git 2.43), except where a re-checkout would only record the same verdict (a DL beside a card token, below), which names its own fix. ⚠ **In a repo that is not armed, re-checking-out is not the fix and the line will repeat** — no checkout there calls the mover, so `NOT RECORDED` is what this leg says about every card-id branch until the repo is armed. The lint does not read the setting and cannot say which of the row's causes it is looking at; a repo you deliberately leave unarmed is one where these lines are noise you should expect (card#9845). A push prints at most one id-space line per branch: `hooks/pre-push` lints each pushed local branch once, even when one push sends it to several remote refs (`git push r b:refs/heads/x b:refs/heads/y` feeds the hook one line per refspec).
 
 - **A DL and an explicit card token — where the mover and the bridge split.** The mover lets a DL that resolves win the MOVE: on `feature/dl-89-card-712-x`, with DL-89 stamped on card 4242, it moves 4242 and logs `DL wins; #712 ignored`. agent-webhook-bridge decides the MERGE the other way (DL-218, `GitHubPrCardMoveClassifier::cardTokenVerdict`): a card token its `CardTokenGrammar` parses out of the PR's head branch that is not one of the DL's cards is authoritative, so at merge that branch's subject is card 712, not 4242. Neither behaviour is changed by this leg; the lint reports the difference. The mover never reads 712, so it records the branch `not_checked` — `DL-89 resolved card #4242; the branch's own card #712 was not judged — …` — and the push line speaks. Checking the branch out again would record the same verdict, so the line names the fixes that do change it: rename the branch so its DL and its card token name the same card, or accept that the bridge acts on card #712 at merge. The record is `resolved` when the explicit token names the DL's own card, and when the other id is a typed leading id (`fix/712-dl-89`), which the bridge grammar does not parse.
 
@@ -75,13 +91,14 @@ What the lint says for a branch carrying a card id (a branch with none is silent
 - **Never a block.** A finding is a line; the exit status is 0 whatever either leg finds.
 - **Independent of the malformed-spelling leg.** A malformed spelling carries no accepted id, so this leg has nothing to judge on it, and an accepted spelling is silent to the other leg. Neither predicate was widened into the other.
 
-The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md). The board verdict leg speaks for a branch carrying a card id once that version carries it, and repeats the board's answer once the branch has been checked out through `post-checkout` with that version on `PATH` — until then the branch reads `NOT RECORDED`.
+The advisory becomes effective once the machine's on-PATH `board-card-start` is the version carrying `--lint` (a toolkit deploy, not merely a tag — see VERSIONING.md). The board verdict leg speaks for a branch carrying a card id once that version carries it, and repeats the board's answer once the branch has been checked out through `post-checkout` with that version on `PATH` **and the repo armed** — until then the branch reads `NOT RECORDED`.
 
 ## Agent-dispatch card-start (`hooks/agent-dispatch-card-start`, card-4945)
 
-`post-checkout` only fires when a **branch** is created — but when work is dispatched to a
-subagent, the card should move to In Progress at **dispatch time**, not at the later
-branch-creation. `hooks/agent-dispatch-card-start` closes that latency window: it is a **Claude
+`post-checkout` only fires when a **branch** is created, and since card#9845 only in an **armed**
+repo (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)) — but when work is
+dispatched to a subagent, the card should move to In Progress at **dispatch time**, not at the
+later branch-creation. In a repo left unarmed, this hook is the only starter at all. `hooks/agent-dispatch-card-start` closes that latency window: it is a **Claude
 Code `PreToolUse` hook for the `Agent` (subagent-dispatch) tool** that moves a card the moment a
 build is dispatched. It is a peer of `post-checkout`, not a replacement — either can fire first;
 `kbcard move` is idempotent, so a second move of an already-In-Progress card is a no-op.
@@ -181,7 +198,7 @@ Two independent movers advance a card, and **they read different surfaces with d
 
 | Mover | Trigger | Reads | Grammar it accepts |
 | --- | --- | --- | --- |
-| `board-card-start` (this hook) | branch checkout/creation → **In Progress** | the **branch name** | `DL-NNN`, `card<id>`/`card-<id>`/`card/<id>`/`card#<id>` (separator optional since card-4621), `#<id>`, or a typed branch's leading id (`feat/<id>-…`) |
+| `board-card-start` (this hook) | branch checkout/creation → **In Progress**, in an **armed** repo only (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)) | the **branch name** | `DL-NNN`, `card<id>`/`card-<id>`/`card/<id>`/`card#<id>` (separator optional since card-4621), `#<id>`, or a typed branch's leading id (`feat/<id>-…`) |
 | bridge writeback | PR opened/merged → **In Review / Shipped / Released** | the PR **title + head branch** | **only** `DL-NNN`, `card-<id>`, or `card#<id>` (`\bcard[-#](\d+)`, bridge ≥ v0.57.0; older bridges accept only `card#<id>` with a trailing `\b`) — a bare leading id like `feat/2950-…` does **not** correlate |
 
 The residual asymmetry is deliberate (the bridge never correlates a bare leading id, to avoid mis-correlating version numbers / non-card digits). Since bridge **v0.57.0** the `card-<id>` form correlates on **both** movers, so the fleet-ratified convention (roundtable #48) satisfies both with one token:
@@ -189,14 +206,17 @@ The residual asymmetry is deliberate (the bridge never correlates a bare leading
 - **Branch:** `<type>/card-<id>-<slug>` (e.g. `feat/card-2950-widget`). The hook moves the card to In Progress; the same ref later correlates the PR's head branch on the bridge. (The older `<type>/<card-id>-<slug>` bare-id shape still works for the hook, but only the hook — the bridge ignores it.)
 - **PR title:** carries the token automatically via the head branch; adding **`card-<card-id>`** (or the older `card#<card-id>`) to the title is belt-and-braces. Use **`DL-NNN`** in the title when the card carries a decision-log id (the bridge prefers a resolving DL, then falls through to the card token — framework #112).
 
-A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge grammar — write `card-<id>` (or `card#<id>`). With this one habit, a card auto-moves Backlog → In Progress → In Review → Shipped → Released with no `kbcard move` and no manual stamp. (A `board-card-branch` helper that mints the branch and emits the PR-title token is a possible future convenience; the convention above is the load-bearing part.)
+A bare `#<id>` (e.g. `(#2950)`) in a PR title does **not** match the bridge grammar — write `card-<id>` (or `card#<id>`). With this one habit, a card auto-moves Backlog → In Progress → In Review → Shipped → Released with no `kbcard move` and no manual stamp — the **In Progress** step in an armed repo (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)); unarmed, the branch name still drives every later step, which the bridge owns. (A `board-card-branch` helper that mints the branch and emits the PR-title token is a possible future convenience; the convention above is the load-bearing part.)
 
 ## Install (per repo that you cut feature branches in)
 
 ```bash
-install-board-hooks /path/to/your-repo     # installs the post-checkout + pre-push hooks; non-destructive
+install-board-hooks /path/to/your-repo                        # installs the post-checkout + pre-push hooks; non-destructive
+git -C /path/to/your-repo config kanban.automove-on-checkout true   # ARM the auto-move — installing does not
 ```
 Re-run after `git pull`-ing a new toolkit version only if the hook set changed: the hook entries are symlinks, so their content tracks the toolkit automatically.
+
+**Installing and arming are two steps on purpose (card#9845).** The installer wires the hooks; the `git config` above is what lets `post-checkout` move a card, and an install without it leaves the auto-move OFF — see § [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845) for why that is the default, and for the `payload.dl_number` stamp an unarmed repo also loses (release-grade, not just advisory noise). `pre-push`'s advisory needs no arming and is unaffected, except that in an unarmed repo its board-verdict leg has no record to repeat.
 
 **That symlink IS the upgrade contract, so the installer measures whether this seat can make one — before it writes anything.** On a symlink-incapable seat (the measured case: Windows/MSYS/Git-Bash with Developer Mode off and no elevation) the emulation layer does **not** fail `ln -s` — it returns success having substituted a **copy**. An install that accepted that would report exactly what a healthy install reports while leaving the seat running hooks no `git pull` will ever reach again. So a capability probe runs first, and there are three outcomes:
 
@@ -286,6 +306,8 @@ So `board-session-close` reports it. Under `── Git hook dispatch ──` it 
 What it reports per hook: **missing**, a **dangling symlink**, present but **not executable** (git ignores it, saying so only through a suppressible `advice.ignoredHook` hint at the moment of the checkout), present but **not reaching `board-card-start`** (a foreign hook), and — as a lower-severity wiring drift, reported as ⚠ *"it still fires, but from a checkout other than the on-PATH tools'"* rather than as a dead hook — a hook **symlinked into a different toolkit checkout** than the one whose `board-card-start` is on `PATH` (that clone can be mid-edit, on another branch, or removed). A copied hook is *not* flagged as drift: copies remain a supported topology on a symlink-incapable seat — now as the installer's explicit `--allow-copies` opt-in (see *Install* above) rather than as something `ln -s` did silently. This check cannot tell a deliberate copy from a stale one, and does not try; the re-install obligation belongs to the seat that opted in.
 
 Per **repo** it also reports `core.hooksPath` states that switch dispatch off wholesale — **set but empty** (git dispatches *no* hooks; it does **not** fall back to `.git/hooks`, so a perfectly-wired `.git/hooks` there is never read) and a value **git cannot expand** (`~unknownuser/…`, which fatals every git command in the repo) — and, per **host**, `board-card-start` being **absent from `PATH`**, which makes every `post-checkout` a no-op however it is wired. All three are findings. A path with no checkout is reported as skipped, not as a finding, and the summary always states **how many checkouts were inspected vs skipped**: zero inspected never prints an all-clear.
+
+⚠ **A `✓` is a WIRING verdict, and since card#9845 wiring is no longer sufficient for a move.** The check asks whether the hook git dispatches still reaches `board-card-start`; it does not read `kanban.automove-on-checkout`, so a repo that is wired and **not armed** reports `✓` and moves nothing — by design, that being the point of the opt-in. The summary line says as much (`that is what ✓ asserts, not that a card will move`). If a card did not move in a repo this check calls healthy, read the arming (§ [Arm it per repo](#arm-it-per-repo--unset-means-off-card9845)) before looking anywhere else: `git -C <repo> config --bool --get kanban.automove-on-checkout`.
 
 It resolves the dispatch directory the way **git** does, not the way it is usually assumed — and the assumptions are where the silent no-ops live. It reuses `install-board-hooks`' own reader and resolver (one implementation, not a second copy), so it inherits both `core.hooksPath` behaviours verified against git: the value is read with `--path`, so a leading **`~` is expanded** (git expands it; reading the raw value makes `~/hooks` look like a *relative* path and plants under the work tree), and its **presence is taken from the exit status**, never from the value, because `--get` returns rc 0 with empty output for a set-but-empty value and rc 1 for unset — and those two mean opposite things. The resolver also *accepts* a git **common dir**, and this check supplies the repo's real one so a linked worktree resolves to the main checkout's hooks dir. Where the installer would target is **asked of the installer**, never modelled here: it answers `<root>/.git/hooks` for an ordinary checkout, the real common dir for a `--separate-git-dir` checkout or a submodule, and a refusal for a linked worktree (see *Install* above). Both tools resolve the common dir and the owning main checkout through the installer's own `_ibh_common_dir` / `_ibh_main_checkout`, so they cannot drift apart on which checkout owns a shared hook dir. A check that read `.git/hooks` alone, or that read the value without its status, would reproduce the exact silent no-op the installer was fixed for — reporting a repo healthy on the strength of a hook git never runs.
 
