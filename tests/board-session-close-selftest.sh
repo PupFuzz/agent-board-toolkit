@@ -121,6 +121,12 @@ rc="$(run_main "$goodhook")"
 eq "exit 0 when the hook detects drift cleanly" "0" "$rc"
 eq "the hook's drift line is surfaced (indented) in stdout" \
    "true" "$(has 'SYNTHETIC stale card 999' "$(cat "$OUTF")")"
+# The hook-dispatch leg's HEADER names `install-board-hooks <repo-dir>` as the remediation, so it
+# carries the arming scope too (card#9845) — asserted on main's real stdout, on the header line
+# itself, so a header that stops interpolating BSC_ARM_NOTE reds here even though every summary
+# branch still carries it.
+eq "⭐ the hook-dispatch header's remediation line carries the arming scope" "true" \
+   "$(has 'kanban.automove-on-checkout true' "$(grep -F 'remediation is yours: install-board-hooks' "$OUTF")")"
 
 echo "== main — FAILS LOUD when the hook can't be found =="
 rc="$(run_main "$TMP/does-not-exist.py")"   # override to a missing file ⇒ no fallback
@@ -1224,6 +1230,38 @@ report "$H/healthy" "$H/dangling" "$H/nohooks" "$H/hookspath" "$H/does-not-exist
 eq "multi-repo: findings accumulate across repos" "3" "$RN"
 eq "multi-repo: summary states it is report-only" "true" "$(saw "REPORT-ONLY")"
 eq "multi-repo: summary reports the inspected/skipped split" "true" "$(saw "4 inspected / 1 skipped")"
+
+# --- WIRING IS HALF: every summary branch carries the arming scope, not just the clean one ----
+# This leg measures wiring and every remedy it prints is a wiring remedy, but since card#9845 a
+# card also needs `kanban.automove-on-checkout` set in the repo — which install-board-hooks
+# deliberately does not set. The statement lived ONLY on the no-findings branch, i.e. it reached
+# exactly the operators with nothing to fix and was withheld from the ones holding a `fix:` line.
+#
+# ⛔ Asserted on the RENDERED report of each branch, never on $BSC_ARM_NOTE, so a branch that stops
+# interpolating the constant reds here. The fixtures are the same ones the counting legs above use,
+# so the branch each one lands in is already established by those assertions.
+#
+# Seen to fail: blank the constant and every ⭐ arm-note leg reds (the header leg under main, too) —
+#   sed -i 's/^BSC_ARM_NOTE=.*/BSC_ARM_NOTE=""/' bin/board-session-close
+_arm="kanban.automove-on-checkout true"
+report "$H/healthy"                                        # → the no-findings branch
+eq "⭐ arm note: the no-findings summary carries it"        "true|true" \
+   "$(saw "no findings")|$(saw "$_arm")"
+report "$H/healthy" "$H/dangling" "$H/nohooks"             # → the findings branch
+eq "⭐ arm note: the FINDINGS summary carries it too (the branch that had none)" "true|true" \
+   "$(saw "REPORT-ONLY")|$(saw "$_arm")"
+eq "…and says plainly that no fix line here sets it"       "true" "$(saw "no fix line here sets")"
+# The ✗ row and its `fix:` line are the strings the note qualifies — assert they are actually
+# present in that same report, or the note is qualifying nothing.
+eq "…in a report that really does carry a ✗ post-checkout row and a fix line" "true|true" \
+   "$(saw "the card auto-move is DEAD for this repo")|$(saw "fix: install-board-hooks")"
+# CONTROL: the 0-inspected summary prints no remedy of its own, so it carries no arming caveat
+# (the leg's HEADER, printed by main, still does — that is asserted on main's output below). Without
+# this leg, "append it to every summary line" would pass the two assertions above.
+report "$H/does-not-exist" "$H/also-not-here"
+eq "control — the 0-inspected summary prints no remedy, so it carries no arming note" "true|false" \
+   "$(saw "NOTHING was verified")|$(saw "$_arm")"
+unset _arm
 
 # --- the remedy line tracks the INSTALLER's disposition, never a model of it (card#5311) ----
 # This check used to substitute <root>/.git for the installer view under the claim that was "the

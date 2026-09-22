@@ -687,6 +687,61 @@ eq "each line says COPY"            "true" "$(has "COPY $r/.git/hooks/post-check
 eq "the summary states the re-run obligation" "true" "$(has "AFTER EVERY TOOLKIT UPGRADE" "$_err")"
 eq "…and never reads as a symlink install" "false" "$(has "-> $TOOLKIT/hooks/post-checkout" "$_out")"
 
+echo "== installer — a successful install SAYS it did not arm the auto-move (card#9845) =="
+# `board-session-close` prints `✗ post-checkout … the card auto-move is DEAD for this repo` with
+# `fix: install-board-hooks <repo>` beneath it. Before this line an operator could run that named
+# fix to completion, read plain success, and still have a repo that moves no card — the installer
+# wires the hook and `hooks/post-checkout` calls the mover only in an ARMED repo. A remedy that
+# terminates in a false sense of completion is the defect.
+#
+# ⛔ The installer must NOT arm the key — that would restore the always-on behaviour card#9845
+# removed, on every repo it touches. So the assertion is that it SAYS so, and the control below is
+# that the repo really is still unarmed afterwards.
+#
+# Both success termini are driven, because the statement is placed once to serve both:
+#   · the symlink path  (rc 0)
+#   · the --allow-copies path (rc 3)
+#
+# Seen to fail: drop the line and both arms red —
+#   sed -i '/wiring done — this command does NOT arm/d' bin/install-board-hooks
+_armsay="this command does NOT arm the checkout auto-move"
+r2="$(_fresh_repo arming-symlink)"
+_run - "$r2"
+eq "⭐ symlink install: rc 0 and it states what it did NOT do" "0|true" "$_rc|$(has "$_armsay" "$_out")"
+eq "…naming the exact key and the repo it just wired" "true" \
+   "$(has "git -C '$r2' config kanban.automove-on-checkout true" "$_out")"
+eq "…and pointing at where the cost of leaving it unset is written" "true" \
+   "$(has "docs/HOOKS.md" "$_out")"
+eq "…and how to read the current state, since it does not read it itself" "true" \
+   "$(has "git -C '$r2' config --bool --get kanban.automove-on-checkout" "$_out")"
+# CONTROL, and the load-bearing half: it SAID so and did NOT do it. An installer that armed the key
+# would satisfy every assertion above while undoing the card.
+eq "⭐ control — the key is still UNSET: the installer says, it never arms" "" \
+   "$(git -C "$r2" config --get kanban.automove-on-checkout 2>/dev/null)"
+eq "…so post-checkout's own guard reads OFF right after a clean install" "false" \
+   "$([ "$(git -C "$r2" config --bool --get kanban.automove-on-checkout 2>/dev/null)" = true ] && echo true || echo false)"
+# The copies terminus is a different exit path (rc 3, its own stderr block) — assert it too rather
+# than assuming one placement serves both.
+_run "$LN_COPY" --allow-copies "$r2"
+eq "⭐ copies install (rc 3): the same statement rides that terminus" "3|true" "$_rc|$(has "$_armsay" "$_out")"
+# CONTROL for the dry run: --check's stdout is a contract other tools consume (board-session-close
+# reads the target directory off it), so the new lines must NOT appear there. This is what proves
+# the statement sits after the dry run's return and not before it.
+r3="$(_fresh_repo arming-check)"
+_run - --check "$r3"
+eq "⭐ control — --check stdout stays the bare target dir, no arming narration" "$r3/.git/hooks|false" \
+   "$_out|$(has "$_armsay" "$_out")"
+eq "…and --check armed nothing either" "" \
+   "$(git -C "$r3" config --get kanban.automove-on-checkout 2>/dev/null)"
+# The other direction: the installer owns wiring only, so a repo the operator ALREADY armed stays
+# armed through a (re-)install — the printed lines are true there too ("does NOT arm" ≠ "disarms").
+r4="$(_fresh_repo arming-prearmed)"
+git -C "$r4" config kanban.automove-on-checkout true
+_run - "$r4"
+eq "control — a pre-armed repo is still armed after an install, and the statement still prints" "0|true|true" \
+   "$_rc|$(git -C "$r4" config --bool --get kanban.automove-on-checkout 2>/dev/null)|$(has "$_armsay" "$_out")"
+unset _armsay
+
 echo "== installer — a copies install does not write THROUGH a previous symlink =="
 # `cp src dst` with dst an existing symlink writes into the link's TARGET: re-installing over a
 # symlink install would rewrite this toolkit's own hook source.
