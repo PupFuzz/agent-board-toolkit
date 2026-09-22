@@ -109,7 +109,7 @@ MUT_RE='kb_api(_status)?[[:space:]]+(POST|PATCH|DELETE)|-X[[:space:]]+"?(POST|PA
 # The file-local read owners, by name. They are named rather than pattern-matched because each
 # one IS a read of the mutated subject: the card, the card's links, the board's field index, the
 # board's cards, the by-ref index.
-READ_RE='kb_api(_status)?[[:space:]]+GET|_kbc_card_witness|_kbc_link_witness|_kbc_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
+READ_RE='kb_api(_status)?[[:space:]]+GET|kb_card_witness|_kbc_link_witness|kb_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
 
 # _classify <file> <line> — prints "<scope>\t<verdict>\t<emits>" for one call site.
 # <verdict> is CONFIRMED or CANDIDATE; <emits> is stdout / stderr-only / silent, the R3 attribute.
