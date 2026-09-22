@@ -984,6 +984,60 @@ eq "no .promote config → still rc 0"              "0"     "$rc"
 eq "…body is still complete (no .promote)"        "true"  "$(has '## Bundled' "$nocfg")"
 eq "…and NO coverage report is emitted (no .promote)"     "false" "$(has 'card coverage:' "$(cat "$COV/nocfg.err")")"
 
+echo "== the header's CARD COVERAGE PRECONDITIONS are exactly the gates the function has (card#10039) =="
+# The header block above card_coverage_report is the ONE statement of when the report runs, and
+# other repos' release docs point at it, so a line there that the function does not evaluate is a
+# false contract with readers who were told not to keep a copy. It was: the header said "a
+# `.promote` config" while the code tests `.promote.board_id`, and it never named the token-regex
+# guard at all. This block reads the DECLARED set out of the bin and drives one falsifier per
+# name, so the two cannot drift without a red:
+#   * a name declared there with no falsifier here reds the set leg (add its arm below);
+#   * a declared precondition the function does NOT evaluate reds its own arm — its falsified run
+#     still prints a coverage line;
+#   * the all-present control reds if the function grows a gate this fixture does not satisfy.
+# ⚠ WHAT IT CANNOT SEE: a NEW gate the fixture happens to satisfy passes the control unnoticed —
+# the falsifier table is only as wide as the header it reads.
+cov_err() {  # <config> <token> <PATH> <bin> — the run's stderr on stdout
+  ( cd "$CR" && PATH="$3" KANBAN_WRITEBACK_TOKEN="$2" KANBAN_EXPECTED_HOST=kanban.test \
+      "$4" --config "$1" --version 0.2.0 --base v0.1.0 --head HEAD 2>&1 >/dev/null ) || true
+}
+_pc_path="$COV/bin:$HERE/../bin:$PATH"
+cp "$CR/.release-pr.json" "$COV/pc-all.json"
+_pc_declared="$(sed -n 's/^#   precondition: \([a-z-]*\) .*/\1/p' "$BIN" | sort | paste -sd' ' -)"
+eq "the header declares exactly the preconditions this block can falsify" \
+   "board-id promoter token-regex writeback-token" "$_pc_declared"
+eq "control: every precondition held ⇒ a coverage line" "true" \
+   "$(has 'release-pr-body: card coverage: ' "$(cov_err "$COV/pc-all.json" tkn "$_pc_path" "$BIN")")"
+for _pc in $_pc_declared; do
+  case "$_pc" in
+    token-regex)
+      jq 'del(.ref_token_regex, .card_token_regex)' "$COV/pc-all.json" > "$COV/pc-f.json"
+      _pc_err="$(cov_err "$COV/pc-f.json" tkn "$_pc_path" "$BIN")" ;;
+    board-id)
+      # The block STAYS — only the key goes. The pre-card#10039 header called this state satisfied.
+      jq 'del(.promote.board_id)' "$COV/pc-all.json" > "$COV/pc-f.json"
+      eq "precondition board-id: the falsified config still HAS a .promote block" "true" \
+         "$(jq 'has("promote")' "$COV/pc-f.json")"
+      _pc_err="$(cov_err "$COV/pc-f.json" tkn "$_pc_path" "$BIN")" ;;
+    writeback-token)
+      _pc_err="$(cov_err "$COV/pc-all.json" "" "$_pc_path" "$BIN")" ;;
+    promoter)
+      _pc_err="$(cov_err "$COV/pc-all.json" tkn "$NOPROM_PATH" "$COV/lonebin/release-pr-body")" ;;
+    *) bad "precondition '$_pc' is declared in the header and has no falsifier in this block"; continue ;;
+  esac
+  eq "precondition $_pc: falsified alone ⇒ NO coverage line" "false" "$(has 'card coverage:' "$_pc_err")"
+done
+# The promoter's DISJUNCTION, asserted rather than read: not on PATH, but executable beside the
+# script, satisfies it — the half the header used to leave out and `docs/INSTALL.md` said as "on PATH".
+mkdir -p "$COV/besidebin"
+cp "$BIN" "$COV/besidebin/release-pr-body"
+cp "$HERE/../bin/promote-released-cards" "$COV/besidebin/promote-released-cards"
+eq "precondition promoter: absent from PATH ..." "" "$(PATH="$NOPROM_PATH" command -v promote-released-cards 2>/dev/null || true)"
+eq "... but beside the script ⇒ the report RUNS" "true" \
+   "$(has 'release-pr-body: card coverage: ' "$(cov_err "$COV/pc-all.json" tkn "$NOPROM_PATH" "$COV/besidebin/release-pr-body")")"
+unset -f cov_err
+unset _pc _pc_err _pc_path _pc_declared
+
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
 # consumer as CARD#9999. Card ids are emitted as bare integers instead — there is no spelling to

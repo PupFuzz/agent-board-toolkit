@@ -23,7 +23,9 @@
 # line per finding, each carrying a fixed prefix so a reader can lift them by grep:
 #   release-pr-body: correlation gap: ...  an empty manifest over a non-empty range (card#8538)
 #   release-pr-body: card coverage: ...    the promote dry-run's verdict. Emitted ONLY when the
-#                                          check could run, so NO such line means it did not run
+#                                          check could run, so NO such line means it did not run;
+#                                          WHEN it runs is the CARD COVERAGE PRECONDITIONS block
+#                                          above card_coverage_report, the one statement of it
 #   release-pr-body: note: ...             a local ref disagrees with the remote the range used
 # No line this tool writes to stderr begins with `## `. Keep the streams apart: `2>&1` into a body
 # file writes builder diagnostics into the release PR. And keep stderr OPEN: under `set -e` a
@@ -562,9 +564,25 @@ bundle_lines() {
 # was hand-edited at the cut). The information is unchanged; only its home moved. See the
 # header's STDOUT/STDERR contract.
 #
-# The report is emitted ONLY when the check could actually run — it needs the promote tool
-# + a board token + a `.promote` config, and where any of those is missing there is NO
-# `card coverage:` line at all. It used to emit a heading unconditionally and, in that case, a
+# CARD COVERAGE PRECONDITIONS — THE ONE STATEMENT OF WHEN THIS REPORT RUNS (card#10039).
+# `docs/INSTALL.md` §4, this repo's `VERSIONING.md` and consumer repos' release docs POINT HERE
+# instead of restating it. The report is attempted only when EVERY line below holds; where any
+# does not, the function returns before printing and there is NO `card coverage:` line at all.
+# Each `precondition:` line is one gate the function tests before printing anything, and
+# tests/release-pr-body-selftest.sh drives each one — every line here must name a gate the
+# function has, and every gate it has must be a line here, or that test reds. "Set" means the
+# key reads NON-EMPTY through `cfg_opt` (absent, `null`, `false` and "" all read as empty):
+#   precondition: token-regex      `ref_token_regex` OR `card_token_regex` is set in the config.
+#                                  Neither ⇒ silent, however complete the three below are.
+#   precondition: board-id         `.promote.board_id` is set. A `.promote` block WITHOUT that
+#                                  key does NOT satisfy it — the block alone is not the gate.
+#   precondition: writeback-token  `$KANBAN_WRITEBACK_TOKEN` is non-empty in the environment.
+#   precondition: promoter         `promote-released-cards` is found — on `PATH`, OR as an
+#                                  executable beside this script (`dirname "$0"`).
+# Past them the promoter itself needs more (`KANBAN_EXPECTED_HOST`, a real api base — see
+# docs/INSTALL.md §4); a run that fails THERE is not silent: it prints the "could not run" line.
+#
+# It used to emit a heading unconditionally and, in that case, a
 # placeholder saying "not checked here, run `promote-released-cards --dry-run` before merge":
 # a report whose entire content is "this was not measured" says nothing about the release, and
 # it was struck by hand from a real release PR body — which does not hold, because the next
@@ -663,8 +681,8 @@ COUNT="$(git log "$RANGE" --no-merges --oneline 2>/dev/null | wc -l | tr -d ' ')
 # An omitted footer and a footer that legitimately has nothing to say are indistinguishable to
 # every reader of this body, so the body has to say which one it is.
 #
-# WHY IT IS ITS OWN REPORT AND NOT PART OF THE COVERAGE ONE. That report needs the promote tool,
-# a board id and a writeback token, and prints nothing when any is missing — its presence IS the
+# WHY IT IS ITS OWN REPORT AND NOT PART OF THE COVERAGE ONE. That report prints nothing unless
+# its CARD COVERAGE PRECONDITIONS (above card_coverage_report) hold — its presence IS the
 # claim that coverage was measured. This finding needs none of them: it is a fact about git and
 # the config, so it must not inherit that report's preconditions, or the repos least able to
 # measure coverage would also be the ones told nothing about why.
