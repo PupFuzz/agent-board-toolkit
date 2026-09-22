@@ -489,7 +489,8 @@ Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already
 both name `promote-released-cards` in the second group, alongside a §6b recipe that copies it as a
 single file. This stage moves it into the first group, so both statements and that recipe need
 amending, plus an entry in [`UPGRADE.md`](UPGRADE.md). The framework's `templates/release/` mirror
-would need the lib too — that mirror is currently healthy, and this stage would make its job harder.
+would need the lib too, and this stage would make its job harder. (Whether that mirror is in step is
+not a property of this document: `tests/framework-mirror-check.sh` measures it, card#9939.)
 
 ---
 
@@ -2196,7 +2197,8 @@ teaches the next reader nothing.
 - **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured
   self-consistent, carried self-documenting `MIRROR NOTE` blocks, and was hours behind a patch
   release — healthy, not evidence of drift. (A measurement, not a standing guarantee: it lives in
-  another repo and is not covered by anything here. Re-measure before citing it.)
+  another repo. Re-measure with `tests/framework-mirror-check.sh` before citing it — card#9939 found
+  it matching no toolkit tag at all.)
 - **Stage ordering** — revision 1 migrated two bins in an early stage that a later stage was what
   let them see the lib.
 - **Renaming to resolve a collision can be a protected-settings change.** Stage B needed a name
