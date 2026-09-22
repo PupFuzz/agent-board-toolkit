@@ -74,6 +74,18 @@ inputs:
       behavior — consumers opt in on their own windows.
     required: false
     default: ''
+  require-complete:
+    description: >-
+      'true' = the opt-in COMPLETENESS GATE (--require-complete): a matched card
+      is refused, not promoted, while a PR outside this release still names it
+      on its head branch (open, or merged to the integration branch after the
+      release was cut), or when those PRs cannot be read. The oracle reads
+      GitHub with this job's token, so the calling workflow must grant
+      `pull-requests: read` and `contents: read`. Default 'false' = no gate,
+      byte-identical prior behavior. The predicate and what it cannot see are
+      in bin/card-completeness's header.
+    required: false
+    default: 'false'
   dry-run:
     description: "'true' = report only, move nothing."
     required: false
@@ -91,6 +103,9 @@ runs:
         INPUT_DLS: ${{ inputs.dls }}
         INPUT_SOURCE: ${{ inputs.source }}
         SHIPPED_STAGE_IDS: ${{ inputs.shipped-stage-ids }}
+        REQUIRE_COMPLETE: ${{ inputs.require-complete }}
+        # The job token reaches the step only when the gate is on — the oracle is its one reader.
+        GITHUB_TOKEN: ${{ inputs.require-complete == 'true' && github.token || '' }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         # api-base reaches the script as $KANBAN_API_BASE (env above), which the script reads
@@ -113,5 +128,6 @@ runs:
         [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
         [ -n "$INPUT_SOURCE" ] && args+=(--source "$INPUT_SOURCE")
         [ -n "$SHIPPED_STAGE_IDS" ] && args+=(--shipped-stages "$SHIPPED_STAGE_IDS")
+        [ "$REQUIRE_COMPLETE" = "true" ] && args+=(--require-complete)
         [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
         "$GITHUB_ACTION_PATH/../bin/promote-released-cards" "${args[@]}"
