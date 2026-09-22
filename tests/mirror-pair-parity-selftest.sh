@@ -342,4 +342,33 @@ eq "control: …and so does the corpus, on a /blob/ URL" "false" \
 unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
 
+# ═══════════════════════ 6 — the terminal:partial hold: promote ↔ kb_partial_marked ═══════════
+#
+# promote-released-cards holds a card carrying the terminal:partial marker rather than promoting
+# it, and may not source the lib, so it carries its own `PARTIAL_TAG` and `partial_marked`. The lib
+# owns the tag (`KB_PARTIAL_TAG`) and the question (`kb_partial_marked`), which kbcard asks when it
+# writes the marker. A disagreement is a partial card the sweep promotes as verified, or a verified
+# card it holds forever.
+echo "== terminal:partial: promote's PARTIAL_TAG / partial_marked agree with the lib, row by row =="
+PARTIAL_TAG="$(sed -n "s/^PARTIAL_TAG='\(.*\)'\$/\1/p" "$PRC")"
+eq "the standalone's PARTIAL_TAG IS the lib's KB_PARTIAL_TAG" "$KB_PARTIAL_TAG" "$PARTIAL_TAG"
+_adopt_fn "$PRC" partial_marked
+# _pm <function> <tags-json> — the verdict as a word, so one row is one comparison.
+_pm() { if "$1" "$2"; then echo marked; else echo unmarked; fi; }
+for _t in '["terminal:partial"]' '["fr","terminal:partial","triaged"]' '["fr"]' '[]' 'null' '{"0":"terminal:partial"}' \
+          '"terminal:partial"' '["Terminal:partial"]' '["terminal:partial "]' '["terminal:"]' '["terminal:partialx"]' \
+          '[1,null,"terminal:partial"]' '[["terminal:partial"]]' '<html>' ''; do
+    eq "partial_marked agrees on [$_t]" "$(_pm kb_partial_marked "$_t")" "$(_pm partial_marked "$_t")"
+done
+eq "witness: the corpus holds a marked list and an unmarked one" "marked|unmarked" \
+   "$(_pm partial_marked '["fr","terminal:partial"]')|$(_pm partial_marked '["fr"]')"
+echo "== control: a promote copy that matches the tag by PREFIX is caught =="
+_pm_mut="$(_fn_src "$PRC" partial_marked | sed 's/any(.\[\]; . == \$t)/any(.[]; type == "string" and startswith($t))/')"
+eq "control: the mutation applied" "false" "$(has '. == $t' "$_pm_mut")"
+eval "$_pm_mut"
+eq "control: the prefix copy now DISAGREES with the lib on a longer tag" "false" \
+   "$([[ "$(_pm kb_partial_marked '["terminal:partialx"]')" == "$(_pm partial_marked '["terminal:partialx"]')" ]] && echo true || echo false)"
+unset -f partial_marked _pm
+unset PARTIAL_TAG _t _pm_mut
+
 _summary "mirror-pair-parity-selftest"

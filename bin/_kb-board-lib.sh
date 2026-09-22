@@ -1364,7 +1364,7 @@ kb_owner_list() {
 # Sets KB_OWNER_NOTE — the one line the caller must print where an operator will see it, or ""
 # when there was nothing to write (the same owner already present; no owner tag to remove).
 kb_owner_tag_write() {
-    local mode="$1" task="$2" label="$3" got http body tags new holders done_msg not_msg reason
+    local mode="$1" task="$2" label="$3" http tags new holders done_msg not_msg reason
     KB_OWNER_NOTE=""
     if [[ "$mode" == stamp ]]; then
         if ! kb_owner_resolve; then
@@ -1375,12 +1375,8 @@ kb_owner_tag_write() {
     else
         not_msg="owner tags NOT cleared on $label"
     fi
-    # kb_api_status, not kb_api: the status is the report, and kb_api strands it in a subshell.
-    got="$(kb_api_status GET "/tasks/$task.json")"
-    http="${got%%$'\n'*}"; body=""
-    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
-    tags=""
-    [[ "$http" == 2* ]] && tags="$(kb_card_tags "$body")"
+    kb_tags_read "$task"
+    http="$KB_TAGS_HTTP"; tags="$KB_TAGS"
     if [[ -z "$tags" ]]; then
         KB_OWNER_NOTE="$(_kb_prog): $not_msg — the card's current tags could not be read (HTTP $http), and the board replaces the tag list wholesale, so no tag list is sent rather than one built from nothing. The card was moved."
         return 0
@@ -1399,19 +1395,74 @@ kb_owner_tag_write() {
         [[ -n "$new" ]] || return 0
         done_msg="removed owner tag(s) $(kb_owner_list "$tags") from $label — a finished card holds nobody's claim"
     fi
-    got="$(kb_api_status PATCH "/tasks/$task.json" "$(jq -cn --argjson t "$new" '{tags: $t}')")"
-    http="${got%%$'\n'*}"; body=""
-    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    kb_tags_write "$task" "$new"
+    http="$KB_TAGS_HTTP"; reason="$KB_TAGS_REASON"
     case "$http" in
         2*)  KB_OWNER_NOTE="$(_kb_prog): $done_msg" ;;
         000) KB_OWNER_NOTE="$(_kb_prog): $not_msg — the tag write DID NOT COMPLETE (no HTTP status came back), so whether it landed is UNKNOWN. The card was moved." ;;
-        *)
-            # The server's own one-line reason, bounded and flattened: a 403 and a 422 need
-            # opposite fixes (the token's role / the tag itself), and the status alone does not say.
-            reason="$(kb_parse_resp "$body" -r '.message | select(type == "string") | [explode[] | if . < 32 or . == 127 then 32 else . end] | implode | .[0:300]')"
-            KB_OWNER_NOTE="$(_kb_prog): $not_msg — HTTP $http${reason:+, server said: $reason}. The card was moved; its tags are unchanged."
-            ;;
+        *)   KB_OWNER_NOTE="$(_kb_prog): $not_msg — HTTP $http${reason:+, server said: $reason}. The card was moved; its tags are unchanged." ;;
     esac
+}
+
+# --- the tag write that follows a move: the read and the replace ---------------
+#
+# Every tag write that FOLLOWS a confirmed move — the owner tag above, the terminal:partial marker
+# below — is the same two requests: read the card's CURRENT list, then `PATCH {tags}` alone with
+# the whole new list, because the board replaces `tags` wholesale and a `tags` key on the move
+# would let a refused tag refuse the move (kb_owner_tag_write's header). These two own the
+# requests; each caller owns what it computes in between and what it reports. Call them directly,
+# not in a `$(…)`: the answer is carried in globals, like kb_owner_resolve's.
+# kb_api_status, not kb_api, in both: the status is the report, and kb_api strands it in a subshell.
+
+# kb_tags_read <task-id>: KB_TAGS=<the card's tag list, compact JSON> and KB_TAGS_HTTP=<status>,
+# or KB_TAGS="" when no list could be read — a non-2xx, a 000, or a 2xx kb_card_tags reads none
+# out of. An empty KB_TAGS is never "no tags": a card carrying none reads `[]`.
+kb_tags_read() {
+    local got body=""
+    got="$(kb_api_status GET "/tasks/$1.json")"
+    KB_TAGS_HTTP="${got%%$'\n'*}"
+    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    KB_TAGS=""
+    [[ "$KB_TAGS_HTTP" == 2* ]] && KB_TAGS="$(kb_card_tags "$body")"
+    return 0
+}
+
+# kb_tags_write <task-id> <tags-json>: `PATCH {tags}` with <tags-json> as the WHOLE list.
+# KB_TAGS_HTTP=<status> (000: the request did not complete, so whether it landed is UNKNOWN), and
+# on any other non-2xx KB_TAGS_REASON=<the server's own one-line message>, else "".
+kb_tags_write() {
+    local got body=""
+    got="$(kb_api_status PATCH "/tasks/$1.json" "$(jq -cn --argjson t "$2" '{tags: $t}')")"
+    KB_TAGS_HTTP="${got%%$'\n'*}"
+    [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+    KB_TAGS_REASON=""
+    case "$KB_TAGS_HTTP" in
+        2*|000) ;;
+        # The server's own one-line reason, bounded and flattened: a 403 and a 422 need
+        # opposite fixes (the token's role / the tag itself), and the status alone does not say.
+        *) KB_TAGS_REASON="$(kb_parse_resp "$body" -r '.message | select(type == "string") | [explode[] | if . < 32 or . == 127 then 32 else . end] | implode | .[0:300]')" ;;
+    esac
+    return 0
+}
+
+# --- the terminal:partial marker ----------------------------------------------
+#
+# A card can reach a terminal column while declared work on it is still outstanding. ONE tag,
+# `terminal:partial`, says so, and its ABSENCE means the work is verified — there is no second
+# value. What it is, who writes it, what it holds back and how it is removed are stated ONCE, in
+# README.md § The terminal:partial marker; the comments below say only how this code carries it.
+KB_PARTIAL_TAG='terminal:partial'
+
+# The ONE spelling of "does this tag list carry the marker", as a jq def so a caller ruling
+# inside a larger filter (kbcard's read-back) asks the same question kb_partial_marked asks.
+# A value that is not a list carries nothing. promote-released-cards is vendored standalone and
+# mirrors this as `partial_marked`; tests/mirror-pair-parity-selftest.sh pins the two.
+KB_JQ_PARTIAL="def is_partial: type == \"array\" and any(.[]; . == \"$KB_PARTIAL_TAG\");"
+
+# kb_partial_marked <tags-json>: rc 0 when the list carries KB_PARTIAL_TAG, rc 1 otherwise.
+kb_partial_marked() {
+    jq -e "$KB_JQ_PARTIAL"' is_partial' <<<"$1" >/dev/null 2>&1 && return 0
+    return 1
 }
 
 # --- whole-board pagination -------------------------------------------------

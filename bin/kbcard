@@ -78,7 +78,7 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
-#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start] [--partial "reason"]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
 #     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
@@ -124,10 +124,21 @@
 #     ONLY WITH --column in_progress (rc 2 otherwise, before any request): the policy is the
 #     promotion's, and there is none to apply to any other column. It costs ONE extra GET before
 #     the move, which is what makes the verdict a reading rather than an assumption.
+#     ⭐ --partial "reason" MARKS A TERMINAL MOVE AS PARTIAL — the card reached the column with
+#     declared work still outstanding. After the move is confirmed, a SEPARATE tags-only PATCH
+#     re-sends the card's whole tag list plus `terminal:partial` (the list is replaced wholesale),
+#     the tag is READ BACK, and the reason is posted as a card comment. A release sweep
+#     (bin/promote-released-cards) holds a card carrying the tag instead of promoting it.
+#     ONLY beside a terminal --column (the set the assignment clear above uses) — rc 2 before any
+#     request otherwise, as is a reason with no text. UNLIKE the owner tag its outcome IS the rc:
+#     the move's echo is still printed, then a tag not written is rc 1 and one not confirmed is
+#     rc 3 — the line says the card is terminal and unmarked. `patch --column` takes it too.
+#     Removing the tag is a deliberate tag edit: `patch --tags` with the list minus the tag. The
+#     rules are README.md § The terminal:partial marker.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]] [--partial "reason"]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -1630,6 +1641,70 @@ _kbc_owner_after_move() {
     [[ -z "$KB_OWNER_NOTE" ]] || printf '%s\n' "$KB_OWNER_NOTE" >&2
 }
 
+# _kbc_partial_preflight <verb> <column> <reason>: --partial's OFFLINE half, rc 2 before any
+# request — or rc 0 at once when no --partial was passed. The marker says a card reached a TERMINAL
+# column with declared work outstanding, so it is refused beside any other column (a patch naming
+# none included); the terminal set is _kbc_terminal_column's and is not restated. A reason with no
+# text is refused by the free-text rule every such flag here obeys. A _kb-board-lib.sh older than
+# this kbcard has no marker write, and finding that AFTER the move would leave a partial card
+# terminal and unmarked — the one state the flag exists to prevent — so it is refused here.
+_kbc_partial_preflight() {
+    local verb="$1" column="$2" reason="$3" fn
+    [[ -n "$reason" ]] || return 0
+    _kbc_text_arg reason partial "" "$reason" "" || return 2
+    if ! _kbc_terminal_column "$column"; then
+        echo "kbcard: --partial marks a card MOVED to a terminal column with declared work still outstanding, and ${column:+'$column' is not a terminal column}${column:-this $verb names no --column} — pass it with the terminal move" >&2
+        return 2
+    fi
+    for fn in kb_tags_read kb_tags_write kb_partial_marked; do
+        declare -F "$fn" >/dev/null || { _kbc_lib_unruled "$verb --partial" "the terminal:partial marker" "$fn" undefined; return 2; }
+    done
+}
+
+# _kbc_partial_after_move <verb> <task> <reason>: the terminal:partial marker (README.md § The
+# terminal:partial marker), written AFTER a move this call has CONFIRMED and printed — its own
+# `PATCH {tags}` carrying the card's whole current list plus the tag, never a key on the move (the
+# owner tag's rule, for the owner tag's reason). Then the reason, as a card comment through
+# cmd_comment. Every line goes to stderr: stdout is the move's echo, and a consumer parses it.
+# UNLIKE the owner tag this is the caller's REQUEST, not hygiene, so it is read back and its
+# outcome IS the verb's rc — an rc 0 over a card left unmarked would tell the caller a release
+# sweep will hold a card that it will in fact promote as verified:
+#   rc 0  the card carries the tag on a re-read (written now, or already there) and the comment is on it
+#   rc 1  NOT written, and known — the current list could not be read (nothing sent), the write was
+#         refused, or the re-read shows the tag absent; or cmd_comment's own rc 1
+#   rc 3  UNVERIFIED — the write or the re-read did not complete; or cmd_comment's own rc 3
+_kbc_partial_after_move() {
+    local verb="$1" task="$2" reason="$3" new crc=0 cid
+    local unmarked="the card was moved and is NOT marked, so a release sweep will promote it as verified"
+    kb_tags_read "$task"
+    if [[ -z "$KB_TAGS" ]]; then
+        echo "kbcard: $verb on task $task: $KB_PARTIAL_TAG NOT written — the card's current tags could not be read (HTTP $KB_TAGS_HTTP), and the board replaces the tag list wholesale, so no tag list is sent rather than one built from nothing; $unmarked" >&2
+        return 1
+    fi
+    if kb_partial_marked "$KB_TAGS"; then
+        echo "kbcard: $verb on task $task: the card already carries $KB_PARTIAL_TAG — no tag write" >&2
+    else
+        new="$(jq -c --arg t "$KB_PARTIAL_TAG" '. + [$t]' <<<"$KB_TAGS")"
+        kb_tags_write "$task" "$new"
+        case "$KB_TAGS_HTTP" in
+            2*)  ;;
+            000) _kbc_unverified "$verb" "on task $task" "The $KB_PARTIAL_TAG tag write did not complete (no HTTP status came back); the card was moved." || return $? ;;
+            *)   echo "kbcard: $verb on task $task: $KB_PARTIAL_TAG NOT written — HTTP $KB_TAGS_HTTP${KB_TAGS_REASON:+, server said: $KB_TAGS_REASON}; $unmarked" >&2
+                 return 1 ;;
+        esac
+        _kbc_confirm_card "$task" "$KB_JQ_PARTIAL"' .card.tags | is_partial' >/dev/null || crc=$?
+        case "$crc" in
+            0) echo "kbcard: $verb on task $task: $KB_PARTIAL_TAG written, and read back on the card" >&2 ;;
+            "$KBC_RC_UNVERIFIED")
+               _kbc_unverified "$verb" "on task $task" "The $KB_PARTIAL_TAG tag write answered HTTP $KB_TAGS_HTTP; the confirming read produced no measurement (its cause is on the line above)." || return $? ;;
+            *) echo "kbcard: $verb on task $task: HARD FAILURE — the $KB_PARTIAL_TAG tag write answered HTTP $KB_TAGS_HTTP, and the card does not carry the tag on a re-read. The status is not the tag; the read-back is. $unmarked" >&2
+               return 1 ;;
+        esac
+    fi
+    cid="$(cmd_comment --task "$task" --content "$KB_PARTIAL_TAG — $reason")" || return $?
+    echo "kbcard: $verb on task $task: the reason is on the card as comment $cid" >&2
+}
+
 # _kbc_write_fault <verb> <task> <body> <http>: name the ONE failure this file's newest write
 # can hit that no retry and no card edit will ever clear. Writing assigned_user_id is a write
 # the toolkit did not make before, and it needs the board token to be PERMITTED to make it — a
@@ -1917,11 +1992,12 @@ _kbc_lib_unruled() {
 }
 
 cmd_move() {
-    local task_ref="" column="" keep_refs="" stamp_owner="" card_start=""
+    local task_ref="" column="" keep_refs="" stamp_owner="" card_start="" partial=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --partial) kb_require_value "$1" "${2:-}" || return 2; partial="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
             --stamp-owner) stamp_owner=1; shift ;;
             --card-start) card_start=1; shift ;;
@@ -1933,6 +2009,7 @@ cmd_move() {
         echo "kbcard: --stamp-owner claims the card for this seat, and $column is a terminal column, whose move removes every owner tag — pass one or the other" >&2
         return 2
     fi
+    _kbc_partial_preflight move "$column" "$partial" || return 2
     # --card-start's stage ids come from the SAME board env every other column does, and they are
     # resolved BEFORE the task ref so a board env missing them costs no request. A guard that
     # cannot be applied REFUSES rather than falling through: falling through is precisely the
@@ -1990,13 +2067,14 @@ cmd_move() {
     _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
     _kbc_owner_after_move "$task" "$column" "$stamp_owner"
     printf '%s\n' "$echo_out"
+    [[ -z "$partial" ]] || _kbc_partial_after_move move "$task" "$partial"
 }
 
 cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" desc_clear="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin=""
     local assign="" unassign="" steal=""
-    local block="" block_file="" unblock="" clear=""
+    local block="" block_file="" unblock="" clear="" partial=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -2006,6 +2084,7 @@ cmd_patch() {
             --issue-url) kb_require_value "$1" "${2:-}" || return 2; issue_url="$2"; shift 2 ;;
             --version) kb_require_value "$1" "${2:-}" || return 2; version="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --partial) kb_require_value "$1" "${2:-}" || return 2; partial="$2"; shift 2 ;;
             --swimlane) kb_require_value "$1" "${2:-}" || return 2; swimlane="$2"; shift 2 ;;
             --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
             --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
@@ -2045,6 +2124,7 @@ cmd_patch() {
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
     if [[ -n "$column" ]]; then stage="$(stage_id "$column")" || return 2; fi
+    _kbc_partial_preflight patch "$column" "$partial" || return 2
     # swimlane_id is a top-level column (not a payload key), so it rides the inner task
     # object like workflow_stage_id — not the payload merge. The ref→JSON rule (none/0 →
     # null, else resolve) is shared with create-card in _kbc_swimlane_value.
@@ -2206,6 +2286,7 @@ cmd_patch() {
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
     _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" "$cleared_json" || return $?
     _kbc_owner_after_move "$task" "$column" ""
+    [[ -z "$partial" ]] || _kbc_partial_after_move patch "$task" "$partial"
 }
 
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure

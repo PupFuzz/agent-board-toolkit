@@ -14,6 +14,10 @@
 # A card it moves has every seat owner tag (`owner:*`) removed by a SEPARATE tag write after the
 # move (the rule is agent-board-toolkit README.md § The seat owner tag); that write's outcome is
 # printed and never changes the move's report, the counts, or the exit code.
+# A matched card carrying the `terminal:partial` tag is HELD — named on a ⊘ line and not moved —
+# because declared work on it is still outstanding (README.md § The terminal:partial marker). The
+# hold has no override and is never a failure; like a stage-guard skip it is not a move either,
+# which the exit policy at the bottom reads exactly as it reads that skip.
 # With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
 # Shipped-class source stage is skipped, not moved (promotion never resurrects a
 # declined/backlog card carrying a stale/recycled stamp); see the Usage note below.
@@ -1199,6 +1203,8 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
         pr: (if $byPr then $cpr else null end),
         card: (if $byId then $cid else null end),
         src: $csrc,
+        # The card as the board read carries it, for the terminal:partial hold in the move loop.
+        tags: $c.tags,
         # match     — promote it: qualification is OFF, the card is THIS repo, or the caller
         #             named its ID (a card id is not a repo-scoped counter — see the header).
         # foreign   — ref-matched, but the card belongs to a DIFFERENT repo. The card#8421 defect.
@@ -1356,8 +1362,25 @@ owner_clear() {
   return 0
 }
 
+# --- the terminal:partial marker: a card still owed work is HELD, never promoted ---------------
+# A card can reach Shipped while declared work on it is still outstanding; the one tag
+# `terminal:partial` says so (README.md § The terminal:partial marker). Promoting it would record
+# unfinished work as released, so the sweep leaves it where it is and names it. There is NO flag
+# that promotes it anyway: a hold that can be forced is not a hold. Removing the tag is the release.
+# MIRRORS the lib's KB_PARTIAL_TAG and KB_JQ_PARTIAL (kb_partial_marked) in _kb-board-lib.sh, for
+# the owner mirror's reason above; tests/mirror-pair-parity-selftest.sh drives partial_marked
+# beside its lib twin.
+PARTIAL_TAG='terminal:partial'
+# partial_marked <tags>: rc 0 when the list carries PARTIAL_TAG, rc 1 otherwise. Written across
+# lines, not as a one-liner: the move loop below sits at FILE scope, and
+# tests/readback-before-success-census.sh closes a function's scope at the first column-zero `}`.
+partial_marked() {
+  jq -e --arg t "$PARTIAL_TAG" 'type == "array" and any(.[]; . == $t)' <<<"$1" >/dev/null 2>&1 && return 0
+  return 1
+}
+
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0
+moved=0; skipped=0; failed=0; guarded=0; held=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
@@ -1372,6 +1395,20 @@ while IFS= read -r row; do
   if [ -n "$SHIPPED_STAGES" ] && ! in_shipped_stage "$cur"; then
     echo "  ⊘ $ref (#$id): current stage $cur not in a Shipped-class source stage — skipped; promotion never resurrects declined/backlog cards" >&2
     guarded=$((guarded + 1)); continue
+  fi
+  # The terminal:partial hold, off the SAME board read the move is decided on. The row's list goes
+  # through owner_card_tags, the reader the owner clear already uses, so absent and null read as
+  # no tags and a list that is not a list reads as UNREADABLE — and an unreadable list is held too,
+  # because "carries the marker" is exactly what it cannot rule out. Like the stage guard's skips,
+  # a hold is a board condition and not a failure of this run: it is counted as neither.
+  rtags="$(owner_card_tags "$(printf '%s' "$row" | jq -c '{data: {tags}}')")"
+  if [ -z "$rtags" ]; then
+    echo "  ⊘ $ref (#$id): no tag list could be read out of the board read, so whether it carries $PARTIAL_TAG is unknown — held, not promoted" >&2
+    held=$((held + 1)); continue
+  fi
+  if partial_marked "$rtags"; then
+    echo "  ⊘ $ref (#$id): carries $PARTIAL_TAG — declared work on it is still outstanding; held, not promoted. Remove the tag once that work is verified, then re-run or promote by hand." >&2
+    held=$((held + 1)); continue
   fi
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
@@ -1413,7 +1450,11 @@ fi
 # ACTIVE, so a run with no --shipped-stages on a `source: "*"` board keeps a byte-identical
 # summary line (backward compatibility — a v0.21.0 fleet-adoption decision, asserted below by
 # tests/promote-stage-guard-selftest.sh).
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# The partial-held count rides the summary only when a card WAS held, for the same byte-identity
+# reason: the hold is always on, so an always-present count would move every run's line.
+HELD_PART=""
+if [ "$held" -gt 0 ]; then HELD_PART="$held partial-held, "; fi
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$HELD_PART${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -1463,7 +1504,8 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 # ~2-minute manual verification a false alarm costs is the right side of the asymmetry
 # vs a silently un-promoted shipped card. The card#8421 counts (`foreign`, `unsourced`) are
 # NOT in the guard either, and for the same reason: a repo-qualification rejection says
-# nothing about whether the RANGE was complete, which is the only question this die asks. A
+# nothing about whether the RANGE was complete, which is the only question this die asks, and
+# nor is `held`, the terminal:partial count: a hold is a board condition, like a stage-guard skip. A
 # release whose refs ALL matched other repos therefore still fails behind a squash tip — which
 # is right, because the two possible causes (nothing of ours shipped / our refs were dropped)
 # are exactly what a human has to tell apart there.

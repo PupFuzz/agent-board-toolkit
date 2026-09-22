@@ -528,4 +528,77 @@ STUB_CARD_BODY="$_owned" GET_LOG="$TMP/gets.log" run_promote --dry-run
 eq "--dry-run: no write, and no card read"                "|false" "$patched|$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
 unset _move_line _tags_line _owned _tp
 
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 8 — A CARD MARKED terminal:partial IS HELD, NAMED, AND THE SWEEP GOES ON =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# A card carrying the terminal:partial tag reached Shipped with declared work still outstanding
+# (README.md § The terminal:partial marker), so promoting it would record unfinished work as
+# released. The hold is decided off the board read the move is decided on, so a held card costs
+# NO request at all — asserted on the whole PATCH log and on the card-GET log, not on a line.
+# Every leg runs the SAME two-card board, one marked and one not, so "the sweep continues" is
+# measured on each rather than argued once.
+_partial_board() { # <card-1 tags JSON> — card 1 (DL-100) carries them; card 2 (DL-101) carries ["fr"]
+    cat > "$BOARD_FILE" <<JSON
+{"data":[
+  {"id":1,"workflow_stage_id":51,"tags":$1,"payload":{"dl_number":"DL-100"}},
+  {"id":2,"workflow_stage_id":51,"tags":["fr"],"payload":{"dl_number":"DL-101"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+}
+# run_pair <extra-args…> — run_promote's shape over BOTH refs.
+run_pair() {
+    : > "$PATCH_LOG"; : > "$TMP/gets.log"
+    rc=0
+    out="$(cd "$TMP" && GET_LOG="$TMP/gets.log" bash "$PRC" --config "$TMP/release-pr.json" --dls "DL-100,DL-101" "$@" 2>"$TMP/err")" || rc=$?
+    err="$(cat "$TMP/err")"
+    patched="$(cat "$PATCH_LOG")"
+}
+_move2=$'https://kanban.test/api/v3/tasks/2.json\t{"workflow_stage_id":85}'
+
+_partial_board '["fr","terminal:partial","triaged"]'
+run_pair
+eq "⭐ marked card: rc 0 — a hold is not a failure"          "0" "$rc"
+eq "⭐ marked card: NOT moved, and the sweep went on to card 2" "$_move2" "$patched"
+eq "marked card: the ⊘ line names the card and the tag"     "true" \
+   "$(has '⊘ DL-100 (#1): carries terminal:partial — declared work on it is still outstanding; held, not promoted' "$err")"
+eq "marked card: …on stderr, not stdout"                     "false" "$(has 'terminal:partial' "$out")"
+eq "marked card: no card read for a card that is not moved"  "false" "$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
+eq "marked card: the summary counts the hold beside the move" "true" \
+   "$(has '1 moved, 0 already-released, 1 partial-held, 0 no-card, 0 failed.' "$out")"
+
+_partial_board '["terminal:partial"]'
+run_pair --dry-run
+eq "--dry-run: the marked card is held, not 'would move'"    "true|false" \
+   "$(has '⊘ DL-100 (#1): carries terminal:partial' "$err")|$(has 'DL-100 (#1): would move' "$out")"
+eq "--dry-run: …and card 2 still would"                     "true" "$(has 'DL-101 (#2): would move 51 → 85' "$out")"
+eq "--dry-run: nothing written"                             "" "$patched"
+
+# An unreadable tag list cannot rule the marker out, so it is held too — through the same reader
+# the owner clear uses, which is why the object below is unreadable while absent and null are not.
+_partial_board '{"0":"terminal:partial"}'
+run_pair
+eq "a tags OBJECT: held, rc 0, the sweep went on"           "0|$_move2" "$rc|$patched"
+eq "a tags OBJECT: …said as UNKNOWN, not as marked"         "true" \
+   "$(has '⊘ DL-100 (#1): no tag list could be read out of the board read, so whether it carries terminal:partial is unknown — held, not promoted' "$err")"
+
+# THE NEGATIVE CONTROLS: an unmarked card moves, a missing or null list is no tags, a tag that
+# only looks like the marker is not the marker — and a run that held nothing prints the summary
+# it always printed.
+_m1=$'https://kanban.test/api/v3/tasks/1.json\t{"workflow_stage_id":85}'
+for _tl in '["fr"]' 'null' '["Terminal:partial","terminal:partialx"]'; do
+    _partial_board "$_tl"
+    run_pair
+    eq "control [$_tl]: both cards moved"                   "0|true|true" "$rc|$(has "$_m1" "$patched")|$(has "$_move2" "$patched")"
+    eq "control [$_tl]: no hold line"                       "false" "$(has 'held, not promoted' "$err")"
+    eq "control [$_tl]: the summary is byte-identical to a pre-hold run" "true" \
+       "$(has_line 'promote-released-cards: 2 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
+done
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-100"}}
+],"meta":{"last_page":1,"total":1}}
+JSON
+unset -f _partial_board run_pair
+unset _move2 _m1 _tl
+
 _summary "promote-refusal-detail-selftest"
