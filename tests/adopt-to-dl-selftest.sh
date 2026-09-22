@@ -277,7 +277,66 @@ eq "⭐ …the line names the function and the rc" "true" \
    "$(has "kb_ref_pairs_alone returned rc 127" "$_err")"
 eq "…and says to re-vendor the lib, and that no DL was minted" "true|true" \
    "$(has 're-vendor the lib with this tool' "$_err")|$(has 'before any DL is minted' "$_err")"
+
+# ---------------------------------------------------------------------------
+echo "== an unreadable 2xx from the REAL next-dl stamps NOTHING (card#10230) =="
+# END-TO-END through the real bins, and the only place the property that matters is measurable:
+# next-dl does not stamp, THIS tool does. next-dl's claim endpoint answers 200 with an HTML page
+# (a gateway holding an expired SSO session, a WAF block page, a maintenance page). The claim
+# POST may ALREADY have spent a number server-side, and the offline max+1 scan cannot see a
+# claimed-but-unstamped DL, so a number taken from it is at or BELOW the one just burned — the
+# duplicate correlation key the allocator exists to prevent, stamped onto a card by this tool.
+#
+# WHY THESE LEGS CAN FAIL, which is the whole reason for the checkout fixture: with no local
+# header and no readable board the scan refuses anyway, so every assertion here would pass
+# against the unfixed next-dl for the wrong reason. A local floor of DL-0300 over a board that
+# answers an empty card list makes the pre-fix behaviour an observable STAMP. Measured both
+# ways: against the pre-fix next-dl this block PATCHes DL-0301 onto the card at rc 0.
+ATA_REAL="$TMP/ata-real"
+mkdir -p "$ATA_REAL"
+cp -pR "$HERE"/../bin/. "$ATA_REAL"/      # the REAL next-dl this time, not the logging stand-in
+_ata_floor="$TMP/ata-checkout"
+mkdir -p "$_ata_floor"
+printf '## DL-0300 — a local header the offline scan would mint from\n' > "$_ata_floor/CLAUDE_DECISIONS.md"
+export KB_DL_CHECKOUT_GLOBS="$_ata_floor"
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/by-ref.json*) printf '200\n{"data":[{"id":4242}]}' ;;
+        "GET "*/tasks/search.json*) printf '200\n{"data":[],"meta":{"last_page":1,"total":0}}' ;;
+        "GET "*/tasks/4242.json*)
+            printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":48,"payload":%s}}' "$ATA_PAYLOAD" ;;
+        "POST "*/dl-sequence/claim.json) printf '200\n%s' "$ATA_CLAIM_BODY" ;;
+        "PATCH "*/tasks/4242.json)
+            printf '200\n'
+            jq -cn --argjson b "$3" --argjson p "$ATA_PAYLOAD" \
+                '{data: {id: 4242, board_id: 42, workflow_stage_id: 48, payload: ($p + ($b.payload // {}))}}' ;;
+    esac
+}
+export -f kb_stub_route
+ata_real_run() {   # ata_real_run <claim-response-body> — adopts a card carrying no refs
+    kb_stub_reset
+    _rc=0
+    _err="$(ATA_PAYLOAD='{}' ATA_CLAIM_BODY="$1" bash "$ATA_REAL/adopt-to-dl" \
+        4242 --repo owner/name --board dev 2>&1 >/dev/null)" || _rc=$?
+}
+ata_real_run '<html><head><title>Sign in</title></head><body>SSO gateway</body></html>'
+eq "⭐ the claim answered 200 + an HTML page → rc 1"          "1" "$_rc"
+eq "⭐ …and NOTHING was stamped (no PATCH)"                    "0" "$(npatch)"
+eq "…and the offline scan was never consulted"               "0" "$(kb_stub_count_any /tasks/search.json)"
+eq "…and the failure is named as the mint"                   "true" "$(has 'mint failed (next-dl)' "$_err")"
+eq "…and next-dl says a number may already be spent"         "true" \
+   "$(has 'may ALREADY have allocated a number' "$_err")"
+# THE CONTROL that makes those four a measurement rather than a broken tool: the same run
+# against a claim this tool CAN read stamps the CLAIMED number in one PATCH.
+ata_real_run '{"data":{"value":93}}'
+eq "control: a decodable claim → rc 0 and ONE PATCH"          "0|1" "$_rc|$(npatch)"
+eq "control: …stamping the CLAIMED DL-0093, never the offline floor" \
+   '{"dl_number":"DL-0093","pr_url":"https://github.com/owner/name/pull/0"}' \
+   "$(kb_stub_bodies PATCH /tasks/4242.json | jq -Sc .payload)"
+unset KB_DL_CHECKOUT_GLOBS
+unset -f ata_real_run
+
 unset -f kb_stub_route ata_run nmint npatch
-unset ATA_BIN ATA_STALE ATA_MINT_LOG REAL_PR _p
+unset ATA_BIN ATA_STALE ATA_MINT_LOG ATA_REAL REAL_PR _p _ata_floor
 
 _summary "adopt-to-dl-selftest"

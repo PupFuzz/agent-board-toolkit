@@ -26,9 +26,13 @@
 #
 # WHAT A GREEN RUN PROVES — the weakest property these assertions support: that next-dl
 # refuses these argument shapes with these messages and these exit codes, that a valid
-# --board reaches board resolution, and that --peek prefers the inspect endpoint over the
-# offline scan and falls back only when that endpoint is absent. It says nothing about the
-# atomic-claim endpoint's real behaviour or the offline scan against real checkouts.
+# --board reaches board resolution, that --peek prefers the inspect endpoint over the
+# offline scan and falls back only when that endpoint is absent, and that an undecodable
+# 2xx takes the fallback on the non-consuming read while REFUSING on the consuming claim
+# (card#10230) — all against a stub. It says nothing about the atomic-claim endpoint's real
+# behaviour or the offline scan against real checkouts, and it cannot say anything about
+# what a CALLER then stamps: `tests/adopt-to-dl-selftest.sh` owns that half, driving the
+# real next-dl and asserting no card is written.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -211,10 +215,12 @@ eq "endpoint 500 → says the endpoint is present but failed" "true" "$(has 'PRE
 eq "endpoint 500 → names the HTTP status"           "true" "$(has 'HTTP 500' "$err")"
 eq "endpoint 500 → does NOT silently answer from the scan" "0" "$(kb_stub_count_any "$SEARCH")"
 
-echo "== a 2xx carrying no usable value is a BENIGN fallback, not an abort =="
-# Deliberately the claim path's semantics, not the 500 path's: a 2xx with no number means the
-# route exists but told us nothing, which is indistinguishable from an older shape — falling
-# back is right, aborting would break every pre-inspect-endpoint board.
+echo "== a 2xx carrying no usable value is a BENIGN fallback on the NON-CONSUMING read =="
+# Not the 500 path's semantics: a 2xx with no number means the route exists but told us nothing,
+# which is indistinguishable from an older shape — falling back is right on a call that spent
+# NOTHING, and aborting would break every pre-inspect-endpoint board. ⛔ This is NOT the claim
+# path's semantics, and asserting that it was is what shipped card#10230: on the claim a number
+# may already be burned, so that arm refuses (the matrix near the end of this file owns both).
 NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{}}' run_ndl --board dev --peek
 eq "2xx with no .data.next → rc 0"                  "0" "$rc"
 eq "2xx with no .data.next → the offline floor"     "DL-0220" "$out"
@@ -460,17 +466,83 @@ eq "transport fail strict → rc 4"                     "4" "$rc"
 eq "transport fail strict → mints NOTHING"            "" "$out"
 only_cause "transport fail strict" 1 "$err"
 
-echo "== cause 4 (2xx carrying no usable value): the route ANSWERED, and says so =="
+echo "== cause 4 (2xx carrying no usable value): ONE cause, TWO dispositions, keyed on CONSUMPTION =="
+# THE CAUSE is one cause on both routes and still gets its own line (only_cause holds on both
+# arms below). What differs is the DISPOSITION, and card#10230 is that it used not to: the
+# 2xx-undecodable arm routed BOTH callers to the benign fallback, which on the CONSUMING route
+# is a FAIL-OPEN — the POST has already allocated a number server-side, the offline max+1 scan
+# cannot see a claimed-but-unstamped DL (card#6232), so the number it hands back is at or BELOW
+# the one just burned: a DUPLICATE correlation key, the one thing an allocator must never emit.
+# Measured against the pre-fix binary, this exact input: `DL-0301` on stdout at rc 0.
+#
+# The realistic producer is not exotic and is driven as its own input below: a gateway answering
+# 200 with HTML (an expired SSO session, a WAF block page, a maintenance page). A fix keyed on
+# the body being valid JSON would pass the `{"data":{}}` leg and fail-open on that one.
 NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl --board dev
-eq "2xx-no-value permissive → rc 0"                   "0" "$rc"
-eq "2xx-no-value permissive → mints the offline floor" "DL-0301" "$out"
-eq "2xx-no-value permissive → names the HTTP status it got" "true" "$(has 'answered HTTP 200' "$err")"
-only_cause "2xx-no-value permissive" 3 "$err"
+eq "2xx-no-value on the CONSUMING claim → rc 1 (fail closed)" "1" "$rc"
+eq "2xx-no-value on the claim → mints NOTHING"        "" "$out"
+eq "2xx-no-value on the claim → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "2xx-no-value on the claim → never reaches the scan" "0" "$(kb_stub_count_any "$SEARCH")"
+eq "2xx-no-value on the claim → names the HTTP status it got" "true" "$(has 'answered HTTP 200' "$err")"
+eq "2xx-no-value on the claim → says a number may ALREADY be burned" "true" \
+   "$(has 'may ALREADY have allocated a number' "$err")"
+eq "2xx-no-value on the claim → does NOT announce a fallback it refused" "false" "$(has "$FALLBACK" "$err")"
+only_cause "2xx-no-value on the claim" 3 "$err"
+# A REMEDIATION STRING IS A DOC SURFACE, so it is asserted like one. `kanban` and `--board kanban`
+# name DIFFERENT boards, so a remedy built by re-printing `$project` alone would hand the operator
+# a command against the wrong board — it is built from the argv words this run was given.
+eq "2xx-no-value on the claim → the remedy is runnable AS PRINTED" "true" \
+   "$(has "next-dl --board dev --peek" "$err")"
 
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='<html><head><title>Sign in</title></head><body>SSO gateway</body></html>' \
+    run_ndl --board dev
+eq "200 + an SSO HTML page on the claim → rc 1"       "1" "$rc"
+eq "200 + an SSO HTML page on the claim → mints NOTHING" "" "$out"
+eq "200 + an SSO HTML page on the claim → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "200 + an SSO HTML page on the claim → never reaches the scan" "0" "$(kb_stub_count_any "$SEARCH")"
+
+# The rc-3 abort is upstream of the degrade decision, exactly as the 500 arm is (pinned again at
+# the end of this file): strict must not renumber an outcome that has already refused.
 NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl --board dev --require-counter
-eq "2xx-no-value strict → rc 4"                       "4" "$rc"
-eq "2xx-no-value strict → mints NOTHING"              "" "$out"
-only_cause "2xx-no-value strict" 3 "$err"
+eq "2xx-no-value on the claim + strict → still rc 1, not 4" "1" "$rc"
+eq "2xx-no-value on the claim + strict → mints NOTHING" "" "$out"
+only_cause "2xx-no-value on the claim + strict" 3 "$err"
+
+# THE OTHER SPELLING, which is what makes the line above a measurement of the spelling rather
+# than of one literal: the bare project alias must print ITSELF, with no `--board` in front of it.
+# A remedy built from `$project` alone passes the assertion above and reds this one.
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl bridge
+eq "2xx-no-value on the bridge ALIAS → rc 1"          "1" "$rc"
+eq "…and the remedy uses the ALIAS spelling, not --board" "true|false" \
+   "$(has 'next-dl bridge --peek' "$err")|$(has '--board' "$err")"
+
+echo "== CONTROL: the SAME undecodable 2xx on the NON-CONSUMING read still falls back =="
+# The control that keeps the fix honest. Nothing was spent on a GET, so the benign fallback is
+# CORRECT there and --peek's offline path is supported (card#7214). A fix that made the
+# transport fail closed for every caller — the over-correction — reds every line here.
+NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{}}' run_ndl --board dev --peek
+eq "2xx-no-value on the peek → rc 0 (benign fallback)" "0" "$rc"
+eq "2xx-no-value on the peek → mints the offline floor" "DL-0301" "$out"
+eq "2xx-no-value on the peek → announces the fallback" "true" "$(has "$FALLBACK" "$err")"
+eq "2xx-no-value on the peek → names the INSPECT endpoint" "true" \
+   "$(has 'DL-sequence inspect endpoint gave no number' "$err")"
+eq "2xx-no-value on the peek → claims NOTHING"        "0" "$(kb_stub_count_any "$CLAIM_URL")"
+eq "2xx-no-value on the peek → does NOT borrow the claim's consumed-number wording" "false" \
+   "$(has 'may ALREADY have allocated a number' "$err")"
+only_cause "2xx-no-value on the peek" 3 "$err"
+
+NDL_PEEK_HTTP=200 NDL_PEEK_BODY='<html><head><title>Sign in</title></head><body>SSO gateway</body></html>' \
+    run_ndl --board dev --peek
+eq "200 + an SSO HTML page on the peek → rc 0"        "0" "$rc"
+eq "200 + an SSO HTML page on the peek → the offline floor" "DL-0301" "$out"
+
+echo "== and a 2xx that DECODES is unaffected on BOTH routes =="
+# The third leg of the matrix: the fix must move only the undecodable case. Both numbers come
+# from their own endpoint and neither is reachable from the fixture's board contents.
+run_ndl --board dev
+eq "decodable claim → rc 0 and the CLAIMED number"    "0|DL-0093" "$rc|$out"
+run_ndl --board dev --peek
+eq "decodable peek → rc 0 and the COUNTER's next"     "0|DL-0222" "$rc|$out"
 
 echo "== cause 1 (config UNRESOLVED): no request was issued, and the notice says that =="
 # The fourth rc-1 cause, which the endpoint-shaped three hide: dl_sequence_call returns 1 before
