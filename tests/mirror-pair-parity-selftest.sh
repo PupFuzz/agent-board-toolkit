@@ -352,7 +352,7 @@ unset _rfg_prc _rfg_mut _rfg_corpus _v
 #
 # THE PAIR HERE IS STANDALONE ↔ ANOTHER BIN, not standalone ↔ the lib, and that is the same
 # defect class rather than a wider one: `bin/kbcard` owns this fleet's write-outcome ladder
-# (card#8556 — APPLIED / NOT APPLIED AND KNOWN / UNVERIFIED, with `KBC_RC_UNVERIFIED=3` as the
+# (card#8556 — APPLIED / NOT APPLIED AND KNOWN / UNVERIFIED, with `KBC_RC_UNVERIFIED` as the
 # third outcome's rc), `bin/promote-released-cards` must not source the lib and cannot exec
 # kbcard either (it is vendored ALONE), and card#9938 made it adopt that ladder rather than mint
 # a second vocabulary for one outcome. So the value and the rule exist twice, and a second
@@ -366,21 +366,57 @@ _rcu_prc="$(command grep -cE '^RC_UNVERIFIED=' "$PRC")"
 _rcu_kbc="$(command grep -cE '^KBC_RC_UNVERIFIED=' "$KBC")"
 eq "witness: promote defines RC_UNVERIFIED exactly once"     "1" "$_rcu_prc"
 eq "witness: kbcard defines KBC_RC_UNVERIFIED exactly once"  "1" "$_rcu_kbc"
+# ⚠ THE TWO SIDES ARE READ DIFFERENTLY, AND THE ASYMMETRY IS THE POINT — it is the same asymmetry
+# this whole file exists for. The STANDALONE's value must be a self-contained LITERAL: it may
+# source nothing, so a copy whose rc came from a name it cannot resolve would be a broken tool,
+# and reading it by text is what can SEE that. The OWNER's value need not be a literal and is
+# already moving — card#10029 points `KBC_RC_UNVERIFIED` at the lib's `KB_RC_UNVERIFIED`, which
+# is the right direction (one owner for the value, not two literals) — so the owner's side is
+# RESOLVED, through the lib this file has already sourced. A `cut -d= -f2` reader would compare
+# promote's `3` against the STRING `"$KB_RC_UNVERIFIED"` and red on a pair that AGREES.
+# _rcu_value <file> <var> — the shipped assignment's VALUE. An indirection that resolves to
+# nothing yields the empty string, so it reds rather than passing: `set +u` is what turns the
+# unbound name into an observable empty instead of an abort with no row printed.
+_rcu_value() {
+    local line
+    line="$(command grep -E "^$2=" "$1")" || return 0
+    ( set +u; eval "$line"; printf '%s' "${!2-}" ) 2>/dev/null || true
+}
 _rcu_prc="$(command grep -E '^RC_UNVERIFIED=' "$PRC" | cut -d= -f2)"
-_rcu_kbc="$(command grep -E '^KBC_RC_UNVERIFIED=' "$KBC" | cut -d= -f2)"
+_rcu_kbc="$(_rcu_value "$KBC" KBC_RC_UNVERIFIED)"
 eq "⭐ the two are the SAME rc (a caller testing for 3 tests one thing)" "$_rcu_kbc" "$_rcu_prc"
 eq "…and it is 3, the rc both files' contracts document" "3" "$_rcu_kbc"
-echo "== control: a promote copy that renumbered the outcome is caught =="
-# ON THE REAL FILE, through the SAME extraction the rows above use — not on a literal typed here.
-# A control that compared two hand-written strings would leave the grep that PRODUCES the
-# population untested, which is the half that silently stops finding anything after a rename.
+eq "⭐ the STANDALONE's rc is a LITERAL — it can resolve no name it does not define" "true" \
+   "$([[ "$_rcu_prc" =~ ^[0-9]+$ ]] && echo true || echo false)"
+echo "== control: a renumbering on EITHER side is caught — both directions, not one =="
+# ON THE REAL FILES, through the SAME extractions the rows above use — not on literals typed
+# here. A control that compared two hand-written strings would leave the readers that PRODUCE
+# the population untested, which is the half that silently stops finding anything after a rename.
+# BOTH sides are mutated: a guard driven from one end only reds when the COPY drifts and passes
+# in silence when the OWNER moves — which is the direction this pair is actually moving.
 sed 's/^RC_UNVERIFIED=3/RC_UNVERIFIED=4/' "$PRC" > "$TMP/prc-renumbered"
 _rcu_mut="$(command grep -E '^RC_UNVERIFIED=' "$TMP/prc-renumbered" | cut -d= -f2)"
-eq "control: the mutation applied, and the extraction SEES it" "4" "$_rcu_mut"
+eq "control: the COPY-side mutation applied, and the extraction SEES it" "4" "$_rcu_mut"
 eq "control: …so the equality above reds on that copy" "false" \
    "$([[ "$_rcu_kbc" == "$_rcu_mut" ]] && echo true || echo false)"
-eq "control: …while the shipped copy still agrees"  "true" \
+sed 's/^KBC_RC_UNVERIFIED=.*/KBC_RC_UNVERIFIED=4/' "$KBC" > "$TMP/kbc-renumbered"
+_rcu_mut="$(_rcu_value "$TMP/kbc-renumbered" KBC_RC_UNVERIFIED)"
+eq "control: the OWNER-side mutation applied, and the resolver SEES it" "4" "$_rcu_mut"
+eq "control: …so the equality above reds when the OWNER moves and the copy does not" "false" \
+   "$([[ "$_rcu_mut" == "$_rcu_prc" ]] && echo true || echo false)"
+eq "control: …while the shipped pair still agrees"  "true" \
    "$([[ "$_rcu_kbc" == "$_rcu_prc" ]] && echo true || echo false)"
+echo "== control: the resolver FOLLOWS an indirection, and reds when it resolves to nothing =="
+# The spelling card#10029 gives the owner's line, driven here against a probe name of this
+# file's own rather than against `KB_RC_UNVERIFIED` — that constant is not on this branch yet,
+# and a row expecting it would assert which PR landed first instead of what the reader does.
+# What is proven is the READER's property, which is what has to hold either way round.
+printf 'KBC_RC_UNVERIFIED="$_RCU_PROBE"\n' > "$TMP/kbc-indirect"
+eq "control: …=\"\$NAME\" with NAME=3 resolves to 3, so the pair still agrees after card#10029" "3" \
+   "$(_RCU_PROBE=3; _rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+eq "control: …and an indirection pointing at NOTHING resolves EMPTY, which reds" "" \
+   "$(_rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+unset -f _rcu_value
 
 echo "== stage_verdict vs _kbc_confirm_stage: one ruling, two runtimes, one corpus =="
 # promote answers a WORD, kbcard answers an EXIT STATUS and a message; the compared property is
