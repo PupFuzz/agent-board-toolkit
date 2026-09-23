@@ -1149,10 +1149,11 @@ eq "leg 4: past the gate region every return has already printed a coverage line
 # EVERY subject the function tests, at any depth, anywhere in it, must be DECLARED in the bin —
 # as a `gates:` name, or on its `non-gates:` line. An undeclared gate has an undeclared subject,
 # so it reds wherever it is parked and in whichever bracket spelling. TWO SHAPES REMAIN OUTSIDE
-# it, both stated on the block rather than left derivable: a gate past the region spelled as a
-# command's exit status (`command -v x || …` — no subject to declare, and leg 4's print-carry does
-# not see it either: MEASURED, whole suite rc 0), and a test that reuses an already-declared
-# subject — which is why naming a subject on `non-gates:` is written there as a CLAIM.
+# it, both stated on the block rather than left derivable: a gate past the region that wraps the
+# PRINT in a command's exit status (`if ! command -v x; then …coverage_line… fi` — no subject to
+# declare, and leg 4 carries the print across the `fi`: MEASURED, whole suite rc 0; the same idea
+# as `cmd && return 0` IS caught by leg 4, also measured), and a test that reuses an
+# already-declared subject — which is why naming a subject on `non-gates:` is written as a CLAIM.
 #
 # Both directions, as leg 3 has them: an undeclared subject reds, and a declared name the
 # function does not test reds. BINARY tests are read here as well as unary ones — leg 2 covers a
