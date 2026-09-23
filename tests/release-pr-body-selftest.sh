@@ -984,6 +984,246 @@ eq "no .promote config → still rc 0"              "0"     "$rc"
 eq "…body is still complete (no .promote)"        "true"  "$(has '## Bundled' "$nocfg")"
 eq "…and NO coverage report is emitted (no .promote)"     "false" "$(has 'card coverage:' "$(cat "$COV/nocfg.err")")"
 
+echo "== the header's CARD COVERAGE PRECONDITIONS are exactly the gates the function has (card#10039) =="
+# The header block above card_coverage_report is the ONE statement of when the report runs, and
+# other repos' release docs point at it, so a line there that the function does not evaluate is a
+# false contract with readers who were told not to keep a copy. It was: the header said "a
+# `.promote` config" while the code tests `.promote.board_id`, and it never named the token-regex
+# guard at all. This block reads the DECLARED set out of the bin and drives one falsifier per
+# name, so the two cannot drift without a red:
+#   * a name declared there with no falsifier here reds the set leg (add its arm below);
+#   * a declared precondition the function does NOT evaluate reds its own arm — its falsified run
+#     still prints a coverage line;
+#   * the all-present control reds if the function grows a gate this fixture does not satisfy.
+# That is `declared ⇒ real` only. `real ⇒ declared` is the SOURCE-DERIVED block further down:
+# the falsifier table below is only as wide as the header it reads, so a NEW gate the fixture
+# happens to satisfy passes every arm here unnoticed — measured, in the r1 review of the PR that
+# added this block: `[ -n "${KANBAN_EXPECTED_HOST:-}" ] || return 0` inserted as the function's
+# first statement left the whole suite at rc 0.
+cov_err() {  # <config> <token> <PATH> <bin> — the run's stderr on stdout
+  ( cd "$CR" && PATH="$3" KANBAN_WRITEBACK_TOKEN="$2" KANBAN_EXPECTED_HOST=kanban.test \
+      "$4" --config "$1" --version 0.2.0 --base v0.1.0 --head HEAD 2>&1 >/dev/null ) || true
+}
+_pc_path="$COV/bin:$HERE/../bin:$PATH"
+cp "$CR/.release-pr.json" "$COV/pc-all.json"
+_pc_declared="$(sed -n 's/^#   precondition: \([a-z-]*\) .*/\1/p' "$BIN" | LC_ALL=C sort | paste -sd' ' -)"
+eq "control: every precondition held ⇒ a coverage line" "true" \
+   "$(has 'release-pr-body: card coverage: ' "$(cov_err "$COV/pc-all.json" tkn "$_pc_path" "$BIN")")"
+for _pc in $_pc_declared; do
+  case "$_pc" in
+    token-regex)
+      jq 'del(.ref_token_regex, .card_token_regex)' "$COV/pc-all.json" > "$COV/pc-f.json"
+      _pc_err="$(cov_err "$COV/pc-f.json" tkn "$_pc_path" "$BIN")" ;;
+    board-id)
+      # The block STAYS — only the key goes. The pre-card#10039 header called this state satisfied.
+      jq 'del(.promote.board_id)' "$COV/pc-all.json" > "$COV/pc-f.json"
+      eq "precondition board-id: the falsified config still HAS a .promote block" "true" \
+         "$(jq 'has("promote")' "$COV/pc-f.json")"
+      _pc_err="$(cov_err "$COV/pc-f.json" tkn "$_pc_path" "$BIN")" ;;
+    writeback-token)
+      _pc_err="$(cov_err "$COV/pc-all.json" "" "$_pc_path" "$BIN")" ;;
+    promoter)
+      _pc_err="$(cov_err "$COV/pc-all.json" tkn "$NOPROM_PATH" "$COV/lonebin/release-pr-body")" ;;
+    *) bad "precondition '$_pc' is declared in the header and has no falsifier in this block"; continue ;;
+  esac
+  eq "precondition $_pc: falsified alone ⇒ NO coverage line" "false" "$(has 'card coverage:' "$_pc_err")"
+done
+# The promoter's DISJUNCTION, asserted rather than read: not on PATH, but executable beside the
+# script, satisfies it — the half the header used to leave out and `docs/INSTALL.md` said as "on PATH".
+mkdir -p "$COV/besidebin"
+cp "$BIN" "$COV/besidebin/release-pr-body"
+cp "$HERE/../bin/promote-released-cards" "$COV/besidebin/promote-released-cards"
+eq "precondition promoter: absent from PATH ..." "" "$(PATH="$NOPROM_PATH" command -v promote-released-cards 2>/dev/null || true)"
+eq "... but beside the script ⇒ the report RUNS" "true" \
+   "$(has 'release-pr-body: card coverage: ' "$(cov_err "$COV/pc-all.json" tkn "$NOPROM_PATH" "$COV/besidebin/release-pr-body")")"
+
+echo "== ...and the function has no gate the header does not declare (card#10039 review r1) =="
+# THE OTHER DIRECTION, and the one that was asserted without a check. The header claims both;
+# the block above only holds `declared ⇒ real`. What stood in for `real ⇒ declared` was a
+# hand-pinned four-name literal right here — a restatement of the set the header owns, whose
+# natural repair on a red is to edit the literal, after which nothing reds at all. It is gone.
+# Everything below is RE-DERIVED from the function's own source on every run, and no figure is
+# left in the block at all: the degeneracy guards test for EMPTINESS — the extractor stopped
+# reading — never for a count of what it should have found.
+#
+# THE GATE REGION — the function's first line through its last SILENT return, i.e. the last
+# `return 0` reached before any `coverage_line` call. Past it the function has measured
+# something and every exit says so, which is leg 4's job.
+_pc_src="$(_fn_src "$BIN" card_coverage_report)"
+_pc_first_print="$(printf '%s\n' "$_pc_src" | { command grep -n 'coverage_line ' || true; } | head -1 | cut -d: -f1)"
+[ -n "$_pc_first_print" ] || { bad "gate region: card_coverage_report makes no coverage_line call — the window moved"; _pc_first_print=2; }
+_pc_last_gate="$(printf '%s\n' "$_pc_src" | head -n "$((_pc_first_print - 1))" \
+                 | { command grep -n 'return 0' || true; } | tail -1 | cut -d: -f1)"
+[ -n "$_pc_last_gate" ] || { bad "gate region: no silent return before the first coverage_line — the window moved"; _pc_last_gate=1; }
+_pc_region="$(printf '%s\n' "$_pc_src" | head -n "$_pc_last_gate")"
+# CONTROLS on the cut itself — without them every leg below could be measuring an empty or a
+# runaway window and still agree with a header that says nothing.
+eq "gate region: reaches the last silent gate arm"     "true"  "$(has 'KANBAN_WRITEBACK_TOKEN' "$_pc_region")"
+eq "gate region: stops before the measured-path tests" "false" "$(has 'dl_manifest' "$_pc_region")"
+
+# LEG 1 — the extractor can read every test in the region. A set comparison is only as good as
+# its parser, and an unreadable spelling (`[ -n $x ]`, unquoted) would otherwise contribute no
+# subject and pass silently. Openings counted against parsed tests, so it cannot.
+_pc_open_n="$(printf '%s\n' "$_pc_region" | { command grep -oE '\[\[? -[a-z] ' || true; } | command grep -c . || true)"
+_pc_read_n="$(printf '%s\n' "$_pc_region" | { command grep -oE '\[\[? -[a-z] "[^"]*" \]\]?' || true; } | command grep -c . || true)"
+eq "leg 1: every test in the gate region is one this extractor can read" "$_pc_open_n" "$_pc_read_n"
+
+# LEG 2 — every silent return in the region is REACHED through such a test. A gate spelled as a
+# command's exit status (`grep -q … || return 0`) has no subject to attribute, so it must red
+# rather than be skipped.
+_pc_stray=""; _pc_carry=0
+while IFS= read -r _pc_line; do
+  _pc_t="${_pc_line#"${_pc_line%%[![:space:]]*}"}"
+  case "$_pc_t" in ''|'#'*) continue ;; esac
+  # `[[ -n "$x" ]]` CONTAINS the substring `[ -n`, so one pattern reads both spellings.
+  _pc_has=false; case "$_pc_t" in *'[ -'*) _pc_has=true ;; esac
+  case "$_pc_t" in *'return '*)
+    { [ "$_pc_has" = true ] || [ "$_pc_carry" = 1 ]; } || _pc_stray="$_pc_stray | $_pc_t" ;;
+  esac
+  case "$_pc_t" in
+    fi|fi\ *|'}') _pc_carry=0 ;;
+    if\ *|elif\ *) if [ "$_pc_has" = true ]; then _pc_carry=1; else _pc_carry=0; fi ;;
+  esac
+done <<< "$_pc_region"
+eq "leg 2: every silent return in the gate region is reached through such a test" "" "$_pc_stray"
+
+# THE SUBJECT EXTRACTOR — ONE READER, TWO SPANS. Legs 3 and 5 ask one question of two
+# different spans (which identifiers does this text TEST), so they ask it through one
+# function. They were two regex sets, and they had already drifted: leg 3's required the
+# closing `]` and normalised only `${V:-}`, so a region test spelled `[ -z "${KANBAN_X:-0}" ]`
+# yielded the subject `{KANBAN_X:-0}` to leg 3 and `KANBAN_X` to leg 5, and no
+# `gates:`/`non-gates:` declaration could satisfy both — the function became UNDECLARABLE.
+#
+# WHOLE-LINE comments are stripped first: the function carries one that spells a test inside
+# backticks (card#5874's note above `args`), and a comment is not code. A trailing comment is
+# left alone — `#` inside a string is not a comment, and no regex here knows the difference;
+# a test it hides is still read, an invented one still reds.
+_pc_uncomment() { printf '%s\n' "$1" | sed -E 's/^[[:space:]]*#.*$//'; }
+# Normalisation, spelled here rather than in the header: `${V:-…}` and `$V`
+# reduce to `V`, and a `$dir/name` operand reduces to `name` (that is the promoter's
+# beside-the-script half, which the header names as `promote-released-cards`).
+# BINARY tests are read as well as unary ones, and `test -z "$x"` is read alongside
+# `[ … ]`/`[[ … ]]`: `test` is a command's exit status by SPELLING, but it carries a quoted
+# operand, so there IS a subject to declare and no ground for it to evade (see leg 5's
+# residual note — the reason the residual gives is *no operand*, not *not a bracket*).
+# Emits one subject per line, in source order and NOT deduplicated, so a caller can count
+# what was parsed as well as compare the set.
+_pc_subjects() {
+  local _pct _pcn _pcu _pcb
+  _pct="$(_pc_uncomment "$1")"
+  _pcn='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
+  _pcu="$(printf '%s\n' "$_pct" | { command grep -oE '(\[\[? |test )-[a-z] "[^"]*"' || true; } \
+    | sed -E 's/^(\[\[? |test )-[a-z] "//; s/"$//' | sed -E "$_pcn")"
+  _pcb="$(printf '%s\n' "$_pct" \
+    | { command grep -oE '(\[\[? |test )"[^"]*" (=|!=|-eq|-ne|-gt|-lt|-ge|-le) ' || true; } \
+    | sed -E 's/^(\[\[? |test )"//; s/" .*$//' | sed -E "$_pcn")"
+  printf '%s\n%s\n' "$_pcu" "$_pcb" | { command grep -v '^$' || true; }
+}
+
+# LEG 3 — THE CLAIM ITSELF. The subjects the function tests before printing, against the
+# subjects the header's `gates:` lines declare. An undeclared gate reds; a declared non-gate
+# reds. It reads through `_pc_subjects` above — the same extractor leg 5 reads the WHOLE
+# function with, so the two legs cannot disagree about what a subject is.
+_pc_real_gates="$(_pc_subjects "$_pc_region" | LC_ALL=C sort -u | paste -sd' ' -)"
+[ -n "$_pc_real_gates" ] || bad "leg 3: no gate subject derived from the function — the extractor read nothing"
+_pc_decl_gates="$(sed -n 's/^#  *gates: //p' "$BIN" | tr ' ' '\n' | { command grep -v '^$' || true; } \
+  | LC_ALL=C sort -u | paste -sd' ' -)"
+eq "leg 3: the header's gates: lines are exactly the subjects the function tests before printing" \
+   "$_pc_real_gates" "$_pc_decl_gates"
+# …and each declared precondition carries one, so a name cannot be added without its subjects.
+eq "leg 3: every declared precondition carries a gates: line" \
+   "$(printf '%s\n' "$_pc_declared" | tr ' ' '\n' | command grep -c . || true)" \
+   "$(sed -n 's/^#  *gates: //p' "$BIN" | command grep -c . || true)"
+
+# LEG 4 — past the region, every return must be immediately preceded by a `coverage_line` call
+# and none may carry a test of its own. That is the leg's whole predicate, and the header states
+# it as the predicate rather than as "no gate can be parked below the region", which is the
+# claim it CANNOT support:
+#   `else` OPENS AN ARM THAT HAS PRINTED NOTHING, so it clears the carried print rather than
+#   letting a `return` under it inherit the `then` arm's one. A STANDALONE `else` line needs no
+#   rule — it becomes the previous line and carries no print. The arm that does is the one-line
+#   `else return 0`, which without the clear inherits the `then` arm's `coverage_line`: MEASURED
+#   BOTH WAYS in r2 — that gate passes the whole suite at rc 0 with the clear removed and reds
+#   with it. ⛔ Clearing must NOT `continue`: the return check below is on the same line.
+#   ⚑ `fi` deliberately does NOT clear: the shipped `if COUNT; then coverage_line …; else
+#   coverage_line …; fi; return 0` prints on every arm and must stay green. So a gate whose
+#   print is CONDITIONAL (`if …; then coverage_line …; fi; return 0`) passes this leg —
+#   MEASURED in r2, whole suite rc 0 with an undeclared `KANBAN_XYZ_UNSET` gate in that shape.
+#   ⛔ THIS LEG CANNOT CLOSE THAT SHAPE and does not try: a print-state machine strict enough to
+#   red on it also reds on this function's own last statement, a conditional print with no `else`
+#   and no trailing return. LEG 5 closes it on the declaration side instead, reading no print
+#   state at all. The falsifier arms above are what cover a gate that keeps its declared subject.
+_pc_below=""; _pc_prev=""
+while IFS= read -r _pc_line; do
+  _pc_t="${_pc_line#"${_pc_line%%[![:space:]]*}"}"
+  case "$_pc_t" in ''|'#'*|fi|fi\ *|'}') continue ;; esac
+  # NO `continue` HERE: `else return 0` on ONE line must still reach the return check below.
+  # Clearing and skipping is what let that spelling through at rc 0 (measured, r2).
+  case "$_pc_t" in else|else\ *) _pc_prev="" ;; esac
+  case "$_pc_t" in *'return '*)
+    case "$_pc_t" in
+      *'[ -'*) _pc_below="$_pc_below | gate: $_pc_t" ;;
+      *) case "$_pc_prev" in *'coverage_line '*) ;; *) _pc_below="$_pc_below | silent: $_pc_t" ;; esac ;;
+    esac ;;
+  esac
+  _pc_prev="$_pc_t"
+done <<< "$(printf '%s\n' "$_pc_src" | tail -n +"$((_pc_last_gate + 1))")"
+eq "leg 4: past the gate region every return has already printed a coverage line" "" "$_pc_below"
+
+# LEG 5 — COMPLETENESS OVER THE WHOLE FUNCTION, which is what closes leg 4's residual. Legs 1–3
+# read the gate region and leg 4 reads returns past it; neither sees a gate whose print is
+# conditional (`if …; then coverage_line …; fi; return 0`), and the print-state machine that
+# would is the one that reds on the function's own last statement. This leg reads no print state:
+# EVERY subject the function tests, at any depth, anywhere in it, must be DECLARED in the bin —
+# as a `gates:` name, or on its `non-gates:` line. An undeclared gate has an undeclared subject,
+# so it reds wherever it is parked, in either bracket spelling and in the `test` spelling.
+#
+# ⚠ THE RESIDUAL — what this leg does NOT reach — stated by the property that puts a shape
+# outside it rather than by a spelling: a gate past the region whose test offers no quoted
+# operand to a bracket or `test` reader, with its print CONDITIONAL. That is a command's exit
+# status (`if ! command -v x; then …coverage_line… fi`, `grep -q`) or an arithmetic
+# `(( ${X:-0} == 0 ))` — MEASURED, whole suite rc 0 for each. There is no subject in either to
+# declare, which is why widening a reader cannot close them. Two shapes that ARE reached, and
+# were once thought not to be: `cmd && return 0` is caught by leg 4 (the `return` carries a test
+# of its own), and `case "$X" in "") …print… ;; esac` is caught by leg 4 too — `esac` is not in
+# its skip list, so the print-carry does not survive it. Both measured. ⛔ A SECOND residual is
+# not stated here but on the bin's `non-gates:` paragraph, which is its home: a test that REUSES
+# an already-declared subject is invisible to a set comparison, which is exactly why naming a
+# subject there is written as a CLAIM that its test cannot end the run in silence.
+#
+# Both directions, as leg 3 has them: an undeclared subject reds, and a declared name the
+# function does not test reds. Reads through `_pc_subjects` — the same extractor leg 3 uses,
+# over the whole function rather than the region — so binary and `test`-spelled tests are read
+# here too. Leg 2 covers a binary gate in the REGION by a different route (it reaches no silent
+# return); past the region there is no such route.
+# Leg 1's technique, widened to the function: a spelling the extractor does not parse would
+# contribute no subject and pass in silence, so openings are counted against tests actually read.
+# The opening counter anchors `test` on a command boundary where the reader does not, so the
+# two can disagree in EITHER direction — a `test` the counter will not count, or one it counts
+# that carries no readable operand (`test "$a"`). Both RED, which is the leg's whole job: a
+# spelling the extractor cannot read must not pass in silence.
+_pc_subj_all="$(_pc_subjects "$_pc_src")"
+_pc_open5="$(_pc_uncomment "$_pc_src" | { command grep -oE '(\[\[? |(^|[;&|( ])test )' || true; } \
+  | command grep -c . || true)"
+_pc_read5="$(printf '%s\n' "$_pc_subj_all" | command grep -c . || true)"
+eq "leg 5: every test in the function is one this extractor can read" "$_pc_open5" "$_pc_read5"
+_pc_real_all="$(printf '%s\n' "$_pc_subj_all" | { command grep -v '^$' || true; } \
+  | LC_ALL=C sort -u | paste -sd' ' -)"
+_pc_nongates="$(sed -n 's/^#  *non-gates: //p' "$BIN" | tr ' ' '\n' | { command grep -v '^$' || true; } \
+  | LC_ALL=C sort -u | paste -sd' ' -)"
+[ -n "$_pc_real_all" ] || bad "leg 5: no test subject derived from the function — the extractor read nothing"
+[ -n "$_pc_nongates" ] || bad "leg 5: the bin declares no non-gates: line — the declared half is missing"
+_pc_decl_all="$( { printf '%s\n' "$_pc_decl_gates" | tr ' ' '\n'; printf '%s\n' "$_pc_nongates" | tr ' ' '\n'; } \
+  | { command grep -v '^$' || true; } | LC_ALL=C sort -u | paste -sd' ' -)"
+eq "leg 5: every subject the function tests is declared in the bin, and every declared name is tested" \
+   "$_pc_real_all" "$_pc_decl_all"
+
+unset -f cov_err _pc_uncomment _pc_subjects
+unset _pc _pc_err _pc_path _pc_declared
+unset _pc_src _pc_first_print _pc_last_gate _pc_region _pc_open_n _pc_read_n
+unset _pc_stray _pc_carry _pc_line _pc_t _pc_has _pc_real_gates _pc_decl_gates _pc_below _pc_prev
+unset _pc_subj_all _pc_open5 _pc_read5 _pc_real_all _pc_nongates _pc_decl_all
+
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a
 # consumer as CARD#9999. Card ids are emitted as bare integers instead — there is no spelling to

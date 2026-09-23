@@ -117,7 +117,7 @@ MUT_RE='kb_api(_status)?[[:space:]]+(POST|PATCH|DELETE)|-X[[:space:]]+"?(POST|PA
 # tool that had just adopted the read-back as still owing one. It is the READ spelling only: a
 # write through the same wrapper carries `-X PATCH` between the two, so this cannot credit a
 # PATCH as its own confirmation.
-READ_RE='kb_api(_status)?[[:space:]]+GET|api "\$API/tasks/|_kbc_card_witness|_kbc_link_witness|_kbc_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
+READ_RE='kb_api(_status)?[[:space:]]+GET|api "\$API/tasks/|kb_card_witness|_kbc_link_witness|kb_confirm_card|_kbc_fetch_fields|_kbc_field_populated|fetch_board_cards|by_ref_has'
 
 # _classify <file> <line> — prints "<scope>\t<verdict>\t<emits>" for one call site.
 # <verdict> is CONFIRMED or CANDIDATE; <emits> is stdout / stderr-only / silent, the R3 attribute.
