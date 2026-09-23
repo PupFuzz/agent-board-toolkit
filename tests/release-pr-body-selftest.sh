@@ -1087,17 +1087,44 @@ while IFS= read -r _pc_line; do
 done <<< "$_pc_region"
 eq "leg 2: every silent return in the gate region is reached through such a test" "" "$_pc_stray"
 
-# LEG 3 — THE CLAIM ITSELF. The subjects the function tests before printing, against the
-# subjects the header's `gates:` lines declare. An undeclared gate reds; a declared non-gate
-# reds. ⚠ OWED CONSOLIDATION — this extractor and LEG 5's are two readers of one thing; see the
-# note at leg 5 before editing either. Normalisation is two rules, both spelled here rather than in the header: `${V:-}`/`$V`
+# THE SUBJECT EXTRACTOR — ONE READER, TWO SPANS. Legs 3 and 5 ask one question of two
+# different spans (which identifiers does this text TEST), so they ask it through one
+# function. They were two regex sets, and they had already drifted: leg 3's required the
+# closing `]` and normalised only `${V:-}`, so a region test spelled `[ -z "${KANBAN_X:-0}" ]`
+# yielded the subject `{KANBAN_X:-0}` to leg 3 and `KANBAN_X` to leg 5, and no
+# `gates:`/`non-gates:` declaration could satisfy both — the function became UNDECLARABLE.
+#
+# WHOLE-LINE comments are stripped first: the function carries one that spells a test inside
+# backticks (card#5874's note above `args`), and a comment is not code. A trailing comment is
+# left alone — `#` inside a string is not a comment, and no regex here knows the difference;
+# a test it hides is still read, an invented one still reds.
+_pc_uncomment() { printf '%s\n' "$1" | sed -E 's/^[[:space:]]*#.*$//'; }
+# Normalisation, spelled here rather than in the header: `${V:-…}` and `$V`
 # reduce to `V`, and a `$dir/name` operand reduces to `name` (that is the promoter's
 # beside-the-script half, which the header names as `promote-released-cards`).
-_pc_real_gates="$(printf '%s\n' "$_pc_region" \
-  | { command grep -oE '\[\[? -[a-z] "[^"]*" \]\]?' || true; } \
-  | sed -E 's/^\[\[? -[a-z] "//; s/" \]\]?$//' \
-  | sed -E 's/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//' \
-  | LC_ALL=C sort -u | paste -sd' ' -)"
+# BINARY tests are read as well as unary ones, and `test -z "$x"` is read alongside
+# `[ … ]`/`[[ … ]]`: `test` is a command's exit status by SPELLING, but it carries a quoted
+# operand, so there IS a subject to declare and no ground for it to evade (see leg 5's
+# residual note — the reason the residual gives is *no operand*, not *not a bracket*).
+# Emits one subject per line, in source order and NOT deduplicated, so a caller can count
+# what was parsed as well as compare the set.
+_pc_subjects() {
+  local _pct _pcn _pcu _pcb
+  _pct="$(_pc_uncomment "$1")"
+  _pcn='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
+  _pcu="$(printf '%s\n' "$_pct" | { command grep -oE '(\[\[? |test )-[a-z] "[^"]*"' || true; } \
+    | sed -E 's/^(\[\[? |test )-[a-z] "//; s/"$//' | sed -E "$_pcn")"
+  _pcb="$(printf '%s\n' "$_pct" \
+    | { command grep -oE '(\[\[? |test )"[^"]*" (=|!=|-eq|-ne|-gt|-lt|-ge|-le) ' || true; } \
+    | sed -E 's/^(\[\[? |test )"//; s/" .*$//' | sed -E "$_pcn")"
+  printf '%s\n%s\n' "$_pcu" "$_pcb" | { command grep -v '^$' || true; }
+}
+
+# LEG 3 — THE CLAIM ITSELF. The subjects the function tests before printing, against the
+# subjects the header's `gates:` lines declare. An undeclared gate reds; a declared non-gate
+# reds. It reads through `_pc_subjects` above — the same extractor leg 5 reads the WHOLE
+# function with, so the two legs cannot disagree about what a subject is.
+_pc_real_gates="$(_pc_subjects "$_pc_region" | LC_ALL=C sort -u | paste -sd' ' -)"
 [ -n "$_pc_real_gates" ] || bad "leg 3: no gate subject derived from the function — the extractor read nothing"
 _pc_decl_gates="$(sed -n 's/^#  *gates: //p' "$BIN" | tr ' ' '\n' | { command grep -v '^$' || true; } \
   | LC_ALL=C sort -u | paste -sd' ' -)"
@@ -1149,57 +1176,53 @@ eq "leg 4: past the gate region every return has already printed a coverage line
 # would is the one that reds on the function's own last statement. This leg reads no print state:
 # EVERY subject the function tests, at any depth, anywhere in it, must be DECLARED in the bin —
 # as a `gates:` name, or on its `non-gates:` line. An undeclared gate has an undeclared subject,
-# so it reds wherever it is parked and in whichever bracket spelling. TWO SHAPES REMAIN OUTSIDE
-# it, both stated on the block rather than left derivable: a gate past the region that wraps the
-# PRINT in a command's exit status (`if ! command -v x; then …coverage_line… fi` — no subject to
-# declare, and leg 4 carries the print across the `fi`: MEASURED, whole suite rc 0; the same idea
-# as `cmd && return 0` IS caught by leg 4, also measured), and a test that reuses an
-# already-declared subject — which is why naming a subject on `non-gates:` is written as a CLAIM.
+# so it reds wherever it is parked, in either bracket spelling and in the `test` spelling.
+#
+# ⚠ THE RESIDUAL — what this leg does NOT reach — stated by the property that puts a shape
+# outside it rather than by a spelling: a gate past the region whose test offers no quoted
+# operand to a bracket or `test` reader, with its print CONDITIONAL. That is a command's exit
+# status (`if ! command -v x; then …coverage_line… fi`, `grep -q`) or an arithmetic
+# `(( ${X:-0} == 0 ))` — MEASURED, whole suite rc 0 for each. There is no subject in either to
+# declare, which is why widening a reader cannot close them. Two shapes that ARE reached, and
+# were once thought not to be: `cmd && return 0` is caught by leg 4 (the `return` carries a test
+# of its own), and `case "$X" in "") …print… ;; esac` is caught by leg 4 too — `esac` is not in
+# its skip list, so the print-carry does not survive it. Both measured. ⛔ A SECOND residual is
+# not stated here but on the bin's `non-gates:` paragraph, which is its home: a test that REUSES
+# an already-declared subject is invisible to a set comparison, which is exactly why naming a
+# subject there is written as a CLAIM that its test cannot end the run in silence.
 #
 # Both directions, as leg 3 has them: an undeclared subject reds, and a declared name the
-# function does not test reds. BINARY tests are read here as well as unary ones — leg 2 covers a
-# binary gate in the region by a different route (it reaches no silent return), and past the
-# region there is no such route. WHOLE-LINE comments are stripped first: the function carries one
-# that spells a test inside backticks (card#5874's note above `args`), and a comment is not code.
-# A trailing comment is left alone — `#` inside a string is not a comment, and no regex here
-# knows the difference; a test it hides is still read, an invented one still reds.
-#
-# ⚠ OWED CONSOLIDATION, NAMED RATHER THAN TAKEN (canon #5). Leg 3 carries a SECOND unary
-# extractor: it requires the closing `]` and normalises only `${V:-}`, where this one accepts
-# `${V:-anything}` and reads binary tests as well. Two readers of one thing is the defect that
-# lets them drift apart — one `_pc_subjects` helper, called with the region and with the whole
-# function, is the repair. It was not taken in the round that added this leg because hoisting it
-# rewrites leg 3, which a review had just certified, and a fix round that invalidates its own
-# verification is worse than the duplication. Take it in a round that re-verifies leg 3.
-_pc_code="$(printf '%s\n' "$_pc_src" | sed -E 's/^[[:space:]]*#.*$//')"
-_pc_norm='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
-_pc_unary="$(printf '%s\n' "$_pc_code" | { command grep -oE '\[\[? -[a-z] "[^"]*"' || true; } \
-  | sed -E 's/^\[\[? -[a-z] "//; s/"$//' | sed -E "$_pc_norm")"
-_pc_binary="$(printf '%s\n' "$_pc_code" \
-  | { command grep -oE '\[\[? "[^"]*" (=|!=|-eq|-ne|-gt|-lt|-ge|-le) ' || true; } \
-  | sed -E 's/^\[\[? "//; s/" .*$//' | sed -E "$_pc_norm")"
-# Leg 1's technique, widened to the function: a spelling neither reader parses would contribute
-# no subject and pass in silence, so openings are counted against tests actually read.
-_pc_open5="$(printf '%s\n' "$_pc_code" | { command grep -oE '\[\[? ' || true; } | command grep -c . || true)"
-_pc_read5=$(( $(printf '%s\n' "$_pc_unary" | command grep -c . || true) \
-            + $(printf '%s\n' "$_pc_binary" | command grep -c . || true) ))
-eq "leg 5: every test in the function is one these extractors can read" "$_pc_open5" "$_pc_read5"
-_pc_real_all="$(printf '%s\n%s\n' "$_pc_unary" "$_pc_binary" | { command grep -v '^$' || true; } \
+# function does not test reds. Reads through `_pc_subjects` — the same extractor leg 3 uses,
+# over the whole function rather than the region — so binary and `test`-spelled tests are read
+# here too. Leg 2 covers a binary gate in the REGION by a different route (it reaches no silent
+# return); past the region there is no such route.
+# Leg 1's technique, widened to the function: a spelling the extractor does not parse would
+# contribute no subject and pass in silence, so openings are counted against tests actually read.
+# The opening counter anchors `test` on a command boundary where the reader does not, so the
+# two can disagree in EITHER direction — a `test` the counter will not count, or one it counts
+# that carries no readable operand (`test "$a"`). Both RED, which is the leg's whole job: a
+# spelling the extractor cannot read must not pass in silence.
+_pc_subj_all="$(_pc_subjects "$_pc_src")"
+_pc_open5="$(_pc_uncomment "$_pc_src" | { command grep -oE '(\[\[? |(^|[;&|( ])test )' || true; } \
+  | command grep -c . || true)"
+_pc_read5="$(printf '%s\n' "$_pc_subj_all" | command grep -c . || true)"
+eq "leg 5: every test in the function is one this extractor can read" "$_pc_open5" "$_pc_read5"
+_pc_real_all="$(printf '%s\n' "$_pc_subj_all" | { command grep -v '^$' || true; } \
   | LC_ALL=C sort -u | paste -sd' ' -)"
 _pc_nongates="$(sed -n 's/^#  *non-gates: //p' "$BIN" | tr ' ' '\n' | { command grep -v '^$' || true; } \
   | LC_ALL=C sort -u | paste -sd' ' -)"
-[ -n "$_pc_real_all" ] || bad "leg 5: no test subject derived from the function — the extractors read nothing"
+[ -n "$_pc_real_all" ] || bad "leg 5: no test subject derived from the function — the extractor read nothing"
 [ -n "$_pc_nongates" ] || bad "leg 5: the bin declares no non-gates: line — the declared half is missing"
 _pc_decl_all="$( { printf '%s\n' "$_pc_decl_gates" | tr ' ' '\n'; printf '%s\n' "$_pc_nongates" | tr ' ' '\n'; } \
   | { command grep -v '^$' || true; } | LC_ALL=C sort -u | paste -sd' ' -)"
 eq "leg 5: every subject the function tests is declared in the bin, and every declared name is tested" \
    "$_pc_real_all" "$_pc_decl_all"
 
-unset -f cov_err
+unset -f cov_err _pc_uncomment _pc_subjects
 unset _pc _pc_err _pc_path _pc_declared
 unset _pc_src _pc_first_print _pc_last_gate _pc_region _pc_open_n _pc_read_n
 unset _pc_stray _pc_carry _pc_line _pc_t _pc_has _pc_real_gates _pc_decl_gates _pc_below _pc_prev
-unset _pc_code _pc_norm _pc_unary _pc_binary _pc_open5 _pc_read5 _pc_real_all _pc_nongates _pc_decl_all
+unset _pc_subj_all _pc_open5 _pc_read5 _pc_real_all _pc_nongates _pc_decl_all
 
 echo "== the card manifest + footer carry BARE ids, and the bundled list shows the token =="
 # The DL side upper-cases every token to fold dl-1/DL-1; applied to a card token that reaches a

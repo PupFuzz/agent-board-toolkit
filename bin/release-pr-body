@@ -577,11 +577,14 @@ bundle_lines() {
 # must be exactly the `gates:` names here, or that test reds. Past that span it reds on a
 # `return` carrying a test of its own, or one no `coverage_line` precedes, and over the WHOLE
 # function every subject it tests must be a `gates:` name here or one of the `non-gates:` names
-# below — so a gate added past the span reds wherever it sits, in either bracket-test spelling.
-# ⚠ The gate it does NOT reach is one past that span that wraps the PRINT in a command's exit
-# status rather than a bracket test (`if ! command -v x; then …coverage_line… fi`): it offers no
-# subject to declare. Measured — that gate leaves the whole suite at rc 0, while the same idea
-# written as `cmd && return 0` is caught, by the `return` rule above.
+# below — so a gate added past the span reds wherever it sits, in either bracket-test spelling
+# or the `test` spelling.
+# ⚠ The gate it does NOT reach is one past that span whose test offers no quoted operand to a
+# bracket or `test` reader — a command's exit status (`if ! command -v x; then …coverage_line…
+# fi`, `grep -q`) or an arithmetic `(( ${X:-0} == 0 ))` — with its print conditional: neither
+# offers a subject to declare, which is why no wider reader closes them. Measured — each leaves
+# the whole suite at rc 0, while `cmd && return 0` and a `case` arm are both caught, by the
+# `return` rule above.
 #
 # "Set" means the key reads NON-EMPTY through `cfg_opt` (absent, `null`, `false` and "" all read
 # as empty):
