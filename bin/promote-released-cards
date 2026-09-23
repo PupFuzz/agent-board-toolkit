@@ -1781,6 +1781,19 @@ if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; f
 # saying it is not. That is the whole of what card#9938 changes for a run that used to be green.
 # Its LINE is printed above rather than here, so a run that also carries a measured-wrong card
 # (which exits 1 first) still tells the operator which cards to go and re-read.
+#
+# ⚠ A NAMED RESIDUAL — THE `failed` PAIRING IS DRIVEN BY NO LEG, and this note is the record of
+# that rather than a row (card#9938). This clause reads NO run-shape counter, so the four
+# pairings a term could be added for are not equally covered: `moved` is driven by 6c, `skipped`
+# by 6j, `not_applied` is INERT — its own clause above exits 1 first, so this line is unreachable
+# with `not_applied` > 0 and a term for it could never change an rc — and `failed` is driven by
+# NOTHING. That last cell is live: the rc-1 clause above requires `moved` = 0 AND `skipped` = 0,
+# so a VISIBLY refused move beside a card that did move does not exit 1, and this clause is what
+# answers. MEASURED: adding `&& [ "$failed" = 0 ]` here drops such a run from rc 3 to rc 0 with a
+# byte-identical summary, and that mutant passes all seven promote suites plus the parity
+# selftest. The gap is the same shape 6i names for the `not_applied` clause, one clause over.
+# ⛔ NOT CLOSED HERE, and deliberately: a row for it is new coverage on a reviewed branch, and the
+# reader who needs this is the one about to ADD a term — which this says not to do, and says why.
 if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # Newly promoted NOTHING (moved==0) despite a non-empty shipped-ref set (an empty set
 # already exited "nothing to do"). Two distinct causes, told apart by whether ref-

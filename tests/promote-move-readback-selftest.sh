@@ -375,6 +375,14 @@ echo "-- 6§d: the DENOMINATOR is re-derived from the shipped exit policy, not w
 # test `$RC_UNVERIFIED` (the exit value), `$DLS_IN`, `$CARDS_IN` and `$HEAD_REF` (this run's
 # inputs), which are not counts of anything and have no row to pair. This tool spells every
 # counter lowercase, so the row's scope below is stated as the counters and means exactly them.
+# ⚠ AND THAT CONVENTION IS DECLARED HERE, NOT CHECKED — reviewed and DECLINED, with the reason
+# (card#9938). An uppercase or unquoted counter is out of the extractor's reach, so such a
+# spelling would enter the exit policy unseen by the leg below. It is TRUE at this head — every
+# counter `promote-released-cards` initialises is lowercase and quoted — so a guard would red on
+# nothing and would be checking a rule that nothing currently violates. What makes the decline
+# safe to leave is that the declaration is the CONVENTION itself and not a claim about a
+# population that moves independently of it: a counter added in another spelling is breaking the
+# stated rule, not outrunning a stale guard. Revisit if a counter is ever added uppercase.
 _exit_policy_counters() {
     command sed -n '/^# --- exit policy/,$p' "$1" | command grep '^if \[ ' \
       | command grep -oE '"\$\{?[a-z_]+' | tr -d '"${' | sort -u | tr '\n' ' ' || true
