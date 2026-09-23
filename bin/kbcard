@@ -2807,12 +2807,13 @@ cmd_unlink() {
 # `KB_RC_UNVERIFIED` for the read-back primitive it now owns (`kb_confirm_card`, hoisted out of
 # this file), and this name is kbcard's published EXIT CODE for that same outcome — so it takes
 # the lib's value rather than re-spelling `3` where nothing compares the two. This file sources
-# the lib, so it has nothing to pin. ⚠ NO STANDALONE COPY OF THIS RC EXISTS TODAY and none is
-# pinned: `command grep -l UNVERIFIED bin/*` names only files that `source "$KB_LIB"`, so no
-# standalone-vendored tool carries this rc at all, and
-# `tests/mirror-pair-parity-selftest.sh` holds no row for this constant. If a standalone tool ever
-# duplicates it, the duplicate needs a parity row ADDED there; nothing holds a future copy level
-# on its own.
+# the lib, so it has nothing to pin. ⚠ A STANDALONE COPY OF THIS RC IS WHAT NEEDS PINNING, and
+# this comment cannot tell you whether one exists — the set moves with every bin that lands, and
+# nothing reds when it does. RE-DERIVE it instead of reading a verdict here: run
+# `command grep -l UNVERIFIED bin/*` and open each file it names; any one that does not
+# `source "$KB_LIB"` — and is not `bin/_kb-board-lib.sh`, which IS the lib and DEFINES the value —
+# carries its own copy of this rc and needs a parity row in
+# `tests/mirror-pair-parity-selftest.sh`. Nothing holds such a copy level on its own.
 KBC_RC_UNVERIFIED="$KB_RC_UNVERIFIED"
 
 # _kbc_unverified <verb> <subject> [detail]: the ONE owner of the unverified-write report.
