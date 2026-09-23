@@ -289,10 +289,9 @@ echo "== § 6 — MORE THAN ONE CARD: the run shapes the exit policy actually ru
 # arrival by putting a THIRD counter in a clause, so the one pairing that would have decided the
 # new term was the one pairing no row drove. An enumeration inside a denominator is a count in
 # longer form: true when written, false on a schedule, and silent either way. It is DERIVED
-# instead, by 6§d below, which re-reads the shipped clauses every run and reds the moment they
-# test a counter no row here pairs:
-#     command sed -n '/^# --- exit policy/,$p' bin/promote-released-cards \
-#       | command grep '^if \[ ' | command grep -o '"\$[a-z_]*"' | tr -d '"$' | sort -u
+# instead, by 6§d below, whose `_exit_policy_counters` re-reads the shipped clauses every run and
+# reds the moment they test a counter the declared list does not name. The derivation is written
+# once, there, rather than copied here where a widening of it would leave a second stale spelling.
 cat > "$TMP/board-two.json" <<'JSON'
 {"data":[
   {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-100"}},
@@ -305,7 +304,18 @@ cat > "$TMP/board-two-one-done.json" <<'JSON'
   {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-200"}}
 ],"meta":{"last_page":1,"total":2}}
 JSON
-# ⚠ The two fixtures are spelled out at every call rather than held in an array: bash decides
+# THREE cards, because two cannot separate the unconditional clause from the `failed` one: a run
+# holding a refusal and a measured un-applied card and nothing else satisfies BOTH clauses' terms,
+# so it exits 1 whichever decides it. The third card MOVES, which falsifies the `failed` clause's
+# `moved == 0` and leaves the unconditional clause as the only route to rc 1 (6i).
+cat > "$TMP/board-three.json" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-100"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-200"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"dl_number":"DL-300"}}
+],"meta":{"last_page":1,"total":3}}
+JSON
+# ⚠ The fixtures are spelled out at every call rather than held in an array: bash decides
 # what is an assignment PREFIX at parse time, so an expanded `"${ARR[@]}" run_promote` would try
 # to run `REFS=…` as a command.
 
@@ -350,19 +360,31 @@ echo "-- 6§d: the DENOMINATOR is re-derived from the shipped exit policy, not w
 # ⛔ THE SECTION'S OWN POPULATION IS A DERIVATION (canon #19). The prose above used to name the
 # counters the exit clauses test, and the diff that added a third one left that name-list stale on
 # arrival — the shape § 6 exists to escape, one level up. This leg re-reads the clauses instead,
-# so a counter that enters the exit policy without a row to pair it reds HERE rather than shipping
-# as an untested term. The declared list is the only written copy, and it is GUARDED by this
-# comparison rather than trusted.
+# so a counter that ENTERS the exit policy reds HERE rather than shipping as an untested term —
+# and that is the whole of the predicate: it compares the counter SET, and nothing in it can check
+# that a counter already in the list still has a row (the rows below are what establish that, one
+# pairing each). The declared list is the only written copy, and it is GUARDED by this comparison
+# rather than trusted.
+# ⚠ THE BRACED SPELLING IS IN REACH DELIBERATELY. `"$c"` and `"${c:-0}"` are one counter to bash
+# and were two to a `'"\$[a-z_]*"'` reader, which saw only the first — and the second is not
+# exotic: this same tool already writes `"${nmiss:-0}"` and `"${nstranded:-0}"` a few clauses up.
+# A counter entering the exit policy in the spelling the extractor cannot see is exactly the
+# untested term this leg exists to red on, so the control below uses THAT spelling.
+#
+# ⚠ LOWERCASE IS THE PREDICATE, and it is what tells a COUNTER from the rest: these clauses also
+# test `$RC_UNVERIFIED` (the exit value), `$DLS_IN`, `$CARDS_IN` and `$HEAD_REF` (this run's
+# inputs), which are not counts of anything and have no row to pair. This tool spells every
+# counter lowercase, so the row's scope below is stated as the counters and means exactly them.
 _exit_policy_counters() {
     command sed -n '/^# --- exit policy/,$p' "$1" | command grep '^if \[ ' \
-      | command grep -o '"\$[a-z_]*"' | tr -d '"$' | sort -u | tr '\n' ' ' || true
+      | command grep -oE '"\$\{?[a-z_]+' | tr -d '"${' | sort -u | tr '\n' ' ' || true
 }
-eq "⭐ every counter the exit clauses test is paired by a row below" \
+eq "⭐ the exit clauses test exactly these counters" \
    "failed moved not_applied skipped unverified " "$(_exit_policy_counters "$PRC")"
 # CONTROL, because a derivation nobody has seen move is a decoration: a clause that GAINS a term
 # must change that answer — which is exactly the edit this leg failed to catch when it did not
 # exist. `guarded` is a real counter of this tool that no exit clause tests.
-sed 's/^if \[ "\$failed" -gt 0 \]/if [ "$guarded" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
+sed 's/^if \[ "\$failed" -gt 0 \]/if [ "${guarded:-0}" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
 eq "⭐ …and a counter ADDED to a clause shows up in the derivation (the control)" \
    "failed guarded moved not_applied skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
 unset -f _exit_policy_counters
@@ -464,16 +486,32 @@ eq "⭐ the UNVERIFIED run-level line is still printed — the losing outcome ke
    "$(has 'could NOT be read back — UNVERIFIED WRITE (rc 3).' "$err")"
 eq "⭐ THE RUN EXITS 1 — a KNOWN refusal is not demoted by a card nobody could read" "1" "$rc"
 
-# ⚠ DECLARED INERT — two pairings the derived denominator admits and no row drives, named rather
-# than added as rows that would assert nothing:
-#   * unreadable × skipped. The unverified clause carries NO run-shape term at all, so pairing it
-#     with `skipped` asks the same question 6c already answers with `moved` — the clause's rc
-#     cannot depend on a counter it does not read.
-#   * refused × measured-un-applied. Both clauses answer rc 1, and the un-applied one is
-#     unconditional and decided first, so no rc this tool can emit distinguishes the two orders.
-#     What the pairing WOULD pin is already pinned: 6a and 6b drive the unconditional clause
-#     beside a non-zero `moved` and `skipped`.
-# Adding either would be a row that passes whatever the exit policy does, which is the decoration
-# this section exists to stop being.
+echo "-- 6i: a MEASURED un-applied card beside a VISIBLY REFUSED one AND a card that moved"
+# ⛔ THE ONLY ROW COVERING THE UNCONDITIONAL CLAUSE AGAINST `failed`. That clause carries no
+# run-shape term, and "it reads no counter" is what this row ESTABLISHES rather than what it may
+# assume — the same reasoning, one clause over, was live on the sibling arm and shipped. Its other
+# pairings are covered (`moved` 6a, `skipped` 6b, `unverified` 6e); a `$failed = 0` term added
+# here is invisible to all three, and it exits a MEASURED un-applied card at 0 — card#9938's whole
+# defect, back. The card that MOVES is load-bearing, not scenery: without it the `failed` clause
+# answers 1 on its own terms and the row cannot tell which clause decided the rc.
+REFS=DL-100,DL-200,DL-300 BOARD_FILE="$TMP/board-three.json" STUB_PATCH_REFUSE_IDS=2 \
+  STUB_PATCH_BODY='{"message":"This action is unauthorized."}' STUB_STAGE_UNAPPLIED_IDS=3 run_promote
+eq "one card moved, one was refused, one read back in the wrong stage" "true|true|true" \
+   "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$(has '✗ DL-200 (#2): move failed (left in place) — HTTP 403' "$err")|$(has '✗ DL-300 (#3): move NOT APPLIED' "$err")"
+eq "…each counted on its own field"                       "true" \
+   "$(has '1 moved, 0 already-released, 0 no-card, 1 NOT APPLIED, 1 failed.' "$out")"
+eq "⭐ THE RUN EXITS 1 — the unconditional clause answers with a refusal beside it" "1" "$rc"
+
+echo "-- 6j: a card ALREADY RELEASED beside one whose read-back never completes"
+# ⛔ THE ONLY ROW COVERING THE UNVERIFIED CLAUSE AGAINST `skipped`. 6c drives it against `moved`
+# and nothing drives it against `skipped`, so a `$skipped = 0` term added there reds nowhere in
+# this file — and it drops an UNVERIFIED write to rc 0 on the most ordinary release shape there
+# is, a run where some of the cards were already released.
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two-one-done.json" STUB_CARD_TRANSPORT_IDS=2 run_promote
+eq "the released card is skipped, the other is UNVERIFIED" "true|true" \
+   "$(has '= DL-100 (#1): already released' "$out")|$(has '⚠ DL-200 (#2): move UNVERIFIED' "$err")"
+eq "…counted"                                             "true" \
+   "$(has '0 moved, 1 already-released, 0 no-card, 1 UNVERIFIED, 0 failed.' "$out")"
+eq "⭐ rc 3 with skipped > 0 — the unverified clause reads no run-shape counter" "3" "$rc"
 
 _summary "promote-move-readback-selftest"
