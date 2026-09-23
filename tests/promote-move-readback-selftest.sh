@@ -278,11 +278,21 @@ echo "== § 6 — MORE THAN ONE CARD: the run shapes the exit policy actually ru
 #
 # A real release promotes MANY cards, so the population this section covers is derived from the
 # exit policy itself: for each outcome a card can end in — measured un-applied, unreadable,
-# visibly refused, applied — a run pairing it with each of the counters the exit clauses test
-# (`moved`, `skipped`), plus the run where every card is clean. Each row says which of the three
-# rcs it expects and whether this card MOVES that rc or PINS it. The per-card stub knobs (the
-# `*_IDS` family) exist for this and only this: a whole-run knob makes every card behave the
-# same way, which is the one thing a mixed run is not.
+# visibly refused, applied — a run pairing it with each of the COUNTERS the exit clauses test,
+# plus the run where every card is clean. Each row says which of the three rcs it expects and
+# whether this card MOVES that rc or PINS it. The per-card stub knobs (the `*_IDS` family) exist
+# for this and only this: a whole-run knob makes every card behave the same way, which is the one
+# thing a mixed run is not.
+#
+# ⛔ THE COUNTER LIST IS NOT WRITTEN OUT HERE, AND THAT IS THE FIX RATHER THAN AN OMISSION. This
+# paragraph used to name it — "(`moved`, `skipped`)" — and card#9938's own diff falsified it on
+# arrival by putting a THIRD counter in a clause, so the one pairing that would have decided the
+# new term was the one pairing no row drove. An enumeration inside a denominator is a count in
+# longer form: true when written, false on a schedule, and silent either way. It is DERIVED
+# instead, by 6§d below, which re-reads the shipped clauses every run and reds the moment they
+# test a counter no row here pairs:
+#     command sed -n '/^# --- exit policy/,$p' bin/promote-released-cards \
+#       | command grep '^if \[ ' | command grep -o '"\$[a-z_]*"' | tr -d '"$' | sort -u
 cat > "$TMP/board-two.json" <<'JSON'
 {"data":[
   {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-100"}},
@@ -313,6 +323,49 @@ _two_patch() { PATCH_LOG="$TMP/probe.log" BOARD_FILE="$TMP/board-two.json" STUB_
 eq "⭐ card 1's 2xx APPLIED and card 2's did not, in one run" "85|51" "$(_two_now 1)|$(_two_now 2)"
 : > "$TMP/probe.log"
 unset -f _two_now _two_patch
+
+echo "-- 6§0b: …and a per-card REFUSAL stays per-card when its status is not the default"
+# The same leg for the OTHER per-card knob, and it is here because the contract for it was false
+# in exactly the way § 6 exists to catch: $STUB_PATCH_REFUSE_IDS answered with $STUB_PATCH_STATUS,
+# so a caller refusing ONE card with a 422 — the spelling the comment described — refused EVERY
+# card and read the uniform run as a mixed one. Driven at the stub, without the tool.
+# _patch_st <card-id> [env assignments…] — the status ONE stage PATCH is answered with.
+_patch_st() { local i="$1"; shift
+              PATCH_LOG="$TMP/probe.log" BOARD_FILE="$TMP/board-two.json" "$@" curl -s -X PATCH \
+                -d '{"workflow_stage_id":85}' -o /dev/null -w '%{http_code}' \
+                "https://kanban.test/api/v3/tasks/$i.json"; }
+: > "$TMP/probe.log"
+eq "the id list alone: one card refused 403, the other answered 200" "200|403" \
+   "$(_patch_st 1 env STUB_PATCH_REFUSE_IDS=2)|$(_patch_st 2 env STUB_PATCH_REFUSE_IDS=2)"
+eq "⭐ …and with a NON-DEFAULT refusal status, the unlisted card still answers 200" "200|422" \
+   "$(_patch_st 1 env STUB_PATCH_REFUSE_IDS=2 STUB_PATCH_REFUSE_STATUS=422)|$(_patch_st 2 env STUB_PATCH_REFUSE_IDS=2 STUB_PATCH_REFUSE_STATUS=422)"
+eq "⭐ PRECEDENCE: a whole-run status does NOT leak onto the unlisted card" "200|403" \
+   "$(_patch_st 1 env STUB_PATCH_REFUSE_IDS=2 STUB_PATCH_STATUS=422)|$(_patch_st 2 env STUB_PATCH_REFUSE_IDS=2 STUB_PATCH_STATUS=422)"
+eq "…and with NO id list the whole-run knob still refuses every card" "422|422" \
+   "$(_patch_st 1 env STUB_PATCH_STATUS=422)|$(_patch_st 2 env STUB_PATCH_STATUS=422)"
+: > "$TMP/probe.log"
+unset -f _patch_st
+
+echo "-- 6§d: the DENOMINATOR is re-derived from the shipped exit policy, not written down here"
+# ⛔ THE SECTION'S OWN POPULATION IS A DERIVATION (canon #19). The prose above used to name the
+# counters the exit clauses test, and the diff that added a third one left that name-list stale on
+# arrival — the shape § 6 exists to escape, one level up. This leg re-reads the clauses instead,
+# so a counter that enters the exit policy without a row to pair it reds HERE rather than shipping
+# as an untested term. The declared list is the only written copy, and it is GUARDED by this
+# comparison rather than trusted.
+_exit_policy_counters() {
+    command sed -n '/^# --- exit policy/,$p' "$1" | command grep '^if \[ ' \
+      | command grep -o '"\$[a-z_]*"' | tr -d '"$' | sort -u | tr '\n' ' ' || true
+}
+eq "⭐ every counter the exit clauses test is paired by a row below" \
+   "failed moved not_applied skipped unverified " "$(_exit_policy_counters "$PRC")"
+# CONTROL, because a derivation nobody has seen move is a decoration: a clause that GAINS a term
+# must change that answer — which is exactly the edit this leg failed to catch when it did not
+# exist. `guarded` is a real counter of this tool that no exit clause tests.
+sed 's/^if \[ "\$failed" -gt 0 \]/if [ "$guarded" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
+eq "⭐ …and a counter ADDED to a clause shows up in the derivation (the control)" \
+   "failed guarded moved not_applied skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
+unset -f _exit_policy_counters
 
 echo "-- 6a: one card MOVES and one is measured NOT APPLIED — the 2026-05-22 shape"
 REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_STAGE_UNAPPLIED_IDS=2 run_promote
@@ -390,5 +443,37 @@ eq "…and no read-back was issued for the refused one"     "false" "$(has 'DL-2
 eq "…counted"                                             "true" \
    "$(has '1 moved, 0 already-released, 0 no-card, 1 failed.' "$out")"
 eq "⚠ RESIDUAL: the run exits 0"                          "0" "$rc"
+
+echo "-- 6h: a VISIBLY REFUSED move beside an UNREADABLE one — the refusal decides the rc"
+# ⛔ THE PAIRING THE `failed` CLAUSE'S TERMS TURN ON, and the one no row drove while the clause
+# carried an `$unverified = 0` term: with it, this run fell past rc 1 into rc 3, and a gate reading
+# rc 3 as the published "not always a failed one / re-running is safe" would have swallowed a 403
+# that re-running does not fix. 6e is the other route (a MEASURED un-applied card beside an
+# unreadable one); this is the refused one, and the ladder answers both the same way, unscoped: a
+# run that has measured one of its cards does not hedge. Nothing moved and nothing was already
+# released, so the `failed` clause's own terms are satisfied and the residual 6f/6g pin is not in
+# play — the only question this row asks is whether the unreadable card demotes the refusal.
+REFS=DL-100,DL-200 BOARD_FILE="$TMP/board-two.json" STUB_PATCH_REFUSE_IDS=1 \
+  STUB_PATCH_BODY='{"message":"This action is unauthorized."}' STUB_CARD_TRANSPORT_IDS=2 run_promote
+eq "one card is visibly refused, the other's read-back never completes" "true|true" \
+   "$(has '✗ DL-100 (#1): move failed (left in place) — HTTP 403' "$err")|$(has '⚠ DL-200 (#2): move UNVERIFIED' "$err")"
+eq "…and nothing claims either card was measured in another stage" "false" "$(has 'NOT APPLIED' "$out$err")"
+eq "…both counted, on their own fields"                   "true" \
+   "$(has '0 moved, 0 already-released, 0 no-card, 1 UNVERIFIED, 1 failed.' "$out")"
+eq "⭐ the UNVERIFIED run-level line is still printed — the losing outcome keeps its cards" "true" \
+   "$(has 'could NOT be read back — UNVERIFIED WRITE (rc 3).' "$err")"
+eq "⭐ THE RUN EXITS 1 — a KNOWN refusal is not demoted by a card nobody could read" "1" "$rc"
+
+# ⚠ DECLARED INERT — two pairings the derived denominator admits and no row drives, named rather
+# than added as rows that would assert nothing:
+#   * unreadable × skipped. The unverified clause carries NO run-shape term at all, so pairing it
+#     with `skipped` asks the same question 6c already answers with `moved` — the clause's rc
+#     cannot depend on a counter it does not read.
+#   * refused × measured-un-applied. Both clauses answer rc 1, and the un-applied one is
+#     unconditional and decided first, so no rc this tool can emit distinguishes the two orders.
+#     What the pairing WOULD pin is already pinned: 6a and 6b drive the unconditional clause
+#     beside a non-zero `moved` and `skipped`.
+# Adding either would be a row that passes whatever the exit policy does, which is the decoration
+# this section exists to stop being.
 
 _summary "promote-move-readback-selftest"

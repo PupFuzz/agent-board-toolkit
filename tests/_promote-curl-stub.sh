@@ -62,11 +62,22 @@
 #                   `{"data":{"id":0}}`, so a caller that sets neither sees the pre-card#9301
 #                   behaviour. A >=400 status here is how a REFUSED CARD MOVE is driven.
 #   $STUB_PATCH_REFUSE_IDS  the PER-CARD twin of $STUB_PATCH_STATUS: a space-separated list of
-#                   card ids whose PATCH is REFUSED — answered $STUB_PATCH_STATUS (default 403)
-#                   carrying $STUB_PATCH_BODY — while every other card's succeeds. A whole-run
-#                   status refuses every card and so can only build a run that promoted nothing;
-#                   the exit policy's `moved == 0 && skipped == 0` terms are invisible to that
-#                   run shape, which is why they went unmeasured for as long as they did.
+#                   card ids whose PATCH is REFUSED — answered $STUB_PATCH_REFUSE_STATUS (default
+#                   403) carrying $STUB_PATCH_BODY — while every other card's SUCCEEDS at 200. A
+#                   whole-run status refuses every card and so can only build a run that promoted
+#                   nothing; the exit policy's `moved == 0 && skipped == 0` terms are invisible to
+#                   that run shape, which is why they went unmeasured for as long as they did.
+#                   ⛔ SET IT AND $STUB_PATCH_STATUS IS NOT CONSULTED — see `patch_status`'s
+#                   PRECEDENCE note below, and use the knob on the next line to pick the refusal
+#                   status. The list used to answer with $STUB_PATCH_STATUS itself, so the
+#                   documented spelling for "refuse card 2 with a 422" refused BOTH cards and the
+#                   run read as mixed while being uniform.
+#                   ⚠ $STUB_PATCH_BODY is still whole-run and rides the SUCCESS answers too; the
+#                   tool reads a PATCH's body only on the failure path (it re-reads the card
+#                   otherwise), so a refusal body on a 200 is inert rather than mixed-up.
+#   $STUB_PATCH_REFUSE_STATUS  the status the ids above are refused with. Default 403. Consulted
+#                   only when $STUB_PATCH_REFUSE_IDS is non-empty; it is the per-card knob's OWN
+#                   status, which is what keeps the refusal off the unlisted cards.
 #   $STUB_PATCH_TRANSPORT  the WRITE-side twin of $STUB_GET_TRANSPORT: the PATCH exits with THIS
 #                   curl rc having written no body and no status. ⚠ IT IS A DIFFERENT CLAIM FROM
 #                   A REFUSAL, not a variant of one — a reset AFTER the server applied the PATCH
@@ -166,9 +177,19 @@ stage_unapplied() {
 
 # patch_status <url> — the status a PATCH to <url> is ANSWERED with. ONE owner, consulted by the
 # PATCH arm and by applied()'s replay, so what the server holds cannot disagree with what it said.
+#
+# ⛔ PRECEDENCE — the two knobs are NOT two layers of one setting, and reading them as one is what
+# made the refusal status uniform. A NON-EMPTY $STUB_PATCH_REFUSE_IDS declares the run MIXED and
+# owns EVERY card's status: a listed card answers $STUB_PATCH_REFUSE_STATUS (default 403) and
+# every other card answers 200 — $STUB_PATCH_STATUS is not consulted at all, because a refusal
+# status shared with the unlisted cards refuses the whole board, which is the one run shape the
+# id list exists to escape.
 patch_status() {
   local id="${1##*/tasks/}"; id="${id%%.json*}"
-  case " ${STUB_PATCH_REFUSE_IDS:-} " in *" $id "*) printf '%s' "${STUB_PATCH_STATUS:-403}"; return 0 ;; esac
+  if [ -n "${STUB_PATCH_REFUSE_IDS:-}" ]; then
+    case " $STUB_PATCH_REFUSE_IDS " in *" $id "*) printf '%s' "${STUB_PATCH_REFUSE_STATUS:-403}"; return 0 ;; esac
+    printf '%s' 200; return 0
+  fi
   printf '%s' "${STUB_PATCH_STATUS:-200}"
 }
 
