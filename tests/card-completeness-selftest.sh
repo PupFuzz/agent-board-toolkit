@@ -173,7 +173,21 @@ prs '[]'; page 1 status:403
 run --cards 9606
 eq "a 403 is UNMEASURED"                       "UNMEASURED" "$(verdict 9606)"
 eq "  … naming the permission to grant"        "true"  "$(has 'pull-requests: read' "$(detail 9606)")"
+# ⛔ AND THE OTHER CAUSE, which this arm used to assert away. Clause (b) issues one
+# `commits/<sha>/pulls` request PER unreleased commit, GitHub answers a secondary rate limit
+# with 403, and `curl --retry` does not retry a 403 — so the MOST LIKELY 403 on a wide window is
+# a rate limit, and a message naming only the permission sends the operator to grant one they
+# already granted (canon #10). RED when: either cause is dropped, or one is asserted over the
+# other.
+eq "  … and the RATE LIMIT that answers alike" "true"  "$(has 'RATE-LIMITING' "$(detail 9606)")"
 eq "  … exit 6 (more severe than 5)"           "6"     "$rc"
+# A 401 is NOT ambiguous, and must not inherit the 403's hedge: no token, or a token this repo
+# rejects. RED when: the two statuses collapse back into one arm.
+prs '[]'; page 1 status:401
+run --cards 9606
+eq "a 401 is UNMEASURED"                       "UNMEASURED" "$(verdict 9606)"
+eq "  … naming the credential as the cause"    "true"  "$(has 'credential is missing or was REJECTED' "$(detail 9606)")"
+eq "  … and NOT blaming a rate limit"          "false" "$(has 'RATE-LIMITING' "$(detail 9606)")"
 prs '[]'; page 1 status:404
 run --cards 9606
 eq "a 404 is UNMEASURED"                       "UNMEASURED" "$(verdict 9606)"

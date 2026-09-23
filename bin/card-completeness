@@ -5,8 +5,14 @@
 # (framework card#9869, where it was built; adopted here as the authority by toolkit card#10176)
 #
 # THIS COPY IS AUTHORITATIVE, like the release bins beside it: the agent-board-framework's
-# `templates/release/card-completeness` is a mirror of it, synced at toolkit tags
-# (`tests/framework-mirror-check.sh` measures whether it is). `bin/promote-released-cards
+# `templates/release/card-completeness` is a mirror of it, synced at toolkit tags.
+# ⚠ NOTHING IN CI MEASURES THAT, and the sentence above must not be read as if something did:
+# the framework repo is private and this repo's CI holds no credential for it, so the mirror is
+# compared BY HAND at each release — `VERSIONING.md` release step 12, which runs
+# `tests/framework-mirror-check.sh` (card#9939). A declaration whose named check does not exist
+# where the reader looks is worse than silence, because the far end then audits its join against
+# a contract it believes is enforced; so if that step or that file is not in this tree, the
+# declaration above is UNCHECKED and nothing here says otherwise. `bin/promote-released-cards
 # --require-complete` is its caller; it is vendored beside that mover and, like it, is
 # STANDALONE — it sources nothing. Card numbers in this header are the framework board's
 # (PupFuzz/agent-board-framework) unless marked otherwise; that is where the defect was measured.
@@ -122,8 +128,13 @@
 #      integration branch's commits BEING in the release head once released. If the release
 #      PR is squash- or rebase-merged, they never are, so every card an integration-branch PR
 #      ever named reads INCOMPLETE — a loud stall, never a silent promote — up to WINDOW_CAP;
-#      past that cap the read hits it first and reports UNMEASURED instead. Both shipped movers
-#      already require a MERGE-commit release tip for their own correlation.
+#      past that cap the read hits it first and reports UNMEASURED instead. ⚠ THE CALLER'S OWN
+#      merge-tip check is NARROWER than this and must not be read as covering it:
+#      `bin/promote-released-cards` refuses a non-merge release tip only when ZERO cards moved
+#      AND the refs came from a git range, so a `--dls`/`--cards` run never reads the tip at all
+#      and a run that moved one card never reaches the check. The other shipped mover lives in
+#      the private agent-board-framework repo, which nothing on this side can read, so nothing
+#      is asserted here about what it requires.
 #   6. A commit pushed to the integration branch WITHOUT a PR. Nothing merged it, so there is
 #      no PR and no branch to read; it is invisible here exactly as 3 is.
 #   7. A part whose branch names the card only by its DL (`feat/dl-300-…`). The release mover
@@ -140,8 +151,8 @@
 # Which card a branch names is decided by the webhook bridge, the one component that MOVES a
 # card off a PR: `CardTokenGrammar::PATTERN` in agent-webhook-bridge
 # (`app/Bridge/Support/CardTokenGrammar.php`), `/\bcard(?|[-#](\d+)|(\d{2,}))/i`. This file
-# does not restate the grammar's rationale; it carries the same accept-set as a POSIX ERE. Four
-# load-bearing properties: both separated aliases correlate (`card#123` / `card-123`);
+# does not restate the grammar's rationale; it carries the same accept-set as a POSIX ERE.
+# Load-bearing properties: both separated aliases correlate (`card#123` / `card-123`);
 # left-anchored only, no trailing boundary (`card-123-foo` correlates); glued `card123`
 # correlates at TWO OR MORE digits so `card2go` names nothing; ASCII `[0-9]`, never `\d`.
 # `tests/card-completeness-selftest.sh` drives this copy over a corpus of those shapes. Nothing
@@ -300,7 +311,7 @@ UNMEASURED=""
 # fetch_pages <label> <url> <array-path> <out> <permission> <404-hint>
 # The ONE page walk. Appends every element of <array-path> (a jq path into each page's body)
 # across all pages to <out>, one compact JSON value per line. On any failure sets UNMEASURED —
-# naming <label>, and the permission a 401/403 most likely lacks — and returns 1.
+# naming <label>, and for a 403 both causes that answer alike — and returns 1.
 fetch_pages() {
   # LC_ALL=C: the `*[!0-9]*` test below is a bash bracket RANGE, which is a COLLATION range
   # under a UTF-8 locale (tests/locale-range-guard-selftest.sh owns the class).
@@ -310,7 +321,22 @@ fetch_pages() {
     code="$(api "$url${sep}per_page=100&page=$page")"
     case "$code" in
       200) ;;
-      401|403) UNMEASURED="$label returned HTTP $code — the credential is missing or lacks '$perm' (set GITHUB_TOKEN/GH_TOKEN, and grant $perm to the workflow)"; return 1 ;;
+      401) UNMEASURED="$label returned HTTP 401 — the credential is missing or was REJECTED (set GITHUB_TOKEN/GH_TOKEN to a token this repo accepts)"; return 1 ;;
+      # ⛔ TWO CAUSES ANSWER ALIKE HERE, and this used to name only one of them. A missing
+      # PERMISSION is what a first-ever run hits. A RATE LIMIT is what a WIDE window hits:
+      # clause (b) issues one `commits/<sha>/pulls` request PER unreleased commit, up to the
+      # WINDOW_CAP above, GitHub answers a rate limit with 403 OR 429, and `curl --retry` retries
+      # only the set its own man page calls transient — a timeout, an FTP 4xx, or HTTP 408, 429,
+      # 500, 502, 503, 504 (read on curl 8.5.0). So the 429 spelling is retried five times and
+      # lands in the `*)` arm below naming its code, while THE 403 SPELLING IS NOT RETRIED AT ALL
+      # and arrives here on the first one. Asserting "the credential lacks '$perm'" here sends an
+      # operator to grant a permission they already granted (canon #10: a wrong-but-specific
+      # cause is worse than an honest generic one). Both are named, with the discriminator the
+      # operator can actually
+      # apply: $label says WHICH read failed, and a run whose earlier reads succeeded was not
+      # short of a permission. Fail-closed either way, so this costs a mis-diagnosis, never a
+      # wrong write.
+      403) UNMEASURED="$label returned HTTP 403 — EITHER the credential lacks '$perm' (grant $perm to the workflow), OR GitHub is RATE-LIMITING this run: a wide unreleased window costs one request per commit and a secondary rate limit also answers 403, which curl does not retry. If earlier reads in this run succeeded, suspect the rate limit and re-run later; if this was the first read, suspect the permission"; return 1 ;;
       404) UNMEASURED="$label returned HTTP 404 — $hint404"; return 1 ;;
       000) UNMEASURED="$label never reached the GitHub API (transport failure)"; return 1 ;;
       *)   UNMEASURED="$label returned HTTP $code"; return 1 ;;

@@ -111,7 +111,7 @@ eq "all complete → rc 0"                            "0"    "$rc"
 eq "card #1 promoted"                               "true" "$(has '/tasks/1.json' "$patched")"
 eq "card #2 promoted"                               "true" "$(has '/tasks/2.json' "$patched")"
 eq "summary carries a zero refusal count"           "true" "$(has '0 completeness-refused' "$out")"
-eq "the gate says it is ON, naming the oracle"      "true" "$(has "completeness-gate ON (oracle $TMP/oracle)" "$err")"
+eq "the gate says it is ON, naming the oracle"      "true" "$(has "completeness-gate ON (oracle $TMP/oracle;" "$err")"
 eq "no FAILED line when nothing was refused"        "false" "$(has 'REFUSED by the completeness gate' "$err")"
 
 echo "== what the oracle is ASKED: the matched cards, this release's head, the integration branch =="
@@ -127,6 +127,43 @@ sed 's/"dev_branch": "trunk",//' "$TMP/release-pr.json" > "$TMP/release-pr-nodev
 : > "$ORACLE_ARGV"
 "$PRC" --config "$TMP/release-pr-nodev.json" --dls "DL-100" --require-complete --completeness "$TMP/oracle" >/dev/null 2>&1 || true
 eq "an absent .dev_branch defaults to 'dev'"        "true" "$(has '--integration dev' "$(cat "$ORACLE_ARGV")")"
+
+echo "== the gate's ON line names the POPULATION it measured, and each value's CHANNEL =="
+# ⛔ WHY THIS IS AN ASSERTION AND NOT A NICETY. `0 completeness-refused` at rc 0 is what a clean
+# release looks like AND what a gate asked about the WRONG POPULATION looks like — the oracle's
+# path, the one thing the line named before, cannot tell them apart. Both values that DEFINE the
+# population resolve from two channels apiece and neither wrong resolution has any other symptom:
+# with no --head the release head is whatever the cwd is checked out at (run from an integration
+# checkout the window is `dev...dev`, empty, so clause (b) has nothing to find), and `.dev_branch`
+# is read from the PR-EDITABLE .release-pr.json, which `bin/release-artifacts-check` does NOT
+# guard — it guards `promote.source`, `ref_token_regex` and `card_token_regex` — so a PR setting
+# it to the release branch empties the window permanently. This is the same rule `docs/INSTALL.md`
+# §4 already states for this tool's other two-source resolution.
+# RED when: either value, or either channel, stops being printed on the ON line.
+_gate_on() { printf '%s\n' "$1" | sed -n '/completeness-gate ON/p'; }
+_oracle 0 "1	COMPLETE	-" "2	COMPLETE	-" "3	COMPLETE	-"
+run_promote --require-complete --completeness "$TMP/oracle"
+ON="$(_gate_on "$err")"
+eq "control: an ON line was printed at all"         "false" "$([ -z "$ON" ] && echo true || echo false)"
+eq "it carries the resolved release head"           "true" \
+   "$(has "release head $(git -C "$ROOT" rev-parse HEAD)" "$ON")"
+eq "  … and the CHANNEL that head came from"        "true" "$(has "no --head passed" "$ON")"
+eq "it carries the integration branch"              "true" "$(has 'integration branch trunk' "$ON")"
+eq "  … and the CHANNEL that branch came from"      "true" \
+   "$(has "from $TMP/release-pr.json .dev_branch" "$ON")"
+# REPORTED, not recited: both values and both channels must MOVE with the run they describe, or
+# the line is a constant that happens to read true today.
+run_promote --require-complete --completeness "$TMP/oracle" --head "$(git -C "$ROOT" rev-parse HEAD~1)"
+ON="$(_gate_on "$err")"
+eq "an explicit --head moves the reported head"     "true" \
+   "$(has "release head $(git -C "$ROOT" rev-parse HEAD~1) from --head" "$ON")"
+eq "  … and the working-tree channel is gone"       "false" "$(has 'no --head passed' "$ON")"
+"$PRC" --config "$TMP/release-pr-nodev.json" --dls "DL-100" --require-complete \
+       --completeness "$TMP/oracle" >/dev/null 2>"$TMP/err" || true
+ON="$(_gate_on "$(cat "$TMP/err")")"
+eq "a DEFAULTED integration branch says so"         "true" \
+   "$(has 'integration branch dev from the built-in default' "$ON")"
+eq "  … and does not claim the config channel"      "false" "$(has '.dev_branch' "$ON")"
 
 echo "== INCOMPLETE: that card is refused BY NAME, its siblings still promote =="
 # RED when: an INCOMPLETE verdict is treated as a warning, or one refusal aborts the whole run.

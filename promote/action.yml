@@ -84,10 +84,17 @@ inputs:
       `pull-requests: read` and `contents: read`. Default 'false' = no gate,
       byte-identical prior behavior. The predicate and what it cannot see are
       in bin/card-completeness's header.
+      ⚠ EXACTLY 'true' or 'false', lower-case. Any other spelling ('True', 'TRUE', 'yes', '1')
+      REFUSES the step at rc 2 rather than being read as 'false' — an unrecognised value used
+      to leave the gate silently OFF on a run that looked like a gated one.
     required: false
     default: 'false'
   dry-run:
-    description: "'true' = report only, move nothing."
+    description: >-
+      'true' = report only, move nothing.
+      ⚠ EXACTLY 'true' or 'false', lower-case, and for the same reason as above with a worse
+      failure: any other spelling REFUSES the step at rc 2, because reading it as 'false'
+      performed REAL board writes for an operator who asked for a preview.
     required: false
     default: 'false'
 
@@ -105,6 +112,14 @@ runs:
         SHIPPED_STAGE_IDS: ${{ inputs.shipped-stage-ids }}
         REQUIRE_COMPLETE: ${{ inputs.require-complete }}
         # The job token reaches the step only when the gate is on — the oracle is its one reader.
+        # ⛔ THIS TEST'S ACCEPT-SET AND THE `bool` GUARD IN THE run: BODY MUST STAY EQUAL. An
+        # Actions expression cannot call a shell function, so this is a SECOND spelling of "is
+        # this input on" and the two can only be held level from outside: any spelling this
+        # accepts and `bool` refuses would ship a token to a step that then dies, and any
+        # spelling `bool` accepts and this refuses would run the gate WITHOUT a credential —
+        # every card UNMEASURED, i.e. a release that refuses every promotion. `bool` refuses
+        # everything but 'true'/'false'/'', which is what makes this literal test sufficient;
+        # `tests/composite-action-wiring-selftest.sh` reds if either side moves alone.
         GITHUB_TOKEN: ${{ inputs.require-complete == 'true' && github.token || '' }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
@@ -124,10 +139,30 @@ runs:
         # --shipped-stages that meant an unguarded promote reported as a clean run). So
         # "unconditionally pass the flag and let the script sort it out" would fail-closed on
         # every consumer that leaves an optional input blank. Keep these conditional.
+        #
+        # ⛔ A BOOLEAN INPUT IS VALIDATED, NEVER READ AS "off" ON A SPELLING THE TEST DOES NOT
+        # KNOW (card#10176 r2). `[ "$X" = "true" ]` answers false for 'True', 'TRUE', 'yes' and
+        # '1' alike, and the run that follows is byte-identical to one where the input was never
+        # passed — so nothing in stdout or stderr says the input did not take. For
+        # `require-complete` that is the gate silently OFF (its state line prints only when the
+        # gate is ON, by design, so an OFF run is silent by contract); for `dry-run` it is worse
+        # and is why this is a guard rather than a fix to one line: the operator asked for a
+        # PREVIEW and gets REAL BOARD WRITES into a terminal stage. Two members of one shape ⇒
+        # one function, so a THIRD boolean input cannot arrive unguarded by writing the same
+        # test a third time. `shipped-stage-ids` is deliberately NOT here: it is passed through
+        # as a VALUE and the script validates it, which is the other correct answer.
+        bool() {
+          case "$2" in
+            true)     return 0 ;;
+            false|'') return 1 ;;
+            *) echo "::error::promote: ${1}='${2}' is not a boolean. Pass exactly 'true' or 'false' (lower-case, quoted) — REFUSING rather than reading an unrecognised value as 'false', because that runs with ${1} silently OFF and no output says so: for dry-run it means REAL board writes where a preview was asked for, and for require-complete a release that promotes cards the gate was meant to refuse." >&2
+               exit 2 ;;
+          esac
+        }
         args=()
         [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
         [ -n "$INPUT_SOURCE" ] && args+=(--source "$INPUT_SOURCE")
         [ -n "$SHIPPED_STAGE_IDS" ] && args+=(--shipped-stages "$SHIPPED_STAGE_IDS")
-        [ "$REQUIRE_COMPLETE" = "true" ] && args+=(--require-complete)
-        [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+        bool require-complete "$REQUIRE_COMPLETE" && args+=(--require-complete)
+        bool dry-run "$DRY_RUN" && args+=(--dry-run)
         "$GITHUB_ACTION_PATH/../bin/promote-released-cards" "${args[@]}"

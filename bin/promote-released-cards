@@ -182,6 +182,13 @@
 #   and `contents: read`; this script reads neither variable itself. A refused card exits 5
 #   (see the exit policy at the end), and a refusal is printed per card, naming the PRs.
 #
+#   ⚠ READ THE GATE'S STATE LINE BEFORE TRUSTING `0 completeness-refused`. It names the RELEASE
+#   HEAD and the INTEGRATION BRANCH the gate measured, and the channel each came from, because
+#   those two values ARE the population: a gate asked about the wrong pair — no `--head` in a
+#   checkout that is not the release, or a `.dev_branch` edited in the PR under review — finds
+#   nothing to refuse and exits 0, which is indistinguishable from a clean release anywhere else
+#   in the output.
+#
 # --completeness PATH: where that oracle is. Default: `card-completeness` beside this script.
 #   Only consulted under --require-complete. An oracle that is absent or not executable is an
 #   UNANSWERED QUESTION, never an absent problem: every matched card is refused and says so.
@@ -415,14 +422,17 @@ require_resolvable() { # <flag> <ref>
     || die "$1 '$2' does not resolve to a commit in this repo — a range built from it walks NOTHING, which this tool would report as 'no shipped refs in range — nothing to do' at rc 0: a promotion that promoted nothing and called it success. Check the spelling, or fetch the ref before passing it"
 }
 
-CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
+CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; HEAD_SRC=""; DRY=0; SHIPPED_STAGES=""
 SOURCE_IN=""; REQUIRE_COMPLETE=0; COMPLETENESS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
     --cards)          require_value "$1" "${2:-}"; CARDS_IN="$2"; shift 2;;
     --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
-    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    # HEAD_SRC records the CHANNEL, not the value, and is read only by the completeness gate's
+    # state line: HEAD_REF is defaulted to `HEAD` further down, after which nothing can tell a
+    # caller-supplied `--head HEAD` from a run that passed no --head at all.
+    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; HEAD_SRC="--head"; shift 2;;
     --source)         require_value "$1" "${2:-}"; SOURCE_IN="$2"; shift 2;;
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
     --require-complete) REQUIRE_COMPLETE=1; shift;;
@@ -1388,11 +1398,35 @@ owner_clear() {
 # leave a half-promoted release: every card gets a verdict or none does, and "none" is
 # UNMEASURED, which refuses. ⛔ NO PREDICATE LIVES HERE — `card-completeness` owns what
 # "complete" means; this block owns only what to do with its answer.
-COMPLETE_VERDICTS=""
+COMPLETE_VERDICTS=""; gate_head=""; gate_head_src=""; gate_integration=""; gate_integration_src=""
 if [ "$REQUIRE_COMPLETE" = 1 ]; then
   # A sibling of THIS file, resolved from the script's own path rather than $PWD: it is vendored
   # into a consumer's bin/ and run from the repo root.
   [ -n "$COMPLETENESS" ] || COMPLETENESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/card-completeness"
+  # ⛔ RESOLVED HERE, ABOVE EVERY BRANCH, BECAUSE THE STATE LINE AT THE END REPORTS THEM AND A
+  # RUN THAT ASKED NOTHING STILL HAS TO SAY WHAT IT WOULD HAVE ASKED ABOUT. These two values —
+  # not the oracle's path — are what DEFINES the population the gate measured, and each resolves
+  # from two channels that nothing else in the output tells apart:
+  #   * the release head. The verdict is ABOUT a commit, as a full sha, because the oracle asks
+  #     GitHub and a local ref name means nothing there; an unresolvable head reaches it EMPTY
+  #     and it refuses by name. With no --head that commit is WHATEVER THE CWD IS CHECKED OUT AT
+  #     — run from an integration-branch checkout the window is `<dev>...<dev>`, i.e. empty, and
+  #     clause (b) has nothing to find while the run reports `0 completeness-refused` at rc 0.
+  #   * the integration branch, `.dev_branch`, defaulted exactly as release-pr-body defaults the
+  #     same key so one key has one reading. That key lives in a PR-EDITABLE file and is NOT one
+  #     of the correlation keys `bin/release-artifacts-check` guards, so a PR setting it to the
+  #     release branch makes clause (b)'s window permanently empty — again at rc 0.
+  # Neither failure has a symptom. Printing the pair WITH ITS CHANNEL is what makes the gate's
+  # population falsifiable from the log, which is the rule `docs/INSTALL.md` §4 already states
+  # for this tool's other two-source resolution (the base) and which this gate was missing.
+  gate_head="$(git rev-parse --verify --quiet "${HEAD_REF:-HEAD}^{commit}" 2>/dev/null || true)"
+  # ⚠ NO APOSTROPHE IN THIS DEFAULT. A `'` inside `${x:-…}` opens a single quote even within the
+  # surrounding double quotes, and bash then reports the unterminated string as a syntax error
+  # 40 lines further down — measured here, on the first spelling of this line.
+  gate_head_src="${HEAD_SRC:-the working tree HEAD (no --head passed)}"
+  gate_integration="$(cfg '.dev_branch')"
+  if [ -n "$gate_integration" ]; then gate_integration_src="$CONFIG .dev_branch"
+  else                                gate_integration="dev"; gate_integration_src="the built-in default"; fi
   gate_ids="$(printf '%s' "$PLAN" | jq -r '[.[].id] | join(",")')"
   if [ -z "$gate_ids" ]; then
     :   # nothing matched, so there is nothing to ask about
@@ -1401,12 +1435,6 @@ if [ "$REQUIRE_COMPLETE" = 1 ]; then
     COMPLETE_VERDICTS="$(printf '%s' "$PLAN" | jq -r --arg p "$COMPLETENESS" \
       '.[].id | "\(.)\tUNMEASURED\tthe completeness oracle is not executable at \($p) (pass --completeness PATH, or drop --require-complete to promote without it)"')"
   else
-    # The release the verdict is ABOUT, as a full sha, because the oracle asks GitHub and a local
-    # ref name means nothing there; an unresolvable head reaches it EMPTY and it refuses by name.
-    # The integration branch is `.dev_branch`, defaulted exactly as release-pr-body defaults the
-    # same key, so one key has one reading.
-    gate_head="$(git rev-parse --verify --quiet "${HEAD_REF:-HEAD}^{commit}" 2>/dev/null || true)"
-    gate_integration="$(cfg '.dev_branch')"; gate_integration="${gate_integration:-dev}"
     gate_rc=0
     COMPLETE_VERDICTS="$("$COMPLETENESS" --release-head "$gate_head" --integration "$gate_integration" --cards "$gate_ids")" || gate_rc=$?
     # 0 all complete, 5 at least one incomplete, 6 unmeasured — each carries one verdict line per
@@ -1530,7 +1558,7 @@ fi
 # The completeness gate's state, only when it is ON: an OFF line would change the stderr of every
 # run that never asked for the gate, and absent is byte-identical by the flag's own contract.
 if [ "$REQUIRE_COMPLETE" = 1 ]; then
-  echo "promote-released-cards: completeness-gate ON (oracle $COMPLETENESS) — a matched card that a PR outside this release still names, or whose PRs could not be read, was NOT promoted." >&2
+  echo "promote-released-cards: completeness-gate ON (oracle $COMPLETENESS; release head ${gate_head:-<UNRESOLVED>} from $gate_head_src; integration branch $gate_integration from $gate_integration_src) — a matched card that a PR outside this release still names, or whose PRs could not be read, was NOT promoted. THOSE TWO VALUES ARE THE POPULATION: the gate looked for PRs merged into that branch and absent from that commit, so a wrong pair reports 0 refusals over a window that was never the release's." >&2
   if [ "$incomplete" -gt 0 ]; then
     echo "promote-released-cards: FAILED — $incomplete card(s) were REFUSED by the completeness gate (named individually above). Land or close the open PR, or release the merged one, and re-run — or, having checked, promote the card by hand." >&2
   fi
