@@ -680,6 +680,9 @@ board_dl_max() (
 # would change what this tool accepts, so it is recorded there rather than fixed here.
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
+# ⚑ ADDING AN EXIT TO board_dl_max? This test is PERMISSIVE by default — any status but 2 mints —
+# which is the shape $NDL_NO_SPEND closes one screen up, not live here only because that function's
+# exits are enumerated (1, 2, and the success pipeline). A new one mints from the local floor alone.
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
 [[ "$dlrc" -eq 2 ]] && exit 1
 kb_is_uint "$bmax" && [[ "$bmax" -gt "$max" ]] && max="$bmax"
