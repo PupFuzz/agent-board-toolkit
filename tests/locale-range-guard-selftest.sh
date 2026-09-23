@@ -602,14 +602,13 @@ scan_sites() {
 }
 scan_ranges()         { scan_sites "$1" range; }
 scan_blank_verdicts() { scan_sites "$1" blank; }
-n_hits() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
 for d in "$BIN" "$ROOT/hooks"; do
     hits="$(scan_ranges "$d")"
-    eq "no unscoped bracket-range regex in ${d##*/}/" "0" "$(n_hits "$hits")"
+    eq "no unscoped bracket-range regex in ${d##*/}/" "0" "$(_n_lines "$hits")"
     [[ -n "$hits" ]] && printf '  offending lines:\n%s\n' "$hits" >&2
     hits="$(scan_blank_verdicts "$d")"
-    eq "no unscoped POSIX-class blank verdict in ${d##*/}/ (use kb_is_blank)" "0" "$(n_hits "$hits")"
+    eq "no unscoped POSIX-class blank verdict in ${d##*/}/ (use kb_is_blank)" "0" "$(_n_lines "$hits")"
     [[ -n "$hits" ]] && printf '  offending lines:\n%s\n' "$hits" >&2
 done
 
@@ -653,7 +652,7 @@ printf '%s\n' 'n="$(printf %s "$x" | grep -oE '"'"'^[0-9]+$'"'"' | head -1)"' \
 printf '%s\n' 'f() {' '    case "$x" in a) : ;; esac' '    y=$(sed -E '"'"'s/[a-z]+//'"'"')' '}' \
     > "$pos/benign-after-esac"
 pos_hits="$(scan_ranges "$pos")"
-eq "scanner flags exactly the five re-minted files" "5" "$(n_hits "$pos_hits")"
+eq "scanner flags exactly the five re-minted files" "5" "$(_n_lines "$pos_hits")"
 case "$pos_hits" in *reminted-glob-oneliner:*) ok "glob range in a one-line case flagged";;
                     *) bad "glob range in a one-line case NOT flagged (the widening does nothing)";; esac
 case "$pos_hits" in *reminted-glob-arm:*) ok "glob range in a bare case ARM flagged";;
@@ -690,7 +689,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'export LC_ALL=C' \
 printf '%s\n' 'f() {' '    local LC_ALL=C' '    [[ -z "${1//[[:space:]]/}" ]]' '}' > "$bpos/benign-window"
 printf '%s\n' 'if kb_ere_match "$2" '"'"'^[[:space:]]*-'"'"'; then :; fi'      > "$bpos/benign-ere"
 bpos_hits="$(scan_blank_verdicts "$bpos")"
-eq "blank scanner flags exactly the four re-minted files" "4" "$(n_hits "$bpos_hits")"
+eq "blank scanner flags exactly the four re-minted files" "4" "$(_n_lines "$bpos_hits")"
 for f in reminted-z reminted-n-blank reminted-noslash reminted-regex; do
     case "$bpos_hits" in *"$f:"*) ok "blank verdict flagged: $f";; *) bad "blank verdict NOT flagged: $f";; esac
 done
@@ -698,7 +697,7 @@ for f in benign-strip benign-comment benign-adopter benign-filepin benign-window
     case "$bpos_hits" in *"$f:"*) bad "benign line flagged: $f";; *) ok "not flagged: $f";; esac
 done
 # And the range scanner must not have started answering the blank question (the modes are distinct).
-eq "range scanner ignores the blank-verdict fixtures" "0" "$(n_hits "$(scan_ranges "$bpos")")"
+eq "range scanner ignores the blank-verdict fixtures" "0" "$(_n_lines "$(scan_ranges "$bpos")")"
 
 # Re-emit the degraded-coverage banner IMMEDIATELY before the verdict: a green summary is
 # what a reader takes away, and half these cases did not run.

@@ -17,7 +17,11 @@
 #   NON-CONSUMING `dl-sequence` inspect endpoint when reachable, and falls back to
 #   the offline max+1 scan only when that endpoint is absent/unreachable, under the
 #   same 404-absent vs present-but-errored discipline the claim path uses, and with
-#   the same announcement and the same --require-counter refusal.
+#   the same announcement and the same --require-counter refusal. TWO arms differ, and they
+#   differ BECAUSE this mode spends nothing (card#10230): a 2xx carrying no usable number,
+#   and a TRANSPORT FAILURE, each fall back HERE and REFUSE on the claim, where a number may
+#   already be burned. They are the two arms in which the call may have SPENT and the answer
+#   is unknown; nothing about --peek can reach that state, because a GET allocates nothing.
 #
 # THE FALLBACK IS ANNOUNCED, AND CAN BE REFUSED (card#7214). It used to be SILENT:
 # rc 0, a number on stdout, nothing on stderr — byte-identical to an atomic claim,
@@ -25,11 +29,50 @@
 # scan. That is the very failure the allocator exists to retire, wearing the
 # allocator's authority. Two changes, neither of which narrows what next-dl accepts:
 #   * EVERY degrade writes its CAUSE to stderr, in that cause's own words.
-#     dl_sequence_call returns rc 1 for FOUR distinct situations — config
-#     unresolved / unreachable / 404-absent / a 2xx carrying no usable value — and
-#     each prints its own line. ONE generic "falling back" line would re-mint the
-#     conflation this closes: the point is not that stderr is non-empty, it is that
-#     the reader can tell "not deployed here" from "I could not reach it".
+#     dl_sequence_call distinguishes them by cause and each prints its own line — written out
+#     PER CAUSE below rather than introduced by a COUNT of them, because the count is the part
+#     that goes stale: the cause set is whatever this file's `unusable` call sites are, and the
+#     selftest derives it from them rather than from any figure written here. ONE
+#     generic "falling back" line would re-mint the conflation this closes: the point is
+#     not that stderr is non-empty, it is that the reader can tell "not deployed here"
+#     from "I could not reach it". The CAUSE set is the same on both routes. The
+#     DISPOSITION is not, and it is written out PER CAUSE rather than as a count of them,
+#     because a count is exactly what went stale here once already: the first pass at
+#     card#10230 moved one arm and left this block asserting "THREE of the four are a
+#     degrade on EITHER route", which was false of the transport arm the same day it was
+#     written. Per cause, then:
+#       config unresolved    — degrades on EITHER route. No request was issued at all.
+#       404-absent           — degrades on EITHER route. The server ANSWERED, and what it
+#                              answered is that the route does not exist here, so a POST to
+#                              it allocated nothing.
+#       unreachable          — degrades under --peek; REFUSES on the claim (card#10230). A
+#                              non-zero curl exit means the request DID NOT COMPLETE, which
+#                              is NOT evidence that it never arrived: a reset, a proxy
+#                              timeout or a lost response answers a claim the server has
+#                              already applied exactly as one that never left does. That is
+#                              this repo's standing reading of a write whose transport died
+#                              — kb_api's $KB_API_RC_TRANSPORT contract in
+#                              bin/_kb-board-lib.sh owns it, promote-released-cards and
+#                              kbcard's _kbc_unfinished_write_note already apply it — and
+#                              the claim POST is a write.
+#       2xx, no usable value — degrades under --peek; REFUSES on the claim (card#10230).
+#                              The number is allocated server-side; only the answer was lost.
+#     `unreachable` and `2xx, no usable value` are each ONE cause carrying TWO dispositions,
+#     the split owned by dl_sequence_call's own contract below and not re-derivable from the rc.
+#     ⛔ AND ON THE CLAIM ROUTE THOSE FIRST TWO ARE THE ONLY DEGRADES THERE ARE — not "the only
+#     ones listed", the only ones REACHABLE. Its call site falls back to the offline scan only on
+#     a positive "no number was allocated" declaration from dl_sequence_call ($NDL_NO_SPEND); any
+#     other way out of that function, including one no arm in this file spells today, REFUSES at
+#     rc 1 with nothing minted. So a future arm is fail-CLOSED by default and a maintainer who
+#     adds one gets a refusal to explain rather than a duplicate DL to discover. --peek carries no
+#     such belt, deliberately: a GET spends nothing, so it has nothing to protect.
+#     ⛔ curl's exit STATUS is not classified anywhere here, deliberately. Splitting it into
+#     "cannot have reached the server" (connect/DNS/proxy) and "may have" would put a copy
+#     of curl's exit-code table in this file, to be maintained against a tool nobody here
+#     owns — and it would buy nothing: where the host is genuinely unreachable the offline
+#     scan's own board read fails too and board_dl_max refuses (card#6631), so the only cell
+#     in which the benign fallback ever MINTED is the cell where the claim died and the rest
+#     of the API answered. That cell is the defect, not a case to preserve.
 #   * --require-counter makes the degrade a REFUSAL: exit 4, mint nothing, so a
 #     caller that needs an atomic number gets a refusal it can surface instead of a
 #     number it cannot distinguish. OPT-IN, and strict is deliberately NOT the
@@ -79,12 +122,12 @@
 #       is a fact about this caller and not about the contract: kb_resolve_env's rc 2 is
 #       pre-empted by resolve_board_cfg's own readable-board-env test.
 #   (b) a SUCCESSFUL read out of which no dl_number came — the ordinary case being a
-#       complete read of a board that carries no stamp at all. max_int's grep then matches
-#       nothing, and under pipefail that exits board_dl_max 1, the same code (a) exits
-#       with. There is no floor to drop in that case; the point is that the exit code does
-#       not separate it from (a).
-# Both land on board_dl_max's exit 1 — see its own exit-code note, which also names the
-# further paths on which a mint proceeded past a board that ANSWERED.
+#       complete read of a board that carries no stamp at all. There is no floor to drop in
+#       that case; the point is that the exit code does not separate it from (a).
+# Both land on board_dl_max's exit 1, AND BOTH NOW SAY SO — each prints $NDL_NO_FLOOR, because
+# the exit code alone never separated these two from a read that FAULTED, which is the fail-open
+# card#10230 closed here. See board_dl_max's own exit-code note, which also names the further
+# paths on which a mint proceeds past a board that ANSWERED.
 # NOTE: the offline path is NOT atomic — safe for single-stream allocation; concurrent
 # allocators on a shared board need the claim endpoint (the default) to avoid
 # duplicates — and, per card#6232 above, it is a FLOOR rather than the truth: it cannot
@@ -110,6 +153,12 @@ USAGE='usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]'
 peek=0
 require_counter=0
 project=""
+# HOW the project was SPELLED, not just which one it is. `kanban` and `--board kanban` name
+# DIFFERENT boards (the alias resolves ~/.kanban-dev-board.env, --board resolves
+# ~/.kanban-kanban-board.env), so a message that re-prints `$project` as if it were a whole
+# invocation hands the operator a command against the wrong board. Kept as the argv words the
+# caller actually used, so a remediation line built from it is runnable as printed.
+project_args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --peek|--no-claim) peek=1 ;;
@@ -124,10 +173,10 @@ while [[ $# -gt 0 ]]; do
             kb_require_value "$1" "${2:-}" || exit 2
             shift
             [[ -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
-            project="$1" ;;
+            project="$1"; project_args=(--board "$1") ;;
         kanban|board|kanban-board|bridge|agent-bridge)
             [[ -z "$project" ]] || { echo "$USAGE" >&2; exit 2; }
-            project="$1" ;;
+            project="$1"; project_args=("$1") ;;
         *) echo "$USAGE" >&2; exit 2 ;;
     esac
     shift
@@ -193,43 +242,222 @@ resolve_board_cfg() (
     printf '%s\t%s\t%s' "$KB_API" "$KB_BOARD_ID" "$KB_TOKEN_FILE"
 )
 
+# ⛔ THE POSITIVE HALF OF card#10230's RULING, and the reason the CONSUMING caller below needs no
+# list of arm shapes. `spent_refusal` is the fail-closed half: an arm that MAY have spent says so
+# and exits 3. This token is the other half: an arm that can PROVE nothing was allocated prints it
+# on stdout, and the claim's call site degrades to the offline scan ONLY on seeing it. Everything
+# else — a novel arm with no terminator (the subshell's status is then the last command's, i.e. 0),
+# a `return 1`, a `set -u` death, any exit code nobody thought about — arrives with this token
+# ABSENT and is REFUSED.
+# ⛔ WHY A TOKEN AND NOT A WIDER STATIC SCAN. The structural leg in tests/next-dl-selftest.sh reads
+# dl_sequence_call's TEXT, so its population is the spellings someone thought to match (`exit 1`
+# today) and it will never be the same set as "every arm a future editor writes": card#10230's own
+# defect was re-planted past it TWICE, on a 502/503/504 arm with no terminator and on the same arm
+# spelled `return 1`, each minting DL-0301 at rc 0 with the whole suite green. A fix that keeps
+# needing its own widening is patching the wrong layer. The caller cannot read an arm's SHAPE, but
+# it can read whether the callee DECLARED — so the default is refusal and the declaration is the
+# only way out. That is a property of the call site and covers arm shapes no scanner can see.
+# ⚠ The value is deliberately not a uint (a uint would be MINTED) and deliberately does not spell
+# the structural leg's `NOTHING WAS SPENT` pin: the two mechanisms are independent, and a token
+# whose text exempted nearby `exit 1` lines from that scanner would entangle them.
+NDL_NO_SPEND='next-dl:no-number-was-allocated'
+
 # The exit code tells the caller HOW a call failed, so a real endpoint error is never
 # masked as "absent" — the bug that made a downstream adopter misdiagnose a deployed
 # endpoint as missing. The contract is stated ONCE, on dl_sequence_call below; it is not
 # restated per wrapper, because the previous copy of it here had already drifted (it
-# assigned "a 2xx with no positive value" to rc 3, while the code has always exited 1
-# there — the benign-fallback arm).
+# assigned "a 2xx with no positive value" to rc 3 unconditionally, which the code did not do
+# on either route — both exited 1 there, the benign-fallback arm). card#10230 has since made
+# that rc 3 on the CONSUMING route only, which is exactly why no wrapper restates it: a copy
+# that is half-true reads as whole-true, and the reader who needs the other half is the one
+# who acts on it.
 # No -f on curl: we need the status to tell 404-absent from a present-but-errored call.
 #
 # ONE transport for BOTH DL-sequence routes. The claim (POST .../dl-sequence/claim.json,
 # `.data.value`) and the peek (GET .../dl-sequence.json, `.data.next`) differ only in
-# method, path and response field: everything that MATTERS — the status-case split, what
-# counts as "absent", the fallback-vs-abort decision — is identical, and must stay
-# identical. Written as two functions (card#6232) it was ~18 duplicated lines held in
-# agreement by a comment asking the next editor to keep them in sync; a divergence there
-# would not fail any test, it would just make one route quietly answer a 500 by falling
-# back to the offline scan. The variable parts are arguments; the contract is code.
+# method, path, response field and WHETHER THE CALL SPENDS A NUMBER: the status-case split and
+# what counts as "absent" are identical and must stay identical. Written as two functions
+# (card#6232) it was ~18 duplicated lines held in agreement by a comment asking the next editor
+# to keep them in sync; a divergence there would not fail any test, it would just make one route
+# quietly answer a 500 by falling back to the offline scan. The variable parts are arguments;
+# the contract is code.
 #
-# dl_sequence_call <method> <path> <jq-field> <endpoint-label> <fallback-risk>
+# ⛔ THE FALLBACK-VS-ABORT DECISION IS *NOT* IDENTICAL FOR THE TWO CALLERS, AND SAYING THAT IT WAS
+# IS WHAT SHIPPED card#10230. This block used to assert it — "everything that MATTERS … the
+# fallback-vs-abort decision — is identical, and must stay identical" — while the one input that
+# separates them, whether the call CONSUMED, was passed in as `<fallback-risk>` and used ONLY as
+# PROSE in the `*)` arm's message. So the 2xx-undecodable arm could not tell the two apart and
+# sent both to the benign fallback. On the POST that is a FAIL-OPEN: the number is already burned
+# server-side, and by the card#6232 note above the offline scan cannot SEE a claimed-but-unstamped
+# DL, so it hands back a number at or below the one just spent — a duplicate correlation key,
+# minted by the allocator that exists to prevent exactly that. The consolidation is still right;
+# what was wrong was modelling the risk as a message instead of as a parameter of the decision.
+# ⛔ AND THE FIRST FIX FOR IT WAS AN ARM PATCH, WHICH IS WHY IT MISSED. It re-parameterised the
+# 2xx-undecodable arm alone and left the TRANSPORT arm handing the same duplicate back on an
+# ordinary network flake, while this file's own header asserted the gap was intended. The rule
+# is therefore stated over the arm SET and not per arm: EVERY arm in which the call may have
+# SPENT a number and the outcome is UNKNOWN refuses, and they share one refusal (spent_refusal
+# below) so a new arm inherits the ruling instead of re-deciding it.
+# ⛔ THAT SENTENCE IS A DESIGN RULE AND IS NOT ITSELF CHECKED — it was twice written as CHECKED
+# and twice falsified (the history is at $NDL_NO_SPEND above, with the arm shapes). What IS
+# checked is the CALL SITE's guarantee: a consuming call returning without $NDL_NO_SPEND refuses,
+# whatever arm produced it. Obey the rule and the operator gets this arm's own words; ignore it
+# and the call site still refuses, in generic ones.
+# tests/next-dl-selftest.sh STILL lifts this function's body and reds on any `exit 1` past the
+# request that is neither inside the `non-consuming` guard nor pinned `NOTHING WAS SPENT` on its
+# own line or the two above it — kept as a FIRST LINE that names the offending arm, not as the
+# guarantee. That leg is watched RED both ways: with the 404 arm's declaration deleted, and with
+# the 502/503/504 arm re-planted.
+# ⛔ Do not "simplify" this back into two functions, and do not re-derive `<consumption>` from
+# `$method`: POST is not what makes a call consuming — the route's semantics are, and a
+# non-consuming POST on this API would silently inherit the fail-closed arm.
+#
+# dl_sequence_call <method> <path> <jq-field> <endpoint-label> <consumption> <fallback-risk>
+#   <consumption> — `consuming` if this route SPENDS a number server-side, `non-consuming` if it
+#       only reads. It DECIDES the transport-failure and 2xx-undecodable arms below. The test is
+#       for the exact token `non-consuming` and every other VALUE is treated as consuming,
+#       deliberately: an unknown value lands on the FAIL-CLOSED side.
+#       ⛔ AN OMITTED ARGUMENT IS A DIFFERENT MISWIRING AND NEEDS A DIFFERENT GUARD — the arity
+#       test at the head of this function, which is why that test is here and is first. This
+#       block used to promise that a caller which "misspells it OR OMITS the argument refuses
+#       loudly", and the omission half was FALSE the day it was written: under `set -u` the
+#       positional read below kills this subshell at the unbound `$6` BEFORE any value test can
+#       run, and the subshell's rc 1 is the caller's BENIGN fallback — so the one miswiring the
+#       sentence named explicitly minted the offline number at rc 0, with no `unusable` cause
+#       line at all. Both miswirings now refuse at exit 3, and the caller aborts on it.
 #   0 → the positive integer on stdout.
-#   1 → endpoint ABSENT (HTTP 404) or unreachable / no config / a 2xx carrying no usable
-#       value — benign; the caller falls back to the offline max+1 scan. A 2xx with no
-#       value is deliberately here and not below: it is indistinguishable from an older
-#       response shape, so aborting would break every board predating the route.
-#       ONE rc, FOUR causes — so the rc is NOT the whole answer, and each cause prints
-#       its OWN line through `unusable` before returning (card#7214). The caller cannot
-#       re-derive which fired (that is the conflation), and the operator must be able to:
-#       "this kanban has no such route" and "I could not reach this kanban" are different
-#       actions. Any new way to reach exit 1 from here owes a distinct `unusable` cause.
-#   3 → endpoint PRESENT but the call FAILED (any non-2xx other than 404) — surfaced
-#       loudly; the caller MUST abort rather than quietly answer from the offline scan.
-#       A wrong-but-plausible DL is worse than no DL: it lands in a decision log and
-#       becomes a duplicate correlation key nobody re-checks.
+#   1 → BENIGN: the caller falls back to the offline max+1 scan — but on the CONSUMING route only
+#       when the arm ALSO printed $NDL_NO_SPEND on stdout, which is the positive declaration
+#       described at that constant. The non-consuming caller needs no declaration: a GET spends
+#       nothing, so there is nothing for it to protect. Its causes are not the same set
+#       on both routes, and the rc does not say which fired, so each prints its OWN line through
+#       `unusable` before returning (card#7214) — the caller cannot re-derive it (that is the
+#       conflation this closes) and the operator must be able to, since "this kanban has no such
+#       route" and "I could not reach this kanban" are different actions. On EITHER route: no
+#       config (nothing was called) and endpoint ABSENT (HTTP 404). On a NON-CONSUMING call
+#       ALSO: a transport failure, and a 2xx carrying no usable value — nothing was spent on a
+#       GET, and an unreadable body is indistinguishable from an older response shape, so
+#       aborting there would break every board predating the route. Any new way to reach exit 1
+#       from here owes a distinct `unusable` cause — CHECKED, not asked for: the selftest DERIVES
+#       the cause set from this function's own `unusable` call sites (it does not restate them)
+#       and reds when a derived cause is driven by no leg, which is what a fifth cause added here
+#       with no coverage produces.
+#   3 → the caller MUST abort rather than quietly answer from the offline scan, because a
+#       wrong-but-plausible DL is worse than no DL: it lands in a decision log and becomes a
+#       duplicate correlation key nobody re-checks. Its members:
+#         * endpoint PRESENT but the call FAILED (any non-2xx other than 404), either route;
+#         * a CONSUMING call whose TRANSPORT DIED (curl exited non-zero) — the request may have
+#           been applied before the answer was lost, and nothing here can tell which (card#10230);
+#         * a CONSUMING call answered 2xx with a body carrying no usable number — the number may
+#           already be spent, so falling back would mint the duplicate (card#10230);
+#         * this function MISWIRED — called with anything other than its six arguments.
+#       The transport and 2xx-undecodable members share ONE rule, and it is the rule and not the
+#       arms that is stated: a CONSUMING call that may have SPENT and whose outcome is UNKNOWN
+#       refuses — both go through `spent_refusal`, which is where that rule lives. A new arm
+#       reaching the mint is dispositioned by that rule, not by being added to this list —
+#       patching one arm at a time is how the transport arm survived card#10230's first pass.
+#       What makes that a CHECK rather than a hope is the CALL SITE, not this list and not the
+#       structural leg: an arm that neither refuses here nor prints $NDL_NO_SPEND is refused
+#       there, by default, however it is spelled.
+#       The CAUSE set is unchanged by any of it (each still prints its own `unusable` line);
+#       what moved is the DISPOSITION, and only for the caller that spent.
 dl_sequence_call() (
-    method="$1"; path="$2"; field="$3"; label="$4"; risk="$5"
+    # ⛔ ARITY IS TESTED BEFORE ANY POSITIONAL IS READ — see the <consumption> note above for
+    # why the ordering is the whole guard. exit 3, not 1: the caller treats 1 as benign.
+    [[ $# -eq 6 ]] || {
+        echo "next-dl: INTERNAL — dl_sequence_call was called with $# arguments, not 6 — REFUSING to mint. This is a miswired call site, not a board or network condition: a DL minted past it would come from the offline max+1 scan, which cannot see a claimed-but-unstamped number. Fix the call site." >&2
+        exit 3
+    }
+    method="$1"; path="$2"; field="$3"; label="$4"; consumption="$5"; risk="$6"
     # The rc-1 cause channel. Written HERE and not by the caller because this is the only
-    # scope that knows WHICH of the four happened; the caller sees one exit code.
+    # scope that knows WHICH cause happened; the caller sees one exit code.
     unusable() { echo "next-dl: NO AUTHORITATIVE NUMBER — the $label $1." >&2; }
+    # The ONE renderer of a response body (canon #5; second caller minted by card#10230's first
+    # pass and hoisted by its second). It matters beyond taste: these bytes are an untrusted
+    # third party's — the 2xx-undecodable arm is designed around a gateway's SSO or WAF page —
+    # and they are emitted RAW. This is the single place a scrub or a width policy can live.
+    # ⛔ THE MASK RUNS BEFORE THE BOUND, and the order is load-bearing: cutting first SPLITS a
+    # credential, and half a token no longer EQUALS the token, so the literal match then finds
+    # nothing and the surviving prefix is printed (card#7500's scrub-before-truncate trap). Same
+    # ruling, same reasoning and the same instrument as the co-vendored sibling renderer,
+    # `resp_detail` in bin/promote-released-cards — cited by FUNCTION, not by line.
+    # ⛔ AND THE CONTROL-BYTE SCRUB IS THE SIBLING'S TOO, WHICH IT WAS NOT WHEN THE LINE ABOVE WAS
+    # FIRST WRITTEN (card#10230, round 7). The mask was ported from `resp_detail` and the scrub was
+    # not, so the parity that sentence asserts did not exist: this bounded with `tr '\n' ' '`, which
+    # converts LF and NOTHING ELSE, and MEASURED on a gateway-style body an ESC, a BEL and a CR each
+    # reached the operator's terminal — the CR letting a third party's page overwrite the very line
+    # that says a DL may already have been spent. The chain below is the sibling's, byte for byte,
+    # and it is also what actually makes this ONE line: `tr '\n' ' '` never touched CR. ⚠ ITS LIMIT
+    # IS C1, NOT C0 — 0x80-0x9F (0x9B CSI included) survives, deliberately, and the measurement and
+    # the reason extending it would CORRUPT legitimate UTF-8 are `resp_detail`'s own paragraph, not
+    # restated here. What holds the two chains together is not this comment: the pair is registered
+    # in tests/mirror-pair-parity-selftest.sh, which drives BOTH renderers over one control-byte
+    # corpus, so a fix landing in one copy and missing its twin reds.
+    # ⛔ WHAT IS MASKED IS THIS CALL'S OWN BEARER TOKEN, AND A PATTERN SCRUB IS DELIBERATELY NOT
+    # ADDED. The bearer is the one secret a response body can actually come to contain — it goes
+    # out in a header and a server rendering debug output echoes request headers into its own error
+    # page (MEASURED on the sibling against a header-echoing server: the body came back carrying
+    # `"Authorization": "Bearer <the token>"` verbatim) — and a literal match on it cannot miss and
+    # cannot mangle JSON. ⚠ RESIDUAL, STATED RATHER THAN CLAIMED AWAY: a session identifier the
+    # THIRD PARTY minted — the `?sid=`/`SAMLRequest=` in a gateway SSO or WAF page, which is this
+    # arm's designed-for producer — is NOT masked. A key=value pattern list would not close it
+    # either: it would be one key name behind whatever the next gateway spells it, while reading
+    # like a guarantee. What bounds that exposure is this function's own cut below and the
+    # stderr-only channel — named as the cut rather than as its width, which lives on that line.
+    # The token is re-read here rather than carried in a variable: `$(cat …)` strips the trailing
+    # newline exactly as it does where kb_auth_header is fed above, so these are the bytes that
+    # went on the wire, and no resolved secret is held anywhere a later edit could print.
+    # ⛔ AND THE RE-READ FAILING IS ITS OWN OUTCOME, NOT AN EMPTY TOKEN. Scoring an unreadable
+    # token file as "no token, nothing to mask" is the read-outcome-collapse class
+    # (tests/read-outcome-collapse-selftest.sh) landing on a SECRET: the file deleted or made
+    # unreadable between the request and this render leaves a real credential in the body and no
+    # mask over it. So a failed read WITHHOLDS the excerpt and says so. An EMPTY but readable
+    # token is a different, measured outcome: nothing went out on the wire to find, and the body
+    # is quoted whole.
+    resp_excerpt() {
+        local tok body
+        tok="$(cat "$token_file" 2>/dev/null)" || {
+            printf '[withheld — this tool could not re-read its own token file to mask it out of this body]'
+            return 0
+        }
+        body="$1"
+        [[ -n "$tok" ]] && body="${body//"$tok"/***}"
+        # One log LINE: newlines/tabs/CR to spaces, then C0 controls AND DEL dropped, runs squeezed
+        # — `resp_detail`'s chain, and the reason it is a chain rather than one `tr` is in that
+        # function's own comment. Then, and only then, the cut.
+        body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+        body="${body# }"; body="${body% }"
+        printf '%s' "$body" | head -c 300
+    }
+    # ONE refusal for EVERY arm where the call may have SPENT a number and the outcome is
+    # UNKNOWN. A function and not two messages, because the ruling is the arm SET's and not any
+    # one arm's: a future arm reaching the mint with spend possible calls this, and a fix that
+    # patched a single arm is precisely what left the transport arm live through card#10230's
+    # first pass. <what-happened> is the only per-arm part. [<raw-body>] is OMITTED where no
+    # answer was read at all — quoting an empty excerpt there would suggest the server said
+    # nothing, when in fact nothing was heard.
+    # ⛔ AND IT NAMES NO RECOVERY RUNBOOK, deliberately. It used to point at
+    # docs/DL-COUNTER-RECOVERY.md, whose scope is a counter STRANDED in the wrong range and whose
+    # remedy force-deletes cards and resets the sequence. What this refusal reports is a ONE-NUMBER
+    # gap, for which that runbook is not merely unnecessary but destructive — and the very next
+    # clause of this same message says the gap is fine, so the pointer contradicted its own
+    # sentence. The volume is why it mattered this round: the transport arm made an ordinary
+    # network flake the common producer of this message, where a gateway HTML page had been.
+    # `${2:+…}`, not `${2+…}`: a 2xx with a genuinely empty body is an arm that DID read an answer
+    # and passes "" here, and `${2+…}` (set, however empty) would print a dangling `Response:`
+    # with nothing after it — which reads as a server that said something unquotable rather than
+    # one that said nothing. The omit-the-clause intent the comment above states is `:+`.
+    spent_refusal() {   # <what-happened> [<raw-body>]
+        echo "next-dl: that call CONSUMES a number, so the $label $1 — REFUSING to mint. The offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. Falling back here would be that duplicate, $risk. An unread claim simply burns a number: a GAP in the sequence is expected and fine and needs NO recovery action — check the counter with 'next-dl ${project_args[*]} --peek', fix the cause, and retry.${2:+ Response: $(resp_excerpt "$2")}" >&2
+    }
+    # The POSITIVE counterpart of spent_refusal, and the ONLY way past the claim's call-site belt.
+    # Called by an arm that can prove no number was allocated; see $NDL_NO_SPEND for why the
+    # default is refusal. It writes to STDOUT because that is the channel the caller already
+    # captures, and the token is not a uint, so nothing downstream can mistake it for an answer.
+    # ⛔ DO NOT call this from inside the `non-consuming` guard. Those arms are benign because of
+    # the ROUTE, not because the server proved anything — declaring there would bless them for a
+    # CONSUMING call too, the day someone widens that guard.
+    nothing_spent() { printf '%s' "$NDL_NO_SPEND"; }
     # ⛔ THE CAUSE IS RELAYED, NEVER ENUMERATED. This line used to list the resolve failures
     # longhand — a copy of kb_resolve_env's return contract, written before that contract grew
     # rcs 6 and 7, so an undeclared api host (rc 6) or an undeclared token file (rc 7) printed
@@ -250,6 +478,7 @@ dl_sequence_call() (
         unusable "was never called: this board's config could not be resolved"
         [[ "$require_counter" -eq 1 ]] && cat "$cfgerr" >&2
         rm -f "$cfgerr"
+        nothing_spent   # no request was issued at all — card#6631's stated bound: this still mints
         exit 1
     }
     rm -f "$cfgerr"
@@ -259,10 +488,26 @@ dl_sequence_call() (
     resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
         "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || {
-        # connection failure → benign fallback. NOT the same as a 404: nothing was learned
-        # about whether the route exists, so "not deployed" would be a fabricated finding.
+        # THE TRANSPORT DIED. ONE cause, TWO dispositions, and the parameter — not the prose —
+        # decides which (card#10230), exactly as the 2xx-undecodable arm below does. The CAUSE
+        # line is unconditional and unchanged: it is still NOT a 404, because nothing was
+        # learned about whether the route exists, and "not deployed" would be a fabricated
+        # finding about the server.
         unusable "could not be REACHED (curl transport failure — no HTTP status came back, so whether the route exists here is unknown)"
-        exit 1
+        if [[ "$consumption" == "non-consuming" ]]; then
+            # A GET allocates nothing, so there is nothing to protect: the benign fallback is
+            # right, and refusing here would take --peek's whole offline path away (card#7214).
+            exit 1
+        fi
+        # A POST that did not complete is NOT a POST that never arrived. curl exits non-zero for
+        # a lost response, a mid-transfer reset and a timeout as well as for a refused
+        # connection, and this call sets no --connect-timeout/--max-time, so the realistic
+        # producer is a proxy-side reset AFTER the claim reached the server. The lib states this
+        # reading once for every write in this tree (kb_api's $KB_API_RC_TRANSPORT contract:
+        # "the outcome is UNKNOWN, NOT 'nothing was written'"), and it is not re-derived per
+        # bin. So: refuse, and SAY that the tool cannot tell which happened.
+        spent_refusal "may ALREADY have allocated a number this run never read an answer to — the request did not complete, so nothing here can tell a claim the server applied from one that never arrived"
+        exit 3
     }
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     # `2[0-9][0-9]` is a glob BRACKET RANGE, so it is a COLLATION range: under a UTF-8 locale
@@ -276,25 +521,44 @@ dl_sequence_call() (
         2[0-9][0-9])
             val="$(kb_parse_resp "$body" -r "$field // empty")"
             kb_is_uint "$val" && [[ "$val" -ge 1 ]] || {
-                # 2xx but no positive value → benign fallback (an older response shape, or
-                # a body this tool cannot read). The route ANSWERED; that is the difference.
+                # 2xx but no positive value: the route ANSWERED and we cannot read it. ONE cause,
+                # TWO dispositions, and the parameter — not the prose — decides which (card#10230).
                 unusable "answered HTTP $http but carried no usable number at $field (an older response shape, or a body that could not be read)"
-                exit 1
+                if [[ "$consumption" == "non-consuming" ]]; then
+                    # Nothing was spent, and the body is indistinguishable from an older response
+                    # shape, so the benign fallback is right — aborting here would refuse every
+                    # board predating the route.
+                    exit 1
+                fi
+                spent_refusal "may ALREADY have allocated a number this response did not carry back" "$body"
+                exit 3
             }
             printf '%s' "$val" ;;
+        # ⛔ THE DECLARATION ON THIS ARM'S `exit 1` IS LOAD-BEARING, NOT DECORATION — it is the
+        # only thing standing between this arm and the structural leg in
+        # tests/next-dl-selftest.sh, which reds on any `exit 1` past the request that is neither
+        # inside the `non-consuming` guard nor carries that declaration on its own line or the two
+        # above it. Deleting it without moving the arm reds that leg, which is how the leg was
+        # watched fail. ⚠ And this paragraph deliberately does not spell the token: written within
+        # two lines of the exit it would PIN the line by itself, and the arm would then be exempt
+        # by its own commentary — measured, that is exactly what an earlier draft did.
         404)   # endpoint not deployed — benign; fall back to the offline scan
             unusable "is NOT DEPLOYED on this board's kanban (HTTP 404) — this kanban predates the DL-sequence route"
-            exit 1 ;;
+            nothing_spent
+            exit 1 ;;   # NOTHING WAS SPENT: the server ANSWERED, and what it answered is that this route does not exist here — so the POST reached a handler that allocates nothing.
         *)
-            echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(printf '%s' "$body" | tr '\n' ' ' | head -c 300)" >&2
+            echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(resp_excerpt "$body")" >&2
             exit 3 ;;
     esac
 )
 
-# Atomic server-side claim (DL-157) — CONSUMES a number.
+# Atomic server-side claim (DL-157) — CONSUMES a number. That word is an ARGUMENT here, not a
+# description: it is what makes an unreadable 2xx, and a dead transport, a refusal rather than a
+# fallback (card#10230).
 board_claim() {
     dl_sequence_call POST dl-sequence/claim.json .data.value \
         "atomic claim endpoint" \
+        consuming \
         "which is not atomic and could re-mint on a shared board"
 }
 
@@ -304,6 +568,7 @@ board_claim() {
 board_peek() {
     dl_sequence_call GET dl-sequence.json .data.next \
         "DL-sequence inspect endpoint" \
+        non-consuming \
         "which cannot see a claimed-but-unstamped DL and would under-report"
 }
 
@@ -319,10 +584,16 @@ degrade_or_refuse() {   # <endpoint-label>
     echo "next-dl: FALLING BACK to the offline max+1 scan after the $1 gave no number. That scan is NOT ATOMIC — two allocators running now can be handed the SAME DL — and it is a FLOOR that cannot see a claimed-but-unstamped number. Pass --require-counter to refuse instead of minting one." >&2
 }
 
-# DEFAULT: prefer the atomic claim. Fall back to the offline peek ONLY when the
-# endpoint is genuinely absent/unreachable (exit 1, the rollout case). A claim that
-# FAILED against a PRESENT endpoint (exit 3) is surfaced by board_claim and aborts
-# here — silently degrading to the non-atomic scan is what masked AIMLA's real error.
+# DEFAULT: prefer the atomic claim. Fall back to the offline scan ONLY when the endpoint is
+# genuinely ABSENT or this board has no config (exit 1, the rollout case — and note that on
+# THIS route "unreachable" is no longer in that set). A claim that FAILED against a PRESENT
+# endpoint (exit 3) is surfaced by board_claim and aborts here — silently degrading to the
+# non-atomic scan is what masked AIMLA's real error. exit 3's OTHER members abort on the same
+# line and for a sharper reason (card#10230): a claim that may have SPENT a number and whose
+# outcome is UNKNOWN — a 2xx carrying no number, or a transport failure — must not degrade,
+# because the scan cannot see a spent-but-unstamped DL and would mint the duplicate.
+# ⛔ AND THE FALL-THROUGH IS FAIL-CLOSED, which is the half the two rcs above do not give: the
+# degrade below is reached only on the callee's positive $NDL_NO_SPEND declaration. See the belt.
 if [[ $peek -eq 0 ]]; then
     if claimed="$(board_claim)"; then crc=0; else crc=$?; fi
     if [[ $crc -eq 0 ]] && kb_is_uint "$claimed"; then
@@ -331,14 +602,33 @@ if [[ $peek -eq 0 ]]; then
         exit 0
     fi
     [[ $crc -eq 3 ]] && exit 1   # endpoint present but errored → already surfaced; do NOT mint via the racy scan
+    # ⛔ THE BELT, and the thing that makes the arm-SET ruling a property of THIS PROGRAM rather
+    # than of whoever last edited the case. The POST returned. It did not hand back a usable
+    # number and it did not refuse, so a spend is POSSIBLE — and the only evidence that it is not
+    # is the callee's own $NDL_NO_SPEND declaration. Absent it, the offline scan is forbidden.
+    # ⛔ WRITTEN AS "REFUSE UNLESS DECLARED", never as a test on $crc or on $claimed's shape: those
+    # enumerate outcomes, and the population here is every arm anyone will ever write. See
+    # $NDL_NO_SPEND for the two that were planted past the enumerating version of this check.
+    if [[ "$claimed" != "$NDL_NO_SPEND" ]]; then
+        echo "next-dl: the atomic claim endpoint RETURNED (status $crc) without a usable number and WITHOUT declaring that nothing was allocated — REFUSING to mint. A POST that returned may have spent a number, and the offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. If this is a code path that provably allocates nothing, it must say so (see NDL_NO_SPEND in this file); otherwise fix the cause above and retry. A GAP in the sequence is expected and fine and needs NO recovery action." >&2
+        exit 1
+    fi
     degrade_or_refuse "atomic claim endpoint"
 fi
 
 # --peek: prefer the authoritative NON-CONSUMING read, with the same fall-through
-# shape as the claim above (absent/unreachable ⇒ offline scan; present-but-errored
-# ⇒ abort, already surfaced). Kept as a sibling `if` rather than folded into an
-# if/else with the claim block: both arms fall through to the SAME offline scan
+# shape as the claim above (absent ⇒ offline scan; present-but-errored ⇒ abort, already
+# surfaced) — and TWO arms deliberately NOT the same, because this mode spends nothing: an
+# unreadable 2xx and a transport failure each reach rc 1 here and the scan answers, where the
+# claim takes rc 3 and aborts (card#10230). Kept as a sibling `if` rather than folded
+# into an if/else with the claim block: both arms fall through to the SAME offline scan
 # below, and an else-branch would have to re-state that.
+# ⛔ AND THIS ROUTE CARRIES NO BELT, deliberately — it is a THIRD deliberate difference, not an
+# omission. The belt exists because a POST may have spent; a GET spends nothing, so every way out
+# of a peek is benign by the ROUTE and there is nothing for a declaration to prove. Requiring one
+# here would make --peek refuse on exactly the boards card#7214 built the offline path for. The
+# $NDL_NO_SPEND token still arrives on two of these arms (it is printed by the arms, not by the
+# route) and is simply not a uint, so it degrades like any other unusable value.
 if [[ $peek -eq 1 ]]; then
     if peeked="$(board_peek)"; then prc=0; else prc=$?; fi
     if [[ $prc -eq 0 ]] && kb_is_uint "$peeked"; then
@@ -363,8 +653,28 @@ done
 
 # (2) board-stamped dl_numbers — fail-soft only where no board is CONFIGURED; a
 # configured board that does not answer a whole read refuses the mint (card#6631).
+#
+# ⛔ THE SIBLING OF $NDL_NO_SPEND, ONE SCREEN DOWN, AND FOR THE SAME REASON (card#10230). The call
+# site below cannot read HOW this function ended — it sees one exit code and one line of stdout —
+# and the benign outcome (this board holds no DL floor) and the malignant one (the read happened
+# but this reader could not project it) BOTH arrive as a non-zero rc with an empty capture, so an
+# rc test cannot tell them apart. MEASURED, not reasoned: a card whose `payload` is not an object
+# faults the projection jq at rc 5, which emits nothing, so max_int's grep then exits 1 and
+# pipefail hands the CALLER rc 1 — the benign channel. So the benign paths DECLARE, and the
+# call site degrades only on the declaration. ⚠ The value is deliberately not a uint: reaching the
+# floor comparison it is ignored rather than minted. And it cannot be FORGED by board data — the
+# only other thing this function ever writes to stdout is max_int's output over a stream the jq
+# `norm` above has already reduced to bare digits, so no card's contents can spell it.
+# ⚠ AND THE DECLARATION IS ONLY AS TRUE AS fetch_board_cards' rc: this function declares "no floor"
+# off an EMPTY projection, so it inherits that function's contract that rc 0 means a whole read was
+# seen. That contract has a known-open hole, already named at the call site below and owned by the
+# OPEN card#6630 — a `.data` array of NON-objects faults the paginator's own dedup jq into its
+# `2>/dev/null` and returns rc 0 with an EMPTY list — and where it is holed this declaration is
+# honestly made and still false. It is named here rather than closed here: closing it is that
+# card's, at that layer, and a second predicate at this one would be the same restatement.
+NDL_NO_FLOOR='next-dl:this-board-holds-no-dl-floor'
 board_dl_max() (
-    cfg="$(resolve_board_cfg)" || exit 1
+    cfg="$(resolve_board_cfg)" || { printf '%s' "$NDL_NO_FLOOR"; exit 1; }
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     tok="$(cat "$token_file")"
     # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
@@ -379,8 +689,11 @@ board_dl_max() (
     # the atomic claim endpoint is the real fix on a shared board. WHICH endpoint this
     # branch is downstream of depends on the mode — the claim by default, the inspect
     # endpoint under --peek, which never calls the claim at all — and it is reached when
-    # the endpoint THAT MODE consulted returned dl_sequence_call's rc 1 (absent,
-    # unreachable, or a 2xx carrying no usable value).
+    # the endpoint THAT MODE consulted returned dl_sequence_call's rc 1. ITS CAUSE SET IS
+    # MODE-DEPENDENT (card#10230): absent or no config on either mode, plus UNREACHABLE and a
+    # 2xx carrying no usable value under --peek only. Those last TWO do NOT reach here on the
+    # claim — a number may already be spent in each of them, and this scan cannot see a
+    # spent-but-unstamped DL, so it would answer at or below it.
     cards="$(fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
         rc=$?
         [[ "$rc" -eq 1 ]] && { echo "next-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board's DL floor and could re-mint a used DL)" >&2; exit 2; }
@@ -399,20 +712,45 @@ board_dl_max() (
     # under it — permanently, since the floor is shared state and the mint only ever moves
     # up. The direction was safe (never re-mints), the cost was the allocator. Under the
     # rule the board itself applies such a stamp derives NO ref, so it occupies no DL and
-    # must not raise the floor. max_int still runs: it takes the MAX over the stream and
-    # turns an empty stream into the rc 1 the caller reads as "no floor from this board".
-    printf '%s' "$cards" | jq -r "$KB_JQ_REF_CANON"'.[]? | .payload.dl_number | norm | select(. != "")' | max_int
+    # must not raise the floor.
+    #
+    # ⛔ THE PROJECTION IS CAPTURED, NOT PIPED STRAIGHT INTO max_int, AND THAT IS THE FIX
+    # (card#10230). Piped, jq's own failure is INVISIBLE to this function: jq aborts the whole
+    # stream at rc 5 on the first runtime error, emits nothing, and max_int's grep then exits 1
+    # over the empty stream — so under pipefail the pipeline's rc is max_int's 1, the SAME rc a
+    # board with no stamps at all produces, and the floor was dropped at rc 0 with no refusal
+    # anywhere. `.[]?` does not prevent it: it suppresses ITERATION errors, not the `.payload`
+    # indexing that follows.
+    # ⚑ WHAT ACTUALLY REACHES IT, measured rather than assumed — and it is NOT the obvious input.
+    # A `.data` element that is not an object at all never gets this far: fetch_board_cards' dedup
+    # reads `.id` off it and faults FIRST, inside that function's own `2>/dev/null` (card#6630's
+    # known-open case, named at the call site below). What passes every check that function makes
+    # — the container predicate `.data|type == "array"` and the dedup — and faults HERE is a card
+    # that IS an object whose `payload` is not one: `{"id":9,"payload":[]}`, which is what a PHP
+    # backend emits for an empty associative array. Reproduced end-to-end against the test stub on
+    # the pre-fix binary: one such card beside a card stamped DL-0500 minted DL-0301 from the local
+    # floor, at rc 0, with no refusal.
+    stamps="$(printf '%s' "$cards" | jq -r "$KB_JQ_REF_CANON"'.[]? | .payload.dl_number | norm | select(. != "")')" || {
+        echo "next-dl: board $board answered, but this reader could not project dl_number out of the card list it returned (jq rc=$?) — refusing to mint from a scan that read NO stamp off this board (would drop this board's DL floor and could re-mint a used DL). A card whose payload is not a JSON object does this." >&2
+        exit 2
+    }
+    # An EMPTY stream here is the declared benign outcome and is now SAID rather than inferred
+    # from an exit code the fault path shares: no card carries a well-formed stamp, so this board
+    # names no DL and contributes no floor. Reached identically by a board with no stamps at all
+    # and by one all of whose stamps are not ONE decorated integer (card#7592, above).
+    [[ -n "$stamps" ]] || { printf '%s' "$NDL_NO_FLOOR"; exit 1; }
+    printf '%s\n' "$stamps" | max_int
 )
 # board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board did not
-# answer a whole read (EVERY non-zero paginator rc, 1 through 4) ⇒ fail loud, mint
-# nothing (an undercount could re-mint). 1 = no DL floor came back from a board ⇒ the
-# fail-soft posture, empty bmax, mint from the local sources. That code covers TWO
+# answer a whole read, or answered one this reader could not project (EVERY non-zero paginator
+# rc, 1 through 4, plus a jq runtime error on the projection) ⇒ fail loud, mint
+# nothing (an undercount could re-mint). 1 + $NDL_NO_FLOOR on stdout = no DL floor came back
+# from a board ⇒ the fail-soft posture, mint from the local sources. That pair covers TWO
 # situations, and the boundary it draws is resolve-failure vs fetch-failure, not
 # configured vs unconfigured: either resolve_board_cfg failed and no request was ever
 # issued (its exit paths are enumerated in this file's header), or the read SUCCEEDED and
-# no dl_number came out of it, which max_int's grep turns into a rc 1 under pipefail. Both
-# are reachable with a named board in the config; only the first is what card#6631's ruling
-# declined to scope.
+# no dl_number came out of it. Both are reachable with a named board in the config; only the
+# first is what card#6631's ruling declined to scope.
 # ⚑ THE SECOND SITUATION IS WIDER THAN "no card carries the field" (card#7592): a board every
 # one of whose stamps is not ONE decorated integer now reaches it too, because such a stamp
 # names no DL under the rule the board itself applies and so contributes no floor. That board
@@ -437,9 +775,25 @@ board_dl_max() (
 # would change what this tool accepts, so it is recorded there rather than fixed here.
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
+# ⛔ REFUSE UNLESS DECLARED, exactly as the claim's belt one screen up, and for the same reason
+# (card#10230). The test here USED to be `[[ $dlrc -eq 2 ]] && exit 1` — a blocklist, permissive by
+# default: every status but 2 minted from the local floor alone. A comment beside it argued that
+# was not live because board_dl_max's exits were enumerated, and the comment was FALSE — the
+# function's own final pipeline supplied an unenumerated ending (see the projection above), so the
+# defect this card exists to fix was live at its third copy, under a note saying it was not.
+# Enumerating a callee's outcomes is the wrong shape wherever it is written: the population is
+# every ending anyone will ever give that function, and no caller can read it. So a floor is taken
+# only from a rc-0 uint, the scan proceeds without one only on the positive $NDL_NO_FLOOR
+# declaration, and everything else — a new exit, a `set -u` death, a status nobody thought about —
+# refuses.
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
-[[ "$dlrc" -eq 2 ]] && exit 1
-kb_is_uint "$bmax" && [[ "$bmax" -gt "$max" ]] && max="$bmax"
+if [[ "$bmax" != "$NDL_NO_FLOOR" ]]; then
+    if [[ "$dlrc" -ne 0 ]] || ! kb_is_uint "$bmax"; then
+        echo "next-dl: the board DL-floor read RETURNED (status $dlrc) without a usable floor and WITHOUT declaring that this board holds none — REFUSING to mint. The local max+1 scan alone cannot see the DLs this board has already stamped, so a number from it would be at or below one already in use: a duplicate DL, which is the one answer an allocator must never give. If this is a path on which the board provably names no DL, it must say so (see NDL_NO_FLOOR in this file); otherwise fix the cause above and retry." >&2
+        exit 1
+    fi
+    [[ "$bmax" -gt "$max" ]] && max="$bmax"
+fi
 
 [[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$project' — check the checkout paths" >&2; exit 1; }
 canon="$(kb_dl_canon "$((max + 1))")" || { echo "next-dl: computed DL $((max + 1)) exceeds the canonical range" >&2; exit 1; }
