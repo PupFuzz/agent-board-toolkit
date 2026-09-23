@@ -3335,7 +3335,7 @@ echo "== delete / archive: the mutation is REPORTED from a read-back, never from
 # a merely SOFT-deleted card exactly as it does for a purged one — and a `--hard` read-back
 # built on it would confirm "permanently deleted, DL ref released" for a card still sitting in
 # the trash pinning the allocation floor. Modelling the rule (rather than asserting the query
-# string as a string) is what makes that a RED here: drop `?trashed=1` from _kbc_card_witness
+# string as a string) is what makes that a RED here: drop `?trashed=1` from kb_card_witness
 # and the still-trashed leg below stops failing and starts reporting a purge.
 rm -rf "$TMP"
 _mktmp_scratch --home
@@ -3478,7 +3478,7 @@ eq "…and says the card is left soft-deleted"           "true" "$(has 'now SOFT
 unset -f kb_stub_route
 unset D_LIVE D_TRASHED D_ARCHIVED
 
-echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
+echo "== kb_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
 # rc 1 under this file's contract is an ASSERTION — "NOT APPLIED, and KNOWN" — and every caller
 # above prints it as HARD FAILURE quoting the board. `jq -e` answers 1 for a filter that RAN and
 # came out false, and 4/5 for one that never ran at all; only the first is a measurement, so the
@@ -3492,8 +3492,8 @@ echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILUR
 # filter. Top level of a fresh subprocess, as `_lane_child` above and for the same reason: an
 # in-process capture suspends errexit for the code under test.
 _conf_child='set -euo pipefail; source "'"$BIN"'";
-  _kbc_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
-  _kbc_confirm_card 505 "$1" >/dev/null'
+  kb_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
+  kb_confirm_card 505 "$1" >/dev/null'
 conf() { rc=0; err="$(bash -c "$_conf_child" _ "$1" 2>&1 >/dev/null)" || rc=$?; }
 
 conf '.state == "present"'

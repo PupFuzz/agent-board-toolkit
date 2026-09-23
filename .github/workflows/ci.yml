@@ -167,6 +167,7 @@ jobs:
           - drift-check-fixture-selftest
           - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
+          - framework-mirror-check-selftest
           - gh-code-search-selftest
           - gitignore-secret-family-selftest
           - help-output-selftest
@@ -190,6 +191,7 @@ jobs:
           - pipeline-free-match-selftest
           - prelude-shadow-selftest
           - promote-completeness-gate-selftest
+          - promote-move-readback-selftest
           - promote-pagination-selftest
           - promote-ref-canon-selftest
           - promote-refusal-detail-selftest

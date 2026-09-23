@@ -287,6 +287,11 @@ DISPOSITIONED=(
   # REFUSES on, so there is no write and no wrong card. The cost is a diagnostic naming a DL that
   # does not exist. Narrowing it is a behaviour change to the adoption guard, not this class.
   "bin/adopt-to-dl: existing_int=\"\$(kb_dl_int_lenient \"\$(kb_parse_resp \"\$card\" -r '.data.payload.dl_number // empty')\")\""
+  # A DISPLAY projection, card#10029: the read-back's `not-applied` line quotes what the card
+  # HOLDS ("it holds payload.dl_number=null, not 77"), so it must show the stored value verbatim
+  # — the same reason as the conflict message above. The COMPARE beside it, in the same function's
+  # `pred`, goes through the canon (`| norm`, arm (a)), so nothing is decided off this read.
+  "bin/board-card-start: dl)    proj='.card.payload.dl_number'"
   # PROJECTIONS, not correlations: kbcard renders these fields for a human or for `--json`. A
   # projection MUST show what is stored — normalising it would hide from the operator that the
   # card holds a stamp the correlating tools refuse, which is the one place they need to see it.
