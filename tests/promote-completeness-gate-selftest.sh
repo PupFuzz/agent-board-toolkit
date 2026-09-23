@@ -79,10 +79,13 @@ _oracle() {
 }
 
 # run_promote <extra-args…> — the real script over the canned board, all three DLs shipped.
+# $PROMOTE_CWD — the directory the tool RUNS IN, defaulting to this test's own cwd so every call
+# below is unaffected. It exists because the tool resolves the release head with `git rev-parse`
+# against its CWD, so a leg about head resolution has to choose the repo that answers.
 run_promote() {
   : > "$PATCH_LOG"; : > "$ORACLE_ARGV"
   rc=0
-  out="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100,DL-101,DL-102" "$@" 2>"$TMP/err")" || rc=$?
+  out="$(cd "${PROMOTE_CWD:-$PWD}" && "$PRC" --config "$TMP/release-pr.json" --dls "DL-100,DL-101,DL-102" "$@" 2>"$TMP/err")" || rc=$?
   err="$(cat "$TMP/err")"
   patched="$(cat "$PATCH_LOG")"
   argv="$(cat "$ORACLE_ARGV")"
@@ -153,10 +156,36 @@ eq "  … and the CHANNEL that branch came from"      "true" \
    "$(has "from $TMP/release-pr.json .dev_branch" "$ON")"
 # REPORTED, not recited: both values and both channels must MOVE with the run they describe, or
 # the line is a constant that happens to read true today.
-run_promote --require-complete --completeness "$TMP/oracle" --head "$(git -C "$ROOT" rev-parse HEAD~1)"
+#
+# ⛔ THE SECOND COMMIT IS BUILT HERE, NOT BORROWED FROM THE CHECKOUT. Showing the head MOVES needs
+# two distinct commits that both RESOLVE, and the ambient checkout cannot be assumed to hold two:
+# CI clones this repo at depth 1, where `HEAD~1` is `fatal: unknown revision`. ⚠ That failure is
+# not the empty string — `git rev-parse` ECHOES THE UNRESOLVABLE ARGUMENT to stdout and exits 128,
+# so `$( )` yields the literal `HEAD~1`, the tool is handed `--head HEAD~1`, `require_value` is
+# satisfied, and the gate line reads `release head <UNRESOLVED> from --head` while the assertion
+# expects `release head HEAD~1`. Measured both ways: red in CI run 35932847181, and reproduced
+# locally in a `--depth 1` clone. A scratch repo makes the two-commit property THIS TEST'S, so the
+# leg measures the tool instead of the checkout's fetch depth.
+HEADREPO="$TMP/headrepo"
+git init -q "$HEADREPO"
+_headrepo_commit() { git -C "$HEADREPO" -c user.email=selftest@invalid -c user.name=selftest \
+                       commit -q --allow-empty -m "$1"; }
+_headrepo_commit first;  HEAD_PREV="$(git -C "$HEADREPO" rev-parse HEAD)"
+_headrepo_commit second; HEAD_NOW="$(git -C "$HEADREPO" rev-parse HEAD)"
+# CONTROL: the fixture only demonstrates a MOVE if the two commits actually differ and both
+# resolve — a repo that silently produced one commit twice would make every check below tautological.
+eq "control: the scratch repo holds TWO distinct commits" "false" \
+   "$([ "$HEAD_PREV" = "$HEAD_NOW" ] && echo true || echo false)"
+# The BEFORE arm, in the SAME repo as the after arm, so the flag is the only thing that changes
+# between them — against the ambient checkout above, cwd and flag moved together.
+PROMOTE_CWD="$HEADREPO" run_promote --require-complete --completeness "$TMP/oracle"
+ON="$(_gate_on "$err")"
+eq "  … with no --head it reports THAT repo's head"  "true" \
+   "$(has "release head $HEAD_NOW from the working tree HEAD" "$ON")"
+PROMOTE_CWD="$HEADREPO" run_promote --require-complete --completeness "$TMP/oracle" --head "$HEAD_PREV"
 ON="$(_gate_on "$err")"
 eq "an explicit --head moves the reported head"     "true" \
-   "$(has "release head $(git -C "$ROOT" rev-parse HEAD~1) from --head" "$ON")"
+   "$(has "release head $HEAD_PREV from --head" "$ON")"
 eq "  … and the working-tree channel is gone"       "false" "$(has 'no --head passed' "$ON")"
 "$PRC" --config "$TMP/release-pr-nodev.json" --dls "DL-100" --require-complete \
        --completeness "$TMP/oracle" >/dev/null 2>"$TMP/err" || true
