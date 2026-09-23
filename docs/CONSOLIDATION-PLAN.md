@@ -489,7 +489,12 @@ Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already
 both name `promote-released-cards` in the second group, alongside a §6b recipe that copies it as a
 single file. This stage moves it into the first group, so both statements and that recipe need
 amending, plus an entry in [`UPGRADE.md`](UPGRADE.md). The framework's `templates/release/` mirror
-would need the lib too — that mirror is currently healthy, and this stage would make its job harder.
+would need the lib too — and this stage would make its job harder. ⚠ **"That mirror is currently
+healthy" stood here and was false when measured (card#9939):** nothing on either end had ever
+compared the two, so the claim rested on the absence of a report from a check that did not exist.
+Do not restate its state here at all — it is a property of another repo and would go stale again the
+moment that repo moved. Run [`../tests/framework-mirror-check.sh`](../tests/framework-mirror-check.sh),
+which re-derives it per file against the toolkit tag each copy's own stamp claims.
 
 ---
 

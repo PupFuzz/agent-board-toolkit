@@ -133,7 +133,56 @@
 #     non-merge commit pushed directly to main whose range carries cardless DLs would fail
 #     loud by the same rule — intended, given the assumption.
 #
-# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--dry-run] [--config PATH]
+# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--require-complete] [--dry-run] [--config PATH]
+#        promote-released-cards --tool-version   # print the agent-board-toolkit release THIS FILE is, and exit
+#
+# --require-complete: OPT-IN card-completeness guard (card#10176). ⛔ ABSENT IS THE ONLY WAY TO
+#   SELECT THE PRIOR BEHAVIOUR, and with it absent every run is BYTE-IDENTICAL to before — no
+#   new read is issued, no new dependency is required, and no card's disposition moves.
+#
+#   WHAT IT FIXES. This mover promotes a card as soon as the FIRST of its refs is in a release.
+#   A card whose work spans several PRs therefore reaches the TERMINAL stage on a partial merge:
+#   the board then reads it RELEASED while the rest is open or merged-but-unreleased, so no
+#   queue offers the remainder and an agent pulling from the board correctly skips it. The
+#   board's own state cannot answer this — a card carries ONE `pr` slot and every writeback
+#   overwrites it, so a multi-PR card structurally cannot represent its own parts.
+#
+#   WHAT IT DOES. Before the move loop, ONE batch call to `card-completeness` (beside this file
+#   or on PATH) classifies every matched card against the release head and the integration
+#   branch. A card that is not COMPLETE is SKIPPED with a line naming the PRs that block it, and
+#   is never moved. UNMEASURED skips too — deliberately: "no PR cites this card" and "I could
+#   not read the PRs" are the same silence if you let them be, and the asymmetry points one way
+#   (an un-promoted shipped card is picked up by the next release; a card wrongly in a terminal
+#   stage is re-read by nobody). The predicate itself, the alternatives rejected against
+#   measurements, and what it CANNOT see are stated in `card-completeness`'s own header and are
+#   deliberately not restated here.
+#
+#   ⚠ IT NEEDS THREE THINGS, and refuses at rc 2 BEFORE ANY REQUEST if it cannot have them
+#   (card#9756's rule: a guard that cannot be applied is a refusal, never a silent skip):
+#     * `card-completeness` resolvable — beside this file, or on PATH. This tool is vendored
+#       STANDALONE and sources no lib, but `--require-complete` makes that ONE sibling a
+#       runtime dependency, so a repo passing the flag must co-vendor it.
+#     * an integration branch — `.dev_branch` in the config. NOT defaulted: a guessed branch is
+#       an answer about a different population, and this decides a terminal-stage write.
+#     * a release head that GitHub knows. Resolved from `--head` (default `HEAD`) as a full sha.
+#       An unpushed local commit is a 404 there, which is UNMEASURED, which skips.
+#   It also needs a credential for the GitHub read ($GITHUB_TOKEN / $GH_TOKEN, `pull-requests:
+#   read` + `contents: read`); without one a private repo reads UNMEASURED and nothing moves.
+#
+# --tool-version: a QUERY about the tool, not about a release. It prints the toolkit release this
+#   file was stamped at, from the `ABTK_TOOL_VERSION` line below, and exits 0 without reading any
+#   config, board or git ref (jq/curl/git must still be on PATH — this tool checks for them ahead
+#   of parsing, as the sibling release-pr-body does). The stamp is EMBEDDED because this file is
+#   VENDORED and MIRRORED — a copy
+#   sitting in another repo has no `VERSION` beside it to read, so without a stamp there is no way
+#   to ask a copy which release it is. That question is the whole input to the mirror lockstep
+#   README.md declares (see `tests/framework-mirror-check.sh`): a copy that cannot name its release
+#   cannot be held to any tag, and the check reports it UNSTAMPED rather than passing it.
+#   ⚠ BOOTSTRAP BOUND: only a copy new enough to carry the flag can answer. Every earlier revision
+#   of this file refuses it as `unknown arg '--tool-version'` at rc 2, which means "older than the
+#   flag" and is NEVER a version. `tests/tool-version-stamp-selftest.sh` derives its population
+#   from the tree, so this file joined it by carrying the stamp, and holds the stamp equal to
+#   `VERSION`; `VERSIONING.md` release step 3 re-stamps it.
 #
 # --source "owner/repo" | "*": override `.promote.source` for this run (see REPO QUALIFICATION
 #   above). One of the two — the config key or this flag — MUST be present, or the run refuses
@@ -190,6 +239,12 @@
 #   ATTACKER side: a PR can edit `.release-pr.json`, so it could always move the target and
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
+
+# The toolkit release THIS FILE is, for `--tool-version`. A guarded restatement of `VERSION`
+# (VERSIONING.md rule 1): a vendored or mirrored copy has no VERSION beside it to read.
+# Line-initial and single-quoted — `tests/tool-version-stamp-selftest.sh` derives its population
+# by that exact spelling and reds on any other.
+ABTK_TOOL_VERSION='0.35.1'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
@@ -391,7 +446,7 @@ require_resolvable() { # <flag> <ref>
 }
 
 CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
-SOURCE_IN=""
+SOURCE_IN=""; REQUIRE_COMPLETE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
@@ -400,7 +455,12 @@ while [ $# -gt 0 ]; do
     --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --source)         require_value "$1" "${2:-}"; SOURCE_IN="$2"; shift 2;;
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
+    --require-complete) REQUIRE_COMPLETE=1; shift;;
     --dry-run)        DRY=1; shift;;
+    # Answered here, in the parser, exactly like -h/--help below and like the sibling
+    # release-pr-body: both tools check for jq/git before parsing, so this reports the stamp
+    # without reading any config, board or git ref — not without those commands on PATH.
+    --tool-version)   printf '%s\n' "$ABTK_TOOL_VERSION"; exit 0;;
     --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     # Print the contiguous leading comment block, whatever its length. A FIXED line range
     # silently truncates the moment the header outgrows it — this header reached 43 lines
@@ -423,6 +483,24 @@ if [ -n "$SHIPPED_STAGES" ]; then
   SHIPPED_STAGES="$(printf '%s' "$SHIPPED_STAGES" | tr -d '[:space:]')"
   uint_csv_ok "$SHIPPED_STAGES" \
     || die "--shipped-stages must be a comma-separated list of numeric stage ids (got '$SHIPPED_STAGES')"
+fi
+
+# ── --require-complete: resolve the guard's ONE external dependency, BEFORE any request ──
+# card#9756's rule for a guard that cannot be applied: refuse at rc 2 with the reason, never
+# proceed with the guard silently off. Doing it HERE — ahead of the config read, the board read
+# and every PATCH — is what makes the refusal free: a run that cannot apply the guard has not
+# yet written anything. The integration branch and the release head are resolved later, where
+# the config and the range are known; each has its own refusal at the same rc, for the same
+# reason. ⛔ Nothing in this block runs when the flag is absent, which is what keeps an
+# unflagged run byte-identical and dependency-free.
+CC=""
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  _self_dir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+  if   [ -x "$_self_dir/card-completeness" ]; then CC="$_self_dir/card-completeness"
+  elif command -v card-completeness >/dev/null 2>&1; then CC="$(command -v card-completeness)"
+  else
+    die "--require-complete needs \`card-completeness\`, and it is neither beside this file ($_self_dir/) nor on PATH. This tool is vendored STANDALONE, so the flag makes that one sibling a runtime dependency: co-vendor bin/card-completeness with bin/promote-released-cards, or drop the flag. REFUSING rather than promoting with the guard silently off — a card wrongly moved to a terminal stage is re-read by nobody."
+  fi
 fi
 
 # Same normalize-then-validate rule for --cards, and STRICT on purpose. --dls is a token
@@ -1356,8 +1434,49 @@ owner_clear() {
   return 0
 }
 
+# --- card-completeness (opt-in, --require-complete) ---------------------------
+# ONE batch call for the whole matched set, not one per card: the tool takes a --cards LIST and
+# answers a line per id, so the open-PR page walk and the release-window compare are paid once.
+# Runs BEFORE the move loop so that a population it could not read stops every move rather than
+# some of them — a half-guarded sweep is the worst of both.
+COMPLETENESS=""
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  # The integration branch is NOT defaulted. A guessed branch answers about a different
+  # population, and what rests on the answer is a write into a stage nobody re-reads.
+  INTEGRATION="$(cfg '.dev_branch')"
+  [ -n "$INTEGRATION" ] \
+    || die "--require-complete needs an integration branch and \`.dev_branch\` is absent from $CONFIG. That branch defines which merged-but-unreleased PRs exist, so it is never guessed: add \"dev_branch\": \"<branch>\" to the config, or drop the flag."
+  # A full sha: a local ref NAME means nothing to the GitHub compare this resolves against.
+  RELEASE_HEAD="$(git rev-parse -q --verify "${HEAD_REF:-HEAD}^{commit}" 2>/dev/null || true)"
+  [ -n "$RELEASE_HEAD" ] \
+    || die "--require-complete could not resolve a release head from '${HEAD_REF:-HEAD}' — the commit the release is AT is what decides which merged PRs are released."
+  cc_ids="$(printf '%s' "$PLAN" | jq -r '[.[].id] | join(",")')"
+  if [ -z "$cc_ids" ]; then
+    # Nothing matched, so there is nothing to classify. Not a skipped guard — an empty subject.
+    echo "promote-released-cards: card-completeness not consulted — no card matched this release." >&2
+  else
+    cc_rc=0
+    # ⛔ stdout is the verdict table and stderr is the tool's own WARN/UNMEASURED narration;
+    # they are kept SEPARATE. Merging them (2>&1) would put prose rows into the table this
+    # parses, and a row that fails to parse reads as a card with no verdict — which skips.
+    COMPLETENESS="$("$CC" --cards "$cc_ids" --release-head "$RELEASE_HEAD" --integration "$INTEGRATION" ${QUALIFY_SRC:+--repo "$QUALIFY_SRC"})" || cc_rc=$?
+    # 0 = all COMPLETE, 5 = at least one INCOMPLETE, 6 = all UNMEASURED. Each is an ANSWER this
+    # loop acts on per card, so none of them is fatal here. Any OTHER rc (2 = refusal/usage, or
+    # a crash) means the tool did not answer at all, and a guard that did not run must not read
+    # as a guard that passed.
+    case "$cc_rc" in
+      0|5|6) ;;
+      *) die "--require-complete: card-completeness exited $cc_rc without answering (2 = its own refusal; see its message above). REFUSING to promote with the guard un-run." ;;
+    esac
+  fi
+fi
+# cc_verdict <id> — the tool's verdict line for one card, or empty when it answered for none.
+# Matched on the id in FIELD 1 against a literal TAB, never a bare grep for the number: a bare
+# match would let card 176 be answered by card 10176's row.
+cc_verdict() { printf '%s\n' "$COMPLETENESS" | awk -F'\t' -v i="$1" '$1 == i { print; exit }'; }
+
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0
+moved=0; skipped=0; failed=0; guarded=0; incomplete=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
@@ -1372,6 +1491,24 @@ while IFS= read -r row; do
   if [ -n "$SHIPPED_STAGES" ] && ! in_shipped_stage "$cur"; then
     echo "  ⊘ $ref (#$id): current stage $cur not in a Shipped-class source stage — skipped; promotion never resurrects declined/backlog cards" >&2
     guarded=$((guarded + 1)); continue
+  fi
+  # Card-completeness guard (opt-in via --require-complete). Ordered AFTER the already-released
+  # check for the same reason the stage guard is: a card genuinely at the target stage must keep
+  # reading "already released" on an idempotent re-run rather than being re-judged.
+  # ⛔ ANYTHING THAT IS NOT THE LITERAL VERDICT `COMPLETE` SKIPS — INCOMPLETE, UNMEASURED, and a
+  # row that did not parse alike. This is the fail-CLOSED direction and it is deliberate: the
+  # two error states are indistinguishable from the outside ("no PR cites this card" and "I
+  # could not read the PRs" are the same silence), and the costs are not symmetric — a card left
+  # unpromoted is picked up by the next release, a card wrongly in a terminal stage is re-read
+  # by nobody. The row's own third field carries WHY, so the skip is never unexplained.
+  if [ "$REQUIRE_COMPLETE" = 1 ]; then
+    cc_row="$(cc_verdict "$id")"
+    cc_state="$(printf '%s' "$cc_row" | cut -f2)"
+    if [ "$cc_state" != COMPLETE ]; then
+      cc_why="$(printf '%s' "$cc_row" | cut -f3-)"
+      echo "  ⊘ $ref (#$id): ${cc_state:-NO VERDICT} — not promoted; this card’s work is not wholly in this release: ${cc_why:-card-completeness returned no row for this card}" >&2
+      incomplete=$((incomplete + 1)); continue
+    fi
   fi
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
@@ -1413,7 +1550,13 @@ fi
 # ACTIVE, so a run with no --shipped-stages on a `source: "*"` board keeps a byte-identical
 # summary line (backward compatibility — a v0.21.0 fleet-adoption decision, asserted below by
 # tests/promote-stage-guard-selftest.sh).
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# $INCOMPLETE_TERM is EMPTY unless the flag was passed, which is what keeps an unflagged run's
+# summary byte-identical. It is built here rather than inline because REQUIRE_COMPLETE holds the
+# string "0" when off, and "0" is non-empty — so the `${VAR:+…}` idiom the other terms use would
+# emit this one on every run.
+INCOMPLETE_TERM=""
+[ "$REQUIRE_COMPLETE" = 1 ] && INCOMPLETE_TERM="$incomplete incomplete, "
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${INCOMPLETE_TERM}${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -1429,6 +1572,21 @@ if [ -n "$SHIPPED_STAGES" ]; then
   echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
 else
   echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
+fi
+# The card-completeness state, ALWAYS, on its own stderr line — same rule as the stage-guard
+# pair above (card#5152): a guard whose whole effect is to NOT move cards is unauditable after
+# the fact unless the run says which way it was set. Separate line, never folded into the
+# summary, so the summary stays the stable parse target it is.
+# ⛔ ONE-SIDED ON PURPOSE, and this is a DELIBERATE DIVERGENCE from the stage-guard pair above.
+# That pair declares BOTH ways (card#5152). This one is silent when the flag is absent, because
+# the two guards' OFF states are not the same kind of thing: stage-guard OFF is a live hazard
+# (a stale stamp on a declined card gets promoted), whereas card-completeness OFF is simply what
+# every consumer of this tool has always done. An always-printed OFF line would therefore appear
+# on every release run in every repo the moment they upgrade, about a flag none of them asked
+# for — and card#10176 requires an absent flag to leave the run byte-identical, which an extra
+# stderr line would not. Flip this to the two-sided form only as an explicit decision.
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  echo "promote-released-cards: card-completeness ON (integration '$INTEGRATION', release head $RELEASE_HEAD) — a matched card whose work is still open, or merged to that branch but not in this release, was NOT promoted; UNMEASURED was treated the same way." >&2
 fi
 # The repo-qualification state, ALWAYS, on its own stderr line — for exactly the reason the
 # stage-guard pair above exists (card#5152). `source: "*"` is a DECLARATION about the board,

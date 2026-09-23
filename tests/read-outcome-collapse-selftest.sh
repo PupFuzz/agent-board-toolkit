@@ -139,6 +139,8 @@ DISPOSITIONED=(
   "bin/board-snapshot:untri_buf|SAME OUTCOME — mktemp is a WRITE, not a read; the empty branch interleaves the untriaged lines instead of losing them, and says so."
   "bin/board-stats:page|SAME OUTCOME — empty sets err='changelog page N is not the shape this tool reads' and breaks; the transport failure above is its own captured branch."
   "bin/board-stats:obj|SAME OUTCOME — empty emits a stub object carrying the board identity and an explicit failure string, so no board is ever dropped from the report."
+  "bin/card-completeness:IDS|NO READ — this greps $CARDS_IN, the caller's OWN --cards value, already in memory; no request has been issued at this point. An empty result is REFUSED on the very next line (\"--cards '…' contains no card ids\", rc 2), so no verdict is ever built from it."
+  "bin/promote-released-cards:RELEASE_HEAD|NO READ — a git rev-parse against the local checkout, not the board. Its trailing '|| true' captures an UNRESOLVABLE ref as empty, and the next line dies rc 2 naming the ref, because --require-complete without a release head would answer about the wrong population; the empty case is therefore its own refusal, never a promoted card."
   "bin/install-board-hooks:root|SAME OUTCOME — both exit 1 'cannot resolve the work-tree root'; git's own refusal is captured separately just above."
   "bin/install-board-hooks:cdir|SAME OUTCOME — both exit 1 'cannot resolve the git common directory', the fail-closed direction for an installer."
   "bin/install-board-hooks:super|SAME OUTCOME — an unresolvable superproject and no superproject both take the non-submodule wording; the install target is unchanged either way."
