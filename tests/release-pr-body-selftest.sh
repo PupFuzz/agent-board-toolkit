@@ -1089,7 +1089,8 @@ eq "leg 2: every silent return in the gate region is reached through such a test
 
 # LEG 3 — THE CLAIM ITSELF. The subjects the function tests before printing, against the
 # subjects the header's `gates:` lines declare. An undeclared gate reds; a declared non-gate
-# reds. Normalisation is two rules, both spelled here rather than in the header: `${V:-}`/`$V`
+# reds. ⚠ OWED CONSOLIDATION — this extractor and LEG 5's are two readers of one thing; see the
+# note at leg 5 before editing either. Normalisation is two rules, both spelled here rather than in the header: `${V:-}`/`$V`
 # reduce to `V`, and a `$dir/name` operand reduces to `name` (that is the promoter's
 # beside-the-script half, which the header names as `promote-released-cards`).
 _pc_real_gates="$(printf '%s\n' "$_pc_region" \
@@ -1162,6 +1163,14 @@ eq "leg 4: past the gate region every return has already printed a coverage line
 # that spells a test inside backticks (card#5874's note above `args`), and a comment is not code.
 # A trailing comment is left alone — `#` inside a string is not a comment, and no regex here
 # knows the difference; a test it hides is still read, an invented one still reds.
+#
+# ⚠ OWED CONSOLIDATION, NAMED RATHER THAN TAKEN (canon #5). Leg 3 carries a SECOND unary
+# extractor: it requires the closing `]` and normalises only `${V:-}`, where this one accepts
+# `${V:-anything}` and reads binary tests as well. Two readers of one thing is the defect that
+# lets them drift apart — one `_pc_subjects` helper, called with the region and with the whole
+# function, is the repair. It was not taken in the round that added this leg because hoisting it
+# rewrites leg 3, which a review had just certified, and a fix round that invalidates its own
+# verification is worse than the duplication. Take it in a round that re-verifies leg 3.
 _pc_code="$(printf '%s\n' "$_pc_src" | sed -E 's/^[[:space:]]*#.*$//')"
 _pc_norm='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
 _pc_unary="$(printf '%s\n' "$_pc_code" | { command grep -oE '\[\[? -[a-z] "[^"]*"' || true; } \
