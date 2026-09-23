@@ -147,6 +147,13 @@ _bcs_patch() {
         return 0
     fi
     http="$KB_HTTP"
+    # ⛔ A THIRD <field> NEEDS AN ARM HERE, and no guard below will tell you it is missing: an
+    # unset `pred` dies under `set -u` inside the command substitution at the kb_confirm_card call,
+    # which is rc 1 — the DENIED arm — so the hook would print a confident NOT APPLIED quoting a
+    # board it never read. Deliberately NOT guarded (canon #6): both call sites pass a LITERAL
+    # (`stage` at the move, `dl` at the stamp) and no input reaches this argument, so the state is
+    # unreachable today and a guard here would be code for a state that cannot occur. This comment
+    # is the disposition; it is the next edit that makes the state reachable.
     case "$field" in
         stage) proj='.card.workflow_stage_id'
                pred='.state == "present" and ((.card.workflow_stage_id | tostring) == env.BCS_WANT)' ;;
@@ -843,9 +850,23 @@ _bcs_verdict resolved "$cid" "card #$cid ($label)"
 # body) proceeds as it always has: it cannot arise here, the empty-stage exit above having left.
 # The stage verdict is asked HERE, before the dl_number stamp, for the same reason: it is pure, and
 # the stamp must not land when the verdict cannot be had.
+# <rc> `undefined` is a function found MISSING WITHOUT CALLING IT (declare -F), for a lib symbol
+# whose absence no rc can report in time. The sibling of kbcard's _kbc_lib_unruled, whose header
+# carries the same rule for the same class; the WORDING stays here for the reason above.
 _bcs_unruled() {
-    bcs_skip "card #$cid ($label): $1 returned rc $2, which is not one of its answers (rc 127: the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written"
+    local said="returned rc $2, which is not one of its answers (rc 127: the"
+    [ "$2" = undefined ] && said="is not defined (the"
+    bcs_skip "card #$cid ($label): $1 $said _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written"
 }
+# ⛔ kb_confirm_card IS ASKED FOR HERE, BEFORE ANY WRITE, and by definedness rather than by a call
+# (a call costs a GET). It is called AFTER the PATCH (_bcs_patch), which is why the rc tests
+# below cannot cover it and why a preflight is the only place it fits: beside an older lib
+# the write would GO OUT and the missing function would answer rc 127 — routed to the UNVERIFIED
+# arm — leaving the board changed, the hook exiting 0 as it must, and the reason only on a stderr
+# the installed wrapper discards. That is a mis-vendored install degrading SILENTLY, and it breaks
+# the rule the rc tests below exist for: a lib older than this hook writes NOTHING, not even the
+# dl_number stamp (card#9756). Measured on this head's hook beside the card#10029 base lib.
+declare -F kb_confirm_card >/dev/null 2>&1 || _bcs_unruled kb_confirm_card undefined
 _bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
 case "$_bcs_pin" in
     0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;

@@ -2806,9 +2806,13 @@ cmd_unlink() {
 # ⛔ THE VALUE IS THE LIB'S, NOT A SECOND CONSTANT (card#10029). `_kb-board-lib.sh` defines
 # `KB_RC_UNVERIFIED` for the read-back primitive it now owns (`kb_confirm_card`, hoisted out of
 # this file), and this name is kbcard's published EXIT CODE for that same outcome — so it takes
-# the lib's value rather than re-spelling `3` where nothing compares the two. A tool that is
-# vendored standalone and CANNOT source the lib duplicates it instead, pinned by a parity test
-# (`bin/promote-released-cards`); this file sources the lib, so it has nothing to pin.
+# the lib's value rather than re-spelling `3` where nothing compares the two. This file sources
+# the lib, so it has nothing to pin. ⚠ NO STANDALONE COPY OF THIS RC EXISTS TODAY and none is
+# pinned: `command grep -l UNVERIFIED bin/*` names only files that `source "$KB_LIB"`, so no
+# standalone-vendored tool carries this rc at all, and
+# `tests/mirror-pair-parity-selftest.sh` holds no row for this constant. If a standalone tool ever
+# duplicates it, the duplicate needs a parity row ADDED there; nothing holds a future copy level
+# on its own.
 KBC_RC_UNVERIFIED="$KB_RC_UNVERIFIED"
 
 # _kbc_unverified <verb> <subject> [detail]: the ONE owner of the unverified-write report.

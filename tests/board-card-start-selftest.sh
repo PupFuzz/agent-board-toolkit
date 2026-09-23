@@ -986,8 +986,18 @@ if command -v git >/dev/null 2>&1; then
     # THE CARD IS STATEFUL, because the mover now reports from a READ-BACK (card#10029): a GET of
     # 4242 answers the stage and payload.dl_number the request log says were PATCHed — unless
     # KB_STUB_MOVE_NOOP / KB_STUB_STAMP_NOOP make that write a 2xx the board did not apply (the
-    # 2026-05-22 shape). KB_STUB_REREAD answers every GET AFTER the stage move with that status
-    # (or `!curl <rc>`), so the read-back itself can be refused or never complete.
+    # 2026-05-22 shape).
+    #
+    # ⭐ KB_STUB_REREAD REFUSES THE READ-BACK AND ONLY THE READ-BACK — the `?trashed=1` GET that
+    # kb_card_witness issues, and no other — with that status (or `!curl <rc>`). The mover's own
+    # opening read and the owner-tag write's own card read are PLAIN GETs and are still answered.
+    # That discrimination is what makes the owner-tag legs below a measurement: while this knob
+    # refused EVERY GET after the move, the tag write's own read failed too, so no tag was written
+    # whatever the gate at the bottom of bin/board-card-start decided — and deleting that gate's
+    # `unverified` arm left the whole suite green (review r1 of PR #384, measured). It is keyed on
+    # the query rather than on a GET ordinal because `?trashed=1` is the property that IS the
+    # read-back (the lib's kb_card_witness header says why it is load-bearing), and an ordinal
+    # would silently re-point at a different request the day a read is added or removed.
     kb_stub_route() {
         local method="$1" url="$2" body="$3" stage=81 payload='{}' moved stamp
         moved="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "workflow_stage_id")' "$KB_STUB_LOG")"
@@ -996,7 +1006,7 @@ if command -v git >/dev/null 2>&1; then
         [[ -n "$stamp" && -z "${KB_STUB_STAMP_NOOP:-}" ]] && payload="$(jq -c '.payload' <<<"$stamp")"
         case "$method $url" in
             "GET "*/tasks/4242.json*)
-                if [[ -n "$moved" && -n "${KB_STUB_REREAD:-}" ]]; then
+                if [[ -n "${KB_STUB_REREAD:-}" && "$url" == *trashed=1* ]]; then
                     printf '%s\n{"message":"re-read refused by the stub"}' "$KB_STUB_REREAD"
                 else
                     printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":%s,"payload":%s,"tags":%s}}' "$stage" "$payload" "${KB_STUB_TAGS:-[]}"
@@ -1070,8 +1080,28 @@ if command -v git >/dev/null 2>&1; then
         eq "re-read $_rr: the durable log says UNVERIFIED, not NOT APPLIED" "true|false" \
            "$(has 'card #4242 write UNVERIFIED (card #4242 (#4242) → In Progress move) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
         eq "re-read $_rr: no owner tag for a move nobody confirmed" "$_move" "$_obody"
+        eq "re-read $_rr: …and the card is not re-read for one — the GATE stopped it, not a failed read" \
+           "2" "$(kb_stub_count GET /tasks/4242.json)"
     done
     eq "re-read transport failure: the log carries the witness's reason" "true" "$(has 'DID NOT COMPLETE' "$_ologtxt")"
+    # ⭐ THE FIXTURE'S OWN CONTROL for the four legs above, and the reason they are a MEASUREMENT of
+    # the owner-tag gate rather than of the stub: the refusal must be the READ-BACK's ALONE. While
+    # KB_STUB_REREAD refused every GET after the move, the tag write's own card read was refused
+    # too, so `no owner tag for a move nobody confirmed` passed because nothing could be READ — for
+    # every gate, a deleted one included (review r1 of PR #384 measured exactly that false green).
+    # Probed at the stub itself, with the last run's request log still in place, in the two GET
+    # spellings this hook issues. Both arms are needed: the refusing one alone would pass for a
+    # stub that refused nothing, the answering one alone for a stub that refused everything.
+    _rbprobe() {  # <url-suffix> — the stub's HTTP status for ONE GET of card 4242 under the knob
+        local o; o="$(KB_STUB_REREAD=403 KB_STUB_TAGS='["fr"]' curl -s -X GET -w '|%{http_code}' \
+            "$KB_STUB_API/tasks/4242.json$1" </dev/null)"
+        printf '%s' "${o##*|}"
+    }
+    eq "fixture control: KB_STUB_REREAD refuses the READ-BACK — kb_card_witness's ?trashed=1 GET" \
+       "403" "$(_rbprobe '?trashed=1')"
+    eq "fixture control: …and ANSWERS the plain GET kb_owner_tag_write makes, so the legs above measure the gate" \
+       "200" "$(_rbprobe '')"
+    unset -f _rbprobe
     # The SECOND call site: the payload.dl_number stamp (a DL that matches no card, so the branch's own
     # card id is used and the stamp is due). The move beside it still lands and is reported.
     git -C "$_orepo" checkout -q -b fix/card-4242-dl-77-x
@@ -1086,6 +1116,20 @@ if command -v git >/dev/null 2>&1; then
        "$(has 'dl_number stamp (=DL-0077) failed — NOT APPLIED: the PATCH answered HTTP 200 and a re-read says card #4242 holds payload.dl_number=null, not the 77 this write asked for' "$_ologtxt")"
     eq "dl stamp 2xx NOT applied: the move beside it is still read back and reported" "true" \
        "$(has '→ In Progress (read back: workflow_stage_id=84)' "$_out")"
+    # ⭐ THE STAMP'S THIRD OUTCOME. KB_STUB_REREAD refuses every read-back on this branch, and the
+    # stamp has one of its own — issued BEFORE the move — so this is the `dl` field driven through
+    # kb_confirm_card's UNVERIFIED arm by the REAL read-back, not by a stubbed predicate. Until the
+    # knob was keyed on `?trashed=1` it could not reach this write at all (it was gated on the move
+    # having already happened), which is why the *Coverage.* claim of three outcomes for the stamp
+    # was wider than the fixture (review r1 of PR #384).
+    _stampbody='{"payload":{"dl_number":"DL-0077"}}'
+    KB_STUB_REREAD=403 _own_run builder
+    eq "⭐ dl stamp UNVERIFIED: rc 0 (fail-soft)"       "0" "$_rc"
+    eq "⭐ dl stamp UNVERIFIED: NO stamped line"        "false" "$(has 'stamped payload.dl_number=DL-0077' "$_out")"
+    eq "⭐ dl stamp UNVERIFIED: the durable log says UNVERIFIED for the STAMP by name, and never NOT APPLIED" "true|false" \
+       "$(has 'card #4242 write UNVERIFIED (card #4242 dl_number stamp (=DL-0077)) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
+    eq "⭐ dl stamp UNVERIFIED: the stamp and the move were both SENT, and no owner tag follows either" \
+       "$_stampbody"$'\n'"$_move" "$_obody"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
     KB_STUB_TAGS='["owner:acme/builder","fr"]' _own_run builder
@@ -1135,8 +1179,48 @@ if command -v git >/dev/null 2>&1; then
     eq "…and it is a genuine no-op, not a failure"         "" "$_ologtxt"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
+    # ⭐ A _kb-board-lib.sh OLDER THAN THIS HOOK WRITES NOTHING — not even the dl_number stamp
+    # (card#9756) — and the read-back is what made that rule hard to keep: kb_confirm_card is
+    # called AFTER the PATCH, so with no preflight the stale pairing SENDS the write, gets rc 127,
+    # routes it to the UNVERIFIED arm and exits 0. A mis-vendored install would then degrade
+    # silently, on a stderr the installed wrapper discards, while the upgrade note promised a loud
+    # refusal (review r1 of PR #384 measured exactly that against the card#10029 base lib).
+    # The pairing is built by STRIPPING the one definition out of a copy of the live lib, not by
+    # vendoring a historical file: the leg then tests the PROPERTY the preflight asks about (the
+    # lib does not define it) and cannot rot as the lib moves on.
+    _stalelib() {  # <dir> <sed-expr> — a runnable hook + lib pair under $TMP/<dir>
+        mkdir -p "$TMP/$1"
+        cp "$BCS" "$TMP/$1/board-card-start"
+        sed "$2" "$HERE/../bin/_kb-board-lib.sh" > "$TMP/$1/_kb-board-lib.sh"
+    }
+    _stalerun() {  # <dir> — run that pair exactly as _own_run runs the real one
+        kb_stub_reset; rm -f "$_olog"; _rc=0
+        _out="$(cd "$_orepo" && env COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder \
+            KB_BCS_LOG="$_olog" bash "$TMP/$1/board-card-start" 2>&1)" || _rc=$?
+        _ologtxt="$(cat "$_olog" 2>/dev/null || true)"
+    }
+    _stalelib stalebin 's/^kb_confirm_card()/_removed_kb_confirm_card()/'
+    _stalelib freshbin 's/^__never_matches__//'
+    # The INSTRUMENT's own control: the edit removed the definition, and the unedited copy kept it.
+    # Without this pair, a sed that silently matched nothing would make the refusal below read as a
+    # pass for a hook that was never given a stale lib at all.
+    eq "stale-lib fixture: the copy under test does NOT define kb_confirm_card, the sibling copy does" "0|1" \
+       "$(command grep -c '^kb_confirm_card()' "$TMP/stalebin/_kb-board-lib.sh" || true)|$(command grep -c '^kb_confirm_card()' "$TMP/freshbin/_kb-board-lib.sh" || true)"
+    KB_STUB_TAGS='["fr"]' _stalerun freshbin
+    eq "stale-lib control: the same copy beside a COMPLETE lib moves the card and stamps the owner" \
+       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
+    KB_STUB_TAGS='["fr"]' _stalerun stalebin
+    eq "⭐ stale lib: rc 0 — a preflight refusal still never blocks a checkout" "0" "$_rc"
+    eq "⭐ stale lib: NOTHING is written — no PATCH of any kind reaches the card" "" \
+       "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ stale lib: the durable log names the function and the fix, and says nothing was written" "true" \
+       "$(has 'kb_confirm_card is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
+    eq "⭐ stale lib: and it never claims an UNVERIFIED write it did not make" "false" \
+       "$(has 'UNVERIFIED' "$_ologtxt")"
+    unset -f _stalelib _stalerun
+
     unset -f _own_run kb_stub_route
-    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp _rr
+    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp _rr _stampbody
 else
     echo "  skip (git not on PATH)"
 fi
