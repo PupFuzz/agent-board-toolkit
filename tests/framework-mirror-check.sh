@@ -23,11 +23,29 @@
 #         1 = at least one file is STALE (equals an older tag) or DIVERGED (equals no tag, or not
 #             the tag its own ABTK_TOOL_VERSION stamp claims)
 #         2 = bad invocation
-#         3 = UNMEASURED — something needed for a verdict could not be read; never a pass
+#         3 = UNMEASURED — something needed for a verdict could not be read, or a file the toolkit
+#             DECLARES travels is not in the mirror at all; never a pass
+#         (a run that is both STALE/DIVERGED and UNMEASURED exits 1: both are failures, and the
+#          re-sync rc 1 asks for is the actionable one. The UNMEASURED rows still print.)
 #
 # THE POPULATION IS DERIVED, NOT LISTED: every file of the toolkit's `bin/` that also exists by
 # name in the mirror directory. A mirror directory sharing NO name with `bin/` is UNMEASURED,
 # not clean. Each run prints the population it derived; read it rather than quoting a count.
+#
+# ⛔ …AND A DERIVED POPULATION IS DERIVED FROM THE AUDITED END, SO THE AUDITED END CAN SHRINK IT.
+# A mirror that has DROPPED one of the two release bins shares ONE name with `bin/`, that one
+# name compares clean, and the run reads `OK` — the check cannot tell IN STEP from NO LONGER
+# MIRRORED, which is the exact shape that let the live drift live (*a sweep predicate built from
+# the FOUND copies cannot find the DRIFTED one*). The N→0 case is caught by the `MIRRORED:` guard
+# below; N→N−1 needs an anchor that does NOT come from the mirror. `FLOOR` is that anchor: the
+# set README declares travels. It is WRITTEN, because it is a DECLARATION and not a measurement —
+# and it is held level with the tree in both directions by two derived guards beside it, so it
+# cannot rot in silence. The population still decides WHAT IS COMPARED; the floor decides WHAT
+# MUST BE PRESENT.
+#
+# A READ HAS THREE OUTCOMES — present, absent, UNREADABLE. Every read of the mirror below keeps
+# the third: a file whose bytes cannot be read is its own row at rc 3 and the loop CONTINUES, so
+# the remaining files are still judged. It is never scored as drift.
 #
 # WHAT A RUN READS AND WHAT IT CANNOT SEE — printed on every run, because a green verdict about
 # the wrong artifact is the failure this check exists to prevent:
@@ -109,15 +127,84 @@ mapfile -t TAGS < <(git -C "$TK" for-each-ref --sort=-creatordate --format='%(re
 echo "AGAINST:  toolkit tags in $TK (local refs only; newest read: ${TAGS[0]} — git fetch --tags if that is not the latest release)"
 echo "NOT SEEN: any other framework artifact (repo branch vs plugin install are different bytes), and behaviour — this compares bytes only"
 
+# ── what MUST be present: the DECLARED travelling set ───────────────────────────────────────
+#
+# README's `bin/release-pr-body` row is the declaration: "the toolkit owns both release bins
+# (tests + release discipline live here); the agent-board-framework's `templates/release/` copies
+# are mirrors synced at toolkit tags". This array is that sentence, machine-readable. It is a
+# RESTATEMENT of README and is therefore GUARDED, not left to agree by inspection:
+# `framework-mirror-check-selftest.sh` holds every member against the README row that carries the
+# declaration (and would red if README stopped naming one).
+FLOOR=(promote-released-cards release-pr-body)
+
+# GUARD 1 — a declared member `bin/` no longer carries. Errs RED on a rename or a removal, so the
+# declaration cannot outlive the file it names.
+floor_missing=""
+for n in "${FLOOR[@]}"; do
+  [ -f "$TK/bin/$n" ] || floor_missing="$floor_missing $n"
+done
+[ -z "$floor_missing" ] || unmeasured "the declared mirrored set names$floor_missing, which $TK/bin/ does not carry — this file's FLOOR (and README's declaration) is stale"
+
+# GUARD 2 — THE SELF-WIDENING LEG. `ABTK_TOOL_VERSION=` is the toolkit's own machine-readable
+# "this file travels" marker (VERSIONING rule 1): it exists so a copy living in another repo, with
+# no `VERSION` beside it, can still name the release it IS. Today exactly ONE of the two declared
+# bins carries it — which is precisely why the stamp is used as a CONTROL ON the declaration and
+# NOT as the anchor itself: as the anchor it would cover `release-pr-body` and say nothing at all
+# about `promote-released-cards`, i.e. it would miss the very drop this whole section exists to
+# catch. As a control it errs the safe way — the day a THIRD bin is stamped, this reds until the
+# FLOOR above is widened, so the written declaration cannot silently lag the tree.
+stamped_extra=""
+for f in "$TK"/bin/*; do
+  [ -f "$f" ] || continue
+  grc=0; command grep -q '^ABTK_TOOL_VERSION=' "$f" || grc=$?
+  case "$grc" in
+    0) case " ${FLOOR[*]} " in *" ${f##*/} "*) ;; *) stamped_extra="$stamped_extra ${f##*/}" ;; esac ;;
+    1) ;;
+    *) unmeasured "could not scan $f for an ABTK_TOOL_VERSION stamp (grep rc $grc) — the floor's control did not run" ;;
+  esac
+done
+[ -z "$stamped_extra" ] || unmeasured "$TK/bin/ stamps$stamped_extra as a travelling release bin, and this file's FLOOR does not declare it — widen the FLOOR (and README) or drop the stamp"
+
+# Printed BEFORE the derived population, and before the guard that can exit on it: the
+# declaration is what the measurement below is judged against, and a run that ends at
+# `nothing to compare` should still have said what it was looking for.
+echo "MUST CARRY: ${FLOOR[*]} — the set README declares travels; one this artifact does not carry is UNMEASURED, never OK"
+
 mapfile -t NAMES < <(_fw_ls "$DIR" | while IFS= read -r n; do [ -f "$TK/bin/$n" ] && printf '%s\n' "$n"; done)
 [ "${#NAMES[@]}" -gt 0 ] || unmeasured "no file under $DIR shares a name with the toolkit's bin/ — nothing to compare"
 echo "MIRRORED: ${NAMES[*]}"
 
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# `|| unmeasured`, not a bare capture: under `set -e` a scratch dir this run could not create
+# would kill the script with mktemp's status 1 — the code this header documents as
+# STALE-or-DIVERGED — and VERSIONING step 12 would relay a re-sync request to another repo's
+# owner for a mirror nothing had read. A failure of this file's own machinery is never drift.
+tmp="$(mktemp -d)" || unmeasured "could not create a scratch directory (TMPDIR unwritable?) — nothing was compared"
+trap 'rm -rf "$tmp"' EXIT
 drift=0; unm=0
+
+# THE ANCHOR ITSELF. A declared file the mirror does not carry is not a file that is in step.
+for n in "${FLOOR[@]}"; do
+  case " ${NAMES[*]} " in
+    *" $n "*) ;;
+    *) echo "NOT MIRRORED $n — the toolkit declares bin/$n travels to $DIR/, and this artifact does not carry it"; unm=1 ;;
+  esac
+done
+
 for n in "${NAMES[@]}"; do
-  _fw_cat "$DIR/$n" > "$tmp/mirror"
-  blob="$(git -C "$TK" hash-object "$tmp/mirror")"
+  if ! _fw_cat "$DIR/$n" > "$tmp/mirror" 2>"$tmp/err"; then
+    echo "UNMEASURED $n — its bytes could not be read from this artifact: $(head -n1 "$tmp/err" 2>/dev/null || true)"; unm=1; continue
+  fi
+  # ⚑ NO LOCAL CONTROL, AND SAID SO RATHER THAN IMPLIED. Unlike the read above and the scratch
+  # dir before it, `git hash-object` over a regular file this process just wrote has no failure this
+  # file can stage: it was driven against a broken `clean` filter and an out-of-worktree path and
+  # answered rc 0 both times. It is kept because it is the one remaining substitution inside the
+  # loop, and a bare capture here re-mints exactly the shape the arm above exists to close — a
+  # non-zero status killing the run under `set -e` and being reported as rc 1 DRIFT. Read it as
+  # a closed hole, never as a checked one; `framework-mirror-check-selftest.sh` drives the other
+  # two legs of this class and does not claim this one.
+  if ! blob="$(git -C "$TK" hash-object "$tmp/mirror" 2>"$tmp/err")"; then
+    echo "UNMEASURED $n — the toolkit could not hash the bytes read for it: $(head -n1 "$tmp/err" 2>/dev/null || true)"; unm=1; continue
+  fi
 
   newest=""; newest_blob=""; match=""
   for t in "${TAGS[@]}"; do
@@ -131,7 +218,7 @@ for n in "${NAMES[@]}"; do
   claim="$(sed -n "s/^ABTK_TOOL_VERSION='\\(.*\\)'\$/\\1/p" "$tmp/mirror" | head -n1)"
   if [ -n "$claim" ]; then
     ctag="$("$TK/bin/release-pr-body" --config "$TK/.release-pr.json" --version "$claim" --tag 2>/dev/null)" \
-      || { echo "UNMEASURED $n — stamp claims $claim, which the toolkit cannot map to a tag"; unm=1; continue; }
+      || { echo "UNMEASURED $n — stamp claims $claim and the toolkit's own release-pr-body --tag could not map it to a tag (is $TK/.release-pr.json readable, and $TK/bin/release-pr-body runnable?)"; unm=1; continue; }
     cblob="$(git -C "$TK" rev-parse -q --verify "$ctag:bin/$n" 2>/dev/null)" \
       || { echo "UNMEASURED $n — stamp claims $ctag, which this checkout does not have (git fetch --tags)"; unm=1; continue; }
     if [ "$cblob" != "$blob" ]; then
