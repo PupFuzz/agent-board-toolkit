@@ -4965,7 +4965,8 @@ KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc pat
 eq "an /issues/178 pr_url, --pr 178 → rc 0 (same number)"   "0|1" "$rc|$(npatch)"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/0"}' kbc patch --task 505 --pr 179
 eq "an /issues/0 pr_url is the placeholder → rc 0, silent"  "0|1|" "$rc|$(npatch)|$err"
-# ⭐ commit / tree / blob carry no number but still attribute the card to their repo, so --pr alone
+# ⭐ commit / tree / blob carry no number but still attribute the card to their repo (absent a
+# payload.repo that outranks the URL — `docs/INSTALL.md` §4), so --pr alone
 # over one would name PR 179 under acme/widget whether or not it is there: refused, naming
 # --pr-url and the derived repo, never the URL (operator ruling "A", card#9846 — card#9837 let it
 # through with a notice).
@@ -5190,8 +5191,9 @@ for _ref in pr issue; do
            "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
     done
     # ⭐ A given value holding two GitHub URLs: the repo comes from the FIRST (other/repo) and a
-    # number from the second (another/repo). promote attributes the card to other/repo, where 178 was
-    # never read — so it is the unnumbered case, refused over a real stored number.
+    # number from the second (another/repo). promote attributes the card to other/repo — absent a
+    # payload.repo outranking every URL (`docs/INSTALL.md` §4) — where 178 was never read, so it is
+    # the unnumbered case, refused over a real stored number.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/another/repo/$_seg/178"
     eq "⭐ $_uf whose 178 is read from ANOTHER repo's URL, over a stored 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
        "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
@@ -5206,8 +5208,9 @@ for _ref in pr issue; do
     eq "a /commit/ $_uf over a stored $_nk '1.5' → rc 0, writes, with the unparsed-number notice" "0|1|true" \
        "$rc|$(npatch)|$(has "the card's $_nk is not a $_noun number" "$err")"
     # A given URL that yields NO repo (not a GitHub URL the promote side derives a source from)
-    # attributes the card nowhere: nothing to disagree with, so it proceeds with the notice, which
-    # never echoes it.
+    # attributes the card nowhere — which is the URL half of `docs/INSTALL.md` §4's rule, so a card
+    # carrying a payload.repo is still sourced. Nothing to disagree with either way, so it proceeds
+    # with the notice, which never echoes it.
     for _u in "https://user:TOKEN-9846@example.com/other/repo/$_seg/179" "https://github.com/other/repo" \
               "https://github.com/other/repo/wiki"; do
         KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"

@@ -203,6 +203,7 @@ jobs:
           - run-coverage-check-selftest
           - runtime-check-selftest
           - shellcheck-pin-selftest
+          - source-precedence-pin-selftest
           - token-duplication-selftest
           - tool-version-stamp-selftest
           - url-userinfo-render-selftest

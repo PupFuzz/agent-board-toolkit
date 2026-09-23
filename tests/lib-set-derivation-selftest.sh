@@ -106,43 +106,9 @@ _derive() {
 REF_SET="$(_derive "$REF_PAT")"
 REF_N="$(printf '%s' "$REF_SET" | grep -c . || true)"
 
-# _headings <file> <ere> — the `<lineno>:<text>` lines of <file> whose text matches <ere>.
-# The `|| true` is what makes "no heading matched" an ASSERTABLE state instead of a death: under
-# `set -e` + `pipefail` grep's rc 1 kills the assignment at the call site. The guard this replaced
-# — `[[ -n "$cut" ]] || { printf ... ; exit 1; }` — could never fire for exactly that reason.
-_headings() { grep -nE "$2" "$1" || true; }
+# shellcheck source=tests/_frozen-region-lib.sh
+source "$HERE/_frozen-region-lib.sh"
 
-# _carve <file> <ere> <live-out> <frozen-out> — split <file> at its FIRST line matching <ere>:
-# everything ABOVE that line is the LIVE region, that line and everything below is the FROZEN one.
-# BOTH halves are written, because the frozen half is the witness that the cut landed on the
-# heading the caller says it did.
-#
-# ⛔ THE CUT IS BY HEADING TEXT, NEVER BY A SECTION NUMBER. `docs/UPGRADE.md` was split on `^## 6\.`
-# while one sentence beside it called the split "derived, not a line number" (the file mentioned
-# the split three times; only that one made the claim): only the OFFSET was
-# derived — the 6 was a hand-kept fact, i.e. this file's own subject, inside this file. Measured:
-# inserting a new LIVE `## 6.` section carrying an enumeration line and renumbering the history to
-# `## 7.` left the whole run rc 0 all-green while the live region silently SHRANK, because the only
-# premise beside the cut asserted what the live region LACKS — a direction that can catch a too-WIDE
-# cut and never a too-narrow one. Each caller now also asserts how many headings matched and that
-# the matched one is in the frozen complement, which is the missing direction.
-#
-# No match at all ⇒ the whole file is LIVE and the frozen half is empty. Fail-CLOSED: leg 3 then
-# scans everything (reporting more, never less) while the caller's count assertion reds.
-_carve() {
-    local file="$1" pat="$2" live="$3" frozen="$4" cut
-    cut="$(_headings "$file" "$pat" | head -n 1 | cut -d: -f1)"
-    if [[ -z "$cut" ]]; then
-        cp "$file" "$live"; : > "$frozen"; return 0
-    fi
-    sed -n "1,$((cut - 1))p" "$file" > "$live"
-    sed -n "$cut,\$p" "$file" > "$frozen"
-}
-
-# _contains <needle> <file> — `has` against a file's contents, with an EMPTY needle answering
-# false. `has ""` matches anything, so a presence witness built from a heading that was never
-# found would pass at exactly the moment the split it witnesses had failed.
-_contains() { [[ -n "$1" ]] || { echo false; return 0; }; has "$1" "$(cat "$2")"; }
 
 # ---------------------------------------------------------------------------
 echo "== premises — the derivation answers something, and it discriminates =="
