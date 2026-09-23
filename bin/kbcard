@@ -2802,7 +2802,19 @@ cmd_unlink() {
 #                       says it landed and nothing says it did not; re-read before acting on
 #                       either reading. This is NOT a widening of rc 1: every state that used
 #                       to be rc 1 and IS still known stays rc 1.
-KBC_RC_UNVERIFIED=3
+#
+# ⛔ THE VALUE IS THE LIB'S, NOT A SECOND CONSTANT (card#10029). `_kb-board-lib.sh` defines
+# `KB_RC_UNVERIFIED` for the read-back primitive it now owns (`kb_confirm_card`, hoisted out of
+# this file), and this name is kbcard's published EXIT CODE for that same outcome — so it takes
+# the lib's value rather than re-spelling `3` where nothing compares the two. This file sources
+# the lib, so it has nothing to pin. ⚠ A STANDALONE COPY OF THIS RC IS WHAT NEEDS PINNING, and
+# this comment cannot tell you whether one exists — the set moves with every bin that lands, and
+# nothing reds when it does. RE-DERIVE it instead of reading a verdict here: run
+# `command grep -l UNVERIFIED bin/*` and open each file it names; any one that does not
+# `source "$KB_LIB"` — and is not `bin/_kb-board-lib.sh`, which IS the lib and DEFINES the value —
+# carries its own copy of this rc and needs a parity row in
+# `tests/mirror-pair-parity-selftest.sh`. Nothing holds such a copy level on its own.
+KBC_RC_UNVERIFIED="$KB_RC_UNVERIFIED"
 
 # _kbc_unverified <verb> <subject> [detail]: the ONE owner of the unverified-write report.
 # Every "the write returned success but nothing could be read back" arm in this file routes
@@ -2816,91 +2828,11 @@ _kbc_unverified() {
     return "$KBC_RC_UNVERIFIED"
 }
 
-# _kbc_card_witness <task-id>: the card's post-write state as ONE object on stdout, the exact
-# sibling of _kbc_link_witness and for the same reason — one owner for a question several
-# verbs ask and one refusal for the end that cannot be read.
-#   {"state":"present","http":"<2xx>","card":{…}}   the server returned a readable card
-#   {"state":"absent","http":"404"}                 the server does not know this id
-# rc 1, with the diagnostic, when the read is NOT A MEASUREMENT: a transport failure (000, so
-# no answer was read at all), a policy refusal (401/403 — the card may be perfectly fine and
-# unreadable by this token), any other status, or a 2xx no card can be read out of. A caller
-# may conclude NOTHING from rc 1; that is the UNVERIFIED arm, not the absent one.
-#
-# ⚠ `?trashed=1` IS LOAD-BEARING AND IS NOT AN OPTIMIZATION. `GET /tasks/{task}.json` binds
-# `->withTrashed()`, but the controller then 404s a trashed card unless the caller opts in with
-# that query parameter (read out of the server's own routes/api.php and TasksController::show
-# guard, not inferred from a response). Without it a SOFT-deleted card answers 404 exactly as a
-# HARD-deleted one does — so a `--hard` read-back would report "permanently deleted, DL ref
-# released" for a card that is merely in the trash with its DL ref still pinning the board's
-# allocation floor (docs/DL-COUNTER-RECOVERY.md § Why it strands). The whole point of reading
-# back a hard delete is to tell those two boards apart, and the bare read cannot.
-#
-# kb_api_status, not kb_api, for the reason unlink's DELETE gives: the statuses here are
-# DIFFERENT OUTCOMES — a 404 is this function's answer, a 403 is its refusal — and kb_api
-# collapses both to rc 1 with KB_HTTP stranded in a subshell.
-_kbc_card_witness() {
-    local task="$1" resp http body data
-    resp="$(kb_api_status GET "/tasks/$task.json?trashed=1")"
-    http="${resp%%$'\n'*}"
-    body=""
-    [[ "$resp" == *$'\n'* ]] && body="${resp#*$'\n'}"
-    case "$http" in
-        404) printf '{"state":"absent","http":"404"}\n'; return 0 ;;
-        2*)  : ;;
-        000) echo "kbcard: the re-read of card $task DID NOT COMPLETE — no HTTP status came back at all, so its state is UNMEASURED" >&2
-             return 1 ;;
-        401|403) echo "kbcard: the re-read of card $task was REFUSED (HTTP $http — POLICY, not an address problem): this token cannot read that card, so its state is UNMEASURED. That is not evidence the card is gone." >&2
-             return 1 ;;
-        *)   echo "kbcard: the re-read of card $task failed (HTTP $http) — its state is UNMEASURED" >&2
-             return 1 ;;
-    esac
-    # The card is wrapped in the SAME stdin read that selects it, never handed back to jq as an
-    # argument: one argv string is capped at MAX_ARG_STRLEN (131072 B on Linux) whatever ARG_MAX
-    # is, a card crosses that by accreting comments, and exec failing there would report a
-    # perfectly readable card as UNMEASURED — rc 3 for a write that landed. A body carrying more
-    # than one JSON text yields one line per text, which is not ONE card, so it stays refused.
-    data="$(kb_parse_resp "$body" -c --arg h "$http" '.data | select(type == "object") | {state: "present", http: $h, card: .}')"
-    [[ -n "$data" && "$data" != *$'\n'* ]] || {
-        echo "kbcard: the re-read of card $task returned success but no card could be read out of its body — its state is UNMEASURED (nothing was read)" >&2
-        return 1
-    }
-    printf '%s\n' "$data"
-}
-
-# _kbc_confirm_card <task> <predicate>: re-read card <task> and RULE on <predicate>, a jq
-# filter over the witness object above that must answer exactly `true`. It reads and rules;
-# it says nothing — the verb's own words are the caller's, exactly as _kbc_link_witness leaves
-# them to unlink, because a shared owner cannot know which mutation was asked for.
-#   rc 0  CONFIRMED — the read is a measurement and the predicate holds. The witness object is
-#                     on stdout, so the caller can quote the state it just measured.
-#   rc 1  DENIED    — the read is a measurement and the predicate is FALSE. The witness object
-#                     is STILL on stdout: this is the arm that names what the board actually
-#                     holds, and a caller with nothing to quote would be back to describing a
-#                     board it never read.
-#   rc $KBC_RC_UNVERIFIED  the read is not a measurement (the witness already said which way).
-# ⛔ JQ'S OWN rc IS SPLIT, because under this file's contract rc 1 IS AN ASSERTION. `jq -e`
-# answers 1 for "the filter RAN and its result was false or null" and 4/5 for "the filter did
-# not run at all" (a parse error, a runtime fault). Only the first is a measurement. Collapsing
-# them read as "a filter typo is a false DENIED rather than a false CONFIRMED — the direction
-# that refuses rather than asserts", and that was wrong twice over: rc 1 here is printed by
-# every caller as HARD FAILURE quoting the board, i.e. the definite claim NOT APPLIED AND
-# KNOWN, and it would have been built out of a predicate that never evaluated. An unrunnable
-# predicate measured nothing, and nothing measured is rc 3's territory, not rc 1's. The fault
-# is kbcard's own — a caller interpolating a server-supplied value into its filter is how one
-# gets minted (`comment`'s does, which is why its id is kb_is_uint-guarded BEFORE it is spliced)
-# — so the diagnostic says whose fault it is rather than describing the board.
-_kbc_confirm_card() {
-    local task="$1" pred="$2" w jrc=0
-    w="$(_kbc_card_witness "$task")" || return "$KBC_RC_UNVERIFIED"
-    printf '%s\n' "$w"
-    jq -e "$pred" <<<"$w" >/dev/null 2>&1 || jrc=$?
-    case "$jrc" in
-        0) return 0 ;;
-        1) return 1 ;;
-        *) echo "kbcard: the confirming predicate for card $task DID NOT RUN (jq rc $jrc) — card $task was read back fine; it is kbcard's own filter that is at fault, so NOTHING was measured about the write and this run makes no claim in either direction." >&2
-           return "$KBC_RC_UNVERIFIED" ;;
-    esac
-}
+# The card read-back — kb_card_witness (the post-write state as ONE object) and kb_confirm_card
+# (read + rule on a jq predicate, saying nothing) — lives in the shared lib, hoisted there when
+# board-card-start became its second caller (card#10029). Its contract, including why
+# `?trashed=1` is load-bearing and why an unrunnable predicate is rc 3 and never rc 1, is
+# documented there.
 
 # The tolerant response parse is kb_parse_resp, in the shared lib — its contract (and why a
 # caller's diagnostic may never say "the body is not JSON") is documented there. It moved out of
@@ -3088,7 +3020,7 @@ cmd_comment() {
         return $?
     fi
     local crc=0
-    _kbc_confirm_card "$task" "([.card.comments[]? | select((.id|tostring) == \"$cid\")] | length) > 0" >/dev/null || crc=$?
+    kb_confirm_card "$task" "([.card.comments[]? | select((.id|tostring) == \"$cid\")] | length) > 0" >/dev/null || crc=$?
     if [[ "$crc" -eq "$KBC_RC_UNVERIFIED" ]]; then
         _kbc_unverified comment "on task $task" "The POST answered 2xx and echoed comment id $cid; the confirming read produced no measurement (its cause is on the line above), so whether the comment is on it is UNMEASURED."
         return $?
@@ -3488,7 +3420,7 @@ cmd_archive() {
     # DL ref kept" — is a claim about a state, so it is made from a read of that state.
     local w
     local rc=0
-    w="$(_kbc_confirm_card "$task" '.state == "present" and .card.archived_at != null')" || rc=$?
+    w="$(kb_confirm_card "$task" '.state == "present" and .card.archived_at != null')" || rc=$?
     if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
         _kbc_unverified archive "on task $task" "Whether card $task is off the board is UNKNOWN; re-read it before deciding whether to re-run."
         return $?
@@ -3554,7 +3486,7 @@ cmd_delete() {
     # IRREVERSIBLE request behind.
     local w
     local rc=0
-    w="$(_kbc_confirm_card "$task" '.state == "present" and .card.deleted_at != null')" || rc=$?
+    w="$(kb_confirm_card "$task" '.state == "present" and .card.deleted_at != null')" || rc=$?
     if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
         _kbc_unverified delete "on task $task" "Whether task $task is in the trash is UNKNOWN.${hard:+ NO force-delete was sent: this tool does not send an irreversible request behind a precondition it could not read. Re-read the card, then re-run --hard.}"
         return $?
@@ -3583,7 +3515,7 @@ cmd_delete() {
     # the next DL mint (docs/DL-COUNTER-RECOVERY.md § Why it strands), so the wrong answer
     # propagates into the numbering. The 204 is the server saying it acted; it is not the purge.
     rc=0
-    w="$(_kbc_confirm_card "$task" '.state == "absent"')" || rc=$?
+    w="$(kb_confirm_card "$task" '.state == "absent"')" || rc=$?
     if [[ "$rc" -eq "$KBC_RC_UNVERIFIED" ]]; then
         _kbc_unverified "delete --hard" "on task $task" "Do NOT treat the DL ref as released on the strength of the 204: a release that did not happen is the input to the next DL mint, so the wrong answer would propagate into the numbering rather than stopping here."
         return $?
