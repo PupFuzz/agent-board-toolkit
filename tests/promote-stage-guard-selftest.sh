@@ -135,7 +135,7 @@ echo "== every value-taking flag rejects an empty value (the whole class, not on
 # red about it, so this block asserted totality over 5/6 for two minor versions (card#6645).
 # expect_value_flags derives the population from the bin's own guard call sites and reds in both
 # directions, so the seventh flag cannot join in silence.
-VALUE_FLAGS=(--dls --cards --base --head --source --shipped-stages --config)
+VALUE_FLAGS=(--dls --cards --base --head --source --shipped-stages --completeness --config)
 expect_value_flags "$PRC" "${VALUE_FLAGS[@]}"
 for f in "${VALUE_FLAGS[@]}"; do
   rc=0; err="$("$PRC" --config "$TMP/release-pr.json" --dls "DL-100" "$f" "" 2>&1)" || rc=$?
