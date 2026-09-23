@@ -489,7 +489,8 @@ Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already
 both name `promote-released-cards` in the second group, alongside a §6b recipe that copies it as a
 single file. This stage moves it into the first group, so both statements and that recipe need
 amending, plus an entry in [`UPGRADE.md`](UPGRADE.md). The framework's `templates/release/` mirror
-would need the lib too — that mirror is currently healthy, and this stage would make its job harder.
+would need the lib too, and this stage would make its job harder. (Whether that mirror is in step is
+not a property of this document: `tests/framework-mirror-check.sh` measures it, card#9939.)
 
 ---
 
@@ -2195,10 +2196,16 @@ teaches the next reader nothing.
   `tests/piped-match-gate-selftest.sh`.
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
-- **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured
-  self-consistent, carried self-documenting `MIRROR NOTE` blocks, and was hours behind a patch
-  release — healthy, not evidence of drift. (A measurement, not a standing guarantee: it lives in
-  another repo and is not covered by anything here. Re-measure before citing it.)
+- **"The framework mirror proves hand-sync failed"** — recorded here as *false when checked*, and
+  **that correction is itself now refuted: the original claim was right.** The refutation rested on
+  the mirror being SELF-consistent — it carried self-documenting `MIRROR NOTE` blocks and read as
+  hours behind a patch release, so it was called healthy. Nothing had ever compared it against a
+  toolkit **tag**. card#9939 built that comparison (`tests/framework-mirror-check.sh`) and neither
+  mirrored file was byte-identical to any tag at all. → **"self-consistent" is not "in step": a copy
+  can only be judged against the thing it is a copy OF, and where that thing is in another repo, no
+  audit either end runs can reach it — so the answer is a check that crosses the hop, never a
+  reading taken off the copy.** (Still a measurement and not a standing guarantee — the subject
+  lives in another repo. Re-run the check before citing this bullet in either direction.)
 - **Stage ordering** — revision 1 migrated two bins in an early stage that a later stage was what
   let them see the lib.
 - **Renaming to resolve a collision can be a protected-settings change.** Stage B needed a name
