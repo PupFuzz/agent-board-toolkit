@@ -5,9 +5,15 @@
 # WHAT A MIRROR PAIR IS HERE. `bin/` ships four tools that are vendored STANDALONE into consumer
 # repos and must not source `bin/_kb-board-lib.sh` — `promote-released-cards`,
 # `release-artifacts-check`, `release-pr-body`, `release-tag-check`. Each therefore carries its
-# own inline copy of a guard the lib also owns. That duplication is not an oversight to remove:
-# `docs/CONSOLIDATION-PLAN.md` § Stage D DECIDED (2026-08-01) against making them source the lib,
-# and chose GUARDED duplication instead. This file is some of that guard.
+# own inline copy of a rule that ANOTHER shipped file owns. That duplication is not an oversight
+# to remove: `docs/CONSOLIDATION-PLAN.md` § Stage D DECIDED (2026-08-01) against making them
+# source the lib, and chose GUARDED duplication instead. This file is some of that guard.
+#
+# ⚠ THE OTHER END IS USUALLY THE LIB AND IS NOT ALWAYS THE LIB (§ 6, card#9938). A standalone that
+# cannot source the lib cannot exec a sibling BIN either — it is vendored alone — so a rule owned
+# by `bin/kbcard` (the write-outcome ladder, card#8556) reaches it by the same duplication, under
+# the same policy, and drifts the same way. The pairs below are therefore "the standalone's copy
+# ↔ the file that OWNS the rule", not "↔ the lib"; nothing about the pin changes with the end.
 #
 # ⚑ AND A PAIR NEED NOT HAVE A LIB ORIGINAL TO BELONG HERE. `require_resolvable` below is two
 # STANDALONES compared against each other, and § 6 is a standalone compared against a bin that DOES
@@ -348,6 +354,135 @@ eq "control: …and so does the corpus, on a /blob/ URL" "false" \
    "$([[ "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget/blob/main/x.md"')" == "$(_rfg "$_rfg_mut" '"https://github.com/acme/widget/blob/main/x.md"')" ]] && echo true || echo false)"
 unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
+
+# ═══════════ 6 — the WRITE-OUTCOME contract: promote ↔ `bin/kbcard` (card#9938) ═══════════
+#
+# THE PAIR HERE IS STANDALONE ↔ ANOTHER BIN, not standalone ↔ the lib, and that is the same
+# defect class rather than a wider one: `bin/kbcard` owns this fleet's write-outcome ladder
+# (card#8556 — APPLIED / NOT APPLIED AND KNOWN / UNVERIFIED, with `KBC_RC_UNVERIFIED` as the
+# third outcome's rc), `bin/promote-released-cards` must not source the lib and cannot exec
+# kbcard either (it is vendored ALONE), and card#9938 made it adopt that ladder rather than mint
+# a second vocabulary for one outcome. So the value and the rule exist twice, and a second
+# expression of one rule drifts. Two things are held: the RC, as a value, and the STAGE RULING.
+echo "== the UNVERIFIED rc: promote's RC_UNVERIFIED IS kbcard's KBC_RC_UNVERIFIED =="
+KBC="$ROOT/bin/kbcard"
+_need -r "$KBC"
+# Each side is the ASSIGNMENT LINE grepped out of the shipped file, asserted to match exactly
+# once: an extraction that found none would compare two empties and pass forever.
+_rcu_prc="$(command grep -cE '^RC_UNVERIFIED=' "$PRC")"
+_rcu_kbc="$(command grep -cE '^KBC_RC_UNVERIFIED=' "$KBC")"
+eq "witness: promote defines RC_UNVERIFIED exactly once"     "1" "$_rcu_prc"
+eq "witness: kbcard defines KBC_RC_UNVERIFIED exactly once"  "1" "$_rcu_kbc"
+# ⚠ THE TWO SIDES ARE READ DIFFERENTLY, AND THE ASYMMETRY IS THE POINT — it is the same asymmetry
+# this whole file exists for. The STANDALONE's value must be a self-contained LITERAL: it may
+# source nothing, so a copy whose rc came from a name it cannot resolve would be a broken tool,
+# and reading it by text is what can SEE that. The OWNER's value need not be a literal and is
+# already moving — card#10029 points `KBC_RC_UNVERIFIED` at the lib's `KB_RC_UNVERIFIED`, which
+# is the right direction (one owner for the value, not two literals) — so the owner's side is
+# RESOLVED, through the lib this file has already sourced. A `cut -d= -f2` reader would compare
+# promote's `3` against the STRING `"$KB_RC_UNVERIFIED"` and red on a pair that AGREES.
+# _rcu_value <file> <var> — the shipped assignment's VALUE. An indirection that resolves to
+# nothing yields the empty string, so it reds rather than passing: `set +u` is what turns the
+# unbound name into an observable empty instead of an abort with no row printed.
+_rcu_value() {
+    local line
+    line="$(command grep -E "^$2=" "$1")" || return 0
+    ( set +u; eval "$line"; printf '%s' "${!2-}" ) 2>/dev/null || true
+}
+_rcu_prc="$(command grep -E '^RC_UNVERIFIED=' "$PRC" | cut -d= -f2)"
+_rcu_kbc="$(_rcu_value "$KBC" KBC_RC_UNVERIFIED)"
+eq "⭐ the two are the SAME rc (a caller testing for 3 tests one thing)" "$_rcu_kbc" "$_rcu_prc"
+eq "…and it is 3, the rc both files' contracts document" "3" "$_rcu_kbc"
+eq "⭐ the STANDALONE's rc is a LITERAL — it can resolve no name it does not define" "true" \
+   "$([[ "$_rcu_prc" =~ ^[0-9]+$ ]] && echo true || echo false)"
+echo "== control: a renumbering on EITHER side is caught — both directions, not one =="
+# ON THE REAL FILES, through the SAME extractions the rows above use — not on literals typed
+# here. A control that compared two hand-written strings would leave the readers that PRODUCE
+# the population untested, which is the half that silently stops finding anything after a rename.
+# BOTH sides are mutated: a guard driven from one end only reds when the COPY drifts and passes
+# in silence when the OWNER moves — which is the direction this pair is actually moving.
+sed 's/^RC_UNVERIFIED=3/RC_UNVERIFIED=4/' "$PRC" > "$TMP/prc-renumbered"
+_rcu_mut="$(command grep -E '^RC_UNVERIFIED=' "$TMP/prc-renumbered" | cut -d= -f2)"
+eq "control: the COPY-side mutation applied, and the extraction SEES it" "4" "$_rcu_mut"
+eq "control: …so the equality above reds on that copy" "false" \
+   "$([[ "$_rcu_kbc" == "$_rcu_mut" ]] && echo true || echo false)"
+sed 's/^KBC_RC_UNVERIFIED=.*/KBC_RC_UNVERIFIED=4/' "$KBC" > "$TMP/kbc-renumbered"
+_rcu_mut="$(_rcu_value "$TMP/kbc-renumbered" KBC_RC_UNVERIFIED)"
+eq "control: the OWNER-side mutation applied, and the resolver SEES it" "4" "$_rcu_mut"
+eq "control: …so the equality above reds when the OWNER moves and the copy does not" "false" \
+   "$([[ "$_rcu_mut" == "$_rcu_prc" ]] && echo true || echo false)"
+eq "control: …while the shipped pair still agrees"  "true" \
+   "$([[ "$_rcu_kbc" == "$_rcu_prc" ]] && echo true || echo false)"
+echo "== control: the resolver FOLLOWS an indirection, and reds when it resolves to nothing =="
+# The spelling card#10029 gives the owner's line, driven here against a probe name of this
+# file's own rather than against `KB_RC_UNVERIFIED` — that constant is not on this branch yet,
+# and a row expecting it would assert which PR landed first instead of what the reader does.
+# What is proven is the READER's property, which is what has to hold either way round.
+printf 'KBC_RC_UNVERIFIED="$_RCU_PROBE"\n' > "$TMP/kbc-indirect"
+eq "control: …=\"\$NAME\" with NAME=3 resolves to 3, so the pair still agrees after card#10029" "3" \
+   "$(_RCU_PROBE=3; _rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+eq "control: …and an indirection pointing at NOTHING resolves EMPTY, which reds" "" \
+   "$(_rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+unset -f _rcu_value
+
+echo "== stage_verdict vs _kbc_confirm_stage: one ruling, two runtimes, one corpus =="
+# promote answers a WORD, kbcard answers an EXIT STATUS and a message; the compared property is
+# the DECISION, exactly as § 1 compares `require_value`'s verdict across two exit policies.
+_adopt_fn "$PRC" card_stage
+_adopt_fn "$PRC" stage_verdict
+_adopt_fn "$KBC" _kbc_confirm_stage
+# _sv <card GET body> <stage asked for> — promote's ruling, driven THROUGH ITS OWN READER. The
+# body goes in, not a stage: `card_stage` is the half that decides a JSON string and a JSON
+# number are the same stage (`tostring`), and a corpus that handed `stage_verdict` a
+# pre-extracted value would be testing a normalisation this file had restated rather than the
+# one the tool ships.
+_sv() { stage_verdict 0 "$(card_stage "$1")" "$2"; }
+# _card <workflow_stage_id as JSON, or the word ABSENT> — a single-card GET body.
+_card() {
+    if [[ "$1" == ABSENT ]]; then printf '{"data":{"id":1,"name":"c"}}'
+    else jq -cn --argjson s "$1" '{data:{id:1,name:"c",workflow_stage_id:$s}}'; fi
+}
+# _cs <workflow_stage_id as JSON, or the word ABSENT> <stage asked for> — kbcard's ruling on the
+# server's write echo. Its own callers hand it `_kbc_write_echo`'s projection, which is an object
+# carrying `workflow_stage_id`; ABSENT builds the object without the key.
+_cs() {
+    local echo_json rc=0
+    if [[ "$1" == ABSENT ]]; then echo_json='{"id":1,"name":"c"}'
+    else echo_json="$(jq -cn --argjson s "$1" '{id:1,name:"c",workflow_stage_id:$s}')"; fi
+    _kbc_confirm_stage move "card 1" "$echo_json" "$2" 2>/dev/null || rc=$?
+    [[ "$rc" -eq 0 ]] && printf 'applied' || printf 'not-applied'
+}
+# THE CORPUS. `85` vs `"85"` is not padding: the board stores the integer this tool sent, and a
+# JSON STRING spelling of it is the same stage — both sides normalise with `tostring` / jq -r,
+# and a copy that dropped it would report a landed move as a HARD FAILURE.
+for _row in '85|85|applied' '84|85|not-applied' '0|85|not-applied' '1085|85|not-applied' '"85"|85|applied' '"84"|85|not-applied'; do
+    IFS='|' read -r _got _want _expect <<<"$_row"
+    eq "both rule [$_got vs $_want] $_expect (promote)" "$_expect" "$(_sv "$(_card "$_got")" "$_want")"
+    eq "…and kbcard agrees"                             "$_expect" "$(_cs "$_got" "$_want")"
+done
+# THE ONE DECLARED DIVERGENCE, asserted in BOTH directions so neither side can quietly move onto
+# the other. A card whose stage CANNOT BE READ is `unverified` in promote and HARD FAILURE in
+# kbcard, and neither is wrong because the two are ruling on different subjects: kbcard rules on
+# the server's own write ECHO, whose readability `_kbc_write_echo` has already established (an
+# unreadable echo is ITS rc 3, one layer up), so a missing stage in a body it has accepted is a
+# real disagreement; promote rules on an INDEPENDENT GET that nothing upstream vouched for, so
+# "no stage could be read" is nothing measured — and nothing measured may not be reported as a
+# measurement. A third divergence would land in the agreement rows above and red there.
+eq "declared divergence: promote calls an UNREADABLE stage unverified" "unverified" "$(_sv "$(_card ABSENT)" 85)"
+eq "…and the same for a body no card can be read out of at all" "unverified" "$(_sv '<html>502</html>' 85)"
+eq "declared divergence: kbcard calls an ABSENT echo stage NOT APPLIED" "not-applied" "$(_cs ABSENT 85)"
+eq "…and promote's OTHER unverified arm: the read itself was not a measurement" "unverified" \
+   "$(stage_verdict 1 85 85)"
+echo "== control: a promote copy that reported from the status class is caught by the corpus =="
+# The pre-card#9938 tool, reduced to this rule: it never read anything back, so every write that
+# answered 2xx was `applied`. Both divergent rows must invert.
+_sv_naive() { printf 'applied'; }
+eq "control: the naive rule calls a card that did NOT move applied" "applied" "$(_sv_naive "$(_card 84)" 85)"
+eq "control: …where the shipped rule does not"                      "not-applied" "$(_sv "$(_card 84)" 85)"
+eq "control: the naive rule calls an UNREADABLE read applied too"   "applied" "$(_sv_naive '<html>502</html>' 85)"
+eq "control: …where the shipped rule refuses to rule"               "unverified" "$(_sv '<html>502</html>' 85)"
+unset -f card_stage stage_verdict _kbc_confirm_stage _sv _cs _card _sv_naive
+unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
 
 # ═══════════════════ 6 — the two renderers of an UNTRUSTED response body ═════════════════════
 #

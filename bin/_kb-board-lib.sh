@@ -1194,6 +1194,107 @@ kb_parse_resp() {
     jq "$@" <<<"$resp" 2>/dev/null || true
 }
 
+# --- the write-outcome read-back: APPLIED / NOT APPLIED / UNVERIFIED -----------------------
+# A write's 2xx is the server ACCEPTING a request, never the board HOLDING the result. The
+# contract for the three outcomes (and what each exit code means to a CLI caller) is owned by
+# bin/kbcard's `WHAT A WRITE VERB'S EXIT CODE MEANS` block; this section owns the card read-back
+# every tool sourcing this lib rules on, so kbcard's verbs and board-card-start's writes cannot
+# disagree about what "confirmed" means (hoisted out of kbcard at its second caller, card#10029).
+#
+# KB_RC_UNVERIFIED — the THIRD outcome's rc: the write was SENT and nothing could be read back.
+# kbcard's KBC_RC_UNVERIFIED is this value (its exit code), not a second spelling of it. It is 3
+# for that published exit code, and it is unrelated to fetch_board_cards' own rc 3-5 vocabulary —
+# the two functions' contracts are separate. A plain assignment for the reason KB_API_RC_TRANSPORT
+# gives (the lib may be sourced twice).
+KB_RC_UNVERIFIED=3
+
+# kb_card_witness <task-id>: the card's post-write state as ONE object on stdout, the exact
+# sibling of bin/kbcard's _kbc_link_witness and for the same reason — one owner for a question
+# several verbs ask and one refusal for the end that cannot be read.
+#   {"state":"present","http":"<2xx>","card":{…}}   the server returned a readable card
+#   {"state":"absent","http":"404"}                 the server does not know this id
+# rc 1, with the diagnostic, when the read is NOT A MEASUREMENT: a transport failure (000, so
+# no answer was read at all), a policy refusal (401/403 — the card may be perfectly fine and
+# unreadable by this token), any other status, or a 2xx no card can be read out of. A caller
+# may conclude NOTHING from rc 1; that is the UNVERIFIED arm, not the absent one.
+#
+# ⚠ `?trashed=1` IS LOAD-BEARING AND IS NOT AN OPTIMIZATION. `GET /tasks/{task}.json` binds
+# `->withTrashed()`, but the controller then 404s a trashed card unless the caller opts in with
+# that query parameter (read out of the server's own routes/api.php and TasksController::show
+# guard, not inferred from a response). Without it a SOFT-deleted card answers 404 exactly as a
+# HARD-deleted one does — so a `--hard` read-back would report "permanently deleted, DL ref
+# released" for a card that is merely in the trash with its DL ref still pinning the board's
+# allocation floor (docs/DL-COUNTER-RECOVERY.md § Why it strands). The whole point of reading
+# back a hard delete is to tell those two boards apart, and the bare read cannot.
+#
+# kb_api_status, not kb_api, for the reason unlink's DELETE gives: the statuses here are
+# DIFFERENT OUTCOMES — a 404 is this function's answer, a 403 is its refusal — and kb_api
+# collapses both to rc 1 with KB_HTTP stranded in a subshell.
+kb_card_witness() {
+    local task="$1" resp http body data
+    resp="$(kb_api_status GET "/tasks/$task.json?trashed=1")"
+    http="${resp%%$'\n'*}"
+    body=""
+    [[ "$resp" == *$'\n'* ]] && body="${resp#*$'\n'}"
+    case "$http" in
+        404) printf '{"state":"absent","http":"404"}\n'; return 0 ;;
+        2*)  : ;;
+        000) echo "$(_kb_prog): the re-read of card $task DID NOT COMPLETE — no HTTP status came back at all, so its state is UNMEASURED" >&2
+             return 1 ;;
+        401|403) echo "$(_kb_prog): the re-read of card $task was REFUSED (HTTP $http — POLICY, not an address problem): this token cannot read that card, so its state is UNMEASURED. That is not evidence the card is gone." >&2
+             return 1 ;;
+        *)   echo "$(_kb_prog): the re-read of card $task failed (HTTP $http) — its state is UNMEASURED" >&2
+             return 1 ;;
+    esac
+    # The card is wrapped in the SAME stdin read that selects it, never handed back to jq as an
+    # argument: one argv string is capped at MAX_ARG_STRLEN (131072 B on Linux) whatever ARG_MAX
+    # is, a card crosses that by accreting comments, and exec failing there would report a
+    # perfectly readable card as UNMEASURED — rc 3 for a write that landed. A body carrying more
+    # than one JSON text yields one line per text, which is not ONE card, so it stays refused.
+    data="$(kb_parse_resp "$body" -c --arg h "$http" '.data | select(type == "object") | {state: "present", http: $h, card: .}')"
+    [[ -n "$data" && "$data" != *$'\n'* ]] || {
+        echo "$(_kb_prog): the re-read of card $task returned success but no card could be read out of its body — its state is UNMEASURED (nothing was read)" >&2
+        return 1
+    }
+    printf '%s\n' "$data"
+}
+
+# kb_confirm_card <task> <predicate>: re-read card <task> and RULE on <predicate>, a jq
+# filter over the witness object above that must answer exactly `true`. It reads and rules;
+# it says nothing — the verb's own words are the caller's, exactly as kbcard's _kbc_link_witness leaves
+# them to unlink, because a shared owner cannot know which mutation was asked for.
+#   rc 0  CONFIRMED — the read is a measurement and the predicate holds. The witness object is
+#                     on stdout, so the caller can quote the state it just measured.
+#   rc 1  DENIED    — the read is a measurement and the predicate is FALSE. The witness object
+#                     is STILL on stdout: this is the arm that names what the board actually
+#                     holds, and a caller with nothing to quote would be back to describing a
+#                     board it never read.
+#   rc $KB_RC_UNVERIFIED  the read is not a measurement (the witness already said which way).
+# ⛔ JQ'S OWN rc IS SPLIT, because under the write-outcome contract rc 1 IS AN ASSERTION. `jq -e`
+# answers 1 for "the filter RAN and its result was false or null" and 4/5 for "the filter did
+# not run at all" (a parse error, a runtime fault). Only the first is a measurement. Collapsing
+# them read as "a filter typo is a false DENIED rather than a false CONFIRMED — the direction
+# that refuses rather than asserts", and that was wrong twice over: rc 1 here is printed by
+# every caller as HARD FAILURE quoting the board, i.e. the definite claim NOT APPLIED AND
+# KNOWN, and it would have been built out of a predicate that never evaluated. An unrunnable
+# predicate measured nothing, and nothing measured is rc 3's territory, not rc 1's. The fault
+# is the calling tool's own — a caller interpolating a server-supplied value into its filter is how
+# one gets minted (kbcard `comment`'s does, which is why its id is kb_is_uint-guarded BEFORE it is
+# spliced; board-card-start passes its expected values through the environment instead)
+# — so the diagnostic says whose fault it is rather than describing the board.
+kb_confirm_card() {
+    local task="$1" pred="$2" w jrc=0
+    w="$(kb_card_witness "$task")" || return "$KB_RC_UNVERIFIED"
+    printf '%s\n' "$w"
+    jq -e "$pred" <<<"$w" >/dev/null 2>&1 || jrc=$?
+    case "$jrc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "$(_kb_prog): the confirming predicate for card $task DID NOT RUN (jq rc $jrc) — card $task was read back fine; it is $(_kb_prog)'s own filter that is at fault, so NOTHING was measured about the write and this run makes no claim in either direction." >&2
+           return "$KB_RC_UNVERIFIED" ;;
+    esac
+}
+
 # kb_card_tags <response>: the tag list of the card a `GET /tasks/<id>.json` body carries, as one
 # compact JSON array, or NOTHING when no tag list can be read out of that body.
 #

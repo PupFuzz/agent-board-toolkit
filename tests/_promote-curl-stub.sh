@@ -46,10 +46,38 @@
 #                   one-line JSON envelope.
 #   $STUB_GET_TRANSPORT  when set, a GET exits with THIS curl rc (7 = could not connect)
 #                   having written no body at all — "the request did not complete", the state
-#                   whose outcome is UNKNOWN rather than refused.
+#                   whose outcome is UNKNOWN rather than refused. ⚠ IT REACHES THE BOARD GET
+#                   ONLY: a single-card read is answered by its own arm first, and is killed by
+#                   $STUB_CARD_TRANSPORT below.
+#   $STUB_CARD_TRANSPORT  the same, for a single-card GET (`/tasks/<id>.json`) — the read a move
+#                   is confirmed by. Separate from the knob above because they cannot be one:
+#                   with every GET dead the board read dies first and the tool refuses before any
+#                   PATCH, so the branch this drives (a stage PATCH whose read-back never
+#                   completed) would be unreachable.
+#   $STUB_CARD_TRANSPORT_IDS  its PER-CARD twin: a space-separated list of card ids whose
+#                   single-card GET exits 7 having written nothing, while every other card reads
+#                   back normally. The mixed run — one card moved, one UNVERIFIED — is a run
+#                   shape the exit policy rules on and a whole-run knob cannot construct.
 #   $STUB_PATCH_STATUS / $STUB_PATCH_BODY  what a PATCH answers with. Defaults 200 and
 #                   `{"data":{"id":0}}`, so a caller that sets neither sees the pre-card#9301
 #                   behaviour. A >=400 status here is how a REFUSED CARD MOVE is driven.
+#   $STUB_PATCH_REFUSE_IDS  the PER-CARD twin of $STUB_PATCH_STATUS: a space-separated list of
+#                   card ids whose PATCH is REFUSED — answered $STUB_PATCH_REFUSE_STATUS (default
+#                   403) carrying $STUB_PATCH_BODY — while every other card's SUCCEEDS at 200. A
+#                   whole-run status refuses every card and so can only build a run that promoted
+#                   nothing; the exit policy's `moved == 0 && skipped == 0` terms are invisible to
+#                   that run shape, which is why they went unmeasured for as long as they did.
+#                   ⛔ SET IT AND $STUB_PATCH_STATUS IS NOT CONSULTED — see `patch_status`'s
+#                   PRECEDENCE note below, and use the knob on the next line to pick the refusal
+#                   status. The list used to answer with $STUB_PATCH_STATUS itself, so the
+#                   documented spelling for "refuse card 2 with a 422" refused BOTH cards and the
+#                   run read as mixed while being uniform.
+#                   ⚠ $STUB_PATCH_BODY is still whole-run and rides the SUCCESS answers too; the
+#                   tool reads a PATCH's body only on the failure path (it re-reads the card
+#                   otherwise), so a refusal body on a 200 is inert rather than mixed-up.
+#   $STUB_PATCH_REFUSE_STATUS  the status the ids above are refused with. Default 403. Consulted
+#                   only when $STUB_PATCH_REFUSE_IDS is non-empty; it is the per-card knob's OWN
+#                   status, which is what keeps the refusal off the unlisted cards.
 #   $STUB_PATCH_TRANSPORT  the WRITE-side twin of $STUB_GET_TRANSPORT: the PATCH exits with THIS
 #                   curl rc having written no body and no status. ⚠ IT IS A DIFFERENT CLAIM FROM
 #                   A REFUSAL, not a variant of one — a reset AFTER the server applied the PATCH
@@ -58,12 +86,41 @@
 #                   what is unknown is what the far end did with it. Without this knob the whole
 #                   transport branch of the MOVE loop is undriven, which is how a message
 #                   asserting the card was "left in place" survived on it.
-#   $STUB_CARD_BODY  what a single-card GET (`/tasks/<id>.json`, the owner-tag clear's fresh read
-#                   after a move) answers, at $STUB_CARD_STATUS (default 200). Default: a card
-#                   carrying no tags, so a caller that sets neither sees no owner-tag write.
+#   $STUB_CARD_BODY  the card a single-card GET (`/tasks/<id>.json`) answers with, at
+#                   $STUB_CARD_STATUS (default 200), as it stood BEFORE this run's writes —
+#                   see THE STUB APPLIES ITS OWN WRITES below. Default: the card of that id out
+#                   of $BOARD_FILE (so its stage is the board's), given an empty `tags` list when
+#                   it carries none, which is what a caller that sets neither sees.
 #   $STUB_TAGS_PATCH_STATUS / $STUB_TAGS_PATCH_BODY  when the status is set, a PATCH whose body
 #                   carries `"tags"` answers with it, while a stage-only PATCH keeps
 #                   $STUB_PATCH_STATUS — the server's move-vs-update authorization split.
+#   $STUB_STAGE_UNAPPLIED_IDS  ⛔ THE PER-CARD TWIN of $STUB_STAGE_UNAPPLIED below: a
+#                   space-separated list of card ids (`"2"`, `"2 5"`) whose STAGE PATCH answers
+#                   its success status, is logged, and applies nothing — while every other
+#                   card's applies. It cannot be one knob with the whole-run one, and that is
+#                   the point: the run shape card#9938's exit policy turns on is a MIXED one
+#                   (one card moves, another is measured un-applied), and a whole-run knob can
+#                   only make every card behave the same way. With a single-card board the two
+#                   are indistinguishable, which is exactly how a rc-1 assertion came to be
+#                   pinned in the one configuration where it happened to hold.
+#   $STUB_STAGE_UNAPPLIED / $STUB_TAGS_UNAPPLIED  ⛔ THE 2xx THAT CHANGES NOTHING. When set, the
+#                   matching PATCH still answers its success status and is still logged — and the
+#                   stub's own card does NOT change. That is the state card#9938 exists for and
+#                   the one this fleet actually met (2026-05-22: 28/28 PATCHed, every call 2xx,
+#                   `updated_at` bumped, `workflow_stage_id` unchanged, the run green). Without a
+#                   knob for it, a control can only drive writes that WORK, and a tool that
+#                   reports from the status class passes every one of those.
+#
+# ⛔ THE STUB APPLIES ITS OWN WRITES, and that is what makes a read-back testable at all. A
+# single-card GET does not answer a canned body: it answers the card as this stub's server now
+# HOLDS it — the base above, with every PATCH it has ANSWERED SUCCESSFULLY merged over it, key by
+# key (the board replaces a tag list wholesale, so a shallow merge is the right model). The merge
+# is replayed from $PATCH_LOG rather than from a side file, so it carries no state a caller has
+# to reset: the callers already truncate that log per run, and the stub decides each logged
+# PATCH's status with the SAME rules it answered it by — a refused PATCH (>=400), one cut off by
+# $STUB_PATCH_TRANSPORT, and one under an *_UNAPPLIED knob apply nothing. A base body that is not
+# JSON with an object `.data` (an HTML error page, a bare `{"message":…}`) is answered VERBATIM,
+# so a fixture testing an unreadable read stays unreadable.
 #
 # ⛔ THERE IS DELIBERATELY NO "FLAKY 503 THEN SUCCEED" KNOB, and the reason belongs here rather
 # than in the caller that wanted one. `--retry` is curl's OWN internal loop, and this stub IS
@@ -109,6 +166,55 @@ emit() {
 
 [ -n "${ATTEMPT_LOG:-}" ] && printf '%s %s\n' "$method" "$url" >> "$ATTEMPT_LOG"
 
+# stage_unapplied <url> — true when this card's STAGE PATCHes apply nothing: either the
+# whole-run knob is set, or the card's own id is named in the per-card list.
+stage_unapplied() {
+  local id="${1##*/tasks/}"; id="${id%%.json*}"
+  [ -z "${STUB_STAGE_UNAPPLIED:-}" ] || return 0
+  case " ${STUB_STAGE_UNAPPLIED_IDS:-} " in *" $id "*) return 0 ;; esac
+  return 1
+}
+
+# patch_status <url> — the status a PATCH to <url> is ANSWERED with. ONE owner, consulted by the
+# PATCH arm and by applied()'s replay, so what the server holds cannot disagree with what it said.
+#
+# ⛔ PRECEDENCE — the two knobs are NOT two layers of one setting, and reading them as one is what
+# made the refusal status uniform. A NON-EMPTY $STUB_PATCH_REFUSE_IDS declares the run MIXED and
+# owns EVERY card's status: a listed card answers $STUB_PATCH_REFUSE_STATUS (default 403) and
+# every other card answers 200 — $STUB_PATCH_STATUS is not consulted at all, because a refusal
+# status shared with the unlisted cards refuses the whole board, which is the one run shape the
+# id list exists to escape.
+patch_status() {
+  local id="${1##*/tasks/}"; id="${id%%.json*}"
+  if [ -n "${STUB_PATCH_REFUSE_IDS:-}" ]; then
+    case " $STUB_PATCH_REFUSE_IDS " in *" $id "*) printf '%s' "${STUB_PATCH_REFUSE_STATUS:-403}"; return 0 ;; esac
+    printf '%s' 200; return 0
+  fi
+  printf '%s' "${STUB_PATCH_STATUS:-200}"
+}
+
+# applied <url> — the merged effect of every PATCH to <url> this stub ANSWERED SUCCESSFULLY, as
+# one JSON object ({} when none). Replayed from $PATCH_LOG under the same status rules the PATCH
+# arm below answers by, so "what the server holds" cannot disagree with "what the server said".
+applied() {
+  local u="$1" lurl lbody st acc='{}' merged
+  [ -r "${PATCH_LOG:-}" ] || { printf '%s' "$acc"; return 0; }
+  while IFS="$(printf '\t')" read -r lurl lbody; do
+    [ "$lurl" = "$u" ] || continue
+    if [ -n "${STUB_PATCH_TRANSPORT:-}" ]; then continue; fi
+    case "$lbody" in
+      *'"tags"'*) st="${STUB_TAGS_PATCH_STATUS:-$(patch_status "$u")}"
+                  if [ -n "${STUB_TAGS_UNAPPLIED:-}" ]; then continue; fi ;;
+      *)          st="$(patch_status "$u")"
+                  if stage_unapplied "$u"; then continue; fi ;;
+    esac
+    case "$st" in [123]??) ;; *) continue ;; esac
+    merged="$(jq -cn --argjson a "$acc" --argjson b "$lbody" '$a + $b' 2>/dev/null)" || continue
+    [ -n "$merged" ] && acc="$merged"
+  done < "$PATCH_LOG"
+  printf '%s' "$acc"
+}
+
 if [ "$method" = PATCH ]; then
   printf '%s\t%s\n' "$url" "$data" >> "$PATCH_LOG"
   # Logged BEFORE the transport exit on purpose: the request went out either way, and a caller
@@ -119,12 +225,37 @@ if [ "$method" = PATCH ]; then
                 [ -n "${STUB_TAGS_PATCH_STATUS:-}" ] && emit "$STUB_TAGS_PATCH_STATUS" "${STUB_TAGS_PATCH_BODY:-$tbody}" ;;
   esac
   pbody='{"data":{"id":0}}'
-  emit "${STUB_PATCH_STATUS:-200}" "${STUB_PATCH_BODY:-$pbody}"
+  emit "$(patch_status "$url")" "${STUB_PATCH_BODY:-$pbody}"
 fi
 
 [ -n "${GET_LOG:-}" ] && printf '%s\n' "$url" >> "$GET_LOG"
 case "$url" in
-  */tasks/[0-9]*.json) cbody='{"data":{"tags":[]}}'; emit "${STUB_CARD_STATUS:-200}" "${STUB_CARD_BODY:-$cbody}" ;;
+  */tasks/[0-9]*.json)
+    # The single-card read that NEVER COMPLETED — no status, no body, curl's own rc. It is the
+    # CARD-scoped twin of $STUB_GET_TRANSPORT, which reaches only the board GET below (this arm
+    # emits before it), and without it the "the move's read-back did not complete" branch is
+    # undrivable: killing every GET kills the board read first and the tool dies before any PATCH.
+    [ -n "${STUB_CARD_TRANSPORT:-}" ] && exit "$STUB_CARD_TRANSPORT"
+    cid="${url##*/tasks/}"; cid="${cid%%.json*}"
+    # …and its PER-CARD twin: only the cards named in the list read back unreadably, so one card
+    # of a run can be UNVERIFIED while another is measured. rc 7 (could not connect), the same
+    # answer the whole-run knob's callers give it.
+    case " ${STUB_CARD_TRANSPORT_IDS:-} " in *" $cid "*) exit 7 ;; esac
+    cstatus="${STUB_CARD_STATUS:-200}"
+    cempty='{"data":{"tags":[]}}'
+    # A refused read answers its body verbatim: nothing was read, so there is nothing to overlay.
+    case "$cstatus" in [123]??) ;; *) emit "$cstatus" "${STUB_CARD_BODY:-$cempty}" ;; esac
+    cbase="${STUB_CARD_BODY:-}"
+    if [ -z "$cbase" ]; then
+      cbase="$(jq -c --arg id "$cid" '{data: ((.data[]? | select((.id|tostring) == $id)) // {})}
+                 | .data |= (if has("tags") then . else .tags = [] end)' "$BOARD_FILE" 2>/dev/null)"
+      [ -n "$cbase" ] || cbase="$cempty"
+    fi
+    cout="$(jq -c --argjson p "$(applied "$url")" '.data = ((.data // {}) + $p)' <<<"$cbase" 2>/dev/null)"
+    # Not JSON with an object `.data` ⇒ verbatim, so an unreadable-body fixture stays unreadable.
+    [ -n "$cout" ] || cout="$cbase"
+    emit "$cstatus" "$cout"
+    ;;
 esac
 # A GET that never reached a server at all: no status, no body, curl's own rc.
 [ -n "${STUB_GET_TRANSPORT:-}" ] && exit "$STUB_GET_TRANSPORT"
