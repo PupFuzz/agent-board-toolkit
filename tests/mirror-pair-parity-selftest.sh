@@ -16,7 +16,7 @@
 # ↔ the file that OWNS the rule", not "↔ the lib"; nothing about the pin changes with the end.
 #
 # ⚑ AND A PAIR NEED NOT HAVE A LIB ORIGINAL TO BELONG HERE. `require_resolvable` below is two
-# STANDALONES compared against each other, and § 6 is a standalone compared against a bin that DOES
+# STANDALONES compared against each other, and § 7 is a standalone compared against a bin that DOES
 # source the lib. What makes something a member is the property, not the topology: one ruling
 # written twice, with nothing that reds when a fix lands in one copy and misses the other.
 #
@@ -484,7 +484,7 @@ eq "control: …where the shipped rule refuses to rule"               "unverifie
 unset -f card_stage stage_verdict _kbc_confirm_stage _sv _cs _card _sv_naive
 unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
 
-# ═══════════════════ 6 — the two renderers of an UNTRUSTED response body ═════════════════════
+# ═══════════════════ 7 — the two renderers of an UNTRUSTED response body ═════════════════════
 #
 # THE PAIR: `resp_detail` in promote-released-cards and `resp_excerpt` in next-dl. Each is its
 # tool's ONE renderer of bytes a third party chose — next-dl's arm is designed around a gateway's
