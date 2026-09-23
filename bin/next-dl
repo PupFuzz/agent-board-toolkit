@@ -390,7 +390,8 @@ dl_sequence_call() (
     # THIRD PARTY minted — the `?sid=`/`SAMLRequest=` in a gateway SSO or WAF page, which is this
     # arm's designed-for producer — is NOT masked. A key=value pattern list would not close it
     # either: it would be one key name behind whatever the next gateway spells it, while reading
-    # like a guarantee. What bounds that exposure is the 300-byte cut and the stderr-only channel.
+    # like a guarantee. What bounds that exposure is this function's own cut below and the
+    # stderr-only channel — named as the cut rather than as its width, which lives on that line.
     # The token is re-read here rather than carried in a variable: `$(cat …)` strips the trailing
     # newline exactly as it does where kb_auth_header is fed above, so these are the bytes that
     # went on the wire, and no resolved secret is held anywhere a later edit could print.
@@ -644,7 +645,9 @@ done
 # faults the projection jq at rc 5, which emits nothing, so max_int's grep then exits 1 and
 # pipefail hands the CALLER rc 1 — the benign channel. So the benign paths DECLARE, and the
 # call site degrades only on the declaration. ⚠ The value is deliberately not a uint: reaching the
-# floor comparison it is ignored rather than minted.
+# floor comparison it is ignored rather than minted. And it cannot be FORGED by board data — the
+# only other thing this function ever writes to stdout is max_int's output over a stream the jq
+# `norm` above has already reduced to bare digits, so no card's contents can spell it.
 # ⚠ AND THE DECLARATION IS ONLY AS TRUE AS fetch_board_cards' rc: this function declares "no floor"
 # off an EMPTY projection, so it inherits that function's contract that rc 0 means a whole read was
 # seen. That contract has a known-open hole, already named at the call site below and owned by the
