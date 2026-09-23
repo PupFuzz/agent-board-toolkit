@@ -305,7 +305,11 @@ kb_stub_route() {
         "GET "*/tasks/search.json*) printf '200\n{"data":[],"meta":{"last_page":1,"total":0}}' ;;
         "GET "*/tasks/4242.json*)
             printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":48,"payload":%s}}' "$ATA_PAYLOAD" ;;
-        "POST "*/dl-sequence/claim.json) printf '200\n%s' "$ATA_CLAIM_BODY" ;;
+        "POST "*/dl-sequence/claim.json)
+            # `!curl <rc>` is the stub's TRANSPORT-failure spelling (tests/_kb-api-stub-curl.sh):
+            # curl exits with that status having written nothing, so no HTTP status is read at all.
+            if [[ -n "${ATA_CLAIM_CURLFAIL:-}" ]]; then printf '!curl %s' "$ATA_CLAIM_CURLFAIL"
+            else printf '200\n%s' "$ATA_CLAIM_BODY"; fi ;;
         "PATCH "*/tasks/4242.json)
             printf '200\n'
             jq -cn --argjson b "$3" --argjson p "$ATA_PAYLOAD" \
@@ -313,14 +317,26 @@ kb_stub_route() {
     esac
 }
 export -f kb_stub_route
-ata_real_run() {   # ata_real_run <claim-response-body> — adopts a card carrying no refs
+ata_real_run() {   # ata_real_run <claim-response-body> [<curl-rc>] — adopts a card carrying no refs
     kb_stub_reset
     _rc=0
-    _err="$(ATA_PAYLOAD='{}' ATA_CLAIM_BODY="$1" bash "$ATA_REAL/adopt-to-dl" \
+    _err="$(ATA_PAYLOAD='{}' ATA_CLAIM_BODY="$1" ATA_CLAIM_CURLFAIL="${2:-}" bash "$ATA_REAL/adopt-to-dl" \
         4242 --repo owner/name --board dev 2>&1 >/dev/null)" || _rc=$?
 }
 ata_real_run '<html><head><title>Sign in</title></head><body>SSO gateway</body></html>'
 eq "⭐ the claim answered 200 + an HTML page → rc 1"          "1" "$_rc"
+eq "⭐ …and NOTHING was stamped (no PATCH)"                    "0" "$(npatch)"
+eq "…and the offline scan was never consulted"               "0" "$(kb_stub_count_any /tasks/search.json)"
+eq "…and the failure is named as the mint"                   "true" "$(has 'mint failed (next-dl)' "$_err")"
+eq "…and next-dl says a number may already be spent"         "true" \
+   "$(has 'may ALREADY have allocated a number' "$_err")"
+# THE OTHER ARM IN WHICH THE CLAIM MAY HAVE SPENT, and the one round 1 left open: the claim POST
+# dies in TRANSPORT. curl exits non-zero having read no status, which is not evidence the request
+# never arrived — a reset or a lost response answers a claim the server already applied exactly
+# as an unopened connection does. Against the round-1 head this stamped DL-0301 onto the card at
+# rc 0, by the identical route the HTML-page leg above closes.
+ata_real_run '' 52
+eq "⭐ the claim's transport DIED → rc 1"                      "1" "$_rc"
 eq "⭐ …and NOTHING was stamped (no PATCH)"                    "0" "$(npatch)"
 eq "…and the offline scan was never consulted"               "0" "$(kb_stub_count_any /tasks/search.json)"
 eq "…and the failure is named as the mint"                   "true" "$(has 'mint failed (next-dl)' "$_err")"

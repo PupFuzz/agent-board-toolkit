@@ -27,11 +27,12 @@
 # WHAT A GREEN RUN PROVES — the weakest property these assertions support: that next-dl
 # refuses these argument shapes with these messages and these exit codes, that a valid
 # --board reaches board resolution, that --peek prefers the inspect endpoint over the
-# offline scan and falls back only when that endpoint is absent, and that an undecodable
-# 2xx takes the fallback on the non-consuming read while REFUSING on the consuming claim
-# (card#10230) — all against a stub. It says nothing about the atomic-claim endpoint's real
-# behaviour or the offline scan against real checkouts, and it cannot say anything about
-# what a CALLER then stamps: `tests/adopt-to-dl-selftest.sh` owns that half, driving the
+# offline scan and falls back only when that endpoint is absent, that an undecodable 2xx AND a
+# dead transport each take the fallback on the non-consuming read while REFUSING on the consuming
+# claim, and that a MISWIRED call site — the argument omitted, or its value misspelled — refuses
+# rather than minting (card#10230) — all against a stub. It says nothing about the atomic-claim
+# endpoint's real behaviour or the offline scan against real checkouts, and it cannot say
+# anything about what a CALLER then stamps: `tests/adopt-to-dl-selftest.sh` owns that half, driving the
 # real next-dl and asserting no card is written.
 set -euo pipefail
 
@@ -368,12 +369,20 @@ eq "strict + no board env → and still says what it refused" "true" \
 # every channel a caller can read, to an atomic claim. Two concurrent allocators were handed the
 # same DL by the tool whose whole purpose is to stop that, and nothing said so.
 #
-# WHY THE CAUSE MATRIX IS THE POINT AND NOT DECORATION. `dl_sequence_call` exits 1 for FOUR
-# different situations, and the exit code is the same for all four, so the stderr line is the ONLY
-# place they are distinguishable. A "stderr is non-empty" assertion would be satisfied by one
-# generic line, which re-mints the conflation this card is about — so each cause asserts its OWN
-# phrase present AND the other three ABSENT. Measured: collapsing the four `unusable` calls into
-# one shared string reds 12 of the 16 matrix assertions.
+# WHY THE CAUSE MATRIX IS THE POINT AND NOT DECORATION. The CAUSES are the four `NDL_CAUSES`
+# holds, and the rc does not separate them: every one of them can reach the caller as the same
+# exit code, so the stderr line is the ONLY place they are distinguishable. A "stderr is
+# non-empty" assertion would be satisfied by one generic line, which re-mints the conflation this
+# card is about — so each cause asserts its OWN phrase present AND the other three ABSENT.
+# Measured: collapsing the four `unusable` calls into one shared string reds 12 of the 16 matrix
+# assertions.
+#
+# ⛔ THE CAUSE SET AND THE rc-1 SET ARE NOT THE SAME SET, and reading them as one is what shipped
+# card#10230 (twice). Every cause still prints its own line on both routes — that is what
+# `only_cause` holds. But on the CONSUMING claim two of them (unreachable, and a 2xx carrying no
+# usable value) exit 3 and abort rather than exiting 1 and degrading, because the call may have
+# spent a number. So a leg here asserts the cause line and the DISPOSITION separately; a matrix
+# that read one off the other would go green on the defect.
 #
 # The fixture is the card#6631 block's, deliberately: a local floor of DL-0300 over a board whose
 # cards top out at DL-0219, so the offline answer is DL-0301 — a value the counter never returns
@@ -414,8 +423,9 @@ export NDL_CLAIM_CURLFAIL="" NDL_PEEK_CURLFAIL=""
 
 echo "== POSITIVE WITNESS: --require-counter still gets an ATOMIC CLAIM when the endpoint answers =="
 # PAIRED WITH EVERY REFUSAL BELOW, and the reason this file cannot pass by breaking the tool: a
-# next-dl that refused unconditionally would satisfy all four strict legs perfectly. This leg is
-# the one that fails for it — the claim is issued, its number is minted, and nothing degrades.
+# next-dl that refused unconditionally would satisfy every strict leg and every fail-closed leg
+# below perfectly. This leg is the one that fails for it — the claim is issued, its number is
+# minted, and nothing degrades.
 run_ndl --board dev --require-counter
 eq "endpoint present + strict → rc 0"                 "0" "$rc"
 eq "endpoint present + strict → the CLAIMED number"   "DL-0093" "$out"
@@ -455,16 +465,73 @@ eq "404 strict → never reads the board at all"        "0" "$(kb_stub_count_any
 echo "== cause 2 (TRANSPORT failure): distinct from 404 — nothing was learned about the route =="
 # curl exits non-zero with no status. Reporting that as "not deployed" would be a fabricated
 # finding about the server, which is card#7210's class: a failed read scored as a usable negative.
-NDL_CLAIM_CURLFAIL=7 run_ndl --board dev
-eq "transport fail permissive → rc 0"                 "0" "$rc"
-eq "transport fail permissive → mints the offline floor" "DL-0301" "$out"
-eq "transport fail permissive → announces the fallback" "true" "$(has "$FALLBACK" "$err")"
-only_cause "transport fail permissive" 1 "$err"
+# THE CAUSE is one cause on both routes and still gets its own line. What differs is the
+# DISPOSITION — and card#10230's SECOND round is that it used not to.
+#
+# ⛔ THIS IS THE ARM THE FIRST FIX MISSED, and it is the whole reason the ruling is now stated
+# over the arm SET rather than per arm. Round 1 closed the 2xx-undecodable arm and left this one
+# taking the benign fallback, so an ordinary network flake on the claim POST still minted from
+# the offline scan: measured against that head, `NDL_CLAIM_CURLFAIL=52` and `=28` each gave
+# `rc 0` and `DL-0301` — the identical defect, on an adjacent arm of the same function, with the
+# whole suite green because no leg here drove the CONSUMING route's transport cell at all.
+#
+# WHY A CONSUMING CALL REFUSES ON EVERY curl rc AND NOT ON A CHOSEN SUBSET. A non-zero curl exit
+# means the request DID NOT COMPLETE, which is not evidence that it never arrived: 52 (empty
+# reply), 56 (recv failure) and 28 (timeout) all name a POST the server may have applied before
+# the answer was lost. Splitting the rcs into "cannot have reached it" (5/6/7) and "may have"
+# would put a copy of curl's exit-code table in bin/next-dl, and would buy nothing — where the
+# host is genuinely unreachable the offline scan's own board read fails too (card#6631). So
+# rc 7 is driven HERE beside 52 and 28: a fix that classified curl's rc would keep 52 and 28 red
+# and turn THIS leg green, which is the discrimination the three-value loop exists to make.
+for _crc in 7 52 28; do
+    NDL_CLAIM_CURLFAIL=$_crc run_ndl --board dev
+    eq "claim transport fail (curl $_crc) → rc 1 (fail closed)"        "1" "$rc"
+    eq "claim transport fail (curl $_crc) → mints NOTHING"             ""  "$out"
+    eq "claim transport fail (curl $_crc) → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+    eq "claim transport fail (curl $_crc) → never reaches the scan"    "0" "$(kb_stub_count_any "$SEARCH")"
+    eq "claim transport fail (curl $_crc) → says a number may ALREADY be spent" "true" \
+       "$(has 'may ALREADY have allocated a number' "$err")"
+    # The honest half, and the one a bare refusal would drop: the tool says it cannot tell a
+    # claim the server applied from one that never arrived, rather than naming a transport error
+    # and leaving the operator to assume nothing was spent.
+    eq "claim transport fail (curl $_crc) → says it cannot tell which happened" "true" \
+       "$(has 'nothing here can tell a claim the server applied from one that never arrived' "$err")"
+    eq "claim transport fail (curl $_crc) → does NOT announce a fallback it refused" "false" \
+       "$(has "$FALLBACK" "$err")"
+    # No body was read, so there is no excerpt to quote — an empty `Response:` here would say the
+    # server answered with nothing, when in fact nothing was heard.
+    eq "claim transport fail (curl $_crc) → quotes no response body"   "false" "$(has 'Response:' "$err")"
+    only_cause "claim transport fail (curl $_crc)" 1 "$err"
+done
+unset _crc
 
-NDL_CLAIM_CURLFAIL=7 run_ndl --board dev --require-counter
-eq "transport fail strict → rc 4"                     "4" "$rc"
-eq "transport fail strict → mints NOTHING"            "" "$out"
-only_cause "transport fail strict" 1 "$err"
+# The rc-3 abort is upstream of the degrade decision, exactly as the 500 and the 2xx-undecodable
+# arms are: strict must not renumber an outcome that has already refused.
+NDL_CLAIM_CURLFAIL=52 run_ndl --board dev --require-counter
+eq "claim transport fail + strict → still rc 1, not 4" "1" "$rc"
+eq "claim transport fail + strict → mints NOTHING"     "" "$out"
+only_cause "claim transport fail + strict" 1 "$err"
+
+echo "== CONTROL: the SAME transport failure on the NON-CONSUMING read still falls back =="
+# The over-correction control, and the reason this route is driven at all (it never was before).
+# A GET allocates nothing, so the benign fallback is CORRECT there and --peek's whole offline
+# path depends on it (card#7214). A fix that made the transport fail closed for EVERY caller
+# reds every line in this block.
+NDL_PEEK_CURLFAIL=52 run_ndl --board dev --peek
+eq "peek transport fail → rc 0 (benign fallback)"     "0" "$rc"
+eq "peek transport fail → mints the offline floor"    "DL-0301" "$out"
+eq "peek transport fail → announces the fallback"     "true" "$(has "$FALLBACK" "$err")"
+eq "peek transport fail → names the INSPECT endpoint" "true" \
+   "$(has 'DL-sequence inspect endpoint gave no number' "$err")"
+eq "peek transport fail → claims NOTHING"             "0" "$(kb_stub_count_any "$CLAIM_URL")"
+eq "peek transport fail → does NOT borrow the claim's spent-number wording" "false" \
+   "$(has 'may ALREADY have allocated a number' "$err")"
+only_cause "peek transport fail" 1 "$err"
+
+NDL_PEEK_CURLFAIL=52 run_ndl --board dev --peek --require-counter
+eq "peek transport fail + strict → rc 4"              "4" "$rc"
+eq "peek transport fail + strict → mints NOTHING"     "" "$out"
+only_cause "peek transport fail + strict" 1 "$err"
 
 echo "== cause 4 (2xx carrying no usable value): ONE cause, TWO dispositions, keyed on CONSUMPTION =="
 # THE CAUSE is one cause on both routes and still gets its own line (only_cause holds on both
@@ -487,6 +554,13 @@ eq "2xx-no-value on the claim → names the HTTP status it got" "true" "$(has 'a
 eq "2xx-no-value on the claim → says a number may ALREADY be burned" "true" \
    "$(has 'may ALREADY have allocated a number' "$err")"
 eq "2xx-no-value on the claim → does NOT announce a fallback it refused" "false" "$(has "$FALLBACK" "$err")"
+# ⭐ THE PRESENCE WITNESS for the transport arm's "quotes no response body" assertion above. That
+# one is an absence, and an absence proves nothing until the same predicate is seen to FIRE: here
+# a body WAS read, so the refusal quotes an excerpt of it. Both refusals come from one
+# `spent_refusal`, so this is the leg that shows the excerpt is omitted where nothing was heard
+# rather than dropped everywhere.
+eq "2xx-no-value on the claim → quotes the body it could not read" "true|true" \
+   "$(has 'Response:' "$err")|$(has '{"data":{}}' "$err")"
 only_cause "2xx-no-value on the claim" 3 "$err"
 # A REMEDIATION STRING IS A DOC SURFACE, so it is asserted like one. `kanban` and `--board kanban`
 # name DIFFERENT boards, so a remedy built by re-printing `$project` alone would hand the operator
@@ -544,8 +618,98 @@ eq "decodable claim → rc 0 and the CLAIMED number"    "0|DL-0093" "$rc|$out"
 run_ndl --board dev --peek
 eq "decodable peek → rc 0 and the COUNTER's next"     "0|DL-0222" "$rc|$out"
 
+echo "== a MISWIRED call site fails CLOSED — both halves, and the omitted one had no control =="
+# dl_sequence_call's contract promises that a caller which misspells <consumption> OR OMITS it
+# refuses loudly rather than re-minting card#10230 in silence. The OMISSION half was FALSE when
+# that sentence was written and nothing here could have seen it: `consumption="$5"; risk="$6"`
+# ran before any value test, so under `set -u` an omitted argument killed the subshell at the
+# unbound `$6` at rc 1 — the caller's BENIGN fallback — and next-dl printed DL-0301 at rc 0 with
+# no `unusable` cause line at all. Reproduced against that head exactly so.
+#
+# ⛔ THE MISWIRING CANNOT BE DRIVEN THROUGH THE CLI, because every shipped call site is correct
+# by construction — which is exactly why the guarantee had no control. So the call site is
+# MUTATED in a scratch copy of bin/. `ndl_mutant` refuses a sed that changed nothing, so a leg
+# below can never be a measurement of the shipped binary wearing a mutant's name.
+NDL_MUT="$TMP/ndl-mut"
+ndl_mutant() {   # ndl_mutant <sed-expr> — a scratch bin/ whose next-dl carries <sed-expr>
+    rm -rf "$NDL_MUT"
+    mkdir -p "$NDL_MUT"
+    cp -pR "$HERE"/../bin/. "$NDL_MUT"/
+    sed -i "$1" "$NDL_MUT/next-dl"
+    if cmp -s "$HERE/../bin/next-dl" "$NDL_MUT/next-dl"; then
+        echo "selftest: mutation '$1' changed nothing in next-dl — did board_claim's argument list move?" >&2
+        exit 1
+    fi
+}
+run_ndl_mut() {
+    kb_stub_reset
+    rc=0
+    out="$("$NDL_MUT/next-dl" "$@" 2>"$TMP/err")" || rc=$?
+    err="$(cat "$TMP/err")"
+}
+
+# HALF 1 — the argument is OMITTED. board_claim passes five arguments instead of six.
+ndl_mutant '/^        consuming \\$/d'
+run_ndl_mut --board dev
+eq "MISWIRED (argument OMITTED) → rc 1"               "1" "$rc"
+eq "MISWIRED (omitted) → mints NOTHING"               ""  "$out"
+eq "MISWIRED (omitted) → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "MISWIRED (omitted) → names the miswiring and the arity it got" "true" \
+   "$(has 'called with 5 arguments, not 6' "$err")"
+# The guard is BEFORE the positional read, which is the whole fix: `set -u` must never be what
+# stops this call, because its rc 1 is the benign fallback.
+eq "MISWIRED (omitted) → no unbound-variable death"   "false" "$(has 'unbound variable' "$err")"
+eq "MISWIRED (omitted) → does NOT announce a fallback" "false" "$(has "$FALLBACK" "$err")"
+eq "MISWIRED (omitted) → issued no request at all"    "0" "$(kb_stub_total)"
+# strict changes nothing: the abort is upstream of the degrade decision, as every rc-3 member is.
+run_ndl_mut --board dev --require-counter
+eq "MISWIRED (omitted) + strict → still rc 1, not 4"  "1" "$rc"
+eq "MISWIRED (omitted) + strict → mints NOTHING"      ""  "$out"
+# ⭐ CONTROL that the mutant is an otherwise-WORKING next-dl and not a tool broken into refusing:
+# --peek never calls board_claim, so it must behave exactly as the shipped binary does.
+run_ndl_mut --board dev --peek
+eq "control: the same mutant's --peek is untouched → rc 0 and the COUNTER's next" "0|DL-0222" "$rc|$out"
+
+# HALF 2 — the VALUE is misspelled. Every value but the exact token `non-consuming` is consuming,
+# so a misspelling on the claim still refuses. This leg is what reds if the token test is ever
+# flipped to `== "consuming"`, which would read a typo as a non-consuming call and fall back.
+ndl_mutant 's/^        consuming \\$/        consumin \\/'
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl_mut --board dev
+eq "MISWIRED (value MISSPELLED) → still rc 1 (fail closed)" "1" "$rc"
+eq "MISWIRED (misspelled) → mints NOTHING"            ""  "$out"
+eq "MISWIRED (misspelled) → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "MISWIRED (misspelled) → takes the SPENT refusal, not the arity one" "true|false" \
+   "$(has 'may ALREADY have allocated a number' "$err")|$(has 'arguments, not 6' "$err")"
+# ⭐ CONTROL, the other direction: a misspelling of `non-consuming` on the PEEK route is treated
+# as consuming too, so it fails closed where the correct spelling falls back. That is the
+# fail-closed side being reached BY a typo rather than merely surviving one.
+ndl_mutant 's/^        non-consuming \\$/        non_consuming \\/'
+NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{}}' run_ndl_mut --board dev --peek
+eq "control: a MISSPELLED non-consuming lands on the FAIL-CLOSED side → rc 1" "1" "$rc"
+eq "control: …and mints NOTHING where the correct spelling mints the floor" "" "$out"
+
+rm -rf "$NDL_MUT"
+unset -f ndl_mutant run_ndl_mut
+unset NDL_MUT
+
+echo "== the LAST post-spend cell: a claim answers a uint the CANON refuses, and still mints nothing =="
+# ⭐ FROM THE card#10230 ARM SWEEP, and a null result pinned rather than left unwitnessed. Every
+# other way out of dl_sequence_call after a CONSUMING POST is asserted above; this is the one
+# that leaves it at rc 0. `kb_is_uint` admits 9999999, so the value is PRINTED and the call
+# succeeds — and `kb_dl_canon` then refuses it as out of the canonical range, at the caller.
+# That already exits 1 and mints nothing, so this leg fixes no defect; it exists because that
+# `|| { … exit 1; }` is the only thing standing between a spent claim and the offline floor on
+# this path, and nothing else in this file would notice it being softened into a fallback.
+# Watched RED under exactly that mutation (the canon refusal replaced by a fall-through).
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{"value":9999999}}' run_ndl --board dev
+eq "out-of-range claim → rc 1"                        "1" "$rc"
+eq "out-of-range claim → mints NOTHING"               ""  "$out"
+eq "out-of-range claim → never answers from the offline floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "out-of-range claim → never reaches the scan"      "0" "$(kb_stub_count_any "$SEARCH")"
+eq "out-of-range claim → names what it refused"       "true" "$(has 'not a canonical DL number' "$err")"
+
 echo "== cause 1 (config UNRESOLVED): no request was issued, and the notice says that =="
-# The fourth rc-1 cause, which the endpoint-shaped three hide: dl_sequence_call returns 1 before
+# The one rc-1 cause the endpoint-shaped ones hide: dl_sequence_call returns 1 before
 # any request when the board config does not resolve, so an UNCONFIGURED board degraded as
 # silently as an absent endpoint. Its permissive outcome is card#6631's stated bound — it still
 # mints — so only the announcement is new here.
