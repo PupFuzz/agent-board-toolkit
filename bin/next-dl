@@ -381,6 +381,18 @@ dl_sequence_call() (
     # nothing and the surviving prefix is printed (card#7500's scrub-before-truncate trap). Same
     # ruling, same reasoning and the same instrument as the co-vendored sibling renderer,
     # `resp_detail` in bin/promote-released-cards — cited by FUNCTION, not by line.
+    # ⛔ AND THE CONTROL-BYTE SCRUB IS THE SIBLING'S TOO, WHICH IT WAS NOT WHEN THE LINE ABOVE WAS
+    # FIRST WRITTEN (card#10230, round 7). The mask was ported from `resp_detail` and the scrub was
+    # not, so the parity that sentence asserts did not exist: this bounded with `tr '\n' ' '`, which
+    # converts LF and NOTHING ELSE, and MEASURED on a gateway-style body an ESC, a BEL and a CR each
+    # reached the operator's terminal — the CR letting a third party's page overwrite the very line
+    # that says a DL may already have been spent. The chain below is the sibling's, byte for byte,
+    # and it is also what actually makes this ONE line: `tr '\n' ' '` never touched CR. ⚠ ITS LIMIT
+    # IS C1, NOT C0 — 0x80-0x9F (0x9B CSI included) survives, deliberately, and the measurement and
+    # the reason extending it would CORRUPT legitimate UTF-8 are `resp_detail`'s own paragraph, not
+    # restated here. What holds the two chains together is not this comment: the pair is registered
+    # in tests/mirror-pair-parity-selftest.sh, which drives BOTH renderers over one control-byte
+    # corpus, so a fix landing in one copy and missing its twin reds.
     # ⛔ WHAT IS MASKED IS THIS CALL'S OWN BEARER TOKEN, AND A PATTERN SCRUB IS DELIBERATELY NOT
     # ADDED. The bearer is the one secret a response body can actually come to contain — it goes
     # out in a header and a server rendering debug output echoes request headers into its own error
@@ -410,7 +422,12 @@ dl_sequence_call() (
         }
         body="$1"
         [[ -n "$tok" ]] && body="${body//"$tok"/***}"
-        printf '%s' "$body" | tr '\n' ' ' | head -c 300
+        # One log LINE: newlines/tabs/CR to spaces, then C0 controls AND DEL dropped, runs squeezed
+        # — `resp_detail`'s chain, and the reason it is a chain rather than one `tr` is in that
+        # function's own comment. Then, and only then, the cut.
+        body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+        body="${body# }"; body="${body% }"
+        printf '%s' "$body" | head -c 300
     }
     # ONE refusal for EVERY arm where the call may have SPENT a number and the outcome is
     # UNKNOWN. A function and not two messages, because the ruling is the arm SET's and not any

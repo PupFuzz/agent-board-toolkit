@@ -95,6 +95,31 @@ run_ndl() {
     out="$("$NDL" "$@" 2>"$TMP/err")" || rc=$?
     err="$(cat "$TMP/err")"
 }
+# ndl_mutant <sed-expr> / run_ndl_mut <args…> — a scratch bin/ whose next-dl carries <sed-expr>,
+# and the same drive as run_ndl against it. These belong to EVERY section that has to exercise a
+# spelling the shipped tree does not contain, so they are defined beside run_ndl rather than beside
+# any one of them: the call-site belts below are `refuse unless the callee DECLARED`, and the whole
+# point of that shape is that the callee's ending set is not enumerable — so the only honest way to
+# drive one is to write an ending that is not there. `ndl_mutant` refuses a sed that changed
+# nothing, so a leg can never be a measurement of the shipped binary wearing a mutant's name.
+# The mutant tree is torn down once, at the end of the last block that uses it.
+NDL_MUT="$TMP/ndl-mut"
+ndl_mutant() {
+    rm -rf "$NDL_MUT"
+    mkdir -p "$NDL_MUT"
+    cp -pR "$HERE"/../bin/. "$NDL_MUT"/
+    sed -i "$1" "$NDL_MUT/next-dl"
+    if cmp -s "$HERE/../bin/next-dl" "$NDL_MUT/next-dl"; then
+        echo "selftest: mutation '$1' changed nothing in next-dl — did the site it targets move?" >&2
+        exit 1
+    fi
+}
+run_ndl_mut() {
+    kb_stub_reset
+    rc=0
+    out="$("$NDL_MUT/next-dl" "$@" 2>"$TMP/err")" || rc=$?
+    err="$(cat "$TMP/err")"
+}
 # Board-QUALIFIED on purpose: the route table answers any board's claim endpoint, so a count
 # that stopped at `/dl-sequence/claim.json` would stay green while --board's value was routed to
 # a different board entirely (measured — it did).
@@ -357,6 +382,46 @@ eq "unprojectable payload → names the projection as the cause" "true" \
    "$(has 'could not project dl_number' "$err")"
 eq "unprojectable payload → and the call site says what it refused and why" "true" \
    "$(has 'WITHOUT declaring that this board holds none' "$err")"
+
+echo "== board_dl_max's CALL-SITE BELT: an ending that function does not HAVE still refuses =="
+# ⭐ THE CONTROL card#10230's ROUND 6 SHIPPED WITHOUT, and the reason this leg is RUN and not
+# scanned. That round replaced the belt below board_dl_max with `refuse unless the callee
+# DECLARED` — and MEASURED, nothing in this file could tell the new spelling from the blocklist it
+# replaced. Reverting the call site to `[[ "$dlrc" -eq 2 ]]` and changing NOTHING else leaves every
+# check in this file green, because the only endings the shipped function HAS are 0, 2, and
+# 1-with-$NDL_NO_FLOOR — and the blocklist catches 2. The leg above passes on BOTH spellings.
+#
+# The guarantee's population is not those three endings; it is every ending anyone will ever give
+# that function, which is exactly why enumerating a callee's exits is the wrong shape wherever it
+# is written. So the only honest way to drive the belt is to write an ending the tree does not
+# contain — here the cheapest possible stand-in for "a status nobody thought about": the projection
+# fault exits 7 instead of 2. Not a new arm, not a `set -u` death, just an unranked code.
+#
+# ⚑ ALL THREE CELLS MEASURED before this leg was trusted, which is what makes it a control and not
+# another assertion that would pass either way:
+#   · blocklist belt + shipped board_dl_max → this whole file GREEN, every check — the round's
+#     own change was invisible to the round's own suite. (No check COUNT is written here: it is a
+#     figure about this file that this file would falsify on its next leg. Re-run it.)
+#   · SHIPPED belt + the plant below        → this whole file GREEN — the belt catches the new
+#     ending, so no other leg moves.
+#   · blocklist belt + the plant below      → RED, and here: `unprojectable payload → mints
+#     NOTHING — expected '' got 'DL-0301'`. That is the fail-open card#10230 exists to close,
+#     reached through an exit code nobody ranked.
+ndl_mutant '/could not project dl_number/{n;s/^        exit 2$/        exit 7/}'
+NDL_SEARCH_BODY='{"data":[{"id":9,"payload":[]},{"id":1,"payload":{"dl_number":"DL-0500"}}],"meta":{"last_page":1,"total":2}}' \
+    run_ndl_mut --board dev
+eq "an UNRANKED exit from board_dl_max → rc 1"              "1" "$rc"
+eq "an UNRANKED exit → mints NOTHING"                       ""  "$out"
+eq "an UNRANKED exit → never answers from the local floor"  "false" "$(has 'DL-0301' "$out$err")"
+eq "an UNRANKED exit → names the missing declaration"       "true" \
+   "$(has 'WITHOUT declaring that this board holds none' "$err")"
+eq "an UNRANKED exit → the status it reports is the one the callee gave" "true" \
+   "$(has 'RETURNED (status 7)' "$err")"
+# ⭐ THE CONTROL, in the `_belt_plant` shape: the mutant is an otherwise-WORKING next-dl, not a tool
+# mutated into refusing everything. Its readable board still mints, so the refusals above are the
+# belt firing on the planted ending rather than the binary having been broken.
+NDL_SEARCH_BODY="$NDL_BOARD_CARDS" run_ndl_mut --board dev
+eq "control: the same mutant still mints the offline floor on a readable board" "0|DL-0301" "$rc|$out"
 
 echo "== a board that answers with NO stamp still mints, and now DECLARES it rather than being inferred =="
 # The POSITIVE control for the declaration channel the leg above is the negative of: the benign
@@ -801,6 +866,40 @@ eq "non-2xx echoing the auth header → the token is NOT emitted" "false" "$(has
 eq "non-2xx echoing the auth header → it is masked IN PLACE"    "true"  "$(has 'Bearer ***' "$err")"
 eq "non-2xx echoing the auth header → the rest of the body is still quoted" "true" \
    "$(has 'blocked' "$err")"
+# ⭐ AND NOTHING A TERMINAL WOULD ACT ON SURVIVES THE RENDER (card#10230, round 7). The mask was
+# ported from the co-vendored sibling `resp_detail` and the SCRUB was not, while the comment beside
+# it claimed parity — so the bound was `tr '\n' ' '`, which converts LF and nothing else. MEASURED
+# on the pre-fix binary against exactly the body below: ESC, BEL and CR all reached the operator's
+# terminal, and the CR is the one that matters — it lets a third party's page overwrite the line
+# being read, on the one message that says a DL may ALREADY have been spent. This arm's
+# designed-for producer is an SSO or WAF page, i.e. bytes chosen by someone else.
+# ⛔ THE ASSERTION IS OVER THE RENDERED LINE, not over $err: stderr carries the `unusable` cause
+# line too, so the LF between them is the harness's and not the body's. The witness below is not
+# optional — an extraction that found nothing would report zero control bytes and pass.
+_ndl_ctl_count() {   # <text> — how many bytes a terminal would ACT on (C0 + DEL) are in it
+    LC_ALL=C printf '%s' "$1" | tr -dc '\000-\037\177' | wc -c | tr -d ' '
+}
+_ndl_quoted_line() {   # <stderr> — the ONE line carrying the quoted body
+    LC_ALL=C awk 'index($0,"Response:"){print; exit}' <<<"$1"
+}
+# The instrument's own control: it must COUNT the bytes this leg is about, or the "0" below is a
+# decoration. Driven on the three literals the fixture body carries.
+eq "control: the counter sees ESC, BEL and CR" "3" "$(_ndl_ctl_count "$(printf '\033\007\r')")"
+eq "control: …and counts nothing in ordinary text" "0" "$(_ndl_ctl_count 'plain {"a":"b"}')"
+NDL_CLAIM_HTTP=200 \
+NDL_CLAIM_BODY="$(printf '{"msg":"blocked\033[2K\007","gw":"\rSSO gateway"}')" \
+    run_ndl --board dev
+_ndl_quoted="$(_ndl_quoted_line "$err")"
+eq "witness: the refusal's quoted-body line was found at all" "true" \
+   "$([[ -n "$_ndl_quoted" ]] && echo true || echo false)"
+eq "a body carrying ESC/BEL/CR → NOT ONE control byte reaches the operator's stream" "0" \
+   "$(_ndl_ctl_count "$_ndl_quoted")"
+# THE CONTROL that keeps the line above from being satisfied by a scrub that emitted nothing: the
+# body's own words still have to arrive, including the ones the CR was carrying.
+eq "…and the body's visible text still arrives" "true|true" \
+   "$(has 'blocked' "$_ndl_quoted")|$(has 'SSO gateway' "$_ndl_quoted")"
+unset -f _ndl_ctl_count _ndl_quoted_line
+unset _ndl_quoted
 # ⭐ THE THIRD OUTCOME OF THAT RE-READ, and it is not "no token": the token file UNREADABLE.
 # Scoring that as an empty token would mask nothing and print the body whole — the
 # read-outcome-collapse class (tests/read-outcome-collapse-selftest.sh) landing on a secret. The
@@ -907,23 +1006,8 @@ echo "== a MISWIRED call site fails CLOSED — both halves, and the omitted one 
 # were watched red there); the misspelling legs' baseline is the shipped binary with the token
 # test inverted, and the out-of-range leg further down baselines against the bespoke mutation its
 # own comment names — there is no binary that lacked ITS fix, because it fixes nothing.
-NDL_MUT="$TMP/ndl-mut"
-ndl_mutant() {   # ndl_mutant <sed-expr> — a scratch bin/ whose next-dl carries <sed-expr>
-    rm -rf "$NDL_MUT"
-    mkdir -p "$NDL_MUT"
-    cp -pR "$HERE"/../bin/. "$NDL_MUT"/
-    sed -i "$1" "$NDL_MUT/next-dl"
-    if cmp -s "$HERE/../bin/next-dl" "$NDL_MUT/next-dl"; then
-        echo "selftest: mutation '$1' changed nothing in next-dl — did board_claim's argument list move?" >&2
-        exit 1
-    fi
-}
-run_ndl_mut() {
-    kb_stub_reset
-    rc=0
-    out="$("$NDL_MUT/next-dl" "$@" 2>"$TMP/err")" || rc=$?
-    err="$(cat "$TMP/err")"
-}
+# (`ndl_mutant`/`run_ndl_mut` are defined beside `run_ndl` at the top of this file — the
+# board_dl_max belt block uses them too, and one owner is the point.)
 
 # HALF 1 — the argument is OMITTED. board_claim passes five arguments instead of six.
 ndl_mutant '/^        consuming \\$/d'
