@@ -575,7 +575,12 @@ bundle_lines() {
 # test — THE CLAIM THIS BLOCK MAKES IS THAT PREDICATE AND IS NOT WIDER THAN IT: over the span
 # from the function's first line to its last silent `return`, the subjects the function tests
 # must be exactly the `gates:` names here, or that test reds. Past that span it reds on a
-# `return` carrying a test of its own, or one no `coverage_line` precedes.
+# `return` carrying a test of its own, or one no `coverage_line` precedes, and over the WHOLE
+# function every subject it tests must be a `gates:` name here or one of the `non-gates:` names
+# below — so a gate added past the span reds wherever it sits, in either bracket-test spelling.
+# ⚠ The gate it does NOT reach is one past that span spelled as a command's exit status rather
+# than a bracket test: it offers no subject to declare. Measured — such a gate, with the print it
+# guards left conditional, leaves the whole suite at rc 0.
 #
 # "Set" means the key reads NON-EMPTY through `cfg_opt` (absent, `null`, `false` and "" all read
 # as empty):
@@ -592,6 +597,14 @@ bundle_lines() {
 #                                  gates: promote promote-released-cards
 # Past them the promoter itself needs more (`KANBAN_EXPECTED_HOST`, a real api base — see
 # docs/INSTALL.md §4); a run that fails THERE is not silent: it prints the "could not run" line.
+#
+# THE REST OF WHAT THE FUNCTION TESTS, declared so that the check above can be complete over the
+# function and not only over the gate region. These select WHICH line is printed; naming a subject
+# here is the claim that its test cannot end the run in silence, because every path through it
+# prints one. They are not preconditions and nothing points a reader here — an operator reads the
+# `precondition:` lines. The list is here rather than in the test because the test would then hold
+# a second copy of a set this block owns, whose repair on a red is to edit the copy:
+#   non-gates: dl_manifest card_manifest COUNT rc miss stranded said
 #
 # It used to emit a heading unconditionally and, in that case, a
 # placeholder saying "not checked here, run `promote-released-cards --dry-run` before merge":
