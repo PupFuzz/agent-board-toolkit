@@ -149,6 +149,15 @@ has_line() {
     case "$nl$2$nl" in *"$nl$1$nl"*) echo true ;; *) echo false ;; esac
 }
 
+# _n_lines <captured-output> — how many lines a STATIC SCANNER reported, with EMPTY meaning zero.
+# Hoisted here at its second caller (card#10230): every scanner selftest in this tree reports its
+# findings as a captured multi-line string and then asserts a count, and `printf '%s\n' "" | wc -l`
+# answers 1 for no findings — so each such site needs the empty case handled, and a second private
+# copy of that handling is one more place for the two to disagree about what "clean" prints.
+# Callers: tests/locale-range-guard-selftest.sh (bracket ranges, blank verdicts) and
+# tests/next-dl-selftest.sh (unguarded benign exits).
+_n_lines() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
 expect_rc() {
     local label="$1" exp="$2"; shift 2

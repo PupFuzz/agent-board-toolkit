@@ -408,15 +408,23 @@ REFUSAL='--require-counter: refusing to mint'
 # $-expansion, trimmed. Non-empty, $-free and mutually DISTINCT are asserted below rather than
 # assumed; degeneracy is additionally self-detecting, since a needle short enough to appear in
 # every message reds only_cause's ABSENCE half everywhere at once.
-ndl_fn_body() {   # <file> — dl_sequence_call's body, lifted (the bin runs its main at top level)
+# ⛔ ONE EXTRACTOR, ONE ANCHOR. Both static legs in this file need dl_sequence_call's body, and
+# the first draft spelled the anchor in each of them — which prelude-shadow-selftest.sh caught as
+# the N+1th hand-spelled extraction. The prelude's `_fn_src` cannot own this one: it anchors
+# `<name>() {` and closes on `^}`, while dl_sequence_call is a SUBSHELL function — `() (` … `)` —
+# so neither half of its range applies. The anchor is therefore written ONCE, here, and every
+# consumer reads this function. The line NUMBER rides each line because the scanner below reports
+# `file:line` and must not re-lift the file to get it.
+ndl_fn_body() {   # <file> — dl_sequence_call's body as `<lineno><TAB><line>`
     LC_ALL=C awk '
         /^dl_sequence_call\(\) \($/ { infn = 1; next }
         infn && /^\)$/              { infn = 0; next }
-        infn                        { print }
+        infn                        { printf "%d\t%s\n", FNR, $0 }
     ' "$1"
 }
+ndl_fn_text() { ndl_fn_body "$1" | cut -f2-; }   # …the same body, line numbers stripped
 ndl_cause_args() {   # <file> — the ARGUMENT of every `unusable "…"` call in that body, in order
-    ndl_fn_body "$1" | sed -n 's/^[[:space:]]*unusable "\(.*\)"[[:space:]]*$/\1/p'
+    ndl_fn_text "$1" | sed -n 's/^[[:space:]]*unusable "\(.*\)"[[:space:]]*$/\1/p'
 }
 ndl_cause_needle() {   # <argument> — its longest $-expansion-free run, trimmed
     LC_ALL=C awk '{
@@ -467,9 +475,9 @@ echo "== the cause set is DERIVED from bin/next-dl's own unusable() call sites =
 # Vacuity first: a lift that found the wrong span, or nothing, would make every leg below pass by
 # measuring an empty set. The landmark is the shared refusal, which only this function defines.
 eq "the lift really got dl_sequence_call's body" "true" \
-   "$(has 'spent_refusal() {' "$(ndl_fn_body "$NDL")")"
+   "$(has 'spent_refusal() {' "$(ndl_fn_text "$NDL")")"
 eq "the lift stopped at the function (it did not swallow the caller)" "false" \
-   "$(has 'degrade_or_refuse "atomic claim endpoint"' "$(ndl_fn_body "$NDL")")"
+   "$(has 'degrade_or_refuse "atomic claim endpoint"' "$(ndl_fn_text "$NDL")")"
 eq "at least one cause was derived" "true" \
    "$([[ ${#NDL_CAUSES[@]} -gt 0 ]] && echo true || echo false)"
 for _i in "${!NDL_CAUSES[@]}"; do
@@ -939,7 +947,7 @@ echo "== STRUCTURAL: every benign exit PAST THE REQUEST is guarded or DECLARED (
 #
 # THE POPULATION IS RE-DERIVED ON EVERY RUN, and by hand in one line if you want to read it
 # rather than trust this paragraph:
-#     ndl_fn_body bin/next-dl | grep -nE '(^|[^A-Za-z0-9_])exit[ \t]+1([^0-9]|$)'
+#     ndl_fn_text bin/next-dl | grep -nE '(^|[^A-Za-z0-9_])exit[ \t]+1([^0-9]|$)'
 # — every benign exit in the function, plus the comment lines that merely mention one (the
 # scanner drops those; a bare grep cannot). What the scanner REPORTS is that list minus its
 # comment, pre-request, guarded and declared members. A denominator a reader cannot re-run is one
@@ -959,13 +967,13 @@ echo "== STRUCTURAL: every benign exit PAST THE REQUEST is guarded or DECLARED (
 # today: dl_sequence_call exits 0 only after `kb_is_uint "$val" && [[ "$val" -ge 1 ]]`, so
 # `$claimed` is always a uint when crc is 0. No leg drives it and none is claimed to.
 #
-# THE EXEMPTIONS ERR CLOSED, deliberately. The pin window is two lines; a nested `if` inside the
-# consumption guard closes the depth early and turns a guarded exit into a REPORTED one; and
-# nothing strips trailing comments, so a trailing comment merely MENTIONING `exit 1` is a hit;
-# and the guard opener requires the `if` spelling, so `[[ "$consumption" == "non-consuming" ]] &&
-# exit 1` on one line is REPORTED rather than recognised. Each of those is a false POSITIVE —
-# loud, visible at the next run, and the direction a guard must err in. A false negative would be
-# this leg silently dead, which is the state it replaces.
+# THE EXEMPTIONS ERR CLOSED, deliberately. The pin window is two lines, so a declaration written
+# further from its exit than that is REPORTED; nothing strips trailing comments, so a trailing
+# comment merely MENTIONING `exit 1` is a hit; and the guard opener requires the `if` spelling, so
+# `[[ "$consumption" == "non-consuming" ]] && exit 1` written on one line is REPORTED rather than
+# recognised. Each of those is a false POSITIVE — loud, visible at the next run, and the direction
+# a guard must err in. A false negative would be this leg silently dead, which is the state it
+# replaces, and it is the direction the first draft of the guard tracker below failed in.
 # ⛔ THE GUARD BLOCK IS TRACKED BY INDENTATION, NOT BY COUNTING `if`/`fi`. The counting version
 # was written first and is WRONG in the fail-OPEN direction, which its own fixture caught: a
 # one-line `if …; then …; fi` inside the guard increments and never decrements, so the depth
@@ -975,13 +983,12 @@ echo "== STRUCTURAL: every benign exit PAST THE REQUEST is guarded or DECLARED (
 # indent, or ANY code line indented LESS than it (a dedent ends the block whatever the `fi` looks
 # like). The second arm is the belt for a reindent that the first would miss.
 ndl_unpinned_benign_exits() {   # <file> — the offending `exit 1` lines, one per line
-    LC_ALL=C awk '
+    ndl_fn_body "$1" | LC_ALL=C awk -v f="$1" '
         function indent(t) { match(t, /^[ \t]*/); return RLENGTH }
-        /^dl_sequence_call\(\) \($/ { infn = 1; next }
-        infn && /^\)$/              { infn = 0; next }
-        !infn                        { next }
         {
-            raw = $0
+            tab = index($0, "\t")
+            lineno = substr($0, 1, tab - 1)
+            raw = substr($0, tab + 1)
             line = raw; sub(/^[ \t]+/, "", line)
             if (line ~ /^#/ || line == "") { p2 = p1; p1 = raw; next }   # comments describe, they do not exit
             if (raw ~ /\$\(curl/) postreq = 1       # THE request: everything below it is spend-capable
@@ -995,25 +1002,22 @@ ndl_unpinned_benign_exits() {   # <file> — the offending `exit 1` lines, one p
             }
             if (postreq && raw ~ /(^|[^A-Za-z0-9_])exit[ \t]+1([^0-9]|$)/ &&
                 (raw p1 p2) !~ /NOTHING WAS SPENT/)
-                printf "%s:%d:%s\n", FILENAME, FNR, raw
+                printf "%s:%s:%s\n", f, lineno, raw
             p2 = p1; p1 = raw
         }
-    ' "$1" 2>/dev/null || true
+    ' 2>/dev/null || true
     return 0
 }
-n_lines() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
 # Vacuity first, because every assertion below would pass over an empty scan. Both landmarks are
 # unique to this function, so a rename or a reshaped body reds HERE rather than going quiet.
-eq "the scanner lifted dl_sequence_call's body" "true" \
-   "$(has 'spent_refusal() {' "$(ndl_fn_body "$NDL")")"
+# The lift's own vacuity legs are ONE extractor's and are asserted once, at the derivation near
+# the cause matrix. What is specific to THIS leg is the post-request boundary.
 eq "the lifted body carries exactly ONE request (the post-request boundary is real)" "1" \
-   "$(ndl_fn_body "$NDL" | grep -c '\$(curl')"
-eq "the lift stopped at the function and did not swallow the caller" "false" \
-   "$(has 'degrade_or_refuse "atomic claim endpoint"' "$(ndl_fn_body "$NDL")")"
+   "$(ndl_fn_text "$NDL" | grep -c '\$(curl')"
 
 _hits="$(ndl_unpinned_benign_exits "$NDL")"
-eq "the SHIPPED bin/next-dl has no unguarded, undeclared benign exit past the request" "0" "$(n_lines "$_hits")"
+eq "the SHIPPED bin/next-dl has no unguarded, undeclared benign exit past the request" "0" "$(_n_lines "$_hits")"
 [[ -n "$_hits" ]] && printf '  offending lines:\n%s\n' "$_hits" >&2
 
 echo "== …and the scanner is SEEN TO FAIL on the arm that falsified the sentence =="
@@ -1022,14 +1026,14 @@ echo "== …and the scanner is SEEN TO FAIL on the arm that falsified the senten
 # other check in this file and minted DL-0301 at rc 0 on a 503. Here it is a hit.
 ndl_planted '/^        \*)$/i\        502|503|504)\n            unusable "is temporarily unavailable (HTTP $http) — a gateway error, not a deployment state"\n            exit 1 ;;'
 _hits="$(ndl_unpinned_benign_exits "$NDL_PLANT")"
-eq "a 502/503/504 benign-fallback arm is FLAGGED" "1" "$(n_lines "$_hits")"
+eq "a 502/503/504 benign-fallback arm is FLAGGED" "1" "$(_n_lines "$_hits")"
 case "$_hits" in *"exit 1 ;;"*) ok "…and the flagged line is the arm's own exit" ;;
                  *) bad "…but the flagged line is not the arm's exit: $_hits" ;; esac
 # ⭐ THE OTHER DIRECTION ON THE SHIPPED TREE: the 404 arm's pin is LOAD-BEARING, not decoration.
 # Without this, the pin arm of the exemption could be dead code and nobody would know.
 ndl_planted 's/NOTHING WAS SPENT: the server ANSWERED/the server answered/'
 eq "deleting the 404 arm's declaration FLAGS that arm" "1" \
-   "$(n_lines "$(ndl_unpinned_benign_exits "$NDL_PLANT")")"
+   "$(_n_lines "$(ndl_unpinned_benign_exits "$NDL_PLANT")")"
 
 echo "== positive controls: what the scanner must and must NOT flag =="
 # Synthetic fixtures, mirroring locale-range-guard-selftest.sh's `pos/` set: the mutations above
