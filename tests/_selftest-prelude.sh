@@ -150,12 +150,23 @@ has_line() {
 }
 
 # _n_lines <captured-output> — how many lines a STATIC SCANNER reported, with EMPTY meaning zero.
-# Hoisted here at its second caller (card#10230): every scanner selftest in this tree reports its
-# findings as a captured multi-line string and then asserts a count, and `printf '%s\n' "" | wc -l`
-# answers 1 for no findings — so each such site needs the empty case handled, and a second private
-# copy of that handling is one more place for the two to disagree about what "clean" prints.
-# Callers: tests/locale-range-guard-selftest.sh (bracket ranges, blank verdicts) and
-# tests/next-dl-selftest.sh (unguarded benign exits).
+# Hoisted here (card#10230): every scanner selftest in this tree reports its findings as a captured
+# multi-line string and then asserts a count, and `printf '%s\n' "" | wc -l` answers 1 for no
+# findings — so each such site needs the empty case handled, and a second private copy of that
+# handling is one more place for the two to disagree about what "clean" prints.
+#
+# WHO CALLS IT IS DERIVED, NEVER LISTED. A list of callers is a count in longer form: it is true
+# when written, nothing checks it, and it is false the next time a caller is added. Re-derive it:
+#     grep -rln '_n_lines' tests/ | grep -v '/_selftest-prelude\.sh$'
+#
+# ⛔ THE `awk 'NF'` FAMILY IS NOT THIS FUNCTION AND IS DELIBERATELY NOT MIGRATED — dispositioned
+# here so the next reader does not re-open it as an oversight. Re-derive that family with:
+#     grep -rnE "awk 'NF'[[:space:]]*\|[[:space:]]*wc -l" tests/
+# They answer a DIFFERENT question: they count NON-BLANK lines anywhere in the stream, where this
+# counts LINES and treats only the wholly-empty capture as zero. On a scanner report with no
+# interior blank line the two agree, which is exactly what makes the difference silent — fed
+# "a\n\nb" this answers 3 and they answer 2. Migrating them would move each call site's predicate
+# without moving its assertion, and every one of them is a denominator. They stay where they are.
 _n_lines() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.

@@ -408,6 +408,15 @@ REFUSAL='--require-counter: refusing to mint'
 # $-expansion, trimmed. Non-empty, $-free and mutually DISTINCT are asserted below rather than
 # assumed; degeneracy is additionally self-detecting, since a needle short enough to appear in
 # every message reds only_cause's ABSENCE half everywhere at once.
+# ⚠ THE SUBJECT OF THE ASSERTION CAN MOVE UNDER A REWORD, and silently. "Longest" is a property of
+# the wording, not of the meaning, so lengthening a different $-free run of the SAME cause hands
+# only_cause a new needle with no edit here and no red anywhere — the leg still passes, about a
+# different substring than the one whoever wrote it had in mind. That is accepted and not fixed:
+# the alternative is a hand-written needle per cause, which is the hand-written array this
+# derivation replaced (its failure mode was a FIFTH cause reddening nothing at all). What bounds
+# the accepted case is the assertions below — a needle that goes empty, gains a `$`, or collides
+# with another cause reds immediately — so the drift this leaves open is "a still-distinct needle
+# from the same message", never "no needle".
 # ⛔ ONE EXTRACTOR, ONE ANCHOR. Both static legs in this file need dl_sequence_call's body, and
 # the first draft spelled the anchor in each of them — which prelude-shadow-selftest.sh caught as
 # the N+1th hand-spelled extraction. The prelude's `_fn_src` cannot own this one: it anchors
@@ -716,6 +725,19 @@ eq "2xx-no-value on the claim → does NOT announce a fallback it refused" "fals
 eq "2xx-no-value on the claim → quotes the body it could not read" "true|true" \
    "$(has 'Response:' "$err")|$(has '{"data":{}}' "$err")"
 only_cause "2xx-no-value on the claim" "$C_UNDECODABLE" "$err"
+# ⭐ THE THIRD CELL OF THAT PAIR, which neither of the two above reaches: a 2xx with a body that is
+# GENUINELY EMPTY. The arm DID read an answer, so it passes "" as the excerpt argument — set, and
+# empty. Under `${2+…}` (set, however empty) the refusal ended with a dangling `Response:` and
+# nothing after it, which reads as a server that said something unquotable rather than one that
+# said nothing at all; `${2:+…}` omits the clause, which is what the comment beside it always
+# said it did. Watched RED with the `:` removed. The refusal itself is unchanged either way, so
+# nothing above would have noticed.
+NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='' run_ndl --board dev
+eq "2xx with an EMPTY body on the claim → still refuses at rc 1" "1" "$rc"
+eq "2xx with an EMPTY body → mints NOTHING"           ""  "$out"
+eq "2xx with an EMPTY body → no dangling 'Response:' clause" "false" "$(has 'Response:' "$err")"
+eq "2xx with an EMPTY body → still says a number may be burned" "true" \
+   "$(has 'may ALREADY have allocated a number' "$err")"
 # A REMEDIATION STRING IS A DOC SURFACE, so it is asserted like one. `kanban` and `--board kanban`
 # name DIFFERENT boards, so a remedy built by re-printing `$project` alone would hand the operator
 # a command against the wrong board — it is built from the argv words this run was given.
@@ -851,6 +873,76 @@ NDL_PEEK_HTTP=200 NDL_PEEK_BODY='{"data":{}}' run_ndl_mut --board dev --peek
 eq "control: a MISSPELLED non-consuming lands on the FAIL-CLOSED side → rc 1" "1" "$rc"
 eq "control: …and mints NOTHING where the correct spelling mints the floor" "" "$out"
 
+echo "== THE CALLER'S BELT: an arm the STRUCTURAL SCANNER CANNOT SEE still refuses =="
+# ⭐ THE CONTROL card#10230 HAS NEEDED SINCE ROUND 2, and the reason the answer stopped being
+# "widen the scanner". The structural leg further down reads dl_sequence_call's TEXT, so its
+# population is the SPELLINGS someone matched — `exit 1` — and the guarantee's population is every
+# arm a future editor writes. Those are not the same set and never will be. MEASURED against the
+# pre-belt head (the plants below, driven exactly as here): a `502|503|504)` arm with NO TERMINATOR
+# left the subshell's status as the last command's, i.e. 0, so `$claimed` was empty, `$crc` was 0,
+# neither the uint test nor the rc-3 test fired, and the offline scan minted DL-0301 at rc 0 — with
+# `next-dl-selftest: all checks passed`. The same arm spelled `return 1` did the identical thing at
+# `$crc` 1. Neither is `exit 1`, so the scanner reported zero offenders on both.
+#
+# WHAT THE BELT CHANGES, and why it is a different KIND of check: the call site cannot read an
+# arm's shape, but it CAN read whether the callee declared $NDL_NO_SPEND. So the degrade is
+# reached only on that declaration and every other outcome refuses — 0, 1, a `set -u` death, an
+# rc nobody has thought of. The three plants below are three DIFFERENT statuses reaching the same
+# refusal, which is the property being asserted; the third (`exit 1`) is in the scanner's
+# population too and is driven here to show the belt does not depend on which layer caught it.
+#
+# ⛔ THESE ARE RUN, NOT SCANNED. The scanner's own fixtures a few sections down are static text;
+# these mutate a scratch bin/ and drive the real binary against the real stub, because what is
+# being asserted is the PROGRAM's behaviour on an arm that does not exist in the shipped tree.
+_belt_plant() {   # _belt_plant <arm-body> — insert a 502/503/504 arm carrying <arm-body>
+    ndl_mutant "/^        \\*)\$/i\\        502|503|504)\\n$1"
+}
+_BELT='RETURNED (status'
+for _arm in '            ;;|no terminator at all (status 0)' \
+            '            return 1 ;;|return 1 (status 1)' \
+            '            exit 1 ;;|exit 1 (status 1 — the scanner sees this one too)'; do
+    _body="${_arm%%|*}"; _what="${_arm#*|}"
+    _belt_plant "$_body"
+    NDL_CLAIM_HTTP=503 NDL_CLAIM_BODY='{"message":"bad gateway"}' run_ndl_mut --board dev
+    eq "undeclared arm [$_what] → rc 1"                    "1" "$rc"
+    eq "undeclared arm [$_what] → mints NOTHING"           ""  "$out"
+    eq "undeclared arm [$_what] → never answers from the floor" "false" "$(has 'DL-0301' "$out$err")"
+    eq "undeclared arm [$_what] → names the missing declaration" "true" "$(has "$_BELT" "$err")"
+    eq "undeclared arm [$_what] → does NOT announce a fallback" "false" "$(has "$FALLBACK" "$err")"
+    eq "undeclared arm [$_what] → never reaches the scan"   "0" "$(kb_stub_count_any "$SEARCH")"
+    # ⭐ CONTROL per plant: the mutant is an otherwise-WORKING next-dl, not a tool broken into
+    # refusing. Its 200 still claims, so the refusals above are the belt firing on the planted
+    # arm and not the binary having been mutated into uselessness.
+    NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{"value":93}}' run_ndl_mut --board dev
+    eq "control [$_what]: the same mutant still claims on a 200" "0|DL-0093" "$rc|$out"
+done
+# …and --require-counter does NOT renumber the belt's refusal, for the rc-3 members' reason: the
+# refusal is upstream of the degrade decision, so a caller keying on rc 1 keeps the abort it
+# already handles. Runs against the loop's last mutant, which is still installed.
+NDL_CLAIM_HTTP=503 NDL_CLAIM_BODY='{"message":"bad gateway"}' run_ndl_mut --board dev --require-counter
+eq "undeclared arm + strict → still rc 1, not 4"           "1" "$rc"
+eq "undeclared arm + strict → mints NOTHING"               ""  "$out"
+eq "undeclared arm + strict → not reported as a strict refusal" "false" "$(has "$REFUSAL" "$err")"
+unset _arm _body _what
+
+# ⭐ THE OTHER DIRECTION — the declaration is LOAD-BEARING, not decoration. Without this the belt
+# could be satisfied by something other than $NDL_NO_SPEND and nobody would know, and the two
+# arms that legitimately degrade would be passing for a reason nothing here had identified.
+# The 404 arm mints DL-0301 on the shipped binary (asserted in the cause matrix above); delete its
+# `nothing_spent` call and the SAME input must refuse.
+ndl_mutant '/^            nothing_spent$/d'
+NDL_CLAIM_HTTP=404 NDL_CLAIM_BODY='{"message":"not found"}' run_ndl_mut --board dev
+eq "404 with its no-spend declaration DELETED → rc 1"      "1" "$rc"
+eq "404 with the declaration deleted → mints NOTHING"      ""  "$out"
+eq "404 with the declaration deleted → does not answer from the floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "404 with the declaration deleted → it is the BELT refusing" "true" "$(has "$_BELT" "$err")"
+# …and the pre-request arm's declaration is a SECOND site, so deleting only the 404's must leave
+# the unconfigured-board path minting exactly as card#6631's bound requires.
+run_ndl_mut --board nosuchboard
+eq "control: the OTHER declared arm is untouched → still mints the floor" "0|DL-0301" "$rc|$out"
+unset _BELT
+unset -f _belt_plant
+
 rm -rf "$NDL_MUT"
 unset -f ndl_mutant run_ndl_mut
 unset NDL_MUT
@@ -959,13 +1051,12 @@ echo "== STRUCTURAL: every benign exit PAST THE REQUEST is guarded or DECLARED (
 # locale-range-guard's `LC_ALL=C` window pin — a structural exemption rather than an allow-list,
 # which an earlier draft of that file proved is the difference between a guard and a rubber stamp.
 #
-# ⚠ WHAT THIS LEG DOES NOT REACH, named rather than implied. The CALLER's
-# `if [[ $crc -eq 0 ]] && kb_is_uint "$claimed"` has a false arm that falls through to
-# degrade_or_refuse — claim succeeded, answer unreadable ⇒ mint from the scan — and it is OUTSIDE
-# this scanner's population BY CONSTRUCTION, because the population is dl_sequence_call's body and
-# that test is at the call site, where spent_refusal is not in scope. It is POSITIVELY UNREACHABLE
-# today: dl_sequence_call exits 0 only after `kb_is_uint "$val" && [[ "$val" -ge 1 ]]`, so
-# `$claimed` is always a uint when crc is 0. No leg drives it and none is claimed to.
+# ⚠ WHAT THIS LEG DOES NOT REACH IS ITS BLIND SPOT, not a cell that happens to be empty: the call
+# site (outside this population by construction) and every arm not spelled `exit 1` (outside it by
+# the predicate) — which is where round 4's two plants lived, minting DL-0301 at rc 0 while this
+# leg reported zero offenders. The `THE CALLER'S BELT` block above covers them. ⛔ This leg's reach
+# is its PREDICATE; the earlier note read it off what the tree happened to contain that day
+# ("POSITIVELY UNREACHABLE today") and that reading is what let those two arms through.
 #
 # THE EXEMPTIONS ERR CLOSED, deliberately. The pin window is two lines, so a declaration written
 # further from its exit than that is REPORTED; nothing strips trailing comments, so a trailing
