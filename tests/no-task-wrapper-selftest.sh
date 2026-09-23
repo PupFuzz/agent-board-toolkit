@@ -51,14 +51,9 @@ scan_wrappers() {
     return 0
 }
 
-n_offenders() {
-    [[ -z "$1" ]] && { printf '0'; return 0; }
-    printf '%s\n' "$1" | wc -l | tr -d ' '
-}
-
 echo "== the guard: bin/ must contain ZERO task-wrapper sends (current tree) =="
 tree_hits="$(scan_wrappers "$BIN")"
-eq "current bin/ has zero task-wrapper offenders" "0" "$(n_offenders "$tree_hits")"
+eq "current bin/ has zero task-wrapper offenders" "0" "$(_n_lines "$tree_hits")"
 if [[ -n "$tree_hits" ]]; then
     printf '  offending lines:\n%s\n' "$tree_hits" >&2
 fi
@@ -74,7 +69,7 @@ printf '%s\n' 'body="{\"task\":{\"workflow_stage_id\":5}}"' > "$pos/wrapped-esca
 printf '%s\n' 'body="$(jq -n --argjson t "$inner" '"'"'{task: $t}'"'"')"' > "$pos/wrapped-jq-argjson"
 
 pos_hits="$(scan_wrappers "$pos")"
-eq "positive control flags all three wrapper files" "3" "$(n_offenders "$pos_hits")"
+eq "positive control flags all three wrapper files" "3" "$(_n_lines "$pos_hits")"
 case "$pos_hits" in *"wrapped-unescaped:"*) ok "unescaped literal flagged";; *) bad "unescaped literal NOT flagged";; esac
 case "$pos_hits" in *"wrapped-escaped:"*)   ok "escaped literal flagged";;   *) bad "escaped literal NOT flagged (the #4772 blind spot)";; esac
 case "$pos_hits" in *"wrapped-jq-argjson:"*) ok "jq argjson wrapper flagged";; *) bad "jq argjson wrapper NOT flagged";; esac
@@ -97,7 +92,7 @@ ben="$TMP/ben"; mkdir -p "$ben"
     printf '%s\n' '    # historical: the old {"task": {...}} body wrapper was dropped in DL-219'
 } > "$ben/benign"
 ben_hits="$(scan_wrappers "$ben")"
-eq "benign tokens + comment mention are NOT flagged" "0" "$(n_offenders "$ben_hits")"
+eq "benign tokens + comment mention are NOT flagged" "0" "$(_n_lines "$ben_hits")"
 if [[ -n "$ben_hits" ]]; then
     printf '  false positives:\n%s\n' "$ben_hits" >&2
 fi

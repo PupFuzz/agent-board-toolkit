@@ -43,7 +43,11 @@
 #     local record, which the pre-push `--lint` repeats without a request (the record's contract
 #     sits above _bcs_verdict_write).
 #
-# OWNER TAG: once the move to In Progress has succeeded, this seat's owner tag is stamped by a
+# READ-BACK: both writes below (the stage move and the payload.dl_number stamp) are reported from a
+# re-read of the card, never from the PATCH's 2xx (card#10029) — see _bcs_patch for the three
+# outcomes. The hook stays fail-soft (exit 0) on every one of them; only what it SAYS changes.
+#
+# OWNER TAG: once the move to In Progress has been READ BACK, this seat's owner tag is stamped by a
 # separate tag write (kb_owner_tag_write in _kb-board-lib.sh, shared with `kbcard move
 # --stamp-owner`). Its rules are README.md § The seat owner tag. Whatever it reports goes to stderr
 # AND the durable log below. A card this hook does not move is not stamped.
@@ -115,20 +119,66 @@ _bcs_verdict() {
     bcs_verdict="$1"; bcs_verdict_subject="$2"; bcs_verdict_reason="$3"; bcs_verdict_remedy="${4:-}"
 }
 
-# _bcs_patch <cid> <json> <success-msg> <fail-reason>: PATCH the resolved card via the shared
-# kb_api, which captures the HTTP status in KB_HTTP (the status-capture the hand-rolled
+# _bcs_patch <cid> <json> <field> <want> <success-msg> <fail-reason>: PATCH the resolved card via
+# the shared kb_api, which captures the HTTP status in KB_HTTP (the status-capture the hand-rolled
 # `curl -fsS` here used to drop, #4337 — a 403 token-scope failure and a 422 were both a bare
-# rc 22). On a 2xx, echo <success-msg> to stderr; on any failure, durably record <fail-reason>
-# plus the status via kb_bcs_log (this hook never sets KB_LOG_FILE, so KB_BCS_LOG is its durable
-# surface). Fail-soft: always returns 0 — a failed board write must never block a checkout.
+# rc 22), then READ THE CARD BACK and report from that read, never from the 2xx (card#10029).
+# <field> is `stage` (workflow_stage_id, compared as text) or `dl` (payload.dl_number, compared
+# through KB_JQ_REF_CANON's `norm` — the reader every DL-correlating tool applies, so "stamped"
+# means "a correlator will find it"); <want> is the value asked for. The read-back and its three
+# outcomes are the lib's kb_confirm_card, shared with kbcard's write verbs:
+#   applied      the re-read agrees → <success-msg> on stderr, suffixed with what was read back.
+#   not-applied  the re-read is a MEASUREMENT and disagrees → a NOT APPLIED line, quoting the
+#                value the board holds, on stderr AND the durable log.
+#   unverified   the re-read is not a measurement → an UNVERIFIED line (nothing says it landed,
+#                nothing says it did not) on stderr AND the durable log, with the witness's reason.
+# A refused or never-completed PATCH records <fail-reason> plus the status via kb_bcs_log, as
+# before (this hook never sets KB_LOG_FILE, so KB_BCS_LOG is its durable surface).
+# The outcome is left in BCS_WRITE (applied | not-applied | unverified | failed) for the caller.
+# Fail-soft: always returns 0 — a failed board write, or one nobody could confirm, must never
+# block a checkout; what changes on those arms is only what the seat is TOLD.
 # Reads KB_API / KB_TOKEN (pinned once above, before the first call).
 _bcs_patch() {
-    local cid="$1" json="$2" okmsg="$3" failreason="$4"
-    if kb_api PATCH "/tasks/$cid.json" "$json" >/dev/null 2>&1; then
-        [ -n "$okmsg" ] && printf '%s\n' "$okmsg" >&2
+    local cid="$1" json="$2" field="$3" want="$4" okmsg="$5" failreason="$6"
+    local http pred proj w crc=0 errf why got
+    BCS_WRITE=failed
+    if ! kb_api PATCH "/tasks/$cid.json" "$json" >/dev/null 2>&1; then
+        kb_bcs_log "$failreason (HTTP ${KB_HTTP:-?})"
         return 0
     fi
-    kb_bcs_log "$failreason (HTTP ${KB_HTTP:-?})"
+    http="$KB_HTTP"
+    # ⛔ A THIRD <field> NEEDS AN ARM HERE, and no guard below will tell you it is missing: an
+    # unset `pred` dies under `set -u` inside the command substitution at the kb_confirm_card call,
+    # which is rc 1 — the DENIED arm — so the hook would print a confident NOT APPLIED quoting a
+    # board it never read. Deliberately NOT guarded (canon #6): both call sites pass a LITERAL
+    # (`stage` at the move, `dl` at the stamp) and no input reaches this argument, so the state is
+    # unreachable today and a guard here would be code for a state that cannot occur. This comment
+    # is the disposition; it is the next edit that makes the state reachable.
+    case "$field" in
+        stage) proj='.card.workflow_stage_id'
+               pred='.state == "present" and ((.card.workflow_stage_id | tostring) == env.BCS_WANT)' ;;
+        dl)    proj='.card.payload.dl_number'
+               pred="$KB_JQ_REF_CANON"'.state == "present" and ((.card.payload.dl_number | norm) == env.BCS_WANT)' ;;
+    esac
+    # The witness's own diagnostic says WHY a re-read measured nothing; it is captured so the
+    # durable log carries it, not only a stderr the installed hook discards.
+    errf="$(mktemp 2>/dev/null)" || errf=/dev/null
+    w="$(BCS_WANT="$want" kb_confirm_card "$cid" "$pred" 2>"$errf")" || crc=$?
+    why=""; [ "$errf" = /dev/null ] || { why="$(tr '\n' ' ' <"$errf")"; rm -f "$errf"; }
+    case "$crc" in
+        0)  got="$(jq -c "$proj" <<<"$w" 2>/dev/null)"
+            printf '%s (read back: %s=%s)\n' "$okmsg" "${proj#.card.}" "$got" >&2
+            BCS_WRITE=applied ;;
+        1)  if [ "$(jq -r '.state' <<<"$w" 2>/dev/null)" = absent ]; then
+                got="the board does not have card #$cid at all (HTTP 404 on the re-read)"
+            else
+                got="card #$cid holds ${proj#.card.}=$(jq -c "$proj" <<<"$w" 2>/dev/null), not the $want this write asked for"
+            fi
+            kb_bcs_note "board-card-start: branch '${branch:-?}': $failreason — NOT APPLIED: the PATCH answered HTTP $http and a re-read says $got. The status is not the write; the read-back is."
+            BCS_WRITE=not-applied ;;
+        *)  kb_bcs_note "board-card-start: branch '${branch:-?}': card #$cid write UNVERIFIED (${failreason%% failed}) — the PATCH answered HTTP $http and the card could NOT be read back, so nothing here says it landed and nothing says it did not; re-read the card before acting.${why:+ ${why% }}"
+            BCS_WRITE=unverified ;;
+    esac
     return 0
 }
 
@@ -800,9 +850,23 @@ _bcs_verdict resolved "$cid" "card #$cid ($label)"
 # body) proceeds as it always has: it cannot arise here, the empty-stage exit above having left.
 # The stage verdict is asked HERE, before the dl_number stamp, for the same reason: it is pure, and
 # the stamp must not land when the verdict cannot be had.
+# <rc> `undefined` is a function found MISSING WITHOUT CALLING IT (declare -F), for a lib symbol
+# whose absence no rc can report in time. The sibling of kbcard's _kbc_lib_unruled, whose header
+# carries the same rule for the same class; the WORDING stays here for the reason above.
 _bcs_unruled() {
-    bcs_skip "card #$cid ($label): $1 returned rc $2, which is not one of its answers (rc 127: the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written"
+    local said="returned rc $2, which is not one of its answers (rc 127: the"
+    [ "$2" = undefined ] && said="is not defined (the"
+    bcs_skip "card #$cid ($label): $1 $said _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written"
 }
+# ⛔ kb_confirm_card IS ASKED FOR HERE, BEFORE ANY WRITE, and by definedness rather than by a call
+# (a call costs a GET). It is called AFTER the PATCH (_bcs_patch), which is why the rc tests
+# below cannot cover it and why a preflight is the only place it fits: beside an older lib
+# the write would GO OUT and the missing function would answer rc 127 — routed to the UNVERIFIED
+# arm — leaving the board changed, the hook exiting 0 as it must, and the reason only on a stderr
+# the installed wrapper discards. That is a mis-vendored install degrading SILENTLY, and it breaks
+# the rule the rc tests below exist for: a lib older than this hook writes NOTHING, not even the
+# dl_number stamp (card#9756). Measured on this head's hook beside the card#10029 base lib.
+declare -F kb_confirm_card >/dev/null 2>&1 || _bcs_unruled kb_confirm_card undefined
 _bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
 case "$_bcs_pin" in
     0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;
@@ -838,7 +902,7 @@ if [ "$via_cardid" = 1 ] && [ -n "$dl" ]; then
     if [ -z "$curdl" ]; then
         want="$(kb_dl_canon "$dl" 2>/dev/null || true)"
         if [ -n "$want" ]; then
-            _bcs_patch "$cid" "$(jq -nc --arg dl "$want" '{payload: {dl_number: $dl}}')" \
+            _bcs_patch "$cid" "$(jq -nc --arg dl "$want" '{payload: {dl_number: $dl}}')" dl "$dl" \
                 "board-card-start: card #$cid stamped payload.dl_number=$want (was unstamped; DL-$dl named in branch)" \
                 "card #$cid dl_number stamp (=$want) failed"
         fi
@@ -865,13 +929,14 @@ case "$_bcs_sv" in
     *) exit 0 ;;
 esac
 
-_bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" \
+_bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" stage "$inprog" \
     "board-card-start: card #$cid ($label) → In Progress" \
     "card #$cid ($label) → In Progress move failed"
-# _bcs_patch is fail-soft (rc 0 either way); kb_api left the move's status in KB_HTTP, in this
-# shell, and only a move that landed gets an owner tag (see the header).
-case "${KB_HTTP:-}" in
-    2*) kb_owner_tag_write stamp "$cid" "card #$cid ($label)"
-        [ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE" ;;
-esac
+# _bcs_patch is fail-soft (rc 0 either way) and leaves its read-back outcome in BCS_WRITE. Only a
+# move the re-read CONFIRMED gets an owner tag (see the header): a 2xx the board did not apply, or
+# one nobody could read back, is not a card this seat is known to have started.
+if [ "$BCS_WRITE" = applied ]; then
+    kb_owner_tag_write stamp "$cid" "card #$cid ($label)"
+    [ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE"
+fi
 exit 0

@@ -2030,21 +2030,23 @@ finding with no owner is abandoned, not filed.
   card#8545, the `unlink` verb, and reported-not-minted on that card's instruction; the finding
   was EJECTED from card#8556 on purpose — that card's class is *a
   mutating verb reports success it never read back*, and this is duplication, so it had no owner
-  until this entry). `_kbc_link_witness` is the sixth and `_kbc_card_witness` — minted by
-  card#8556 itself, after this entry was written — is the seventh. The shape every one of them spells is the
+  until this entry). `_kbc_link_witness` is the sixth and `kb_card_witness` — minted by
+  card#8556 itself as `_kbc_card_witness`, after this entry was written, and hoisted into
+  `bin/_kb-board-lib.sh` by card#10029 when `board-card-start` became its second caller — is the
+  seventh (it is still kbcard's spelling; it is no longer in kbcard's file). The shape every one of them spells is the
   same three steps: `kb_api GET "/tasks/<id>.json"`, pull the card out of the 2xx body with
   `kb_parse_resp`, then test the result for emptiness and refuse with a "nothing was read"
   diagnostic — because a 2xx whose body carries no card is not an empty card, which is this
   program's own *empty vs absent* trap (§ *Diagnosis*, item 1) at the read boundary. **The population, re-derived rather than quoted:**
-  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard` returns 7 — `_kbc_patch_tags`,
-  `_kbc_link_witness`, `_kbc_card_witness`, `cmd_show`, `cmd_comments`, `_kbc_archive_decision`
-  and `_kbc_field_restamp_dl`'s verify loop — plus two more outside this bin that the count
-  deliberately excludes (repo-wide the same grep over `bin/` returns 9): `bin/adopt-to-dl`'s and
-  `bin/board-card-start`'s, each a different bin with its own refusal vocabulary, and hoisting
-  across that boundary is a separate call. Re-run the grep; do not trust the seven.
+  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard bin/_kb-board-lib.sh` — the
+  lib is in the derivation because `kb_card_witness` now lives there (card#10029), and so does a
+  hit that is NOT a kbcard spelling (`kb_owner_tag_write`'s tag read); the same grep over all of
+  `bin/` adds each other bin's own single-card read, each with its own refusal vocabulary.
+  ⚠ No figure is written here on purpose: the one this entry used to carry went stale as kbcard
+  grew verbs, which is the drift a written count invites. Re-run the grep.
   ⛔ **THE `kb_api\(_status\)\?` ALTERNATION IS THE LOAD-BEARING PART OF THAT PATTERN, and it is
   here because the narrower one FAILED.** This entry originally derived on `kb_api GET
-  "/tasks/\$` — and `_kbc_card_witness`, the seventh spelling, reads through **`kb_api_status`**,
+  "/tasks/\$` — and `kb_card_witness` (then `_kbc_card_witness`), the seventh spelling, reads through **`kb_api_status`**,
   so the narrow grep returned 6 both before and after the commit that minted it. The trigger this
   entry exists to arm was therefore standing on a count that could not move. An instrument that
   greps a NAME answers about the NAME, and a population derived BEFORE an edit cannot see what
@@ -2072,7 +2074,7 @@ finding with no owner is abandoned, not filed.
   refusals are not interchangeable text. They differ in RETURN POSTURE (`return 1` in four;
   `_kbc_archive_decision` prints a tab-separated `noprimitive` verdict and returns 0 so the gate
   fails closed without aborting its caller; the backfill loop pushes onto `unread` and
-  `continue`s so one bad row cannot abort a batch; `_kbc_card_witness` returns 1 only for
+  `continue`s so one bad row cannot abort a batch; `kb_card_witness` returns 1 only for
   UNMEASURED and answers **rc 0 with `{"state":"absent"}` on a 404** — the one spelling of the
   seven for which *the card is not there* is an ANSWER rather than a failure) and in the NOUN the
   diagnostic names ("its links are UNMEASURED", "refusing to replace this card's tags with a list
@@ -2081,7 +2083,7 @@ finding with no owner is abandoned, not filed.
   flatten them, and the flattening is exactly what turns `_kbc_archive_decision`'s deliberate
   fail-closed into an abort. **Do NOT collapse the diagnostics** — Stage A's rule that
   consolidating a guard deletes it silently applies here in full.
-  ⛔ **AND `_kbc_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
+  ⛔ **AND `kb_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
   hoist would silently lose.** It is the only one of the seven that reads through
   **`kb_api_status`** rather than `kb_api` — because a 404 and a 403 are two different answers
   there and `kb_api` collapses both to rc 1 with `KB_HTTP` stranded in a subshell — and the only
