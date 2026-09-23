@@ -309,6 +309,8 @@ jq . <your-repo>/.release-pr.json   # must parse (no trailing commas); remove th
 > ```
 >
 > `--dry-run` moves nothing; drop it only when you mean to promote. A run that refuses with `api_base '…' is not https:// on '…'` names, in the same line, which channel the offending value came from — fix that one.
+>
+> ⚠ **A red promote step is not always a failed one, and the exit ladder is published by the tool rather than here (card#9938).** Every move is reported from a re-read of the card, so a run can end `NOT APPLIED` (the board was read and disagrees with the write) or `UNVERIFIED` (the write went out and this run could not read what it did) as well as applied or refused. **Run `promote-released-cards --help` and read § EXIT CODES for what each rc means and — the half a gate actually needs — what each is CONDITIONAL on.** That block is where the ladder is STATED; every other surface in this project — this page and `README.md` included — points at it instead of carrying a copy. It ships inside the vendored script, so it cannot drift from the code the way `README.md`'s copy did: round 2 of card#9938 changed the ladder and left that page publishing the pre-change rule for a whole round. ⛔ **Before you build a gate on the rc, read it** — not every failed move reaches a non-zero exit, and the summary line's `<n> failed.` tail is the check for the one that does not. The previous behaviour reported every `2xx` as a move and exited `0`, which is how a release once read as fully promoted with all 28 of its cards still in Shipped.
 
 ## 5. Verify (expected output shown)
 
