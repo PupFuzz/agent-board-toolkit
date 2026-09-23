@@ -333,6 +333,57 @@ eq "page-2 500 → names the rc, not a cause"         "true" "$(has 'did not ret
 eq "page-2 500 → keeps the partial-scan wording"    "true" "$(has 'refusing to mint from a partial scan' "$err")"
 eq "page-2 500 → does not borrow the rc-1 arm's causes" "false" "$(has 'could not be read at all' "$err")"
 
+echo "== a card whose PAYLOAD is not an object faults the projection → REFUSE, do not mint =="
+# card#10230's THIRD copy of the fail-open shape, and the one that shipped in this branch under a
+# comment arguing it was not live. board_dl_max used to END in the projection pipeline: jq aborts
+# the whole stream at its rc 5, emits nothing, max_int's grep then exits 1 over the empty stream,
+# and under pipefail the CALLER reads rc 1 — byte-identically to a board that simply carries no
+# stamp. The floor was dropped and the number came from the local scan alone, at rc 0, silently.
+# ⚠ THE INPUT IS MEASURED, AND IT IS NOT THE OBVIOUS ONE. A `.data` element that is not an object
+# never reaches this projection — fetch_board_cards' dedup reads `.id` off it and faults FIRST,
+# inside that function's own 2>/dev/null (the leg below pins that case, which is card#6630's and
+# is NOT closed here). What passes every check that function makes and faults HERE is a card that
+# IS an object whose `payload` is not one: `{"id":9,"payload":[]}` — the empty-map spelling a PHP
+# backend emits for a card with no payload keys.
+# THE DISCRIMINATOR is the board's OWN stamp, above the local floor: the unfixed behaviour is not
+# a refusal that failed to happen, it is a MINT of DL-0301 over a board already holding DL-0500.
+# Measured both ways against the pre-fix binary (mints DL-0301 at rc 0; fixed, refuses at rc 1).
+NDL_SEARCH_BODY='{"data":[{"id":9,"payload":[]},{"id":1,"payload":{"dl_number":"DL-0500"}}],"meta":{"last_page":1,"total":2}}' \
+    run_ndl --board dev
+eq "unprojectable payload → rc 1"                   "1" "$rc"
+eq "unprojectable payload → mints NOTHING"          ""  "$out"
+eq "unprojectable payload → does not answer from the local floor" "false" "$(has 'DL-0301' "$out$err")"
+eq "unprojectable payload → names the projection as the cause" "true" \
+   "$(has 'could not project dl_number' "$err")"
+eq "unprojectable payload → and the call site says what it refused and why" "true" \
+   "$(has 'WITHOUT declaring that this board holds none' "$err")"
+
+echo "== a board that answers with NO stamp still mints, and now DECLARES it rather than being inferred =="
+# The POSITIVE control for the declaration channel the leg above is the negative of: the benign
+# outcome must still degrade, and what degrades it must be $NDL_NO_FLOOR on stdout rather than an
+# exit code the fault path also produces. Reds if the token is ever made a uint, or leaked to the
+# caller's stdout, or stops being printed on this path.
+NDL_SEARCH_BODY='{"data":[{"id":1,"payload":{"other":"x"}}],"meta":{"last_page":1,"total":1}}' \
+    run_ndl --board dev
+eq "board with no stamp → rc 0"                     "0" "$rc"
+eq "board with no stamp → mints local-floor + 1"    "DL-0301" "$out"
+eq "board with no stamp → the declaration never reaches the caller's stdout" "false" \
+   "$(has 'no-dl-floor' "$out")"
+
+echo "== card#6630's known-open case is UNCHANGED by this fix, and pinned so the two are never confused =="
+# A `.data` array holding a NON-OBJECT faults the PAGINATOR's dedup (`.id` on a string), inside
+# fetch_board_cards' own 2>/dev/null, so it returns rc 0 with an EMPTY list — and next-dl then
+# sees a clean read of a board with no stamps and mints from the local floor. Named at
+# board_dl_max's call site, owned by the OPEN card#6630, and deliberately not closed here: it is
+# a layer down, and a second predicate at this one would restate that function's contract instead
+# of fixing it. ⭐ This leg exists because this exact input was first read as a reproduction of
+# the projection fault above; it is not one, and the two mechanisms have different owners.
+# If it ever starts refusing, card#6630 has moved and the comment citing it is stale.
+NDL_SEARCH_BODY='{"data":["x",{"id":1,"payload":{"dl_number":"DL-0500"}}],"meta":{"last_page":1,"total":2}}' \
+    run_ndl --board dev
+eq "non-object element → the paginator swallows it, so this still mints (rc 0)" "0" "$rc"
+eq "non-object element → mints DL-0301, the card#6630 residual"                 "DL-0301" "$out"
+
 echo "== an UNCONFIGURED board is NOT a board that failed to answer — it still mints =="
 # The stated bound of card#6631's ruling. With no resolvable board env, resolve_board_cfg fails
 # and board_dl_max exits 1 (not 2), so the local floor still mints. If this ever reds, the
@@ -725,6 +776,47 @@ eq "2xx-no-value on the claim → does NOT announce a fallback it refused" "fals
 eq "2xx-no-value on the claim → quotes the body it could not read" "true|true" \
    "$(has 'Response:' "$err")|$(has '{"data":{}}' "$err")"
 only_cause "2xx-no-value on the claim" "$C_UNDECODABLE" "$err"
+# ⭐ AND THE EXCERPT IS SCRUBBED BEFORE IT IS BOUNDED (card#10230). The bytes are an untrusted
+# third party's, and this arm's designed-for producer is a gateway page — while a server that
+# renders debug output echoes the REQUEST headers into its own error body, which is where this
+# tool's bearer token is (MEASURED that way on the co-vendored sibling renderer, resp_detail in
+# bin/promote-released-cards). `resp_excerpt` masks the wire token LITERALLY and before the
+# 300-byte cut, because cutting first splits the credential and half a token no longer EQUALS the
+# token, so the match then finds nothing and the surviving prefix prints (card#7500's trap).
+# Watched LEAK on the pre-fix binary on BOTH cells, which is why both are driven — this one is
+# the cell card#10230 widened, the 500 below is the pre-existing one.
+# ⚠ The fixture credential is the harness's literal `stub-token`; no real one is resolved here.
+NDL_CLAIM_HTTP=200 \
+NDL_CLAIM_BODY='{"data":{},"request":{"Authorization":"Bearer stub-token"},"link":"https://sso.example/?sid=abc"}' \
+    run_ndl --board dev
+eq "2xx echoing the auth header → the token is NOT emitted"  "false" "$(has 'Bearer stub-token' "$err")"
+eq "2xx echoing the auth header → it is masked IN PLACE"     "true"  "$(has 'Bearer ***' "$err")"
+# THE CONTROL, and not optional: a scrub that emitted nothing at all would satisfy both legs
+# above while destroying the diagnostic this refusal exists to carry.
+eq "2xx echoing the auth header → the rest of the body is still quoted" "true" \
+   "$(has 'sso.example' "$err")"
+NDL_CLAIM_HTTP=500 NDL_CLAIM_BODY='{"request":{"Authorization":"Bearer stub-token"},"msg":"blocked"}' \
+    run_ndl --board dev
+eq "non-2xx echoing the auth header → the token is NOT emitted" "false" "$(has 'Bearer stub-token' "$err")"
+eq "non-2xx echoing the auth header → it is masked IN PLACE"    "true"  "$(has 'Bearer ***' "$err")"
+eq "non-2xx echoing the auth header → the rest of the body is still quoted" "true" \
+   "$(has 'blocked' "$err")"
+# ⭐ THE THIRD OUTCOME OF THAT RE-READ, and it is not "no token": the token file UNREADABLE.
+# Scoring that as an empty token would mask nothing and print the body whole — the
+# read-outcome-collapse class (tests/read-outcome-collapse-selftest.sh) landing on a secret. The
+# producer is this file's own documented one: a token file that is a DIRECTORY passes
+# kb_resolve_env's `-r` test, so the config RESOLVES, the request goes out with an EMPTY bearer,
+# and `cat` fails at render time. (An unreadable regular file does NOT reach here — `-r` refuses
+# it upstream and the call is never made; measured.)
+_ndl_tok_saved="$(cat "$KB_STUB_TOKEN_FILE")"
+rm -f "$KB_STUB_TOKEN_FILE"; mkdir -p "$KB_STUB_TOKEN_FILE"
+NDL_CLAIM_HTTP=500 NDL_CLAIM_BODY='{"request":{"Authorization":"Bearer stub-token"}}' \
+    run_ndl --board dev
+rmdir "$KB_STUB_TOKEN_FILE"; printf '%s\n' "$_ndl_tok_saved" > "$KB_STUB_TOKEN_FILE"
+eq "unreadable token file → the body is WITHHELD rather than quoted unmasked" "true" \
+   "$(has 'withheld' "$err")"
+eq "unreadable token file → and none of the body's own bytes are printed" "false" \
+   "$(has 'Authorization' "$err")"
 # ⭐ THE THIRD CELL OF THAT PAIR, which neither of the two above reaches: a 2xx with a body that is
 # GENUINELY EMPTY. The arm DID read an answer, so it passes "" as the excerpt argument — set, and
 # empty. Under `${2+…}` (set, however empty) the refusal ended with a dangling `Response:` and

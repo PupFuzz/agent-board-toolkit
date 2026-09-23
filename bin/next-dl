@@ -122,12 +122,12 @@
 #       is a fact about this caller and not about the contract: kb_resolve_env's rc 2 is
 #       pre-empted by resolve_board_cfg's own readable-board-env test.
 #   (b) a SUCCESSFUL read out of which no dl_number came — the ordinary case being a
-#       complete read of a board that carries no stamp at all. max_int's grep then matches
-#       nothing, and under pipefail that exits board_dl_max 1, the same code (a) exits
-#       with. There is no floor to drop in that case; the point is that the exit code does
-#       not separate it from (a).
-# Both land on board_dl_max's exit 1 — see its own exit-code note, which also names the
-# further paths on which a mint proceeded past a board that ANSWERED.
+#       complete read of a board that carries no stamp at all. There is no floor to drop in
+#       that case; the point is that the exit code does not separate it from (a).
+# Both land on board_dl_max's exit 1, AND BOTH NOW SAY SO — each prints $NDL_NO_FLOOR, because
+# the exit code alone never separated these two from a read that FAULTED, which is the fail-open
+# card#10230 closed here. See board_dl_max's own exit-code note, which also names the further
+# paths on which a mint proceeds past a board that ANSWERED.
 # NOTE: the offline path is NOT atomic — safe for single-stream allocation; concurrent
 # allocators on a shared board need the claim endpoint (the default) to avoid
 # duplicates — and, per card#6232 above, it is a FLOOR rather than the truth: it cannot
@@ -376,9 +376,41 @@ dl_sequence_call() (
     # pass and hoisted by its second). It matters beyond taste: these bytes are an untrusted
     # third party's — the 2xx-undecodable arm is designed around a gateway's SSO or WAF page —
     # and they are emitted RAW. This is the single place a scrub or a width policy can live.
-    # ⛔ A scrub goes INSIDE here, BEFORE the truncation, never after: truncating a
-    # line-anchored redactor can un-redact what it had already masked (card#7500's trap).
-    resp_excerpt() { printf '%s' "$1" | tr '\n' ' ' | head -c 300; }
+    # ⛔ THE MASK RUNS BEFORE THE BOUND, and the order is load-bearing: cutting first SPLITS a
+    # credential, and half a token no longer EQUALS the token, so the literal match then finds
+    # nothing and the surviving prefix is printed (card#7500's scrub-before-truncate trap). Same
+    # ruling, same reasoning and the same instrument as the co-vendored sibling renderer,
+    # `resp_detail` in bin/promote-released-cards — cited by FUNCTION, not by line.
+    # ⛔ WHAT IS MASKED IS THIS CALL'S OWN BEARER TOKEN, AND A PATTERN SCRUB IS DELIBERATELY NOT
+    # ADDED. The bearer is the one secret a response body can actually come to contain — it goes
+    # out in a header and a server rendering debug output echoes request headers into its own error
+    # page (MEASURED on the sibling against a header-echoing server: the body came back carrying
+    # `"Authorization": "Bearer <the token>"` verbatim) — and a literal match on it cannot miss and
+    # cannot mangle JSON. ⚠ RESIDUAL, STATED RATHER THAN CLAIMED AWAY: a session identifier the
+    # THIRD PARTY minted — the `?sid=`/`SAMLRequest=` in a gateway SSO or WAF page, which is this
+    # arm's designed-for producer — is NOT masked. A key=value pattern list would not close it
+    # either: it would be one key name behind whatever the next gateway spells it, while reading
+    # like a guarantee. What bounds that exposure is the 300-byte cut and the stderr-only channel.
+    # The token is re-read here rather than carried in a variable: `$(cat …)` strips the trailing
+    # newline exactly as it does where kb_auth_header is fed above, so these are the bytes that
+    # went on the wire, and no resolved secret is held anywhere a later edit could print.
+    # ⛔ AND THE RE-READ FAILING IS ITS OWN OUTCOME, NOT AN EMPTY TOKEN. Scoring an unreadable
+    # token file as "no token, nothing to mask" is the read-outcome-collapse class
+    # (tests/read-outcome-collapse-selftest.sh) landing on a SECRET: the file deleted or made
+    # unreadable between the request and this render leaves a real credential in the body and no
+    # mask over it. So a failed read WITHHOLDS the excerpt and says so. An EMPTY but readable
+    # token is a different, measured outcome: nothing went out on the wire to find, and the body
+    # is quoted whole.
+    resp_excerpt() {
+        local tok body
+        tok="$(cat "$token_file" 2>/dev/null)" || {
+            printf '[withheld — this tool could not re-read its own token file to mask it out of this body]'
+            return 0
+        }
+        body="$1"
+        [[ -n "$tok" ]] && body="${body//"$tok"/***}"
+        printf '%s' "$body" | tr '\n' ' ' | head -c 300
+    }
     # ONE refusal for EVERY arm where the call may have SPENT a number and the outcome is
     # UNKNOWN. A function and not two messages, because the ruling is the arm SET's and not any
     # one arm's: a future arm reaching the mint with spend possible calls this, and a fix that
@@ -603,8 +635,26 @@ done
 
 # (2) board-stamped dl_numbers — fail-soft only where no board is CONFIGURED; a
 # configured board that does not answer a whole read refuses the mint (card#6631).
+#
+# ⛔ THE SIBLING OF $NDL_NO_SPEND, ONE SCREEN DOWN, AND FOR THE SAME REASON (card#10230). The call
+# site below cannot read HOW this function ended — it sees one exit code and one line of stdout —
+# and the benign outcome (this board holds no DL floor) and the malignant one (the read happened
+# but this reader could not project it) BOTH arrive as a non-zero rc with an empty capture, so an
+# rc test cannot tell them apart. MEASURED, not reasoned: a card whose `payload` is not an object
+# faults the projection jq at rc 5, which emits nothing, so max_int's grep then exits 1 and
+# pipefail hands the CALLER rc 1 — the benign channel. So the benign paths DECLARE, and the
+# call site degrades only on the declaration. ⚠ The value is deliberately not a uint: reaching the
+# floor comparison it is ignored rather than minted.
+# ⚠ AND THE DECLARATION IS ONLY AS TRUE AS fetch_board_cards' rc: this function declares "no floor"
+# off an EMPTY projection, so it inherits that function's contract that rc 0 means a whole read was
+# seen. That contract has a known-open hole, already named at the call site below and owned by the
+# OPEN card#6630 — a `.data` array of NON-objects faults the paginator's own dedup jq into its
+# `2>/dev/null` and returns rc 0 with an EMPTY list — and where it is holed this declaration is
+# honestly made and still false. It is named here rather than closed here: closing it is that
+# card's, at that layer, and a second predicate at this one would be the same restatement.
+NDL_NO_FLOOR='next-dl:this-board-holds-no-dl-floor'
 board_dl_max() (
-    cfg="$(resolve_board_cfg)" || exit 1
+    cfg="$(resolve_board_cfg)" || { printf '%s' "$NDL_NO_FLOOR"; exit 1; }
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     tok="$(cat "$token_file")"
     # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
@@ -642,20 +692,45 @@ board_dl_max() (
     # under it — permanently, since the floor is shared state and the mint only ever moves
     # up. The direction was safe (never re-mints), the cost was the allocator. Under the
     # rule the board itself applies such a stamp derives NO ref, so it occupies no DL and
-    # must not raise the floor. max_int still runs: it takes the MAX over the stream and
-    # turns an empty stream into the rc 1 the caller reads as "no floor from this board".
-    printf '%s' "$cards" | jq -r "$KB_JQ_REF_CANON"'.[]? | .payload.dl_number | norm | select(. != "")' | max_int
+    # must not raise the floor.
+    #
+    # ⛔ THE PROJECTION IS CAPTURED, NOT PIPED STRAIGHT INTO max_int, AND THAT IS THE FIX
+    # (card#10230). Piped, jq's own failure is INVISIBLE to this function: jq aborts the whole
+    # stream at rc 5 on the first runtime error, emits nothing, and max_int's grep then exits 1
+    # over the empty stream — so under pipefail the pipeline's rc is max_int's 1, the SAME rc a
+    # board with no stamps at all produces, and the floor was dropped at rc 0 with no refusal
+    # anywhere. `.[]?` does not prevent it: it suppresses ITERATION errors, not the `.payload`
+    # indexing that follows.
+    # ⚑ WHAT ACTUALLY REACHES IT, measured rather than assumed — and it is NOT the obvious input.
+    # A `.data` element that is not an object at all never gets this far: fetch_board_cards' dedup
+    # reads `.id` off it and faults FIRST, inside that function's own `2>/dev/null` (card#6630's
+    # known-open case, named at the call site below). What passes every check that function makes
+    # — the container predicate `.data|type == "array"` and the dedup — and faults HERE is a card
+    # that IS an object whose `payload` is not one: `{"id":9,"payload":[]}`, which is what a PHP
+    # backend emits for an empty associative array. Reproduced end-to-end against the test stub on
+    # the pre-fix binary: one such card beside a card stamped DL-0500 minted DL-0301 from the local
+    # floor, at rc 0, with no refusal.
+    stamps="$(printf '%s' "$cards" | jq -r "$KB_JQ_REF_CANON"'.[]? | .payload.dl_number | norm | select(. != "")')" || {
+        echo "next-dl: board $board answered, but this reader could not project dl_number out of the card list it returned (jq rc=$?) — refusing to mint from a scan that read NO stamp off this board (would drop this board's DL floor and could re-mint a used DL). A card whose payload is not a JSON object does this." >&2
+        exit 2
+    }
+    # An EMPTY stream here is the declared benign outcome and is now SAID rather than inferred
+    # from an exit code the fault path shares: no card carries a well-formed stamp, so this board
+    # names no DL and contributes no floor. Reached identically by a board with no stamps at all
+    # and by one all of whose stamps are not ONE decorated integer (card#7592, above).
+    [[ -n "$stamps" ]] || { printf '%s' "$NDL_NO_FLOOR"; exit 1; }
+    printf '%s\n' "$stamps" | max_int
 )
 # board_dl_max's OWN exit codes, which are not the paginator's: 2 = the board did not
-# answer a whole read (EVERY non-zero paginator rc, 1 through 4) ⇒ fail loud, mint
-# nothing (an undercount could re-mint). 1 = no DL floor came back from a board ⇒ the
-# fail-soft posture, empty bmax, mint from the local sources. That code covers TWO
+# answer a whole read, or answered one this reader could not project (EVERY non-zero paginator
+# rc, 1 through 4, plus a jq runtime error on the projection) ⇒ fail loud, mint
+# nothing (an undercount could re-mint). 1 + $NDL_NO_FLOOR on stdout = no DL floor came back
+# from a board ⇒ the fail-soft posture, mint from the local sources. That pair covers TWO
 # situations, and the boundary it draws is resolve-failure vs fetch-failure, not
 # configured vs unconfigured: either resolve_board_cfg failed and no request was ever
 # issued (its exit paths are enumerated in this file's header), or the read SUCCEEDED and
-# no dl_number came out of it, which max_int's grep turns into a rc 1 under pipefail. Both
-# are reachable with a named board in the config; only the first is what card#6631's ruling
-# declined to scope.
+# no dl_number came out of it. Both are reachable with a named board in the config; only the
+# first is what card#6631's ruling declined to scope.
 # ⚑ THE SECOND SITUATION IS WIDER THAN "no card carries the field" (card#7592): a board every
 # one of whose stamps is not ONE decorated integer now reaches it too, because such a stamp
 # names no DL under the rule the board itself applies and so contributes no floor. That board
@@ -680,12 +755,25 @@ board_dl_max() (
 # would change what this tool accepts, so it is recorded there rather than fixed here.
 # The `if` form is set -e-safe (a non-zero command substitution in a bare
 # assignment would otherwise exit before $? is captured).
-# ⚑ ADDING AN EXIT TO board_dl_max? This test is PERMISSIVE by default — any status but 2 mints —
-# which is the shape $NDL_NO_SPEND closes one screen up, not live here only because that function's
-# exits are enumerated (1, 2, and the success pipeline). A new one mints from the local floor alone.
+# ⛔ REFUSE UNLESS DECLARED, exactly as the claim's belt one screen up, and for the same reason
+# (card#10230). The test here USED to be `[[ $dlrc -eq 2 ]] && exit 1` — a blocklist, permissive by
+# default: every status but 2 minted from the local floor alone. A comment beside it argued that
+# was not live because board_dl_max's exits were enumerated, and the comment was FALSE — the
+# function's own final pipeline supplied an unenumerated ending (see the projection above), so the
+# defect this card exists to fix was live at its third copy, under a note saying it was not.
+# Enumerating a callee's outcomes is the wrong shape wherever it is written: the population is
+# every ending anyone will ever give that function, and no caller can read it. So a floor is taken
+# only from a rc-0 uint, the scan proceeds without one only on the positive $NDL_NO_FLOOR
+# declaration, and everything else — a new exit, a `set -u` death, a status nobody thought about —
+# refuses.
 if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
-[[ "$dlrc" -eq 2 ]] && exit 1
-kb_is_uint "$bmax" && [[ "$bmax" -gt "$max" ]] && max="$bmax"
+if [[ "$bmax" != "$NDL_NO_FLOOR" ]]; then
+    if [[ "$dlrc" -ne 0 ]] || ! kb_is_uint "$bmax"; then
+        echo "next-dl: the board DL-floor read RETURNED (status $dlrc) without a usable floor and WITHOUT declaring that this board holds none — REFUSING to mint. The local max+1 scan alone cannot see the DLs this board has already stamped, so a number from it would be at or below one already in use: a duplicate DL, which is the one answer an allocator must never give. If this is a path on which the board provably names no DL, it must say so (see NDL_NO_FLOOR in this file); otherwise fix the cause above and retry." >&2
+        exit 1
+    fi
+    [[ "$bmax" -gt "$max" ]] && max="$bmax"
+fi
 
 [[ "$max" -eq 0 ]] && { echo "next-dl: no DL headers found for '$project' — check the checkout paths" >&2; exit 1; }
 canon="$(kb_dl_canon "$((max + 1))")" || { echo "next-dl: computed DL $((max + 1)) exceeds the canonical range" >&2; exit 1; }

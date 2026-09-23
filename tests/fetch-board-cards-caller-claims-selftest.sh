@@ -218,12 +218,18 @@ REGISTERED_CALLS=$'bin/board-card-start\t1\nbin/board-snapshot\t1\nbin/board-sta
 #   same call. It fires on a read the paginator returned rc 0 for, so it is not a
 #   paginator arm at all and names no rc and no cause of one; what it claims is what
 #   happened — this bin's own filter over a complete board did not produce a census.
+#   bin/next-dl — board_dl_max's own dl_number PROJECTION failure, in the window after its
+#   call. Same ruling and same reason as kbcard's census line above: it fires on a read the
+#   paginator returned rc 0 for, so it is not a paginator arm, and the rc it names is jq's,
+#   which it says outright. What it claims is what happened — this bin's own projection over
+#   a complete board produced no stamp because it faulted, which is NOT the board saying it
+#   holds no DL (card#10230: those two used to be one signal, and that was the defect).
 #   bin/kbcard — `search`'s two ZERO-RESULT lines, in the window after its call. Both fire
 #   on a read the paginator returned rc 0 for, and each is a statement about the match set
 #   that COMPLETE read returned: nothing matched, or the query's matches were all removed by
 #   the client-side filter flags. Neither names an rc or a cause, and neither could be
 #   reached by a failed read — the arm above exits 1 first.
-EXEMPT_EMITS=$'bin/kbcard\tprintf \'%s\\n\' "$out"\nbin/kbcard\techo "kbcard: board $KB_BOARD_ID read could not be projected for key \'$key\'" >&2\nbin/kbcard\techo "kbcard: no card on board $KB_BOARD_ID matched this search"\nbin/kbcard\techo "kbcard: the query matched $total card(s) on board $KB_BOARD_ID, none of which passed the filter flags"'
+EXEMPT_EMITS=$'bin/kbcard\tprintf \'%s\\n\' "$out"\nbin/kbcard\techo "kbcard: board $KB_BOARD_ID read could not be projected for key \'$key\'" >&2\nbin/kbcard\techo "kbcard: no card on board $KB_BOARD_ID matched this search"\nbin/kbcard\techo "kbcard: the query matched $total card(s) on board $KB_BOARD_ID, none of which passed the filter flags"\nbin/next-dl\techo "next-dl: board $board answered, but this reader could not project dl_number out of the card list it returned (jq rc=$?) — refusing to mint from a scan that read NO stamp off this board (would drop this board\'s DL floor and could re-mint a used DL). A card whose payload is not a JSON object does this." >&2'
 
 # ---------------------------------------------------------------------------
 # THE DERIVATION — one primitive answering both questions, re-run here, never recalled.
