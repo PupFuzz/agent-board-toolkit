@@ -29,8 +29,10 @@
 # scan. That is the very failure the allocator exists to retire, wearing the
 # allocator's authority. Two changes, neither of which narrows what next-dl accepts:
 #   * EVERY degrade writes its CAUSE to stderr, in that cause's own words.
-#     dl_sequence_call distinguishes FOUR causes — config unresolved / unreachable /
-#     404-absent / a 2xx carrying no usable value — and each prints its own line. ONE
+#     dl_sequence_call distinguishes them by cause and each prints its own line — written out
+#     PER CAUSE below rather than introduced by a COUNT of them, because the count is the part
+#     that goes stale: the cause set is whatever this file's `unusable` call sites are, and the
+#     selftest derives it from them rather than from any figure written here. ONE
 #     generic "falling back" line would re-mint the conflation this closes: the point is
 #     not that stderr is non-empty, it is that the reader can tell "not deployed here"
 #     from "I could not reach it". The CAUSE set is the same on both routes. The
@@ -269,6 +271,18 @@ resolve_board_cfg() (
 # is therefore stated over the arm SET and not per arm: EVERY arm in which the call may have
 # SPENT a number and the outcome is UNKNOWN refuses, and they share one refusal (spent_refusal
 # below) so a new arm inherits the ruling instead of re-deciding it.
+# ⛔ AND THAT SENTENCE IS CHECKED — which is the only reason it is still written as a universal.
+# The unchecked version of it was FALSIFIED by doing the obvious thing: adding the arm an
+# ordinary maintainer would add, three lines treating a gateway 502/503/504 as "temporarily
+# down, fall back and retry later", minted DL-0301 from the offline scan at rc 0 on a claim the
+# server had answered — card#10230's own defect, on a new arm, with the whole suite GREEN.
+# tests/next-dl-selftest.sh now LIFTS this function's body and reds on any `exit 1` past the
+# request that is neither inside the `non-consuming` guard nor pinned `NOTHING WAS SPENT` on its
+# own line or the two above it. So a new arm may call spent_refusal and exit 3, may guard itself
+# with the `non-consuming` test, or may DECLARE in writing why the server's answer proves nothing
+# was allocated. Silently taking the benign fallback is not among them and does not go green.
+# That leg is watched RED both ways: with the 404 arm's declaration deleted, and with the
+# 502/503/504 arm above re-planted.
 # ⛔ Do not "simplify" this back into two functions, and do not re-derive `<consumption>` from
 # `$method`: POST is not what makes a call consuming — the route's semantics are, and a
 # non-consuming POST on this API would silently inherit the fail-closed arm.
@@ -296,7 +310,10 @@ resolve_board_cfg() (
 #       ALSO: a transport failure, and a 2xx carrying no usable value — nothing was spent on a
 #       GET, and an unreadable body is indistinguishable from an older response shape, so
 #       aborting there would break every board predating the route. Any new way to reach exit 1
-#       from here owes a distinct `unusable` cause.
+#       from here owes a distinct `unusable` cause — CHECKED, not asked for: the selftest DERIVES
+#       the cause set from this function's own `unusable` call sites (it does not restate them)
+#       and reds when a derived cause is driven by no leg, which is what a fifth cause added here
+#       with no coverage produces.
 #   3 → the caller MUST abort rather than quietly answer from the offline scan, because a
 #       wrong-but-plausible DL is worse than no DL: it lands in a decision log and becomes a
 #       duplicate correlation key nobody re-checks. Its members:
@@ -310,7 +327,9 @@ resolve_board_cfg() (
 #       arms that is stated: a CONSUMING call that may have SPENT and whose outcome is UNKNOWN
 #       refuses — both go through `spent_refusal`, which is where that rule lives. A new arm
 #       reaching the mint is dispositioned by that rule, not by being added to this list —
-#       patching one arm at a time is how the transport arm survived card#10230's first pass.
+#       patching one arm at a time is how the transport arm survived card#10230's first pass,
+#       and the structural leg named in the arm-SET block above is what makes that a CHECK
+#       rather than a hope.
 #       The CAUSE set is unchanged by any of it (each still prints its own `unusable` line);
 #       what moved is the DISPOSITION, and only for the caller that spent.
 dl_sequence_call() (
@@ -322,7 +341,7 @@ dl_sequence_call() (
     }
     method="$1"; path="$2"; field="$3"; label="$4"; consumption="$5"; risk="$6"
     # The rc-1 cause channel. Written HERE and not by the caller because this is the only
-    # scope that knows WHICH of the four happened; the caller sees one exit code.
+    # scope that knows WHICH cause happened; the caller sees one exit code.
     unusable() { echo "next-dl: NO AUTHORITATIVE NUMBER — the $label $1." >&2; }
     # The ONE renderer of a response body (canon #5; second caller minted by card#10230's first
     # pass and hoisted by its second). It matters beyond taste: these bytes are an untrusted
@@ -338,8 +357,15 @@ dl_sequence_call() (
     # first pass. <what-happened> is the only per-arm part. [<raw-body>] is OMITTED where no
     # answer was read at all — quoting an empty excerpt there would suggest the server said
     # nothing, when in fact nothing was heard.
+    # ⛔ AND IT NAMES NO RECOVERY RUNBOOK, deliberately. It used to point at
+    # docs/DL-COUNTER-RECOVERY.md, whose scope is a counter STRANDED in the wrong range and whose
+    # remedy force-deletes cards and resets the sequence. What this refusal reports is a ONE-NUMBER
+    # gap, for which that runbook is not merely unnecessary but destructive — and the very next
+    # clause of this same message says the gap is fine, so the pointer contradicted its own
+    # sentence. The volume is why it mattered this round: the transport arm made an ordinary
+    # network flake the common producer of this message, where a gateway HTML page had been.
     spent_refusal() {   # <what-happened> [<raw-body>]
-        echo "next-dl: that call CONSUMES a number, so the $label $1 — REFUSING to mint. The offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. Falling back here would be that duplicate, $risk. An unread claim simply burns a number (a gap is expected and fine) — check the counter with 'next-dl ${project_args[*]} --peek' or docs/DL-COUNTER-RECOVERY.md, fix the cause, and retry.${2+ Response: $(resp_excerpt "$2")}" >&2
+        echo "next-dl: that call CONSUMES a number, so the $label $1 — REFUSING to mint. The offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. Falling back here would be that duplicate, $risk. An unread claim simply burns a number: a GAP in the sequence is expected and fine and needs NO recovery action — check the counter with 'next-dl ${project_args[*]} --peek', fix the cause, and retry.${2+ Response: $(resp_excerpt "$2")}" >&2
     }
     # ⛔ THE CAUSE IS RELAYED, NEVER ENUMERATED. This line used to list the resolve failures
     # longhand — a copy of kb_resolve_env's return contract, written before that contract grew
@@ -416,9 +442,17 @@ dl_sequence_call() (
                 exit 3
             }
             printf '%s' "$val" ;;
+        # ⛔ THE DECLARATION ON THIS ARM'S `exit 1` IS LOAD-BEARING, NOT DECORATION — it is the
+        # only thing standing between this arm and the structural leg in
+        # tests/next-dl-selftest.sh, which reds on any `exit 1` past the request that is neither
+        # inside the `non-consuming` guard nor carries that declaration on its own line or the two
+        # above it. Deleting it without moving the arm reds that leg, which is how the leg was
+        # watched fail. ⚠ And this paragraph deliberately does not spell the token: written within
+        # two lines of the exit it would PIN the line by itself, and the arm would then be exempt
+        # by its own commentary — measured, that is exactly what an earlier draft did.
         404)   # endpoint not deployed — benign; fall back to the offline scan
             unusable "is NOT DEPLOYED on this board's kanban (HTTP 404) — this kanban predates the DL-sequence route"
-            exit 1 ;;
+            exit 1 ;;   # NOTHING WAS SPENT: the server ANSWERED, and what it answered is that this route does not exist here — so the POST reached a handler that allocates nothing.
         *)
             echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(resp_excerpt "$body")" >&2
             exit 3 ;;

@@ -369,13 +369,17 @@ eq "strict + no board env → and still says what it refused" "true" \
 # every channel a caller can read, to an atomic claim. Two concurrent allocators were handed the
 # same DL by the tool whose whole purpose is to stop that, and nothing said so.
 #
-# WHY THE CAUSE MATRIX IS THE POINT AND NOT DECORATION. The CAUSES are the four `NDL_CAUSES`
-# holds, and the rc does not separate them: every one of them can reach the caller as the same
+# WHY THE CAUSE MATRIX IS THE POINT AND NOT DECORATION. The CAUSES are what `NDL_CAUSES` holds,
+# and the rc does not separate them: every one of them can reach the caller as the same
 # exit code, so the stderr line is the ONLY place they are distinguishable. A "stderr is
 # non-empty" assertion would be satisfied by one generic line, which re-mints the conflation this
-# card is about — so each cause asserts its OWN phrase present AND the other three ABSENT.
-# Measured: collapsing the four `unusable` calls into one shared string reds 12 of the 16 matrix
-# assertions.
+# card is about — so each cause asserts its OWN phrase present AND every OTHER cause ABSENT.
+# MEASURED, against every `unusable` argument in the bin rewritten to one shared string: since
+# card#10230's third round the collapse reds the DERIVATION legs below before the matrix is even
+# reached — all four distinctness assertions (identical needles), then all four key binds (no key
+# matches the generic string), and then the run aborts at the plant guard, because the sed that
+# targets a named cause line now matches nothing. That abort is the guard working, not a defect.
+# Before the derivation it reddened only matrix assertions, and only by luck of wording.
 #
 # ⛔ THE CAUSE SET AND THE rc-1 SET ARE NOT THE SAME SET, and reading them as one is what shipped
 # card#10230 (twice). Every cause still prints its own line on both routes — that is what
@@ -387,13 +391,145 @@ eq "strict + no board env → and still says what it refused" "true" \
 # The fixture is the card#6631 block's, deliberately: a local floor of DL-0300 over a board whose
 # cards top out at DL-0219, so the offline answer is DL-0301 — a value the counter never returns
 # (its claim is 93), so "it degraded" and "it claimed" are never the same number.
-NDL_CAUSES=("config could not be resolved" "could not be REACHED" "NOT DEPLOYED" "carried no usable number")
 FALLBACK='FALLING BACK to the offline max+1 scan'
 REFUSAL='--require-counter: refusing to mint'
 
-# only_cause <label> <index-into-NDL_CAUSES|none> <stderr> — the anti-generic-line control.
+# --- the cause set is DERIVED FROM THE BIN, not restated here (card#10230, round 3) ------------
+# It used to be a hand-written array, so bin/next-dl's rc-1 contract — "Any new way to reach
+# exit 1 from here owes a distinct `unusable` cause" — was checked by NOTHING: this file's idea
+# of the cause set came from this file, so a FIFTH cause added to dl_sequence_call reddened not
+# one leg here. The population now comes from that function's own `unusable` call sites, is
+# re-derived on every run, and the COVERAGE leg at the very end of this file reds when a derived
+# cause is driven by no leg above. That leg, not this comment, is the :298 guarantee's control.
+#
+# THE REDUCTION RULE, stated because a derived needle has to be usable by `has`, which is a
+# LITERAL substring test: a cause argument may interpolate ($http, $field), and an interpolated
+# string is not a literal — so each needle is the LONGEST run of its argument carrying no
+# $-expansion, trimmed. Non-empty, $-free and mutually DISTINCT are asserted below rather than
+# assumed; degeneracy is additionally self-detecting, since a needle short enough to appear in
+# every message reds only_cause's ABSENCE half everywhere at once.
+ndl_fn_body() {   # <file> — dl_sequence_call's body, lifted (the bin runs its main at top level)
+    LC_ALL=C awk '
+        /^dl_sequence_call\(\) \($/ { infn = 1; next }
+        infn && /^\)$/              { infn = 0; next }
+        infn                        { print }
+    ' "$1"
+}
+ndl_cause_args() {   # <file> — the ARGUMENT of every `unusable "…"` call in that body, in order
+    ndl_fn_body "$1" | sed -n 's/^[[:space:]]*unusable "\(.*\)"[[:space:]]*$/\1/p'
+}
+ndl_cause_needle() {   # <argument> — its longest $-expansion-free run, trimmed
+    LC_ALL=C awk '{
+        n = split($0, seg, "$"); best = ""
+        for (i = 1; i <= n; i++) {
+            s = seg[i]
+            if (i > 1) { sub(/^\{[^}]*\}/, "", s); sub(/^[A-Za-z_][A-Za-z0-9_]*/, "", s) }
+            gsub(/^[ \t]+|[ \t]+$/, "", s)
+            if (length(s) > length(best)) best = s
+        }
+        print best
+    }' <<<"$1"
+}
+# ndl_planted <sed-expr> — a scratch COPY of bin/next-dl carrying <sed-expr>, for the STATIC legs
+# (they READ a file and never run it, so no scratch bin/ is needed — that is ndl_mutant's job).
+# Refuses a sed that changed nothing, for ndl_mutant's reason: a no-op plant would make every
+# assertion downstream of it a measurement of the shipped file wearing a mutant's name.
+NDL_PLANT="$TMP/ndl-planted"
+ndl_planted() {
+    cp -p "$NDL" "$NDL_PLANT"
+    sed -i "$1" "$NDL_PLANT"
+    if cmp -s "$NDL" "$NDL_PLANT"; then
+        echo "selftest: plant '$1' changed nothing in $NDL — did the site it targets move?" >&2
+        exit 1
+    fi
+}
+
+NDL_CAUSE_ARGS=(); NDL_CAUSES=()
+while IFS= read -r _a; do
+    NDL_CAUSE_ARGS+=("$_a")
+    NDL_CAUSES+=("$(ndl_cause_needle "$_a")")
+done < <(ndl_cause_args "$NDL")
+unset _a
+declare -A NDL_CAUSE_IX=()
+NDL_CAUSE_SEEN=()
+
+# The KEYS below NAME the cause a leg drives; they are NOT the population. Each must resolve to
+# exactly ONE derived cause — a GUARDED restatement rather than a second copy of the set: a key
+# that stops matching (or starts matching two) reds the bind below, and a CAUSE that no key names
+# reds the coverage leg at the end. The hand-written array covered neither direction.
+C_CONFIG='config could not be resolved'
+C_TRANSPORT='could not be REACHED'
+C_ABSENT='NOT DEPLOYED'
+C_UNDECODABLE='carried no usable number'
+NDL_CAUSE_KEYS=("$C_CONFIG" "$C_TRANSPORT" "$C_ABSENT" "$C_UNDECODABLE")
+
+echo "== the cause set is DERIVED from bin/next-dl's own unusable() call sites =="
+# Vacuity first: a lift that found the wrong span, or nothing, would make every leg below pass by
+# measuring an empty set. The landmark is the shared refusal, which only this function defines.
+eq "the lift really got dl_sequence_call's body" "true" \
+   "$(has 'spent_refusal() {' "$(ndl_fn_body "$NDL")")"
+eq "the lift stopped at the function (it did not swallow the caller)" "false" \
+   "$(has 'degrade_or_refuse "atomic claim endpoint"' "$(ndl_fn_body "$NDL")")"
+eq "at least one cause was derived" "true" \
+   "$([[ ${#NDL_CAUSES[@]} -gt 0 ]] && echo true || echo false)"
+for _i in "${!NDL_CAUSES[@]}"; do
+    eq "derived needle [$_i] is non-empty" "true" \
+       "$([[ -n "${NDL_CAUSES[$_i]}" ]] && echo true || echo false)"
+    eq "derived needle [$_i] survives as a LITERAL (no \$-expansion left in it)" "false" \
+       "$(has '$' "${NDL_CAUSES[$_i]}")"
+    _dup=0
+    for _j in "${!NDL_CAUSES[@]}"; do
+        [[ "$_i" == "$_j" ]] && continue
+        [[ "${NDL_CAUSES[$_j]}" == *"${NDL_CAUSES[$_i]}"* ]] && _dup=1
+    done
+    eq "derived needle [$_i] is DISTINCT from every other (only_cause's absence half needs it)" \
+       "0" "$_dup"
+done
+unset _i _j _dup
+for _k in "${NDL_CAUSE_KEYS[@]}"; do
+    _n=0; _want=-1
+    for _i in "${!NDL_CAUSE_ARGS[@]}"; do
+        [[ "${NDL_CAUSE_ARGS[$_i]}" == *"$_k"* ]] && { _want=$_i; _n=$((_n + 1)); }
+    done
+    eq "cause key '$_k' still identifies exactly ONE derived cause" "1" "$_n"
+    NDL_CAUSE_IX["$_k"]=$_want
+done
+unset _i _k _n _want
+
+# ⭐ POSITIVE CONTROL — the derivation READS the bin. Without this the whole scheme could be a
+# constant wearing a derivation's name, and every leg above would be green for it. Both
+# directions, and neither side of either assertion is a written figure: the expected value is
+# computed from the SHIPPED derivation, so this cannot be re-synced by editing a number.
+_PLANTED_CAUSE='is a PLANTED fifth cause that no leg drives'
+ndl_planted "/^        404)/i\\            unusable \"$_PLANTED_CAUSE\""
+eq "planting a fifth unusable() call derives one cause MORE" \
+   "$(( ${#NDL_CAUSES[@]} + 1 ))" "$(ndl_cause_args "$NDL_PLANT" | wc -l | tr -d ' ')"
+eq "…and the planted cause is what is new there" "true" \
+   "$(has "$_PLANTED_CAUSE" "$(ndl_cause_args "$NDL_PLANT")")"
+eq "…and it is absent from the shipped set (so the comparison is not vacuous)" "false" \
+   "$(has "$_PLANTED_CAUSE" "$(ndl_cause_args "$NDL")")"
+# ⭐ AND THE COVERAGE LEG WOULD RED ON IT: no existing key names the planted cause, so it derives
+# into the population with nothing driving it, which is exactly the end-of-file assertion.
+_pk=0
+for _k in "${NDL_CAUSE_KEYS[@]}"; do
+    [[ "$_PLANTED_CAUSE" == *"$_k"* ]] && _pk=1
+done
+eq "no cause key binds the planted fifth cause (so the coverage leg RED on it is real)" "0" "$_pk"
+unset _k _pk _PLANTED_CAUSE
+ndl_planted '/^            unusable "is NOT DEPLOYED/d'
+eq "deleting an unusable() call derives one cause FEWER" \
+   "$(( ${#NDL_CAUSES[@]} - 1 ))" "$(ndl_cause_args "$NDL_PLANT" | wc -l | tr -d ' ')"
+rm -f "$NDL_PLANT"
+
+# only_cause <label> <cause-key|none> <stderr> — the anti-generic-line control. The key NAMES the
+# cause this leg drives; the phrase asserted is the DERIVED one, so a derivation that broke would
+# red here rather than quietly assert nothing.
 only_cause() {
-    local label="$1" want="$2" errtext="$3" i
+    local label="$1" key="$2" errtext="$3" i want=-1
+    if [[ "$key" != none ]]; then
+        want="${NDL_CAUSE_IX[$key]:--1}"
+        [[ "$want" -ge 0 ]] && NDL_CAUSE_SEEN[$want]=1
+    fi
     for i in "${!NDL_CAUSES[@]}"; do
         if [[ "$i" == "$want" ]]; then
             eq "$label names its own cause (${NDL_CAUSES[$i]})" "true" "$(has "${NDL_CAUSES[$i]}" "$errtext")"
@@ -451,7 +587,7 @@ eq "404 permissive → still mints the offline floor"   "DL-0301" "$out"
 eq "404 permissive → announces the fallback"          "true" "$(has "$FALLBACK" "$err")"
 eq "404 permissive → names the CLAIM endpoint in the notice" "true" "$(has 'atomic claim endpoint gave no number' "$err")"
 eq "404 permissive → offers the opt-out"              "true" "$(has 'Pass --require-counter' "$err")"
-only_cause "404 permissive" 2 "$err"
+only_cause "404 permissive" "$C_ABSENT" "$err"
 
 NDL_CLAIM_HTTP=404 NDL_CLAIM_BODY='{"message":"not found"}' run_ndl --board dev --require-counter
 eq "404 strict → rc 4"                                "4" "$rc"
@@ -459,7 +595,7 @@ eq "404 strict → mints NOTHING"                       "" "$out"
 eq "404 strict → says it is refusing"                 "true" "$(has "$REFUSAL" "$err")"
 eq "404 strict → does NOT announce a fallback it did not take" "false" "$(has "$FALLBACK" "$err")"
 eq "404 strict → does not leak the floor anywhere"    "false" "$(has 'DL-0301' "$out$err")"
-only_cause "404 strict" 2 "$err"
+only_cause "404 strict" "$C_ABSENT" "$err"
 eq "404 strict → never reads the board at all"        "0" "$(kb_stub_count_any "$SEARCH")"
 
 echo "== cause 2 (TRANSPORT failure): distinct from 404 — nothing was learned about the route =="
@@ -481,8 +617,18 @@ echo "== cause 2 (TRANSPORT failure): distinct from 404 — nothing was learned 
 # the answer was lost. Splitting the rcs into "cannot have reached it" (5/6/7) and "may have"
 # would put a copy of curl's exit-code table in bin/next-dl, and would buy nothing — where the
 # host is genuinely unreachable the offline scan's own board read fails too (card#6631). So
-# rc 7 is driven HERE beside 52 and 28: a fix that classified curl's rc would keep 52 and 28 red
-# and turn THIS leg green, which is the discrimination the three-value loop exists to make.
+# rc 7 is driven HERE beside 52 and 28: a fix that classified curl's rc into "cannot have reached
+# the server" (5/6/7) and "may have" (everything else) would leave the 52 and 28 legs GREEN and
+# turn THIS one RED, which is the discrimination the three-value loop exists to make — so rc 7 is
+# the leg that catches that fix, and 52/28 are the ones that do not.
+# ⛔ THAT SENTENCE USED TO SAY THE OPPOSITE ("keep 52 and 28 red and turn THIS leg green"), which
+# was false in the direction that costs: read as written it names the curl-7 leg as the expendable
+# one, and it is the only leg here the classifying fix reds. MEASURED independently by the round-2
+# review and again by the round-3 fix, against exactly that rival fix (capture curl's rc; `5|6|7`
+# ⇒ benign fallback on the consuming route, everything else refuses): 7 assertions FAILED, every
+# one of them `claim transport fail (curl 7)`; the 52 and 28 legs PASSED. A wrong comment on a
+# control is worse than no comment, because the next maintainer deletes the wrong leg and the
+# suite stays green.
 for _crc in 7 52 28; do
     NDL_CLAIM_CURLFAIL=$_crc run_ndl --board dev
     eq "claim transport fail (curl $_crc) → rc 1 (fail closed)"        "1" "$rc"
@@ -501,7 +647,7 @@ for _crc in 7 52 28; do
     # No body was read, so there is no excerpt to quote — an empty `Response:` here would say the
     # server answered with nothing, when in fact nothing was heard.
     eq "claim transport fail (curl $_crc) → quotes no response body"   "false" "$(has 'Response:' "$err")"
-    only_cause "claim transport fail (curl $_crc)" 1 "$err"
+    only_cause "claim transport fail (curl $_crc)" "$C_TRANSPORT" "$err"
 done
 unset _crc
 
@@ -510,7 +656,7 @@ unset _crc
 NDL_CLAIM_CURLFAIL=52 run_ndl --board dev --require-counter
 eq "claim transport fail + strict → still rc 1, not 4" "1" "$rc"
 eq "claim transport fail + strict → mints NOTHING"     "" "$out"
-only_cause "claim transport fail + strict" 1 "$err"
+only_cause "claim transport fail + strict" "$C_TRANSPORT" "$err"
 
 echo "== CONTROL: the SAME transport failure on the NON-CONSUMING read still falls back =="
 # The over-correction control, and the reason this route is driven at all (it never was before).
@@ -526,12 +672,12 @@ eq "peek transport fail → names the INSPECT endpoint" "true" \
 eq "peek transport fail → claims NOTHING"             "0" "$(kb_stub_count_any "$CLAIM_URL")"
 eq "peek transport fail → does NOT borrow the claim's spent-number wording" "false" \
    "$(has 'may ALREADY have allocated a number' "$err")"
-only_cause "peek transport fail" 1 "$err"
+only_cause "peek transport fail" "$C_TRANSPORT" "$err"
 
 NDL_PEEK_CURLFAIL=52 run_ndl --board dev --peek --require-counter
 eq "peek transport fail + strict → rc 4"              "4" "$rc"
 eq "peek transport fail + strict → mints NOTHING"     "" "$out"
-only_cause "peek transport fail + strict" 1 "$err"
+only_cause "peek transport fail + strict" "$C_TRANSPORT" "$err"
 
 echo "== cause 4 (2xx carrying no usable value): ONE cause, TWO dispositions, keyed on CONSUMPTION =="
 # THE CAUSE is one cause on both routes and still gets its own line (only_cause holds on both
@@ -561,7 +707,7 @@ eq "2xx-no-value on the claim → does NOT announce a fallback it refused" "fals
 # rather than dropped everywhere.
 eq "2xx-no-value on the claim → quotes the body it could not read" "true|true" \
    "$(has 'Response:' "$err")|$(has '{"data":{}}' "$err")"
-only_cause "2xx-no-value on the claim" 3 "$err"
+only_cause "2xx-no-value on the claim" "$C_UNDECODABLE" "$err"
 # A REMEDIATION STRING IS A DOC SURFACE, so it is asserted like one. `kanban` and `--board kanban`
 # name DIFFERENT boards, so a remedy built by re-printing `$project` alone would hand the operator
 # a command against the wrong board — it is built from the argv words this run was given.
@@ -580,7 +726,7 @@ eq "200 + an SSO HTML page on the claim → never reaches the scan" "0" "$(kb_st
 NDL_CLAIM_HTTP=200 NDL_CLAIM_BODY='{"data":{}}' run_ndl --board dev --require-counter
 eq "2xx-no-value on the claim + strict → still rc 1, not 4" "1" "$rc"
 eq "2xx-no-value on the claim + strict → mints NOTHING" "" "$out"
-only_cause "2xx-no-value on the claim + strict" 3 "$err"
+only_cause "2xx-no-value on the claim + strict" "$C_UNDECODABLE" "$err"
 
 # THE OTHER SPELLING, which is what makes the line above a measurement of the spelling rather
 # than of one literal: the bare project alias must print ITSELF, with no `--board` in front of it.
@@ -603,7 +749,7 @@ eq "2xx-no-value on the peek → names the INSPECT endpoint" "true" \
 eq "2xx-no-value on the peek → claims NOTHING"        "0" "$(kb_stub_count_any "$CLAIM_URL")"
 eq "2xx-no-value on the peek → does NOT borrow the claim's consumed-number wording" "false" \
    "$(has 'may ALREADY have allocated a number' "$err")"
-only_cause "2xx-no-value on the peek" 3 "$err"
+only_cause "2xx-no-value on the peek" "$C_UNDECODABLE" "$err"
 
 NDL_PEEK_HTTP=200 NDL_PEEK_BODY='<html><head><title>Sign in</title></head><body>SSO gateway</body></html>' \
     run_ndl --board dev --peek
@@ -630,6 +776,15 @@ echo "== a MISWIRED call site fails CLOSED — both halves, and the omitted one 
 # by construction — which is exactly why the guarantee had no control. So the call site is
 # MUTATED in a scratch copy of bin/. `ndl_mutant` refuses a sed that changed nothing, so a leg
 # below can never be a measurement of the shipped binary wearing a mutant's name.
+#
+# ⚠ WHICH BINARY THE MUTANT LEGS BASELINE AGAINST, stated so a whole-file baseline is read
+# correctly. They do NOT baseline against the PR base binary: the base has no `<consumption>`
+# argument at all, so the first sed below matches nothing there and `ndl_mutant` ABORTS the run —
+# which is the guard working, not a suite defect. The omission legs' correct baseline is
+# card#10230's FIRST head, which carries the `consuming` line and lacks the arity guard (8 of them
+# were watched red there); the misspelling legs' baseline is the shipped binary with the token
+# test inverted, and the out-of-range leg further down baselines against the bespoke mutation its
+# own comment names — there is no binary that lacked ITS fix, because it fixes nothing.
 NDL_MUT="$TMP/ndl-mut"
 ndl_mutant() {   # ndl_mutant <sed-expr> — a scratch bin/ whose next-dl carries <sed-expr>
     rm -rf "$NDL_MUT"
@@ -718,13 +873,13 @@ eq "unresolved config permissive → rc 0"              "0" "$rc"
 eq "unresolved config permissive → still mints the local floor" "DL-0301" "$out"
 eq "unresolved config permissive → announces the fallback" "true" "$(has "$FALLBACK" "$err")"
 eq "unresolved config permissive → keeps the old skip message too" "true" "$(has 'skipping board check' "$err")"
-only_cause "unresolved config permissive" 0 "$err"
+only_cause "unresolved config permissive" "$C_CONFIG" "$err"
 eq "unresolved config permissive → issued no request" "0" "$(kb_stub_total)"
 
 run_ndl --board nosuchboard --require-counter
 eq "unresolved config strict → rc 4"                  "4" "$rc"
 eq "unresolved config strict → mints NOTHING"         "" "$out"
-only_cause "unresolved config strict" 0 "$err"
+only_cause "unresolved config strict" "$C_CONFIG" "$err"
 
 echo "== --peek degrades through the SAME policy, in the INSPECT endpoint's name =="
 # The two modes call one degrade_or_refuse with different labels. A swapped label would hand the
@@ -734,7 +889,7 @@ eq "peek 404 permissive → rc 0"                       "0" "$rc"
 eq "peek 404 permissive → the offline floor"          "DL-0301" "$out"
 eq "peek 404 permissive → names the INSPECT endpoint" "true" "$(has 'DL-sequence inspect endpoint gave no number' "$err")"
 eq "peek 404 permissive → does NOT name the claim endpoint" "false" "$(has 'atomic claim endpoint' "$err")"
-only_cause "peek 404 permissive" 2 "$err"
+only_cause "peek 404 permissive" "$C_ABSENT" "$err"
 eq "peek 404 permissive → claims nothing"             "0" "$(kb_stub_count_any "$CLAIM_URL")"
 
 NDL_PEEK_HTTP=404 NDL_PEEK_BODY='{"message":"not found"}' run_ndl --board dev --peek --require-counter
@@ -753,5 +908,214 @@ eq "claim 500 + strict → not reported as a strict refusal" "false" "$(has "$RE
 unset NDL_CLAIM_CURLFAIL NDL_PEEK_CURLFAIL
 
 unset KB_DL_CHECKOUT_GLOBS
+
+echo "== STRUCTURAL: every benign exit PAST THE REQUEST is guarded or DECLARED (the arm-SET rule) =="
+# ⭐ THE CONTROL FOR A GUARANTEE ABOUT CODE THAT DOES NOT EXIST YET. bin/next-dl states its ruling
+# over the arm SET — "EVERY arm in which the call may have SPENT a number and the outcome is
+# UNKNOWN refuses … they share one refusal so a new arm inherits the ruling instead of
+# re-deciding it" — and until this leg NOTHING checked it. It was falsified by doing the obvious
+# thing: three lines treating a gateway 502/503/504 as "temporarily down, fall back and retry
+# later", inserted before the `*)` arm, minted DL-0301 at rc 0 off the offline scan on a claim the
+# server had ANSWERED, and the whole suite stayed GREEN. card#10230's own defect, on a new arm,
+# with CI green — which is what a universal with no control is worth.
+#
+# A BEHAVIOUR CASE CANNOT COVER THIS, and neither can a list of blessed lines: the population is
+# every arm a future editor adds, so the check has to be a STRUCTURAL PROPERTY of the function's
+# own text. That is the pattern this repo already owns —
+# tests/locale-range-guard-selftest.sh, which bin/next-dl cites three lines above the very `case`
+# scanned here — so this extends it rather than siblings a second idiom.
+#
+# THE PROPERTY. `exit 1` is the caller's BENIGN FALLBACK: it is the code that reaches the offline
+# max+1 scan and MINTS. So inside dl_sequence_call every `exit 1` must be one of:
+#   * PRE-REQUEST — above the curl command substitution. Nothing was issued, so nothing can have
+#     been spent, and that is a property of POSITION rather than of anyone's say-so.
+#   * `non-consuming`-GUARDED — inside the `[[ "$consumption" == "non-consuming" ]]` block. A GET
+#     allocates nothing, and this is --peek's whole offline path (card#7214).
+#   * DECLARED — pinned `NOTHING WAS SPENT` on its own line or the two above it. Today that is the
+#     404 arm alone: the server ANSWERED, and what it answered is that the route is absent here.
+# Anything else is an arm taking the fallback with a spend possible, which IS the defect. The
+# fail-closed exits (spent_refusal then `exit 3`) are not in this population at all — they are the
+# ruling being obeyed, and a new arm that takes them needs no pin.
+#
+# THE POPULATION IS RE-DERIVED ON EVERY RUN, and by hand in one line if you want to read it
+# rather than trust this paragraph:
+#     ndl_fn_body bin/next-dl | grep -nE '(^|[^A-Za-z0-9_])exit[ \t]+1([^0-9]|$)'
+# — every benign exit in the function, plus the comment lines that merely mention one (the
+# scanner drops those; a bare grep cannot). What the scanner REPORTS is that list minus its
+# comment, pre-request, guarded and declared members. A denominator a reader cannot re-run is one
+# nobody can check, which is why it is a command here and not a number.
+#
+# THE PIN IS A DECLARATION, NOT A PASSWORD, and that is the whole design: a maintainer cannot
+# reach green by accident, only by writing down WHY the server's answer proves nothing was
+# allocated. That is the decision the guarantee exists to force, and it is the same shape as
+# locale-range-guard's `LC_ALL=C` window pin — a structural exemption rather than an allow-list,
+# which an earlier draft of that file proved is the difference between a guard and a rubber stamp.
+#
+# ⚠ WHAT THIS LEG DOES NOT REACH, named rather than implied. The CALLER's
+# `if [[ $crc -eq 0 ]] && kb_is_uint "$claimed"` has a false arm that falls through to
+# degrade_or_refuse — claim succeeded, answer unreadable ⇒ mint from the scan — and it is OUTSIDE
+# this scanner's population BY CONSTRUCTION, because the population is dl_sequence_call's body and
+# that test is at the call site, where spent_refusal is not in scope. It is POSITIVELY UNREACHABLE
+# today: dl_sequence_call exits 0 only after `kb_is_uint "$val" && [[ "$val" -ge 1 ]]`, so
+# `$claimed` is always a uint when crc is 0. No leg drives it and none is claimed to.
+#
+# THE EXEMPTIONS ERR CLOSED, deliberately. The pin window is two lines; a nested `if` inside the
+# consumption guard closes the depth early and turns a guarded exit into a REPORTED one; and
+# nothing strips trailing comments, so a trailing comment merely MENTIONING `exit 1` is a hit;
+# and the guard opener requires the `if` spelling, so `[[ "$consumption" == "non-consuming" ]] &&
+# exit 1` on one line is REPORTED rather than recognised. Each of those is a false POSITIVE —
+# loud, visible at the next run, and the direction a guard must err in. A false negative would be
+# this leg silently dead, which is the state it replaces.
+# ⛔ THE GUARD BLOCK IS TRACKED BY INDENTATION, NOT BY COUNTING `if`/`fi`. The counting version
+# was written first and is WRONG in the fail-OPEN direction, which its own fixture caught: a
+# one-line `if …; then …; fi` inside the guard increments and never decrements, so the depth
+# sticks above zero and every later line in the function reads as guarded — the scanner would go
+# quiet for the whole rest of the body, which is the exact failure it exists to prevent. The
+# block therefore closes two ways, both anchored on the opening `if`'s own indent: a `fi` at that
+# indent, or ANY code line indented LESS than it (a dedent ends the block whatever the `fi` looks
+# like). The second arm is the belt for a reindent that the first would miss.
+ndl_unpinned_benign_exits() {   # <file> — the offending `exit 1` lines, one per line
+    LC_ALL=C awk '
+        function indent(t) { match(t, /^[ \t]*/); return RLENGTH }
+        /^dl_sequence_call\(\) \($/ { infn = 1; next }
+        infn && /^\)$/              { infn = 0; next }
+        !infn                        { next }
+        {
+            raw = $0
+            line = raw; sub(/^[ \t]+/, "", line)
+            if (line ~ /^#/ || line == "") { p2 = p1; p1 = raw; next }   # comments describe, they do not exit
+            if (raw ~ /\$\(curl/) postreq = 1       # THE request: everything below it is spend-capable
+            if (!inguard && raw ~ /if[ \t]*\[\[.*consumption.*"non-consuming"/) {
+                inguard = 1; gind = indent(raw); p2 = p1; p1 = raw; next
+            }
+            if (inguard) {
+                if (line ~ /^fi([ \t;]|$)/ && indent(raw) == gind) { inguard = 0; p2 = p1; p1 = raw; next }
+                if (indent(raw) < gind) inguard = 0          # a dedent ends the block regardless
+                else { p2 = p1; p1 = raw; next }
+            }
+            if (postreq && raw ~ /(^|[^A-Za-z0-9_])exit[ \t]+1([^0-9]|$)/ &&
+                (raw p1 p2) !~ /NOTHING WAS SPENT/)
+                printf "%s:%d:%s\n", FILENAME, FNR, raw
+            p2 = p1; p1 = raw
+        }
+    ' "$1" 2>/dev/null || true
+    return 0
+}
+n_lines() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+# Vacuity first, because every assertion below would pass over an empty scan. Both landmarks are
+# unique to this function, so a rename or a reshaped body reds HERE rather than going quiet.
+eq "the scanner lifted dl_sequence_call's body" "true" \
+   "$(has 'spent_refusal() {' "$(ndl_fn_body "$NDL")")"
+eq "the lifted body carries exactly ONE request (the post-request boundary is real)" "1" \
+   "$(ndl_fn_body "$NDL" | grep -c '\$(curl')"
+eq "the lift stopped at the function and did not swallow the caller" "false" \
+   "$(has 'degrade_or_refuse "atomic claim endpoint"' "$(ndl_fn_body "$NDL")")"
+
+_hits="$(ndl_unpinned_benign_exits "$NDL")"
+eq "the SHIPPED bin/next-dl has no unguarded, undeclared benign exit past the request" "0" "$(n_lines "$_hits")"
+[[ -n "$_hits" ]] && printf '  offending lines:\n%s\n' "$_hits" >&2
+
+echo "== …and the scanner is SEEN TO FAIL on the arm that falsified the sentence =="
+# ⭐ THE ACCEPTANCE TEST FOR THIS LEG, and it is the round-2 review's reproduction re-planted
+# verbatim: the arm an ordinary maintainer adds. Against the shipped binary that arm passed every
+# other check in this file and minted DL-0301 at rc 0 on a 503. Here it is a hit.
+ndl_planted '/^        \*)$/i\        502|503|504)\n            unusable "is temporarily unavailable (HTTP $http) — a gateway error, not a deployment state"\n            exit 1 ;;'
+_hits="$(ndl_unpinned_benign_exits "$NDL_PLANT")"
+eq "a 502/503/504 benign-fallback arm is FLAGGED" "1" "$(n_lines "$_hits")"
+case "$_hits" in *"exit 1 ;;"*) ok "…and the flagged line is the arm's own exit" ;;
+                 *) bad "…but the flagged line is not the arm's exit: $_hits" ;; esac
+# ⭐ THE OTHER DIRECTION ON THE SHIPPED TREE: the 404 arm's pin is LOAD-BEARING, not decoration.
+# Without this, the pin arm of the exemption could be dead code and nobody would know.
+ndl_planted 's/NOTHING WAS SPENT: the server ANSWERED/the server answered/'
+eq "deleting the 404 arm's declaration FLAGS that arm" "1" \
+   "$(n_lines "$(ndl_unpinned_benign_exits "$NDL_PLANT")")"
+
+echo "== positive controls: what the scanner must and must NOT flag =="
+# Synthetic fixtures, mirroring locale-range-guard-selftest.sh's `pos/` set: the mutations above
+# prove the scanner works on the REAL file, and these prove each of its rules discriminates —
+# without which a matcher that flagged every post-request line would satisfy both mutations.
+_pos="$TMP/ndl-struct"; rm -rf "$_pos"; mkdir -p "$_pos"
+_fixture() {   # _fixture <name> <line>...
+    local f="$_pos/$1"; shift
+    { printf 'dl_sequence_call() (\n'; printf '%s\n' "$@"; printf ')\n'; } > "$f"
+}
+_fixture pre-request-exit \
+    '    cfg="$(resolve_board_cfg)" || {' '        exit 1' '    }' \
+    '    resp="$(curl -sS "$url")" || { exit 3; }'
+_fixture unguarded-arm \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '    case "$http" in' '        503)' '            exit 1 ;;' '    esac'
+_fixture guarded-arm \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        if [[ "$consumption" == "non-consuming" ]]; then' '            exit 1' '        fi'
+_fixture pinned-arm \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        404)   # NOTHING WAS SPENT: the server answered that the route is absent' \
+    '            unusable "is NOT DEPLOYED"' '            exit 1 ;;'
+_fixture pinned-same-line \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '            exit 1 ;;   # NOTHING WAS SPENT: the server answered 404'
+_fixture pin-out-of-window \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        # NOTHING WAS SPENT: three lines up is NOT within the window' \
+    '        404)' '            unusable "is NOT DEPLOYED"' '            exit 1 ;;'
+_fixture refusing-arm \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        503)' '            spent_refusal "may ALREADY have allocated"' '            exit 3 ;;'
+_fixture comment-only-mention \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        # a 404 takes exit 1 here, which is described and not done'
+_fixture exit-ten \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '            exit 10 ;;'
+# An exit past the request but past the FUNCTION too: the caller is a different population, and a
+# scanner that never reset `infn` would flag the whole rest of the file.
+{ printf 'dl_sequence_call() (\n    resp="$(curl -sS "$url")" || { exit 3; }\n)\n'
+  printf 'if [[ $crc -eq 3 ]]; then exit 1; fi\n'; } > "$_pos/outside-the-function"
+# A one-line `if …; fi` nested inside the consumption guard — the shape that broke the counting
+# tracker. Still NOT flagged, because the exit really is guarded; what this pins is that the
+# scanner does not lose the block on it.
+_fixture nested-if-in-guard \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        if [[ "$consumption" == "non-consuming" ]]; then' \
+    '            if [[ -n "$x" ]]; then :; fi' '            exit 1' '        fi'
+# ⭐ THE GUARD MUST CLOSE. Without this the block could swallow the whole rest of the function and
+# every arm after it would read as guarded — which is how the counting tracker failed.
+_fixture exit-after-the-guard-closes \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        if [[ "$consumption" == "non-consuming" ]]; then' '            exit 1' '        fi' \
+    '        exit 1 ;;'
+# …and it closes on a DEDENT too, where the `fi` has been reindented out of alignment.
+_fixture dedent-closes-the-guard \
+    '    resp="$(curl -sS "$url")" || { exit 3; }' \
+    '        if [[ "$consumption" == "non-consuming" ]]; then' '                exit 1' '          fi' \
+    '    exit 1'
+
+_flagged() { [[ -n "$(ndl_unpinned_benign_exits "$_pos/$1")" ]] && echo true || echo false; }
+for _f in unguarded-arm pin-out-of-window exit-after-the-guard-closes dedent-closes-the-guard; do
+    eq "FLAGS $_f" "true" "$(_flagged "$_f")"
+done
+for _f in pre-request-exit guarded-arm pinned-arm pinned-same-line refusing-arm \
+          comment-only-mention exit-ten outside-the-function nested-if-in-guard; do
+    eq "does NOT flag $_f" "false" "$(_flagged "$_f")"
+done
+unset _f
+rm -rf "$_pos" "$NDL_PLANT"
+unset -f _fixture _flagged ndl_planted
+
+echo "== COVERAGE: every cause dl_sequence_call can PRINT is driven by a leg above (the rc-1 rule) =="
+# ⭐ THE :298 GUARANTEE'S CONTROL — "Any new way to reach exit 1 from here owes a distinct
+# `unusable` cause". The population is DERIVED from the bin (see the derivation near the cause
+# matrix above), so a FIFTH cause added to dl_sequence_call lands here with nothing driving it and
+# reds, where under the old hand-written array it reddened nothing at all.
+# ⛔ A NEW CAUSE OWES MORE THAN A LEG HERE: it is described per cause, not as a count, in
+# bin/next-dl's header, in README.md and in docs/CHANGELOG.md. Those are prose and this cannot
+# check them; it can tell you to go and write them, which is what this line is for.
+for _i in "${!NDL_CAUSES[@]}"; do
+    eq "derived cause [$_i] <${NDL_CAUSES[$_i]}> is asserted PRESENT by at least one leg" \
+       "1" "${NDL_CAUSE_SEEN[$_i]:-0}"
+done
+unset _i
 
 _summary "next-dl-selftest"
