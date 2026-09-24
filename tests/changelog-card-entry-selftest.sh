@@ -67,6 +67,17 @@
 # run as "the CHANGELOG is correct"; it means "no shipped card is undocumented, and no PR left a
 # stale copy of its own entry beside its replacement under one heading".
 #
+# AND ON A SQUASH-MERGED pull_request RUN, PROPERTY TWO IS JUDGED ON WHAT THE MERGE WILL RECORD, NOT
+# ON THE BRANCH'S COMMITS (card#10338). A squash erases a branch's internal removals, so the diff
+# this gate was handed before a merge and the diff that landed after one were different objects: a
+# branch that filed two bullets and reworded one netted 1 here and 2 on `dev`, and the gate was
+# systematically WEAKER before the merge than after it — it admitted #388 and then reddened the
+# branch nobody can rebase. `_squash_ends` + `_added_bullets`' delta path own the repair, the two
+# derived conditions under which it applies AT ALL — this repo merge-commits its release and
+# back-merge PRs, where that basis would fold a whole release into one group — and the residual it
+# leaves (a local run, having no merge ref, still answers per commit). The live leg PRINTS which
+# basis answered; do not infer it.
+#
 # WHY THE SECOND PROPERTY EXISTS (card#7227). A `merge=union` attribute on docs/CHANGELOG.md
 # resolves the anchor collision every sibling PR creates by keeping both sides' lines, and on a
 # REBASE that same rule re-adds a line the branch had already superseded, at rc 0 and in
@@ -338,9 +349,39 @@ _bullets_at() {
     rm -f "$at"
 }
 
-# _added_bullets <repo> <path> <range> <version> — one TAB-separated `<pr>\t<+|->\t<bullet line>`
-# record per line-initial card bullet a commit in <range> added to <path>, or removed from the
-# unreleased REGION of <path>. Both signs are emitted; `_stale_dupes` owns what they mean.
+# _added_bullets <repo> <path> <range> <version> [<squash-base> <squash-head>] — one TAB-separated
+# `<pr>\t<+|->\t<bullet line>` record per line-initial card bullet a PR in <range> added to <path>,
+# or removed from the unreleased REGION of <path>. Both signs are emitted; `_stale_dupes` owns what
+# they mean.
+#
+# ⛔ THE UNIT IS A PR'S TREE DELTA, NOT A COMMIT SERIES (card#10338), and until that card those
+# were the same thing only for PRs that had ALREADY been squashed. The records for a merged PR come
+# from its squashed commit's diff — ONE tree delta — while the records for the PR being CHECKED came
+# from `git log -p` over the branch's own commits, i.e. N deltas unioned. Those are different
+# objects, because a SQUASH ERASES A BRANCH'S INTERNAL REMOVALS: a branch that files two bullets and
+# then rewords one records `+A +B −A +A'` as a series and `+A' +B` as a squash. The net rule in
+# `_stale_dupes` reads the first as 1 and the second as 2, so the gate was systematically WEAKER
+# before a merge than after it — measured on #388 (PR runs 35936139848 / 35932847183 SUCCESS, push
+# run 35936951086 on dev@1b301f36 FAILURE). A gate that admits the branch it would block and then
+# reds the branch nobody can rebase is worse than no gate on that shape.
+#
+# SO THE SQUASH ENDS ARE PASSED IN AND THE DELTA IS DIFFED DIRECTLY. `<squash-base>` is the base
+# branch tip and `<squash-head>` the revision whose TREE will land on it — on a pull_request run
+# that pair is `_squash_ends`' output, i.e. the base tip and the MERGE COMMIT `actions/checkout`
+# leaves in the tree, so `git diff <base> <merged>` is byte-for-byte the diff the squashed commit
+# will record. The commits that delta re-derives (`<base>..<merged>` — the branch's own, plus any
+# catch-up merge) are then DROPPED from the per-commit walk, or the same work would be counted
+# twice into one group. Everything else in <range> — the base branch's own squashed commits since
+# the tag — keeps coming from `git log -p`, where one commit already IS one PR's tree delta.
+#
+# ⛔ RESIDUAL, named rather than left implied: with NO ends supplied the function answers exactly
+# as it did before this card, per commit. That is what a LOCAL `bash tests/…` run and a `push` run
+# on a branch carrying unsquashed commits get, and on those the pre-card weakness stands. It is not
+# the shape that matters: the two runs that gate a merge — the pull_request run and the push run on
+# `dev` — now judge the SAME two revisions (base tip → resulting tree) against the SAME file, so
+# their verdicts agree by construction. The parity claim is also specific to SQUASH merging, which
+# is this repo's method; under rebase-merge the branch's commits land individually and the
+# asymmetry would return with the signs swapped.
 #
 # THE TWO SIGNS ARE SCOPED IN DIFFERENT PLACES, AND THAT IS THE POINT (card#7303). `_stale_dupes`
 # states its scope as the region and both halves of its arithmetic have to honour it — but the
@@ -349,7 +390,8 @@ _bullets_at() {
 # the presence test `_stale_dupes` already runs, so its net half is gated on that same test and
 # nothing is owed here. A REMOVAL cannot be judged that way at all — the line is GONE from the
 # file, so the only witness to where it stood is the revision it was removed FROM. Hence the
-# `<version>` argument and the parent-revision read below.
+# `<version>` argument and the witness-revision read below: `<sha>^` for a commit's own diff, and
+# `<squash-base>` for the delta, which is the SAME revision the squashed commit's `^` will be.
 #
 # ⛔ THE PATH-SCOPED VERSION ERRED GREEN, measured by construction rather than reasoned about:
 # ONE commit adding two `card#4000` bullets to `[Unreleased]` while deleting two `card#4000`
@@ -381,17 +423,45 @@ _bullets_at() {
 # obvious spelling, and the one to reach for first — reds this repo as it stands, on two entries
 # that are correct.
 #
-# MERGE COMMITS CONTRIBUTE NOTHING, by `git log -p`'s default of not diffing them, and that is
-# load-bearing rather than incidental: a branch that catches up with `git merge origin/dev` takes
-# every sibling entry that landed meanwhile (by hand — this repo has no `.gitattributes`, so that
-# merge conflicts on this file), and attributing all of them to the branch's own group would red
-# a branch for entries it did not write.
+# A BRANCH'S CATCH-UP MERGE NEVER CONTRIBUTES ITS SIBLINGS, on either path, and the two reasons are
+# different. In the per-commit walk it is `git log -p`'s default of not diffing merge commits; in
+# the delta it is that those siblings already stand AT THE SQUASH BASE, so they are on both sides of
+# the diff and cannot appear as additions. Either way, a branch that catches up with
+# `git merge origin/dev` (by hand — this repo has no `.gitattributes`, so that merge conflicts on
+# this file) is not reddened for entries it did not write.
+#
+# THE MARKERS ARE THE STREAM'S OWN GRAMMAR, three of them, and they arrive in the order the awk
+# needs: `@@COVERED@@` first (the shas the delta re-derives), then `@@DELTA@@` (its witness
+# revision) with the delta's diff behind it, then the per-commit walk. A `@@COMMIT@@` whose sha the
+# first group named emits nothing.
+#
+# THE DELTA'S GROUP KEY IS THE PR'S OWN NUMBER WHERE THE CALLER KNOWS IT (`<delta-pr>`, 7th
+# argument; the live leg reads `$PR_NUMBER`, set from `github.event.number` by the workflow). That
+# is the same key the SQUASHED commit will carry on `dev`, so the two runs group identically as well
+# as diffing identically — the last place the two bases could still disagree. Defaulting to
+# `(unsquashed)` is a real weakening and not a neutral fallback: that key conflates every commit in
+# the range whose subject carries no `(#N)`, so a DIRECT PUSH to `dev` filing a bullet for card X
+# shares a group with the PR under review, and a PR filing its own bullet for X under the same
+# heading reds here while the post-merge `dev` run — where its records move to `(#N)` — is green.
+# That is a pre-existing false red (card#10338 R1), not one the delta introduced; supplying the
+# number closes it for every run that has one.
 _added_bullets() {
-    local repo="$1" path="$2" range="$3" version="$4"
-    local sha pr sign line memo_rev="" memo_bullets=""
-    git -C "$repo" log -p --no-color --format='@@COMMIT@@ %H %s' "$range" -- "$path" | awk '
+    local repo="$1" path="$2" range="$3" version="$4" sbase="${5:-}" shead="${6:-}"
+    local dpr="${7:-(unsquashed)}"
+    local witness pr sign line memo_rev="" memo_bullets=""
+    {
+        if [[ -n "$sbase" && -n "$shead" ]]; then
+            git -C "$repo" log --no-color --format='@@COVERED@@ %H' "$sbase..$shead"
+            printf '@@DELTA@@ %s\n' "$sbase"
+            git -C "$repo" diff --no-color "$sbase" "$shead" -- "$path"
+        fi
+        git -C "$repo" log -p --no-color --format='@@COMMIT@@ %H %s' "$range" -- "$path"
+    } | awk -v deltapr="$dpr" '
+        /^@@COVERED@@ / { covered[$2] = 1; next }
+        /^@@DELTA@@ /   { witness = $2; skip = 0; pr = deltapr; next }
         /^@@COMMIT@@ / {
-            sha = $2
+            witness = $2 "^"
+            skip = ($2 in covered)
             pr = "(unsquashed)"; s = $0
             while (match(s, /\(#[0-9]+\)/)) {
                 pr = substr(s, RSTART + 2, RLENGTH - 3)
@@ -399,15 +469,16 @@ _added_bullets() {
             }
             next
         }
-        /^\+- \*\*card#[0-9]+\*\*/ { print sha "\t" pr "\t+\t" substr($0, 2); next }
-        /^-- \*\*card#[0-9]+\*\*/  { print sha "\t" pr "\t-\t" substr($0, 2); next }
-    ' | while IFS=$'\t' read -r sha pr sign line; do
+        skip { next }
+        /^\+- \*\*card#[0-9]+\*\*/ { print witness "\t" pr "\t+\t" substr($0, 2); next }
+        /^-- \*\*card#[0-9]+\*\*/  { print witness "\t" pr "\t-\t" substr($0, 2); next }
+    ' | while IFS=$'\t' read -r witness pr sign line; do
         if [[ "$sign" == "-" ]]; then
-            # One read per commit, not per record: `git log -p` emits a commit's records
-            # together, so a single memo slot is all the caching this needs.
-            if [[ "$memo_rev" != "$sha" ]]; then
-                memo_rev="$sha"
-                memo_bullets="$(_bullets_at "$repo" "$sha^" "$path" "$version")"
+            # One read per witness revision, not per record: both producers emit a revision's
+            # records together, so a single memo slot is all the caching this needs.
+            if [[ "$memo_rev" != "$witness" ]]; then
+                memo_rev="$witness"
+                memo_bullets="$(_bullets_at "$repo" "$witness" "$path" "$version")"
             fi
             [[ "$(has_line "$line" "$memo_bullets")" == true ]] || continue
         fi
@@ -476,10 +547,11 @@ _added_bullets() {
 #   a false red on merged, correct history, seen before this rule was written and fixtured below.
 #
 #   TWO STILL PRESENT UNDER ONE HEADING — the file's state: both copies are in the region right
-#   now, claiming the same KIND of change. A branch that
-#   corrects its own entry adds two wordings across two commits, which nets to two only when
-#   `union` re-adds the superseded one during a rebase; if the branch simply reworded, the first
-#   wording is gone and there is nothing for a reader to trip over.
+#   now, claiming the same KIND of change. A branch that corrects its own entry adds two wordings
+#   across two commits, and whether that reaches net two depends on the BASIS: on a squash delta it
+#   does not, because the delta never records the superseded wording at all; on the commit series it
+#   does only when `union` re-adds the superseded one during a rebase. Either way, if the branch
+#   simply reworded, the first wording is gone and there is nothing for a reader to trip over.
 #
 # Requiring both means a red always corresponds to two lines a reader can see, which is what
 # makes the failure actionable — and neither leg alone is sound: net-only reds a PR that
@@ -764,6 +836,88 @@ _pr_merge_refs() {
     [[ -n "${GITHUB_BASE_REF:-}" ]] || return 0
     [[ "$(git -C "$1" rev-list --parents -n 1 HEAD 2>/dev/null | wc -w)" -eq 3 ]] || return 0
     printf '%s %s\n' "$(git -C "$1" rev-parse HEAD^1)" "$(git -C "$1" rev-parse HEAD^2)"
+}
+
+# _squash_ends <repo> <floor> — `<base> <merged>`: the two revisions whose TREE DELTA this pull
+# request's SQUASHED commit will record on the base branch, and NOTHING off a checkout for which
+# that sentence is not true (card#10338). `_added_bullets` diffs them. <floor> is the release tag
+# the live range starts at.
+#
+# ⛔ `_pr_merge_refs`' TWO CONDITIONS ARE NOT ENOUGH, and the gap was a BLOCKER on a shape this repo
+# ships every release. That function asks "is HEAD a pull_request merge ref", which is deliberately
+# BASE-AGNOSTIC — its own consumer, the fold diagnosis, wants every PR class. This one needs
+# something strictly narrower, because `changelog-card-entry.yml` puts no `branches:` filter on
+# `pull_request` and VERSIONING.md § Anti-patterns says outright: *"Don't squash a release PR or a
+# back-merge sync PR … Both use a merge commit; only `dev`-targeted PRs are squashed."* On a release
+# PR (`release/v<version>` → `main`) `HEAD^1` is main's tip, a whole release behind `dev`, so the
+# delta spans EVERY PR in the release and re-emits all of their bullets under ONE group — which
+# destroys the PR-number grouping that exists to separate two PRs each documenting one card.
+# MEASURED by replaying all 44 release merges in this repo's history through both bases: two of them
+# — #295/v0.29.0 (card#6645 AND card#7038, the two this file's own `_added_bullets` docblock names
+# verbatim as legitimate) and #308/v0.30.0 (card#7536) — go from green to RED on correct,
+# already-merged, already-gated history. `changelog-card-entry` is a required context beside
+# `ci-gate` (`tests/ci-gate-selftest.sh`), so that red would have blocked the release with no fix
+# available inside the PR short of deleting a correct bullet from a released section.
+#
+# SO THE PRECONDITION IS DERIVED, IN THIS GATE'S OWN TERMS, NOT DECLARED AS A BRANCH NAME. What the
+# delta stands in for is exactly what its group key claims: the UNRELEASED, UNSQUASHED commits. Two
+# legs, and the case analysis is why there are two rather than one — neither catches the other's
+# class, measured on real history:
+#
+#   UNRELEASED — every covered commit must be above <floor>. Rejects the BACK-MERGE sync PR, whose
+#   base IS `dev` (so no base-name test would reject it) and which is merge-committed too: its
+#   covered commits came from `main` and are ancestors of the tag the merge ref already reaches.
+#   Measured on the four most recent syncs: covered 5/4/3/3, above-the-tag 2/2/1/1 — every one
+#   refused. It does NOT reject a release PR (48 of 48 and 12 of 12 covered commits sit above the
+#   previous tag).
+#   UNSQUASHED — no covered commit may already carry a `(#N)` of its own, because a commit that has
+#   one IS a PR and cannot be folded into another PR's group. Rejects the RELEASE PR: 39 of 48 and 8
+#   of 12 covered commits carry one. It does not reject the back-merge (0 of N do).
+#
+# ⛔ REFUSING IS SAFE AND SILENCE IS NOT: a refusal falls back to the per-commit basis — which, on
+# exactly these two classes, is the CORRECT basis anyway, because a merge-commit merge lands each
+# commit individually and that is what any later run would read. The live leg PRINTS which basis
+# answered, so a refusal is legible rather than a quiet weakening.
+#
+# ⛔ RESIDUAL the UNSQUASHED leg buys, named rather than discovered: a feature branch whose own
+# commit subject happens to carry a `(#N)` — *"follow-up to (#390)"* — refuses the delta and drops
+# to the per-commit basis. That is a false DECLINE, never a false red, and it is printed.
+#
+# ⛔ RESIDUAL the UNRELEASED leg rests on, stated because it is a PREMISE rather than a check: the
+# leg recognises a back-merge only because `<floor>` is the tag that merge brings back, which holds
+# because the release is tagged before the sync PR is opened (VERSIONING.md steps 9–10). Where that
+# tag is MISSING — auto-tag's push refused, the card#6579 shape — `<floor>` is the previous release,
+# every covered commit sits above it, and the delta is admitted on a back-merge. Benign rather than
+# guarded: a fold is textually an insertion of headings and adds no bullet, so the delta has no
+# record to group. Named, not fixtured; the fixture below pins the floor instead of deriving it.
+#
+# ⛔ THE SECOND END IS THE MERGE COMMIT, NOT THE BRANCH TIP, and the difference is the whole
+# function. `git diff <base-tip> <branch-tip>` is a two-dot diff between two divergent trees: every
+# line the BASE gained while the branch was open reads as a REMOVAL by the branch. The merge commit
+# is the tree that will actually land, so `git diff <base-tip> <merged>` is the squashed commit's
+# own diff and needs no three-dot spelling to be right. It is also the pair whose witness revision
+# — `<base-tip>` — is exactly the `<squashed-sha>^` the later push run on `dev` will read, which is
+# what makes the two runs' records the same objects rather than merely similar ones.
+#
+# It reuses `_pr_merge_refs` for the base and for the REFUSAL, rather than re-deciding either: that
+# function is what establishes HEAD is a two-parent pull_request merge ref at all, so `HEAD` here is
+# the commit it already validated and `HEAD^1` is a documented parent rather than a guess.
+_squash_ends() {
+    local repo="$1" floor="$2" refs base head covered unreleased subjects
+    [[ -n "$floor" ]] || return 0
+    refs="$(_pr_merge_refs "$repo")"
+    [[ -n "$refs" ]] || return 0
+    base="${refs%% *}"
+    head="$(git -C "$repo" rev-parse HEAD)"
+    covered="$(git -C "$repo" rev-list --count "$base..$head")"
+    unreleased="$(git -C "$repo" rev-list --count "$base..$head" --not "$floor")"
+    [[ "$covered" -eq "$unreleased" ]] || return 0
+    # A HERESTRING, not a pipeline: the producer is the shell writing an already-complete string,
+    # so the early-exit window `_selftest-prelude.sh`'s `has_line` header documents does not exist
+    # — and the needle is a REGEX, which is the case that helper cannot answer.
+    subjects="$(git -C "$repo" log --format='%s' "$base..$head")"
+    if grep -qE '\(#[0-9]+\)' <<< "$subjects"; then return 0; fi
+    printf '%s %s\n' "$base" "$head"
 }
 
 # ---------------------------------------------------------------------------
@@ -1695,6 +1849,329 @@ eq "the version heading a branch adds is a BOUNDARY, never a line filed under it
    "$(_added_section_label "$PFU/merged.md" "$PFU/added-heading-only" "$PFU/baseline-prefold.md")"
 
 # ---------------------------------------------------------------------------
+# SQUASH PARITY (card#10338). Everything above judges a branch by its COMMIT SERIES, which is not
+# the object a squash-merge lands. The fixtures below drive the same branch through BOTH bases and
+# through a REAL `git merge --squash`, so the disagreement is measured rather than described: the
+# pre-card basis is still reachable (call `_added_bullets` with no ends — the local-run path), which
+# makes it the control, and the squashed commit is git's own answer to what the PR records.
+#
+# THE FIXTURE CARRIES A SIBLING ENTRY ON `dev` AND IT IS LOAD-BEARING TWICE. It proves the delta
+# does not attribute a base-side bullet to the branch (it stands on both sides of the diff), and it
+# proves the per-commit walk still covers the base side after the branch's own commits are dropped
+# from it — a skip that took the sibling with it would narrow the gate silently.
+# ---------------------------------------------------------------------------
+
+# _sq_file <dir> <heading> <bullet> — file a bullet at the TOP of <heading>'s body. `_prepend` has
+# one anchor and these fixtures need two headings, which is the whole point of them.
+_sq_file() {
+    awk -v h="$2" -v b="$3" 'index($0, h) == 1 && !done { print; print b; done = 1; next } 1' \
+        "$1/CHANGELOG.md" > "$1/CHANGELOG.md.t"
+    mv "$1/CHANGELOG.md.t" "$1/CHANGELOG.md"
+}
+# _sq_newrepo <dir> — a repo on `dev` whose `[Unreleased]` carries two real `###` headings, each
+# with a standing entry. `_newrepo`'s file has no headings at all, which is the one thing a
+# same-heading-vs-split fixture cannot do without.
+_sq_newrepo() {
+    mkdir -p "$1"
+    g init -q "$1"
+    cat > "$1/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+- **card#9000** — an entry standing on dev when this branch forked.
+
+### Fixed
+- **card#9001** — a second standing entry.
+
+## [0.23.1] - 2026-07-27
+EOF
+    : > "$1/.gitattributes"
+    g -C "$1" add -A && g -C "$1" commit -qm 'docs(changelog): the file as it stands (#264)'
+    # The base commit IS the last release, and `_squash_ends`' UNRELEASED leg needs that floor to
+    # be a real revision rather than a name these fixtures agree to pretend about.
+    g -C "$1" tag -a v0.23.1 -m 'v0.23.1' -q 2>/dev/null || g -C "$1" tag v0.23.1
+}
+# _sq_records <dir> <range> [<base> <merged> [<delta-pr>]] — `_added_bullets`, C-sorted. Two callers
+# per fixture and the sort is the same every time; spelling it twice per assertion is what drifts.
+_sq_records() {
+    local d="$1" range="$2"
+    _added_bullets "$d" CHANGELOG.md "$range" "0.23.1" "${3:-}" "${4:-}" "${5:-(unsquashed)}" |
+        LC_ALL=C sort
+}
+# _sq_verdict <dir> <records> — `_stale_dupes` over captured records and the dir's CURRENT file.
+_sq_verdict() {
+    _stale_dupes <(printf '%s\n' "$2") "$1/CHANGELOG.md" "0.23.1"
+}
+
+echo "== prove-it-can-fail: the branch series and the SQUASHED delta DISAGREE on one branch =="
+SQ="$TMP/squash-parity"
+_sq_newrepo "$SQ"
+SQ_DEV0="$(g -C "$SQ" rev-parse dev)"
+g -C "$SQ" checkout -q -b feat
+_sq_file "$SQ" '### Added' '- **card#4000** — FIRST WORDING.'
+_sq_file "$SQ" '### Added' '- **card#4000** — a second claim of the SAME kind.'
+g -C "$SQ" commit -qam 'feat(x): the change, documented twice (card#4000)'
+# The reword — routine, and the whole mechanism: a remove plus an add that no squash will record.
+sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$SQ/CHANGELOG.md"
+g -C "$SQ" commit -qam 'docs(changelog): reword the first bullet (card#4000)'
+g -C "$SQ" checkout -q dev
+_sq_file "$SQ" '### Fixed' '- **card#9002** — a sibling PR, filed on dev while this branch was open.'
+g -C "$SQ" commit -qam 'fix(y): a sibling (card#9002) (#265)'
+eq "the PR merge is clean — git combined the two, no human resolved anything" "0" \
+   "$(_pf_prmerge "$SQ" feat)"
+SQ_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQ" v0.23.1)"
+eq "the ends are the BASE TIP and the MERGE COMMIT — not the branch tip" \
+   "$(g -C "$SQ" rev-parse dev) $(g -C "$SQ" rev-parse HEAD)" "$SQ_ENDS"
+eq "… and the branch tip is a THIRD revision (witness: the distinction is not vacuous)" "false" \
+   "$(has "$(g -C "$SQ" rev-parse feat)" "$SQ_ENDS")"
+
+# THE BEFORE — the basis this gate used until this card, still reachable and still what a local run
+# gets. Its `-` record is the branch's own removal, which the squash will not record.
+SQ_BEFORE="$(_sq_records "$SQ" "$SQ_DEV0..HEAD")"
+eq "the SERIES carries the branch's internal removal, and the sibling from dev" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — FIRST WORDING.
+(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
+(unsquashed)	-	- **card#4000** — FIRST WORDING.
+265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQ_BEFORE"
+eq "so on the SERIES this PR is GREEN — the defect, reproduced" "" "$(_sq_verdict "$SQ" "$SQ_BEFORE")"
+
+# THE AFTER — the same branch, the same file, the same function; only the basis moves.
+SQ_AFTER="$(_sq_records "$SQ" "$SQ_DEV0..HEAD" "${SQ_ENDS%% *}" "${SQ_ENDS##* }")"
+eq "the DELTA carries no removal at all, and still carries the base side's own PR" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
+265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQ_AFTER"
+eq "so on the DELTA the same PR is RED" "card#4000" "$(_sq_verdict "$SQ" "$SQ_AFTER")"
+
+# THE ORACLE, produced by git rather than argued: squash `feat` onto `dev` for real and ask the
+# push-run basis. This is the verdict that reddened `dev` at 1b301f36.
+SQ_PR_BLOB="$(g -C "$SQ" rev-parse HEAD:CHANGELOG.md)"
+g -C "$SQ" checkout -q dev
+g -C "$SQ" merge -q --squash feat >/dev/null 2>&1
+g -C "$SQ" commit -qm 'feat(x): the change, documented twice (card#4000) (#500)'
+eq "the squashed commit carries the very tree the PR run judged (witness: one object, two runs)" \
+   "$SQ_PR_BLOB" "$(g -C "$SQ" rev-parse HEAD:CHANGELOG.md)"
+SQ_PUSH="$(_sq_records "$SQ" "$SQ_DEV0..HEAD")"
+eq "the squashed diff records the two survivors and NO removal" \
+   "265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open.
+500	+	- **card#4000** — CORRECTED WORDING.
+500	+	- **card#4000** — a second claim of the SAME kind." "$SQ_PUSH"
+eq "and dev's push run REDS — which is where this was discovered, after the merge" "card#4000" \
+   "$(_sq_verdict "$SQ" "$SQ_PUSH")"
+
+echo "== CONTROL: the blessed CROSS-HEADING split stays green on the delta, reworded and all =="
+# The shape this repo's released sections have carried since #180 (#221/card#5910 Added+Fixed,
+# #212/card#5776 Added+Changed, #180/card#5200 across three) — re-derive with the recipe in
+# `_stale_dupes`. A fix that bought parity by refusing this would be a worse gate than the one it
+# replaces: an operator who learns the gate reds correct work learns to bypass it.
+SQS="$TMP/squash-parity-split"
+_sq_newrepo "$SQS"
+SQS_DEV0="$(g -C "$SQS" rev-parse dev)"
+g -C "$SQS" checkout -q -b feat
+_sq_file "$SQS" '### Added' '- **card#4000** — FIRST WORDING of the feature half.'
+_sq_file "$SQS" '### Fixed' '- **card#4000** — the other half, a claim of a different KIND.'
+g -C "$SQS" commit -qam 'feat(x): the change, split by kind (card#4000)'
+sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$SQS/CHANGELOG.md"
+g -C "$SQS" commit -qam 'docs(changelog): reword the Added half (card#4000)'
+eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQS" feat)"
+SQS_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQS" v0.23.1)"
+SQS_AFTER="$(_sq_records "$SQS" "$SQS_DEV0..HEAD" "${SQS_ENDS%% *}" "${SQS_ENDS##* }")"
+eq "the delta still reaches NET 2 for this card (witness: the heading is what saves it)" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING of the feature half.
+(unsquashed)	+	- **card#4000** — the other half, a claim of a different KIND." "$SQS_AFTER"
+eq "and the split is NOT reported" "" "$(_sq_verdict "$SQS" "$SQS_AFTER")"
+# THE DISCRIMINATOR, without which the green above is satisfied by a delta nobody read: the same
+# records against the same file with the two headings merged into one.
+sed 's/^### Fixed$/### Added/' "$SQS/CHANGELOG.md" > "$SQS/CHANGELOG-merged.md"
+eq "… while under ONE heading those identical records ARE reported" "card#4000" \
+   "$(_stale_dupes <(printf '%s\n' "$SQS_AFTER") "$SQS/CHANGELOG-merged.md" "0.23.1")"
+
+echo "== CONTROL: on the delta a removal of a STANDING entry still offsets (the #266 shape) =="
+# The other direction, and the one that stops "drop the removals" satisfying everything above: a PR
+# that REWORDS a bullet somebody else's PR left standing and files its own owns two surviving lines
+# under one heading and must stay green. The delta records that removal, because the line stood at
+# the squash base rather than inside the branch.
+SQR="$TMP/squash-parity-replace"
+_sq_newrepo "$SQR"
+_sq_file "$SQR" '### Added' '- **card#7038** — the first PR on this card.'
+g -C "$SQR" commit -qam 'fix(a): first (card#7038) (#265)'
+SQR_DEV0="$(g -C "$SQR" rev-parse dev)"
+g -C "$SQR" checkout -q -b feat
+sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
+    "$SQR/CHANGELOG.md"
+_sq_file "$SQR" '### Added' '- **card#7038** — the second PR on the same card.'
+g -C "$SQR" commit -qam 'test(a): second (card#7038)'
+eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQR" feat)"
+SQR_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQR" v0.23.1)"
+SQR_AFTER="$(_sq_records "$SQR" "$SQR_DEV0..HEAD" "${SQR_ENDS%% *}" "${SQR_ENDS##* }")"
+eq "the delta records the removal of the line that stood at the BASE" \
+   "(unsquashed)	+	- **card#7038** — the first PR on this card, now cross-referenced.
+(unsquashed)	+	- **card#7038** — the second PR on the same card.
+(unsquashed)	-	- **card#7038** — the first PR on this card." "$SQR_AFTER"
+eq "two surviving bullets under one heading, and NOT reported — the net is 1" "" \
+   "$(_sq_verdict "$SQR" "$SQR_AFTER")"
+
+echo "== the branch's CATCH-UP MERGE contributes no sibling to the delta, and both runs still agree =="
+# The universal `_added_bullets` states on BOTH paths, fixtured on the delta path where its reason is
+# different (the siblings stand at the squash BASE, so they are on both sides of the diff) — until
+# card#10338 R1 that half had no fixture anywhere in this file and two surfaces claimed one.
+SQC="$TMP/squash-parity-catchup"
+_sq_newrepo "$SQC"
+SQC_DEV0="$(g -C "$SQC" rev-parse dev)"
+g -C "$SQC" checkout -q -b feat
+_sq_file "$SQC" '### Added' '- **card#4000** — FIRST WORDING.'
+g -C "$SQC" commit -qam 'feat(x): the entry (card#4000)'
+g -C "$SQC" checkout -q dev
+_sq_file "$SQC" '### Fixed' '- **card#9002** — a sibling PR, filed on dev while this branch was open.'
+g -C "$SQC" commit -qam 'fix(y): a sibling (card#9002) (#265)'
+# The catch-up itself, and then the reword plus a second same-heading bullet ON TOP of it.
+g -C "$SQC" checkout -q feat && g -C "$SQC" merge -q --no-edit dev >/dev/null 2>&1
+sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$SQC/CHANGELOG.md"
+_sq_file "$SQC" '### Added' '- **card#4000** — a second claim of the SAME kind.'
+g -C "$SQC" commit -qam 'docs(changelog): reword and add (card#4000)'
+eq "the branch really carries a merge commit from dev (witness: this is the catch-up shape)" "1" \
+   "$(g -C "$SQC" rev-list --count --merges "$SQC_DEV0..feat")"
+eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQC" feat)"
+SQC_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQC" v0.23.1)"
+SQC_AFTER="$(_sq_records "$SQC" "$SQC_DEV0..HEAD" "${SQC_ENDS%% *}" "${SQC_ENDS##* }")"
+eq "the delta carries the branch's own two bullets and NOT the sibling it merged in" \
+   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
+(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
+265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQC_AFTER"
+eq "the PR verdict names the branch's own card, and only it" "card#4000" \
+   "$(_sq_verdict "$SQC" "$SQC_AFTER")"
+# And the ORACLE for this shape too, because "agree" is the claim and one side of it is a squash.
+g -C "$SQC" checkout -q dev && g -C "$SQC" merge -q --squash feat >/dev/null 2>&1
+g -C "$SQC" commit -qm 'feat(x): the entry (card#4000) (#500)'
+eq "and the push run after a real squash agrees" "card#4000" \
+   "$(_sq_verdict "$SQC" "$(_sq_records "$SQC" "$SQC_DEV0..HEAD")")"
+
+# ---------------------------------------------------------------------------
+# ⛔ THE DELTA BASIS IS REFUSED ON THE PR CLASSES THIS REPO DOES NOT SQUASH (card#10338 R1). The
+# repair above is right about WHAT to diff and was wrong about WHEN: `_pr_merge_refs`' two
+# conditions are base-agnostic by design, `changelog-card-entry.yml` puts no `branches:` filter on
+# `pull_request`, and VERSIONING.md § Anti-patterns merge-commits both the release PR and the
+# back-merge sync PR. Replaying all 44 release merges in this repo's history through a FORCED delta
+# reddens two of them on correct, already-merged history — #295/v0.29.0 on card#6645 and card#7038,
+# the two `_added_bullets`' own docblock names as legitimate, and #308/v0.30.0 on card#7536.
+#
+# TWO FIXTURES BECAUSE THERE ARE TWO LEGS AND NEITHER CATCHES THE OTHER'S CLASS — the case analysis
+# `_squash_ends` states, driven rather than asserted about. Each one carries the CROSS-WITNESS that
+# the other leg would have let it through, or a single leg would satisfy both fixtures.
+# ---------------------------------------------------------------------------
+echo "== prove-it-can-fail: a RELEASE PR's delta spans every PR in the release and reds correct history =="
+SQREL="$TMP/squash-parity-release"
+_sq_newrepo "$SQREL"
+g -C "$SQREL" branch main
+# The real card#7038 shape, on two squashed `dev` PRs: #265 files a bullet, #266 rewords it and
+# files its own. Per PR each nets 1 and both are correct; over ONE delta they net 2.
+_sq_file "$SQREL" '### Added' '- **card#7038** — the first PR on this card.'
+g -C "$SQREL" commit -qam 'fix(a): first (card#7038) (#265)'
+sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
+    "$SQREL/CHANGELOG.md"
+_sq_file "$SQREL" '### Added' '- **card#7038** — the second PR on the same card.'
+g -C "$SQREL" commit -qam 'test(a): second (card#7038) (#266)'
+# The release PR: a disposable `release/v<version>` head off `dev`, merged to MAIN with a merge
+# commit — VERSIONING.md rule 7 and § Anti-patterns, not an invention of this fixture.
+g -C "$SQREL" checkout -q -b release/v0.24.0 dev
+_pf_fold "$SQREL" 0.24.0
+g -C "$SQREL" commit -qam 'chore(release): v0.24.0'
+g -C "$SQREL" checkout -q -b pr-release main
+eq "the release PR's merge is clean" "0" \
+   "$(rc=0; g -C "$SQREL" merge -q --no-ff --no-edit release/v0.24.0 >/dev/null 2>&1 || rc=$?; echo "$rc")"
+SQREL_RANGE="v0.23.1..HEAD"
+# THE CONTROL — the basis this repo used before card#10338, and the one a merge-commit merge leaves
+# behind afterwards: each PR is its own group, each nets 1, nothing is reported.
+eq "per COMMIT this release is GREEN, which is the right answer on correct history" "" \
+   "$(_sq_verdict "$SQREL" "$(_sq_records "$SQREL" "$SQREL_RANGE")")"
+# THE DEFECT — the delta FORCED, i.e. exactly what the pre-R1 `_squash_ends` returned here.
+SQREL_FORCED="$(_sq_records "$SQREL" "$SQREL_RANGE" \
+    "$(g -C "$SQREL" rev-parse HEAD^1)" "$(g -C "$SQREL" rev-parse HEAD)")"
+eq "the FORCED delta re-emits both PRs' bullets under ONE group (the grouping is destroyed)" \
+   "(unsquashed)	+	- **card#7038** — the first PR on this card, now cross-referenced.
+(unsquashed)	+	- **card#7038** — the second PR on the same card." "$SQREL_FORCED"
+eq "so the FORCED delta REDS a correct release — the blocker, reproduced" "card#7038" \
+   "$(_sq_verdict "$SQREL" "$SQREL_FORCED")"
+# THE GUARD — and the cross-witness that it is the UNSQUASHED leg doing the work here.
+eq "the shipped derivation REFUSES the delta on this shape" "" \
+   "$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
+eq "… because covered commits carry a (#N) of their own (the UNSQUASHED leg)" "2" \
+   "$(g -C "$SQREL" log --format='%s' 'HEAD^1..HEAD' | { grep -cE '\(#[0-9]+\)' || true; })"
+eq "… and NOT because they are released — every one is above the floor (the other leg is silent)" \
+   "$(g -C "$SQREL" rev-list --count 'HEAD^1..HEAD')" \
+   "$(g -C "$SQREL" rev-list --count 'HEAD^1..HEAD' --not v0.23.1)"
+eq "so the live spelling is GREEN on this release PR" "" \
+   "$(SQ_E="$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
+      _sq_verdict "$SQREL" "$(_sq_records "$SQREL" "$SQREL_RANGE" "${SQ_E%% *}" "${SQ_E##* }")")"
+
+echo "== prove-it-can-fail: a BACK-MERGE sync PR is based on dev and is not squashed either =="
+# The class no base-name test could reject — its base IS `dev`. What disqualifies it is that the
+# commits the delta would cover came from `main` and are ALREADY RELEASED.
+SQBM="$TMP/squash-parity-backmerge"
+_sq_newrepo "$SQBM"
+g -C "$SQBM" branch main
+g -C "$SQBM" checkout -q -b release/v0.24.0 dev
+_pf_fold "$SQBM" 0.24.0
+g -C "$SQBM" commit -qam 'chore(release): v0.24.0'
+g -C "$SQBM" checkout -q main
+g -C "$SQBM" merge -q --no-ff --no-edit release/v0.24.0 >/dev/null 2>&1
+g -C "$SQBM" tag -a v0.24.0 -m 'v0.24.0'
+g -C "$SQBM" checkout -q -b sync/main-to-dev-post-v0.24.0 main
+g -C "$SQBM" checkout -q -b pr-sync dev
+eq "the back-merge PR's merge is clean" "0" \
+   "$(rc=0; g -C "$SQBM" merge -q --no-ff --no-edit sync/main-to-dev-post-v0.24.0 >/dev/null 2>&1 || rc=$?; echo "$rc")"
+eq "its base really is dev — a base-name test would admit it (witness for the OTHER leg)" "true" \
+   "$(has_line "$(g -C "$SQBM" rev-parse dev)" "$(g -C "$SQBM" rev-parse 'HEAD^1')")"
+# ⛔ THE FLOOR IS PINNED, NOT `describe`d, AND THE REASON IS A CI-ONLY RED THIS FIXTURE ALREADY
+# TOOK. The live leg passes `LAST_TAG`, which on a real back-merge is the tag the merge brings back
+# — the release is tagged before this PR is opened (VERSIONING.md steps 9–10) and every older tag is
+# a whole release away. This fixture is four commits wide, so BOTH its tags are near HEAD and
+# `git describe --abbrev=0` is choosing between them on commit ORDER: it answered `v0.24.0` on a
+# laptop and `v0.23.1` on a runner, where the commits share a timestamp. That is a property of the
+# fixture's size, not of the rule under test, so the rule is handed the floor it is about and the
+# tag's position is asserted TOPOLOGICALLY, which no tie-break can move.
+SQBM_TAG=v0.24.0
+eq "the tag is reachable from the merge and NOT from dev — it is what this PR brings back" \
+   "true false" \
+   "$(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" HEAD && echo true || echo false) $(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" dev && echo true || echo false)"
+eq "the shipped derivation REFUSES the delta here too" "" \
+   "$(GITHUB_BASE_REF=dev _squash_ends "$SQBM" "$SQBM_TAG")"
+eq "… because a covered commit is ALREADY RELEASED (the UNRELEASED leg: covered > above-the-tag)" \
+   "true" \
+   "$([[ "$(g -C "$SQBM" rev-list --count 'HEAD^1..HEAD')" -gt \
+         "$(g -C "$SQBM" rev-list --count 'HEAD^1..HEAD' --not "$SQBM_TAG")" ]] && echo true || echo false)"
+eq "… and NOT because they carry a (#N) — none does (the other leg is silent)" "0" \
+   "$(g -C "$SQBM" log --format='%s' 'HEAD^1..HEAD' | { grep -cE '\(#[0-9]+\)' || true; })"
+
+echo "== the delta's GROUP KEY is the PR's own number where the caller knows it =="
+# The last place the two bases could disagree: the squashed commit will carry `(#NNN)`, so the PR
+# run has to group by the same key. Defaulting to `(unsquashed)` conflates the PR under review with
+# every unnumbered commit in the range — a DIRECT PUSH to dev, below.
+SQK="$TMP/squash-parity-key"
+_sq_newrepo "$SQK"
+SQK_DEV0="$(g -C "$SQK" rev-parse dev)"
+# A direct push to dev: no PR, so no `(#N)` in its subject, and a bullet for the same card.
+_sq_file "$SQK" '### Added' '- **card#4000** — filed by a direct push to dev.'
+g -C "$SQK" commit -qam 'docs(changelog): a direct push, no PR number (card#4000)'
+g -C "$SQK" checkout -q -b feat
+_sq_file "$SQK" '### Added' '- **card#4000** — the PR under review, same card, same heading.'
+g -C "$SQK" commit -qam 'feat(x): the PR under review (card#4000)'
+eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQK" feat)"
+SQK_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQK" v0.23.1)"
+eq "with NO number the two share the (unsquashed) group and the PR REDS — the pre-existing red" \
+   "card#4000" \
+   "$(_sq_verdict "$SQK" "$(_sq_records "$SQK" "$SQK_DEV0..HEAD" "${SQK_ENDS%% *}" "${SQK_ENDS##* }")")"
+SQK_KEYED="$(_sq_records "$SQK" "$SQK_DEV0..HEAD" "${SQK_ENDS%% *}" "${SQK_ENDS##* }" 501)"
+eq "given the number, the delta's records carry it and the direct push keeps its own group" \
+   "(unsquashed)	+	- **card#4000** — filed by a direct push to dev.
+501	+	- **card#4000** — the PR under review, same card, same heading." "$SQK_KEYED"
+eq "so the PR is GREEN, exactly as the post-squash dev run would be" "" \
+   "$(_sq_verdict "$SQK" "$SQK_KEYED")"
+
+# ---------------------------------------------------------------------------
 # Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
 # ABSENCE, so anything that can make it answer "" for a reason unrelated to the repo being
 # clean has to stop the run rather than be reported alongside a pass.
@@ -1764,7 +2241,14 @@ fi
 
 echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
 RECORDS="$TMP/added-live"
-_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" > "$RECORDS"
+# THE PR IS JUDGED ON WHAT WILL LAND (card#10338). On a pull_request run these are the base tip and
+# the merge commit, so this PR's records are the diff its SQUASHED commit will record on `dev` —
+# the same two revisions, against the same tree, that `dev`'s own push run will read afterwards.
+# Off any other checkout `_squash_ends` answers with nothing, both expansions are empty, and
+# `_added_bullets` falls back to the per-commit walk it always did (its docblock owns that residual).
+SQUASH_ENDS="$(_squash_ends "$ROOT" "$LAST_TAG")"
+_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" \
+    "${SQUASH_ENDS%% *}" "${SQUASH_ENDS##* }" "${PR_NUMBER:-(unsquashed)}" > "$RECORDS"
 # ⚠ THE LABELS ARE NARROWER THAN THEY LOOK, AND SAY SO (card#7303). Removals are region-scoped
 # in `_added_bullets`, so the second figure counts removals FROM THE REGION, not from the file;
 # and the third counts PRs that left a surviving RECORD, so a PR whose only contribution to this
@@ -1775,6 +2259,16 @@ printf '  ..   %s bullet(s) added · %s removed from the region · %s PR(s) with
     "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
     "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
     "$(cut -f1 "$RECORDS" | LC_ALL=C sort -u | grep -c . || true)" "$LAST_TAG"
+# WHICH BASIS ANSWERED, printed rather than assumed: the two are not equally strong (card#10338),
+# and a run that silently fell back to the per-commit walk is the one whose green says less.
+if [[ -n "$SQUASH_ENDS" ]]; then
+    printf '  ..   this PR judged as its SQUASH DELTA %s · group %s\n' \
+        "$SQUASH_ENDS" "${PR_NUMBER:-(unsquashed)}"
+else
+    printf '  ..   NO squash delta — judged per COMMIT. Either this is not a pull_request merge ref,\n'
+    printf '  ..   or the delta would have covered commits its group cannot claim (already released,\n'
+    printf '  ..   or already carrying a (#N) of their own: a release PR or a back-merge sync PR).\n'
+fi
 eq "no card carries two surviving bullets from one PR under one ### heading" "" \
    "$(_stale_dupes "$RECORDS" "$CHANGELOG" "$LAST_VERSION")"
 

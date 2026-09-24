@@ -31,6 +31,14 @@ jobs:
     # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
     runs-on: ubuntu-latest
     steps:
+      # ⛔ THE DEFAULT `ref:` IS LOAD-BEARING FOR THE VERDICT, not only for the checkout
+      # (card#10338). On a pull_request event this action leaves the MERGE COMMIT
+      # `refs/pull/N/merge` in the tree, and the duplicate leg diffs its first parent against it —
+      # that pair IS the diff the squashed commit will record on `dev`, which is what makes the
+      # gate's answer here the same as its answer there. Pinning `ref:` to the HEAD branch would
+      # leave a checkout with no merge commit, `_squash_ends` would answer with nothing, and the
+      # leg would silently fall back to the per-commit basis this card replaced — green on the PR
+      # and red on `dev`, with no line anywhere saying why. The run prints which basis answered.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -41,4 +49,10 @@ jobs:
           # pass here and fail on the push to `dev` afterwards, with the omission already
           # merged. Passed through the environment, never interpolated into the run: script.
           PR_TITLE: ${{ github.event.pull_request.title }}
+          # The group key the SQUASHED commit will carry on `dev` (`… (#NNN)`), handed over rather
+          # than guessed, so the PR run groups its records exactly as the later push run will
+          # (card#10338). Empty on a `push` run, where the subjects already carry it. It is never a
+          # licence to USE the squash basis — `_squash_ends` decides that, and refuses on the PR
+          # classes this repo merge-commits.
+          PR_NUMBER: ${{ github.event.number }}
         run: bash tests/changelog-card-entry-selftest.sh
