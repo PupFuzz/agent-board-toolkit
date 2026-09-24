@@ -46,6 +46,13 @@
 # A READ HAS THREE OUTCOMES — present, absent, UNREADABLE. Every read of the mirror below keeps
 # the third: a file whose bytes cannot be read is its own row at rc 3 and the loop CONTINUES, so
 # the remaining files are still judged. It is never scored as drift.
+#   ⚑ THAT IS NOW GUARDED, NOT MERELY STATED (card#10311). This file's first cut collapsed those
+#     three outcomes, and `tests/read-outcome-collapse-selftest.sh` ran GREEN over it, because
+#     its population was `bin/`+`hooks/` and this file lives in `tests/`. It is in that gate's
+#     population now, because its NAME ends `-check.sh` — the kind this tree uses for a check an
+#     operator runs — so an rc-discarding capture added here reds that gate until it is fixed or
+#     dispositioned there. That key is the filename, not anything a doc says: renaming this file
+#     to something that does not declare its kind would red the gate rather than quietly drop it.
 #
 # WHAT A RUN READS AND WHAT IT CANNOT SEE — printed on every run, because a green verdict about
 # the wrong artifact is the failure this check exists to prevent:

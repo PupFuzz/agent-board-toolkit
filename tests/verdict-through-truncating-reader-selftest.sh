@@ -68,8 +68,10 @@
 # is one past canon #5's threshold. `tests/_shipped-shell-lib.sh` now owns it, `ci.yml` remains
 # the authority, and `_ci_shellcheck_drift` (asserted below, with planted controls) is what
 # keeps the lib's copy honest — a workflow `run:` string cannot source a bash lib, so the
-# restatement can only be guarded, not deleted. The other two gates are unchanged and can adopt
-# the lib in their own PRs: its output is byte-identical to what each already computes.
+# restatement can only be guarded, not deleted. `read-outcome-collapse-selftest.sh` has since
+# adopted it too (card#10311, composing it with `tests/*-check.sh`, the operator-run checks);
+# `piped-match-gate-selftest.sh` is the one gate still spelling the expression itself, and can
+# adopt in its own PR: the lib's output is byte-identical to what it already computes.
 #
 # MEMBERSHIP IS MEASURED, NOT READ. A grep over the shape is NOT an audit of this class, and
 # the first sibling-audit instrument tried on it failed its own control (it reported the
