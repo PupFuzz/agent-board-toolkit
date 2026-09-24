@@ -46,6 +46,13 @@
 # A READ HAS THREE OUTCOMES — present, absent, UNREADABLE. Every read of the mirror below keeps
 # the third: a file whose bytes cannot be read is its own row at rc 3 and the loop CONTINUES, so
 # the remaining files are still judged. It is never scored as drift.
+#   ⚑ THAT IS NOW GUARDED, NOT MERELY STATED (card#10311). This file's first cut collapsed those
+#     three outcomes, and `tests/read-outcome-collapse-selftest.sh` ran GREEN over it, because
+#     its population was `bin/`+`hooks/` and this file lives in `tests/`. It is in that gate's
+#     population now — derived, because `VERSIONING.md` INVOKES it by name in a fenced release
+#     step — so an rc-discarding capture added here reds that gate until it is fixed or
+#     dispositioned there. Nothing about that derivation is written down in this file; moving
+#     this check out of the runbook's reach would move it back out of the gate.
 #
 # WHAT A RUN READS AND WHAT IT CANNOT SEE — printed on every run, because a green verdict about
 # the wrong artifact is the failure this check exists to prevent:

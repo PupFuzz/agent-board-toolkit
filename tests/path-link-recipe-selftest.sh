@@ -40,8 +40,10 @@
 # ─────────────────────────── THE PREDICATE, STATED ───────────────────────────
 #
 # A RECIPE LINE is a line containing `ln -s` that sits INSIDE a fenced code block of a tracked
-# `*.md` file. The population is re-derived from `git ls-files` on every run — there is no list in
-# this file, which is the shape that cannot go red when a doc grows a copy.
+# `*.md` file. The population is re-derived from `git ls-files` on every run — through
+# `_md_fenced_lines` in `tests/_shipped-shell-lib.sh`, which owns that scan for this file and for
+# card#10311's runbook-invoked-check derivation — so there is no list in this file, which is the
+# shape that cannot go red when a doc grows a copy.
 #
 # The fence half is what does the discriminating: this repository's prose talks about `ln -s`
 # constantly (the Windows copies-not-symlinks note, the HOOKS install narrative, a dozen CHANGELOG
@@ -93,6 +95,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=tests/_shipped-shell-lib.sh
+source "$HERE/_shipped-shell-lib.sh"
 ROOT="$(cd "$HERE/.." && pwd)"
 _mktmp_scratch
 
@@ -103,14 +107,20 @@ SANCTIONED_OWNER="docs/INSTALL.md"
 SANCTIONED_SECOND="VERSIONING.md"
 
 # _recipe_lines <repo-root> — every recipe line in the tree, as "path<TAB>lineno<TAB>text".
+# The fenced-line scan itself is `_md_fenced_lines` from `tests/_shipped-shell-lib.sh` — this
+# file was its first caller and card#10311's runbook-invoked-check derivation is its second, so
+# it is extracted at the second caller (canon #5) rather than copied. Output is unchanged: the
+# same tracked-`*.md` population, the same fence toggle, the same three-field record. What the
+# lib adds is that `git ls-files`' status is KEPT (rc 3 UNMEASURED) rather than discarded —
+# stated precisely, because the difference is small here: THIS caller does not yet read that
+# rc, and leg 0's non-empty control is still what reds on an index that could not be read, as
+# it always was. The change is that the status now EXISTS to be read.
 _recipe_lines() {
-    local root="$1" f
-    while IFS= read -r f; do
-        awk -v F="$f" '
-            /^[[:space:]]*```/ { fence = !fence; next }
-            fence && /ln -s/   { printf "%s\t%d\t%s\n", F, NR, $0 }
-        ' "$root/$f"
-    done < <(cd "$root" && git ls-files '*.md')
+    _md_fenced_lines "$1" | awk '{
+        L = $0
+        if (!sub(/^[^\t]*\t[^\t]*\t/, "", L)) next
+        if (L ~ /ln -s/) print
+    }'
 }
 
 # _fixture <dir> — a source `bin/` holding one of every shape the loop must dispose of, plus the

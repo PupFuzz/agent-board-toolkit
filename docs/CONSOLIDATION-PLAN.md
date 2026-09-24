@@ -794,14 +794,17 @@ finding with no owner is abandoned, not filed.
   One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
   box, though its classification does not.
 - **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
-  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+  one adoption still owed.** `.github/workflows/ci.yml` names the population once
   (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
   '*.sh'`), and by the time this was noticed the expression had been re-typed into
   `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
   `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
-  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
-  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
-  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it; the card#6911 gate was its first
+  caller and `read-outcome-collapse-selftest.sh` adopted it in card#10311. `piped-match-gate` is
+  the one gate still spelling the expression itself. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER
+  AND MUST NOT BE FLATTENED:** card#6911's takes `bin/`+`hooks/`, card#7210's takes those plus the
+  `tests/` files a runbook invokes by name (card#10311's `_runbook_invoked_checks`), and
+  `piped-match-gate` deliberately ADDS all of `tests/*.sh` because 44 of the 47 copies its
   class found were inside the harness. So the lib exports **CI's two halves separately** and each
   caller composes its own union — the population is a parameter, never a constant. Adoption is
   behaviour-preserving by construction (byte-identical output to what each already computes), so
@@ -1860,9 +1863,13 @@ finding with no owner is abandoned, not filed.
   `install-board-hooks`.** That is Stage B's card#5740 lesson a third time — *fixing N copies
   without the guard that forbids the N+1th leaves the cause in place* — so the guard is
   `tests/read-outcome-collapse-selftest.sh`, and it is deliberately **not** a rewrite of the sites
-  it lists. It derives its population from the tree on every run (`find bin hooks -maxdepth 1 -type
-  f ! -name '*.py'` — the `bin`/`hooks` half of `ci.yml`'s shellcheck expression; `tests/` is a
-  stated exclusion, since the harness discards a read's status on purpose), keys members on
+  it lists. It derives its population from the tree on every run (`_shipped_shell_files` — the
+  `bin`/`hooks` half of `ci.yml`'s shellcheck expression — **plus `_runbook_invoked_checks`, the
+  `tests/` files a tracked runbook tells an operator to RUN**, which card#10311 added after the
+  gate ran green over a live instance of its own class in `tests/framework-mirror-check.sh`; the
+  rest of `tests/` stays a stated exclusion, since the harness discards a read's status on
+  purpose, and the price of that exclusion is re-measured in the denominator every run rather
+  than written down here), keys members on
   `<file>:<var>` rather than a line number so a disposition does not rot on the next edit above it,
   prints its **denominator** on every run — clean or not — and reds on a member its
   **disposition list** does not carry, one line each with the reason it is permitted. The split
@@ -1898,8 +1905,9 @@ finding with no owner is abandoned, not filed.
   already ruled that *a copy that survives an audit of its own class is the argument FOR the gate
   that audit declined*, and Stage B's card#5740 section had ruled it once before that. It derives
   its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus
-  `tests/*.sh` — **`tests/` is IN**, unlike `read-outcome-collapse-selftest.sh`, because this class
-  minted its red inside the harness), keys members on `<file>` carrying an **occurrence count** so
+  `tests/*.sh` — **ALL of `tests/` is IN**, where `read-outcome-collapse-selftest.sh` takes only
+  the `tests/` files a runbook invokes by name, because this class minted its red inside the
+  harness), keys members on `<file>` carrying an **occurrence count** so
   that an N+1th copy inside an already-dispositioned file still reds, prints its denominator on
   every run, and carries exactly one disposition: the `_piped*` / `_stat*` fixtures that ARE the
   construct held still so `pipeline-free-match-selftest.sh` can watch it fail. All three red paths
