@@ -2184,7 +2184,7 @@ cmd_reorder() {
     local got_ids
     got_ids="$(jq -r '[.[].id] | join(",")' <<<"$ranked")"
     if [[ "$got_ids" != "$ids_csv" ]]; then
-        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the cards the board returned, in the order it returned them, are '$got_ids'. The status is not the rank; the read-back is." >&2
+        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the cards the board returned, in the order it returned them, are '$got_ids'. The status is not the rank; the read-back is. The write DID go out, so the column may have been ranked some other way — re-read it before re-issuing." >&2
         return 1
     fi
 
@@ -2197,12 +2197,12 @@ cmd_reorder() {
     esac
     got_val="$(jq -r --arg k "$want_side" '.[$k] // "null"' <<<"$meta")"
     if [[ "$got_val" != "$want_val" ]]; then
-        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports the block landed with $want_side=$got_val, where this call asked for $want_side=$want_val. The status is not the placement; the read-back is. The board's own meta: $meta" >&2
+        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports the block landed with $want_side=$got_val, where this call asked for $want_side=$want_val. The status is not the placement; the read-back is. The cards WERE ranked — they are just not where this call asked — so re-read the column before re-issuing. The board's own meta: $meta" >&2
         return 1
     fi
 
     if [[ "$(jq -r '.renumbered' <<<"$meta")" == "true" ]]; then
-        echo "kbcard: reorder: the board reports renumbered=true — the stage's position COORDINATES were re-spaced onto an even ladder because the gap between two neighbours was exhausted. NO card's rank changed by it, no card outside the ones below was moved, and the board records it as ONE lane.cards_renumbered event rather than as N moves." >&2
+        echo "kbcard: reorder: the board reports renumbered=true — the stage's position COORDINATES were re-spaced onto an even ladder because the gap between two neighbours was exhausted. NO card's rank changed by it — the re-spaced cards kept their order and are NOT in the list below, which is the cards THIS call ranked — and the board records it as ONE lane.cards_renumbered event rather than as N moves." >&2
     fi
     echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
     # Assembled then `printf`-ed, the spelling every other verb here ends on — not a `jq` writing
