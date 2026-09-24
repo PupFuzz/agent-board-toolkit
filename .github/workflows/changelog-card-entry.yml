@@ -31,6 +31,14 @@ jobs:
     # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
     runs-on: ubuntu-latest
     steps:
+      # ⛔ THE DEFAULT `ref:` IS LOAD-BEARING FOR THE VERDICT, not only for the checkout
+      # (card#10338). On a pull_request event this action leaves the MERGE COMMIT
+      # `refs/pull/N/merge` in the tree, and the duplicate leg diffs its first parent against it —
+      # that pair IS the diff the squashed commit will record on `dev`, which is what makes the
+      # gate's answer here the same as its answer there. Pinning `ref:` to the HEAD branch would
+      # leave a checkout with no merge commit, `_squash_ends` would answer with nothing, and the
+      # leg would silently fall back to the per-commit basis this card replaced — green on the PR
+      # and red on `dev`, with no line anywhere saying why. The run prints which basis answered.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
