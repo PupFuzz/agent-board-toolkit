@@ -232,8 +232,13 @@ _control() {
     # LEG 4 — THE `PUT` ARM OF THE DENOMINATOR PREDICATE, for the reason the ⚠ note in the header
     # gives: the method set was hand-enumerated and `PUT` was not in it, so the tree's first PUT
     # write was invisible here. Like LEG 3 this asserts on the SWEEP rather than on a handed line,
-    # because the arm under test lives in MUT_RE and `_classify` never runs it. Drop `PUT` from
-    # either half of MUT_RE and this reds with the site named.
+    # because the arm under test lives in MUT_RE and `_classify` never runs it.
+    #
+    # ⛔ WHAT IT COVERS IS THE `kb_api` HALF, AND ONLY THAT HALF. Drop `PUT` from that alternative
+    # and this reds with the site named; drop it from the `-X` alternative and NOTHING reds — the
+    # denominator does not move, because `bin/` holds no `-X PUT` site for this leg to anchor on.
+    # Both measured. That is the ⚠ in this file's header stated where a maintainer reading only
+    # the leg would otherwise conclude the `-X PUT` arm is guarded and could be deleted safely.
     f="bin/kbcard"
     ln="$(_ctl_line "$f" '^[[:space:]]*resp="\$\(kb_api PUT "/tasks/reorder\.json"')" || {
         echo "control: LEG 4's anchor (the reorder PUT in $f) no longer matches exactly one line — the control cannot assert a site it cannot address" >&2
