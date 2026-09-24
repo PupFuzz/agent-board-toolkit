@@ -173,19 +173,25 @@
 #     ⭐ AND IT IS CONFIRMED, NOT ASSUMED — a 2xx is the server accepting the request, never the
 #     board holding the rank. THREE comparisons against the returned data, and they answer three
 #     DIFFERENT questions; read which is evidence of what, because they are not interchangeable:
-#       1. WHICH CARDS — the ids echoed must be the ids this call asked to rank, in that order.
-#          ⚠ THIS IS A CONSISTENCY CHECK, NOT EVIDENCE OF THE ACHIEVED ORDER. The board builds
-#          that collection from the request's OWN ordered id list, so it agrees with the request
-#          by construction and can disagree only on a server already wrong about much more.
-#       2. THE ORDER INSIDE THE BLOCK — the `position` values must be STRICTLY INCREASING in the
-#          order returned. This is the gate that measures `--ids`, because position is the one
-#          value here the request never supplied: the board computes it from the column's live
+#       GATE ONE, WHICH CARDS — the ids echoed must be the ids this call asked to rank, in that
+#          order. ⚠ THIS IS A CONSISTENCY CHECK, NOT EVIDENCE OF THE ACHIEVED ORDER. The board
+#          builds that collection from the request's OWN ordered id list, so it agrees with the
+#          request by construction and can disagree only on a server already wrong about much more.
+#       GATE TWO, THE ORDER INSIDE THE BLOCK — the `position` values must be STRICTLY INCREASING
+#          in the order returned. This is the gate that measures `--ids`, because position is the
+#          one value here the request never supplied: the board computes it from the column's live
 #          coordinates. Not strictly increasing (ties included) is rc 1 HARD FAILURE; a row with
 #          no NUMERIC position is not a wrong order but NO order that can be read, so it is an
 #          UNVERIFIED WRITE at rc 3 rather than a claim nobody measured.
-#       3. WHERE THE BLOCK LANDED — the bracket must be the one asked for: `--placement top` ⇒ NO
-#          card before the block, `bottom` ⇒ none after, `--before-task X` ⇒ X is the card AFTER
-#          it, `--after-task X` ⇒ X is the card BEFORE it. rc 1 HARD FAILURE on a disagreement.
+#       GATE THREE, WHERE THE BLOCK LANDED — the bracket must be the one asked for: `--placement
+#          top` ⇒ NO card before the block, `bottom` ⇒ none after, `--before-task X` ⇒ X is the
+#          card AFTER it, `--after-task X` ⇒ X is the card BEFORE it. rc 1 HARD FAILURE on a
+#          disagreement.
+#       ⛔ THOSE THREE ARE DELIBERATELY NOT A NUMBERED LIST, and that is not a style choice: a
+#       line beginning `1. ` is a LIST ITEM to `tests/by-ref-source-claim-selftest.sh`, whose unit
+#       is a PASSAGE and which therefore CUT this header in two — orphaning the by-ref precedence
+#       claim in the half above from the `payload.repo` condition that discharges it further down,
+#       and reding that gate on a change that added no claim at all. Measured both ways.
 #     A 2xx carrying no readable collection or no meta is an UNVERIFIED WRITE at rc 3.
 #     ⚠ THAT SECOND COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK IT. It
 #     was read at the kanban tag the route shipped in: the brackets are DERIVED from the
