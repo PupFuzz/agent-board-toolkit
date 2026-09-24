@@ -1336,6 +1336,10 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
     if type != "string" then null
     else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
     end;
+  # by-ref-source-rule: HOME — the code-side full statement, for a copy vendored standalone with
+  # no docs/ beside it. tests/by-ref-source-claim-selftest.sh holds the field order stated here
+  # against the def below, which is the one executable answer, and holds the other declared HOMEs
+  # against the same def.
   # sourceFor field preference: payload.repo — ONLY when it is a string containing "/", and it
   # then WINS outright, with no fall-through on a null canon — then payload.pr_url,
   # payload.issue_url, payload.html_url, and finally the top-level external_link.
@@ -1451,8 +1455,13 @@ if [ -n "$QUALIFY_SRC" ]; then
   # status out of a sibling release bin once already (card#5874), and it is one edit away from
   # becoming a block's last statement again.
   if [ -n "$FOREIGN" ]; then printf '%s\n' "$FOREIGN" >&2; fi
+  # THE KEY LIST IN THE LINE BELOW IS A COPY ON PURPOSE. It is RENDERED to an operator, who cannot
+  # follow a pointer out of a log line, so the five keys are spelled where they are read. What
+  # keeps it from becoming a fifth unpinned restatement is the trailing marker: it declares this a
+  # statement of the field set, and tests/by-ref-source-claim-selftest.sh holds it to derive_source
+  # above — a key added to that def and not to this line reds.
   STRANDED="$(printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.cls=="unsourced")
-    | "  ⊘ \(.ref) (#\(.id)): card has NO by-ref source (no payload.repo / pr_url / issue_url / html_url / external_link) — cannot be attributed to \"\($q)\"; not promoted. Stamp a repo-qualified payload.pr_url (kbcard patch --pr-url) and re-run, or promote by hand."')"
+    | "  ⊘ \(.ref) (#\(.id)): card has NO by-ref source (no payload.repo / pr_url / issue_url / html_url / external_link) — cannot be attributed to \"\($q)\"; not promoted. Stamp a repo-qualified payload.pr_url (kbcard patch --pr-url) and re-run, or promote by hand."')"  # by-ref-source-rule: HOME
   if [ -n "$STRANDED" ]; then printf '%s\n' "$STRANDED" >&2; fi
   # The --cards exemption, made legible. These cards ARE promoted; the line exists so that
   # "an id outranks the repo guard" is something an operator reads in the log rather than

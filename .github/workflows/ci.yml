@@ -158,6 +158,7 @@ jobs:
           - board-snapshot-selftest
           - board-stats-selftest
           - bsc-same-dir-selftest
+          - by-ref-source-claim-selftest
           - card-completeness-selftest
           - ci-gate-selftest
           - composite-action-wiring-selftest
