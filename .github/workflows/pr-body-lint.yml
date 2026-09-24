@@ -1,8 +1,38 @@
-# pr-body-lint.yml — runs the coord framework's PR-body linter on every pull request, REPORTING-ONLY.
+# pr-body-lint.yml — runs the coord framework's PR-body linter on RELEASE pull requests,
+# REPORTING-ONLY.
 #
 # The standard is `skills/release-pr/SKILL.md § PR body` in the coord plugin; the program is the
 # one vendored, pinned, in `.github/pr-body-lint/` (`PIN` there names the version and the bytes).
 # Its own header lists the rules and what it does not judge; this file does not restate them.
+#
+# ⛔ RELEASE PRs ONLY, and the gate is on the HEAD ref (card#10353). The program enforces the
+# RELEASE-PR body standard — every message it prints says so, and its `ALLOWED_H2` is a release
+# body's closed section set — while `.github/pull_request_template.md` prescribes a feature-PR
+# shape. Run on every pull request it therefore reported `heading-not-allowed` on the repo's OWN
+# template headings, on every PR, forever, which is how a reporting channel dies: the findings are
+# ignored because they are always wrong, including the ones that would have mattered. Re-derive
+# the verdict over any window of merged PRs rather than trusting a figure written here:
+#   gh pr list --base dev --state merged --limit 20 --json number --jq '.[].number' \
+#     | while read -r n; do gh pr view "$n" --json body --jq .body \
+#         | python3 .github/pr-body-lint/pr-body-lint.py --body-file - --label "#$n"; done
+#
+# WHY THE HEAD AND NOT THE BASE. `VERSIONING.md` §5 rules 2 and 7 own this repo's release-PR
+# shape: the branch is cut off `dev`, named `release/v<version>`, and stays the PR head all the
+# way to `main`. A `base == main` gate would be both too wide and too narrow — it admits every
+# non-release PR opened against `main`, and it misses the `release/*`-headed release-prep PRs to
+# `dev` that rule 7 retired but nothing prevents. Both populations are real here and neither is a
+# figure to trust from this comment; re-derive them:
+#   gh pr list --base main --state all --limit 400 --json number,headRefName \
+#     --jq '.[] | select(.headRefName | startswith("release/") | not)'
+#   gh pr list --state all --limit 800 --json number,headRefName,baseRefName \
+#     --jq '.[] | select((.headRefName|startswith("release/")) and .baseRefName != "main")'
+#
+# ⚠ WHAT THIS GIVES UP, named here rather than discovered later: `Built:` and `Coordinated in:`
+# are required by the template on EVERY PR body, and this job was the only thing reading them.
+# The linter is all-or-nothing — it has no rule-subset flag (`--help` is the authority) — so
+# scoping the workflow scopes the whole program, and nothing checks those two rows on a feature
+# PR any more. Widening `ALLOWED_H2` (a fork of vendored, pinned bytes) and rewriting the
+# template to the release shape were both considered and declined on card#10353.
 #
 # ⛔ IT CANNOT BLOCK A MERGE — operator ruling, 2026-09-18: reporting-only first, and whether it
 # ever blocks is decided later on the evidence of these runs. Two things hold that, and both are
@@ -24,6 +54,14 @@
 # workflow template does), THEN add `pr-body-lint` to the required status checks.
 # In this repo, also move `pr-body-lint` from `NOT_A_PR_GATE` to `REQUIRE_BESIDE_CI_GATE` in
 # `tests/ci-gate-selftest.sh`, the file that declares which contexts are required.
+# THE SCOPE ABOVE IS WHAT MAKES THAT PLAN SAFE rather than a repo-wide block, and it is why the
+# gate is a job-level `if:` and not an `on:`-level filter: the job still REPORTS on every pull
+# request (as `skipped` on a feature PR — measured on this change's own PR), where a
+# workflow-level filter
+# produces no run at all, and a required context that never reports deadlocks the PR. `ci.yml`'s
+# own `ci-gate` comment records the behaviour this turns on — a skipped required check does not
+# block a merge. ⚠ Read the flip side with it: once required, this context can never speak FOR a
+# feature PR, because on one it never runs.
 #
 # `edited` is in the trigger because the body is not part of the diff: a body edit fires `edited`,
 # never `synchronize`.
@@ -44,6 +82,10 @@ env:
 
 jobs:
   pr-body-lint:
+    # RELEASE PRs only — the header owns why this is the head ref and not the base, and what it
+    # gives up. `release/` is the same glob this repo's release conventions already use; the
+    # value is the branch NAME (`release/v0.35.1`), never a `refs/heads/` ref.
+    if: startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
