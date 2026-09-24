@@ -883,6 +883,14 @@ _pr_merge_refs() {
 # commit subject happens to carry a `(#N)` — *"follow-up to (#390)"* — refuses the delta and drops
 # to the per-commit basis. That is a false DECLINE, never a false red, and it is printed.
 #
+# ⛔ RESIDUAL the UNRELEASED leg rests on, stated because it is a PREMISE rather than a check: the
+# leg recognises a back-merge only because `<floor>` is the tag that merge brings back, which holds
+# because the release is tagged before the sync PR is opened (VERSIONING.md steps 9–10). Where that
+# tag is MISSING — auto-tag's push refused, the card#6579 shape — `<floor>` is the previous release,
+# every covered commit sits above it, and the delta is admitted on a back-merge. Benign rather than
+# guarded: a fold is textually an insertion of headings and adds no bullet, so the delta has no
+# record to group. Named, not fixtured; the fixture below pins the floor instead of deriving it.
+#
 # ⛔ THE SECOND END IS THE MERGE COMMIT, NOT THE BRANCH TIP, and the difference is the whole
 # function. `git diff <base-tip> <branch-tip>` is a two-dot diff between two divergent trees: every
 # line the BASE gained while the branch was open reads as a REMOVAL by the branch. The merge commit
@@ -2117,8 +2125,18 @@ eq "the back-merge PR's merge is clean" "0" \
    "$(rc=0; g -C "$SQBM" merge -q --no-ff --no-edit sync/main-to-dev-post-v0.24.0 >/dev/null 2>&1 || rc=$?; echo "$rc")"
 eq "its base really is dev — a base-name test would admit it (witness for the OTHER leg)" "true" \
    "$(has_line "$(g -C "$SQBM" rev-parse dev)" "$(g -C "$SQBM" rev-parse 'HEAD^1')")"
-SQBM_TAG="$(g -C "$SQBM" describe --tags --abbrev=0 --match 'v*' HEAD)"
-eq "the tag the gate would measure from is the one this merge brings back" "v0.24.0" "$SQBM_TAG"
+# ⛔ THE FLOOR IS PINNED, NOT `describe`d, AND THE REASON IS A CI-ONLY RED THIS FIXTURE ALREADY
+# TOOK. The live leg passes `LAST_TAG`, which on a real back-merge is the tag the merge brings back
+# — the release is tagged before this PR is opened (VERSIONING.md steps 9–10) and every older tag is
+# a whole release away. This fixture is four commits wide, so BOTH its tags are near HEAD and
+# `git describe --abbrev=0` is choosing between them on commit ORDER: it answered `v0.24.0` on a
+# laptop and `v0.23.1` on a runner, where the commits share a timestamp. That is a property of the
+# fixture's size, not of the rule under test, so the rule is handed the floor it is about and the
+# tag's position is asserted TOPOLOGICALLY, which no tie-break can move.
+SQBM_TAG=v0.24.0
+eq "the tag is reachable from the merge and NOT from dev — it is what this PR brings back" \
+   "true false" \
+   "$(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" HEAD && echo true || echo false) $(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" dev && echo true || echo false)"
 eq "the shipped derivation REFUSES the delta here too" "" \
    "$(GITHUB_BASE_REF=dev _squash_ends "$SQBM" "$SQBM_TAG")"
 eq "… because a covered commit is ALREADY RELEASED (the UNRELEASED leg: covered > above-the-tag)" \
