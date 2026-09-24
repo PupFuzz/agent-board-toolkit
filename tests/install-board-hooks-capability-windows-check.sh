@@ -3,6 +3,15 @@
 #
 #     bash <toolkit>/tests/install-board-hooks-capability-windows-check.sh
 #
+# ⚑ IT IS IN A CLASS GATE'S POPULATION, and by its NAME (card#10311). `tests/*-check.sh` is how
+# this tree spells "a check an operator runs", as against `*-selftest.sh` (harness),
+# `*-census.sh` (instrument) and `_*` (lib/stub) — so `read-outcome-collapse-selftest.sh` scans
+# this file for the three-outcome collapse exactly as it scans `bin/`. ⛔ That was NOT true of
+# that gate's first cut, which derived its `tests/` half from fenced runbook invocations and so
+# reached `framework-mirror-check.sh` alone: `docs/HOOKS.md` invokes THIS file in an inline-code
+# span spelled `<toolkit>/tests/…`, which no such predicate sees. Renaming this file to
+# something that does not declare its kind reds that gate rather than quietly dropping it.
+#
 # WHY IT EXISTS. `install-board-hooks` installs its git hooks by SYMLINK, and that symlink is
 # the upgrade contract: a `git pull` in the toolkit checkout updates every installed hook only
 # because each hook entry points at the source. On a symlink-incapable seat — the measured case

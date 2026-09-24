@@ -35,44 +35,45 @@
 # `tests/_shipped-shell-lib.sh` and re-derived on every invocation. No file list is stored
 # here, so a new member is scanned the day it lands:
 #
-#   `_shipped_shell_files`      `bin/` + `hooks/`, one level, minus the python shims — the
-#                               `bin`/`hooks` half of `.github/workflows/ci.yml`'s shellcheck
-#                               expression, which that lib owns rather than this file copying.
-#   `_runbook_invoked_checks`   the `tests/*.sh` files a tracked runbook INVOKES BY NAME in a
-#                               fenced code block — shipped behaviour wearing a test's clothes.
-#                               ⛔ The members are NOT named here; the denominator below PRINTS
-#                               them by name on every run, which is the copy that cannot be
-#                               wrong. The day a runbook step tells an operator to run another
-#                               check, it is scanned with no edit to this file.
+#   `_shipped_shell_files`   `bin/` + `hooks/`, one level, minus the python shims — the
+#                            `bin`/`hooks` half of `.github/workflows/ci.yml`'s shellcheck
+#                            expression, which that lib owns rather than this file copying.
+#   `_operator_run_checks`   `tests/*-check.sh` — the operator-run checks that live in the
+#                            harness directory without being harness. ⛔ The members are NOT
+#                            named here; the denominator below PRINTS them on every run, which
+#                            is the copy that cannot be wrong.
 #
-# ⛔ WHY THE SECOND HALF EXISTS, AND WHY IT IS NOT "add `tests/`" (card#10311). This gate ran
-# GREEN over a live instance of its own class. PR #387 shipped `tests/framework-mirror-check.sh`
-# with `_fw_cat "$DIR/$n" > "$tmp/mirror"` under `set -euo pipefail`: an unreadable mirror file
-# killed the script at rc 1, which is the code that file's own header documents as STALE or
-# DIVERGED — and `VERSIONING.md` release step 12 tells the operator to answer a non-zero rc by
-# relaying a re-sync request to ANOTHER REPO'S OWNER. So an unreadable file produced a re-sync
-# request for a file nobody ever read. That is shipped behaviour, and the gate built for exactly
-# this class could not see it, because the population was `bin`+`hooks` and nothing else.
+# ⛔ WHY THE SECOND HALF EXISTS (card#10311). This gate ran GREEN over a live instance of its
+# own class. PR #387 shipped `tests/framework-mirror-check.sh` with `_fw_cat "$DIR/$n" >
+# "$tmp/mirror"` under `set -euo pipefail`: an unreadable mirror file killed the script at rc 1,
+# which is the code that file's own header documents as STALE or DIVERGED — and `VERSIONING.md`
+# release step 12 tells the operator to answer a non-zero rc by relaying a re-sync request to
+# ANOTHER REPO'S OWNER. So an unreadable file produced a re-sync request for a file nobody ever
+# read. That is shipped behaviour, and the gate built for exactly this class could not see it.
+#
+# ⛔ WHY THE HALF IS A FILENAME GLOB AND NOT "WHAT A RUNBOOK INVOKES", which is what this gate's
+# first cut used and got wrong. That predicate parses markdown, and its miss is SILENT. This
+# tree holds TWO operator-run checks; `docs/HOOKS.md` invokes the second
+# (`install-board-hooks-capability-windows-check.sh`, which a Windows seat runs and sends the
+# whole output of) in an inline-code span spelled `<toolkit>/tests/…`, which no fence-and-
+# command-word predicate reaches — so the first cut covered one of two while asserting there
+# was one. A predicate whose failure mode is a silent under-count must not BE the population of
+# the gate whose entire subject is silent under-counting. The filename kind is a property of
+# the file, needs no parser, and cannot be shrunk by a doc's formatting. The lib states how the
+# four kinds partition `tests/*.sh`; the two guards that keep that partition honest are below.
 #
 # ⛔ THE HARNESS IS STILL OUT, AND THAT EXCLUSION IS MEASURED RATHER THAN ASSERTED. The harness
 # discards a read's status ON PURPOSE (a probe's rc IS the thing under test, and `expect_out`
 # captures with `|| true` by design), so unioning `_selftest_shell_files` in would hand this
 # file a pile of dispositions that mostly read "this is a test" — plus this file's OWN planted
-# collapse fixture matching itself. Exemptions nobody reads are not coverage; they train the
-# reader to stamp the next one unread, which is this gate's entire failure mode.
+# collapse fixtures matching themselves. Exemptions nobody reads are not coverage; they train
+# the reader to stamp the next one unread, which is this gate's entire failure mode.
 #
 # ⛔ THAT PRICE IS NOT WRITTEN DOWN HERE, IT IS RE-MEASURED. A number in this comment would be a
 # stale claim with a maintenance schedule (canon #16), and the figure the card was ruled on has
 # already moved. So the denominator below prints `harness members this exclusion declines` on
-# EVERY run, through the identical scanner, over `_selftest_shell_files` minus what the runbook
-# derivation already pulls in. Nothing asserts on it — it is the cost of the ruling, kept live
-# so the ruling can be re-argued against a current figure instead of a remembered one.
-#
-# ⛔ MEMBERSHIP IS DERIVED, NOT NAMED. A list of operator-run checks written into this file
-# would be a restatement surface (canon #16) that cannot red when `VERSIONING.md` grows a step —
-# card#6645's class, one layer up. The derivation and what it structurally cannot see are stated
-# at `_runbook_invoked_checks` in `tests/_shipped-shell-lib.sh`; the control that it still
-# matches SOMETHING on the real tree, and that it does not match a mere mention, is below.
+# EVERY run, through the identical scanner. Nothing asserts on it — it is the cost of the
+# ruling, kept live so the ruling can be re-argued against a current figure.
 #
 # MEMBER — `<relpath>:<varname>`, NOT a line number. A line number rots on the next edit above
 # it and would turn every disposition into a re-typing chore; the variable is what carries the
@@ -264,14 +265,10 @@ END {
 }'
 
 # _roc_population <root> — THE population, composed from `tests/_shipped-shell-lib.sh`: the
-# shipped shell, plus the `tests/` files a tracked runbook tells an operator to RUN. Both halves
-# are re-derived from the tree on every call; neither is a list in this file. The runbook half's
-# status is KEPT (`|| return`) — a tree whose index cannot be read must not arrive here as a
-# tree whose runbooks invoke nothing, which is this gate's own class.
+# shipped shell, plus the operator-run checks that live under `tests/`. Both halves are globs
+# over the tree, re-derived on every call; neither reads a doc and neither is a list here.
 _roc_population() {
-    local root="$1" runbook
-    runbook="$(_runbook_invoked_checks "$root")" || return $?
-    { _shipped_shell_files "$root"; printf '%s\n' "$runbook"; } | awk 'NF' | LC_ALL=C sort -u
+    { _shipped_shell_files "$1"; _operator_run_checks "$1"; } | awk 'NF' | LC_ALL=C sort -u
 }
 
 # _roc_records <root> — one TAB record per candidate CAPTURE: relpath, var, line, why.
@@ -346,46 +343,60 @@ cat > "$FIX/bin/planted-later-stmt" <<'EOF'
 FMT="$(cfg_opt '.tag_format')"; [ -n "$FMT" ] || FMT='v{{version}}'
 EOF
 
-# ── the POPULATION control: two identical collapses under tests/, one reachable, one not ─────
+# ── the POPULATION control: two identical collapses under tests/, one in scope, one not ─────
 #
 # The widening this file carries (card#10311) is a claim about WHICH `tests/` files are in
 # scope, and a population claim cannot be proven by the tree it was drawn around — on the real
-# tree the one member contributes NO candidate today, so a green run says nothing about
-# whether the widening reaches it. These two files carry the SAME planted collapse and differ
-# in exactly one thing: the fixture runbook RUNS one of them and merely MENTIONS the other.
-cat > "$FIX/tests/planted-runbook-check.sh" <<'EOF'
+# tree NEITHER operator-run check contributes a candidate today, so a green run says nothing
+# about whether the widening reaches them. These two files carry the SAME planted collapse and
+# differ in exactly one thing: the KIND their filename declares.
+cat > "$FIX/tests/planted-mirror-check.sh" <<'EOF'
 #!/usr/bin/env bash
 MIRROR="$(cat "$DIR/$n" 2>/dev/null || true)"
 [ -n "$MIRROR" ] || echo "STALE or DIVERGED"
 EOF
-cat > "$FIX/tests/planted-harness-only.sh" <<'EOF'
+cat > "$FIX/tests/planted-harness-selftest.sh" <<'EOF'
 #!/usr/bin/env bash
 HARNESS="$(cat "$DIR/$n" 2>/dev/null || true)"
 [ -n "$HARNESS" ] || echo "STALE or DIVERGED"
 EOF
-# The fixture runbook. Three shapes the derivation must tell apart, all naming a `tests/…sh`:
-# an INVOCATION inside a fence, a fenced line where the path is an ARGUMENT rather than the
-# command word, and a prose/link mention outside any fence.
-{ printf 'Prose naming `tests/planted-harness-only.sh`, and a [link](tests/planted-harness-only.sh).\n'
+# A fixture runbook, for the GUARD rather than for the population. Four shapes it must tell
+# apart, all naming a `tests/…sh`: an invocation in a PLAIN fence; one in a BLOCKQUOTED fence
+# (a real code block a reader pastes from — this tree uses that shape in two operator recipes,
+# and both consumers of `_md_fenced_lines` were blind to it until card#10311 round 2); a fenced
+# line where the path is an ARGUMENT, not the command word; and a prose/link mention.
+{ printf 'Prose naming `tests/planted-harness-selftest.sh`, and a [link](tests/planted-harness-selftest.sh).\n'
   printf '\n```bash\n'
-  printf 'tests/planted-runbook-check.sh --ref origin/dev <somewhere>\n'
-  printf 'cat tests/planted-harness-only.sh   # named as an ARGUMENT, not run\n'
+  printf 'cd "$TK" && bash -x <toolkit>/tests/planted-mirror-check.sh --ref origin/dev\n'
+  printf 'cat tests/planted-harness-selftest.sh   # named as an ARGUMENT, not run\n'
   printf '```\n'
-  printf '\nMore prose about tests/planted-harness-only.sh, outside every fence.\n'; } > "$FIX/RUNBOOK.md"
+  printf '\n> ```bash\n'
+  printf '> env FOO=1 tests/planted-mirror-check.sh|tee out\n'
+  printf '> ```\n'
+  printf '\nMore prose about tests/planted-harness-selftest.sh, outside every fence.\n'; } > "$FIX/RUNBOOK.md"
 ( cd "$FIX" && git add bin tests RUNBOOK.md ) >/dev/null 2>&1
 
-echo "== the runbook derivation discriminates (population control) =="
-eq "only the check the runbook RUNS is in the population — an argument and a mention are not" \
-   "tests/planted-runbook-check.sh" "$(_runbook_invoked_checks "$FIX")"
+echo "== the population is the FILENAME KIND, and it discriminates =="
+eq "a tests/ file named *-check.sh is in the population; an identically-shaped selftest is not" \
+   "$(printf 'tests/planted-mirror-check.sh')" "$(_operator_run_checks "$FIX")"
+eq "every tests/*.sh in the fixture declares one of the four kinds" "" "$(_tests_shell_unclassified "$FIX")"
+
+echo "== the runbook GUARD reaches the spellings a runbook actually uses =="
+# One equality carries the whole matrix: a `cd … &&` chain, an interpreter WITH FLAGS, a
+# `<placeholder>/` path prefix, an `env VAR=` prefix, a BLOCKQUOTED fence, and a `|` with no
+# space — all invocations of the same file, which must dedupe to one line; against an ARGUMENT
+# position and two prose mentions of the other file, which must not appear at all.
+eq "every invocation spelling resolves to the file RUN; an argument and a mention do not" \
+   "tests/planted-mirror-check.sh" "$(_runbook_invoked_checks "$FIX")"
 # A REAL directory that is simply not a git repo — not a missing path, which would be refused
 # one step earlier by `cd` and would leave the `git ls-files` status untested.
 mkdir -p "$TMP/no-index"
-eq "an index that cannot be read is UNMEASURED (rc 3), never a tree whose runbooks invoke nothing" "3" \
+eq "an index that cannot be read is UNMEASURED (rc 3), never a runbook that invokes nothing" "3" \
    "$(_runbook_invoked_checks "$TMP/no-index" >/dev/null 2>&1; echo $?)"
 
 echo "== the scanner finds a planted collapse (positive control) =="
-eq "the canonical shape is derived as a member, in bin/ AND in a runbook-invoked check" \
-   "$(printf 'bin/planted-collapse:FOUND\ntests/planted-runbook-check.sh:MIRROR')" \
+eq "the canonical shape is derived as a member, in bin/ AND in an operator-run check" \
+   "$(printf 'bin/planted-collapse:FOUND\ntests/planted-mirror-check.sh:MIRROR')" \
    "$(_roc_members "$FIX")"
 
 echo "== the scanner discriminates (negative controls) =="
@@ -397,8 +408,8 @@ has_noempty="$(has "planted-no-empty-test" "$(_roc_members "$FIX")")"
 eq "a discarded rc never tested for emptiness is not a member" "false" "$has_noempty"
 has_later="$(has "planted-later-stmt" "$(_roc_members "$FIX")")"
 eq "a '||' in a later statement on the same line is not attributed to the capture" "false" "$has_later"
-has_harness="$(has "planted-harness-only" "$(_roc_members "$FIX")")"
-eq "an identical collapse in a tests/ file NO runbook runs is not a member (the harness stays out)" \
+has_harness="$(has "planted-harness-selftest" "$(_roc_members "$FIX")")"
+eq "an identical collapse in a tests/ SELFTEST is not a member (the harness stays out)" \
    "false" "$has_harness"
 
 # ── the denominator ─────────────────────────────────────────────────────────────────────────
@@ -407,15 +418,21 @@ eq "an identical collapse in a tests/ file NO runbook runs is not a member (the 
 # the searcher stopped, not the state of the tree — so this gate states the population it was
 # clean over, re-derived from the tree by the same code path that judges it.
 mapfile -t POPULATION < <(_roc_population "$ROOT")
-mapfile -t RUNBOOK_CHECKS < <(_runbook_invoked_checks "$ROOT")
-mapfile -t RECORDS < <(_roc_records "$ROOT")
-mapfile -t MEMBERS < <(_roc_members "$ROOT")
+mapfile -t OPCHECKS   < <(_operator_run_checks "$ROOT")
+mapfile -t RECORDS    < <(_roc_records "$ROOT")
+mapfile -t MEMBERS    < <(_roc_members "$ROOT")
+
+# The runbook GUARD's input. ⛔ Its rc is READ, not merely kept: an index this process cannot
+# read must not reach the guard below as "no runbook invokes anything", which would satisfy it
+# silently. `_md_fenced_lines` answers 3 for that, and this is where the gate dies on it.
+RUNBOOK_INVOKED="$(_runbook_invoked_checks "$ROOT")" \
+    || { echo "read-outcome-collapse-selftest: UNMEASURED — the tracked-markdown set could not be read (rc $?); the runbook guard did not run" >&2; exit 3; }
 
 # THE PRICE OF THE STATED EXCLUSION, re-measured every run rather than written down (canon #16):
 # what unioning the whole harness in would ADD, through the identical scanner. Asserted on by
 # nothing — it exists so the ruling "the harness stays out" is re-arguable against a live figure.
 mapfile -t DECLINED_HARNESS < <(
-    LC_ALL=C comm -23 <(_selftest_shell_files "$ROOT") <(printf '%s\n' "${RUNBOOK_CHECKS[@]}" | awk 'NF') \
+    LC_ALL=C comm -23 <(_selftest_shell_files "$ROOT") <(printf '%s\n' "${OPCHECKS[@]}" | awk 'NF') \
     | { mapfile -t h; _roc_records_over "$ROOT" "${h[@]:-}"; } | awk -F'\t' 'NF { print $1 ":" $2 }' | LC_ALL=C sort -u
 )
 
@@ -427,15 +444,15 @@ STALE="$(LC_ALL=C comm -13 <(printf '%s\n' "$DERIVED") <(printf '%s\n' "$LISTED"
 _count() { printf '%s\n' "$1" | awk 'NF' | wc -l | tr -d ' '; }
 
 echo "== denominator [read-outcome-collapse/v2] =="
-printf '  shell files scanned (bin/ + hooks/ + runbook-invoked checks) : %s\n' "${#POPULATION[@]}"
-printf '  of those, tests/ files a tracked runbook INVOKES by name     : %s\n' "$(_count "$(printf '%s\n' "${RUNBOOK_CHECKS[@]}")")"
-printf '%s\n' "${RUNBOOK_CHECKS[@]}" | awk 'NF { printf "    %s\n", $0 }'
-printf '  rc-discarding captures ALSO tested for emptiness             : %s\n' "${#RECORDS[@]}"
-printf '  candidate MEMBERS (<file>:<var>, captures merged)            : %s\n' "$(_count "$DERIVED")"
-printf '  dispositioned below                                          : %s\n' "$(_count "$LISTED")"
-printf '  NEW / undispositioned                                        : %s\n' "$(_count "$NEW")"
-printf '  stale dispositions (listed, no longer derived)               : %s\n' "$(_count "$STALE")"
-printf '  harness members this exclusion DECLINES (not asserted on)    : %s\n' \
+printf '  shell files scanned (bin/ + hooks/ + operator-run checks)     : %s\n' "${#POPULATION[@]}"
+printf '  of those, tests/ operator-run checks (tests/*-check.sh)       : %s\n' "$(_count "$(printf '%s\n' "${OPCHECKS[@]}")")"
+printf '%s\n' "${OPCHECKS[@]}" | awk 'NF { printf "    %s\n", $0 }'
+printf '  rc-discarding captures ALSO tested for emptiness              : %s\n' "${#RECORDS[@]}"
+printf '  candidate MEMBERS (<file>:<var>, captures merged)             : %s\n' "$(_count "$DERIVED")"
+printf '  dispositioned below                                           : %s\n' "$(_count "$LISTED")"
+printf '  NEW / undispositioned                                         : %s\n' "$(_count "$NEW")"
+printf '  stale dispositions (listed, no longer derived)                : %s\n' "$(_count "$STALE")"
+printf '  harness members this exclusion DECLINES (not asserted on)     : %s\n' \
     "$(_count "$(printf '%s\n' "${DECLINED_HARNESS[@]}")")"
 printf '  by rc-discard spelling:\n'
 printf '%s\n' "${RECORDS[@]}" | awk -F'\t' 'NF { n[$4]++ } END { for (k in n) printf "    %-16s %s\n", k, n[k] }' | LC_ALL=C sort
@@ -443,21 +460,36 @@ printf '%s\n' "${RECORDS[@]}" | awk -F'\t' 'NF { n[$4]++ } END { for (k in n) pr
 echo "== the derivation carries real data (control on the REAL tree) =="
 eq "the scan of $ROOT derived at least one candidate" "false" \
    "$([[ "${#RECORDS[@]}" -eq 0 ]] && echo true || echo false)"
-# A derivation that has silently stopped matching is indistinguishable from a repo whose
-# runbooks invoke nothing — and the whole point of card#10311 is that this gate once WAS blind
-# to an operator-run check and ran green. Zero here means the widening is inert; it reds.
-eq "the runbook derivation names at least one operator-run check on the REAL tree" "false" \
-   "$([[ "$(_count "$(printf '%s\n' "${RUNBOOK_CHECKS[@]}")")" -eq 0 ]] && echo true || echo false)"
-# Every runbook-derived member must be a file that EXISTS and is scannable here; a runbook
-# naming a check this tree does not carry is a broken release step, and silently dropping it
-# would put the population back where it was.
-missing_runbook=""
-for rb in "${RUNBOOK_CHECKS[@]}"; do
+# A glob that has silently stopped matching is indistinguishable from a tree with no operator-run
+# checks — and the whole point of card#10311 is that this gate once WAS blind to one and ran
+# green. Zero here means the widening is inert; it reds.
+eq "the population names at least one operator-run check on the REAL tree" "false" \
+   "$([[ "$(_count "$(printf '%s\n' "${OPCHECKS[@]}")")" -eq 0 ]] && echo true || echo false)"
+
+echo "== the naming partition that makes the glob a COMPLETE population =="
+# `tests/*-check.sh` is only the right population while every OTHER tests/*.sh declares which
+# kind it is. A file named neither `_*`, `*-selftest.sh`, `*-census.sh` nor `*-check.sh` is
+# unclassifiable, which means nothing can say whether it belongs in this gate — so it reds here
+# rather than defaulting to "out", which is how the blind spot this card closes was created.
+eq "a tests/*.sh whose name declares no kind (name it *-check.sh if an operator runs it)" "" \
+   "$(printf '%s\n' "$(_tests_shell_unclassified "$ROOT")")"
+
+echo "== the runbook guard: a check a runbook RUNS must be a kind this gate can place =="
+# The second guard on the glob, and the weaker one by construction — its markdown reach is
+# bounded and the lib states the bounds. What it catches is the shape that would otherwise
+# re-open the blind spot: an operator-run check landing under an unrecognised name AND being
+# wired into a runbook step. It cannot catch one that is never wired into a fenced block, which
+# is precisely why the POPULATION is the glob above and not this.
+unplaceable=""
+while IFS= read -r rb; do
     [[ -n "$rb" ]] || continue
-    [[ -r "$ROOT/$rb" ]] || missing_runbook+="$rb"$'\n'
-done
-eq "a runbook invokes a check this tree does not carry (fix the runbook, or restore the check)" \
-   "" "${missing_runbook%$'\n'}"
+    [[ -r "$ROOT/$rb" ]] || { unplaceable+="$rb (a runbook invokes it; this tree does not carry it)"$'\n'; continue; }
+    case "${rb#tests/}" in
+        _*|*-selftest.sh|*-census.sh|*-check.sh) ;;
+        *) unplaceable+="$rb (a runbook invokes it; its name declares no kind)"$'\n' ;;
+    esac
+done <<< "$RUNBOOK_INVOKED"
+eq "a runbook invokes a tests/ file this gate cannot place" "" "${unplaceable%$'\n'}"
 
 echo "== every candidate is dispositioned =="
 eq "undispositioned read-outcome collapse (add a line to DISPOSITIONED with its reason, or fix the site)" "" "$NEW"

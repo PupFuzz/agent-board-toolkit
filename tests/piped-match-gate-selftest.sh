@@ -52,8 +52,8 @@
 # invocation. No file list is stored here, so a bin or a selftest added tomorrow is scanned that
 # day.
 #   ⚑ ALL of `tests/` IS IN THE POPULATION HERE, and that is a deliberate DIVERGENCE from
-#     `read-outcome-collapse-selftest.sh`, which takes only the NARROW slice of `tests/` a
-#     runbook invokes by name (card#10311). The reason is not symmetry, it is where the defect
+#     `read-outcome-collapse-selftest.sh`, which takes only `tests/*-check.sh` — the
+#     operator-run checks (card#10311). The reason is not symmetry, it is where the defect
 #     lives: this class minted its CI red INSIDE the harness, and 44 of the 47 copies card#7175
 #     found were in `tests/`. A gate over `bin/` alone would have said nothing about any of
 #     them. (The other gate narrows because a selftest discards a read's status on purpose, so
