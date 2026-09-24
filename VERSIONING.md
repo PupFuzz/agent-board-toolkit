@@ -18,11 +18,40 @@ Two long-lived branches: **`main`** (releases only) and **`dev`** (integration).
 
 The toolkit is pre-1.0. The effective cadence — matching the actual tag history (e.g. v0.8.0 feature → v0.8.1 fix) — is:
 
-- **Patch** (`x.y.Z+1`) — bug fixes, refactors, docs, internal-only changes, no new user-visible surface.
-- **Minor** (`x.Y+1.0`) — new user-visible additions (a new `bin/` tool, a new flag, a new capability).
+- **Patch** (`x.y.Z+1`) — bug fixes, refactors, docs, internal-only changes, no new user-visible surface **and no acceptance narrowing** (below).
+- **Minor** (`x.Y+1.0`) — new user-visible additions (a new `bin/` tool, a new flag, a new capability) — **and every acceptance narrowing** (below), whether or not the release adds anything.
 - **Major** (`X+1.0.0`) — reserved for post-1.0 breaking changes to the public CLI/flag surface.
 
 When a release mixes a feature with fixes, lean toward minor; a release that is only fixes/refactors/docs is a patch. When in doubt, state the reasoning in the release PR.
+
+### An acceptance narrowing takes a MINOR, and the test is what the input did BEFORE (card#9956)
+
+**A release in which an input that previously SUCCEEDED now fails takes a minor at minimum — whatever else is or is not in it.** Until card#9956 the three buckets above had no home for that change: it adds no surface, so the minor bucket's test answers no; major is reserved for post-1.0, so that bucket is closed; and it landed in **patch by elimination** — the one bump that tells a vendoring consumer their working caller is safe. Every such bump was correct under the rule as written. The rule is what had no bucket.
+
+**The test — one question per refused input, answered from measurement.** *What did that exact input do before this change?*
+
+- **It completed** — `rc 0`, and the effect it asked for happened: a value was stored, a report printed, a step went green. ⇒ **acceptance narrowing, minor.** This holds where the old result was WRONG, which is the case that feels like an exception and is not: the caller's script exited 0 and now exits non-zero, and *"the old answer was wrong anyway"* is the argument that makes every break sound like a fix.
+- **It already failed** — non-zero then, or an error one layer down that the caller was already receiving. ⇒ **not a narrowing for sizing; patch-eligible.** The change moves where and how legibly it fails, not whether. v0.32.0 is the worked case: `run-coverage-check --repo owner/name.git` was accepted by a shape regex, interpolated into a request path and **answered 404 by GitHub**, so refusing it at the flag regresses nothing. **Taking this branch obliges you to state the old exit status in the release notes** — it is a claim about measured behaviour, and it is the branch that can be taken by impression.
+
+**The surface is everything a consumer can reach from outside this tree**, not the CLI alone: arguments and flags, config keys read from `.release-pr.json` and `~/.kanban-*-board.env`, the composite actions' inputs (`promote/`, `release-artifacts/`, `release-tag-check/`), environment variables, and the symbols of `bin/_kb-board-lib.sh` — a vendored file, so its predicates are somebody's call site (v0.30.0's `kb_is_uint` leading-zero refusal). **Three shapes ARE narrowings and are covered, so they need not be re-argued each time:** removing a flag, verb or tool; making an optional config key required (v0.32.0's `.promote.source`); and a gate that reds a consumer's CI run that used to go green (v0.28.0's `retired_artifacts` arm).
+
+**What the shipped history shows — this replaces an accident, not a judgement.** Re-derive it rather than trusting this paragraph: `awk '/^## \[/{v=$0} tolower($0)~/narrow|acceptance change/{print v": "NR}' docs/CHANGELOG.md` prints a release heading per hit, and the hits have to be **read** rather than counted — the wording drifts release to release, two of them (v0.26.0, v0.27.0) are the *negative* declaration, and several hits in v0.31.0/v0.33.0 use "narrow" about something else entirely. Read that way, the bump has tracked whether the release ADDED anything, never whether it narrowed anything. v0.24.0 (*"⚠ UPGRADING — four things narrow what the tools accept"*), v0.25.0, v0.29.0, v0.30.0, v0.32.0 and v0.34.0 each carried narrowings and each took a **minor** — for their additions. v0.23.1, v0.30.1 and v0.35.1 each carried narrowings, added nothing, and took a **patch**. v0.23.1 states the mechanism in its own words, reasoning *"Per `VERSIONING.md` § Bump sizing this is a **patch**: every change is a fix … no new `bin/` tool, no new flag, no new capability"* in the paragraph directly above *"⚠ UPGRADING — the CLIs now reject `--flag ""` where they previously accepted it silently."* The same consumer-visible break has therefore shipped under both signals, sorted by something that has nothing to do with it. This rule changes only the second group: it makes the narrowing a floor of its own instead of a passenger.
+
+**Why the minor and not a major — semver does not say what it looks like it says.** [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) scopes its patch, minor and major clauses (6–8) to `x > 0` / `X > 0`, and its clause 4 reads *"Major version zero (0.y.z) is for initial development. Anything MAY change at any time. The public API SHOULD NOT be considered stable."* Pre-1.0 the spec imposes **no** rule here at all, which is exactly why this repo has to state one rather than cite one. Major is unavailable on its own terms too: the next major from `0.x` is **1.0.0**, which under clause 5 *defines the public API* — shipping that as the side effect of refusing a leading zero would assert a stability commitment nobody made. The minor is the leftmost position that can move pre-1.0, so that is where the narrowing goes. Post-1.0 the same change is a major under clause 8, and this subsection is re-derived at the 1.0 cut rather than carried over.
+
+**Say it on the release, because the bump is read off that sentence.** A release's CHANGELOG summary states its narrowings or states that it has none — v0.26.0 and v0.27.0 already say *"No narrowings this release"* — and that line is both what the bump size is derived from and the only thing a later audit can read. Omission must never be how a release says "nothing narrowed", for the same reason § The §6 upgrade-action rule carries an explicit no-action line.
+
+**Not retroactive.** A released version keeps the number it shipped under; the entries in `docs/UPGRADE.md` §6 are what walk an upgrader across the releases that predate this rule, and the three named above are among them.
+
+**What this rule does NOT cover.** Each of these can break a consumer just as hard. None is sized here, and reading this subsection as covering them is the misreading it is written to prevent.
+
+1. **Output shape at `rc 0`** — what a tool PRINTS while still succeeding: stdout format, a field name, the wording of a message a caller greps. v0.34.0's `release-pr-body` stdout contract change and v0.35.1's removal of clauses from a refusal message are that class, and nothing in this document sizes it.
+2. **Behaviour changes where the input is still accepted** — a default that moves, a write that writes less, an action that stops acting until it is armed (`hooks/post-checkout`'s opt-in). Nothing fails, so the test above answers "not a narrowing" — correctly, and that class is open.
+3. **Post-1.0**, per the clause-8 note above.
+4. **Whether the narrowing should ship at all.** Sizing is not approval — several of the narrowings above record their own in the changelog (*asked and granted*, *operator-approved*), and this subsection does not stand in for that gate.
+5. **The `[Unreleased]` and §6 obligations**, which are owed identically at every bump size and are owned by the two sections below.
+
+**It is a floor, never a ceiling.** It cannot lower a bump, and it does not make a release that also adds surface anything other than the minor it already was.
 
 ## The `[Unreleased]` entry rule — every card-carrying PR, not the release
 
