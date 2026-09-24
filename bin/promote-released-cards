@@ -18,6 +18,52 @@
 # With the opt-in `--shipped-stages IDS` guard, a matched card NOT currently in a
 # Shipped-class source stage is skipped, not moved (promotion never resurrects a
 # declined/backlog card carrying a stale/recycled stamp); see the Usage note below.
+# A matched card carrying the `program` tag is WITHHELD — always, no flag — because such a card
+# is a PARENT naming several legs and no one release may take it terminal; see THE PROGRAM-PARENT
+# WITHHOLD below.
+#
+# THE PROGRAM-PARENT WITHHOLD — unconditional, non-fatal, counted (toolkit card#10068).
+#   A card carrying the `program` tag names SEVERAL LEGS rather than one deliverable. A release
+#   ships one of them, the card's `dl_number`/`pr_number` matches, and this mover then puts the
+#   PARENT in the terminal stage — the one nobody re-reads — while its other legs are unbuilt and
+#   stop being offered by any queue. The work is still written on the card; the card just reads
+#   DONE. The live instance (kanban card#9996, seven legs, one built) was held out of this by a
+#   hand-set `block_reason` and a source-stage pin, i.e. by COLUMN, not by any predicate.
+#
+#   WHY THE PREDICATE IS THE TAG AND NOT A PARENT/CHILD RELATION. Measured on this fleet: the
+#   `program` tag selects exactly one card across the three live boards; `parent_id` — which now
+#   exists in the board schema — selects ZERO, because nothing backfills it, and on the row being
+#   MOVED it marks that row as a CHILD, so a predicate keyed on it would refuse exactly the legs
+#   that should move and permit the parent it exists to hold back. The structurally right
+#   predicate is the inverse, *has children*, and the board's task resource does not project it,
+#   so no external writer can read it at all yet. Revisit when it does, not before.
+#
+#   WHY WITHHOLD AND NOT REFUSE, which is the whole shape of this guard and not a soft option.
+#   This tool is VENDORED, SHA-PINNED, into other repos' release workflows, so a hard failure here
+#   becomes THEIR broken release for a card that is not theirs; and on an install with no bridge
+#   this is the ONLY writer of the terminal stage, which is exactly where the predicate most needs
+#   to exist rather than to be load-bearing on an exit code. A withheld card is left where it was
+#   and is recoverable by hand on any later day; a terminal one is not. So: the card is named on
+#   stderr with the `⊘` the source-stage guard already uses, counted in its own summary segment,
+#   and the run continues and exits on exactly the ladder it would have without it.
+#
+#   ⛔ THE SPELLING IS AN EXACT, CASE-SENSITIVE, WHITESPACE-SENSITIVE MATCH ON THE TAG `program`,
+#   which is written here as the literal an operator reading `--help` needs (this block IS the
+#   published contract for a copy vendored standalone with no docs beside it) rather than as a
+#   pointer to the constant below — and the two are held equal by a cell in
+#   `tests/promote-program-withhold-selftest.sh`, so this copy cannot drift from the predicate. And
+#   that is not this file's choice to make: the board stores tags verbatim (it normalizes neither
+#   case nor whitespace) and the bridge's own `ProgramCardGuard` — the other writer that consults
+#   this tag — matches exactly. `Program` and `program ` are a DIFFERENT tag to that writer, so
+#   admitting them here would make the two writers disagree about which cards are parents, which
+#   is worse than either rule alone. A second spelling would be a second rule.
+#
+#   ⚠ WHAT THIS CANNOT SEE, so `0 program-withheld` is not read as "no parent was promoted": a
+#   parent nobody TAGGED is invisible to this, exactly as it is to the bridge's guard — the tag is
+#   an operator convention with no enforcement at mint time on either side. And a row whose `tags`
+#   this run could not read as a list answers "not a parent" and is PROMOTED; that direction is
+#   deliberate and is the bridge guard's too (the alternative withholds a whole release on one
+#   malformed response), but it means an unreadable `tags` is silent here.
 #
 # Shipped refs come from an EXPLICIT set (`--dls "DL-1,DL-2"` and/or `--cards "12,34"`),
 # else from `git log <base>..<head>`:
@@ -173,7 +219,11 @@
 #
 #   0  the run promoted what it says it promoted: no card was measured in another stage, and no
 #      write went unread. ⚠ NOT "every matched card is released" — a stage-guarded skip, a
-#      no-card or other-repo ref, and the refusal case below all live at 0.
+#      program-parent withhold, a no-card or other-repo ref, and the refusal case below all live
+#      at 0. The program withhold is at 0 BY DESIGN and not by omission: see THE PROGRAM-PARENT
+#      WITHHOLD above for why this vendored tool reports that card instead of failing its
+#      consumer's release over it. ⛔ A GATE THAT MUST CATCH ONE READS THE `program-withheld`
+#      SEGMENT OF THE SUMMARY LINE, NOT THE RC.
 #   1  a KNOWN failure. TWO ROUTES REACH IT AND THEY ARE NOT CONDITIONAL ON THE SAME THING —
 #      the difference is the whole of what round 2 changed, so it is stated rather than implied:
 #        · a MEASURED un-applied move (`✗ … move NOT APPLIED`) — UNCONDITIONAL. Whatever else
@@ -354,6 +404,14 @@ require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 # in_shipped_stage <stage-id>: true iff the id is in the comma-separated $SHIPPED_STAGES set.
 # Only consulted when SHIPPED_STAGES is non-empty (the guard is opt-in).
 in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+# The tag that marks a card as a PARENT naming several legs — THE ONE PLACE THIS STRING IS
+# WRITTEN in this script. The correlation's jq reads it through `--arg ptag`, the report lines
+# interpolate it, and `tests/promote-program-withhold-selftest.sh` reads it back OUT of this line
+# rather than restating it, so the spelling the withhold matches cannot drift from the spelling
+# the operator is told about. Why the tag at all, why an exact match, and why a withhold rather
+# than a refusal: THE PROGRAM-PARENT WITHHOLD in the header, which `--help` prints.
+PROGRAM_TAG='program'
 
 # uint_ok <s> / uint_csv_ok <s>: true iff <s> is a non-empty run of ASCII digits, or a
 # non-empty comma-separated list of them (no leading/trailing/doubled comma).
@@ -1215,7 +1273,7 @@ CARDS="$(fetch_whole_board)"
 #     AND (when repo qualification is on) the REF legs are this repo's — see REPO QUALIFICATION.
 # The classification is done ONCE here, in one pass, and every downstream leg reads `.cls`, so
 # the move loop, the reports and the summary cannot disagree about which cards matched.
-CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" '
+CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" --arg ptag "$PROGRAM_TAG" '
   # norm reads a card ref (dl_number, pr_number or id) and answers the bare-integer,
   # zero-stripped form numlist produces for the shipped side, so "093"/93 correlate — or ""
   # for a value that is not ONE integer, which correlates to nothing and leaves the card alone.
@@ -1361,8 +1419,18 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
     | (($cid != "") and ($cids|index($cid) != null)) as $byId
     | select($byDl or $byPr or $byId)
     | ($c | derive_source) as $csrc
+    # THE PROGRAM-PARENT PREDICATE, read HERE because this is where the row still is (card#10068).
+    # The board resource this scan already fetched projects `tags` on every row, so the predicate
+    # costs ZERO extra requests — but this projection used to drop the field, so the move loop
+    # below could not see a tag the tool had already been told. That is the whole of what made the
+    # withhold look like new I/O.
+    # EXACT string match, deliberately: see the header. `select(type == "string")` keeps a
+    # non-string member out of the compare rather than letting it decide it, and the `[…[]?]`
+    # form answers `false` for a `tags` that is absent or not a list — the degrade-toward-promoting
+    # direction the header names as a blind spot rather than hides.
+    | (([($c.tags // [])[]? | select(type == "string")] | index($ptag)) != null) as $prog
     # Display precedence keeps DL first so a run with no --cards renders exactly as before.
-    | { id: $c.id, stage: ($c.workflow_stage_id|tostring),
+    | { id: $c.id, stage: ($c.workflow_stage_id|tostring), program: $prog,
         ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" else "#\($cpr)" end),
         dl: (if $byDl then $cdl else null end),
         pr: (if $byPr then $cpr else null end),
@@ -1689,13 +1757,33 @@ complete_verdict() {
 }
 
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0; incomplete=0
+moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0; incomplete=0; program_held=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
   cur="$(printf '%s' "$row" | jq -r '.stage')"
   ref="$(printf '%s' "$row" | jq -r '.ref')"
   if [ "$cur" = "$STAGE" ]; then echo "  = $ref (#$id): already released"; skipped=$((skipped + 1)); continue; fi
+  # PROGRAM-PARENT WITHHOLD (card#10068) — unconditional, non-fatal. Why the tag, why exact, why a
+  # withhold rather than a refusal: the header block, which --help prints. Not restated here.
+  #
+  # ⛔ WHY IT IS FIRST AMONG THE PRE-WRITE REFUSALS, which is a choice and not the order it was
+  # written in. Every other refusal in this loop is CONDITIONAL on how the consumer invoked the
+  # tool — `--shipped-stages` and `--require-complete` are both opt-in — so ordering this one
+  # after them would make the reason an operator reads for ONE card depend on which flags another
+  # repo's workflow happens to pass. The withhold is a property of the CARD, it is the same on
+  # every install, and it is the permanent one (a parent must not be taken terminal by any leg's
+  # ref, on any day), where "outside the shipped stages" and "incomplete" are states that change.
+  # So it is named first and always, and no run reports a parent as anything else.
+  #
+  # AFTER the already-released check, for the reason the source-stage guard is: a card genuinely
+  # at the target stage is an idempotent re-run, and withholding it would claim this run held back
+  # something that is already there. BEFORE the --dry-run branch, so a preview shows the withhold
+  # the real run would make.
+  if [ "$(printf '%s' "$row" | jq -r '.program')" = "true" ]; then
+    echo "  ⊘ $ref (#$id): carries the \`$PROGRAM_TAG\` tag — this is a PARENT card naming SEVERAL legs, not one deliverable, so one release's ref may not take it to the terminal stage while its other legs are unbuilt. WITHHELD, not promoted, and left exactly where it was: move it by hand once every leg has shipped. Nothing else in this run is affected." >&2
+    program_held=$((program_held + 1)); continue
+  fi
   # Source-stage guard (opt-in via --shipped-stages). Promotion means Shipped→Released, so a
   # matched card NOT in a Shipped-class source stage is skipped, not moved — promotion never
   # resurrects a declined/backlog card carrying a stale or recycled DL/PR stamp. Evaluated
@@ -1828,14 +1916,23 @@ fi
 # read-back counts, "was this run gated at all?" for the completeness one.
 #
 # SEGMENT ORDER is by WHEN a card leaves the promotion path, not by which card added the term:
-# the pre-write refusals (`stage-guarded`, `completeness-refused`, `other-repo`/`unsourced`,
-# `no-card`) come first in the order the move loop applies them, then the post-write outcomes
-# (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits immediately after
-# `stage-guarded` because that is where its `continue` is in the loop.
-unv_txt=""; na_txt=""
+# the pre-write refusals (`program-withheld`, `stage-guarded`, `completeness-refused`,
+# `other-repo`/`unsourced`, `no-card`) come first in the order the move loop applies them, then
+# the post-write outcomes (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits
+# immediately after `stage-guarded` because that is where its `continue` is in the loop, and
+# `program-withheld` sits ahead of both because its `continue` is ahead of both.
+#
+# ⚠ `program-withheld` RIDES BY THE COUNT RULE, not the flag rule, because it has no flag: it
+# appears only when there IS one, so every run that has always been possible keeps a
+# byte-identical summary line and a run that withheld a parent says so on the line an operator
+# already reads. It is its OWN segment and folded into NO other count, which is the honesty this
+# whole guard turns on — a withheld card is neither promoted nor failed, and adding it to `moved`
+# would make the one number a release step is read for assert the opposite of what happened.
+unv_txt=""; na_txt=""; prog_txt=""
 if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+if [ "$program_held" -gt 0 ]; then prog_txt="$program_held program-withheld, "; fi
+echo "promote-released-cards: $moved moved, $skipped already-released, $prog_txt${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -1847,10 +1944,28 @@ echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED
 # without overturning that decision — the summary stays a stable parse target, and stderr is
 # where this tool already puts its operator-facing findings (the no-card WARNING above, the
 # per-card guard skips).
+#
+# THE PROGRAM WITHHOLD'S RUN-LEVEL LINE prints only when it WITHHELD something, and that is the
+# opposite choice from the stage-guard pair directly below — so the difference is stated rather
+# than left to look like an oversight. That pair exists because `--shipped-stages` can be ON or
+# OFF and a run must say which, or an unguarded promote reads as a clean one. This withhold has no
+# OFF: it is on for every run, on every install, so a line announcing it would tell every operator
+# something true of every run that has ever been possible, and would change the stderr of all of
+# them to say nothing. What an operator needs is the CARD, and that is what this prints.
+# ⚠ Read `0 program-withheld`'s ABSENCE from the summary as "this run withheld no parent", never
+# as "no parent was promoted": an untagged parent is invisible to the predicate (header).
+if [ "$program_held" -gt 0 ]; then
+  echo "promote-released-cards: $program_held card(s) carrying the \`$PROGRAM_TAG\` tag were WITHHELD from the terminal stage and are named individually above. They are PARENT cards naming several legs each; this release shipped one leg's ref, which does not finish them. Nothing was written for them and they are where they were — move each by hand once its every leg has shipped. This is not a failure and does not affect this run's exit code." >&2
+fi
 if [ -n "$SHIPPED_STAGES" ]; then
   echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
 else
-  echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
+  # ⚠ THE SCOPE WORD IS LOAD-BEARING AND IT IS NARROWER THAN IT WAS. This line used to say EVERY
+  # DL/PR-matched card was promoted regardless of its stage, which stopped being true the day the
+  # program-parent withhold landed: a matched parent is held back on a run with no --shipped-stages
+  # at all, so the unqualified claim would have told an operator this run moved a card it did not.
+  # A guard's stated scope has to equal its actual predicate, in both directions.
+  echo "promote-released-cards: stage-guard OFF (no --shipped-stages) — every DL/PR-matched card this run promoted was promoted regardless of its current stage, so a stale or recycled stamp on a declined/backlog card would have moved it. Pass --shipped-stages <ids> to guard." >&2
 fi
 # The repo-qualification state, ALWAYS, on its own stderr line — for exactly the reason the
 # stage-guard pair above exists (card#5152). `source: "*"` is a DECLARATION about the board,
@@ -1984,7 +2099,13 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # markers can be lost while a title DL still matches. A guarded-skip therefore cannot
 # disprove a dropped sibling ref; on this off-process path (non-merge tip only) the
 # ~2-minute manual verification a false alarm costs is the right side of the asymmetry
-# vs a silently un-promoted shipped card. The card#8421 counts (`foreign`, `unsourced`) are
+# vs a silently un-promoted shipped card. `program_held` is NOT in the guard either, by exactly
+# that argument: a withheld parent proves a ref reached a card, not that the RANGE was complete,
+# so a release whose only match was a parent still fails behind a squash tip — and rightly, since
+# the two possible causes there (only a parent of ours was named / our refs were dropped) are
+# again what a human has to tell apart. The withhold is non-fatal on its OWN axis; it does not
+# buy a run past a die that is asking a different question.
+# The card#8421 counts (`foreign`, `unsourced`) are
 # NOT in the guard either, and for the same reason: a repo-qualification rejection says
 # nothing about whether the RANGE was complete, which is the only question this die asks. A
 # release whose refs ALL matched other repos therefore still fails behind a squash tip — which

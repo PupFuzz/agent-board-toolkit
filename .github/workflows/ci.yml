@@ -194,6 +194,7 @@ jobs:
           - promote-completeness-gate-selftest
           - promote-move-readback-selftest
           - promote-pagination-selftest
+          - promote-program-withhold-selftest
           - promote-ref-canon-selftest
           - promote-refusal-detail-selftest
           - promote-source-qualify-selftest
