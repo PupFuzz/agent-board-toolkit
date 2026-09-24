@@ -49,4 +49,10 @@ jobs:
           # pass here and fail on the push to `dev` afterwards, with the omission already
           # merged. Passed through the environment, never interpolated into the run: script.
           PR_TITLE: ${{ github.event.pull_request.title }}
+          # The group key the SQUASHED commit will carry on `dev` (`… (#NNN)`), handed over rather
+          # than guessed, so the PR run groups its records exactly as the later push run will
+          # (card#10338). Empty on a `push` run, where the subjects already carry it. It is never a
+          # licence to USE the squash basis — `_squash_ends` decides that, and refuses on the PR
+          # classes this repo merge-commits.
+          PR_NUMBER: ${{ github.event.number }}
         run: bash tests/changelog-card-entry-selftest.sh
