@@ -33,7 +33,9 @@
 #      kanban per-key payload merge (#2180). Both keys land together or not at all: two writes
 #      with a crash between would leave a dl_number-without-source card the writeback can't
 #      correlate and the reconcile can't see — the exact silent-no-move footgun this avoids.
-#      (swimlane_id alone does NOT yield a source; the pr_url does.)
+#      (swimlane_id alone does NOT yield a source; the pr_url does — on a card where no
+#      payload.repo that is a string containing `/` outranks it, which _ata_pr_url's header
+#      below owns and this line does not restate.)
 #   5. fail-loud verify     — GET by-ref?system=dl&ref=N&source=<repo> must now return the card,
 #      exercising the SAME repo-qualified correlation the bridge writeback + the coord.kanban_common
 #      reconcile use (roundtable #14, DL-SOURCE-CORRELATION.md). A miss aborts LOUD at adoption
