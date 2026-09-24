@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # changelog-card-entry-selftest.sh — assert that every card shipped since the last release tag
 # owns a line-initial `- **card#NNNN**` entry in docs/CHANGELOG.md, and that no PR left a
-# SUPERSEDED entry standing beside its replacement.
+# SUPERSEDED entry standing beside its replacement — i.e. under the same `###` heading, which is
+# what "beside its replacement" means here and, until card#10176, was NOT what the leg measured.
 #
 # WHY THIS FILE EXISTS. `[Unreleased]` is where this repo records shipped work between
 # releases, and 21 of the 24 cards merged to `dev` since v0.23.1 had an entry there. Nothing
@@ -56,11 +57,15 @@
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest properties the assertions support. One:
 # every `card#NNNN` appearing in a commit subject since the last release tag also appears at
 # the head of some bullet in the sections ABOVE that tag's section. Two: no card in that region
-# carries two line-initial bullets that a SINGLE PR put there and left standing. Neither says
+# carries two line-initial bullets that a SINGLE PR put there and left standing UNDER ONE `###`
+# HEADING (card#10176 — a card's `### Added` bullet and its `### Changed` BREAKING bullet are two
+# claims of different KINDS about one change, which this repo's released sections have carried
+# since #180, and reporting that as a duplicate is what this leg used to do). Neither says
 # anything about whether a bullet's prose is accurate, current, or describes what shipped, and
 # the second sees BULLETS only — a duplicated line inside a multi-line entry is outside its
-# population. Never report a green run as "the CHANGELOG is correct"; it means "no shipped card
-# is undocumented, and no PR left a stale copy of its own entry behind".
+# population, as is a superseded wording that was MOVED to another heading. Never report a green
+# run as "the CHANGELOG is correct"; it means "no shipped card is undocumented, and no PR left a
+# stale copy of its own entry beside its replacement under one heading".
 #
 # WHY THE SECOND PROPERTY EXISTS (card#7227). A `merge=union` attribute on docs/CHANGELOG.md
 # resolves the anchor collision every sibling PR creates by keeping both sides' lines, and on a
@@ -250,6 +255,42 @@ _bullets() {
     _region "$1" "$2" | { grep -E '^- \*\*card#[0-9]+\*\*' || true; }
 }
 
+# _region_kinds <changelog> <version> — one `<kind>\t<bullet line>` record per line-initial card
+# bullet standing in the region, where <kind> is the `### ` heading the bullet is filed under.
+#
+# THE KIND IS THE `###` HEADING ALONE, DELIBERATELY IGNORING WHICH `## [` SECTION IT SITS IN,
+# and both halves of that are load-bearing for `_stale_dupes` (card#10176):
+#   * `###` distinguishes `### Added` from `### Changed`. A Keep-a-Changelog heading is a CLAIM
+#     ABOUT THE KIND of the change, so one card's feature bullet and the same card's BREAKING
+#     bullet are two different claims, not two wordings of one.
+#   * `## [` is ignored so that a bullet carried under a folded `## [X.Y.Z]` heading and a second
+#     one filed under `## [Unreleased]` — the card#8442 shape, where the gate's own remedy used to
+#     mint a duplicate — still reads as ONE kind and is still reported. Keying on the pair would
+#     silence exactly that.
+#
+# A bullet with no `### ` above it inside the region takes the kind "" — its own kind, not a
+# missing value. Every `## [` section older than [0.31.0] is written that way, as are the fixtures
+# below and the union-rebase derivation, so "" is the common case in the historical file rather
+# than an edge.
+#
+# Headings are matched with `index(… ) == 1` for `_region`'s reason: `[` never reaches a regex and
+# there is nothing to escape. `### ` is tested FIRST because `index($0, "## ")` is 0 on a `###`
+# line (the third character is `#`, not a space) — the order is belt to that, not the mechanism.
+_region_kinds() {
+    _region "$1" "$2" | awk '
+        index($0, "### ") == 1 { kind = $0; sub(/[ \t]+$/, "", kind); next }
+        index($0, "## ") == 1  { kind = ""; next }
+        /^- \*\*card#[0-9]+\*\*/ { print kind "\t" $0 }
+    '
+}
+
+# _kinds_of <bullet line> <_region_kinds output> — every kind under which that EXACT line stands.
+# Empty when the line is not in the region at all, which is the presence test `_stale_dupes` runs;
+# more than one line when the identical wording stands under two headings.
+_kinds_of() {
+    awk -F'\t' -v b="$1" '$2 == b { print $1 }' <<< "$2"
+}
+
 # _discharged <changelog> <version> — the card tokens carrying a line-initial bullet in the
 # region. The head token is extracted BEFORE the id is, so a bullet whose prose cites a second
 # card does not discharge it (the card#5374 shape, fixtured below).
@@ -375,10 +416,56 @@ _added_bullets() {
 }
 
 # _stale_dupes <records> <changelog> <version> — the card ids for which ONE PR left two or more
-# bullets standing in the region. <records> is `_added_bullets`' output, whose REMOVALS are
-# already region-scoped there (they have to be — see below); this function scopes the additions.
+# bullets standing UNDER ONE `###` HEADING in the region. <records> is `_added_bullets`' output,
+# whose REMOVALS are already region-scoped there (they have to be — see below); this function
+# scopes the additions.
 #
-# TWO CONDITIONS, AND EACH REJECTS A REAL SHAPE THE OTHER ACCEPTS.
+# ⛔ THE HEADING SCOPE IS card#10176, AND IT NARROWS A PREDICATE THAT WAS WIDER THAN ITS OWN
+# STATED SCOPE. This leg is announced as "no PR left a SUPERSEDED entry standing beside its
+# REPLACEMENT" and its predicate was "no card carries two surviving bullets from one PR" — not the
+# same set, and the difference is not hypothetical: #388 filed card#10176's `--require-complete`
+# feature under `### Added` and the same card's ⚠ BREAKING refusal of `dry-run: 'True'` under
+# `### Changed`, two claims of different KINDS about one change, neither superseding the other,
+# and the gate reported a duplicate on `dev`. **Folding them into one bullet is the wrong remedy**
+# — it files a breaking change under `### Added`, where the reader who scans `### Changed` for
+# what an upgrade will break does not look, and `docs/CHANGELOG.md` is the file a release section
+# is cut from.
+#
+# THE SPLIT IS THIS REPO'S CONVENTION, DERIVED FROM THE FILE RATHER THAN ARGUED. Of the commits in
+# `docs/CHANGELOG.md`'s whole history that added two or more bullets for ONE card (re-derive with
+# the recipe below), three did it across two or three `###` headings and all three are standing in
+# released sections today: #221 filed card#5910 under `### Added` + `### Fixed`, #212 filed
+# card#5776 under `### Added` + `### Changed` (its second bullet says "same change as above,
+# refactor half" in so many words), and #180 filed card#5200 across `### Added` + `### Changed` +
+# `### Fixed`. VERSIONING.md § The `[Unreleased]` entry rule obliges *a* line-initial bullet and
+# has never said "exactly one".
+#
+#     git log --format=%H -- docs/CHANGELOG.md | while read -r s; do
+#         git show --format= "$s" -- docs/CHANGELOG.md | grep -oE '^\+- \*\*card#[0-9]+\*\*'
+#     done | sort | uniq -c | awk '$1 > 1'   # …then read each one's headings at that revision
+#
+# WHAT IT STILL CATCHES, WHICH IS THE WHOLE POINT OF NARROWING RATHER THAN DELETING. The shape
+# this leg exists for is a `merge=union` rebase (or a hand-resolved conflict) re-adding a wording
+# the branch had already superseded. Union keeps BOTH sides' lines AT THE COLLIDING ANCHOR, so the
+# re-added copy lands where the original stood — under the same heading, by construction. The
+# end-to-end derivation below drives a real union rebase and the repaired predicate still reports
+# it; so does the across-the-fold case, where the two copies sit under the same `###` in two
+# different `## [` sections. A predicate that could not red on those would be a loosening; these
+# are fixtured as a pair with the legitimate two-heading case, in both directions.
+#
+# ⛔ RESIDUAL THE HEADING SCOPE BUYS, named rather than discovered: a superseded wording that ends
+# up under a DIFFERENT heading from its replacement — a branch that reworded its bullet and moved
+# it from `### Added` to `### Changed`, with a bad merge re-adding the old one — now reads as the
+# legitimate split and passes. Nothing structural tells those two apart: they are the same shape,
+# and the only difference is in the PROSE, which this gate does not and should not judge (its
+# green has never meant "the wording is right" — see WHAT A GREEN RUN HERE ACTUALLY PROVES).
+#
+# ⛔ RESIDUAL UNCHANGED BY THIS CARD: two or more bullets legitimately filed under ONE heading for
+# one card by one PR are still reported. #180 did exactly that (fourteen `### Fixed` bullets for
+# card#5200) and would red today — as it would have before this change, which is why it is a
+# standing residual and not one this narrowing introduces.
+#
+# TWO CONDITIONS BESIDES THE HEADING, AND EACH REJECTS A REAL SHAPE THE OTHER ACCEPTS.
 #
 #   NET ≥ 2 — the PR's arithmetic, IN THE REGION AT BOTH ENDS (card#7303): bullets it added that
 #   still STAND in the region, minus bullets it removed FROM the region. Editing somebody else's
@@ -388,7 +475,8 @@ _added_bullets() {
 #   arithmetic reads that as one new entry. Counting raw additions reported it as a duplicate —
 #   a false red on merged, correct history, seen before this rule was written and fixtured below.
 #
-#   TWO STILL PRESENT — the file's state: both copies are in the region right now. A branch that
+#   TWO STILL PRESENT UNDER ONE HEADING — the file's state: both copies are in the region right
+#   now, claiming the same KIND of change. A branch that
 #   corrects its own entry adds two wordings across two commits, which nets to two only when
 #   `union` re-adds the superseded one during a rebase; if the branch simply reworded, the first
 #   wording is gone and there is nothing for a reader to trip over.
@@ -410,32 +498,52 @@ _added_bullets() {
 # side is filtered HERE, by letting an add count toward net only when the presence test has
 # already found it standing in the region: it needs no history, it deletes the second copy of
 # that test rather than adding one, and it makes net ≥ pres STRUCTURALLY — so the only thing that
-# can pull a genuine duplicate back under the threshold is a genuine in-region removal.
+# can pull a genuine duplicate back under the threshold is a genuine in-region removal. The
+# heading scope does not disturb that invariant: per-heading presence can only be ≤ the total
+# presence the net already dominates.
+#
+# ⛔ THE NET STAYS PER (PR, CARD) — it is NOT scoped by heading, and that is a decision with a
+# residual rather than an oversight. A removal's heading lives at the PARENT revision (see
+# `_added_bullets`), so scoping it would need a second historical read to buy a STRICTER check
+# than the one this card is correcting — out of this change's scope. The residual: a PR that
+# removes one card bullet from `### Added` and files two under `### Fixed` nets to 1 and stays
+# green. That is the replace-an-existing-entry trade below, taken across headings.
 #
 # ⛔ RESIDUAL, deliberate and unchanged in kind: a PR that removes two in-region bullets for one
 # card and files two of its own nets to zero and stays green. That is the replace-an-existing-entry
 # case at multiplicity two — the same trade the net rule already makes at multiplicity one, and a
 # card whose entry a PR must replace TWICE was carrying duplicates before that PR existed.
 _stale_dupes() {
-    local present pr sign line id
-    present="$(_bullets "$2" "$3")"
+    local kinds pr sign line id kind standing
+    kinds="$(_region_kinds "$2" "$3")"
     while IFS=$'\t' read -r pr sign line; do
         [[ -n "$line" ]] || continue
         id="${line#- \*\*}"; id="${id%%\**}"
         if [[ "$sign" == "-" ]]; then
             printf '%s\t%s\tnet\t-1\n' "$pr" "$id"
-        elif [[ "$(has_line "$line" "$present")" == true ]]; then
+            continue
+        fi
+        standing=false
+        while IFS= read -r kind; do
+            standing=true
+            printf '%s\t%s\tpresent\t%s\t%s\n' "$pr" "$id" "$kind" "$line"
+        done < <(_kinds_of "$line" "$kinds")
+        if [[ "$standing" == true ]]; then
             printf '%s\t%s\tnet\t1\n' "$pr" "$id"
-            printf '%s\t%s\tpresent\t%s\n' "$pr" "$id" "$line"
         fi
     done < "$1" | awk -F'\t' '
         $3 == "net" { net[$1 FS $2] += $4; next }
         $3 == "present" {
-            if (!(($1 FS $2 FS $4) in seen)) { seen[$1 FS $2 FS $4] = 1; pres[$1 FS $2]++ }
+            if (!(($1 FS $2 FS $4 FS $5) in seen)) {
+                seen[$1 FS $2 FS $4 FS $5] = 1
+                pres[$1 FS $2 FS $4]++
+            }
         }
         END {
-            for (k in net)
-                if (net[k] >= 2 && pres[k] >= 2) { split(k, a, FS); print a[2] }
+            for (k in pres) {
+                split(k, a, FS)
+                if (pres[k] >= 2 && net[a[1] FS a[2]] >= 2) print a[2]
+            }
         }
     ' | LC_ALL=C sort -u
 }
@@ -925,6 +1033,85 @@ eq "a reword whose superseded line is gone is not a duplicate" "" \
    "$(_stale_dupes "$FIX/records" "$FIX/changelog-reworded.md" "0.23.1")"
 eq "the region scope holds: the released section's own card#4000 is not read as a survivor" \
    "" "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1" | grep -x 'card#9000' || true)"
+
+# ---------------------------------------------------------------------------
+# THE `###` HEADING SCOPE (card#10176). Everything above is written against sections carrying no
+# `###` heading at all — the layout of every `## [` section in this file older than [0.31.0], and
+# the one the union derivation below builds. That makes the kind "" the only kind those fixtures
+# exercise, so the heading rule is fixtured HERE, in both directions, over one file that carries
+# real headings. The three arms are not variants of one assertion: the first is the false red this
+# card removes, the second and third are the two shapes that must still red, and a predicate
+# satisfying any two without the third is wrong.
+# ---------------------------------------------------------------------------
+echo "== one PR filing one card under TWO headings is a SPLIT, not a superseded entry =="
+printf '%s\t%s\t%s\n' \
+    '388' '+' '- **card#10176** — the `--require-complete` gate and its oracle.' \
+    '388' '+' '- **card#10176** — ⚠ BREAKING: a boolean input spelled `True` now refuses.' \
+    '388' '+' '- **card#4000** — FIRST WORDING, under Fixed.' \
+    '388' '+' '- **card#4000** — CORRECTED WORDING, under Fixed.' \
+    '221' '+' '- **card#8442** — the entry the fold carried under the version heading.' \
+    '221' '+' '- **card#8442** — the entry its author filed again after the gate said MISSING.' \
+    > "$FIX/records-kinds"
+
+cat > "$FIX/changelog-kinds.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+- **card#10176** — the `--require-complete` gate and its oracle.
+- **card#8442** — the entry its author filed again after the gate said MISSING.
+
+### Changed
+- **card#10176** — ⚠ BREAKING: a boolean input spelled `True` now refuses.
+
+### Fixed
+- **card#4000** — FIRST WORDING, under Fixed.
+- **card#4000** — CORRECTED WORDING, under Fixed.
+
+## [0.36.0] - 2026-09-20
+
+### Added
+- **card#8442** — the entry the fold carried under the version heading.
+
+## [0.23.1] - 2026-07-27
+EOF
+# The witness first: all six bullets stand in the region and the kinds are the ones claimed, so a
+# green below is a ruling about headings and not about an unread file.
+eq "the region's kinds are derived per bullet, with the ## [ container ignored" \
+   "### Added	- **card#10176** — the \`--require-complete\` gate and its oracle.
+### Added	- **card#8442** — the entry its author filed again after the gate said MISSING.
+### Changed	- **card#10176** — ⚠ BREAKING: a boolean input spelled \`True\` now refuses.
+### Fixed	- **card#4000** — FIRST WORDING, under Fixed.
+### Fixed	- **card#4000** — CORRECTED WORDING, under Fixed.
+### Added	- **card#8442** — the entry the fold carried under the version heading." \
+   "$(_region_kinds "$FIX/changelog-kinds.md" "0.23.1")"
+eq "card#10176 is NOT reported: ### Added and ### Changed are two claims, not two wordings" "" \
+   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#10176' || true)"
+
+echo "== prove-it-can-fail: the same PR, the same card, ONE heading, is still REPORTED =="
+# The union-rebase shape in a sectioned file: two wordings under one `### Fixed`. Same records,
+# same file, same PR as the pass above — the only thing that differs is the heading.
+eq "two surviving wordings under ONE heading are named" "card#4000" \
+   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#4000' || true)"
+
+echo "== THE DISCRIMINATOR: card#10176's own bullets, moved under ONE heading, DO red =="
+# The tightest control available, and the one that stops the green above being vacuous: the same
+# records, the same PR, the same card, the same two wordings — only the heading of the second one
+# moves. If this passed too, the leg would be answering about something other than the heading.
+sed 's/^### Changed$/### Added/' "$FIX/changelog-kinds.md" > "$FIX/changelog-kinds-merged.md"
+eq "with both filed under ### Added, card#10176 IS reported" "card#10176" \
+   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds-merged.md" "0.23.1" | grep -x 'card#10176' || true)"
+
+echo "== prove-it-can-fail: the same heading in TWO ## [ sections is still ONE kind =="
+# The card#8442 shape the gate's own remedy used to mint: the fold carried the branch's bullet
+# under `## [0.36.0]`, the author filed a second under `## [Unreleased]`, and both sit under
+# `### Added`. Keying the kind on the (`## [`, `###`) PAIR would silence this — it does not.
+eq "a duplicate spanning the fold is named" "card#8442" \
+   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#8442' || true)"
+eq "and those are the only two reported (witness: the whole verdict, not three greps)" \
+   "card#4000
+card#8442" "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1")"
 
 echo "== the derivation against the REAL mechanism: a union rebase, with its no-attribute control =="
 # `_stale_dupes` above is proven over hand-written records. This proves the thing that mints
@@ -1588,7 +1775,7 @@ printf '  ..   %s bullet(s) added · %s removed from the region · %s PR(s) with
     "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
     "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
     "$(cut -f1 "$RECORDS" | LC_ALL=C sort -u | grep -c . || true)" "$LAST_TAG"
-eq "no card carries two surviving bullets from one PR" "" \
+eq "no card carries two surviving bullets from one PR under one ### heading" "" \
    "$(_stale_dupes "$RECORDS" "$CHANGELOG" "$LAST_VERSION")"
 
 _summary "changelog-card-entry-selftest"
