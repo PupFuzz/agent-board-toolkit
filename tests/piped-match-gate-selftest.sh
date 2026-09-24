@@ -51,12 +51,14 @@
 # `.github/workflows/ci.yml`'s shellcheck expression) PLUS `tests/*.sh`, re-derived on every
 # invocation. No file list is stored here, so a bin or a selftest added tomorrow is scanned that
 # day.
-#   ⚑ `tests/` IS IN THE POPULATION HERE, and that is a deliberate DIVERGENCE from
-#     `read-outcome-collapse-selftest.sh`, which excludes it. The reason is not symmetry, it is
-#     where the defect lives: this class minted its CI red INSIDE the harness, and 44 of the 47
-#     copies card#7175 found were in `tests/`. A gate over `bin/` alone would have said nothing
-#     about any of them. (The other gate excludes `tests/` because a selftest discards a read's
-#     status on purpose — that reasoning is specific to that class and does not transfer.)
+#   ⚑ ALL of `tests/` IS IN THE POPULATION HERE, and that is a deliberate DIVERGENCE from
+#     `read-outcome-collapse-selftest.sh`, which takes only `tests/*-check.sh` — the
+#     operator-run checks (card#10311). The reason is not symmetry, it is where the defect
+#     lives: this class minted its CI red INSIDE the harness, and 44 of the 47 copies card#7175
+#     found were in `tests/`. A gate over `bin/` alone would have said nothing about any of
+#     them. (The other gate narrows because a selftest discards a read's status on purpose, so
+#     the harness would arrive as a pile of dispositions reading "this is a test" — that
+#     reasoning is specific to that class and does not transfer.)
 #
 # MEMBER — a FILE, `<relpath>`, carrying a COUNT of occurrences. Not a line number: a line number
 # rots on the next edit above it and turns every disposition into a re-typing chore. The count is

@@ -33,7 +33,9 @@
 #      kanban per-key payload merge (#2180). Both keys land together or not at all: two writes
 #      with a crash between would leave a dl_number-without-source card the writeback can't
 #      correlate and the reconcile can't see — the exact silent-no-move footgun this avoids.
-#      (swimlane_id alone does NOT yield a source; the pr_url does.)
+#      (swimlane_id alone does NOT yield a source; the pr_url does — on a card where no
+#      payload.repo that is a string containing `/` outranks it, which _ata_pr_url's header
+#      below owns and this line does not restate.)
 #   5. fail-loud verify     — GET by-ref?system=dl&ref=N&source=<repo> must now return the card,
 #      exercising the SAME repo-qualified correlation the bridge writeback + the coord.kanban_common
 #      reconcile use (roundtable #14, DL-SOURCE-CORRELATION.md). A miss aborts LOUD at adoption
@@ -72,12 +74,14 @@ KB_PROG="adopt-to-dl"
 # name for one predicate is how a second predicate starts.
 
 # _ata_pr_url <repo>: the pre-PR placeholder pr_url whose repo segment yields the card's
-# by-ref `source`. The reconciler/writeback overwrite the URL when the real PR opens; only the
-# `<owner>/<name>` segment is load-bearing here.
+# by-ref `source` — where no `payload.repo` that is a string containing `/` outranks every URL
+# (the stamp comment below, and `docs/INSTALL.md` §4). The reconciler/writeback overwrite the
+# URL when the real PR opens; only the `<owner>/<name>` segment is load-bearing here.
 _ata_pr_url() { printf 'https://github.com/%s/pull/0' "$1"; }
 
 # _ata_issue_url <repo> <issue-n>: the issue_url whose repo segment yields the card's by-ref
-# `source` for the issue→card correlation (system=github_issue). Mirror of _ata_pr_url; unlike
+# `source` for the issue→card correlation (system=github_issue) — where no `payload.repo` that
+# is a string containing `/` outranks every URL, exactly as for _ata_pr_url above. Unlike
 # the pre-PR placeholder the issue number is known at adoption, so the real #N rides the URL —
 # but as with pr_url only the `<owner>/<name>` segment is load-bearing for `source`.
 _ata_issue_url() { printf 'https://github.com/%s/issues/%s' "$1" "$2"; }

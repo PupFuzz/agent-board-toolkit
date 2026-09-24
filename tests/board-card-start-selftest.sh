@@ -72,6 +72,20 @@ lint_silent "a DL branch → silent"                 "feature/dl212-event-gated"
 lint_silent "no card-ish signal → silent"          "docs/adoption-guide"
 lint_silent "embedded 'card' (discard_42) → silent" "feature/discard_42-x"
 lint_silent "single-digit (card_3) → silent ({2,})" "fix/card_3-x"
+# card#9845: before that change, "rename it" was the WHOLE fix — every wired repo fired the
+# hook, so a compliant rename always correlated AND moved. Since the hook is opt-in, a rename
+# in an unarmed repo still moves nothing, so the advisory must not imply otherwise. This leg
+# reds against the PRE-FIX wording of this same line (the string this file's own git history
+# carries before this commit) — NOT against origin/dev's hook, since the defect is in this
+# advisory's TEXT, introduced by card#9845's change, not in the old hook's behavior:
+#   git show <pre-fix HEAD>:bin/board-card-start | grep -c 'ARMED for checkout auto-move'  # 0
+_lint_arm_warn="$(_bcs_branch_lint_warning "fix/card_4524-x")"
+grep -q "ARMED for checkout auto-move" <<< "$_lint_arm_warn" \
+    && ok "malformed-spelling advisory also names arming as a separate precondition" \
+    || bad "malformed-spelling advisory does not mention arming: $_lint_arm_warn"
+grep -q "kanban.automove-on-checkout" <<< "$_lint_arm_warn" \
+    && ok "…and gives the exact config key to check" \
+    || bad "malformed-spelling advisory omits the config key: $_lint_arm_warn"
 
 echo "== board-card-start --lint — the wiring the pre-push hook invokes (subprocess, network-free) =="
 # --lint moves nothing and issues no request; exercises the real arg path + exit code. The
@@ -260,6 +274,51 @@ if command -v git >/dev/null 2>&1; then
     cp "$(_vfile fix/card-713-x)" "$(_vfile fix/card-712-x)"
     _vwarn fix/card-712-x 42
     eq "another branch's record at this path: UNREADABLE, never borrowed" "1|true" "$_vrc|$(has "is UNREADABLE" "$_vout")"
+
+    # ── the re-checkout remedy states its own precondition, on EVERY row that prints it (card#9845)
+    # `$again` is ONE string printed by several rows (the population: every line that interpolates
+    # it — `grep -n '[$]again' bin/board-card-start | grep -v 'again='`; the unquoted pattern is
+    # load-bearing, since NOT CHECKED interpolates it inside `${r_remedy:-…}`).
+    # When the opt-in landed only the NOT RECORDED row was qualified; UNREADABLE, STALE and NOT
+    # CHECKED kept sending an operator to a command that records nothing in an unarmed repo. These
+    # legs drive each row of that population and assert the precondition rides the REMEDY, so a row
+    # added later inherits it — and a row added later needs a leg here.
+    #
+    # ⛔ Asserted on the PRINTED line of each row, not on the variable: a caller could stop using
+    # `$again` and this would still have to fail.
+    #
+    # Seen to fail: restore the pre-card#9845 remedy text and every leg below reds —
+    #   sed -i "s/ — which records nothing at all unless this repo is ARMED[^\"]*\"/\"/" bin/board-card-start
+    _armed_re="records nothing at all unless this repo is ARMED"
+    _vwarn fix/card-714-x 42        # no record at all      → NOT RECORDED
+    eq "⭐ NOT RECORDED: the re-checkout remedy names arming as its precondition" "true|true" \
+       "$(has "board verdict NOT RECORDED" "$_vout")|$(has "$_armed_re" "$_vout")"
+    eq "…and gives the exact config key, on the remedy itself" "true" \
+       "$(has "git config kanban.automove-on-checkout true" "$_vout")"
+    _vwarn fix/card-712-x 42        # garbage/foreign file  → UNREADABLE
+    eq "⭐ UNREADABLE: same remedy, same precondition" "true|true" \
+       "$(has "is UNREADABLE" "$_vout")|$(has "$_armed_re" "$_vout")"
+    _vrec fix/card-733-x resolved "" 42 733 "card #733"
+    _vwarn fix/card-733-x 43        # board re-mapped       → STALE
+    eq "⭐ STALE: same remedy, same precondition" "true|true" \
+       "$(has "is STALE" "$_vout")|$(has "$_armed_re" "$_vout")"
+    _vwarn fix/card-713-x 42        # no board answer, no recorded remedy → NOT CHECKED (default arm)
+    eq "⭐ NOT CHECKED (no recorded remedy): same remedy, same precondition" "true|true" \
+       "$(has "board verdict NOT CHECKED" "$_vout")|$(has "$_armed_re" "$_vout")"
+    # THE CONTROL for the arm above: a row whose record carries its OWN remedy must NOT gain the
+    # clause — the recorded remedy replaces the re-checkout advice entirely, so a precondition on a
+    # command that is no longer being suggested would be noise. Without this leg the four
+    # assertions above would also pass against a change that pasted the clause onto every row.
+    _vwarn fix/card-731-x 42
+    eq "control — a recorded remedy replaces the advice, so it carries NO arming clause" "true|false|false" \
+       "$(has "rename the branch, the remedy" "$_vout")|$(has "check the branch out again" "$_vout")|$(has "$_armed_re" "$_vout")"
+    # …and a row that is SILENT stays silent: the remedy string is built unconditionally, so a
+    # resolved branch must not start printing a config key at push.
+    _vrec fix/card-734-x resolved "" 42 734 "card #734"
+    _vwarn fix/card-734-x 42
+    eq "control — a resolved record is still silent, arming clause included" "0||false" \
+       "$_vrc|$_vout|$(has "$_armed_re" "$_vout")"
+    unset _armed_re
 
     unset -f _vrec _vwarn _vfile _vfield
     rm -rf "$_vt"
@@ -924,13 +983,38 @@ if command -v git >/dev/null 2>&1; then
     # KB_STUB_TAGS is the card's `tags` value, spliced raw so a leg can hand it a non-list.
     # KB_STUB_TAGS_PATCH answers a PATCH carrying `tags` with that status; KB_STUB_MOVE refuses the
     # stage-only move.
+    # THE CARD IS STATEFUL, because the mover now reports from a READ-BACK (card#10029): a GET of
+    # 4242 answers the stage and payload.dl_number the request log says were PATCHed — unless
+    # KB_STUB_MOVE_NOOP / KB_STUB_STAMP_NOOP make that write a 2xx the board did not apply (the
+    # 2026-05-22 shape).
+    #
+    # ⭐ KB_STUB_REREAD REFUSES THE READ-BACK AND ONLY THE READ-BACK — the `?trashed=1` GET that
+    # kb_card_witness issues, and no other — with that status (or `!curl <rc>`). The mover's own
+    # opening read and the owner-tag write's own card read are PLAIN GETs and are still answered.
+    # That discrimination is what makes the owner-tag legs below a measurement: while this knob
+    # refused EVERY GET after the move, the tag write's own read failed too, so no tag was written
+    # whatever the gate at the bottom of bin/board-card-start decided — and deleting that gate's
+    # `unverified` arm left the whole suite green (review r1 of PR #384, measured). It is keyed on
+    # the query rather than on a GET ordinal because `?trashed=1` is the property that IS the
+    # read-back (the lib's kb_card_witness header says why it is load-bearing), and an ordinal
+    # would silently re-point at a different request the day a read is added or removed.
     kb_stub_route() {
-        local method="$1" url="$2" body="$3"
+        local method="$1" url="$2" body="$3" stage=81 payload='{}' moved stamp
+        moved="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "workflow_stage_id")' "$KB_STUB_LOG")"
+        stamp="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "dl_number")' "$KB_STUB_LOG" | tail -1 | cut -f3-)"
+        [[ -n "$moved" && -z "${KB_STUB_MOVE_NOOP:-}" ]] && stage=84
+        [[ -n "$stamp" && -z "${KB_STUB_STAMP_NOOP:-}" ]] && payload="$(jq -c '.payload' <<<"$stamp")"
         case "$method $url" in
             "GET "*/tasks/4242.json*)
-                printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":81,"tags":%s}}' "${KB_STUB_TAGS:-[]}" ;;
+                if [[ -n "${KB_STUB_REREAD:-}" && "$url" == *trashed=1* ]]; then
+                    printf '%s\n{"message":"re-read refused by the stub"}' "$KB_STUB_REREAD"
+                else
+                    printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":%s,"payload":%s,"tags":%s}}' "$stage" "$payload" "${KB_STUB_TAGS:-[]}"
+                fi ;;
             "GET "*/tasks/4244.json*)
                 printf '200\n{"data":{"id":4244,"board_id":42,"workflow_stage_id":84,"tags":[]}}' ;;
+            "GET "*/tasks/search.json*)
+                printf '200\n{"data":[],"meta":{"last_page":1,"total":0}}' ;;
             "PATCH "*/tasks/4242.json)
                 if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
                     printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
@@ -958,7 +1042,10 @@ if command -v git >/dev/null 2>&1; then
     eq "stamp: rc 0"                                     "0" "$_rc"
     eq "stamp: the stage-only move, THEN a separate PATCH with the card's tags plus the owner tag" \
        "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
-    eq "stamp: …the owner write re-reads the card after the move" "2" "$(kb_stub_count GET /tasks/4242.json)"
+    # Three reads: the mover's own, the move's READ-BACK (card#10029), then the owner write's re-read.
+    eq "stamp: …the owner write re-reads the card after the move" "3" "$(kb_stub_count GET /tasks/4242.json)"
+    eq "stamp: …the move is reported FROM THE READ-BACK" "true" \
+       "$(has 'card #4242 (#4242) → In Progress (read back: workflow_stage_id=84)' "$_out")"
     eq "stamp: …and says so"                             "true" "$(has 'owner tag owner:acme/builder stamped on card #4242' "$_out")"
 
     for _tp in 403 422; do
@@ -975,6 +1062,75 @@ if command -v git >/dev/null 2>&1; then
     KB_STUB_MOVE=403 KB_STUB_TAGS='["fr"]' _own_run builder
     eq "a refused move: no owner tag is written for it"  "$_move" "$_obody"
     eq "a refused move: …and the card is not re-read for one" "1" "$(kb_stub_count GET /tasks/4242.json)"
+
+    # ⭐ THE READ-BACK (card#10029). The move answered 2xx in every leg below; what the seat is TOLD
+    # must come from a re-read of the card, and only a CONFIRMED move gets an owner tag.
+    KB_STUB_MOVE_NOOP=1 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "⭐ 2xx NOT applied: rc 0 (fail-soft, never blocks a checkout)" "0" "$_rc"
+    # A success line is the move sentence ENDING the line (pre-card#10029) or followed by its read-back;
+    # the NOT APPLIED / UNVERIFIED lines quote the same sentence mid-line, so they are not one.
+    eq "⭐ 2xx NOT applied: NO success line"             "0" "$(command grep -cE '→ In Progress($| \(read back)' <<<"$_out")"
+    eq "⭐ 2xx NOT applied: the durable log says NOT APPLIED, quoting the stage the board holds" "true" \
+       "$(has 'In Progress move failed — NOT APPLIED: the PATCH answered HTTP 200 and a re-read says card #4242 holds workflow_stage_id=81, not the 84 this write asked for' "$_ologtxt")"
+    eq "⭐ 2xx NOT applied: no owner tag for a card that did not move" "$_move" "$_obody"
+    for _rr in 403 '!curl 7'; do
+        KB_STUB_REREAD="$_rr" KB_STUB_TAGS='["fr"]' _own_run builder
+        eq "re-read $_rr: rc 0"                            "0" "$_rc"
+        eq "re-read $_rr: NO success line"                 "0" "$(command grep -cE '→ In Progress($| \(read back)' <<<"$_out")"
+        eq "re-read $_rr: the durable log says UNVERIFIED, not NOT APPLIED" "true|false" \
+           "$(has 'card #4242 write UNVERIFIED (card #4242 (#4242) → In Progress move) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
+        eq "re-read $_rr: no owner tag for a move nobody confirmed" "$_move" "$_obody"
+        eq "re-read $_rr: …and the card is not re-read for one — the GATE stopped it, not a failed read" \
+           "2" "$(kb_stub_count GET /tasks/4242.json)"
+    done
+    eq "re-read transport failure: the log carries the witness's reason" "true" "$(has 'DID NOT COMPLETE' "$_ologtxt")"
+    # ⭐ THE FIXTURE'S OWN CONTROL for the four legs above, and the reason they are a MEASUREMENT of
+    # the owner-tag gate rather than of the stub: the refusal must be the READ-BACK's ALONE. While
+    # KB_STUB_REREAD refused every GET after the move, the tag write's own card read was refused
+    # too, so `no owner tag for a move nobody confirmed` passed because nothing could be READ — for
+    # every gate, a deleted one included (review r1 of PR #384 measured exactly that false green).
+    # Probed at the stub itself, with the last run's request log still in place, in the two GET
+    # spellings this hook issues. Both arms are needed: the refusing one alone would pass for a
+    # stub that refused nothing, the answering one alone for a stub that refused everything.
+    _rbprobe() {  # <url-suffix> — the stub's HTTP status for ONE GET of card 4242 under the knob
+        local o; o="$(KB_STUB_REREAD=403 KB_STUB_TAGS='["fr"]' curl -s -X GET -w '|%{http_code}' \
+            "$KB_STUB_API/tasks/4242.json$1" </dev/null)"
+        printf '%s' "${o##*|}"
+    }
+    eq "fixture control: KB_STUB_REREAD refuses the READ-BACK — kb_card_witness's ?trashed=1 GET" \
+       "403" "$(_rbprobe '?trashed=1')"
+    eq "fixture control: …and ANSWERS the plain GET kb_owner_tag_write makes, so the legs above measure the gate" \
+       "200" "$(_rbprobe '')"
+    unset -f _rbprobe
+    # The SECOND call site: the payload.dl_number stamp (a DL that matches no card, so the branch's own
+    # card id is used and the stamp is due). The move beside it still lands and is reported.
+    git -C "$_orepo" checkout -q -b fix/card-4242-dl-77-x
+    _own_run builder
+    eq "dl stamp applied: reported from the read-back"  "true" \
+       "$(has 'card #4242 stamped payload.dl_number=DL-0077 (was unstamped; DL-77 named in branch) (read back: payload.dl_number="DL-0077")' "$_out")"
+    eq "dl stamp applied: the durable log carries neither NOT APPLIED nor UNVERIFIED" "false|false" \
+       "$(has 'NOT APPLIED' "$_ologtxt")|$(has 'UNVERIFIED' "$_ologtxt")"
+    KB_STUB_STAMP_NOOP=1 _own_run builder
+    eq "⭐ dl stamp 2xx NOT applied: NO stamped line"   "false" "$(has 'stamped payload.dl_number=DL-0077' "$_out")"
+    eq "⭐ dl stamp 2xx NOT applied: the durable log says NOT APPLIED, quoting what the card holds" "true" \
+       "$(has 'dl_number stamp (=DL-0077) failed — NOT APPLIED: the PATCH answered HTTP 200 and a re-read says card #4242 holds payload.dl_number=null, not the 77 this write asked for' "$_ologtxt")"
+    eq "dl stamp 2xx NOT applied: the move beside it is still read back and reported" "true" \
+       "$(has '→ In Progress (read back: workflow_stage_id=84)' "$_out")"
+    # ⭐ THE STAMP'S THIRD OUTCOME. KB_STUB_REREAD refuses every read-back on this branch, and the
+    # stamp has one of its own — issued BEFORE the move — so this is the `dl` field driven through
+    # kb_confirm_card's UNVERIFIED arm by the REAL read-back, not by a stubbed predicate. Until the
+    # knob was keyed on `?trashed=1` it could not reach this write at all (it was gated on the move
+    # having already happened), which is why the *Coverage.* claim of three outcomes for the stamp
+    # was wider than the fixture (review r1 of PR #384).
+    _stampbody='{"payload":{"dl_number":"DL-0077"}}'
+    KB_STUB_REREAD=403 _own_run builder
+    eq "⭐ dl stamp UNVERIFIED: rc 0 (fail-soft)"       "0" "$_rc"
+    eq "⭐ dl stamp UNVERIFIED: NO stamped line"        "false" "$(has 'stamped payload.dl_number=DL-0077' "$_out")"
+    eq "⭐ dl stamp UNVERIFIED: the durable log says UNVERIFIED for the STAMP by name, and never NOT APPLIED" "true|false" \
+       "$(has 'card #4242 write UNVERIFIED (card #4242 dl_number stamp (=DL-0077)) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
+    eq "⭐ dl stamp UNVERIFIED: the stamp and the move were both SENT, and no owner tag follows either" \
+       "$_stampbody"$'\n'"$_move" "$_obody"
+    git -C "$_orepo" checkout -q fix/card-4242-x
 
     KB_STUB_TAGS='["owner:acme/builder","fr"]' _own_run builder
     eq "same owner: the move alone (no tags write)"      "$_move" "$_obody"
@@ -1023,8 +1179,48 @@ if command -v git >/dev/null 2>&1; then
     eq "…and it is a genuine no-op, not a failure"         "" "$_ologtxt"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
+    # ⭐ A _kb-board-lib.sh OLDER THAN THIS HOOK WRITES NOTHING — not even the dl_number stamp
+    # (card#9756) — and the read-back is what made that rule hard to keep: kb_confirm_card is
+    # called AFTER the PATCH, so with no preflight the stale pairing SENDS the write, gets rc 127,
+    # routes it to the UNVERIFIED arm and exits 0. A mis-vendored install would then degrade
+    # silently, on a stderr the installed wrapper discards, while the upgrade note promised a loud
+    # refusal (review r1 of PR #384 measured exactly that against the card#10029 base lib).
+    # The pairing is built by STRIPPING the one definition out of a copy of the live lib, not by
+    # vendoring a historical file: the leg then tests the PROPERTY the preflight asks about (the
+    # lib does not define it) and cannot rot as the lib moves on.
+    _stalelib() {  # <dir> <sed-expr> — a runnable hook + lib pair under $TMP/<dir>
+        mkdir -p "$TMP/$1"
+        cp "$BCS" "$TMP/$1/board-card-start"
+        sed "$2" "$HERE/../bin/_kb-board-lib.sh" > "$TMP/$1/_kb-board-lib.sh"
+    }
+    _stalerun() {  # <dir> — run that pair exactly as _own_run runs the real one
+        kb_stub_reset; rm -f "$_olog"; _rc=0
+        _out="$(cd "$_orepo" && env COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder \
+            KB_BCS_LOG="$_olog" bash "$TMP/$1/board-card-start" 2>&1)" || _rc=$?
+        _ologtxt="$(cat "$_olog" 2>/dev/null || true)"
+    }
+    _stalelib stalebin 's/^kb_confirm_card()/_removed_kb_confirm_card()/'
+    _stalelib freshbin 's/^__never_matches__//'
+    # The INSTRUMENT's own control: the edit removed the definition, and the unedited copy kept it.
+    # Without this pair, a sed that silently matched nothing would make the refusal below read as a
+    # pass for a hook that was never given a stale lib at all.
+    eq "stale-lib fixture: the copy under test does NOT define kb_confirm_card, the sibling copy does" "0|1" \
+       "$(command grep -c '^kb_confirm_card()' "$TMP/stalebin/_kb-board-lib.sh" || true)|$(command grep -c '^kb_confirm_card()' "$TMP/freshbin/_kb-board-lib.sh" || true)"
+    KB_STUB_TAGS='["fr"]' _stalerun freshbin
+    eq "stale-lib control: the same copy beside a COMPLETE lib moves the card and stamps the owner" \
+       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
+    KB_STUB_TAGS='["fr"]' _stalerun stalebin
+    eq "⭐ stale lib: rc 0 — a preflight refusal still never blocks a checkout" "0" "$_rc"
+    eq "⭐ stale lib: NOTHING is written — no PATCH of any kind reaches the card" "" \
+       "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ stale lib: the durable log names the function and the fix, and says nothing was written" "true" \
+       "$(has 'kb_confirm_card is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
+    eq "⭐ stale lib: and it never claims an UNVERIFIED write it did not make" "false" \
+       "$(has 'UNVERIFIED' "$_ologtxt")"
+    unset -f _stalelib _stalerun
+
     unset -f _own_run kb_stub_route
-    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp
+    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp _rr _stampbody
 else
     echo "  skip (git not on PATH)"
 fi
@@ -1205,6 +1401,97 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
     _git "$_rrepo" branch -q -D fix/card-712-x fix/card-4242-x
 
+    # ── the auto-move OPT-IN gate, on real checkouts (card#9845) ─────────────────────────────
+    # `hooks/post-checkout` called the mover on EVERY branch checkout, so reading a colleague's
+    # branch, bisecting or hopping back to `main` silently moved that branch's card to In
+    # Progress. `git config kanban.automove-on-checkout` now arms it, per repo, and UNSET IS OFF.
+    #
+    # ⛔ ASSERTED ON WHAT REACHED THE BOARD — the stub's request log — never on an exit code: the
+    # hook is fail-soft, so "moved the card" and "did nothing at all" are both rc 0, and an
+    # exit-code assertion would pass whatever this hook does. Card 4242 sits in BACKLOG (stage 81)
+    # in the stub, which is what makes BOTH answers reachable here: on a card already In Progress
+    # the mover writes nothing regardless, so that fixture could not fail and would prove nothing.
+    # Every arm is driven through a REAL `git switch -c` firing the REAL hook file, not by calling
+    # the hook by hand — the guard being tested is one git itself has to reach.
+    _hookcut() {  # <branch> — re-cut <branch> from scratch so post-checkout fires on a branch checkout
+        _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
+        _git "$_rrepo" branch -q -D "$1" >/dev/null 2>&1 || true
+        rm -f "$(cd "$_rrepo" && _bcs_verdict_file "$1")"
+        kb_stub_reset; rm -f "$_rlog"; _rc=0
+        _out="$(_git "$_rrepo" switch -q -c "$1" 2>&1)" || _rc=$?
+    }
+    _hmoved() { kb_stub_bodies PATCH /tasks/4242.json | jq -cS . 2>/dev/null | head -1; }
+    _hcard=fix/card-4242-x
+
+    _hookcut "$_hcard"
+    eq "⭐ opt-in UNSET: the card is NOT moved on a real branch checkout" "" "$(_hmoved)"
+    eq "⭐ opt-in UNSET: the card is not even READ — no request is issued at all" "0" \
+       "$(kb_stub_count_any /tasks/)"
+    eq "opt-in UNSET: the checkout itself succeeded and HEAD is the new branch" "0|$_hcard" \
+       "$_rc|$(git -C "$_rrepo" symbolic-ref --short HEAD)"
+    eq "opt-in UNSET: the hook prints nothing" "" "$_out"
+    # The cost of not calling the mover, pinned so it is a decision and not a surprise: the
+    # board-verdict record (DL-225) is the mover's write too, so a disarmed repo records none and
+    # `pre-push` then reports NOT RECORDED for such a branch.
+    eq "opt-in UNSET: no board verdict is recorded either" "" "$(_vget "$_hcard" verdict)"
+    _push "$_rrepo" "$_hcard"
+    eq "opt-in UNSET: pre-push says NOT RECORDED and still never blocks a push" "0|true" \
+       "$_rc|$(has "board verdict NOT RECORDED for branch '$_hcard'" "$_out")"
+    # …and that line names the arming as a cause, AND its remedy — check the branch out again —
+    # carries the precondition that makes it honest: an unarmed repo records nothing on any number
+    # of re-checkouts, and a remedy that cannot work is worse than a cause too many. (It is not the
+    # ONLY such cause — an unwritable record survives a re-checkout too — so the cause clause says
+    # "may not", never "the one": a uniqueness claim there would be false.)
+    #
+    # ⛔ The precondition moved OFF this row and ONTO the shared `$again` remedy string, because
+    # the other rows that print that same remedy had not been qualified (card#9845). The end-to-end
+    # property asserted here is unchanged and now holds for every such row — the in-process legs
+    # above drive each one; this leg proves it survives the REAL pre-push path.
+    eq "opt-in UNSET: the NOT RECORDED line names the arming, and its remedy states the precondition" "true|true" \
+       "$(has "git config kanban.automove-on-checkout true" "$_out")|$(has "records nothing at all unless this repo is ARMED" "$_out")"
+
+    # THE CONTROL: the same fixture, the same checkout, armed — the card DOES move. Without this
+    # arm every assertion above would also pass against a fixture that can never move a card.
+    git -C "$_rrepo" config kanban.automove-on-checkout true
+    _hookcut "$_hcard"
+    eq "⭐ opt-in TRUE: the card moves to In Progress (stage-only PATCH)" '{"workflow_stage_id":84}' "$(_hmoved)"
+    eq "opt-in TRUE: the board verdict is recorded again" "resolved" "$(_vget "$_hcard" verdict)"
+
+    # git owns the SPELLING (`--bool`), not the hook: the arming values are git's, and everything
+    # else — including a value git refuses to read as a boolean — is OFF, silently and fail-soft.
+    for _hv in yes on 1; do
+        git -C "$_rrepo" config kanban.automove-on-checkout "$_hv"
+        _hookcut "$_hcard"
+        eq "opt-in '$_hv' (a git boolean TRUE): the card moves" '{"workflow_stage_id":84}' "$(_hmoved)"
+    done
+    for _hv in false off 0 "" not-a-boolean; do
+        git -C "$_rrepo" config kanban.automove-on-checkout "$_hv"
+        _hookcut "$_hcard"
+        eq "opt-in '$_hv' → OFF: nothing is read or written, the checkout succeeds, nothing is printed" "0|0||" \
+           "$_rc|$(kb_stub_count_any /tasks/)|$(_hmoved)|$_out"
+    done
+    unset _hv
+
+    # The branch-checkout guard is unchanged and still decides first: git passes $3=0 for a FILE
+    # checkout, and an ARMED repo must not move a card on one either. Driven by argv — that is the
+    # interface git uses, and it is the one way to reach flag 0 deterministically.
+    git -C "$_rrepo" config kanban.automove-on-checkout true
+    kb_stub_reset; _rc=0
+    _out="$( cd "$_rrepo" && PATH="$_hbin:$PATH" bash "$_rrepo/.git/hooks/post-checkout" \
+             1111111111111111111111111111111111111111 1111111111111111111111111111111111111111 0 2>&1 )" || _rc=$?
+    eq "armed, but \$3=0 (a file checkout): no request, rc 0, nothing printed" "0|0|" \
+       "$_rc|$(kb_stub_count_any /tasks/)|$_out"
+
+    # The rest of this block drives the hook's ARMED path (it is testing what post-checkout does
+    # once it decides to run), so the fixture stays opted in from here on, and is returned to the
+    # state the legs below expect: no `fix/card-4242-x`, no record for it, HEAD on the base branch.
+    _git "$_rrepo" checkout -q main 2>/dev/null || _git "$_rrepo" checkout -q master
+    _git "$_rrepo" branch -q -D "$_hcard"
+    rm -f "$(cd "$_rrepo" && _bcs_verdict_file "$_hcard")"
+    kb_stub_reset
+    unset -f _hookcut _hmoved
+    unset _hcard
+
     # A branch cut from a wrong-space number: the board says no, and pre-push repeats it.
     _git "$_rrepo" switch -q -c fix/card-712-x
     _push "$_rrepo" fix/card-712-x
@@ -1282,16 +1569,26 @@ else
     echo "  skip (git not on PATH, or no scratch HOME)"
 fi
 
-echo "== _bcs_patch — 2xx echoes success (no log); non-2xx durably logs the captured status; always fail-soft (#4510) =="
-# Stub the shared writer so the decision logic is exercised network-free. Redefining kb_api here
-# shadows the lib's (sourced via $BCS); this is the last block, so the stub can't leak into others.
+echo "== _bcs_patch — success is the READ-BACK, not the 2xx (card#10029); non-2xx durably logs the captured status; always fail-soft (#4510) =="
+# Stub the shared writer AND the lib's read-back so the decision logic is exercised network-free.
+# Redefining them here shadows the lib's (sourced via $BCS); this is the last block, so the stubs
+# can't leak into others. The process legs above drive the real read-back against a faked board.
 _tmpd="$(mktemp -d)"
-kb_api() { KB_HTTP=200; return 0; }   # success path
-_out="$(KB_BCS_LOG="$_tmpd/ok.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
-grep -q 'OKMSG-emitted' <<< "$_out" && ok "2xx emits the success message" || bad "2xx did not emit success: $_out"
-[[ ! -s "$_tmpd/ok.log" ]] && ok "2xx writes NO durable failure line" || bad "2xx wrote an unexpected failure line: $(cat "$_tmpd/ok.log")"
+kb_api() { KB_HTTP=200; return 0; }   # the PATCH answers 2xx in the first three legs
+kb_confirm_card() { printf '%s\n' '{"state":"present","http":"200","card":{"workflow_stage_id":84}}'; return 0; }
+_out="$(KB_BCS_LOG="$_tmpd/ok.log" _bcs_patch 42 '{}' stage 84 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+grep -q 'OKMSG-emitted (read back: workflow_stage_id=84)' <<< "$_out" && ok "2xx + confirmed read-back emits the success message, quoting the read" || bad "confirmed read-back did not emit success: $_out"
+[[ ! -s "$_tmpd/ok.log" ]] && ok "2xx + confirmed read-back writes NO durable failure line" || bad "confirmed read-back wrote an unexpected failure line: $(cat "$_tmpd/ok.log")"
+kb_confirm_card() { printf '%s\n' '{"state":"present","http":"200","card":{"workflow_stage_id":81}}'; return 1; }
+_out="$(KB_BCS_LOG="$_tmpd/denied.log" _bcs_patch 42 '{}' stage 84 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+grep -q 'OKMSG-emitted' <<< "$_out" && bad "2xx + DENIED read-back wrongly emitted the success message" || ok "2xx + DENIED read-back does NOT emit the success message"
+grep -q 'FAILMSG-reason — NOT APPLIED' "$_tmpd/denied.log" 2>/dev/null && ok "2xx + DENIED read-back durably logs NOT APPLIED" || bad "DENIED read-back did not log NOT APPLIED: $(cat "$_tmpd/denied.log" 2>/dev/null)"
+kb_confirm_card() { return 3; }
+_out="$(KB_BCS_LOG="$_tmpd/unv.log" _bcs_patch 42 '{}' stage 84 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+grep -q 'OKMSG-emitted' <<< "$_out" && bad "2xx + UNREADABLE read-back wrongly emitted the success message" || ok "2xx + UNREADABLE read-back does NOT emit the success message"
+grep -q 'write UNVERIFIED' "$_tmpd/unv.log" 2>/dev/null && ok "2xx + UNREADABLE read-back durably logs UNVERIFIED" || bad "UNREADABLE read-back did not log UNVERIFIED: $(cat "$_tmpd/unv.log" 2>/dev/null)"
 kb_api() { KB_HTTP=422; return 1; }   # non-2xx: KB_HTTP carries the code kb_api captured
-_out="$(KB_BCS_LOG="$_tmpd/fail.log" _bcs_patch 42 '{}' 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
+_out="$(KB_BCS_LOG="$_tmpd/fail.log" _bcs_patch 42 '{}' stage 84 'OKMSG-emitted' 'FAILMSG-reason' 2>&1 || true)"
 if grep -q 'FAILMSG-reason' "$_tmpd/fail.log" 2>/dev/null && grep -q 'HTTP 422' "$_tmpd/fail.log" 2>/dev/null; then
     ok "non-2xx durably logs the fail-reason + captured status"
 else
@@ -1299,7 +1596,7 @@ else
 fi
 grep -q 'OKMSG-emitted' <<< "$_out" && bad "non-2xx wrongly emitted the success message" || ok "non-2xx does NOT emit the success message"
 kb_api() { KB_HTTP=500; return 1; }
-_rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' 'x' 'y' >/dev/null 2>&1 || _rc=$?
+_rc=0; KB_BCS_LOG="$_tmpd/rc.log" _bcs_patch 42 '{}' stage 84 'x' 'y' >/dev/null 2>&1 || _rc=$?
 [[ "$_rc" -eq 0 ]] && ok "returns 0 even on a failed write (fail-soft: never blocks a checkout)" || bad "returned rc=$_rc on failure (must be 0)"
 rm -rf "$_tmpd"
 

@@ -1237,6 +1237,8 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                                        # resolvable kbcard config
                     --content          # driven with an empty value at the comment verb, below
                     --link-id --on     # driven empty at the unlink verb, below
+                    --ids --placement --before-task --after-task
+                                       # driven empty at the reorder verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
                     --content-file --description-file --name-file --block-reason-file
                     --field --from --to --relation --key --label)
@@ -3335,7 +3337,7 @@ echo "== delete / archive: the mutation is REPORTED from a read-back, never from
 # a merely SOFT-deleted card exactly as it does for a purged one — and a `--hard` read-back
 # built on it would confirm "permanently deleted, DL ref released" for a card still sitting in
 # the trash pinning the allocation floor. Modelling the rule (rather than asserting the query
-# string as a string) is what makes that a RED here: drop `?trashed=1` from _kbc_card_witness
+# string as a string) is what makes that a RED here: drop `?trashed=1` from kb_card_witness
 # and the still-trashed leg below stops failing and starts reporting a purge.
 rm -rf "$TMP"
 _mktmp_scratch --home
@@ -3478,7 +3480,7 @@ eq "…and says the card is left soft-deleted"           "true" "$(has 'now SOFT
 unset -f kb_stub_route
 unset D_LIVE D_TRASHED D_ARCHIVED
 
-echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
+echo "== kb_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILURE at rc 1 =="
 # rc 1 under this file's contract is an ASSERTION — "NOT APPLIED, and KNOWN" — and every caller
 # above prints it as HARD FAILURE quoting the board. `jq -e` answers 1 for a filter that RAN and
 # came out false, and 4/5 for one that never ran at all; only the first is a measurement, so the
@@ -3492,8 +3494,8 @@ echo "== _kbc_confirm_card: an UNRUNNABLE predicate is rc 3, never a HARD FAILUR
 # filter. Top level of a fresh subprocess, as `_lane_child` above and for the same reason: an
 # in-process capture suspends errexit for the code under test.
 _conf_child='set -euo pipefail; source "'"$BIN"'";
-  _kbc_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
-  _kbc_confirm_card 505 "$1" >/dev/null'
+  kb_card_witness() { printf "%s\n" "{\"state\":\"present\",\"http\":\"200\",\"card\":{\"id\":505}}"; };
+  kb_confirm_card 505 "$1" >/dev/null'
 conf() { rc=0; err="$(bash -c "$_conf_child" _ "$1" 2>&1 >/dev/null)" || rc=$?; }
 
 conf '.state == "present"'
@@ -4014,8 +4016,10 @@ echo "== payload free-text flags — a visually blank value is refused, not sent
 # "   "` over a card holding `origin: "preemptive"` was rc 0, and a re-read returned `origin: null`
 # — the board's TrimStrings → ConvertEmptyStringsToNull turned the padding into a CLEAR, and the
 # caller was told the write landed. `--pr-url` / `--issue-url` cost more: those keys set the
-# card's by-ref `source`, so a blank one detaches the card from its repo and a release promote
-# then skips it. Narrowing four shipped flags is an acceptance change; asked and granted.
+# card's by-ref `source` unless a `payload.repo` that is a string containing `/` outranks them,
+# so a blank one detaches the card from its repo — on a card with no such payload.repo — and a
+# release promote then skips it. Narrowing four shipped flags is an acceptance change; asked and
+# granted.
 #
 # THE POPULATION IS DERIVED, NOT TYPED. `_payload_flags` reads each verb's own
 # `_kbc_build_payload` call and resolves every variable it passes back to the case arm that sets
@@ -4231,7 +4235,8 @@ echo "== patch --clear <field> — the payload fields' clearer the blank refusal
 # --issue-url, and a blank value was the only DELIBERATE route this CLI had to empty one of them
 # (a wont_do decline also nulls pr_url, as a side effect of declining): the board turned it into a
 # clear. A field a tool can set and not unset goes stale in place — and a wrong
-# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`. The operator's
+# pr_url / issue_url keeps the card correlated to that repo's by-ref `source`, on a card whose
+# payload.repo does not outrank it (a string containing `/` does). The operator's
 # ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
 # issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
 # sent as null (kanban-board TaskMutator::update) and leaves an omitted one alone.
@@ -4874,9 +4879,10 @@ unset KB_STUB_CARD KB_STUB_READ CS_CFG CSMOVE
 echo "== patch --pr without --pr-url refuses to leave the card naming two PRs (card#9837) =="
 # THE DEFECT: the payload PATCH merges per key, so `--pr N` alone wrote pr_number and left a stored
 # pr_url naming a DIFFERENT pull request — and the board attributes the card (by-ref `source`)
-# from that URL's owner/repo, so a card re-pointed at another repo's PR stayed attributed to the
-# old one, at rc 0. Driven as a PROCESS for the reason the assignment block is: "NOTHING WAS
-# WRITTEN" is a claim about the request log, which a stubbed kb_api cannot measure.
+# from that URL's owner/repo, where no payload.repo string containing `/` outranks it, so a card
+# re-pointed at another repo's PR stayed attributed to the old one, at rc 0. Driven as a PROCESS
+# for the reason the assignment block is: "NOTHING WAS WRITTEN" is a claim about the request log,
+# which a stubbed kb_api cannot measure.
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -4961,8 +4967,9 @@ KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc pat
 eq "an /issues/178 pr_url, --pr 178 → rc 0 (same number)"   "0|1" "$rc|$(npatch)"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/0"}' kbc patch --task 505 --pr 179
 eq "an /issues/0 pr_url is the placeholder → rc 0, silent"  "0|1|" "$rc|$(npatch)|$err"
-# ⭐ commit / tree / blob carry no number but still attribute the card to their repo, so --pr alone
-# over one would name PR 179 under acme/widget whether or not it is there: refused, naming
+# ⭐ commit / tree / blob carry no number but still name a repo — the one that attributes the card
+# where no payload.repo outranks the URL (_kbc_ref_pair_guard's header owns that rule) — so --pr
+# alone over one would name PR 179 under acme/widget whether or not it is there: refused, naming
 # --pr-url and the derived repo, never the URL (operator ruling "A", card#9846 — card#9837 let it
 # through with a notice).
 KB_STUB_PAYLOAD='{"pr_url":"https://user:TOKEN-9846@github.com/acme/widget/commit/178"}' kbc patch --task 505 --pr 179
@@ -5028,8 +5035,11 @@ done
 echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
 # stub and helpers above are reused. A URL-side write moves the card's by-ref `source` to the given
-# URL's repo while the stored number stays, so that repo's release shipping the old number promotes
-# the card — the mirror of the defect above.
+# URL's repo — unless a payload.repo that is a string containing `/` outranks every URL, on which
+# card nothing moves — while the stored number stays. On the `pr` pair that repo's release
+# shipping the old number then promotes the card; the `issue` pair carries no such
+# consequence, because promote correlates on no issue key (card#9935). The mirror of the
+# defect above.
 
 # --- member 2: --issue without --issue-url over a stored issue_url --------------------------
 ISS42='{"issue_number":42,"issue_url":"https://github.com/acme/widget/issues/42"}'
@@ -5183,8 +5193,9 @@ for _ref in pr issue; do
            "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
     done
     # ⭐ A given value holding two GitHub URLs: the repo comes from the FIRST (other/repo) and a
-    # number from the second (another/repo). promote attributes the card to other/repo, where 178 was
-    # never read — so it is the unnumbered case, refused over a real stored number.
+    # number from the second (another/repo). promote attributes the card to other/repo — where no
+    # payload.repo outranks the URL (_kbc_ref_pair_guard's header owns that rule) — and 178 was
+    # never read there, so it is the unnumbered case, refused over a real stored number.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/another/repo/$_seg/178"
     eq "⭐ $_uf whose 178 is read from ANOTHER repo's URL, over a stored 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
        "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
@@ -5199,8 +5210,10 @@ for _ref in pr issue; do
     eq "a /commit/ $_uf over a stored $_nk '1.5' → rc 0, writes, with the unparsed-number notice" "0|1|true" \
        "$rc|$(npatch)|$(has "the card's $_nk is not a $_noun number" "$err")"
     # A given URL that yields NO repo (not a GitHub URL the promote side derives a source from)
-    # attributes the card nowhere: nothing to disagree with, so it proceeds with the notice, which
-    # never echoes it.
+    # attributes the card nowhere BY URL — a payload.repo would still outrank it and source the
+    # card anyway (_kbc_ref_pair_guard's header owns that rule); the guard reads no such key, which
+    # is why it can only say the check was not possible. Nothing to disagree with, so it proceeds
+    # with the notice, which never echoes the URL.
     for _u in "https://user:TOKEN-9846@example.com/other/repo/$_seg/179" "https://github.com/other/repo" \
               "https://github.com/other/repo/wiki"; do
         KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"
@@ -5345,5 +5358,416 @@ unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args _v
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
+
+# ---------------------------------------------------------------------------
+echo "== reorder — rank cards WITHIN a column, reported from what the board RETURNED (card#10346) =="
+# THE GAP: `PUT /api/v3/tasks/reorder.json` shipped in kanban v0.47.0 and NO board tool could
+# reach it, so a seat that needed to rank cards inside a column either did nothing or built a
+# private wrapper — which is the one thing the fleet's one-method ruling exists to prevent.
+#
+# ⭐ THE PROPERTY UNDER TEST, and why a 200 fixture alone would not establish it: this route
+# hands back the ranked cards WITH their new positions and a `meta` naming the untouched cards
+# bracketing them, precisely so a caller can confirm the ACHIEVED placement from data. A verb
+# that printed success off the status class would throw that away, and every leg below is
+# therefore paired either with the REQUEST LOG (which nothing under test can truncate) or with a
+# fixture the request itself could not have produced.
+#
+# ⛔ WHAT THE FIXTURES ARE EVIDENCE ABOUT. They are this repo's own statement of the route's
+# response shape, read at the kanban tag it shipped in. They measure the TOOL against that shape;
+# they measure NOTHING about the server. `bin/kbcard`'s reorder header owns which parts of that
+# shape are a claim about another repo and cannot be checked from here — read it there.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42
+kb_stub_install
+
+# r_resp <ids-csv> <before|null> <after|null> <renumbered:true|false> — a reorder response in the
+# shape the route returns. The `data` collection is DERIVED from the id list, in that order, so a
+# fixture cannot state a collection its own argument contradicts; `position` is a value NOTHING
+# in the request carries, which is what makes it usable as proof of where stdout came from.
+r_resp() {
+    jq -nc --arg ids "$1" --argjson b "$2" --argjson a "$3" --argjson rn "$4" \
+       '{data: [$ids | split(",") | to_entries[]
+                | {id: (.value | tonumber), name: "card \(.value)", workflow_stage_id: 48,
+                   swimlane_id: null, position: (1024 + (.key + 1) * 256)}],
+         meta: {workflow_stage_id: 48, before_task_id: $b, after_task_id: $a, renumbered: $rn}}'
+}
+R_OK_TOP="$(r_resp 501,502 null 600 false)"
+export R_OK_TOP
+
+kb_stub_route() {
+    local method="$1" url="$2"
+    case "$method $url" in
+        "GET "*/tasks/search.json*)  printf '200\n{"data":[{"id":901}]}' ;;
+        "PUT "*/tasks/reorder.json)  printf '%s\n%s' "${R_HTTP:-200}" "${R_BODY:-$R_OK_TOP}" ;;
+    esac
+}
+export -f kb_stub_route
+
+# rrun <bin> <args…> — `kbc`, for a bin that is not $BIN (the mutant controls below).
+rrun() { local b="$1"; shift; kb_stub_reset; rc=0; out="$("$b" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+
+# _rmut <tag> <sed-script> <outvar> — the REAL kbcard with ONE guard neutered, copied beside a
+# real _kb-board-lib.sh; assigns the copy's path to <outvar>.
+#
+# ⭐ THE MUTANT IS THE CONTROL, and without it the offline refusals below measure nothing. Each
+# asserts "rc 2 and ZERO requests", which a call that could never have reached the wire satisfies
+# just as well as a guard that stopped it. With the guard's `return` removed the SAME call MUST
+# reach the wire — so the pair is what makes the refusal attributable to the guard. A sed script
+# that matched nothing is reported as a failure rather than passed over: an unchanged copy would
+# "prove" the guard by running it.
+#
+# ⛔ IT ANSWERS THROUGH `printf -v`, NOT ON STDOUT, AND THAT IS THE LOAD-BEARING PART. Called as
+# `path="$(_rmut …)"` it ran in a COMMAND SUBSTITUTION, i.e. a subshell — so the `bad` above
+# printed its FAIL line and then died with that subshell, taking `fails=$((fails + 1))` with it.
+# The no-match guard was therefore a decoration: it reported and did not count, and a run whose
+# only failure was a stale mutation would have printed FAIL and exited 0. (It never did, because
+# every call site is paired with a downstream assertion that reds too — a latent hole, not a live
+# one, which is exactly the kind that outlives the person who could still remember it.) Assigning
+# in the CALLER's shell keeps the counter and the report in the same process.
+_rmut() {
+    local dir="$TMP/mut-$1" src; src="$(readlink -f "$BIN")"
+    mkdir -p "$dir"
+    sed "$2" "$src" > "$dir/kbcard"
+    cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/"
+    chmod +x "$dir/kbcard"
+    cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    printf -v "$3" '%s' "$dir/kbcard"
+}
+
+# The control for the control, and the reason `_rmut` answers through a variable: a sed script
+# that matches nothing must both REPORT and COUNT. Run in a subshell so this file's own counters
+# are untouched — the verdict is the data here, not a failure of this run.
+eq "⭐ _rmut: a mutation that matches NOTHING is counted, not just printed" "1" \
+   "$( fails=0; _rmut nomatch 's/@@a-string-no-shipped-kbcard-carries@@/x/' _discard >/dev/null 2>&1; printf '%s' "$fails" )"
+eq "control: a mutation that DOES match counts nothing" "0" \
+   "$( fails=0; _rmut matches '/requires EXACTLY ONE placement and got none/{n;s/^        return 2$/        :/;}' _discard >/dev/null 2>&1; printf '%s' "$fails" )"
+
+echo "-- the verb exists at all: the PRE-CHANGE behaviour is the control --"
+# Before this card `kbcard reorder` was an unknown command at rc 2 — the whole defect, since the
+# route was live and unreachable. This leg is what reds if the dispatch entry is ever dropped.
+kbc reorder --ids 501 --placement top
+eq "reorder: is dispatched, not refused as an unknown command" "false" \
+   "$(has "unknown command 'reorder'" "$err")"
+
+echo "-- the happy path: ONE PUT, and stdout built out of what came back --"
+R_BODY="$R_OK_TOP" kbc reorder --ids 501,502 --placement top
+eq "reorder --placement top: rc 0"                       "0" "$rc"
+eq "reorder: exactly ONE request, and it is the PUT"     "1|1" "$(kb_stub_total)|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "reorder: ids ride as ONE comma STRING, not a JSON array" '"501,502"' \
+   "$(jq -c '.ids' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+eq "reorder: the body carries the placement and NOTHING else" '["ids","placement"]' \
+   "$(jq -c 'keys' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+eq "reorder: …with the placement asked for"              '"top"' \
+   "$(jq -c '.placement' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+eq "reorder: stdout carries the meta block whole"        '{"workflow_stage_id":48,"before_task_id":null,"after_task_id":600,"renumbered":false}' \
+   "$(jq -c 'del(.ranked)' <<<"$out")"
+eq "reorder: …and every ranked row, in the order returned" '[501,502]' "$(jq -c '[.ranked[].id]' <<<"$out")"
+# ⭐ THE LOAD-BEARING PAIR: `position` and `name` are fields the REQUEST never carried, so a verb
+# restating what it sent could not print them at all — and the SAME call prints different values
+# when the server returns different ones. That is the difference between a read-back and an echo.
+eq "⭐ reorder: EVERY row's position is the one the BOARD returned" "[1280,1536]" \
+   "$(jq -c '[.ranked[].position]' <<<"$out")"
+eq "⭐ …and every row's name, which the request never carried"      '["card 501","card 502"]' \
+   "$(jq -c '[.ranked[].name]' <<<"$out")"
+R_BODY="$(jq -c '.data |= map(.position += 4096)' <<<"$R_OK_TOP")" kbc reorder --ids 501,502 --placement top
+eq "⭐ …the SAME call prints the MOVED positions when the board returns different ones" "[5376,5632]" \
+   "$(jq -c '[.ranked[].position]' <<<"$out")"
+eq "reorder: the success line says where the answer came from" "true" \
+   "$(has 'read back from the board' "$err")"
+
+echo "-- each placement form reaches the wire under the board's own body key --"
+R_BODY="$(r_resp 501 400 600 false)" kbc reorder --ids 501 --after-task 400
+eq "reorder --after-task: rc 0, one PUT"       "0|1" "$rc|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "reorder --after-task: body key + value"    '{"ids":"501","after_task_id":400}' \
+   "$(jq -c '{ids,after_task_id}' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+R_BODY="$(r_resp 501 400 600 false)" kbc reorder --ids 501 --before-task 600
+eq "reorder --before-task: rc 0"               "0" "$rc"
+eq "reorder --before-task: body key + value"   '{"ids":"501","before_task_id":600}' \
+   "$(jq -c '{ids,before_task_id}' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+R_BODY="$(r_resp 501 400 null false)" kbc reorder --ids 501 --placement bottom
+eq "reorder --placement bottom: rc 0"          "0" "$rc"
+
+echo "-- an external id resolves through the SAME resolver every --task takes --"
+R_BODY="$(r_resp 901,502 null 600 false)" kbc reorder --ids EXT-A,502 --placement top
+eq "reorder: an external-id member is resolved before the PUT" "0|1" "$rc|$(kb_stub_count GET '/tasks/search.json')"
+eq "reorder: …and the RESOLVED id is what goes on the wire"    '"901,502"' \
+   "$(jq -c '.ids' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+# A numeric member costs no request: the whole list resolving through one GET is the proof.
+eq "reorder: a numeric member issues no lookup of its own"     "1" "$(kb_stub_count_any '/tasks/search.json')"
+
+echo "-- ⭐ EXACTLY ONE PLACEMENT, refused OFFLINE — each with its guard removed as the control --"
+kbc reorder --ids 501
+eq "reorder with NO placement: rc 2"                       "2" "$rc"
+eq "reorder with NO placement: NOTHING was sent"           "0" "$(kb_stub_total)"
+eq "reorder with NO placement: nothing on stdout"          ""  "$out"
+eq "reorder with NO placement: names all three forms"      "true" \
+   "$(has 'requires EXACTLY ONE placement and got none' "$err")"
+_rmut noplacement '/requires EXACTLY ONE placement and got none/{n;s/^        return 2$/        :/;}' _rm
+rrun "$_rm" reorder --ids 501
+eq "control: with that guard removed the SAME call reaches the wire" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+
+kbc reorder --ids 501 --placement top --after-task 400
+eq "reorder with TWO placements: rc 2"                     "2" "$rc"
+eq "reorder with TWO placements: NOTHING was sent"         "0" "$(kb_stub_total)"
+eq "reorder with TWO placements: names the ones passed"    "true|true" \
+   "$(has 'takes EXACTLY ONE placement and got' "$err")|$(has '--placement --after-task' "$err")"
+_rmut twoplacements '/takes EXACTLY ONE placement and got/{n;s/^        return 2$/        :/;}' _rm
+rrun "$_rm" reorder --ids 501 --placement top --after-task 400
+eq "control: with that guard removed the SAME call reaches the wire" "1" \
+   "$(kb_stub_count PUT '/tasks/reorder.json')"
+
+kbc reorder --ids 501 --placement sideways
+eq "reorder --placement sideways: rc 2, nothing sent"      "2|0" "$rc|$(kb_stub_total)"
+eq "reorder --placement sideways: names the two values"    "true" \
+   "$(has 'takes top or bottom, got' "$err")"
+_rmut badplacement '/reorder --placement takes top or bottom/{n;s/^        return 2$/        :/;}' _rm
+rrun "$_rm" reorder --ids 501 --placement sideways
+eq "control: with that guard removed the bad value reaches the wire" '"sideways"' \
+   "$(jq -c '.placement' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+
+echo "-- a member naming no card is REFUSED, never dropped: dropping it ranks a different set --"
+for _ids in "501,,502" "501," ",501" "501, ,502" "   "; do
+    kbc reorder --ids "$_ids" --placement top
+    eq "reorder --ids '$_ids': rc 2, nothing sent"          "2|0" "$rc|$(kb_stub_total)"
+    eq "reorder --ids '$_ids': says why dropping it is wrong" "true" \
+       "$(has 'has a member that names no card' "$err")"
+done
+# Surrounding blanks are TRIMMED, as the board trims them — the same spelling minus the empty
+# member is accepted and reaches the wire with the padding gone.
+R_BODY="$(r_resp 501,502 null 600 false)" kbc reorder --ids " 501 , 502 " --placement top
+eq "reorder: a padded member is trimmed, not refused"      "0" "$rc"
+eq "reorder: …and the padding never reaches the wire"      '"501,502"' \
+   "$(jq -c '.ids' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+_rmut blankmember '/has a member that names no card/{n;s/^            return 2$/            :/;}' _rm
+rrun "$_rm" reorder --ids "501,,502" --placement top
+eq "control: with that guard removed the blank member reaches the wire" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+
+echo "-- the same card named TWICE is refused, including under two spellings --"
+kbc reorder --ids 501,501 --placement top
+eq "reorder --ids 501,501: rc 2, nothing sent"             "2|0" "$rc|$(kb_stub_total)"
+eq "reorder --ids 501,501: names the card, once"           "true" \
+   "$(has 'names card 501 twice' "$err")"
+# ⭐ The case a caller can reach WITHOUT typing a repeat: an id and that card's external id are
+# two spellings of one card, and the board's own refusal would then name a number nobody typed.
+kbc reorder --ids 901,EXT-A --placement top
+eq "⭐ reorder: an id and its EXTERNAL id are one card — rc 2, NO PUT" "2|0" \
+   "$rc|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "…and the lookup it took to find that out did happen (control)"    "1" \
+   "$(kb_stub_count GET '/tasks/search.json')"
+_rmut dupe '/the board refuses a repeated id/{n;s/return 2 ;;/;;/;}' _rm
+rrun "$_rm" reorder --ids 501,501 --placement top
+eq "control: with that guard removed the repeat reaches the wire" '"501,501"' \
+   "$(jq -c '.ids' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+
+echo "-- ⭐ …and an ANCHOR that is one of the moving cards is the SAME shape, so it is offline too --"
+# It used to be RELAYED, on the stated rule "a fact about rows this call never reads" — which is
+# FALSE of this one: both values are already in hand and the test is set membership, no stage
+# rule re-derived. The cost of leaving it to the board was the wrong EXIT BUCKET: rc 1 (the
+# server answered) for a purely malformed invocation whose sibling, the same card twice in --ids,
+# is rc 2 (nothing sent). A caller branching on rc 2 as "my argv is wrong, do not retry" was told
+# to retry a call that can never succeed.
+kbc reorder --ids 501,502 --after-task 501
+eq "reorder --after-task naming a card in --ids: rc 2, NOTHING sent" "2|0" "$rc|$(kb_stub_total)"
+eq "reorder: …names the card and the flag"                 "true" \
+   "$(has 'reorder --after-task names card 501, which is also in --ids' "$err")"
+eq "reorder: …and says why it states no position at all"   "true" \
+   "$(has 'cannot be placed relative to one of its own members' "$err")"
+eq "reorder: …nothing on stdout"                           ""  "$out"
+kbc reorder --ids 501,502 --before-task 502
+eq "reorder --before-task naming a card in --ids: rc 2, NOTHING sent" "2|0" "$rc|$(kb_stub_total)"
+eq "reorder: …names THAT flag, not the other one"          "true" \
+   "$(has 'reorder --before-task names card 502, which is also in --ids' "$err")"
+# ⭐ THE CASE A CALLER REACHES WITHOUT TYPING A REPEAT — the whole reason this is decided here and
+# not left to the board, which would refuse it naming a number nobody typed.
+kbc reorder --ids 901,502 --after-task EXT-A
+eq "⭐ reorder: an anchor given as the EXTERNAL id of a card in --ids → rc 2, NO PUT" "2|0" \
+   "$rc|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "…and the lookup it took to find that out did happen (control)" "1" \
+   "$(kb_stub_count GET '/tasks/search.json')"
+# The negative control: an anchor that is NOT in --ids is not refused, through the same code.
+R_BODY="$(r_resp 501,502 400 600 false)" kbc reorder --ids 501,502 --after-task 400
+eq "control: an anchor outside --ids still reaches the wire" "0|1" \
+   "$rc|$(kb_stub_count PUT '/tasks/reorder.json')"
+_rmut anchorinids '/cannot be placed relative to one of its own members/{n;s/^            return 1 ;;$/            ;;/;}' _rm
+rrun "$_rm" reorder --ids 501,502 --after-task 501
+eq "control: with that guard removed the self-anchor reaches the wire" "501" \
+   "$(jq -c '.after_task_id' <<<"$(kb_stub_bodies PUT '/tasks/reorder.json')")"
+
+echo "-- ⭐ A 2xx IS NOT THE RANK: the echoed collection is compared against what was asked --"
+R_BODY="$(r_resp 501,999 null 600 false)" kbc reorder --ids 501,502 --placement top
+eq "reorder: a 2xx returning a card that was not asked for → rc 1" "1" "$rc"
+eq "reorder: …nothing on stdout that could read as a rank"         ""  "$out"
+eq "reorder: …named a HARD FAILURE, quoting what came back"        "true|true" \
+   "$(has 'HARD FAILURE' "$err")|$(has "are '501,999'" "$err")"
+eq "reorder: …saying outright that the status is not the rank"     "true" \
+   "$(has 'The status is not the rank; the read-back is' "$err")"
+eq "reorder: control — the PUT really was issued on this leg"      "1" \
+   "$(kb_stub_count PUT '/tasks/reorder.json')"
+# ORDER is half the claim: the right cards in the wrong order is a different rank.
+R_BODY="$(r_resp 502,501 null 600 false)" kbc reorder --ids 501,502 --placement top
+eq "reorder: the right cards in the WRONG ORDER → rc 1, no stdout"  "1|" "$rc|$out"
+_rmut idecho '/the cards the board returned, in the order it returned them/{n;s/^        return 1$/        :/;}' _rm
+R_BODY="$(r_resp 501,999 null 600 false)" rrun "$_rm" reorder --ids 501,502 --placement top
+eq "control: with that comparison removed the wrong collection reads as SUCCESS" "0" "$rc"
+
+echo "-- ⭐⭐ THE GATE THAT MEASURES THE ORDER INSIDE THE BLOCK: the RETURNED positions --"
+# ⛔ WHY THIS EXISTS AND WHY THE ID ECHO IS NOT IT. The board builds the returned collection as
+# `collect($orderedIds)->map(…)` — straight from the request's OWN ordered id list — so the id
+# echo agrees with the request BY CONSTRUCTION and is a consistency check, never evidence of the
+# achieved order. The bracket rules on where the block landed AS A WHOLE. Neither says anything
+# about the order WITHIN it, which is exactly what `--ids` states. `position` is the one value in
+# this response the request never supplied: the board computes it from the column's live
+# coordinates. Before this gate it was projected, printed, and never compared — so a response
+# that is the request's own id list plus a correct meta, with the positions DESCENDING or absent
+# entirely, passed at rc 0 under a success line saying "read back from the board". Both shapes
+# below are that response; neither is reachable on the server build the verb was read against,
+# which is why the finding is a false SUCCESS CONTRACT rather than a live mis-rank.
+R_BODY="$(jq -c '.data[0].position = 1536 | .data[1].position = 1280' <<<"$(r_resp 501,502 null 600 false)")" \
+  kbc reorder --ids 501,502 --placement top
+eq "positions DESCENDING under a correct id echo and a correct meta → rc 1" "1" "$rc"
+eq "…nothing on stdout that could read as a rank"           ""  "$out"
+eq "…named as the order, not as the placement"              "true" \
+   "$(has 'are not strictly increasing in the order it returned them' "$err")"
+eq "…quoting the positions the board actually wrote"        "true" \
+   "$(has '[1536,1280]' "$err")"
+eq "…and saying the cards WERE ranked, so re-read the column" "true" \
+   "$(has 'The cards WERE ranked — just not in that order' "$err")"
+eq "control: the PUT really was issued on this leg"         "1" \
+   "$(kb_stub_count PUT '/tasks/reorder.json')"
+# A TIE is not an ordering either: two cards on one coordinate leave the order between them to be
+# broken by something this response does not carry.
+R_BODY="$(jq -c '.data |= map(.position = 1280)' <<<"$(r_resp 501,502 null 600 false)")" \
+  kbc reorder --ids 501,502 --placement top
+eq "two cards on ONE position → rc 1, no stdout"            "1|" "$rc|$out"
+eq "…named as not strictly increasing"                      "true" \
+   "$(has 'not strictly increasing' "$err")"
+# ⭐ THE OTHER SHAPE, AND IT IS A DIFFERENT ANSWER: a row with no NUMERIC position is not a wrong
+# order, it is NO order that can be read — rc 3, never rc 1, because rc 1 would assert a
+# measurement nobody made. This response is EXACTLY an echo of the request ids plus a meta block.
+R_BODY='{"data":[{"id":501},{"id":502}],"meta":{"workflow_stage_id":48,"before_task_id":null,"after_task_id":600,"renumbered":false}}' \
+  kbc reorder --ids 501,502 --placement top
+eq "⭐ a collection with NO positions → rc 3 UNVERIFIED, not rc 1 and not rc 0" "3" "$rc"
+eq "…nothing on stdout"                                     ""  "$out"
+eq "…named an UNVERIFIED WRITE"                             "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "…saying the ORDER is what is unmeasured"                "true" \
+   "$(has 'the ORDER the board wrote is UNMEASURED' "$err")"
+eq "…and naming what is left: this call's own id list"      "true" \
+   "$(has "this call's own id list handed back" "$err")"
+# A position that is a STRING is the same answer — jq sorts strings fine, so a type check is what
+# separates "ordered" from "ordered by something that is not a coordinate".
+R_BODY="$(jq -c '.data |= map(.position = (.position | tostring))' <<<"$(r_resp 501,502 null 600 false)")" \
+  kbc reorder --ids 501,502 --placement top
+eq "a STRING position → rc 3, not a silently accepted lexicographic order" "3" "$rc"
+# The positive control for all four: the SAME bin, ascending numeric positions.
+R_BODY="$(r_resp 501,502 null 600 false)" kbc reorder --ids 501,502 --placement top
+eq "control: strictly-increasing numeric positions → rc 0" "0|[1280,1536]" \
+   "$rc|$(jq -c '[.ranked[].position]' <<<"$out")"
+# A ONE-card block has no interior order to violate: the gate must not manufacture one.
+R_BODY="$(r_resp 501 null 600 false)" kbc reorder --ids 501 --placement top
+eq "control: a single-card block passes the order gate"     "0" "$rc"
+_rmut posorder '/are not strictly increasing in the order it returned them/{n;s/^            return 1 ;;$/            ;;/;}' _rm
+R_BODY="$(jq -c '.data |= map(.position = 1280)' <<<"$(r_resp 501,502 null 600 false)")" \
+  rrun "$_rm" reorder --ids 501,502 --placement top
+eq "control: with the order gate removed, tied positions read as SUCCESS" "0" "$rc"
+_rmut posnum '/the ORDER the board wrote is UNMEASURED/{s/_kbc_unverified/: _kbc_unverified/;}' _rm
+R_BODY='{"data":[{"id":501},{"id":502}],"meta":{"workflow_stage_id":48,"before_task_id":null,"after_task_id":600,"renumbered":false}}' \
+  rrun "$_rm" reorder --ids 501,502 --placement top
+eq "control: with the numeric leg removed, a positionless echo reads as SUCCESS" "0" "$rc"
+eq "…printing null positions for every row — the echo this verb exists to refuse" "[null,null]" \
+   "$(jq -c '[.ranked[].position]' <<<"$out")"
+
+echo "-- ⭐ …and the ACHIEVED PLACEMENT is read out of the meta, per placement form --"
+R_BODY="$(r_resp 501 400 600 false)" kbc reorder --ids 501 --placement top
+eq "top: a card left BEFORE the block → rc 1"              "1" "$rc"
+eq "top: …names the key and both values"                   "true" \
+   "$(has 'landed with before_task_id=400, where this call asked for before_task_id=null' "$err")"
+eq "top: …saying the status is not the placement"          "true" \
+   "$(has 'The status is not the placement; the read-back is' "$err")"
+eq "top: …and nothing on stdout"                           ""  "$out"
+R_BODY="$(r_resp 501 400 600 false)" kbc reorder --ids 501 --placement bottom
+eq "bottom: a card left AFTER the block → rc 1"            "1" "$rc"
+eq "bottom: …names after_task_id"                          "true" \
+   "$(has 'landed with after_task_id=600, where this call asked for after_task_id=null' "$err")"
+R_BODY="$(r_resp 501 400 700 false)" kbc reorder --ids 501 --before-task 600
+eq "--before-task 600: the board says the block landed before 700 → rc 1" "1" "$rc"
+eq "…names the anchor that was asked for"                  "true" \
+   "$(has 'landed with after_task_id=700, where this call asked for after_task_id=600' "$err")"
+R_BODY="$(r_resp 501 300 600 false)" kbc reorder --ids 501 --after-task 400
+eq "--after-task 400: the board says the block landed after 300 → rc 1" "1" "$rc"
+eq "…names the anchor that was asked for"                  "true" \
+   "$(has 'landed with before_task_id=300, where this call asked for before_task_id=400' "$err")"
+# The positive control for all four: the SAME bin, the SAME calls, a meta that agrees.
+R_BODY="$(r_resp 501 null 600 false)" kbc reorder --ids 501 --placement top
+eq "control: top with no card before the block → rc 0"     "0" "$rc"
+R_BODY="$(r_resp 501 400 null false)" kbc reorder --ids 501 --placement bottom
+eq "control: bottom with no card after the block → rc 0"   "0" "$rc"
+R_BODY="$(r_resp 501 300 600 false)" kbc reorder --ids 501 --before-task 600
+eq "control: --before-task 600 bracketed by 600 → rc 0"    "0" "$rc"
+R_BODY="$(r_resp 501 400 700 false)" kbc reorder --ids 501 --after-task 400
+eq "control: --after-task 400 bracketed by 400 → rc 0"     "0" "$rc"
+_rmut bracket '/The status is not the placement/{n;s/^        return 1$/        :/;}' _rm
+R_BODY="$(r_resp 501 400 600 false)" rrun "$_rm" reorder --ids 501 --placement top
+eq "control: with that comparison removed the wrong placement reads as SUCCESS" "0" "$rc"
+
+echo "-- ⚠ a RENUMBER is not N moves, and is never reported as movement --"
+R_BODY="$(r_resp 501 null 600 true)" kbc reorder --ids 501 --placement top
+eq "renumbered=true: still rc 0 — the placement landed"    "0" "$rc"
+eq "renumbered=true: called out on stderr in the board's own terms" "true|true" \
+   "$(has 'NO card' "$err")|$(has 'rank changed by it' "$err")"
+eq "renumbered=true: …named as ONE event, not as N moves"  "true" \
+   "$(has 'ONE lane.cards_renumbered event rather than as N moves' "$err")"
+eq "⭐ renumbered=true: the ranked list is still ONLY the card this call ranked" "[501]" \
+   "$(jq -c '[.ranked[].id]' <<<"$out")"
+eq "renumbered=true: …and the flag rides stdout for a machine reader" "true" \
+   "$(jq -c '.renumbered' <<<"$out")"
+# The negative control that makes the line attributable: the same call, renumbered=false.
+R_BODY="$(r_resp 501 null 600 false)" kbc reorder --ids 501 --placement top
+eq "control: renumbered=false says nothing about a renumber" "false|false" \
+   "$(has 'lane.cards_renumbered' "$err")|$(jq -c '.renumbered' <<<"$out")"
+
+echo "-- a 2xx nothing can be read out of is an UNVERIFIED WRITE, never a printed rank --"
+R_BODY='{"meta":{"workflow_stage_id":48,"before_task_id":null,"after_task_id":600,"renumbered":false}}' \
+  kbc reorder --ids 501 --placement top
+eq "reorder: a 2xx with no ranked-card list → rc 3"        "3" "$rc"
+eq "reorder: …named an UNVERIFIED WRITE, not a failure"    "true" "$(has 'UNVERIFIED WRITE' "$err")"
+eq "reorder: …says where those cards sit is UNMEASURED"    "true" "$(has 'is UNMEASURED' "$err")"
+eq "reorder: …and nothing on stdout"                       ""  "$out"
+R_BODY='{"data":{"id":501}}' kbc reorder --ids 501 --placement top
+eq "reorder: a .data that is not a LIST → rc 3, not an empty rank" "3" "$rc"
+R_BODY="$(jq -c 'del(.meta)' <<<"$R_OK_TOP")" kbc reorder --ids 501,502 --placement top
+eq "reorder: a collection with NO meta → rc 3"             "3" "$rc"
+eq "reorder: …names the ACHIEVED PLACEMENT as the thing unmeasured" "true" \
+   "$(has 'ACHIEVED placement' "$err")"
+R_BODY='not json at all' kbc reorder --ids 501 --placement top
+eq "reorder: a 2xx that is not JSON → rc 3, no jq parse error leaking" "3|false" \
+   "$rc|$(has 'parse error' "$err")"
+R_HTTP=422 R_BODY='{"message":"All ids must be in the same workflow stage; got stage ids 35, 36."}' \
+  kbc reorder --ids 501,502 --placement top
+eq "reorder: the board's own 422 is RELAYED at rc 1, not re-derived here" "1" "$rc"
+eq "reorder: …with the server's message on stderr"         "true" \
+   "$(has 'must be in the same workflow stage' "$err")"
+eq "reorder: …and nothing on stdout"                       ""  "$out"
+
+echo "-- the value-taking flags reject an EMPTY value (the class kb_require_value owns) --"
+for _f in --ids --placement --before-task --after-task; do
+    kbc reorder "$_f" ""
+    eq "reorder $_f \"\" → rc 2, nothing sent"             "2|0" "$rc|$(kb_stub_total)"
+    eq "reorder $_f \"\" names the flag"                   "true" \
+       "$(has "$_f requires a non-empty value" "$err")"
+done
+kbc reorder --ids
+eq "reorder: a trailing flag with no argument names the flag, not set -u" "2|false" \
+   "$rc|$(has 'unbound variable' "$err")"
+kbc reorder --ids 501 --placement top --nonsense x
+eq "reorder: an unknown arg is rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+
+unset -f kb_stub_route r_resp rrun _rmut
+unset R_BODY R_HTTP R_OK_TOP _rm _ids _f
 
 _summary "kbcard-selftest"

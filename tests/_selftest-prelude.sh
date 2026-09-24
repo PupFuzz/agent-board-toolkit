@@ -149,6 +149,26 @@ has_line() {
     case "$nl$2$nl" in *"$nl$1$nl"*) echo true ;; *) echo false ;; esac
 }
 
+# _n_lines <captured-output> — how many lines a STATIC SCANNER reported, with EMPTY meaning zero.
+# Hoisted here (card#10230): every scanner selftest in this tree reports its findings as a captured
+# multi-line string and then asserts a count, and `printf '%s\n' "" | wc -l` answers 1 for no
+# findings — so each such site needs the empty case handled, and a second private copy of that
+# handling is one more place for the two to disagree about what "clean" prints.
+#
+# WHO CALLS IT IS DERIVED, NEVER LISTED. A list of callers is a count in longer form: it is true
+# when written, nothing checks it, and it is false the next time a caller is added. Re-derive it:
+#     grep -rln '_n_lines' tests/ | grep -v '/_selftest-prelude\.sh$'
+#
+# ⛔ THE `awk 'NF'` FAMILY IS NOT THIS FUNCTION AND IS DELIBERATELY NOT MIGRATED — dispositioned
+# here so the next reader does not re-open it as an oversight. Re-derive that family with:
+#     grep -rnE "awk 'NF'[[:space:]]*\|[[:space:]]*wc -l" tests/
+# They answer a DIFFERENT question: they count NON-BLANK lines anywhere in the stream, where this
+# counts LINES and treats only the wholly-empty capture as zero. On a scanner report with no
+# interior blank line the two agree, which is exactly what makes the difference silent — fed
+# "a\n\nb" this answers 3 and they answer 2. Migrating them would move each call site's predicate
+# without moving its assertion, and every one of them is a denominator. They stay where they are.
+_n_lines() { [[ -z "$1" ]] && { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
 # expect_rc <label> <expected-rc> <fn> <args...> — assert a call's exit status.
 expect_rc() {
     local label="$1" exp="$2"; shift 2
@@ -252,6 +272,52 @@ _adopt_fn() {
     src="$(_fn_src "$1" "$2")" || exit 1
     eval "$src"
 }
+
+# ── splitting a file's LIVE head from its FROZEN history ─────────────────────────────────────
+# Hoisted here at the second caller (canon #5). `tests/lib-set-derivation-selftest.sh` leg 3 and
+# `tests/by-ref-source-claim-selftest.sh` leg 3 each refuse a prose shape ANYWHERE in the repo, and
+# each must exempt the append-only at-that-version records — `docs/CHANGELOG.md`, `docs/UPGRADE.md`,
+# and for the second caller `CLAUDE.md`'s release table — where a statement that was true AT a
+# version cannot rot. Two hand-spellings of one split is the shape prelude-shadow-selftest.sh
+# exists to refuse.
+
+# _headings <file> <ere> — the `<lineno>:<text>` lines of <file> whose text matches <ere>.
+# The `|| true` is what makes "no heading matched" an ASSERTABLE state instead of a death: under
+# `set -e` + `pipefail` grep's rc 1 kills the assignment at the call site. The guard this replaced
+# — `[[ -n "$cut" ]] || { printf ... ; exit 1; }` — could never fire for exactly that reason.
+_headings() { grep -nE "$2" "$1" || true; }
+
+# _carve <file> <ere> <live-out> <frozen-out> — split <file> at its FIRST line matching <ere>:
+# everything ABOVE that line is the LIVE region, that line and everything below is the FROZEN one.
+# BOTH halves are written, because the frozen half is the witness that the cut landed on the
+# heading the caller says it did.
+#
+# ⛔ THE CUT IS BY HEADING TEXT, NEVER BY A SECTION NUMBER. `docs/UPGRADE.md` was split on `^## 6\.`
+# while one sentence beside it called the split "derived, not a line number" (the file mentioned
+# the split three times; only that one made the claim): only the OFFSET was
+# derived — the 6 was a hand-kept fact, i.e. that file's own subject, inside that file. Measured:
+# inserting a new LIVE `## 6.` section carrying an enumeration line and renumbering the history to
+# `## 7.` left the whole run rc 0 all-green while the live region silently SHRANK, because the only
+# premise beside the cut asserted what the live region LACKS — a direction that can catch a too-WIDE
+# cut and never a too-narrow one. Each caller must also assert how many headings matched and that
+# the matched one is in the frozen complement, which is the missing direction.
+#
+# No match at all ⇒ the whole file is LIVE and the frozen half is empty. Fail-CLOSED: a caller's
+# prohibition then scans everything (reporting more, never less) while its count assertion reds.
+_carve() {
+    local file="$1" pat="$2" live="$3" frozen="$4" cut
+    cut="$(_headings "$file" "$pat" | head -n 1 | cut -d: -f1)"
+    if [[ -z "$cut" ]]; then
+        cp "$file" "$live"; : > "$frozen"; return 0
+    fi
+    sed -n "1,$((cut - 1))p" "$file" > "$live"
+    sed -n "$cut,\$p" "$file" > "$frozen"
+}
+
+# _contains <needle> <file> — `has` against a file's contents, with an EMPTY needle answering
+# false. `has ""` matches anything, so a presence witness built from a heading that was never
+# found would pass at exactly the moment the split it witnesses had failed.
+_contains() { [[ -n "$1" ]] || { echo false; return 0; }; has "$1" "$(cat "$2")"; }
 
 # _mktmp_scratch [--home] — set TMP to a fresh temp dir + an EXIT trap that removes it.
 # With --home, also export a scratch HOME=$TMP so no real ~/.kanban-* file taints a result.

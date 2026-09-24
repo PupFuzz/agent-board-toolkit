@@ -220,6 +220,18 @@ emit() { # <status> <body>
   exit 0
 }
 if [ "$method" = PATCH ]; then printf '%s\n' "$url" >> "$PATCH_LOG"; emit 200 '{"data":{"id":0}}'; fi
+# The single-card read (card#9938): the mover re-reads every card it PATCHes and reports the move
+# from THAT, so a stub answering this url with the whole board array says "no stage could be read"
+# and every move here would be UNVERIFIED. This arm models the server that APPLIED the write — the
+# card out of $BOARD_FILE with $STUB_STAGE overlaid — which is what every assertion in this file is
+# about (WHICH cards are PATCHed, never what the write did). $STUB_STAGE is DERIVED from the same
+# config the tool reads, so the two cannot disagree about the target stage.
+case "$url" in
+  */tasks/[0-9]*.json)
+    cid="${url##*/tasks/}"; cid="${cid%%.json*}"
+    emit 200 "$(jq -c --arg id "$cid" --argjson s "$STUB_STAGE" \
+                  '{data: (((.data[]? | select((.id|tostring) == $id)) // {}) + {workflow_stage_id: $s, tags: []})}' "$BOARD_FILE")" ;;
+esac
 emit 200 "$(cat "$BOARD_FILE")"
 STUB
 chmod +x "$TMP/bin/curl"
@@ -242,6 +254,11 @@ export KANBAN_WRITEBACK_TOKEN=tkn
 export KANBAN_EXPECTED_HOST=kanban.test
 export PATCH_LOG="$TMP/patches.log"
 export BOARD_FILE="$TMP/board.json"
+# READ OUT OF THE CONFIG THE TOOL ITSELF READS, never written here a second time: a literal would
+# be this fixture's released stage restated, and a restatement that drifts makes every move in
+# this file read back as landing in the wrong column.
+STUB_STAGE="$(jq -r '.promote.released_stage_id' "$TMP/release-pr.json")"
+export STUB_STAGE
 
 # moved <id> → true/false: was card <id> PATCHed on the last run?
 moved() { has_line "https://kanban.test/api/v3/tasks/$1.json" "$patched"; }

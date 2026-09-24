@@ -5,9 +5,20 @@
 # WHAT A MIRROR PAIR IS HERE. `bin/` ships four tools that are vendored STANDALONE into consumer
 # repos and must not source `bin/_kb-board-lib.sh` — `promote-released-cards`,
 # `release-artifacts-check`, `release-pr-body`, `release-tag-check`. Each therefore carries its
-# own inline copy of a guard the lib also owns. That duplication is not an oversight to remove:
-# `docs/CONSOLIDATION-PLAN.md` § Stage D DECIDED (2026-08-01) against making them source the lib,
-# and chose GUARDED duplication instead. This file is some of that guard.
+# own inline copy of a rule that ANOTHER shipped file owns. That duplication is not an oversight
+# to remove: `docs/CONSOLIDATION-PLAN.md` § Stage D DECIDED (2026-08-01) against making them
+# source the lib, and chose GUARDED duplication instead. This file is some of that guard.
+#
+# ⚠ THE OTHER END IS USUALLY THE LIB AND IS NOT ALWAYS THE LIB (§ 6, card#9938). A standalone that
+# cannot source the lib cannot exec a sibling BIN either — it is vendored alone — so a rule owned
+# by `bin/kbcard` (the write-outcome ladder, card#8556) reaches it by the same duplication, under
+# the same policy, and drifts the same way. The pairs below are therefore "the standalone's copy
+# ↔ the file that OWNS the rule", not "↔ the lib"; nothing about the pin changes with the end.
+#
+# ⚑ AND A PAIR NEED NOT HAVE A LIB ORIGINAL TO BELONG HERE. `require_resolvable` below is two
+# STANDALONES compared against each other, and § 7 is a standalone compared against a bin that DOES
+# source the lib. What makes something a member is the property, not the topology: one ruling
+# written twice, with nothing that reds when a fix lands in one copy and misses the other.
 #
 # WHY IT EXISTS. `kb-host-guard-selftest.sh`, `kb-positional-guard-selftest.sh`,
 # `url-userinfo-render-selftest.sh`, `promote-pagination-selftest.sh`,
@@ -41,9 +52,11 @@ ROOT="$(cd "$HERE/.." && pwd)"
 LIB="$ROOT/bin/_kb-board-lib.sh"
 PRC="$ROOT/bin/promote-released-cards"
 RPB="$ROOT/bin/release-pr-body"
+NDL="$ROOT/bin/next-dl"
 _need -r "$LIB"
 _need -x "$PRC"
 _need -x "$RPB"
+_need -x "$NDL"
 
 # shellcheck source=/dev/null
 source "$LIB"
@@ -301,7 +314,8 @@ unset _b _t _naive
 
 # ═══════════════════════ 5 — `repo_from_gh_url`: promote ↔ KB_JQ_REPO_FROM_GH_URL ══════════════
 #
-# The board attributes a card (by-ref `source`) from a GitHub URL through one rule, which
+# The board attributes a card (by-ref `source`) from a GitHub URL — where no `payload.repo`
+# that is a string containing `/` outranks it — through one rule, which
 # promote-released-cards mirrors in jq as `def repo_from_gh_url:`. `kbcard patch` and `adopt-to-dl`
 # ask the SAME question — does a URL written without its number still attribute the card to a
 # repo? (card#9846) — through the lib's `KB_JQ_REPO_FROM_GH_URL`, which is that def's text. The
@@ -340,5 +354,306 @@ eq "control: …and so does the corpus, on a /blob/ URL" "false" \
    "$([[ "$(_rfg "$KB_JQ_REPO_FROM_GH_URL" '"https://github.com/acme/widget/blob/main/x.md"')" == "$(_rfg "$_rfg_mut" '"https://github.com/acme/widget/blob/main/x.md"')" ]] && echo true || echo false)"
 unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
+
+# ═══════════ 6 — the WRITE-OUTCOME contract: promote ↔ `bin/kbcard` (card#9938) ═══════════
+#
+# THE PAIR HERE IS STANDALONE ↔ ANOTHER BIN, not standalone ↔ the lib, and that is the same
+# defect class rather than a wider one: `bin/kbcard` owns this fleet's write-outcome ladder
+# (card#8556 — APPLIED / NOT APPLIED AND KNOWN / UNVERIFIED, with `KBC_RC_UNVERIFIED` as the
+# third outcome's rc), `bin/promote-released-cards` must not source the lib and cannot exec
+# kbcard either (it is vendored ALONE), and card#9938 made it adopt that ladder rather than mint
+# a second vocabulary for one outcome. So the value and the rule exist twice, and a second
+# expression of one rule drifts. Two things are held: the RC, as a value, and the STAGE RULING.
+echo "== the UNVERIFIED rc: promote's RC_UNVERIFIED IS kbcard's KBC_RC_UNVERIFIED =="
+KBC="$ROOT/bin/kbcard"
+_need -r "$KBC"
+# Each side is the ASSIGNMENT LINE grepped out of the shipped file, asserted to match exactly
+# once: an extraction that found none would compare two empties and pass forever.
+_rcu_prc="$(command grep -cE '^RC_UNVERIFIED=' "$PRC")"
+_rcu_kbc="$(command grep -cE '^KBC_RC_UNVERIFIED=' "$KBC")"
+eq "witness: promote defines RC_UNVERIFIED exactly once"     "1" "$_rcu_prc"
+eq "witness: kbcard defines KBC_RC_UNVERIFIED exactly once"  "1" "$_rcu_kbc"
+# ⚠ THE TWO SIDES ARE READ DIFFERENTLY, AND THE ASYMMETRY IS THE POINT — it is the same asymmetry
+# this whole file exists for. The STANDALONE's value must be a self-contained LITERAL: it may
+# source nothing, so a copy whose rc came from a name it cannot resolve would be a broken tool,
+# and reading it by text is what can SEE that. The OWNER's value need not be a literal and is
+# already moving — card#10029 points `KBC_RC_UNVERIFIED` at the lib's `KB_RC_UNVERIFIED`, which
+# is the right direction (one owner for the value, not two literals) — so the owner's side is
+# RESOLVED, through the lib this file has already sourced. A `cut -d= -f2` reader would compare
+# promote's `3` against the STRING `"$KB_RC_UNVERIFIED"` and red on a pair that AGREES.
+# _rcu_value <file> <var> — the shipped assignment's VALUE. An indirection that resolves to
+# nothing yields the empty string, so it reds rather than passing: `set +u` is what turns the
+# unbound name into an observable empty instead of an abort with no row printed.
+_rcu_value() {
+    local line
+    line="$(command grep -E "^$2=" "$1")" || return 0
+    ( set +u; eval "$line"; printf '%s' "${!2-}" ) 2>/dev/null || true
+}
+_rcu_prc="$(command grep -E '^RC_UNVERIFIED=' "$PRC" | cut -d= -f2)"
+_rcu_kbc="$(_rcu_value "$KBC" KBC_RC_UNVERIFIED)"
+eq "⭐ the two are the SAME rc (a caller testing for 3 tests one thing)" "$_rcu_kbc" "$_rcu_prc"
+eq "…and it is 3, the rc both files' contracts document" "3" "$_rcu_kbc"
+eq "⭐ the STANDALONE's rc is a LITERAL — it can resolve no name it does not define" "true" \
+   "$([[ "$_rcu_prc" =~ ^[0-9]+$ ]] && echo true || echo false)"
+echo "== control: a renumbering on EITHER side is caught — both directions, not one =="
+# ON THE REAL FILES, through the SAME extractions the rows above use — not on literals typed
+# here. A control that compared two hand-written strings would leave the readers that PRODUCE
+# the population untested, which is the half that silently stops finding anything after a rename.
+# BOTH sides are mutated: a guard driven from one end only reds when the COPY drifts and passes
+# in silence when the OWNER moves — which is the direction this pair is actually moving.
+sed 's/^RC_UNVERIFIED=3/RC_UNVERIFIED=4/' "$PRC" > "$TMP/prc-renumbered"
+_rcu_mut="$(command grep -E '^RC_UNVERIFIED=' "$TMP/prc-renumbered" | cut -d= -f2)"
+eq "control: the COPY-side mutation applied, and the extraction SEES it" "4" "$_rcu_mut"
+eq "control: …so the equality above reds on that copy" "false" \
+   "$([[ "$_rcu_kbc" == "$_rcu_mut" ]] && echo true || echo false)"
+sed 's/^KBC_RC_UNVERIFIED=.*/KBC_RC_UNVERIFIED=4/' "$KBC" > "$TMP/kbc-renumbered"
+_rcu_mut="$(_rcu_value "$TMP/kbc-renumbered" KBC_RC_UNVERIFIED)"
+eq "control: the OWNER-side mutation applied, and the resolver SEES it" "4" "$_rcu_mut"
+eq "control: …so the equality above reds when the OWNER moves and the copy does not" "false" \
+   "$([[ "$_rcu_mut" == "$_rcu_prc" ]] && echo true || echo false)"
+eq "control: …while the shipped pair still agrees"  "true" \
+   "$([[ "$_rcu_kbc" == "$_rcu_prc" ]] && echo true || echo false)"
+echo "== control: the resolver FOLLOWS an indirection, and reds when it resolves to nothing =="
+# The spelling card#10029 gives the owner's line, driven here against a probe name of this
+# file's own rather than against `KB_RC_UNVERIFIED` — that constant is not on this branch yet,
+# and a row expecting it would assert which PR landed first instead of what the reader does.
+# What is proven is the READER's property, which is what has to hold either way round.
+printf 'KBC_RC_UNVERIFIED="$_RCU_PROBE"\n' > "$TMP/kbc-indirect"
+eq "control: …=\"\$NAME\" with NAME=3 resolves to 3, so the pair still agrees after card#10029" "3" \
+   "$(_RCU_PROBE=3; _rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+eq "control: …and an indirection pointing at NOTHING resolves EMPTY, which reds" "" \
+   "$(_rcu_value "$TMP/kbc-indirect" KBC_RC_UNVERIFIED)"
+unset -f _rcu_value
+
+echo "== stage_verdict vs _kbc_confirm_stage: one ruling, two runtimes, one corpus =="
+# promote answers a WORD, kbcard answers an EXIT STATUS and a message; the compared property is
+# the DECISION, exactly as § 1 compares `require_value`'s verdict across two exit policies.
+_adopt_fn "$PRC" card_stage
+_adopt_fn "$PRC" stage_verdict
+_adopt_fn "$KBC" _kbc_confirm_stage
+# _sv <card GET body> <stage asked for> — promote's ruling, driven THROUGH ITS OWN READER. The
+# body goes in, not a stage: `card_stage` is the half that decides a JSON string and a JSON
+# number are the same stage (`tostring`), and a corpus that handed `stage_verdict` a
+# pre-extracted value would be testing a normalisation this file had restated rather than the
+# one the tool ships.
+_sv() { stage_verdict 0 "$(card_stage "$1")" "$2"; }
+# _card <workflow_stage_id as JSON, or the word ABSENT> — a single-card GET body.
+_card() {
+    if [[ "$1" == ABSENT ]]; then printf '{"data":{"id":1,"name":"c"}}'
+    else jq -cn --argjson s "$1" '{data:{id:1,name:"c",workflow_stage_id:$s}}'; fi
+}
+# _cs <workflow_stage_id as JSON, or the word ABSENT> <stage asked for> — kbcard's ruling on the
+# server's write echo. Its own callers hand it `_kbc_write_echo`'s projection, which is an object
+# carrying `workflow_stage_id`; ABSENT builds the object without the key.
+_cs() {
+    local echo_json rc=0
+    if [[ "$1" == ABSENT ]]; then echo_json='{"id":1,"name":"c"}'
+    else echo_json="$(jq -cn --argjson s "$1" '{id:1,name:"c",workflow_stage_id:$s}')"; fi
+    _kbc_confirm_stage move "card 1" "$echo_json" "$2" 2>/dev/null || rc=$?
+    [[ "$rc" -eq 0 ]] && printf 'applied' || printf 'not-applied'
+}
+# THE CORPUS. `85` vs `"85"` is not padding: the board stores the integer this tool sent, and a
+# JSON STRING spelling of it is the same stage — both sides normalise with `tostring` / jq -r,
+# and a copy that dropped it would report a landed move as a HARD FAILURE.
+for _row in '85|85|applied' '84|85|not-applied' '0|85|not-applied' '1085|85|not-applied' '"85"|85|applied' '"84"|85|not-applied'; do
+    IFS='|' read -r _got _want _expect <<<"$_row"
+    eq "both rule [$_got vs $_want] $_expect (promote)" "$_expect" "$(_sv "$(_card "$_got")" "$_want")"
+    eq "…and kbcard agrees"                             "$_expect" "$(_cs "$_got" "$_want")"
+done
+# THE ONE DECLARED DIVERGENCE, asserted in BOTH directions so neither side can quietly move onto
+# the other. A card whose stage CANNOT BE READ is `unverified` in promote and HARD FAILURE in
+# kbcard, and neither is wrong because the two are ruling on different subjects: kbcard rules on
+# the server's own write ECHO, whose readability `_kbc_write_echo` has already established (an
+# unreadable echo is ITS rc 3, one layer up), so a missing stage in a body it has accepted is a
+# real disagreement; promote rules on an INDEPENDENT GET that nothing upstream vouched for, so
+# "no stage could be read" is nothing measured — and nothing measured may not be reported as a
+# measurement. A third divergence would land in the agreement rows above and red there.
+eq "declared divergence: promote calls an UNREADABLE stage unverified" "unverified" "$(_sv "$(_card ABSENT)" 85)"
+eq "…and the same for a body no card can be read out of at all" "unverified" "$(_sv '<html>502</html>' 85)"
+eq "declared divergence: kbcard calls an ABSENT echo stage NOT APPLIED" "not-applied" "$(_cs ABSENT 85)"
+eq "…and promote's OTHER unverified arm: the read itself was not a measurement" "unverified" \
+   "$(stage_verdict 1 85 85)"
+echo "== control: a promote copy that reported from the status class is caught by the corpus =="
+# The pre-card#9938 tool, reduced to this rule: it never read anything back, so every write that
+# answered 2xx was `applied`. Both divergent rows must invert.
+_sv_naive() { printf 'applied'; }
+eq "control: the naive rule calls a card that did NOT move applied" "applied" "$(_sv_naive "$(_card 84)" 85)"
+eq "control: …where the shipped rule does not"                      "not-applied" "$(_sv "$(_card 84)" 85)"
+eq "control: the naive rule calls an UNREADABLE read applied too"   "applied" "$(_sv_naive '<html>502</html>' 85)"
+eq "control: …where the shipped rule refuses to rule"               "unverified" "$(_sv '<html>502</html>' 85)"
+unset -f card_stage stage_verdict _kbc_confirm_stage _sv _cs _card _sv_naive
+unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
+
+# ═══════════════════ 7 — the two renderers of an UNTRUSTED response body ═════════════════════
+#
+# THE PAIR: `resp_detail` in promote-released-cards and `resp_excerpt` in next-dl. Each is its
+# tool's ONE renderer of bytes a third party chose — next-dl's arm is designed around a gateway's
+# SSO or WAF page — onto an operator's terminal, and each carries the SAME ruling in two halves:
+# mask this call's bearer token BEFORE the length bound (cutting first splits the credential, so
+# the literal match finds nothing and the prefix prints — card#7500), and emit no byte a terminal
+# would ACT on.
+#
+# ⛔ WHY IT IS REGISTERED, and it is not a hypothetical (card#10230, round 7). The mask was ported
+# from `resp_detail` into `resp_excerpt` and the SCRUB WAS NOT, under a comment at the new site
+# claiming "same ruling, same reasoning and the same instrument as the co-vendored sibling". The
+# comment made the divergence invisible: `resp_excerpt` bounded with `tr '\n' ' '`, which converts
+# LF and nothing else, so ESC, BEL and CR all reached the terminal — the CR letting a third
+# party's page overwrite the refusal line being read, on the one message that says a DL may already
+# have been spent. Exactly this file's founding shape: a fix landing in one copy, missing its twin,
+# green suite, held by prose.
+#
+# ⚑ THE HOIST WAS CONSIDERED AND DECLINED, recorded here because "why is this still two texts" is
+# the first question a reader has. next-dl DOES source the lib, so a `kb_*` primitive is available
+# to it — but promote-released-cards may NOT source the lib (§ Stage D, above), so its copy stays
+# under any hoist. A lib primitive would therefore relocate ONE of the two texts and add a lib API
+# with a single lib-side caller, leaving the same two texts to keep in sync. What closes the defect
+# is the comparison, not the relocation. If a SECOND lib-sourcing bin ever needs this chain, that
+# is canon #5's second real caller and the hoist becomes right; this block keeps working either
+# way, because it compares behaviour and not text.
+#
+# WHAT IS COMPARED, and what is not: the DECISION about the body — which bytes survive the render
+# and in what form. The tools' envelopes differ by design (`resp_detail` prints `HTTP <status>,
+# server said: …` and cuts at its own named constant; `resp_excerpt` is interpolated mid-sentence
+# and cuts at next-dl's), so the corpus is kept under both bounds and the envelope is stripped.
+echo "== the untrusted-body renderers: promote's resp_detail ↔ next-dl's resp_excerpt =="
+# `resp_excerpt` is nested INSIDE dl_sequence_call, so `_fn_src` (which anchors at column zero)
+# cannot reach it; extracted and de-indented here, the way § 5 de-indents promote's embedded jq
+# def. Both halves of the extraction are witnessed before anything is compared.
+RX_SRC="$(sed -n '/^    resp_excerpt() {/,/^    }/p' "$NDL" | sed 's/^    //')"
+eq "witness: next-dl's resp_excerpt was extracted with a body" "true|true" \
+   "$(has 'resp_excerpt() {' "$RX_SRC")|$(has 'head -c' "$RX_SRC")"
+eq "witness: the extraction stopped at the function (it did not swallow the caller)" "false" \
+   "$(has 'spent_refusal' "$RX_SRC")"
+eval "$RX_SRC"
+_adopt_fn "$PRC" resp_detail
+
+MP_TOKEN='parity-stub-token'
+token_file="$TMP/mp-token"; printf '%s' "$MP_TOKEN" > "$token_file"
+API_ERR_FILE="$TMP/mp-detail"
+API_ERR_EXCERPT_MAX="$(sed -n 's/^API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$PRC")"
+TOKEN="$MP_TOKEN"
+eq "witness: promote's bound was read out of the bin" "false" \
+   "$([[ -z "$API_ERR_EXCERPT_MAX" ]] && echo true || echo false)"
+
+# _mp_detail <body> — resp_detail's verdict on the BODY, envelope removed. Its no-body sentence
+# and resp_excerpt's empty string are the same decision said two ways; mapping one onto the other
+# is the envelope difference being stripped, not a disagreement being hidden.
+_mp_detail() {
+    local out
+    printf '%s\n%s' 200 "$1" > "$API_ERR_FILE"
+    out="$(resp_detail)"
+    case "$out" in
+        'HTTP 200, and the server sent no body') printf '' ;;
+        *) printf '%s' "${out#HTTP 200, server said: }" ;;
+    esac
+}
+_mp_ctl() {   # <text> — how many C0-or-DEL bytes are in it, i.e. bytes a terminal ACTS on
+    LC_ALL=C printf '%s' "$1" | tr -dc '\000-\037\177' | wc -c | tr -d ' '
+}
+# ⚠ NUL IS ABSENT FROM THE CORPUS AND CANNOT BE ADDED: a shell variable cannot carry one, so no
+# row here can feed it. Both chains delete `\000` and neither tool can receive a NUL through the
+# path it actually reads (a `$(…)` capture of curl's output), so this is a bound of the harness
+# rather than an untested class of the guard — stated, not claimed away.
+MP_LABELS=('plain JSON'                       'an ESC CSI erase-line sequence'
+           'a BEL'                            'a CR the far page would overwrite with'
+           'an LF'                            'a TAB'
+           'VT and FF'                        'SO and US'
+           'DEL'                              'a run of spaces'
+           'leading and trailing space'       'the wire token echoed back'
+           'UTF-8 that must survive intact'   'the empty body'
+           'a raw C1 CSI byte')
+MP_BODIES=('{"message":"nope"}'               "$(printf '{"m":"blocked\033[2Kfree"}')"
+           "$(printf '{"m":"ring\007ing"}')"  "$(printf 'refusing\rnext-dl: minted DL-9999')"
+           "$(printf 'line one\nline two')"   "$(printf 'a\tb')"
+           "$(printf 'a\013b\014c')"          "$(printf 'a\016b\037c')"
+           "$(printf 'a\177b')"               'a     b'
+           '  a b  '                          '{"Authorization":"Bearer parity-stub-token"}'
+           'café €50'                         ''
+           "$(printf 'a\233b')")
+eq "witness: every corpus row has a label" "${#MP_LABELS[@]}" "${#MP_BODIES[@]}"
+# ⛔ THE CORPUS MUST FIT UNDER BOTH CUTS, or a long row would be truncated at two different
+# places and red as a DISAGREEMENT when the two chains actually agree. Both bounds are READ OUT OF
+# their bins rather than written here, and the check is the comparison — no figure lives in this
+# file to go stale when either tool re-tunes its own.
+_mp_ndl_max="$(sed -n 's/.*head -c \([0-9][0-9]*\).*/\1/p' "$NDL" | head -1)"
+eq "witness: next-dl's cut was read out of the bin" "false" \
+   "$([[ -z "$_mp_ndl_max" ]] && echo true || echo false)"
+_mp_longest=0
+for _i in "${!MP_BODIES[@]}"; do
+    _n="$(LC_ALL=C printf '%s' "${MP_BODIES[$_i]}" | wc -c | tr -d ' ')"
+    [[ "$_n" -gt "$_mp_longest" ]] && _mp_longest="$_n"
+done
+eq "witness: every corpus row fits under BOTH cuts, so no row compares two truncations" "true" \
+   "$([[ "$_mp_longest" -lt "$_mp_ndl_max" && "$_mp_longest" -lt "$API_ERR_EXCERPT_MAX" ]] && echo true || echo false)"
+# ⭐ VACUITY: the rows below assert that no control byte SURVIVES, which an all-plain corpus would
+# satisfy having measured nothing. The corpus itself must carry them going in — and the DERIVED
+# count is printed rather than asserted against a written floor, which would stop being re-derived
+# the day a row moved. What is ASSERTED is the property: the corpus feeds some, and every row that
+# feeds one is a row the render had to CHANGE.
+_mp_in=0; _mp_rows=0
+for _i in "${!MP_BODIES[@]}"; do
+    _n="$(_mp_ctl "${MP_BODIES[$_i]}")"
+    _mp_in=$(( _mp_in + _n )); [[ "$_n" -gt 0 ]] && _mp_rows=$(( _mp_rows + 1 ))
+done
+printf '   corpus: %s rows, %s of them carrying %s control byte(s) in\n' \
+    "${#MP_BODIES[@]}" "$_mp_rows" "$_mp_in"
+eq "witness: the corpus really feeds control bytes IN" "true" \
+   "$([[ "$_mp_in" -gt 0 && "$_mp_rows" -gt 0 ]] && echo true || echo false)"
+
+for _i in "${!MP_BODIES[@]}"; do
+    _l="${MP_LABELS[$_i]}"; _b="${MP_BODIES[$_i]}"
+    _x="$(resp_excerpt "$_b")"; _d="$(_mp_detail "$_b")"
+    eq "the two renderers agree on [$_l]"                  "$_d" "$_x"
+    eq "…and NEITHER emits a byte a terminal acts on [$_l]" "0|0" "$(_mp_ctl "$_d")|$(_mp_ctl "$_x")"
+    # ⭐ PER-ROW VACUITY, derived from the row itself: a row that carried a control byte in must
+    # come out DIFFERENT. Without it a renderer that returned its input unchanged would satisfy the
+    # agreement row, and the "0 out" row only for the plain rows.
+    if [[ "$(_mp_ctl "$_b")" -gt 0 ]]; then
+        eq "…and the render actually CHANGED that body [$_l]" "false" \
+           "$([[ "$_x" == "$_b" ]] && echo true || echo false)"
+    fi
+done
+unset _i _l _b _x _d _n _mp_in _mp_rows _mp_longest _mp_ndl_max
+# THE DECLARED DIVERGENCE FROM "no control bytes", asserted as a VALUE on BOTH copies rather than
+# skipped: the scrub is C0-and-DEL, so C1 (0x80-0x9F, 0x9B CSI included) SURVIVES. `resp_detail`'s
+# own comment owns the reason — `\200-\237` overlaps UTF-8's continuation-byte range, so deleting
+# it would turn legitimate localised text into mojibake — and it is not restated here. If a copy
+# ever starts stripping C1, this reds and that reason gets re-argued instead of silently lost.
+_mp_c1() { LC_ALL=C printf '%s' "$1" | tr -dc '\233' | wc -c | tr -d ' '; }
+_mp_c1_body="$(printf 'a\233b')"
+eq "declared limit: the C1 CSI byte survives promote's copy"   "1" "$(_mp_c1 "$(_mp_detail "$_mp_c1_body")")"
+eq "declared limit: …and next-dl's, identically"               "1" "$(_mp_c1 "$(resp_excerpt "$_mp_c1_body")")"
+eq "declared limit: …and the UTF-8 row is untouched by both"   "true|true" \
+   "$(has 'café €50' "$(_mp_detail 'café €50')")|$(has 'café €50' "$(resp_excerpt 'café €50')")"
+
+# ⭐ THE CONTROL, DRIVEN FROM BOTH ENDS. Every row above would pass just as well for two copies
+# that had BOTH lost the scrub — which is the state this branch shipped in round 6 minus one copy.
+# So each copy has its `tr -d` stage cut out in turn and must be seen to leak.
+echo "== control: cutting the scrub stage out of EITHER copy is caught =="
+_mp_esc="$(printf '{"m":"blocked\033[2Kfree"}')"
+eq "control: the ESC row does carry control bytes going in" "true" \
+   "$([[ "$(_mp_ctl "$_mp_esc")" -gt 0 ]] && echo true || echo false)"
+# The needle is the STAGE, not the string `tr -d`: promote's copy quotes a `tr -d` invocation in
+# its own comment (the mojibake measurement), so the bare string is present with or without the
+# pipeline stage and an assertion on it reports the comment.
+_mp_needle='tr -d '\''\000-'
+RX_NAIVE="$(printf '%s\n' "$RX_SRC" | sed "s/| tr -d '[^']*' //; s/^resp_excerpt()/rx_naive()/")"
+eq "control: the scrub stage really came out of next-dl's copy" "true|false|true" \
+   "$(has "$_mp_needle" "$RX_SRC")|$(has "$_mp_needle" "$RX_NAIVE")|$(has 'rx_naive() {' "$RX_NAIVE")"
+eval "$RX_NAIVE"
+eq "control: unscrubbed, next-dl's copy LEAKS the ESC sequence" "true" \
+   "$([[ "$(_mp_ctl "$(rx_naive "$_mp_esc")")" -gt 0 ]] && echo true || echo false)"
+eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(resp_excerpt "$_mp_esc")")"
+RD_SRC="$(_fn_src "$PRC" resp_detail)"
+RD_NAIVE="$(printf '%s\n' "$RD_SRC" | sed "s/| tr -d '[^']*' //; s/^resp_detail()/rd_naive()/")"
+eq "control: the scrub stage really came out of promote's copy" "true|false|true" \
+   "$(has "$_mp_needle" "$RD_SRC")|$(has "$_mp_needle" "$RD_NAIVE")|$(has 'rd_naive() {' "$RD_NAIVE")"
+eval "$RD_NAIVE"
+printf '%s\n%s' 200 "$_mp_esc" > "$API_ERR_FILE"
+eq "control: unscrubbed, promote's copy LEAKS it too"           "true" \
+   "$([[ "$(_mp_ctl "$(rd_naive)")" -gt 0 ]] && echo true || echo false)"
+eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(_mp_detail "$_mp_esc")")"
+unset -f resp_excerpt resp_detail rx_naive rd_naive _mp_detail _mp_ctl _mp_c1
+unset RX_SRC RX_NAIVE RD_SRC RD_NAIVE _mp_needle MP_LABELS MP_BODIES MP_TOKEN _mp_esc _mp_c1_body token_file
 
 _summary "mirror-pair-parity-selftest"

@@ -40,8 +40,10 @@
 # ─────────────────────────── THE PREDICATE, STATED ───────────────────────────
 #
 # A RECIPE LINE is a line containing `ln -s` that sits INSIDE a fenced code block of a tracked
-# `*.md` file. The population is re-derived from `git ls-files` on every run — there is no list in
-# this file, which is the shape that cannot go red when a doc grows a copy.
+# `*.md` file. The population is re-derived from `git ls-files` on every run — through
+# `_md_fenced_lines` in `tests/_shipped-shell-lib.sh`, which owns that scan for this file and for
+# card#10311's runbook-invoked-check derivation — so there is no list in this file, which is the
+# shape that cannot go red when a doc grows a copy.
 #
 # The fence half is what does the discriminating: this repository's prose talks about `ln -s`
 # constantly (the Windows copies-not-symlinks note, the HOOKS install narrative, a dozen CHANGELOG
@@ -93,6 +95,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
+# shellcheck source=tests/_shipped-shell-lib.sh
+source "$HERE/_shipped-shell-lib.sh"
 ROOT="$(cd "$HERE/.." && pwd)"
 _mktmp_scratch
 
@@ -103,14 +107,36 @@ SANCTIONED_OWNER="docs/INSTALL.md"
 SANCTIONED_SECOND="VERSIONING.md"
 
 # _recipe_lines <repo-root> — every recipe line in the tree, as "path<TAB>lineno<TAB>text".
+# The fenced-line scan itself is `_md_fenced_lines` from `tests/_shipped-shell-lib.sh` — this
+# file was its first caller and card#10311's runbook guard is its second, so it is extracted at
+# the second caller (canon #5) rather than copied, and the record decoder with it
+# (`_md_fenced_text`). ⛔ Its rc is READ here, not merely kept: an index this process cannot
+# read must not arrive as a tree with no tracked markdown, which is the read-outcome-collapse
+# class in the derivation feeding a class gate. rc 3 exits; leg 0's non-empty control below
+# stays, and now speaks about a population that was actually measured.
+#
+# ⚑ card#10311 round 2 widened the underlying scan to BLOCKQUOTED fences, which changes what
+# this file sees. `> ```bash` opens a real code block a reader pastes from, and `docs/INSTALL.md`
+# — the file whose §2 OWNS the `PATH` symlink recipe — already uses that shape twice. A third
+# copy of the recipe planted in such a block left this gate at `all checks passed`, which is
+# exactly the "a doc grew a copy and nothing reddened" failure the header above claims it closes.
+#
+# ⛔ IT RETURNS the read status; it does not `exit` on it. `_recipe_lines` is called from inside
+# a command substitution, and an `exit` there kills only that SUBSHELL — the script continues
+# with an empty population and reds, if at all, through a leg that cannot say why. Measured:
+# with `.git` moved aside this file reported `5 check(s) FAILED` at rc 1 instead of UNMEASURED.
+# So the rc travels back and EVERY call site below refuses on it, at top level, by name.
 _recipe_lines() {
-    local root="$1" f
-    while IFS= read -r f; do
-        awk -v F="$f" '
-            /^[[:space:]]*```/ { fence = !fence; next }
-            fence && /ln -s/   { printf "%s\t%d\t%s\n", F, NR, $0 }
-        ' "$root/$f"
-    done < <(cd "$root" && git ls-files '*.md')
+    local lines rc
+    lines="$(_md_fenced_lines "$1")" || { rc=$?; return "$rc"; }
+    printf '%s\n' "$lines" | _md_fenced_grep 'ln -s'
+}
+
+# _unmeasured <root> — the one refusal both call sites share.
+_unmeasured() {
+    echo "path-link-recipe-selftest: UNMEASURED — the tracked *.md set under $1 could not be read;" \
+         "the recipe population was never derived, so nothing below measured anything" >&2
+    exit 3
 }
 
 # _fixture <dir> — a source `bin/` holding one of every shape the loop must dispose of, plus the
@@ -180,7 +206,7 @@ _field() { printf '%s\n' "$2" | sed -n "s/^$1=//p"; }
 
 echo "== leg 0: the derivation runs, and the fence predicate discriminates =="
 
-POP="$(_recipe_lines "$ROOT")"
+POP="$(_recipe_lines "$ROOT")" || _unmeasured "$ROOT"
 eq "the recipe population is non-empty (a zero-member population measures nothing)" "false" \
    "$([[ -z "$POP" ]] && echo true || echo false)"
 eq "the owner's copy is in the population" "true" \
@@ -199,7 +225,7 @@ mkdir -p "$CTL" && ( cd "$CTL" && git init -q . )
   echo '```'
   echo 'More prose: `ln -s` again, outside any fence.'; } > "$CTL/doc.md"
 ( cd "$CTL" && git add doc.md >/dev/null 2>&1 )
-CTLPOP="$(_recipe_lines "$CTL")"
+CTLPOP="$(_recipe_lines "$CTL")" || _unmeasured "$CTL"
 eq "control: the fenced recipe is found (1 member)" "1" "$(printf '%s\n' "$CTLPOP" | awk 'NF' | wc -l | tr -d ' ')"
 eq "control: neither prose mention is picked up" "false" "$(has 'Prose about' "$CTLPOP")"
 

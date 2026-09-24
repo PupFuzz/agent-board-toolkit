@@ -40,8 +40,18 @@
 # outcome that produces copies and reports what producing symlinks reports.
 #
 # Installs hooks/post-checkout (auto-move the correlated card to In Progress on a
-# feature-branch checkout) and hooks/pre-push (a fail-soft advisory warning when a branch
-# name references a card in a spelling the auto-move grammar won't recognize; card-4621).
+# feature-branch checkout — but ONLY in a repo ARMED with `git config
+# kanban.automove-on-checkout true`, card#9845: installing WIRES the hook, it never arms it,
+# and unset means OFF, so an install alone moves nothing) and hooks/pre-push (a fail-soft
+# advisory warning when a branch name references a card in a spelling the auto-move grammar
+# won't recognize; card-4621 — that advisory needs no arming, but in an UNARMED repo its
+# board-verdict leg gets no fresh verdict from a checkout, since the record is the mover's
+# write (what it then reports per branch: docs/HOOKS.md § Arm it per repo) — as is the
+# payload.dl_number stamp (framework contract #112 step 2), also skipped in an unarmed repo,
+# which is the release-grade cost, not just advisory noise, and as is the seat
+# owner tag the mover stamps after a move that landed. An unarmed repo loses EVERY write the
+# mover makes, so this comment counts none of them; docs/HOOKS.md § Arm it per repo and § What
+# it does own that set between them).
 # HONORS core.hooksPath: when a repo sets it (gitleaks, the
 # pre-commit framework, Husky, many Windows setups), git dispatches hooks ONLY from there —
 # installing into .git/hooks would be a SILENT no-op (the symlink is created, install reports
@@ -521,7 +531,9 @@ _ibh_main() {
     local toolkit
     toolkit="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
     # The full hook set the toolkit installs. post-checkout: auto-move the card to In
-    # Progress on branch checkout. pre-push: the fail-soft branch-name advisory (card-4621).
+    # Progress on branch checkout, in a repo armed with kanban.automove-on-checkout — this
+    # installer wires that hook and never arms it (card#9845). pre-push: the fail-soft
+    # branch-name advisory (card-4621).
     local hooks=(post-checkout pre-push)
     local hook
     for hook in "${hooks[@]}"; do
@@ -792,6 +804,30 @@ _ibh_main() {
     # NB: an `[ -n "$hp" ] && echo …` trailing statement would return 1 (→ script exit 1) on a
     # successful install with no core.hooksPath; use an if so success always exits 0.
     if [ -n "$hp" ]; then echo "install-board-hooks: (honored core.hooksPath=$hp)"; fi
+    # WHAT THIS INSTALL DID NOT DO (card#9845). Placed after the loop and before the copies block
+    # so it rides BOTH success termini — the symlink path (exit 0) and the --allow-copies path
+    # (exit 3) — as one statement rather than one per terminus.
+    #
+    # ⛔ This tool does NOT arm the key, and must not: `hooks/post-checkout` calling the mover on
+    # every checkout is exactly what card#9845 removed, and an installer that armed as a side
+    # effect would restore it on every repo it touched, silently, under a command whose name says
+    # nothing about it. So the installer wires and SAYS; the operator arms.
+    #
+    # This is where every `install-board-hooks` remedy in the toolkit terminates — board-session-
+    # close's `fix:` lines, the `then: install-board-hooks` repairs, UPGRADE's re-run entries — so
+    # it is the one place the missing second step can be named for all of them. Without it a run to
+    # completion read as plain success and left an unarmed repo moving no card.
+    #
+    # The state is deliberately NOT read here: the lines below are true whether the repo is armed
+    # or not (this command never arms it, and says how to check), so a reader is not added to make
+    # them conditional.
+    echo "install-board-hooks: wiring done — this command does NOT arm the checkout auto-move."
+    echo "  post-checkout moves a card ONLY in a repo armed for it; unset means OFF (card#9845). Arm it:"
+    echo "      git -C '$repo' config kanban.automove-on-checkout true"
+    echo "  (read the current state: git -C '$repo' config --bool --get kanban.automove-on-checkout)"
+    echo "  Unarmed, the repo stays wired but quiet — the pre-push branch-name advisory works either way,"
+    echo "  and docs/HOOKS.md § Arm it per repo has what an unarmed repo gives up (the board-verdict"
+    echo "  record, and the payload.dl_number stamp — that one is release-grade)."
     if [ -n "$install_copies" ]; then
         {
             echo "install-board-hooks: installed ${#hooks[@]} hook(s) as COPIES, not symlinks ($probe_out)."

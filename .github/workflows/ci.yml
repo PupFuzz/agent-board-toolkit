@@ -158,6 +158,8 @@ jobs:
           - board-snapshot-selftest
           - board-stats-selftest
           - bsc-same-dir-selftest
+          - by-ref-source-claim-selftest
+          - card-completeness-selftest
           - ci-gate-selftest
           - composite-action-wiring-selftest
           - dependabot-reconcile-selftest
@@ -166,6 +168,7 @@ jobs:
           - drift-check-fixture-selftest
           - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
+          - framework-mirror-check-selftest
           - gh-code-search-selftest
           - gitignore-secret-family-selftest
           - help-output-selftest
@@ -188,6 +191,8 @@ jobs:
           - piped-match-gate-selftest
           - pipeline-free-match-selftest
           - prelude-shadow-selftest
+          - promote-completeness-gate-selftest
+          - promote-move-readback-selftest
           - promote-pagination-selftest
           - promote-ref-canon-selftest
           - promote-refusal-detail-selftest

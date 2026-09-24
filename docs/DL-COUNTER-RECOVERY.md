@@ -6,6 +6,13 @@ low hundreds — the board's **DL allocation counter is stranded**. This runbook
 end-to-end recovery, driven entirely over the board's kanbantool-v3 API, so an agent with
 only an API token (no server shell) can fix it.
 
+> **⛔ A SINGLE BURNED NUMBER IS NOT A STRAND, and this runbook is the wrong tool for it.** A
+> claim that was allocated and never stamped leaves a **one-number gap** in the sequence — which
+> is expected, harmless, and needs **no action at all**. Every remedy below is destructive
+> (force-deleting cards, resetting the counter), so running it for a gap costs data and fixes
+> nothing. `bin/next-dl`'s refusals say so and deliberately name no runbook; the symptom that
+> brings you here is the paragraph above — numbers coming back in the **wrong range**.
+>
 > **Scope.** Board-agnostic: it targets the kanbantool-v3 **DL-sequence** endpoint shapes
 > (`boards/{board}/dl-sequence*.json`) that `next-dl` already consumes. A board's kanban must
 > expose the inspect + reset endpoints (kanban DL-201 or later). On an older kanban that only

@@ -489,7 +489,8 @@ Both [`INSTALL.md`](INSTALL.md) §6b and [`ADOPTION.md`](../ADOPTION.md) already
 both name `promote-released-cards` in the second group, alongside a §6b recipe that copies it as a
 single file. This stage moves it into the first group, so both statements and that recipe need
 amending, plus an entry in [`UPGRADE.md`](UPGRADE.md). The framework's `templates/release/` mirror
-would need the lib too — that mirror is currently healthy, and this stage would make its job harder.
+would need the lib too, and this stage would make its job harder. (Whether that mirror is in step is
+not a property of this document: `tests/framework-mirror-check.sh` measures it, card#9939.)
 
 ---
 
@@ -792,15 +793,23 @@ finding with no owner is abandoned, not filed.
   gate author knows the axis exists and that `--help`-shaped is not the same as host-independent.
   One residual is named at the gate: `board-session-close`'s direct rc and byte count still vary by
   box, though its classification does not.
-- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED, and
-  two adoptions still owed.** `.github/workflows/ci.yml` names the population once
+- **CI's shell-file population, hand-copied into three class gates** (card#6911) — **EXTRACTED;
+  which adoptions remain is DERIVED, never counted here** (a figure would be right today and
+  wrong the day the next adoption lands, with nothing to red — card#10311 r2):
+  `command grep -l 'find bin hooks' tests/*.sh | command grep -v _shipped-shell-lib.sh`. The
+  exclusion is not a fudge: the lib itself holds that literal on purpose, as the needle
+  `_ci_shellcheck_drift` compares against `ci.yml`, so the owner always prints.
+  `.github/workflows/ci.yml` names the population once
   (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
   '*.sh'`), and by the time this was noticed the expression had been re-typed into
   `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
   `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
-  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it and the card#6911 gate is its first
-  caller. ⛔ **THE THREE POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** two take
-  `bin/`+`hooks/`, `piped-match-gate` deliberately ADDS `tests/*.sh` because 44 of the 47 copies its
+  #5's threshold. `tests/_shipped-shell-lib.sh` now owns it; the card#6911 gate was its first
+  caller and `read-outcome-collapse-selftest.sh` adopted it in card#10311. ⛔ **THE THREE
+  POPULATIONS GENUINELY DIFFER AND MUST NOT BE FLATTENED:** card#6911's takes `bin/`+`hooks/`,
+  card#7210's takes those plus `tests/*-check.sh` — the operator-run checks, keyed on the
+  filename kind rather than on what a doc says (card#10311) — and
+  `piped-match-gate` deliberately ADDS all of `tests/*.sh` because 44 of the 47 copies its
   class found were inside the harness. So the lib exports **CI's two halves separately** and each
   caller composes its own union — the population is a parameter, never a constant. Adoption is
   behaviour-preserving by construction (byte-identical output to what each already computes), so
@@ -1543,8 +1552,8 @@ finding with no owner is abandoned, not filed.
   flag (`--type`); `--triaged` alone always faulted (`object + array`), which is why the first round
   read as diagnostic-only. Closed by testing the CONTAINER type of `tags` in the same filter, at the
   same refusal and the same rc. **This narrowed the accepted set by 8 rows**, re-derived in round 3
-  on a 184-row A/B matrix (23 body shapes x 8 flag combinations; see the `[Unreleased]` CHANGELOG
-  entry for the denominator), every one of them the object-valued-`tags` class. **The earlier
+  on a 184-row A/B matrix (23 body shapes x 8 flag combinations; see the card#6426 entry in
+  `docs/CHANGELOG.md` for the denominator), every one of them the object-valued-`tags` class. **The earlier
   decomposition of those 8 — "6 rows (3 bodies x 2 flag combinations) … and 2 where an empty object
   …" — was wrong and is corrected here:** the 8 are **2 bodies x 4 `--type` combinations**
   (`--type` in its tag-alias and native-id forms, each with and without `--triaged`) — 4 rows where
@@ -1859,9 +1868,19 @@ finding with no owner is abandoned, not filed.
   `install-board-hooks`.** That is Stage B's card#5740 lesson a third time — *fixing N copies
   without the guard that forbids the N+1th leaves the cause in place* — so the guard is
   `tests/read-outcome-collapse-selftest.sh`, and it is deliberately **not** a rewrite of the sites
-  it lists. It derives its population from the tree on every run (`find bin hooks -maxdepth 1 -type
-  f ! -name '*.py'` — the `bin`/`hooks` half of `ci.yml`'s shellcheck expression; `tests/` is a
-  stated exclusion, since the harness discards a read's status on purpose), keys members on
+  it lists. It derives its population from the tree on every run (`_shipped_shell_files` — the
+  `bin`/`hooks` half of `ci.yml`'s shellcheck expression — **plus `_operator_run_checks`,
+  `tests/*-check.sh`**, which card#10311 added after the gate ran green over a live instance of
+  its own class in `tests/framework-mirror-check.sh`. ⛔ That half is keyed on the FILENAME KIND,
+  not on what a runbook says: the first cut derived it from fenced invocations and reached one of
+  this tree's two operator-run checks while asserting there was one, because `docs/HOOKS.md`
+  invokes the other in an inline-code span — a predicate whose miss is silent has no business
+  being the population of a gate whose subject is silent misses. Two guards keep the glob
+  complete: every `tests/*.sh` must declare one of the four kinds its name can carry, and a
+  `tests/` file a runbook invokes must be one of them. The rest of `tests/` stays a stated
+  exclusion, since the harness discards a read's status on purpose, and the price of that
+  exclusion is re-measured in the denominator every run rather than written down here), keys
+  members on
   `<file>:<var>` rather than a line number so a disposition does not rot on the next edit above it,
   prints its **denominator** on every run — clean or not — and reds on a member its
   **disposition list** does not carry, one line each with the reason it is permitted. The split
@@ -1897,8 +1916,9 @@ finding with no owner is abandoned, not filed.
   already ruled that *a copy that survives an audit of its own class is the argument FOR the gate
   that audit declined*, and Stage B's card#5740 section had ruled it once before that. It derives
   its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus
-  `tests/*.sh` — **`tests/` is IN**, unlike `read-outcome-collapse-selftest.sh`, because this class
-  minted its red inside the harness), keys members on `<file>` carrying an **occurrence count** so
+  `tests/*.sh` — **ALL of `tests/` is IN**, where `read-outcome-collapse-selftest.sh` takes only
+  `tests/*-check.sh`, because this class minted its red inside the
+  harness), keys members on `<file>` carrying an **occurrence count** so
   that an N+1th copy inside an already-dispositioned file still reds, prints its denominator on
   every run, and carries exactly one disposition: the `_piped*` / `_stat*` fixtures that ARE the
   construct held still so `pipeline-free-match-selftest.sh` can watch it fail. All three red paths
@@ -2002,7 +2022,14 @@ finding with no owner is abandoned, not filed.
   (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
   bridge PHP and `kanban_common._derive_card_source`; its `repo_from_gh_url` def is carried once more,
   verbatim, by the lib as `KB_JQ_REPO_FROM_GH_URL` for the `kbcard patch` / `adopt-to-dl` pair check
-  (card#9846), held line for line to promote's by `tests/mirror-pair-parity-selftest.sh` § 5. The
+  (card#9846), held line for line to promote's by `tests/mirror-pair-parity-selftest.sh` § 5.
+  <!-- by-ref-source-rule: POINTER --> ⚠ **`repo_from_gh_url` is only the URL half.** What a
+  card's by-ref `source` actually is, is decided first by `payload.repo` when it is a string
+  containing `/`, which outranks every URL; `docs/INSTALL.md` §4 states the whole derivation, and
+  `tests/by-ref-source-claim-selftest.sh` holds every declared statement of it against the shipped
+  `derive_source`. That guard is the answer to a related consolidation this plan does NOT carry:
+  the PROSE copies of the rule were four times swept by phrase grep and four times under-reported
+  (card#9957). The
   obvious consolidation is to stop mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
   <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
   with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
@@ -2024,26 +2051,48 @@ finding with no owner is abandoned, not filed.
   opt-in `external_references` include — the second alone would remove the mirror, because the
   derivation would no longer need re-expressing to read a value the board already handed over.
   The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
+- **The same source-derivation rule, restated in PROSE across the tree** (card#9918, card#9957) —
+  **SHIPPED, on the fifth attempt at closing the class.** Distinct from the bullet above: that one
+  is about the rule expressed in four RUNTIMES, this one about it stated in comments, help and
+  docs. Four sweeps ran under card#9918, each a phrase grep, each missing sites the next one found;
+  the fourth was written into `docs/CHANGELOG.md` **as if it were the population** and
+  under-reported, which is the same shape as the lib-list class above — an instrument answering
+  about its own spelling rather than about the repo, published as an answer about the repo.
+  **Two answers ship together, and the split is the ruling:** every site that is not RENDERED to an
+  operator became a pointer carrying the condition (`README.md` twice, this document's bullet
+  above, the comments in `tests/kbcard-selftest.sh`), because a pointer cannot drift; the sites a
+  program PRINTS stayed copies, because a pointer cannot reach a reader looking at a log line, and
+  they are held to `derive_source` instead. `tests/by-ref-source-claim-selftest.sh` is what holds
+  both: it reports any PASSAGE — never a line, which is how the third sweep lost a claim spanning a
+  line break — that names a URL or link, a card, and an attribution, and requires it to name
+  `payload.repo`; a second arm admits bare `source` where the passage also names a derivation
+  field, which is what tells this meaning of that overloaded word from the other three; and it compares the field ORDER of every self-declared full statement against the
+  order extracted from the shipped def on every run, in both directions, so a home cannot be
+  silently deleted either. **The trigger keys on the claim's nouns and never on its verb**, which
+  is the one property all four phrase greps lacked. ⛔ **No count of sites lives here** — run the
+  check; a figure in a document is exactly what the fourth sweep got wrong.
 - **The single-card read and its "was anything actually read?" refusal — SEVEN spellings in
   `bin/kbcard`, and they do not agree on what a card IS** (raised as **m7** and again as **m11** in the review of
   card#8545, the `unlink` verb, and reported-not-minted on that card's instruction; the finding
   was EJECTED from card#8556 on purpose — that card's class is *a
   mutating verb reports success it never read back*, and this is duplication, so it had no owner
-  until this entry). `_kbc_link_witness` is the sixth and `_kbc_card_witness` — minted by
-  card#8556 itself, after this entry was written — is the seventh. The shape every one of them spells is the
+  until this entry). `_kbc_link_witness` is the sixth and `kb_card_witness` — minted by
+  card#8556 itself as `_kbc_card_witness`, after this entry was written, and hoisted into
+  `bin/_kb-board-lib.sh` by card#10029 when `board-card-start` became its second caller — is the
+  seventh (it is still kbcard's spelling; it is no longer in kbcard's file). The shape every one of them spells is the
   same three steps: `kb_api GET "/tasks/<id>.json"`, pull the card out of the 2xx body with
   `kb_parse_resp`, then test the result for emptiness and refuse with a "nothing was read"
   diagnostic — because a 2xx whose body carries no card is not an empty card, which is this
   program's own *empty vs absent* trap (§ *Diagnosis*, item 1) at the read boundary. **The population, re-derived rather than quoted:**
-  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard` returns 7 — `_kbc_patch_tags`,
-  `_kbc_link_witness`, `_kbc_card_witness`, `cmd_show`, `cmd_comments`, `_kbc_archive_decision`
-  and `_kbc_field_restamp_dl`'s verify loop — plus two more outside this bin that the count
-  deliberately excludes (repo-wide the same grep over `bin/` returns 9): `bin/adopt-to-dl`'s and
-  `bin/board-card-start`'s, each a different bin with its own refusal vocabulary, and hoisting
-  across that boundary is a separate call. Re-run the grep; do not trust the seven.
+  `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard bin/_kb-board-lib.sh` — the
+  lib is in the derivation because `kb_card_witness` now lives there (card#10029), and so does a
+  hit that is NOT a kbcard spelling (`kb_owner_tag_write`'s tag read); the same grep over all of
+  `bin/` adds each other bin's own single-card read, each with its own refusal vocabulary.
+  ⚠ No figure is written here on purpose: the one this entry used to carry went stale as kbcard
+  grew verbs, which is the drift a written count invites. Re-run the grep.
   ⛔ **THE `kb_api\(_status\)\?` ALTERNATION IS THE LOAD-BEARING PART OF THAT PATTERN, and it is
   here because the narrower one FAILED.** This entry originally derived on `kb_api GET
-  "/tasks/\$` — and `_kbc_card_witness`, the seventh spelling, reads through **`kb_api_status`**,
+  "/tasks/\$` — and `kb_card_witness` (then `_kbc_card_witness`), the seventh spelling, reads through **`kb_api_status`**,
   so the narrow grep returned 6 both before and after the commit that minted it. The trigger this
   entry exists to arm was therefore standing on a count that could not move. An instrument that
   greps a NAME answers about the NAME, and a population derived BEFORE an edit cannot see what
@@ -2071,7 +2120,7 @@ finding with no owner is abandoned, not filed.
   refusals are not interchangeable text. They differ in RETURN POSTURE (`return 1` in four;
   `_kbc_archive_decision` prints a tab-separated `noprimitive` verdict and returns 0 so the gate
   fails closed without aborting its caller; the backfill loop pushes onto `unread` and
-  `continue`s so one bad row cannot abort a batch; `_kbc_card_witness` returns 1 only for
+  `continue`s so one bad row cannot abort a batch; `kb_card_witness` returns 1 only for
   UNMEASURED and answers **rc 0 with `{"state":"absent"}` on a 404** — the one spelling of the
   seven for which *the card is not there* is an ANSWER rather than a failure) and in the NOUN the
   diagnostic names ("its links are UNMEASURED", "refusing to replace this card's tags with a list
@@ -2080,7 +2129,7 @@ finding with no owner is abandoned, not filed.
   flatten them, and the flattening is exactly what turns `_kbc_archive_decision`'s deliberate
   fail-closed into an abort. **Do NOT collapse the diagnostics** — Stage A's rule that
   consolidating a guard deletes it silently applies here in full.
-  ⛔ **AND `_kbc_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
+  ⛔ **AND `kb_card_witness` DIFFERS ON THE WIRE, not just in its posture, which is the part a
   hoist would silently lose.** It is the only one of the seven that reads through
   **`kb_api_status`** rather than `kb_api` — because a 404 and a 403 are two different answers
   there and `kb_api` collapses both to rc 1 with `KB_HTTP` stranded in a subshell — and the only
@@ -2193,10 +2242,16 @@ teaches the next reader nothing.
   `tests/piped-match-gate-selftest.sh`.
 - **"`INSTALL.md` §6b is unaffected"** — false. Both it and `ADOPTION.md` state these bins need no
   lib, and §6b's recipe is a single-file `cp`. → *affected, with an upgrade step.*
-- **"The framework mirror proves hand-sync failed"** — false when checked. The mirror measured
-  self-consistent, carried self-documenting `MIRROR NOTE` blocks, and was hours behind a patch
-  release — healthy, not evidence of drift. (A measurement, not a standing guarantee: it lives in
-  another repo and is not covered by anything here. Re-measure before citing it.)
+- **"The framework mirror proves hand-sync failed"** — recorded here as *false when checked*, and
+  **that correction is itself now refuted: the original claim was right.** The refutation rested on
+  the mirror being SELF-consistent — it carried self-documenting `MIRROR NOTE` blocks and read as
+  hours behind a patch release, so it was called healthy. Nothing had ever compared it against a
+  toolkit **tag**. card#9939 built that comparison (`tests/framework-mirror-check.sh`) and neither
+  mirrored file was byte-identical to any tag at all. → **"self-consistent" is not "in step": a copy
+  can only be judged against the thing it is a copy OF, and where that thing is in another repo, no
+  audit either end runs can reach it — so the answer is a check that crosses the hop, never a
+  reading taken off the copy.** (Still a measurement and not a standing guarantee — the subject
+  lives in another repo. Re-run the check before citing this bullet in either direction.)
 - **Stage ordering** — revision 1 migrated two bins in an early stage that a later stage was what
   let them see the lib.
 - **Renaming to resolve a collision can be a protected-settings change.** Stage B needed a name

@@ -101,8 +101,26 @@ BSC_WORKTREES=(
   "$HOME/agent-board-toolkit-prod"
 )
 # The hooks install-board-hooks installs. post-checkout is load-bearing (it is what moves
-# the card to In Progress); pre-push is the fail-soft branch-name advisory.
+# the card to In Progress, in a repo ARMED per BSC_ARM_NOTE below); pre-push is the fail-soft
+# branch-name advisory, which needs no arming.
 BSC_HOOKS=(post-checkout pre-push)
+
+# THE SCOPE OF THE HOOK-DISPATCH LEG, in one string (card#9845), emitted on the leg's header and on
+# every summary branch that measured something.
+#
+# This leg measures WIRING — does the hook git dispatches still reach board-card-start — and every
+# remedy it prints (the `fix:` lines, the `then: install-board-hooks` repairs under a broken
+# core.hooksPath, the hand-chain line, the manual `ln -s` tail, the host PATH fix) is a WIRING
+# remedy. Wiring is necessary, not sufficient: `hooks/post-checkout` calls the mover only in a repo
+# armed with `kanban.automove-on-checkout`, and no remedy here sets it — install-board-hooks
+# deliberately does not arm, because arming by default is the behaviour card#9845 removed. So an
+# operator can run any remedy below to completion and still have a repo that moves no card.
+#
+# One string on the leg rather than a clause on each remedy: they are all remedies of this one leg,
+# so the statement belongs to the leg (canon #5). Not conditional on reading the setting either —
+# an unarmed repo is the intended default, not a finding, and the note qualifies the remedies
+# without judging any repo.
+BSC_ARM_NOTE="wiring is half: a card also needs that repo ARMED — 'git config kanban.automove-on-checkout true' — which no fix line here sets (docs/HOOKS.md § Arm it per repo)"
 
 # _bsc_hooks_dir <repo-dir> — echo the directory git ACTUALLY dispatches this repo's hooks
 # from.  rc 0 = resolved · 1 and 6 = REFUSED, and stdout carries the cause instead of a
@@ -710,9 +728,12 @@ _bsc_hook_dispatch_report() {
   if [[ "$inspected" -eq 0 ]]; then
     echo "  (0 checkout(s) inspected, ${skipped} skipped, ${findings} finding(s) — NOTHING was verified here; point this at your checkouts before reading it as clean)"
   elif [[ "$findings" -eq 0 ]]; then
-    echo "  (${inspected} inspected / ${skipped} skipped — no findings: every INSPECTED checkout has a runnable post-checkout that textually calls board-card-start; that is what ✓ asserts, not that a card will move — see docs/HOOKS.md)"
+    echo "  (${inspected} inspected / ${skipped} skipped — no findings: every INSPECTED checkout has a runnable post-checkout that textually calls board-card-start; that is what ✓ asserts, not that a card will move — ${BSC_ARM_NOTE})"
   else
-    echo "  (${inspected} inspected / ${skipped} skipped — ${findings} finding(s) — REPORT-ONLY: nothing was installed, repaired or changed here)"
+    # The arm note belongs on THIS branch above all: these are the operators holding a fix line,
+    # and running it to completion still leaves an unarmed repo moving nothing (card#9845). The
+    # 0-inspected branch above prints no remedy of its own, so it carries no note.
+    echo "  (${inspected} inspected / ${skipped} skipped — ${findings} finding(s) — REPORT-ONLY: nothing was installed, repaired or changed here; ${BSC_ARM_NOTE})"
   fi
   return "$findings"
 }
@@ -834,7 +855,7 @@ main() {
   done
   echo
   echo "── Git hook dispatch — does each checkout's post-checkout still reach board-card-start? ──"
-  echo "   (report-only; remediation is yours: install-board-hooks <repo-dir>)"
+  echo "   (report-only; remediation is yours: install-board-hooks <repo-dir> — ${BSC_ARM_NOTE})"
   # board-card-start is fail-soft by contract, so a dead hook looks exactly like a working
   # one from here — this leg is the only thing on the host that reads the wiring itself.
   # Report-only by design: the finding count is deliberately NOT folded into the ritual's

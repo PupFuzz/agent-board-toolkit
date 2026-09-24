@@ -509,10 +509,21 @@ for _tp in 403 422; do
        "$(has "⚠ DL-100 (#1): owner tags NOT cleared — HTTP $_tp, server said: {\"message\":\"tag write refused by the stub\"}" "$err")"
 done
 
+# ⛔ THIS FIXTURE CHANGED MEANING AT card#9938, and the rows are rewritten rather than relaxed.
+# The read it refuses is no longer only the clear's: it is the MOVE's own read-back, the one that
+# decides whether this run may say the card moved. So a 403 here is not "the move landed and the
+# tags were not cleared" — it is "the PATCH went out and nobody here can say what it did", which
+# is the UNVERIFIED outcome (`rc 3`, `bin/kbcard`'s ladder, adopted). The old rows asserted rc 0
+# and a `0 failed.` summary; both were true of the tool that reported a move from its 2xx.
 STUB_CARD_STATUS=403 STUB_CARD_BODY='{"message":"This action is unauthorized."}' run_promote
 eq "card read refused: no tag write, only the move"       "$_move_line" "$patched"
-eq "card read refused: …said, with the status"            "true" "$(has 'owner tags NOT cleared — the card' "$err")"
-eq "card read refused: …and the run is still clean"       "0|true" "$rc|$(has '0 failed.' "$out")"
+eq "card read refused: the MOVE is reported UNVERIFIED, with the status" "true" \
+   "$(has '⚠ DL-100 (#1): move UNVERIFIED — the stage PATCH was SENT and answered success, but its outcome could NOT be read back (HTTP 403, server said: {"message":"This action is unauthorized."})' "$err")"
+eq "card read refused: …and NOTHING claims the card moved" "false" "$(has '✓ DL-100 (#1): moved' "$out")"
+eq "card read refused: …nor that its tags were cleared"   "false" "$(has 'owner tag' "$out$err")"
+eq "card read refused: …and the run exits 3, not 0"       "3|true" "$rc|$(has '0 no-card, 1 UNVERIFIED, 0 failed.' "$out")"
+eq "card read refused: …saying what an operator does next" "true" \
+   "$(has 'promote-released-cards: 1 stage PATCH(es) were SENT and answered success, and their outcome could NOT be read back — UNVERIFIED WRITE (rc 3).' "$err")"
 STUB_CARD_BODY='{"data":{"id":1,"tags":{"0":"owner:acme/builder"}}}' run_promote
 eq "unreadable tag list: no tag write (never a list built from nothing)" "$_move_line" "$patched"
 eq "unreadable tag list: …said"                           "true" "$(has 'no tag list could be read out of it' "$err")"

@@ -68,8 +68,10 @@
 # is one past canon #5's threshold. `tests/_shipped-shell-lib.sh` now owns it, `ci.yml` remains
 # the authority, and `_ci_shellcheck_drift` (asserted below, with planted controls) is what
 # keeps the lib's copy honest — a workflow `run:` string cannot source a bash lib, so the
-# restatement can only be guarded, not deleted. The other two gates are unchanged and can adopt
-# the lib in their own PRs: its output is byte-identical to what each already computes.
+# restatement can only be guarded, not deleted. `read-outcome-collapse-selftest.sh` has since
+# adopted it too (card#10311, composing it with `tests/*-check.sh`, the operator-run checks);
+# `piped-match-gate-selftest.sh` is the one gate still spelling the expression itself, and can
+# adopt in its own PR: the lib's output is byte-identical to what it already computes.
 #
 # MEMBERSHIP IS MEASURED, NOT READ. A grep over the shape is NOT an audit of this class, and
 # the first sibling-audit instrument tried on it failed its own control (it reported the
@@ -175,6 +177,7 @@ DRIVERS=(
   "bin/agent-board-toolkit-runtime-check|--help"
   "bin/board-card-start|--help"
   "bin/board-session-close|--help"
+  "bin/card-completeness|--help"
   "bin/board-snapshot|--help"
   "bin/board-stats|--help"
   "bin/dependabot-deploy-reconcile|--help"
@@ -217,6 +220,7 @@ DISPOSITIONED=(
   "bin/dependabot-deploy-reconcile|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; a known residual at rc 120 on the python side is recorded in the v0.27.0 CHANGELOG entry."
   "bin/dl-a0-backfill-triaged|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; this is a board WRITER, so a lost rc is a write whose outcome the caller cannot read."
   "bin/dl-a1-register-field|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; also a board writer."
+  "bin/card-completeness|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; it writes its per-card verdict lines to stdout and exits 0/5/6 afterwards, so a truncating reader destroys the verdict the caller acts on. It arrived with the gate (card#10176) carrying the shape it was adopted with, and is an instance to fix with its siblings rather than alone."
   "bin/kbcard|LOSES|card#6911 instance — driven by the no-argument usage path (25 KB to stdout at rc 0). Verdict path NOT separately driven; this is the toolkit's most-piped tool and every board WRITE goes through it, so it is the highest-consequence member of the roll."
   "bin/promote-released-cards|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; it prints a summary and then \`die\`s, which is the filed shape exactly, and it MOVES CARDS."
   "bin/release-artifacts-check|LOSES|card#6911 instance — help path measured. Verdict path NOT separately driven; it writes \`::error::\` annotations to STDOUT and then \`exit 1\`, so a truncating reader costs both the annotations and the gate's verdict."
