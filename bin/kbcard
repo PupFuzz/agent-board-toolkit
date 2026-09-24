@@ -124,6 +124,66 @@
 #     ONLY WITH --column in_progress (rc 2 otherwise, before any request): the policy is the
 #     promotion's, and there is none to apply to any other column. It costs ONE extra GET before
 #     the move, which is what makes the verdict a reading rather than an assumption.
+#   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --placement top|bottom
+#   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --before-task ID-OR-EXT
+#   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --after-task ID-OR-EXT
+#     RANK cards WITHIN one column — the one thing `move` cannot do (it decides the COLUMN and
+#     lets the card land wherever the board puts it). Writes ONLY `position`, so it can NEVER
+#     move a card between columns or swimlanes: `move` / `patch --column` own the column and
+#     `patch --swimlane` owns the lane, and this verb is not a third way to reach either.
+#     SCOPE IS THE STAGE, ACROSS EVERY SWIMLANE IN IT. All the ids must be active cards of ONE
+#     stage — a list spanning two is refused by the board, there being no ordering between
+#     columns to express — while a list spanning several swimlanes of one stage is the ORDINARY
+#     case and is accepted: the resulting positions totally order the whole column.
+#     --ids IS THE MOVING BLOCK, IN TARGET ORDER, as ONE comma list (the spelling --tags and
+#     --clear use). Each member is an ID-OR-EXT resolved through the SAME resolver every --task
+#     takes, so an external id works here and a numeric id costs no request.
+#     ⭐ EXACTLY ONE PLACEMENT, AND THIS TOOL DECIDES THAT OFFLINE. Zero placements, or more than
+#     one, is rc 2 BEFORE any request, naming what was passed — it is the board's own rule (the
+#     same call is refused server-side), applied where the flags are typed so a malformed
+#     invocation costs no traffic, the posture --dl / --pr / --clear already take. --placement
+#     takes `top` or `bottom` and NOTHING else (rc 2, naming the two). --before-task /
+#     --after-task name an ANCHOR card to land the block against.
+#     REFUSED OFFLINE, nothing sent: no --ids at all; an --ids member that is visually BLANK
+#     ("5,,6", "5,", "5, ,6") — a token naming no card is a caller mistake about WHICH cards are
+#     being ranked, and dropping it silently would land a DIFFERENT order at rc 0, which is the
+#     board's own reasoning for refusing it too; and the SAME card named TWICE once the members
+#     are resolved, which a caller can reach here without typing it (an id and that card's
+#     external id are two spellings of one card, and the board would then refuse ids IT derived,
+#     naming a number nobody typed). Surrounding blanks on a member are TRIMMED, as the board
+#     trims them, so `--ids "10309, 10221"` means what it looks like.
+#     RELAYED, NOT RE-DERIVED — the board's refusals, at its own wording and rc 1: ids spanning
+#     two stages, an id naming no active card, an anchor that is not in the same stage, and an
+#     anchor that is itself in --ids. Each is a fact about cards this call has not read, and a
+#     second implementation of the board's stage rules here is precisely the divergence this
+#     verb exists to stop at the caller level.
+#     ⭐ WHAT IS PRINTED IS THE SERVER'S OWN COLLECTION, never a restatement of the request. The
+#     200 carries the ranked cards in their new order with their new `position`, plus a `meta`
+#     naming the UNTOUCHED cards immediately bracketing the block — which is what makes the
+#     ACHIEVED placement readable from data rather than from a status. stdout is ONE object:
+#     {workflow_stage_id, before_task_id, after_task_id, renumbered,
+#      ranked: [{id, name, workflow_stage_id, swimlane_id, position}, …]}.
+#     ⭐ AND IT IS CONFIRMED, NOT ASSUMED — a 2xx is the server accepting the request, never the
+#     board holding the rank. Two comparisons, both against the returned data: the ids echoed
+#     must be the ids this call asked to rank IN THAT ORDER, and the bracket must be the one
+#     asked for — `--placement top` ⇒ NO card before the block, `bottom` ⇒ none after,
+#     `--before-task X` ⇒ X is the card AFTER it, `--after-task X` ⇒ X is the card BEFORE it. A
+#     disagreement is rc 1 HARD FAILURE quoting what the board returned, never a printed
+#     success; a 2xx carrying no readable collection or no meta is an UNVERIFIED WRITE at rc 3.
+#     ⚠ THAT SECOND COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK IT. It
+#     was read at the kanban tag the route shipped in: the brackets are DERIVED from the
+#     positions actually written (BoardPositionService::bracketsAround — the last untouched card
+#     below the block and the first above it), not echoed back out of the request, which is
+#     exactly what makes them worth comparing against. A server build that changed that
+#     derivation would make this verb report HARD FAILURE over a write that LANDED — the costlier
+#     direction to be wrong in — so it is NAMED here rather than assumed, the same way the
+#     --unblock paragraph names its middleware claim. Re-read the route before widening it.
+#     ⚠ `renumbered: true` IS NOT MOVEMENT, and must not be reported as any. On the rare request
+#     whose placement exhausts the float gap between two neighbours, the stage's position
+#     COORDINATES are rebuilt onto an even ladder and NO CARD'S RANK CHANGES; the board records
+#     that as ONE `lane.cards_renumbered`, never as N moves. `ranked` is the cards THIS call
+#     ranked and never the re-spaced ones, and the flag is called out on stderr in those words so
+#     a reader cannot take it for a bigger move than it was.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
@@ -1990,6 +2050,168 @@ cmd_move() {
     _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
     _kbc_owner_after_move "$task" "$column" "$stamp_owner"
     printf '%s\n' "$echo_out"
+}
+
+# _kbc_trim_blank <string>: the string with leading and trailing BLANKS removed, where "blank"
+# is kb_is_blank's six ASCII characters and nothing else — the `LC_ALL=C` pin is what makes that
+# true, since `[[:space:]]` in a pattern asks bash for a LOCALE class and a UTF-8 seat answers a
+# wider set (card#9337 measured that divergence on U+2003/U+3000). Pinned so a value this trims
+# to empty is EXACTLY a value kb_is_blank calls blank, on every seat.
+#
+# It exists for `reorder --ids`, whose members the board itself trims before reading them; not
+# trimming here would refuse a spelling the board accepts, by sending " 10221" to the
+# external-id lookup. The same idiom sits inline in _kb-board-lib.sh's board-env parser; hoisting
+# ONE trim primitive into the lib is a consolidation this card does not take — it would widen a
+# vendored file for a caller that does not need it yet (the second real caller is the moment).
+_kbc_trim_blank() {
+    local LC_ALL=C s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+
+# --- reorder: rank cards WITHIN one column, and REPORT FROM WHAT CAME BACK ----------------
+# The flag shape, every refusal and the stdout contract are stated in the usage block above and
+# are NOT restated here. What this header owns is why the confirmation is shaped the way it is.
+#
+# ⭐ THE ROUTE HANDS BACK THE RANKED CARDS ON PURPOSE. `PUT /tasks/reorder.json` answers with the
+# moved cards in their new order carrying their new `position`, plus a `meta` naming the
+# untouched cards bracketing the block — its own docblock says this exists "so a caller can
+# confirm the ACHIEVED placement from data rather than from a 2xx". A verb that printed `ok` off
+# the status would throw away the one thing that makes the write verifiable at all, which is the
+# class `readback-before-success-census.sh` measures.
+#
+# ⛔ THE BRACKET COMPARISON IS A CLAIM ABOUT THE BOARD'S CODE AND THIS REPO CANNOT CHECK IT — the
+# ⚠ paragraph in the usage block states it in the caller's words and is the one place it is
+# stated; nothing here re-derives it. What matters at THIS end: the bracket is computed from the
+# positions the board actually wrote, so it is evidence independent of the id echo (which the
+# controller builds from the request's own ordered list and therefore cannot disagree with it
+# except on a server that is wrong about something much larger). Comparing both is not belt and
+# braces — one measures that the right cards were ranked, the other that they landed where the
+# call asked. A single comparison would leave the other question answered by the status code.
+#
+# THE ANCHOR AND ids ARE NOT CROSS-CHECKED HERE, deliberately. Whether an anchor is in the same
+# stage as the block, and whether it is itself one of the moving cards, are facts about rows this
+# call never reads; the board holds them under the same lock it does the placement under, and it
+# refuses on both in its own words. Re-deriving either here would need reads this verb does not
+# take and would put a second copy of the board's stage rules in a client — the divergence this
+# card exists to prevent one layer up.
+cmd_reorder() {
+    local ids_raw="" placement="" before_ref="" after_ref=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ids)         kb_require_value "$1" "${2:-}" || return 2; ids_raw="$2"; shift 2 ;;
+            --placement)   kb_require_value "$1" "${2:-}" || return 2; placement="$2"; shift 2 ;;
+            --before-task) kb_require_value "$1" "${2:-}" || return 2; before_ref="$2"; shift 2 ;;
+            --after-task)  kb_require_value "$1" "${2:-}" || return 2; after_ref="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    [[ -n "$ids_raw" ]] || {
+        echo "kbcard: reorder requires --ids \"<id-or-ext>[,<id-or-ext>...]\" — the cards to rank, in the order they should end up in" >&2
+        return 2
+    }
+
+    # EXACTLY ONE PLACEMENT, decided before anything is resolved or sent. The three are three
+    # ways to say WHERE the block lands, so a call naming two states two different positions for
+    # it and a call naming none states no position at all — neither is a request this tool can
+    # complete, and relaying either to the server would spend a round trip to be told what is
+    # already knowable from argv.
+    local given="" n_given=0
+    [[ -n "$placement" ]]  && { given="$given --placement";   n_given=$((n_given + 1)); }
+    [[ -n "$before_ref" ]] && { given="$given --before-task"; n_given=$((n_given + 1)); }
+    [[ -n "$after_ref" ]]  && { given="$given --after-task";  n_given=$((n_given + 1)); }
+    if [[ "$n_given" -eq 0 ]]; then
+        echo "kbcard: reorder requires EXACTLY ONE placement and got none — pass --placement top|bottom, --before-task <id-or-ext> or --after-task <id-or-ext>. A rank with nothing to land against states no position at all, so nothing was sent" >&2
+        return 2
+    fi
+    if [[ "$n_given" -gt 1 ]]; then
+        echo "kbcard: reorder takes EXACTLY ONE placement and got$given — they are three ways to say where the block lands, and a call naming more than one states more than one position for it. Nothing was sent" >&2
+        return 2
+    fi
+    if [[ -n "$placement" && "$placement" != "top" && "$placement" != "bottom" ]]; then
+        echo "kbcard: reorder --placement takes top or bottom, got '$placement' — to land the block against a particular card use --before-task/--after-task <id-or-ext>" >&2
+        return 2
+    fi
+
+    # The members are split and BLANK-refused offline, then resolved one by one. A blank member
+    # is refused rather than dropped for the board's own reason: a token naming no card is a
+    # mistake about WHICH cards are being ranked, and silently dropping it lands a DIFFERENT
+    # order at rc 0. Trimming first matches what the board does to the same list, so a spelling
+    # it accepts is not refused here on whitespace alone.
+    local ids_csv="" rest="$ids_raw" ref id
+    while :; do
+        ref="$(_kbc_trim_blank "${rest%%,*}")"
+        if [[ -z "$ref" ]]; then
+            echo "kbcard: reorder --ids '$ids_raw' has a member that names no card — every member must be a task id or an external id. Nothing was sent (dropping it would rank a DIFFERENT set of cards than you asked for)" >&2
+            return 2
+        fi
+        # resolve_task refuses at rc 1 and says why. It is NOT downgraded to a bad invocation
+        # here: its failures include an external-id lookup that could not be READ, which is not
+        # the caller's typing. Nothing is written either way — this runs before the PUT.
+        id="$(resolve_task "$ref")" || return 1
+        case ",$ids_csv," in
+            *",$id,"*)
+                echo "kbcard: reorder --ids names card $id twice (as '$ref', and already once above) — the board refuses a repeated id, and two spellings of one card (its id and its external id) reach that refusal as a number you never typed. Nothing was sent" >&2
+                return 2 ;;
+        esac
+        ids_csv="${ids_csv:+$ids_csv,}$id"
+        [[ "$rest" == *,* ]] || break
+        rest="${rest#*,}"
+    done
+
+    local body anchor=""
+    if [[ -n "$placement" ]]; then
+        body="$(jq -n --arg ids "$ids_csv" --arg p "$placement" '{ids: $ids, placement: $p}')"
+    elif [[ -n "$before_ref" ]]; then
+        anchor="$(resolve_task "$before_ref")" || return 1
+        body="$(jq -n --arg ids "$ids_csv" --argjson a "$anchor" '{ids: $ids, before_task_id: $a}')"
+    else
+        anchor="$(resolve_task "$after_ref")" || return 1
+        body="$(jq -n --arg ids "$ids_csv" --argjson a "$anchor" '{ids: $ids, after_task_id: $a}')"
+    fi
+
+    local resp ranked meta
+    resp="$(kb_api PUT "/tasks/reorder.json" "$body")" || return 1
+    # `select(type == "array")` on the near side of any default, per the rule the tag read
+    # learned the hard way: a `.data` that is not a list must reach the UNVERIFIED arm, not be
+    # folded into an empty one that reads as "the server ranked nothing".
+    ranked="$(kb_parse_resp "$resp" -c '.data | select(type == "array") | map({id, name, workflow_stage_id, swimlane_id, position})')"
+    [[ -n "$ranked" ]] || _kbc_unverified reorder "on ids $ids_csv" "The PUT answered 2xx and no ranked-card list could be read out of its body, so where those cards now sit is UNMEASURED." || return $?
+    meta="$(kb_parse_resp "$resp" -c '.meta | select(type == "object")')"
+    [[ -n "$meta" ]] || _kbc_unverified reorder "on ids $ids_csv" "The PUT answered 2xx with a ranked-card list and no meta block, so the ACHIEVED placement — which card the block landed between — is UNMEASURED." || return $?
+
+    # Bare jq from here: both values came through the tolerant parse and a non-empty guard.
+    local got_ids
+    got_ids="$(jq -r '[.[].id] | join(",")' <<<"$ranked")"
+    if [[ "$got_ids" != "$ids_csv" ]]; then
+        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the cards the board returned, in the order it returned them, are '$got_ids'. The status is not the rank; the read-back is." >&2
+        return 1
+    fi
+
+    local want_side want_val got_val
+    case "${placement:-anchor}" in
+        top)    want_side="before_task_id"; want_val="null"     ;;
+        bottom) want_side="after_task_id";  want_val="null"     ;;
+        *)      if [[ -n "$before_ref" ]]; then want_side="after_task_id"; else want_side="before_task_id"; fi
+                want_val="$anchor" ;;
+    esac
+    got_val="$(jq -r --arg k "$want_side" '.[$k] // "null"' <<<"$meta")"
+    if [[ "$got_val" != "$want_val" ]]; then
+        echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports the block landed with $want_side=$got_val, where this call asked for $want_side=$want_val. The status is not the placement; the read-back is. The board's own meta: $meta" >&2
+        return 1
+    fi
+
+    if [[ "$(jq -r '.renumbered' <<<"$meta")" == "true" ]]; then
+        echo "kbcard: reorder: the board reports renumbered=true — the stage's position COORDINATES were re-spaced onto an even ladder because the gap between two neighbours was exhausted. NO card's rank changed by it, no card outside the ones below was moved, and the board records it as ONE lane.cards_renumbered event rather than as N moves." >&2
+    fi
+    echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
+    # Assembled then `printf`-ed, the spelling every other verb here ends on — not a `jq` writing
+    # straight to stdout. Two reasons, and neither is style: the write's own emission is then on
+    # the same line-oriented idiom the rest of this file uses, and `readback-before-success
+    # -census.sh` reads an `echo`/`printf` to decide a site's `emits` attribute, so a verb whose
+    # only stdout came out of jq reported `stderr-only` — a write that prints its result being
+    # censused as one that says nothing.
+    printf '%s\n' "$(jq -n --argjson meta "$meta" --argjson ranked "$ranked" '$meta + {ranked: $ranked}')"
 }
 
 cmd_patch() {
@@ -4796,6 +5018,7 @@ main() {
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;
         move)        cmd_move "$@" ;;
+        reorder)     cmd_reorder "$@" ;;
         patch)       cmd_patch "$@" ;;
         list)        cmd_list "$@" ;;
         stages)      cmd_stages "$@" ;;
