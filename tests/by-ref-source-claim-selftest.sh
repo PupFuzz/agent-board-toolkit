@@ -27,26 +27,45 @@
 #
 #   * THE UNIT IS A PASSAGE, NEVER A LINE. `_bsc_passages` joins each maximal run of same-kind
 #     non-blank lines into one record, so a claim split over three comment lines is one string.
-#     It breaks at a new ITEM — a list bullet, an ordered item, a table row, a heading, a fence —
-#     because two adjacent bullets are two claims, and merging them manufactures a co-occurrence
-#     neither one makes. Blockquote `>` markers are stripped, not broken on: `docs/INSTALL.md`
-#     writes whole paragraphs inside one.
+#     It breaks at a new ITEM — a list bullet, an ordered item, a table row, a fence — because two
+#     adjacent bullets are two claims, and merging them manufactures a co-occurrence neither one
+#     makes. Blockquote `>` markers are stripped, not broken on: `docs/INSTALL.md` writes whole
+#     paragraphs inside one.
+#     ⛔ THIS SENTENCE WAS FALSE FOR MARKDOWN FOR A ROUND, IN BOTH DIRECTIONS, AND IT IS THE
+#     CLASSIFIER — not the trigger — THAT DECIDES IT. The mode test is `#` only, and the
+#     blockquote strip runs BEFORE it; the reasoning for both, and what each got wrong, is at the
+#     awk itself rather than restated here. The controls at the bottom drive a `*` bullet pair, a
+#     `**bold**`-leading continuation, and the `-`/unbolded twins that reported all along, so this
+#     paragraph is measured on every run rather than believed.
 #
 #   * THE TRIGGER KEYS ON THE CLAIM'S NOUNS, NEVER ON ITS VERB — which is what lets it see a copy
 #     worded in a way nobody has used yet. Any statement of this rule relates a URL — or a
 #     `link`, since naming the thing is not the same as naming the field — to which repo
 #     a CARD is attributed to; there is no smaller invariant, and none of the four wordings that
 #     defeated the sweeps above ("falling back to", "detaching the card from its repo", "they set
-#     its by-ref source", "from pr_url / issue_url / payload.repo") avoids all three nouns.
-#     ⚑ `source` ALONE IS DELIBERATELY NOT IN THE TRIGGER, and that is the lexical half of why the
-#     greps failed: this tree spends the word on four unrelated things — the shell builtin, the
-#     `.promote.source` config key, `source of truth`, and this field. The trigger takes the two
-#     spellings that are unambiguous here, `attribut*` and `by-ref` beside `source`.
+#     its by-ref source", "from pr_url / issue_url / payload.repo") avoids the nouns both arms
+#     between them require. What is claimed is coverage of those arms, never that no wording can
+#     escape — see the residual bound below.
+#     ⚑ BARE `source` IS NOT ENOUGH ON ITS OWN, and that is the lexical half of why the greps
+#     failed: this tree spends the word on four unrelated things — the shell builtin, the
+#     `.promote.source` config key, `source of truth`, and this field. So the first arm takes the
+#     two spellings that are unambiguous here, `attribut*` and `by-ref` beside `source`.
+#     ⚑ A SECOND ARM CARRIES `source` ANYWAY, because excluding it outright HAD a measured cost
+#     (round 1, MINOR 5): *"whichever GitHub pr_url the card carries is what SETS ITS SOURCE, so
+#     clearing that URL detaches the card from its repo"* is a full-strength instance in this
+#     tree's own vocabulary and went green. The arm admits `source` when the passage also names a
+#     derivation FIELD by name, which is what disambiguates it from the other three meanings —
+#     measured on this tree, the arm costs 4 further dispositions where admitting bare `source`
+#     beside any url/link would cost 48.
+#     ⚑ THE RESIDUAL BOUND, WRITTEN DOWN AND PINNED BY A CONTROL: a claim that says `source` and
+#     names NO field — "whichever link you paste sets its source" — is still outside the trigger.
+#     That is the honest edge of this instrument, not an oversight; the control at the bottom
+#     asserts it so the bound cannot quietly change without somebody noticing.
 #
 #   * THE DISCHARGE IS THE CONDITION ITSELF. A passage that names `payload.repo` has stated the
 #     thing whose omission is the defect; a passage that does not has made the URL case sound
 #     universal. That is one rule with no allow-list of blessed phrasings — and it is also the
-#     shape every pointer in this tree already adopted, `bin/kbcard`'s five being the model
+#     shape every pointer in this tree already adopted, `bin/kbcard`'s being the model
 #     ("unless the card's `payload.repo` outranks it (`_kbc_ref_pair_guard`'s header owns that
 #     rule)"), so pointing and discharging are the same act.
 #
@@ -98,18 +117,38 @@ MARKER="$MARKER_KEY: ""HOME"
 # _bsc_passages <file> <relpath> — one record per PASSAGE: `<relpath>\t<startline>\t<text>`.
 # The unit is argued in this file's header; this is its one implementation, and both the tree
 # scan and every fixture go through it, so a control cannot be measuring a different unit.
+# ⚑ NO APOSTROPHE ANYWHERE INSIDE THE awk PROGRAM BELOW — it is a single-quoted shell string, and
+# one in a comment ends it. (The same constraint KB_JQ_REPO_FROM_GH_URL states for its own value.)
 _bsc_passages() {
     awk -v REL="$2" '
     function flush() { if (buf != "") printf "%s\t%d\t%s\n", REL, start, buf; buf = ""; start = 0 }
     {
         line = $0
-        if (match(line, /^[ \t]*(#+|\/\/+|\*)[ \t]?/)) { mode = "c"; body = substr(line, RSTART + RLENGTH) }
-        else                                          { mode = "p"; body = line }
-        sub(/^[ \t]*(>[ \t]*)+/, "", body)
+        # ORDER IS LOAD-BEARING, AND GETTING IT WRONG LOST FINDINGS IN BOTH DIRECTIONS (round 1,
+        # MAJOR 1). The blockquote prefix is stripped FIRST, before the comment test, because a
+        # bulleted line inside a blockquote is a new ITEM exactly as it is outside one — and the
+        # first cut stripped it AFTER, so the same bullet broke a passage inside a quote and did
+        # not outside it.
+        sub(/^[ \t]*(>[ \t]*)+/, "", line)
+        # ⛔ ONLY `#`. The first cut also treated a leading `*` as a C block-comment continuation
+        # and ATE it — on the RAW line, before the item test could see it — so in markdown:
+        #   MERGE: two adjacent `* ` bullets became ONE passage, and a neighbour bullet naming
+        #          payload.repo then discharged the other one. Measured green where the same two
+        #          lines as `- ` bullets red.
+        #   SPLIT: a `**bold**`-leading continuation line flipped mode mid-paragraph and CUT the
+        #          passage, so a claim spanning that break tripped nothing — which is miss 3, the
+        #          defect this whole file exists to close, re-minted by its own classifier.
+        # The arm guarded a state this tree cannot reach; re-derive rather than trust that:
+        #   git ls-files | sed "s/.*\\.//" | sort | uniq -c | sort -rn   (sh, md, yml, py, txt)
+        #   git ls-files | grep -cE "[.](c|h|js|ts|go|java|rs|css)$"       (0)
+        # A `//` arm went with it for the same reason. Both are canon #6: not defending against a
+        # state that cannot happen — and here the defence was the defect.
+        if (match(line, /^[ \t]*#+[ \t]?/)) { mode = "c"; body = substr(line, RSTART + RLENGTH) }
+        else                                 { mode = "p"; body = line }
         gsub(/^[ \t]+|[ \t]+$/, "", body)
         # A TABLE ROW IS ANCHORED AT BOTH ENDS. A bare leading-pipe test also fires on a jq
         # pipeline continuation line, which SPLIT the shipped derive_source into fragments and
-        # hid the def from the leg that exempts it. No apostrophes here: awk program, single quotes.
+        # hid the def from the leg that exempts it.
         isitem = (body ~ /^([-*+][ \t]|[0-9]+[.)][ \t]|```|~~~)/ || body ~ /^\|.*\|[ \t]*$/)
         if (body == "" || mode != prevmode || isitem) flush()
         prevmode = mode
@@ -207,7 +246,7 @@ eq "control: a function NAME ending in pr_url is not the field" "" \
 
 # ---------------------------------------------------------------------------
 # THE CORPUS, built ONCE and read by both legs below — every passage of every text file under
-# <root>, with the two carve-outs applied. They are argued at leg 3, which is the leg they were
+# <root>, with the carve-outs applied. They are argued at leg 3, which is the leg they were
 # minted for; leg 2 shares them for the same reason (a released entry's at-that-version copy is
 # not a live restatement, and rewriting one rewrites the record).
 #
@@ -221,10 +260,27 @@ CHANGELOG_CUT='^## \[[0-9]'
 UPGRADE_CUT='^### v[0-9]'
 _carve "$CHANGELOG" "$CHANGELOG_CUT" "$TMP/changelog-live.md" "$TMP/changelog-frozen.md"
 _carve "$UPGRADE"   "$UPGRADE_CUT"   "$TMP/upgrade-live.md"   "$TMP/upgrade-frozen.md"
-for pair in "docs/CHANGELOG.md|$CHANGELOG|$CHANGELOG_CUT|changelog" "docs/UPGRADE.md|$UPGRADE|$UPGRADE_CUT|upgrade"; do
-    IFS='|' read -r cname cfile cpat ckey <<<"$pair"
+# ⛔ `CLAUDE.md` IS CARVED AT ITS TABLE HEADER, NOT WHOLE-FILE (round 1, MINOR 6). It used to be
+# the one carve-out with NO witness — no premise, no assertion, and a stated reason ("its release
+# table is a copy of CHANGELOG highlights") that was true of the TABLE and not of the FILE, so any
+# live prose added elsewhere in it disappeared silently. Measured: the whole-file carve suppressed
+# exactly ONE reported line, the `v0.35.1` table row. It is now split like the other two and gets
+# the same four premise assertions, so its frozen half is witnessed and its live head is IN.
+CLAUDE_MD="$ROOT/CLAUDE.md"
+# By SHAPE — the table's own header row — so no version and no line number is a fact kept here.
+CLAUDE_CUT='^\| Version \| Date \|'
+_carve "$CLAUDE_MD" "$CLAUDE_CUT" "$TMP/claude-live.md" "$TMP/claude-frozen.md"
+BSC_HISTORY=()
+
+# ⚑ THE FIELD SEPARATOR IS NOT `|`. `CLAUDE.md`'s cut pattern IS a pipe-delimited table row, and
+# splitting on `|` shredded it into the wrong fields — caught by these very premises, which is the
+# direction they exist for.
+for pair in "docs/CHANGELOG.md~$CHANGELOG~$CHANGELOG_CUT~changelog" \
+            "docs/UPGRADE.md~$UPGRADE~$UPGRADE_CUT~upgrade" \
+            "CLAUDE.md~$CLAUDE_MD~$CLAUDE_CUT~claude"; do
+    IFS='~' read -r cname cfile cpat ckey <<<"$pair"
     cutline="$(_headings "$cfile" "$cpat" | head -n 1 | cut -d: -f2-)"
-    eq "$cname carries a versioned heading to split at" "true" \
+    eq "$cname carries the heading it is split at" "true" \
        "$([ "$(_headings "$cfile" "$cpat" | grep -c . || true)" -ge 1 ] && echo true || echo false)"
     eq "premise: the $ckey LIVE head is non-empty"      "true" \
        "$([ -s "$TMP/$ckey-live.md" ] && echo true || echo false)"
@@ -232,10 +288,20 @@ for pair in "docs/CHANGELOG.md|$CHANGELOG|$CHANGELOG_CUT|changelog" "docs/UPGRAD
     eq "…which IS in the frozen complement"             "true"  "$(_contains "$cutline" "$TMP/$ckey-frozen.md")"
 done
 
-BSC_HISTORY=("CLAUDE.md")
 
+# ⛔ THE FILE WALK KEEPS ITS OWN STDERR (round 1, MINOR 6). `grep -rIl ''` was written with
+# `2>/dev/null`, so a file `grep` could not READ — or decided was binary and skipped under `-I` —
+# left the population in silence, in the one leg whose whole claim is that it is fail-CLOSED over
+# the repo. An unreadable file is not an absent file. The stderr is captured and asserted empty by
+# the caller; `grep` exits 1 on "no file matched", which is a real state for an empty fixture tree
+# and is not an error, so the rc is not what is judged here.
+# ⚑ THE WALK'S STDERR GOES TO A FILE, NOT A VARIABLE. `_bsc_corpus` is always called inside a
+# command substitution, i.e. in a SUBSHELL, so a variable it assigns never reaches the assertion —
+# the first cut of this guard did exactly that and the premise below could not fail, which is the
+# decoration canon #9 names. A file crosses the subshell boundary; a variable does not.
 _bsc_corpus() { # <root> — every passage under <root>, carves applied
     local root="$1" f rel src
+    grep -rIl '' "$root" --exclude-dir=.git 2>"$TMP/walk.err" >/dev/null || true
     while IFS= read -r f; do
         rel="${f#"$root"/}"
         case " ${BSC_HISTORY[*]} " in *" $rel "*) continue ;; esac
@@ -244,6 +310,7 @@ _bsc_corpus() { # <root> — every passage under <root>, carves applied
             case "$rel" in
                 docs/UPGRADE.md)   src="$TMP/upgrade-live.md" ;;
                 docs/CHANGELOG.md) src="$TMP/changelog-live.md" ;;
+                CLAUDE.md)         src="$TMP/claude-live.md" ;;
             esac
         fi
         _bsc_passages "$src" "$rel"
@@ -252,6 +319,7 @@ _bsc_corpus() { # <root> — every passage under <root>, carves applied
 ALL="$(_bsc_corpus "$ROOT")"
 eq "premise: the corpus reached files and produced passages" "true" \
    "$([ -n "$ALL" ] && echo true || echo false)"
+eq "premise: …and the walk read every file it was handed" "" "$(cat "$TMP/walk.err")"
 
 echo "== leg 2 — every declared HOME states the rule, and every full statement is a HOME =="
 # THE HOME SET IS DERIVED FROM THE MARKERS, never listed here: mark a fifth surface and it is held
@@ -268,9 +336,51 @@ echo "== leg 2 — every declared HOME states the rule, and every full statement
 # phrase greps do not close this population. That the condition is PRESENT at all is leg 3's
 # question, asked of every passage including these; that it is TRUE is pinned behaviourally by
 # tests/promote-source-qualify-selftest.sh § 5.
+# ⛔ THE HOME SET IS PINNED, AND ROUND 1's MAJOR 3 IS WHY. Deriving the homes from the markers
+# alone checks only ONE direction — a marker removed from a statement. Deleting the marker AND the
+# statement together was GREEN, home count 4 → 3 in silence, leaving `bin/kbcard`'s pointers citing
+# a header that no longer states the rule, in a bin this file itself argues can read neither
+# `docs/` nor `promote-released-cards`. A declaration checked in one direction is a declaration you
+# can delete.
+#
+# THIS LIST IS A FLOOR AND ONLY THIS LEG READS IT, which is what makes hand-keeping it legitimate
+# (the same terms `tests/lib-set-derivation-selftest.sh` leg 2 states for its own). It is asserted
+# in BOTH directions below: every entry must resolve to a marked passage, and every marked passage
+# must be an entry — so a home cannot be deleted, and a new one cannot be added unreviewed.
+BSC_HOMES=(
+    # The operator-facing full statement. `README.md` points here twice and `bin/_kb-board-lib.sh`
+    # once, so deleting it dangles those pointers.
+    "docs/INSTALL.md::derived exactly as the kanban server derives it"
+    # The code-side statement, beside the def itself, for a copy vendored with no docs/.
+    "bin/promote-released-cards::sourceFor field preference"
+    # RENDERED to an operator, who cannot follow a pointer out of a log line.
+    "bin/promote-released-cards::card has NO by-ref source"
+    # kbcard's own, cited by its in-file pointers; vendored standalone, reads neither of the above.
+    "bin/kbcard::THE DEFECT IT CLOSES"
+)
 HOMES="$(printf '%s\n' "$ALL" | grep -F "$MARKER" || true)"
 eq "premise: at least one surface DECLARES itself a home" "true" \
    "$([ -n "$HOMES" ] && echo true || echo false)"
+# DIRECTION 1 — every declared home still EXISTS, still carries its marker, and is the passage the
+# registry named. This is the leg a whole-home deletion reds.
+for h in "${BSC_HOMES[@]}"; do
+    hpath="${h%%::*}"; hanchor="${h#*::}"
+    eq "registered home still exists and is marked: $hpath — $hanchor" "true" \
+       "$(awk -F'\t' -v p="$hpath" -v a="$hanchor" -v m="$MARKER" \
+             'BEGIN{f="false"} $1==p && index($3,a) && index($3,m){f="true"} END{print f}' <<<"$HOMES")"
+done
+# DIRECTION 2 — and no marked passage is missing from the registry, so a fifth home cannot be
+# declared without the review this list exists to force.
+UNREGISTERED="$(awk -F'\t' -v reg="$(printf '%s\n' "${BSC_HOMES[@]}")" '
+    BEGIN { n = split(reg, R, "\n") }
+    NF >= 3 {
+        for (i = 1; i <= n; i++) {
+            p = R[i]; sub(/::.*/, "", p); a = R[i]; sub(/^[^:]*::/, "", a)
+            if ($1 == p && index($3, a)) next
+        }
+        printf "%s:%s\n", $1, $2
+    }' <<<"$HOMES")"
+eq "no marked home is missing from the registry" "" "$UNREGISTERED"
 while IFS=$'\t' read -r hrel hline htext; do
     [[ -n "$hrel" ]] || continue
     eq "home states the def's own field order: $hrel:$hline" "$CODE_ORDER" \
@@ -323,15 +433,15 @@ BSC_DISPOSED=(
     # ── the by-ref QUERY, not the derived field. `source=` here is a request parameter; these
     #    passages are about `kb_is_repo_slug`, the accept predicate for the `<owner>/<name>` that
     #    goes INTO that parameter, and rule on nothing about where a card's source comes from.
-    "bin/_kb-board-lib.sh::WHY THIS IS A PRIMITIVE AND NOT A SHAPE TEST AT EACH CALLER"
-    "bin/promote-released-cards::THE SHAPE \`case\` ABOVE AND THIS CHARSET CHECK ARE ONE PAIR"
-    "tests/kb-board-lib-selftest.sh::A SHAPE TEST ALONE CANNOT DO THIS JOB"
+    "bin/_kb-board-lib.sh::WHY THIS IS A PRIMITIVE AND NOT A SHAPE TEST AT EACH CALLER::fee40a6f7730"
+    "bin/promote-released-cards::THE SHAPE \`case\` ABOVE AND THIS CHARSET CHECK ARE ONE PAIR::065ec7d1f572"
+    "tests/kb-board-lib-selftest.sh::A SHAPE TEST ALONE CANNOT DO THIS JOB::1fd3905c3c9b"
 
     # ── WHAT A TOOL STAMPS, not what the board then reads. Both describe the write; the rule for
     #    the read is stated 20 lines below each, at `_ata_pr_url` and `_ata_issue_url`, and both
     #    of those carry the condition.
-    "README.md::pull-into-build adoption seam"
-    "bin/adopt-to-dl::Usage: adopt-to-dl <card-id> --repo"
+    "README.md::pull-into-build adoption seam::1a88070060c7"
+    "bin/adopt-to-dl::Usage: adopt-to-dl <card-id> --repo::3f252362e401"
 
     # ── ⚠ RENDERED FAILURE TEXT, REPORTED RATHER THAN FIXED (card#9957). Both messages list the
     #    causes of a failed by-ref VERIFY and neither names the one this rule creates: a card
@@ -340,42 +450,58 @@ BSC_DISPOSED=(
     #    tool tells an operator is an ask-first gate, so it is named here and on the card rather
     #    than taken unasked. The passages state no precedence either way, which is why they are
     #    disposed and not fixed in passing.
-    "bin/adopt-to-dl::VERIFY FAILED — by-ref(system=dl"
-    "bin/adopt-to-dl::ISSUE VERIFY FAILED — by-ref(system=github_issue"
+    "bin/adopt-to-dl::VERIFY FAILED — by-ref(system=dl::581f5381b988"
+    "bin/adopt-to-dl::ISSUE VERIFY FAILED — by-ref(system=github_issue::899ad93ea3a2"
 
     # ── THE NULL CASE — "this card has NO source", which is not a claim about which key supplies
     #    one. The remedy each gives (stamp a `pr_url`) is correct under its own premise: a card
     #    with a `payload.repo` that is a string containing `/` is not in the population these
     #    lines describe.
-    "bin/promote-released-cards::A card with NO derivable by-ref source cannot be attributed"
-    "bin/release-pr-body::matched ONLY an unsourced card"
-    "docs/INSTALL.md::Shipped refs whose card carries no by-ref source"
-    "tests/promote-source-qualify-selftest.sh::qualified: the foreign card is NAMED, by id"
-    "tests/release-pr-body-selftest.sh::the coverage report MEASURED (qualified)"
+    "bin/promote-released-cards::A card with NO derivable by-ref source cannot be attributed::a7139314fe13"
+    "bin/release-pr-body::matched ONLY an unsourced card::d7ef1a8db8a4"
+    "docs/INSTALL.md::Shipped refs whose card carries no by-ref source::a306030aea36"
+    "tests/promote-source-qualify-selftest.sh::qualified: the foreign card is NAMED, by id::86591210a1ed"
+    "tests/release-pr-body-selftest.sh::the coverage report MEASURED (qualified)::bdbe48bd011b"
+
+    # ── ADMITTED BY ARM 2 (bare `source` beside a field name), and the same rulings as above one
+    #    class over: what the tool STAMPS, and a fixture. The arm that reported them also found a
+    #    real site four sweeps and this file's own round-1 predicate had all missed —
+    #    `bin/adopt-to-dl`'s step-4 note — which is fixed rather than disposed.
+    "bin/adopt-to-dl::Stamps an EXISTING plain product card::44563f1fb1b4"
+    "tests/promote-source-qualify-selftest.sh::4c: nothing was promoted::7d9b8b1c2b79"
 
     # ── A DIFFERENT SUBJECT that happens to share the nouns: a custom FIELD definition narrowing
     #    under cards that carry a value for it.
-    "bin/kbcard::even while a card references the dropped value"
+    "bin/kbcard::even while a card references the dropped value::7ea4273e4d9f"
 
     # ── ASSERTIONS ABOUT A MESSAGE, not statements of the rule. `_c9918` asserts that a refusal
     #    states NO attribution consequence — the opposite of making one — and the prelude-shadow
     #    entry is a disposition table for another guard entirely.
-    "tests/kbcard-selftest.sh::it states no consequence: no attribution"
-    "tests/prelude-shadow-selftest.sh::EXTRACTORS=("
+    "tests/kbcard-selftest.sh::it states no consequence: no attribution::fd7177779bbd"
+    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::003fa2a3c360"
 
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control
     #    fixture. The fixture MUST be reportable — that is its job — and the other two cannot
     #    describe a predicate over these nouns without using them.
-    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS"
-    "tests/by-ref-source-claim-selftest.sh::t ~ /url|link/"
-    "tests/by-ref-source-claim-selftest.sh::control: a claim SPLIT ACROSS LINES is reported"
+    "tests/by-ref-source-claim-selftest.sh::WHY THIS FILE EXISTS::3b392b49ed5d"
+    "tests/by-ref-source-claim-selftest.sh::ARM 1 — a URL or link::43370a6a1fe8"
+    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS::01279241b6d0"
+    "tests/by-ref-source-claim-selftest.sh::control: a claim SPLIT ACROSS LINES is reported::cfa933e61486"
 )
 
 # _bsc_claims <passages> — the trigger, and its one implementation. Nouns only; see the header.
 _bsc_claims() {
     awk -F'\t' '
-    { t = tolower($3) }
-    t ~ /url|link/ && t ~ /card/ && (t ~ /attribut/ || (t ~ /by-ref/ && t ~ /source/))' <<<"$1"
+    BEGIN { FLD = "pr_url|issue_url|html_url|external_link|payload[.]repo" }
+    {
+        t = tolower($3)
+        # ARM 1 — a URL or link, and an attribution, in a passage about a card.
+        a1 = (t ~ /url|link/) && (t ~ /attribut/ || (t ~ /by-ref/ && t ~ /source/))
+        # ARM 2 — bare `source`, admitted only beside a derivation FIELD NAME, which is what
+        # tells this meaning of the word apart from the other three this tree spends it on.
+        a2 = (t ~ /source/) && (t ~ FLD)
+        if ((t ~ /card/) && (a1 || a2)) print
+    }' <<<"$1"
 }
 # _bsc_undischarged <claims> — claims that do not name the condition.
 _bsc_undischarged() { awk -F'\t' 'tolower($3) !~ /payload[.]repo/' <<<"$1"; }
@@ -388,17 +514,55 @@ _bsc_scan() {
         | awk -F'\t' 'NF{printf "%s: %d: %s\n", $1, $2, $3}'
 }
 
-# _bsc_disposes <dpath> <dsub> <line> — THE disposition predicate, one owner, asked by both
-# questions below: "is this reported line disposed?" and "does this disposition suppress anything?"
+# ⛔ A DISPOSITION IS BOUND TO THE EXACT TEXT IT RULED ON — `<path>::<substring>::<digest>` — AND
+# THAT THIRD FIELD IS THE WHOLE OF ROUND 1's MAJOR 2. A reported line is a PASSAGE, so a
+# disposition matched on path+substring alone suppresses the whole passage, and a passage GROWS:
+# measured, a brand-new undischarged operator-rendered claim inserted one line below the already
+# disposed `VERIFY FAILED` message in `bin/adopt-to-dl` went green and did not move the claim
+# count, while the same claim in a different passage of the SAME file reported. So the scope was
+# never "the line" the PR body claimed — it was "whatever that passage grows into", unbounded.
+#
+# ⚠ AND IT IS REACHABLE BY THIS CARD'S OWN NEXT STEP: those two `VERIFY FAILED` messages are the
+# ask-gated edit named in the dispositions below, so the edit that closes that finding would have
+# landed INSIDE a disposed passage.
+#
+# The digest is over the passage TEXT, so any change to it re-reports and the ruling has to be
+# re-made against what is there now — which is the same contract the liveness assertion already
+# imposes in the other direction. A failure PRINTS the current digest, so re-ruling is a
+# one-field edit and never a hunt.
+#
+# _bsc_digest — the first 12 hex of the sha256 of stdin. One owner; the recorded field and the
+# measured value can only be produced the same way.
+_bsc_digest() { sha256sum | cut -c1-12; }
+
+# _bsc_disposes <dpath> <dsub> <line> — path prefix + substring. Deliberately NOT the digest: the
+# two questions below need to find the passage a disposition is ABOUT even when its text has
+# moved, so that the failure can say "this ruling is stale" instead of "this ruling is dead".
 _bsc_disposes() { case "$3" in "$1: "*) case "$3" in *"$2"*) return 0 ;; esac ;; esac; return 1; }
 
+# _bsc_disposed_digest <dpath> <dsub> — the digest of the passage this disposition matches now,
+# or the empty string when it matches none.
+_bsc_disposed_digest() {
+    local line
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        if _bsc_disposes "$1" "$2" "$line"; then printf '%s' "${line#*: *: }" | _bsc_digest; return 0; fi
+    done <<<"$BSC_RAW"
+    printf ''
+}
+
+# A disposition suppresses a reported passage ONLY while that passage still hashes to what was
+# ruled on. A passage that has changed falls straight back into the undisposed set.
 _bsc_undisposed() {
-    local raw="$1" d line keep
+    local raw="$1" d line keep dpath dsub ddig
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         keep=true
         for d in ${BSC_DISPOSED[@]+"${BSC_DISPOSED[@]}"}; do
-            if _bsc_disposes "${d%%::*}" "${d#*::}" "$line"; then keep=false; fi
+            dpath="${d%%::*}"; ddig="${d##*::}"; dsub="${d#*::}"; dsub="${dsub%::*}"
+            if _bsc_disposes "$dpath" "$dsub" "$line"; then
+                [[ "$(printf '%s' "${line#*: *: }" | _bsc_digest)" == "$ddig" ]] && keep=false
+            fi
         done
         $keep && printf '%s\n' "$line"
     done <<<"$raw"
@@ -431,8 +595,11 @@ eq "premise: the scan reached files and reported something" "true" \
 # EVERY DISPOSITION IS STILL LIVE. One that has stopped matching is an inherited ruling about a
 # line nobody can point to, and it must be re-derived rather than carried.
 for d in ${BSC_DISPOSED[@]+"${BSC_DISPOSED[@]}"}; do
-    dpath="${d%%::*}"; dsub="${d#*::}"
-    eq "disposition suppresses a live line: $dpath — $dsub" "true" "$(_bsc_disposition_live "$dpath" "$dsub")"
+    dpath="${d%%::*}"; ddig="${d##*::}"; dsub="${d#*::}"; dsub="${dsub%::*}"
+    eq "disposition suppresses a live passage: $dpath — $dsub" "true" "$(_bsc_disposition_live "$dpath" "$dsub")"
+    # …AND that passage is still the text the ruling was made about. A changed passage reds here
+    # with the digest to paste back, after the ruling has been re-made against what it says now.
+    eq "…and that passage is unchanged since it was ruled on: $dpath" "$ddig" "$(_bsc_disposed_digest "$dpath" "$dsub")"
 done
 eq "no undisposed precedence claim anywhere in the repo" "" "$(_bsc_undisposed "$BSC_RAW")"
 
@@ -486,20 +653,89 @@ FIXTURE
 eq "control: a wording nobody has used is still reported" "true" \
    "$(has 'docs/NEVER-WORDED-THIS-WAY.md' "$(_bsc_scan "$TMP/fix")")"
 
-# THE DISPOSITION MECHANISM, on the fixture tree: it suppresses its own line and nothing else in
-# the same file.
+# ⛔ THE MARKDOWN-CLASSIFIER CONTROLS (round 1, MAJOR 1). Both directions the first cut lost, each
+# beside the one-character-different text that already reported — which is what makes them
+# measurements of the classifier rather than of the trigger.
+#
+# MERGE: two adjacent `* ` bullets, the second naming payload.repo. Under the first cut the `*`
+# was eaten as a comment marker, the two became ONE passage, and the neighbour discharged the
+# claim. The `- ` pair beside it reported throughout, so the difference is the bullet character.
+mkdir -p "$TMP/fix2/docs"
+{ printf -- '* The stamped pr_url is what %s the card to a repo, for every release.\n' "$AV"
+  printf -- '* Separately, payload.repo is a key some boards set.\n'; } > "$TMP/fix2/docs/STAR-BULLETS.md"
+{ printf -- '- The stamped pr_url is what %s the card to a repo, for every release.\n' "$AV"
+  printf -- '- Separately, payload.repo is a key some boards set.\n'; } > "$TMP/fix2/docs/DASH-BULLETS.md"
+
+# SPLIT: a `**bold**`-leading continuation line. Under the first cut this flipped mode mid-
+# paragraph and CUT the passage, so the claim tripped nothing — miss 3 re-minted by the very
+# classifier built to close it. The unbolded sentence beside it reported throughout.
+{ printf 'Whichever GitHub link was stamped last is the one the board reads, and it is\n'
+  printf -- '**what decides** which repository the card is %s to from then on.\n' "$AV"; } > "$TMP/fix2/docs/BOLD-SPLIT.md"
+{ printf 'Whichever GitHub link was stamped last is the one the board reads, and it is\n'
+  printf -- 'what decides which repository the card is %s to from then on.\n' "$AV"; } > "$TMP/fix2/docs/PLAIN-SPLIT.md"
+
+# …and the same `*` bullets INSIDE a blockquote, which reported even under the first cut because
+# the `>` strip happened to run first there. It is the control that pinned the cause, so it stays.
+{ printf -- '> * The stamped pr_url is what %s the card to a repo, for every release.\n' "$AV"
+  printf -- '> * Separately, payload.repo is a key some boards set.\n'; } > "$TMP/fix2/docs/QUOTED-STAR.md"
+
+FIX2TREE="$(_bsc_scan "$TMP/fix2")"
+for fx in STAR-BULLETS DASH-BULLETS BOLD-SPLIT PLAIN-SPLIT QUOTED-STAR; do
+    eq "control: markdown classifier reports docs/$fx.md" "true" "$(has "docs/$fx.md" "$FIX2TREE")"
+done
+
+# ⚑ THE STATED RESIDUAL BOUND OF THE TRIGGER, PINNED SO IT CANNOT MOVE UNNOTICED (round 1,
+# MINOR 5). Arm 2 admits bare `source` only beside a derivation FIELD NAME. A claim that says
+# `source` and names no field is therefore OUTSIDE this instrument — this asserts that edge is
+# where the header says it is, and reds if it ever moves in either direction.
+# The field name is COMPOSED, so this file does not itself hold a claim naming one (the same
+# reason `$AV` carries the attribution verb in the fixtures above).
+FLDN='pr_url'
+
+printf 'Whichever link you paste last on the card sets its source from then on.\n' \
+    > "$TMP/fix2/docs/RESIDUAL-NO-FIELD.md"
+printf 'Whichever %s you paste last on the card sets its source from then on.\n' "$FLDN" \
+    > "$TMP/fix2/docs/RESIDUAL-WITH-FIELD.md"
+FIX2TREE="$(_bsc_scan "$TMP/fix2")"
+eq "control: arm 2 reports a 'sets its source' claim that NAMES a field" "true" \
+   "$(has 'docs/RESIDUAL-WITH-FIELD.md' "$FIX2TREE")"
+eq "control: …and the stated bound holds — the same claim naming NONE is out of reach" "false" \
+   "$(has 'docs/RESIDUAL-NO-FIELD.md' "$FIX2TREE")"
+
+# THE DISPOSITION MECHANISM, on the fixture tree. FOUR directions, and the fourth is the one
+# round 1 found missing: the first cut only ever exercised a claim in a DIFFERENT FILE, which is
+# not the direction that loses findings. A disposition suppresses a PASSAGE, so the direction that
+# loses findings is a new claim arriving INSIDE one — and that is now a control.
 FIX2="$(_bsc_scan "$TMP/fix")"
 BSC_RAW_SAVE="$BSC_RAW"; BSC_RAW="$FIX2"
 BSC_DISPOSED_SAVE=("${BSC_DISPOSED[@]+"${BSC_DISPOSED[@]}"}")
-BSC_DISPOSED=("docs/SPLIT-CLAIM.md::every release that ships its number")
-eq "control: a disposition suppresses its own line"        "false" \
+SPLIT_SUB='every release that ships its number'
+SPLIT_DIG="$(printf '%s' "$(printf '%s\n' "$FIX2" | sed -n "s/^docs\/SPLIT-CLAIM.md: [0-9]*: //p")" | _bsc_digest)"
+BSC_DISPOSED=("docs/SPLIT-CLAIM.md::$SPLIT_SUB::$SPLIT_DIG")
+eq "control: a disposition suppresses its own passage"     "false" \
    "$(has 'docs/SPLIT-CLAIM.md' "$(_bsc_undisposed "$FIX2")")"
 eq "control: …and nothing else in the tree"                "true" \
    "$(has 'docs/NEVER-WORDED-THIS-WAY.md' "$(_bsc_undisposed "$FIX2")")"
 eq "control: …and a live disposition reports itself live"  "true" \
-   "$(_bsc_disposition_live 'docs/SPLIT-CLAIM.md' 'every release that ships its number')"
+   "$(_bsc_disposition_live 'docs/SPLIT-CLAIM.md' "$SPLIT_SUB")"
 eq "control: …while a disposition matching nothing is DEAD" "false" \
    "$(_bsc_disposition_live 'docs/SPLIT-CLAIM.md' 'a substring no line carries')"
+# ⛔ THE FOURTH DIRECTION (round 1, MAJOR 2). A NEW claim appended into the disposed passage —
+# no blank line, so it joins that passage rather than starting one — must NOT inherit the ruling.
+# The disposition still MATCHES (same path, same substring); what stops it suppressing is that the
+# passage no longer hashes to what was ruled on.
+printf 'A new sentence: the link last pasted is what %s the card to its repo.\n' "$AV" \
+    >> "$TMP/fix/docs/SPLIT-CLAIM.md"
+FIX3="$(_bsc_scan "$TMP/fix")"
+eq "control: a claim appended INTO a disposed passage is NOT suppressed" "true" \
+   "$(has 'docs/SPLIT-CLAIM.md' "$(_bsc_undisposed "$FIX3")")"
+# …and the stale ruling says so by NAME rather than by going quiet: the disposition still matches
+# a passage, and it is the digest leg that reds.
+BSC_RAW="$FIX3"
+eq "control: …the disposition still MATCHES a passage"     "true" \
+   "$(_bsc_disposition_live 'docs/SPLIT-CLAIM.md' "$SPLIT_SUB")"
+eq "control: …but its digest no longer does"               "false" \
+   "$([ "$(_bsc_disposed_digest 'docs/SPLIT-CLAIM.md' "$SPLIT_SUB")" = "$SPLIT_DIG" ] && echo true || echo false)"
 BSC_DISPOSED=("${BSC_DISPOSED_SAVE[@]+"${BSC_DISPOSED_SAVE[@]}"}")
 BSC_RAW="$BSC_RAW_SAVE"
 

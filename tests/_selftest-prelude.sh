@@ -275,10 +275,11 @@ _adopt_fn() {
 
 # ── splitting a file's LIVE head from its FROZEN history ─────────────────────────────────────
 # Hoisted here at the second caller (canon #5). `tests/lib-set-derivation-selftest.sh` leg 3 and
-# `tests/by-ref-source-claim-selftest.sh` leg 3 both refuse a prose shape ANYWHERE in the repo,
-# and both must exempt the append-only at-that-version records in `docs/CHANGELOG.md` and
-# `docs/UPGRADE.md`, where a statement that was true AT a version cannot rot. Two hand-spellings
-# of one split is the shape prelude-shadow-selftest.sh exists to refuse.
+# `tests/by-ref-source-claim-selftest.sh` leg 3 each refuse a prose shape ANYWHERE in the repo, and
+# each must exempt the append-only at-that-version records — `docs/CHANGELOG.md`, `docs/UPGRADE.md`,
+# and for the second caller `CLAUDE.md`'s release table — where a statement that was true AT a
+# version cannot rot. Two hand-spellings of one split is the shape prelude-shadow-selftest.sh
+# exists to refuse.
 
 # _headings <file> <ere> — the `<lineno>:<text>` lines of <file> whose text matches <ere>.
 # The `|| true` is what makes "no heading matched" an ASSERTABLE state instead of a death: under

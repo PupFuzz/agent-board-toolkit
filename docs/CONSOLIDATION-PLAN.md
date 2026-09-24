@@ -2060,12 +2060,13 @@ finding with no owner is abandoned, not filed.
   about its own spelling rather than about the repo, published as an answer about the repo.
   **Two answers ship together, and the split is the ruling:** every site that is not RENDERED to an
   operator became a pointer carrying the condition (`README.md` twice, this document's bullet
-  above, three comments in `tests/kbcard-selftest.sh`), because a pointer cannot drift; the sites a
+  above, the comments in `tests/kbcard-selftest.sh`), because a pointer cannot drift; the sites a
   program PRINTS stayed copies, because a pointer cannot reach a reader looking at a log line, and
   they are held to `derive_source` instead. `tests/by-ref-source-claim-selftest.sh` is what holds
   both: it reports any PASSAGE — never a line, which is how the third sweep lost a claim spanning a
   line break — that names a URL or link, a card, and an attribution, and requires it to name
-  `payload.repo`; and it compares the field ORDER of every self-declared full statement against the
+  `payload.repo`; a second arm admits bare `source` where the passage also names a derivation
+  field, which is what tells this meaning of that overloaded word from the other three; and it compares the field ORDER of every self-declared full statement against the
   order extracted from the shipped def on every run, in both directions, so a home cannot be
   silently deleted either. **The trigger keys on the claim's nouns and never on its verb**, which
   is the one property all four phrase greps lacked. ⛔ **No count of sites lives here** — run the
