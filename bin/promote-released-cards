@@ -30,10 +30,13 @@
 #   DONE. The live instance (kanban card#9996, seven legs, one built) was held out of this by a
 #   hand-set `block_reason` and a source-stage pin, i.e. by COLUMN, not by any predicate.
 #
-#   WHY THE PREDICATE IS THE TAG AND NOT A PARENT/CHILD RELATION. Measured on this fleet: the
-#   `program` tag selects exactly one card across the three live boards; `parent_id` — which now
-#   exists in the board schema — selects ZERO, because nothing backfills it, and on the row being
-#   MOVED it marks that row as a CHILD, so a predicate keyed on it would refuse exactly the legs
+#   WHY THE PREDICATE IS THE TAG AND NOT A PARENT/CHILD RELATION. Measured on the boards this
+#   fleet runs, and stated as the comparison rather than as a pair of figures that would rot —
+#   re-derive it by asking each board for the tag, beside a control tag known to be in use, so an
+#   empty answer is a FILTER result and not an empty corpus: the `program` tag SELECTS the parents
+#   it is put on; `parent_id` — which now exists in the board schema — selects NOTHING, because
+#   nothing backfills it, and on the row being MOVED it marks that row as a CHILD, so a predicate
+#   keyed on it would refuse exactly the legs
 #   that should move and permit the parent it exists to hold back. The structurally right
 #   predicate is the inverse, *has children*, and the board's task resource does not project it,
 #   so no external writer can read it at all yet. Revisit when it does, not before.
