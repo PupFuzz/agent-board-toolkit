@@ -387,14 +387,17 @@ _exit_policy_counters() {
     command sed -n '/^# --- exit policy/,$p' "$1" | command grep '^if \[ ' \
       | command grep -oE '"\$\{?[a-z_]+' | tr -d '"${' | sort -u | tr '\n' ' ' || true
 }
+# `incomplete` joined this set at card#10176's merge, not by an edit to the exit policy made here:
+# the completeness gate's clause (`exit 5`) is the sixth to read a counter. It is declared rather
+# than excluded — the leg's point is that a counter ENTERING the policy must move this line.
 eq "⭐ the exit clauses test exactly these counters" \
-   "failed moved not_applied skipped unverified " "$(_exit_policy_counters "$PRC")"
+   "failed incomplete moved not_applied skipped unverified " "$(_exit_policy_counters "$PRC")"
 # CONTROL, because a derivation nobody has seen move is a decoration: a clause that GAINS a term
 # must change that answer — which is exactly the edit this leg failed to catch when it did not
 # exist. `guarded` is a real counter of this tool that no exit clause tests.
 sed 's/^if \[ "\$failed" -gt 0 \]/if [ "${guarded:-0}" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
 eq "⭐ …and a counter ADDED to a clause shows up in the derivation (the control)" \
-   "failed guarded moved not_applied skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
+   "failed guarded incomplete moved not_applied skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
 unset -f _exit_policy_counters
 
 echo "-- 6a: one card MOVES and one is measured NOT APPLIED — the 2026-05-22 shape"

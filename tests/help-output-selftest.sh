@@ -71,7 +71,7 @@ BINDIR="$HERE/../bin"
 _mktmp_scratch
 
 # The CLIs whose --help prints a leading comment header.
-CLIS=(promote-released-cards release-pr-body release-artifacts-check release-tag-check
+CLIS=(promote-released-cards card-completeness release-pr-body release-artifacts-check release-tag-check
       agent-board-toolkit-runtime-check dependabot-deploy-reconcile board-stats gh-code-search
       gitignore-secret-family-check run-coverage-check)
 

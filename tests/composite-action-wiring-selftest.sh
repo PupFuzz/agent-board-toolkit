@@ -22,6 +22,11 @@
 # stated rather than left to be discovered, and left in place here because editing two green CI
 # jobs is a wider change than this card carries. This file is a superset guard, not their
 # replacement.
+#   ⚑ ONE PART OF "input→flag" HAS SINCE MOVED HERE and the sentence above is scoped accordingly:
+#     the BOOLEAN accept-set (card#10176 r2) is derived and driven for every action below,
+#     because it is a class, not one action's map — two inputs on `promote` held it and a third
+#     anywhere would have re-minted it. What stays in the per-action jobs is the flag MAP itself
+#     (which input names which `--flag`), which is genuinely per-action.
 #
 # THE POPULATION IS PRINTED ON EVERY RUN, clean or not. A clean result over an unnamed set
 # reports where the searcher stopped, not the state of the tree.
@@ -143,6 +148,37 @@ for path in sorted(acts):
     slug = re.sub(r'\.ya?ml$', '', rel).replace('/', '_')
     with open(os.path.join(rundir, slug + '.sh'), 'w') as f:
         f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + joined + '\n')
+
+    # ── THE BOOLEAN-INPUT POPULATION, for the accept-set leg below ────────────────────────
+    # A composite action's inputs are STRINGS; `true`/`false` is a convention the run body has
+    # to enforce itself. Written out here, from the same YAML this scan already judged, rather
+    # than re-parsed in bash: one parse, one answer about which inputs are booleans.
+    # THE PREDICATE HAS TWO LEGS, because either alone leaves a boolean the check cannot see:
+    # the DECLARED DEFAULT ('true'/'false' — what a consumer will pass), OR an input the step's
+    # own env compares against a literal (`inputs.X == '…'` — an input BEING USED as a boolean
+    # whatever it was declared with). Its env var is the step-env key whose expression references
+    # it, so the leg below can set exactly what the runner would set.
+    env_of = {}
+    for e in envs:
+        for k, v in e.items():
+            for n in re.findall(r'inputs\.([A-Za-z0-9_-]+)', str(v)):
+                env_of.setdefault(n, k)
+    # `inputs.<name> == '<literal>'` — a SECOND spelling of "is this input on", evaluated by
+    # Actions before the shell ever runs, so the run body's own guard cannot cover it. Emitted
+    # so the leg below can hold the two accept-sets equal.
+    cmps = set()
+    for e in envs:
+        for v in e.values():
+            for n, lit in re.findall(r"inputs\.([A-Za-z0-9_-]+)\s*==\s*'([^']*)'", str(v)):
+                cmps.add((n, lit))
+    compared = {n for n, _ in cmps}
+    with open(os.path.join(rundir, slug + '.bools'), 'w') as f:
+        for name, spec in (d.get('inputs') or {}).items():
+            if str((spec or {}).get('default')) in ('true', 'false') or name in compared:
+                f.write('%s\t%s\n' % (name, env_of.get(name, '')))
+    with open(os.path.join(rundir, slug + '.boolcmp'), 'w') as f:
+        for name, lit in sorted(cmps):
+            f.write('%s\t%s\n' % (name, lit))
 PY
 }
 
@@ -174,6 +210,114 @@ SC_RC=0
 SC_OUT="$("$SHELLCHECK" -S error "$TMP"/run/*.sh 2>&1)" || SC_RC=$?
 [ "$SC_RC" = 0 ] && ok "shellcheck -S error over $(find "$TMP/run" -name '*.sh' | wc -l) extracted run: body/bodies" \
                  || bad "shellcheck reported: $SC_OUT"
+
+# ── BOOLEAN INPUTS: THE ACCEPT-SET IS DRIVEN, NOT READ ────────────────────────────────────────
+# ⛔ THE DEFECT THIS EXISTS TO STOP (card#10176 r2). A composite action's inputs are STRINGS.
+# `[ "$X" = "true" ]` answers FALSE for 'True', 'TRUE', 'yes' and '1' alike, and the run that
+# follows is byte-identical to one where the input was never passed — no flag, no message, no
+# non-zero status. `promote`'s `require-complete` failed that way into a gate that was silently
+# OFF on a run that looked gated, and `dry-run` failed that way into REAL BOARD WRITES for an
+# operator who asked for a preview. The flag-parity derivation in ci.yml's `promote-action-selftest`
+# job could not see it: it reads which `--flag`s the body CAN pass, never which input VALUES make
+# it pass them. Nothing anywhere drove input → flag until this block.
+#
+# THE POPULATION IS DERIVED TWICE OVER and printed: every action.yml in the tree (the walk above),
+# and within each, every input whose DECLARED DEFAULT is 'true'/'false'. A third boolean input,
+# on this action or a fourth one, is covered by this unedited code — which is the property the
+# one-function guard in the run body and this leg exist to hold together.
+#
+# THE SPELLINGS ARE CLASSIFIED FROM THE RUN, not asserted against a list of expected messages:
+# each probe is driven through the real extracted body against a STUB target bin, and lands in
+# ON (the argv differs from the `false` run), OFF (identical to it) or REFUSED (non-zero rc).
+# `eq` then pins the whole ON and OFF sets, so a spelling silently JOINING either one reds here.
+echo "== boolean inputs: the accept-set is DRIVEN through the real run: body =="
+mkdir -p "$TMP/act/x" "$TMP/act/bin"
+# One stub per bin the tree ships, so any action's exec line resolves whatever it wraps. The stub
+# prints its argv and nothing else: the classification below is a comparison of those argvs.
+for _b in "$ROOT"/bin/*; do
+  [ -f "$_b" ] || continue
+  printf '#!/usr/bin/env bash\nprintf "ARGV:%%s\\n" "$*"\n' > "$TMP/act/bin/$(basename "$_b")"
+  chmod +x "$TMP/act/bin/$(basename "$_b")"
+done
+# _drive <body.sh> <ENVVAR> <value> → "<rc>|<merged output, one line>". stderr is merged in
+# deliberately: the refusal is a `::error::` annotation on stderr and IS the thing being read.
+_drive() {
+  local rc=0 out
+  out="$(env "GITHUB_ACTION_PATH=$TMP/act/x" "$2=$3" bash "$1" 2>&1)" || rc=$?
+  printf '%s|%s' "$rc" "$(printf '%s' "$out" | tr '\n' ' ')"
+}
+# The probe set. `<empty>` stands for the empty string — an input left at a blank default, or one
+# a caller passes empty, which must mean OFF and never a refusal.
+BOOL_PROBES='true True TRUE false False yes no on off 1 0 <empty>'
+BOOL_POP=""; BOOL_DRIVEN=0; CMP_DRIVEN=0
+for _bf in "$TMP"/run/*.bools; do
+  [ -s "$_bf" ] || continue
+  _slug="$(basename "$_bf" .bools)"
+  while IFS="$(printf '\t')" read -r _in _var; do
+    [ -n "$_in" ] || continue
+    BOOL_POP="$BOOL_POP$_slug:$_in($_var)"$'\n'
+  done < "$_bf"
+done
+printf '%s' "$BOOL_POP" | sed 's/^/  boolean input: /'
+eq "the boolean-input population is not empty (control)" "false" \
+   "$([ -z "$BOOL_POP" ] && echo true || echo false)"
+# A NAMED WITNESS, not a count — the two inputs whose defect minted this block.
+eq "…including promote's dry-run, by name"        "true" \
+   "$(has 'promote_action:dry-run(DRY_RUN)' "$BOOL_POP")"
+
+for _bf in "$TMP"/run/*.bools; do
+  [ -s "$_bf" ] || continue
+  _slug="$(basename "$_bf" .bools)"
+  _body="$TMP/run/$_slug.sh"
+  while IFS="$(printf '\t')" read -r _in _var; do
+    [ -n "$_in" ] && [ -n "$_var" ] || continue
+    BOOL_DRIVEN=$((BOOL_DRIVEN + 1))
+    _off_ref="$(_drive "$_body" "$_var" false)"
+    _on_set=""; _off_set=""; _refused_sample=""
+    for _p in $BOOL_PROBES; do
+      _v="$_p"; [ "$_p" = '<empty>' ] && _v=""
+      _r="$(_drive "$_body" "$_var" "$_v")"
+      if [ "${_r%%|*}" != 0 ]; then _refused_sample="${_r#*|}"
+      elif [ "$_r" = "$_off_ref" ]; then _off_set="$_off_set$_p"$'\n'
+      else _on_set="$_on_set$_p"$'\n'
+      fi
+    done
+    _on_set="$(printf '%s' "$_on_set" | LC_ALL=C sort | tr '\n' ',')"
+    _off_set="$(printf '%s' "$_off_set" | LC_ALL=C sort | tr '\n' ',')"
+    eq "$_slug:$_in — exactly 'true' turns it ON"  "true,"          "$_on_set"
+    eq "$_slug:$_in — only 'false'/empty are OFF"  "<empty>,false," "$_off_set"
+    # Every remaining probe REFUSED, and a refusal an operator cannot act on is not a refusal.
+    eq "$_slug:$_in — an unknown spelling is refused (control)" "false" \
+       "$([ -z "$_refused_sample" ] && echo true || echo false)"
+    eq "$_slug:$_in — …the refusal names the input"  "true" "$(has "$_in=" "$_refused_sample")"
+    eq "$_slug:$_in — …and what to pass instead"     "true" \
+       "$(has "'true' or 'false'" "$_refused_sample")"
+  done < "$_bf"
+done
+
+# THE ACTIONS-EXPRESSION HALF. `GITHUB_TOKEN: ${{ inputs.require-complete == 'true' && … }}` is a
+# second accept-set, evaluated before the shell exists, so the run body's guard cannot hold it.
+# Drive each compared literal through the body: a literal the expression treats as ON that the
+# body does not is a token shipped to a step that dies, and the reverse is the gate running with
+# NO credential — every card UNMEASURED, i.e. a release that refuses every promotion.
+BOOL_CMP="$(cat "$TMP"/run/*.boolcmp 2>/dev/null || true)"
+eq "an inputs.X == '<literal>' comparison exists (control)" "false" \
+   "$([ -z "$BOOL_CMP" ] && echo true || echo false)"
+for _bf in "$TMP"/run/*.boolcmp; do
+  [ -s "$_bf" ] || continue
+  _slug="$(basename "$_bf" .boolcmp)"
+  _body="$TMP/run/$_slug.sh"
+  while IFS="$(printf '\t')" read -r _in _lit; do
+    [ -n "$_in" ] || continue
+    _var="$(awk -F'\t' -v i="$_in" '$1 == i { print $2 }' "$TMP/run/$_slug.bools")"
+    [ -n "$_var" ] || continue
+    CMP_DRIVEN=$((CMP_DRIVEN + 1))
+    _off_ref="$(_drive "$_body" "$_var" false)"
+    _r="$(_drive "$_body" "$_var" "$_lit")"
+    eq "$_slug: the env expression's '$_lit' for $_in is ON in the body too" "true" \
+       "$([ "${_r%%|*}" = 0 ] && [ "$_r" != "$_off_ref" ] && echo true || echo false)"
+  done < "$_bf"
+done
 
 # ── PROVE IT CAN FAIL — EVERY code has a mutant, each one edit away from a clean action ───────
 # A predicate that cannot fail is a decoration, and the first cut of this block shipped two that
@@ -379,6 +523,15 @@ eq "…and the analyser says why"                  "true"  "$(has 'SC1' "$out")"
 # ⚠ EXPECTED is the count of the assertions ABOVE this line — this one is not in it. When you
 # add or remove an assertion here, move this number by the same amount; a mismatch means the
 # battery changed, and the only question is whether you meant it.
-eq "the whole battery ran (leg count)" "22" "$checks"
+#
+# ⚠ TWO TERMS, because one of the blocks above is DATA-DRIVEN. `22` is the HAND-WRITTEN legs, and
+# is what the paragraph above is about. The boolean-input block runs its legs per member of a
+# population the tree decides, so a literal total would red on any action that GAINS or DROPS a
+# boolean input — a number rotting on a change that is not a defect, which is how a leg count
+# stops being read. Its term is therefore computed from the population it drove: the two
+# population controls, FIVE legs per boolean input, and the comparison control plus one leg per
+# `inputs.X == '<literal>'` row. The per-member constants are what red on an `eq` deleted from
+# inside either loop — the same property the literal has, at the only grain that survives.
+eq "the whole battery ran (leg count)" "$(( 22 + 2 + 5 * BOOL_DRIVEN + 1 + CMP_DRIVEN ))" "$checks"
 
 _summary "composite-action-wiring-selftest"

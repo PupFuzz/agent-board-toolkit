@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+# card-completeness — answer, for each named card, whether its work is COMPLETE as of a
+# release head in one repo, so a terminal-stage mover never promotes a card whose work is
+# still in flight — open, or merged to the integration branch but not yet released.
+# (framework card#9869, where it was built; adopted here as the authority by toolkit card#10176)
+#
+# THIS COPY IS AUTHORITATIVE, like the release bins beside it: the agent-board-framework's
+# `templates/release/card-completeness` is a mirror of it, synced at toolkit tags.
+# ⚠ NOTHING IN CI MEASURES THAT, and the sentence above must not be read as if something did:
+# the framework repo is private and this repo's CI holds no credential for it, so the mirror is
+# compared BY HAND at each release — `VERSIONING.md` release step 12, which runs
+# `tests/framework-mirror-check.sh` (card#9939). A declaration whose named check does not exist
+# where the reader looks is worse than silence, because the far end then audits its join against
+# a contract it believes is enforced; so if that step or that file is not in this tree, the
+# declaration above is UNCHECKED and nothing here says otherwise. `bin/promote-released-cards
+# --require-complete` is its caller; it is vendored beside that mover and, like it, is
+# STANDALONE — it sources nothing. Card numbers in this header are the framework board's
+# (PupFuzz/agent-board-framework) unless marked otherwise; that is where the defect was measured.
+#
+# WHY THIS EXISTS — the defect, and every place it has been measured. THIS LIST IS THE ONE
+# RECORD OF THE SIGHTINGS; every other doc and comment points here rather than counting them.
+#   A card's work spans SEVERAL PRs. The stage machinery drives the card to a TERMINAL stage
+#   when WHICHEVER PART MERGES FIRST merges, and the board then reports the card DONE while
+#   the product is unreleased and incomplete.
+#     - card#9451 (the framework repo PupFuzz/agent-board-framework, read 2026-09-19): PR
+#       #924 merged and the card reached `released_to_main`, while PR #936 (the FTS5 index +
+#       the record-search CLI — the PRODUCT of the phase) was merged to dev AFTER the tag and
+#       PR #959 was still open. The tool the card names was never delivered to any seat.
+#     - card#9606 (sola-device, 2026-09-20): PR #673 (docs) merged and drove the card toward
+#       terminal while PR #674 — the actual implementation, carrying a real field defect —
+#       was still open. A human moved the stage back by hand.
+#     - PupFuzz/agent-roundtable#532, from aimla-pm, independently: "a card moves to
+#       shipped_to_dev on PARTIAL implementation, and the release sweep promotes that stage."
+#   That second sentence is the compounding half and the reason this tool is consulted by the
+#   RELEASE movers: even where the partial `shipped_to_dev` is set by a mover the release
+#   tooling does not own (the bridge), the promotion of that stage into the terminal
+#   `released_to_main` — the stage nobody ever re-reads — is owned here, and is where the
+#   error becomes permanent.
+#
+# ============================================================================================
+# THE COMPLETENESS PREDICATE — stated once, here, because it is the whole tool
+# ============================================================================================
+#
+#   A card's work is INCOMPLETE as of a release head iff a pull request whose HEAD BRANCH
+#   carries the card's token is either
+#     (a) OPEN, or
+#     (b) MERGED by a commit that is on the integration branch but NOT in the release head.
+#   Otherwise it is COMPLETE. If either population cannot be READ, the answer is UNMEASURED
+#   — never COMPLETE.
+#
+# Clause (b) is the RELEASE-CUT WINDOW (card#9869 r1). A release is cut from the integration
+# branch and merged to the release branch some time later; a PR that merges to the
+# integration branch in between is no longer OPEN, and is not in the release either. Reading
+# only (a), a card whose last part lands in that window reads COMPLETE and is promoted to the
+# terminal stage while that part is still only on the integration branch — card#9451's own
+# shape above (PR #936 "merged to dev AFTER the tag"), and measured again at r1: PR #959
+# (branch `card-9451-waypoint-refs`) merged to dev after the v0.55.0 cut, and the (a)-only
+# predicate read card#9451 COMPLETE against v0.55.0 on the live repo. The window any release
+# has is re-derivable at any time — `git log --oneline <release-head>..origin/<integration>`
+# — and is never recorded here as a count.
+#
+# Each clause was chosen against a measurement, and each rejected alternative is named:
+#
+#   * WHY NOT THE BOARD'S OWN STATE. A card carries ONE `pr` slot and every writeback
+#     OVERWRITES it, so a multi-PR card structurally cannot represent its own parts:
+#     card#9606 is carried by PRs 673 and 674 and its `pr` field holds 673 — re-stamping to
+#     674 loses the docs half, leaving 673 loses the implementation half, and there is no
+#     third value. The stored state CANNOT ANSWER THE QUESTION, so this tool does not ask it.
+#     (The same trust argument the framework's `promote-cards-by-token` already makes about an `absorbed-by`
+#     link applies: a mutable card field is not a safe input to a terminal-stage write.)
+#
+#   * WHY THE BRANCH, AND ONLY THE BRANCH. Derived on the framework repo and its board
+#     (board 13), 2026-09-20, over OPEN PRs — the count of cards at a terminal stage matched
+#     by an open PR citing them was 3 by BRANCH, 4 by branch-or-title, and 10 by ANY surface
+#     including the PR body. Seven of those ten were a body citing a prior card as background
+#     or as a sibling, so a gate on "any surface" would refuse to close seven cards over a
+#     MENTION — which is the stall inversion card#9869 warns about, with a number on it. The
+#     branch is also the surface the framework's own tooling MINTS, and the framework's BRIDGE-WRITEBACK.md
+#     § The `card#<task-id>` convention already rules the branch authoritative and a title
+#     token the branch does not back "uncorroborated". A title-only citation is therefore
+#     REPORTED (stderr WARN) and never blocking.
+#
+#   * WHY THE PR'S MERGE COMMIT, AND NOT "A LIVE BRANCH WHOSE TIP IS UNREACHABLE FROM THE
+#     RELEASE HEAD". The branch-tip form was the first design and it is WRONG, measured: PRs on
+#     the framework repo are SQUASH-merged, so a merged branch's tip is NEVER an ancestor of
+#     main. There, 2026-09-20, ALL 34 remote branches carrying a card token read "unlanded"
+#     against `origin/main` — the predicate cannot tell a merged card from an in-flight one
+#     and would refuse every promotion forever. Branch EXISTENCE alone is worse still:
+#     branches are not deleted on merge there, so 34 stale refs would each stall their card
+#     permanently. Clause (b) does not read the branch tip at all. It reads the commits the
+#     integration branch has and the release head lacks (GitHub's compare of the two), and
+#     for each one asks GitHub which PR it MERGED (a PR whose `merge_commit_sha` IS that
+#     commit — a squash commit, a merge commit, or a rebase's last commit are all that). A
+#     squash does not hide that commit: it IS the commit on the integration branch, and the
+#     release carries it to the release branch by a MERGE (see CANNOT SEE 5 for when it does
+#     not). The branch is then read off the PR, so (a) and (b) correlate on the same surface.
+#
+#   * WHY POSITIVE-ONLY. A card that NO open or unreleased PR names is COMPLETE. Absence is
+#     never read as evidence of unfinished work — the normal, healthy end state of every card
+#     is exactly that absence, so the inverse reading would stall the whole board. Every
+#     refusal this tool produces rests on a POSITIVE observation: a PR that exists — open, or
+#     merged by a commit the release head lacks — with a branch that names the card.
+#
+#   * WHY UNMEASURED IS NOT COMPLETE. "No PR cites this card" and "I could not read the PRs"
+#     are the same silence if you let them be. A run that cannot reach the GitHub API, has no
+#     credential, cannot resolve the release head or the integration branch, gets a compare
+#     whose commit list does not add up to its own `ahead_by`, or hits a cap reports
+#     UNMEASURED for every card and the caller REFUSES the terminal move. A refusal that
+#     names what it could not determine is a correct outcome; a confident wrong stage is not.
+#
+# WHAT THIS PREDICATE CANNOT SEE — named, rather than left to be discovered (canon #10).
+#   1. Work that has not been branched or opened as a PR yet. A card whose second part is
+#      still a plan reads COMPLETE here. No repo-side signal exists for it; the board would
+#      have to carry a declared part list, which is card#9869's option (c) and is not this.
+#   2. Work in ANOTHER repo. This tool answers about ONE repo's PRs. A card whose parts
+#      span repos is answered only for the repo it is asked about.
+#   3. A PR whose branch carries no card token. The branch is the correlation surface; a PR
+#      that declines to use it is invisible here exactly as it is invisible to every other
+#      mover in this family. A title-only citation is WARNed so the author's miss surfaces.
+#   4. A STALE open PR — abandoned work nobody will land — blocks its card until the PR is
+#      closed. That is deliberate and is the direction the asymmetry points (an un-promoted
+#      shipped card is recoverable on the next release; a card wrongly in a terminal stage is
+#      not re-read by anyone). The cost at any install is re-derivable, never recorded here:
+#      run this tool over the board's Shipped-class cards and count the INCOMPLETE lines whose
+#      PR nobody intends to land. The escape is to close the PR, or to promote by hand with the
+#      caller's targeted-promote flag.
+#   5. A release that does not reach the release branch by a MERGE. Clause (b) relies on the
+#      integration branch's commits BEING in the release head once released. If the release
+#      PR is squash- or rebase-merged, they never are, so every card an integration-branch PR
+#      ever named reads INCOMPLETE — a loud stall, never a silent promote — up to WINDOW_CAP;
+#      past that cap the read hits it first and reports UNMEASURED instead. ⚠ THE CALLER'S OWN
+#      merge-tip check is NARROWER than this and must not be read as covering it:
+#      `bin/promote-released-cards` refuses a non-merge release tip only when ZERO cards moved
+#      AND the refs came from a git range, so a `--dls`/`--cards` run never reads the tip at all
+#      and a run that moved one card never reaches the check. The other shipped mover lives in
+#      the private agent-board-framework repo, which nothing on this side can read, so nothing
+#      is asserted here about what it requires.
+#   6. A commit pushed to the integration branch WITHOUT a PR. Nothing merged it, so there is
+#      no PR and no branch to read; it is invisible here exactly as 3 is.
+#   7. A part whose branch names the card only by its DL (`feat/dl-300-…`). The release mover
+#      correlates a card by `dl_number` as well as by `pr_number`, so a card it promotes can have
+#      parts this oracle cannot see: the grammar above reads CARD tokens, and a DL-only branch
+#      carries none. Such a part reads as absent — COMPLETE, the unsafe direction — so a repo
+#      whose branches carry DLs rather than card ids gets no protection from this gate. Asked of
+#      this fleet's own remotes when this was adopted, every branch carrying a token carried a
+#      card token; re-derive that before relying on it elsewhere.
+#
+# ============================================================================================
+# CARD-TOKEN GRAMMAR — NOT LOCAL
+# ============================================================================================
+# Which card a branch names is decided by the webhook bridge, the one component that MOVES a
+# card off a PR: `CardTokenGrammar::PATTERN` in agent-webhook-bridge
+# (`app/Bridge/Support/CardTokenGrammar.php`), `/\bcard(?|[-#](\d+)|(\d{2,}))/i`. This file
+# does not restate the grammar's rationale; it carries the same accept-set as a POSIX ERE.
+# Load-bearing properties: both separated aliases correlate (`card#123` / `card-123`);
+# left-anchored only, no trailing boundary (`card-123-foo` correlates); glued `card123`
+# correlates at TWO OR MORE digits so `card2go` names nothing; ASCII `[0-9]`, never `\d`.
+# `tests/card-completeness-selftest.sh` drives this copy over a corpus of those shapes. Nothing
+# in THIS repo can read the bridge's pattern, so that corpus is the binding on this side, and a
+# bridge-side grammar move is not seen here until someone moves the corpus with it. Do not
+# widen it here.
+#
+# ONE DELIBERATE DIFFERENCE FROM THE BRIDGE, in the conservative direction: the bridge's
+# `parse()` takes the FIRST token on a branch, while `ids_in` below takes EVERY token. A branch
+# naming two cards therefore blocks both here — a stall, never a false COMPLETE.
+#
+# Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH
+#                          [--api BASE]
+#   --cards "9451,card#9606"   ids or tokens; both spellings accepted.
+#   --release-head REV         REQUIRED. The commit the release being promoted is AT, in any
+#                              form GitHub's compare accepts (a full sha is the one to pass: a
+#                              local ref name means nothing to the API). It must exist ON
+#                              GitHub — an unpushed local commit is a 404, hence UNMEASURED.
+#   --integration BRANCH       REQUIRED. The branch PRs merge into before a release (`dev` in
+#                              a dev→main flow; the release branch itself in a trunk flow,
+#                              where the window is then whatever merged after the release
+#                              head). Clause (b)'s population is its commits the head lacks.
+#                              Neither is defaulted HERE: a guessed branch is an answer about a
+#                              different population. The callers resolve them.
+#   --repo  OWNER/REPO         the repo whose PRs are the population. Defaults to
+#                              $GITHUB_REPOSITORY, then to the `origin` remote of the cwd.
+#   --api   BASE               GitHub API base (default $GITHUB_API_URL, then
+#                              https://api.github.com). Must be https://.
+#
+# Env: GITHUB_TOKEN / GH_TOKEN   the credential for every read (needs `pull-requests: read`
+#                                and `contents: read`). It rides curl's STDIN
+#                                (`-H @-`), never argv, which `/proc/<pid>/cmdline`
+#                                exposes to every user on the box. Absent ⇒ the read is attempted
+#                                unauthenticated and, on a private repo, fails into
+#                                UNMEASURED naming the missing variable.
+#
+# OUTPUT — one TAB-separated line per requested card, on stdout, in the order asked:
+#     <id>  COMPLETE    -
+#     <id>  INCOMPLETE  #990 card-9921-part-3 (open)[; #989 card-9921-merge-order (merged to
+#                       dev, not in the release head)]
+#     <id>  UNMEASURED  <why a population could not be read>
+#   Title-only (uncorroborated) citations go to STDERR as a WARN and never appear above.
+#
+# EXIT CODES
+#   0  every requested card is COMPLETE.
+#   2  refusal / usage: no cards, no repo, no --release-head / --integration, a non-https
+#      api base, missing jq/curl.
+#   5  at least one card is INCOMPLETE (and the measurement itself succeeded).
+#   6  a population could not be MEASURED — every card is UNMEASURED. More severe than 5:
+#      5 is an answer, 6 is the absence of one.
+set -euo pipefail
+
+die() { echo "card-completeness: $*" >&2; exit 2; }
+for c in jq curl; do command -v "$c" >/dev/null || die "$c is required"; done
+
+# The card-token grammar, POSIX ERE — see § CARD-TOKEN GRAMMAR in the header for its owner.
+CARD_RE='\bcard([-#][0-9]+|[0-9]{2,})'
+
+# ids_in <text> — every card id the shared grammar finds in <text>, leading zeros collapsed,
+# one per line. The ONE extraction site, so the two surfaces (branch, title) cannot drift.
+ids_in() {
+  printf '%s\n' "$1" | grep -oiE "$CARD_RE" | grep -oE '[0-9]+' \
+    | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++' || true
+}
+
+# require_value <flag> <value>: die unless a value-taking flag was given a non-empty value, so
+# an unexpanded variable (`--release-head "$SHA"` with SHA unset) is refused by name instead of
+# reading as the flag's absence. The same copy promote-released-cards carries — this file is
+# standalone for the same reason — and tests/mirror-pair-parity-selftest.sh derives every copy
+# from the tree and drives it against the lib's `kb_require_value`.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+
+USAGE="Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH [--api BASE]"
+REPO=""; CARDS_IN=""; API=""; RELEASE_HEAD=""; INTEGRATION=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)         require_value "$1" "${2:-}"; REPO="$2"; shift 2;;
+    --cards)        require_value "$1" "${2:-}"; CARDS_IN="$2"; shift 2;;
+    --api)          require_value "$1" "${2:-}"; API="$2"; shift 2;;
+    --release-head) require_value "$1" "${2:-}"; RELEASE_HEAD="$2"; shift 2;;
+    --integration)  require_value "$1" "${2:-}"; INTEGRATION="$2"; shift 2;;
+    -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+IDS="$(printf '%s' "$CARDS_IN" | grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++' || true)"
+[ -n "$IDS" ] || die "--cards '$CARDS_IN' contains no card ids"
+# Clause (b)'s population is defined by these two, so neither is defaulted: an absent one is a
+# question this tool cannot answer, and answering only clause (a) instead would be exactly the
+# release-cut-window false COMPLETE that clause (b) exists to close.
+[ -n "$RELEASE_HEAD" ] || die "no --release-head — the commit the release is AT is what decides which merged PRs are released. $USAGE"
+[ -n "$INTEGRATION" ]  || die "no --integration — the branch PRs merge into before a release is where unreleased merged work sits. $USAGE"
+
+# REPO resolution, most-authoritative first. A wrong repo here is not a wrong ANSWER, it is an
+# answer about a different population, so it is never guessed silently: the last resort is the
+# cwd's own `origin` remote, and failing that the run refuses.
+[ -n "$REPO" ] || REPO="${GITHUB_REPOSITORY:-}"
+if [ -z "$REPO" ]; then
+  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  # git@host:owner/repo(.git) | https://host/owner/repo(.git) | ssh://git@host/owner/repo
+  case "$origin" in
+    *:*|*/*) REPO="$(printf '%s' "${origin%.git}" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')" ;;
+  esac
+  case "$REPO" in */*) ;; *) REPO="" ;; esac
+fi
+[ -n "$REPO" ] \
+  || die "no repo to read PRs from — pass --repo OWNER/REPO, or set GITHUB_REPOSITORY, or run inside a checkout with an 'origin' remote. Refusing to guess the population a terminal-stage decision rests on."
+
+[ -n "$API" ] || API="${GITHUB_API_URL:-https://api.github.com}"
+# The refusal does not echo the value: an api base can carry `user:pass@` userinfo, and this is
+# the path guaranteed to fire on a misconfigured one (the url-userinfo-render class, card#7500).
+case "$API" in https://*) ;; *) die "--api is not an https:// URL — refusing to send a credential over it";; esac
+API="${API%/}"
+
+TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
+BODY="$TMPD/resp.json"
+
+# api <url> — ONE GitHub GET. Prints the HTTP status; leaves the response body at $BODY.
+# $BODY is CLEARED before the call, because on a TRANSPORT failure curl neither creates nor
+# truncates its `-o` file (measured, curl 8.5.0 / 8.18.0) and the previous call's body would
+# otherwise be reported as this call's — the same property promote-released-cards' `api()`
+# holds. The bearer rides STDIN (`-H @-`), never argv.
+# A tokenless run sends no Authorization header at all rather than an empty one (an empty
+# bearer is a 401 whose message is about the token's VALUE, not about its absence).
+api() {
+  local code
+  : > "$BODY"
+  if [ -n "$TOKEN" ]; then
+    code="$(curl -sS -g --retry 5 --retry-connrefused --retry-max-time 60 \
+              -o "$BODY" -w '%{http_code}' -H @- \
+              -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$1" <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")")" || code='000'
+  else
+    code="$(curl -sS -g --retry 5 --retry-connrefused --retry-max-time 60 \
+              -o "$BODY" -w '%{http_code}' \
+              -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$1" </dev/null)" || code='000'
+  fi
+  printf '%s' "${code:-000}"
+}
+
+# PAGE_CAP — every walk is by explicit `page=N` (never the Link header, so nothing depends on a
+# header a proxy may drop). The cap exists so an API that IGNORES `page=` cannot spin forever;
+# reaching it means the read is TRUNCATED, which is UNMEASURED, never "no PR cites this card".
+PAGE_CAP=20
+# WINDOW_CAP — a COST bound on clause (b), not a convergence claim: each unreleased commit costs
+# one PR lookup, so a window this wide is refused as UNMEASURED rather than walked. A window that
+# wide also means the release head is very likely not a release of this integration branch at
+# all (a wrong --integration, or a release that was squash-merged — CANNOT SEE 5).
+WINDOW_CAP=500
+PRS="$TMPD/prs.tsv"
+UNMEASURED=""
+
+# fetch_pages <label> <url> <array-path> <out> <permission> <404-hint>
+# The ONE page walk. Appends every element of <array-path> (a jq path into each page's body)
+# across all pages to <out>, one compact JSON value per line. On any failure sets UNMEASURED —
+# naming <label>, and for a 403 both causes that answer alike — and returns 1.
+fetch_pages() {
+  # LC_ALL=C: the `*[!0-9]*` test below is a bash bracket RANGE, which is a COLLATION range
+  # under a UTF-8 locale (tests/locale-range-guard-selftest.sh owns the class).
+  local LC_ALL=C label="$1" url="$2" path="$3" out="$4" perm="$5" hint404="$6" page=1 code n sep='?'
+  case "$url" in *\?*) sep='&' ;; esac
+  while :; do
+    code="$(api "$url${sep}per_page=100&page=$page")"
+    case "$code" in
+      200) ;;
+      401) UNMEASURED="$label returned HTTP 401 — the credential is missing or was REJECTED (set GITHUB_TOKEN/GH_TOKEN to a token this repo accepts)"; return 1 ;;
+      # ⛔ TWO CAUSES ANSWER ALIKE HERE, and this used to name only one of them. A missing
+      # PERMISSION is what a first-ever run hits. A RATE LIMIT is what a WIDE window hits:
+      # clause (b) issues one `commits/<sha>/pulls` request PER unreleased commit, up to the
+      # WINDOW_CAP above, GitHub answers a rate limit with 403 OR 429, and `curl --retry` retries
+      # only the set its own man page calls transient — a timeout, an FTP 4xx, or HTTP 408, 429,
+      # 500, 502, 503, 504 (read on curl 8.5.0). So the 429 spelling is retried five times and
+      # lands in the `*)` arm below naming its code, while THE 403 SPELLING IS NOT RETRIED AT ALL
+      # and arrives here on the first one. Asserting "the credential lacks '$perm'" here sends an
+      # operator to grant a permission they already granted (canon #10: a wrong-but-specific
+      # cause is worse than an honest generic one). Both are named, with the discriminator the
+      # operator can actually
+      # apply: $label says WHICH read failed, and a run whose earlier reads succeeded was not
+      # short of a permission. Fail-closed either way, so this costs a mis-diagnosis, never a
+      # wrong write.
+      403) UNMEASURED="$label returned HTTP 403 — EITHER the credential lacks '$perm' (grant $perm to the workflow), OR GitHub is RATE-LIMITING this run: a wide unreleased window costs one request per commit and a secondary rate limit also answers 403, which curl does not retry. If earlier reads in this run succeeded, suspect the rate limit and re-run later; if this was the first read, suspect the permission"; return 1 ;;
+      404) UNMEASURED="$label returned HTTP 404 — $hint404"; return 1 ;;
+      000) UNMEASURED="$label never reached the GitHub API (transport failure)"; return 1 ;;
+      *)   UNMEASURED="$label returned HTTP $code"; return 1 ;;
+    esac
+    n="$(jq -r "$path | if type == \"array\" then length else \"x\" end" < "$BODY" 2>/dev/null || echo '')"
+    # The digit test is a bash bracket RANGE, scoped by this function's `local LC_ALL=C` above.
+    case "$n" in
+      ''|*[!0-9]*) UNMEASURED="$label page $page returned a body with no JSON array where one was expected"; return 1 ;;
+    esac
+    jq -c "${path}[]" < "$BODY" >> "$out" 2>/dev/null \
+      || { UNMEASURED="$label page $page could not be parsed"; return 1; }
+    [ "$n" -lt 100 ] && return 0
+    page=$((page + 1))
+    if [ "$page" -gt "$PAGE_CAP" ]; then
+      UNMEASURED="$label exceeded the ${PAGE_CAP}-page cap — the read is TRUNCATED, so a PR could sit past the cut"
+      return 1
+    fi
+  done
+}
+
+# pr_rows <state-label> — PR objects (one per line, stdin) → rows on $PRS, fields separated by
+# US (0x1F):   number  head-ref  title  state-label
+# US, NOT TAB: TAB is an IFS-WHITESPACE character, so `read` collapses a run of them and an
+# EMPTY field (a blank title) would shift every field after it one slot left — a parse error
+# that looks like a clean answer. A non-whitespace separator keeps empty fields empty. The
+# separator itself, and line breaks, are squeezed out of every field at the ONE place a row is
+# produced, for the same reason.
+pr_rows() {
+  jq -r --arg st "$1" '[ (.number|tostring), (.head.ref // ""), (.title // ""), $st ]
+                       | map(gsub("[\u001f\r\n]"; " ")) | join("\u001f")' >> "$PRS"
+}
+
+# Clause (a): the OPEN PRs.
+load_open_prs() {
+  local raw="$TMPD/open.jsonl"
+  : > "$raw"
+  fetch_pages "the open-PR read of $REPO" "$API/repos/$REPO/pulls?state=open" '.' "$raw" \
+    'pull-requests: read' 'wrong repo slug, or the credential cannot see it' || return 1
+  pr_rows open < "$raw"
+}
+
+# Clause (b): PRs MERGED by a commit the integration branch has and the release head lacks.
+# The commit set is GitHub's compare of the two (`<head>...<integration>` lists the commits on
+# the integration side only — `ahead_by` of them), and each commit's PR is the one whose
+# `merge_commit_sha` IS that commit. Filtering on that equality is load-bearing, not tidiness:
+# `commits/<sha>/pulls` ALSO returns every OPEN PR whose branch merely CONTAINS the commit
+# (measured on the framework repo: one commit's lookup returned its merging PR among a list of
+# open PRs based on top of it), and reading those as "merged by this commit" would block a card
+# on any open PR that happens to be based on its work.
+load_unreleased_prs() {
+  local LC_ALL=C cmp="$TMPD/window.jsonl" ahead got sha raw="$TMPD/commit-prs.jsonl" hits
+  local lab="the compare of release head $RELEASE_HEAD against integration branch $INTEGRATION on $REPO"
+  : > "$cmp"
+  fetch_pages "$lab" "$API/repos/$REPO/compare/$RELEASE_HEAD...$INTEGRATION" '.commits' "$cmp" \
+    'contents: read' "the release head or the integration branch is unknown to GitHub (an unpushed local commit, or a wrong --integration)" \
+    || return 1
+  ahead="$(jq -r '.ahead_by // empty' < "$BODY" 2>/dev/null || true)"
+  # Bracket RANGE again, under this function's `local LC_ALL=C`.
+  case "$ahead" in ''|*[!0-9]*) UNMEASURED="$lab returned no numeric ahead_by, so its commit list cannot be checked for completeness"; return 1 ;; esac
+  got="$(grep -c . "$cmp" || true)"
+  # The compare's own count is the control on its list: a list shorter than `ahead_by` is a
+  # truncated window, and a PR merged in the missing part would read as released.
+  if [ "$got" != "$ahead" ]; then
+    UNMEASURED="$lab listed $got commit(s) but reports ahead_by=$ahead — the window read is TRUNCATED"
+    return 1
+  fi
+  if [ "$ahead" -gt "$WINDOW_CAP" ]; then
+    UNMEASURED="$lab has $ahead unreleased commit(s), over the ${WINDOW_CAP}-commit cap — is --integration the branch this release was cut from, and was the release MERGED (not squashed) into its release branch?"
+    return 1
+  fi
+  jq -r '.sha // empty' < "$cmp" > "$TMPD/window.shas"
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    : > "$raw"
+    fetch_pages "the PR lookup of unreleased commit $sha on $REPO" "$API/repos/$REPO/commits/$sha/pulls" '.' "$raw" \
+      'pull-requests: read' "the commit is unknown to GitHub" || return 1
+    hits="$(jq -c --arg sha "$sha" 'select(.merged_at != null and .merge_commit_sha == $sha)' < "$raw")"
+    [ -n "$hits" ] && printf '%s\n' "$hits" | pr_rows "merged to $INTEGRATION, not in the release head"
+  done < "$TMPD/window.shas"
+  return 0
+}
+
+: > "$PRS"
+if ! { load_open_prs && load_unreleased_prs; }; then
+  for id in $IDS; do printf '%s\tUNMEASURED\t%s\n' "$id" "$UNMEASURED"; done
+  echo "card-completeness: UNMEASURED — $UNMEASURED. Every card is reported UNMEASURED; nothing here says a card is complete." >&2
+  exit 6
+fi
+
+# ── the verdicts ─────────────────────────────────────────────────────────────────────────
+incomplete=0
+for id in $IDS; do
+  blocking=""; uncorroborated=""
+  while IFS="$(printf '\037')" read -r num head title state; do
+    [ -n "$num" ] || continue
+    hit=0
+    for n in $(ids_in "$head"); do
+      [ "$n" = "$id" ] && hit=1
+    done
+    if [ "$hit" = 1 ]; then
+      blocking="$blocking${blocking:+; }#$num ${head:-<no head ref>} ($state)"
+      continue
+    fi
+    # TITLE-ONLY: the author declared the correlation on the surface the grammar reads second.
+    # Reported, never blocking — see § WHY THE BRANCH, AND ONLY THE BRANCH.
+    for n in $(ids_in "$title"); do
+      [ "$n" = "$id" ] && uncorroborated="$uncorroborated${uncorroborated:+; }#$num"
+    done
+  done < "$PRS"
+  if [ -n "$uncorroborated" ]; then
+    echo "card-completeness: WARNING — PR(s) $uncorroborated name card#$id in the TITLE but NOT on the head branch. The branch is the authoritative correlation surface, so this citation is UNCORROBORATED and does NOT block card#$id. If that PR really carries this card's work, rename its branch to carry card-$id." >&2
+  fi
+  if [ -n "$blocking" ]; then
+    printf '%s\tINCOMPLETE\t%s\n' "$id" "$blocking"
+    incomplete=$((incomplete + 1))
+  else
+    printf '%s\tCOMPLETE\t-\n' "$id"
+  fi
+done
+
+[ "$incomplete" -gt 0 ] && exit 5
+exit 0

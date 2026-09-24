@@ -189,8 +189,12 @@
 #          ⛔ A GATE THAT MUST CATCH THAT ONE READS THE `<n> failed.` TAIL OF THE SUMMARY LINE,
 #          NOT THE RC.
 #   2  bad invocation, or a refusal this tool `die`s on before/instead of promoting — including
-#      the completeness die: 0 cards newly promoted behind a NON-MERGE release tip, where a
-#      squash/rebase merge may have dropped the per-PR refs. Both read-back clauses above are
+#      the REF-COMPLETENESS die: 0 cards newly promoted behind a NON-MERGE release tip, where a
+#      squash/rebase merge may have dropped the per-PR refs. ⛔ THAT DIE IS NOT THE
+#      `--require-complete` GATE, which is rung 5: this one asks whether the REFS this run reads
+#      arrived intact, that one asks whether a matched card's WORK is finished. They were both
+#      called "the completeness die" while they lived on separate branches; they are different
+#      questions at different exit codes and only the ref one is here. Both read-back clauses above are
 #      decided BEFORE that die, because on their runs the refs demonstrably arrived, matched
 #      cards and were PATCHed — sending the operator after dropped refs would be the wrong
 #      question at an rc that means bad invocation.
@@ -200,6 +204,24 @@
 #      all is an incomplete record, and rc 0 would be this tool saying otherwise.
 #      ⚠ A RED PROMOTE STEP IS NOT ALWAYS A FAILED ONE. Re-running is safe — a card already at
 #      the target stage is skipped as already-released.
+#   5  at least one matched card was REFUSED by the `--require-complete` completeness gate
+#      (card#10176) — ONLY REACHABLE UNDER THAT FLAG, so no run that was possible before it can
+#      reach this code. The card stayed in its shipped stage; nothing was written for it. TWO
+#      VERDICT FAMILIES LAND HERE AND THE LINE SAYS WHICH: `INCOMPLETE` — a PR this release does
+#      not contain still carries the card's work; and `UNMEASURED` — the oracle could not answer
+#      (absent, not executable, refused to run, or silent for that card). They share an rc
+#      deliberately: "no unreleased PR names this card" and "the PRs could not be read" are the
+#      same silence, and only one of them licenses a terminal move, so the tool refuses on both
+#      rather than guessing which it has. The number is `card-completeness`'s own rc 5, adopted
+#      so the oracle and its caller do not disagree about what 5 means.
+#      ⚠ IT IS LAST ON THE LADDER, BELOW 1, 2 AND 3, and that ranking is the point: those three
+#      mean "this run is DEGRADED", 5 means "this run did the right thing and a human must land,
+#      close or release something". A run carrying both reports the degradation, because 5 would
+#      hide it. The remedy is on the gate's own FAILED line, which names the cards.
+#      ⛔ 5 IS THE GATE FIRING, NOT THE GATE WORKING. Its absence proves nothing: a gate handed
+#      the wrong release head / integration branch pair refuses nothing and exits 0,
+#      indistinguishable from a clean release. Read `completeness-gate ON (…)` on stderr — it
+#      names the pair it measured — before reading a 0 here as "every card is complete".
 #   ⛔ 1 OUTRANKS 3 where one run carries both: 3 says NOBODY KNOWS, 1 is a MEASUREMENT that the
 #   write did not take, and a run that has measured one does not hedge. Both run-level lines are
 #   printed before the exit, so the cards to go and re-read are still named either way.
@@ -218,7 +240,7 @@
 #   exactly where the assumption enters: it rules on the server's own write ECHO, inside the same
 #   request, so it needs no second read to be consistent with the first.
 #
-# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--dry-run] [--config PATH]
+# Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--require-complete] [--completeness PATH] [--dry-run] [--config PATH]
 #
 # --source "owner/repo" | "*": override `.promote.source` for this run (see REPO QUALIFICATION
 #   above). One of the two — the config key or this flag — MUST be present, or the run refuses
@@ -245,6 +267,39 @@
 #   behavior — consumers opt in. ABSENT is the only way to select that default: an
 #   explicitly EMPTY value (`--shipped-stages ""`) is a config error and dies, like any
 #   other malformed set — it never silently degrades to the unguarded default.
+#
+# --require-complete: the COMPLETENESS GATE (toolkit card#10176; built as framework card#9869).
+#   A matched card is REFUSED, not promoted, while the head branch of a PR this release does
+#   not contain still names it — a PR still OPEN, or one MERGED to the integration branch
+#   (`.release-pr.json` `.dev_branch`, default `dev`) by a commit the release head lacks — and
+#   refused just the same when those PRs cannot be READ at all. Absent (default) = no gate,
+#   byte-identical prior behavior — consumers opt in, exactly as they do for --shipped-stages.
+#
+#   WHY, AND WHY --shipped-stages DOES NOT COVER IT. A card's `pr_number` holds ONE PR, so a
+#   card whose work spans several reaches its shipped stage on whichever part merged first, and
+#   this mover then selects it by the ref that shipped and moves it to the TERMINAL released
+#   stage — the one nobody re-reads — while its other parts are still open or unreleased. The
+#   stage guard cannot help: it refuses cards OUTSIDE the shipped set, and such a card is
+#   legitimately inside it.
+#
+#   THE PREDICATE IS NOT DEFINED HERE. It lives in ONE program, `card-completeness`, vendored
+#   beside this one, together with every alternative it rejects and everything it cannot see
+#   (read its header before relying on the gate — a DL-only branch, for one, is invisible to
+#   it). It reads GitHub, so it needs $GITHUB_TOKEN (or $GH_TOKEN) with `pull-requests: read`
+#   and `contents: read`; this script reads neither variable itself. A refused card exits at the
+#   completeness rung of EXIT CODES above — which states what that rc is and what it is
+#   conditional on, and is not restated here — and a refusal is printed per card, naming the PRs.
+#
+#   ⚠ READ THE GATE'S STATE LINE BEFORE TRUSTING `0 completeness-refused`. It names the RELEASE
+#   HEAD and the INTEGRATION BRANCH the gate measured, and the channel each came from, because
+#   those two values ARE the population: a gate asked about the wrong pair — no `--head` in a
+#   checkout that is not the release, or a `.dev_branch` edited in the PR under review — finds
+#   nothing to refuse and exits 0, which is indistinguishable from a clean release anywhere else
+#   in the output.
+#
+# --completeness PATH: where that oracle is. Default: `card-completeness` beside this script.
+#   Only consulted under --require-complete. An oracle that is absent or not executable is an
+#   UNANSWERED QUESTION, never an absent problem: every matched card is refused and says so.
 #
 # ENVIRONMENT (all three are read at run time; none has a baked default):
 #
@@ -475,16 +530,21 @@ require_resolvable() { # <flag> <ref>
     || die "$1 '$2' does not resolve to a commit in this repo — a range built from it walks NOTHING, which this tool would report as 'no shipped refs in range — nothing to do' at rc 0: a promotion that promoted nothing and called it success. Check the spelling, or fetch the ref before passing it"
 }
 
-CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; DRY=0; SHIPPED_STAGES=""
-SOURCE_IN=""
+CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; HEAD_SRC=""; DRY=0; SHIPPED_STAGES=""
+SOURCE_IN=""; REQUIRE_COMPLETE=0; COMPLETENESS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
     --cards)          require_value "$1" "${2:-}"; CARDS_IN="$2"; shift 2;;
     --base)           require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
-    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
+    # HEAD_SRC records the CHANNEL, not the value, and is read only by the completeness gate's
+    # state line: HEAD_REF is defaulted to `HEAD` further down, after which nothing can tell a
+    # caller-supplied `--head HEAD` from a run that passed no --head at all.
+    --head)           require_value "$1" "${2:-}"; HEAD_REF="$2"; HEAD_SRC="--head"; shift 2;;
     --source)         require_value "$1" "${2:-}"; SOURCE_IN="$2"; shift 2;;
     --shipped-stages) require_value "$1" "${2:-}"; SHIPPED_STAGES="$2"; shift 2;;
+    --require-complete) REQUIRE_COMPLETE=1; shift;;
+    --completeness)   require_value "$1" "${2:-}"; COMPLETENESS="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
     --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     # Print the contiguous leading comment block, whatever its length. A FIXED line range
@@ -1556,8 +1616,71 @@ owner_clear() {
   return 0
 }
 
+# --- the COMPLETENESS GATE (opt-in: --require-complete) ----------------------
+# ONE consultation for the whole matched set, BEFORE any write, so the gate's own failure cannot
+# leave a half-promoted release: every card gets a verdict or none does, and "none" is
+# UNMEASURED, which refuses. ⛔ NO PREDICATE LIVES HERE — `card-completeness` owns what
+# "complete" means; this block owns only what to do with its answer.
+COMPLETE_VERDICTS=""; gate_head=""; gate_head_src=""; gate_integration=""; gate_integration_src=""
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  # A sibling of THIS file, resolved from the script's own path rather than $PWD: it is vendored
+  # into a consumer's bin/ and run from the repo root.
+  [ -n "$COMPLETENESS" ] || COMPLETENESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/card-completeness"
+  # ⛔ RESOLVED HERE, ABOVE EVERY BRANCH, BECAUSE THE STATE LINE AT THE END REPORTS THEM AND A
+  # RUN THAT ASKED NOTHING STILL HAS TO SAY WHAT IT WOULD HAVE ASKED ABOUT. These two values —
+  # not the oracle's path — are what DEFINES the population the gate measured, and each resolves
+  # from two channels that nothing else in the output tells apart:
+  #   * the release head. The verdict is ABOUT a commit, as a full sha, because the oracle asks
+  #     GitHub and a local ref name means nothing there; an unresolvable head reaches it EMPTY
+  #     and it refuses by name. With no --head that commit is WHATEVER THE CWD IS CHECKED OUT AT
+  #     — run from an integration-branch checkout the window is `<dev>...<dev>`, i.e. empty, and
+  #     clause (b) has nothing to find while the run reports `0 completeness-refused` at rc 0.
+  #   * the integration branch, `.dev_branch`, defaulted exactly as release-pr-body defaults the
+  #     same key so one key has one reading. That key lives in a PR-EDITABLE file and is NOT one
+  #     of the correlation keys `bin/release-artifacts-check` guards, so a PR setting it to the
+  #     release branch makes clause (b)'s window permanently empty — again at rc 0.
+  # Neither failure has a symptom. Printing the pair WITH ITS CHANNEL is what makes the gate's
+  # population falsifiable from the log, which is the rule `docs/INSTALL.md` §4 already states
+  # for this tool's other two-source resolution (the base) and which this gate was missing.
+  gate_head="$(git rev-parse --verify --quiet "${HEAD_REF:-HEAD}^{commit}" 2>/dev/null || true)"
+  # ⚠ NO APOSTROPHE IN THIS DEFAULT. A `'` inside `${x:-…}` opens a single quote even within the
+  # surrounding double quotes, and bash then reports the unterminated string as a syntax error
+  # 40 lines further down — measured here, on the first spelling of this line.
+  gate_head_src="${HEAD_SRC:-the working tree HEAD (no --head passed)}"
+  gate_integration="$(cfg '.dev_branch')"
+  if [ -n "$gate_integration" ]; then gate_integration_src="$CONFIG .dev_branch"
+  else                                gate_integration="dev"; gate_integration_src="the built-in default"; fi
+  gate_ids="$(printf '%s' "$PLAN" | jq -r '[.[].id] | join(",")')"
+  if [ -z "$gate_ids" ]; then
+    :   # nothing matched, so there is nothing to ask about
+  elif [ ! -x "$COMPLETENESS" ]; then
+    # NOT a fallback to "no gate": an unanswered question does not write a terminal stage.
+    COMPLETE_VERDICTS="$(printf '%s' "$PLAN" | jq -r --arg p "$COMPLETENESS" \
+      '.[].id | "\(.)\tUNMEASURED\tthe completeness oracle is not executable at \($p) (pass --completeness PATH, or drop --require-complete to promote without it)"')"
+  else
+    gate_rc=0
+    COMPLETE_VERDICTS="$("$COMPLETENESS" --release-head "$gate_head" --integration "$gate_integration" --cards "$gate_ids")" || gate_rc=$?
+    # 0 all complete, 5 at least one incomplete, 6 unmeasured — each carries one verdict line per
+    # card. Anything else is the oracle REFUSING to run (its reason is on stderr, with no
+    # verdicts), so every card is synthesised UNMEASURED rather than left to read as "no answer".
+    case "$gate_rc" in
+      0|5|6) ;;
+      *) COMPLETE_VERDICTS="$(printf '%s' "$PLAN" | jq -r --arg p "$COMPLETENESS" --arg rc "$gate_rc" \
+           '.[].id | "\(.)\tUNMEASURED\tthe completeness oracle (\($p)) refused to run, exit \($rc) — its reason is on stderr above"')" ;;
+    esac
+  fi
+fi
+
+# complete_verdict <card-id> — "<verdict>\t<detail>". An id with NO line is UNMEASURED: a missing
+# answer and a clean answer must never read the same.
+complete_verdict() {
+  printf '%s\n' "$COMPLETE_VERDICTS" | awk -F'\t' -v id="$1" '
+    $1 == id { print $2 "\t" $3; found = 1; exit }
+    END { if (!found) print "UNMEASURED\tthe completeness oracle returned no verdict for this card" }'
+}
+
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0
+moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0; incomplete=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
@@ -1572,6 +1695,21 @@ while IFS= read -r row; do
   if [ -n "$SHIPPED_STAGES" ] && ! in_shipped_stage "$cur"; then
     echo "  ⊘ $ref (#$id): current stage $cur not in a Shipped-class source stage — skipped; promotion never resurrects declined/backlog cards" >&2
     guarded=$((guarded + 1)); continue
+  fi
+  # COMPLETENESS GATE (opt-in). AFTER the already-released and source-stage checks, so an
+  # idempotent re-run and a stage-guarded card still read as what they are; BEFORE the dry-run
+  # branch, so a preview shows the refusal the real run would make.
+  if [ "$REQUIRE_COMPLETE" = 1 ]; then
+    IFS=$'\t' read -r verdict detail < <(complete_verdict "$id")
+    case "$verdict" in
+      COMPLETE) ;;
+      INCOMPLETE)
+        echo "  ⊘ $ref (#$id): INCOMPLETE — PR(s) this release does not contain still carry this card's work: $detail. REFUSED: promoting it would make a partial implementation's stage terminal." >&2
+        incomplete=$((incomplete + 1)); continue ;;
+      *)
+        echo "  ⊘ $ref (#$id): completeness UNMEASURED — $detail. REFUSED: 'no unreleased PR names this card' and 'the PRs could not be read' are the same silence, and only one of them licenses a terminal stage." >&2
+        incomplete=$((incomplete + 1)); continue ;;
+    esac
   fi
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
@@ -1669,10 +1807,26 @@ fi
 # A plain `if`, never `[ … ] && X=…`: under `set -e` that form EXITS the script on the false
 # branch (and it is the same trailing-test spelling card#5874 records leaking a false status out
 # of a sibling release bin).
+#
+# ⚠ `completeness-refused` RIDES BY A DIFFERENT RULE, and the paragraph above is not true of it:
+# it is gated on the FLAG, not on its count, so `--require-complete` prints `0 completeness-
+# refused` and that zero is deliberate (a gate asked about the wrong release head refuses
+# nothing — the header's `--require-complete` § says to read the gate's state line before
+# trusting it). Byte-identity is preserved by the same argument nonetheless, because the flag is
+# opt-in: with `--require-complete` absent the segment is absent, so every run that was possible
+# before card#10176 keeps the line it had. The two rules coexist on one line rather than being
+# unified, because they answer different questions — "did this run grow a new outcome?" for the
+# read-back counts, "was this run gated at all?" for the completeness one.
+#
+# SEGMENT ORDER is by WHEN a card leaves the promotion path, not by which card added the term:
+# the pre-write refusals (`stage-guarded`, `completeness-refused`, `other-repo`/`unsourced`,
+# `no-card`) come first in the order the move loop applies them, then the post-write outcomes
+# (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits immediately after
+# `stage-guarded` because that is where its `continue` is in the loop.
 unv_txt=""; na_txt=""
 if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -1698,6 +1852,14 @@ if [ -n "$QUALIFY_SRC" ]; then
   echo "promote-released-cards: repo-qualification ON (source '$QUALIFY_SRC', from $SOURCE_SRC) — a ref-matched card belonging to another repo, or to no derivable repo, was NOT promoted." >&2
 else
   echo "promote-released-cards: repo-qualification OFF — source '*' (from $SOURCE_SRC) DECLARES this board tracks exactly one repo, so a bare dl_number/pr_number is unambiguous on it. If it tracks several, set .promote.source to '<owner>/<repo>': those counters are repo-scoped and an unqualified match promotes another repo's cards." >&2
+fi
+# The completeness gate's state, only when it is ON: an OFF line would change the stderr of every
+# run that never asked for the gate, and absent is byte-identical by the flag's own contract.
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  echo "promote-released-cards: completeness-gate ON (oracle $COMPLETENESS; release head ${gate_head:-<UNRESOLVED>} from $gate_head_src; integration branch $gate_integration from $gate_integration_src) — a matched card that a PR outside this release still names, or whose PRs could not be read, was NOT promoted. THOSE TWO VALUES ARE THE POPULATION: the gate looked for PRs merged into that branch and absent from that commit, so a wrong pair reports 0 refusals over a window that was never the release's." >&2
+  if [ "$incomplete" -gt 0 ]; then
+    echo "promote-released-cards: FAILED — $incomplete card(s) were REFUSED by the completeness gate (named individually above). Land or close the open PR, or release the merged one, and re-run — or, having checked, promote the card by hand." >&2
+  fi
 fi
 # --- the run-level lines for the two READ-BACK outcomes, printed BEFORE any exit -------------
 # ⛔ BOTH, WHATEVER THE RC. A run can carry a measured-wrong card AND an unreadable one, and the
@@ -1822,4 +1984,10 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 if [ "$moved" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi
+# A COMPLETENESS REFUSAL IS LAST ON THE LADDER, and non-zero rather than a warning: a card left
+# in its shipped stage is recoverable on the next release, a card wrongly in the terminal stage
+# is one nobody re-reads. It ranks BELOW EVERY cause above on purpose — those mean "this run
+# is degraded", this one means "this run did the right thing and a human must finish or close
+# something" — so it never masks them. Only reachable under --require-complete.
+if [ "$incomplete" -gt 0 ]; then exit 5; fi
 exit 0
