@@ -1795,7 +1795,17 @@ _kbc_assign_guard() {
 # not one of its answers. A lib too old to have the check at all never reaches here:
 # _kbc_ref_pair_preflight refuses that, offline, on every patch.
 #
-# THE DEFECT IT CLOSES. The payload PATCH merges per key, so a call that writes one half of a
+# by-ref-source-rule: HOME — THE DEFECT IT CLOSES. This paragraph is kbcard's full statement of
+# the derivation, and the pointers elsewhere in this file cite it rather than restate it. No count
+# of them is kept here, and deliberately no grep either: the obvious one is line-scoped, and some of
+# those pointers wrap `_kbc_ref_pair_guard's` across a line break, so a published command would
+# under-report — which is the exact failure card#9957 exists to end, and a wrong derivation is
+# worse than none. It is a copy rather than a pointer for the reason
+# KB_JQ_REPO_FROM_GH_URL's header gives for its own: this bin is vendored standalone,
+# beside neither docs/ nor promote-released-cards, so it can read neither. What makes it a pinned
+# copy rather than an unpinned one is tests/by-ref-source-claim-selftest.sh, which holds the field
+# order below against the shipped `derive_source`.
+# The payload PATCH merges per key, so a call that writes one half of a
 # number/URL pair leaves the stored other half untouched. The board derives a card's by-ref
 # `source` (owner/repo) from a URL (a payload.repo that is a string containing `/` outranks every
 # URL; else the first of pr_url, issue_url, html_url, external_link yielding a repo) and never from
