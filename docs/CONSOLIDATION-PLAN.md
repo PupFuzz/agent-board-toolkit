@@ -2022,7 +2022,14 @@ finding with no owner is abandoned, not filed.
   (`sourceFor` / `repoFromGitHubUrl` / `canonicalizeSource`) in jq, alongside the server PHP, the
   bridge PHP and `kanban_common._derive_card_source`; its `repo_from_gh_url` def is carried once more,
   verbatim, by the lib as `KB_JQ_REPO_FROM_GH_URL` for the `kbcard patch` / `adopt-to-dl` pair check
-  (card#9846), held line for line to promote's by `tests/mirror-pair-parity-selftest.sh` § 5. The
+  (card#9846), held line for line to promote's by `tests/mirror-pair-parity-selftest.sh` § 5.
+  <!-- by-ref-source-rule: POINTER --> ⚠ **`repo_from_gh_url` is only the URL half.** What a
+  card's by-ref `source` actually is, is decided first by `payload.repo` when it is a string
+  containing `/`, which outranks every URL; `docs/INSTALL.md` §4 states the whole derivation, and
+  `tests/by-ref-source-claim-selftest.sh` holds every declared statement of it against the shipped
+  `derive_source`. That guard is the answer to a related consolidation this plan does NOT carry:
+  the PROSE copies of the rule were four times swept by phrase grep and four times under-reported
+  (card#9957). The
   obvious consolidation is to stop mirroring and let the server answer: `GET /boards/{b}/tasks/by-ref.json?system=dl&ref=N&source=
   <repo>` already applies the qualification server-side, and `bin/adopt-to-dl` step-5-verifies
   with exactly that query. **Read live, it cannot produce this tool's report.** Its filter is
@@ -2044,6 +2051,26 @@ finding with no owner is abandoned, not filed.
   opt-in `external_references` include — the second alone would remove the mirror, because the
   derivation would no longer need re-expressing to read a value the board already handed over.
   The copy is bound BEHAVIOURALLY meanwhile, by `tests/promote-source-qualify-selftest.sh` § 5.
+- **The same source-derivation rule, restated in PROSE across the tree** (card#9918, card#9957) —
+  **SHIPPED, on the fifth attempt at closing the class.** Distinct from the bullet above: that one
+  is about the rule expressed in four RUNTIMES, this one about it stated in comments, help and
+  docs. Four sweeps ran under card#9918, each a phrase grep, each missing sites the next one found;
+  the fourth was written into `docs/CHANGELOG.md` **as if it were the population** and
+  under-reported, which is the same shape as the lib-list class above — an instrument answering
+  about its own spelling rather than about the repo, published as an answer about the repo.
+  **Two answers ship together, and the split is the ruling:** every site that is not RENDERED to an
+  operator became a pointer carrying the condition (`README.md` twice, this document's bullet
+  above, the comments in `tests/kbcard-selftest.sh`), because a pointer cannot drift; the sites a
+  program PRINTS stayed copies, because a pointer cannot reach a reader looking at a log line, and
+  they are held to `derive_source` instead. `tests/by-ref-source-claim-selftest.sh` is what holds
+  both: it reports any PASSAGE — never a line, which is how the third sweep lost a claim spanning a
+  line break — that names a URL or link, a card, and an attribution, and requires it to name
+  `payload.repo`; a second arm admits bare `source` where the passage also names a derivation
+  field, which is what tells this meaning of that overloaded word from the other three; and it compares the field ORDER of every self-declared full statement against the
+  order extracted from the shipped def on every run, in both directions, so a home cannot be
+  silently deleted either. **The trigger keys on the claim's nouns and never on its verb**, which
+  is the one property all four phrase greps lacked. ⛔ **No count of sites lives here** — run the
+  check; a figure in a document is exactly what the fourth sweep got wrong.
 - **The single-card read and its "was anything actually read?" refusal — SEVEN spellings in
   `bin/kbcard`, and they do not agree on what a card IS** (raised as **m7** and again as **m11** in the review of
   card#8545, the `unlink` verb, and reported-not-minted on that card's instruction; the finding
