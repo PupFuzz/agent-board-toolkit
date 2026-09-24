@@ -1514,9 +1514,13 @@ finding with no owner is abandoned, not filed.
     rather than anything the server sent. The response risk sits upstream, in that one filter over
     `$cards_json`, and the `fetch_board_cards` call already guards it on rc.
   - `kb_by_ref_hit` (`bin/_kb-board-lib.sh`) — its input genuinely *is* a raw response body, but the
-    `jq -e … >/dev/null 2>&1` **is the predicate**: its status is the function's return value,
-    consumed as a boolean, message suppressed, and any jq fault reads as a non-hit (fail-closed).
-    There is no status to leak into `set -e` and no value to misread.
+    `jq … 2>/dev/null` **is the classifier**: its only output is one of three tokens, read by a
+    `case` that maps anything else — a parse fault, an empty input, an unrunnable jq — to the
+    function's UNREADABLE rc. There is no status to leak into `set -e` and no value to misread.
+    ⚠ This row used to end *"any jq fault reads as a non-hit (fail-closed)"*: that disposition is
+    no longer the primitive's to make, and it is not the same claim as containment. `fail-closed`
+    is now each call site's, which is what card#10241 corrected — the two callers where a non-hit
+    is the PASS condition were fail-OPEN under a primitive that ruled for them.
   - `_kbc_field_enumerate` (`bin/kbcard`) — reads `$fields`, which comes only from
     `_kbc_fetch_fields`, and that read now refuses a body no custom-field set can be read out of.
     Stronger than that: it is reached only from `_kbc_field_set_options`' "field not defined" arm,
@@ -1601,7 +1605,7 @@ finding with no owner is abandoned, not filed.
   `fetch_board_cards` / `fetch_whole_board` are the named producers the predicate already sees;
   `_kbc_patch_tags` and `_bs_window_rows` emit a `jq -n`-BUILT value (`L`); `_kbc_archive_decision`
   emits the python shim's tab-separated verdict, read by `IFS=$'\t' read`, never by jq;
-  `resolve_task` emits a `kb_is_uint`-validated scalar; `by_ref_has` is a boolean-by-rc predicate;
+  `resolve_task` emits a `kb_is_uint`-validated scalar; `by_ref_state` reports its by-ref read's three outcomes by rc and prints nothing;
   `_bcs_patch` and `delete_throwaway` are writers that discard the body; `adopt-to-dl`'s `main`,
   `board_report` and `_bs_one_board` are top-level. The two functions pass 2 expected to be out
   ARE out, for the reason it gave: `_kbc_swimlane_map` and `_kbc_board_repo` read local env/config

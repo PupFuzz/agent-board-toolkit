@@ -1541,18 +1541,53 @@ expect_out "no digits -> empty"         ""      kb_dl_int_lenient "DL-"
 expect_out "all-zeros -> 0"             "0"     kb_dl_int_lenient "DL-0000"
 expect_out "multi-run strips all"       "20042" kb_dl_int_lenient "v2-DL-0042"
 
-echo "== kb_by_ref_hit — object-or-array tolerant by-ref predicate =="
+echo "== kb_by_ref_hit — a by-ref read has THREE outcomes: hit / absent / UNREADABLE =="
+# ⛔ THE THIRD RC IS THE SUBJECT OF THIS BLOCK (card#10241). The predicate used to answer every
+# body it could not read with a plain non-hit, and its own header ruled that disposition for
+# every caller — "any jq/parse error is a non-hit (fail-closed)". That ruling was FALSE at the
+# two dispositions in bin/dl-a1-register-field where a non-hit is the PASS condition ("after
+# clear … empty", "zero residue"), so a 2xx from an SSO gateway printed a clean bill of health
+# at exit 0. The distinction is now carried by the rc, and asserting the TRUTHINESS alone (what
+# the previous cut of the malformed-JSON row did) cannot see it: `absent` and `unreadable` are
+# both falsy, which is exactly the collapse.
+eq "the unreadable rc is PINNED, and is neither answer" "5" "$KB_RC_BYREF_UNREADABLE"
+
+# — READ, and it says so. These are the control for every unreadable row below: without them a
+# predicate that answered UNREADABLE to everything would pass the whole block.
 expect_rc "envelope: card present -> hit"        0 kb_by_ref_hit '{"data":[{"id":4020}]}'          4020
 expect_rc "envelope: present among many"         0 kb_by_ref_hit '{"data":[{"id":4020},{"id":5}]}' 4020
-expect_rc "envelope: different card -> miss"     1 kb_by_ref_hit '{"data":[{"id":99}]}'            4020
-expect_rc "envelope: empty data -> miss"         1 kb_by_ref_hit '{"data":[]}'                     4020
+expect_rc "envelope: different card -> ABSENT"   1 kb_by_ref_hit '{"data":[{"id":99}]}'            4020
+expect_rc "envelope: empty data -> ABSENT"       1 kb_by_ref_hit '{"data":[]}'                     4020
 expect_rc "bare array: present -> hit"           0 kb_by_ref_hit '[{"id":4020}]'                   4020
-expect_rc "bare array: different -> miss"        1 kb_by_ref_hit '[{"id":99}]'                     4020
-expect_rc "bare empty array -> miss"             1 kb_by_ref_hit '[]'                              4020
-expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'                              4020
-# Malformed JSON: jq's own parse-error exit code passes through (not necessarily 1); the
-# contract every caller relies on is "falsy = no hit", so assert the truthiness, not the code.
-if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
+expect_rc "bare array: different -> ABSENT"      1 kb_by_ref_hit '[{"id":99}]'                     4020
+expect_rc "bare empty array -> ABSENT"           1 kb_by_ref_hit '[]'                              4020
+
+# — NOT READ. Every shape a 2xx can carry that is not a by-ref result, each named by its
+# producer, because they do NOT all take one path inside the predicate and a single fixture
+# would certify the others by association:
+#   * the first three never reach a verdict at all — jq faults or produces no output;
+#   * ⭐ the next five PARSE PERFECTLY. `jq -e`'s own status cannot see them: measured on jq 1.7
+#     through the pre-change expression, `{"message":…}` — the API's (or a gateway's) JSON error
+#     envelope — scored rc 1, byte-identical to the genuinely-empty `{"data":[]}` row above. So
+#     the ENVELOPE is the tell, not jq's exit code: `.data` present AND an array, the same
+#     separator fetch_board_cards measured against the live API.
+U="$KB_RC_BYREF_UNREADABLE"
+expect_rc "a gateway's HTML at 200 -> UNREADABLE"    "$U" kb_by_ref_hit '<html><body>502 Bad Gateway</body></html>' 4020
+expect_rc "a TRUNCATED body -> UNREADABLE"           "$U" kb_by_ref_hit '{"data":[{"id":40'                          4020
+expect_rc "an EMPTY body -> UNREADABLE"              "$U" kb_by_ref_hit ''                                           4020
+expect_rc "⭐ a JSON ERROR envelope -> UNREADABLE"    "$U" kb_by_ref_hit '{"message":"session expired"}'              4020
+expect_rc "a bare null -> UNREADABLE"                "$U" kb_by_ref_hit 'null'                                       4020
+expect_rc "a bare string -> UNREADABLE"              "$U" kb_by_ref_hit '"no"'                                       4020
+expect_rc "no data key at all -> UNREADABLE"         "$U" kb_by_ref_hit '{}'                                         4020
+expect_rc "data: null -> UNREADABLE"                 "$U" kb_by_ref_hit '{"data":null}'                              4020
+expect_rc "data is an OBJECT, not rows -> UNREADABLE" "$U" kb_by_ref_hit '{"data":{"id":4020}}'                      4020
+# A row this predicate cannot identify makes the WHOLE answer unclassifiable — "absent" over it
+# would be a claim about a population that was never read.
+expect_rc "a row that is not an object -> UNREADABLE" "$U" kb_by_ref_hit '{"data":["4020"]}'                         4020
+expect_rc "a row with no numeric id -> UNREADABLE"    "$U" kb_by_ref_hit '{"data":[{"name":"n"}]}'                   4020
+# A card-id `--argjson` will not take is a CALLER fault, and it lands in the same arm rather than
+# in a false "absent": nothing was read, which is the only true thing to say about it.
+expect_rc "a non-JSON card-id -> UNREADABLE"         "$U" kb_by_ref_hit '{"data":[{"id":4020}]}'                     'not-an-id'
 
 # ---------------------------------------------------------------------------
 echo "== kb_require_value — a value-taking flag's PRESENCE is the dispatch signal =="

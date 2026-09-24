@@ -2022,12 +2022,66 @@ kb_ref_pair_verdicts() {
             end) | @tsv' <<<"$1"
 }
 
-# kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
-# id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
-# envelope OR a bare top-level array — so every caller (adoption verify, field registration)
-# shares one predicate instead of forking it. jq -e sets the exit status; any jq/parse error
-# is a non-hit (fail-closed).
+# KB_RC_BYREF_UNREADABLE — the rc kb_by_ref_hit returns when the response could not be read as
+# a by-ref RESULT at all, as distinct from rc 1, which means it WAS read and holds no such row.
+# Callers branch on the NAME; the number itself is arbitrary and pinned here. It is deliberately
+# NOT 0 and NOT 1 (the two answers it exists to be distinguishable from) and NOT
+# $KB_API_RC_TRANSPORT, which is a DIFFERENT function's "the request did not complete" — a caller
+# that propagates one rc onward must not make the two read as one state. A plain assignment, not
+# `readonly` and not `${…:=}`, for the reason KB_API_RC_TRANSPORT states at its own pin: this lib
+# is sourced more than once in some shells, and an ambient variable must not get to redefine what
+# "nothing was read" means.
+KB_RC_BYREF_UNREADABLE=5
+
+# kb_by_ref_hit <by-ref-json> <card-id>: does this by-ref response carry a row whose id ==
+# <card-id>? Tolerates BOTH shapes the endpoint can return — a {"data":[…]} envelope OR a bare
+# top-level array — so every caller (adoption verify, field registration) shares one predicate
+# instead of forking it.
+#
+#   rc 0                        HIT — the response was READ and it carries that row.
+#   rc 1                        ABSENT — the response was READ and it carries no such row. This
+#                               is a MEASURED negative: an empty `{"data":[]}` or an array of
+#                               other cards' rows.
+#   rc $KB_RC_BYREF_UNREADABLE  NOTHING WAS READ. The argument is not a by-ref result at all —
+#                               a gateway's HTML, a truncated body, an empty body, a JSON error
+#                               envelope, a `.data` that is not an array, a row this predicate
+#                               cannot identify, or a <card-id> that is not JSON. NOT a miss.
+#
+# THE CALLER STILL OWNS THE POLICY — the same mechanism/policy split kb_parse_resp documents
+# above. This function decides what the RESPONSE SAYS; whether "nothing was read" is fatal,
+# fail-soft or a retry stays at each call site. This header used to assert the disposition for
+# everyone — *"any jq/parse error is a non-hit (fail-closed)"* — and that is a policy claim a
+# primitive may not make on its callers' behalf: it was FALSE at two of the three dispositions in
+# bin/dl-a1-register-field, where a miss is the PASS condition ("after clear … empty", "zero
+# residue"), so an undecodable 2xx printed a clean bill of health at exit 0 (card#10241). Fail-
+# closed is a property of a caller's use, not of a predicate.
+#
+# ⛔ THE TELL IS THE ENVELOPE, NOT jq's OWN EXIT STATUS — measured, and it is why this classifies
+# the shape rather than plumbing `jq -e`'s rc outward. `jq -e` separates a parse failure (rc 5)
+# and an empty input (rc 4) from a false result (rc 1), but a body that PARSES PERFECTLY and is
+# not a by-ref result does not fault at all: on jq 1.7, `{"message":"…"}` — a gateway's or the
+# API's own JSON error envelope — scored rc 1 through the old `.data // []`, byte-identical to a
+# genuinely empty `{"data":[]}`. So does a bare `null` and a bare string. `.data` present AND an
+# array is the separator fetch_board_cards measured against the live API (an empty result is
+# `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200), and it is the one used here.
+#
+# The verdict is a printed TOKEN rather than jq's status for the same reason kb_parse_resp prints
+# nothing on a fault: every way this can fail — a parse error, an empty input, a jq that is
+# missing or unrunnable, a <card-id> `--argjson` will not take — produces no token, and no token
+# is the one value that cannot be mistaken for an answer.
 kb_by_ref_hit() {
-    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" \
-        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
+    local verdict
+    verdict="$(printf '%s' "${1:-}" | jq -r --argjson id "${2:-0}" '
+        (if type == "object" then .data else . end) as $rows
+        | if ($rows | type) != "array" then "unreadable"
+          # A row this predicate cannot identify makes the WHOLE answer unclassifiable: "absent"
+          # over it would be a claim about a population that was never read.
+          elif any($rows[]; (type != "object") or ((.id | type) != "number")) then "unreadable"
+          elif any($rows[]; .id == $id) then "hit"
+          else "absent" end' 2>/dev/null)"
+    case "$verdict" in
+        hit)    return 0 ;;
+        absent) return 1 ;;
+        *)      return "$KB_RC_BYREF_UNREADABLE" ;;
+    esac
 }

@@ -31,6 +31,29 @@
 # Exit 0 only if (found AND by-ref now empty AND throwaway deleted AND no
 # residue on a final by-ref check). A re-run is a clean no-op.
 #
+# ⛔ A BY-REF READ THAT MEASURED NOTHING IS ITS OWN OUTCOME — exit 3, never 0 and never 1.
+# Two of this tool's three by-ref dispositions treat an ABSENT result as their PASS condition
+# ("after clear … empty", "zero residue"), so a read that could not be read — a gateway's HTML
+# or JSON error page at 200, a truncated body, a non-2xx, a request that never completed — used
+# to print BOTH pass lines and exit 0 over a board this tool never measured (card#10241). The
+# caller of a setup tool has to be able to tell *"I checked and it is clean"* from *"I could not
+# check"*, so they are different exit codes:
+#
+#   0  verified — every by-ref read completed and said what it had to say.
+#   1  verification FAILED, measured: by-ref did not resolve the throwaway, the cleared
+#      dl_number still resolves, or the deleted throwaway leaves residue.
+#   2  usage / config — refused before any request.
+#   3  UNMEASURED — at least one by-ref read returned nothing this tool could read, and no
+#      measured failure was seen. NOTHING in a run that exits 3 says the route works, and
+#      nothing says the board is residue-free. The throwaway teardown still runs.
+#
+# 3 is the toolkit's published "sent, but nothing could be read back" exit code (kbcard's rc 3
+# UNVERIFIED WRITE, the lib's KB_RC_UNVERIFIED), so an operator reading a 3 out of any of these
+# tools reads one meaning. A MEASURED failure OUTRANKS an unmeasured read when a run sees both —
+# the ordering bin/run-coverage-check states for MISSING vs UNMEASURED, and for its reason:
+# neither scores 0 in either ordering, so the ordering is free to report the strongest claim
+# that is TRUE.
+#
 # Usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]
 #
 # Genericized (the reference hard-coded these):
@@ -114,11 +137,48 @@ SENTINEL_DL="$(kb_dl_canon "$SENTINEL")"
 KBC_BOARD_ARG=""
 [[ -n "$board_name" ]] && KBC_BOARD_ARG=" --board $board_name"
 
-# True if the by-ref response for $SENTINEL contains a row with id == $1.
-by_ref_has() {
-    local resp
-    resp="$(kb_api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || return 1
-    kb_by_ref_hit "$resp" "$1"
+# A1_RC_UNMEASURED — this tool's exit code for "a by-ref read measured nothing", and the rc
+# by_ref_state returns for that outcome. Pinned once so the reads and the verdict cannot drift
+# apart; the value is 3 for the reason the header states.
+A1_RC_UNMEASURED=3
+
+# The by-ref read for $SENTINEL, as THREE outcomes, never two:
+#   0                   READ, and card $1 is in the result.
+#   1                   READ, and it is not — a MEASURED negative.
+#   $A1_RC_UNMEASURED   NOTHING WAS READ: the request did not complete, the server answered a
+#                       non-2xx, or the 2xx body was not a by-ref result (kb_by_ref_hit's
+#                       $KB_RC_BYREF_UNREADABLE).
+# ⛔ The third outcome is NOT a miss, and folding it into rc 1 is the defect this shape exists to
+# prevent: `|| return 1` on the kb_api failure, plus a predicate that scored an undecodable body
+# as a non-hit, made every unreadable answer arrive at the two call sites below that treat a miss
+# as their pass condition (card#10241). A non-2xx is in that third outcome for the same reason an
+# undecodable 2xx is: a 500 on this GET is not evidence the index resolves nothing.
+#
+# BY_REF_WHY carries WHICH of those three producers it was, because they are three different
+# next actions for the operator and this tool is the only surface that can say: KB_API_QUIET=1
+# keeps the lib's own non-2xx line off stderr, and KB_HTTP is set inside the `$(…)` subshell the
+# body capture needs, so the rc is the only channel that crosses (kb_api's own contract says so).
+# It is set on EVERY path, including the ones that do not read it, so a stale value from an
+# earlier read can never be printed beside a later one.
+BY_REF_WHY=""
+by_ref_state() {
+    local resp arc=0 rc=0
+    BY_REF_WHY=""
+    resp="$(kb_api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || arc=$?
+    if [[ "$arc" != 0 ]]; then
+        if [[ "$arc" == "$KB_API_RC_TRANSPORT" ]]; then
+            BY_REF_WHY="the request DID NOT COMPLETE — no HTTP status came back at all"
+        else
+            BY_REF_WHY="the server ANSWERED the by-ref read and not with a 2xx"
+        fi
+        return "$A1_RC_UNMEASURED"
+    fi
+    kb_by_ref_hit "$resp" "$1" || rc=$?
+    case "$rc" in
+        0|1) return "$rc" ;;
+        *)   BY_REF_WHY="the read returned a 2xx whose body is NOT a by-ref result — a gateway's sign-in or error page, a truncated read, or a JSON error envelope"
+             return "$A1_RC_UNMEASURED" ;;
+    esac
 }
 
 # --- 1. register dl_number (flat body) --------------------------------------
@@ -229,22 +289,30 @@ delete_throwaway() {
 trap 'delete_throwaway' EXIT
 
 # --- 3. by-ref must resolve the throwaway -----------------------------------
-if by_ref_has "$TID"; then
-    found=1; echo "  by-ref system=dl ref=$SENTINEL: FOUND (card $TID)"
-else
-    found=0; echo "  by-ref system=dl ref=$SENTINEL: NOT FOUND" >&2
-fi
+# `found` and `still` below carry the THREE states, not two: `UNMEASURED` is a value they take,
+# so the verdict line cannot print a `0` or a `1` for a read that never produced one. `unmeasured`
+# accumulates the names of those reads, in the order they ran, and is what selects the rc 3 arm.
+unmeasured=""
+brs=0; by_ref_state "$TID" || brs=$?
+case "$brs" in
+    0) found=1; echo "  by-ref system=dl ref=$SENTINEL: FOUND (card $TID)" ;;
+    1) found=0; echo "  by-ref system=dl ref=$SENTINEL: NOT FOUND" >&2 ;;
+    *) found=UNMEASURED; unmeasured="$unmeasured verify"
+       echo "  by-ref system=dl ref=$SENTINEL: UNMEASURED — $BY_REF_WHY. That is not evidence the index does not resolve the throwaway." >&2 ;;
+esac
 
 # --- 4. cleanup — clear dl_number, verify by-ref empty, delete --------------
 if ! kb_api PATCH "/tasks/$TID.json" "$CLEAR_DL_BODY" >/dev/null; then
     echo "dl-a1-register-field: FATAL clearing dl_number: HTTP $KB_HTTP" >&2
     exit 1   # trap still fires the delete
 fi
-if by_ref_has "$TID"; then
-    still=1; echo "  after clear: by-ref ref=$SENTINEL STILL PRESENT" >&2
-else
-    still=0; echo "  after clear: by-ref ref=$SENTINEL empty"
-fi
+brs=0; by_ref_state "$TID" || brs=$?
+case "$brs" in
+    0) still=1; echo "  after clear: by-ref ref=$SENTINEL STILL PRESENT" >&2 ;;
+    1) still=0; echo "  after clear: by-ref ref=$SENTINEL empty" ;;
+    *) still=UNMEASURED; unmeasured="$unmeasured after-clear"
+       echo "  after clear: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY. The clear itself was accepted by the server; whether the index stopped resolving the sentinel was NOT measured." >&2 ;;
+esac
 
 if ! kb_api PATCH "/tasks/$TID.json" "$DELETE_BODY" >/dev/null; then
     echo "dl-a1-register-field: FATAL deleting throwaway: HTTP $KB_HTTP" >&2
@@ -254,15 +322,27 @@ cleanup_done=1   # the explicit delete above succeeded; skip the trap's retry
 echo "  throwaway $TID deleted"
 
 # Acceptance: final by-ref must be empty (zero residue).
-if by_ref_has "$TID"; then
-    echo "dl-a1-register-field: residue — by-ref still resolves $TID after delete" >&2
+# ⛔ "zero residue" is a POSITIVE claim about the board's state, so it may only be printed from a
+# read that succeeded. An undecodable answer here leaves the residue question open — the delete
+# was accepted, and nothing read it back — which is what the UNMEASURED arm says instead.
+brs=0; by_ref_state "$TID" || brs=$?
+case "$brs" in
+    0) echo "dl-a1-register-field: residue — by-ref still resolves $TID after delete" >&2
+       exit 1 ;;
+    1) echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue" ;;
+    *) unmeasured="$unmeasured acceptance"
+       echo "  acceptance: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY, so this run makes NO residue claim. Check by hand before seeding a DL minter from this board: kbcard${KBC_BOARD_ARG} show --task $TID" >&2 ;;
+esac
+
+# The verdict. A MEASURED failure outranks an unmeasured read (header: both are non-zero, so the
+# ordering only decides which true statement the operator gets).
+if [[ "$found" == 0 || "$still" == 1 ]]; then
+    echo "dl-a1-register-field: verification failed (found=$found still_present=$still)" >&2
     exit 1
 fi
-echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue"
-
-if [[ "$found" == 1 && "$still" == 0 ]]; then
-    echo "dl-a1-register-field: OK (field registered + by-ref verified + throwaway removed)"
-    exit 0
+if [[ -n "$unmeasured" ]]; then
+    echo "dl-a1-register-field: UNMEASURED — the by-ref read(s)$unmeasured returned nothing this tool could read (found=$found still_present=$still). The dl_number field is registered and the throwaway was torn down, but NOTHING here says the system=dl by-ref route works or that the board is residue-free. Re-run once the board reads; a 2xx from an SSO gateway, a WAF or a maintenance page is the usual producer." >&2
+    exit "$A1_RC_UNMEASURED"
 fi
-echo "dl-a1-register-field: verification failed (found=$found still_present=$still)" >&2
-exit 1
+echo "dl-a1-register-field: OK (field registered + by-ref verified + throwaway removed)"
+exit 0

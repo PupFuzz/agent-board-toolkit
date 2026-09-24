@@ -93,12 +93,35 @@ kb_stub_route() {
             [[ -n "$body" ]] || body="{\"data\":{\"id\":$KB_STUB_TASK_ID}}"
             printf '%s\n%s' "${KB_STUB_CREATE_HTTP:-201}" "$body" ;;
         "GET "*/tasks/by-ref.json*)
+            # One answer per by-ref read, in order; the last repeats. `hit`/`miss` are the two
+            # READABLE answers; the rest are the shapes a read can take that say NOTHING about
+            # the index (card#10241).
+            #
+            # ⛔ FOUR UNDECODABLE `2xx` SHAPES, ENUMERATED RATHER THAN REPRESENTED — they do not
+            # share one path and a single fixture would certify the other three by association.
+            # `html`, `trunc` and `nobody` never reach a jq verdict at all; `jsonerr` PARSES
+            # PERFECTLY and is the one jq's own exit status cannot see — measured on jq 1.7, it
+            # scored the pre-change predicate's rc 1, byte-identical to a genuinely empty
+            # `{"data":[]}`, so a fix that only plumbed jq's rc outward would have left this
+            # shape reading as a clean board. `http500` is the fifth producer of the same state
+            # from a different layer: the request was ANSWERED and not with a 2xx.
             read -r -a byref <<<"$KB_STUB_BYREF"
-            if [[ "${byref[$((route_n - 1))]:-${byref[-1]}}" == hit ]]; then
-                printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID}]}"
-            else
-                printf '%s\n%s' 200 '{"data":[]}'
-            fi ;;
+            case "${byref[$((route_n - 1))]:-${byref[-1]}}" in
+                hit)     printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID}]}" ;;
+                miss)    printf '%s\n%s' 200 '{"data":[]}' ;;
+                html)    printf '%s\n%s' 200 '<html><body>502 Bad Gateway</body></html>' ;;
+                trunc)   printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID" ;;
+                jsonerr) printf '%s\n%s' 200 '{"message":"your session has expired"}' ;;
+                nobody)  printf '%s\n%s' 200 '' ;;
+                http500) printf '%s\n%s' 500 '{"message":"nope"}' ;;
+                # The stub's TRANSPORT-failure spelling (tests/_kb-api-stub-curl.sh): curl exits
+                # with that status having written nothing, so no HTTP status is read at all.
+                curlfail) printf '!curl 7' ;;
+                # A knob value this route does not know answers LOUDLY rather than plausibly:
+                # 599 is outside every arm the tool branches on, so a typo in a scenario reds
+                # the scenario instead of quietly re-running one of the arms above.
+                *)       printf '%s\n%s' 599 '{"message":"unknown KB_STUB_BYREF token"}' ;;
+            esac ;;
         "PATCH "*/tasks/*)
             # The two teardown writes are distinguished by their bodies, not their URLs — they
             # target the same card — so a scenario can fail the clear without failing the delete.
@@ -285,6 +308,116 @@ eq "residue after delete → rc 1"          "1" "$rc"
 eq "the residue is named with the card id" "true" "$(has 'residue — by-ref still resolves 777 after delete' "$err")"
 eq "residue is decided AFTER the delete (3 reads happened)" "3" "$(kb_stub_count "${BYREF[@]}")"
 eq "residue never prints the zero-residue acceptance" "false" "$(has 'zero residue' "$out")"
+
+# ---------------------------------------------------------------------------
+echo "== a by-ref read that MEASURED NOTHING is rc 3 UNMEASURED, never a pass (card#10241) =="
+# THE DEFECT. Two of this tool's three by-ref dispositions treat a non-hit as their PASS
+# condition — `after clear: … empty` and `zero residue` — and every unreadable answer arrived at
+# them as a non-hit, so a board behind an SSO gateway, a WAF or a maintenance page (each of which
+# answers 200 with HTML) was CERTIFIED: both pass lines printed, exit 0, nothing measured. The
+# caller of a setup tool has to be able to tell "I checked and it is clean" from "I could not
+# check", so those are now different exit codes and different lines.
+#
+# THE POPULATION IS (undecodable shape × read position), not one of each. The shapes are the five
+# in `kb_stub_route` above and the positions are this tool's three by-ref reads, because the
+# dispositions differ per position: position 1's non-hit was already a reported FAILURE, while 2
+# and 3 were the fail-open pair. Every row below was observed RED against the pre-change binary
+# (`git show HEAD~1:bin/…` over the identical fixtures), and the `miss` control beside each is
+# what makes the row a measurement: the SAME position, answered readably, still passes.
+for shape in html trunc jsonerr nobody http500; do
+    # Position 1 — the verify. A non-hit here was always non-fatal-but-reported; what changes is
+    # that the tool no longer reports NOT FOUND, which is a claim about the index, for a read
+    # that never happened.
+    KB_STUB_BYREF="$shape miss miss" run_a1
+    eq "[$shape] undecodable at the VERIFY read → rc 3, not 0 and not 1" "3" "$rc"
+    eq "[$shape] …the verify line says UNMEASURED"  "true" \
+       "$(has "by-ref system=dl ref=$SENTINEL_DEFAULT: UNMEASURED" "$err")"
+    eq "[$shape] …and never claims NOT FOUND"       "false" \
+       "$(has "by-ref system=dl ref=$SENTINEL_DEFAULT: NOT FOUND" "$err")"
+    eq "[$shape] …the verdict names the read that measured nothing" "true" \
+       "$(has 'UNMEASURED — the by-ref read(s) verify' "$err")"
+    eq "[$shape] …and never claims the route is verified" "false" \
+       "$(has 'OK (field registered' "$out")"
+    eq "[$shape] …the throwaway is still cleared and deleted" "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+
+    # Position 2 — after the clear. THE FAIL-OPEN: `empty` is the pass condition.
+    KB_STUB_BYREF="hit $shape miss" run_a1
+    eq "[$shape] undecodable AFTER THE CLEAR → rc 3" "3" "$rc"
+    eq "[$shape] …and the after-clear line does NOT say empty" "false" \
+       "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
+    eq "[$shape] …it says UNMEASURED"               "true" \
+       "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT UNMEASURED" "$err")"
+    eq "[$shape] …the verdict names that read"      "true" \
+       "$(has 'UNMEASURED — the by-ref read(s) after-clear' "$err")"
+    eq "[$shape] …and the still_present column says UNMEASURED, not 0" "true" \
+       "$(has 'still_present=UNMEASURED' "$err")"
+
+    # Position 3 — the acceptance. THE OTHER FAIL-OPEN: `zero residue` is a POSITIVE claim about
+    # the board, and it may only be made from a read that succeeded.
+    KB_STUB_BYREF="hit miss $shape" run_a1
+    eq "[$shape] undecodable at the ACCEPTANCE read → rc 3" "3" "$rc"
+    eq "[$shape] …NO zero-residue claim is printed"  "false" "$(has 'zero residue' "$out")"
+    eq "[$shape] …the acceptance line says UNMEASURED" "true" \
+       "$(has "acceptance: by-ref ref=$SENTINEL_DEFAULT UNMEASURED" "$err")"
+    eq "[$shape] …and the run still deleted the throwaway" "true" \
+       "$(has 'throwaway 777 deleted' "$out")"
+
+    # All three unreadable — the whole run measured nothing, and says so once per read.
+    KB_STUB_BYREF="$shape $shape $shape" run_a1
+    eq "[$shape] every by-ref read undecodable → rc 3" "3" "$rc"
+    eq "[$shape] …all three reads are named in the verdict" "true" \
+       "$(has 'the by-ref read(s) verify after-clear acceptance' "$err")"
+    eq "[$shape] …with no zero-residue claim on stdout"  "false" "$(has 'zero residue' "$out")"
+    eq "[$shape] …and no OK verdict on stdout"           "false" "$(has 'OK (field registered' "$out")"
+    eq "[$shape] …and the teardown still ran" "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+done
+# THE CONTROL, at each of the three positions: the identical harness, answered READABLY, still
+# reaches the pass lines and rc 0. Without it every row above could be passing because the tool
+# refuses everything.
+KB_STUB_BYREF="hit miss miss" run_a1
+eq "control: readable answers at all three positions → rc 0" "0" "$rc"
+eq "control: …the after-clear line reads empty"  "true" \
+   "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
+eq "control: …the acceptance claims zero residue" "true" "$(has 'zero residue' "$out")"
+
+# ⛔ THE PRODUCER IS NAMED, not folded into one "could not read" sentence, because the three lead
+# an operator to three different next actions — and this tool is the only surface that can say
+# which: KB_API_QUIET=1 keeps the lib's own non-2xx line off stderr, and KB_HTTP does not cross
+# the `$(…)` the body capture needs, so nothing else in the run carries it.
+KB_STUB_BYREF="html miss miss" run_a1
+eq "an undecodable 2xx blames the BODY"        "true"  "$(has 'NOT a by-ref result' "$err")"
+eq "…and not the status"                       "false" "$(has 'not with a 2xx' "$err")"
+KB_STUB_BYREF="http500 miss miss" run_a1
+eq "a non-2xx blames the STATUS"               "true"  "$(has 'ANSWERED the by-ref read and not with a 2xx' "$err")"
+eq "…and not the body"                         "false" "$(has 'NOT a by-ref result' "$err")"
+KB_STUB_BYREF="curlfail miss miss" run_a1
+eq "a request that never completed → rc 3"     "3"     "$rc"
+eq "…and says no HTTP status came back at all" "true"  "$(has 'DID NOT COMPLETE' "$err")"
+eq "…and blames neither the status nor the body" "false" \
+   "$(has 'ANSWERED the by-ref read' "$err")"
+# The cause does not leak from an earlier read into a later one: the verify is readable here and
+# the acceptance is not, so the acceptance line must carry the acceptance's own producer.
+KB_STUB_BYREF="hit miss http500" run_a1
+eq "the acceptance line carries ITS OWN cause" "true" \
+   "$(has "acceptance: by-ref ref=$SENTINEL_DEFAULT UNMEASURED — the server ANSWERED" "$err")"
+
+# ⭐ THE DISCRIMINATOR, stated as an assertion rather than as prose: a MEASURED failure and an
+# unmeasured read are different exit codes, so a caller can act on the difference. Both are
+# non-zero, which is why the ordering below is free — when a run sees both, the measured failure
+# outranks (bin/run-coverage-check's MISSING-outranks-UNMEASURED ruling).
+KB_STUB_BYREF="miss miss miss" run_a1
+eq "a MEASURED miss is still rc 1, not rc 3" "1" "$rc"
+eq "…and reports a verification failure, not an unmeasured one" "true" \
+   "$(has 'verification failed (found=0 still_present=0)' "$err")"
+eq "…and never prints the UNMEASURED verdict" "false" "$(has 'dl-a1-register-field: UNMEASURED' "$err")"
+KB_STUB_BYREF="hit hit html" run_a1
+eq "a measured STILL-PRESENT beside an unmeasured acceptance → rc 1" "1" "$rc"
+eq "…the verdict states the measured failure" "true" \
+   "$(has 'verification failed (found=1 still_present=1)' "$err")"
+KB_STUB_BYREF="html miss hit" run_a1
+eq "a measured RESIDUE beside an unmeasured verify → rc 1" "1" "$rc"
+eq "…and names the residue, which is the stronger true statement" "true" \
+   "$(has 'residue — by-ref still resolves 777 after delete' "$err")"
 
 # ---------------------------------------------------------------------------
 echo "== the EXIT trap fires when a teardown step itself fails =="
