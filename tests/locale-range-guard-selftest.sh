@@ -31,6 +31,8 @@
 # the two above it — so that text inside a nearby comment exempts a line too. It does NOT flag
 # every POSIX class either: the remaining users in bin/ and hooks/ are strips
 # (`name="${name//[[:space:]]/}"`), splits and quoted grep/sed/jq patterns.
+# ⛔ NOR EVERY RANGE: a range held in a variable and applied as `=~ $re` is NOT CAUGHT — the
+# range arm needs the `=~` and the range on ONE line, and the assignment line has no `=~`.
 #
 # WHAT WAS AND WAS NOT WRONG — the claim this file makes is deliberately narrow. The
 # widened guards still rejected the characters they were written to reject (a comma and a

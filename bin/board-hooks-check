@@ -61,9 +61,11 @@
 # `sh -c` applies: only space, tab and newline separate words (a CR, VT or FF is part of the
 # name); `~` expands only unquoted at the start of the word, `$HOME` and `$CLAUDE_PROJECT_DIR`
 # only unquoted or double-quoted; a quoted `~` or a single-quoted `$VAR` stays literal, so that
-# command is a relative path. Anything else that names the hook is UNMEASURED, and so is a
-# handler that names it (in its command or any `args` element) while setting `args` (exec form),
-# `if`, `once`, or a `shell` other than bash — each named. ⛔ Hook COMMANDS ARE NEVER PRINTED: a
+# command is a relative path. From a linked worktree a command using `$CLAUDE_PROJECT_DIR` is
+# UNMEASURED: which root Claude Code sets it to there is not verified, so it is not guessed.
+# Anything else that names the hook is UNMEASURED, and so is a handler that names it (in its
+# command or any `args` element) while setting `args` (exec form), `if`, `once`, or a `shell`
+# other than bash — each named. ⛔ Hook COMMANDS ARE NEVER PRINTED: a
 # command line can carry an env-prefixed secret, so an entry is named by file, matcher and index,
 # and only a resolved bare path is shown.
 # The hook acts only on dispatch prompts carrying a `BOARD-CARD: <board>#<id>` line, which
@@ -82,7 +84,9 @@
 # A <repo-dir> with no `.git` that git will not open is UNMEASURED (not a checkout); a checkout
 # git REFUSES (dubious ownership, an unexpandable config value) is NOT-LIVE, in git's words.
 # Both hooks also need board-card-start on PATH (each exits silently without it). The PATH read
-# is THIS process's; a hook runs with the PATH git has at dispatch time.
+# is THIS process's. What can stop a LIVE git hook without this tool seeing it (git's own PATH at
+# hook time among them) is a FIXED list printed once per run when a <repo-dir> is named
+# (_bhc_git_bound) — the one statement of it.
 set -uo pipefail
 # The verdict IS the exit code, so a reader that stops reading (`| head`) must not be able to
 # turn it into a signal death (card#6911): SIGPIPE is ignored first, and the report is built
@@ -133,8 +137,10 @@ _bhc_matcher_covers_agent() {
     return 2
 }
 
-# _bhc_sh_word <command> <project-dir> — the command read as ONE `sh -c` word, with the expansion
-# the shell would apply, on stdout (rc 0) · rc 2 it is not a single word this reader evaluates.
+# _bhc_sh_word <command> <project-dir> [<main-checkout>] — the command read as ONE `sh -c` word,
+# with the expansion the shell would apply, on stdout (rc 0) · rc 2 it is not a single word this
+# reader evaluates · rc 3 it uses `$CLAUDE_PROJECT_DIR` while <main-checkout> is set (<project-dir>
+# is a linked worktree), where the value Claude Code gives it is not known here.
 # Quoting decides expansion, so it is walked in order rather than stripped first: `~` expands
 # only UNQUOTED at the start of the word and followed by an unquoted `/`; `$HOME` and
 # `$CLAUDE_PROJECT_DIR` (braced or not) expand unquoted or inside double quotes, and stay literal
@@ -144,7 +150,7 @@ _bhc_matcher_covers_agent() {
 _bhc_sh_word() {
     # LC_ALL=C is function-local: every bracket range below is an ASCII range, not a collation
     # range (which under a UTF-8 locale also admits non-ASCII letters — card#5409).
-    local c="$1" proj="$2" out="" q="" ch rest name len val i=0 n LC_ALL=C
+    local c="$1" proj="$2" wt_main="${3:-}" out="" q="" ch rest name len val i=0 n LC_ALL=C
     local re_braced='^\{([A-Za-z_][A-Za-z0-9_]*)\}' re_bare='^([A-Za-z_][A-Za-z0-9_]*)' re_plain='^[A-Za-z0-9_./+@%:,=~-]$'
     n=${#c}
     case "$c" in
@@ -171,7 +177,7 @@ _bhc_sh_word() {
                 fi
                 case "$name" in
                     HOME)               val="$HOME" ;;
-                    CLAUDE_PROJECT_DIR) val="$proj" ;;
+                    CLAUDE_PROJECT_DIR) [[ -z "$wt_main" ]] || return 3; val="$proj" ;;
                     *)                  return 2 ;;
                 esac
                 # Unquoted, the value is field-split and globbed: not one word this reads.
@@ -189,15 +195,22 @@ _bhc_sh_word() {
     printf '%s' "$out"
 }
 
-# _bhc_cmd_target <command> <project-dir> — rc 0 the command is a bare path to the toolkit
-# script (the path on stdout) · 1 it is not this hook · 2 it names the hook but is not a bare
-# path this reader evaluates (the reason on stdout — never the command itself).
+# _bhc_cmd_target <command> <project-dir> [<main-checkout>] — rc 0 the command is a bare path to
+# the toolkit script (the path on stdout) · 1 it is not this hook · 2 it names the hook but is not
+# a bare path this reader evaluates (the reason on stdout — never the command itself).
 _bhc_cmd_target() {
-    local raw="$1" proj="$2" c real sep=$' \t\n'
-    # Only what sh separates words on (space, tab, newline) is trimmed: a CR, VT or FF — which a
-    # [[:space:]] class also matches — is part of the command name sh looks up.
+    local raw="$1" proj="$2" wt_main="${3:-}" c real wrc=0 sep=$' \t\n'
+    # Only the characters sh separates words on are trimmed, and of those only space and tab can
+    # reach here: the extraction escapes a newline to `\n`, whose backslash reads UNMEASURED. A CR,
+    # VT or FF — which a [[:space:]] class also matches — is part of the command name sh looks up.
     raw="${raw#"${raw%%[!$sep]*}"}"; raw="${raw%"${raw##*[!$sep]}"}"
-    if ! c="$(_bhc_sh_word "$raw" "$proj")"; then
+    c="$(_bhc_sh_word "$raw" "$proj" "$wt_main")" || wrc=$?
+    if [[ "$wrc" == 3 ]]; then
+        [[ "$raw" == *"$_BHC_SCRIPT"* ]] || return 1
+        printf 'uses $CLAUDE_PROJECT_DIR, and --project %s is a linked worktree (main checkout %s) — which root Claude Code sets it to there is not verified here, so which file it runs is unknown' "$proj" "$wt_main"
+        return 2
+    fi
+    if [[ "$wrc" != 0 ]]; then
         [[ "$raw" == *"$_BHC_SCRIPT"* ]] || return 1
         printf 'is not a bare path (arguments, an interpreter, a variable other than HOME or CLAUDE_PROJECT_DIR, or shell syntax) — this reader does not evaluate shell'
         return 2
@@ -251,16 +264,28 @@ _bhc_unread_bound() {
   NOT read here, and able to stop a LIVE hook or change what it runs:
     - launch flags: --bare and --safe-mode skip hooks; --restricted ignores user, project and local settings files; --setting-sources drops the sources it does not name; --settings adds a file this tool never sees
     - workspace trust: a registration in a project's .claude/ files runs only once that folder is trusted (the trust dialog)
-    - managed-source precedence: a higher-ranked managed source (server-managed settings, MDM/OS policy — macOS profile, Windows HKLM/HKCU registry) delivering any policy key can silence /etc/claude-code/managed-settings.json and its managed-settings.d
-    - linked worktrees: \${CLAUDE_PROJECT_DIR} stays at the main checkout's root, so a command using it resolves there, not under --project
+    - managed-source precedence (not verified here): a higher-ranked managed source (server-managed settings, MDM/OS policy — macOS profile, Windows HKLM/HKCU registry) delivering any policy key can silence /etc/claude-code/managed-settings.json and its managed-settings.d
+    - linked worktrees: which root Claude Code sets \${CLAUDE_PROJECT_DIR} to is not verified here (the worktree or the main checkout's root), so from a worktree a command using it reads UNMEASURED
     - disableAllHooks or allowManagedHooksOnly set in a source not read here
   NOT read here, so a registration made only there reads NOT-REGISTERED here: claude --settings, server-managed settings, MDM/OS policy, a policyHelper, the SDK managedSettings option, skill and subagent frontmatter hooks, and plugin hooks. Not detectable at all: a wrapper that runs it without naming $_BHC_SCRIPT in its command or args (a script, an alias, a differently-named command on PATH).
 BOUND
 }
 
+# _bhc_git_bound — the git hooks' counterpart of _bhc_unread_bound: a FIXED list, printed once per
+# run whenever a <repo-dir> is named, of what can stop a git hook this tool calls LIVE.
+_bhc_git_bound() {
+    cat <<'BOUND'
+  Git hooks: NOT read here, and able to stop a LIVE git hook:
+    - PATH: a hook runs with git's own PATH at hook time, not this tool's, so board-card-start found here may be absent there
+    - git push --no-verify skips pre-push
+    - a per-command git -c core.hooksPath=<dir> dispatches from another dir (or, empty, from none) for that one command
+    - the reach test is textual: WIRED reads the hook file and never runs it, so a mention in a string or after an early exit reads as a reach (docs/HOOKS.md § What the reach test can and cannot tell you)
+BOUND
+}
+
 # _bhc_claude_leg <project-dir> — one verdict for the Claude Code dispatch hook.
 _bhc_claude_leg() {
-    local proj="$1" f kind tsv idx ent m cmd fields argnames fld tgt why mrc trc s dup found="" live_at="" live_path="" live_needs_no_trust="" main tk tk_rc=0
+    local proj="$1" f kind tsv idx ent m cmd fields argnames fld tgt why mrc trc s dup found="" live_at="" live_path="" live_needs_no_trust="" main="" tk tk_rc=0
     local -a files=() kinds=() seen=() unm=() dead=() elsewhere=() fw=()
     echo "── Claude Code hook: $_BHC_SCRIPT (PreToolUse, matcher covering Agent) ──"
     files+=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json");  kinds+=(user)
@@ -328,7 +353,7 @@ _bhc_claude_leg() {
             unm+=("$f could not be walked for PreToolUse entries"); continue; }
         while IFS=$'\x1f' read -r ent m cmd fields argnames; do
             [[ -n "$ent" ]] || continue
-            trc=0; tgt="$(_bhc_cmd_target "$cmd" "$proj")" || trc=$?
+            trc=0; tgt="$(_bhc_cmd_target "$cmd" "$proj" "$main")" || trc=$?
             [[ "$trc" == 1 && "$argnames" != true ]] && continue
             mrc=0; why="$(_bhc_matcher_covers_agent "$m")" || mrc=$?
             if [[ "$mrc" == 1 ]]; then elsewhere+=("$f entry #$ent (matcher '$m')"); continue; fi
@@ -480,6 +505,7 @@ _bhc_main() {
         _bhc_verdict UNMEASURED "post-checkout, pre-push" "no <repo-dir> named — git hooks are per repo; name the checkouts you cut branches in"
     else
         for repo in "${repos[@]}"; do _bhc_git_leg "$repo" "$tk" "$tk_rc"; done
+        _bhc_git_bound
     fi
     echo "── ${live} LIVE · ${notlive} NOT-LIVE · ${unmeasured} UNMEASURED ──"
     if [[ "$notlive" -gt 0 ]]; then return 1; fi

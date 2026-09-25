@@ -27,7 +27,11 @@
 # trust caveat; the main checkout's settings.local.json and managed-settings.d unread; no printed
 # bound). Mutants watched red: the function-local LC_ALL=C dropped from the word reader (the UTF-8
 # case reads LIVE); the user/managed exemption from the trust caveat dropped; the drop-in listing
-# emptied.
+# emptied. Round 3, each watched red against the round-2 head first: a `$CLAUDE_PROJECT_DIR`
+# command run from a linked worktree with the file only under the worktree (read LIVE at rc 0), the
+# unverified wording of the worktree and managed-precedence caveats, and the git bound (not
+# printed). Mutants watched red: the word reader's worktree gate (rc 3) dropped; the
+# `_bhc_git_bound` call removed.
 #
 # Fixtures: a scratch HOME (no real settings or ~/.kanban-* file can taint a result), real
 # `git init` repos wired by the real bin/install-board-hooks, and a PATH shim dir holding
@@ -347,6 +351,26 @@ run -- --project "$TMP/mainco" "$TMP/r1"
 eq "run from the main checkout itself, that file is read once (it IS the project's)" "false" \
    "$(has 'main-checkout' "$OUT")"
 rm -f "$TMP/mainco/.claude/settings.local.json"
+# From a linked worktree, which root Claude Code sets $CLAUDE_PROJECT_DIR to is not verified here,
+# so a command using it is UNMEASURED naming the worktree — never expanded to --project (a false
+# LIVE when the file exists only under the worktree) nor to the main root (a guess the other way).
+for where in wtco mainco; do
+    rm -rf "$TMP/wtco/tk" "$TMP/mainco/tk"; mkdir -p "$TMP/$where/tk"
+    ln -sf "$SCRIPT" "$TMP/$where/tk/agent-dispatch-card-start"
+    for c in '"\"$CLAUDE_PROJECT_DIR\"/tk/agent-dispatch-card-start"' '"$CLAUDE_PROJECT_DIR/tk/agent-dispatch-card-start"' \
+             '"${CLAUDE_PROJECT_DIR}/tk/agent-dispatch-card-start"'; do
+        register "$USER_SETTINGS" '"Agent"' "$c"
+        run -- --project "$TMP/wtco" "$TMP/r1"
+        eq "from a worktree, $c with the file only under $where/tk → UNMEASURED naming the worktree, never LIVE" "4|true|false" \
+           "$RC|$(has "uses \$CLAUDE_PROJECT_DIR, and --project $TMP/wtco is a linked worktree" "$(line 'agent-dispatch-card-start:')")|$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+    done
+done
+rm -rf "$TMP/wtco/tk" "$TMP/mainco/tk"
+register "$USER_SETTINGS" '"Agent"' "\"$SCRIPT\""
+run -- --project "$TMP/wtco" "$TMP/r1"
+eq "from a worktree, a command NOT using \$CLAUDE_PROJECT_DIR is still read → LIVE (the positive control)" "0|true" \
+   "$RC|$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+rm -f "$USER_SETTINGS"
 run -- --project "$TMP/r1" "$TMP/r1"
 eq "--project moves the project leg (the registration is no longer read)" "true" \
    "$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
@@ -420,6 +444,18 @@ for src in -- '--bare' '--safe-mode' '--restricted' '--setting-sources' '--setti
     [[ "$src" == -- ]] && continue
     eq "the printed bound names: $src" "true" "$(has "$src" "$OUT")"
 done
+eq "the worktree \${CLAUDE_PROJECT_DIR} caveat is printed as UNVERIFIED, not as fact" "true|false" \
+   "$(has 'which root Claude Code sets ${CLAUDE_PROJECT_DIR} to is not verified here' "$OUT")|$(has 'stays at the main checkout' "$OUT")"
+eq "the managed-precedence caveat is printed as UNVERIFIED" "true" \
+   "$(has 'managed-source precedence (not verified here)' "$OUT")"
+# The git verdicts carry a bound too: LIVE there is also only what is read.
+eq "the git bound is printed exactly once, with a repo named" "1" "$(grep -c 'Git hooks: NOT read here, and able to stop a LIVE git hook' <<< "$OUT")"
+for src in "git's own PATH at hook time" 'git push --no-verify skips pre-push' \
+           'git -c core.hooksPath=' "the reach test is textual"; do
+    eq "the printed git bound names: $src" "true" "$(has "$src" "$OUT")"
+done
+run -- "$TMP/r1" "$TMP/r1"
+eq "…and exactly once with two repos named" "1" "$(grep -c 'Git hooks: NOT read here' <<< "$OUT")"
 
 # ---------------------------------------------------------------------------
 echo "== kbcard off PATH: a registered hook that would skip every marker is NOT-LIVE =="
