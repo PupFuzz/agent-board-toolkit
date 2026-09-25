@@ -610,6 +610,9 @@ echo "== _bs_one_board — the derivation reaches the report, and an empty class
 NOW4=1786000000
 CUT4=$((NOW4 - 86400))
 printf 'a-token\n' > "$TMP/fx-token"
+# The breach preview every _bs_one_board case below is served: a readable one with nothing at
+# its limit, so no WIP line joins the failure lists those cases assert on.
+FX_NO_BREACHES='{"data":{"columns":[],"swimlanes":[],"cells":[]}}'
 API="https://stub.invalid/api/v3"
 cat > "$HOME/.kanban-fx-board.env" <<ENVF
 export KB_BOARD_ID=1
@@ -634,6 +637,7 @@ kb_api() {
     case "$2" in
         */preload.json) cat "$TMP/fx-preload.json" ;;
         */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        */wip-breaches.json) printf '%s' "$FX_NO_BREACHES" ;;
         *) return 1 ;;
     esac
 }
@@ -662,6 +666,7 @@ kb_api() {
     case "$2" in
         */preload.json) cat "$TMP/fx-preload-nolane.json" ;;
         */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        */wip-breaches.json) printf '%s' "$FX_NO_BREACHES" ;;
         *) return 1 ;;
     esac
 }
@@ -691,6 +696,7 @@ kb_api() {
     case "$2" in
         */preload.json) cat "$TMP/fx-preload.json" ;;
         */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+        */wip-breaches.json) printf '%s' "$FX_NO_BREACHES" ;;
         *) return 1 ;;
     esac
 }
@@ -719,6 +725,7 @@ kb_api() {
     case "$2" in
         */preload.json) cat "$TMP/fx-preload.json" ;;
         */changelog.json*) printf '%s' '{"data":null}' ;;
+        */wip-breaches.json) printf '%s' "$FX_NO_BREACHES" ;;
         *) return 1 ;;
     esac
 }
@@ -753,6 +760,188 @@ eq "control: a readable window carries no INCOMPLETE line" "false" \
    "$(has 'changelog window INCOMPLETE' "$(printf '%s' "$onb" | jq -r '.failures[]')")"
 eq "control: …and its flow half is marked COMPLETE, so the flag is not stuck false" "true" \
    "$(printf '%s' "$onb" | jq '.flow_complete')"
+
+# ===========================================================================
+# card#10347 — the board's WIP configuration reaches the report. A WIP refusal (a 422 keyed
+# `workflow_stage_id`, `swimlane_id` or `_action`) fires only on a CONJUNCTION — the board is
+# `enforced`, the target carries a limit, and the target is already at it — and before this
+# section no shipped tool printed any of the three, so a tenant handed that 422 could not tell
+# whether it applied to their board at all. The legs below assert the three are read TOGETHER,
+# that a field the host did not send is never printed as a value, and that an unreadable breach
+# preview is a ⚠ line rather than an "at or over a limit now: none".
+# ===========================================================================
+echo "== _bs_wip_config — the mode, the limits and is_terminal, read out of the preload =="
+cat > "$TMP/wip-preload.json" <<'PRE'
+{"data":{"wip_enforcement":"enforced","workflows":[{"id":1,"stages":[
+  {"id":84,"name":"In Progress","lane_type":"in_progress","position":2,"wip_limit":3,"is_terminal":false},
+  {"id":83,"name":"Backlog","lane_type":"backlog_inventory","position":1,"wip_limit":null,"is_terminal":false},
+  {"id":85,"name":"Done","lane_type":"done","position":3,"wip_limit":null,"is_terminal":true}]}],
+  "swimlanes":[{"id":6,"name":"Team B","position":2,"wip_limit":null},
+               {"id":5,"name":"Team A","position":1,"wip_limit":2}]}}
+PRE
+wcfg="$(_bs_wip_config "$(cat "$TMP/wip-preload.json")")"
+eq "the enforcement mode is read"                   "enforced" "$(printf '%s' "$wcfg" | jq -r '.enforcement')"
+eq "every field was reported by this host"          "[]"       "$(printf '%s' "$wcfg" | jq -c '.unreported')"
+eq "stages are in board position order, with their limits" '[[83,null],[84,3],[85,null]]' \
+   "$(printf '%s' "$wcfg" | jq -c '[.stages[] | [.stage_id, .wip_limit]]')"
+eq "is_terminal keeps false DISTINCT from true"     '[false,false,true]' \
+   "$(printf '%s' "$wcfg" | jq -c '[.stages[].is_terminal]')"
+eq "swimlanes are in position order, with their limits" '[["Team A",2],["Team B",null]]' \
+   "$(printf '%s' "$wcfg" | jq -c '[.swimlanes[] | [.swimlane, .wip_limit]]')"
+eq "no breach preview is claimed before one is read" "null" "$(printf '%s' "$wcfg" | jq -c '.breaches')"
+eq "an unusable body is null — the section is unavailable, not limit-free" "null" \
+   "$(_bs_wip_config '<html>a proxy said hello</html>')"
+eq "…and so is a JSON body with no .data object"    "null" "$(_bs_wip_config '{"data":null}')"
+
+echo "== _bs_wip_config — a field the host did NOT send is named, never read as null =="
+# An older host's preload carries none of these keys. `wip_limit: null` means "no limit", so
+# reading an ABSENT key as null would print "none set" over a limit that may be refusing the
+# tenant's moves right now — the exact misdirection the section exists to remove.
+wold="$(_bs_wip_config "$(jq -c 'del(.data.wip_enforcement)
+        | .data.workflows[0].stages |= map(del(.wip_limit, .is_terminal))
+        | .data.swimlanes |= map(del(.wip_limit))' "$TMP/wip-preload.json")")"
+eq "every absent field is named in unreported" \
+   '["wip_enforcement","stage wip_limit","stage is_terminal","swimlane wip_limit"]' \
+   "$(printf '%s' "$wold" | jq -c '.unreported')"
+eq "a board with no swimlanes KEY names that too"   "true" \
+   "$(_bs_wip_config "$(jq -c 'del(.data.swimlanes)' "$TMP/wip-preload.json")" | jq '.unreported | index("swimlanes") != null')"
+# A field is reported only when EVERY row carries it: one stage missing it is still unknown.
+eq "one stage without wip_limit leaves the field unreported" '["stage wip_limit"]' \
+   "$(_bs_wip_config "$(jq -c '.data.workflows[0].stages[0] |= del(.wip_limit)' "$TMP/wip-preload.json")" | jq -c '.unreported')"
+
+echo "== _bs_wip_breaches — the at/over-limit set, labelled; an unreadable preview is an ERROR =="
+cat > "$TMP/wip-breaches.json" <<'BR'
+{"data":{"columns":[{"stage_id":84,"name":"In Progress","count":3,"limit":3}],
+         "swimlanes":[{"swimlane_id":5,"name":"Team A","count":2,"limit":2}],
+         "cells":[{"stage_id":84,"swimlane_id":6,"count":4,"limit":2}]}}
+BR
+kb_api() { cat "$TMP/wip-breaches.json"; }
+wbr="$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body")"
+eq "a readable preview carries no error"            "null" "$(printf '%s' "$wbr" | jq -c '.error')"
+eq "a column breach keeps the server's count/limit" '["In Progress",3,3]' \
+   "$(printf '%s' "$wbr" | jq -c '.breaches.columns[0] | [.stage, .count, .limit]')"
+eq "a CELL (ids only on the wire) is labelled from the preload's names" '["In Progress","Team B",4,2]' \
+   "$(printf '%s' "$wbr" | jq -c '.breaches.cells[0] | [.stage, .swimlane, .count, .limit]')"
+# Each unreadable arm is its own route, and each must reach `error` — a preview read as "no
+# breaches" is how a tenant is told nothing is at its limit while one is refusing them.
+kb_api() { KB_HTTP="404"; return 1; }
+eq "a non-2xx answer names the status"              "the server ANSWERED HTTP 404" \
+   "$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" | jq -r '.error')"
+kb_api() { KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"; }
+eq "a request that never completed names no status" "the request DID NOT COMPLETE — no answer was read" \
+   "$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" | jq -r '.error')"
+for body in '<html>502</html>' '{"data":null}' '{"data":{"columns":[],"swimlanes":[]}}' '{"data":{"columns":[],"swimlanes":[],"cells":null}}' \
+            '{"data":{"columns":[],"swimlanes":[],"cells":[]}}<html>502</html>' \
+            '{"data":{"columns":[],"swimlanes":[],"cells":[]}}{"data":{"columns":[],"swimlanes":[],"cells":[]}}'; do
+    kb_api() { printf '%s' "$body"; }
+    eq "an unreadable 2xx is an error, not an empty preview: $body" "true" \
+       "$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" | jq '.breaches == null and (.error | test("not the shape"))')"
+done
+# CONTROL: the genuinely empty preview is a readable ZERO, not an error — otherwise the arms
+# above would pass on a helper that refused everything.
+kb_api() { printf '%s' '{"data":{"columns":[],"swimlanes":[],"cells":[]}}'; }
+eq "control: an EMPTY preview is readable, with no error" '{"columns":[],"swimlanes":[],"cells":[]} null' \
+   "$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" | jq -c '.breaches, .error' | paste -sd' ')"
+
+echo "== _bs_one_board + _bs_render_text — the wip section reaches the report =="
+# _wip_render <board-object>: the text a human reads for that one board.
+_wip_render() {
+    printf '%s' "$1" | jq -s --argjson now "$NOW4" '
+        { generated_at: ($now | todate),
+          since: {spec: "24h", cutoff: (($now - 86400) | todate), epoch: ($now - 86400)},
+          partial: false, failed_boards: 0, readable_boards: 1, boards: . }' > "$TMP/doc-wip.json"
+    _bs_render_text "$TMP/doc-wip.json"
+}
+_wip_section() { printf '%s\n' "$1" | awk '/^  wip/{f=1} /^▸/{f=0} /^⚠ /{f=0} f'; }
+# _wip_board <preload-file> <breaches-body|FAIL>: one _bs_one_board run over the fx env.
+_wip_board() {
+    WIP_PRE="$1" WIP_BR="$2"
+    kb_api() {
+        case "$2" in
+            */preload.json) cat "$WIP_PRE" ;;
+            */changelog.json*) cat "$TMP/fx-changelog.json" ;;
+            */wip-breaches.json)
+                printf '%s\n' "$2" >> "$TMP/wip-calls"
+                if [[ "$WIP_BR" == FAIL ]]; then KB_HTTP="500"; return 1; fi
+                printf '%s' "$WIP_BR" ;;
+            *) return 1 ;;
+        esac
+    }
+    mkdir -p "$TMP/bw"; : > "$TMP/wip-calls"
+    _bs_one_board fx "Fixture board" "$CUT4" "$NOW4" "$TMP/bw"
+}
+wb="$(_wip_board "$TMP/wip-preload.json" "$(cat "$TMP/wip-breaches.json")")"
+eq "a readable config + preview adds no failure line" "0" "$(printf '%s' "$wb" | jq '.failures | length')"
+eq "the board object carries the wip section"       "enforced" "$(printf '%s' "$wb" | jq -r '.wip.enforcement')"
+eq "…with the preview merged into it"               "3" \
+   "$(printf '%s' "$wb" | jq '[.wip.breaches.columns, .wip.breaches.swimlanes, .wip.breaches.cells] | map(length) | add')"
+wtxt="$(_wip_section "$(_wip_render "$wb")")"
+eq "the text names the mode and what it means"      "true" "$(has 'enforced — a card newly entering a target at its limit is REFUSED' "$wtxt")"
+eq "…the column limit"                              "true" "$(has "$(printf '      %-46s%5s' 'In Progress' 3)" "$wtxt")"
+eq "…the swimlane limit"                            "true" "$(has "$(printf '      %-46s%5s' 'Team A' 2)" "$wtxt")"
+eq "…and not a swimlane that has none"              "false" "$(has 'Team B  ' "$(printf '%s' "$wtxt" | command grep -v '×')")"
+# Read as the row's LAST FIELD, not a padded literal: printf pads in BYTES and `×` is two of
+# them, while the renderer pads in codepoints, so a printf-built needle is off by one here.
+eq "…each at/over-limit dimension, count/limit"     "column In Progress=3/3 swimlane Team A=2/2 cell In Progress × Team B=4/2" \
+   "$(printf '%s\n' "$wtxt" | awk '/^      (column|swimlane|cell) / { l = $0; sub(/^ +/, "", l); n = $NF; sub(/ +[^ ]+$/, "", l); printf "%s%s=%s", sep, l, n; sep = " " }')"
+eq "…and is_terminal as the board declares it"      "true" "$(has 'is_terminal (board-declared): Done' "$wtxt")"
+eq "a declaration that agrees with lane_type adds no divergence line" "false" "$(has 'differs from lane_type' "$wtxt")"
+
+# The mode alone flips the meaning of every limit below it, so the ADVISORY render is asserted
+# as its own arm rather than inferred from the enforced one.
+jq -c '.data.wip_enforcement = "advisory"' "$TMP/wip-preload.json" > "$TMP/wip-preload-adv.json"
+wadv="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-adv.json" "$(cat "$TMP/wip-breaches.json")")")")"
+eq "advisory mode says no WIP refusal fires"        "true" "$(has 'advisory — limits are displayed, never enforced; no WIP refusal fires on this board' "$wadv")"
+eq "…and never claims enforcement"                  "false" "$(has 'REFUSED' "$wadv")"
+
+# is_terminal is a DECLARE-only leg on the server (nothing backfills it), so where it disagrees
+# with lane_type — which the [terminal] marker is derived from — that is printed, not hidden.
+jq -c '.data.workflows[0].stages |= map(.is_terminal = false)' "$TMP/wip-preload.json" > "$TMP/wip-preload-div.json"
+wdiv="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-div.json" "$(cat "$TMP/wip-breaches.json")")")")"
+eq "no declared terminal stage reads as none"       "true" "$(has 'is_terminal (board-declared): none' "$wdiv")"
+eq "…and the disagreement with lane_type is printed" "true" "$(has 'differs from lane_type=done (Done)' "$wdiv")"
+
+# ABSENT is not NONE, through the whole pipeline. CONTROL: the same preload with every limit
+# present-and-null renders "none set" — so NOT REPORTED is driven by the key, not the value.
+jq -c 'del(.data.wip_enforcement) | .data.workflows[0].stages |= map(del(.wip_limit, .is_terminal))
+       | .data.swimlanes |= map(del(.wip_limit))' "$TMP/wip-preload.json" > "$TMP/wip-preload-old.json"
+wold_t="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-old.json" "$(cat "$TMP/wip-breaches.json")")")")"
+eq "an unsent mode is NOT REPORTED, not a mode"     "true" "$(has 'NOT REPORTED by this host — whether a WIP refusal can fire here is unknown' "$wold_t")"
+eq "unsent column limits are unknown, not none"     "true" "$(has 'column limits: NOT REPORTED by this host — unknown, not none' "$wold_t")"
+eq "unsent swimlane limits are unknown, not none"   "true" "$(has 'swimlane limits: NOT REPORTED by this host — unknown, not none' "$wold_t")"
+eq "unsent is_terminal is NOT REPORTED"             "true" "$(has 'is_terminal: NOT REPORTED by this host' "$wold_t")"
+eq "…and nothing in that section says none set"     "false" "$(has 'none set' "$wold_t")"
+jq -c '.data.workflows[0].stages |= map(.wip_limit = null) | .data.swimlanes |= map(.wip_limit = null)' \
+    "$TMP/wip-preload.json" > "$TMP/wip-preload-nolimit.json"
+wnone="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-nolimit.json" "$(cat "$TMP/wip-breaches.json")")")")"
+eq "control: limits present-and-null ARE none set"  "true true" \
+   "$(has 'column limits: none set' "$wnone") $(has 'swimlane limits: none set' "$wnone")"
+eq "control: …and say nothing about NOT REPORTED"   "false" "$(has 'NOT REPORTED' "$wnone")"
+
+# An unreadable preview is a ⚠ on the board's own failure list, and the section says it could
+# not answer — "at or over a limit now: none" would tell a refused tenant nothing is at a limit.
+wfail="$(_wip_board "$TMP/wip-preload.json" FAIL)"
+eq "an unreadable preview is a failure line"        "true" \
+   "$(has 'WIP breach preview unavailable (the server ANSWERED HTTP 500)' "$(printf '%s' "$wfail" | jq -r '.failures[]')")"
+wfail_t="$(_wip_section "$(_wip_render "$wfail")")"
+eq "…the section says UNAVAILABLE"                  "true" "$(has 'at or over a limit now: UNAVAILABLE' "$wfail_t")"
+eq "…and never says none"                           "false" "$(has 'at or over a limit now: none' "$wfail_t")"
+eq "…while the configuration it DID read still renders" "true" "$(has 'enforced — a card newly entering' "$wfail_t")"
+wempty_t="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload.json" "$FX_NO_BREACHES")")")"
+eq "control: a readable EMPTY preview says none"    "true" "$(has 'at or over a limit now: none' "$wempty_t")"
+
+# An unusable preload is ONE ⚠ naming both consequences, and no breach preview is requested
+# for a section that has nothing to qualify.
+printf '%s' '<html>a proxy said hello</html>' > "$TMP/wip-preload-bad.json"
+wbad="$(_wip_board "$TMP/wip-preload-bad.json" "$(cat "$TMP/wip-breaches.json")")"
+eq "an unusable preload leaves the section null"    "null" "$(printf '%s' "$wbad" | jq -c '.wip')"
+eq "…the one preload ⚠ says the wip section is missing" "1" \
+   "$(printf '%s' "$wbad" | jq '[.failures[] | select(test("preload read failed") and test("wip section is missing"))] | length')"
+eq "…no breach preview was requested"               "0" "$(wc -l < "$TMP/wip-calls" | tr -d ' ')"
+eq "…and the text says UNAVAILABLE"                 "true" \
+   "$(has 'wip: UNAVAILABLE — see the ⚠ line(s) above' "$(_wip_render "$wbad")")"
+eq "control: a readable preload DID request the preview" "1" \
+   "$(_wip_board "$TMP/wip-preload.json" "$FX_NO_BREACHES" > /dev/null; wc -l < "$TMP/wip-calls" | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 echo "== _bs_render_text — the text renders what the JSON carries =="
@@ -826,11 +1015,16 @@ kb_stub_install
 
 # One preload naming three stages, with the two lane_types the classification derives
 # from, so no "could not be classified" line joins the failure list and the only ⚠ under
-# test is the card read's.
-KB_STUB_PRELOAD="$(jq -cn '{data:{workflows:[{stages:[
-    {id:83,name:"Backlog",position:1,lane_type:"backlog_inventory"},
-    {id:84,name:"In Progress",position:2,lane_type:null},
-    {id:89,name:"Shipped to dev",position:3,lane_type:"done"}]}]}}')"
+# test is the card read's. It carries the WIP configuration a current host sends (card#10347)
+# — mode, one column limit, one swimlane limit, is_terminal — so the wip section renders
+# populated rather than as NOT REPORTED, and the breach preview answers readable-and-empty so
+# it adds no ⚠ of its own either.
+KB_STUB_PRELOAD="$(jq -cn '{data:{wip_enforcement:"enforced",workflows:[{stages:[
+    {id:83,name:"Backlog",position:1,lane_type:"backlog_inventory",wip_limit:null,is_terminal:false},
+    {id:84,name:"In Progress",position:2,lane_type:null,wip_limit:2,is_terminal:false},
+    {id:89,name:"Shipped to dev",position:3,lane_type:"done",wip_limit:null,is_terminal:true}]}],
+  swimlanes:[{id:5,name:"Team A",position:1,wip_limit:1}]}}')"
+KB_STUB_BREACHES='{"data":{"columns":[],"swimlanes":[],"cells":[]}}'
 # THE SAME three cards under two different `meta` blocks: `complete` declares the total it
 # delivered (rc 0), `short` declares five (rc 4 — the census sees sum_n < total). Same rows,
 # so the two renders differ ONLY by what this change adds, which is what makes the
@@ -887,7 +1081,7 @@ KB_STUB_CHANGELOG_NOMOVE="$(jq -cn '{data:[
 KB_STUB_CHANGELOG_NOMOVE_SHORT="$(jq -cn '{data:[
   {id:9,board_id:7,subject_id:1,action:"task.created",actor_type:"human",
    payload:{},created_at:((now - 3600)|todate)}]}')"
-export KB_STUB_PRELOAD KB_STUB_CARDS_OK KB_STUB_CARDS_SHORT KB_STUB_CARDS_FULL KB_STUB_CHANGELOG
+export KB_STUB_PRELOAD KB_STUB_BREACHES KB_STUB_CARDS_OK KB_STUB_CARDS_SHORT KB_STUB_CARDS_FULL KB_STUB_CHANGELOG
 export KB_STUB_CHANGELOG_SHORT KB_STUB_CHANGELOG_NOMOVE KB_STUB_CHANGELOG_NOMOVE_SHORT
 # ONE route table for both e2e blocks. The changelog arm switches on KB_STUB_WINDOW, which
 # `stats` — the ONLY caller that reaches this table, since every other invocation of the bin in
@@ -900,6 +1094,7 @@ kb_stub_route() {
     local url="$2"
     case "$url" in
         */preload.json*)   printf '200\n%s\n' "$KB_STUB_PRELOAD" ;;
+        */wip-breaches.json*) printf '200\n%s\n' "$KB_STUB_BREACHES" ;;
         */changelog.json*)
             case "$KB_STUB_WINDOW" in
                 short)        printf '200\n%s\n' "$KB_STUB_CHANGELOG_SHORT" ;;
@@ -1036,7 +1231,16 @@ window: 24h — flow counts events at or after <TS> · generated <TS>
     resolutions, per destination stage (never collapsed into one number):
       Shipped to dev                                    1   human 0 · service 1
     washes (terminal -> non-terminal; reported, NOT netted against the resolutions above):
-      Shipped to dev -> Backlog                         1"
+      Shipped to dev -> Backlog                         1
+  wip — the board configuration, read from the preload: a WIP refusal needs enforced mode AND a limit AND a target already at it
+    enforcement             enforced — a card newly entering a target at its limit is REFUSED
+    column limits:
+      In Progress                                       2
+    swimlane limits (in-progress cards per row):
+      Team A                                            1
+    cell limits: no read route returns them — a cell at or over its limit is listed below
+    at or over a limit now: none
+    is_terminal (board-declared): Shipped to dev"
 eq "CONTROL rc 0: the complete-read report is byte-identical" "$okexpect" "$(printf '%s' "$okout" | _declock)"
 eq "CONTROL rc 0: exits 0"                                    "0" "$STATS_RC"
 eq "CONTROL rc 0: no floor marker anywhere in the report"     "false" "$(has '≥' "$okout")"
@@ -1125,8 +1329,11 @@ eq "rc 3: the oldest-card ID is qualified on this arm too" "true" \
 # string inside failures[] — is a CONTRACT change whose consumer set has not been
 # enumerated, so it is not made here. That is a decision, not an oversight, and it is
 # asserted so the next change to this renderer cannot make it by accident: the per-board
-# key set is the same six keys on a partial read as on a whole one.
-_e2e_keys='["board","board_id","failures","flow","label","stock"]'
+# key set is the same on a partial read as on a whole one.
+# `wip` is card#10347's section — the board's WIP configuration, a new reading and not a
+# completeness field for either half — so it is in the set on every read, and what this
+# asserts is unchanged: no key appears or vanishes with the completeness of a read.
+_e2e_keys='["board","board_id","failures","flow","label","stock","wip"]'
 eq "the per-board JSON keys are unchanged on a COMPLETE read" "$_e2e_keys" \
    "$(printf '%s' "$(stats complete json)" | jq -c '.boards[0] | keys')"
 eq "…and unchanged on a PARTIAL one"                          "$_e2e_keys" \
@@ -1162,7 +1369,7 @@ echo "== board-stats(1) — a partly-read changelog window floors every flow num
 # section says nothing about the other — which is exactly what the cross controls below test.
 # It stops at the next board heading and at the line-initial ⚠ of the report trailer, neither
 # of which belongs to it (a board's own ⚠ lines are indented and sit above the section anyway).
-_flow_section() { printf '%s\n' "$1" | awk '/^  flow/{f=1} /^▸/{f=0} /^⚠ /{f=0} f'; }
+_flow_section() { printf '%s\n' "$1" | awk '/^  flow/{f=1} /^  wip/{f=0} /^▸/{f=0} /^⚠ /{f=0} f'; }
 # _flow_count <render> <label> — that row's NUMBER, read as the field AFTER the label rather
 # than matched inside a spacing literal, for the reason _stock_count is a field read: the count
 # is right-padded into a fixed column and the marker takes one of its cells instead of adding

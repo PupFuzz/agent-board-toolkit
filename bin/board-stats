@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # board-stats — a per-board STOCK + FLOW report, read from the two surfaces that can
-# actually answer those two questions. Read-only: every call it makes is a GET.
+# actually answer those two questions, plus the board's WIP configuration (see A THIRD
+# SECTION below). Read-only: every call it makes is a GET.
 #
 # TWO SECTIONS, TWO SOURCES, ON PURPOSE.
 #
@@ -49,6 +50,18 @@
 # event recorded and then to "stage <id>" — an unnamed column is honest, a guessed one is how
 # a hardcoded label reads as working for years.
 #
+# A THIRD SECTION, WIP, IS CONFIGURATION, NOT A COUNT (card#10347). The server refuses a
+# create/move on WIP grounds (a 422 keyed `workflow_stage_id`, `swimlane_id` or `_action`) only on
+# a conjunction — the board's `wip_enforcement` is `enforced`, the stage/swimlane/cell the card
+# enters carries a limit, and that target is already at it — so a tenant handed that 422 needs all
+# three to tell whether it applies to their board. The section prints them together: the mode and
+# every stage's and swimlane's `wip_limit` out of the same preload.json this tool already reads,
+# and the at/over-limit set out of the server's own breach preview (wip-breaches.json), the only
+# API read that shows a CELL limit at all. The board-declared `is_terminal` rides the same stage
+# projection and is printed beside it, with a line where it disagrees with the `lane_type`
+# derivation above. A field the host does not send is printed as NOT REPORTED, never as a value,
+# and an unreadable preview is a ⚠ line, never "none at limit".
+#
 # A SWIMLANE-ONLY MOVE IS NOT A TRANSITION. The board emits `task.moved` when the stage OR the
 # swimlane changes, so a swimlaned board's log carries rows whose from_stage_id equals their
 # to_stage_id. Those are excluded from the transition grouping — one inside a terminal stage
@@ -86,7 +99,8 @@
 #   --format <fmt>   text (human, the default) or json. Both are rendered from ONE derivation,
 #                    so the JSON carries exactly what the text prints — per-board stock,
 #                    per-transition counts with their human/service split, the created count,
-#                    the washes, and every per-board failure.
+#                    the washes, the wip section (`.wip`, with `.wip.unreported` naming every
+#                    field the host did not send), and every per-board failure.
 #
 # Knobs: BOARD_STATS_MAX_TIME (per-request seconds, default 15), BOARD_STATS_PAGE_CAP
 # (changelog pages per board, default 25 x 200 rows), BOARD_STATS_CARD_PAGE_CAP (default 25).
@@ -188,6 +202,68 @@ _BS_STAGEMAP_JQ='
     derived_term: [ $s[] | select(.lane == "done") | .id ],
     derived_pull: [ $s[] | select(.lane == "backlog_inventory") | .id ] }'
 
+# The board's WIP configuration, out of the SAME untrusted preload body: the enforcement mode,
+# every stage's `wip_limit` and `is_terminal`, and every swimlane's `wip_limit`. `null` when the
+# body carries no `.data` object — the section is then unavailable, never a board with no limits.
+#
+# WHY THIS IS ONE UNIT AND NOT A FIELD. The server refuses a create/move on WIP grounds only on a
+# CONJUNCTION: the board is `enforced`, AND the stage/swimlane/cell the card enters carries a
+# limit, AND that target is already at it (WipLimitGuard). The mode alone tells a tenant nothing
+# actionable, and the limits alone do not say whether any of them can refuse — so they are read
+# and printed together. Cell limits are the one dimension no read route returns; the breach
+# preview (`_BS_BREACH_JQ`) is where an at/over-limit cell becomes visible.
+#
+# A FIELD THE HOST DID NOT SEND IS NOT A NULL. `wip_limit: null` means "no limit"; an older host
+# that emits no `wip_limit` key at all means "unknown", and reading the two alike prints "none
+# set" for a limit that may be refusing the tenant's moves right now. `is_terminal: false` is the
+# same trap. So presence is tested with `has`, never `//`, and every absent field is NAMED in
+# `unreported` for the renderer to print in its place. A field counts as reported only when EVERY
+# row carries it; over zero rows nothing was reported either way, and nothing is claimed.
+_BS_WIP_JQ='
+def fld($rows; $k): ($rows | length) > 0 and all($rows[]; has($k));
+(fromjson? // null) as $p
+| if ($p | type) != "object" or ($p.data | type) != "object" then null else
+  $p.data as $b
+  | [ $b.workflows[]? | objects | .stages[]? | objects | select(.id != null) ] as $st
+  | [ $b.swimlanes[]? | objects | select(.id != null) ] as $sl
+  | { enforcement: (if $b | has("wip_enforcement") then $b.wip_enforcement else null end),
+      unreported: [ (if $b | has("wip_enforcement") then empty else "wip_enforcement" end),
+                    (if ($st | length) == 0 or fld($st; "wip_limit") then empty else "stage wip_limit" end),
+                    (if ($st | length) == 0 or fld($st; "is_terminal") then empty else "stage is_terminal" end),
+                    (if $b | has("swimlanes") then empty else "swimlanes" end),
+                    (if ($sl | length) == 0 or fld($sl; "wip_limit") then empty else "swimlane wip_limit" end) ],
+      stages: [ $st | sort_by(.position // 0)[]
+                | { stage_id: .id,
+                    stage: ((.name // ("stage " + (.id | tostring))) | tostring | gsub("\\s+"; " ")),
+                    lane_type: (.lane_type // null),
+                    wip_limit: (if has("wip_limit") then .wip_limit else null end),
+                    is_terminal: (if has("is_terminal") then .is_terminal else null end) } ],
+      swimlanes: [ $sl | sort_by(.position // 0)[]
+                   | { swimlane_id: .id,
+                       swimlane: ((.name // ("swimlane " + (.id | tostring))) | tostring | gsub("\\s+"; " ")),
+                       wip_limit: (if has("wip_limit") then .wip_limit else null end) } ],
+      breaches: null } end'
+
+# The server's breach preview (`GET /boards/{id}/wip-breaches.json`): every column, swimlane row
+# and cell whose ACTIVE card count is at or over its limit, regardless of mode — the third leg
+# of the conjunction above, computed by the server's own guard rather than re-derived here from
+# a card snapshot that counts a different population. Emits NOTHING unless `.data` is an object
+# whose three members are arrays (the envelope rule the pagers in this file carry), so an
+# unreadable body reaches the caller's non-empty guard instead of reading as "nothing at limit".
+# A cell carries only ids, so it is labelled from the preload's own names ($wip).
+_BS_BREACH_JQ='
+(.data // null) as $d
+| if ($d | type) != "object"
+     or ([$d.columns, $d.swimlanes, $d.cells] | map(type == "array") | all | not) then empty else
+  ([ $wip.stages[]    | {key: (.stage_id | tostring),    value: .stage} ]    | from_entries) as $sn
+  | ([ $wip.swimlanes[] | {key: (.swimlane_id | tostring), value: .swimlane} ] | from_entries) as $ln
+  | { columns:   [ $d.columns[]   | objects | {stage_id, stage: (.name // $sn[(.stage_id | tostring)] // "stage \(.stage_id)"), count, limit} ],
+      swimlanes: [ $d.swimlanes[] | objects | {swimlane_id, swimlane: (.name // $ln[(.swimlane_id | tostring)] // "swimlane \(.swimlane_id)"), count, limit} ],
+      cells:     [ $d.cells[]     | objects | {stage_id, swimlane_id,
+                                               stage: ($sn[(.stage_id | tostring)] // "stage \(.stage_id)"),
+                                               swimlane: ($ln[(.swimlane_id | tostring)] // "swimlane \(.swimlane_id)"),
+                                               count, limit} ] } end'
+
 # The whole per-board derivation — stock and flow both, from the card file, the row file and
 # the board's meta. ONE derivation feeds both output formats, so the JSON cannot drift from
 # the text: the text renderer below reads this object and computes nothing of its own.
@@ -276,6 +352,7 @@ def round1: ((. * 10) | round) / 10;
         pages: $meta.flow.pages,
         truncated: $meta.flow.truncated,
         data_available_from: $meta.flow.data_available_from } end),
+    wip: $meta.wip,
     failures: $meta.failures }'
 
 # The text rendering — a pure function of the document above.
@@ -368,6 +445,47 @@ def nonepop($f): if $f == "" then "in window" else "in the events read" end;
              else "    washes (terminal -> non-terminal; reported, NOT netted against the resolutions above):",
                   ( .flow.washes[] | "      \("\(.from_stage) -> \(.to_stage)" | pad(46))\(.count | fl($fflow) | lpad(5))" )
              end )
+      end ),
+    # The WIP section takes no floor marker: its limits are board configuration, read whole or
+    # not at all, and its at/over counts come from the server breach preview, not a census here.
+    # A field the host did not send is printed as NOT REPORTED in its place — see _BS_WIP_JQ.
+    ( if .wip == null then "  wip: UNAVAILABLE — see the ⚠ line(s) above"
+      else .wip as $w
+      | $w.unreported as $u
+      | def unrep($k): ($u | index($k)) != null;
+        def names($a): if ($a | length) == 0 then "none" else ($a | join(", ")) end;
+        "  wip — the board configuration, read from the preload: a WIP refusal needs enforced mode AND a limit AND a target already at it",
+        "    \("enforcement" | pad(24))"
+          + (if unrep("wip_enforcement") then "NOT REPORTED by this host — whether a WIP refusal can fire here is unknown"
+             elif $w.enforcement == "enforced" then "enforced — a card newly entering a target at its limit is REFUSED"
+             elif $w.enforcement == "advisory" then "advisory — limits are displayed, never enforced; no WIP refusal fires on this board"
+             else "\($w.enforcement) — not a mode this tool knows" end),
+        ( if unrep("stage wip_limit") then "    column limits: NOT REPORTED by this host — unknown, not none"
+          else [ $w.stages[] | select(.wip_limit != null) ] as $c
+          | if ($c | length) == 0 then "    column limits: none set"
+            else "    column limits:", ( $c[] | "      \(.stage | pad(46))\(.wip_limit | lpad(5))" ) end
+          end ),
+        ( if unrep("swimlanes") or unrep("swimlane wip_limit") then "    swimlane limits: NOT REPORTED by this host — unknown, not none"
+          else [ $w.swimlanes[] | select(.wip_limit != null) ] as $s
+          | if ($s | length) == 0 then "    swimlane limits: none set"
+            else "    swimlane limits (in-progress cards per row):", ( $s[] | "      \(.swimlane | pad(46))\(.wip_limit | lpad(5))" ) end
+          end ),
+        "    cell limits: no read route returns them — a cell at or over its limit is listed below",
+        ( if $w.breaches == null then "    at or over a limit now: UNAVAILABLE — see the ⚠ line(s) above"
+          else [ ($w.breaches.columns[]   | {k: "column \(.stage)",               count, limit}),
+                 ($w.breaches.swimlanes[] | {k: "swimlane \(.swimlane)",          count, limit}),
+                 ($w.breaches.cells[]     | {k: "cell \(.stage) × \(.swimlane)", count, limit}) ] as $br
+          | if ($br | length) == 0 then "    at or over a limit now: none"
+            else "    at or over a limit now (count/limit, the server'"'"'s own breach preview):",
+                 ( $br[] | "      \(.k | pad(46))\("\(.count)/\(.limit)" | lpad(9))" ) end
+          end ),
+        ( if unrep("stage is_terminal") then "    is_terminal: NOT REPORTED by this host"
+          else [ $w.stages[] | select(.is_terminal == true) ] as $it
+          | [ $w.stages[] | select(.lane_type == "done") ] as $ld
+          | "    is_terminal (board-declared): \(names([ $it[].stage ]))",
+            ( if ([ $it[].stage_id ] | sort) == ([ $ld[].stage_id ] | sort) then empty
+              else "      differs from lane_type=done (\(names([ $ld[].stage ]))) — the [terminal] marker above derives from lane_type plus any KB_STAGE_* override, never from is_terminal" end )
+          end )
       end ) ),
 ( if .partial then
     "",
@@ -434,6 +552,38 @@ _bs_since_epoch() {
 # the empty map on any unusable body (see _BS_STAGEMAP_JQ).
 _bs_stage_map() {
     printf '%s' "${1:-}" | jq -c -R -s "$_BS_STAGEMAP_JQ" 2>/dev/null || printf '%s' "$_BS_EMPTY_MAP"
+}
+
+# _bs_wip_config <preload-body>: the board's WIP configuration object, or `null` on any body
+# that carries no `.data` object (see _BS_WIP_JQ).
+_bs_wip_config() {
+    printf '%s' "${1:-}" | jq -c -R -s "$_BS_WIP_JQ" 2>/dev/null || printf 'null'
+}
+
+# _bs_wip_breaches <board-id> <wip-json> <body-file>: prints {breaches, error} — `breaches` the
+# labelled at/over-limit set, or null with `error` naming why it could not be read. The body goes
+# through a FILE rather than a `$( … )` for the card#6680 reason documented in _bs_window_rows:
+# KB_HTTP set inside a command substitution never reaches this shell.
+_bs_wip_breaches() {
+    local board_id="$1" wip="$2" bodyf="$3" rc=0 br err=""
+    local KB_API_QUIET=1
+    kb_api GET "/boards/$board_id/wip-breaches.json" > "$bodyf" || rc=$?
+    if [[ "$rc" -eq "$KB_API_RC_TRANSPORT" ]]; then
+        err="the request DID NOT COMPLETE — no answer was read"
+    elif [[ "$rc" -ne 0 ]]; then
+        err="the server ANSWERED HTTP ${KB_HTTP:-?}"
+    else
+        # kb_jq_one, not bare jq: jq STREAMS, so `{"data":{…}}<html>` would print a verdict about
+        # the first text before faulting on the rest, and two texts would print two — which the
+        # merge below cannot take, dropping the board's whole line. See its header in the lib.
+        br="$(kb_jq_one "$(cat "$bodyf")" -c --argjson wip "$wip" "$_BS_BREACH_JQ")"
+        [[ -n "$br" ]] || err="the response is not the shape this tool reads"
+    fi
+    if [[ -n "$err" ]]; then
+        jq -cn --arg err "$err" '{breaches: null, error: $err}'
+    else
+        jq -cn --argjson br "$br" '{breaches: $br, error: null}'
+    fi
 }
 
 # _bs_classify <map-json> <shipped> <released> <wont-do> <backlog> <prioritized>:
@@ -590,7 +740,7 @@ _bs_one_board() {
     local -a fails=() vals=()
     local board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
     local stock_ok=false stock_complete=false flow_ok=false flow_complete=false
-    local rc pre map cls err termn pulln
+    local rc pre map cls err termn pulln msg brmeta wip=null
     local cardfile="$tmp/cards.json" rowsfile="$tmp/rows.jsonl"
     local flowmeta='{"pages":0,"truncated":false,"data_available_from":null,"error":null}'
     map="$_BS_EMPTY_MAP"
@@ -645,8 +795,29 @@ _bs_one_board() {
 
                 pre="$(KB_API_QUIET=1 kb_api GET "/boards/$board_id/preload.json" 2>/dev/null)" || pre=""
                 map="$(_bs_stage_map "$pre")"
-                [[ "$map" == "$_BS_EMPTY_MAP" ]] \
-                    && fails+=("board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id, and the lane_type classification below has nothing to derive from")
+                # A body with no `.data` object leaves both empty, so it is ONE ⚠ naming both
+                # consequences rather than two voices for one failed read.
+                wip="$(_bs_wip_config "$pre")"
+                if [[ "$map" == "$_BS_EMPTY_MAP" ]]; then
+                    msg="board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id"
+                    if [[ "$wip" == null ]]; then
+                        msg+=", the lane_type classification below has nothing to derive from, and the wip section is missing"
+                    else
+                        msg+=", and the lane_type classification below has nothing to derive from"
+                    fi
+                    fails+=("$msg")
+                fi
+                # The breach preview is read only beside a readable configuration: its cells
+                # carry ids alone, and a section with no mode and no limits has nothing for an
+                # at/over-limit row to qualify.
+                if [[ "$wip" != null ]]; then
+                    brmeta="$(_bs_wip_breaches "$board_id" "$wip" "$tmp/breaches.json")"
+                    err="$(printf '%s' "$brmeta" | jq -r '.error // ""')"
+                    if [[ -n "$err" ]]; then
+                        fails+=("WIP breach preview unavailable ($err) — the wip section below cannot say which limits are at or over now, and a cell limit is readable nowhere else")
+                    fi
+                    wip="$(jq -cn --argjson w "$wip" --argjson m "$brmeta" '$w + {breaches: $m.breaches}')"
+                fi
 
                 # Derived (lane_type) + override (KB_STAGE_*). An EMPTY class after both is
                 # reported, never left to render as zeros: with no terminal stage every
@@ -720,12 +891,12 @@ _bs_one_board() {
         --argjson map "$map" --argjson flow "$flowmeta" --argjson failures "$failures_json" \
         --argjson now "$now" --argjson stock_ok "$stock_ok" --argjson flow_ok "$flow_ok" \
         --argjson stock_complete "$stock_complete" --argjson flow_complete "$flow_complete" \
-        --argjson cls "$cls" '
+        --argjson cls "$cls" --argjson wip "$wip" '
         { name: $name, label: $label,
           board_id: (if $bid == "" then null else ($bid | tonumber? // $bid) end),
           names: $map.names, order: $map.order,
           term: $cls.term, pull: $cls.pull,
-          now: $now, flow: $flow, failures: $failures,
+          now: $now, flow: $flow, failures: $failures, wip: $wip,
           stock_ok: $stock_ok, stock_complete: $stock_complete,
           flow_ok: $flow_ok, flow_complete: $flow_complete }')"
 
@@ -741,7 +912,7 @@ _bs_one_board() {
     else
         jq -c -n --argjson meta "$meta" \
             '{ board: $meta.name, label: $meta.label, board_id: $meta.board_id,
-               stock: null, stock_complete: null, flow: null, flow_complete: null,
+               stock: null, stock_complete: null, flow: null, flow_complete: null, wip: null,
                failures: ($meta.failures + ["this board could not be summarized — the report aggregation failed on its data"]) }'
     fi
 }
