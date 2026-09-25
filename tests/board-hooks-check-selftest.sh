@@ -22,7 +22,12 @@
 # `args`-names-the-script gate dropped (bash+args reads NOT-REGISTERED); the handler-field gate
 # disabled (args/if/once/shell read LIVE); the `.git` split forced to UNMEASURED (a refused
 # checkout loses its NOT-LIVE). The quoting fixtures were watched red against the prior
-# strip-quotes-then-expand reader, which read each quoted form as LIVE at rc 0.
+# strip-quotes-then-expand reader, which read each quoted form as LIVE at rc 0. Round 2: every new
+# case was watched red against the round-1 head first (a trailing CR/VT/FF read LIVE at rc 0; no
+# trust caveat; the main checkout's settings.local.json and managed-settings.d unread; no printed
+# bound). Mutants watched red: the function-local LC_ALL=C dropped from the word reader (the UTF-8
+# case reads LIVE); the user/managed exemption from the trust caveat dropped; the drop-in listing
+# emptied.
 #
 # Fixtures: a scratch HOME (no real settings or ~/.kanban-* file can taint a result), real
 # `git init` repos wired by the real bin/install-board-hooks, and a PATH shim dir holding
@@ -218,6 +223,17 @@ register "$USER_SETTINGS" '"Agent"' "\"bash $SCRIPT\""
 run -- "$TMP/r1"
 eq "an interpreter-prefixed command is UNMEASURED, rc 4" "4|true" \
    "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+# sh separates words on space, tab and newline only: a trailing CR, VT or FF is PART of the
+# command name, so the file sh looks for is not the script. A [[:space:]] trim read each as LIVE.
+for ws in '\r' '\u000b' '\f'; do
+    register "$USER_SETTINGS" '"Agent"' "\"$SCRIPT$ws\""
+    run -- "$TMP/r1"
+    eq "a command ending in $ws is not the bare path → UNMEASURED, never LIVE" "4|true" \
+       "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+done
+register "$USER_SETTINGS" '"Agent"' "\" \\t$SCRIPT \\t\""
+run -- "$TMP/r1"
+eq "leading/trailing spaces and tabs are separators sh drops → LIVE" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
 # Quoting decides expansion, as `sh -c` applies it: `~` expands only UNQUOTED at the word start,
 # `$VAR` only unquoted or inside double quotes. Stripping quotes first read each of these as the
 # expanded path — a false LIVE for a command the shell runs as a literal, relative name.
@@ -243,6 +259,24 @@ eq "an UNQUOTED \$CLAUDE_PROJECT_DIR holding a space is split by the shell → U
 register "$USER_SETTINGS" '"Agent"' '"\"$CLAUDE_PROJECT_DIR\"/tk/agent-dispatch-card-start"'
 run -- --project "$TMP/p q" "$TMP/r1"
 eq "…and double-quoted it is one word → LIVE" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+# The word reader's accept-sets are ASCII ranges under a function-local LC_ALL=C. A bracket range is
+# a COLLATION range under a UTF-8 locale (card#5409), so the pin is watched here by BEHAVIOUR: an
+# unquoted U+00E9 is outside the plain-path set whatever the caller's locale — and the same path
+# double-quoted is one word, so LIVE (the positive control). Skipped loudly where the runner's
+# en_US.UTF-8 does not widen [A-Za-z], because then this proves nothing.
+EACUTE=$'\xc3\xa9'
+if LC_ALL=en_US.UTF-8 IN="$EACUTE" bash -c '[[ "$IN" =~ ^[A-Za-z]$ ]]' 2>/dev/null; then
+    mkdir -p "$HOME/$EACUTE"; ln -sf "$SCRIPT" "$HOME/$EACUTE/agent-dispatch-card-start"
+    register "$USER_SETTINGS" '"Agent"' "\"$HOME/$EACUTE/agent-dispatch-card-start\""
+    LC_ALL=en_US.UTF-8 run -- "$TMP/r1"
+    eq "under a UTF-8 locale an unquoted non-ASCII letter is still outside the plain-path set → UNMEASURED" "4|true" \
+       "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+    register "$USER_SETTINGS" '"Agent"' "\"\\\"$HOME/$EACUTE/agent-dispatch-card-start\\\"\""
+    LC_ALL=en_US.UTF-8 run -- "$TMP/r1"
+    eq "…and double-quoted it is one word → LIVE (positive control)" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+else
+    echo "  skip locale-pin case: en_US.UTF-8 does not widen [A-Za-z] on this runner, so it would prove nothing"
+fi
 register "$USER_SETTINGS" '"Agent"' "\"\$TMP_UNKNOWN/agent-dispatch-card-start\""
 run -- "$TMP/r1"
 eq "a variable this reader does not know is UNMEASURED" "4|true" \
@@ -287,11 +321,32 @@ eq "an Agent hook that is some OTHER command is not this hook → NOT-REGISTERED
 
 # ---------------------------------------------------------------------------
 echo "== the settings population: project files, dedupe, unreadable/invalid, restricting keys =="
+register "$USER_SETTINGS" '"Agent"' "\"$SCRIPT\""
+run -- "$TMP/r1"
+eq "a LIVE from user settings carries no workspace-trust caveat" "false" \
+   "$(has 'trusted' "$(line 'agent-dispatch-card-start:')")"
 rm -f "$USER_SETTINGS"
 register "$PROJ/.claude/settings.local.json" '"Agent"' "\"$SCRIPT\""
 run -- "$TMP/r1"
 eq "a registration in the project's settings.local.json → LIVE" "true" \
    "$(has "registered in $PROJ/.claude/settings.local.json" "$(line 'agent-dispatch-card-start:')")"
+eq "a LIVE only from project settings says it depends on the folder being trusted" "true" \
+   "$(has 'only if this folder is trusted (the workspace trust dialog; not read here)' "$(line 'agent-dispatch-card-start:')")"
+# A session in a linked worktree also reads the MAIN checkout's .claude/settings.local.json.
+mkrepo "$TMP/mainco"
+git -C "$TMP/mainco" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$TMP/mainco" worktree add -q "$TMP/wtco" 2>/dev/null || bad "fixture: git worktree add failed"
+mkdir -p "$TMP/mainco/.claude"
+register "$TMP/mainco/.claude/settings.local.json" '"Agent"' "\"$SCRIPT\""
+run -- --project "$TMP/wtco" "$TMP/r1"
+eq "run from a worktree, a registration only in the main checkout's settings.local.json → LIVE" "0|true" \
+   "$RC|$(has "registered in $TMP/mainco/.claude/settings.local.json" "$(line 'agent-dispatch-card-start:')")"
+eq "…a project-file LIVE, so it carries the trust caveat" "true" \
+   "$(has 'only if this folder is trusted' "$(line 'agent-dispatch-card-start:')")"
+run -- --project "$TMP/mainco" "$TMP/r1"
+eq "run from the main checkout itself, that file is read once (it IS the project's)" "false" \
+   "$(has 'main-checkout' "$OUT")"
+rm -f "$TMP/mainco/.claude/settings.local.json"
 run -- --project "$TMP/r1" "$TMP/r1"
 eq "--project moves the project leg (the registration is no longer read)" "true" \
    "$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
@@ -306,7 +361,7 @@ if [[ "$(id -u)" != 0 ]]; then
     printf '{}' > "$USER_SETTINGS"; chmod 000 "$USER_SETTINGS"
     run -- "$TMP/r1"
     eq "an UNREADABLE settings file is UNMEASURED, never LIVE" "4|true" \
-       "$RC|$(has "$USER_SETTINGS is not a readable file" "$(line 'agent-dispatch-card-start:')")"
+       "$RC|$(has "$USER_SETTINGS is not readable by this process" "$(line 'agent-dispatch-card-start:')")"
     chmod 600 "$USER_SETTINGS"
 else
     echo "  skip unreadable-file case (running as root: chmod 000 does not deny root)"
@@ -332,11 +387,38 @@ register "$TMP/managed.json" '"Agent"' "\"$SCRIPT\""
 OUT="$(cd "$PROJ" && PATH="$FULLPATH" BHC_MANAGED_SETTINGS="$TMP/managed.json" "$BIN" "$TMP/r1" 2>&1)"; RC=$?
 eq "a managed-settings registration is read → LIVE" "0|true" \
    "$RC|$(has "registered in $TMP/managed.json" "$OUT")"
-for src in 'claude --settings' 'server-managed settings' 'MDM/OS policy' 'the SDK managedSettings option' \
-           'managed-settings.d drop-ins' 'skill and subagent frontmatter hooks' 'plugin hooks' \
+# managed-settings.d drop-ins are read beside the managed file, as Claude Code reads them: `*.json`,
+# not a dotfile, in name order.
+MGD="$TMP/mgd"; mkdir -p "$MGD/managed-settings.d"
+register "$MGD/managed-settings.d/10-hooks.json" '"Agent"' "\"$SCRIPT\""
+runm() { OUT="$(cd "$PROJ" && HOME="$HOME" PATH="$FULLPATH" BHC_MANAGED_SETTINGS="$MGD/managed-settings.json" "$BIN" "$@" 2>&1)"; RC=$?; }
+runm "$TMP/r1"
+eq "a registration only in a managed-settings.d drop-in is read → LIVE" "0|true" \
+   "$RC|$(has "registered in $MGD/managed-settings.d/10-hooks.json" "$(line 'agent-dispatch-card-start:')")"
+mv "$MGD/managed-settings.d/10-hooks.json" "$MGD/managed-settings.d/.10-hooks.json"
+runm "$TMP/r1"
+eq "a dotfile drop-in is not read (Claude Code skips it) → NOT-REGISTERED" "1|true" \
+   "$RC|$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
+rm -f "$MGD/managed-settings.d/.10-hooks.json"
+register "$USER_SETTINGS" '"Agent"' "\"$SCRIPT\""
+jq -n '{disableAllHooks: true}' > "$MGD/managed-settings.d/20-off.json"
+runm "$TMP/r1"
+eq "disableAllHooks in a drop-in makes the verdict UNMEASURED by name" "4|true" \
+   "$RC|$(has "$MGD/managed-settings.d/20-off.json sets disableAllHooks" "$(line 'agent-dispatch-card-start:')")"
+rm -rf "$MGD"; rm -f "$USER_SETTINGS"
+
+echo "== the printed bound: LIVE's definition and the runtime conditions not read, once per run =="
+run -- "$TMP/r1"
+eq "LIVE's narrowed definition is printed exactly once" "1" "$(grep -c 'LIVE here means:' <<< "$OUT")"
+eq "the unread-condition list is printed exactly once" "1" "$(grep -c 'NOT read here, and able to stop a LIVE hook' <<< "$OUT")"
+for src in -- '--bare' '--safe-mode' '--restricted' '--setting-sources' '--settings' 'workspace trust' \
+           'higher-ranked managed source' 'CLAUDE_PROJECT_DIR' 'main checkout' \
+           'server-managed settings' 'MDM/OS policy' 'a policyHelper' 'the SDK managedSettings option' \
+           'skill and subagent frontmatter hooks' 'plugin hooks' \
            'a registration made only there reads NOT-REGISTERED here' \
-           'a disableAllHooks or allowManagedHooksOnly set there can make a LIVE here wrong'; do
-    eq "the unread-source bound names: $src" "true" "$(has "$src" "$(line '(not read:')")"
+           'disableAllHooks or allowManagedHooksOnly set in a source not read here'; do
+    [[ "$src" == -- ]] && continue
+    eq "the printed bound names: $src" "true" "$(has "$src" "$OUT")"
 done
 
 # ---------------------------------------------------------------------------
