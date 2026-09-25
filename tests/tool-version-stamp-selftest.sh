@@ -11,32 +11,25 @@
 #
 # THE POPULATION IS DERIVED, never listed: every file in bin/ with a line-initial
 # `ABTK_TOOL_VERSION=`, UNION every file in bin/ naming `--tool-version` on a line before any `#`,
-# UNION the VENDORED-BY-COPY set (card#10367) — what INSTALL.md §6b tells a non-Actions consumer
-# to copy, where a copy that cannot say what it is cannot be told from a stale one. That set is
-# read in two steps, never from a list and never from the stamps (a population built from the
-# stamped files cannot find the unstamped one):
-#   1. every `bin/<name>` NAMED anywhere in a composite action (`*/action.yml`). That is a
-#      SUPERSET of what the actions run — a description naming a tool counts too — and is kept
-#      wide on purpose: over-inclusion costs a stamp, under-inclusion ships an unnameable copy;
-#   2. CLOSED over the siblings each member LAUNCHES from its own directory. The predicate, and
-#      the whole of what it sees: a file resolving its own dir via `dirname` of `$0`/`BASH_SOURCE`/
-#      `__file__` that names the sibling LITERALLY as a `/<name>` path segment on a non-comment
-#      line. Any `/<name>` counts, not only one after the dir variable — an over-inclusion in the
-#      safe direction (a member too many costs a stamp). A bare mention in a message is NOT one:
-#      §6b's recipe answers "what must I copy beside it", where a mentioned name is a harmless
-#      extra copy; here every member must be STAMPED, and a message naming `kbcard` would make it
-#      one. A sibling launched at runtime is copied beside its launcher and runs in the same job,
-#      so it is vendored exactly as its launcher is.
-#      WHAT IT CANNOT SEE, and silently (no line is printed for a skipped file): a sibling name
-#      held in a variable (`t=helper; "$dir/$t"`) or assembled at run time, and a file resolving
-#      its own dir by any other idiom (`${BASH_SOURCE[0]%/*}`, `realpath`, `readlink` without
-#      `dirname`). Such a sibling is not a member and nothing here reds for it; a control below
-#      pins the variable-held case as a known non-member, so widening or narrowing this reach
-#      changes a test, not only prose.
-# So a tool joining an action, or launched by one that did in a shape leg 2 sees, is a member
-# that day and reds until it is stamped. The second leg makes a bin that answers the flag WITHOUT
-# a stamp a member, so it reds for carrying none. The PRESENCE witnesses are `release-pr-body`
-# (stamp leg) and a non-empty action leg: an empty derivation cannot pass.
+# UNION the VENDORED-BY-COPY set (card#10367): the action-named bins, closed over the siblings
+# each launches literally from its own directory. That set is read in two steps, never from a list
+# and never from the stamps (a population built from the stamped files cannot find the unstamped
+# one):
+#   1. every `bin/<name>` NAMED anywhere in a `*/action.yml` that is a file in bin/ — a superset
+#      of what the actions run (a description naming a tool counts too);
+#   2. closed over `_launched`: for a file with a line holding `dirname` and, after it, `$0`,
+#      `BASH_SOURCE` or `__file__`, every other bin/ file written as a `/<name>` segment on a
+#      non-comment line.
+# THE REACH OF STEP 2 — the one statement of it; other docs point here rather than restate it.
+# Claimed only as far as a control below pins it:
+#   MEMBERS: a literal `/<sibling>` launch under `dirname "$0"`, `dirname "${BASH_SOURCE[0]}"`,
+#     and python `os.path.dirname(...__file__...)`;
+#   KNOWN NON-MEMBERS: a sibling only mentioned (no `/` segment); a literal launch from a file
+#     with no `dirname` self-dir; a sibling name held in a variable; a self-dir resolved by
+#     `${BASH_SOURCE[0]%/*}`, `realpath "$0"` or `readlink -f "$0"` without `dirname`.
+# A known non-member is not held to the flag, and nothing reds or prints for it.
+# The presence witnesses are `release-pr-body` (stamp leg) and a non-empty action leg: an empty
+# derivation cannot pass.
 #
 # PER MEMBER, each a separate violation:
 #   * exactly one stamp line, spelled `ABTK_TOOL_VERSION='<value>'`;
@@ -97,7 +90,7 @@ _action_bins() {
 # _launched <root> <name> — the bin/ siblings <root>/bin/<name> launches from its own directory:
 # only for a file matching `dirname` of `$0`/`BASH_SOURCE`/`__file__`, and only a name written
 # literally as any `/<name>` segment on a non-comment line that is a regular file in <root>/bin/
-# other than itself. Reach and blind spots: header, leg 2.
+# other than itself. Reach: header, THE REACH OF STEP 2.
 _launched() {
   local f="$1/bin/$2"
   command grep -qE 'dirname.*(\$0|BASH_SOURCE|__file__)' "$f" || return 0
@@ -303,9 +296,9 @@ eq "control: the same launch from a file that never resolves its own dir mints n
    "$(sed -i '/dirname/d' "$fx/bin/launcher-tool"; has_line helper-tool "$(_members "$fx")")"
 
 echo "== KNOWN NON-MEMBERS: launches the launch leg cannot see (its stated blind spots) =="
-# Pins leg 2's reach from the other side: each launcher below really does run helper-tool from
-# its own directory, and helper-tool is NOT made a member. If the predicate widens to see one,
-# these go red and the header's WHAT IT CANNOT SEE is owed an edit in the same change.
+# Each launcher below really does run helper-tool from its own directory, and helper-tool is NOT
+# made a member. If the predicate widens to see one, it reds and the header's THE REACH OF STEP 2
+# is owed an edit in the same change.
 fx="$(_fixture blind-spots)"
 cat > "$fx/bin/helper-tool" <<'SH'
 #!/usr/bin/env bash
@@ -334,8 +327,35 @@ eq "premise: the \${BASH_SOURCE[0]%/*} launcher really reaches helper-tool" "tru
    "$(has "unknown arg 'x'" "$("$fx/bin/launcher-tool" x 2>&1 || true)")"
 eq "blind spot: a literal sibling under a \${BASH_SOURCE[0]%/*} self-dir is NOT a member" "false" \
    "$(has_line helper-tool "$(_members "$fx")")"
-sed -i 's#^HERE=.*#HERE="$(dirname "${BASH_SOURCE[0]}")"#' "$fx/bin/launcher-tool"
+for _res in realpath 'readlink -f'; do
+  sed -i -e '/^SELF=/d' -e "s#^HERE=.*#SELF=\"\$($_res \"\$0\")\"\nHERE=\"\${SELF%/*}\"#" "$fx/bin/launcher-tool"
+  eq "premise: the $_res self-dir launcher really reaches helper-tool" "true" \
+     "$(has "unknown arg 'x'" "$("$fx/bin/launcher-tool" x 2>&1 || true)")"
+  eq "blind spot: a literal sibling under a $_res self-dir (no dirname) is NOT a member" "false" \
+     "$(has_line helper-tool "$(_members "$fx")")"
+done
+sed -i -e '/^SELF=/d' -e 's#^HERE=.*#HERE="$(dirname "${BASH_SOURCE[0]}")"#' "$fx/bin/launcher-tool"
 eq "control: the same literal launch under a dirname self-dir IS a member" "true" \
+   "$(has_line helper-tool "$(_members "$fx")")"
+
+echo "== CONTROL: a python launcher resolving its dir via dirname of __file__ makes its sibling a member =="
+fx="$(_fixture py-launcher)"
+cat > "$fx/bin/helper-tool" <<'SH'
+#!/usr/bin/env bash
+echo "unknown arg '$1'" >&2; exit 2
+SH
+cat > "$fx/bin/py-launcher" <<'PY'
+#!/usr/bin/env python3
+import os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+os.execv(here + "/helper-tool", [here + "/helper-tool"] + sys.argv[1:])
+PY
+chmod +x "$fx/bin/py-launcher" "$fx/bin/helper-tool"
+mkdir -p "$fx/py-action"
+printf 'runs:\n  using: composite\n  steps:\n    - run: "$GITHUB_ACTION_PATH/../bin/py-launcher"\n' > "$fx/py-action/action.yml"
+eq "premise: run, the python launcher really reaches helper-tool" "true" \
+   "$(has "unknown arg 'x'" "$("$fx/bin/py-launcher" x 2>&1 || true)")"
+eq "a sibling the python launcher execs from its __file__ dir is a member" "true" \
    "$(has_line helper-tool "$(_members "$fx")")"
 
 echo "== CONTROL: a stamped member that checks for jq BEFORE answering --tool-version reds =="

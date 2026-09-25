@@ -217,8 +217,7 @@ _run --toolkit "$TKG" "$OKF"
 eq "a declared member bin/ no longer carries: rc 3" "3" "$RC"
 eq "…and it is named, not silently dropped from the floor" "true" \
    "$(has "the declared mirrored set names promote-released-cards, which $TKG/bin/ does not carry" "$OUT")"
-# A STAMP IS NOT A MIRROR DECLARATION (card#10367): every vendorable-by-copy bin carries one, and
-# most of them are not mirrored. A stamped bin the floor does not declare and the mirror does not
+# A STAMP IS NOT A MIRROR DECLARATION (card#10367): stamped bins that are not mirrored exist. A stamped bin the floor does not declare and the mirror does not
 # carry is outside the population, and the run is judged on the declared set alone.
 TKS="$TMP/tk-newstamp"; cp -a "$TK" "$TKS"
 printf "#!/usr/bin/env bash\nABTK_TOOL_VERSION='0.2.0'\n" > "$TKS/bin/some-new-mover"
