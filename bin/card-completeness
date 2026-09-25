@@ -166,6 +166,7 @@
 #
 # Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH
 #                          [--api BASE]
+#        card-completeness --tool-version
 #   --cards "9451,card#9606"   ids or tokens; both spellings accepted.
 #   --release-head REV         REQUIRED. The commit the release being promoted is AT, in any
 #                              form GitHub's compare accepts (a full sha is the one to pass: a
@@ -181,6 +182,12 @@
 #                              $GITHUB_REPOSITORY, then to the `origin` remote of the cwd.
 #   --api   BASE               GitHub API base (default $GITHUB_API_URL, then
 #                              https://api.github.com). Must be https://.
+#   --tool-version             print the toolkit release this FILE was stamped at, and exit
+#                              0. It answers from the embedded `ABTK_TOOL_VERSION` line
+#                              before any config, repo, network or sibling is read, so a
+#                              vendored copy can say what it is (VERSIONING.md rule 1). A
+#                              copy refusing it as `unknown arg` is older than the flag,
+#                              never a version.
 #
 # Env: GITHUB_TOKEN / GH_TOKEN   the credential for every read (needs `pull-requests: read`
 #                                and `contents: read`). It rides curl's STDIN
@@ -205,6 +212,8 @@
 #      5 is an answer, 6 is the absence of one.
 set -euo pipefail
 
+ABTK_TOOL_VERSION='0.36.0'
+
 die() { echo "card-completeness: $*" >&2; exit 2; }
 for c in jq curl; do command -v "$c" >/dev/null || die "$c is required"; done
 
@@ -226,7 +235,7 @@ ids_in() {
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 USAGE="Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH [--api BASE]"
-REPO=""; CARDS_IN=""; API=""; RELEASE_HEAD=""; INTEGRATION=""
+REPO=""; CARDS_IN=""; API=""; RELEASE_HEAD=""; INTEGRATION=""; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)         require_value "$1" "${2:-}"; REPO="$2"; shift 2;;
@@ -234,10 +243,17 @@ while [ $# -gt 0 ]; do
     --api)          require_value "$1" "${2:-}"; API="$2"; shift 2;;
     --release-head) require_value "$1" "${2:-}"; RELEASE_HEAD="$2"; shift 2;;
     --integration)  require_value "$1" "${2:-}"; INTEGRATION="$2"; shift 2;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
+
+# Before anything else is read: a vendored copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
+fi
 
 IDS="$(printf '%s' "$CARDS_IN" | grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++' || true)"
 [ -n "$IDS" ] || die "--cards '$CARDS_IN' contains no card ids"

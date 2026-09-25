@@ -10,9 +10,15 @@
 # bumps VERSION without re-stamping reds here instead of shipping a stale stamp.
 #
 # THE POPULATION IS DERIVED, never listed: every file in bin/ with a line-initial
-# `ABTK_TOOL_VERSION=`, UNION every file in bin/ naming `--tool-version` on a line before any `#`.
-# The second half makes a bin that answers the flag WITHOUT a stamp a member, so it reds for
-# carrying none. The PRESENCE witness is `release-pr-body`: an empty derivation cannot pass.
+# `ABTK_TOOL_VERSION=`, UNION every file in bin/ naming `--tool-version` on a line before any `#`,
+# UNION every `bin/<name>` a composite action (`*/action.yml`) runs. The second leg makes a bin
+# that answers the flag WITHOUT a stamp a member, so it reds for carrying none. The third is the
+# VENDORED-BY-COPY set (card#10367): what an action runs is what INSTALL.md §6b tells a
+# non-Actions consumer to copy, and a copy that cannot say what it is cannot be told from a stale
+# one — so a tool joining an action is a member on that day, stamped or not, and reds until it is.
+# That leg is read from the action files, never from a list, and never from the stamps (a
+# population built from the stamped files cannot find the unstamped one). The PRESENCE witnesses
+# are `release-pr-body` (stamp leg) and a non-empty action leg: an empty derivation cannot pass.
 #
 # PER MEMBER, each a separate violation:
 #   * exactly one stamp line, spelled `ABTK_TOOL_VERSION='<value>'`;
@@ -40,16 +46,33 @@ source "$HERE/_selftest-prelude.sh"
 ROOT="$(cd "$HERE/.." && pwd)"
 _mktmp_scratch
 
+# _action_bins <root> — every bin/ basename a composite action at <root>/*/action.yml names.
+# Only names that exist in <root>/bin/ are kept, so a match inside a comment or a description that
+# names no real file cannot mint a member that then reds as unrunnable.
+_action_bins() {
+  local a
+  for a in "$1"/*/action.yml; do
+    [ -f "$a" ] || continue
+    command grep -oE 'bin/[A-Za-z0-9_.-]+' "$a" || true
+  done | sed 's#^bin/##' | sort -u | while IFS= read -r n; do
+    [ -f "$1/bin/$n" ] && printf '%s\n' "$n"
+  done
+  return 0
+}
+
 # _members <root> — the derived population, one bin/ basename per line.
 _members() {
   local f
-  for f in "$1"/bin/*; do
-    [ -f "$f" ] || continue
-    if command grep -qE '^ABTK_TOOL_VERSION=' "$f" \
-       || command grep -qE -- '^[^#]*--tool-version' "$f"; then
-      printf '%s\n' "${f##*/}"
-    fi
-  done
+  {
+    for f in "$1"/bin/*; do
+      [ -f "$f" ] || continue
+      if command grep -qE '^ABTK_TOOL_VERSION=' "$f" \
+         || command grep -qE -- '^[^#]*--tool-version' "$f"; then
+        printf '%s\n' "${f##*/}"
+      fi
+    done
+    _action_bins "$1"
+  } | sort -u
 }
 
 # _violations <root> — one line per violation, naming the file. Prints nothing when clean.
@@ -107,6 +130,9 @@ fi
 echo "== the real tree: every stamp and every --tool-version answer equals VERSION =="
 members="$(_members "$ROOT")"
 eq "presence witness: release-pr-body is a member" "true" "$(has_line release-pr-body "$members")"
+abins="$(_action_bins "$ROOT")"
+eq "presence witness: the composite actions name at least one bin/ file" "false" "$([ -z "$abins" ] && echo true || echo false)"
+echo "population: $(printf '%s' "$members" | tr '\n' ' ')"
 v="$(_violations "$ROOT")"
 eq "no violations on this tree" "" "$v"
 
@@ -160,5 +186,28 @@ chmod +x "$fx/bin/stamp-only"
 eq "stamp without the flag reds"      "true" "$(has 'stamp-only: stamped, but names no --tool-version flag' "$(_violations "$fx")")"
 printf "#!/usr/bin/env bash\nABTK_TOOL_VERSION='%s'\ncase \"\${1:-}\" in --tool-version) echo other;; esac\n" "$(tr -d '\n' < "$ROOT/VERSION")" > "$fx/bin/stamp-only"
 eq "an answer other than the stamp reds" "true" "$(has "stamp-only: --tool-version printed 'other" "$(_violations "$fx")")"
+
+echo "== CONTROL: a tool a composite action runs, carrying NO stamp and NO flag, is a member and reds =="
+# The card#10367 shape: a tool vendored by copy that cannot say what it is. The first two legs
+# cannot see it (it names neither the stamp nor the flag); only the action leg can.
+fx="$(_fixture unstamped-action-tool)"
+cat > "$fx/bin/new-release-tool" <<'SH'
+#!/usr/bin/env bash
+echo "unknown arg '$1'" >&2; exit 2
+SH
+chmod +x "$fx/bin/new-release-tool"
+eq "premise: invisible to the stamp and flag legs" "false" \
+   "$(command grep -qE -e '^ABTK_TOOL_VERSION=' -e '^[^#]*--tool-version' "$fx/bin/new-release-tool" && echo true || echo false)"
+eq "control: NOT a member while no action names it" "false" "$(has_line new-release-tool "$(_members "$fx")")"
+eq "control: and the fixture is clean without it" "" "$(_violations "$fx")"
+mkdir -p "$fx/new-action"
+printf 'runs:\n  using: composite\n  steps:\n    - run: "$GITHUB_ACTION_PATH/../bin/new-release-tool"\n' > "$fx/new-action/action.yml"
+eq "an action naming it makes it a member" "true" "$(has_line new-release-tool "$(_members "$fx")")"
+v="$(_violations "$fx")"
+eq "reds for carrying no stamp"          "true" "$(has 'new-release-tool: carries 0 ABTK_TOOL_VERSION= lines' "$v")"
+eq "…for naming no flag"                  "true" "$(has 'new-release-tool: stamped, but names no --tool-version flag' "$v")"
+eq "…and for the copy not answering"      "true" "$(has 'new-release-tool: --tool-version exited 2' "$v")"
+eq "control: an action naming a bin/ path that is not a file mints no member" "false" \
+   "$(printf '# see bin/no-such-tool\n' >> "$fx/new-action/action.yml"; has_line no-such-tool "$(_members "$fx")")"
 
 _summary "tool-version-stamp-selftest"

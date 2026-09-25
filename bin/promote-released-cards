@@ -313,6 +313,12 @@
 #   request, so it needs no second read to be consistent with the first.
 #
 # Usage: promote-released-cards [--dls LIST] [--cards IDS] [--base REF] [--head REF] [--source OWNER/REPO|*] [--shipped-stages IDS] [--require-complete] [--completeness PATH] [--dry-run] [--config PATH]
+#        promote-released-cards --tool-version
+#
+# --tool-version: print the toolkit release this FILE was stamped at, and exit 0. It answers from
+#   the embedded `ABTK_TOOL_VERSION` line before any config, repo, network, credential or sibling
+#   is read, so a vendored copy can say what it is (VERSIONING.md rule 1). A copy refusing it as
+#   `unknown arg` is older than the flag, never a version.
 #
 # --source "owner/repo" | "*": override `.promote.source` for this run (see REPO QUALIFICATION
 #   above). One of the two — the config key or this flag — MUST be present, or the run refuses
@@ -402,6 +408,8 @@
 #   ATTACKER side: a PR can edit `.release-pr.json`, so it could always move the target and
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
+
+ABTK_TOOL_VERSION='0.36.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
@@ -611,7 +619,7 @@ require_resolvable() { # <flag> <ref>
 }
 
 CONFIG=".release-pr.json"; DLS_IN=""; CARDS_IN=""; BASE=""; HEAD_REF=""; HEAD_SRC=""; DRY=0; SHIPPED_STAGES=""
-SOURCE_IN=""; REQUIRE_COMPLETE=0; COMPLETENESS=""
+SOURCE_IN=""; REQUIRE_COMPLETE=0; COMPLETENESS=""; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dls)            require_value "$1" "${2:-}"; DLS_IN="$2"; shift 2;;
@@ -626,6 +634,7 @@ while [ $# -gt 0 ]; do
     --require-complete) REQUIRE_COMPLETE=1; shift;;
     --completeness)   require_value "$1" "${2:-}"; COMPLETENESS="$2"; shift 2;;
     --dry-run)        DRY=1; shift;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     --config)         require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     # Print the contiguous leading comment block, whatever its length. A FIXED line range
     # silently truncates the moment the header outgrows it — this header reached 43 lines
@@ -636,6 +645,12 @@ while [ $# -gt 0 ]; do
     *) die "unknown arg '$1'";;
   esac
 done
+
+# Before anything else is read: a vendored copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
+fi
 
 # Normalize + validate the opt-in source-stage guard set: strip whitespace, then require a
 # non-empty comma-separated list of positive integers (mirrors the board_id/stage numeric

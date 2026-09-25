@@ -68,6 +68,7 @@
 #
 # Usage:
 #   release-artifacts-check --base <ref> --head <ref> [--config PATH] [--classify-only]
+#   release-artifacts-check --tool-version
 #
 #   --base   the PR's base commit/ref (e.g. github.event.pull_request.base.sha)
 #   --head   the PR's head commit/ref (e.g. github.event.pull_request.head.sha)
@@ -77,6 +78,10 @@
 #                    declares no artifacts: they are what the answer is computed from, and the
 #                    empty-`artifacts` opt-out below is an opt-out of the artifact LEGS, not of
 #                    the classification. A config lacking them is rc 2 here, never "not-release".
+#   --tool-version   print the toolkit release this FILE was stamped at, and exit 0. It answers
+#                    from the embedded `ABTK_TOOL_VERSION` line before any config, repo, network or
+#                    sibling is read, so a vendored copy can say what it is (VERSIONING.md rule 1).
+#                    A copy refusing it as `unknown arg` is older than the flag, never a version.
 #
 # `--classify-only` EXISTS SO THE RULE HAS ONE IMPLEMENTATION, NOT TWO (card#6579). The
 # release-VALUE test below — the fork-point version against head's, INCLUDING the arm that
@@ -153,6 +158,9 @@
 # being shipped is then unknown) — none of these is EVER classified as "not a release PR",
 # because that misclassification is a silent non-run of the whole gate rather than a pass.
 set -euo pipefail
+
+ABTK_TOOL_VERSION='0.36.0'
+
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
 # non-ASCII digits (card#5409). Exported so the `grep`s inherit it, not just this shell.
@@ -175,19 +183,31 @@ command -v git >/dev/null || die "git is required"
 # and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; BASE=""; HEAD_REF=""; CLASSIFY_ONLY=0
+CONFIG=".release-pr.json"; BASE=""; HEAD_REF=""; CLASSIFY_ONLY=0; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base)   require_value "$1" "${2:-}"; BASE="$2"; shift 2;;
     --head)   require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config) require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     --classify-only) CLASSIFY_ONLY=1; shift;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — a fixed `sed -n '2,20p'` is
     # silently wrong in both directions as the header grows or shrinks (card#5145).
     -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
+
+# Two query modes, each replacing the output with its own answer: passing both would silently lose
+# one, and --classify-only's answer is machine-read by release-tag-check.
+[ "$TOOL_VERSION_ONLY" = 0 ] || [ "$CLASSIFY_ONLY" = 0 ] \
+  || die "--tool-version and --classify-only are mutually exclusive query modes (run the tool once per question)"
+
+# Before anything else is read: a vendored copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
+fi
 
 [ -n "$BASE" ]     || die "--base <ref> is required"
 [ -n "$HEAD_REF" ] || die "--head <ref> is required"

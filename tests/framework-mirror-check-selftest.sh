@@ -213,13 +213,21 @@ _run --toolkit "$TKG" "$OKF"
 eq "a declared member bin/ no longer carries: rc 3" "3" "$RC"
 eq "…and it is named, not silently dropped from the floor" "true" \
    "$(has "the declared mirrored set names promote-released-cards, which $TKG/bin/ does not carry" "$OUT")"
-# the SELF-WIDENING leg: a third bin carrying the toolkit's own `this file travels` stamp reds
-# until the floor declares it, so the written declaration cannot lag the tree in silence.
+# A STAMP IS NOT A MIRROR DECLARATION (card#10367): every vendorable-by-copy bin carries one, and
+# most of them are not mirrored. A stamped bin the floor does not declare and the mirror does not
+# carry is outside the population, and the run is judged on the declared set alone.
 TKS="$TMP/tk-newstamp"; cp -a "$TK" "$TKS"
 printf "#!/usr/bin/env bash\nABTK_TOOL_VERSION='0.2.0'\n" > "$TKS/bin/some-new-mover"
 _run --toolkit "$TKS" "$OKF"
-eq "a newly stamped bin the floor does not declare: rc 3" "3" "$RC"
-eq "…and it is named" "true" "$(has "stamps some-new-mover as a travelling release bin" "$OUT")"
+eq "a stamped bin neither declared nor mirrored: rc 0" "0" "$RC"
+eq "…and it is not reported as mirrored" "false" "$(has "some-new-mover" "$OUT")"
+# RED half, one condition apart: the same stamped bin placed in the mirror joins the population by
+# name, and no toolkit tag carries it, so the run cannot score it and says so.
+TKSM="$TMP/fw-newstamp"; cp -a "$OKF" "$TKSM"
+cp "$TKS/bin/some-new-mover" "$TKSM/plugins/coord/templates/release/some-new-mover"
+_run --toolkit "$TKS" "$TKSM"
+eq "the same stamped bin, mirrored: rc 3" "3" "$RC"
+eq "…naming it" "true" "$(has "UNMEASURED some-new-mover — no toolkit tag carries bin/some-new-mover" "$OUT")"
 
 echo "== the FLOOR is a restatement of README, and is held against it =="
 # The check loads the declared set INLINE — a running program cannot follow a pointer — so the
@@ -228,8 +236,8 @@ echo "== the FLOOR is a restatement of README, and is held against it =="
 # third copy.
 # ⚑ BOUND, stated so the guard is not over-cited: this is one-way. It reds when the check declares
 # a file README's declaration does not name. README naming a THIRD travelling bin that the floor
-# omits is prose with no machine-readable shape, and is covered instead by the stamp guard above
-# the moment that bin is stamped.
+# omits is prose with no machine-readable shape, and NOTHING covers it: the stamp is not a mirror
+# declaration (the arm above), so no derived leg can say what the floor should contain.
 mapfile -t FLOOR_DECLARED < <(awk '/^FLOOR=\(/ { s = $0; sub(/^FLOOR=\(/, "", s); sub(/\).*$/, "", s); n = split(s, a, " "); for (i = 1; i <= n; i++) print a[i]; exit }' "$CHECK")
 eq "the FLOOR extraction carries real data (positive control)" "false" \
    "$([[ "${#FLOOR_DECLARED[@]}" -eq 0 ]] && echo true || echo false)"
