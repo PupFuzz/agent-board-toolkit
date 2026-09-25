@@ -115,7 +115,7 @@
 # to every reader of this body (card#8538).
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.35.1'
+ABTK_TOOL_VERSION='0.36.0'
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
 command -v jq  >/dev/null || die "jq is required"
