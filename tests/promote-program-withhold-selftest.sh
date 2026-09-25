@@ -14,9 +14,10 @@
 # This tool is vendored SHA-pinned into other repos' release workflows, so a hard failure here
 # becomes THEIR broken release over a card that is not theirs. The shipped behaviour is therefore:
 # name the card on stderr, count it in its own summary segment, promote everything else, and never
-# raise the run's rc. Every one of those four is a cell below, because three of them are exactly
-# what a reviewer would "tidy" into a `die`. "Never raise" is only half of rc PARITY, so the rc
-# cells run BOTH directions against the pre-change bin's own rc on each shape: a parent that bin
+# turn a run that exited 0 non-zero. Every one of those four is a cell below, because three of them
+# are exactly what a reviewer would "tidy" into a `die`. "Never 0 → non-zero" is only half of rc
+# PARITY, so the rc cells run BOTH directions against the pre-change bin's own rc on each shape: a
+# parent that bin
 # would have PATCHed must keep the "promoted nothing?" arms quiet (§ 6, § 7 — red on a head that
 # withheld it without telling those arms), and a parent it would have stage-guarded or seen
 # refused by the completeness gate must NOT (§ 8, § 9, § 10 — red on 77468c8, which counted every

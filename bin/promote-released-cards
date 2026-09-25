@@ -58,7 +58,10 @@
 #   CODES: the refused-move route of 1 and the ref-completeness die of 2). ⚠ THE ONE CASE IT
 #   CANNOT MATCH: a parent whose PATCH the pre-withhold tool would have sent and seen FAIL
 #   (refused, NOT APPLIED, unread). Knowing that takes the write this guard exists not to make, so
-#   the run is decided as if the move had landed — which can only LOWER an rc, never raise it.
+#   the run is decided as if the move had landed: its rc is the one the rest of the run earns. A
+#   pre-change rc 0 always stays 0. A non-zero rc that the parent's own failed write produced can
+#   become 0 or a DIFFERENT non-zero code (1→3, 1→5, 3→5, 2→5), because that failure no longer
+#   happens — so a gate must not read a code here as "at least as bad before".
 #
 #   ⛔ THE SPELLING IS AN EXACT, CASE-SENSITIVE, WHITESPACE-SENSITIVE MATCH ON THE TAG `program`,
 #   which is written here as the literal an operator reading `--help` needs (this block IS the
@@ -71,7 +74,7 @@
 #   admitting them here would make the two writers disagree about which cards are parents, which
 #   is worse than either rule alone. A second spelling would be a second rule.
 #
-#   ⚠ WHAT THIS CANNOT SEE, so `0 program-withheld` is not read as "no parent was promoted": a
+#   ⚠ WHAT THIS CANNOT SEE, so an absent `program-withheld` segment is not read as "no parent was promoted": a
 #   parent nobody TAGGED is invisible to this, exactly as it is to the bridge's guard — the tag is
 #   an operator convention with no enforcement at mint time on either side. And a row whose `tags`
 #   this run could not read as a list answers "not a parent" and is PROMOTED; that direction is
@@ -1973,7 +1976,7 @@ echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED
 # ⚠ Read `0 program-withheld`'s ABSENCE from the summary as "this run withheld no parent", never
 # as "no parent was promoted": an untagged parent is invisible to the predicate (header).
 if [ "$program_held" -gt 0 ]; then
-  echo "promote-released-cards: $program_held card(s) carrying the \`$PROGRAM_TAG\` tag were WITHHELD from the terminal stage and are named individually above. They are PARENT cards naming several legs each; this release shipped one leg's ref, which does not finish them. Nothing was written for them and they are where they were — move each by hand once its every leg has shipped. This is not a failure: the withhold never raises this run's exit code, and changes it at all only where the move it did not make would itself have failed." >&2
+  echo "promote-released-cards: $program_held card(s) carrying the \`$PROGRAM_TAG\` tag were WITHHELD from the terminal stage and are named individually above. They are PARENT cards naming several legs each; this release shipped one leg's ref, which does not finish them. Nothing was written for them and they are where they were — move each by hand once its every leg has shipped. This is not a failure: the withhold never turns a run that exited 0 non-zero, and changes this run's exit code at all only where the move it did not make would itself have failed." >&2
 fi
 if [ -n "$SHIPPED_STAGES" ]; then
   echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
@@ -2066,9 +2069,10 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # the PATCH landed, counted `moved` — which kept this arm quiet. So the term changes no rc a run
 # whose parent's move would have landed ever had; where that move would have been refused (the one
 # case nothing here can know without sending it) the pre-withhold run was rc 1 only if nothing else
-# moved, and this run is rc 0 — a lowering, never a raise. A parent the stage guard or the
-# completeness gate stops never reaches the withhold, is counted `guarded` / `incomplete` as it
-# always was, and leaves this arm exactly as armed as before (`tests/promote-program-withhold-
+# moved, and this run's rc is the one the rest of the run earns — 0, or a different non-zero code
+# (1→3, 1→5; header § THE PROGRAM-PARENT WITHHOLD). A pre-change rc 0 always stays 0. A parent
+# the stage guard or the completeness gate stops never reaches the withhold, is counted
+# `guarded` / `incomplete` as it always was, and leaves this arm exactly as armed as before (`tests/promote-program-withhold-
 # selftest.sh` § 9). Without the term, a parent beside a refused move turned a run that has always
 # exited 0 into rc 1 (§ 6). It is its own term, not a fold into `moved`, for the reason the summary
 # line gives: a withheld card was not promoted.
