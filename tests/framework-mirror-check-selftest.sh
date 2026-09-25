@@ -12,10 +12,10 @@
 # check names IN-STEP / STALE / DIVERGED / UNMEASURED for the inputs built to be each, exits with
 # the rc its header documents, derives its population from names shared with `bin/`, holds that
 # derived population to the DECLARED floor so a mirror that dropped a file is not scored clean
-# and a mirrored name the floor omits is not either, keeps a read's third outcome (unreadable) apart from drift, reads the git ref it was given
-# rather than the working tree, holds a stamped copy to the tag its stamp claims, and says which
-# artifact it read. It proves nothing about the real framework mirror — run the check itself for
-# that (VERSIONING.md's release flow).
+# and a mirrored name the floor omits is not either, keeps a read's third outcome (unreadable)
+# apart from drift, reads the git ref it was given rather than the working tree, holds a stamped
+# copy to the tag its stamp claims, and says which artifact it read. It proves nothing about the
+# real framework mirror — run the check itself for that (VERSIONING.md's release flow).
 #
 # ⛔ EVERY rc-0 ASSERTION IS PAIRED WITH THE SAME FIXTURE, ONE CONDITION APART, OBSERVED RED —
 # because an IN-STEP answer from a check that compared nothing would pass the rc-0 half alone.

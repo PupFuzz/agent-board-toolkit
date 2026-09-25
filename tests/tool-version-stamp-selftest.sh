@@ -18,17 +18,25 @@
 #   1. every `bin/<name>` NAMED anywhere in a composite action (`*/action.yml`). That is a
 #      SUPERSET of what the actions run — a description naming a tool counts too — and is kept
 #      wide on purpose: over-inclusion costs a stamp, under-inclusion ships an unnameable copy;
-#   2. CLOSED over the siblings each member LAUNCHES from its own directory — the property §6b's
-#      sibling recipe keys on (the file resolves its own dir with `dirname` of `$0`/`BASH_SOURCE`/
-#      `__file__`), narrowed to a sibling named as a PATH SEGMENT (`$dir/<name>`, `pwd)/<name>`).
-#      The narrowing is deliberate: §6b's recipe answers "what must I copy beside it", where a
-#      bare mention in a message is a harmless extra copy; here every member must be STAMPED, and
-#      a message naming `kbcard` would make it one. A sibling launched at runtime is copied beside
-#      its launcher and runs in the same job, so it is vendored exactly as its launcher is.
-# So a tool joining an action, or launched by one that did, is a member that day and reds until
-# it is stamped. The second leg makes a bin that answers the flag WITHOUT a stamp a member, so it
-# reds for carrying none. The PRESENCE witnesses are `release-pr-body` (stamp leg) and a
-# non-empty action leg: an empty derivation cannot pass.
+#   2. CLOSED over the siblings each member LAUNCHES from its own directory. The predicate, and
+#      the whole of what it sees: a file resolving its own dir via `dirname` of `$0`/`BASH_SOURCE`/
+#      `__file__` that names the sibling LITERALLY as a `/<name>` path segment on a non-comment
+#      line. Any `/<name>` counts, not only one after the dir variable — an over-inclusion in the
+#      safe direction (a member too many costs a stamp). A bare mention in a message is NOT one:
+#      §6b's recipe answers "what must I copy beside it", where a mentioned name is a harmless
+#      extra copy; here every member must be STAMPED, and a message naming `kbcard` would make it
+#      one. A sibling launched at runtime is copied beside its launcher and runs in the same job,
+#      so it is vendored exactly as its launcher is.
+#      WHAT IT CANNOT SEE, and silently (no line is printed for a skipped file): a sibling name
+#      held in a variable (`t=helper; "$dir/$t"`) or assembled at run time, and a file resolving
+#      its own dir by any other idiom (`${BASH_SOURCE[0]%/*}`, `realpath`, `readlink` without
+#      `dirname`). Such a sibling is not a member and nothing here reds for it; a control below
+#      pins the variable-held case as a known non-member, so widening or narrowing this reach
+#      changes a test, not only prose.
+# So a tool joining an action, or launched by one that did in a shape leg 2 sees, is a member
+# that day and reds until it is stamped. The second leg makes a bin that answers the flag WITHOUT
+# a stamp a member, so it reds for carrying none. The PRESENCE witnesses are `release-pr-body`
+# (stamp leg) and a non-empty action leg: an empty derivation cannot pass.
 #
 # PER MEMBER, each a separate violation:
 #   * exactly one stamp line, spelled `ABTK_TOOL_VERSION='<value>'`;
@@ -37,10 +45,11 @@
 #   * `--tool-version`, run on a COPY of the member file alone — in a scratch box outside every git
 #     work tree, with a decoy VERSION beside the copy's bin/ and in the directory it runs from, and
 #     with `jq`, `curl` and `git` absent from PATH (the question must not need the tool's runtime
-#     dependencies: a host that lacks one still gets its answer) — exits 0 with stdout exactly `<VERSION>\n` and stderr empty. The decoy is VERSION with a
-#     suffix, so it can never equal VERSION. Run in place instead, a stamped bin that reads
-#     `$(dirname "$0")/../VERSION` before its stamp prints the right answer from the checkout and
-#     the wrong one from every copy; from the box, that read reds.
+#     dependencies: a host that lacks one still gets its answer) — exits 0 with stdout exactly
+#     `<VERSION>\n` and stderr empty. The decoy is VERSION with a suffix, so it can never equal
+#     VERSION. Run in place instead, a stamped bin that reads `$(dirname "$0")/../VERSION`
+#     before its stamp prints the right answer from the checkout and the wrong one from every
+#     copy; from the box, that read reds.
 #
 # WHAT A GREEN RUN PROVES — and no more: that every member's stamp and answer equal VERSION on
 # THIS tree, and that the answer does not come from a VERSION file beside the file or in its cwd.
@@ -86,8 +95,9 @@ _action_bins() {
 }
 
 # _launched <root> <name> — the bin/ siblings <root>/bin/<name> launches from its own directory:
-# only for a file that resolves that directory, and only a name that is a PATH SEGMENT on a line
-# that is not a comment and is a regular file in <root>/bin/ other than itself.
+# only for a file matching `dirname` of `$0`/`BASH_SOURCE`/`__file__`, and only a name written
+# literally as any `/<name>` segment on a non-comment line that is a regular file in <root>/bin/
+# other than itself. Reach and blind spots: header, leg 2.
 _launched() {
   local f="$1/bin/$2"
   command grep -qE 'dirname.*(\$0|BASH_SOURCE|__file__)' "$f" || return 0
@@ -291,6 +301,56 @@ eq "…and for the copy not answering" "true" "$(has 'helper-tool: --tool-versio
 eq "…and only the sibling reds"      "false" "$(has 'launcher-tool:' "$v")"
 eq "control: the same launch from a file that never resolves its own dir mints no member" "false" \
    "$(sed -i '/dirname/d' "$fx/bin/launcher-tool"; has_line helper-tool "$(_members "$fx")")"
+
+echo "== KNOWN NON-MEMBERS: launches the launch leg cannot see (its stated blind spots) =="
+# Pins leg 2's reach from the other side: each launcher below really does run helper-tool from
+# its own directory, and helper-tool is NOT made a member. If the predicate widens to see one,
+# these go red and the header's WHAT IT CANNOT SEE is owed an edit in the same change.
+fx="$(_fixture blind-spots)"
+cat > "$fx/bin/helper-tool" <<'SH'
+#!/usr/bin/env bash
+echo "unknown arg '$1'" >&2; exit 2
+SH
+cat > "$fx/bin/launcher-tool" <<SH
+#!/usr/bin/env bash
+ABTK_TOOL_VERSION='$V'
+case "\${1:-}" in --tool-version) printf '%s\\n' "\$ABTK_TOOL_VERSION"; exit 0;; esac
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+tool=helper-tool
+exec "\$HERE/\$tool" "\$@"
+SH
+chmod +x "$fx/bin/launcher-tool" "$fx/bin/helper-tool"
+mkdir -p "$fx/launch-action"
+printf 'runs:\n  using: composite\n  steps:\n    - run: "$GITHUB_ACTION_PATH/../bin/launcher-tool"\n' \
+  > "$fx/launch-action/action.yml"
+eq "premise: the launcher is a member" "true" "$(has_line launcher-tool "$(_members "$fx")")"
+eq "premise: run, the launcher really reaches helper-tool" "true" \
+   "$(has "unknown arg 'x'" "$("$fx/bin/launcher-tool" x 2>&1 || true)")"
+eq "blind spot: a sibling name held in a variable is NOT a member" "false" \
+   "$(has_line helper-tool "$(_members "$fx")")"
+sed -i 's#^HERE=.*#HERE="${BASH_SOURCE[0]%/*}"#; s#^tool=.*##; s#"\$HERE/\$tool"#"$HERE/helper-tool"#' \
+  "$fx/bin/launcher-tool"
+eq "premise: the \${BASH_SOURCE[0]%/*} launcher really reaches helper-tool" "true" \
+   "$(has "unknown arg 'x'" "$("$fx/bin/launcher-tool" x 2>&1 || true)")"
+eq "blind spot: a literal sibling under a \${BASH_SOURCE[0]%/*} self-dir is NOT a member" "false" \
+   "$(has_line helper-tool "$(_members "$fx")")"
+sed -i 's#^HERE=.*#HERE="$(dirname "${BASH_SOURCE[0]}")"#' "$fx/bin/launcher-tool"
+eq "control: the same literal launch under a dirname self-dir IS a member" "true" \
+   "$(has_line helper-tool "$(_members "$fx")")"
+
+echo "== CONTROL: a stamped member that checks for jq BEFORE answering --tool-version reds =="
+fx="$(_fixture deps-first)"
+cat > "$fx/bin/deps-first" <<SH
+#!/usr/bin/env bash
+ABTK_TOOL_VERSION='$V'
+command -v jq >/dev/null || exit 2
+case "\${1:-}" in --tool-version) printf '%s\\n' "\$ABTK_TOOL_VERSION"; exit 0;; esac
+SH
+chmod +x "$fx/bin/deps-first"
+eq "premise: NODEPS carries no jq" "false" "$(PATH="$NODEPS" command -v jq >/dev/null && echo true || echo false)"
+eq "premise: with jq on PATH it answers VERSION" "$V" "$("$fx/bin/deps-first" --tool-version)"
+eq "reds: the copy exits 2 with jq absent" "true" \
+   "$(has 'deps-first: --tool-version exited 2' "$(_violations "$fx")")"
 
 echo "== the launch leg on the real tree =="
 eq "presence witness: promote-released-cards launches card-completeness" "true" \

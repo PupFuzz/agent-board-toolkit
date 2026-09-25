@@ -160,7 +160,8 @@ done
 # travels to the framework mirror" and went UNMEASURED on any stamped bin the FLOOR did not
 # declare. The stamp does not mean that: VERSIONING rule 1 gives it to every bin that may be
 # COPIED anywhere, and `tests/tool-version-stamp-selftest.sh` requires it on every bin a composite
-# action names and every sibling those launch (INSTALL.md §6b's vendor-by-copy set), most of which the framework does not mirror.
+# action names and every sibling those launch by a literal path from their own dir (that
+# selftest's header owns the exact reach), most of which the framework does not mirror.
 # Read as a mirror marker it would red every release on a correct tree. So nothing here derives
 # the FLOOR's WIDTH: README naming a new travelling bin that the FLOOR omits is prose with no
 # machine-readable shape, and is not caught UNTIL the mirror carries that bin. What IS caught: a
