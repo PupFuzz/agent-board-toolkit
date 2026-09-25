@@ -299,14 +299,19 @@ delete_throwaway() {
 }
 trap 'delete_throwaway' EXIT
 
-# report_leaked — name every card in BY_REF_IDS that is NOT this run's throwaway. This run's
-# teardown cannot remove those (it only ever touches $TID), so the operator has to, and a leaked
-# sentinel left in place is what the minter would seed from.
+# report_leaked — name every card in BY_REF_IDS that is NOT this run's throwaway, once per run
+# (a card both residue reads name is one card). This run's teardown cannot remove those (it only
+# ever touches $TID), and it must not guess what they are: a card carrying the sentinel may be an
+# earlier run's leaked throwaway, or a REAL card whose DL collides with the sentinel — deleting
+# the second destroys a real record. So the operator inspects, and the advice branches on which.
+LEAKS_REPORTED=" "
 report_leaked() {
     local id
     for id in $BY_REF_IDS; do
         [[ "$id" == "$TID" ]] && continue
-        echo "  card $id is NOT this run's throwaway ($TID) but carries the sentinel — a leak (e.g. an earlier run's failed teardown). This run does not touch it; clear its dl_number and delete it before seeding a DL minter from this board: kbcard${KBC_BOARD_ARG} show --task $id" >&2
+        [[ "$LEAKS_REPORTED" == *" $id "* ]] && continue
+        LEAKS_REPORTED="$LEAKS_REPORTED$id "
+        echo "  card $id is NOT this run's throwaway ($TID) but carries the sentinel $SENTINEL_DL. This run does not touch it. Inspect it: kbcard${KBC_BOARD_ARG} show --task $id — if it is NOT an [A1-verify] throwaway, the sentinel collides with a real DL: leave the card alone and re-run with a different --sentinel. Only if it IS an [A1-verify] throwaway (e.g. an earlier run's failed teardown), clear its dl_number and delete it before seeding a DL minter from this board." >&2
     done
 }
 

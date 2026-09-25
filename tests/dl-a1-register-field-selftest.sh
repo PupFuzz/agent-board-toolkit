@@ -438,8 +438,13 @@ echo "== a by-ref hit on a DIFFERENT card is residue, never 'empty' (card#10426)
 # the sentinel and poisons the minter's max(dl_number) seed exactly as this run's own would — so
 # reading "not my card" as "empty" printed both pass lines and exited 0 over the very state this
 # tool exists to rule out.
+# The foreign card is NOT this run's to write: it may be a real card whose DL collides with the
+# sentinel. Zero requests of ANY method to its task path, beside the throwaway's own teardown.
+FOREIGN_TASK="/tasks/$KB_STUB_FOREIGN_ID.json"
+LEAK_LINE="card $KB_STUB_FOREIGN_ID is NOT this run's throwaway (777)"
 KB_STUB_BYREF="hit foreign miss" run_a1
 eq "a foreign card AFTER THE CLEAR → rc 1"        "1" "$rc"
+eq "…the foreign card receives ZERO writes"     "0" "$(kb_stub_count_any "$FOREIGN_TASK")"
 eq "…the after-clear line does NOT say empty"     "false" \
    "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
 eq "…it names the foreign card"                   "true" \
@@ -451,6 +456,7 @@ eq "…the throwaway is still cleared and deleted"  "2" "$(kb_stub_count "${TEAR
 
 KB_STUB_BYREF="hit miss foreign" run_a1
 eq "a foreign card at the ACCEPTANCE read → rc 1" "1" "$rc"
+eq "…the foreign card receives ZERO writes"     "0" "$(kb_stub_count_any "$FOREIGN_TASK")"
 eq "…NO zero-residue claim is printed"            "false" "$(has 'zero residue' "$out")"
 eq "…the residue line names the foreign card"     "true" \
    "$(has 'residue — by-ref still resolves 5 after delete' "$err")"
@@ -459,20 +465,30 @@ eq "…and the run never prints OK"                 "false" "$(has 'OK (field re
 # The card's reproduction, verbatim: the foreign id at BOTH residue reads.
 KB_STUB_BYREF="hit foreign foreign" run_a1
 eq "a foreign card at both residue reads → rc 1"  "1" "$rc"
+eq "…the foreign card receives ZERO writes"     "0" "$(kb_stub_count_any "$FOREIGN_TASK")"
 eq "…no after-clear 'empty' line"                 "false" \
    "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
 eq "…no zero-residue claim"                       "false" "$(has 'zero residue' "$out")"
-eq "…the foreign card is named as a LEAK to delete" "true" \
+eq "…the foreign card is named, with the command to inspect it" "true" \
    "$(has 'kbcard show --task 5' "$err")"
+eq "…named ONCE though both residue reads saw it" "1" \
+   "$(grep -cF "$LEAK_LINE" <<<"$err")"
+eq "…the advice does not prescribe deleting a possibly-real card" "true" \
+   "$(has 're-run with a different --sentinel' "$err")"
 
 # Own AND foreign in one answer: both are named, so the operator does not delete the throwaway
 # and walk away from the leaked card.
 KB_STUB_BYREF="hit both miss" run_a1
 eq "own + foreign AFTER THE CLEAR → rc 1"         "1" "$rc"
+eq "…the foreign card receives ZERO writes"     "0" "$(kb_stub_count_any "$FOREIGN_TASK")"
 eq "…both cards are named"                        "true" \
    "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT STILL PRESENT — resolves card(s) 777 5" "$err")"
+eq "…the after-clear read reports the foreign card as a leak" "true" "$(has "$LEAK_LINE" "$err")"
+eq "…and never reports this run's OWN throwaway as a leak" "false" \
+   "$(has "card 777 is NOT" "$err")"
 KB_STUB_BYREF="hit miss both" run_a1
 eq "own + foreign at ACCEPTANCE → rc 1"           "1" "$rc"
+eq "…the foreign card receives ZERO writes"     "0" "$(kb_stub_count_any "$FOREIGN_TASK")"
 eq "…both cards are named"                        "true" \
    "$(has 'residue — by-ref still resolves 777 5 after delete' "$err")"
 
