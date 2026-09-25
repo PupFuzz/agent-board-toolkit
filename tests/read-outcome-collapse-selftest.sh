@@ -75,10 +75,14 @@
 # EVERY run, through the identical scanner. Nothing asserts on it — it is the cost of the
 # ruling, kept live so the ruling can be re-argued against a current figure.
 #
-# MEMBER — `<relpath>:<varname>`, NOT a line number. A line number rots on the next edit above
-# it and would turn every disposition into a re-typing chore; the variable is what carries the
-# collapsed outcome. Two captures of one variable in one file are therefore ONE member, and a
-# disposition covers the variable, not a line. The raw per-capture records are still printed in
+# MEMBER — `<relpath>:<varname>` for legs (a)+(b), NOT a line number. A line number rots on the
+# next edit above it and would turn every disposition into a re-typing chore; the variable is
+# what carries the collapsed outcome. Two captures of one variable in one file are therefore ONE
+# member, and a disposition covers the variable, not a line. ⛔ That is a LIMIT, not only a
+# convenience: a NEW same-named capture anywhere in the file is covered by the existing line and
+# does not red. The function-boundary legs below key per FUNCTION for exactly that reason (review
+# round 1 planted such a capture and this gate stayed green); legs (a)+(b) scan one file with no
+# function tracking and keep the per-file key. The raw per-capture records are still printed in
 # the denominator, so the merge is visible rather than silent.
 #
 # A member is a CANDIDATE iff  (a) ∧ (b), both derived from the file:
@@ -97,7 +101,8 @@
 #       exclusion is what makes this predicate discriminate rather than count assignments, and
 #       it is asserted below against a fixture, not assumed.
 #       Line continuations are joined before the test (`install-board-hooks`' probe puts its
-#       `|| { … }` on the next physical line), and the line is truncated at its first TOP-LEVEL
+#       `|| { … }` on the next physical line) — a trailing `\`, and a line ending in `||` or `&&`,
+#       which bash continues with no `\` — and the line is truncated at its first TOP-LEVEL
 #       `;` so a `||` belonging to a LATER statement on the same line is not attributed to the
 #       capture (`release-pr-body`'s `TAG_FORMAT="$(cfg_opt …)"; [ -n … ] || TAG_FORMAT=…`).
 #
@@ -142,9 +147,13 @@
 #                     Member `<file>:<fn>():envelope`. [#6594, #6630, #10241]
 #   fn-collapse       `V="$(G …)"` where G is a COLLAPSER and V is tested for emptiness (leg b):
 #                     the discard is inside G, so no `2>/dev/null` is in sight at the capture.
-#                     Joins leg (a)'s `<file>:<var>` key space — one variable, one verdict.
+#                     Any statement of a line counts (`local V; V="$(G)"`, `… && V="$(G)"`,
+#                     `if V="$(G)"`). Member `<file>:<fn>:<var>` (`(top)` outside a function):
+#                     a disposition covers that function's captures of V and no other's.
 #   rc1-merge         Inside a function, a read whose failure tail answers a LITERAL rc 1
-#                     (`|| return 1`, `|| exit 1`, or either anywhere in an `|| { … }` block) —
+#                     (`|| return 1`, `|| exit 1`, or either anywhere in an `|| { … }` block;
+#                     or anywhere on the arm an `if` takes when the read FAILS — `then` under
+#                     `if ! READ`, `else` under `if READ`, READ a capture or a bare call) —
 #                     the rc a predicate uses for "absent" — and that function's rc is USED as
 #                     an answer somewhere: tested as a condition, or captured with `$?`, directly
 #                     or through a wrapper that passes it straight through. A function whose rc
@@ -152,9 +161,13 @@
 #                     a verdict is. Member `<file>:<fn>()`. [#6631, #10230, #10241]
 #   truthiness        A READING function called as a condition — `if`/`elif`/`while`/`until`,
 #                     `!`, `&&`, or `||` with a tail that is neither a refusal (`return`/`exit`/
-#                     `die`, which is rc1-merge's or the process's) nor an rc capture (`x=$?`).
+#                     `die`, which is rc1-merge's or the process's), an rc capture (`x=$?`), nor
+#                     a discard (`|| true`, `|| :`, which branches on nothing) — or CAPTURED in
+#                     one (`if [!] V="$(F …)"`: the assignment's status is F's) unless the `else`
+#                     keeps the rc (`else rc=$?`). A one-line definition is not a call of itself.
 #                     A three-outcome function tested for truth IS the collapse, however well
-#                     the function keeps its outcomes apart. Member `<file>:if <fn>`. [#10241]
+#                     the function keeps its outcomes apart. Member `<file>:<caller>:if <fn>`,
+#                     per calling function for the same reason fn-collapse is. [#10241]
 #
 #   The CORRECT shape these must stay green on is card#10241's fix, planted verbatim below: the
 #   predicate classifies the envelope and returns 0 / 1 / a NAMED third rc, the wrapper keeps
@@ -177,6 +190,16 @@
 #     own `else` — an rc read any later is not seen, which UNDER-collects, the silent direction;
 #     and a jq default on an envelope key other than `.data` (a `gh api` body's own shape) is not
 #     envelope-default.
+#   * A capture's OWN list tail is judged by legs (a)+(b) and rc1-merge, never by truthiness:
+#     `V="$(F)" || echo "zero residue"` is the `if ! V="$(F)"` spelling moved into a list, and it
+#     is a member only where V is tested for emptiness (leg b), or the tail answers a literal 1
+#     in a function whose rc is used (rc1-merge).
+#   * `if` arms are read to the `fi`/`else`/`elif` at the indentation of that `if` (or on its own
+#     line); an arm the source formats at any other indentation is read short. A continued line
+#     joins only after a trailing `\`, `||` or `&&` — a statement continued after a bare `|` is
+#     read one line at a time.
+#   * A bare call of a collapser inside a function marks that function a COLLAPSER too, even when
+#     the output is redirected away (`kb_parse_resp … >&2`) — over-collects, errs RED.
 #   * card#6771 — the sixth recorded instance — is not a shell shape in THIS tree: `kbcard list`
 #     projected no `description`, and a peer's `grep` over that projection answered 0 for a card
 #     the board held. No function here collapsed a read; the consumer read a surface that never
@@ -190,7 +213,8 @@
 #     next edits that site — not a proof.
 #   * Leg (b) matches the name anywhere in the file, so a same-named variable in an unrelated
 #     function counts. That over-collects, which errs RED — a spurious member demanding a
-#     disposition, never a real one going quiet.
+#     disposition, never a real one going quiet. (The per-FILE key of legs (a)+(b), under MEMBER
+#     above, is the opposite direction and does go quiet.)
 #
 # ⛔ `command grep`, never bare `grep`: in an interactive Claude Code shell `grep` is a function
 # execing `ugrep --ignore-files`, which honours `.gitignore` and still exits 0 — a truncated
@@ -206,12 +230,12 @@ ROOT="$(cd "$HERE/.." && pwd)"
 
 # ── the disposition list ────────────────────────────────────────────────────────────────────
 #
-# "<relpath>:<var>|<reason it is permitted>". Every currently-known candidate, one line each.
+# "<member key>|<reason it is permitted>". Every currently-known candidate, one line each.
 # A candidate NOT listed here reds this test; a line here naming a candidate the scanner no
 # longer derives ALSO reds it, so the list cannot outlive what it excuses (the stale-exception
 # hole `prelude-shadow-selftest.sh` closes on its own allow-list).
 #
-# Reasons fall into three shapes, and the shape is legible from the wording:
+# Every reason OPENS with one of the types below, and that is checked — an undeclared type reds:
 #   NO READ      — the capture is a pipeline over a string already in memory. `grep` over
 #                  "$branch" has no third outcome to lose: rc 1 IS "absent".
 #   SAME OUTCOME — absent and unreadable reach the same branch, and that branch REFUSES,
@@ -221,6 +245,12 @@ ROOT="$(cd "$HERE/.." && pwd)"
 #   DISTINCT     — (function-boundary members) the rc or value the scan flagged carries ONE
 #                  outcome only: "absent" is answered on a different channel (rc 0 with `[]`, a
 #                  `null`, rc 3 UNVERIFIED), so nothing measured-absent can arrive looking like it.
+#   FIXED HERE   — the site IS the class's fix, and the reason says which recorded instance.
+#   OPEN         — a LIVE DEFECT, not an excuse: the collapse is wrong and is left in place
+#                  (typically because fixing it is an ask-first acceptance change). It MUST cite
+#                  the card tracking it (`card#N`), checked below, so an open defect cannot sit
+#                  in this list looking like a ruling. ⛔ The check proves a card is CITED, not
+#                  that the card is still open: this gate does not read the board.
 DISPOSITIONED=(
   "bin/agent-board-toolkit-runtime-check:p|SAME OUTCOME — command -v: a tool this seat cannot resolve cannot be run, so 'missing' is true of absent and unreadable alike."
   "bin/agent-board-toolkit-runtime-check:newest|SAME OUTCOME — empty warns 'cannot judge staleness (UNKNOWN, not ok)' and continues; it never reports current. The offline case is named separately at the fetch above."
@@ -250,6 +280,8 @@ DISPOSITIONED=(
   "bin/_kb-board-lib.sh:qextra|SAME OUTCOME — empty returns 5 with 'no request was issued, nothing was read'; refusing the widest wrong answer IS this site's purpose."
   "bin/_kb-board-lib.sh:last_page|SAME OUTCOME — deliberately UNKNOWN on anything but a positive integer (card#4623), so an unreadable meta falls through to the primary short-page break rather than terminating the scan."
   "bin/_kb-board-lib.sh:data|FIXED HERE — this IS the class's fix (card#6594/#6630): empty refuses and names what the refusal saved the caller from. The header records the one accepted residual (a board the token cannot see returns the same well-formed empty envelope)."
+  "bin/_kb-board-lib.sh:kb_card_pinned:data|DISTINCT — empty (no card object could be read out of the body) returns 2, apart from pinned (0) and not pinned (1), so an unread card never reads as unpinned."
+  "bin/_kb-board-lib.sh:kb_card_witness:data|SAME OUTCOME — a 2xx whose .data is not exactly one object is the only way to reach empty here, and empty REFUSES at rc 1, the UNMEASURED arm ('no card could be read out of its body — its state is UNMEASURED'); the absent answer is the 404 arm's own JSON, on a different channel."
   "bin/kbcard:board|SAME OUTCOME — documented at the site: a partial or empty census only removes twins (more conservative), and this site makes no operator-facing claim."
   "bin/kbcard:name|NO READ of a third outcome — _kbc_user_name is a pure scan of this shell's own KB_USER_* variables: it prints a name at rc 0 and prints NOTHING at rc 1, so empty IS 'this board env maps no name for that id', which is the only thing the emptiness test asks. Nothing is fetched, opened or parsed, so there is no unreadable state to lose, and the empty branch renders the RAW id (\`user <n>\`) rather than claiming a name it does not have."
   "bin/kbcard:decision|SAME OUTCOME — the --force escape hatch, documented: an empty decision still writes the audited override line, never a silent forced archive; the non-force branch keeps no '||' and fails closed."
@@ -268,43 +300,55 @@ DISPOSITIONED=(
   "bin/release-pr-body:miss|DISPOSED — the mover's rc is captured at the call ('&& rc=0 || rc=\$?') and a non-zero rc prints 'could not run'; this grep only reads output already accepted."
   "bin/release-pr-body:stranded|DISPOSED — line 2 of the mover's no-card report (card#8421), read at the same site and out of the same already-accepted \$out as miss above: the mover's rc is captured at the call ('&& rc=0 || rc=\$?') and a non-zero rc prints 'could not run' and RETURNS before either grep runs."
   "bin/_kb-board-lib.sh:fetch_board_cards()|DISTINCT — rc 1 is only 'page 1 was not read' (no response, a non-2xx, or a 2xx with no card array); an empty board answers rc 0 with [] (card#6594), so no read-and-absent outcome shares it. Where its rc is used it is branched on (the DL minter refuses on every non-zero one, card#6631); the one discard is the archive census above, where a partial read is the conservative direction."
-  "bin/_kb-board-lib.sh:if kb_owner_resolve|SAME OUTCOME — the only reads are of the LOCAL coord config, and every false answer (unreadable, not an object, no project, no seat, not on the roster) stamps nothing and prints KB_OWNER_WHY, naming which; nothing is guessed and no absence is claimed."
-  "bin/_kb-board-lib.sh:new|DISPOSED — \$tags is kb_card_tags' output, refused above when empty (the unreadable arm names HTTP and sends nothing), so kb_owner_strip reads a list already accepted: empty here means only 'no owner tag to remove', and the branch sends no write."
-  "bin/adopt-to-dl:cur_board|SAME OUTCOME — empty REFUSES the adoption, naming that nothing was read and the board is UNCONFIRMED; a readable card always carries a board_id, so there is no absent case to lose."
-  "bin/card-completeness:if load_open_prs|DISTINCT — rc 1 is only UNMEASURED (the cause in \$UNMEASURED); a repo with no open PRs is rc 0 with no rows. The false branch reports every card UNMEASURED at exit 6 and never 'complete'."
-  "bin/card-completeness:if load_unreleased_prs|DISTINCT — rc 1 is only UNMEASURED (a failed page, a missing ahead_by, a truncated or over-cap window); an empty window is rc 0. The false branch reports every card UNMEASURED at exit 6."
+  "bin/_kb-board-lib.sh:kb_owner_resolve()|SAME OUTCOME — rc 1 is 'no owner can be resolved' for every cause (config unreadable, not a JSON object, no project, no seat, not on the roster), and every rc-1 arm names its cause in KB_OWNER_WHY; the one caller that tests it (kb_owner_tag_write) stamps nothing and prints KB_OWNER_WHY. Nothing is guessed and no absence is claimed."
+  "bin/_kb-board-lib.sh:kb_owner_tag_write:if kb_owner_resolve|SAME OUTCOME — the only reads are of the LOCAL coord config, and every false answer (unreadable, not an object, no project, no seat, not on the roster) stamps nothing and prints KB_OWNER_WHY, naming which; nothing is guessed and no absence is claimed."
+  "bin/_kb-board-lib.sh:kb_owner_tag_write:new|DISPOSED — \$tags is kb_card_tags' output, refused above when empty (the unreadable arm names HTTP and sends nothing), so kb_owner_strip reads a list already accepted: empty here means only 'no owner tag to remove', and the branch sends no write."
+  "bin/_kb-board-lib.sh:kb_owner_tag_write:tags|SAME OUTCOME — reached only on a 2xx; kb_card_tags answers [] for a card with no tags, so empty is only the unreadable case, and that branch sends NO tag list and says the tags could not be read (HTTP status named). The card move is not undone either way."
+  "bin/adopt-to-dl:main:cur_board|SAME OUTCOME — empty REFUSES the adoption, naming that nothing was read and the board is UNCONFIRMED; a readable card always carries a board_id, so there is no absent case to lose."
+  "bin/card-completeness:(top):if load_open_prs|DISTINCT — rc 1 is only UNMEASURED (the cause in \$UNMEASURED); a repo with no open PRs is rc 0 with no rows. The false branch reports every card UNMEASURED at exit 6 and never 'complete'."
+  "bin/card-completeness:(top):if load_unreleased_prs|DISTINCT — rc 1 is only UNMEASURED (a failed page, a missing ahead_by, a truncated or over-cap window); an empty window is rc 0. The false branch reports every card UNMEASURED at exit 6."
   "bin/card-completeness:load_open_prs()|DISTINCT — its one rc-1 tail is fetch_pages failing, which sets \$UNMEASURED; 'no open PRs' is rc 0 with no rows, never rc 1."
   "bin/card-completeness:load_unreleased_prs()|DISTINCT — every rc-1 tail sets \$UNMEASURED; an empty unreleased window is rc 0, never rc 1."
   "bin/dl-a1-register-field:(top)():envelope|SAME OUTCOME, WITH A WRONG MESSAGE — '.data[]?' scores an unreadable 2xx field index as 'no dl_number definition', and both reach the FATAL exit 1, so no board is certified. Residual, not fixed here (an error-message change is ask-first): that FATAL line asserts 'the board's custom-field index carries NO dl_number definition' about a body it could not read."
   "bin/kbcard:_kbc_field_create_call()|DISTINCT — its rc 1 is the re-read's 'does not define it' (a HARD FAILURE, the fail-closed direction for a create's read-back): \$after is _kbc_fetch_fields' output, which refuses a body with no .data, and a re-read that cannot be made returns _kbc_unverified's rc 3 on its own branch. Residual: a .data that is an object, not an array, would read as 'does not define it'. The POST's own failure is a write, outside this leg."
-  "bin/kbcard:base|SAME OUTCOME — empty REFUSES the tag replace ('a list built from nothing'); kb_card_tags answers [] for a card with no tags, so empty is only the unreadable case."
-  "bin/kbcard:card|SAME OUTCOME — empty or null is the 'noprimitive' verdict, which the archive gate fails LOUD on and never archives."
-  "bin/kbcard:cid|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED WRITE, never a success and never 'not posted'."
-  "bin/kbcard:cmd_comments():envelope|OPEN, RECORDED AT THE SITE — '.data.comments // []' answers [] for a 2xx JSON body with no .data (an API or gateway error envelope), so 'kbcard comments' prints no comments at rc 0 for a card it never read. Left open there as card#6426 §b: refusing it moves a READ verb from rc 0 to rc 1, an acceptance change not granted. The 'false' half of the same default is docs/CONSOLIDATION-PLAN.md's 'shape test downstream of //' class."
-  "bin/kbcard:comments|SAME OUTCOME for every body jq cannot parse or whose comments are not a list of objects — empty REFUSES, saying nothing was read and that this is NOT an empty list, while a real empty list decodes to [], which is non-empty. The JSON-envelope residual is the cmd_comments():envelope line above."
-  "bin/kbcard:cur|SAME OUTCOME — empty REFUSES the --card-start move at rc 2 before any write, saying the stage could not be read."
-  "bin/kbcard:data|SAME OUTCOME — at every capture empty means no card object was read: show and the link witness REFUSE naming it; the patch preflights REFUSE before the write, except under --unassign and --steal, which proceed LOUDLY and by design (the flag already overrides the holder the read would have named)."
-  "bin/kbcard:echo_out|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a confirmed move."
-  "bin/kbcard:fid|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a created field."
-  "bin/kbcard:fields|SAME OUTCOME — empty REFUSES, saying nothing was read and that this is NOT a board with no custom fields; a board with none decodes to [], which is non-empty."
-  "bin/kbcard:got|SAME OUTCOME — empty (a body jq cannot parse) joins the restamp's UNREAD list; a card with no such key decodes to null and joins MISMATCH; neither is counted done. Residual: a 2xx JSON error envelope with no .data also decodes to null and is reported as a MISMATCH rather than UNREAD — the wrong name on a not-done card, the direction that claims nothing."
-  "bin/kbcard:id|DISPOSED — \$rows is already refused when empty, and a well-formed [] reaches 'no task found' correctly. Residual recorded at the site: a .data that is an object reads as the not-found arm (refusing it would change what this read verb accepts). The other emptiness test of an 'id' in this file is a different function's local."
-  "bin/kbcard:link|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a created link."
-  "bin/kbcard:meta|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED placement, never a confirmed reorder."
-  "bin/kbcard:out|SAME OUTCOME — the link witness REFUSES an unreadable linked_tasks list as UNMEASURED; the write echo takes _kbc_unverified (rc 3). Neither answers 'no links' or 'written'."
-  "bin/kbcard:ranked|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a confirmed reorder."
-  "bin/kbcard:ref_ids|SAME OUTCOME — empty sends NO acknowledgement, so an unread set and a set the server did not name both leave the refusal standing; only the advisory wording branches on it, and nothing is written either way."
+  "bin/kbcard:_kbc_patch_tags:base|SAME OUTCOME — empty REFUSES the tag replace ('a list built from nothing'); kb_card_tags answers [] for a card with no tags, so empty is only the unreadable case."
+  "bin/kbcard:_kbc_archive_decision:card|SAME OUTCOME — empty or null is the 'noprimitive' verdict, which the archive gate fails LOUD on and never archives."
+  "bin/kbcard:cmd_comment:cid|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED WRITE, never a success and never 'not posted'."
+  "bin/kbcard:cmd_comments():envelope|OPEN (card#6426 §b) — '.data.comments // []' answers [] for a 2xx JSON body with no .data (an API or gateway error envelope), so 'kbcard comments' prints no comments at rc 0 for a card it never read. Refusing it moves a READ verb from rc 0 to rc 1, an acceptance change not granted. ⚠ card#6426 itself read in a terminal stage and unassigned on 2026-09-25 with §b not done, so this defect has NO open tracking card until one is minted. The 'false' half of the same default is docs/CONSOLIDATION-PLAN.md's 'shape test downstream of //' class."
+  "bin/kbcard:cmd_comments:comments|SAME OUTCOME for every body jq cannot parse or whose comments are not a list of objects — empty REFUSES, saying nothing was read and that this is NOT an empty list, while a real empty list decodes to [], which is non-empty. The JSON-envelope residual is the cmd_comments():envelope line."
+  "bin/kbcard:_kbc_card_start_guard:cur|SAME OUTCOME — empty REFUSES the --card-start move at rc 2 before any write, saying the stage could not be read."
+  "bin/kbcard:_kbc_assign_guard:data|SAME OUTCOME — empty means no card object was read, and the preflight REFUSES before the write, except under --unassign and --steal, which proceed LOUDLY and by design (the flag already overrides the holder the read would have named)."
+  "bin/kbcard:_kbc_assign_guard:if kb_api|SAME OUTCOME — any failed read (no response, or a non-2xx) reaches one arm that says the card's current assignment could NOT be read: it REFUSES before the write (rc 1), or under --unassign / --steal proceeds LOUDLY saying so. No arm claims the card is unassigned."
+  "bin/kbcard:_kbc_link_witness:data|SAME OUTCOME — empty REFUSES at rc 1: no card could be read out of the body, its links are UNMEASURED."
+  "bin/kbcard:_kbc_ref_pair_guard:data|SAME OUTCOME — empty means no card object was read, and the preflight REFUSES before the write, naming each number/URL pair it could not check."
+  "bin/kbcard:_kbc_ref_pair_guard:if kb_api|SAME OUTCOME — any failed read (no response, or a non-2xx) takes the arm that says the card could NOT be read and REFUSES before the write, naming each pair it could not check. No arm claims the pairs agree."
+  "bin/kbcard:cmd_show:data|SAME OUTCOME — empty (a body jq cannot parse) REFUSES show at rc 1, saying nothing was read. Residual, recorded in card#6426's own text and not fixed here: a 2xx JSON body with no .data prints 'null', which is not empty, so this test never sees it."
+  "bin/kbcard:cmd_move:echo_out|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a confirmed move."
+  "bin/kbcard:_kbc_field_create_call:fid|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a created field."
+  "bin/kbcard:_kbc_fetch_fields:fields|SAME OUTCOME — empty REFUSES, saying nothing was read and that this is NOT a board with no custom fields; a board with none decodes to [], which is non-empty."
+  "bin/kbcard:_kbc_field_restamp_dl:got|SAME OUTCOME — empty (a body jq cannot parse) joins the restamp's UNREAD list; a card with no such key decodes to null and joins MISMATCH; neither is counted done. Residual: a 2xx JSON error envelope with no .data also decodes to null and is reported as a MISMATCH rather than UNREAD — the wrong name on a not-done card, the direction that claims nothing."
+  "bin/kbcard:resolve_task:id|DISPOSED — \$rows is already refused when empty, and a well-formed [] reaches 'no task found' correctly. Residual recorded at the site: a .data that is an object reads as the not-found arm (refusing it would change what this read verb accepts)."
+  "bin/kbcard:cmd_link:link|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a created link."
+  "bin/kbcard:cmd_reorder:meta|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED placement, never a confirmed reorder."
+  "bin/kbcard:_kbc_link_witness:out|SAME OUTCOME — empty (no linked_tasks LIST) REFUSES at rc 1 as UNMEASURED; it never answers 'no links'."
+  "bin/kbcard:_kbc_write_echo:out|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED WRITE, never a confirmed write."
+  "bin/kbcard:cmd_reorder:ranked|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED, never a confirmed reorder."
+  "bin/kbcard:_kbc_field_change_type_report:readable|SAME OUTCOME — empty (a body that is not a JSON object) takes the arm that says no refusal could be read out of the body and that nothing was written; it names no rule and no card set."
+  "bin/kbcard:_kbc_field_change_type_report:ref_ids|SAME OUTCOME — only the wording of a REFUSAL report branches on it (which cap sentence prints, and whether the moved-card list prints); the conversion wrote nothing either way, and no card set is named from an empty read."
+  "bin/kbcard:_kbc_field_retype:ref_ids|SAME OUTCOME — empty sends NO acknowledgement, so an unread set and a set the server did not name both leave the refusal standing; nothing is written either way."
   "bin/kbcard:resolve_task():envelope|SAME OUTCOME — '.data // empty' routes a missing, null or false .data to the REFUSAL that says nothing was read and that it is NOT 'no such card'; a well-formed empty result [] is truthy in jq and survives to the not-found arm."
-  "bin/kbcard:row|DISTINCT — empty takes _kbc_unverified (rc 3) at the set-options read-back; at the retype it takes the arm that refuses the ECHO of a conversion the 2xx says landed and does not restamp. Neither reports an option set or a type it did not read."
-  "bin/kbcard:rows|SAME OUTCOME — empty REFUSES the external-id lookup, saying nothing was read and that it is NOT 'no such card'. The other emptiness test of a 'rows' in this file is a different function's local (the KB_STAGE_* table)."
-  "bin/kbcard:to_t|DISTINCT — empty takes the same refuse-the-echo arm as \$row at the retype, with no restamp; the converted type is reported only when it was read."
+  "bin/kbcard:_kbc_field_retype:row|SAME OUTCOME — empty takes the arm that refuses the ECHO of a conversion the 2xx says landed and does not restamp; it never reports a type it did not read."
+  "bin/kbcard:_kbc_field_set_options:row|DISTINCT — empty takes _kbc_unverified (rc 3) at the set-options read-back; it never reports an option set it did not read."
+  "bin/kbcard:resolve_task:rows|SAME OUTCOME — empty REFUSES the external-id lookup, saying nothing was read and that it is NOT 'no such card'."
+  "bin/kbcard:_kbc_field_retype:to_t|DISTINCT — empty takes the same refuse-the-echo arm as \$row at the retype, with no restamp; the converted type is reported only when it was read."
   "bin/next-dl:dl_sequence_call()|SAME OUTCOME — rc 1 is only 'nothing was spent': the config did not resolve (no request), the route answered 404 (it does not exist here), or — on the NON-consuming peek alone — the request did not complete or its 2xx could not be read. Every rc 1 takes the announced offline fallback that --require-counter refuses; where a number MAY have been spent (the claim, transport or undecodable) it exits 3 and refuses to mint (card#10230)."
-  "bin/promote-released-cards:back|SAME OUTCOME — owner_card_tags answers [] for a card with no tags, so empty is only 'no tag list could be read', and that branch says the clear is UNVERIFIED rather than done."
-  "bin/promote-released-cards:kept|DISPOSED — \$tags already passed owner_card_tags' refusal above, so owner_strip reads an accepted list: empty means only 'no owner tag to remove', and no write is sent."
-  "bin/promote-released-cards:left|DISPOSED — \$back already passed owner_card_tags' UNVERIFIED branch above, so owner_list reads an accepted array: empty means the card really carries no owner tag, which is the read-back the success line quotes."
-  "bin/promote-released-cards:tags|SAME OUTCOME — owner_card_tags answers [] for a card with no tags, so empty is only the unreadable case, and that branch sends NO tag list and says so."
+  "bin/promote-released-cards:owner_clear:back|SAME OUTCOME — owner_card_tags answers [] for a card with no tags, so empty is only 'no tag list could be read', and that branch says the clear is UNVERIFIED rather than done."
+  "bin/promote-released-cards:owner_clear:kept|DISPOSED — \$tags already passed owner_card_tags' refusal above, so owner_strip reads an accepted list: empty means only 'no owner tag to remove', and no write is sent."
+  "bin/promote-released-cards:owner_clear:left|DISPOSED — \$back already passed owner_card_tags' UNVERIFIED branch above, so owner_list reads an accepted array: empty means the card really carries no owner tag, which is the read-back the success line quotes."
+  "bin/promote-released-cards:owner_clear:tags|SAME OUTCOME — owner_card_tags answers [] for a card with no tags, so empty is only the unreadable case, and that branch sends NO tag list and says so."
   "bin/release-artifacts-check:_json_parses()|NO READ — a parse of a config blob already in memory; its two answers are 'parses' and 'does not', and the READ (git show) failed on its own branch before the blob got here."
-  "bin/release-artifacts-check:if _json_parses|NO READ — the same in-memory parse; the false branch dies or scores the config 'unreadable'/'not valid JSON' by name, which is what an unparseable blob is."
+  "bin/release-artifacts-check:(top):if _json_parses|NO READ — the same in-memory parse of the fork-point config (the git show failed on its own branch); the false branch records 'it is not valid JSON there' by name."
+  "bin/release-artifacts-check:_ref_cfg_load:if _json_parses|NO READ — a parse of a config blob already in memory (the git show that read it failed on its own branch above); the false branch scores the ref's config 'unreadable' by name, which is what an unparseable blob is."
 )
 
 # ── the derivation ──────────────────────────────────────────────────────────────────────────
@@ -339,6 +383,27 @@ function tested(v, lines, nl,   j, L, reA, reB) {
     }
     return 0
 }
+# opcont(L) — L is a code line ending in `||` or `&&`: bash continues the list on the next line
+# with no `\`, so the two lines are one statement (`out="$(cmd)" ||` / `    true`).
+function opcont(L) { return L !~ /^[[:space:]]*#/ && L ~ /(\|\||&&)[[:space:]]*$/ }
+# pieces(s, arr[, so]) — s split at every TOP-LEVEL `;`, `&&` and `||` (outside quotes and every
+# $( )), so `local x; x="$(g)"` and `[ … ] && x="$(g)"` each yield the capture as a piece of its
+# own. With so set, at `;` only: the statements of s, each keeping its own list operators.
+function pieces(s, arr, so,   i, c, n, q, d, k, cur) {
+    n = length(s); q = ""; d = 0; k = 0; cur = ""
+    for (i = 1; i <= n; i++) { c = substr(s, i, 1)
+        if (q == SQ) { cur = cur c; if (c == SQ) q = ""; continue }
+        if (q == "\"" && c == "\"" && d == 0) { q = ""; cur = cur c; continue }
+        if (d == 0 && q == "" && (c == "\"" || c == SQ)) { q = c; cur = cur c; continue }
+        if (c == "$" && substr(s, i + 1, 1) == "(") { d++; cur = cur "$("; i++; continue }
+        if (d > 0 && c == "(") d++
+        else if (d > 0 && c == ")") d--
+        if (d == 0 && q == "" && (c == ";" || (!so && (c == "&" || c == "|") && substr(s, i + 1, 1) == c))) {
+            arr[++k] = cur; cur = ""; if (c != ";") i++; continue }
+        cur = cur c
+    }
+    arr[++k] = cur; return k
+}
 BEGIN { SQ = sprintf("%c", 39) }
 '
 _roc_awk="$_roc_awk_lib"'
@@ -346,6 +411,7 @@ _roc_awk="$_roc_awk_lib"'
 {
     if (cont != "") { L = cont " " $0 } else { L = $0; start = NR }
     if (L ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", L); cont = L; next }
+    if (opcont(L)) { cont = L; next }
     cont = ""
     S = stmt(L)
     if (S ~ /^[[:space:]]*#/) next
@@ -422,6 +488,29 @@ function orpos(s,   i, c, n, q, d) {
     }
     return 0
 }
+# ifarms(F, s, i, J) — sets THEN and ELSE to the two arms of the `if` whose condition statement J
+# starts on line s and ends on line i of F: on that line (`if …; then A; else B; fi`), or down to
+# the `fi` at the indentation of that if, an `elif` there ending the arms. Non-comment lines only.
+function ifarms(F, s, i, J,   ind, e, X, t, arm) {
+    THEN = ""; ELSE = ""
+    if (match(J, /;[[:space:]]*then([[:space:]]|$)/)) {
+        t = substr(J, RSTART + RLENGTH)
+        if (t ~ /(^|;)[[:space:]]*fi[[:space:]]*(;.*)?(#.*)?$/) {
+            sub(/;?[[:space:]]*fi[[:space:]]*(;.*)?(#.*)?$/, "", t)
+            if (match(t, /(^|;)[[:space:]]*else([[:space:]]|$)/)) { THEN = substr(t, 1, RSTART - 1); ELSE = substr(t, RSTART + RLENGTH) }
+            else THEN = t
+            return
+        }
+        THEN = t
+    }
+    ind = line[F, s]; sub(/[^[:space:]].*/, "", ind); arm = "then"
+    for (e = i + 1; e <= n[F]; e++) { X = line[F, e]
+        if (X ~ ("^" ind "(fi|elif)([^A-Za-z0-9_]|$)")) break
+        if (X ~ ("^" ind "else([^A-Za-z0-9_]|$)")) { arm = "else"; t = X; sub(/^[[:space:]]*else[[:space:]]*/, "", t); ELSE = ELSE t "\n"; continue }
+        if (iscomment(X)) continue
+        if (arm == "then") THEN = THEN X "\n"; else ELSE = ELSE X "\n"
+    }
+}
 function rec(f, k, l, w) { printf "%s\t%s\t%d\t%s\n", f, k, l, w }
 BEGIN { nl = split(ONLY, o, "\n"); for (k = 1; k <= nl; k++) if (o[k] != "") only[o[k]] = 1 }
 { F = FILENAME; n[F]++; line[F, n[F]] = $0; if (!(F in seen)) { seen[F] = 1; files[++nf] = F } }
@@ -436,15 +525,21 @@ END {
             fnat[F, i] = (depth > 0) ? stack[depth] : ""
             # A continued line is judged as the WHOLE statement: a pass-through spelled over two
             # lines with its `|| return 1` on the second is not a pass-through.
-            if (B ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", B); pend = pend B " "; B = "" }
-            else if (pend != "" && B != "") { B = pend B; pend = "" }
+            # A line ending in `||`/`&&` continues the same way with no `\` (card#10361 r1).
+            if (pend != "" && B != "") { B = pend B; pend = "" }
+            if (B ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", B); pend = B " "; B = "" }
+            else if (opcont(B)) { pend = B " "; B = "" }
             if (depth > 0 && B != "") { c = cmds(B); m = split(c, w, " ")
                 for (k = 1; k <= m; k++) { t = w[k]; if (t == "") continue
                     if (isprim(t)) { for (d = 1; d <= depth; d++) direct[stack[d]] = 1 }
                     else for (d = 1; d <= depth; d++) if (t != stack[d]) edge[stack[d], t] = 1 }
-                if (!isassign(B)) {
-                    if (B ~ /\|\|[[:space:]]*(true|:|printf|echo)([^A-Za-z0-9_]|$)/ && c ~ / (kb_api|kb_api_status|curl|gh|jq|git-ls-remote|git-fetch) /) coll[stack[depth]] = 1
-                    if (B !~ /\|\||&&/) for (k = 1; k <= m; k++) if (w[k] != "") passes[stack[depth], w[k]] = 1
+                # Judged per STATEMENT: `local x; x="$(g)"` is a declaration and a capture, and
+                # neither one is this function passing g through to its own output.
+                ns = pieces(B, sp, 1)
+                for (q = 1; q <= ns; q++) if (!isassign(sp[q]) && sp[q] !~ /^[[:space:]]*(local|declare|export|readonly)[[:space:]]/) {
+                    cq = cmds(sp[q])
+                    if (sp[q] ~ /\|\|[[:space:]]*(true|:|printf|echo)([^A-Za-z0-9_]|$)/ && cq ~ / (kb_api|kb_api_status|curl|gh|jq|git-ls-remote|git-fetch) /) coll[stack[depth]] = 1
+                    if (sp[q] !~ /\|\||&&/) { mq = split(cq, wq, " "); for (k = 1; k <= mq; k++) if (wq[k] != "") passes[stack[depth], wq[k]] = 1 }
                 }
             }
             if (one) depth--
@@ -462,9 +557,10 @@ END {
         for (i = 1; i <= n[F]; i++) { R = line[F, i]
             if (cont != "") J = cont " " R; else { J = R; st = i }
             if (J ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", J); cont = J; continue }
+            if (opcont(J)) { cont = J; continue }
             cont = ""
             if (iscomment(J)) continue
-            fn = fnat[F, st]
+            fn = fnat[F, st]; fk = (fn == "" ? "(top)" : fn)
             write = (J ~ /(^|[^A-Za-z])(PATCH|POST|PUT|DELETE)([^A-Za-z]|$)/)
             if (rep && (J ~ /\.data[[:space:]]*\/\/|\.data\[\]\?/ || J ~ /\.data(\.[A-Za-z_][A-Za-z0-9_]*|\[[^]]*\])+\??[[:space:]]*\/\/[[:space:]]*(\[|\{|"|[0-9]|false|true|null|\$)/)) rec(F, (fn == "" ? "(top)" : fn) "():envelope", st, "envelope-default")
             # a capture whose rc is KEPT marks its function as ANSWERING (for rc1-merge below)
@@ -483,10 +579,42 @@ END {
             # a bare call whose status is taken on the NEXT line (`F …` then `rc=$?`)
             if (J !~ /\|\||&&|\|/ && line[F, i + 1] ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?/) {
                 m = split(cmds(nosubst(J)), w, " "); for (k = 1; k <= m; k++) if (w[k] != "") { used[w[k]] = 1; break } }
-            if (rep && match(J, /^[[:space:]]*((local|declare|export|readonly)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*[A-Za-z_][A-Za-z0-9_]*/)) {
-                h = substr(J, RSTART, RLENGTH); v = h; sub(/=.*/, "", v); sub(/^.*[[:space:]]/, "", v)
+            # fn-collapse, over every PIECE of the statement (`local x; x="$(g)"`, `… && x="$(g)"`,
+            # `if x="$(g)"`), keyed per FUNCTION: a disposition covers the captures of one
+            # variable in one function, never a same-named capture elsewhere in the file.
+            np = pieces(J, pc)
+            for (q = 1; q <= np; q++) if (rep && match(pc[q], /^[[:space:]]*((then|else|do|\{)[[:space:]]+)?((if|elif|while|until)[[:space:]]+(![[:space:]]+)?)?((local|declare|export|readonly)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*[A-Za-z_][A-Za-z0-9_]*/)) {
+                h = substr(pc[q], RSTART, RLENGTH); v = h; sub(/=.*/, "", v); sub(/^.*[[:space:]]/, "", v)
                 g = h; sub(/^.*\$\([[:space:]]*/, "", g)
-                if ((g in coll) && tested(v, cur, n[F])) rec(F, v, st, "fn-collapse(" g "),")
+                if ((g in coll) && tested(v, cur, n[F])) rec(F, fk ":" v, st, "fn-collapse(" g "),")
+            }
+            # THE CONDITION SPELLINGS (card#10361 r1): `if [!] V="$(F …)"` / `if [!] F …`. The
+            # assignment status IS the status of F, so the `if` tests F for truth — but nosubst
+            # below strips the call, and the rc1-merge `||` leg never sees an `if` arm. Both are
+            # read here from the condition piece and the arm the FAILURE takes (`then` under
+            # `!`, else `else`).
+            if (match(J, /^[[:space:]]*((then|else|do)[[:space:]]+)?(if|elif|while|until)[[:space:]]+/)) {
+                kw = substr(J, RSTART, RLENGTH); cnd = substr(J, RSTART + RLENGTH)
+                neg = (cnd ~ /^![[:space:]]/); if (neg) sub(/^![[:space:]]+/, "", cnd)
+                split("", cp); pieces(cnd, cp); cnd = cp[1]
+                cwrite = (cnd ~ /(^|[^A-Za-z])(PATCH|POST|PUT|DELETE)([^A-Za-z]|$)/)
+                isif = (kw ~ /(^|[[:space:]])(if|elif)[[:space:]]+$/)
+                if (!cwrite && cnd !~ /^[[:space:]]*(\[|test[[:space:]])/) {
+                    THEN = ""; ELSE = ""; if (isif) ifarms(F, st, i, J)
+                    fail = neg ? THEN : ELSE
+                    rccap = (!neg && ELSE ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?/)
+                    # rc1-merge: a read in the condition, a literal 1 on the failure arm
+                    if (rep && isif && fn != "") { hit = 0; m = split(cmds(cnd), w, " ")
+                        for (k = 1; k <= m; k++) if (w[k] != "" && w[k] != fn && (isprim(w[k]) || (w[k] in reader))) hit = 1
+                        if (hit && (fail ~ /(^|[^A-Za-z0-9_])(return|exit)[[:space:]]+1([^0-9]|$)/ || fail ~ /^[[:space:]]*false([^A-Za-z0-9_]|$)/)) { nm2++; m2f[nm2] = F; m2n[nm2] = fn; m2l[nm2] = st }
+                    }
+                    # truthiness: a READING function inside the captured substitution
+                    if (match(cnd, /^[[:space:]]*((local|declare|export|readonly)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="?\$\(/)) {
+                        m = split(cmds(substr(cnd, RSTART + RLENGTH - 2)), w, " ")
+                        for (k = 1; k <= m; k++) { t = w[k]; if (t == "" || !(t in reader) || !(t in defd)) continue
+                            used[t] = 1; if (rep && !rccap) rec(F, fk ":if " t, st, "truthiness") }
+                    }
+                }
             }
             op = orpos(J)
             if (rep && fn != "" && op > 0 && !write) { pre = substr(J, 1, op - 1); tl = substr(J, op + 2); hit = 0
@@ -499,7 +627,9 @@ END {
                     if (blk ~ /(^|[^A-Za-z0-9_])(return|exit)[[:space:]]+1([^0-9]|$)/ || blk ~ /^[[:space:]]*false([^A-Za-z0-9_]|$)/) { nm2++; m2f[nm2] = F; m2n[nm2] = fn; m2l[nm2] = st }
                 }
             }
-            S = nosubst(J); m = split(cmds(S), w, " ")
+            # A one-line DEFINITION is not a call of itself: judge only its body.
+            S = nosubst(J); if (isdef(S)) S = substr(S, index(S, "()") + 2)
+            m = split(cmds(S), w, " ")
             for (k = 1; k <= m; k++) { t = w[k]; if (t == "" || !(t in reader) || !(t in defd)) continue
                 if (!match(S, "(^|[^A-Za-z0-9_])" t "([^A-Za-z0-9_-]|$)")) continue
                 before = substr(S, 1, RSTART); after = substr(S, RSTART + RLENGTH)
@@ -508,10 +638,12 @@ END {
                 rest = substr(after, length(seg) + 1)
                 cond = (before ~ /(^|[^A-Za-z0-9_])(if|elif|while|until)[[:space:]]+(![[:space:]]+)?[^;]*$/ && before !~ /(^|[^A-Za-z0-9_])(then|do|else)[[:space:]][^;]*$/) || before ~ /![[:space:]]*\{?[[:space:]]*$/
                 lst = (rest ~ /^[[:space:]]*(&&|\|\|)/) || before ~ /(&&|\|\|)[[:space:]]*$/
+                # `F || true` / `F || :` DISCARDS the rc; nothing branches on it, so it is no truth test.
+                if (rest ~ /^[[:space:]]*\|\|[[:space:]]*(true|:)[[:space:]]*([;)}]|$)/ && before !~ /(&&|\|\|)[[:space:]]*$/) lst = 0
                 if (rest ~ /^[[:space:]]*\|\|[[:space:]]*(\{[[:space:]]*)?[A-Za-z_][A-Za-z0-9_]*=\$\?/) { used[t] = 1; lst = 0 }
                 if (rest ~ /^[[:space:]]*;[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?/) used[t] = 1
                 if (rest ~ /^[[:space:]]*\|\|[[:space:]]*(return|exit|die)([^A-Za-z0-9_]|$)/ && !cond) lst = 0
-                if (cond || lst) { used[t] = 1; if (rep) rec(F, "if " t, st, "truthiness") }
+                if (cond || lst) { used[t] = 1; if (rep) rec(F, fk ":if " t, st, "truthiness") }
             }
         }
     }
@@ -582,6 +714,15 @@ _roc_records_over() {
     # DEFINITIONS in view (a harness file calls the lib's functions) but reporting only these.
     [[ ${#given[@]} -gt 0 ]] || return 0
     _roc_fn_records "$root" "$(printf '%s\n' "${given[@]}")" "${pop[@]}" "${given[@]}"
+}
+
+# _roc_reason_defects — reads DISPOSITIONED lines on stdin and prints each whose reason opens
+# with no declared type, or is OPEN without citing a tracking card. One owner for the rule, so
+# the planted control below and the real list are judged by the same code.
+_roc_reason_defects() {
+    awk '{ r = $0; sub(/^[^|]*\|/, "", r)
+           if (r !~ /^(NO READ|SAME OUTCOME|DISPOSED|DISTINCT|FIXED HERE|OPEN)([^A-Za-z]|$)/) { print "undeclared type: " $0; next }
+           if (r ~ /^OPEN/ && r !~ /card#[0-9]+/) print "OPEN without card#N: " $0 }'
 }
 
 # ── controls: the scanner must be able to find something, and must not find everything ──────
@@ -896,10 +1037,10 @@ eq "card#6631: an unreadable board answered with the no-floor rc, and branched o
 eq "card#10230: a failed CONSUMING read answered with the not-deployed rc, through a wrapper" \
    "bin/next-dl:dl_sequence_call()" "$(_roc_members "$S10230")"
 eq "card#10241: envelope default + rc-1 wrapper + a miss-is-pass caller testing it for truth" \
-   "$(printf '%s\n' 'bin/dl-a1-register-field:by_ref_has()' 'bin/dl-a1-register-field:if by_ref_has' 'bin/dl-a1-register-field:kb_by_ref_hit():envelope')" \
+   "$(printf '%s\n' 'bin/dl-a1-register-field:(top):if by_ref_has' 'bin/dl-a1-register-field:by_ref_has()' 'bin/dl-a1-register-field:kb_by_ref_hit():envelope')" \
    "$(_roc_members "$S10241")"
 eq "the reason each was derived is the leg it names" \
-   "$(printf '%s\n' envelope-default envelope-default rc1-merge rc1-merge rc1-merge truthiness envelope-default)" \
+   "$(printf '%s\n' envelope-default envelope-default rc1-merge rc1-merge truthiness rc1-merge envelope-default)" \
    "$(for r in "$S6594" "$S6630" "$S6631" "$S10230" "$S10241"; do _roc_records "$r" | awk -F'\t' '{ print $2 "\t" $4 }' | LC_ALL=C sort -u | cut -f2; done)"
 eq "card#10241's FIX, as shipped, derives nothing (the correct shape stays green)" \
    "" "$(_roc_members "$SFIXED")"
@@ -957,11 +1098,185 @@ items="$(printf '%s' "$resp" | jq -c '.data.items // []')"
 EOF
 echo "== the function-boundary legs discriminate =="
 eq "exactly the positives: a path defaulted to a VALUE (not to empty), a collapser's capture, rc-1 answered AND used (however the rc is taken), a reader tested for truth (not a write)" \
-   "$(printf '%s\n' '(top)():envelope' 'collapsed' 'if answers_named' 'if answers_one' | sed 's|^|bin/disc-callers:|'; printf '%s\n' 'answers_one()' 'bare_one()' 'spread_one()' | sed 's|^|bin/disc-lib:|')" \
+   "$(printf '%s\n' '(top)():envelope' '(top):collapsed' '(top):if answers_named' '(top):if answers_one' | sed 's|^|bin/disc-callers:|'; printf '%s\n' 'answers_one()' 'bare_one()' 'spread_one()' | sed 's|^|bin/disc-lib:|')" \
    "$(_roc_members "$SDISC")"
 eq "the derived sets: kb_parse_resp COLLAPSES; every function here READS" \
    "$(printf '%s\n' 'C kb_parse_resp' 'R answers_named' 'R answers_one' 'R bare_one' 'R id_of' 'R kb_api' 'R kb_parse_resp' 'R only_propagates' 'R read_card' 'R spread_one')" \
    "$(_roc_fn_sets "$SDISC" | awk -F'\t' '$1 != "D" { print $1 " " $2 }' | LC_ALL=C sort)"
+
+# ── review round 1 (card#10361): each hole a reviewer planted, as a flagged/safe pair ─────────
+#
+# A disposition is keyed PER FUNCTION for the function-boundary legs. Keyed per file, the line
+# excusing one capture silently excused every same-named capture in that file: a reviewer
+# planted this exact `data` collapse in a NEW function, and the gate stayed green.
+SKEY="$TMP/seam-key"; mkdir -p "$SKEY/bin"
+cat > "$SKEY/bin/key-lib" <<'EOF'
+kb_parse_resp() { local resp="$1"; shift; jq "$@" <<<"$resp" 2>/dev/null || true; }
+EOF
+cat > "$SKEY/bin/key-callers" <<'EOF'
+first_reader() {
+    local data
+    data="$(kb_parse_resp "$resp" -c '.data | select(type == "object")')"
+    [[ -n "$data" ]] || { echo "nothing was read" >&2; return 1; }
+}
+planted_reader() {
+    local data
+    data="$(kb_parse_resp "$resp" -r '.data.payload.dl_number // empty')"
+    [[ -z "$data" ]] && echo "no dl_number"
+}
+EOF
+echo "== a disposition covers ONE function's capture, never a same-named one elsewhere =="
+eq "a same-named collapser capture in a second function is a member of its own" \
+   "$(printf '%s\n' 'bin/key-callers:first_reader:data' 'bin/key-callers:planted_reader:data')" "$(_roc_members "$SKEY")"
+eq "a list excusing the first function's capture leaves the planted one undispositioned (it REDS)" \
+   "bin/key-callers:planted_reader:data" \
+   "$(LC_ALL=C comm -23 <(_roc_members "$SKEY") <(printf '%s\n' 'bin/key-callers:first_reader:data'))"
+
+# THE CONDITION SPELLINGS. `if [!] V="$(F …)"` tests F's status exactly as `if F` does, and a
+# literal 1 on the failure ARM of an `if` merges exactly as `|| return 1` does. Each spelling
+# beside its safe twin: the rc kept in `else rc=$?`, a named rc on the arm, or a write.
+SCOND="$TMP/seam-cond"; mkdir -p "$SCOND/bin"
+cat > "$SCOND/bin/cond-lib" <<'EOF'
+kb_api() { curl -sS -X "$1" "$API$2"; }
+by_ref_has() {
+    local resp
+    resp="$(kb_api GET "/by-ref")" || return "$RC_UNREADABLE"
+    printf '%s' "$resp" | jq -e '.data | length > 0' >/dev/null
+}
+guard_one() {
+    if ! resp="$(curl -sS "$API/x")"; then
+        echo "could not read" >&2; return 1
+    fi
+    printf '%s' "$resp"
+}
+guard_named() {
+    if ! resp="$(curl -sS "$API/x")"; then
+        echo "could not read" >&2; return "$RC_UNREADABLE"
+    fi
+    printf '%s' "$resp"
+}
+else_one() {
+    if resp="$(curl -sS "$API/y")"; then
+        printf '%s' "$resp"
+    else
+        return 1
+    fi
+}
+else_named() {
+    if resp="$(curl -sS "$API/y")"; then printf '%s' "$resp"; else return "$RC_UNREADABLE"; fi
+}
+split_one() {
+    resp="$(curl -sS "$API/s")" ||
+        return 1
+    printf '%s' "$resp"
+}
+EOF
+cat > "$SCOND/bin/cond-callers" <<'EOF'
+if x="$(guard_one)"; then :; else rc=$?; fi
+if x="$(guard_named)"; then :; else rc=$?; fi
+if y="$(else_one)"; then :; else rc=$?; fi
+if y="$(else_named)"; then :; else rc=$?; fi
+if z="$(split_one)"; then :; else rc=$?; fi
+check_pos() {
+    if out="$(by_ref_has 1)"; then echo "found"; fi
+}
+check_neg() {
+    if ! out="$(by_ref_has 1)"; then echo "zero residue"; fi
+}
+check_kept() {
+    if out="$(by_ref_has 1)"; then echo "found"; else rc=$?; fi
+}
+check_write() {
+    if ! out="$(kb_api PATCH "/tasks/1.json")"; then die "write refused"; fi
+}
+EOF
+echo "== the condition spellings: if V=\"\$(F)\" and if ! V=\"\$(F)\" =="
+eq "exactly the positives: an if-arm answering 1 (either arm), a '|| return 1' continued onto the next line, a reader's capture tested for truth (either sense); not a named rc, a kept rc, or a write" \
+   "$(printf '%s\n' 'check_neg:if by_ref_has' 'check_pos:if by_ref_has' | sed 's|^|bin/cond-callers:|'; printf '%s\n' 'else_one()' 'guard_one()' 'split_one()' | sed 's|^|bin/cond-lib:|')" \
+   "$(_roc_members "$SCOND")"
+
+# The two recorded instances as a reviewer RESPELLED them, which the first cut passed green.
+S6631B="$(_seam 6631b next-dl <<'EOF'
+fetch_board_cards() { curl -sS "$1/tasks/search.json" | jq -c '.data'; }
+board_dl_max() (
+    if ! cards="$(fetch_board_cards "$api" "$tok" "$board")"; then exit 1; fi
+    printf '%s' "$cards" | jq -r '.[]?.payload.dl_number // empty' | max_int
+)
+if bmax="$(board_dl_max)"; then dlrc=0; else dlrc=$?; fi
+[[ "$dlrc" -eq 2 ]] && exit 1
+EOF
+)"
+S10241B="$(_seam 10241b dl-a1-register-field <<'EOF'
+kb_by_ref_hit() {
+    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" \
+        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
+}
+by_ref_has() {
+    local resp
+    resp="$(kb_api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || return 1
+    kb_by_ref_hit "$resp" "$1"
+}
+if ! out="$(by_ref_has "$TID")"; then
+    echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue"
+fi
+EOF
+)"
+eq "card#6631 respelled 'if ! cards=\"\$(fetch_board_cards …)\"; then exit 1; fi'" \
+   "$(printf '%s\n' 'bin/next-dl:board_dl_max()' 'bin/next-dl:board_dl_max:if fetch_board_cards')" "$(_roc_members "$S6631B")"
+eq "card#10241 respelled 'if ! out=\"\$(by_ref_has …)\"'" \
+   "$(printf '%s\n' 'bin/dl-a1-register-field:(top):if by_ref_has' 'bin/dl-a1-register-field:by_ref_has()' 'bin/dl-a1-register-field:kb_by_ref_hit():envelope')" \
+   "$(_roc_members "$S10241B")"
+
+# THE REACH of a capture: `local x; x="$(g)"` (the capture is not at the line start) and a
+# collapse or capture tail continued onto the next line after `||` with no `\`.
+SREACH="$TMP/seam-reach"; mkdir -p "$SREACH/bin"
+cat > "$SREACH/bin/reach-lib" <<'EOF'
+ml_collapse() {
+    jq -r '.data.id' <<<"$1" 2>/dev/null ||
+        true
+}
+ml_kept() {
+    jq -r '.data.id' <<<"$1" 2>/dev/null ||
+        return 1
+}
+EOF
+cat > "$SREACH/bin/reach-callers" <<'EOF'
+use_ml() {
+    local a; a="$(ml_collapse "$r")"
+    [[ -n "$a" ]] || die "none"
+    local b; b="$(ml_kept "$r")"
+    [[ -n "$b" ]] || die "none"
+}
+z="$(curl -sS "$API/z" 2>/dev/null)" ||
+    true
+[ -n "$z" ] || echo "no z"
+k="$(curl -sS "$API/k" 2>/dev/null)" ||
+    exit 1
+[ -n "$k" ] || echo "no k"
+EOF
+echo "== a capture after 'local x;', and a tail continued after '||' =="
+eq "exactly the positives: the collapser captured after 'local a;', and the '||' + newline + 'true' capture; not the kept twins" \
+   "$(printf '%s\n' 'bin/reach-callers:use_ml:a' 'bin/reach-callers:z')" "$(_roc_members "$SREACH")"
+eq "a collapser whose '|| true' is on the next line is derived as one; its '|| return 1' twin is not" \
+   "C ml_collapse" "$(_roc_fn_sets "$SREACH" | awk -F'\t' '$1 == "C" { print $1 " " $2 }')"
+
+# NOT a truth test: a one-line DEFINITION is not a call of itself, and `F || true` discards the
+# rc rather than branching on it (so it is not a USE of that rc for rc1-merge either).
+SNIT="$TMP/seam-nit"; mkdir -p "$SNIT/bin"
+cat > "$SNIT/bin/nit" <<'EOF'
+kb_api() { curl -sS -X "$1" "$API$2"; }
+quiet_read() { kb_api GET "/q" >/dev/null 2>&1 || true; }
+probe_read() { kb_api GET "/p" >/dev/null || echo "unreadable" >&2; }
+discard_one() {
+    resp="$(kb_api GET "/d")" || return 1
+    printf '%s' "$resp"
+}
+discard_one || true
+quiet_read
+EOF
+echo "== a definition is not a call of itself; 'F || true' is not a truth test =="
+eq "exactly the one real truth test (kb_api inside probe_read's body); not the definitions, and not 'discard_one || true'" \
+   "bin/nit:probe_read:if kb_api" "$(_roc_members "$SNIT")"
 
 # ── the denominator ─────────────────────────────────────────────────────────────────────────
 #
@@ -1064,6 +1379,13 @@ for d in "${DISPOSITIONED[@]}"; do
     [[ "$d" == *"|"* ]] && [[ -n "${d#*|}" ]] || noreason+="${d}"$'\n'
 done
 eq "disposition with no reason" "" "${noreason%$'\n'}"
+
+echo "== every reason is a declared type, and every OPEN one cites its card =="
+eq "the rule reds on an undeclared type and on an OPEN with no card, and on nothing else (control)" \
+   "$(printf '%s\n' 'undeclared type: x:a|Fine — it is ok.' 'OPEN without card#N: x:b|OPEN — recorded at the site.')" \
+   "$(printf '%s\n' 'x:a|Fine — it is ok.' 'x:b|OPEN — recorded at the site.' 'x:c|OPEN (card#1) — tracked.' 'x:d|SAME OUTCOME — refuses.' | _roc_reason_defects)"
+eq "disposition whose reason is not a declared type, or OPEN without a card#N" "" \
+   "$(printf '%s\n' "${DISPOSITIONED[@]}" | _roc_reason_defects)"
 
 echo "== no member is dispositioned twice =="
 dupes="$(printf '%s\n' "${DISPOSITIONED[@]}" | awk -F'|' 'NF { print $1 }' | LC_ALL=C sort | uniq -d)"

@@ -1901,10 +1901,13 @@ finding with no owner is abandoned, not filed.
   read", and a caller acting on that answer; neither half is wrong alone. Four more spellings are
   derived over the same population in one whole-tree pass (a decoder DEFAULTING the `.data`
   envelope, or a path through it to a value; a capture of a function that collapses its own read; a failed read inside a function
-  answered with rc 1 when that function's rc is used as a verdict; a reading function tested as a
-  condition), each instance is planted in the gate reduced from its pre-fix commit and must derive
-  exactly its member, and card#10241's fix, as shipped, must derive nothing. The gate's header
-  owns the legs' exact predicates and their stated limits. **Weakest properties, stated so it is
+  answered with rc 1 — on an `||` tail or an `if` arm — when that function's rc is used as a
+  verdict; a reading function tested as a condition, called or captured there), each instance is
+  planted in the gate reduced from its pre-fix commit and must derive exactly its member, and
+  card#10241's fix, as shipped, must derive nothing. Those legs' dispositions are keyed per
+  FUNCTION, so one line cannot excuse a same-named site elsewhere in the file; legs (a)+(b) keep a
+  per-file key, and there a new same-named capture IS covered silently — a stated limit. The
+  gate's header owns the legs' exact predicates and their stated limits. **Weakest properties, stated so it is
   not over-cited:** it cannot see a collapse that never touches a variable
   (`if [ -n "$(cmd 2>/dev/null)" ]`), a seam carried across a PROCESS boundary (a script's own
   exit contract), `bin/*.py`, or the bash embedded in this repo's composite actions — **however
