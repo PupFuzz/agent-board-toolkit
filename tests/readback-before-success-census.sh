@@ -28,10 +28,22 @@
 # ─────────────────────────── THE PREDICATE, STATED ───────────────────────────
 #
 # UNIT — the CALL SITE. A line in `bin/` that names a mutating HTTP method: the shared lib
-# invoked with one (`kb_api`/`kb_api_status` with POST, PATCH or DELETE), or a `-X` carrying
-# POST, PATCH, DELETE **or a variable** (`-X "$method"`). Comment lines are excluded and NOTHING
-# ELSE IS — the denominator has no exemption list, which is what lets it equal the predicate
-# exactly. It is re-derived on every run.
+# invoked with one (`kb_api`/`kb_api_status` with POST, PUT, PATCH or DELETE), or a `-X` carrying
+# POST, PUT, PATCH, DELETE **or a variable** (`-X "$method"`). Comment lines are excluded and
+# NOTHING ELSE IS — the denominator has no exemption list, which is what lets it equal the
+# predicate exactly. It is re-derived on every run.
+#
+# ⚠ `PUT` WAS MISSING FROM BOTH HALVES UNTIL card#10346, and the miss is the same shape the two
+# `-X` widenings below record: the method set was HAND-ENUMERATED from the methods this tree
+# happened to use, so the FIRST `PUT` to land — `kbcard reorder`'s write to the board's
+# rank-within-a-column route — was a mutating call site the census could not see, and the
+# denominator it printed was silently one short at the moment a write verb shipped. It cost
+# nothing to find only because that card's author ran this census; nothing here would have. LEG 4
+# of the control is what makes the arm falsifiable rather than a widening nobody exercises —
+# for the LIB-CALL half. The `-X` half's `PUT` is UNEXERCISED and is named rather than
+# implied: `bin/` holds no `-X PUT` site for a control to anchor on, so dropping `PUT` from
+# that alternative alone reds nothing here. It is carried for the symmetry the two halves
+# have always had, and the first `-X PUT` to land is the moment it becomes measurable.
 #
 # ⚠ THE `-X` HALF DELIBERATELY DOES NOT REQUIRE THE COMMAND WORD TO BE `curl`, and it admits a
 # VARIABLE method. Both halves of that were once absent and both hid a live member of the class:
@@ -84,7 +96,7 @@
 #       `fetch_board_cards` and `bin/_shellcheck-pinned`'s pinned-binary download (no `-X` at
 #       all, so plain GETs); `next-dl`'s `dl_sequence_call` and `promote-released-cards`'s
 #       `api()` (both take the method from the caller, and both are matched). Not one of them
-#       hardcodes POST, PATCH or DELETE. Re-run that enumeration; do not trust this note, which
+#       hardcodes POST, PUT, PATCH or DELETE. Re-run that enumeration; do not trust this note, which
 #       is a measurement with a date on it and not a property of the language.
 #
 # The CONTROL below is what makes the classifier a measurement rather than a decoration. It runs
@@ -105,7 +117,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-MUT_RE='kb_api(_status)?[[:space:]]+(POST|PATCH|DELETE)|-X[[:space:]]+"?(POST|PATCH|DELETE|\$)'
+MUT_RE='kb_api(_status)?[[:space:]]+(POST|PUT|PATCH|DELETE)|-X[[:space:]]+"?(POST|PUT|PATCH|DELETE|\$)'
 # The file-local read owners, by name. They are named rather than pattern-matched because each
 # one IS a read of the mutated subject: the card, the card's links, the board's field index, the
 # board's cards, the by-ref index.
@@ -174,7 +186,7 @@ _ctl_line() {
     command grep -nE "$anchor" "$file" | cut -d: -f1
 }
 
-# --- the control: three legs, all on REAL bin/ lines ---
+# --- the control: four legs, all on REAL bin/ lines ---
 _control() {
     local rc=0 f ln got want
 
@@ -216,6 +228,26 @@ _control() {
     }
     got="$(_classify "$f" "$ln" | cut -f1)"
     [[ "$got" == "<file-scope>" ]] || { echo "control: LEG 3 ($f:$ln) scoped '$got', expected '<file-scope>' — the file-scope branch is no longer exercised" >&2; rc=1; }
+
+    # LEG 4 — THE `PUT` ARM OF THE DENOMINATOR PREDICATE, for the reason the ⚠ note in the header
+    # gives: the method set was hand-enumerated and `PUT` was not in it, so the tree's first PUT
+    # write was invisible here. Like LEG 3 this asserts on the SWEEP rather than on a handed line,
+    # because the arm under test lives in MUT_RE and `_classify` never runs it.
+    #
+    # ⛔ WHAT IT COVERS IS THE `kb_api` HALF, AND ONLY THAT HALF. Drop `PUT` from that alternative
+    # and this reds with the site named; drop it from the `-X` alternative and NOTHING reds — the
+    # denominator does not move, because `bin/` holds no `-X PUT` site for this leg to anchor on.
+    # Both measured. That is the ⚠ in this file's header stated where a maintainer reading only
+    # the leg would otherwise conclude the `-X PUT` arm is guarded and could be deleted safely.
+    f="bin/kbcard"
+    ln="$(_ctl_line "$f" '^[[:space:]]*resp="\$\(kb_api PUT "/tasks/reorder\.json"')" || {
+        echo "control: LEG 4's anchor (the reorder PUT in $f) no longer matches exactly one line — the control cannot assert a site it cannot address" >&2
+        return 1
+    }
+    _sweep | cut -d: -f1,2 | command grep -qx "$f:$ln" || {
+        echo "control: LEG 4 — $f:$ln is a PUT that mutates card positions and MUT_RE does not put it in the sweep, so the printed denominator is NOT the population it claims" >&2
+        rc=1
+    }
 
     return "$rc"
 }
