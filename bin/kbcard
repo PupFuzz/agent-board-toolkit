@@ -1659,7 +1659,7 @@ cmd_create_card() {
     printf '%s\n' "$out"
     # ⭐ THE BOARD RIDES STDERR ON EVERY SUCCESS (card#10385). The stdout projection carries no
     # board key and widening it is a consumer-contract change, so — as with `stages` — the
-    # provenance goes on the channel a piping consumer still sees without touching its JSON.
+    # provenance goes to stderr, which reaches the operator without touching the piped JSON.
     echo "kbcard: create-card: card $(jq -r '.id' <<<"$out") created on board $KB_BOARD_ID" >&2
 }
 
