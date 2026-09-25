@@ -15,9 +15,12 @@
 # becomes THEIR broken release over a card that is not theirs. The shipped behaviour is therefore:
 # name the card on stderr, count it in its own summary segment, promote everything else, and never
 # raise the run's rc. Every one of those four is a cell below, because three of them are exactly
-# what a reviewer would "tidy" into a `die`. The rc one is TWO cells (§ 6, § 7), one per exit arm
-# that asks whether a run promoted anything: each ran red on a head that withheld the parent
-# without telling that arm, and the pre-change bin is rc 0 on both shapes.
+# what a reviewer would "tidy" into a `die`. "Never raise" is only half of rc PARITY, so the rc
+# cells run BOTH directions against the pre-change bin's own rc on each shape: a parent that bin
+# would have PATCHed must keep the "promoted nothing?" arms quiet (§ 6, § 7 — red on a head that
+# withheld it without telling those arms), and a parent it would have stage-guarded or seen
+# refused by the completeness gate must NOT (§ 8, § 9, § 10 — red on 77468c8, which counted every
+# withheld parent). Every rc cell passes against origin/dev's bin at 7b93cde.
 #
 # ⚠ TWO ARMS, AND NEITHER IS THE OTHER'S BACKGROUND. A guard that withholds EVERYTHING passes a
 # one-armed subject test, and promoting cards is this tool's whole job — so the ordinary card and
@@ -234,5 +237,73 @@ eq "parent-only match, squash tip → rc 0, as before the withhold" "0" "$rc"
 eq "the die did not fire"                            "false" "$(has 'not a merge commit' "$err")"
 eq "the parent was named as withheld"                "true"  "$(has '(#2): carries' "$err")"
 eq "nothing was PATCHed"                             ""      "$patched"
+
+echo "== 8. a parent the pre-withhold bin would NOT have moved leaves the ref-completeness die armed (run A) =="
+# The other direction of § 7, and the reason the exit arms count only a parent the old bin would
+# have PATCHed. Parent #7 sits OUTSIDE the Shipped-class stages, so before the withhold existed the
+# stage guard skipped it, `moved` stayed 0, and behind this squash tip the die fired at rc 2. A term
+# that counted EVERY withheld parent kept that die quiet — a withhold LOWERING an rc the run always
+# had. RED on 77468c8 (rc 0); origin/dev's bin is rc 2 on this exact run.
+GITA="$TMP/gitA"; mkdir -p "$GITA"
+git -C "$GITA" init -q -b main
+git -C "$GITA" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "baseline"
+git -C "$GITA" tag v0.0.1
+git -C "$GITA" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "release: v0.0.2 DL-106 squashed"
+: > "$PATCH_LOG"
+rc=0; out="$(cd "$GITA" && "$PRC" --config "$TMP/release-pr.json" --shipped-stages 51 2>"$TMP/err")" || rc=$?
+err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+eq "stage-guarded parent only, squash tip → rc 2, as before the withhold" "2" "$rc"
+eq "the die fired"                                   "true"  "$(has 'not a merge commit' "$err")"
+eq "the parent is still named as withheld"           "true"  "$(has '(#7): carries' "$err")"
+eq "nothing was PATCHed"                             ""      "$patched"
+
+echo "== 9. a stage-guarded parent does not quiet the rc-1 arm over a refused move (run B) =="
+# Before the withhold, #7 here was a stage-guard skip — it never reached the PATCH, never counted
+# `moved` — so card #1's refused move was a run that promoted nothing, and exited 1. RED on
+# 77468c8 (rc 0 with `1 failed` on the line); origin/dev's bin is rc 1.
+STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-106' --shipped-stages 51
+eq "refused card + stage-guarded parent → rc 1, as before the withhold" "1" "$rc"
+eq "the refusal is reported"                         "true"  "$(has '(#1): move failed' "$err")"
+eq "the parent is named as withheld"                 "true"  "$(has '(#7): carries' "$err")"
+eq "parent #7 was NOT PATCHed"                       "false" "$(has '/tasks/7.json' "$patched")"
+
+echo "== 10. under --require-complete a parent keeps the verdict the gate would have given it =="
+# The oracle is a stub (`--completeness PATH`), so no GitHub lookup is made. It is asked about the
+# MATCHED set, which includes the parent — exactly as the pre-withhold bin asked — so reading the
+# parent's verdict costs no request. Before the withhold an INCOMPLETE or UNMEASURED parent was a
+# completeness refusal: rc 5, or rc 2 behind a squash tip. A COMPLETE one was PATCHed and counted
+# `moved`, which is the § 6 shape again under the flag.
+ORACLE="$TMP/oracle"
+_oracle() {
+    local orc="$1"; shift
+    { printf '#!/usr/bin/env bash\n'
+      local line
+      for line in "$@"; do printf 'printf %%s\\\\n %s\n' "$(printf '%q' "$line")"; done
+      printf 'exit %s\n' "$orc"
+    } > "$ORACLE"
+    chmod +x "$ORACLE"
+}
+_oracle 5 "1	COMPLETE	-" "2	INCOMPLETE	#99 (open)"
+run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
+eq "INCOMPLETE parent beside a promoted card → rc 5, as before the withhold" "5" "$rc"
+eq "ordinary card #1 WAS PATCHed"                    "true"  "$(has '/tasks/1.json' "$patched")"
+eq "parent #2 was NOT PATCHed"                       "false" "$(has '/tasks/2.json' "$patched")"
+eq "the parent's line carries the gate's verdict"    "true"  "$(has '#99 (open)' "$err")"
+eq "a run-level FAILED line explains the rc 5"       "true"  "$(has 'FAILED —' "$err")"
+
+_oracle 6 "1	COMPLETE	-"
+run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
+eq "UNMEASURED parent (no verdict line) → rc 5, as before the withhold" "5" "$rc"
+
+_oracle 0 "1	COMPLETE	-" "2	COMPLETE	-"
+STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
+eq "COMPLETE parent + refused card → rc 0, as before the withhold (it would have moved)" "0" "$rc"
+
+_oracle 5 "2	INCOMPLETE	#99 (open)"
+: > "$PATCH_LOG"
+rc=0; out="$(cd "$GITDIR" && "$PRC" --config "$TMP/release-pr.json" --require-complete --completeness "$ORACLE" 2>"$TMP/err")" || rc=$?
+err="$(cat "$TMP/err")"
+eq "INCOMPLETE parent only, squash tip → rc 2, as before the withhold" "2" "$rc"
+eq "  … the die fired"                               "true"  "$(has 'not a merge commit' "$err")"
 
 _summary "promote-program-withhold-selftest"
