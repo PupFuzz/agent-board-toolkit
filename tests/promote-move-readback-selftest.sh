@@ -390,21 +390,19 @@ _exit_policy_counters() {
 # `incomplete` joined this set at card#10176's merge, not by an edit to the exit policy made here:
 # the completeness gate's clause (`exit 5`) is the sixth to read a counter. It is declared rather
 # than excluded — the leg's point is that a counter ENTERING the policy must move this line.
-# `program_promotable` and `program_refused` joined the same way at card#10068: the rc-1 arm and
-# the ref-completeness die each gained a `program_promotable == 0` term (a withheld parent the
-# pre-withhold bin would have PATCHed), and the `exit 5` clause a `program_refused` one (a withheld
-# parent the completeness gate would have refused), so a withheld parent leaves the rc where the
-# pre-withhold bin put it. `program_held`, the count of every withheld parent, is deliberately in
-# NO clause. Their rows are not in this file — the fixture that makes a parent is — so they live in
-# `tests/promote-program-withhold-selftest.sh` § 6–§ 10.
+# `program_held` joined the same way at card#10068: the rc-1 arm and the ref-completeness die each
+# gained a `program_held == 0` term. The withhold is the last check before the write, so every
+# parent it counts is one the pre-withhold bin PATCHed and counted `moved`, and the term leaves the
+# rc where that bin put it. Its rows are not in this file — the fixture that makes a parent is — so
+# they live in `tests/promote-program-withhold-selftest.sh` § 6–§ 10.
 eq "⭐ the exit clauses test exactly these counters" \
-   "failed incomplete moved not_applied program_promotable program_refused skipped unverified " "$(_exit_policy_counters "$PRC")"
+   "failed incomplete moved not_applied program_held skipped unverified " "$(_exit_policy_counters "$PRC")"
 # CONTROL, because a derivation nobody has seen move is a decoration: a clause that GAINS a term
 # must change that answer — which is exactly the edit this leg failed to catch when it did not
 # exist. `guarded` is a real counter of this tool that no exit clause tests.
 sed 's/^if \[ "\$failed" -gt 0 \]/if [ "${guarded:-0}" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
 eq "⭐ …and a counter ADDED to a clause shows up in the derivation (the control)" \
-   "failed guarded incomplete moved not_applied program_promotable program_refused skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
+   "failed guarded incomplete moved not_applied program_held skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
 unset -f _exit_policy_counters
 
 echo "-- 6a: one card MOVES and one is measured NOT APPLIED — the 2026-05-22 shape"

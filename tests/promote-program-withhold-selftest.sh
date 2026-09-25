@@ -20,7 +20,10 @@
 # would have PATCHed must keep the "promoted nothing?" arms quiet (§ 6, § 7 — red on a head that
 # withheld it without telling those arms), and a parent it would have stage-guarded or seen
 # refused by the completeness gate must NOT (§ 8, § 9, § 10 — red on 77468c8, which counted every
-# withheld parent). Every rc cell passes against origin/dev's bin at 7b93cde.
+# withheld parent). Every rc cell passes against origin/dev's bin at 7b93cde. The bin gets both
+# directions from ONE placement rather than from bookkeeping: the withhold is the last check before
+# the write, so a parent the stage guard or the gate stops is reported as exactly that — and those
+# cells assert the old REPORT too, not only the old rc.
 #
 # ⚠ TWO ARMS, AND NEITHER IS THE OTHER'S BACKGROUND. A guard that withholds EVERYTHING passes a
 # one-armed subject test, and promoting cards is this tool's whole job — so the ordinary card and
@@ -48,10 +51,11 @@
 # evaluated AFTER the idempotence check, so a parent that somebody already moved by hand reads as
 # what it is instead of being reported as held back from a stage it is already in.
 #
-# ⚑ THE `--shipped-stages` CELL IS THE OTHER ORDERING ASSERTION. The withhold is evaluated FIRST
-# among the pre-write refusals, so the reason an operator reads for one card does not depend on
-# which optional flags another repo's workflow happens to pass. A parent outside the Shipped-class
-# stages is reported as a PARENT on every install, not as a stage-guard skip on some of them.
+# ⚑ THE `--shipped-stages` CELL IS THE OTHER ORDERING ASSERTION. The withhold is evaluated LAST
+# among the pre-write refusals, immediately before the write, because the tag only matters for a
+# card that would otherwise MOVE. A parent outside the Shipped-class stages is therefore a stage-
+# guard skip, reported and counted exactly as the pre-withhold tool reported it — and a parent the
+# completeness gate refuses is a completeness refusal (§ 10). That is what gives rc parity for free.
 #
 # ── THE TWO MUTANTS EACH ARM WAS WATCHED RED AGAINST (card#10068, reproducible) ──────────────
 #   SUBJECT ARM — run this file against the PRE-CHANGE bin, over this identical fixture:
@@ -101,7 +105,7 @@ JSON
 #   #4  four near-miss spellings, none of them the tag → promoted     (the predicate discriminates)
 #   #5  a PARENT already at the released stage 85   → already-released (ordering vs idempotence)
 #   #6  `tags` present but NOT a list               → promoted        (the degrade direction)
-#   #7  a PARENT outside the Shipped-class stages   → WITHHELD        (ordering vs --shipped-stages)
+#   #7  a PARENT outside the Shipped-class stages   → stage-guarded under --shipped-stages (ordering)
 export BOARD_FILE="$TMP/board.json"
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[
@@ -196,14 +200,15 @@ eq "dry-run summary keeps the withhold out of moved" \
    "promote-released-cards: 1 moved, 0 already-released, 1 program-withheld, 0 no-card, 0 failed (dry-run)." \
    "$(printf '%s' "$out" | tail -n 1)"
 
-echo "== 5. a parent outside the Shipped-class stages reads as a PARENT, on every install =="
+echo "== 5. a parent outside the Shipped-class stages reads as a STAGE-GUARD SKIP, as it always did =="
 run_promote 'DL-106' --shipped-stages 51
 eq "guarded parent → rc 0"                           "0"     "$rc"
 eq "parent #7 was NOT PATCHed"                       "false" "$(has '/tasks/7.json' "$patched")"
-eq "#7 is reported as a parent"                      "true"  "$(has '(#7): carries' "$err")"
-eq "#7 is NOT reported as a stage-guard skip"        "false" "$(has 'not in a Shipped-class source stage' "$err")"
-eq "the two counts stay separate on one line" \
-   "promote-released-cards: 0 moved, 0 already-released, 1 program-withheld, 0 stage-guarded, 0 no-card, 0 failed." \
+eq "#7 is NOT reported as a withheld parent"         "false" "$(has '(#7): carries' "$err")"
+eq "#7 IS reported as a stage-guard skip"            "true"  "$(has '(#7): current stage 99 not in a Shipped-class source stage' "$err")"
+eq "stderr carries no run-level withhold line"       "false" "$(has 'were WITHHELD' "$err")"
+eq "the summary counts it stage-guarded, with no program segment" \
+   "promote-released-cards: 0 moved, 0 already-released, 1 stage-guarded, 0 no-card, 0 failed." \
    "$(printf '%s' "$out" | tail -n 1)"
 
 echo "== 6. a withheld parent beside a REFUSED move does not turn the run red (rc parity, arm 1) =="
@@ -254,7 +259,8 @@ rc=0; out="$(cd "$GITA" && "$PRC" --config "$TMP/release-pr.json" --shipped-stag
 err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
 eq "stage-guarded parent only, squash tip → rc 2, as before the withhold" "2" "$rc"
 eq "the die fired"                                   "true"  "$(has 'not a merge commit' "$err")"
-eq "the parent is still named as withheld"           "true"  "$(has '(#7): carries' "$err")"
+eq "the parent is reported as stage-guarded, as before" "true" "$(has '(#7): current stage 99 not in a Shipped-class' "$err")"
+eq "the parent is NOT reported as withheld"          "false" "$(has '(#7): carries' "$err")"
 eq "nothing was PATCHed"                             ""      "$patched"
 
 echo "== 9. a stage-guarded parent does not quiet the rc-1 arm over a refused move (run B) =="
@@ -264,7 +270,11 @@ echo "== 9. a stage-guarded parent does not quiet the rc-1 arm over a refused mo
 STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-106' --shipped-stages 51
 eq "refused card + stage-guarded parent → rc 1, as before the withhold" "1" "$rc"
 eq "the refusal is reported"                         "true"  "$(has '(#1): move failed' "$err")"
-eq "the parent is named as withheld"                 "true"  "$(has '(#7): carries' "$err")"
+eq "the parent is reported as stage-guarded, as before" "true" "$(has '(#7): current stage 99 not in a Shipped-class' "$err")"
+eq "the parent is NOT reported as withheld"          "false" "$(has '(#7): carries' "$err")"
+eq "the summary is the pre-withhold one" \
+   "promote-released-cards: 0 moved, 0 already-released, 1 stage-guarded, 0 no-card, 1 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
 eq "parent #7 was NOT PATCHed"                       "false" "$(has '/tasks/7.json' "$patched")"
 
 echo "== 10. under --require-complete a parent keeps the verdict the gate would have given it =="
@@ -288,16 +298,26 @@ run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
 eq "INCOMPLETE parent beside a promoted card → rc 5, as before the withhold" "5" "$rc"
 eq "ordinary card #1 WAS PATCHed"                    "true"  "$(has '/tasks/1.json' "$patched")"
 eq "parent #2 was NOT PATCHed"                       "false" "$(has '/tasks/2.json' "$patched")"
+eq "the parent is reported INCOMPLETE, as before"    "true"  "$(has '(#2): INCOMPLETE — ' "$err")"
 eq "the parent's line carries the gate's verdict"    "true"  "$(has '#99 (open)' "$err")"
+eq "the parent is NOT reported as withheld"          "false" "$(has '(#2): carries' "$err")"
 eq "a run-level FAILED line explains the rc 5"       "true"  "$(has 'FAILED —' "$err")"
+eq "the summary counts it completeness-refused, with no program segment" \
+   "promote-released-cards: 1 moved, 0 already-released, 1 completeness-refused, 0 no-card, 0 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
 
 _oracle 6 "1	COMPLETE	-"
 run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
 eq "UNMEASURED parent (no verdict line) → rc 5, as before the withhold" "5" "$rc"
+eq "the parent is reported UNMEASURED, not withheld" "true"  "$(has '(#2): completeness UNMEASURED' "$err")"
 
 _oracle 0 "1	COMPLETE	-" "2	COMPLETE	-"
 STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-101' --require-complete --completeness "$ORACLE"
 eq "COMPLETE parent + refused card → rc 0, as before the withhold (it would have moved)" "0" "$rc"
+eq "the COMPLETE parent passed the gate and was WITHHELD" "true" "$(has '(#2): carries' "$err")"
+eq "the summary puts program-withheld after completeness-refused (loop order)" \
+   "promote-released-cards: 0 moved, 0 already-released, 0 completeness-refused, 1 program-withheld, 0 no-card, 1 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
 
 _oracle 5 "2	INCOMPLETE	#99 (open)"
 : > "$PATCH_LOG"
@@ -305,5 +325,6 @@ rc=0; out="$(cd "$GITDIR" && "$PRC" --config "$TMP/release-pr.json" --require-co
 err="$(cat "$TMP/err")"
 eq "INCOMPLETE parent only, squash tip → rc 2, as before the withhold" "2" "$rc"
 eq "  … the die fired"                               "true"  "$(has 'not a merge commit' "$err")"
+eq "  … the parent is reported INCOMPLETE, not withheld" "true" "$(has '(#2): INCOMPLETE — ' "$err")"
 
 _summary "promote-program-withhold-selftest"
