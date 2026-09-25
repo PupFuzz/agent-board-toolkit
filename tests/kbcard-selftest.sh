@@ -1744,6 +1744,41 @@ eq "…and says so rather than exiting 0 with no output" "true" \
 kbc show --task 505
 eq "control: show on a well-formed body → rc 0"  "0" "$rc"
 eq "control: …and returns the card"              "505" "$(jq -r '.id' <<<"$out")"
+
+echo "-- comments / show: a 2xx that PARSES but carries no card object (card#10489) --"
+# The parseable half of the same trap. An API or gateway error envelope answered at 2xx is valid
+# JSON with no `.data`, so a reader that only asks "did it parse?" gets past it: `comments`
+# defaulted the missing path to [] and said "card 505 has no comments" at rc 0, and `show`
+# printed `null` at rc 0 — both an answer about a card this read never saw. Each shape below is
+# one way in to that: no `.data`, a null one, one that is not an object, a `comments` that is not
+# a list (jq's `//` substitutes its default for `false` as well as `null`, so a shape test on the
+# far side of it never saw that value), and TWO JSON texts, which is not ONE card.
+for body in '{"message":"session expired"}' '{"data":null}' '{"data":"str"}' \
+            '{"data":{"id":505,"comments":false}}' \
+            '{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[]}}'; do
+    KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$body" kbc comments --task 505
+    eq "comments on $body → rc 1"                 "1" "$rc"
+    eq "…never claims the card has no comments"   "false" "$(has 'no comments' "$out")"
+    eq "…prints nothing on stdout"                "" "$out"
+    eq "…refuses in the true-in-every-arm wording" "true" \
+       "$(has 'no comment list could be read out of its body' "$err")"
+done
+for body in '{"message":"session expired"}' '{"data":null}' '{"data":"str"}' \
+            '{"data":{"id":505}}{"data":{"id":505}}'; do
+    KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$body" kbc show --task 505
+    eq "show on $body → rc 1"                     "1" "$rc"
+    eq "…prints nothing on stdout (no 'null')"    "" "$out"
+    eq "…refuses in the true-in-every-arm wording" "true" \
+       "$(has 'no card could be read out of its body' "$err")"
+done
+# Controls on the SAME arm: a card whose comments are null, or absent, IS a reading — the card
+# was read and carries none — so the refusal above is the shape test and not `comments` refusing
+# every card without a populated list.
+for body in '{"data":{"id":505,"comments":null}}' '{"data":{"id":505}}'; do
+    KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$body" kbc comments --task 505
+    eq "control: comments on $body → rc 0"        "0" "$rc"
+    eq "control: …says the card has no comments"  "kbcard: card 505 has no comments" "$out"
+done
 unset NONJSON_BODY
 
 unset -f kb_stub_route
