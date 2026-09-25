@@ -39,16 +39,24 @@
 #   /Library/Application Support/ClaudeCode/managed-settings.json   managed (when present)
 # $BHC_MANAGED_SETTINGS, when set, REPLACES the managed list with that one path (the selftest
 # uses it to stay hermetic on a host that has a managed file).
-# NOT read, and printed on every run as the bound it is: hooks contributed by plugins, by
-# server-managed settings and by managed-settings.d drop-ins. A registration made only there
-# reads NOT-REGISTERED here.
+# NOT read, and printed on every run as the bound it is — in BOTH directions: `claude
+# --settings`, server-managed settings, MDM/OS policy (macOS profile, Windows HKLM/HKCU
+# registry), a policyHelper, the SDK `managedSettings` option, managed-settings.d drop-ins, hooks
+# in skill or subagent frontmatter, and plugin hooks. A registration made only there reads
+# NOT-REGISTERED here; a disableAllHooks or allowManagedHooksOnly set only there can make a LIVE
+# here wrong. Also undetectable, and printed: a wrapper that runs the hook without naming it in
+# its command or args reads NOT-REGISTERED.
 # A matcher is evaluated only where it is a literal: absent, "", "*" and ".*" match every tool;
 # a `|`/`,`-separated list of names matches when one of them is `Agent`. A regex, or a list
 # naming the legacy `Task` without `Agent`, is UNMEASURED. `disableAllHooks` or
 # `allowManagedHooksOnly` set true in any file read makes the verdict UNMEASURED, naming the key:
 # how Claude Code applies them across sources is not modelled here.
-# A command is evaluated only as a bare path (optionally quoted; `~/`, `$HOME/`,
-# `$CLAUDE_PROJECT_DIR/` expanded). Anything else that names the hook is UNMEASURED. ⛔ Hook
+# A command is evaluated only as ONE shell-form word that is a bare path, read with the quoting
+# `sh -c` applies: `~` expands only unquoted at the start of the word, `$HOME` and
+# `$CLAUDE_PROJECT_DIR` only unquoted or double-quoted; a quoted `~` or a single-quoted `$VAR`
+# stays literal, so that command is a relative path. Anything else that names the hook is
+# UNMEASURED, and so is a handler that names it (in its command or any `args` element) while
+# setting `args` (exec form), `if`, `once`, or a `shell` other than bash — each named. ⛔ Hook
 # COMMANDS ARE NEVER PRINTED: a command line can carry an env-prefixed secret, so an entry is
 # named by file, matcher and index, and only a resolved bare path is shown.
 # The hook acts only on dispatch prompts carrying a `BOARD-CARD: <board>#<id>` line, which
@@ -64,6 +72,8 @@
 #   ARMED  post-checkout only: `git config --bool --get kanban.automove-on-checkout` answers
 #          `true`, read exactly as the hook reads it — any other answer, unset or unreadable
 #          included, is what the hook treats as OFF. pre-push needs no arming.
+# A <repo-dir> with no `.git` that git will not open is UNMEASURED (not a checkout); a checkout
+# git REFUSES (dubious ownership, an unexpandable config value) is NOT-LIVE, in git's words.
 # Both hooks also need board-card-start on PATH (each exits silently without it). The PATH read
 # is THIS process's; a hook runs with the PATH git has at dispatch time.
 set -uo pipefail
@@ -116,31 +126,76 @@ _bhc_matcher_covers_agent() {
     return 2
 }
 
+# _bhc_sh_word <command> <project-dir> — the command read as ONE `sh -c` word, with the expansion
+# the shell would apply, on stdout (rc 0) · rc 2 it is not a single word this reader evaluates.
+# Quoting decides expansion, so it is walked in order rather than stripped first: `~` expands
+# only UNQUOTED at the start of the word and followed by an unquoted `/`; `$HOME` and
+# `$CLAUDE_PROJECT_DIR` (braced or not) expand unquoted or inside double quotes, and stay literal
+# inside single quotes; unquoted, a value holding whitespace or a glob character is rc 2 (the
+# shell splits and globs it). Any other variable, a backslash or backtick, whitespace or an unquoted
+# character outside a plain-path set (globs, redirects, separators, a comment) is rc 2.
+_bhc_sh_word() {
+    local c="$1" proj="$2" out="" q="" ch rest name len val i=0 n LC_ALL=C
+    n=${#c}
+    case "$c" in
+        '~/'*) out="$HOME"; i=1 ;;
+        '~'*)  return 2 ;;
+    esac
+    while (( i < n )); do
+        ch="${c:i:1}"
+        if [[ "$q" == "'" ]]; then
+            [[ "$ch" == "'" ]] && q="" || out+="$ch"
+            i=$((i + 1)); continue
+        fi
+        case "$ch" in
+            "'") if [[ -z "$q" ]]; then q="'"; else out+="$ch"; fi ;;
+            '"') if [[ -z "$q" ]]; then q='"'; else q=""; fi ;;
+            '$')
+                rest="${c:i+1}"
+                # ASCII ranges: LC_ALL=C is function-local (declared at the top of this function).
+                if [[ "$rest" =~ ^\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; then
+                    name="${BASH_REMATCH[1]}"; len=${#BASH_REMATCH[0]}
+                # ASCII ranges: LC_ALL=C is function-local (declared at the top of this function).
+                elif [[ "$rest" =~ ^([A-Za-z_][A-Za-z0-9_]*) ]]; then
+                    name="${BASH_REMATCH[1]}"; len=${#BASH_REMATCH[0]}
+                else
+                    return 2
+                fi
+                case "$name" in
+                    HOME)               val="$HOME" ;;
+                    CLAUDE_PROJECT_DIR) val="$proj" ;;
+                    *)                  return 2 ;;
+                esac
+                # Unquoted, the value is field-split and globbed: not one word this reads.
+                [[ -z "$q" && "$val" =~ [[:space:]*?[] ]] && return 2
+                out+="$val"
+                i=$((i + len)) ;;
+            '`'|'\') return 2 ;;
+            *)
+                # ASCII ranges: LC_ALL=C is function-local (declared at the top of this function).
+                if [[ -z "$q" && ! "$ch" =~ ^[A-Za-z0-9_./+@%:,=~-]$ ]]; then return 2; fi
+                out+="$ch" ;;
+        esac
+        i=$((i + 1))
+    done
+    [[ -z "$q" ]] || return 2
+    printf '%s' "$out"
+}
+
 # _bhc_cmd_target <command> <project-dir> — rc 0 the command is a bare path to the toolkit
 # script (the path on stdout) · 1 it is not this hook · 2 it names the hook but is not a bare
 # path this reader evaluates (the reason on stdout — never the command itself).
 _bhc_cmd_target() {
-    local c="$1" proj="$2" real
-    c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"
-    case "$c" in
-        \"*\") c="${c#\"}"; c="${c%\"}" ;;
-        \'*\') c="${c#\'}"; c="${c%\'}" ;;
-    esac
-    case "$c" in
-        '~/'*)                      c="$HOME/${c#\~/}" ;;
-        '$HOME/'*)                  c="$HOME/${c#\$HOME/}" ;;
-        '${HOME}/'*)                c="$HOME/${c#\$\{HOME\}/}" ;;
-        '$CLAUDE_PROJECT_DIR/'*)    c="$proj/${c#\$CLAUDE_PROJECT_DIR/}" ;;
-        '${CLAUDE_PROJECT_DIR}/'*)  c="$proj/${c#\$\{CLAUDE_PROJECT_DIR\}/}" ;;
-    esac
-    if [[ "$c" =~ [[:space:]\$\;\|\&\<\>\`\"\'\(\)\\] ]]; then
-        [[ "$c" == *"$_BHC_SCRIPT"* ]] || return 1
-        printf 'is not a bare path (arguments, an interpreter, a variable or shell syntax) — this reader does not evaluate shell'
+    local raw="$1" proj="$2" c real
+    raw="${raw#"${raw%%[![:space:]]*}"}"; raw="${raw%"${raw##*[![:space:]]}"}"
+    if ! c="$(_bhc_sh_word "$raw" "$proj")"; then
+        [[ "$raw" == *"$_BHC_SCRIPT"* ]] || return 1
+        printf 'is not a bare path (arguments, an interpreter, a variable other than HOME or CLAUDE_PROJECT_DIR, or shell syntax) — this reader does not evaluate shell'
         return 2
     fi
     if [[ "$c" != /* ]]; then
         [[ "$c" == *"$_BHC_SCRIPT"* ]] || return 1
-        printf 'is a relative path — it resolves against the session working directory, which this reader does not know'
+        printf 'is a relative path as the shell reads it (a quoted ~ and a single-quoted $VAR are not expanded) — it resolves against the session working directory, which this reader does not know'
         return 2
     fi
     real="$(readlink -f -- "$c" 2>/dev/null)" || real=""
@@ -148,6 +203,16 @@ _bhc_cmd_target() {
         printf '%s' "$c"; return 0
     fi
     return 1
+}
+
+# _bhc_field_why <field> — what a handler field does to whether or how the command runs.
+_bhc_field_why() {
+    case "$1" in
+        args)  printf '`args` (exec form: no shell, the command is resolved as an executable and args are its argv)' ;;
+        if)    printf '`if` (a permission-rule filter on each tool call)' ;;
+        once)  printf '`once` (removal after the first successful run where honoured)' ;;
+        shell) printf '`shell` (a non-default shell)' ;;
+    esac
 }
 
 # _bhc_managed_files — the managed-settings population, one path per line.
@@ -159,8 +224,8 @@ _bhc_managed_files() {
 
 # _bhc_claude_leg <project-dir> — one verdict for the Claude Code dispatch hook.
 _bhc_claude_leg() {
-    local proj="$1" f kind tsv idx ent m cmd tgt why mrc trc s dup found="" live_at="" live_path="" tk tk_rc=0
-    local -a files=() kinds=() seen=() unm=() dead=() elsewhere=()
+    local proj="$1" f kind tsv idx ent m cmd fields argnames fld tgt why mrc trc s dup found="" live_at="" live_path="" tk tk_rc=0
+    local -a files=() kinds=() seen=() unm=() dead=() elsewhere=() fw=()
     echo "── Claude Code hook: $_BHC_SCRIPT (PreToolUse, matcher covering Agent) ──"
     files+=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json");  kinds+=(user)
     files+=("$proj/.claude/settings.json");                        kinds+=(project)
@@ -202,23 +267,37 @@ _bhc_claude_leg() {
                 unm+=("$f sets $s — how Claude Code applies it across sources is not modelled here")
             fi
         done
-        # One record per (entry, command hook): index, matcher, command, joined by US (0x1f).
-        # NOT a tab: tab is IFS whitespace, so `read` collapses an EMPTY matcher field and shifts
-        # the command into it. A newline is escaped (one record per line) and US is dropped, so
-        # neither can split a record; the escape leaves a `\`, which reads as shell syntax below.
-        tsv="$(jq -r '(.hooks.PreToolUse // []) | to_entries[]
+        # One record per (entry, command hook): index, matcher, command, the handler fields that
+        # change whether or how the command runs, and whether any `args` element names the
+        # script — joined by US (0x1f). NOT a tab: tab is IFS whitespace, so `read` collapses an
+        # EMPTY matcher field and shifts the command into it. A newline is escaped (one record per
+        # line) and US is dropped, so neither can split a record; the escape leaves a `\`, which
+        # reads as shell syntax below. `args` is tested here and never extracted: like the
+        # command, it can carry a secret.
+        tsv="$(jq -r --arg s "$_BHC_SCRIPT" '(.hooks.PreToolUse // []) | to_entries[]
                       | .key as $i | ((.value.matcher // "") | tostring) as $m
                       | (.value.hooks // [])[]? | select(type == "object" and .type == "command")
-                      | [($i|tostring), $m, ((.command // "") | tostring)]
+                      | [($i|tostring), $m, ((.command // "") | tostring),
+                         ([ (if .args != null then "args" else empty end),
+                            (if .["if"] != null then "if" else empty end),
+                            (if .once != null and .once != false then "once" else empty end),
+                            (if .shell != null and .shell != "bash" then "shell" else empty end)
+                          ] | join(",")),
+                         ((.args // []) | (if type == "array" then . else [.] end)
+                          | any(.[]; tostring | contains($s)) | tostring)]
                       | map(gsub("\u001f"; "") | gsub("\n"; "\\n")) | join("\u001f")' "$f" 2>/dev/null)" || {
             unm+=("$f could not be walked for PreToolUse entries"); continue; }
-        while IFS=$'\x1f' read -r ent m cmd; do
+        while IFS=$'\x1f' read -r ent m cmd fields argnames; do
             [[ -n "$ent" ]] || continue
             trc=0; tgt="$(_bhc_cmd_target "$cmd" "$proj")" || trc=$?
-            [[ "$trc" == 1 ]] && continue
+            [[ "$trc" == 1 && "$argnames" != true ]] && continue
             mrc=0; why="$(_bhc_matcher_covers_agent "$m")" || mrc=$?
             if [[ "$mrc" == 1 ]]; then elsewhere+=("$f entry #$ent (matcher '$m')"); continue; fi
             if [[ "$mrc" == 2 ]]; then unm+=("$f entry #$ent runs the hook, but its matcher '$m' $why"); continue; fi
+            if [[ -n "$fields" ]]; then
+                fw=(); for fld in ${fields//,/ }; do fw+=("$(_bhc_field_why "$fld")"); done
+                unm+=("$f entry #$ent (matcher '$m') names the hook, but its handler sets $(_bhc_join "${fw[@]}") — this reader evaluates only a shell-form command with none of these set"); continue
+            fi
             if [[ "$trc" == 2 ]]; then unm+=("$f entry #$ent (matcher '$m') names the hook, but its command $tgt"); continue; fi
             found=1
             if [[ ! -e "$tgt" ]]; then dead+=("$f entry #$ent runs $tgt, which does not exist"); continue; fi
@@ -228,7 +307,8 @@ _bhc_claude_leg() {
             fi
         done <<< "$tsv"
     done
-    echo "  (not read — a registration made only there reads NOT-REGISTERED here: hooks from plugins, server-managed settings, managed-settings.d drop-ins)"
+    echo "  (not read: claude --settings, server-managed settings, MDM/OS policy (macOS profile, Windows HKLM/HKCU registry), a policyHelper, the SDK managedSettings option, managed-settings.d drop-ins, skill and subagent frontmatter hooks, and plugin hooks — a registration made only there reads NOT-REGISTERED here, and a disableAllHooks or allowManagedHooksOnly set there can make a LIVE here wrong)"
+    echo "  (not detectable: a wrapper that runs it without naming $_BHC_SCRIPT in its command or args — a script, an alias, a differently-named command on PATH — reads NOT-REGISTERED here)"
     if [[ "${#unm[@]}" -gt 0 ]]; then
         _bhc_verdict UNMEASURED "$_BHC_SCRIPT" "$(_bhc_join "${unm[@]}")"
         return
@@ -281,7 +361,18 @@ _bhc_git_leg() {
         2) for hook in post-checkout pre-push; do _bhc_verdict UNMEASURED "$hook" "nothing exists at $repo"; done; return ;;
         7|8) for hook in post-checkout pre-push; do _bhc_verdict UNMEASURED "$hook" "not a checkout: $dir"; done; return ;;
         5) for hook in post-checkout pre-push; do _bhc_verdict UNMEASURED "$hook" "install-board-hooks (which owns the core.hooksPath resolver) could not be read beside board-session-close"; done; return ;;
-        1) for hook in post-checkout pre-push; do _bhc_verdict NOT-LIVE "$hook" "git refuses this checkout, so no hook dispatches: $dir"; done; return ;;
+        1)
+            # rc 1 carries git's refusal, and that covers two opposite states: a repository git
+            # refuses to operate in (dubious ownership, an unexpandable config value — no hook
+            # dispatches: NOT-LIVE), and a path that is no repository at all (nothing to measure:
+            # UNMEASURED, like the other not-a-checkout arms). A checkout root always holds `.git`,
+            # so its presence splits them without parsing git's localisable message.
+            if [[ -e "$repo/.git" ]]; then
+                for hook in post-checkout pre-push; do _bhc_verdict NOT-LIVE "$hook" "git refuses this checkout, so no hook dispatches: $dir"; done
+            else
+                for hook in post-checkout pre-push; do _bhc_verdict UNMEASURED "$hook" "not a checkout (no .git here, and git says: $dir)"; done
+            fi
+            return ;;
         4) for hook in post-checkout pre-push; do _bhc_verdict NOT-LIVE "$hook" "core.hooksPath is set to an EMPTY value, so git dispatches no hooks here (no fallback to .git/hooks)"; done; return ;;
         6) for hook in post-checkout pre-push; do _bhc_verdict NOT-LIVE "$hook" "$dir — git fatals when it dispatches"; done; return ;;
         *) for hook in post-checkout pre-push; do _bhc_verdict UNMEASURED "$hook" "the dispatch-dir resolver answered rc $rc"; done; return ;;

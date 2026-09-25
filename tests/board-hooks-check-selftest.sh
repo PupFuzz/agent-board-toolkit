@@ -18,7 +18,11 @@
 # (does-not-cover) arm disabled; the `board-card-start`-not-on-PATH leg dropped; the final
 # `return 1` removed; the final `return 4` removed; the per-entry shape check (`all(...)`) and
 # the extraction's failure arm reverted to `|| tsv=""` — which read a file holding a non-object
-# PreToolUse entry as LIVE at rc 0, not merely as NOT-REGISTERED.
+# PreToolUse entry as LIVE at rc 0, not merely as NOT-REGISTERED. Added in the fix round: the
+# `args`-names-the-script gate dropped (bash+args reads NOT-REGISTERED); the handler-field gate
+# disabled (args/if/once/shell read LIVE); the `.git` split forced to UNMEASURED (a refused
+# checkout loses its NOT-LIVE). The quoting fixtures were watched red against the prior
+# strip-quotes-then-expand reader, which read each quoted form as LIVE at rc 0.
 #
 # Fixtures: a scratch HOME (no real settings or ~/.kanban-* file can taint a result), real
 # `git init` repos wired by the real bin/install-board-hooks, and a PATH shim dir holding
@@ -65,6 +69,11 @@ register() {
        '{hooks: {PreToolUse: [{matcher: $m, hooks: [{type: "command", command: $c}]}]}}' > "$1"
 }
 mkrepo() { git init -q "$1"; }
+# register_handler <file> <matcher-json> <handler-json> — one PreToolUse entry whose single
+# handler is the given object verbatim (for the fields register() does not write).
+register_handler() {
+    jq -n --argjson m "$2" --argjson h "$3" '{hooks: {PreToolUse: [{matcher: $m, hooks: [$h]}]}}' > "$1"
+}
 
 # ---------------------------------------------------------------------------
 echo "== a deliberately-UNWIRED seat reads NOT-LIVE, by name =="
@@ -147,6 +156,18 @@ mkrepo "$TMP/r2"; mkdir -p "$TMP/r2/sub"
 run -- "$TMP/r2/sub"
 eq "a directory inside a work tree is UNMEASURED (not a checkout)" "true" \
    "$(has 'UNMEASURED — not a checkout' "$(line 'post-checkout:')")"
+mkdir -p "$TMP/plain"
+export GIT_CEILING_DIRECTORIES="$TMP"
+run -- "$TMP/plain"
+unset GIT_CEILING_DIRECTORIES
+eq "a directory that is not a repository is UNMEASURED, rc 4, in git's words" "4|true" \
+   "$RC|$(has 'UNMEASURED — not a checkout (no .git here, and git says: fatal: not a git repository' "$(line 'post-checkout:')")"
+mkrepo "$TMP/r3"
+export GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+run -- "$TMP/r3"
+unset GIT_TEST_ASSUME_DIFFERENT_OWNER
+eq "a repository git REFUSES (dubious ownership) is NOT-LIVE, rc 1, in git's words" "1|true" \
+   "$RC|$(has 'NOT-LIVE — git refuses this checkout, so no hook dispatches: fatal: detected dubious ownership' "$(line 'post-checkout:')")"
 run -- "$TMP/r1" "$TMP/r2"
 eq "NOT-LIVE outranks UNMEASURED in the exit status" "1" "$RC"
 run -- "$TMP/does-not-exist" "$TMP/r2"
@@ -197,6 +218,56 @@ register "$USER_SETTINGS" '"Agent"' "\"bash $SCRIPT\""
 run -- "$TMP/r1"
 eq "an interpreter-prefixed command is UNMEASURED, rc 4" "4|true" \
    "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+# Quoting decides expansion, as `sh -c` applies it: `~` expands only UNQUOTED at the word start,
+# `$VAR` only unquoted or inside double quotes. Stripping quotes first read each of these as the
+# expanded path — a false LIVE for a command the shell runs as a literal, relative name.
+for c in '"\"~/tk/hooks/agent-dispatch-card-start\""' "\"'~/tk/hooks/agent-dispatch-card-start'\"" \
+         "\"'\$HOME/tk/hooks/agent-dispatch-card-start'\""; do
+    register "$USER_SETTINGS" '"Agent"' "$c"
+    run -- "$TMP/r1"
+    eq "command $c is a literal (quoted, unexpanded) relative name → UNMEASURED, rc 4" "4|true" \
+       "$RC|$(has 'is a relative path' "$(line 'agent-dispatch-card-start:')")"
+done
+for c in '"\"$HOME/tk/hooks/agent-dispatch-card-start\""' '"~/\"tk/hooks\"/agent-dispatch-card-start"' \
+         '"\"$CLAUDE_PROJECT_DIR\"/tk/agent-dispatch-card-start"'; do
+    mkdir -p "$PROJ/tk"; ln -sf "$SCRIPT" "$PROJ/tk/agent-dispatch-card-start"
+    register "$USER_SETTINGS" '"Agent"' "$c"
+    run -- "$TMP/r1"
+    eq "command $c expands where sh expands it → LIVE" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+done
+mkdir -p "$TMP/p q/tk"; ln -sf "$SCRIPT" "$TMP/p q/tk/agent-dispatch-card-start"
+register "$USER_SETTINGS" '"Agent"' '"$CLAUDE_PROJECT_DIR/tk/agent-dispatch-card-start"'
+run -- --project "$TMP/p q" "$TMP/r1"
+eq "an UNQUOTED \$CLAUDE_PROJECT_DIR holding a space is split by the shell → UNMEASURED" "4|true" \
+   "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+register "$USER_SETTINGS" '"Agent"' '"\"$CLAUDE_PROJECT_DIR\"/tk/agent-dispatch-card-start"'
+run -- --project "$TMP/p q" "$TMP/r1"
+eq "…and double-quoted it is one word → LIVE" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+register "$USER_SETTINGS" '"Agent"' "\"\$TMP_UNKNOWN/agent-dispatch-card-start\""
+run -- "$TMP/r1"
+eq "a variable this reader does not know is UNMEASURED" "4|true" \
+   "$RC|$(has 'is not a bare path' "$(line 'agent-dispatch-card-start:')")"
+# Handler fields that change whether or how the command runs: each is UNMEASURED by name, never
+# the LIVE the bare command alone would read as.
+for pair in "args|{\"type\":\"command\",\"command\":\"$SCRIPT\",\"args\":[]}" \
+            "if|{\"type\":\"command\",\"command\":\"$SCRIPT\",\"if\":\"Agent(*)\"}" \
+            "once|{\"type\":\"command\",\"command\":\"$SCRIPT\",\"once\":true}" \
+            "shell|{\"type\":\"command\",\"command\":\"$SCRIPT\",\"shell\":\"powershell\"}" \
+            "args|{\"type\":\"command\",\"command\":\"bash\",\"args\":[\"$SCRIPT\"]}"; do
+    register_handler "$USER_SETTINGS" '"Agent"' "${pair#*|}"
+    run -- "$TMP/r1"
+    eq "a handler with ${pair%%|*} (${pair#*|}) is UNMEASURED naming the field, rc 4" "4|true" \
+       "$RC|$(has "sets \`${pair%%|*}\`" "$(line 'agent-dispatch-card-start:')")"
+done
+register_handler "$USER_SETTINGS" '"Agent"' "{\"type\":\"command\",\"command\":\"$SCRIPT\",\"shell\":\"bash\"}"
+run -- "$TMP/r1"
+eq "shell: bash is the default → still LIVE" "true" "$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+register_handler "$USER_SETTINGS" '"Agent"' '{"type":"command","command":"/usr/bin/true","args":["x"]}'
+run -- "$TMP/r1"
+eq "an exec-form handler that names some OTHER program is not this hook" "true" \
+   "$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
+eq "the wrapper bound is printed: a wrapper that never names the script reads NOT-REGISTERED" "true" \
+   "$(has 'a wrapper that runs it without naming agent-dispatch-card-start' "$OUT")"
 register "$USER_SETTINGS" '"Agent"' '"hooks/agent-dispatch-card-start"'
 run -- "$TMP/r1"
 eq "a relative command is UNMEASURED" "true" "$(has 'is a relative path' "$(line 'agent-dispatch-card-start:')")"
@@ -261,8 +332,12 @@ register "$TMP/managed.json" '"Agent"' "\"$SCRIPT\""
 OUT="$(cd "$PROJ" && PATH="$FULLPATH" BHC_MANAGED_SETTINGS="$TMP/managed.json" "$BIN" "$TMP/r1" 2>&1)"; RC=$?
 eq "a managed-settings registration is read → LIVE" "0|true" \
    "$RC|$(has "registered in $TMP/managed.json" "$OUT")"
-eq "the unread sources are named on every run" "true" \
-   "$(has 'not read — a registration made only there reads NOT-REGISTERED here: hooks from plugins' "$OUT")"
+for src in 'claude --settings' 'server-managed settings' 'MDM/OS policy' 'the SDK managedSettings option' \
+           'managed-settings.d drop-ins' 'skill and subagent frontmatter hooks' 'plugin hooks' \
+           'a registration made only there reads NOT-REGISTERED here' \
+           'a disableAllHooks or allowManagedHooksOnly set there can make a LIVE here wrong'; do
+    eq "the unread-source bound names: $src" "true" "$(has "$src" "$(line '(not read:')")"
+done
 
 # ---------------------------------------------------------------------------
 echo "== kbcard off PATH: a registered hook that would skip every marker is NOT-LIVE =="
