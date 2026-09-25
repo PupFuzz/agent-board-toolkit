@@ -48,7 +48,7 @@
 #   to exist rather than to be load-bearing on an exit code. A withheld card is left where it was
 #   and is recoverable by hand on any later day; a terminal one is not. So: the card is named on
 #   stderr with the `⊘` the source-stage guard already uses, counted in its own summary segment,
-#   and the run continues. A WITHHELD CARD NEVER CHANGES THE RUN'S EXIT CODE: THE RUN EXITS AS IF
+#   and the run continues. A WITHHELD CARD NEVER TURNS A RUN THAT EXITED 0 NON-ZERO: THE RUN EXITS AS IF
 #   THE MOVE HAD LANDED. That follows from WHERE the withhold sits — it is the LAST check before the
 #   write, after already-released, `--shipped-stages` and `--require-complete` — so a parent any
 #   of those stops is reported, counted and exited on exactly as it was before the withhold existed
