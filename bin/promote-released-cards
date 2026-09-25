@@ -48,7 +48,10 @@
 #   to exist rather than to be load-bearing on an exit code. A withheld card is left where it was
 #   and is recoverable by hand on any later day; a terminal one is not. So: the card is named on
 #   stderr with the `⊘` the source-stage guard already uses, counted in its own summary segment,
-#   and the run continues and exits on exactly the ladder it would have without it.
+#   and the run continues. A WITHHELD CARD NEVER RAISES THE RUN'S RC: the two exit arms that ask
+#   whether a run promoted anything (EXIT CODES, the refused-move route of 1 and the ref-
+#   completeness die of 2) each carry a `program_held == 0` term, so a parent that the pre-change
+#   tool moved and counted keeps those arms quiet exactly as it did then.
 #
 #   ⛔ THE SPELLING IS AN EXACT, CASE-SENSITIVE, WHITESPACE-SENSITIVE MATCH ON THE TAG `program`,
 #   which is written here as the literal an operator reading `--help` needs (this block IS the
@@ -193,7 +196,8 @@
 #     The owner-tag clear is read back the same way; its outcome still changes no count and no
 #     exit code (see the paragraph above). The ONE extra request per moved card is the clear's
 #     own read-back — the FIRST read is shared, not added: the clear already re-read the card.
-#   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
+#   - Nothing NEWLY promoted (and no program parent withheld) despite a non-empty shipped-ref
+#     set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
 #     ref-derivation was COMPLETE, so the refs are genuinely cardless => WARN (exit 0); a
 #     non-merge tip means
@@ -233,24 +237,25 @@
 #          the run moved, skipped or could not read: the board was read and it disagrees with
 #          the write, so the release is not clean. 27 promoted beside one un-applied is rc 1.
 #        · a REFUSED or never-completed move (`✗ … move failed (left in place)` /
-#          `move NOT CONFIRMED`, the `<n> failed` count) — only on a run where NOTHING moved and
-#          NOTHING was already released. A refusal beside a promoted card exits 0, as it always
-#          has: that is the card#9301 acceptance, left standing deliberately (widening it changes
-#          runs this tool has always called green). ⛔ AN UNREADABLE CARD BESIDE IT DOES NOT
+#          `move NOT CONFIRMED`, the `<n> failed` count) — only on a run where NOTHING moved,
+#          NOTHING was already released and NO program parent was withheld. A refusal beside
+#          a promoted card exits 0, as it always has: that is the card#9301 acceptance,
+#          left standing deliberately (widening it changes runs this tool has always
+#          called green). ⛔ AN UNREADABLE CARD BESIDE IT DOES NOT
 #          DEMOTE IT TO 3: the refusal is a measurement, and the rule below is unscoped. That
 #          pair is driven in `tests/promote-move-readback-selftest.sh` § 6.
 #          ⛔ A GATE THAT MUST CATCH THAT ONE READS THE `<n> failed.` TAIL OF THE SUMMARY LINE,
 #          NOT THE RC.
 #   2  bad invocation, or a refusal this tool `die`s on before/instead of promoting — including
-#      the REF-COMPLETENESS die: 0 cards newly promoted behind a NON-MERGE release tip, where a
-#      squash/rebase merge may have dropped the per-PR refs. ⛔ THAT DIE IS NOT THE
-#      `--require-complete` GATE, which is rung 5: this one asks whether the REFS this run reads
-#      arrived intact, that one asks whether a matched card's WORK is finished. They were both
-#      called "the completeness die" while they lived on separate branches; they are different
-#      questions at different exit codes and only the ref one is here. Both read-back clauses above are
-#      decided BEFORE that die, because on their runs the refs demonstrably arrived, matched
-#      cards and were PATCHed — sending the operator after dropped refs would be the wrong
-#      question at an rc that means bad invocation.
+#      the REF-COMPLETENESS die: 0 cards newly promoted and no program parent withheld, behind a
+#      NON-MERGE release tip, where a squash/rebase merge may have dropped the per-PR refs. ⛔ THAT
+#      DIE IS NOT THE `--require-complete` GATE, which is rung 5: this one asks whether the REFS
+#      this run reads arrived intact, that one asks whether a matched card's WORK is finished. They
+#      were both called "the completeness die" while they lived on separate branches; they are
+#      different questions at different exit codes and only the ref one is here. Both read-back
+#      clauses above are decided BEFORE that die, because on their runs the refs demonstrably
+#      arrived, matched cards and were PATCHed — sending the operator after dropped refs would be
+#      the wrong question at an rc that means bad invocation.
 #   3  $RC_UNVERIFIED — a stage PATCH WAS SENT, answered success, and its outcome could NOT be
 #      read. Nothing here says it landed and nothing says it did not; re-read before acting
 #      either way. It fires with `moved` > 0 too: 27 cards read back moved and one not read at
@@ -1004,11 +1009,11 @@ API_RC_REFUSED=22
 #
 # ⛔ THE LADDER IS NOT RESTATED HERE. It used to be — as `1  a KNOWN failure — refused, or the
 # read-back says the card did not move.` — and that sentence declared a condition this file does
-# not evaluate: a REFUSED move reaches rc 1 only on a run where nothing moved and nothing was
-# already released (the clause below the summary line), so a refusal beside a promoted card exits
-# 0 and the line said otherwise. This block owns the VALUE and why it is
-# duplicated; the header's EXIT CODES block (`--help`) owns what each rc MEANS and what it is
-# conditional on.
+# not evaluate: a REFUSED move reaches rc 1 only on a run where nothing moved, nothing was
+# already released and no program parent was withheld (the clause below the summary line), so
+# a refusal beside a promoted card exits 0 and the line said otherwise. This block owns the VALUE
+# and why it is duplicated; the header's EXIT CODES block (`--help`) owns what each rc MEANS and
+# what it is conditional on.
 RC_UNVERIFIED=3
 
 # TWO FILES, NOT TWO VARIABLES, and the reason is shell scoping rather than taste. The
@@ -1926,11 +1931,13 @@ fi
 # `program-withheld` sits ahead of both because its `continue` is ahead of both.
 #
 # ⚠ `program-withheld` RIDES BY THE COUNT RULE, not the flag rule, because it has no flag: it
-# appears only when there IS one, so every run that has always been possible keeps a
+# appears only when there IS one, so every run that matches no `program`-tagged card keeps a
 # byte-identical summary line and a run that withheld a parent says so on the line an operator
-# already reads. It is its OWN segment and folded into NO other count, which is the honesty this
-# whole guard turns on — a withheld card is neither promoted nor failed, and adding it to `moved`
-# would make the one number a release step is read for assert the opposite of what happened.
+# already reads. ⚠ A run that DOES match one changes more than the new segment — the parent leaves
+# `moved`, where the pre-change tool counted it — which is the honesty below, not a regression. It
+# is its OWN segment and folded into NO other count, which is the honesty this whole guard turns on
+# — a withheld card is neither promoted nor failed, and adding it to `moved` would make the one
+# number a release step is read for assert the opposite of what happened.
 unv_txt=""; na_txt=""; prog_txt=""
 if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
@@ -1958,7 +1965,7 @@ echo "promote-released-cards: $moved moved, $skipped already-released, $prog_txt
 # ⚠ Read `0 program-withheld`'s ABSENCE from the summary as "this run withheld no parent", never
 # as "no parent was promoted": an untagged parent is invisible to the predicate (header).
 if [ "$program_held" -gt 0 ]; then
-  echo "promote-released-cards: $program_held card(s) carrying the \`$PROGRAM_TAG\` tag were WITHHELD from the terminal stage and are named individually above. They are PARENT cards naming several legs each; this release shipped one leg's ref, which does not finish them. Nothing was written for them and they are where they were — move each by hand once its every leg has shipped. This is not a failure and does not affect this run's exit code." >&2
+  echo "promote-released-cards: $program_held card(s) carrying the \`$PROGRAM_TAG\` tag were WITHHELD from the terminal stage and are named individually above. They are PARENT cards naming several legs each; this release shipped one leg's ref, which does not finish them. Nothing was written for them and they are where they were — move each by hand once its every leg has shipped. This is not a failure and never raises this run's exit code." >&2
 fi
 if [ -n "$SHIPPED_STAGES" ]; then
   echo "promote-released-cards: stage-guard ON (Shipped-class source stages: $SHIPPED_STAGES) — a matched card outside them is skipped, never promoted." >&2
@@ -2040,23 +2047,30 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # `tests/promote-move-readback-selftest.sh` § 6, which reds if it comes back.
 #
 # ⚠ THIS ARM ANSWERS ONE QUESTION — "did this run promote NOTHING AT ALL?" — and its `moved == 0
-# && skipped == 0` terms are that question's, not a general failure policy. `$failed` now holds
-# ONLY the visibly-failed request (a refused PATCH, and the never-completed one recorded as a
-# residual at the move loop): card#9938's measured-wrong-stage outcome has its own counter and
+# && skipped == 0 && program_held == 0` terms are that question's, not a general failure
+# policy. `$failed` now holds ONLY the visibly-failed request (a refused PATCH, and the
+# never-completed one recorded as a residual at the move loop): card#9938's measured-wrong-stage
+# outcome has its own counter and
 # its own unconditional clause ABOVE, because giving a new outcome an old counter gave it that
-# counter's run-shape condition too. This clause is byte-identical — the line itself, not just
-# its behaviour — to the one card#9938 found here.
+# counter's run-shape condition too. This clause is the one card#9938 found here plus ONE term,
+# `program_held == 0` (card#10068), and that term changes no rc any pre-withhold run could reach:
+# every card it counts is one the pre-withhold bin PATCHed and counted `moved`, which already
+# kept this arm from firing. Without it, withholding a parent beside a refused move turned a run
+# that has always exited 0 into rc 1 — the withhold breaking a consumer's release, which it exists
+# not to do (header: THE PROGRAM-PARENT WITHHOLD). It is its own term, not a fold into `moved`, for
+# the reason the summary line gives: a withheld card was not promoted.
 #
 # ⚠ A NAMED RESIDUAL, on the SAME axis and deliberately not closed here: a VISIBLY refused or
-# never-completed move beside a card that DID move (or an already-released one) still exits 0 —
-# `moved == 0 && skipped == 0` is why. That is the acceptance card#9301 shipped, on a run shape
-# that predates card#9938; widening it changes what this tool reports on runs it has always
-# reported as green, which is its own decision to ask for and is not this card's. What card#9938
-# owes is that the DOCS say so, and they do in ONE place: the header's EXIT CODES block, which
-# `--help` prints and which states the condition rather than the unconditional rule that was true
+# never-completed move beside a card that DID move (or an already-released one, or a withheld
+# parent) still exits 0 — `moved == 0 && skipped == 0 && program_held == 0` is why. That is the
+# acceptance card#9301 shipped, on a run shape that predates card#9938; widening it changes
+# what this tool reports on runs it has always reported as green, which is its own decision to ask
+# for and is not this card's. What card#9938 owes is that the DOCS say so, and they do in ONE place:
+# the header's EXIT CODES block, which `--help` prints and which states the condition rather than
+# the unconditional rule that was true
 # of neither half. Every other surface points there rather than carrying a copy — that block
 # publishes the command that re-derives which surfaces those are.
-if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
+if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ] && [ "$program_held" = 0 ]; then exit 1; fi
 # A WRITE WENT OUT AND NOBODY HERE CAN SAY WHAT IT DID → exit $RC_UNVERIFIED (card#9938).
 #
 # ⛔ IT IS DECIDED BEFORE THE COMPLETENESS DIE BELOW, because that die's premise is FALSE on this
@@ -2102,19 +2116,24 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # markers can be lost while a title DL still matches. A guarded-skip therefore cannot
 # disprove a dropped sibling ref; on this off-process path (non-merge tip only) the
 # ~2-minute manual verification a false alarm costs is the right side of the asymmetry
-# vs a silently un-promoted shipped card. `program_held` is NOT in the guard either, by exactly
-# that argument: a withheld parent proves a ref reached a card, not that the RANGE was complete,
-# so a release whose only match was a parent still fails behind a squash tip — and rightly, since
-# the two possible causes there (only a parent of ours was named / our refs were dropped) are
-# again what a human has to tell apart. The withhold is non-fatal on its OWN axis; it does not
-# buy a run past a die that is asking a different question.
+# vs a silently un-promoted shipped card. `program_held` IS in the guard, and that is not the
+# same call made the other way — it is a different constraint winning (card#10068). A withheld
+# parent proves a ref reached a card, not that the RANGE was complete, so on the die's own
+# question it is no better evidence than a guarded skip. But every card it counts is one the
+# pre-withhold bin PATCHed and counted `moved`, which kept this die from firing; leaving it out
+# made a release whose only match was a parent go from rc 0 to rc 2 — a withheld card breaking a
+# consumer's release, the one thing THE PROGRAM-PARENT WITHHOLD (header) is shaped not to do.
+# So the term preserves exactly the rc that run always had, and the residual it leaves is the
+# one it always had: a squash release whose ONLY surviving ref was a parent's is not told apart
+# from one whose other refs were dropped. The withhold still names the parent on stderr, so the
+# operator reading that run is pointed at the card this run could see.
 # The card#8421 counts (`foreign`, `unsourced`) are
 # NOT in the guard either, and for the same reason: a repo-qualification rejection says
 # nothing about whether the RANGE was complete, which is the only question this die asks. A
 # release whose refs ALL matched other repos therefore still fails behind a squash tip — which
 # is right, because the two possible causes (nothing of ours shipped / our refs were dropped)
 # are exactly what a human has to tell apart there.
-if [ "$moved" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
+if [ "$moved" = 0 ] && [ "$program_held" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi
 # A COMPLETENESS REFUSAL IS LAST ON THE LADDER, and non-zero rather than a warning: a card left

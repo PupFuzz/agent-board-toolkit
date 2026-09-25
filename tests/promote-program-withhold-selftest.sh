@@ -13,9 +13,11 @@
 # ⛔ THE WITHHOLD IS NOT A REFUSAL, AND THIS FILE ASSERTS THE DIFFERENCE RATHER THAN ASSUMING IT.
 # This tool is vendored SHA-pinned into other repos' release workflows, so a hard failure here
 # becomes THEIR broken release over a card that is not theirs. The shipped behaviour is therefore:
-# name the card on stderr, count it in its own summary segment, promote everything else, exit on
-# the ladder the run would have exited on anyway. Every one of those four is a cell below, because
-# three of them are exactly what a reviewer would "tidy" into a `die`.
+# name the card on stderr, count it in its own summary segment, promote everything else, and never
+# raise the run's rc. Every one of those four is a cell below, because three of them are exactly
+# what a reviewer would "tidy" into a `die`. The rc one is TWO cells (§ 6, § 7), one per exit arm
+# that asks whether a run promoted anything: each ran red on a head that withheld the parent
+# without telling that arm, and the pre-change bin is rc 0 on both shapes.
 #
 # ⚠ TWO ARMS, AND NEITHER IS THE OTHER'S BACKGROUND. A guard that withholds EVERYTHING passes a
 # one-armed subject test, and promoting cards is this tool's whole job — so the ordinary card and
@@ -200,5 +202,37 @@ eq "#7 is NOT reported as a stage-guard skip"        "false" "$(has 'not in a Sh
 eq "the two counts stay separate on one line" \
    "promote-released-cards: 0 moved, 0 already-released, 1 program-withheld, 0 stage-guarded, 0 no-card, 0 failed." \
    "$(printf '%s' "$out" | tail -n 1)"
+
+echo "== 6. a withheld parent beside a REFUSED move does not turn the run red (rc parity, arm 1) =="
+# The rc-1 arm fires on a run that promoted NOTHING AT ALL — `failed` > 0 with `moved` and
+# `skipped` both 0. Before the withhold existed the parent here was PATCHed and counted `moved`,
+# so this exact run exited 0; a withhold that left `program_held` out of that arm's terms turned
+# it into rc 1 over a card that is not a failure. Counting the parent anywhere would be the wrong
+# fix (see the summary cell in § 1): the arm is told about it as its own term instead.
+STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-101'
+eq "refused card + withheld parent → rc 0, as before the withhold" "0" "$rc"
+eq "the refusal is still reported"                   "true"  "$(has '(#1): move failed' "$err")"
+eq "the refusal is still counted" \
+   "promote-released-cards: 0 moved, 0 already-released, 1 program-withheld, 0 no-card, 1 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
+eq "parent #2 was NOT PATCHed"                       "false" "$(has '/tasks/2.json' "$patched")"
+
+echo "== 7. a parent-only match behind a squash tip does not trip the ref-completeness die (arm 2) =="
+# Refs DERIVED from git (no --dls/--cards) behind a NON-merge tip, and the only card they reach is
+# a parent. Before the withhold that card moved, so `moved` was 1 and the die never asked its
+# question; with the parent withheld and no term for it, `moved` is 0 and the die sent the
+# operator after dropped refs at rc 2 — refs that demonstrably arrived and matched a card.
+GITDIR="$TMP/gitfx"; mkdir -p "$GITDIR"
+git -C "$GITDIR" init -q -b main
+git -C "$GITDIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "baseline"
+git -C "$GITDIR" tag v0.0.1
+git -C "$GITDIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "release: v0.0.2 DL-101 squashed"
+: > "$PATCH_LOG"
+rc=0; out="$(cd "$GITDIR" && "$PRC" --config "$TMP/release-pr.json" 2>"$TMP/err")" || rc=$?
+err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+eq "parent-only match, squash tip → rc 0, as before the withhold" "0" "$rc"
+eq "the die did not fire"                            "false" "$(has 'not a merge commit' "$err")"
+eq "the parent was named as withheld"                "true"  "$(has '(#2): carries' "$err")"
+eq "nothing was PATCHed"                             ""      "$patched"
 
 _summary "promote-program-withhold-selftest"
