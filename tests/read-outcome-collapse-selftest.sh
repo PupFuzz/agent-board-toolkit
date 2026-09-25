@@ -167,6 +167,7 @@ DISPOSITIONED=(
   "bin/board-card-start:cur|DISPOSED — the unreadable HTTP outcome is refused above ('the card was NOT confirmed missing'); this jq only reads a body already accepted."
   "bin/board-card-start:curdl|DISPOSED — same already-accepted body; an empty dl_number stamps, and the stamp is fail-soft and conflict-guarded."
   "bin/board-card-start:want|SAME OUTCOME — kb_dl_canon over an in-memory \$dl; empty writes nothing at all (fail-closed on the write)."
+  "bin/board-hooks-check:real|SAME OUTCOME — readlink -f only fails when a path component cannot be resolved, i.e. the registered command cannot be exec'd either. In the command resolver the raw basename is still tested, so an unresolvable path NAMED agent-dispatch-card-start reads 'registered but cannot run' and one named otherwise reads NOT-REGISTERED: both NOT-LIVE, rc 1, never LIVE. In the drift note the path was already proven runnable, so the read cannot fail there, and an empty answer would only ADD the warning."
   "bin/board-session-close:pdir|NO READ — grep over \$PATH, already in memory."
   "bin/board-session-close:root|DISPOSED — git's own refusal is captured and reported one branch above (rc 1); reaching this line means git answered, and the comment says so."
   "bin/board-session-close:p|SAME OUTCOME — readlink -f with an explicit '|| printf' identity fallback; emptiness was already refused at the command -v above."

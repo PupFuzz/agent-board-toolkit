@@ -28,6 +28,7 @@
 # Usage:
 #   release-tag-check --before <ref> --after <ref> [--config PATH] [--remote NAME]
 #                     [--timeout SECS] [--interval SECS] [--read-timeout SECS]
+#   release-tag-check --tool-version
 #
 #   --before   the ref the branch pointed at BEFORE this push (github.event.before)
 #   --after    the pushed commit (github.sha) — the tag must point HERE
@@ -37,6 +38,10 @@
 #   --interval seconds between polls (default 10; must be >= 1)
 #   --read-timeout  seconds ONE `git ls-remote` may take before it is killed and scored as an
 #              unreadable remote (default 30; must be >= 1; ignored where `timeout` is absent)
+#   --tool-version print the toolkit release this FILE was stamped at, and exit 0. It answers
+#                  from the embedded `ABTK_TOOL_VERSION` line before any config, repo, network or
+#                  sibling is read, so a vendored copy can say what it is (VERSIONING.md rule 1).
+#                  A copy refusing it as `unknown arg` is older than the flag, never a version.
 #
 # THE RELEASE CLASSIFICATION IS NOT RE-DERIVED HERE. It is delegated to
 # `release-artifacts-check --classify-only`, which owns the repo's one definition of "this
@@ -126,12 +131,14 @@
 # that asserts nothing about the tag), or the tag exists at a DIFFERENT commit. 2 = usage
 # error, or the range could not be classified.
 set -euo pipefail
+
+ABTK_TOOL_VERSION='0.36.0'
+
 # A bracket range is a COLLATION range and en_US.UTF-8 widens `[0-9]` to non-ASCII digits
 # (card#5409); exported so the greps below inherit it, not just this shell.
 export LC_ALL=C
 
 die() { echo "release-tag-check: $*" >&2; exit 2; }
-command -v git >/dev/null || die "git is required"
 
 # Mirrors kb_require_value in _kb-board-lib.sh. Like its release siblings this script is
 # deliberately self-contained and does not source that lib. THE AGREEMENT IS CHECKED, NOT ASKED
@@ -151,7 +158,7 @@ require_uint()  { case "${2:-}" in ''|*[!0-9]*) die "$1 requires a non-negative 
 require_pint()  { require_uint "$1" "${2:-}"; [ "${2:-0}" -gt 0 ] || die "$1 requires a positive integer — 0 polls without pause"; }
 
 CONFIG=".release-pr.json"; BEFORE=""; AFTER=""; REMOTE="origin"; TIMEOUT=300; INTERVAL=10
-READ_BOUND=30
+READ_BOUND=30; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --before)   require_value "$1" "${2:-}"; BEFORE="$2"; shift 2;;
@@ -161,12 +168,23 @@ while [ $# -gt 0 ]; do
     --timeout)  require_uint  "$1" "${2:-}"; TIMEOUT="$2"; shift 2;;
     --interval) require_pint  "$1" "${2:-}"; INTERVAL="$2"; shift 2;;
     --read-timeout) require_pint "$1" "${2:-}"; READ_BOUND="$2"; shift 2;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — a fixed `sed -n` range is silently
     # wrong in both directions as the header grows or shrinks (card#5145).
     -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0"; exit 0;;
     *) die "unknown arg '$1'";;
   esac
 done
+
+# Before anything else is read: a vendored copy must answer from whatever directory it is run in.
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  printf '%s\n' "$ABTK_TOOL_VERSION"
+  exit 0
+fi
+
+# Runtime dependencies are checked only AFTER the --tool-version exit above: that question needs
+# none of them, and a host lacking one must still be able to ask which release this copy is.
+command -v git >/dev/null || die "git is required"
 
 [ -n "$BEFORE" ] || die "--before <ref> is required"
 [ -n "$AFTER" ]  || die "--after <ref> is required"
