@@ -1210,9 +1210,9 @@ kb_parse_resp() {
 # The filter is the LAST argument; everything before it is passed to jq and must be drawn from
 # `-r`, `-c`, `--arg <name> <value>`, `--argjson <name> <value>`. Any other option is REFUSED —
 # a diagnostic and rc 2, the usage-error rc (see KB_API_RC_TRANSPORT) — rather than passed
-# through, because the rest are not safe here: `-n` and `-s` change what `.` is; `-e` turns a
-# clean `false`/`null` answer into rc 1 with no output; `-R`, `--stream` and `--seq` fail on
-# valid input. Each makes a legitimate answer read as "not one JSON text".
+# through, because the rest are not safe here: `-n`, `-s` and `--stream` change what `.` is;
+# `-e` turns a clean `false`/`null` answer into rc 1 with no output; `-R` and `--seq` fail on
+# valid input. Each either misreads a legitimate answer or reports it as "not one JSON text".
 kb_jq_one() {
     local input="$1"; shift
     local filter="${*: -1}" one i=0
