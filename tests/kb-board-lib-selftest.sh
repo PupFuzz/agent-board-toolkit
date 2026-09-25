@@ -55,6 +55,9 @@ expect_rc() { # <label> <expected-rc> <fn> <args...>
 reset_env() {
     unset KBCARD_API KBCARD_TOKEN_FILE KB_API KB_BOARD_ID KB_TOKEN KB_TOKEN_FILE \
           KB_BOARD_ENV KB_HOST_TOKEN_FILE KANBAN_EXPECTED_HOST COORD_CREDENTIALS
+    # The lib snapshots the KB_BOARD_ID this process inherited at SOURCE time, so an operator
+    # shell that exported one would otherwise put its value into every case below.
+    _KB_INHERITED_BOARD_ID=""
     : > "$KANBAN_HOST_ENV"
     # COORD_CREDENTIALS and the scratch store go with them (card#7316). The token ladder now
     # ends in a DISCOVERY — the coord credential store's `[kanban] api_token_file` — so an
@@ -541,6 +544,51 @@ eq "board B falls through to the ambient token, not A's" "$TMP/ambient.token" "$
 eq "ambient KBCARD_TOKEN_FILE restored in the caller's env" "$TMP/ambient.token" "${KBCARD_TOKEN_FILE:-}"
 
 # ---------------------------------------------------------------------------
+echo "== kb_resolve_env — KB_BOARD_ID has ONE source, the board env (card#10385) =="
+# An inherited KB_BOARD_ID used to be a silent, partial tier: it lost to a board env that set
+# one, and won over one that did not while that env still supplied the stage ids. Each leg sets
+# the lib's inherited snapshot the way sourcing it under an exported id does (the source-time
+# capture itself is the last leg); the process-level legs in kbcard-selftest drive the same
+# rule through the bin.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+{ echo 'export KB_BOARD_ID=5'; echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$TMP/.kanban-five-board.env"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\"" > "$TMP/.kanban-noid-board.env"   # declares NO id
+
+export KB_BOARD_ID=13; _KB_INHERITED_BOARD_ID=13
+rc=0; kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w" || rc=$?
+eq "inherited 13, env declares 5 → resolves (rc)"          "0" "$rc"
+eq "  …to the board env's id"                              "5" "${KB_BOARD_ID:-}"
+eq "  …and SAYS it ignored the inherited one"              "true" "$(has 'ignoring the inherited KB_BOARD_ID=13' "$(cat "$TMP/w")")"
+eq "  …naming the board env and the id it declares"        "true" "$(has "$TMP/.kanban-five-board.env declares (KB_BOARD_ID=5)" "$(cat "$TMP/w")")"
+
+export KB_BOARD_ID=13; _KB_INHERITED_BOARD_ID=13
+rc=0; kb_resolve_env "$TMP/.kanban-noid-board.env" 2>"$TMP/w" || rc=$?
+eq "inherited 13, env declares NONE → the id is EMPTY, not the inherited one" "0|" "$rc|${KB_BOARD_ID:-}"
+eq "  …and the line says the env declares none"            "true" "$(has 'declares (KB_BOARD_ID=<none>)' "$(cat "$TMP/w")")"
+
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+export KB_BOARD_ID=5; _KB_INHERITED_BOARD_ID=5
+kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w"
+eq "inherited id EQUAL to the env's → no line (a shell that sourced this env)" "5|" "${KB_BOARD_ID:-}|$(cat "$TMP/w")"
+
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w"
+eq "nothing inherited → the env's id, and no line"          "5|" "${KB_BOARD_ID:-}|$(cat "$TMP/w")"
+# Cross-call: the id published by one resolve is not "inherited" by the next — board five's 5
+# must neither leak into noid nor be reported as something the caller exported.
+kb_resolve_env "$TMP/.kanban-noid-board.env" 2>"$TMP/w"
+eq "a SECOND resolve does not inherit the first's id"       "" "${KB_BOARD_ID:-}"
+eq "  …and does not warn about the lib's own output"        "" "$(cat "$TMP/w")"
+
+# The snapshot is taken when the lib is SOURCED, from the process environment.
+eq "the lib captures an exported KB_BOARD_ID at source time" "13" \
+   "$(KB_BOARD_ID=13 bash -c 'source "$1"; printf %s "$_KB_INHERITED_BOARD_ID"' _ "$LIB")"
+reset_env
+
+# ---------------------------------------------------------------------------
 echo "== kb_resolve_env — failure return codes =="
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
@@ -600,6 +648,26 @@ rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
 eq "no board envs → still rc 2" "2" "$rc"
 case "$msg" in *"no ~/.kanban-*-board.env files found"*) ok "  says no board envs were found" ;;
     *) bad "  empty-discovery message unclear: '$msg'" ;; esac
+
+# card#10385: kb_resolve_env publishes an EMPTY id for a board env that declares none, and every
+# kb_load_config caller is board-scoped — an empty id reached the wire as `/boards//…` or as an
+# unscoped `board_id= external_id:<ref>` search over every board. The refusal is the loader's, so
+# no caller can forget it, and it comes before the token is read.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'secret-tok' > "$TMP/load-config.token"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\"" > "$TMP/.kanban-noid-board.env"   # declares NO id
+{ echo 'export KB_BOARD_ID=5'; echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\""; } > "$TMP/.kanban-five-board.env"
+KB_TOKEN=""
+rc=0; msg="$(kb_load_config noid 2>&1 >/dev/null)" || rc=$?
+eq "board env declaring no KB_BOARD_ID → rc 2"               "2" "$rc"
+eq "  …naming the env and the missing key"                  "true" "$(has "$TMP/.kanban-noid-board.env declares no KB_BOARD_ID" "$msg")"
+eq "  …and how to choose a board"                           "true" "$(has '--board <name>' "$msg")"
+kb_load_config noid 2>/dev/null || true
+eq "  …and reads no token"                                  "" "$KB_TOKEN"
+rc=0; kb_load_config five 2>/dev/null || rc=$?
+eq "control: an env declaring 5 → rc 0, id 5, token read"   "0|5|secret-tok" "$rc|$KB_BOARD_ID|$KB_TOKEN"
+KB_TOKEN=""
 
 # ---------------------------------------------------------------------------
 echo "== kb_load_host_env =="

@@ -50,8 +50,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- config resolution (shared lib, sourced above) ---------------------------
-kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN
-[[ -n "$KB_BOARD_ID" ]] || { echo "$KB_PROG: KB_BOARD_ID not set — check $KB_BOARD_ENV" >&2; exit 2; }
+kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID (required) / KB_TOKEN
 
 # --- fetch the board's cards ------------------------------------------------
 # Use the shared PAGINATED fetch, not a single /boards/<id>.json read: a board
