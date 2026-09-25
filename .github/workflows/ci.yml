@@ -154,6 +154,7 @@ jobs:
           - agent-dispatch-card-start-selftest
           - bin-artifact-hygiene-selftest
           - board-card-start-selftest
+          - board-hooks-check-selftest
           - board-session-close-selftest
           - board-snapshot-selftest
           - board-stats-selftest
