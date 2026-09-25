@@ -6036,10 +6036,22 @@ MB_PRE_BODY="$MB_SAME" mbm "$MB_SAMEB" "" move-board --task 901 --to-board tgt -
 eq "  control: WITHOUT the refusal, the same-board move is POSTed" "1" "$(kb_stub_count POST '/move-board.json')"
 
 echo "-- the TARGET env's token is never sent, so it need not be readable --"
+# WHICH token: the stub logs each request's bearer. The target env's token file is READABLE here
+# and holds `tgt-token`, so a move that read and sent it would be seen on the wire.
+mbc "${MB_ARGS[@]}"
+eq "M21a a READABLE target token → rc 0, the POST and every other request carried the SOURCE token, and none the target's" \
+   "0|stub-token|stub-token|false" \
+   "$rc|$(kb_stub_bearers POST '/move-board.json')|$(cut -f3 "$KB_STUB_AUTH_LOG" | sort -u)|$(has 'tgt-token' "$out$err")"
+eq "  …the stub saw a bearer on every request (the log is not vacuous)" \
+   "$(kb_stub_total)" "$(awk -F'\t' '$3 != ""' "$KB_STUB_AUTH_LOG" | wc -l | tr -d ' ')"
+_rmut mb-tgttok '/^    to_tok="\$(jq -r .\.token_file. <<<"\$target")"$/a\    KB_TOKEN="$(cat "$to_tok")"' MB_TGTTOK
+mbm "$MB_TGTTOK" "" "${MB_ARGS[@]}"
+eq "  control: a move that loads the TARGET token POSTs it" "tgt-token" "$(kb_stub_bearers POST '/move-board.json')"
 mv "$TMP/tgt.token" "$TMP/tgt.token.away"
 mbc "${MB_ARGS[@]}"
 eq "M21 an unreadable target token file → rc 0, the move POSTed with the source's token" \
-   "0|1|false" "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'token file not readable' "$err")"
+   "0|1|false|stub-token" \
+   "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'token file not readable' "$err")|$(kb_stub_bearers POST '/move-board.json')"
 mv "$TMP/tgt.token.away" "$TMP/tgt.token"
 # UNDECLARED: no tier supplies the target a token file. The host env's declaration moves into the
 # SOURCE board env (so the source still has one), the target env loses its own, and nothing is
@@ -6050,8 +6062,9 @@ grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/host.env.keep" > "$KANBAN_HOST_ENV"
 grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/tgt.env.keep" > "$HOME/.kanban-tgt-board.env"
 printf 'export KBCARD_TOKEN_FILE="%s"\n' "$KB_STUB_TOKEN_FILE" >> "$HOME/.kanban-dev-board.env"
 mbc "${MB_ARGS[@]}"
-eq "M21b a target env declaring NO token file (no tier supplies one) → rc 0, the move POSTed" \
-   "0|1|false" "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'no token file is declared' "$err")"
+eq "M21b a target env declaring NO token file (no tier supplies one) → rc 0, the move POSTed with the source's token" \
+   "0|1|false|stub-token|0" \
+   "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'no token file is declared' "$err")|$(kb_stub_bearers POST '/move-board.json')|$(grep -c 'tgt-token' "$KB_STUB_AUTH_LOG")"
 mkdir -p "$TMP/mut-mb-undecl"
 cp "$(readlink -f "$BIN")" "$TMP/mut-mb-undecl/kbcard"
 sed 's/2>\/dev\/null)" || KB_TOKEN_FILE=""$/2>\/dev\/null)" || return 7/' \

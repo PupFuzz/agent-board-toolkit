@@ -632,6 +632,33 @@ rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
 eq "kb_load_config x --no-token, unreadable token → rc 0, KB_TOKEN empty" "0|42|" "$rc|${KB_BOARD_ID:-}|$KB_TOKEN"
 rc=0; kb_load_config x 2>/dev/null || rc=$?
 eq "  control: kb_load_config x without the flag → rc 2"   "2" "$rc"
+# NOT READ, not read-and-failed: the unreadable fixture above cannot tell the two apart, so the
+# same load against a READABLE token file holding a sentinel must leave that sentinel in no shell
+# variable and no output. The sentinel is spelled in two halves everywhere in this file, so the
+# only place its joined value exists is the token file — `set` finding it means the load read it.
+printf '%s%s\n' NOTOKEN- SENTINEL-7f3a > "$TMP/readable.token"
+_nt_line="export KBCARD_TOKEN_FILE=\"$TMP/readable.token\""
+sed -i '$d' "$TMP/.kanban-x-board.env"; echo "$_nt_line" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "READABLE token, no flag → rc 0 and KB_TOKEN holds it (the fixture is readable)" \
+   "0|1" "$rc|$(grep -c 'NOTOKEN-''SENTINEL-7f3a' <<<"$KB_TOKEN")"
+KB_TOKEN="STALE"
+rc=0; msg="$(kb_load_config x --no-token 2>&1)" || rc=$?
+eq "  --no-token → rc 0 and nothing printed" "0|" "$rc|$msg"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "  --no-token → KB_TOKEN empty, and the token's value in NO variable of this shell" \
+   "0||0" "$rc|$KB_TOKEN|$(set | grep -c 'NOTOKEN-''SENTINEL-7f3a')"
+# Control: the same fixture against a copy of the lib whose --no-token arm reads the file (the
+# mutation the unreadable fixture could not see). Both variable shapes must red.
+for _nt_mut in 's|^        KB_TOKEN=""$|        KB_TOKEN="$(cat "$KB_TOKEN_FILE" 2>/dev/null)"|' \
+               's|^        KB_TOKEN=""$|        KB_TOKEN=""; _kb_peek="$(cat "$KB_TOKEN_FILE")"|'; do
+    sed "$_nt_mut" "$LIB" > "$TMP/mut-notoken-lib.sh"
+    cmp -s "$TMP/mut-notoken-lib.sh" "$LIB" && bad "no-token control: the lib mutation matched nothing"
+    # shellcheck disable=SC1091
+    _nt_seen="$(unset _KB_BOARD_LIB_LOADED; source "$TMP/mut-notoken-lib.sh"; kb_load_config x --no-token 2>/dev/null; set | grep -c 'NOTOKEN-''SENTINEL-7f3a' || true)"
+    eq "  control: a --no-token arm that reads the file IS seen ($_nt_mut)" "true" "$([[ "$_nt_seen" -gt 0 ]] && echo true || echo false)"
+done
+unset _nt_mut _nt_seen _nt_line
 KB_TOKEN=""
 rm -f "$TMP/.kanban-x-board.env"
 
