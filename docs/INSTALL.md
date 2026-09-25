@@ -331,6 +331,8 @@ kbcard list --column backlog            # -> JSON array of cards (or [] if empty
                                         #    are all correct.
 kbcard show --task <some-id> | jq .id   # -> the task id echoed back
 ```
+Using the card-start hooks? Check them too — `board-hooks-check <repo-dir>…` reports each hook **LIVE**, **NOT-LIVE** or **UNMEASURED** (exit `0` / `1` / `4`), with the git hooks' wiring and arming as separate facts; installing the git hooks does not arm them, and the dispatch hook is registered by hand ([`HOOKS.md` § Is each hook live on this seat?](HOOKS.md#is-each-hook-live-on-this-seat--board-hooks-check)).
+
 If `kbcard` errors with `HTTP 401` → token wrong/missing. `column '...' is not defined` → a `KB_STAGE_*` id is unset in your env file. A curl/connection error → `KBCARD_API` host wrong. `board env file not readable: …/.kanban-dev-board.env` → this box has no default (`dev`) board — set `KBCARD_BOARD_ENV` or pass `--board <name>` (see §3b); the error lists the boards that do exist.
 
 ## 6. (Optional) Consume a tool from a product repo's CI
