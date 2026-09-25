@@ -1724,32 +1724,47 @@ finding with no owner is abandoned, not filed.
     measured — a false claim about the board rather than a loud failure. The same change closed the
     envelope half of that site (a 2xx with no `.data` read as no comments) and `show`'s residual
     (`null` at rc 0 for the same body; jq's rc 5 for a `.data` that is not an object): both verbs
-    now take the card-object test `kb_card_tags` / `kb_card_witness` apply to the same GET, and
-    refuse at rc 1. Covered by `tests/kbcard-selftest.sh` (`comments / show: a 2xx that PARSES but
-    carries no card object`), watched red.
+    now read the body through `_kbc_one_card` — slurped, so it answers only for a body that is
+    exactly ONE JSON text whose `.data` is an object — and refuse anything else at rc 1. Covered
+    by `tests/kbcard-selftest.sh` (`comments / show: a 2xx that PARSES but carries no card
+    object`), watched red. **Not migrated to that helper, deliberately:** `_kbc_assign_guard`,
+    `_kbc_ref_pair_guard` and `_kbc_link_witness` read the same GET with the streamed
+    `.data | select(type == "object")`, so a card text beside a second text or trailing bytes
+    still reads as a card there; adopting the helper would move each from proceeding to refusing
+    on those bodies, which is a change to what they accept and not card#10489's. The cross-bin
+    copies of the one-card read (`_kb-board-lib.sh`'s card readers, `adopt-to-dl`,
+    `promote-released-cards`) are the same consolidation, also not done here — the lib's
+    `kb_jq_one` is the existing one-text primitive they would converge on.
 
   **Still open on the same read-verb acceptance axis:** `_kbc_field_list` (above). **A NEW instance
   of this class is the signal to take that axis as a class rather than one verb at a time** — the
   `//`-shaped filter is a two-token idiom any new projection can reproduce, so the count moving is
   the thing to watch. Re-derive it — do not quote the number — with a scan of the SHAPE rather than
-  of the known sites, over the whole file text with whitespace runs squeezed, so a filter spanning
-  several lines is still one string and its indentation cannot push it out of the window:
+  of the known sites, over the whole file text with newlines and tabs folded to spaces and runs
+  squeezed, so a filter spanning several lines is still one string and its indentation cannot push
+  it out of the window:
 
       for f in bin/*; do [ -f "$f" ] || continue; case "$f" in *.py) continue;; esac
-        tr '\n' ' ' < "$f" | tr -s ' ' | grep -oE '//[^|)]{0,12}\) ?\| ?select\(type' \
+        tr '\n\t' '  ' < "$f" | tr -s ' ' | grep -oE '//[^|)]{0,12}\)? ?\| ?select\(type' \
           | sed "s|^|$f: |"
       done
 
-  It matches a default whose closing paren is followed DIRECTLY by the container test, and so not
+  It matches a default followed DIRECTLY by the container test, parenthesized or not —
+  `(.x // []) | select(type …)` and `.x // [] | select(type …)` both — and so not
   `(.x // [])[]? | select(type …)`, which filters ELEMENTS after iterating (a per-element test, not
-  a container test — `board-hooks-check` and `promote-released-cards` carry that form). **The
+  a container test — `board-hooks-check` and `promote-released-cards` carry that form). What it
+  still does NOT see: a default more than 12 characters long, or anything between the default and
+  the `select` other than one optional `)` (a `.[]`, a second pipe stage, a `select(.x | type …)`
+  spelling) — a hit is a lead, and silence is silence of this pattern, not of the class. **The
   scan this paragraph carried before card#10489 could not see instance 2 at all:** its `[^|]{0,12}`
   window ran over the multi-line filter's indentation, while it did match those two element
   filters — so its recorded "1 hit, `cmd_comments`" was not what it printed. **Control that proves
   the current scan discriminates** (canon #9): it prints nothing on the tree as card#10489 leaves
   it, and prints the `cmd_comments` line against the pre-card#10489 `bin/kbcard`
-  (`git show <base>:bin/kbcard` into a scratch file) and against round 2's pre-fix
-  `_kbc_patch_tags` filter planted in a scratch file.
+  (`git show <base>:bin/kbcard` into a scratch file), against round 2's pre-fix
+  `_kbc_patch_tags` filter planted in a scratch file with tab indentation, and against the
+  unparenthesized `.data.tags // [] | select(type == "array")` planted the same way — the last
+  two print nothing under a newline-only fold without the optional `)`.
 - **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
   THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
   not in conflict: it counts attempts at the LIST itself, of which the first two closures here were

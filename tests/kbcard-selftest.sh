@@ -1752,10 +1752,16 @@ echo "-- comments / show: a 2xx that PARSES but carries no card object (card#104
 # printed `null` at rc 0 — both an answer about a card this read never saw. Each shape below is
 # one way in to that: no `.data`, a null one, one that is not an object, a `comments` that is not
 # a list (jq's `//` substitutes its default for `false` as well as `null`, so a shape test on the
-# far side of it never saw that value), and TWO JSON texts, which is not ONE card.
+# far side of it never saw that value), and more than ONE JSON text, which is not one card —
+# including the pairs where exactly one text IS a card (a non-card text before it, a card
+# followed by non-JSON bytes). jq STREAMS, so a per-text filter answers for the card text and
+# drops the other; only reading the body as a whole can refuse those.
 for body in '{"message":"session expired"}' '{"data":null}' '{"data":"str"}' \
             '{"data":{"id":505,"comments":false}}' \
-            '{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[]}}'; do
+            '{"data":{"id":505,"comments":[]}}{"data":{"id":505,"comments":[]}}' \
+            '{"message":"session expired"}{"data":{"id":505,"comments":[]}}' \
+            '{"data":{"id":505,"comments":false}}{"data":{"id":505,"comments":[]}}' \
+            '{"data":{"id":505,"comments":[]}}<html>502</html>'; do
     KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$body" kbc comments --task 505
     eq "comments on $body → rc 1"                 "1" "$rc"
     eq "…never claims the card has no comments"   "false" "$(has 'no comments' "$out")"
@@ -1764,7 +1770,9 @@ for body in '{"message":"session expired"}' '{"data":null}' '{"data":"str"}' \
        "$(has 'no comment list could be read out of its body' "$err")"
 done
 for body in '{"message":"session expired"}' '{"data":null}' '{"data":"str"}' \
-            '{"data":{"id":505}}{"data":{"id":505}}'; do
+            '{"data":{"id":505}}{"data":{"id":505}}' \
+            '{"message":"session expired"}{"data":{"id":505}}' \
+            '{"data":{"id":505}}<html>502</html>'; do
     KB_STUB_GET_HTTP=200 KB_STUB_GET_BODY="$body" kbc show --task 505
     eq "show on $body → rc 1"                     "1" "$rc"
     eq "…prints nothing on stdout (no 'null')"    "" "$out"
