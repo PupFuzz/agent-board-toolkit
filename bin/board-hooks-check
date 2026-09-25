@@ -62,14 +62,16 @@
 # name); `~` expands only unquoted at the start of the word, `$HOME` and `$CLAUDE_PROJECT_DIR`
 # only unquoted or double-quoted; a quoted `~` or a single-quoted `$VAR` stays literal, so that
 # command is a relative path. From a linked worktree a command using `$CLAUDE_PROJECT_DIR` is
-# UNMEASURED: which root Claude Code sets it to there is not verified, so it is not guessed.
+# UNMEASURED: which root Claude Code sets it to there is not verified, so it is not guessed — and
+# that holds whether or not it names the hook (a symlink or renamed copy need not), except that one
+# not naming it cannot outvote a LIVE registration read elsewhere.
 # Anything else that names the hook is UNMEASURED, and so is a handler that names it (in its
 # command or any `args` element) while setting `args` (exec form), `if`, `once`, or a `shell`
 # other than bash — each named. ⛔ Hook COMMANDS ARE NEVER PRINTED: a
 # command line can carry an env-prefixed secret, so an entry is named by file, matcher and index,
 # and only a resolved bare path is shown.
 # The hook acts only on dispatch prompts carrying a `BOARD-CARD: <board>#<id>` line, which
-# nothing writes for you; LIVE says the hook will run, not that a prompt carries one.
+# nothing writes for you; LIVE says every condition this tool reads holds, not that a prompt carries one.
 #
 # THE GIT HOOKS (hooks/post-checkout, hooks/pre-push), per <repo-dir>. WIRED and ARMED are
 # reported as separate facts, because wired-but-unarmed is the state that reads as working:
@@ -195,20 +197,21 @@ _bhc_sh_word() {
     printf '%s' "$out"
 }
 
-# _bhc_cmd_target <command> <project-dir> [<main-checkout>] — rc 0 the command is a bare path to
-# the toolkit script (the path on stdout) · 1 it is not this hook · 2 it names the hook but is not
-# a bare path this reader evaluates (the reason on stdout — never the command itself).
+# _bhc_cmd_target <command> <project-dir> [<main-checkout> <project-label>] — rc 0 the command is a
+# bare path to the toolkit script (the path on stdout) · 1 it is not this hook · 2 it names the
+# hook but is not a bare path this reader evaluates · 3 it uses `$CLAUDE_PROJECT_DIR` from a linked
+# worktree, so which file it runs is unknown whether or not it names the hook (a symlink or renamed
+# copy need not). For 2 and 3 the reason is on stdout — never the command itself.
 _bhc_cmd_target() {
-    local raw="$1" proj="$2" wt_main="${3:-}" c real wrc=0 sep=$' \t\n'
+    local raw="$1" proj="$2" wt_main="${3:-}" label="${4:-}" c real wrc=0 sep=$' \t\n'
     # Only the characters sh separates words on are trimmed, and of those only space and tab can
     # reach here: the extraction escapes a newline to `\n`, whose backslash reads UNMEASURED. A CR,
     # VT or FF — which a [[:space:]] class also matches — is part of the command name sh looks up.
     raw="${raw#"${raw%%[!$sep]*}"}"; raw="${raw%"${raw##*[!$sep]}"}"
     c="$(_bhc_sh_word "$raw" "$proj" "$wt_main")" || wrc=$?
     if [[ "$wrc" == 3 ]]; then
-        [[ "$raw" == *"$_BHC_SCRIPT"* ]] || return 1
-        printf 'uses $CLAUDE_PROJECT_DIR, and --project %s is a linked worktree (main checkout %s) — which root Claude Code sets it to there is not verified here, so which file it runs is unknown' "$proj" "$wt_main"
-        return 2
+        printf 'uses $CLAUDE_PROJECT_DIR, and %s %s is a linked worktree (main checkout %s) — which root Claude Code sets it to there is not verified here, so which file it runs is unknown' "$label" "$proj" "$wt_main"
+        return 3
     fi
     if [[ "$wrc" != 0 ]]; then
         [[ "$raw" == *"$_BHC_SCRIPT"* ]] || return 1
@@ -283,10 +286,11 @@ _bhc_git_bound() {
 BOUND
 }
 
-# _bhc_claude_leg <project-dir> — one verdict for the Claude Code dispatch hook.
+# _bhc_claude_leg <project-dir> <project-label> — one verdict for the Claude Code dispatch hook.
+# <project-label> names where <project-dir> came from ("--project" or "the current directory").
 _bhc_claude_leg() {
-    local proj="$1" f kind tsv idx ent m cmd fields argnames fld tgt why mrc trc s dup found="" live_at="" live_path="" live_needs_no_trust="" main="" tk tk_rc=0
-    local -a files=() kinds=() seen=() unm=() dead=() elsewhere=() fw=()
+    local proj="$1" label="$2" f kind tsv idx ent m cmd fields argnames fld tgt why mrc trc s dup found="" live_at="" live_path="" live_needs_no_trust="" main="" tk tk_rc=0
+    local -a files=() kinds=() seen=() unm=() dead=() elsewhere=() fw=() maybe=()
     echo "── Claude Code hook: $_BHC_SCRIPT (PreToolUse, matcher covering Agent) ──"
     files+=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json");  kinds+=(user)
     files+=("$proj/.claude/settings.json");                        kinds+=(project)
@@ -353,16 +357,22 @@ _bhc_claude_leg() {
             unm+=("$f could not be walked for PreToolUse entries"); continue; }
         while IFS=$'\x1f' read -r ent m cmd fields argnames; do
             [[ -n "$ent" ]] || continue
-            trc=0; tgt="$(_bhc_cmd_target "$cmd" "$proj" "$main")" || trc=$?
+            trc=0; tgt="$(_bhc_cmd_target "$cmd" "$proj" "$main" "$label")" || trc=$?
             [[ "$trc" == 1 && "$argnames" != true ]] && continue
             mrc=0; why="$(_bhc_matcher_covers_agent "$m")" || mrc=$?
+            # One that does not name the hook can only ADD a registration, never disable one: it
+            # decides the verdict only where nothing read is LIVE.
+            if [[ "$trc" == 3 && "$cmd" != *"$_BHC_SCRIPT"* && "$argnames" != true ]]; then
+                [[ "$mrc" == 1 ]] || maybe+=("$f entry #$ent (matcher '$m') may run the hook: its command $tgt")
+                continue
+            fi
             if [[ "$mrc" == 1 ]]; then elsewhere+=("$f entry #$ent (matcher '$m')"); continue; fi
             if [[ "$mrc" == 2 ]]; then unm+=("$f entry #$ent runs the hook, but its matcher '$m' $why"); continue; fi
             if [[ -n "$fields" ]]; then
                 fw=(); for fld in ${fields//,/ }; do fw+=("$(_bhc_field_why "$fld")"); done
                 unm+=("$f entry #$ent (matcher '$m') names the hook, but its handler sets $(_bhc_join "${fw[@]}") — this reader evaluates only a shell-form command with none of these set"); continue
             fi
-            if [[ "$trc" == 2 ]]; then unm+=("$f entry #$ent (matcher '$m') names the hook, but its command $tgt"); continue; fi
+            if [[ "$trc" == 2 || "$trc" == 3 ]]; then unm+=("$f entry #$ent (matcher '$m') names the hook, but its command $tgt"); continue; fi
             found=1
             if [[ ! -e "$tgt" ]]; then dead+=("$f entry #$ent runs $tgt, which does not exist"); continue; fi
             if ! why="$(_bsc_runnable "$tgt")"; then dead+=("$f entry #$ent runs $tgt, which $why"); continue; fi
@@ -391,6 +401,10 @@ _bhc_claude_leg() {
         local trust=""
         [[ -z "$live_needs_no_trust" ]] && trust=" — registered only in project settings, so it runs only if this folder is trusted (the workspace trust dialog; not read here)"
         _bhc_verdict LIVE "$_BHC_SCRIPT" "$live_at$drift$trust; it acts only on a dispatch prompt carrying a 'BOARD-CARD: <board>#<id>' line, which nothing writes for you (docs/HOOKS.md § Marker convention)"
+        return
+    fi
+    if [[ "${#maybe[@]}" -gt 0 ]]; then
+        _bhc_verdict UNMEASURED "$_BHC_SCRIPT" "$(_bhc_join "${maybe[@]}" ${dead[@]+"${dead[@]}"})"
         return
     fi
     if [[ "${#dead[@]}" -gt 0 ]]; then
@@ -477,13 +491,13 @@ _bhc_git_leg() {
 }
 
 _bhc_main() {
-    local project="$PWD" tk="" tk_rc=0 repo
+    local project="$PWD" label="the current directory" tk="" tk_rc=0 repo
     local -a repos=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --project)
                 [[ $# -ge 2 && -n "$2" ]] || { echo "board-hooks-check: --project needs a dir" >&2; echo "$_BHC_USAGE" >&2; return 2; }
-                project="$2"; shift ;;
+                project="$2"; label="--project"; shift ;;
             -h|--help) awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "${BASH_SOURCE[0]}"; return 0 ;;
             --) shift; repos+=("$@"); break ;;
             -*) echo "board-hooks-check: unknown arg '$1'" >&2; echo "$_BHC_USAGE" >&2; return 2 ;;
@@ -498,7 +512,7 @@ _bhc_main() {
     # shellcheck source=/dev/null
     . "$_BHC_BSC"
     echo "═══ TOOLKIT HOOK LIVENESS — read-only: nothing is installed, armed or registered ═══"
-    _bhc_claude_leg "$project"
+    _bhc_claude_leg "$project" "$label"
     tk="$(_bsc_active_toolkit)" || tk_rc=$?
     if [[ "${#repos[@]}" -eq 0 ]]; then
         echo "── Git hooks ──"

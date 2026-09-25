@@ -31,7 +31,9 @@
 # command run from a linked worktree with the file only under the worktree (read LIVE at rc 0), the
 # unverified wording of the worktree and managed-precedence caveats, and the git bound (not
 # printed). Mutants watched red: the word reader's worktree gate (rc 3) dropped; the
-# `_bhc_git_bound` call removed.
+# `_bhc_git_bound` call removed. Round 4, watched red against the round-3 head first: a worktree
+# `$CLAUDE_PROJECT_DIR/bin/x` symlinked to the hook read NOT-REGISTERED at rc 1, and its message
+# said "--project" when none was passed.
 #
 # Fixtures: a scratch HOME (no real settings or ~/.kanban-* file can taint a result), real
 # `git init` repos wired by the real bin/install-board-hooks, and a PATH shim dir holding
@@ -366,6 +368,27 @@ for where in wtco mainco; do
     done
 done
 rm -rf "$TMP/wtco/tk" "$TMP/mainco/tk"
+# A worktree $CLAUDE_PROJECT_DIR command that does NOT name the hook can still BE it (a symlink or
+# a renamed copy), so which file it runs is unknown: UNMEASURED, never NOT-REGISTERED. The message
+# names --project only when it was passed; run from the worktree without it, "the current directory".
+mkdir -p "$TMP/wtco/bin" "$TMP/mainco/bin"
+ln -sf "$SCRIPT" "$TMP/wtco/bin/x"; ln -sf "$SCRIPT" "$TMP/mainco/bin/x"
+register "$USER_SETTINGS" '"Agent"' '"$CLAUDE_PROJECT_DIR/bin/x"'
+run -- --project "$TMP/wtco" "$TMP/r1"
+eq "from a worktree (--project), \$CLAUDE_PROJECT_DIR/bin/x symlinked to the hook → UNMEASURED, not NOT-REGISTERED" "4|true|false" \
+   "$RC|$(has "uses \$CLAUDE_PROJECT_DIR, and --project $TMP/wtco is a linked worktree" "$(line 'agent-dispatch-card-start:')")|$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
+OUT="$(cd "$TMP/wtco" && HOME="$HOME" PATH="$FULLPATH" BHC_MANAGED_SETTINGS="$TMP/no-managed.json" "$BIN" "$TMP/r1" 2>&1)"; RC=$?
+eq "…run from the worktree with no --project, the message names the current directory, not --project" "4|true|false|false" \
+   "$RC|$(has "uses \$CLAUDE_PROJECT_DIR, and the current directory $TMP/wtco is a linked worktree" "$(line 'agent-dispatch-card-start:')")|$(has '--project' "$(line 'agent-dispatch-card-start:')")|$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
+register "$USER_SETTINGS" '"Bash"' '"$CLAUDE_PROJECT_DIR/bin/x"'
+run -- --project "$TMP/wtco" "$TMP/r1"
+eq "…under a matcher that does not cover Agent it never fires on a dispatch → NOT-REGISTERED" "1|true" \
+   "$RC|$(has 'NOT-REGISTERED' "$(line 'agent-dispatch-card-start:')")"
+jq -n --arg s "$SCRIPT" '{hooks: {PreToolUse: [{matcher: "Agent", hooks: [{type: "command", command: "$CLAUDE_PROJECT_DIR/bin/x"}, {type: "command", command: $s}]}]}}' > "$USER_SETTINGS"
+run -- --project "$TMP/wtco" "$TMP/r1"
+eq "…beside a LIVE registration it cannot un-register the hook → still LIVE" "0|true" \
+   "$RC|$(has 'agent-dispatch-card-start: LIVE' "$OUT")"
+rm -rf "$TMP/wtco/bin" "$TMP/mainco/bin"
 register "$USER_SETTINGS" '"Agent"' "\"$SCRIPT\""
 run -- --project "$TMP/wtco" "$TMP/r1"
 eq "from a worktree, a command NOT using \$CLAUDE_PROJECT_DIR is still read → LIVE (the positive control)" "0|true" \
