@@ -9,6 +9,10 @@
 # (card#7316) — a path an operator wrote in their own store, never one baked in here.
 #
 # Usage:
+#   EVERY VERB IS BOARD-SCOPED, AND THE BOARD IS THE BOARD ENV'S KB_BOARD_ID (card#10385). A board
+#   env that declares none is rc 2 before any request, whatever the verb; an exported KB_BOARD_ID
+#   is ignored (a ⚠ line names it when it differs). Choose a board with --board <name> or
+#   KBCARD_BOARD_ENV — docs/INSTALL.md §3b.
 #   THE FLAGS THAT CARRY PROSE COME IN PAIRS — text long enough that someone other than the
 #   caller may have written it: --name/--name-file, --description/--description-file,
 #   --block-reason/--block-reason-file and --content/--content-file. Pass exactly one of a
@@ -78,6 +82,9 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
+#     THE BOARD IS THE BOARD ENV'S KB_BOARD_ID, and a success names it on stderr:
+#     `kbcard: create-card: card <id> created on board <n>` (stdout is unchanged, so do not
+#     merge stderr into a JSON pipe). The board-id rule itself is at the top of this block.
 #   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
@@ -1644,10 +1651,15 @@ cmd_create_card() {
     # Surface swimlane_id in the echo only when --swimlane was passed — same rule as
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
     # of birthing the card on a lane) without changing every other create's echo shape.
-    local resp
+    local resp out
     resp="$(kb_api POST "/tasks.json" "$body")" || return 1
-    _kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
-        "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage"
+    out="$(_kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
+        "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage")" || return $?
+    printf '%s\n' "$out"
+    # ⭐ THE BOARD RIDES STDERR ON EVERY SUCCESS (card#10385). The stdout projection carries no
+    # board key and widening it is a consumer-contract change, so — as with `stages` — the
+    # provenance goes to stderr, which reaches the operator without touching the piped JSON.
+    echo "kbcard: create-card: card $(jq -r '.id' <<<"$out") created on board $KB_BOARD_ID" >&2
 }
 
 # --- the ONE task PATCH both stage-writing verbs go through -----------------------------
@@ -2709,7 +2721,7 @@ cmd_stages() {
     # depend on — one {id, name} object and no other key — and widening it to carry a caveat
     # would break every consumer to warn the one that never reads. This is the same channel
     # `list` uses for the denominator its own stdout cannot carry.
-    echo "kbcard: stages: these NAMES ARE LOCAL — each is a KB_STAGE_* variable's suffix, lowercased, over the KB_STAGE_* variables VISIBLE TO THIS PROCESS (this install's board env for board ${KB_BOARD_ID:-?}, plus any you exported in your own shell), not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
+    echo "kbcard: stages: these NAMES ARE LOCAL — each is a KB_STAGE_* variable's suffix, lowercased, over the KB_STAGE_* variables VISIBLE TO THIS PROCESS (this install's board env for board $KB_BOARD_ID, plus any you exported in your own shell), not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
     # unique_by drops the duplicate rows a duplicated id produces (both resolve through
     # stage_name to the same name, so the pair is identical); sort_by(.name) is jq's codepoint
     # order, i.e. deterministic and locale-free — and NOT the board's column order, which
