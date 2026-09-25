@@ -78,6 +78,10 @@
 #     create-then-patch and leaves no laneless window for a lane-keyed reader to observe.
 #     --swimlane none (or 0) births it explicitly laneless. An unresolved name fails
 #     rc 2 BEFORE the POST — no card is created at all.
+#     THE BOARD IS THE BOARD ENV'S KB_BOARD_ID, and a success names it on stderr:
+#     `kbcard: create-card: card <id> created on board <n>` (stdout is unchanged, so do not
+#     merge stderr into a JSON pipe). An exported KB_BOARD_ID is ignored, with a ⚠ line when
+#     it differs; a board env declaring none is rc 2 before any request (card#10385).
 #   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
@@ -1607,6 +1611,10 @@ cmd_create_card() {
     _kbc_require_type_alias "$type" || return 2
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
 
+    # The board env is the only source of the board id (kb_resolve_env), so an empty one is a
+    # board env that declares none — refused before anything is resolved or sent.
+    [[ -n "$KB_BOARD_ID" ]] || { echo "kbcard: create-card: $KB_BOARD_ENV declares no KB_BOARD_ID — there is no board to create the card on (docs/INSTALL.md §3b)" >&2; return 2; }
+
     local stage type_id
     stage="$(stage_id "$column")"
     type_id="$(native_type_id "$type")"
@@ -1644,10 +1652,15 @@ cmd_create_card() {
     # Surface swimlane_id in the echo only when --swimlane was passed — same rule as
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
     # of birthing the card on a lane) without changing every other create's echo shape.
-    local resp
+    local resp out
     resp="$(kb_api POST "/tasks.json" "$body")" || return 1
-    _kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
-        "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage"
+    out="$(_kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
+        "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage")" || return $?
+    printf '%s\n' "$out"
+    # ⭐ THE BOARD RIDES STDERR ON EVERY SUCCESS (card#10385). The stdout projection carries no
+    # board key and widening it is a consumer-contract change, so — as with `stages` — the
+    # provenance goes on the channel a piping consumer still sees without touching its JSON.
+    echo "kbcard: create-card: card $(jq -r '.id' <<<"$out") created on board $KB_BOARD_ID" >&2
 }
 
 # --- the ONE task PATCH both stage-writing verbs go through -----------------------------

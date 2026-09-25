@@ -5770,4 +5770,56 @@ eq "reorder: an unknown arg is rc 2 before any request" "2|0" "$rc|$(kb_stub_tot
 unset -f kb_stub_route r_resp rrun _rmut
 unset R_BODY R_HTTP R_OK_TOP _rm _ids _f
 
+# ---------------------------------------------------------------------------
+echo "== create-card: the board is the board env's, and a success SAYS which (card#10385) =="
+# rt#556: three cards minted with KB_BOARD_ID=13 exported landed on another board at rc 0, and
+# nothing on either channel named the board. These drive the real bin as a process, so the
+# inherited id reaches it the way an operator's export does.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 5 'export KB_STAGE_BACKLOG=100'
+printf 'export KB_STAGE_BACKLOG=100\n' > "$HOME/.kanban-noid-board.env"   # declares NO board id
+kb_stub_install
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json) printf '%s\n{"data":{"id":9001,"name":"probe","workflow_stage_id":100}}' "${CB_HTTP:-200}" ;;
+    esac
+}
+export -f kb_stub_route
+cb_board() { kb_stub_bodies POST '/tasks.json' | jq -r '.board_id'; }
+
+export KB_BOARD_ID=13
+kbc create-card --type feature --name probe
+eq "P1 exported 13, no --board, env declares 5 → rc 0"   "0" "$rc"
+eq "  …the POST carries the board env's id"               "5" "$(cb_board)"
+eq "  …stderr SAYS the exported id was ignored"           "true" "$(has 'ignoring the inherited KB_BOARD_ID=13' "$err")"
+eq "  …and names the board the card landed on"            "true" "$(has 'card 9001 created on board 5' "$err")"
+kbc --board dev create-card --type feature --name probe
+eq "P2 exported 13, --board dev → the POST carries 5"     "0|5" "$rc|$(cb_board)"
+eq "  …and says so"                                       "true|true" \
+   "$(has 'ignoring the inherited KB_BOARD_ID=13' "$err")|$(has 'created on board 5' "$err")"
+kbc --board noid create-card --type feature --name probe
+eq "C1 exported 13, env declares NONE → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
+eq "  …naming the env that declares no id"                "true" "$(has "$HOME/.kanban-noid-board.env declares no KB_BOARD_ID" "$err")"
+unset KB_BOARD_ID
+
+kbc create-card --type feature --name probe
+eq "C2 nothing exported → board 5, rc 0"                  "0|5" "$rc|$(cb_board)"
+eq "  …stdout is the unchanged echo projection — no board key" '{"id":9001,"name":"probe","workflow_stage_id":100}' \
+   "$(jq -c . <<<"$out")"
+# Exact line, so a debug echo or a stray warning riding the success path reds here.
+eq "  …stderr is exactly the one confirmation line"       \
+   "kbcard: create-card: card 9001 created on board 5" "$err"
+export KB_BOARD_ID=5
+kbc create-card --type feature --name probe
+eq "exported id EQUAL to the env's → no warning, just the confirmation" "0|1" "$rc|$(grep -c . <<<"$err")"
+unset KB_BOARD_ID
+CB_HTTP=500 kbc create-card --type feature --name probe
+eq "a failed POST → rc 1 and NO success line"             "1|false" "$rc|$(has 'created on board' "$err")"
+
+unset -f kb_stub_route cb_board
+
 _summary "kbcard-selftest"

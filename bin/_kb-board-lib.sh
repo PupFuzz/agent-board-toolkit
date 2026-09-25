@@ -76,6 +76,10 @@
 
 if [[ -n "${_KB_BOARD_LIB_LOADED:-}" ]]; then return 0; fi
 _KB_BOARD_LIB_LOADED=1
+# The KB_BOARD_ID this PROCESS inherited, taken before any board env is sourced. kb_resolve_env
+# names it when the board env overrides it; snapshotting per call instead would read a previous
+# resolve's published id as "inherited" and warn about the lib's own output.
+_KB_INHERITED_BOARD_ID="${KB_BOARD_ID:-}"
 
 # Message prefix; a script may set KB_PROG, else its own basename is used.
 _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
@@ -458,9 +462,11 @@ kb_declared_token_file() {
 
 # kb_resolve_env <board_env_path>: source the host env then the board env, and
 # publish KB_API / KB_BOARD_ID / KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the
-# token content and does NOT require KB_BOARD_ID — the caller decides those. Quiet
+# token content and does NOT require KB_BOARD_ID — the caller decides those. KB_BOARD_ID is
+# the BOARD ENV's alone: empty when it sets none, whatever the caller's shell held. Quiet
 # (return-code only) apart from the rc-4, rc-6 and rc-7 refusals, which speak for
-# themselves, so a fail-soft caller can craft its own message for the rest. Returns:
+# themselves, and a ⚠ line when the board env overrides an INHERITED KB_BOARD_ID, so a
+# fail-soft caller can craft its own message for the rest. Returns:
 #   0 ok   2 env unreadable   3 KBCARD_API unset   4 board env sets KBCARD_API
 #   5 token file unreadable   6 API host refused   7 no token file declared
 #
@@ -484,12 +490,10 @@ kb_resolve_env() {
     # and the two are treated differently on purpose rather than by omission:
     #   * KB_TOKEN_FILE / KB_BOARD_ENV name a CREDENTIAL and the file that chose it. A stale one
     #     survives as a path something might later read, which is the leak above.
-    #   * KB_BOARD_ID must NOT be cleared here. `KB_BOARD_ID="${KB_BOARD_ID:-}"` below reads its
-    #     own prior value on purpose — that is the documented AMBIENT tier, the one a caller sets
-    #     for a board whose env does not. Clearing it at the top would silently delete that tier,
-    #     which is precisely the mistake the ambient snapshot below is written to avoid.
-    # Widening the clear is therefore a behaviour change, not a tidy-up. If this comment and the
-    # line under it ever disagree again, the comment is the thing that drifted.
+    #   * KB_BOARD_ID is not cleared HERE because it is unset immediately before the board env is
+    #     sourced, below — the board env is its only source (card#10385).
+    # If this comment and the line under it ever disagree again, the comment is the thing that
+    # drifted.
     KB_TOKEN_FILE=""; KB_BOARD_ENV=""
     [[ -r "$board_env" ]] || return 2
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
@@ -513,8 +517,19 @@ kb_resolve_env() {
     [[ -r "$host_env" ]] && source "$host_env"
     local eff_api="${amb_api:-${KBCARD_API:-}}"
     unset KBCARD_API   # so the board source below reveals a BOARD-set value
+    # ⛔ KB_BOARD_ID HAS ONE SOURCE: THE BOARD ENV. It is not a tier (card#10385). An inherited
+    # value used to survive only when the board env set none, so an exported id either lost
+    # silently to the env's, or won while the env still supplied the stage ids and types — a
+    # card on one board in another board's stage. The board env carries the id and the stage map
+    # together, and --board is how a board is chosen. Same ruling as kb_board_env_for and
+    # board-snapshot, which unset it before sourcing for the same reason.
+    unset KB_BOARD_ID
     # shellcheck disable=SC1090
     source "$board_env"
+    KB_BOARD_ID="${KB_BOARD_ID:-}"
+    if [[ -n "$_KB_INHERITED_BOARD_ID" && "$_KB_INHERITED_BOARD_ID" != "$KB_BOARD_ID" ]]; then
+        echo "$(_kb_prog): ⚠ ignoring the inherited KB_BOARD_ID=$_KB_INHERITED_BOARD_ID — the board is the one $board_env declares (KB_BOARD_ID=${KB_BOARD_ID:-<none>}); choose a board with --board <name>, never by exporting KB_BOARD_ID" >&2
+    fi
     local board_api="${KBCARD_API:-}" cfg_tok="${KBCARD_TOKEN_FILE:-}"   # cfg_tok: board's, else host's
     # Restore both before any return — never leave a caller's env mangled.
     export KBCARD_API="$eff_api"
@@ -526,7 +541,6 @@ kb_resolve_env() {
         return 4
     fi
     KB_API="$eff_api"
-    KB_BOARD_ID="${KB_BOARD_ID:-}"
     [[ -n "$KB_API" ]] || return 3
     # BEFORE the token file is even located, let alone read: a base nobody vouched for is
     # not a base this process should go looking for credentials to send to (card#7245).
