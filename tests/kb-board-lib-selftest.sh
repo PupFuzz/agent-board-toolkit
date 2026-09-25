@@ -1610,6 +1610,14 @@ expect_rc  "a filter fault -> rc 1"                 1         kb_jq_one '{"a":1}
 expect_out "options before the filter reach jq"     '{"a":1}' kb_jq_one '{"a":1}'           -c '.'
 expect_out "--argjson reaches the filter"           '7'       kb_jq_one 'null'              --argjson x 7 '$x'
 expect_out "a filter ending in a # comment still closes" 'x'  kb_jq_one '1'                 -r '"x" # trailing comment'
+expect_out "--arg reaches the filter"               'v'       kb_jq_one 'null'              -r --arg x v '$x'
+# — Options outside -r -c --arg --argjson are REFUSED, not passed through: `-e` turns a clean
+# `false`/`null` answer into rc 1 with no output (the "not one JSON text" signal this exists to
+# keep unambiguous), and `-s` slurps a second time, so `.` is no longer what the filter expects.
+expect_rc  "-e is refused -> rc 2 (caller fault)"   2         kb_jq_one 'false'             -e '.'
+expect_out "-e is refused -> NOTHING printed"       ''        kb_jq_one '{"a":1}'           -e '.a'
+expect_rc  "-s is refused -> rc 2 (caller fault)"   2         kb_jq_one '{"a":1}'           -s '.'
+expect_out "-s is refused -> NOTHING printed"       ''        kb_jq_one '{"a":1}'           -s '.'
 
 # ---------------------------------------------------------------------------
 echo "== kb_require_value — a value-taking flag's PRESENCE is the dispatch signal =="

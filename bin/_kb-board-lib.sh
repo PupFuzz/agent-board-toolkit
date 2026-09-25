@@ -1197,22 +1197,38 @@ kb_parse_resp() {
 # kb_jq_one <input> [jq-opt…] <jq-filter>: the filter applied to <input> ONLY when <input> is
 # exactly one JSON text. rc 0 with the filter's output when it is and the filter ran clean;
 # otherwise NOTHING on stdout and rc 1 — for a parse error, an empty input, a SECOND JSON text,
-# non-JSON bytes after a complete one, a filter fault, and a jq that is missing or unrunnable.
+# non-JSON bytes after a complete one, a filter fault, and a jq that is missing or unrunnable —
+# or rc 2 for a jq option this refuses (below), which is the caller's fault, not the input's.
 #
 # ⛔ WHY NOT PLAIN `jq`: jq STREAMS. Given `{"data":[]}<html>502</html>` it runs the filter over
 # the first text, PRINTS that result, and only then faults on the bytes after it — so a caller
 # that reads stdout and suppresses the fault holds a verdict about a body that is not JSON. A
 # second text is the same hazard in another form (one result per text). `-s` parses the whole
 # input before the filter runs, so a parse fault anywhere yields no output at all, and the
-# length check refuses zero or several texts. The filter is the LAST argument; everything before
-# it is passed to jq as options, which must not include `-n` or `-s` (both change what `.` is).
+# length check refuses zero or several texts.
+#
+# The filter is the LAST argument; everything before it is passed to jq and must be drawn from
+# `-r`, `-c`, `--arg <name> <value>`, `--argjson <name> <value>`. Any other option is REFUSED —
+# a diagnostic and rc 2, the usage-error rc (see KB_API_RC_TRANSPORT) — rather than passed
+# through, because the rest are not safe here: `-n` and `-s` change what `.` is; `-e` turns a
+# clean `false`/`null` answer into rc 1 with no output; `-R`, `--stream` and `--seq` fail on
+# valid input. Each makes a legitimate answer read as "not one JSON text".
 kb_jq_one() {
     local input="$1"; shift
-    local filter="${*: -1}" out
-    out="$(jq -s "${@:1:$#-1}" "if length == 1 then .[0] | (
+    local filter="${*: -1}" one i=0
+    local -a opts=("${@:1:$#-1}")
+    while (( i < ${#opts[@]} )); do
+        case "${opts[i]}" in
+            -r|-c)           i=$((i + 1)) ;;
+            --arg|--argjson) i=$((i + 3)) ;;
+            *) echo "$(_kb_prog): kb_jq_one: jq option '${opts[i]}' is not one of -r -c --arg --argjson" >&2
+               return 2 ;;
+        esac
+    done
+    one="$(jq -s "${@:1:$#-1}" "if length == 1 then .[0] | (
 $filter
 ) else error(\"not exactly one JSON text\") end" <<<"$input" 2>/dev/null)" || return 1
-    [[ -z "$out" ]] || printf '%s\n' "$out"
+    [[ -z "$one" ]] || printf '%s\n' "$one"
 }
 
 # --- the write-outcome read-back: APPLIED / NOT APPLIED / UNVERIFIED -----------------------
