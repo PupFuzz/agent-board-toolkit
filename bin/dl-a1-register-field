@@ -40,8 +40,9 @@
 # check"*, so they are different exit codes:
 #
 #   0  verified — every by-ref read completed and said what it had to say.
-#   1  verification FAILED, measured: by-ref did not resolve the throwaway, the cleared
-#      dl_number still resolves, or the deleted throwaway leaves residue.
+#   1  verification FAILED, measured: by-ref did not resolve the throwaway, or the sentinel
+#      still resolves after the clear or after the delete — to the throwaway OR to any other
+#      card (a sentinel leaked by an earlier run is residue too, card#10426).
 #   2  usage / config — refused before any request.
 #   3  UNMEASURED — at least one by-ref read returned nothing this tool could read, and no
 #      measured failure was seen. NOTHING in a run that exits 3 says the route works, and
@@ -160,10 +161,19 @@ A1_RC_UNMEASURED=3
 # body capture needs, so the rc is the only channel that crosses (kb_api's own contract says so).
 # It is set on EVERY path, including the ones that do not read it, so a stale value from an
 # earlier read can never be printed beside a later one.
+#
+# BY_REF_IDS carries EVERY card id a READ result named, this run's throwaway or not, and is empty
+# on the other two outcomes. The after-clear and acceptance reads ask whether the SENTINEL still
+# resolves, not whether it resolves to $TID: a card an earlier run's failed teardown leaked carries
+# the same sentinel and poisons the minter's seed exactly as this run's own would, so at those two
+# reads any id here is residue, whoever it names (card#10426). rc 1 alone cannot say that — it is
+# "$TID is not in the result", which a result naming only a foreign card also answers.
 BY_REF_WHY=""
+BY_REF_IDS=""
 by_ref_state() {
     local resp arc=0 rc=0
     BY_REF_WHY=""
+    BY_REF_IDS=""
     resp="$(kb_api GET "/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL")" || arc=$?
     if [[ "$arc" != 0 ]]; then
         if [[ "$arc" == "$KB_API_RC_TRANSPORT" ]]; then
@@ -175,7 +185,8 @@ by_ref_state() {
     fi
     kb_by_ref_hit "$resp" "$1" || rc=$?
     case "$rc" in
-        0|1) return "$rc" ;;
+        0|1) BY_REF_IDS="$KB_BY_REF_ROW_IDS"
+             return "$rc" ;;
         *)   BY_REF_WHY="the read returned a 2xx whose body is NOT a by-ref result — a gateway's sign-in or error page, a truncated read, or a JSON error envelope"
              return "$A1_RC_UNMEASURED" ;;
     esac
@@ -288,6 +299,22 @@ delete_throwaway() {
 }
 trap 'delete_throwaway' EXIT
 
+# report_leaked — name every card in BY_REF_IDS that is NOT this run's throwaway, once per run
+# (a card both residue reads name is one card). This run's teardown cannot remove those (it only
+# ever touches $TID), and it must not guess what they are: a card carrying the sentinel may be an
+# earlier run's leaked throwaway, or a REAL card whose DL collides with the sentinel — deleting
+# the second destroys a real record. So the operator inspects, and the advice branches on which.
+LEAKS_REPORTED=" "
+report_leaked() {
+    local id
+    for id in $BY_REF_IDS; do
+        [[ "$id" == "$TID" ]] && continue
+        [[ "$LEAKS_REPORTED" == *" $id "* ]] && continue
+        LEAKS_REPORTED="$LEAKS_REPORTED$id "
+        echo "  card $id is NOT this run's throwaway ($TID) but carries the sentinel $SENTINEL_DL. This run does not touch it. Inspect it: kbcard${KBC_BOARD_ARG} show --task $id — if it is NOT an [A1-verify] throwaway, the sentinel collides with a real DL: leave the card alone and re-run with a different --sentinel. Only if it IS an [A1-verify] throwaway (e.g. an earlier run's failed teardown), clear its dl_number and delete it before seeding a DL minter from this board." >&2
+    done
+}
+
 # --- 3. by-ref must resolve the throwaway -----------------------------------
 # `found` and `still` below carry the THREE states, not two: `UNMEASURED` is a value they take,
 # so the verdict line cannot print a `0` or a `1` for a read that never produced one. `unmeasured`
@@ -308,8 +335,12 @@ if ! kb_api PATCH "/tasks/$TID.json" "$CLEAR_DL_BODY" >/dev/null; then
 fi
 brs=0; by_ref_state "$TID" || brs=$?
 case "$brs" in
-    0) still=1; echo "  after clear: by-ref ref=$SENTINEL STILL PRESENT" >&2 ;;
-    1) still=0; echo "  after clear: by-ref ref=$SENTINEL empty" ;;
+    0|1) if [[ -n "$BY_REF_IDS" ]]; then
+             still=1; echo "  after clear: by-ref ref=$SENTINEL STILL PRESENT — resolves card(s) $BY_REF_IDS" >&2
+             report_leaked
+         else
+             still=0; echo "  after clear: by-ref ref=$SENTINEL empty"
+         fi ;;
     *) still=UNMEASURED; unmeasured="$unmeasured after-clear"
        echo "  after clear: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY. The clear itself was accepted by the server; whether the index stopped resolving the sentinel was NOT measured." >&2 ;;
 esac
@@ -327,9 +358,12 @@ echo "  throwaway $TID deleted"
 # was accepted, and nothing read it back — which is what the UNMEASURED arm says instead.
 brs=0; by_ref_state "$TID" || brs=$?
 case "$brs" in
-    0) echo "dl-a1-register-field: residue — by-ref still resolves $TID after delete" >&2
-       exit 1 ;;
-    1) echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue" ;;
+    0|1) if [[ -n "$BY_REF_IDS" ]]; then
+             echo "dl-a1-register-field: residue — by-ref still resolves $BY_REF_IDS after delete" >&2
+             report_leaked
+             exit 1
+         fi
+         echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue" ;;
     *) unmeasured="$unmeasured acceptance"
        echo "  acceptance: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY, so this run makes NO residue claim. Check by hand before seeding a DL minter from this board: kbcard${KBC_BOARD_ARG} show --task $TID" >&2 ;;
 esac

@@ -1598,6 +1598,28 @@ expect_rc "a valid ABSENT body + trailing HTML -> UNREADABLE" "$U" kb_by_ref_hit
 expect_rc "a valid HIT body + trailing bytes -> UNREADABLE"   "$U" kb_by_ref_hit '{"data":[{"id":4020}]} garbage'        4020
 expect_rc "two JSON texts -> UNREADABLE"                      "$U" kb_by_ref_hit '{"data":[{"id":4020}]}{"data":[]}'     4020
 
+echo "== kb_by_ref_hit — KB_BY_REF_ROW_IDS names EVERY row a read result carries (card#10426) =="
+# rc 1 answers "<card-id> is not in it", which a result naming ONLY A DIFFERENT CARD also answers —
+# so a caller whose pass condition is "the ref resolves nothing" (bin/dl-a1-register-field's
+# residue reads) read a leaked sentinel card as empty. The ids are the separator. Called directly,
+# not through expect_rc, because the global does not cross a subshell.
+kb_by_ref_hit '{"data":[{"id":4020},{"id":5}]}' 4020 || true
+eq "a hit among many names ALL rows, in response order" "4020 5" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+eq "⭐ an ABSENT (rc 1) result naming another card still names it" "99" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '[{"id":99},{"id":7}]' 4020 || true
+eq "the bare-array shape names its rows too"      "99 7" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[]}' 4020 || true
+eq "an empty result names nothing"                ""     "$KB_BY_REF_ROW_IDS"
+# Reset on every call: a readable answer followed by an unreadable one must not keep the first
+# answer's ids, or a caller would print a stale population beside the UNREADABLE rc.
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+kb_by_ref_hit '<html>502</html>' 4020 || true
+eq "an UNREADABLE result clears the previous call's ids" "" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+kb_by_ref_hit '{"data":[]}' 4020 || true
+eq "an empty result clears the previous call's ids" "" "$KB_BY_REF_ROW_IDS"
+
 echo "== kb_jq_one — a filter over EXACTLY ONE JSON text, or nothing =="
 expect_out "one text -> the filter's output"        '1'       kb_jq_one '{"a":1}'           '.a'
 expect_rc  "one text -> rc 0"                       0         kb_jq_one '{"a":1}'           '.a'
