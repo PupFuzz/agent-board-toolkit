@@ -53,6 +53,7 @@ kb_stub_board_config nostage 88                                # no stage anywhe
 kb_stub_install
 
 export KB_STUB_TASK_ID=777
+export KB_STUB_FOREIGN_ID=5
 export KB_STUB_BYREF="hit miss miss"   # one answer per by-ref read, in order; the last repeats
 
 USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
@@ -111,6 +112,12 @@ kb_stub_route() {
             case "${byref[$((route_n - 1))]:-${byref[-1]}}" in
                 hit)     printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID}]}" ;;
                 miss)    printf '%s\n%s' 200 '{"data":[]}' ;;
+                # READABLE answers naming a card that is NOT this run's throwaway — the shape a
+                # sentinel card leaked by an earlier run's failed teardown takes (card#10426).
+                # `both` carries the throwaway AND the foreign card; the foreign id is pinned so
+                # an assertion can require the tool to NAME it.
+                foreign) printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_FOREIGN_ID}]}" ;;
+                both)    printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID},{\"id\":$KB_STUB_FOREIGN_ID}]}" ;;
                 html)    printf '%s\n%s' 200 '<html><body>502 Bad Gateway</body></html>' ;;
                 trunc)   printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID" ;;
                 jsonerr) printf '%s\n%s' 200 '{"message":"your session has expired"}' ;;
@@ -423,6 +430,57 @@ KB_STUB_BYREF="html miss hit" run_a1
 eq "a measured RESIDUE beside an unmeasured verify → rc 1" "1" "$rc"
 eq "…and names the residue, which is the stronger true statement" "true" \
    "$(has 'residue — by-ref still resolves 777 after delete' "$err")"
+
+# ---------------------------------------------------------------------------
+echo "== a by-ref hit on a DIFFERENT card is residue, never 'empty' (card#10426) =="
+# The after-clear and acceptance reads ask whether the SENTINEL still resolves, not whether it
+# resolves to THIS run's throwaway. A card an earlier run's failed teardown leaked still carries
+# the sentinel and poisons the minter's max(dl_number) seed exactly as this run's own would — so
+# reading "not my card" as "empty" printed both pass lines and exited 0 over the very state this
+# tool exists to rule out.
+KB_STUB_BYREF="hit foreign miss" run_a1
+eq "a foreign card AFTER THE CLEAR → rc 1"        "1" "$rc"
+eq "…the after-clear line does NOT say empty"     "false" \
+   "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
+eq "…it names the foreign card"                   "true" \
+   "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT STILL PRESENT — resolves card(s) 5" "$err")"
+eq "…the verdict reports still_present=1"         "true" \
+   "$(has 'verification failed (found=1 still_present=1)' "$err")"
+eq "…and the run never prints OK"                 "false" "$(has 'OK (field registered' "$out")"
+eq "…the throwaway is still cleared and deleted"  "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+
+KB_STUB_BYREF="hit miss foreign" run_a1
+eq "a foreign card at the ACCEPTANCE read → rc 1" "1" "$rc"
+eq "…NO zero-residue claim is printed"            "false" "$(has 'zero residue' "$out")"
+eq "…the residue line names the foreign card"     "true" \
+   "$(has 'residue — by-ref still resolves 5 after delete' "$err")"
+eq "…and the run never prints OK"                 "false" "$(has 'OK (field registered' "$out")"
+
+# The card's reproduction, verbatim: the foreign id at BOTH residue reads.
+KB_STUB_BYREF="hit foreign foreign" run_a1
+eq "a foreign card at both residue reads → rc 1"  "1" "$rc"
+eq "…no after-clear 'empty' line"                 "false" \
+   "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
+eq "…no zero-residue claim"                       "false" "$(has 'zero residue' "$out")"
+eq "…the foreign card is named as a LEAK to delete" "true" \
+   "$(has 'kbcard show --task 5' "$err")"
+
+# Own AND foreign in one answer: both are named, so the operator does not delete the throwaway
+# and walk away from the leaked card.
+KB_STUB_BYREF="hit both miss" run_a1
+eq "own + foreign AFTER THE CLEAR → rc 1"         "1" "$rc"
+eq "…both cards are named"                        "true" \
+   "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT STILL PRESENT — resolves card(s) 777 5" "$err")"
+KB_STUB_BYREF="hit miss both" run_a1
+eq "own + foreign at ACCEPTANCE → rc 1"           "1" "$rc"
+eq "…both cards are named"                        "true" \
+   "$(has 'residue — by-ref still resolves 777 5 after delete' "$err")"
+
+# THE CONTROL: the same positions answered with an EMPTY result still pass, so the rows above
+# are not passing because the tool now refuses every run.
+KB_STUB_BYREF="hit miss miss" run_a1
+eq "control: empty residue reads → rc 0"          "0" "$rc"
+eq "control: …and the OK verdict"                 "true" "$(has 'OK (field registered' "$out")"
 
 # ---------------------------------------------------------------------------
 echo "== the EXIT trap fires when a teardown step itself fails =="

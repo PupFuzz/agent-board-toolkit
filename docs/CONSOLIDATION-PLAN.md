@@ -1514,8 +1514,9 @@ finding with no owner is abandoned, not filed.
     rather than anything the server sent. The response risk sits upstream, in that one filter over
     `$cards_json`, and the `fetch_board_cards` call already guards it on rc.
   - `kb_by_ref_hit` (`bin/_kb-board-lib.sh`) — its input genuinely *is* a raw response body, but the
-    `kb_jq_one` call **is the classifier**: its only output is one of three tokens, read by a
-    `case` that maps anything else — a parse fault, an empty input, a complete JSON text followed
+    `kb_jq_one` call **is the classifier**: its only output is one of three tokens (the two READ
+    verdicts carry the result's row ids after the token, card#10426), read by a `case` on that
+    leading token that maps anything else — a parse fault, an empty input, a complete JSON text followed
     by other bytes or by a second text, an unrunnable jq — to the function's UNREADABLE rc.
     `kb_jq_one` slurps and requires exactly one text, because plain `jq` streams: it prints the
     first text's result before faulting on what follows. There is no status to leak into `set -e`
