@@ -607,6 +607,35 @@ rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "unreadable token file → rc 5" "5" "$rc"
 
 # ---------------------------------------------------------------------------
+echo "== kb_resolve_env / kb_load_config --no-token — a board env read for its IDS only (card#10381) =="
+# The opt-in drops exactly the two token refusals, and each case is paired with the SAME fixture
+# resolved without the flag, so a fixture that never reached rc 7 / rc 5 cannot pass for one.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'export KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNDECLARED token, no flag → rc 7 (the fixture reaches the refusal)" "7" "$rc"
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
+rc=0; msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>&1 >/dev/null)" || rc=$?
+eq "  --no-token → rc 0, and says nothing"                  "0|" "$rc|$msg"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  …publishing the board's ids and env, and NO token file" \
+   "0|42|$TMP/.kanban-x-board.env|" "$rc|${KB_BOARD_ID:-}|${KB_BOARD_ENV:-}|${KB_TOKEN_FILE:-}"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/absent.token\"" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNREADABLE token, no flag → rc 5 (the fixture reaches the refusal)" "5" "$rc"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  --no-token → rc 0, the declared path still published" "0|$TMP/absent.token" "$rc|${KB_TOKEN_FILE:-}"
+# The loader: rc 0 on the same unreadable token, and KB_TOKEN left empty rather than read.
+KB_TOKEN="STALE"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "kb_load_config x --no-token, unreadable token → rc 0, KB_TOKEN empty" "0|42|" "$rc|${KB_BOARD_ID:-}|$KB_TOKEN"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "  control: kb_load_config x without the flag → rc 2"   "2" "$rc"
+KB_TOKEN=""
+rm -f "$TMP/.kanban-x-board.env"
+
+# ---------------------------------------------------------------------------
 echo "== kb_load_config — the board-env-missing error names its fix (roundtable #89) =="
 
 # A box with real board envs under non-dev names but NO ~/.kanban-dev-board.env and no

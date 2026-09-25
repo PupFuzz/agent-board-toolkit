@@ -5911,8 +5911,8 @@ mbc move-board --task 901 --to-board tgt --column held --yes
 eq "M3 a column the TARGET env does not map → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
 eq "  …naming the target env it was resolved against"   "true" "$(has "resolved against the TARGET board env $HOME/.kanban-tgt-board.env" "$err")"
 # THE CONTROL: with the unset removed, the SOURCE board's KB_STAGE_HELD=49 leaks into the target's
-# resolution and the same call reaches the wire with stage 49 — a stage of the WRONG board. Without
-# this pair, "rc 2 and no request" could be a call that never got that far for another reason.
+# resolution and the same call reaches the wire with stage 49 — a stage of the WRONG board. That
+# shows what the column is resolved against; it does not attribute the refusal to one guard.
 _rmut mb-leak 's/^    unset \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_SWIMLANE_@} \${!KB_USER_@} KB_TYPING_MODE$/    :/' MB_LEAK
 kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column held --yes </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the source's held=49 is POSTed to board 77" "49" "$(mb_post | jq -r .workflow_stage_id)"
@@ -5921,6 +5921,14 @@ mbc move-board --task 901 --to-board tgt --column prioritized --card-type bug --
 eq "M4 a type alias the TARGET does not map (the source does) → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
 kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column prioritized --card-type bug --yes </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the source's bug=8 is POSTed to board 77" "8" "$(mb_post | jq -r .card_type_id)"
+# The mb-leak pair proves the target env is what M3/M4 resolve against, not that each refusal is
+# its guard's. For the card type it is: with the unmapped-type refusal removed (the unset kept),
+# the empty resolution is read as an omitted --card-type and the move goes out with no type. The
+# column has no such control — without its refusal the empty stage still fails kb_is_uint offline.
+_rmut mb-type '/maps no native card type in \$KB_BOARD_ENV/{n;s/^                return 2$/                :/}' MB_TYPE
+kb_stub_reset; rc=0; "$MB_TYPE" move-board --task 901 --to-board tgt --column prioritized --card-type bug --yes </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the type refusal, the move is POSTed with NO card_type_id" \
+   "1|false" "$(kb_stub_count POST '/move-board.json')|$(mb_post | jq 'has("card_type_id")')"
 # mbm <mutant> <stdin> <args…> — mbc for a guard-removed copy: fresh log, rc captured, output dropped.
 mbm() { local m="$1" in="$2"; shift 2; kb_stub_reset; rc=0; "$m" "$@" <<<"$in" >/dev/null 2>"$TMP/e" || rc=$?; err="$(cat "$TMP/e")"; }
 # Every control below is a copy of kbcard with the refusal it controls removed (the empty
@@ -5990,6 +5998,27 @@ mbc "${MB_ARGS[@]}"
 eq "M21 an unreadable target token file → rc 0, the move POSTed with the source's token" \
    "0|1|false" "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'token file not readable' "$err")"
 mv "$TMP/tgt.token.away" "$TMP/tgt.token"
+# UNDECLARED: no tier supplies the target a token file. The host env's declaration moves into the
+# SOURCE board env (so the source still has one), the target env loses its own, and nothing is
+# exported; the scratch HOME has no coord store. The control proves the fixture reaches the
+# undeclared arm: the same call against a lib whose --no-token path refuses it (rc 7) sends nothing.
+cp "$KANBAN_HOST_ENV" "$TMP/host.env.keep"; cp "$HOME/.kanban-dev-board.env" "$TMP/dev.env.keep"; cp "$HOME/.kanban-tgt-board.env" "$TMP/tgt.env.keep"
+grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/host.env.keep" > "$KANBAN_HOST_ENV"
+grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/tgt.env.keep" > "$HOME/.kanban-tgt-board.env"
+printf 'export KBCARD_TOKEN_FILE="%s"\n' "$KB_STUB_TOKEN_FILE" >> "$HOME/.kanban-dev-board.env"
+mbc "${MB_ARGS[@]}"
+eq "M21b a target env declaring NO token file (no tier supplies one) → rc 0, the move POSTed" \
+   "0|1|false" "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'no token file is declared' "$err")"
+mkdir -p "$TMP/mut-mb-undecl"
+cp "$(readlink -f "$BIN")" "$TMP/mut-mb-undecl/kbcard"
+sed 's/2>\/dev\/null)" || KB_TOKEN_FILE=""$/2>\/dev\/null)" || return 7/' \
+    "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" > "$TMP/mut-mb-undecl/_kb-board-lib.sh"
+cmp -s "$TMP/mut-mb-undecl/_kb-board-lib.sh" "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" \
+    && bad "mb-undecl: the lib mutation matched nothing — this control would measure the path it exists to remove"
+mbm "$TMP/mut-mb-undecl/kbcard" "" "${MB_ARGS[@]}"
+eq "  control: with the lib refusing an undeclared target token, the same call → rc 2, nothing sent" \
+   "2|0" "$rc|$(kb_stub_total)"
+cp "$TMP/host.env.keep" "$KANBAN_HOST_ENV"; cp "$TMP/dev.env.keep" "$HOME/.kanban-dev-board.env"; cp "$TMP/tgt.env.keep" "$HOME/.kanban-tgt-board.env"
 
 echo "-- --card-type omitted: the key is not sent, and the re-read must say null --"
 MB_AFTER="$(jq -c '.data.card_type_id = null' <<<"$MB_OK")" mbc move-board --task 901 --to-board tgt --column prioritized --swimlane lane-a --yes
