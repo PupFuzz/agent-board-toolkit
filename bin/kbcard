@@ -87,8 +87,9 @@
 #     merge stderr into a JSON pipe). The board-id rule itself is at the top of this block.
 #   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
 #     Changes the card's COLUMN on THIS board only. To take a card to ANOTHER board, use
-#     `move-board` (below) — `move` has no board option, and passing one is refused with a
-#     pointer there.
+#     `move-board` (below) — `move` has no board option: `--to-board` is refused with a pointer
+#     there, and `--board` with the reminder that it is the GLOBAL flag and goes BEFORE the verb
+#     (`kbcard --board <name> move …`). Both are rc 2 before any request.
 #     The stage the server ECHOES is compared against the stage this call asked for, and a
 #     disagreement is rc 1 HARD FAILURE rather than a printed success. `create-card` and
 #     `patch --column` carry the same compare. ⚠ WHAT THAT IS: the echo is the server's
@@ -229,7 +230,11 @@
 #     KB_BOARD_ID). The target board id, --column, --card-type and --swimlane are ALL resolved
 #     out of the TARGET board env, never out of the source one — a stage or type id is only
 #     meaningful on its own board. A target env that cannot be resolved, declares no
-#     KB_BOARD_ID, or maps no such column / type / swimlane is rc 2 before any request.
+#     KB_BOARD_ID, or maps no such column / type / swimlane is rc 2 before any request. The
+#     target env's TOKEN is never read: the move is one request, sent with the SOURCE board's
+#     token, so the target's token file may be undeclared or unreadable.
+#     A card the read shows is ALREADY on the target board is rc 2 before the write (with
+#     --dry-run too) — `move` is the verb for a column on the same board.
 #     --card-type takes an alias (KB_TYPE_<ALIAS> in the target env) or a numeric id. OMIT it
 #     to move onto a board that declares NO card types: the key is then not sent and the board
 #     decides — a board that declares types answers 422 (card_type_id required), and a kanban
@@ -250,18 +255,21 @@
 #     and writes nothing.
 #     AUTHORIZATION IS TWO-SIDED: the token must be allowed to UPDATE the card on its board AND
 #     to CREATE cards on the target. Either missing is a 403, reported as that policy refusal —
-#     with the token FILE named (never its value) — rather than as a generic failure. The
-#     board's other refusals (already on that board, a card that is a leg of another or has
-#     legs, a WIP limit, a terminal-column rule on the target) are relayed at its own wording,
-#     rc 1, not re-derived here. A POST that never completed is rc 3: re-read the card first.
-#     ⭐ CONFIRMED FROM A RE-READ OF THE CARD, never from the 2xx. Success requires the card to
+#     with the token FILE named (never its value) — rather than as a generic failure. A 401 is
+#     reported separately: the token was not accepted at all (invalid or expired). The board's
+#     other 4xx refusals (a card that is a leg of another or has legs, a WIP limit, a
+#     terminal-column rule on the target) are relayed at its own wording, rc 1, not re-derived
+#     here. A 5xx, or a POST that never completed, is NOT taken as "not applied" — the server may
+#     have moved the card before it failed — so the card is re-read and judged exactly as after
+#     a 2xx below, and a re-read that cannot be made is rc 3.
+#     ⭐ CONFIRMED FROM A RE-READ OF THE CARD, never from the status. Success requires the card to
 #     re-read with board_id = the target, and the stage, card type (null when --card-type was
 #     omitted) and swimlane (null when laneless) this call sent. stdout is ONE object read back
 #     off the card: {id, name, board_id, workflow_stage_id, card_type_id, swimlane_id,
 #     assigned_user_id, payload}; stderr names the board it moved FROM and the board it now
-#     reads on. Still on its old board is rc 1 HARD FAILURE (did not take). On the target but
-#     in another stage / type / lane is rc 1 HARD FAILURE too, and says the card DID move —
-#     re-read it before acting. A re-read that cannot be made is rc 3.
+#     reads on. Still on its old board is rc 1 HARD FAILURE (it did not move). On the target but
+#     in another stage / type / lane is rc 1 HARD FAILURE too, and says the card moved
+#     partially — re-read it before acting. A re-read that cannot be made is rc 3.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
@@ -2087,8 +2095,11 @@ cmd_move() {
             --keep-refs) keep_refs=1; shift ;;
             --stamp-owner) stamp_owner=1; shift ;;
             --card-start) card_start=1; shift ;;
-            --to-board|--board)
+            --to-board)
                 echo "kbcard: move changes a card's column on THIS board and takes no '$1' — to move a card to another board, use: kbcard move-board --task <id> --to-board <name|id> --column <column> [--card-type <alias|id>]" >&2
+                return 2 ;;
+            --board)
+                echo "kbcard: --board is the GLOBAL flag and goes BEFORE the verb: kbcard --board <name> move --task <id> --column <column>" >&2
                 return 2 ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
@@ -2446,7 +2457,9 @@ _kbc_move_board_target() (
     # The source board's load already said whatever there was to say about an inherited id; the
     # same variable would otherwise be reported a second time here, against the TARGET's env.
     _KB_INHERITED_BOARD_ID=""
-    kb_load_config "$name" || return 2
+    # --no-token: the move is ONE request, on the SOURCE board's token, so the target env is read
+    # for its ids only and its token file may be absent or unreadable.
+    kb_load_config "$name" --no-token || return 2
     local where="resolved against the TARGET board env $KB_BOARD_ENV"
     # These ids are spliced into the read-back's jq predicate, so a non-id is refused HERE, where
     # the config is read, rather than meeting jq as a filter fault after the write went out.
@@ -2530,6 +2543,12 @@ cmd_move_board() {
     from_id="$(jq -r '.board_id // "?"' <<<"$card")"
     keys="$(jq -r '.payload | if . == null or . == {} then "" elif type == "object" then keys_unsorted | join(", ") else tojson end' <<<"$card")"
     uid="$(jq -r '.assigned_user_id // empty' <<<"$card")"
+    # From the READ, not from --board: a task id is global, so the board this run was pointed at
+    # says nothing about which board the card is on.
+    if [[ "$from_id" == "$to_id" ]]; then
+        echo "kbcard: move-board: card $task is already on board $to_id — this verb moves a card to ANOTHER board; for a column on the same board, use: kbcard --board <name> move --task $task --column $column. Nothing was sent." >&2
+        return 2
+    fi
     echo "kbcard: move-board: card $task, board $from_id → board $to_id ($to_env): column $column (stage $(jq -r '.workflow_stage_id' <<<"$body")), card type $(jq -r '.card_type_id // "none (--card-type omitted)"' <<<"$body"), swimlane $(jq -r 'if has("swimlane_id") and .swimlane_id != null then .swimlane_id else "none (laneless)" end' <<<"$body")" >&2
     if [[ -n "$keys" ]]; then
         echo "kbcard: move-board: ⚠ the move CLEARS the card's custom-field payload, which holds: $keys. None of it is carried to board $to_id and nothing restores it — a correlation stamp (dl_number, pr_number, pr_url, …) among them stops correlating this card." >&2
@@ -2549,22 +2568,26 @@ cmd_move_board() {
         [[ "$ans" == [yY] ]] || { echo "kbcard: aborted — card $task left on board $from_id, nothing written" >&2; return 0; }
     fi
 
-    local prc=0
+    local prc=0 lead="the POST answered 2xx"
     kb_api POST "/tasks/$task/move-board.json" "$body" >/dev/null || prc=$?
     if [[ "$prc" -eq "$KB_API_RC_TRANSPORT" ]]; then
-        _kbc_unverified move-board "on task $task" "The POST did not complete — no HTTP status came back — so whether card $task left board $from_id is UNKNOWN. Re-read it (kbcard show --task $task) before re-issuing." || return $?
-    fi
-    if [[ "$prc" -ne 0 ]]; then
+        lead="the POST did not complete (no HTTP status came back)"
+    elif [[ "$prc" -ne 0 && "${KB_HTTP:-}" == 5* ]]; then
+        # A 5xx is the server failing, not the server refusing: it may have reparented the card
+        # before it failed, so like a POST that never completed it is not "not applied" — the
+        # re-read below says what the board holds.
+        lead="the POST answered HTTP $KB_HTTP"
+    elif [[ "$prc" -ne 0 ]]; then
+        local tokn="the token this run resolved for its own board ($KB_TOKEN_FILE)"
+        [[ -z "$to_tok" || "$to_tok" == "$KB_TOKEN_FILE" ]] || tokn="$tokn — NOT the one board $to_id's env declares ($to_tok): the move is ONE request and carries ONE token"
         case "${KB_HTTP:-}" in
-            401|403)
-                local tokn="the token this run resolved for its own board ($KB_TOKEN_FILE)"
-                [[ "$to_tok" == "$KB_TOKEN_FILE" ]] || tokn="$tokn — NOT the one board $to_id's env declares ($to_tok): the move is ONE request and carries ONE token"
-                echo "kbcard: move-board on task $task: HTTP $KB_HTTP is a POLICY refusal, not a card problem. A cross-board move needs the token to UPDATE card $task on board $from_id AND to CREATE cards on board $to_id, and one of the two is missing. The request carried $tokn. Nothing was moved." >&2 ;;
+            401) echo "kbcard: move-board on task $task: HTTP 401 — the token was not accepted — invalid or expired. The request carried $tokn. Nothing was moved." >&2 ;;
+            403) echo "kbcard: move-board on task $task: HTTP 403 is a POLICY refusal, not a card problem. A cross-board move needs the token to UPDATE card $task on board $from_id AND to CREATE cards on board $to_id, and one of the two is missing. The request carried $tokn. Nothing was moved." >&2 ;;
         esac
         return 1
     fi
 
-    # ⭐ THE OUTCOME IS THE RE-READ, NOT THE 2xx. Every classifier this call sent is compared,
+    # ⭐ THE OUTCOME IS THE RE-READ, NOT THE STATUS. Every classifier this call sent is compared,
     # because each is a value this file resolved and the board stores verbatim: board_id, the
     # stage, card_type_id (null when --card-type was omitted — the only way the board accepts that
     # is onto a board that declares no card types, and it writes null there) and swimlane_id (null
@@ -2575,20 +2598,21 @@ cmd_move_board() {
     pred=".state == \"present\" and (.card | {board_id, workflow_stage_id, card_type_id, swimlane_id}) == $exp"
     w="$(kb_confirm_card "$task" "$pred")" || crc=$?
     if [[ "$crc" -eq "$KBC_RC_UNVERIFIED" ]]; then
-        _kbc_unverified move-board "on task $task" "The POST answered 2xx and card $task could not be re-read, so whether it now reads on board $to_id is UNKNOWN. Re-read it before re-issuing." || return $?
+        _kbc_unverified move-board "on task $task" "After the write ($lead), card $task could not be re-read, so whether it now reads on board $to_id is UNKNOWN. Re-read it (kbcard show --task $task) before re-issuing." || return $?
     fi
     if [[ "$crc" -ne 0 ]]; then
         local got
         got="$(jq -c '.card | {board_id, workflow_stage_id, card_type_id, swimlane_id}' <<<"$w")"
         if [[ "$(jq -r '.state' <<<"$w")" != "present" ]]; then
-            echo "kbcard: move-board on task $task: HARD FAILURE — the POST answered 2xx and card $task does not re-read at all (404 on a ?trashed=1 read). The status is not the move; the read-back is." >&2
+            echo "kbcard: move-board on task $task: HARD FAILURE — $lead and card $task does not re-read at all (404 on a ?trashed=1 read). The status is not the move; the read-back is." >&2
         elif [[ "$(jq -r '.board_id' <<<"$got")" != "$to_id" ]]; then
-            echo "kbcard: move-board on task $task: HARD FAILURE — the POST answered 2xx and card $task still re-reads on board $(jq -r '.board_id' <<<"$got"), not board $to_id. The status is not the move; the read-back is. The move did not take." >&2
+            echo "kbcard: move-board on task $task: HARD FAILURE — $lead and card $task still re-reads on board $(jq -r '.board_id' <<<"$got"), not board $to_id: it did not move. The status is not the move; the read-back is." >&2
         else
-            echo "kbcard: move-board on task $task: HARD FAILURE — card $task DID move to board $to_id, but re-reads as $got where this call sent $exp. It is on the target board and not where it was asked — re-read it before acting." >&2
+            echo "kbcard: move-board on task $task: HARD FAILURE — $lead and card $task moved partially: it DID move to board $to_id, but re-reads as $got where this call sent $exp. It is on the target board and not where it was asked — re-read it before acting." >&2
         fi
         return 1
     fi
+    [[ "$prc" -eq 0 ]] || echo "kbcard: move-board: $lead, and the re-read shows the move landed anyway" >&2
     local out
     out="$(jq '.card | {id, name, board_id, workflow_stage_id, card_type_id, swimlane_id, assigned_user_id, payload}' <<<"$w")"
     echo "kbcard: move-board: card $task moved from board $from_id to board $to_id — re-read after the POST: $(jq -c '{board_id, workflow_stage_id, card_type_id, swimlane_id}' <<<"$out")" >&2

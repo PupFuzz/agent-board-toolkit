@@ -460,9 +460,14 @@ kb_declared_token_file() {
     return 1
 }
 
-# kb_resolve_env <board_env_path>: source the host env then the board env, and
+# kb_resolve_env <board_env_path> [--no-token]: source the host env then the board env, and
 # publish KB_API / KB_BOARD_ID / KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the
-# token content and does NOT require KB_BOARD_ID — the caller decides those. KB_BOARD_ID is
+# token content and does NOT require KB_BOARD_ID — the caller decides those.
+# --no-token is for a board env read only for its IDS, whose credential this process never
+# sends (kbcard move-board's TARGET: the move is one request on the source board's token). The
+# token file is then located QUIETLY and published if declared, but neither an undeclared (rc 7)
+# nor an unreadable (rc 5) one is refused — refusing on a credential that is never sent would
+# block a move over a file that plays no part in it. KB_BOARD_ID is
 # the BOARD ENV's alone: empty when it sets none, whatever the caller's shell held. Quiet
 # (return-code only) apart from the rc-4, rc-6 and rc-7 refusals, which speak for
 # themselves, and a ⚠ line when the board env overrides an INHERITED KB_BOARD_ID, so a
@@ -475,7 +480,8 @@ kb_declared_token_file() {
 # reaches the operator through a caller that can only say "config incomplete (rc=N)" —
 # next-dl's arm, verbatim — which is why rc 4's refusal was already written this way.
 kb_resolve_env() {
-    local board_env="$1"
+    local board_env="$1" no_token=""
+    [[ "${2:-}" == --no-token ]] && no_token=1
     # CLEARED FIRST, not on the success path only. These are globals, and five of the seven
     # rcs below return before assigning them — so after a FAILED resolve of board B they
     # would still hold board A's values from an earlier call in the same shell, and a
@@ -545,6 +551,11 @@ kb_resolve_env() {
     # BEFORE the token file is even located, let alone read: a base nobody vouched for is
     # not a base this process should go looking for credentials to send to (card#7245).
     kb_require_known_api_host "$KB_API" || return 6
+    if [[ -n "$no_token" ]]; then
+        KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok" 2>/dev/null)" || KB_TOKEN_FILE=""
+        KB_BOARD_ENV="$board_env"
+        return 0
+    fi
     KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok")" || return 7   # board > host > ambient > coord store
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
@@ -610,10 +621,11 @@ kb_board_roster() {
     return 0
 }
 
-# kb_load_config [board_name]: public config entry for the name-driven scripts
+# kb_load_config [board_name] [--no-token]: public config entry for the name-driven scripts
 # (kbcard, adopt-to-dl, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
-# api/board/token, and reads the token into KB_TOKEN. An empty NAME means "no
-# --board given" and honors $KBCARD_BOARD_ENV (back-compat); kanban|dev resolves
+# api/board/token, and reads the token into KB_TOKEN. --no-token (kb_resolve_env's) reads no
+# token and leaves KB_TOKEN empty: for a board loaded for its ids only, never sent to. An empty
+# NAME means "no --board given" and honors $KBCARD_BOARD_ENV (back-compat); kanban|dev resolves
 # the kanban-dev board; any other name → ~/.kanban-<name>-board.env. On failure
 # prints the cause and returns 2.
 # ⛔ KB_BOARD_ID IS REQUIRED HERE (card#10385), unlike kb_resolve_env, which publishes an empty
@@ -623,7 +635,7 @@ kb_board_roster() {
 # the token sees, so a patch landed on another board's card at rc 0. Refused here, before the
 # token is read, so no caller can forget it.
 kb_load_config() {
-    local name="${1:-}"
+    local name="${1:-}" no_token="${2:-}"
     local board_env
     case "$name" in
         "")         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}" ;;
@@ -631,7 +643,7 @@ kb_load_config() {
         *)          board_env="$HOME/.kanban-${name}-board.env" ;;
     esac
     local rc
-    kb_resolve_env "$board_env"; rc=$?
+    kb_resolve_env "$board_env" "$no_token"; rc=$?
     case "$rc" in
         0) ;;
         2)  # unreadable board env — name the fix like the sibling arms do (roundtable #89)
@@ -658,7 +670,11 @@ kb_load_config() {
         echo "$(_kb_prog): $board_env declares no KB_BOARD_ID — there is no board to act on; add the line to that file, or choose a board with --board <name> (docs/INSTALL.md §3b)" >&2
         return 2
     fi
-    KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+    if [[ "$no_token" == --no-token ]]; then
+        KB_TOKEN=""
+    else
+        KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+    fi
     return 0
 }
 
