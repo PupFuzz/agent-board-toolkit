@@ -28,6 +28,35 @@ annot() { _kbc_annotate_card "$1" | jq -c "$2"; }
 # all of them, so only the per-section `kb_stub_route` is torn down between them.
 kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
 
+# _rmut <tag> <sed-script> <outvar> — the REAL kbcard with ONE guard neutered, copied beside a
+# real _kb-board-lib.sh; assigns the copy's path to <outvar>. File-scope because more than one
+# process-driving section builds its controls from it (reorder, move-board).
+#
+# ⭐ THE MUTANT IS THE CONTROL, and without it the offline refusals below measure nothing. Each
+# asserts "rc 2 and ZERO requests", which a call that could never have reached the wire satisfies
+# just as well as a guard that stopped it. With the guard's `return` removed the SAME call MUST
+# reach the wire — so the pair is what makes the refusal attributable to the guard. A sed script
+# that matched nothing is reported as a failure rather than passed over: an unchanged copy would
+# "prove" the guard by running it.
+#
+# ⛔ IT ANSWERS THROUGH `printf -v`, NOT ON STDOUT, AND THAT IS THE LOAD-BEARING PART. Called as
+# `path="$(_rmut …)"` it ran in a COMMAND SUBSTITUTION, i.e. a subshell — so the `bad` above
+# printed its FAIL line and then died with that subshell, taking `fails=$((fails + 1))` with it.
+# The no-match guard was therefore a decoration: it reported and did not count, and a run whose
+# only failure was a stale mutation would have printed FAIL and exited 0. (It never did, because
+# every call site is paired with a downstream assertion that reds too — a latent hole, not a live
+# one, which is exactly the kind that outlives the person who could still remember it.) Assigning
+# in the CALLER's shell keeps the counter and the report in the same process.
+_rmut() {
+    local dir="$TMP/mut-$1" src; src="$(readlink -f "$BIN")"
+    mkdir -p "$dir"
+    sed "$2" "$src" > "$dir/kbcard"
+    cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/"
+    chmod +x "$dir/kbcard"
+    cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    printf -v "$3" '%s' "$dir/kbcard"
+}
+
 # The operator's shell may have a real board env sourced (they `export` their
 # keys) — scrub every KB_STAGE_* so no live board id can fake a pass or a fail.
 # shellcheck disable=SC2086
@@ -1239,6 +1268,8 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --link-id --on     # driven empty at the unlink verb, below
                     --ids --placement --before-task --after-task
                                        # driven empty at the reorder verb, below
+                    --to-board --card-type
+                                       # driven empty at the move-board verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
                     --content-file --description-file --name-file --block-reason-file
                     --field --from --to --relation --key --label)
@@ -5453,33 +5484,6 @@ export -f kb_stub_route
 # rrun <bin> <args…> — `kbc`, for a bin that is not $BIN (the mutant controls below).
 rrun() { local b="$1"; shift; kb_stub_reset; rc=0; out="$("$b" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
 
-# _rmut <tag> <sed-script> <outvar> — the REAL kbcard with ONE guard neutered, copied beside a
-# real _kb-board-lib.sh; assigns the copy's path to <outvar>.
-#
-# ⭐ THE MUTANT IS THE CONTROL, and without it the offline refusals below measure nothing. Each
-# asserts "rc 2 and ZERO requests", which a call that could never have reached the wire satisfies
-# just as well as a guard that stopped it. With the guard's `return` removed the SAME call MUST
-# reach the wire — so the pair is what makes the refusal attributable to the guard. A sed script
-# that matched nothing is reported as a failure rather than passed over: an unchanged copy would
-# "prove" the guard by running it.
-#
-# ⛔ IT ANSWERS THROUGH `printf -v`, NOT ON STDOUT, AND THAT IS THE LOAD-BEARING PART. Called as
-# `path="$(_rmut …)"` it ran in a COMMAND SUBSTITUTION, i.e. a subshell — so the `bad` above
-# printed its FAIL line and then died with that subshell, taking `fails=$((fails + 1))` with it.
-# The no-match guard was therefore a decoration: it reported and did not count, and a run whose
-# only failure was a stale mutation would have printed FAIL and exited 0. (It never did, because
-# every call site is paired with a downstream assertion that reds too — a latent hole, not a live
-# one, which is exactly the kind that outlives the person who could still remember it.) Assigning
-# in the CALLER's shell keeps the counter and the report in the same process.
-_rmut() {
-    local dir="$TMP/mut-$1" src; src="$(readlink -f "$BIN")"
-    mkdir -p "$dir"
-    sed "$2" "$src" > "$dir/kbcard"
-    cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/"
-    chmod +x "$dir/kbcard"
-    cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
-    printf -v "$3" '%s' "$dir/kbcard"
-}
 
 # The control for the control, and the reason `_rmut` answers through a variable: a sed script
 # that matches nothing must both REPORT and COUNT. Run in a subshell so this file's own counters
@@ -5810,7 +5814,7 @@ eq "reorder: a trailing flag with no argument names the flag, not set -u" "2|fal
 kbc reorder --ids 501 --placement top --nonsense x
 eq "reorder: an unknown arg is rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
 
-unset -f kb_stub_route r_resp rrun _rmut
+unset -f kb_stub_route r_resp rrun
 unset R_BODY R_HTTP R_OK_TOP _rm _ids _f
 
 # ---------------------------------------------------------------------------
@@ -5882,5 +5886,268 @@ CB_HTTP=500 kbc create-card --type feature --name probe
 eq "a failed POST → rc 1 and NO success line"             "1|false" "$rc|$(has 'created on board' "$err")"
 
 unset -f kb_stub_route cb_board
+
+echo "== move-board — a card to ANOTHER board in place, confirmed from a re-read (card#10381) =="
+# THE GAP: `POST /tasks/{task}/move-board.json` is live on the board and nothing here could reach
+# it, so a seat either concluded cross-board moves were impossible or re-created the card on the
+# target and deleted the original — losing its comments, changelog, attachments, subtasks, time
+# trackers and links. Every leg below drives the REAL bin as a process against the stub; the
+# fixtures are this repo's statement of the route's contract (TaskMutator::moveToBoard) and
+# measure the TOOL against it, never the server.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_SWIMLANE_@}
+# SOURCE board 42 maps `held` (49); the TARGET board 77 deliberately does NOT — that asymmetry is
+# what the leak leg below needs. Type and stage ids differ between the two so a value resolved from
+# the wrong env is visible in the POST body.
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_HELD=49' \
+    'export KB_TYPE_FEATURE=7' 'export KB_TYPE_BUG=8' 'export KB_SWIMLANE_3=src-lane' 'export KB_USER_ALICE=5'
+printf 'tgt-token\n' > "$TMP/tgt.token"
+kb_stub_board_config tgt 77 'export KB_STAGE_BACKLOG=880' 'export KB_STAGE_PRIORITIZED=881' \
+    'export KB_TYPE_FEATURE=19' 'export KB_SWIMLANE_12=lane-a' "export KBCARD_TOKEN_FILE=\"$TMP/tgt.token\""
+printf 'export KB_STAGE_BACKLOG=1\n' > "$HOME/.kanban-noid-board.env"   # declares NO board id
+kb_stub_install
+
+MB_PRE='{"data":{"id":901,"name":"probe","board_id":42,"workflow_stage_id":48,"card_type_id":7,"swimlane_id":3,"assigned_user_id":5,"payload":{"dl_number":"DL-0012","pr_number":88}}}'
+# `name` differs from the pre-read so stdout can be attributed to the RE-READ, not the first read.
+MB_OK='{"data":{"id":901,"name":"probe (re-read)","board_id":77,"workflow_stage_id":881,"card_type_id":19,"swimlane_id":12,"assigned_user_id":null,"payload":null}}'
+export MB_PRE MB_OK
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/901.json?trashed=1)
+            if [[ "$4" == 1 ]]; then printf '%s\n%s' "${MB_PRE_HTTP:-200}" "${MB_PRE_BODY:-$MB_PRE}"
+            else printf '%s\n%s' "${MB_AFTER_HTTP:-200}" "${MB_AFTER:-$MB_OK}"; fi ;;
+        "POST "*/tasks/901/move-board.json)
+            printf '%s\n%s' "${MB_POST_HTTP:-200}" "${MB_POST_BODY:-$MB_OK}" ;;
+    esac
+}
+export -f kb_stub_route
+# mbc — kbc with stdin pinned to NOT a terminal, so the --yes rule is exercised the same way on a
+# developer's terminal as in CI.
+mbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"; }
+mb_post() { kb_stub_bodies POST '/move-board.json'; }
+MB_ARGS=(move-board --task 901 --to-board tgt --column prioritized --card-type feature --swimlane lane-a --yes)
+
+echo "-- the verb exists, and the success is the RE-READ --"
+mbc "${MB_ARGS[@]}"
+eq "M1 rc 0"                                                  "0" "$rc"
+eq "  …GET, POST, GET — the read BEFORE the write, then the re-read" \
+   "3|2|1" "$(kb_stub_total)|$(kb_stub_count GET '/tasks/901.json?trashed=1')|$(kb_stub_count POST '/move-board.json')"
+eq "  …the POST body is the TARGET's ids and nothing else" \
+   '{"board_id":77,"card_type_id":19,"swimlane_id":12,"workflow_stage_id":881}' "$(mb_post | jq -cS .)"
+eq "  …stdout is the RE-READ card (its name is the re-read's)" '"probe (re-read)"|77' "$(jq -c .name <<<"$out")|$(jq -r .board_id <<<"$out")"
+eq "  …stdout carries exactly the documented keys" \
+   '["assigned_user_id","board_id","card_type_id","id","name","payload","swimlane_id","workflow_stage_id"]' "$(jq -c 'keys' <<<"$out")"
+eq "  …stderr names the board it left and the board it re-reads on" "true" "$(has 'card 901 moved from board 42 to board 77 — re-read after the POST' "$err")"
+eq "  …stderr names the payload keys the move clears"      "true" "$(has 'which holds: dl_number, pr_number' "$err")"
+eq "  …stderr warns the assignment MAY be cleared, naming the seat" "true" "$(has 'assigned to alice (user 5)' "$err")"
+eq "  …and says it WAS cleared once the re-read shows it"  "true" "$(has 'the board cleared the card' "$err")"
+
+mbc move-board --task 901 --to-board 77 --column prioritized --card-type feature --swimlane lane-a --yes
+eq "M2 --to-board by ID resolves the same env → same body, rc 0" \
+   '0|{"board_id":77,"card_type_id":19,"swimlane_id":12,"workflow_stage_id":881}' "$rc|$(mb_post | jq -cS .)"
+
+echo "-- offline refusals: rc 2, NO request --"
+mbc move-board --task 901 --to-board tgt --column held --yes
+eq "M3 a column the TARGET env does not map → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
+eq "  …naming the target env it was resolved against"   "true" "$(has "resolved against the TARGET board env $HOME/.kanban-tgt-board.env" "$err")"
+# THE CONTROL: with the unset removed, the SOURCE board's KB_STAGE_HELD=49 leaks into the target's
+# resolution and the same call reaches the wire with stage 49 — a stage of the WRONG board. That
+# shows what the column is resolved against; it does not attribute the refusal to one guard.
+_rmut mb-leak 's/^    unset \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_SWIMLANE_@} \${!KB_USER_@} KB_TYPING_MODE$/    :/' MB_LEAK
+kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column held --yes </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the unset, the source's held=49 is POSTed to board 77" "49" "$(mb_post | jq -r .workflow_stage_id)"
+
+mbc move-board --task 901 --to-board tgt --column prioritized --card-type bug --yes
+eq "M4 a type alias the TARGET does not map (the source does) → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
+kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column prioritized --card-type bug --yes </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the unset, the source's bug=8 is POSTed to board 77" "8" "$(mb_post | jq -r .card_type_id)"
+# The mb-leak pair proves the target env is what M3/M4 resolve against, not that each refusal is
+# its guard's. For the card type it is: with the unmapped-type refusal removed (the unset kept),
+# the empty resolution is read as an omitted --card-type and the move goes out with no type. The
+# column has no such control — without its refusal the empty stage still fails kb_is_uint offline.
+_rmut mb-type '/maps no native card type in \$KB_BOARD_ENV/{n;s/^                return 2$/                :/}' MB_TYPE
+kb_stub_reset; rc=0; "$MB_TYPE" move-board --task 901 --to-board tgt --column prioritized --card-type bug --yes </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the type refusal, the move is POSTed with NO card_type_id" \
+   "1|false" "$(kb_stub_count POST '/move-board.json')|$(mb_post | jq 'has("card_type_id")')"
+# mbm <mutant> <stdin> <args…> — mbc for a guard-removed copy: fresh log, rc captured, output dropped.
+mbm() { local m="$1" in="$2"; shift 2; kb_stub_reset; rc=0; "$m" "$@" <<<"$in" >/dev/null 2>"$TMP/e" || rc=$?; err="$(cat "$TMP/e")"; }
+# Every control below is a copy of kbcard with the refusal it controls removed (the empty
+# --to-board one removes two, and says why), and it must then REACH THE WIRE.
+# The refusals with no such control say why where each is asserted: removing
+# the guard alone still refuses offline, through a second one.
+mbc move-board --task 901 --to-board 99 --column backlog --yes
+eq "M5 an id no board env declares → rc 2, no request"   "2|0" "$rc|$(kb_stub_total)"
+eq "  …saying so"                                        "true" "$(has 'no board env on this box declares KB_BOARD_ID=99' "$err")"
+_rmut mb-noenv '/boards found on this box: \$found/{n;s/^            return 2$/            :/}' MB_NOENV
+mbm "$MB_NOENV" "" move-board --task 901 --to-board 99 --column backlog --yes
+eq "  control: WITHOUT the refusal, an unknown id falls to the DEFAULT board and the card is READ" \
+   "1" "$(kb_stub_count GET '/tasks/901.json?trashed=1')"
+mbc move-board --task 901 --to-board noid --column backlog --yes
+# NO network control: this is kb_load_config's refusal, and kbcard's own board-id check
+# (`KB_BOARD_ID='' … is not a board id`) refuses the same call offline without it — so it is pinned
+# by rc, request count and the loader's own message only.
+eq "M6 a target env declaring NO board id → rc 2, no request, the loader's own refusal" \
+   "2|0|true" "$rc|$(kb_stub_total)|$(has "$HOME/.kanban-noid-board.env declares no KB_BOARD_ID" "$err")"
+mbc move-board --task 901 --to-board tgt --column prioritized
+eq "M7 no --yes in a non-interactive shell → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
+kb_stub_reset; rc=0; "$BIN" move-board --task 901 --to-board tgt --column prioritized <<<y >/dev/null 2>&1 || rc=$?
+eq "  …a non-terminal stdin that SAYS y is still no consent → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
+_rmut mb-yes '/move-board requires --yes in a non-interactive shell/{n;s/^        return 2$/        :/}' MB_YES
+mbm "$MB_YES" y move-board --task 901 --to-board tgt --column prioritized
+eq "  control: WITHOUT the refusal, that piped y is read as consent and the move is POSTed" \
+   "1" "$(kb_stub_count POST '/move-board.json')"
+mbc move-board --task 901 --to-board "" --column backlog --yes
+eq "  an EMPTY --to-board → rc 2, no request, naming the flag" "2|0|true" "$rc|$(kb_stub_total)|$(has '--to-board requires a non-empty value' "$err")"
+# Two guards stand in front of this one, the empty-value refusal and the required-flags check, and
+# either alone refuses offline — so the control removes both, and shows what they stand in front of.
+_rmut mb-emptyto 's/--to-board) kb_require_value "\$1" "\${2:-}" || return 2; to_board=/--to-board) to_board=/;s/^    \[\[ -z "\$task_ref" || -z "\$to_board" || -z "\$column" \]\] && { echo "kbcard: move-board requires .*$/    :/' MB_EMPTYTO
+mbm "$MB_EMPTYTO" "" move-board --task 901 --to-board "" --column backlog --yes
+eq "  control: WITHOUT both, an empty --to-board falls to the DEFAULT board and the card is READ" \
+   "1" "$(kb_stub_count GET '/tasks/901.json?trashed=1')"
+mbc move-board --task 901 --to-board tgt --column prioritized --card-type "" --yes
+eq "  an EMPTY --card-type → rc 2, no request, naming the flag (not read as omitted)" "2|0|true" "$rc|$(kb_stub_total)|$(has '--card-type requires a non-empty value' "$err")"
+_rmut mb-emptytype 's/--card-type) kb_require_value "\$1" "\${2:-}" || return 2; ctype=/--card-type) ctype=/' MB_EMPTYTYPE
+mbm "$MB_EMPTYTYPE" "" move-board --task 901 --to-board tgt --column prioritized --card-type "" --yes
+eq "  control: WITHOUT it, the empty type is read as OMITTED and the move is POSTed with no card_type_id" \
+   "1|false" "$(kb_stub_count POST '/move-board.json')|$(mb_post | jq 'has("card_type_id")')"
+# NO network control for M8/M8b: these arms only NAME the right command. Without them the call is
+# still rc 2 with no request, through `move`'s unknown-argument refusal — pinned by rc, request
+# count and message only.
+mbc move --task 901 --to-board tgt --column backlog
+eq "M8 the near-miss: move --to-board → rc 2, no request, pointing at move-board" \
+   "2|0|true" "$rc|$(kb_stub_total)|$(has 'use: kbcard move-board' "$err")"
+mbc move --task 901 --board tgt --column backlog
+eq "M8b move --board → rc 2, no request, naming --board the GLOBAL flag that goes BEFORE the verb" \
+   "2|0|true|false" "$rc|$(kb_stub_total)|$(has 'kbcard --board <name> move --task' "$err")|$(has 'move-board' "$err")"
+
+echo "-- a card already ON the target board: refused before the write, after the read --"
+MB_SAME='{"data":{"id":901,"name":"probe","board_id":77,"workflow_stage_id":880,"card_type_id":19,"swimlane_id":null,"payload":null}}'
+for _d in --yes --dry-run; do
+    MB_PRE_BODY="$MB_SAME" mbc move-board --task 901 --to-board tgt --column prioritized "$_d"
+    eq "M20 $_d: pre-read on board 77 = the target → rc 2, the read and NO POST, saying so" \
+       "2|1|0|true" "$rc|$(kb_stub_total)|$(kb_stub_count POST '/move-board.json')|$(has 'card 901 is already on board 77' "$err")"
+done
+unset _d
+_rmut mb-same '/is already on board \$to_id/{n;s/^        return 2$/        :/}' MB_SAMEB
+MB_PRE_BODY="$MB_SAME" mbm "$MB_SAMEB" "" move-board --task 901 --to-board tgt --column prioritized --yes
+eq "  control: WITHOUT the refusal, the same-board move is POSTed" "1" "$(kb_stub_count POST '/move-board.json')"
+
+echo "-- the TARGET env's token is never sent, so it need not be readable --"
+# WHICH token: the stub logs each request's bearer. The target env's token file is READABLE here
+# and holds `tgt-token`, so a move that read and sent it would be seen on the wire.
+mbc "${MB_ARGS[@]}"
+eq "M21a a READABLE target token → rc 0, the POST and every other request carried the SOURCE token, and none the target's" \
+   "0|stub-token|stub-token|false" \
+   "$rc|$(kb_stub_bearers POST '/move-board.json')|$(cut -f3 "$KB_STUB_AUTH_LOG" | sort -u)|$(has 'tgt-token' "$out$err")"
+eq "  …the stub saw a bearer on every request (the log is not vacuous)" \
+   "$(kb_stub_total)" "$(awk -F'\t' '$3 != ""' "$KB_STUB_AUTH_LOG" | wc -l | tr -d ' ')"
+_rmut mb-tgttok '/^    to_tok="\$(jq -r .\.token_file. <<<"\$target")"$/a\    KB_TOKEN="$(cat "$to_tok")"' MB_TGTTOK
+mbm "$MB_TGTTOK" "" "${MB_ARGS[@]}"
+eq "  control: a move that loads the TARGET token POSTs it" "tgt-token" "$(kb_stub_bearers POST '/move-board.json')"
+mv "$TMP/tgt.token" "$TMP/tgt.token.away"
+mbc "${MB_ARGS[@]}"
+eq "M21 an unreadable target token file → rc 0, the move POSTed with the source's token" \
+   "0|1|false|stub-token" \
+   "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'token file not readable' "$err")|$(kb_stub_bearers POST '/move-board.json')"
+mv "$TMP/tgt.token.away" "$TMP/tgt.token"
+# UNDECLARED: no tier supplies the target a token file. The host env's declaration moves into the
+# SOURCE board env (so the source still has one), the target env loses its own, and nothing is
+# exported; the scratch HOME has no coord store. The control proves the fixture reaches the
+# undeclared arm: the same call against a lib whose --no-token path refuses it (rc 7) sends nothing.
+cp "$KANBAN_HOST_ENV" "$TMP/host.env.keep"; cp "$HOME/.kanban-dev-board.env" "$TMP/dev.env.keep"; cp "$HOME/.kanban-tgt-board.env" "$TMP/tgt.env.keep"
+grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/host.env.keep" > "$KANBAN_HOST_ENV"
+grep -v '^export KBCARD_TOKEN_FILE=' "$TMP/tgt.env.keep" > "$HOME/.kanban-tgt-board.env"
+printf 'export KBCARD_TOKEN_FILE="%s"\n' "$KB_STUB_TOKEN_FILE" >> "$HOME/.kanban-dev-board.env"
+mbc "${MB_ARGS[@]}"
+eq "M21b a target env declaring NO token file (no tier supplies one) → rc 0, the move POSTed with the source's token" \
+   "0|1|false|stub-token|0" \
+   "$rc|$(kb_stub_count POST '/move-board.json')|$(has 'no token file is declared' "$err")|$(kb_stub_bearers POST '/move-board.json')|$(grep -c 'tgt-token' "$KB_STUB_AUTH_LOG")"
+mkdir -p "$TMP/mut-mb-undecl"
+cp "$(readlink -f "$BIN")" "$TMP/mut-mb-undecl/kbcard"
+sed 's/2>\/dev\/null)" || KB_TOKEN_FILE=""$/2>\/dev\/null)" || return 7/' \
+    "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" > "$TMP/mut-mb-undecl/_kb-board-lib.sh"
+cmp -s "$TMP/mut-mb-undecl/_kb-board-lib.sh" "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" \
+    && bad "mb-undecl: the lib mutation matched nothing — this control would measure the path it exists to remove"
+mbm "$TMP/mut-mb-undecl/kbcard" "" "${MB_ARGS[@]}"
+eq "  control: with the lib refusing an undeclared target token, the same call → rc 2, nothing sent" \
+   "2|0" "$rc|$(kb_stub_total)"
+cp "$TMP/host.env.keep" "$KANBAN_HOST_ENV"; cp "$TMP/dev.env.keep" "$HOME/.kanban-dev-board.env"; cp "$TMP/tgt.env.keep" "$HOME/.kanban-tgt-board.env"
+
+echo "-- --card-type omitted: the key is not sent, and the re-read must say null --"
+MB_AFTER="$(jq -c '.data.card_type_id = null' <<<"$MB_OK")" mbc move-board --task 901 --to-board tgt --column prioritized --swimlane lane-a --yes
+eq "M9 rc 0, and the body carries NO card_type_id key"   "0|false" "$rc|$(mb_post | jq 'has("card_type_id")')"
+mbc move-board --task 901 --to-board tgt --column prioritized --swimlane lane-a --yes
+eq "  …a re-read still carrying a type is not what was sent → rc 1" "1" "$rc"
+
+echo "-- --dry-run: the disclosure and the request, nothing written --"
+mbc move-board --task 901 --to-board tgt --column prioritized --card-type feature --dry-run
+eq "M10 rc 0, ONE request (the read), no POST"           "0|1|0" "$rc|$(kb_stub_total)|$(kb_stub_count POST '/move-board.json')"
+eq "  …stdout is the exact request"                      "true" "$(has 'POST /tasks/901/move-board.json  {"board_id":77,"workflow_stage_id":881,"card_type_id":19}' "$out")"
+eq "  …stderr already names what would be cleared"       "true" "$(has 'which holds: dl_number, pr_number' "$err")"
+MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":null}}' mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
+eq "  …an empty payload is SAID to lose nothing, not skipped" "true" "$(has 'payload is empty, so the move' "$err")"
+
+echo "-- the read BEFORE the write refuses when it is not a measurement --"
+for _h in "500|{}" "200|<html>502</html>" "403|{}"; do
+    MB_PRE_HTTP="${_h%%|*}" MB_PRE_BODY="${_h#*|}" mbc "${MB_ARGS[@]}"
+    eq "M11 pre-read ${_h} → rc 1, NO POST"             "1|0" "$rc|$(kb_stub_count POST '/move-board.json')"
+    # The unreadable read and the 404 are OPPOSITE answers; the second guard would also refuse
+    # here, so the wording is what attributes the refusal to the right one.
+    eq "  …saying the card could not be READ, never that it does not exist" "true|false" \
+       "$(has 'the card could not be READ' "$err")|$(has '(404)' "$err")"
+done
+unset _h
+
+echo "-- the board's refusals, as themselves --"
+MB_POST_HTTP=403 MB_POST_BODY='{"message":"This action is unauthorized."}' mbc "${MB_ARGS[@]}"
+eq "M12 a 403 → rc 1, named as the TWO-SIDED policy refusal" "1|true" "$rc|$(has 'UPDATE card 901 on board 42 AND to CREATE cards on board 77' "$err")"
+eq "  …naming the token FILE the request carried, and the target's different one" "true" \
+   "$(has "NOT the one board 77's env declares ($TMP/tgt.token)" "$err")"
+eq "  …and no success line, no re-read"                  "false|1" "$(has 'moved from board' "$err")|$(kb_stub_count GET '/tasks/901.json?trashed=1')"
+eq "  …and NOT called an invalid token"                   "false" "$(has 'invalid or expired' "$err")"
+MB_POST_HTTP=401 MB_POST_BODY='{"message":"Unauthenticated."}' mbc "${MB_ARGS[@]}"
+eq "M12b a 401 → rc 1, the token was NOT ACCEPTED — never a permission refusal" \
+   "1|true|false" "$rc|$(has 'token was not accepted — invalid or expired' "$err")|$(has 'POLICY refusal' "$err")"
+eq "  …naming the token FILE it carried"                  "true" "$(has "($KB_STUB_TOKEN_FILE)" "$err")"
+MB_POST_HTTP=422 MB_POST_BODY='{"message":"The task is already on this board."}' mbc "${MB_ARGS[@]}"
+eq "M13 a 422 → rc 1 with the board's own message"      "1|true" "$rc|$(has 'The task is already on this board.' "$err")"
+eq "  …and NOT dressed as a policy refusal"              "false" "$(has 'POLICY refusal' "$err")"
+
+echo "-- a 5xx or a POST that never completed is NOT 'not applied': the re-read decides --"
+for _p in 500 '!curl 7'; do
+    MB_POST_HTTP="$_p" mbc "${MB_ARGS[@]}"
+    eq "M14 POST ${_p}, re-read on the target as sent → rc 0, the card re-read, saying the POST did not answer 2xx" \
+       "0|2|true|true" "$rc|$(kb_stub_count GET '/tasks/901.json?trashed=1')|$(has 'moved from board 42 to board 77' "$err")|$(has 'the move landed anyway' "$err")"
+    MB_POST_HTTP="$_p" MB_AFTER="$MB_PRE" mbc "${MB_ARGS[@]}"
+    eq "  POST ${_p}, re-read still on board 42 → rc 1, it did not move" \
+       "1|true|false" "$rc|$(has 'it did not move' "$err")|$(has 'UNVERIFIED' "$err")"
+    MB_POST_HTTP="$_p" MB_AFTER="$(jq -c '.data.workflow_stage_id = 880' <<<"$MB_OK")" mbc "${MB_ARGS[@]}"
+    eq "  POST ${_p}, re-read on board 77 in another stage → rc 1, it moved partially" \
+       "1|true" "$rc|$(has 'moved partially' "$err")"
+    MB_POST_HTTP="$_p" MB_AFTER_HTTP=500 mbc "${MB_ARGS[@]}"
+    eq "  POST ${_p}, re-read fails → rc 3 UNVERIFIED, never 'not applied'" \
+       "3|true|false" "$rc|$(has 'UNVERIFIED WRITE' "$err")|$(has 'Nothing was moved' "$err")"
+done
+unset _p
+
+echo "-- the re-read decides, never the 2xx --"
+MB_AFTER="$MB_PRE" mbc "${MB_ARGS[@]}"
+eq "M15 2xx, card still on board 42 → rc 1 HARD FAILURE, did not take" \
+   "1|true|false" "$rc|$(has 'still re-reads on board 42, not board 77' "$err")|$(has 'moved from board' "$err")"
+MB_AFTER="$(jq -c '.data.workflow_stage_id = 880' <<<"$MB_OK")" mbc "${MB_ARGS[@]}"
+eq "M16 2xx, on board 77 in another stage → rc 1, and it SAYS the card moved" \
+   "1|true" "$rc|$(has 'DID move to board 77' "$err")"
+MB_AFTER_HTTP=500 mbc "${MB_ARGS[@]}"
+eq "M17 a re-read that fails → rc 3, not a success and not a failure" "3|false" "$rc|$(has 'moved from board' "$err")"
+MB_AFTER='<html>502</html>' mbc "${MB_ARGS[@]}"
+eq "M18 a 2xx re-read with no card in it → rc 3"         "3" "$rc"
+MB_AFTER="$(jq -c '.data.assigned_user_id = 5' <<<"$MB_OK")" mbc "${MB_ARGS[@]}"
+eq "M19 an assignee the target kept → rc 0, and NO 'cleared' line" "0|false" "$rc|$(has 'the board cleared the card' "$err")"
+
+unset -f kb_stub_route mbc mb_post
+unset MB_PRE MB_OK MB_ARGS MB_LEAK
 
 _summary "kbcard-selftest"

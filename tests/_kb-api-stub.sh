@@ -120,11 +120,12 @@ kb_stub_install() {
     chmod +x "$TMP/bin/curl"
     export PATH="$TMP/bin:$PATH"
     export KB_STUB_LOG="$TMP/kb-api-requests.log"
-    : > "$KB_STUB_LOG"
+    export KB_STUB_AUTH_LOG="$TMP/kb-api-auth.log"
+    : > "$KB_STUB_LOG"; : > "$KB_STUB_AUTH_LOG"
 }
 
-# kb_stub_reset — start a fresh request log (and reset every ROUTE_N with it).
-kb_stub_reset() { : > "$KB_STUB_LOG"; }
+# kb_stub_reset — start fresh request and auth logs (and reset every ROUTE_N with them).
+kb_stub_reset() { : > "$KB_STUB_LOG"; : > "$KB_STUB_AUTH_LOG"; }
 
 # kb_stub_lines <method> <url-substring> — the logged requests matching both, one per line.
 # Matched field-wise (method EXACT, substring against the URL field only) so a body that happens
@@ -141,3 +142,8 @@ kb_stub_count_any() { awk -F'\t' -v n="$1" 'index($2, n)' "$KB_STUB_LOG" | wc -l
 kb_stub_total() { wc -l < "$KB_STUB_LOG" | tr -d ' '; }
 # kb_stub_bodies <method> <url-substring> — their request bodies, one per line.
 kb_stub_bodies() { kb_stub_lines "$@" | cut -f3-; }
+# kb_stub_bearers <method> <url-substring> — the bearer token each matching request carried, one
+# per line (empty line = none). Matched field-wise like kb_stub_lines, against the auth log.
+kb_stub_bearers() {
+    awk -F'\t' -v m="$1" -v n="$2" '$1 == m && index($2, n) { print $3 }' "$KB_STUB_AUTH_LOG"
+}

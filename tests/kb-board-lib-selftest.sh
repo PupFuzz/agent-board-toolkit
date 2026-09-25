@@ -607,6 +607,62 @@ rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "unreadable token file → rc 5" "5" "$rc"
 
 # ---------------------------------------------------------------------------
+echo "== kb_resolve_env / kb_load_config --no-token — a board env read for its IDS only (card#10381) =="
+# The opt-in drops exactly the two token refusals, and each case is paired with the SAME fixture
+# resolved without the flag, so a fixture that never reached rc 7 / rc 5 cannot pass for one.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'export KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNDECLARED token, no flag → rc 7 (the fixture reaches the refusal)" "7" "$rc"
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
+rc=0; msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>&1 >/dev/null)" || rc=$?
+eq "  --no-token → rc 0, and says nothing"                  "0|" "$rc|$msg"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  …publishing the board's ids and env, and NO token file" \
+   "0|42|$TMP/.kanban-x-board.env|" "$rc|${KB_BOARD_ID:-}|${KB_BOARD_ENV:-}|${KB_TOKEN_FILE:-}"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/absent.token\"" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNREADABLE token, no flag → rc 5 (the fixture reaches the refusal)" "5" "$rc"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  --no-token → rc 0, the declared path still published" "0|$TMP/absent.token" "$rc|${KB_TOKEN_FILE:-}"
+# The loader: rc 0 on the same unreadable token, and KB_TOKEN left empty rather than read.
+KB_TOKEN="STALE"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "kb_load_config x --no-token, unreadable token → rc 0, KB_TOKEN empty" "0|42|" "$rc|${KB_BOARD_ID:-}|$KB_TOKEN"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "  control: kb_load_config x without the flag → rc 2"   "2" "$rc"
+# NOT READ, not read-and-failed: the unreadable fixture above cannot tell the two apart, so the
+# same load against a READABLE token file holding a sentinel must leave that sentinel in no shell
+# variable and no output. The sentinel is spelled in two halves everywhere in this file, so the
+# only place its joined value exists is the token file — `set` finding it means the load read it.
+printf '%s%s\n' NOTOKEN- SENTINEL-7f3a > "$TMP/readable.token"
+_nt_line="export KBCARD_TOKEN_FILE=\"$TMP/readable.token\""
+sed -i '$d' "$TMP/.kanban-x-board.env"; echo "$_nt_line" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "READABLE token, no flag → rc 0 and KB_TOKEN holds it (the fixture is readable)" \
+   "0|1" "$rc|$(grep -c 'NOTOKEN-''SENTINEL-7f3a' <<<"$KB_TOKEN")"
+KB_TOKEN="STALE"
+rc=0; msg="$(kb_load_config x --no-token 2>&1)" || rc=$?
+eq "  --no-token → rc 0 and nothing printed" "0|" "$rc|$msg"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "  --no-token → KB_TOKEN empty, and the token's value in NO variable of this shell" \
+   "0||0" "$rc|$KB_TOKEN|$(set | grep -c 'NOTOKEN-''SENTINEL-7f3a')"
+# Control: the same fixture against a copy of the lib whose --no-token arm reads the file (the
+# mutation the unreadable fixture could not see). Both variable shapes must red.
+for _nt_mut in 's|^        KB_TOKEN=""$|        KB_TOKEN="$(cat "$KB_TOKEN_FILE" 2>/dev/null)"|' \
+               's|^        KB_TOKEN=""$|        KB_TOKEN=""; _kb_peek="$(cat "$KB_TOKEN_FILE")"|'; do
+    sed "$_nt_mut" "$LIB" > "$TMP/mut-notoken-lib.sh"
+    cmp -s "$TMP/mut-notoken-lib.sh" "$LIB" && bad "no-token control: the lib mutation matched nothing"
+    # shellcheck disable=SC1091
+    _nt_seen="$(unset _KB_BOARD_LIB_LOADED; source "$TMP/mut-notoken-lib.sh"; kb_load_config x --no-token 2>/dev/null; set | grep -c 'NOTOKEN-''SENTINEL-7f3a' || true)"
+    eq "  control: a --no-token arm that reads the file IS seen ($_nt_mut)" "true" "$([[ "$_nt_seen" -gt 0 ]] && echo true || echo false)"
+done
+unset _nt_mut _nt_seen _nt_line
+KB_TOKEN=""
+rm -f "$TMP/.kanban-x-board.env"
+
+# ---------------------------------------------------------------------------
 echo "== kb_load_config — the board-env-missing error names its fix (roundtable #89) =="
 
 # A box with real board envs under non-dev names but NO ~/.kanban-dev-board.env and no
