@@ -1701,8 +1701,8 @@ finding with no owner is abandoned, not filed.
     on now covers an unreadable page 2 as well.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
-  **every recorded instance fixed** — instance 2 by card#10489). jq's `//` yields its right-hand side for `false` exactly as it
-  does for `null`, so any filter shaped `(.x // <default>) | select(type == …)` hands the container
+  instances 1 and 2 fixed — instance 2 by card#10489; instance 3 recorded, not fixed). jq's `//`
+  yields its right-hand side for `false` exactly as it does for `null`, so any filter shaped `(.x // <default>) | select(type == …)` hands the container
   test **the default** whenever `.x` is `false` — the test sits on the far side of the very
   substitution it was written to police, and can never fail for that input. The remedy is the same
   at both instances and is named here so whoever rules on the second does not re-derive it: **decide
@@ -1729,12 +1729,18 @@ finding with no owner is abandoned, not filed.
     by `tests/kbcard-selftest.sh` (`comments / show: a 2xx that PARSES but carries no card
     object`), watched red. **Not migrated to that helper, deliberately:** `_kbc_assign_guard`,
     `_kbc_ref_pair_guard` and `_kbc_link_witness` read the same GET with the streamed
-    `.data | select(type == "object")`, so a card text beside a second text or trailing bytes
-    still reads as a card there; adopting the helper would move each from proceeding to refusing
+    `.data | select(type == "object")`, so a card text beside a second text or trailing
+    non-whitespace bytes still reads as a card there; adopting the helper would move each from proceeding to refusing
     on those bodies, which is a change to what they accept and not card#10489's. The cross-bin
     copies of the one-card read (`_kb-board-lib.sh`'s card readers, `adopt-to-dl`,
     `promote-released-cards`) are the same consolidation, also not done here — the lib's
     `kb_jq_one` is the existing one-text primitive they would converge on.
+  - **Instance 3 — `cmd_comments`' per-comment `content` test (`bin/kbcard`), NOT FIXED.** The
+    row test card#10489 added, `((.content // "") | type == "string")`, sits downstream of the
+    `//` it polices, so a comment row with `"content": false` passes it and prints as an empty
+    comment instead of refusing the read. Barely reachable — the comment write route requires a
+    string `content`, so the server would have to emit a row it cannot accept — which is why it
+    is recorded rather than fixed; the remedy is the near-side test above.
 
   **Still open on the same read-verb acceptance axis:** `_kbc_field_list` (above). **A NEW instance
   of this class is the signal to take that axis as a class rather than one verb at a time** — the
@@ -1763,8 +1769,10 @@ finding with no owner is abandoned, not filed.
   it, and prints the `cmd_comments` line against the pre-card#10489 `bin/kbcard`
   (`git show <base>:bin/kbcard` into a scratch file), against round 2's pre-fix
   `_kbc_patch_tags` filter planted in a scratch file with tab indentation, and against the
-  unparenthesized `.data.tags // [] | select(type == "array")` planted the same way — the last
-  two print nothing under a newline-only fold without the optional `)`.
+  unparenthesized `.data.tags // [] | select(type == "array")` planted the same way. Each plant
+  names the weakening it catches: the tab-indented round-2 filter prints nothing if the fold turns
+  only newlines into spaces (a tab is left between `)` and `|`) or if the optional `)` is dropped
+  from the pattern; the unparenthesized plant prints nothing if that `)` is made mandatory.
 - **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
   THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
   not in conflict: it counts attempts at the LIST itself, of which the first two closures here were

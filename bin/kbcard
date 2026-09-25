@@ -560,9 +560,10 @@
 #     assigned_user_id). An annotation this install cannot resolve is OMITTED, never emitted
 #     null — the raw assigned_user_id is on the card either way, so an unmapped seat costs a
 #     name, not an answer. A 2xx whose body is not exactly ONE JSON text whose `.data` is an
-#     object — not JSON, a second JSON text or trailing bytes after the first (even when one
-#     text IS a card), no `.data` (an API or gateway error envelope), or a `.data` that is not
-#     an object — is rc 1 with nothing on stdout, never a printed `null` (card#10489).
+#     object — not JSON, a second JSON text or trailing non-whitespace bytes after the first
+#     (even when one text IS a card), no `.data` (an API or gateway error envelope), or a
+#     `.data` that is not an object — is rc 1 with nothing on stdout, never a printed `null`
+#     (card#10489).
 #   kbcard comment --task ID-OR-EXT --content "text" | --content-file PATH
 #     WRITE a card comment — the routine audit trail — and print the CREATED COMMENT ID on
 #     stdout. That id is the write verification — never a card timestamp: whether a comment
@@ -590,7 +591,8 @@
 #     A card with none prints one explicit "no comments" line at rc 0, so an empty answer is
 #     never a silent one. A 2xx no comment list can be read out of — a body that fails `show`'s
 #     one-card test above, or a card whose `comments` is present and not null but is not a list
-#     of objects each carrying a string (or absent / null) `content` (`false` included) — is
+#     of objects whose `content` is a string, absent, null or `false` (a `comments` of `false`
+#     included; a `content` of `false` passes jq's `//` default and prints as empty) — is
 #     rc 1, never that line (card#10489). A card whose `comments` is absent or null is a card
 #     with none. The array is the WHOLE ordered comment history (measured at N=60 on the
 #     sandbox instance: 60 posted, 60 returned, created_at ascending, no gap) — this read is not
