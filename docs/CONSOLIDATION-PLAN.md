@@ -1895,9 +1895,19 @@ finding with no owner is abandoned, not filed.
   tested for emptiness* are both derivable, but **whether that collapse is a defect is not** — it
   depends on what the branch does next, and `fetch_board_cards`' `-z "$data"` refusal and a
   confident wrong count one file over match identically. So the scanner owns the population and the
-  list owns the verdict. **Weakest properties, stated so it is not over-cited:** it cannot see a
-  collapse that never touches a variable (`if [ -n "$(cmd 2>/dev/null)" ]`), one carried across a
-  function boundary, `bin/*.py`, or the bash embedded in this repo's composite actions — **however
+  list owns the verdict. **The seam one call up is in reach too (card#10361):** the shape that
+  kept re-minting — card#6594, #6630, #6631, #10230 and #10241, each found by hand, the last two
+  after shipping past this gate green — is a function answering one value or rc for "absent" and "nothing was
+  read", and a caller acting on that answer; neither half is wrong alone. Four more spellings are
+  derived over the same population in one whole-tree pass (a decoder DEFAULTING the `.data`
+  envelope, or a path through it to a value; a capture of a function that collapses its own read; a failed read inside a function
+  answered with rc 1 when that function's rc is used as a verdict; a reading function tested as a
+  condition), each instance is planted in the gate reduced from its pre-fix commit and must derive
+  exactly its member, and card#10241's fix, as shipped, must derive nothing. The gate's header
+  owns the legs' exact predicates and their stated limits. **Weakest properties, stated so it is
+  not over-cited:** it cannot see a collapse that never touches a variable
+  (`if [ -n "$(cmd 2>/dev/null)" ]`), a seam carried across a PROCESS boundary (a script's own
+  exit contract), `bin/*.py`, or the bash embedded in this repo's composite actions — **however
   many there are**, a set `tests/composite-action-wiring-selftest.sh` derives from the tree and
   prints on every run, so this exclusion is not re-counted here (it said "the two" while a third
   was landing) — and a disposition is a recorded judgement, not a proof.
