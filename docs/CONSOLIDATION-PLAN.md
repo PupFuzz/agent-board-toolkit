@@ -1619,7 +1619,7 @@ finding with no owner is abandoned, not filed.
   tighten `_kbc_fetch_fields` to require `.data` to be an ARRAY, which moves `field list` on
   `{"data":null}` from jq's rc **5** to this tool's rc **1** refusal. It needs no new exit code, but
   it is a change to what a READ verb accepts and to the status it reports — the ask-first axis
-  card#6426 §(b) is already fenced on, and the same axis `show`'s residual wording sits behind. It
+  card#10489 tracks this defect, and the same axis `show`'s residual wording sits behind. It
   is recorded here as an in-population, unmigrated site with a named blocker, not left as silence.
 
   **What these dispositions do NOT cover, said plainly:** `R` means the raw `jq` at that row is
@@ -1896,9 +1896,22 @@ finding with no owner is abandoned, not filed.
   tested for emptiness* are both derivable, but **whether that collapse is a defect is not** — it
   depends on what the branch does next, and `fetch_board_cards`' `-z "$data"` refusal and a
   confident wrong count one file over match identically. So the scanner owns the population and the
-  list owns the verdict. **Weakest properties, stated so it is not over-cited:** it cannot see a
-  collapse that never touches a variable (`if [ -n "$(cmd 2>/dev/null)" ]`), one carried across a
-  function boundary, `bin/*.py`, or the bash embedded in this repo's composite actions — **however
+  list owns the verdict. **The seam one call up is in reach too (card#10361):** the shape that
+  kept re-minting — card#6594, #6630, #6631, #10230 and #10241, each found by hand, the last two
+  after shipping past this gate green — is a function answering one value or rc for "absent" and "nothing was
+  read", and a caller acting on that answer; neither half is wrong alone. Four more spellings are
+  derived over the same population in one whole-tree pass (a decoder DEFAULTING the `.data`
+  envelope, or a path through it to a value; a capture of a function that collapses its own read; a failed read inside a function
+  answered with rc 1 — on an `||` tail or an `if` arm — when that function's rc is used as a
+  verdict; a reading function tested as a condition, called or captured there), each instance is
+  planted in the gate reduced from its pre-fix commit and must derive exactly its member, and
+  card#10241's fix, as shipped, must derive nothing. Those legs' dispositions are keyed per
+  FUNCTION, so one line cannot excuse a same-named site elsewhere in the file; legs (a)+(b) keep a
+  per-file key, and there a new same-named capture IS covered silently — a stated limit. The
+  gate's header owns the legs' exact predicates and their stated limits. **Weakest properties, stated so it is
+  not over-cited:** it cannot see a collapse that never touches a variable
+  (`if [ -n "$(cmd 2>/dev/null)" ]`), a seam carried across a PROCESS boundary (a script's own
+  exit contract), `bin/*.py`, or the bash embedded in this repo's composite actions — **however
   many there are**, a set `tests/composite-action-wiring-selftest.sh` derives from the tree and
   prints on every run, so this exclusion is not re-counted here (it said "the two" while a third
   was landing) — and a disposition is a recorded judgement, not a proof.
