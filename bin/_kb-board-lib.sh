@@ -2107,16 +2107,32 @@ KB_RC_BYREF_UNREADABLE=5
 # read can fail — a parse error, an empty input, a complete JSON text FOLLOWED by other bytes or
 # by a second text, a jq that is missing or unrunnable, a <card-id> `--argjson` will not take.
 # No token is the one value that cannot be mistaken for an answer.
+#
+# KB_BY_REF_ROW_IDS — set on EVERY call: the ids of ALL rows a READ result carries, space-
+# separated in response order, whoever they name; empty on an empty result AND on an unreadable
+# one (the rc tells those apart). rc 1 answers "is <card-id> in it", which is not "is it empty":
+# a caller whose PASS condition is that the ref resolves NOTHING — bin/dl-a1-register-field's
+# after-clear and residue reads — must read this, because an rc-1 answer carrying a different
+# card's row is residue, not absence (card#10426). A global rather than stdout because the rc is
+# the contract every caller already branches on, and its callers invoke it directly, not in `$(…)`.
+# Initialised here, at source time, so a caller that reads it under `set -u` beside a lib that
+# predates it dies loudly instead of reading the old "any non-hit is empty" answer.
+KB_BY_REF_ROW_IDS=""
 kb_by_ref_hit() {
-    local verdict
-    verdict="$(kb_jq_one "${1:-}" -r --argjson id "${2:-0}" '
+    local out verdict
+    KB_BY_REF_ROW_IDS=""
+    out="$(kb_jq_one "${1:-}" -r --argjson id "${2:-0}" '
         (if type == "object" then .data else . end) as $rows
         | if ($rows | type) != "array" then "unreadable"
           # A row this predicate cannot identify makes the WHOLE answer unclassifiable: "absent"
           # over it would be a claim about a population that was never read.
           elif any($rows[]; (type != "object") or ((.id | type) != "number")) then "unreadable"
-          elif any($rows[]; .id == $id) then "hit"
-          else "absent" end')"
+          else (if any($rows[]; .id == $id) then "hit" else "absent" end)
+               + ($rows | map(" " + (.id | tostring)) | add // "") end')"
+    verdict="${out%% *}"
+    case "$verdict" in
+        hit|absent) [[ "$out" == *" "* ]] && KB_BY_REF_ROW_IDS="${out#* }" ;;
+    esac
     case "$verdict" in
         hit)    return 0 ;;
         absent) return 1 ;;
