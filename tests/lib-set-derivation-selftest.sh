@@ -314,6 +314,14 @@ LEG3_DISPOSED=(
     "tests/kb-positional-guard-selftest.sh::kb_require_positional"
     # This file's own regrown-list control fixture, below. It MUST be reportable; that is its job.
     "tests/lib-set-derivation-selftest.sh::IF you vendored a lib-sourcing bin"
+    # ⛔ EXPIRES AT THE NEXT RELEASE, like every `docs/CHANGELOG.md` disposition (the contract
+    # stated in the block below). card#10241's `[vendor]` line names THE THREE FILES ONE CHANGE
+    # MOVED — a property of that diff, which no derivation over the tree can answer — and not the
+    # lib-sourcing SET this leg keeps out of prose. It names two bins because those two are the
+    # ones whose behaviour changes beside an old lib; a consumer reading it as "the bins that
+    # source the lib" would be reading a sentence that does not say that, and §3's derivation is
+    # one link away in the same file.
+    "docs/CHANGELOG.md::beside an old lib still scores a body that PARSES but is not a by-ref result"
     # ⛔ NO `docs/CHANGELOG.md` DISPOSITION SURVIVES A RELEASE, and that is the contract, not an
     # omission. v0.30.0 carried three — card#7175, card#6884 and card#6680 — each ruled on the
     # live `[Unreleased]` entry it named. Step 4 of VERSIONING.md retitled that section as

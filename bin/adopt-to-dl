@@ -304,26 +304,46 @@ main() {
     # 5. fail-loud verify — the same repo-qualified by-ref correlation the writeback/reconcile use.
     # The card's stored source is the LOWERCASED repo (server canonicalizeSource), so lowercase the
     # query to match without relying on the server also canonicalizing the query param.
-    local source_enc by_ref
+    #
+    # ⛔ THE REFUSAL IS THE SAME, THE CAUSE IS NOT (card#10241). Both arms below abort at rc 1 —
+    # the disposition here is fail-closed and stays fail-closed, because a stamp this run could
+    # not confirm must never read as adopted. What changed is that kb_by_ref_hit now keeps
+    # "the index answered, and this card is not in it" apart from "no by-ref result could be read
+    # at all", and stating the first over the second is a wrong-but-specific cause (a 200 carrying
+    # an SSO gateway's HTML would have been reported as "the dl_number/pr_url may not have
+    # persisted"), which sends the operator to inspect a write that in fact landed. The rc is
+    # matched rather than the lib constant named, so a copy of this bin beside an older lib does
+    # not die under `set -u`; it still refuses at rc 1 either way, but the cause it prints then
+    # follows the OLD predicate's rc (a body that does not parse lands in `*`, one that parses and
+    # is not a by-ref result lands in `1`).
+    local source_enc by_ref hit_rc
     source_enc="$(_ata_canon_source "$repo")"; source_enc="${source_enc//\//%2F}"
     by_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=dl&ref=$dl_int&source=$source_enc")" \
         || { echo "adopt-to-dl: VERIFY read failed after stamping card #$card_id (DL-$dl_int) — investigate before relying on the card" >&2; exit 1; }
-    if ! kb_by_ref_hit "$by_ref" "$card_id"; then
-        echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
-        exit 1
-    fi
+    hit_rc=0; kb_by_ref_hit "$by_ref" "$card_id" || hit_rc=$?
+    case "$hit_rc" in
+        0) : ;;
+        1) echo "adopt-to-dl: VERIFY FAILED — by-ref(system=dl, ref=$dl_int, source=$repo) did NOT return card #$card_id after stamping. The dl_number/pr_url may not have persisted, or the source did not resolve. Fix before the next bridge:check (do NOT assume the card is adopted)." >&2
+           exit 1 ;;
+        *) echo "adopt-to-dl: VERIFY UNMEASURED — by-ref(system=dl, ref=$dl_int, source=$repo) answered with something this tool could not read as a by-ref result (a gateway or error page at 2xx, a truncated body), so the stamp on card #$card_id is NEITHER confirmed NOR shown to have failed. Re-run the verify by hand before the next bridge:check; do not assume the card is adopted." >&2
+           exit 1 ;;
+    esac
 
     # When --issue was co-stamped, verify the issue correlation the SAME way — exercising the
     # github_issue by-ref the bridge/kanban use — so a source that resolves for DL but not for the
     # issue is caught at adoption, not silently at the next bridge:check.
     if [[ -n "$req_issue" ]]; then
-        local issue_ref
+        local issue_ref issue_rc
         issue_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=github_issue&ref=$req_issue&source=$source_enc")" \
             || { echo "adopt-to-dl: ISSUE VERIFY read failed after stamping card #$card_id (issue #$req_issue) — investigate before relying on the card" >&2; exit 1; }
-        if ! kb_by_ref_hit "$issue_ref" "$card_id"; then
-            echo "adopt-to-dl: ISSUE VERIFY FAILED — by-ref(system=github_issue, ref=$req_issue, source=$repo) did NOT return card #$card_id after stamping. The issue_number/issue_url may not have persisted, or the source did not resolve. Fix before the next bridge:check." >&2
-            exit 1
-        fi
+        issue_rc=0; kb_by_ref_hit "$issue_ref" "$card_id" || issue_rc=$?
+        case "$issue_rc" in
+            0) : ;;
+            1) echo "adopt-to-dl: ISSUE VERIFY FAILED — by-ref(system=github_issue, ref=$req_issue, source=$repo) did NOT return card #$card_id after stamping. The issue_number/issue_url may not have persisted, or the source did not resolve. Fix before the next bridge:check." >&2
+               exit 1 ;;
+            *) echo "adopt-to-dl: ISSUE VERIFY UNMEASURED — by-ref(system=github_issue, ref=$req_issue, source=$repo) answered with something this tool could not read as a by-ref result, so the issue correlation on card #$card_id is NEITHER confirmed NOR shown to have failed. Re-run the verify by hand before the next bridge:check." >&2
+               exit 1 ;;
+        esac
     fi
 
     echo "adopt-to-dl: card #$card_id adopted as $dl_canon, source=$repo${req_issue:+, issue #$req_issue} — verified via by-ref."
