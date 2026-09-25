@@ -118,8 +118,6 @@ set -euo pipefail
 ABTK_TOOL_VERSION='0.36.0'
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
-command -v jq  >/dev/null || die "jq is required"
-command -v git >/dev/null || die "git is required"
 
 # require_value <flag> <value>: die unless a value-taking option was given a non-empty
 # value. An option that consumes "$2" and is then dispatched with `[ -n "$var" ]` reads an
@@ -179,6 +177,11 @@ if [ "$TOOL_VERSION_ONLY" = 1 ]; then
   printf '%s\n' "$ABTK_TOOL_VERSION"
   exit 0
 fi
+
+# Runtime dependencies are checked only AFTER the --tool-version exit above: that question needs
+# none of them, and a host lacking one must still be able to ask which release this copy is.
+command -v jq  >/dev/null || die "jq is required"
+command -v git >/dev/null || die "git is required"
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
 cfg() { jq -re "$1" "$CONFIG" 2>/dev/null; }
