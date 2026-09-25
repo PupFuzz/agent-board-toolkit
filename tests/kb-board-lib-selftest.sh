@@ -649,6 +649,26 @@ eq "no board envs → still rc 2" "2" "$rc"
 case "$msg" in *"no ~/.kanban-*-board.env files found"*) ok "  says no board envs were found" ;;
     *) bad "  empty-discovery message unclear: '$msg'" ;; esac
 
+# card#10385: kb_resolve_env publishes an EMPTY id for a board env that declares none, and every
+# kb_load_config caller is board-scoped — an empty id reached the wire as `/boards//…` or as an
+# unscoped `board_id= external_id:<ref>` search over every board. The refusal is the loader's, so
+# no caller can forget it, and it comes before the token is read.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'secret-tok' > "$TMP/load-config.token"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\"" > "$TMP/.kanban-noid-board.env"   # declares NO id
+{ echo 'export KB_BOARD_ID=5'; echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\""; } > "$TMP/.kanban-five-board.env"
+KB_TOKEN=""
+rc=0; msg="$(kb_load_config noid 2>&1 >/dev/null)" || rc=$?
+eq "board env declaring no KB_BOARD_ID → rc 2"               "2" "$rc"
+eq "  …naming the env and the missing key"                  "true" "$(has "$TMP/.kanban-noid-board.env declares no KB_BOARD_ID" "$msg")"
+eq "  …and how to choose a board"                           "true" "$(has '--board <name>' "$msg")"
+kb_load_config noid 2>/dev/null || true
+eq "  …and reads no token"                                  "" "$KB_TOKEN"
+rc=0; kb_load_config five 2>/dev/null || rc=$?
+eq "control: an env declaring 5 → rc 0, id 5, token read"   "0|5|secret-tok" "$rc|$KB_BOARD_ID|$KB_TOKEN"
+KB_TOKEN=""
+
 # ---------------------------------------------------------------------------
 echo "== kb_load_host_env =="
 reset_env

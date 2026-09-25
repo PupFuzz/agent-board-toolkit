@@ -109,7 +109,7 @@ done
 
 # --- config resolution (shared lib, sourced above) ---------------------------
 kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID / KB_TOKEN / KB_HTTP
-BOARD="${KB_BOARD_ID:?KB_BOARD_ID not set — check $KB_BOARD_ENV}"
+BOARD="$KB_BOARD_ID"   # kb_load_config refuses a board env that declares none
 
 STAGE="${stage_arg:-${KB_A1_STAGE:-${KB_STAGE_BACKLOG:-}}}"
 SWIMLANE="${swimlane_arg:-${KB_A1_SWIMLANE:-}}"

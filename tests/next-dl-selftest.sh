@@ -1157,6 +1157,21 @@ eq "unresolved config strict → rc 4"                  "4" "$rc"
 eq "unresolved config strict → mints NOTHING"         "" "$out"
 only_cause "unresolved config strict" "$C_CONFIG" "$err"
 
+# card#10385: a board env that RESOLVES (rc 0) but declares no KB_BOARD_ID is the same cause, and
+# its line said `board config incomplete (rc=0)` — an rc that reads as success, naming nothing.
+# It now names the env and the missing key. Its disposition is card#6631's bound, unchanged.
+printf 'export KB_STAGE_BACKLOG=100\n' > "$HOME/.kanban-noid-board.env"
+run_ndl --board noid
+eq "no KB_BOARD_ID permissive → rc 0, the local floor" "0|DL-0301" "$rc|$out"
+eq "no KB_BOARD_ID → names the env and the missing key" "true" \
+   "$(has "$HOME/.kanban-noid-board.env declares no KB_BOARD_ID" "$err")"
+eq "no KB_BOARD_ID → no misleading '(rc=0)'"         "false" "$(has 'rc=0' "$err")"
+only_cause "no KB_BOARD_ID permissive" "$C_CONFIG" "$err"
+eq "no KB_BOARD_ID → issued no request"              "0" "$(kb_stub_total)"
+run_ndl --board noid --require-counter
+eq "no KB_BOARD_ID strict → rc 4, mints NOTHING"     "4|" "$rc|$out"
+rm -f "$HOME/.kanban-noid-board.env"
+
 echo "== --peek degrades through the SAME policy, in the INSPECT endpoint's name =="
 # The two modes call one degrade_or_refuse with different labels. A swapped label would hand the
 # operator the claim endpoint's reasoning for a peek, which is the card#6232 mistake one layer up.

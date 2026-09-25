@@ -611,11 +611,17 @@ kb_board_roster() {
 }
 
 # kb_load_config [board_name]: public config entry for the name-driven scripts
-# (kbcard, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
+# (kbcard, adopt-to-dl, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
 # api/board/token, and reads the token into KB_TOKEN. An empty NAME means "no
 # --board given" and honors $KBCARD_BOARD_ENV (back-compat); kanban|dev resolves
 # the kanban-dev board; any other name → ~/.kanban-<name>-board.env. On failure
-# prints the cause and returns 2 (KB_BOARD_ID is published but not required).
+# prints the cause and returns 2.
+# ⛔ KB_BOARD_ID IS REQUIRED HERE (card#10385), unlike kb_resolve_env, which publishes an empty
+# one for a board env that declares none. Every caller of this loader is board-scoped, and an
+# empty id does not fail on the wire — it reaches it as `/boards//…`, or as kbcard's
+# `board_id= external_id:<ref>` lookup, which the server reads as free text over EVERY board
+# the token sees, so a patch landed on another board's card at rc 0. Refused here, before the
+# token is read, so no caller can forget it.
 kb_load_config() {
     local name="${1:-}"
     local board_env
@@ -648,6 +654,10 @@ kb_load_config() {
         6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
+    if [[ -z "$KB_BOARD_ID" ]]; then
+        echo "$(_kb_prog): $board_env declares no KB_BOARD_ID — there is no board to act on; add the line to that file, or choose a board with --board <name> (docs/INSTALL.md §3b)" >&2
+        return 2
+    fi
     KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
     return 0
 }

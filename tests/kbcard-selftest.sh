@@ -5805,11 +5805,29 @@ kbc --board noid create-card --type feature --name probe
 eq "C1 exported 13, env declares NONE → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
 eq "  …naming the env that declares no id"                "true" "$(has "$HOME/.kanban-noid-board.env declares no KB_BOARD_ID" "$err")"
 unset KB_BOARD_ID
+# Every board-scoped verb, not create-card alone. With KB_BOARD_ID empty, resolve_task's lookup
+# was `board_id= external_id:<ref>`, which the server reads as free text over EVERY board the
+# token sees, so a patch/move landed on a card on another board at rc 0; list, search and the
+# field routes read `/boards//…`. One family per request shape: an external-ref resolve (patch,
+# move), a board card list (list), a board search (search), a board custom-field read (field).
+for _v in "patch --task some-ref --name x" "move --task some-ref --column backlog" \
+          "list" "search probe" "field list"; do
+    read -ra _argv <<<"$_v"
+    kbc --board noid "${_argv[@]}"
+    eq "C1 $_v: env declares NONE → rc 2, no request"     "2|0" "$rc|$(kb_stub_total)"
+    eq "  …naming the env that declares no id"            "true" "$(has "$HOME/.kanban-noid-board.env declares no KB_BOARD_ID" "$err")"
+done
+unset _v _argv
 
 kbc create-card --type feature --name probe
 eq "C2 nothing exported → board 5, rc 0"                  "0|5" "$rc|$(cb_board)"
-eq "  …stdout is the unchanged echo projection — no board key" '{"id":9001,"name":"probe","workflow_stage_id":100}' \
-   "$(jq -c . <<<"$out")"
+# Compared as RAW BYTES from a file: `$(…)` strips trailing newlines and `jq -c` re-serialises,
+# so either would pass a stray blank line or a re-indented projection.
+kb_stub_reset
+"$BIN" create-card --type feature --name probe >"$TMP/o" 2>/dev/null || true
+printf '%s\n' '{' '  "id": 9001,' '  "name": "probe",' '  "workflow_stage_id": 100' '}' > "$TMP/o.want"
+eq "  …stdout is the unchanged echo projection, byte for byte — no board key" "same" \
+   "$(cmp -s "$TMP/o.want" "$TMP/o" && echo same || od -c "$TMP/o")"
 # Exact line, so a debug echo or a stray warning riding the success path reds here.
 eq "  …stderr is exactly the one confirmation line"       \
    "kbcard: create-card: card 9001 created on board 5" "$err"
