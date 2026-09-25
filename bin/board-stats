@@ -474,7 +474,8 @@ def nonepop($f): if $f == "" then "in window" else "in the events read" end;
             else "    swimlane limits (in-progress cards per row):", ( $s[] | "      \(.swimlane | pad(46))\(.wip_limit | lpad(5))" ) end
           end ),
         "    cell limits: no read route returns them — a cell at or over its limit is listed below",
-        ( if $w.breaches == null then "    at or over a limit now: UNAVAILABLE — see the ⚠ line(s) above"
+        ( if unrep("wip_enforcement") then "    at or over a limit now: NOT REPORTED — this host predates the WIP API, so it has no breach preview to read"
+          elif $w.breaches == null then "    at or over a limit now: UNAVAILABLE — see the ⚠ line(s) above"
           else [ ($w.breaches.columns[]   | {k: "column \(.stage)",               count, limit}),
                  ($w.breaches.swimlanes[] | {k: "swimlane \(.swimlane)",          count, limit}),
                  ($w.breaches.cells[]     | {k: "cell \(.stage) × \(.swimlane)", count, limit}) ] as $br
@@ -806,21 +807,28 @@ _bs_one_board() {
                 pre="$(KB_API_QUIET=1 kb_api GET "/boards/$board_id/preload.json" 2>/dev/null)" || pre=""
                 map="$(_bs_stage_map "$pre")"
                 # A body with no `.data` object leaves both empty, so it is ONE ⚠ naming both
-                # consequences rather than two voices for one failed read.
+                # consequences rather than two voices for one failed read. A body that WAS read
+                # but carried no stage list is a different cause — the wip section still renders
+                # out of it — so its ⚠ names the absent list, not a failed read.
                 wip="$(_bs_wip_config "$pre")"
                 if [[ "$map" == "$_BS_EMPTY_MAP" ]]; then
-                    msg="board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id"
                     if [[ "$wip" == null ]]; then
-                        msg+=", the lane_type classification below has nothing to derive from, and the wip section is missing"
+                        msg="board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id, the lane_type classification below has nothing to derive from, and the wip section is missing"
+                    elif [[ "$(printf '%s' "$wip" | jq '.unreported | index("stages") != null')" == true ]]; then
+                        msg="board column names unavailable (the preload carried no stage list) — columns are labelled by stage id, and the lane_type classification below has nothing to derive from"
                     else
-                        msg+=", and the lane_type classification below has nothing to derive from"
+                        msg="board column names unavailable (preload read failed or was unusable) — columns are labelled by stage id, and the lane_type classification below has nothing to derive from"
                     fi
                     fails+=("$msg")
                 fi
                 # The breach preview is read only beside a readable configuration: its cells
                 # carry ids alone, and a section with no mode and no limits has nothing for an
                 # at/over-limit row to qualify.
-                if [[ "$wip" != null ]]; then
+                # A host that sends no `wip_enforcement` predates the WIP API and so has no
+                # preview to read: the GET is skipped rather than turned into a ⚠ about a 404
+                # from an endpoint it never had, and the renderer prints NOT REPORTED.
+                if [[ "$wip" != null ]] \
+                   && [[ "$(printf '%s' "$wip" | jq '.unreported | index("wip_enforcement") == null')" == true ]]; then
                     brmeta="$(_bs_wip_breaches "$board_id" "$wip" "$tmp/breaches.json")"
                     err="$(printf '%s' "$brmeta" | jq -r '.error // ""')"
                     if [[ -n "$err" ]]; then

@@ -937,7 +937,14 @@ for shape in 'del(.data.workflows)' '.data.workflows |= map(del(.stages))'; do
     jq -c "$shape" "$TMP/wip-preload.json" > "$TMP/wip-preload-nost.json"
     eq "no stage list is named unreported: $shape"   "true" \
        "$(_bs_wip_config "$(cat "$TMP/wip-preload-nost.json")" | jq '.unreported | index("stages") != null')"
-    wnost="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-nost.json" "$FX_NO_BREACHES")")")"
+    wnostb="$(_wip_board "$TMP/wip-preload-nost.json" "$FX_NO_BREACHES")"
+    # The preload WAS read — the wip section below renders out of it — so the ⚠ names the
+    # missing stage list, never a failed read or a missing wip section.
+    eq "…the ⚠ names the absent stage list: $shape"  "1" \
+       "$(printf '%s' "$wnostb" | jq '[.failures[] | select(test("the preload carried no stage list") and test("lane_type classification below has nothing to derive from"))] | length')"
+    eq "…and never calls the read failed or the wip section missing: $shape" "0" \
+       "$(printf '%s' "$wnostb" | jq '[.failures[] | select(test("preload read failed") or test("wip section is missing"))] | length')"
+    wnost="$(_wip_section "$(_wip_render "$wnostb")")"
     eq "…column limits are NOT REPORTED: $shape"     "true" "$(has 'column limits: NOT REPORTED by this host — unknown, not none' "$wnost")"
     eq "…is_terminal is NOT REPORTED: $shape"        "true" "$(has 'is_terminal: NOT REPORTED by this host' "$wnost")"
     eq "…and nothing says none for them: $shape"     "false false" \
@@ -957,6 +964,17 @@ eq "…and never says none"                           "false" "$(has 'at or over
 eq "…while the configuration it DID read still renders" "true" "$(has 'enforced — a card newly entering' "$wfail_t")"
 wempty_t="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload.json" "$FX_NO_BREACHES")")")"
 eq "control: a readable EMPTY preview says none"    "true" "$(has 'at or over a limit now: none' "$wempty_t")"
+
+# A host that sends no `wip_enforcement` predates the WIP API, so it has no breach preview to
+# read either: the GET is skipped and the line says NOT REPORTED, with no ⚠ and no partial —
+# a 404 from an endpoint the host never had is not a failed read of this board.
+jq -c 'del(.data.wip_enforcement)' "$TMP/wip-preload.json" > "$TMP/wip-preload-nomode.json"
+wnomode="$(_wip_board "$TMP/wip-preload-nomode.json" FAIL)"
+eq "an unsent mode issues no breach request"        "0" "$(wc -l < "$TMP/wip-calls" | tr -d ' ')"
+eq "…adds no failure line"                          "0" "$(printf '%s' "$wnomode" | jq '.failures | length')"
+wnomode_t="$(_wip_section "$(_wip_render "$wnomode")")"
+eq "…and the at/over line is NOT REPORTED"          "true" "$(has 'at or over a limit now: NOT REPORTED' "$wnomode_t")"
+eq "…never UNAVAILABLE"                             "false" "$(has 'at or over a limit now: UNAVAILABLE' "$wnomode_t")"
 
 # An unusable preload is ONE ⚠ naming both consequences, and no breach preview is requested
 # for a section that has nothing to qualify.
