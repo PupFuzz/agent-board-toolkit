@@ -1588,6 +1588,28 @@ expect_rc "a row with no numeric id -> UNREADABLE"    "$U" kb_by_ref_hit '{"data
 # A card-id `--argjson` will not take is a CALLER fault, and it lands in the same arm rather than
 # in a false "absent": nothing was read, which is the only true thing to say about it.
 expect_rc "a non-JSON card-id -> UNREADABLE"         "$U" kb_by_ref_hit '{"data":[{"id":4020}]}'                     'not-an-id'
+# — A COMPLETE JSON text FOLLOWED BY anything is not a by-ref result either. jq streams: it prints
+# the first text's verdict and only then faults on what follows, so a reader that suppresses the
+# fault holds a verdict — ABSENT for the first row, HIT for the second — about a body that is not
+# JSON. The third row is the other form of the same hazard, one verdict per text; it guards the
+# single-text rule itself, since a slurp that took `.[0]` without checking the length would pass
+# the first two rows and answer HIT here.
+expect_rc "a valid ABSENT body + trailing HTML -> UNREADABLE" "$U" kb_by_ref_hit '{"data":[]}<html>502</html>'           4020
+expect_rc "a valid HIT body + trailing bytes -> UNREADABLE"   "$U" kb_by_ref_hit '{"data":[{"id":4020}]} garbage'        4020
+expect_rc "two JSON texts -> UNREADABLE"                      "$U" kb_by_ref_hit '{"data":[{"id":4020}]}{"data":[]}'     4020
+
+echo "== kb_jq_one — a filter over EXACTLY ONE JSON text, or nothing =="
+expect_out "one text -> the filter's output"        '1'       kb_jq_one '{"a":1}'           '.a'
+expect_rc  "one text -> rc 0"                       0         kb_jq_one '{"a":1}'           '.a'
+expect_out "trailing bytes -> NOTHING printed"      ''        kb_jq_one '{"a":1}<html>'     '.a'
+expect_rc  "trailing bytes -> rc 1"                 1         kb_jq_one '{"a":1}<html>'     '.a'
+expect_out "two texts -> NOTHING printed"           ''        kb_jq_one '{"a":1} {"a":2}'   '.a'
+expect_rc  "two texts -> rc 1"                      1         kb_jq_one '{"a":1} {"a":2}'   '.a'
+expect_rc  "an empty input -> rc 1"                 1         kb_jq_one ''                  '.'
+expect_rc  "a filter fault -> rc 1"                 1         kb_jq_one '{"a":1}'           '.a | error("x")'
+expect_out "options before the filter reach jq"     '{"a":1}' kb_jq_one '{"a":1}'           -c '.'
+expect_out "--argjson reaches the filter"           '7'       kb_jq_one 'null'              --argjson x 7 '$x'
+expect_out "a filter ending in a # comment still closes" 'x'  kb_jq_one '1'                 -r '"x" # trailing comment'
 
 # ---------------------------------------------------------------------------
 echo "== kb_require_value — a value-taking flag's PRESENCE is the dispatch signal =="

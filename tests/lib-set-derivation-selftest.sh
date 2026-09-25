@@ -321,7 +321,7 @@ LEG3_DISPOSED=(
     # ones whose behaviour changes beside an old lib; a consumer reading it as "the bins that
     # source the lib" would be reading a sentence that does not say that, and §3's derivation is
     # one link away in the same file.
-    "docs/CHANGELOG.md::beside an old lib scores an undecodable body as a miss again"
+    "docs/CHANGELOG.md::beside an old lib still scores a body that PARSES but is not a by-ref result"
     # ⛔ NO `docs/CHANGELOG.md` DISPOSITION SURVIVES A RELEASE, and that is the contract, not an
     # omission. v0.30.0 carried three — card#7175, card#6884 and card#6680 — each ruled on the
     # live `[Unreleased]` entry it named. Step 4 of VERSIONING.md retitled that section as

@@ -312,8 +312,10 @@ main() {
     # at all", and stating the first over the second is a wrong-but-specific cause (a 200 carrying
     # an SSO gateway's HTML would have been reported as "the dl_number/pr_url may not have
     # persisted"), which sends the operator to inspect a write that in fact landed. The rc is
-    # matched rather than the lib constant named, so a copy of this bin beside an older lib still
-    # takes the FAILED arm it always took instead of dying under `set -u`.
+    # matched rather than the lib constant named, so a copy of this bin beside an older lib does
+    # not die under `set -u`; it still refuses at rc 1 either way, but the cause it prints then
+    # follows the OLD predicate's rc (a body that does not parse lands in `*`, one that parses and
+    # is not a by-ref result lands in `1`).
     local source_enc by_ref hit_rc
     source_enc="$(_ata_canon_source "$repo")"; source_enc="${source_enc//\//%2F}"
     by_ref="$(kb_api GET "/boards/$KB_BOARD_ID/tasks/by-ref.json?system=dl&ref=$dl_int&source=$source_enc")" \

@@ -1194,6 +1194,27 @@ kb_parse_resp() {
     jq "$@" <<<"$resp" 2>/dev/null || true
 }
 
+# kb_jq_one <input> [jq-opt…] <jq-filter>: the filter applied to <input> ONLY when <input> is
+# exactly one JSON text. rc 0 with the filter's output when it is and the filter ran clean;
+# otherwise NOTHING on stdout and rc 1 — for a parse error, an empty input, a SECOND JSON text,
+# non-JSON bytes after a complete one, a filter fault, and a jq that is missing or unrunnable.
+#
+# ⛔ WHY NOT PLAIN `jq`: jq STREAMS. Given `{"data":[]}<html>502</html>` it runs the filter over
+# the first text, PRINTS that result, and only then faults on the bytes after it — so a caller
+# that reads stdout and suppresses the fault holds a verdict about a body that is not JSON. A
+# second text is the same hazard in another form (one result per text). `-s` parses the whole
+# input before the filter runs, so a parse fault anywhere yields no output at all, and the
+# length check refuses zero or several texts. The filter is the LAST argument; everything before
+# it is passed to jq as options, which must not include `-n` or `-s` (both change what `.` is).
+kb_jq_one() {
+    local input="$1"; shift
+    local filter="${*: -1}" out
+    out="$(jq -s "${@:1:$#-1}" "if length == 1 then .[0] | (
+$filter
+) else error(\"not exactly one JSON text\") end" <<<"$input" 2>/dev/null)" || return 1
+    [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+
 # --- the write-outcome read-back: APPLIED / NOT APPLIED / UNVERIFIED -----------------------
 # A write's 2xx is the server ACCEPTING a request, never the board HOLDING the result. The
 # contract for the three outcomes (and what each exit code means to a CLI caller) is owned by
@@ -2066,19 +2087,20 @@ KB_RC_BYREF_UNREADABLE=5
 # `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200), and it is the one used here.
 #
 # The verdict is a printed TOKEN rather than jq's status for the same reason kb_parse_resp prints
-# nothing on a fault: every way this can fail — a parse error, an empty input, a jq that is
-# missing or unrunnable, a <card-id> `--argjson` will not take — produces no token, and no token
-# is the one value that cannot be mistaken for an answer.
+# nothing on a fault, and it is read through kb_jq_one so that "no token" covers every way the
+# read can fail — a parse error, an empty input, a complete JSON text FOLLOWED by other bytes or
+# by a second text, a jq that is missing or unrunnable, a <card-id> `--argjson` will not take.
+# No token is the one value that cannot be mistaken for an answer.
 kb_by_ref_hit() {
     local verdict
-    verdict="$(printf '%s' "${1:-}" | jq -r --argjson id "${2:-0}" '
+    verdict="$(kb_jq_one "${1:-}" -r --argjson id "${2:-0}" '
         (if type == "object" then .data else . end) as $rows
         | if ($rows | type) != "array" then "unreadable"
           # A row this predicate cannot identify makes the WHOLE answer unclassifiable: "absent"
           # over it would be a claim about a population that was never read.
           elif any($rows[]; (type != "object") or ((.id | type) != "number")) then "unreadable"
           elif any($rows[]; .id == $id) then "hit"
-          else "absent" end' 2>/dev/null)"
+          else "absent" end')"
     case "$verdict" in
         hit)    return 0 ;;
         absent) return 1 ;;

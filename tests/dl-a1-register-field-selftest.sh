@@ -97,14 +97,16 @@ kb_stub_route() {
             # READABLE answers; the rest are the shapes a read can take that say NOTHING about
             # the index (card#10241).
             #
-            # ⛔ FOUR UNDECODABLE `2xx` SHAPES, ENUMERATED RATHER THAN REPRESENTED — they do not
-            # share one path and a single fixture would certify the other three by association.
+            # ⛔ THE UNDECODABLE `2xx` SHAPES ARE ENUMERATED RATHER THAN REPRESENTED — they do
+            # not share one path and a single fixture would certify the others by association.
             # `html`, `trunc` and `nobody` never reach a jq verdict at all; `jsonerr` PARSES
             # PERFECTLY and is the one jq's own exit status cannot see — measured on jq 1.7, it
             # scored the pre-change predicate's rc 1, byte-identical to a genuinely empty
             # `{"data":[]}`, so a fix that only plumbed jq's rc outward would have left this
-            # shape reading as a clean board. `http500` is the fifth producer of the same state
-            # from a different layer: the request was ANSWERED and not with a 2xx.
+            # shape reading as a clean board. `trailing` is a complete `{"data":[]}` FOLLOWED by a
+            # gateway's HTML: jq streams, so it printed the first text's ABSENT verdict before
+            # faulting on the rest, and the fault was discarded. `http500` is a producer of the
+            # same state from a different layer: the request was ANSWERED and not with a 2xx.
             read -r -a byref <<<"$KB_STUB_BYREF"
             case "${byref[$((route_n - 1))]:-${byref[-1]}}" in
                 hit)     printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID}]}" ;;
@@ -113,6 +115,7 @@ kb_stub_route() {
                 trunc)   printf '%s\n%s' 200 "{\"data\":[{\"id\":$KB_STUB_TASK_ID" ;;
                 jsonerr) printf '%s\n%s' 200 '{"message":"your session has expired"}' ;;
                 nobody)  printf '%s\n%s' 200 '' ;;
+                trailing) printf '%s\n%s' 200 '{"data":[]}<html><body>502 Bad Gateway</body></html>' ;;
                 http500) printf '%s\n%s' 500 '{"message":"nope"}' ;;
                 # The stub's TRANSPORT-failure spelling (tests/_kb-api-stub-curl.sh): curl exits
                 # with that status having written nothing, so no HTTP status is read at all.
@@ -318,13 +321,15 @@ echo "== a by-ref read that MEASURED NOTHING is rc 3 UNMEASURED, never a pass (c
 # caller of a setup tool has to be able to tell "I checked and it is clean" from "I could not
 # check", so those are now different exit codes and different lines.
 #
-# THE POPULATION IS (undecodable shape × read position), not one of each. The shapes are the five
-# in `kb_stub_route` above and the positions are this tool's three by-ref reads, because the
-# dispositions differ per position: position 1's non-hit was already a reported FAILURE, while 2
-# and 3 were the fail-open pair. Every row below was observed RED against the pre-change binary
-# (`git show HEAD~1:bin/…` over the identical fixtures), and the `miss` control beside each is
-# what makes the row a measurement: the SAME position, answered readably, still passes.
-for shape in html trunc jsonerr nobody http500; do
+# THE POPULATION IS (undecodable shape × read position), not one of each. The shapes are the
+# undecodable tokens `kb_stub_route` above answers, and the positions are this tool's three by-ref
+# reads, because the dispositions differ per position: position 1's non-hit was already a reported
+# FAILURE, while 2 and 3 were the fail-open pair. Every SCENARIO (shape × position) below has at
+# least one row observed RED against the pre-change binary over the identical fixtures. Not every
+# row is: the teardown rows and the "no OK verdict" rows hold of the pre-change binary too, and are
+# there to pin that the new arm did not lose them. The control is the block after the loop: the
+# same positions, answered readably, still pass.
+for shape in html trunc jsonerr nobody trailing http500; do
     # Position 1 — the verify. A non-hit here was always non-fatal-but-reported; what changes is
     # that the tool no longer reports NOT FOUND, which is a claim about the index, for a read
     # that never happened.

@@ -1514,9 +1514,12 @@ finding with no owner is abandoned, not filed.
     rather than anything the server sent. The response risk sits upstream, in that one filter over
     `$cards_json`, and the `fetch_board_cards` call already guards it on rc.
   - `kb_by_ref_hit` (`bin/_kb-board-lib.sh`) — its input genuinely *is* a raw response body, but the
-    `jq … 2>/dev/null` **is the classifier**: its only output is one of three tokens, read by a
-    `case` that maps anything else — a parse fault, an empty input, an unrunnable jq — to the
-    function's UNREADABLE rc. There is no status to leak into `set -e` and no value to misread.
+    `kb_jq_one` call **is the classifier**: its only output is one of three tokens, read by a
+    `case` that maps anything else — a parse fault, an empty input, a complete JSON text followed
+    by other bytes or by a second text, an unrunnable jq — to the function's UNREADABLE rc.
+    `kb_jq_one` slurps and requires exactly one text, because plain `jq` streams: it prints the
+    first text's result before faulting on what follows. There is no status to leak into `set -e`
+    and no value to misread.
     ⚠ This row used to end *"any jq fault reads as a non-hit (fail-closed)"*: that disposition is
     no longer the primitive's to make, and it is not the same claim as containment. `fail-closed`
     is now each call site's, which is what card#10241 corrected — the two callers where a non-hit
