@@ -1618,7 +1618,7 @@ finding with no owner is abandoned, not filed.
   tighten `_kbc_fetch_fields` to require `.data` to be an ARRAY, which moves `field list` on
   `{"data":null}` from jq's rc **5** to this tool's rc **1** refusal. It needs no new exit code, but
   it is a change to what a READ verb accepts and to the status it reports — the ask-first axis
-  card#6426 §(b) is already fenced on, and the same axis `show`'s residual wording sits behind. It
+  card#10489 tracks this defect, and the same axis `show`'s residual wording sits behind. It
   is recorded here as an in-population, unmigrated site with a named blocker, not left as silence.
 
   **What these dispositions do NOT cover, said plainly:** `R` means the raw `jq` at that row is
