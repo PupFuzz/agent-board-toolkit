@@ -24,7 +24,8 @@
 #             the tag its own ABTK_TOOL_VERSION stamp claims)
 #         2 = bad invocation
 #         3 = UNMEASURED — something needed for a verdict could not be read, or a file the toolkit
-#             DECLARES travels is not in the mirror at all; never a pass
+#             DECLARES travels is not in the mirror at all, or the mirror carries a bin/ name the
+#             toolkit does not declare; never a pass
 #         (a run that is both STALE/DIVERGED and UNMEASURED exits 1: both are failures, and the
 #          re-sync rc 1 asks for is the actionable one. The UNMEASURED rows still print.)
 #
@@ -38,10 +39,13 @@
 # MIRRORED, which is the exact shape that let the live drift live (*a sweep predicate built from
 # the FOUND copies cannot find the DRIFTED one*). The N→0 case is caught by the `MIRRORED:` guard
 # below; N→N−1 needs an anchor that does NOT come from the mirror. `FLOOR` is that anchor: the
-# set README declares travels. It is WRITTEN, because it is a DECLARATION and not a measurement —
-# and it is held level with the tree in both directions by two derived guards beside it, so it
-# cannot rot in silence. The population still decides WHAT IS COMPARED; the floor decides WHAT
-# MUST BE PRESENT.
+# set README declares travels. It is WRITTEN, because it is a DECLARATION and not a measurement.
+# The population still decides WHAT IS COMPARED; the floor decides WHAT MUST BE PRESENT.
+# ⚑ WHAT HOLDS THE FLOOR, AND WHAT DOES NOT — see the block after GUARD 1 below. Against `bin/`
+# it is held ONE way (GUARD 1: a member `bin/` no longer carries). Against the mirror it is held
+# both ways (NOT MIRRORED: a member the artifact lacks; UNDECLARED: a mirrored `bin/` name the
+# floor omits). README declaring a newly travelling bin that the floor omits, while the mirror
+# does not carry it yet, is caught by NOTHING — it can rot in silence until the mirror catches up.
 #
 # A READ HAS THREE OUTCOMES — present, absent, UNREADABLE. Every read of the mirror below keeps
 # the third: a file whose bytes cannot be read is its own row at rc 3 and the loop CONTINUES, so
@@ -156,12 +160,14 @@ done
 # travels to the framework mirror" and went UNMEASURED on any stamped bin the FLOOR did not
 # declare. The stamp does not mean that: VERSIONING rule 1 gives it to every bin that may be
 # COPIED anywhere, and `tests/tool-version-stamp-selftest.sh` requires it on every bin a composite
-# action runs (INSTALL.md §6b's vendor-by-copy set), most of which the framework does not mirror.
+# action names and every sibling those launch (INSTALL.md §6b's vendor-by-copy set), most of which the framework does not mirror.
 # Read as a mirror marker it would red every release on a correct tree. So nothing here derives
 # the FLOOR's WIDTH: README naming a new travelling bin that the FLOOR omits is prose with no
-# machine-readable shape, and is not caught. What IS caught is unchanged: a FLOOR member bin/ no
-# longer carries (GUARD 1), a FLOOR member the mirror does not carry (NOT MIRRORED, below), and a
-# stamped mirror copy whose bytes are not the tag its stamp claims.
+# machine-readable shape, and is not caught UNTIL the mirror carries that bin. What IS caught: a
+# FLOOR member bin/ no longer carries (GUARD 1), a FLOOR member the mirror does not carry (NOT
+# MIRRORED, below), a mirrored bin/ name the FLOOR does not declare (UNDECLARED, below — the
+# widening leg, read off the MIRROR rather than off a stamp), and a stamped mirror copy whose
+# bytes are not the tag its stamp claims.
 
 # Printed BEFORE the derived population, and before the guard that can exit on it: the
 # declaration is what the measurement below is judged against, and a run that ends at
@@ -185,6 +191,15 @@ for n in "${FLOOR[@]}"; do
   case " ${NAMES[*]} " in
     *" $n "*) ;;
     *) echo "NOT MIRRORED $n — the toolkit declares bin/$n travels to $DIR/, and this artifact does not carry it"; unm=1 ;;
+  esac
+done
+# …AND THE OTHER DIRECTION: a bin/ name this artifact mirrors that the FLOOR does not declare. The
+# declaration has fallen behind what actually travels, so a later drop of that file would read OK.
+# The file is still compared below; this row is about the declaration, not the bytes.
+for n in "${NAMES[@]}"; do
+  case " ${FLOOR[*]} " in
+    *" $n "*) ;;
+    *) echo "UNDECLARED $n — this artifact mirrors bin/$n, and the toolkit's declared set does not name it — widen this file's FLOOR and README's declaration"; unm=1 ;;
   esac
 done
 

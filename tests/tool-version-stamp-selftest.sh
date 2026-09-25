@@ -11,22 +11,33 @@
 #
 # THE POPULATION IS DERIVED, never listed: every file in bin/ with a line-initial
 # `ABTK_TOOL_VERSION=`, UNION every file in bin/ naming `--tool-version` on a line before any `#`,
-# UNION every `bin/<name>` a composite action (`*/action.yml`) runs. The second leg makes a bin
-# that answers the flag WITHOUT a stamp a member, so it reds for carrying none. The third is the
-# VENDORED-BY-COPY set (card#10367): what an action runs is what INSTALL.md §6b tells a
-# non-Actions consumer to copy, and a copy that cannot say what it is cannot be told from a stale
-# one — so a tool joining an action is a member on that day, stamped or not, and reds until it is.
-# That leg is read from the action files, never from a list, and never from the stamps (a
-# population built from the stamped files cannot find the unstamped one). The PRESENCE witnesses
-# are `release-pr-body` (stamp leg) and a non-empty action leg: an empty derivation cannot pass.
+# UNION the VENDORED-BY-COPY set (card#10367) — what INSTALL.md §6b tells a non-Actions consumer
+# to copy, where a copy that cannot say what it is cannot be told from a stale one. That set is
+# read in two steps, never from a list and never from the stamps (a population built from the
+# stamped files cannot find the unstamped one):
+#   1. every `bin/<name>` NAMED anywhere in a composite action (`*/action.yml`). That is a
+#      SUPERSET of what the actions run — a description naming a tool counts too — and is kept
+#      wide on purpose: over-inclusion costs a stamp, under-inclusion ships an unnameable copy;
+#   2. CLOSED over the siblings each member LAUNCHES from its own directory — the property §6b's
+#      sibling recipe keys on (the file resolves its own dir with `dirname` of `$0`/`BASH_SOURCE`/
+#      `__file__`), narrowed to a sibling named as a PATH SEGMENT (`$dir/<name>`, `pwd)/<name>`).
+#      The narrowing is deliberate: §6b's recipe answers "what must I copy beside it", where a
+#      bare mention in a message is a harmless extra copy; here every member must be STAMPED, and
+#      a message naming `kbcard` would make it one. A sibling launched at runtime is copied beside
+#      its launcher and runs in the same job, so it is vendored exactly as its launcher is.
+# So a tool joining an action, or launched by one that did, is a member that day and reds until
+# it is stamped. The second leg makes a bin that answers the flag WITHOUT a stamp a member, so it
+# reds for carrying none. The PRESENCE witnesses are `release-pr-body` (stamp leg) and a
+# non-empty action leg: an empty derivation cannot pass.
 #
 # PER MEMBER, each a separate violation:
 #   * exactly one stamp line, spelled `ABTK_TOOL_VERSION='<value>'`;
 #   * <value> equal to VERSION (trailing newline stripped, as VERSIONING.md tells consumers to);
 #   * the file names `--tool-version` (a stamp nothing prints is not a surface);
 #   * `--tool-version`, run on a COPY of the member file alone — in a scratch box outside every git
-#     work tree, with a decoy VERSION beside the copy's bin/ and in the directory it runs from —
-#     exits 0 with stdout exactly `<VERSION>\n` and stderr empty. The decoy is VERSION with a
+#     work tree, with a decoy VERSION beside the copy's bin/ and in the directory it runs from, and
+#     with `jq`, `curl` and `git` absent from PATH (the question must not need the tool's runtime
+#     dependencies: a host that lacks one still gets its answer) — exits 0 with stdout exactly `<VERSION>\n` and stderr empty. The decoy is VERSION with a
 #     suffix, so it can never equal VERSION. Run in place instead, a stamped bin that reads
 #     `$(dirname "$0")/../VERSION` before its stamp prints the right answer from the checkout and
 #     the wrong one from every copy; from the box, that read reds.
@@ -46,6 +57,20 @@ source "$HERE/_selftest-prelude.sh"
 ROOT="$(cd "$HERE/.." && pwd)"
 _mktmp_scratch
 
+# NODEPS — a PATH holding every command on this PATH EXCEPT jq, curl and git, so a member that
+# checks for its runtime dependencies before answering `--tool-version` reds. Links, first match
+# per name wins, which is the lookup PATH itself does.
+NODEPS="$TMP/nodeps"; mkdir -p "$NODEPS"
+IFS=: read -ra _pdirs <<< "$PATH"
+for _d in "${_pdirs[@]}"; do
+  [ -d "$_d" ] || continue
+  for _e in "$_d"/*; do
+    _n="${_e##*/}"
+    case "$_n" in jq|curl|git) continue ;; esac
+    [ -x "$_e" ] && [ ! -d "$_e" ] && [ ! -e "$NODEPS/$_n" ] && ln -s "$_e" "$NODEPS/$_n"
+  done
+done
+
 # _action_bins <root> — every bin/ basename a composite action at <root>/*/action.yml names.
 # Only names that exist in <root>/bin/ are kept, so a match inside a comment or a description that
 # names no real file cannot mint a member that then reds as unrunnable.
@@ -60,6 +85,32 @@ _action_bins() {
   return 0
 }
 
+# _launched <root> <name> — the bin/ siblings <root>/bin/<name> launches from its own directory:
+# only for a file that resolves that directory, and only a name that is a PATH SEGMENT on a line
+# that is not a comment and is a regular file in <root>/bin/ other than itself.
+_launched() {
+  local f="$1/bin/$2"
+  command grep -qE 'dirname.*(\$0|BASH_SOURCE|__file__)' "$f" || return 0
+  command grep -vE '^[[:space:]]*#' "$f" | command grep -oE '/[A-Za-z0-9_][A-Za-z0-9._-]*' \
+    | sed 's#^/##' | sort -u | while IFS= read -r n; do
+      [ "$n" != "$2" ] && [ -f "$1/bin/$n" ] && printf '%s\n' "$n"
+    done
+  return 0
+}
+
+# _vendored <root> — _action_bins, closed over _launched. A worklist, so a sibling's own
+# siblings join too; each name is expanded once, so a launch cycle terminates.
+_vendored() {
+  local -A seen=(); local -a work; local n s
+  mapfile -t work < <(_action_bins "$1")
+  while [ "${#work[@]}" -gt 0 ]; do
+    n="${work[0]}"; work=("${work[@]:1}")
+    [ -z "${seen[$n]:-}" ] || continue
+    seen[$n]=1; printf '%s\n' "$n"
+    while IFS= read -r s; do work+=("$s"); done < <(_launched "$1" "$n")
+  done
+}
+
 # _members <root> — the derived population, one bin/ basename per line.
 _members() {
   local f
@@ -71,7 +122,7 @@ _members() {
         printf '%s\n' "${f##*/}"
       fi
     done
-    _action_bins "$1"
+    _vendored "$1"
   } | sort -u
 }
 
@@ -102,7 +153,7 @@ _violations() {
     command grep -qE -- '^[^#]*--tool-version' "$f" \
       || printf '%s: stamped, but names no --tool-version flag\n' "$name"
     cp "$f" "$box/bin/$name"
-    rc=0; (cd "$box/cwd" && "$box/bin/$name" --tool-version) >"$TMP/out" 2>"$TMP/err" || rc=$?
+    rc=0; (cd "$box/cwd" && PATH="$NODEPS" "$box/bin/$name" --tool-version) >"$TMP/out" 2>"$TMP/err" || rc=$?
     [ "$rc" = 0 ] || printf '%s: --tool-version exited %s\n' "$name" "$rc"
     printf '%s\n' "$want" > "$TMP/want"
     cmp -s "$TMP/out" "$TMP/want" \
@@ -209,5 +260,40 @@ eq "…for naming no flag"                  "true" "$(has 'new-release-tool: sta
 eq "…and for the copy not answering"      "true" "$(has 'new-release-tool: --tool-version exited 2' "$v")"
 eq "control: an action naming a bin/ path that is not a file mints no member" "false" \
    "$(printf '# see bin/no-such-tool\n' >> "$fx/new-action/action.yml"; has_line no-such-tool "$(_members "$fx")")"
+
+echo "== CONTROL: an unstamped sibling an action-run tool LAUNCHES from its own directory is a member and reds =="
+# Named by no action, carrying no stamp and no flag: only the launch leg can see it. The launcher
+# is itself clean (stamped, answers from its copy), so every violation below is the sibling's.
+fx="$(_fixture launched-sibling)"
+V="$(tr -d '\n' < "$ROOT/VERSION")"
+cat > "$fx/bin/launcher-tool" <<SH
+#!/usr/bin/env bash
+ABTK_TOOL_VERSION='$V'
+case "\${1:-}" in --tool-version) printf '%s\\n' "\$ABTK_TOOL_VERSION"; exit 0;; esac
+echo "see helper-tool --help for the options"
+SH
+cat > "$fx/bin/helper-tool" <<'SH'
+#!/usr/bin/env bash
+echo "unknown arg '$1'" >&2; exit 2
+SH
+chmod +x "$fx/bin/launcher-tool" "$fx/bin/helper-tool"
+mkdir -p "$fx/launch-action"
+printf 'runs:\n  using: composite\n  steps:\n    - run: "$GITHUB_ACTION_PATH/../bin/launcher-tool"\n' > "$fx/launch-action/action.yml"
+eq "premise: the launcher is a member" "true" "$(has_line launcher-tool "$(_members "$fx")")"
+eq "control: a sibling only MENTIONED in a message (no path segment) is NOT a member" "false" \
+   "$(has_line helper-tool "$(_members "$fx")")"
+eq "control: and the fixture is clean" "" "$(_violations "$fx")"
+printf 'HERE="$(cd "$(dirname "$0")" && pwd)"\nexec "$HERE/helper-tool" "$@"\n' >> "$fx/bin/launcher-tool"
+eq "a sibling the launcher execs from its own dir is a member" "true" "$(has_line helper-tool "$(_members "$fx")")"
+v="$(_violations "$fx")"
+eq "reds for carrying no stamp"     "true" "$(has 'helper-tool: carries 0 ABTK_TOOL_VERSION= lines' "$v")"
+eq "…and for the copy not answering" "true" "$(has 'helper-tool: --tool-version exited 2' "$v")"
+eq "…and only the sibling reds"      "false" "$(has 'launcher-tool:' "$v")"
+eq "control: the same launch from a file that never resolves its own dir mints no member" "false" \
+   "$(sed -i '/dirname/d' "$fx/bin/launcher-tool"; has_line helper-tool "$(_members "$fx")")"
+
+echo "== the launch leg on the real tree =="
+eq "presence witness: promote-released-cards launches card-completeness" "true" \
+   "$(has_line card-completeness "$(_launched "$ROOT" promote-released-cards)")"
 
 _summary "tool-version-stamp-selftest"

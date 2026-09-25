@@ -412,7 +412,6 @@ set -euo pipefail
 ABTK_TOOL_VERSION='0.36.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
-for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
 
 # require_value <flag> <value>: die unless a value-taking flag was given a non-empty value.
 # An option that consumes "$2" must dispatch on the FLAG being SEEN, not on its VALUE being
@@ -651,6 +650,10 @@ if [ "$TOOL_VERSION_ONLY" = 1 ]; then
   printf '%s\n' "$ABTK_TOOL_VERSION"
   exit 0
 fi
+
+# Runtime dependencies are checked only AFTER the --tool-version exit above: that question needs
+# none of them, and a host lacking one must still be able to ask which release this copy is.
+for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
 
 # Normalize + validate the opt-in source-stage guard set: strip whitespace, then require a
 # non-empty comma-separated list of positive integers (mirrors the board_id/stage numeric

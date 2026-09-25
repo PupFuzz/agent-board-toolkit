@@ -11,8 +11,8 @@
 # WHAT A GREEN RUN PROVES — the weakest property the assertions support: on these fixtures the
 # check names IN-STEP / STALE / DIVERGED / UNMEASURED for the inputs built to be each, exits with
 # the rc its header documents, derives its population from names shared with `bin/`, holds that
-# derived population to the DECLARED floor so a mirror that dropped a file is not scored clean,
-# keeps a read's third outcome (unreadable) apart from drift, reads the git ref it was given
+# derived population to the DECLARED floor so a mirror that dropped a file is not scored clean
+# and a mirrored name the floor omits is not either, keeps a read's third outcome (unreadable) apart from drift, reads the git ref it was given
 # rather than the working tree, holds a stamped copy to the tag its stamp claims, and says which
 # artifact it read. It proves nothing about the real framework mirror — run the check itself for
 # that (VERSIONING.md's release flow).
@@ -204,9 +204,13 @@ _run --toolkit "$TK" "$DROP"
 eq "control: the same fixture carrying both files is rc 0" "0" "$RC"
 eq "control: no NOT MIRRORED row on a complete mirror" "false" "$(has "NOT MIRRORED" "$OUT")"
 
-echo "== the declared floor is held level with bin/, in both directions =="
-# The floor is WRITTEN (it is a declaration, not a measurement), so the two guards that stop it
-# rotting are what make it trustworthy — and each is driven here rather than assumed.
+echo "== the declared floor: held against bin/ ONE way, against the mirror both ways =="
+# The floor is WRITTEN (it is a declaration, not a measurement), so the guards that stop it rotting
+# are what make it trustworthy — and each is driven here rather than assumed. Against bin/ there
+# is ONE (GUARD 1, next). Against the mirror there are two: NOT MIRRORED (the drop arm above) and
+# UNDECLARED (below). README naming a newly travelling bin the floor omits, before the mirror
+# carries it, is guarded by nothing — `framework-mirror-check.sh`'s NO STAMP-BASED WIDENING LEG
+# block says why.
 TKG="$TMP/tk-renamed"; cp -a "$TK" "$TKG"
 mv "$TKG/bin/promote-released-cards" "$TKG/bin/promote-cards"
 _run --toolkit "$TKG" "$OKF"
@@ -228,6 +232,20 @@ cp "$TKS/bin/some-new-mover" "$TKSM/plugins/coord/templates/release/some-new-mov
 _run --toolkit "$TKS" "$TKSM"
 eq "the same stamped bin, mirrored: rc 3" "3" "$RC"
 eq "…naming it" "true" "$(has "UNMEASURED some-new-mover — no toolkit tag carries bin/some-new-mover" "$OUT")"
+eq "…and naming the floor as behind the mirror" "true" "$(has "UNDECLARED some-new-mover — this artifact mirrors bin/some-new-mover" "$OUT")"
+# UNDECLARED on its own: a bin/ file every tag carries, mirrored byte-identical to the newest tag,
+# that the floor does not declare. Its bytes are IN-STEP; the DECLARATION is what is behind, and
+# that alone is rc 3. The control is the same fixture without the file (OKF, rc 0, no such row).
+UND="$TMP/fw-undeclared"; cp -a "$OKF" "$UND"
+git -C "$TK" show v0.2.0:bin/kbcard > "$UND/plugins/coord/templates/release/kbcard"
+_run --toolkit "$TK" "$UND"
+eq "a mirrored bin/ name the floor does not declare: rc 3" "3" "$RC"
+eq "…as its own UNDECLARED row" "true" \
+   "$(has "UNDECLARED kbcard — this artifact mirrors bin/kbcard, and the toolkit's declared set does not name it" "$OUT")"
+eq "…while its bytes are still judged" "true" "$(has "IN-STEP   kbcard — byte-identical to v0.2.0" "$OUT")"
+_run --toolkit "$TK" "$OKF"
+eq "control: the same fixture without it is rc 0" "0" "$RC"
+eq "control: no UNDECLARED row on a mirror carrying only the declared set" "false" "$(has "UNDECLARED" "$OUT")"
 
 echo "== the FLOOR is a restatement of README, and is held against it =="
 # The check loads the declared set INLINE — a running program cannot follow a pointer — so the
@@ -236,8 +254,9 @@ echo "== the FLOOR is a restatement of README, and is held against it =="
 # third copy.
 # ⚑ BOUND, stated so the guard is not over-cited: this is one-way. It reds when the check declares
 # a file README's declaration does not name. README naming a THIRD travelling bin that the floor
-# omits is prose with no machine-readable shape, and NOTHING covers it: the stamp is not a mirror
-# declaration (the arm above), so no derived leg can say what the floor should contain.
+# omits is prose with no machine-readable shape, and nothing covers it until the mirror carries
+# that bin (UNDECLARED, above): the stamp is not a mirror declaration, so no leg derived from this
+# tree can say what the floor should contain.
 mapfile -t FLOOR_DECLARED < <(awk '/^FLOOR=\(/ { s = $0; sub(/^FLOOR=\(/, "", s); sub(/\).*$/, "", s); n = split(s, a, " "); for (i = 1; i <= n; i++) print a[i]; exit }' "$CHECK")
 eq "the FLOOR extraction carries real data (positive control)" "false" \
    "$([[ "${#FLOOR_DECLARED[@]}" -eq 0 ]] && echo true || echo false)"

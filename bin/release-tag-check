@@ -139,7 +139,6 @@ ABTK_TOOL_VERSION='0.36.0'
 export LC_ALL=C
 
 die() { echo "release-tag-check: $*" >&2; exit 2; }
-command -v git >/dev/null || die "git is required"
 
 # Mirrors kb_require_value in _kb-board-lib.sh. Like its release siblings this script is
 # deliberately self-contained and does not source that lib. THE AGREEMENT IS CHECKED, NOT ASKED
@@ -182,6 +181,10 @@ if [ "$TOOL_VERSION_ONLY" = 1 ]; then
   printf '%s\n' "$ABTK_TOOL_VERSION"
   exit 0
 fi
+
+# Runtime dependencies are checked only AFTER the --tool-version exit above: that question needs
+# none of them, and a host lacking one must still be able to ask which release this copy is.
+command -v git >/dev/null || die "git is required"
 
 [ -n "$BEFORE" ] || die "--before <ref> is required"
 [ -n "$AFTER" ]  || die "--after <ref> is required"
