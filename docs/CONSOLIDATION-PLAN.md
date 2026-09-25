@@ -1619,16 +1619,17 @@ finding with no owner is abandoned, not filed.
   tighten `_kbc_fetch_fields` to require `.data` to be an ARRAY, which moves `field list` on
   `{"data":null}` from jq's rc **5** to this tool's rc **1** refusal. It needs no new exit code, but
   it is a change to what a READ verb accepts and to the status it reports — the ask-first axis
-  card#10489 tracks this defect, and the same axis `show`'s residual wording sits behind. It
-  is recorded here as an in-population, unmigrated site with a named blocker, not left as silence.
+  card#10489 took for `comments` and `show` (they now refuse such a body at rc 1); `field list` was
+  not in that card's scope. It is recorded here as an in-population, unmigrated site with a named
+  blocker, not left as silence.
 
   **What these dispositions do NOT cover, said plainly:** `R` means the raw `jq` at that row is
   safe, not that its verb is. The read-verb residue is separate and stays filed — a `2xx` whose
   `.data` is valid JSON of the wrong shape still exits at jq's rc 5 in the projections that index it
   (measured: `field list` on `{"data":null}`; `field set-options --field <k>` on `{"data":null}` and
-  on `{"data":{"id":9}}`; `show --task 7` on `{"data":"str"}` and `{"data":5}`; `list` on
-  `{"data":{"id":9}}`), which is a change to what those verbs **accept** and therefore not this
-  card's to make.
+  on `{"data":{"id":9}}`; `list` on `{"data":{"id":9}}`), which is a change to what those verbs
+  **accept** and therefore not this card's to make. (`show --task 7` on `{"data":"str"}` and
+  `{"data":5}` was on this list; card#10489 made it an rc-1 refusal.)
 
   **In-population members no pass of the derivation named, recorded rather than migrated.** The
   first two below are card#6426 fix round 3's; the third arrived with card#6525 and dates itself.
@@ -1700,8 +1701,8 @@ finding with no owner is abandoned, not filed.
     on now covers an unreadable page 2 as well.
 
   **CLASS — a shape test applied downstream of `//` does not see `false`** (card#6426, fix round 3;
-  **2 instances, 1 fixed, 1 open**). jq's `//` yields its right-hand side for `false` exactly as it
-  does for `null`, so any filter shaped `(.x // <default>) | select(type == …)` hands the container
+  instances 1 and 2 fixed — instance 2 by card#10489; instance 3 recorded, not fixed). jq's `//`
+  yields its right-hand side for `false` exactly as it does for `null`, so any filter shaped `(.x // <default>) | select(type == …)` hands the container
   test **the default** whenever `.x` is `false` — the test sits on the far side of the very
   substitution it was written to police, and can never fail for that input. The remedy is the same
   at both instances and is named here so whoever rules on the second does not re-derive it: **decide
@@ -1717,35 +1718,61 @@ finding with no owner is abandoned, not filed.
     Covered by
     `tests/kbcard-selftest.sh` (`patch --triaged (tags is false)`, `patch --type (tags is false)`),
     watched red.
-  - **Instance 2 — `cmd_comments` (`bin/kbcard`), OPEN and ask-gated.** `(.data.comments // []) |
-    select(type == "array")` accepts `{"data":{"id":505,"comments":false}}` and prints
-    **"card 505 has no comments" at rc 0** — measured — which is exactly the claim the comment two
-    lines above it forbids ("printing it here would answer a question this read never reached").
-    **NOT fixed: the round-3 grant was the write path only.** Applying the remedy moves a **READ**
-    verb from rc 0 to rc 1, i.e. a change to what it accepts — the same ask-first axis as
-    `_kbc_field_list` and `show`'s residual wording, and it needs the same ruling. The hazard is
-    strictly worse than those, though, and that is why it is recorded as a live wrong-answer rather
-    than a diagnostic residue: the other two *fail*, loudly, at a status nobody documented; this one
-    **succeeds with a false claim about the board**. Recorded at the site as well as here.
+  - **Instance 2 — `cmd_comments` (`bin/kbcard`), FIXED by card#10489 (ask-gated: it moves a READ
+    verb from rc 0 to rc 1).** `(.data.comments // []) | select(type == "array")` accepted
+    `{"data":{"id":505,"comments":false}}` and printed **"card 505 has no comments" at rc 0** —
+    measured — a false claim about the board rather than a loud failure. The same change closed the
+    envelope half of that site (a 2xx with no `.data` read as no comments) and `show`'s residual
+    (`null` at rc 0 for the same body; jq's rc 5 for a `.data` that is not an object): both verbs
+    now read the body through `_kbc_one_card` — slurped, so it answers only for a body that is
+    exactly ONE JSON text whose `.data` is an object — and refuse anything else at rc 1. Covered
+    by `tests/kbcard-selftest.sh` (`comments / show: a 2xx that PARSES but carries no card
+    object`), watched red. **Not migrated to that helper, deliberately:** `_kbc_assign_guard`,
+    `_kbc_ref_pair_guard` and `_kbc_link_witness` read the same GET with the streamed
+    `.data | select(type == "object")`, so a card text beside a second text or trailing
+    non-whitespace bytes still reads as a card there; adopting the helper would move each from proceeding to refusing
+    on those bodies, which is a change to what they accept and not card#10489's. The cross-bin
+    copies of the one-card read (`_kb-board-lib.sh`'s card readers, `adopt-to-dl`,
+    `promote-released-cards`) are the same consolidation, also not done here — the lib's
+    `kb_jq_one` is the existing one-text primitive they would converge on.
+  - **Instance 3 — `cmd_comments`' per-comment `content` test (`bin/kbcard`), NOT FIXED.** The
+    row test card#10489 added, `((.content // "") | type == "string")`, sits downstream of the
+    `//` it polices, so a comment row with `"content": false` passes it and prints as an empty
+    comment instead of refusing the read. Barely reachable — the comment write route requires a
+    string `content`, so the server would have to emit a row it cannot accept — which is why it
+    is recorded rather than fixed; the remedy is the near-side test above.
 
-  **Owner and queue position for the open half** — this document, as the preamble states, and
-  **blocked on one operator ruling**: the read-verb acceptance axis. That single ruling disposes
-  instance 2, `_kbc_field_list` and `show`'s residual wording together; they are three symptoms of
-  one gate, not three questions. **A NEW instance of this class arriving before that ruling lands
-  is the signal to stop patching instances and take the ruling** — the `//`-shaped filter is a
-  two-token idiom any new projection can reproduce, so the count moving is the thing to watch.
-  Re-derive it — do not quote the number — with a scan of the SHAPE rather than of the known
-  sites, over the whole file text so a filter spanning several lines is still one string:
+  **Still open on the same read-verb acceptance axis:** `_kbc_field_list` (above). **A NEW instance
+  of this class is the signal to take that axis as a class rather than one verb at a time** — the
+  `//`-shaped filter is a two-token idiom any new projection can reproduce, so the count moving is
+  the thing to watch. Re-derive it — do not quote the number — with a scan of the SHAPE rather than
+  of the known sites, over the whole file text with newlines and tabs folded to spaces and runs
+  squeezed, so a filter spanning several lines is still one string and its indentation cannot push
+  it out of the window:
 
       for f in bin/*; do [ -f "$f" ] || continue; case "$f" in *.py) continue;; esac
-        tr '\n' ' ' < "$f" | grep -oE '//[^|]{0,12}\| *[^|]{0,40}(select\(type|\| *type *\))' \
+        tr '\n\t' '  ' < "$f" | tr -s ' ' | grep -oE '//[^|)]{0,12}\)? ?\| ?select\(type' \
           | sed "s|^|$f: |"
       done
 
-  **1 hit at the time of writing** — `cmd_comments`, i.e. exactly the open instance; the fixed one
-  no longer matches, which is the point. **Control that proves it discriminates** (canon #9):
-  reinstating round 2's pre-fix filter in `_kbc_patch_tags` takes the count to **2** and back to
-  **1** on restore — restored by byte snapshot + `cmp`, never `git checkout --`.
+  It matches a default followed DIRECTLY by the container test, parenthesized or not —
+  `(.x // []) | select(type …)` and `.x // [] | select(type …)` both — and so not
+  `(.x // [])[]? | select(type …)`, which filters ELEMENTS after iterating (a per-element test, not
+  a container test — `board-hooks-check` and `promote-released-cards` carry that form). What it
+  still does NOT see: a default more than 12 characters long, or anything between the default and
+  the `select` other than one optional `)` (a `.[]`, a second pipe stage, a `select(.x | type …)`
+  spelling) — a hit is a lead, and silence is silence of this pattern, not of the class. **The
+  scan this paragraph carried before card#10489 could not see instance 2 at all:** its `[^|]{0,12}`
+  window ran over the multi-line filter's indentation, while it did match those two element
+  filters — so its recorded "1 hit, `cmd_comments`" was not what it printed. **Control that proves
+  the current scan discriminates** (canon #9): it prints nothing on the tree as card#10489 leaves
+  it, and prints the `cmd_comments` line against the pre-card#10489 `bin/kbcard`
+  (`git show <base>:bin/kbcard` into a scratch file), against round 2's pre-fix
+  `_kbc_patch_tags` filter planted in a scratch file with tab indentation, and against the
+  unparenthesized `.data.tags // [] | select(type == "array")` planted the same way. Each plant
+  names the weakening it catches: the tab-indented round-2 filter prints nothing if the fold turns
+  only newlines into spaces (a tab is left between `)` and `|`) or if the optional `)` is dropped
+  from the pattern; the unparenthesized plant prints nothing if that `)` is made mandatory.
 - **The lib-sourcing-bins list, in FOUR prose copies** (card #5981) — **SHIPPED, card#6884, on the
   THIRD attempt AT CLOSING THE CLASS** (`tests/lib-set-derivation-selftest.sh` says *fourth* and is
   not in conflict: it counts attempts at the LIST itself, of which the first two closures here were
