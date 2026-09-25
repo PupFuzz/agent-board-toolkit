@@ -1322,9 +1322,9 @@ finding with no owner is abandoned, not filed.
     purpose: it is a machine-readable CONTRACT change, and the operator ruled the consumer set has to
     be enumerated before a key consumers must honour is added. The document behind the renderer does
     now carry a `stock_complete` and a `flow_complete` (the text renderer computes nothing of its own
-    and needed fields to read), and the `json` arm STRIPS both — so the emitted object is the same six
-    keys it always was, asserted in `tests/board-stats-selftest.sh` on a whole read, a partial card
-    read and a partly-read window. **The unmeasured bound is unchanged and is the first step of that
+    and needed fields to read), and the `json` arm STRIPS both — so neither reaches the emitted
+    object, whose key set is pinned as `_e2e_keys` in `tests/board-stats-selftest.sh` and asserted
+    there on a whole read, a partial card read and a partly-read window. **The unmeasured bound is unchanged and is the first step of that
     half, not a detail of it:** nothing in this repository consumes `board-stats --format json`
     (grepped), which is a statement about this repository and not about who runs the tool.
 

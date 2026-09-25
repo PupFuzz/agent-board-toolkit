@@ -843,6 +843,18 @@ kb_api() { printf '%s' '{"data":{"columns":[],"swimlanes":[],"cells":[]}}'; }
 eq "control: an EMPTY preview is readable, with no error" '{"columns":[],"swimlanes":[],"cells":[]} null' \
    "$(_bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" | jq -c '.breaches, .error' | paste -sd' ')"
 
+# A board-stats vendored beside a lib that predates kb_jq_one (v0.36.0) must say THAT, not blame
+# the server: the call would answer rc 127 with no output, which the shape guard reads as a body
+# it could not parse (card#9756's rule — a missing lib function is named, by definedness).
+_BS_STALE_LIB_ERR="bin/_kb-board-lib.sh beside this board-stats has no kb_jq_one — the lib is older than this tool; re-vendor bin/_kb-board-lib.sh together with bin/board-stats"
+kb_api() { printf '%s\n' "$2" >> "$TMP/wip-calls"; cat "$TMP/wip-breaches.json"; }
+: > "$TMP/wip-calls"
+wstale="$( unset -f kb_jq_one; _bs_wip_breaches 1 "$wcfg" "$TMP/wbr.body" )"
+eq "a lib without kb_jq_one is named as the cause, never the server" "$_BS_STALE_LIB_ERR" \
+   "$(printf '%s' "$wstale" | jq -r '.error')"
+eq "…with no breach set claimed"                    "null" "$(printf '%s' "$wstale" | jq -c '.breaches')"
+eq "…and no request issued for a body it cannot read" "0" "$(wc -l < "$TMP/wip-calls" | tr -d ' ')"
+
 echo "== _bs_one_board + _bs_render_text — the wip section reaches the report =="
 # _wip_render <board-object>: the text a human reads for that one board.
 _wip_render() {
@@ -917,6 +929,22 @@ wnone="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-nolimit.jso
 eq "control: limits present-and-null ARE none set"  "true true" \
    "$(has 'column limits: none set' "$wnone") $(has 'swimlane limits: none set' "$wnone")"
 eq "control: …and say nothing about NOT REPORTED"   "false" "$(has 'NOT REPORTED' "$wnone")"
+
+# NO STAGE LIST is not NO LIMITS. A preload whose `.data.workflows` is absent, or whose workflows
+# carry no `stages` key, reported no stage at all — so neither column limits nor is_terminal can
+# be "none", and `stages` is named in `.wip.unreported`.
+for shape in 'del(.data.workflows)' '.data.workflows |= map(del(.stages))'; do
+    jq -c "$shape" "$TMP/wip-preload.json" > "$TMP/wip-preload-nost.json"
+    eq "no stage list is named unreported: $shape"   "true" \
+       "$(_bs_wip_config "$(cat "$TMP/wip-preload-nost.json")" | jq '.unreported | index("stages") != null')"
+    wnost="$(_wip_section "$(_wip_render "$(_wip_board "$TMP/wip-preload-nost.json" "$FX_NO_BREACHES")")")"
+    eq "…column limits are NOT REPORTED: $shape"     "true" "$(has 'column limits: NOT REPORTED by this host — unknown, not none' "$wnost")"
+    eq "…is_terminal is NOT REPORTED: $shape"        "true" "$(has 'is_terminal: NOT REPORTED by this host' "$wnost")"
+    eq "…and nothing says none for them: $shape"     "false false" \
+       "$(has 'column limits: none set' "$wnost") $(has 'is_terminal (board-declared): none' "$wnost")"
+done
+eq "control: a preload WITH stages leaves stages reported" "false" \
+   "$(_bs_wip_config "$(cat "$TMP/wip-preload.json")" | jq '.unreported | index("stages") != null')"
 
 # An unreadable preview is a ⚠ on the board's own failure list, and the section says it could
 # not answer — "at or over a limit now: none" would tell a refused tenant nothing is at a limit.

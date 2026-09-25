@@ -218,7 +218,9 @@ _BS_STAGEMAP_JQ='
 # set" for a limit that may be refusing the tenant's moves right now. `is_terminal: false` is the
 # same trap. So presence is tested with `has`, never `//`, and every absent field is NAMED in
 # `unreported` for the renderer to print in its place. A field counts as reported only when EVERY
-# row carries it; over zero rows nothing was reported either way, and nothing is claimed.
+# row carries it. Zero rows is not zero limits: a preload with no stage list (no `workflows`, or
+# workflows with no `stages`) names `stages` itself, and the renderer prints NOT REPORTED for
+# both stage-level fields; zero swimlanes under a present `swimlanes` key is a real empty list.
 _BS_WIP_JQ='
 def fld($rows; $k): ($rows | length) > 0 and all($rows[]; has($k));
 (fromjson? // null) as $p
@@ -228,6 +230,7 @@ def fld($rows; $k): ($rows | length) > 0 and all($rows[]; has($k));
   | [ $b.swimlanes[]? | objects | select(.id != null) ] as $sl
   | { enforcement: (if $b | has("wip_enforcement") then $b.wip_enforcement else null end),
       unreported: [ (if $b | has("wip_enforcement") then empty else "wip_enforcement" end),
+                    (if ($st | length) == 0 then "stages" else empty end),
                     (if ($st | length) == 0 or fld($st; "wip_limit") then empty else "stage wip_limit" end),
                     (if ($st | length) == 0 or fld($st; "is_terminal") then empty else "stage is_terminal" end),
                     (if $b | has("swimlanes") then empty else "swimlanes" end),
@@ -460,7 +463,7 @@ def nonepop($f): if $f == "" then "in window" else "in the events read" end;
              elif $w.enforcement == "enforced" then "enforced — a card newly entering a target at its limit is REFUSED"
              elif $w.enforcement == "advisory" then "advisory — limits are displayed, never enforced; no WIP refusal fires on this board"
              else "\($w.enforcement) — not a mode this tool knows" end),
-        ( if unrep("stage wip_limit") then "    column limits: NOT REPORTED by this host — unknown, not none"
+        ( if unrep("stages") or unrep("stage wip_limit") then "    column limits: NOT REPORTED by this host — unknown, not none"
           else [ $w.stages[] | select(.wip_limit != null) ] as $c
           | if ($c | length) == 0 then "    column limits: none set"
             else "    column limits:", ( $c[] | "      \(.stage | pad(46))\(.wip_limit | lpad(5))" ) end
@@ -479,7 +482,7 @@ def nonepop($f): if $f == "" then "in window" else "in the events read" end;
             else "    at or over a limit now (count/limit, the server'"'"'s own breach preview):",
                  ( $br[] | "      \(.k | pad(46))\("\(.count)/\(.limit)" | lpad(9))" ) end
           end ),
-        ( if unrep("stage is_terminal") then "    is_terminal: NOT REPORTED by this host"
+        ( if unrep("stages") or unrep("stage is_terminal") then "    is_terminal: NOT REPORTED by this host"
           else [ $w.stages[] | select(.is_terminal == true) ] as $it
           | [ $w.stages[] | select(.lane_type == "done") ] as $ld
           | "    is_terminal (board-declared): \(names([ $it[].stage ]))",
@@ -567,17 +570,24 @@ _bs_wip_config() {
 _bs_wip_breaches() {
     local board_id="$1" wip="$2" bodyf="$3" rc=0 br err=""
     local KB_API_QUIET=1
-    kb_api GET "/boards/$board_id/wip-breaches.json" > "$bodyf" || rc=$?
-    if [[ "$rc" -eq "$KB_API_RC_TRANSPORT" ]]; then
-        err="the request DID NOT COMPLETE — no answer was read"
-    elif [[ "$rc" -ne 0 ]]; then
-        err="the server ANSWERED HTTP ${KB_HTTP:-?}"
+    # Asked by DEFINEDNESS, before the GET (card#9756's rule): beside a lib that predates
+    # kb_jq_one the read below answers rc 127 with no output, which the shape guard would
+    # report as the SERVER's fault.
+    if ! declare -F kb_jq_one >/dev/null; then
+        err="bin/_kb-board-lib.sh beside this board-stats has no kb_jq_one — the lib is older than this tool; re-vendor bin/_kb-board-lib.sh together with bin/board-stats"
     else
-        # kb_jq_one, not bare jq: jq STREAMS, so `{"data":{…}}<html>` would print a verdict about
-        # the first text before faulting on the rest, and two texts would print two — which the
-        # merge below cannot take, dropping the board's whole line. See its header in the lib.
-        br="$(kb_jq_one "$(cat "$bodyf")" -c --argjson wip "$wip" "$_BS_BREACH_JQ")"
-        [[ -n "$br" ]] || err="the response is not the shape this tool reads"
+        kb_api GET "/boards/$board_id/wip-breaches.json" > "$bodyf" || rc=$?
+        if [[ "$rc" -eq "$KB_API_RC_TRANSPORT" ]]; then
+            err="the request DID NOT COMPLETE — no answer was read"
+        elif [[ "$rc" -ne 0 ]]; then
+            err="the server ANSWERED HTTP ${KB_HTTP:-?}"
+        else
+            # kb_jq_one, not bare jq: jq STREAMS, so `{"data":{…}}<html>` would print a verdict about
+            # the first text before faulting on the rest, and two texts would print two — which the
+            # merge below cannot take, dropping the board's whole line. See its header in the lib.
+            br="$(kb_jq_one "$(cat "$bodyf")" -c --argjson wip "$wip" "$_BS_BREACH_JQ")"
+            [[ -n "$br" ]] || err="the response is not the shape this tool reads"
+        fi
     fi
     if [[ -n "$err" ]]; then
         jq -cn --arg err "$err" '{breaches: null, error: $err}'
