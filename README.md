@@ -294,3 +294,7 @@ The coupling itself predates this flag and is coherent — a blocked card should
 ## Versioning
 
 `VERSION` holds the toolkit's semver. Upgrades bump it; product repos that vendor a tool record the version they vendored (see UPGRADE.md) so `agent-board-toolkit-drift-check` can flag both *content* drift and *version* skew. Composite-action consumers (INSTALL.md §6a) don't vendor — their version is the SHA pin, bumped by dependabot.
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE) (SPDX `PolyForm-Noncommercial-1.0.0`). The terms in [`LICENSE`](LICENSE) govern; in short, they permit noncommercial purposes only. Anyone who passes on a copy — including files vendored out of this repo — must include the license terms (or their URL, <https://polyformproject.org/licenses/noncommercial/1.0.0>) and the `Required Notice:` line at the top of [`LICENSE`](LICENSE); carrying `LICENSE` itself (see [`docs/INSTALL.md`](docs/INSTALL.md) §6b and [`ADOPTION.md`](ADOPTION.md)) does both. These terms apply to every copy that carries this LICENSE file: commits from this change onward, and every release from the next one. Earlier versions (every release and commit before this change) carry no LICENSE file; adding one here grants nothing for them.
