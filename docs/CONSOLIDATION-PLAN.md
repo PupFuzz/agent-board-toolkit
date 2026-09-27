@@ -646,8 +646,9 @@ finding with no owner is abandoned, not filed.
   not the two instances.** The entry above pins the mirrored *functions*; neither instance below
   was a mirrored function, and that is the whole point.
   **Instance 1 — the needle.** `_rc_digest` defines what "the same credential" MEANS: the file's
-  content **as its readers see it**, i.e. with trailing newlines stripped, because every reader
-  takes a token through `$(cat …)`. `tests/token-duplication-selftest.sh` re-spelled that rule as
+  content **as its readers see it** — at the time, trailing newlines stripped, because every
+  reader took a token through `$(cat …)`; since card#9777 trailing whitespace, because every reader
+  takes it through the lib's `kb_token_file_read`. `tests/token-duplication-selftest.sh` re-spelled that rule as
   `printf '%s\n' "$FAKE" | sha256sum` to build the needle its canon #20 absence assertions search
   the tool's whole output for. When R2 corrected the definition in the bin, the copy in the test
   stayed on RAW BYTES — so both absence rows searched for a string the tool **cannot emit on any

@@ -22,11 +22,11 @@
 #
 # It then judges the seat's CREDENTIAL topology, which is the same question one layer over
 # (card#8376): a kanban token resolving from more than one source. The same CREDENTIAL in two
-# files — the same content its READERS see, i.e. the bytes with trailing newlines stripped, which
-# is what `$(cat …)` hands every one of them — is a copy that is redundant today — FAIL. A
-# readable token file no board resolves is a second live credential — WARN, because its innocent
-# twin is a supported install (docs/INSTALL.md §3b owns all three outcomes; the reasoning for the
-# split is at the arm itself in this file).
+# files — the same content its READERS see, i.e. the bytes with trailing whitespace stripped,
+# which is what the lib's kb_token_file_read hands every one of them — is a copy that is redundant
+# today — FAIL. A readable token file no board resolves is a second live credential — WARN,
+# because its innocent twin is a supported install (docs/INSTALL.md §3b owns all three outcomes;
+# the reasoning for the split is at the arm itself in this file).
 #
 # ITS POPULATION IS EVERY DECLARED SOURCE PLUS THE LITERAL GLOB `~/.kanban-*-token`, and the
 # second half is not a widening for its own sake: an install that moves onto the store's pointer
@@ -299,8 +299,8 @@ fi
 # EFFECTIVE token file under the documented precedence — this board env's KBCARD_TOKEN_FILE > the
 # host env's > an ambient one > the coord store's `[kanban] api_token_file` pointer (INSTALL.md
 # §3b) — and then:
-#   • two DIFFERENT files holding the SAME CREDENTIAL — equal once trailing newlines are
-#     stripped, which is what `$(cat …)` hands every reader — ⇒ ✗ DUPLICATE. One of them is
+#   • two DIFFERENT files holding the SAME CREDENTIAL — equal once trailing whitespace is
+#     stripped, which is what kb_token_file_read hands every reader — ⇒ ✗ DUPLICATE. One of them is
 #     redundant today, whichever source names it; that is the copy the store rung leaves behind.
 #   • a source naming a readable token file that is the effective token of NO board ⇒ ⚠ SECOND
 #     CREDENTIAL: a DIFFERENT live token this seat carries and nothing on it resolves. WARN, not
@@ -452,13 +452,16 @@ _rc_declared_token_file() {
 # pipe into sha256sum's stdin. Not argv, not a variable, not a temp file. The caller compares
 # digests and prints none of them.
 #
-# ⛔ TRAILING NEWLINES ARE STRIPPED, AND THAT IS THE IDENTITY, not a tidy-up. Every reader of a
-# token file on this seat takes it through `$(cat …)` — `kb_read_token` and the board-env reads
-# in `_kb-board-lib.sh`, `next-dl`'s counter reads — and command substitution strips trailing
-# newlines. So docs/INSTALL.md §3b step (b)'s own recipe (`printf '%s'`, unterminated) and the
-# same secret written by an editor are ONE credential to every tool here, and a digest over the
-# RAW bytes answers "each a different credential" at rc 0 over exactly the state this leg exists
-# to detect — a confident wrong answer, in the direction that reads as healthy.
+# ⛔ TRAILING WHITESPACE IS STRIPPED, AND THAT IS THE IDENTITY, not a tidy-up. Every reader of a
+# token file on this seat takes it through the lib's `kb_token_file_read` — `kb_read_token`, the
+# board-env reads in `_kb-board-lib.sh`, `next-dl`'s counter reads — which strips trailing space,
+# tab, CR, LF, VT and FF (card#9777: a CRLF file is the same credential curl sends). So
+# docs/INSTALL.md §3b step (b)'s own recipe (`printf '%s'`, unterminated), the same secret written
+# by an editor, and the same secret saved with CRLF are ONE credential to every tool here, and a
+# digest over the RAW bytes answers "each a different credential" at rc 0 over exactly the state
+# this leg exists to detect — a confident wrong answer, in the direction that reads as healthy.
+# The set below is kb_token_file_read's, spelled for awk; tests/token-duplication-selftest.sh
+# drives the two against one corpus.
 #
 # POSIX awk only, and no `RS` games: the record-separator trick that reads a file as one record
 # needs a hex escape this tool cannot assume of the runner's awk, and it mangles a file that
@@ -472,8 +475,8 @@ _rc_declared_token_file() {
 _rc_digest() {
     local h
     h="$( { LC_ALL=C awk '{ a[NR] = $0 }
-                 END { n = NR; while (n > 0 && a[n] == "") n--
-                       for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "\n" : ""), a[i] }' <"$1" \
+                 END { s = ""; for (i = 1; i <= NR; i++) s = s (i > 1 ? "\n" : "") a[i]
+                       sub(/[ \t\n\r\v\f]+$/, "", s); printf "%s", s }' <"$1" \
            | sha256sum; } 2>/dev/null )" || return 1
     [[ -n "$h" ]] || return 1
     printf '%s' "${h%% *}"

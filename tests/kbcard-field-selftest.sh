@@ -1817,4 +1817,22 @@ eq "…named as an UNVERIFIED WRITE"                   "true" "$(has 'UNVERIFIED
 eq "…and says to treat the conversion as LANDED"     "true" "$(has 'Treat the conversion as LANDED' "$ERR")"
 eq "…and still does NOT run the --restamp-dl pass"   "0"    "$(_calls PATCH)"
 
+echo "-- retype — a refusal body echoing the bearer token is masked on stderr and in the log (card#9777) --"
+# _kbc_field_change_type_report mirrors kb_api's non-2xx print (its status line, the body, the
+# failure-log line). kb_api now masks the literal wire token out of both (card#9777); a mirror that
+# did not would be the one kbcard write path still printing a header-echoing server's
+# `Bearer <token>` to stderr and to the durable ~/.kbcard-failures.log.
+_seed "$_F_DL_NUM" "$_B_MIXED"
+_ct_saved_tok="$KB_TOKEN"; KB_TOKEN='ct-wire-token-0123456789'
+: > "$KB_LOG_FILE"
+_CT_FORCE_HTTP=422
+_CT_FORCE_BODY='{"message":"The given data was invalid.","debug":{"authorization":"Bearer ct-wire-token-0123456789"}}'
+rc=0; ERR="$(_kbc_field_retype --field dl_number --to string 2>&1 >/dev/null)" || rc=$?
+eq "a refused retype whose body echoes the token → rc 1" "1" "$rc"
+eq "…the body is still shown, token masked"         "true"  "$(has '"authorization":"Bearer ***"' "$ERR")"
+eq "…the token is on NEITHER stderr nor the failure log" "false|false" \
+   "$(has 'ct-wire-token-0123456789' "$ERR")|$(has 'ct-wire-token-0123456789' "$(cat "$KB_LOG_FILE")")"
+eq "…and the log line was written (witness)"        "true"  "$(has 'HTTP-422 {"message":"The given data was invalid."' "$(cat "$KB_LOG_FILE")")"
+KB_TOKEN="$_ct_saved_tok"; unset _ct_saved_tok
+
 _summary "kbcard-field-selftest"

@@ -112,6 +112,18 @@ done
 distinct="$(sort -u "$TMP/refusal-lines" | grep -c . || true)"
 eq "four different refusals render four DIFFERENT lines" "4" "$distinct"
 
+# ⭐ THE PARENT-WITH-OPEN-LEGS REFUSAL, rendered the way every other stage writer renders it
+# (card#9777). This tool cannot call the lib's kb_stage_write — it may not source the lib — so the
+# same shape is held by two things: this leg, which drives the render through the real move loop,
+# and tests/mirror-pair-parity-selftest.sh § 8, which holds resp_detail byte-equal to the lib's
+# kb_render_refusal. The body is MADE UP — the kanban server's refusal of a terminal move on a
+# parent with open legs is not live and its body is unpublished — and carries the token a
+# header-echoing server would echo back, which must not survive.
+STUB_PATCH_STATUS=422 STUB_PATCH_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $TOKEN_VALUE\"}}" run_promote
+eq "open-legs 422: the refusal line carries the status and the server's words, token masked" "true" \
+   "$(has '✗ DL-100 (#1): move failed (left in place) — HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$err")"
+eq "open-legs 422: …and the token appears nowhere in the run's output" "false" "$(has "$TOKEN_VALUE" "$err$out")"
+
 # ⛔ NEGATIVE CONTROL — the detector must NOT fire on a success. Without this every assertion
 # above is satisfiable by a tool that appends `HTTP …` to every line it prints.
 unset STUB_PATCH_STATUS
@@ -538,5 +550,65 @@ eq "…and no card read for one"                            "false" "$(has '/tas
 STUB_CARD_BODY="$_owned" GET_LOG="$TMP/gets.log" run_promote --dry-run
 eq "--dry-run: no write, and no card read"                "|false" "$patched|$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
 unset _move_line _tags_line _owned _tp
+
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 8 — A SECRET ENDING IN A NEWLINE OR A CR IS STILL THE ONE THE MASK MATCHES (card#9777) =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# TOKEN is read from $KANBAN_WRITEBACK_TOKEN RAW; an Actions secret or an operator's shell
+# export routinely carries a trailing newline, and the header api() builds goes through
+# `$(printf …)` (which drops a trailing LF) while curl drops a trailing CR from a header
+# line — so the value that reaches the wire, and that a header-echoing server hands back, is
+# the token WITHOUT it. resp_detail's mask is a LITERAL match against $TOKEN, so with $TOKEN
+# left raw the mask's string is longer than what the body actually carries and it misses.
+#
+# Driven through the real bin as a PROCESS, not resp_detail in isolation: the fix is at the
+# READ, before resp_detail ever sees $TOKEN, so a unit drive with a clean $TOKEN set by hand
+# (as § 3b does) cannot reach this bug at all — this section is that same echoed-body scenario
+# taken through the one call site § 3b does not cover. The rule this pins is extracted and
+# driven for real, byte for byte against the lib's kb_token_file_read, at
+# tests/mirror-pair-parity-selftest.sh § 8.
+_S8_LABELS=('a trailing LF' 'a trailing CR')
+_S8_SUFFIXES=($'\n' $'\r')
+_s8_echoed="{\"headers\":{\"Authorization\":\"Bearer $TOKEN_VALUE\"},\"message\":\"Server Error\"}"
+for _s8_i in "${!_S8_SUFFIXES[@]}"; do
+    _s8_label="${_S8_LABELS[$_s8_i]}"
+    export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE${_S8_SUFFIXES[$_s8_i]}"
+    STUB_PATCH_STATUS=500 STUB_PATCH_BODY="$_s8_echoed" run_promote
+    eq "[$_s8_label] the echoed token is NOT rendered"      "false" "$(has "$TOKEN_VALUE" "$err")"
+    eq "[$_s8_label] …it is replaced by a mask"             "true"  "$(has 'Bearer ***' "$err")"
+    eq "[$_s8_label] …and the rest of the body survives"    "true"  "$(has 'Server Error' "$err")"
+done
+unset STUB_PATCH_STATUS STUB_PATCH_BODY _s8_i _s8_label _s8_echoed _S8_LABELS _S8_SUFFIXES
+export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
+
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 9 — A WHITESPACE-ONLY SECRET IS REFUSED BY ITS OWN NAME, NOT AS 'not set' (card#9777 r3) =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# § 8's strip left ONE case unhandled: a $KANBAN_WRITEBACK_TOKEN that is SET but strips down to
+# nothing (all space/tab/CR/LF/VT/FF) used to send an empty bearer — silently, mask and all,
+# since there was no token left to leak. Refusing it (this cut) is a NEW acceptance narrowing,
+# and it must say what actually happened: "is not set" is FALSE of a variable that IS set, so
+# a whitespace-only secret gets its OWN message, told apart from the truly-absent case.
+export ATTEMPT_LOG="$TMP/attempts-s9.log"
+: > "$ATTEMPT_LOG"
+export KANBAN_WRITEBACK_TOKEN=$'   \t\n'
+run_promote
+eq "whitespace-only token: still refused, rc 2"           "2"     "$rc"
+eq "whitespace-only token: named as SET, not absent"      "true"  "$(has 'KANBAN_WRITEBACK_TOKEN is set but is empty or whitespace-only' "$err")"
+eq "whitespace-only token: …and NOT the unset wording"    "false" "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+eq "whitespace-only token: no request was issued"         "0"     "$(wc -l < "$ATTEMPT_LOG" | tr -d ' ')"
+unset ATTEMPT_LOG
+
+unset KANBAN_WRITEBACK_TOKEN
+run_promote
+eq "unset token: still the ORIGINAL wording"              "true"  "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+eq "unset token: …and NOT the whitespace-only wording"    "false" "$(has 'whitespace-only' "$err")"
+
+export KANBAN_WRITEBACK_TOKEN=""
+run_promote
+eq "empty-string token: the SAME unset wording (never seen as whitespace-only)" "true" \
+   "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+
+export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
 
 _summary "promote-refusal-detail-selftest"

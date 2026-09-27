@@ -943,7 +943,9 @@ _stub_curl_respond() { # <body> <status>
     return 0
 }
 curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"forbidden: token lacks board scope"}' 403; }
-rc=0; out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/fetch.err")" || rc=$?
+# A token-shaped token, not `tok`: the failure arms mask the literal bearer (card#9777), and `tok`
+# is a substring of this body's own prose ("token"), which no real bearer is.
+rc=0; out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" fetch-4337-token-0123456789 8 2>"$TMP/fetch.err")" || rc=$?
 eq "HTTP 403 on page 1 → rc 1"                    "1" "$rc"
 eq "HTTP 403 → no data on stdout"                 ""  "$out"
 grep -q "HTTP-403" "$FETCH_LOG" && ok "failure log carries the HTTP status" || bad "failure log missing HTTP-403"
@@ -1381,6 +1383,64 @@ eq "CONTROL: …and no mask was inserted into it"                           "fal
 unset -f _ui_case
 unset _UI_PW _UI_USER _UI_BASE _UI_LOG
 unset -f curl
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: a body that ECHOES the bearer never reaches stderr or the log (card#9777) =="
+# The same request sends $token in its Authorization header, and a server that renders debug
+# output echoes request headers into its error page (card#9301). The stub is that server: it
+# reads the header curl was fed on stdin and puts it into the body, so the token in the body is
+# the one that went on the wire — not a fixture string that merely resembles it.
+# ⛔ ASSERTED ON THE TOKEN'S ABSENCE, paired with a positive control that the line was written
+# and that the body really carried the token (the card#7500 block's rule: an empty log or a stub
+# that never echoed satisfies every absence while measuring nothing).
+_ET_TOK='fetch-echo-token-9777-0123456789abcdef'
+_ET_LOG="$TMP/echo-token-fetch.log"; _ET_ERR="$TMP/echo-token-fetch.err"; _ET_SEEN="$TMP/echo-token-seen"
+_et_echo() { # <status> <body-prefix> <body-suffix>: echo the received auth header between them
+    local hdr; hdr="$(cat)"; printf '%s' "$hdr" > "$_ET_SEEN"
+    printf '%s%s%s\n__HTTP__%s' "$2" "$hdr" "$3" "$1"
+}
+_et_case() { # <label> <expect-rc> <log-marker>; the caller has installed the curl stub
+    local label="$1" exprc="$2" marker="$3" rc=0 logtext errtext
+    : > "$_ET_LOG"; : > "$_ET_SEEN"
+    KB_FETCH_LOUD=1 KB_LOG_FILE="$_ET_LOG" fetch_board_cards "https://kanban.test/api/v3" "$_ET_TOK" 8 \
+        >/dev/null 2>"$_ET_ERR" || rc=$?
+    logtext="$(cat "$_ET_LOG")"; errtext="$(cat "$_ET_ERR")"
+    eq "$label (rc)" "$exprc" "$rc"
+    eq "$label — control: the stub was sent the token and echoed it" "true" "$(has "Bearer $_ET_TOK" "$(cat "$_ET_SEEN")")"
+    eq "$label — the durable log line was written (positive control)" "true" "$(has "$marker" "$logtext")"
+    eq "$label — …with the body in it, the token masked" "true|true" \
+       "$(has 'Bearer ***' "$logtext")|$(has 'Bearer ***' "$errtext")"
+    eq "$label — the token is NOT in the durable log" "false" "$(has "$_ET_TOK" "$logtext")"
+    eq "$label — the token is NOT on stderr"          "false" "$(has "$_ET_TOK" "$errtext")"
+}
+curl() { _et_echo 500 '{"message":"Server Error","headers":"' '"}'; }
+_et_case "HTTP-500 echoing the request headers" 1 'HTTP-500 {"message":"Server Error"'
+curl() { _et_echo 200 '<html><pre>' '</pre></html>'; }
+_et_case "UNREADABLE-BODY (a 2xx echoing the request headers)" 1 'HTTP-200 UNREADABLE-BODY <html><pre>'
+# CONTROL for the mask's scope: an empty token masks nothing, so the body is logged verbatim.
+curl() { cat >/dev/null; printf '%s\n__HTTP__%s' '{"error":"forbidden"}' 403; }
+: > "$_ET_LOG"
+KB_LOG_FILE="$_ET_LOG" fetch_board_cards "https://kanban.test/api/v3" "" 8 >/dev/null 2>&1 || true
+eq "CONTROL: an empty token leaves the body byte-identical" "true|false" \
+   "$(has 'HTTP-403 {"error":"forbidden"}' "$(cat "$_ET_LOG")")|$(has '***' "$(cat "$_ET_LOG")")"
+unset -f _et_echo _et_case curl
+unset _ET_TOK _ET_LOG _ET_ERR _ET_SEEN
+
+echo "== kb_api: a transport failure's partial body is masked in the FAILED-CURL line (card#9777) =="
+# A transfer cut off mid-body (a --max-time expiry) leaves the part already read in kb_api's
+# capture beside curl's error text, and that capture is the FAILED-CURL log line.
+reset_env
+KB_API="https://kanban.test/api/v3"; KB_TOKEN="kbapi-partial-token-9777-abcdef"
+_FC_LOG="$TMP/kbapi-failed-curl.log"; : > "$_FC_LOG"
+curl() { local h; h="$(cat)"; printf '{"debug":"%s' "$h"; echo 'curl: (28) Operation timed out' >&2; return 28; }
+rc=0; KB_LOG_FILE="$_FC_LOG" kb_api GET /tasks/1.json >/dev/null 2>&1 || rc=$?
+eq "FAILED-CURL: rc \$KB_API_RC_TRANSPORT, the line written with the partial body masked" \
+   "$KB_API_RC_TRANSPORT|true|true" \
+   "$rc|$(has 'GET /tasks/1.json FAILED-CURL {"debug":"Authorization: Bearer ***' "$(cat "$_FC_LOG")")|$(has 'Operation timed out' "$(cat "$_FC_LOG")")"
+eq "FAILED-CURL: the token is NOT in the durable log" "false" "$(has "$KB_TOKEN" "$(cat "$_FC_LOG")")"
+unset -f curl
+unset _FC_LOG
+reset_env
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: the optional [query] — one encoded term inside the same q= (card#6771) =="
@@ -2071,6 +2131,17 @@ eq "stamp: a refused tag write → NOT stamped, the status and the server's reas
 OW_PATCH_HTTP=422 OW_PATCH_BODY=$'{"message":"The tags.1 field must not be\\ngreater than 64 characters."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
 eq "stamp: a 422 carries its reason, flattened to one line" "true" \
    "$(has 'HTTP 422, server said: The tags.1 field must not be greater than 64 characters.' "$KB_OWNER_NOTE")"
+# The quoted reason is a server body, and a debug-rendering server echoes the bearer into it
+# (card#9777): masked BEFORE the 300-byte cut, so a token straddling the cut leaves no prefix.
+_ow_tok='owner-tag-token-9777-0123456789abcdef'
+OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"Server Error: Authorization: Bearer $_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
+eq "stamp: a reason echoing the bearer → quoted with the token masked" "true|false" \
+   "$(has 'HTTP 500, server said: Server Error: Authorization: Bearer ***' "$KB_OWNER_NOTE")|$(has "$_ow_tok" "$KB_OWNER_NOTE")"
+_ow_pad="$(printf 'x%.0s' $(seq 1 290))"
+OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"$_ow_pad$_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
+eq "stamp: a bearer straddling the 300-byte cut leaves no prefix of it" "true|false" \
+   "$(has "${_ow_pad}***" "$KB_OWNER_NOTE")|$(has "${_ow_tok:0:8}" "$KB_OWNER_NOTE")"
+unset _ow_tok _ow_pad
 OW_PATCH_HTTP=000 OW_PATCH_BODY='' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
 eq "stamp: a tag write that never completed is UNKNOWN, not refused" "true" "$(has 'DID NOT COMPLETE' "$KB_OWNER_NOTE")"
 
@@ -2129,5 +2200,131 @@ eq "a stage the policy does not name → LEFT ALONE"    "1" "$(_sv 999 81 82 83)
 eq "no held column: no card is ever HELD"             "1" "$(_sv 83 81 82 '')"
 eq "an empty current stage → LEFT ALONE"              "1" "$(_sv '' 81 82 83)"
 unset -f _pin _sv
+
+# ---------------------------------------------------------------------------
+echo "== kb_stage_write: kb_api's rc contract, plus the refusal render (card#9777) =="
+# Called in THIS shell (never through `$(…)`) so KB_HTTP and the stub's argv are readable after the
+# call — the same reason board-card-start calls it that way. The per-site render is proven at each
+# mover's own selftest; this block pins the primitive's contract those arms rely on.
+reset_env
+KB_API="https://kanban.test/api/v3"; KB_TOKEN="sw-token-0123456789abcdef"
+SW_LOGF="$TMP/sw-failures.log"; SW_OUT="$TMP/sw.out"; SW_ERR="$TMP/sw.err"
+SW_REFUSAL="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $KB_TOKEN\"}}"
+SW_LINE='kb-board-lib-selftest: PATCH /tasks/5.json answered HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}'
+_sw() { rc=0; : > "$SW_LOGF"; KB_LOG_FILE="$SW_LOGF" kb_stage_write PATCH /tasks/5.json '{"workflow_stage_id":51}' >"$SW_OUT" 2>"$SW_ERR" || rc=$?; }
+
+# curl runs inside kb_api's own `$(…)`, so its argv is written to a FILE — an array assigned there
+# dies with that subshell, and an absence asserted over it would be vacuous.
+SW_ARGV="$TMP/sw.argv"
+curl() { _STUB_ARGS=("$@"); printf '%s\n' "$@" > "$SW_ARGV"; _stub_curl_respond '{"data":{"id":5,"workflow_stage_id":51}}' 200; }
+: > "$SW_ARGV"
+_sw
+eq "2xx → rc 0, the body on stdout, nothing on stderr" \
+   '0|{"data":{"id":5,"workflow_stage_id":51}}|' "$rc|$(cat "$SW_OUT")|$(cat "$SW_ERR")"
+eq "2xx → it is a PATCH carrying the stage body (witness: argv was captured)" "true|true" \
+   "$(has_line 'PATCH' "$(cat "$SW_ARGV")")|$(has_line '{"workflow_stage_id":51}' "$(cat "$SW_ARGV")")"
+eq "2xx → the token is NOT in curl's argv (it rides stdin)" "false" "$(has "$KB_TOKEN" "$(cat "$SW_ARGV")")"
+
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond "$SW_REFUSAL" 422; }
+_sw
+eq "422 → rc 1 (the server answered), nothing on stdout" "1|" "$rc|$(cat "$SW_OUT")"
+eq "422 → stderr is EXACTLY the one render line"         "$SW_LINE" "$(cat "$SW_ERR")"
+eq "422 → KB_HTTP carries the status to the caller's shell" "422" "$KB_HTTP"
+eq "422 → the durable log records it with the token masked" "true|false" \
+   "$(has 'PATCH /tasks/5.json HTTP-422 {"error":"parent has open legs"' "$(cat "$SW_LOGF")")|$(has "$KB_TOKEN" "$(cat "$SW_LOGF")")"
+# The caller's own knobs do not change the render: ERRBODY would print the body a second time and
+# QUIET would drop the render — kb_stage_write shadows both for its one call.
+KB_API_ERRBODY=1 _sw
+eq "422 under the caller's KB_API_ERRBODY=1 → still exactly the one line" "$SW_LINE" "$(cat "$SW_ERR")"
+KB_API_QUIET=1 _sw
+eq "422 under the caller's KB_API_QUIET=1 → still rendered"               "$SW_LINE" "$(cat "$SW_ERR")"
+# ⛔ CONTROL for the mask on the log: kb_api under ERRBODY with the SAME body puts the token nowhere
+# either — and the bare body really does carry it, so the two absences above are measurements.
+eq "control: the stub's body really carries the token" "true" "$(has "$KB_TOKEN" "$SW_REFUSAL")"
+rc=0; KB_API_ERRBODY=1 KB_LOG_FILE="$SW_LOGF" kb_api PATCH /tasks/5.json '{}' >/dev/null 2>"$SW_ERR" || rc=$?
+eq "kb_api's own ERRBODY echo masks the token too" "1|false|true" \
+   "$rc|$(has "$KB_TOKEN" "$(cat "$SW_ERR")")|$(has 'Bearer ***' "$(cat "$SW_ERR")")"
+
+curl() { cat >/dev/null; return 7; }
+_sw
+eq "transport → rc \$KB_API_RC_TRANSPORT, not 1" "$KB_API_RC_TRANSPORT" "$rc"
+eq "transport → kb_api's own line, and NO render (no answer was read)" "true|false" \
+   "$(has 'curl failed on PATCH /tasks/5.json' "$(cat "$SW_ERR")")|$(has 'answered' "$(cat "$SW_ERR")")"
+eq "transport → KB_API_ERR_RESP holds no earlier call's body" "" "$KB_API_ERR_RESP"
+unset -f curl _sw
+unset SW_LOGF SW_OUT SW_ERR SW_REFUSAL SW_LINE SW_ARGV
+reset_env
+
+# ---------------------------------------------------------------------------
+echo "== kb_token_file_read: the token a tool holds IS the token on the wire (card#9777) =="
+# kb_mask_token masks the LITERAL token, so it is only as good as the equality between KB_TOKEN
+# and the bytes a server can echo back. `$(cat …)` alone strips trailing LF and nothing else: a
+# CRLF token file (normal on Windows/Git-Bash) read as `tok\r`; curl drops that CR from a `-H @-`
+# header line, so auth worked, and a server echoing the header returned the token WITHOUT it —
+# the mask missed and the bearer reached stderr and the durable log (MEASURED against a
+# header-echoing server behind real curl 8.5). A trailing space/tab is SENT by curl, and a server
+# trims it as header whitespace (RFC 9110 §5.5) before echoing — the same miss.
+_tfr() { # <file-content> — kb_token_file_read's value, %q-quoted so a stray byte is visible
+    local v="__untouched__"; printf '%s' "$1" > "$TMP/tfr.token"
+    kb_token_file_read v "$TMP/tfr.token" || { echo "rc=$?"; return 0; }
+    printf '%q' "$v"
+}
+eq "a CRLF file → the bare token"                       "tok123"          "$(_tfr $'tok123\r\n')"
+eq "trailing spaces/tab → the bare token"               "tok123"          "$(_tfr $'tok123 \t \n')"
+eq "several trailing newlines → the bare token"         "tok123"          "$(_tfr $'tok123\n\n\n')"
+eq "no terminator at all → unchanged"                   "tok123"          "$(_tfr 'tok123')"
+eq "an INTERIOR CR is kept (trailing is the whole rule)" "$'tok\r123'"   "$(_tfr $'tok\r123\n')"
+eq "LEADING whitespace is kept"                         "\\ tok123"       "$(_tfr $' tok123\n')"
+_tfr_v="__untouched__"; rc=0; kb_token_file_read _tfr_v "$TMP/no-such.token" || rc=$?
+eq "an unreadable file → rc 1 and the caller's var untouched" "1|__untouched__" "$rc|$_tfr_v"
+reset_env
+printf 'tok123\r\n' > "$TMP/crlf.token"
+kb_read_token "$TMP/crlf.token"
+eq "kb_read_token over a CRLF file → KB_TOKEN is the bare token" "tok123" "$(printf '%q' "$KB_TOKEN")"
+# UNCHANGED, pinned: a file that passes -r and still cannot be read (a directory) leaves KB_TOKEN
+# empty at rc 0, exactly as the `$(cat …)` this replaced did — a refusal there is an acceptance
+# change this card does not make.
+reset_env; mkdir -p "$TMP/dir.token"; KB_TOKEN="stale"; rc=0; kb_read_token "$TMP/dir.token" || rc=$?
+eq "kb_read_token over a DIRECTORY → rc 0, KB_TOKEN empty (as before)" "0|" "$rc|$KB_TOKEN"
+# kb_load_config's own read goes the same way (it used to `cat` the file itself).
+reset_env
+{ echo 'export KBCARD_API="https://kanban.test/api/v3"'; echo "export KBCARD_TOKEN_FILE=\"$TMP/crlf.token\""; } > "$KANBAN_HOST_ENV"
+echo 'KB_BOARD_ID=42' > "$TMP/.kanban-crlf-board.env"
+rc=0; kb_load_config crlf 2>/dev/null || rc=$?
+eq "kb_load_config over a CRLF token file → rc 0, the bare token" "0|tok123" "$rc|$(printf '%q' "${KB_TOKEN:-}")"
+unset -f _tfr; unset _tfr_v
+
+echo "== a CRLF / trailing-space token file + a header-echoing server: the echo is MASKED (card#9777) =="
+# The stub is the server behind curl: it reads the header line curl was fed on stdin, drops the
+# trailing CR curl drops and the trailing whitespace the server trims (both measured above), and
+# echoes what is left in a 500 body — so the token in the body is the one that reached the server,
+# not the one the tool happens to hold. Watched LEAK on the pre-fix lib (a373666) for the CRLF file.
+reset_env
+KB_API="https://kanban.test/api/v3"
+CE_LOG="$TMP/crlf-echo.log"; CE_ERR="$TMP/crlf-echo.err"; CE_SEEN="$TMP/crlf-echo.seen"
+curl() {
+    local h; h="$(cat)"; h="${h%"${h##*[!$' \t\r']}"}"; printf '%s' "$h" > "$CE_SEEN"
+    _stub_curl_respond "{\"message\":\"Server Error\",\"headers\":{\"authorization\":\"${h#Authorization: }\"}}" 500
+}
+for _ce in 'CRLF' 'trailing-space'; do
+    case "$_ce" in
+        CRLF)           printf 'crlf-echo-token-9777-abcdef\r\n'   > "$TMP/ce.token" ;;
+        trailing-space) printf 'crlf-echo-token-9777-abcdef  \n'   > "$TMP/ce.token" ;;
+    esac
+    kb_read_token "$TMP/ce.token"
+    : > "$CE_LOG"; : > "$CE_SEEN"; rc=0
+    KB_LOG_FILE="$CE_LOG" kb_stage_write PATCH /tasks/5.json '{"workflow_stage_id":51}' >/dev/null 2>"$CE_ERR" || rc=$?
+    eq "$_ce: rc 1, the refusal rendered and logged (positive control)" "1|true|true" \
+       "$rc|$(has 'answered HTTP 500' "$(cat "$CE_ERR")")|$(has 'PATCH /tasks/5.json HTTP-500' "$(cat "$CE_LOG")")"
+    eq "$_ce: control — the server really saw, and echoed, the bare token" "true" \
+       "$(has 'Bearer crlf-echo-token-9777-abcdef' "$(cat "$CE_SEEN")")"
+    eq "$_ce: masked IN PLACE on stderr and in the log" "true|true" \
+       "$(has '"Bearer ***"' "$(cat "$CE_ERR")")|$(has '"Bearer ***"' "$(cat "$CE_LOG")")"
+    eq "$_ce: the token is NOT on stderr"          "false" "$(has 'crlf-echo-token-9777-abcdef' "$(cat "$CE_ERR")")"
+    eq "$_ce: the token is NOT in the durable log" "false" "$(has 'crlf-echo-token-9777-abcdef' "$(cat "$CE_LOG")")"
+done
+unset -f curl
+unset CE_LOG CE_ERR CE_SEEN _ce
+reset_env
 
 _summary "kb-board-lib-selftest"

@@ -2127,6 +2127,31 @@ eq "control: …and re-read the board's field index to confirm the converge" "2"
 eq "control: …and projects the reconciled option set" '["a","b"]' \
    "$(jq -c '[.options[].value]' <<<"$out")"
 
+# ⭐ a kbcard beside a lib without kb_mask_token refuses field retype BEFORE its conversion POST,
+# not after it (card#9777 review round). retype's own non-2xx report masks through kb_mask_token
+# AFTER the POST already went out — asked for by definedness at cmd_field's own dispatch instead:
+# rc 2, no request at all, the lib named. No other field sub-verb calls kb_mask_token, driven
+# below as the negative half of that same claim.
+_fstale="$(_bin_beside_stale_lib "$TMP/stale-field-mask" "$BIN" kb_mask_token)"
+kb_stub_reset; rc=0
+out="$("$_fstale" field retype --field stage --to string 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_mask_token: field retype --field stage --to string → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+   "$(has "kbcard: field retype: kb_mask_token is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+for _fsub in "list" "set-options --field stage --options a,b" "create --key probe --label Probe --type string" "delete --field stage"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$("$_fstale" field $_fsub 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ …and field $_fsub is UNAFFECTED (does not call kb_mask_token)" "false" \
+       "$(has 'kb_mask_token is not defined' "$err")"
+done
+unset _fsub
+# Control for the zero count: the SAME call through the real kbcard does reach the wire.
+kbc field retype --field stage --to string
+eq "control: with the real lib, field retype --field stage --to string issues at least one request" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _fstale
+
 echo "-- set-options: a 2xx that did NOT converge is a HARD FAILURE, not a reconcile --"
 # The claim this verb makes is about the BOARD ("the options are now exactly this list, in this
 # order"), so it is made from a read of the board and not from the PATCH's own echo. With the
@@ -3120,7 +3145,14 @@ export U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO
 kb_stub_route() {
     local method="$1" url="$2" route_n="$4"
     case "$method $url" in
-        "DELETE "*/task_links/*)    printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}" ;;
+        # U_DEL_ECHO=1: the body ECHOES the bearer this request carried — $BEARER is the stub's
+        # own parse of the `-H @-` header (tests/_kb-api-stub-curl.sh), in scope here because
+        # the stub calls this route in its own shell (card#9777).
+        "DELETE "*/task_links/*)    if [[ -n "${U_DEL_ECHO:-}" ]]; then
+                                        printf '%s\n%s' "${U_DEL_HTTP:-204}" "{\"message\":\"debug\",\"authorization\":\"Bearer $BEARER\"}"
+                                    else
+                                        printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}"
+                                    fi ;;
         "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
         "GET "*/tasks/505.json)     if [[ "$route_n" == 1 ]]; then
                                         printf '%s\n%s' "${U_PRE_HTTP:-200}" "$U_FROM_PRE"
@@ -3256,6 +3288,38 @@ U_DEL_HTTP=500 U_DEL_BODY='{"message":"boom"}' kbc unlink --link-id 9 --on 505
 eq "unlink: an unclassified failure → rc 1"                 "1" "$rc"
 eq "unlink: …calls the outcome UNKNOWN rather than picking one" "true" \
    "$(has 'Whether anything was removed is UNKNOWN' "$err")"
+# A server that echoes request headers into its error body hands the bearer back (card#9777):
+# both arms that quote the body mask it. Paired with a positive control that the quote line was
+# printed and one that the DELETE really carried the token, so each absence is a measurement.
+for _ue in 403 500; do
+    U_DEL_HTTP=$_ue U_DEL_ECHO=1 kbc unlink --link-id 9 --on 505
+    eq "unlink: HTTP $_ue echoing the bearer → rc 1"          "1" "$rc"
+    eq "unlink: …control: the DELETE carried the token the body echoes" "stub-token" \
+       "$(kb_stub_bearers DELETE '/task_links/9.json')"
+    eq "unlink: …control: the 'server said' line was printed, with the echoed body" "true" \
+       "$(has 'kbcard:   server said: {"message":"debug","authorization":"Bearer ' "$err")"
+    eq "unlink: …the 'server said' line was printed, the token masked" "true" \
+       "$(has 'kbcard:   server said: {"message":"debug","authorization":"Bearer ***"}' "$err")"
+    eq "unlink: …and the token is NOT on stderr"              "false" "$(has 'stub-token' "$err")"
+done
+unset _ue
+
+# ⭐ a kbcard beside a lib without kb_mask_token refuses unlink BEFORE the DELETE, not after it
+# (card#9777 review round). Beside such a lib the DELETE used to go out and only THEN die at
+# `kb_mask_token: command not found` (rc 127) while masking the outcome it was about to report
+# — asked for by definedness at dispatch instead, the same way the write-side verbs above are
+# asked for kb_stage_write: rc 2, no request at all, the lib named.
+_unstale="$(_bin_beside_stale_lib "$TMP/stale-unlink-mask" "$BIN" kb_mask_token)"
+kb_stub_reset; rc=0
+out="$("$_unstale" unlink --link-id 9 --on 505 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_mask_token: unlink --link-id 9 --on 505 → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+   "$(has "kbcard: unlink: kb_mask_token is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+# Control for the zero count: the SAME call through the real kbcard does reach the wire.
+kbc unlink --link-id 9 --on 505
+eq "control: with the real lib, unlink --link-id 9 --on 505 issues at least one request" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _unstale
 
 echo "-- which end is FROM comes from the card's own \`direction\`, never from the flag --"
 # --on takes EITHER end, so a verb that inferred from/to from the flag would print a reversed
@@ -5435,6 +5499,40 @@ for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7"; do
     eq "control: with the real lib, patch $_args issues at least one request" "true" \
        "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 done
+# --- ⭐ a kbcard beside a lib without kb_stage_write refuses every STAGE-WRITING verb (card#9777) --
+# Every stage write goes through the lib's kb_stage_write, so beside a lib that predates it the
+# write died at rc 127 with a bare `command not found`, after the verb's own reads. Asked for by
+# definedness at dispatch: rc 2, no request at all, the lib named — and the read verbs unaffected.
+# The board env this section inherits declares none of the stages/types these writes name, so it
+# would refuse them OFFLINE whatever the lib — re-declared here so the zero-request rows below are
+# measurements (the next section rebuilds the whole fixture).
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49' 'export KB_TYPE_FR=7'
+_psstale="$(_bin_beside_stale_lib "$TMP/stale-sw" "$BIN" kb_stage_write)"
+for _args in "create-card --type fr --name probe --column backlog" "move --task 505 --column in_progress" \
+             "patch --task 505 --dl DL-7" "move-board --task 505 --to-board other --yes"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$(KB_STUB_PAYLOAD="$PR178" "$_psstale" $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without kb_stage_write: $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+       "$(has "kb_stage_write is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+done
+# Control for the zero counts: the SAME calls through the real kbcard do reach the wire. (move-board
+# is not in it — no `other` board env exists here, so it refuses offline either way; its rows
+# above are carried by the message.)
+for _args in "create-card --type fr --name probe --column backlog" "move --task 505 --column in_progress" \
+             "patch --task 505 --dl DL-7"; do
+    kb_stub_reset
+    # shellcheck disable=SC2086
+    KB_STUB_PAYLOAD="$PR178" "$BIN" $_args >/dev/null 2>&1 || true
+    eq "control: with the real lib, $_args issues at least one request" "true" \
+       "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+done
+# Control: the preflight is scoped to the writers — a read verb beside the same lib still reads.
+kb_stub_reset; rc=0
+KB_STUB_PAYLOAD="$PR178" "$_psstale" show --task 505 >/dev/null 2>"$TMP/e" || rc=$?
+eq "control: show beside that lib → rc 0 and it reached the wire" "0|true" \
+   "$rc|$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args _v
 
 unset -f kb_stub_route ppay npatch nget
@@ -6156,5 +6254,78 @@ eq "M19 an assignee the target kept → rc 0, and NO 'cleared' line" "0|false" "
 
 unset -f kb_stub_route mbc mb_post
 unset MB_PRE MB_OK MB_ARGS MB_LEAK
+
+echo "== a REFUSED stage write says why, with the token masked — kb_stage_write (card#9777) =="
+# THE CLAIM: every kbcard write that carries a stage — move, patch --column, create-card and
+# move-board — goes through the lib's kb_stage_write, so a board that refuses it is rendered as
+# `kbcard: <METHOD> <path> answered HTTP <status>, server said: <excerpt>`, with the bearer token
+# masked out of the excerpt and out of the durable failure log. Before it, kbcard echoed the RAW
+# body under KB_API_ERRBODY=1: a header-echoing server's copy of `Bearer <token>` went to stderr
+# and to ~/.kbcard-failures.log verbatim.
+#
+# ⚠ WHAT THIS DOES NOT PROVE. The 422 body below is made up — plausible, not captured: the kanban
+# server's refusal of a terminal move on a parent with open legs ("branch A") is not live and its
+# body is unpublished. What is proven is that WHATEVER body the board sends is rendered, masked
+# and bounded at every one of these sites; the first real refusal is card#9781's check.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_SWIMLANE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_TYPE_FEATURE=7'
+kb_stub_board_config tgt 77 'export KB_STAGE_BACKLOG=880' 'export KB_TYPE_FEATURE=19'
+kb_stub_install
+SW_TOKEN="$(cat "$KB_STUB_TOKEN_FILE")"
+SW_CARD='{"data":{"id":505,"name":"probe","board_id":42,"workflow_stage_id":48,"card_type_id":7,"payload":null}}'
+SW_REFUSAL="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $SW_TOKEN\"}}"
+export SW_CARD SW_REFUSAL
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/505.json*)           printf '200\n%s' "$SW_CARD" ;;
+        "PATCH "*/tasks/505.json)          printf '422\n%s' "$SW_REFUSAL" ;;
+        "POST "*/tasks.json)               printf '422\n%s' "$SW_REFUSAL" ;;
+        "POST "*/tasks/505/move-board.json) printf '422\n%s' "$SW_REFUSAL" ;;
+    esac
+}
+export -f kb_stub_route
+SW_SHOWN='HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}'
+SW_LOG="$HOME/.kbcard-failures.log"
+# sw_leg <label> <method> <path> <verb-args…> — one refused write, and everything it must say.
+sw_leg() {
+    local label="$1" method="$2" path="$3"; shift 3
+    : > "$SW_LOG"
+    kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"
+    eq "$label: the refused write → rc 1"                       "1" "$rc"
+    eq "$label: …the write DID reach the wire (the refusal is the board's)" "1" "$(kb_stub_count "$method" "$path")"
+    eq "$label: …stderr names method, path, status and the server's own words" "true" \
+       "$(has "kbcard: $method $path answered $SW_SHOWN" "$err")"
+    eq "$label: …the bearer token is on NEITHER stderr nor the failure log" "false|false" \
+       "$(has "$SW_TOKEN" "$err")|$(has "$SW_TOKEN" "$(cat "$SW_LOG")")"
+    eq "$label: …the failure log still records the refusal, masked" "true" \
+       "$(has "HTTP-422 {\"error\":\"parent has open legs\"" "$(cat "$SW_LOG")")"
+    # KB_API_ERRBODY=1 is kbcard's global; kb_stage_write owns the render for its one call, so the
+    # body must appear ONCE — a second, raw copy is the leak this card closes.
+    eq "$label: …and the body is rendered ONCE, not echoed a second time raw" "1" \
+       "$(/usr/bin/grep -c 'parent has open legs' <<<"$err" || true)"
+    eq "$label: …and nothing on stdout" "" "$out"
+}
+sw_leg "move"          PATCH /tasks/505.json      move --task 505 --column shipped_to_dev
+sw_leg "patch --column" PATCH /tasks/505.json     patch --task 505 --column shipped_to_dev
+sw_leg "create-card"   POST  /tasks.json          create-card --type feature --name probe
+sw_leg "move-board"    POST  /tasks/505/move-board.json move-board --task 505 --to-board tgt --column backlog --yes
+# THE CONTROL: the same route answering 2xx for a move — so a green above is the refusal being
+# rendered, not a verb that prints this line on every run.
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/505.json*)  printf '200\n%s' "$SW_CARD" ;;
+        "PATCH "*/tasks/505.json) printf '200\n%s' "$(jq -c '.data.workflow_stage_id = 48' <<<"$SW_CARD")" ;;
+    esac
+}
+export -f kb_stub_route
+kb_stub_reset; rc=0; out="$("$BIN" move --task 505 --column backlog 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"
+eq "control: the same move answered 2xx → rc 0, and no refusal line" "0|false" "$rc|$(has 'answered HTTP' "$err")"
+unset -f kb_stub_route sw_leg
+unset SW_TOKEN SW_CARD SW_REFUSAL SW_SHOWN SW_LOG
 
 _summary "kbcard-selftest"

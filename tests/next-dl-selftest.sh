@@ -906,7 +906,7 @@ unset _ndl_quoted
 # read-outcome-collapse class (tests/read-outcome-collapse-selftest.sh) landing on a secret. The
 # producer is this file's own documented one: a token file that is a DIRECTORY passes
 # kb_resolve_env's `-r` test, so the config RESOLVES, the request goes out with an EMPTY bearer,
-# and `cat` fails at render time. (An unreadable regular file does NOT reach here — `-r` refuses
+# and the re-read fails at render time. (An unreadable regular file does NOT reach here — `-r` refuses
 # it upstream and the call is never made; measured.)
 _ndl_tok_saved="$(cat "$KB_STUB_TOKEN_FILE")"
 rm -f "$KB_STUB_TOKEN_FILE"; mkdir -p "$KB_STUB_TOKEN_FILE"
@@ -917,6 +917,30 @@ eq "unreadable token file → the body is WITHHELD rather than quoted unmasked" 
    "$(has 'withheld' "$err")"
 eq "unreadable token file → and none of the body's own bytes are printed" "false" \
    "$(has 'Authorization' "$err")"
+# ⭐ A CRLF OR TRAILING-SPACE TOKEN FILE (card#9777). The mask is a LITERAL match, and it used to
+# be taken over `$(cat …)`, which leaves a CR or a trailing space on the token — while curl drops the
+# CR from the header line and a server trims header whitespace before echoing. So the server's echo
+# carried `stub-token` and the mask looked for `stub-token\r`: watched LEAK on the pre-fix bin. The
+# token is now read through the lib's kb_token_file_read for the header AND for the mask.
+for _ndl_tf in $'stub-token\r\n' $'stub-token \t\n'; do
+    printf '%s' "$_ndl_tf" > "$KB_STUB_TOKEN_FILE"
+    NDL_CLAIM_HTTP=500 NDL_CLAIM_BODY='{"request":{"Authorization":"Bearer stub-token"},"msg":"blocked"}' \
+        run_ndl --board dev
+    eq "token file $(printf '%q' "$_ndl_tf"): the claim carried the BARE token (control)" "stub-token" \
+       "$(kb_stub_bearers "${CLAIM[@]}")"
+    eq "token file $(printf '%q' "$_ndl_tf"): the echoed token is masked in place, the body still quoted" "false|true|true" \
+       "$(has 'Bearer stub-token' "$err")|$(has 'Bearer ***' "$err")|$(has 'blocked' "$err")"
+done
+printf '%s\n' "$_ndl_tok_saved" > "$KB_STUB_TOKEN_FILE"
+unset _ndl_tf
+# ⭐ AND BESIDE A LIB THAT PREDATES THOSE TWO it refuses before any request, naming the lib — rather
+# than sending the claim with no bearer and dying in the board-max scan at rc 127.
+_ndl_stale="$(_bin_beside_stale_lib "$TMP/ndl-stale" "$NDL" kb_token_file_read)"
+kb_stub_reset; rc=0
+out="$("$_ndl_stale" --board dev 2>"$TMP/err")" || rc=$?; err="$(cat "$TMP/err")"
+eq "lib without kb_token_file_read → rc 1, mints nothing, NO request" "1||0" "$rc|$out|$(kb_stub_total)"
+eq "…and says which lib to re-vendor" "true" "$(has 'predates kb_token_file_read / kb_mask_token — re-vendor _kb-board-lib.sh' "$err")"
+unset _ndl_stale
 # ⭐ THE THIRD CELL OF THAT PAIR, which neither of the two above reaches: a 2xx with a body that is
 # GENUINELY EMPTY. The arm DID read an answer, so it passes "" as the excerpt argument — set, and
 # empty. Under `${2+…}` (set, however empty) the refusal ended with a dangling `Response:` and
