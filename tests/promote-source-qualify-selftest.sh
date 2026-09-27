@@ -1122,6 +1122,27 @@ patched="$(cat "$PATCH_LOG")"
 eq "M7 (bare arm dropped): the bare-number card is promoted"         "true"  "$(moved 3)"
 eq "M7: …and the other repo's card is STILL refused"                 "false" "$(moved 2)"
 
+# M8 — the DL no-card accounting reads the Released-silenced verdict (`cls`) instead of the one it
+# replaced (`was`): a Released unsourced card then stops counting for its ref, which moves from
+# "matched ONLY an unsourced card" (stamp it) to "matched NO card" (CREATE a card) — a second card
+# for a ref already carded. Driven over a one-row board: #34, Released (85), DL-7, no source.
+released_unsourced_board() {
+  cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":34,"workflow_stage_id":85,"payload":{"dl_number":"DL-7"}}
+],"meta":{"last_page":1,"total":1}}
+JSON
+}
+released_unsourced_board
+mutant was-to-cls 's|select(.was=="unsourced")|select(.cls=="unsourced")|'
+run_bin "$MUT" "$CFG_REPO" --dls DL-7
+eq "M8 (was→cls): DL-7 lands on the matched-NO-card line"   "true"  "$(has 'matched NO card (unstamped card, or none): DL-7' "$err")"
+eq "M8: …and off the matched-ONLY-an-unsourced-card line"   "false" "$(has 'matched ONLY an unsourced card' "$err")"
+run_promote "$CFG_REPO" --dls DL-7
+eq "M8 control: the shipped bin keeps DL-7 off matched-NO-card" "false" "$(has 'matched NO card' "$err")"
+eq "M8 control: …and on the unsourced line, naming #34"     "true"  "$(has 'DL-7 (unsourced card #34 already in the released stage)' "$err")"
+pr_board
+
 # CONTROL for the whole battery — the UNMUTATED bin over the same fixture answers the other way
 # on every observable the mutants flipped. Without it, a fixture that promoted everything under
 # any binary would satisfy each mutant arm above.
@@ -1324,6 +1345,47 @@ eq "8b qualified: the Released unsourced DL card #34 is NOT named" "false" "$(ha
 eq "8b qualified: the Released other-repo DL card #35 is NOT named" "false" "$(has '(#35)' "$err")"
 eq "8b qualified: the qualification counts are zero, #36 alone pr-unqualified" "true" "$(has '0 other-repo, 0 unsourced, 1 pr-unqualified, ' "$out")"
 eq "8b qualified: CONTROL — #33 still reads already released" "true" "$(has '= #15 (#33): already released' "$out")"
+# THE REF-LEVEL HALF of the Released rule. #34's own ⊘ line is silenced, but DL-7 still matched a
+# card that exists and carries it — so the ref stays on the "matched ONLY an unsourced card" line
+# (whose remedy is a stamp) and NEVER reaches "matched NO card" (whose remedy is to CREATE a second
+# card). And since no ⊘ line names #34 any more, that ref line names it. The § 6 mutant `was→cls`
+# is what shows these two arms discriminate.
+stranded_8b="$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+nocard_8b="$(printf '%s\n' "$err" | grep -F 'matched NO card' || true)"
+eq "8b qualified: DL-7 is on the matched-ONLY-an-unsourced-card line, naming Released #34" "true" \
+   "$(has 'DL-7 (unsourced card #34 already in the released stage)' "$stranded_8b")"
+eq "8b qualified: …and NOT on the matched-NO-card line"      "false" "$(has 'DL-7' "$nocard_8b")"
+
+echo "== 8c. A card whose shipped pr_number its own pr_url CONTRADICTS is named, not dropped =="
+# The pr_url decides which pull request a card tracks, so a card stamped pr_number 15 beside a
+# pr_url naming #16 is not promoted when #15 ships. Before the pr-diverged class it was also
+# named NOWHERE — neither leg matched it — which broke the header's "each named and skipped".
+#   #51 pr_number 15, pr_url acme/widget#16 — the contradiction: named, counted, not promoted;
+#   #52 pr_number 16, pr_url acme/widget#15 — CONTROL: the URL names the shipped PR, promoted;
+#   #53 Released, same stamps as #51          — CONTROL: a Released card is silent, as in § 8b.
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":51,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/16"}},
+  {"id":52,"workflow_stage_id":51,"payload":{"pr_number":"16","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":53,"workflow_stage_id":85,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/16"}}
+],"meta":{"last_page":1,"total":3}}
+JSON
+for cfg8c in "$CFG_STAR" "$CFG_REPO"; do
+  run7 acme/widget "$cfg8c"
+  m="8c $(basename "$cfg8c" .json)"
+  eq "$m: rc 0"                                              "0"     "$rc"
+  eq "$m: the contradicted card #51 is NOT promoted"         "false" "$(moved 51)"
+  eq "$m: …and IS named, with the pull request its URL names" "true" "$(has '#15 (#51): pr_number 15 shipped, but the card pr_url names pull request acme/widget#16' "$err")"
+  eq "$m: …with the stamp remedy"                            "true"  "$(has 'kbcard patch --task 51 --pr <N> --pr-url' "$err")"
+  eq "$m: …and COUNTED on the summary line"                  "true"  "$(has ' 1 pr-diverged, ' "$out")"
+  eq "$m: CONTROL — the URL-matched #52 IS promoted"         "true"  "$(moved 52)"
+  eq "$m: CONTROL — the Released #53 is silent"              "false" "$(has '(#53)' "$err")"
+done
+# MUTANT — the class deleted from the correlation's row filter: #51 is dropped silently again.
+mutant diverged-off 's/ or \$byDiv or / or /'
+: > "$PATCH_LOG"; rc=0
+err="$( (cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 "$MUT" --config "$CFG_STAR") 2>&1 >/dev/null)" || rc=$?
+eq "M9 (pr-diverged row dropped): #51 is named NOWHERE"      "false" "$(has '(#51)' "$err")"
 
 # restore the four-card board and the one-PR history for anything appended below
 cat > "$BOARD_FILE" <<'JSON'

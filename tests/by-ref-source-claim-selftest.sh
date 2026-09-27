@@ -466,7 +466,9 @@ BSC_DISPOSED=(
     #    with a `payload.repo` that is a string containing `/` is not in the population these
     #    lines describe.
     "bin/promote-released-cards::A card with NO derivable by-ref source cannot be attributed::a7139314fe13"
-    "bin/release-pr-body::matched ONLY an unsourced card::d7ef1a8db8a4"
+    #    RE-RULED at #415 against the text there now: the added sentence (a ref noted as already in
+    #    the released stage names a card with nothing to move) names no key and no precedence.
+    "bin/release-pr-body::matched ONLY an unsourced card::a63f4bf6f565"
     "docs/INSTALL.md::Shipped refs whose card carries no by-ref source::a306030aea36"
     "tests/release-pr-body-selftest.sh::the coverage report MEASURED (qualified)::bdbe48bd011b"
 
