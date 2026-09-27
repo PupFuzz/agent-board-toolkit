@@ -2266,9 +2266,10 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # side's own def (the constant's header says how the two are held together), and <url-repo> is
 # always that repo. That repo is what ATTRIBUTES the card only where no `payload.repo` outranks
 # it: a `payload.repo` that is a string containing `/` wins over every URL (`docs/INSTALL.md` §4
-# states the whole derivation), so EVERY consequence this header draws from <url-repo> below —
-# who the card is attributed to, what a release there would promote — is the URL case and not a
-# universal. The verdicts do not turn on it (the pair diverges either way), which is why nothing
+# states the whole derivation), so the ATTRIBUTION this header draws from <url-repo> below is the
+# URL case and not a universal. What a release promotes is not drawn from it at all: the PR side
+# of promote matches on the number the pr_url names (payload.repo and a bare pr_number no longer
+# promote). The verdicts do not turn on it (the pair diverges either way), which is why nothing
 # here asks the question and why a caller's MESSAGE states the divergence and not the consequence
 # (card#9918). Its NUMBER is read from a `pull` or `issues` segment — the only two of promote's
 # segments that carry one; GitHub numbers issues and pull requests in ONE
@@ -2301,9 +2302,9 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # with no digits, or a number read out of a different repo's URL), under a real number on the
 # other side: the card would name that number while its URL names none (operator ruling "a",
 # card#9846, for both sides). The mis-promotion that ruling was argued from is NARROWER than the
-# verdict — promote correlates on `pr_number` and reads no issue key at all (card#9935), and only
-# where no `payload.repo` outranks the URL — which is why the verdict, not the consequence, is
-# what this function answers. The `-given` kinds are why the placeholder is exempt only where it
+# verdict — promote correlates a PR by the (repo, number) its `pr_url` names, never through
+# `payload.repo` (agent-webhook-bridge DL-429), and reads no issue key at all (card#9935) — which
+# is why the verdict, not the consequence, is what this function answers. The `-given` kinds are why the placeholder is exempt only where it
 # is STORED: given, it says "no ref yet" about a card whose number names one, and moves the
 # card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
 # card#9846).

@@ -10,9 +10,9 @@
 # released stage from a different repo's version line.
 #
 # The fix is a REQUIRED `.promote.source` with no default — absent is a refusal before any read
-# — plus `"*"` as the explicit single-repo DECLARATION that restores the prior behaviour byte
-# for byte. Both halves are properties an ordinary refactor can silently drop, which is what
-# this file is for: § 6 runs a MUTATION BATTERY, re-driving § 4's fixture against copies of the
+# — plus `"*"` as the explicit single-repo DECLARATION (which relaxes the DL leg only, § 8).
+# Both halves are properties an ordinary refactor can silently drop, which is what this file is
+# for: § 6 runs a MUTATION BATTERY, re-driving § 4's fixture against copies of the
 # bin with each half removed, and asserts the observable FLIPS. A guard nothing can red is a
 # decoration (canon #9), and the mutants are how these arms are shown to discriminate rather
 # than merely to pass.
@@ -23,8 +23,8 @@
 #   * the accept set for the value is exactly `<owner>/<repo>` or `*`, case-folded and trimmed;
 #   * on one shipped ref, a qualified run promotes only THIS repo's card, names the other
 #     repo's and the unattributable one, and counts both;
-#   * a `"*"` run over the same fixture promotes all of them and prints the pre-card#8421
-#     summary line byte for byte;
+#   * a `"*"` run over the same fixture leaves the DL leg unqualified, and still qualifies the
+#     PR leg by the (repo, number) a card's pr_url names (§ 8);
 #   * the card source is derived through the server's field-preference order;
 #   * `--source` beats the config, and `--cards` is exempt and says so;
 #   * a resolved source other than `*` that is not $GITHUB_REPOSITORY refuses before any board
@@ -106,6 +106,20 @@ run_bin() {
 }
 run_promote() { run_bin "$PRC" "$@"; }
 moved() { has "/tasks/$1.json" "$patched"; }
+# run7 <GITHUB_REPOSITORY value or OMIT> <config> [args...] — run_promote with the variable SET
+# (or explicitly unset) for this one run. § 7 is where it is the subject; § 4, § 5b and § 8 use
+# it because under `*` the PR leg takes its repo from it.
+run7() { # run7 <GITHUB_REPOSITORY value or OMIT> <config> [args...]
+  local gh="$1"; shift
+  local cfg="$1"; shift
+  : > "$PATCH_LOG"; : > "$TMP/gets.log"; rc=0
+  if [ "$gh" = OMIT ]; then
+    out="$( (cd "$GITDIR" && env -u GITHUB_REPOSITORY GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
+  else
+    out="$( (cd "$GITDIR" && env GITHUB_REPOSITORY="$gh" GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
+  fi
+  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; gets="$(cat "$TMP/gets.log")"
+}
 
 # ───────────────────────────────────────────────────────────────────────────────────────────
 echo "== 1. .promote.source ABSENT → refuse, BEFORE any read, naming its own fix =="
@@ -131,7 +145,8 @@ echo "== 1b. the token guard is NOT what refused (the check is genuinely earlier
 # still refused, and still on the source. And the CONTROL in the other direction — a config
 # that DOES carry the key gets past this point and reaches the board.
 eq "…the refusal is not about the token"            "false" "$(has 'KANBAN_WRITEBACK_TOKEN' "$err")"
-run_promote "$CFG_STAR"
+# Under `*` with a PR shipped the run needs a repo for the PR leg (§ 8), so the control names one.
+run7 acme/widget "$CFG_STAR"
 eq "control: a config WITH the key reaches the board" "true" "$(has '/tasks/search.json' "$gets")"
 
 echo "== 2. an explicitly EMPTY --source dies; it never falls through to the config =="
@@ -177,7 +192,7 @@ for good in "acme/widget" "ACME/Widget" "  acme/widget  "; do
   eq "control: --source '$good' runs (rc 0)"        "0"     "$rc"
   eq "control: …and qualifies as acme/widget"       "true"  "$( [ "$(moved 1)" = true ] && [ "$(moved 2)" = false ] && echo true || echo false )"
 done
-run_promote "$CFG_STAR" --source '*'
+run7 acme/widget "$CFG_STAR" --source '*'
 eq "control: --source '*' runs (rc 0)"              "0"     "$rc"
 eq "control: …and qualification is OFF"             "true"  "$(has 'repo-qualification OFF' "$err")"
 
@@ -225,7 +240,9 @@ lib_verdict() {
 }
 # rc 2 is promote's DOCUMENTED refusal (every `die`); rc 0 is acceptance. Any other rc is a
 # CRASH, and folding it into R would let a bin that died read as a bin that refused.
-promote_verdict() { run_promote "$CFG_STAR" --source "$1"; case "$rc" in 0) echo A;; 2) echo R;; *) echo "CRASHED-rc$rc";; esac; }
+# `--dls` so the run ships no pull request: under `*` a shipped PR with no $GITHUB_REPOSITORY is
+# refused (§ 8), which would read here as the VALUE being refused.
+promote_verdict() { run_promote "$CFG_STAR" --source "$1" --dls DL-1; case "$rc" in 0) echo A;; 2) echo R;; *) echo "CRASHED-rc$rc";; esac; }
 # `<A|R>|<value>` — the verdict BOTH copies must reach. The pin is per-side, not a bare
 # "they agree": a mutant that refused everything would satisfy an equality-only check, and the
 # accept rows below are what stops it (canon #9).
@@ -806,18 +823,19 @@ eq "control: _ata_canon_source with its fold removed does the same"      "ACME/W
    "$(_fold_sh "$(printf '%s' "$_ATA_CANON_SRC" | sed "s/tr '\[:upper:\]' '\[:lower:\]'/cat/")" _ata_canon_source 'ACME/Widget')"
 
 echo "== 4. THE DEFECT, held still: one shipped ref, three cards, two of them not ours =="
-# This is card#8421 reproduced in miniature. Under `"*"` the tool promotes all three — that is
-# the pre-fix behaviour and it is CORRECT there, because `*` is a declaration that no such
-# collision exists on this board. Under a repo-qualified config the same fixture moves one.
-run_promote "$CFG_STAR"
+# This is card#8421 reproduced in miniature. Under a repo-qualified config the fixture moves one.
+# Under `"*"` it moves the same one — the PR leg is (repo, number) under both declarations (§ 8,
+# agent-webhook-bridge DL-429), and `*` takes its repo from $GITHUB_REPOSITORY. Until then `*`
+# promoted all three, which is the org-move collision § 8 holds still.
+run7 acme/widget "$CFG_STAR"
 eq "star: rc 0"                                     "0"     "$rc"
 eq "star: our own card #1 promoted"                 "true"  "$(moved 1)"
-eq "star: the OTHER repo's card #2 also promoted"   "true"  "$(moved 2)"
-eq "star: the unsourced card #3 also promoted"      "true"  "$(moved 3)"
+eq "star: the OTHER repo's card #2 is NOT"          "false" "$(moved 2)"
+eq "star: the bare-number card #3 is NOT"           "false" "$(moved 3)"
 eq "star: the unrelated PR 99 card #4 stays put"    "false" "$(moved 4)"
-# The byte-identical claim: under `*` the summary is the line this tool printed before the key
-# existed — no other-repo column, no unsourced column.
-eq "star: summary is the pre-card#8421 line"        "3 moved, 0 already-released, 0 no-card, 0 failed." \
+# Under `*` the two PR-leg skips ride by the COUNT rule; § 4c's control is a `*` run that skips
+# nothing and prints no qualification segment at all.
+eq "star: summary counts both skips"                "1 moved, 0 already-released, 1 other-repo, 1 pr-unqualified, 0 no-card, 0 failed." \
    "$(printf '%s' "$out" | sed -n 's/^promote-released-cards: //p' | grep 'moved,' || true)"
 eq "star: the state line says qualification is OFF" "true"  "$(has 'repo-qualification OFF' "$err")"
 eq "star: …and names the remedy for a multi-repo board" "true" "$(has "set .promote.source to '<owner>/<repo>'" "$err")"
@@ -828,11 +846,11 @@ eq "qualified: our own card #1 IS promoted"         "true"  "$(moved 1)"
 eq "qualified: the OTHER repo's card #2 is NOT"     "false" "$(moved 2)"
 eq "qualified: the unsourced card #3 is NOT"        "false" "$(moved 3)"
 eq "qualified: the unrelated card #4 still stays"   "false" "$(moved 4)"
-eq "qualified: the foreign card is NAMED, by id"    "true"  "$(has '(#2): card source "acme/other" is NOT "acme/widget"' "$err")"
+eq "qualified: the foreign card is NAMED, by id"    "true"  "$(has '(#2): the card tracks pull request acme/other#15, not acme/widget#15' "$err")"
 eq "qualified: …and says it was not promoted"       "true"  "$(has 'not promoted' "$err")"
-eq "qualified: the unsourced card is NAMED, by id"  "true"  "$(has '(#3): card has NO by-ref source' "$err")"
-eq "qualified: …and names the fix for it"           "true"  "$(has 'kbcard patch --pr-url' "$err")"
-eq "qualified: both are COUNTED in the summary"     "true"  "$(has '1 other-repo, 1 unsourced,' "$out")"
+eq "qualified: the bare-number card is NAMED, by id" "true" "$(has '(#3): pr_number 15 names no repo' "$err")"
+eq "qualified: …and names the fix for it"           "true"  "$(has 'kbcard patch --task 3 --pr 15 --pr-url' "$err")"
+eq "qualified: both are COUNTED in the summary"     "true"  "$(has '1 other-repo, 0 unsourced, 1 pr-unqualified,' "$out")"
 eq "qualified: the state line says ON, with the repo" "true" "$(has "repo-qualification ON (source 'acme/widget'" "$err")"
 eq "qualified: neither rejection changes the exit code" "0" "$rc"
 eq "qualified: rejections go to stderr, not stdout" "false" "$(has 'DIFFERENT repo' "$out")"
@@ -842,7 +860,7 @@ echo "== 4b. GITHUB_STEP_SUMMARY carries the unsourced report (a green job hides
 ( cd "$GITDIR" && env GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY="$TMP/step-summary.md" \
     "$PRC" --config "$CFG_REPO" ) >/dev/null 2>&1 || rc=$?
 summ="$(cat "$TMP/step-summary.md")"
-eq "step summary names the unsourced count"         "true"  "$(has '1 ref-matched card(s) had NO by-ref source' "$summ")"
+eq "step summary names the pr-unqualified count"   "true"  "$(has '1 PR-matched card(s) could not be qualified to the repo this release ships' "$summ")"
 eq "…and carries the per-card line"                 "true"  "$(has '(#3)' "$summ")"
 eq "…and names the declared source"                 "true"  "$(has 'acme/widget' "$summ")"
 # The FOREIGN list reaches the step summary too, and for the identical stated reason: the
@@ -895,6 +913,12 @@ eq "4c: …and carries no OTHER ref"                          "false" "$(has 'DL
 # through the other door.
 eq "4c: the new line does NOT read 'matched NO card'"       "false" "$(has 'matched NO card' "$stranded_line")"
 eq "4c: the no-card COUNT excludes the unsourced ref"       "true"  "$(has '2 no-card,' "$out")"
+# The unsourced class is reachable on the DL leg only, so its step-summary block is held HERE.
+: > "$TMP/step-summary.md"
+( cd "$GITDIR" && env GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY="$TMP/step-summary.md" \
+    "$PRC" --config "$CFG_REPO" --dls "DL-77,DL-88,DL-99" ) >/dev/null 2>&1 || true
+eq "4c: step summary names the unsourced count"             "true"  "$(has '1 ref-matched card(s) had NO by-ref source' "$(cat "$TMP/step-summary.md")")"
+eq "4c: …and carries that card's per-card line"             "true"  "$(has '(#42)' "$(cat "$TMP/step-summary.md")")"
 # CONTROL — the SAME board and the SAME refs under the single-repo declaration. Card #42 is
 # attributable there (qualification is off), so DL-77 is COVERED and there is no second line at
 # all: the split above is the qualification's doing, not this fixture's.
@@ -923,25 +947,24 @@ echo "== 5. a card's source is derived through the server's field-preference ord
 # and all four arms went on PASSING while the tool they certify had crashed (measured). An
 # absence-only assertion certifies whatever replaces the behaviour it describes; the rc is the
 # PRESENCE witness that says the run completed and then declined, rather than never ruling.
+#
+# THE CORPUS DRIVES THE DL LEG. The derived source qualifies a DL match only — a PR match is
+# qualified by the (repo, number) its own pr_url names (§ 8) — so every row carries dl_number
+# DL-5 and the run ships exactly DL-5; the payloads are otherwise the corpus as written (their
+# pr_number is inert under an explicit --dls, which derives no PR set).
 src_case() { # <payload-json> — does a card carrying it get promoted under acme/widget?
-  cat > "$BOARD_FILE" <<JSON
-{"data":[{"id":7,"workflow_stage_id":51,"payload":$1}],"meta":{"last_page":1,"total":1}}
-JSON
-  run_promote "$CFG_REPO"
+  jq -n --argjson p "$1" '{data:[{id:7,workflow_stage_id:51,payload:($p + {dl_number:"DL-5"})}],meta:{last_page:1,total:1}}' > "$BOARD_FILE"
+  run_promote "$CFG_REPO" --dls DL-5
   printf '%s/%s' "$rc" "$(moved 7)"
 }
 ext_case() { # <external_link> — the top-level field, last in the preference order
-  cat > "$BOARD_FILE" <<JSON
-{"data":[{"id":7,"workflow_stage_id":51,"external_link":"$1","payload":{"pr_number":"15"}}],"meta":{"last_page":1,"total":1}}
-JSON
-  run_promote "$CFG_REPO"
+  jq -n --arg e "$1" '{data:[{id:7,workflow_stage_id:51,external_link:$e,payload:{dl_number:"DL-5"}}],meta:{last_page:1,total:1}}' > "$BOARD_FILE"
+  run_promote "$CFG_REPO" --dls DL-5
   printf '%s/%s' "$rc" "$(moved 7)"
 }
 ext_json_case() { # <external_link-as-RAW-JSON> — the same field, non-string values included
-  cat > "$BOARD_FILE" <<JSON
-{"data":[{"id":7,"workflow_stage_id":51,"external_link":$1,"payload":{"pr_number":"15"}}],"meta":{"last_page":1,"total":1}}
-JSON
-  run_promote "$CFG_REPO"
+  jq -n --argjson e "$1" '{data:[{id:7,workflow_stage_id:51,external_link:$e,payload:{dl_number:"DL-5"}}],meta:{last_page:1,total:1}}' > "$BOARD_FILE"
+  run_promote "$CFG_REPO" --dls DL-5
   printf '%s/%s' "$rc" "$(moved 7)"
 }
 eq "payload.repo wins outright"                  "0/true"  "$(src_case '{"pr_number":"15","repo":"acme/widget","pr_url":"https://github.com/acme/other/pull/1"}')"
@@ -986,8 +1009,12 @@ echo "== 5b. --source beats the config, and the run says which channel it used =
 run_promote "$CFG_STAR" --source "acme/widget"
 eq "flag over a '*' config: the foreign card is refused" "false" "$(moved 2)"
 eq "…and the state line names the FLAG as the channel"   "true"  "$(has "from --source" "$err")"
-run_promote "$CFG_REPO" --source '*'
-eq "flag over a repo config: the foreign card moves"     "true"  "$(moved 2)"
+# Observable: under the config (acme/widget) a run in acme/other is REFUSED by § 7's identity
+# leg; the flag turns the declaration into `*`, so the same run proceeds and its PR leg takes
+# acme/other from $GITHUB_REPOSITORY — card #2, whose pr_url names acme/other#15, moves.
+run7 acme/other "$CFG_REPO" --source '*'
+eq "flag over a repo config: the run is not refused"     "0"     "$rc"
+eq "…and the acme/other card moves"                      "true"  "$(moved 2)"
 run_promote "$CFG_REPO"
 eq "no flag: the state line names the CONFIG as the channel" "true" "$(has "from $CFG_REPO .promote.source" "$err")"
 
@@ -1023,33 +1050,98 @@ mutant() {
   eq "mutant $1: …and still parses"                 "0"     "$(bash -n "$MUT" >/dev/null 2>&1; echo $?)"
 }
 
-# M1 — the guard switched off wholesale: QUALIFY_SRC forced empty.
-mutant qualify-off 's|^if \[ "$SOURCE" = .\*. \]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi|QUALIFY_SRC=""|'
-run_bin "$MUT" "$CFG_REPO"
-eq "M1 (qualification dropped): the foreign card is promoted again" "true" "$(moved 2)"
-eq "M1: …and so is the unattributable one"                          "true" "$(moved 3)"
-eq "M1: …and § 4 would therefore red on both"                       "true" \
-   "$( [ "$(moved 2)" = true ] && [ "$(moved 3)" = true ] && echo true || echo false )"
+# M1–M3 drive the DL leg — the leg the declared source qualifies through the derived source —
+# over § 4c's board: #42 carries DL-77 and no source (unsourced), #43 carries DL-88 and a URL
+# naming acme/other (foreign on the DL leg). M6–M7 drive the PR leg over the four-card board.
+dl_board() {
+  cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":42,"workflow_stage_id":51,"payload":{"dl_number":"DL-77"}},
+  {"id":43,"workflow_stage_id":51,"payload":{"dl_number":"DL-88","pr_url":"https://github.com/acme/other/pull/2"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+}
+pr_board() {
+  cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/other/pull/15"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"pr_number":"15"}},
+  {"id":4,"workflow_stage_id":51,"payload":{"pr_number":"99","pr_url":"https://github.com/acme/widget/pull/99"}}
+],"meta":{"last_page":1,"total":4}}
+JSON
+}
 
-# M2 — only the FOREIGN arm dropped: a different repo's card classifies as a match.
-mutant foreign-arm 's|else                     "foreign" end),|else                     "match" end),|'
-run_bin "$MUT" "$CFG_REPO"
-eq "M2 (foreign arm dropped): the other repo's card is promoted" "true"  "$(moved 2)"
-eq "M2: …and the unsourced card is STILL refused (the arms are independent)" "false" "$(moved 3)"
+# M1 — the guard switched off wholesale: QUALIFY_SRC forced empty.
+dl_board
+mutant qualify-off 's|^if \[ "$SOURCE" = .\*. \]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi|QUALIFY_SRC=""|'
+run_bin "$MUT" "$CFG_REPO" --dls "DL-77,DL-88"
+eq "M1 (qualification dropped): the foreign card is promoted again" "true" "$(moved 43)"
+eq "M1: …and so is the unattributable one"                          "true" "$(moved 42)"
+
+# M2 — only the FOREIGN arm of the DL verdict dropped: a different repo's card is a match.
+mutant foreign-arm 's|elif $csrc == $qsrc then "match" else "foreign" end)|elif $csrc == $qsrc then "match" else "match" end)|'
+run_bin "$MUT" "$CFG_REPO" --dls "DL-77,DL-88"
+eq "M2 (foreign arm dropped): the other repo's card is promoted" "true"  "$(moved 43)"
+eq "M2: …and the unsourced card is STILL refused (the arms are independent)" "false" "$(moved 42)"
 
 # M3 — only the UNSOURCED arm dropped: an unattributable card classifies as a match.
-mutant unsourced-arm 's|elif $csrc == null  then "unsourced"|elif $csrc == null  then "match"|'
-run_bin "$MUT" "$CFG_REPO"
-eq "M3 (unsourced arm dropped): the unattributable card is promoted" "true"  "$(moved 3)"
-eq "M3: …and the foreign card is STILL refused"                      "false" "$(moved 2)"
+mutant unsourced-arm 's|elif $csrc == null then "unsourced"|elif $csrc == null then "match"|'
+run_bin "$MUT" "$CFG_REPO" --dls "DL-77,DL-88"
+eq "M3 (unsourced arm dropped): the unattributable card is promoted" "true"  "$(moved 42)"
+eq "M3: …and the foreign card is STILL refused"                      "false" "$(moved 43)"
+
+# CONTROL for M1–M3 — the unmutated bin over the same board and refs refuses both.
+run_promote "$CFG_REPO" --dls "DL-77,DL-88"
+eq "control: the shipped bin refuses the DL-foreign card"     "false" "$(moved 43)"
+eq "control: …and the DL-unsourced card"                      "false" "$(moved 42)"
+pr_board
 
 # M4 — the key made OPTIONAL again, defaulting to the permissive declaration. This is the exact
 # regression the card names: "a silent permissive default is what makes this class dangerous".
 mutant optional-key 's|^\[ -n "$SOURCE" \] |[ -n "${SOURCE:=*}" ] |'
-run_bin "$MUT" "$CFG_NONE"
+GITHUB_REPOSITORY=acme/widget run_bin "$MUT" "$CFG_NONE"
 eq "M4 (key made optional): a source-less config RUNS"    "0"     "$rc"
-eq "M4: …and promotes the other repo's card"              "true"  "$(moved 2)"
+eq "M4: …and reads the board it was never told the arity of" "true" "$(has '/tasks/search.json' "$gets")"
 eq "M4: …so § 1's refusal arms would all red"             "false" "$(has 'REQUIRED and has no default' "$err")"
+
+# M6 — the PR leg's repo compare dropped: a pr_url naming ANY repo's #15 is a match. This is the
+# org-move collision (§ 8) put back, under the `*` declaration where it lived.
+mutant pr-repo-arm 's|if $pref.repo == $prrepo then "match" else "foreign" end|if $pref.repo == $prrepo then "match" else "match" end|'
+: > "$PATCH_LOG"; rc=0
+( cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 "$MUT" --config "$CFG_STAR" ) >/dev/null 2>&1 || rc=$?
+patched="$(cat "$PATCH_LOG")"
+eq "M6 (PR repo compare dropped): the other repo's card is promoted" "true"  "$(moved 2)"
+eq "M6: …and the bare-number card is STILL refused"                  "false" "$(moved 3)"
+
+# M7 — the bare-number arm dropped: a card with no pr_url matches on its number again.
+mutant pr-bare-arm 's|elif $byBare then "unqualified"|elif $byBare then "match"|'
+: > "$PATCH_LOG"; rc=0
+( cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 "$MUT" --config "$CFG_STAR" ) >/dev/null 2>&1 || rc=$?
+patched="$(cat "$PATCH_LOG")"
+eq "M7 (bare arm dropped): the bare-number card is promoted"         "true"  "$(moved 3)"
+eq "M7: …and the other repo's card is STILL refused"                 "false" "$(moved 2)"
+
+# M8 — the DL no-card accounting reads the Released-silenced verdict (`cls`) instead of the one it
+# replaced (`was`): a Released unsourced card then stops counting for its ref, which moves from
+# "matched ONLY an unsourced card" (stamp it) to "matched NO card" (CREATE a card) — a second card
+# for a ref already carded. Driven over a one-row board: #34, Released (85), DL-7, no source.
+released_unsourced_board() {
+  cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":34,"workflow_stage_id":85,"payload":{"dl_number":"DL-7"}}
+],"meta":{"last_page":1,"total":1}}
+JSON
+}
+released_unsourced_board
+mutant was-to-cls 's|select(.was=="unsourced")|select(.cls=="unsourced")|'
+run_bin "$MUT" "$CFG_REPO" --dls DL-7
+eq "M8 (was→cls): DL-7 lands on the matched-NO-card line"   "true"  "$(has 'matched NO card (unstamped card, or none): DL-7' "$err")"
+eq "M8: …and off the matched-ONLY-an-unsourced-card line"   "false" "$(has 'matched ONLY an unsourced card' "$err")"
+run_promote "$CFG_REPO" --dls DL-7
+eq "M8 control: the shipped bin keeps DL-7 off matched-NO-card" "false" "$(has 'matched NO card' "$err")"
+eq "M8 control: …and on the unsourced line, naming #34"     "true"  "$(has 'DL-7 (unsourced card #34 already in the released stage)' "$err")"
+pr_board
 
 # CONTROL for the whole battery — the UNMUTATED bin over the same fixture answers the other way
 # on every observable the mutants flipped. Without it, a fixture that promoted everything under
@@ -1057,6 +1149,10 @@ eq "M4: …so § 1's refusal arms would all red"             "false" "$(has 'REQ
 run_promote "$CFG_REPO"
 eq "control: the shipped bin refuses the foreign card"        "false" "$(moved 2)"
 eq "control: …refuses the unattributable card"                "false" "$(moved 3)"
+eq "control: …and still promotes our own"                     "true"  "$(moved 1)"
+run7 acme/widget "$CFG_STAR"
+eq "control: under '*' it refuses the other repo's #15"       "false" "$(moved 2)"
+eq "control: …and the bare-number card"                       "false" "$(moved 3)"
 eq "control: …and still promotes our own"                     "true"  "$(moved 1)"
 run_promote "$CFG_NONE"
 eq "control: …and still refuses a source-less config"         "2"     "$rc"
@@ -1077,17 +1173,6 @@ echo "== 7. THE DECLARATION IS CHECKED AGAINST THE REPO IT IS MADE IN (card#8538
 # Watched red: delete the prelude's `unset`, export GITHUB_REPOSITORY, re-run this file and the
 # two named there — this arm reds, and so do the arms it protects.
 eq "the prelude floor holds: no runner \$GITHUB_REPOSITORY reaches this suite" "" "${GITHUB_REPOSITORY+set}"
-run7() { # run7 <GITHUB_REPOSITORY value or OMIT> <config> [args...]
-  local gh="$1"; shift
-  local cfg="$1"; shift
-  : > "$PATCH_LOG"; : > "$TMP/gets.log"; rc=0
-  if [ "$gh" = OMIT ]; then
-    out="$( (cd "$GITDIR" && env -u GITHUB_REPOSITORY GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
-  else
-    out="$( (cd "$GITDIR" && env GITHUB_REPOSITORY="$gh" GITHUB_ACTIONS=1 GET_LOG="$TMP/gets.log" "$PRC" --config "$cfg" "$@") 2>"$TMP/err")" || rc=$?
-  fi
-  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; gets="$(cat "$TMP/gets.log")"
-}
 
 # THE REFUSAL, and like § 1 it is asserted on the GET log rather than on an empty PATCH set: a
 # run that read the board and then moved nothing would satisfy an empty PATCH while the
@@ -1117,7 +1202,7 @@ run7 '' "$CFG_REPO"
 eq "an EMPTY GITHUB_REPOSITORY does not fire either" "true" "$(has '/tasks/search.json' "$gets")"
 run7 acme/other "$CFG_STAR"
 eq "'*' is a DECLARATION, not a repo name — exempt"  "true" "$(has '/tasks/search.json' "$gets")"
-eq "…and it still promotes every matched card"       "true" "$(moved 2)"
+eq "…and its PR leg promotes the card of the repo it runs in" "true" "$(moved 2)"
 
 # THE FLAG IS NOT AN ESCAPE HATCH. `--source` is the per-run override of the VALUE, and the leg
 # applies to whatever it resolved to: a run that promotes another repo cards is the failure, not
@@ -1134,5 +1219,201 @@ err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; gets="$(cat "$TMP/gets.l
 eq "M5 (identity leg deleted): the mismatched run reads the board" "true" "$(has '/tasks/search.json' "$gets")"
 eq "M5: …and exits 0 having promoted our own card"  "0"     "$rc"
 eq "M5: …so § 7's refusal arms would all red"       "false" "$(has 'is not the repository this run is in' "$err")"
+
+echo "== 8. THE PR LEG IS (repo, number), IN BOTH MODES — the org-move collision (agent-webhook-bridge DL-429) =="
+# A PR number is a per-repo counter, and a repo moved to a new org restarts at 1 while its board
+# is re-mapped to the new repo — so the board stays single-repo and `"*"` stays a TRUE
+# declaration about it, while old-repo #15 and new-repo #15 are two pull requests on it. Under
+# `"*"` the PR leg used to match on the bare number, so the new repo's release promoted every old
+# card that had tracked an old #15. A card names a pull request only through a `pr_url` naming
+# its repo; a bare `pr_number` (no pr_url, or the `.../pull/0` placeholder) names none.
+#   #21 tracks oldorg/widget#15 — the old repo's card, the collision itself;
+#   #22 tracks acme/widget#15   — the release's own card, the same-repo CONTROL;
+#   #23 carries a bare pr_number 15 and nothing else;
+#   #24 carries the acme/widget `.../pull/0` placeholder beside a bare 15 — the placeholder is
+#       no evidence of the number's repo (card#9850's ruling, which DL-429 keeps);
+#   #25 carries payload.repo acme/widget beside a bare 15 — a derived source is no evidence of
+#       the number's repo either (DL-429 "Alternatives rejected (a)");
+#   #26 carries only dl_number DL-7 — the DL leg, which DL-429 leaves unqualified on a
+#       single-repo board, so `"*"` must still promote it (the DL leg is not what changed).
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":21,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/oldorg/widget/pull/15"}},
+  {"id":22,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":23,"workflow_stage_id":51,"payload":{"pr_number":"15"}},
+  {"id":24,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/0"}},
+  {"id":25,"workflow_stage_id":51,"payload":{"pr_number":"15","repo":"acme/widget"}},
+  {"id":26,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}}
+],"meta":{"last_page":1,"total":6}}
+JSON
+git -C "$GITDIR" checkout -q -b feat8 main
+git -C "$GITDIR" commit -q --allow-empty -m "feat: DL-7 a decision"
+git -C "$GITDIR" checkout -q main
+git -C "$GITDIR" merge -q --no-ff feat8 -m "Merge feat8"
+
+run7 acme/widget "$CFG_STAR"
+eq "8 star: rc 0"                                            "0"     "$rc"
+eq "8 star: the same-repo card #22 IS promoted (control)"    "true"  "$(moved 22)"
+eq "8 star: the OLD repo's card #21 is NOT"                  "false" "$(moved 21)"
+eq "8 star: the bare-number card #23 is NOT"                 "false" "$(moved 23)"
+eq "8 star: the placeholder card #24 is NOT"                 "false" "$(moved 24)"
+eq "8 star: the payload.repo card #25 is NOT"                "false" "$(moved 25)"
+eq "8 star: the DL-only card #26 still IS (DL leg unchanged)" "true" "$(moved 26)"
+eq "8 star: #21 is NAMED as another repo's PR"               "true"  "$(has '#15 (#21): the card tracks pull request oldorg/widget#15, not acme/widget#15' "$err")"
+eq "8 star: #23 is NAMED as a bare number"                   "true"  "$(has '#15 (#23): pr_number 15 names no repo' "$err")"
+eq "8 star: #24 is NAMED as a bare number"                   "true"  "$(has '#15 (#24): pr_number 15 names no repo' "$err")"
+eq "8 star: #25 is NAMED as a bare number"                   "true"  "$(has '#15 (#25): pr_number 15 names no repo' "$err")"
+eq "8 star: the bare-number line names the stamp that fixes it" "true" "$(has 'kbcard patch --task 23 --pr 15 --pr-url https://github.com/<owner>/<repo>/pull/15' "$err")"
+eq "8 star: both skips are COUNTED on the summary line"      "true"  "$(has '1 other-repo, 3 pr-unqualified, ' "$out")"
+eq "8 star: the state line no longer calls a bare pr_number unambiguous" "false" "$(has 'bare dl_number/pr_number is unambiguous' "$err")"
+
+run7 acme/widget "$CFG_REPO"
+eq "8 qualified: rc 0"                                       "0"     "$rc"
+eq "8 qualified: the same-repo card #22 IS promoted"         "true"  "$(moved 22)"
+eq "8 qualified: #21 is NOT"                                 "false" "$(moved 21)"
+eq "8 qualified: #23 is NOT"                                 "false" "$(moved 23)"
+eq "8 qualified: the placeholder card #24 is NOT"            "false" "$(moved 24)"
+eq "8 qualified: the payload.repo card #25 is NOT"           "false" "$(moved 25)"
+eq "8 qualified: #25 is NAMED as a bare number"              "true"  "$(has '#15 (#25): pr_number 15 names no repo' "$err")"
+
+# OFF A RUNNER under `"*"` there is no repo for the PR leg to compare against — `"*"` is a
+# declaration about the board, not a repo name — so a run whose release ships a pull request is
+# REFUSED before any board read (the card#8538 no-op-config precedent): run on, it could only
+# promote none of its PR-tracked cards at rc 0. Asserted on the GET log, like § 1 and § 7.
+run7 OMIT "$CFG_STAR"
+eq "8 star, no GITHUB_REPOSITORY, PRs shipped: rc 2"         "2"     "$rc"
+eq "8 star, no repo: …no card was PATCHed"                   ""      "$patched"
+eq "8 star, no repo: …and NO board GET was issued at all"    ""      "$gets"
+eq "8 star, no repo: …the refusal names --source as a fix"   "true"  "$(has '--source <owner/repo>' "$err")"
+eq "8 star, no repo: …and GITHUB_REPOSITORY as the other"    "true"  "$(has 'GITHUB_REPOSITORY=<owner>/<repo>' "$err")"
+run7 '' "$CFG_STAR"
+eq "8 star, EMPTY GITHUB_REPOSITORY, PRs shipped: rc 2 too"  "2"     "$rc"
+eq "8 star, empty repo: …and NO board GET"                   ""      "$gets"
+# The fixes the refusal names, each shown to work — and the runs it must NOT touch: an explicit
+# --dls / --cards set ships no pull request, so there is no PR number to attribute.
+run7 OMIT "$CFG_STAR" --source acme/widget
+eq "8 --source <owner/repo> off a runner: rc 0"              "0"     "$rc"
+eq "8 --source off a runner: #22 IS promoted"                "true"  "$(moved 22)"
+run7 OMIT "$CFG_STAR" --dls DL-7
+eq "8 star, no repo, --dls only: rc 0 (no PR set, not refused)" "0"  "$rc"
+eq "8 star, no repo, --dls only: the DL-only card #26 IS promoted" "true" "$(moved 26)"
+run7 OMIT "$CFG_STAR" --cards 22
+eq "8 star, no repo, --cards only: rc 0 (no PR set, not refused)" "0" "$rc"
+eq "8 star, no repo, --cards only: #22 IS promoted"          "true"  "$(moved 22)"
+
+echo "== 8b. A card ALREADY IN THE RELEASED STAGE is never a qualification finding =="
+# The board read is the WHOLE board, every stage, and the qualification ran over all of it — so a
+# card already at the released stage (85 here) that the qualification would reject was named with
+# a remedy even though no promotion was ever on the table for it. Measured on the live boards:
+# scores of Released cards carry a bare pr_number, and after an org move the new repo restarts at
+# #1, so every release would print a `⊘ … pr-unqualified` line per old card AND steer the operator
+# to stamp the NEW repo's URL onto an OLD card — the collision DL-429 exists to close. A Released
+# card the qualification rejects is SILENT (not named, not counted); one it accepts is
+# `already released`, exactly as before.
+#   #31 Released, bare pr_number 15              — silent, never pr-unqualified;
+#   #32 Released, pr_url oldorg/widget#15        — silent, never other-repo;
+#   #33 Released, pr_url acme/widget#15          — CONTROL: still `= … already released`;
+#   #34 Released, DL-7, no source                — silent under a declared source, never unsourced;
+#   #35 Released, DL-7, payload.repo acme/other  — silent under a declared source, never other-repo;
+#   #36 Shipped (51), bare pr_number 15          — CONTROL: a non-Released card is still named.
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":31,"workflow_stage_id":85,"payload":{"pr_number":15}},
+  {"id":32,"workflow_stage_id":85,"payload":{"pr_number":"15","pr_url":"https://github.com/oldorg/widget/pull/15"}},
+  {"id":33,"workflow_stage_id":85,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":34,"workflow_stage_id":85,"payload":{"dl_number":"DL-7"}},
+  {"id":35,"workflow_stage_id":85,"payload":{"dl_number":"DL-7","repo":"acme/other"}},
+  {"id":36,"workflow_stage_id":51,"payload":{"pr_number":"15"}}
+],"meta":{"last_page":1,"total":6}}
+JSON
+
+run7 acme/widget "$CFG_STAR"
+eq "8b star: rc 0"                                           "0"     "$rc"
+eq "8b star: the Released bare-number card #31 is NOT named" "false" "$(has '(#31)' "$err")"
+eq "8b star: …and no stamp remedy is printed for it"         "false" "$(has 'kbcard patch --task 31' "$err")"
+eq "8b star: the Released other-repo card #32 is NOT named"  "false" "$(has '(#32)' "$err")"
+eq "8b star: no other-repo segment on the summary"           "false" "$(has 'other-repo' "$out")"
+eq "8b star: CONTROL — the Shipped bare-number #36 IS named" "true"  "$(has '#15 (#36): pr_number 15 names no repo' "$err")"
+eq "8b star: …and is the ONLY pr-unqualified count"          "true"  "$(has ' 1 pr-unqualified, ' "$out")"
+eq "8b star: CONTROL — #33 still reads already released"     "true"  "$(has '= #15 (#33): already released' "$out")"
+eq "8b star: nothing was PATCHed"                            ""      "$patched"
+run7 acme/widget "$CFG_REPO"
+eq "8b qualified: rc 0"                                      "0"     "$rc"
+eq "8b qualified: #31 is NOT named"                          "false" "$(has '(#31)' "$err")"
+eq "8b qualified: #32 is NOT named"                          "false" "$(has '(#32)' "$err")"
+eq "8b qualified: the Released unsourced DL card #34 is NOT named" "false" "$(has '(#34)' "$err")"
+eq "8b qualified: the Released other-repo DL card #35 is NOT named" "false" "$(has '(#35)' "$err")"
+eq "8b qualified: the qualification counts are zero, #36 alone pr-unqualified" "true" "$(has '0 other-repo, 0 unsourced, 1 pr-unqualified, ' "$out")"
+eq "8b qualified: CONTROL — #33 still reads already released" "true" "$(has '= #15 (#33): already released' "$out")"
+# THE REF-LEVEL HALF of the Released rule. #34's own ⊘ line is silenced, but DL-7 still matched a
+# card that exists and carries it — so the ref stays on the "matched ONLY an unsourced card" line
+# (whose remedy is a stamp) and NEVER reaches "matched NO card" (whose remedy is to CREATE a second
+# card). And since no ⊘ line names #34 any more, that ref line names it. The § 6 mutant `was→cls`
+# is what shows these two arms discriminate.
+stranded_8b="$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+nocard_8b="$(printf '%s\n' "$err" | grep -F 'matched NO card' || true)"
+eq "8b qualified: DL-7 is on the matched-ONLY-an-unsourced-card line, naming Released #34" "true" \
+   "$(has 'DL-7 (unsourced card #34 already in the released stage)' "$stranded_8b")"
+eq "8b qualified: …and NOT on the matched-NO-card line"      "false" "$(has 'DL-7' "$nocard_8b")"
+# THE ANNOTATION MUST NOT HIDE A CARD THAT STILL NEEDS THE STAMP. DL-7 on #34 (Released) AND on
+# #35 (in progress, no source): #35 is exactly the card the plain ref's stamp remedy is for, so
+# the ref carries no "already in the released stage" note unless EVERY unsourced card for it is
+# Released — release-pr-body reads that note as "nothing to move".
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":34,"workflow_stage_id":85,"payload":{"dl_number":"DL-7"}},
+  {"id":35,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+run7 acme/widget "$CFG_REPO" --dls DL-7
+stranded_8b2="$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+eq "8b mixed: the in-progress unsourced #35 IS named"        "true"  "$(has 'DL-7 (#35): card has NO by-ref source' "$err")"
+eq "8b mixed: DL-7 is on the unsourced line…"                "true"  "$(has ': DL-7' "$stranded_8b2")"
+eq "8b mixed: …WITHOUT the already-released note"            "false" "$(has 'already in the released stage' "$stranded_8b2")"
+
+echo "== 8c. A card whose shipped pr_number its own pr_url CONTRADICTS is named, not dropped =="
+# The pr_url decides which pull request a card tracks, so a card stamped pr_number 15 beside a
+# pr_url naming #16 is not promoted when #15 ships. Before the pr-diverged class it was also
+# named NOWHERE — neither leg matched it — which broke the header's "each named and skipped".
+#   #51 pr_number 15, pr_url acme/widget#16 — the contradiction: named, counted, not promoted;
+#   #52 pr_number 16, pr_url acme/widget#15 — CONTROL: the URL names the shipped PR, promoted;
+#   #53 Released, same stamps as #51          — CONTROL: a Released card is silent, as in § 8b.
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":51,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/16"}},
+  {"id":52,"workflow_stage_id":51,"payload":{"pr_number":"16","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":53,"workflow_stage_id":85,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/16"}}
+],"meta":{"last_page":1,"total":3}}
+JSON
+for cfg8c in "$CFG_STAR" "$CFG_REPO"; do
+  run7 acme/widget "$cfg8c"
+  m="8c $(basename "$cfg8c" .json)"
+  eq "$m: rc 0"                                              "0"     "$rc"
+  eq "$m: the contradicted card #51 is NOT promoted"         "false" "$(moved 51)"
+  eq "$m: …and IS named, with the pull request its URL names" "true" "$(has '#15 (#51): pr_number 15 shipped, but the card pr_url names pull request acme/widget#16' "$err")"
+  eq "$m: …with the stamp remedy"                            "true"  "$(has 'kbcard patch --task 51 --pr <N> --pr-url' "$err")"
+  eq "$m: …and COUNTED on the summary line"                  "true"  "$(has ' 1 pr-diverged, ' "$out")"
+  eq "$m: CONTROL — the URL-matched #52 IS promoted"         "true"  "$(moved 52)"
+  eq "$m: CONTROL — the Released #53 is silent"              "false" "$(has '(#53)' "$err")"
+done
+# …and the step summary carries it, since the line is warn-only and lands in a GREEN job.
+: > "$TMP/step-summary.md"
+( cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY="$TMP/step-summary.md" "$PRC" --config "$CFG_STAR" ) >/dev/null 2>&1 || true
+eq "8c: the step summary names the pr-diverged card" "true" "$(has '1 card(s) carry a shipped pr_number their pr_url contradicts' "$(cat "$TMP/step-summary.md")")"
+# MUTANT — the class deleted from the correlation's row filter: #51 is dropped silently again.
+mutant diverged-off 's/ or \$byDiv or / or /'
+: > "$PATCH_LOG"; rc=0
+err="$( (cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 "$MUT" --config "$CFG_STAR") 2>&1 >/dev/null)" || rc=$?
+eq "M9 (pr-diverged row dropped): #51 is named NOWHERE"      "false" "$(has '(#51)' "$err")"
+
+# restore the four-card board and the one-PR history for anything appended below
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/15"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/other/pull/15"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"pr_number":"15"}},
+  {"id":4,"workflow_stage_id":51,"payload":{"pr_number":"99","pr_url":"https://github.com/acme/widget/pull/99"}}
+],"meta":{"last_page":1,"total":4}}
+JSON
 
 _summary "promote-source-qualify-selftest"
