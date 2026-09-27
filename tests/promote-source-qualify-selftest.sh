@@ -1355,6 +1355,21 @@ nocard_8b="$(printf '%s\n' "$err" | grep -F 'matched NO card' || true)"
 eq "8b qualified: DL-7 is on the matched-ONLY-an-unsourced-card line, naming Released #34" "true" \
    "$(has 'DL-7 (unsourced card #34 already in the released stage)' "$stranded_8b")"
 eq "8b qualified: …and NOT on the matched-NO-card line"      "false" "$(has 'DL-7' "$nocard_8b")"
+# THE ANNOTATION MUST NOT HIDE A CARD THAT STILL NEEDS THE STAMP. DL-7 on #34 (Released) AND on
+# #35 (in progress, no source): #35 is exactly the card the plain ref's stamp remedy is for, so
+# the ref carries no "already in the released stage" note unless EVERY unsourced card for it is
+# Released — release-pr-body reads that note as "nothing to move".
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":34,"workflow_stage_id":85,"payload":{"dl_number":"DL-7"}},
+  {"id":35,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+run7 acme/widget "$CFG_REPO" --dls DL-7
+stranded_8b2="$(printf '%s\n' "$err" | grep -F 'matched ONLY an unsourced card' || true)"
+eq "8b mixed: the in-progress unsourced #35 IS named"        "true"  "$(has 'DL-7 (#35): card has NO by-ref source' "$err")"
+eq "8b mixed: DL-7 is on the unsourced line…"                "true"  "$(has ': DL-7' "$stranded_8b2")"
+eq "8b mixed: …WITHOUT the already-released note"            "false" "$(has 'already in the released stage' "$stranded_8b2")"
 
 echo "== 8c. A card whose shipped pr_number its own pr_url CONTRADICTS is named, not dropped =="
 # The pr_url decides which pull request a card tracks, so a card stamped pr_number 15 beside a
@@ -1381,6 +1396,10 @@ for cfg8c in "$CFG_STAR" "$CFG_REPO"; do
   eq "$m: CONTROL — the URL-matched #52 IS promoted"         "true"  "$(moved 52)"
   eq "$m: CONTROL — the Released #53 is silent"              "false" "$(has '(#53)' "$err")"
 done
+# …and the step summary carries it, since the line is warn-only and lands in a GREEN job.
+: > "$TMP/step-summary.md"
+( cd "$GITDIR" && env GITHUB_REPOSITORY=acme/widget GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY="$TMP/step-summary.md" "$PRC" --config "$CFG_STAR" ) >/dev/null 2>&1 || true
+eq "8c: the step summary names the pr-diverged card" "true" "$(has '1 card(s) carry a shipped pr_number their pr_url contradicts' "$(cat "$TMP/step-summary.md")")"
 # MUTANT — the class deleted from the correlation's row filter: #51 is dropped silently again.
 mutant diverged-off 's/ or \$byDiv or / or /'
 : > "$PATCH_LOG"; rc=0

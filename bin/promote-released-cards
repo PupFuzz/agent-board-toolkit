@@ -25,8 +25,8 @@
 #
 # THE PROGRAM-PARENT WITHHOLD — unconditional, non-fatal, counted (toolkit card#10068).
 #   A card carrying the `program` tag names SEVERAL LEGS rather than one deliverable. A release
-#   ships one of them, the card's `dl_number`/`pr_number` matches, and this mover then puts the
-#   PARENT in the terminal stage — the one nobody re-reads — while its other legs are unbuilt and
+#   ships one of them, the card's `dl_number` or the pull request it tracks matches, and this
+#   mover then puts the PARENT in the terminal stage — the one nobody re-reads — while its other legs are unbuilt and
 #   stop being offered by any queue. The work is still written on the card; the card just reads
 #   DONE. The live instance (kanban card#9996, seven legs, one built) was held out of this by a
 #   hand-set `block_reason` and a source-stage pin, i.e. by COLUMN, not by any predicate.
@@ -174,7 +174,9 @@
 #       to 'true' for that one merge (or disable the workflow), read every `→` line it prints,
 #       then run this tool by hand with `--base <the last old-repo commit>` — the range then holds
 #       only new-repo markers — and promote the old-repo cards in a separate `--cards` run (an
-#       explicit id set derives no range at all). ⚠ A TAG AT THE LAST OLD-REPO COMMIT IS NOT A
+#       explicit id set derives no range at all). Then REVERT the `dry-run` edit in the next dev
+#       PR: under a release-branch flow the back-merge carries it into dev, and every later
+#       release would otherwise run as a dry run. ⚠ A TAG AT THE LAST OLD-REPO COMMIT IS NOT A
 #       SUBSTITUTE in general: the derived base is `git describe` of the release head's FIRST
 #       PARENT, and under a release-branch flow that is the previous main tip, from which a tag on
 #       a later dev commit is unreachable — describe still answers the last release tag (measured).
@@ -1702,8 +1704,8 @@ PLAN="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="match")]')"
 #     colon rule below.
 # A card ALREADY AT THE RELEASED STAGE that the qualification rejects (cls "released") gets no ⊘
 # line, so for its ref the two reports above say less: line 1 names the ref with no card beside
-# it, and line 2 names a ref whose unsourced card is Released — and names that card, after the
-# ref, since no ⊘ line does. Both lines stay TRUE of the ref.
+# it, and line 2 names a ref whose unsourced card is Released — and, when every unsourced card
+# for the ref is Released, names them after the ref, since no ⊘ line does. Both lines stay TRUE of the ref.
 # Unmatched PRs are on neither line (see above). With --cards absent the card leg is empty, and
 # under `source: "*"` nothing can classify as unsourced — so line 2 is absent and line 1 is
 # byte-identical to the DL-only report this tool has always printed.
@@ -1719,16 +1721,20 @@ MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" --argjson 
                     --argjson sc "$CARDS_J" --argjson mc "$MATCHED_CARDS" '
   [ $sd[] | select(. as $x | (($md|index($x))|not) and (($ud|index($x))|not)) | "DL-\(.)" ]
   + [ $sc[] | select(. as $x | ($mc|index($x))|not) | "card#\(.)" ]')"
-# A ref whose unsourced card is ALREADY RELEASED names that card here, because its per-card ⊘
-# line is silenced and this is then the only line that mentions the ref at all: without the id
-# an operator is told a card exists and carries the ref, and is given no way to find it. ⛔ No
-# colon in the qualifier — release-pr-body cuts this line at its first colon (see below).
+# A ref whose unsourced cards are ALL ALREADY RELEASED names them here, because their per-card ⊘
+# lines are silenced and this is then the only line that mentions the ref at all: without the id
+# an operator is told a card exists and carries the ref, and is given no way to find it. ONLY when
+# every one is Released: release-pr-body reads the note as "nothing to move", so a ref that ALSO
+# has a non-Released unsourced card stays plain — that card has its own ⊘ line and needs the stamp
+# the plain ref's remedy gives. ⛔ No colon in the qualifier — release-pr-body cuts this line at
+# its first colon (see below).
 STRANDED_REFS="$(printf '%s' "$CORREL" | jq -c --argjson ud "$UNSOURCED_DLS" --argjson md "$MATCHED_DLS" '
   . as $c
   | [ $ud[] | select(. as $x | ($md|index($x))|not)
       | . as $x
-      | [ $c[] | select(.was=="unsourced" and .cls=="released" and .dl==$x) | "#\(.id)" ] as $rel
-      | if ($rel|length) == 0 then "DL-\($x)"
+      | [ $c[] | select(.was=="unsourced" and .dl==$x) ] as $all
+      | [ $all[] | select(.cls=="released") | "#\(.id)" ] as $rel
+      | if ($rel|length) == 0 or ($rel|length) != ($all|length) then "DL-\($x)"
         else "DL-\($x) (unsourced card \($rel|join(" "))" + " already in the released stage)" end ]')"
 
 # --- repo-qualification report (card#8421) -----------------------------------
