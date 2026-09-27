@@ -450,8 +450,16 @@ BSC_DISPOSED=(
     #    tool tells an operator is an ask-first gate, so it is named here and on the card rather
     #    than taken unasked. The passages state no precedence either way, which is why they are
     #    disposed and not fixed in passing.
-    "bin/adopt-to-dl::VERIFY FAILED — by-ref(system=dl::581f5381b988"
-    "bin/adopt-to-dl::ISSUE VERIFY FAILED — by-ref(system=github_issue::899ad93ea3a2"
+    #
+    #    ⚠ RE-RULED at card#10241, against the text that is there now — which is the digest
+    #    field's whole purpose, and the case its own header predicted ("the edit that closes that
+    #    finding would have landed INSIDE a disposed passage"). Each passage now also carries an
+    #    UNMEASURED arm, for a by-ref answer that could not be READ at all; that arm names no key
+    #    and no precedence either, and the card#9957 gap above is untouched by it — an undecodable
+    #    response and a card sourced to another repo are different causes, and only the first one
+    #    is what that arm is about.
+    "bin/adopt-to-dl::VERIFY FAILED — by-ref(system=dl::f07b741db3eb"
+    "bin/adopt-to-dl::ISSUE VERIFY FAILED — by-ref(system=github_issue::392169920b00"
 
     # ── THE NULL CASE — "this card has NO source", which is not a claim about which key supplies
     #    one. The remedy each gives (stamp a `pr_url`) is correct under its own premise: a card

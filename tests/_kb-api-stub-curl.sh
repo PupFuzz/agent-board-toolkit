@@ -9,8 +9,10 @@
 #
 # WHAT IT EMULATES — only what _kb-board-lib.sh's three callers actually depend on:
 #   1. The auth header arrives on STDIN (`-H @-` fed by a herestring), never on argv, because the
-#      bearer token must not be world-readable via `ps` (_kb-board-lib.sh:253). It is DRAINED and
-#      never inspected: a stub that read the token from argv would pass while the lib leaked it.
+#      bearer token must not be world-readable via `ps` (see kb_auth_header). It is read from
+#      stdin ONLY — a stub that read the token from argv would pass while the lib leaked it — and
+#      its bearer is logged to $KB_STUB_AUTH_LOG, so a test can assert WHICH token a request
+#      carried, not merely that one was sent.
 #   2. `-w <format>` is echoed after the body with `%{http_code}` substituted. The lib's
 #      `\n__HTTP__%{http_code}` marker is therefore produced by honoring the CALLER's format
 #      rather than by hardcoding the marker here — the stub cannot drift from the parser.
@@ -54,9 +56,14 @@
 # the same value. An exact-equality assertion therefore compares against the collapsed spelling.
 set -uo pipefail
 
-# Drain the `-H @-` herestring. Guarded on a tty only so a hand-run of this file from a terminal
+# Read the `-H @-` herestring. Guarded on a tty only so a hand-run of this file from a terminal
 # cannot hang — every real caller redirects stdin.
-[ -t 0 ] || cat >/dev/null
+HDRS=""
+[ -t 0 ] || HDRS="$(cat)"
+BEARER=""
+while IFS= read -r _h; do
+    [[ "$_h" == 'Authorization: Bearer '* ]] && BEARER="${_h#'Authorization: Bearer '}"
+done <<<"$HDRS"
 
 METHOD=GET
 URL=""
@@ -79,6 +86,7 @@ while (($#)); do
 done
 
 : "${KB_STUB_LOG:?kb-api-stub-curl: KB_STUB_LOG is unset — call kb_stub_install first}"
+: "${KB_STUB_AUTH_LOG:?kb-api-stub-curl: KB_STUB_AUTH_LOG is unset — call kb_stub_install first}"
 
 # Ordinals are this request's, so they are counted BEFORE it is logged. ROUTE_N counts only
 # prior requests with the SAME method and URL (the trailing tab pins the whole URL field), which
@@ -86,6 +94,9 @@ done
 CALL_N=$(( $(wc -l < "$KB_STUB_LOG") + 1 ))
 ROUTE_N=$(( $(grep -cF -- "$(printf '%s\t%s\t' "$METHOD" "$URL")" "$KB_STUB_LOG" || true) + 1 ))
 printf '%s\t%s\t%s\n' "$METHOD" "$URL" "${DATA//$'\n'/ }" >> "$KB_STUB_LOG"
+# A SEPARATE log, so the request log's `<method>\t<url>\t<body>` shape — which every body
+# assertion cuts — is unchanged. Empty third field = no bearer arrived.
+printf '%s\t%s\t%s\n' "$METHOD" "$URL" "$BEARER" >> "$KB_STUB_AUTH_LOG"
 
 ROUTED=""
 UNROUTED='{"error":"kb-api-stub-curl: no route matched this request"}'

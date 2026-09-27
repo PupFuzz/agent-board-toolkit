@@ -24,7 +24,8 @@
 #             the tag its own ABTK_TOOL_VERSION stamp claims)
 #         2 = bad invocation
 #         3 = UNMEASURED — something needed for a verdict could not be read, or a file the toolkit
-#             DECLARES travels is not in the mirror at all; never a pass
+#             DECLARES travels is not in the mirror at all, or the mirror carries a bin/ name the
+#             toolkit does not declare; never a pass
 #         (a run that is both STALE/DIVERGED and UNMEASURED exits 1: both are failures, and the
 #          re-sync rc 1 asks for is the actionable one. The UNMEASURED rows still print.)
 #
@@ -38,10 +39,13 @@
 # MIRRORED, which is the exact shape that let the live drift live (*a sweep predicate built from
 # the FOUND copies cannot find the DRIFTED one*). The N→0 case is caught by the `MIRRORED:` guard
 # below; N→N−1 needs an anchor that does NOT come from the mirror. `FLOOR` is that anchor: the
-# set README declares travels. It is WRITTEN, because it is a DECLARATION and not a measurement —
-# and it is held level with the tree in both directions by two derived guards beside it, so it
-# cannot rot in silence. The population still decides WHAT IS COMPARED; the floor decides WHAT
-# MUST BE PRESENT.
+# set README declares travels. It is WRITTEN, because it is a DECLARATION and not a measurement.
+# The population still decides WHAT IS COMPARED; the floor decides WHAT MUST BE PRESENT.
+# ⚑ WHAT HOLDS THE FLOOR, AND WHAT DOES NOT — see the block after GUARD 1 below. Against `bin/`
+# it is held ONE way (GUARD 1: a member `bin/` no longer carries). Against the mirror it is held
+# both ways (NOT MIRRORED: a member the artifact lacks; UNDECLARED: a mirrored `bin/` name the
+# floor omits). README declaring a newly travelling bin that the floor omits, while the mirror
+# does not carry it yet, is caught by NOTHING — it can rot in silence until the mirror catches up.
 #
 # A READ HAS THREE OUTCOMES — present, absent, UNREADABLE. Every read of the mirror below keeps
 # the third: a file whose bytes cannot be read is its own row at rc 3 and the loop CONTINUES, so
@@ -152,25 +156,18 @@ for n in "${FLOOR[@]}"; do
 done
 [ -z "$floor_missing" ] || unmeasured "the declared mirrored set names$floor_missing, which $TK/bin/ does not carry — this file's FLOOR (and README's declaration) is stale"
 
-# GUARD 2 — THE SELF-WIDENING LEG. `ABTK_TOOL_VERSION=` is the toolkit's own machine-readable
-# "this file travels" marker (VERSIONING rule 1): it exists so a copy living in another repo, with
-# no `VERSION` beside it, can still name the release it IS. Today exactly ONE of the two declared
-# bins carries it — which is precisely why the stamp is used as a CONTROL ON the declaration and
-# NOT as the anchor itself: as the anchor it would cover `release-pr-body` and say nothing at all
-# about `promote-released-cards`, i.e. it would miss the very drop this whole section exists to
-# catch. As a control it errs the safe way — the day a THIRD bin is stamped, this reds until the
-# FLOOR above is widened, so the written declaration cannot silently lag the tree.
-stamped_extra=""
-for f in "$TK"/bin/*; do
-  [ -f "$f" ] || continue
-  grc=0; command grep -q '^ABTK_TOOL_VERSION=' "$f" || grc=$?
-  case "$grc" in
-    0) case " ${FLOOR[*]} " in *" ${f##*/} "*) ;; *) stamped_extra="$stamped_extra ${f##*/}" ;; esac ;;
-    1) ;;
-    *) unmeasured "could not scan $f for an ABTK_TOOL_VERSION stamp (grep rc $grc) — the floor's control did not run" ;;
-  esac
-done
-[ -z "$stamped_extra" ] || unmeasured "$TK/bin/ stamps$stamped_extra as a travelling release bin, and this file's FLOOR does not declare it — widen the FLOOR (and README) or drop the stamp"
+# NO STAMP-BASED WIDENING LEG (card#10367). This file once read `ABTK_TOOL_VERSION=` as "this bin
+# travels to the framework mirror" and went UNMEASURED on any stamped bin the FLOOR did not
+# declare. The stamp does not mean that: VERSIONING rule 1 gives it to every bin that may be
+# COPIED anywhere, and `tests/tool-version-stamp-selftest.sh` requires it on every member of the
+# population its header derives, most of which the framework does not mirror.
+# Read as a mirror marker it would red every release on a correct tree. So nothing here derives
+# the FLOOR's WIDTH: README naming a new travelling bin that the FLOOR omits is prose with no
+# machine-readable shape, and is not caught UNTIL the mirror carries that bin. What IS caught: a
+# FLOOR member bin/ no longer carries (GUARD 1), a FLOOR member the mirror does not carry (NOT
+# MIRRORED, below), a mirrored bin/ name the FLOOR does not declare (UNDECLARED, below — the
+# widening leg, read off the MIRROR rather than off a stamp), and a stamped mirror copy whose
+# bytes are not the tag its stamp claims.
 
 # Printed BEFORE the derived population, and before the guard that can exit on it: the
 # declaration is what the measurement below is judged against, and a run that ends at
@@ -194,6 +191,15 @@ for n in "${FLOOR[@]}"; do
   case " ${NAMES[*]} " in
     *" $n "*) ;;
     *) echo "NOT MIRRORED $n — the toolkit declares bin/$n travels to $DIR/, and this artifact does not carry it"; unm=1 ;;
+  esac
+done
+# …AND THE OTHER DIRECTION: a bin/ name this artifact mirrors that the FLOOR does not declare. The
+# declaration has fallen behind what actually travels, so a later drop of that file would read OK.
+# The file is still compared below; this row is about the declaration, not the bytes.
+for n in "${NAMES[@]}"; do
+  case " ${FLOOR[*]} " in
+    *" $n "*) ;;
+    *) echo "UNDECLARED $n — this artifact mirrors bin/$n, and the toolkit's declared set does not name it — widen this file's FLOOR and README's declaration"; unm=1 ;;
   esac
 done
 

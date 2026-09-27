@@ -55,6 +55,9 @@ expect_rc() { # <label> <expected-rc> <fn> <args...>
 reset_env() {
     unset KBCARD_API KBCARD_TOKEN_FILE KB_API KB_BOARD_ID KB_TOKEN KB_TOKEN_FILE \
           KB_BOARD_ENV KB_HOST_TOKEN_FILE KANBAN_EXPECTED_HOST COORD_CREDENTIALS
+    # The lib snapshots the KB_BOARD_ID this process inherited at SOURCE time, so an operator
+    # shell that exported one would otherwise put its value into every case below.
+    _KB_INHERITED_BOARD_ID=""
     : > "$KANBAN_HOST_ENV"
     # COORD_CREDENTIALS and the scratch store go with them (card#7316). The token ladder now
     # ends in a DISCOVERY — the coord credential store's `[kanban] api_token_file` — so an
@@ -541,6 +544,51 @@ eq "board B falls through to the ambient token, not A's" "$TMP/ambient.token" "$
 eq "ambient KBCARD_TOKEN_FILE restored in the caller's env" "$TMP/ambient.token" "${KBCARD_TOKEN_FILE:-}"
 
 # ---------------------------------------------------------------------------
+echo "== kb_resolve_env — KB_BOARD_ID has ONE source, the board env (card#10385) =="
+# An inherited KB_BOARD_ID used to be a silent, partial tier: it lost to a board env that set
+# one, and won over one that did not while that env still supplied the stage ids. Each leg sets
+# the lib's inherited snapshot the way sourcing it under an exported id does (the source-time
+# capture itself is the last leg); the process-level legs in kbcard-selftest drive the same
+# rule through the bin.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+{ echo 'export KB_BOARD_ID=5'; echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$TMP/.kanban-five-board.env"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\"" > "$TMP/.kanban-noid-board.env"   # declares NO id
+
+export KB_BOARD_ID=13; _KB_INHERITED_BOARD_ID=13
+rc=0; kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w" || rc=$?
+eq "inherited 13, env declares 5 → resolves (rc)"          "0" "$rc"
+eq "  …to the board env's id"                              "5" "${KB_BOARD_ID:-}"
+eq "  …and SAYS it ignored the inherited one"              "true" "$(has 'ignoring the inherited KB_BOARD_ID=13' "$(cat "$TMP/w")")"
+eq "  …naming the board env and the id it declares"        "true" "$(has "$TMP/.kanban-five-board.env declares (KB_BOARD_ID=5)" "$(cat "$TMP/w")")"
+
+export KB_BOARD_ID=13; _KB_INHERITED_BOARD_ID=13
+rc=0; kb_resolve_env "$TMP/.kanban-noid-board.env" 2>"$TMP/w" || rc=$?
+eq "inherited 13, env declares NONE → the id is EMPTY, not the inherited one" "0|" "$rc|${KB_BOARD_ID:-}"
+eq "  …and the line says the env declares none"            "true" "$(has 'declares (KB_BOARD_ID=<none>)' "$(cat "$TMP/w")")"
+
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+export KB_BOARD_ID=5; _KB_INHERITED_BOARD_ID=5
+kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w"
+eq "inherited id EQUAL to the env's → no line (a shell that sourced this env)" "5|" "${KB_BOARD_ID:-}|$(cat "$TMP/w")"
+
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+kb_resolve_env "$TMP/.kanban-five-board.env" 2>"$TMP/w"
+eq "nothing inherited → the env's id, and no line"          "5|" "${KB_BOARD_ID:-}|$(cat "$TMP/w")"
+# Cross-call: the id published by one resolve is not "inherited" by the next — board five's 5
+# must neither leak into noid nor be reported as something the caller exported.
+kb_resolve_env "$TMP/.kanban-noid-board.env" 2>"$TMP/w"
+eq "a SECOND resolve does not inherit the first's id"       "" "${KB_BOARD_ID:-}"
+eq "  …and does not warn about the lib's own output"        "" "$(cat "$TMP/w")"
+
+# The snapshot is taken when the lib is SOURCED, from the process environment.
+eq "the lib captures an exported KB_BOARD_ID at source time" "13" \
+   "$(KB_BOARD_ID=13 bash -c 'source "$1"; printf %s "$_KB_INHERITED_BOARD_ID"' _ "$LIB")"
+reset_env
+
+# ---------------------------------------------------------------------------
 echo "== kb_resolve_env — failure return codes =="
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
@@ -557,6 +605,62 @@ echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
 { echo 'KB_BOARD_ID=42'; echo "export KBCARD_TOKEN_FILE=\"$TMP/absent.token\""; } > "$TMP/.kanban-x-board.env"
 rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
 eq "unreadable token file → rc 5" "5" "$rc"
+
+# ---------------------------------------------------------------------------
+echo "== kb_resolve_env / kb_load_config --no-token — a board env read for its IDS only (card#10381) =="
+# The opt-in drops exactly the two token refusals, and each case is paired with the SAME fixture
+# resolved without the flag, so a fixture that never reached rc 7 / rc 5 cannot pass for one.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'export KB_BOARD_ID=42' > "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNDECLARED token, no flag → rc 7 (the fixture reaches the refusal)" "7" "$rc"
+KB_TOKEN_FILE="$TMP/STALE-FROM-A-PREVIOUS-RESOLVE.token"
+rc=0; msg="$(kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>&1 >/dev/null)" || rc=$?
+eq "  --no-token → rc 0, and says nothing"                  "0|" "$rc|$msg"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  …publishing the board's ids and env, and NO token file" \
+   "0|42|$TMP/.kanban-x-board.env|" "$rc|${KB_BOARD_ID:-}|${KB_BOARD_ENV:-}|${KB_TOKEN_FILE:-}"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/absent.token\"" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" 2>/dev/null || rc=$?
+eq "UNREADABLE token, no flag → rc 5 (the fixture reaches the refusal)" "5" "$rc"
+rc=0; kb_resolve_env "$TMP/.kanban-x-board.env" --no-token 2>/dev/null || rc=$?
+eq "  --no-token → rc 0, the declared path still published" "0|$TMP/absent.token" "$rc|${KB_TOKEN_FILE:-}"
+# The loader: rc 0 on the same unreadable token, and KB_TOKEN left empty rather than read.
+KB_TOKEN="STALE"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "kb_load_config x --no-token, unreadable token → rc 0, KB_TOKEN empty" "0|42|" "$rc|${KB_BOARD_ID:-}|$KB_TOKEN"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "  control: kb_load_config x without the flag → rc 2"   "2" "$rc"
+# NOT READ, not read-and-failed: the unreadable fixture above cannot tell the two apart, so the
+# same load against a READABLE token file holding a sentinel must leave that sentinel in no shell
+# variable and no output. The sentinel is spelled in two halves everywhere in this file, so the
+# only place its joined value exists is the token file — `set` finding it means the load read it.
+printf '%s%s\n' NOTOKEN- SENTINEL-7f3a > "$TMP/readable.token"
+_nt_line="export KBCARD_TOKEN_FILE=\"$TMP/readable.token\""
+sed -i '$d' "$TMP/.kanban-x-board.env"; echo "$_nt_line" >> "$TMP/.kanban-x-board.env"
+rc=0; kb_load_config x 2>/dev/null || rc=$?
+eq "READABLE token, no flag → rc 0 and KB_TOKEN holds it (the fixture is readable)" \
+   "0|1" "$rc|$(grep -c 'NOTOKEN-''SENTINEL-7f3a' <<<"$KB_TOKEN")"
+KB_TOKEN="STALE"
+rc=0; msg="$(kb_load_config x --no-token 2>&1)" || rc=$?
+eq "  --no-token → rc 0 and nothing printed" "0|" "$rc|$msg"
+rc=0; kb_load_config x --no-token 2>/dev/null || rc=$?
+eq "  --no-token → KB_TOKEN empty, and the token's value in NO variable of this shell" \
+   "0||0" "$rc|$KB_TOKEN|$(set | grep -c 'NOTOKEN-''SENTINEL-7f3a')"
+# Control: the same fixture against a copy of the lib whose --no-token arm reads the file (the
+# mutation the unreadable fixture could not see). Both variable shapes must red.
+for _nt_mut in 's|^        KB_TOKEN=""$|        KB_TOKEN="$(cat "$KB_TOKEN_FILE" 2>/dev/null)"|' \
+               's|^        KB_TOKEN=""$|        KB_TOKEN=""; _kb_peek="$(cat "$KB_TOKEN_FILE")"|'; do
+    sed "$_nt_mut" "$LIB" > "$TMP/mut-notoken-lib.sh"
+    cmp -s "$TMP/mut-notoken-lib.sh" "$LIB" && bad "no-token control: the lib mutation matched nothing"
+    # shellcheck disable=SC1091
+    _nt_seen="$(unset _KB_BOARD_LIB_LOADED; source "$TMP/mut-notoken-lib.sh"; kb_load_config x --no-token 2>/dev/null; set | grep -c 'NOTOKEN-''SENTINEL-7f3a' || true)"
+    eq "  control: a --no-token arm that reads the file IS seen ($_nt_mut)" "true" "$([[ "$_nt_seen" -gt 0 ]] && echo true || echo false)"
+done
+unset _nt_mut _nt_seen _nt_line
+KB_TOKEN=""
+rm -f "$TMP/.kanban-x-board.env"
 
 # ---------------------------------------------------------------------------
 echo "== kb_load_config — the board-env-missing error names its fix (roundtable #89) =="
@@ -600,6 +704,26 @@ rc=0; msg="$(kb_load_config "" 2>&1 >/dev/null)" || rc=$?
 eq "no board envs → still rc 2" "2" "$rc"
 case "$msg" in *"no ~/.kanban-*-board.env files found"*) ok "  says no board envs were found" ;;
     *) bad "  empty-discovery message unclear: '$msg'" ;; esac
+
+# card#10385: kb_resolve_env publishes an EMPTY id for a board env that declares none, and every
+# kb_load_config caller is board-scoped — an empty id reached the wire as `/boards//…` or as an
+# unscoped `board_id= external_id:<ref>` search over every board. The refusal is the loader's, so
+# no caller can forget it, and it comes before the token is read.
+reset_env
+echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
+echo 'secret-tok' > "$TMP/load-config.token"
+echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\"" > "$TMP/.kanban-noid-board.env"   # declares NO id
+{ echo 'export KB_BOARD_ID=5'; echo "export KBCARD_TOKEN_FILE=\"$TMP/load-config.token\""; } > "$TMP/.kanban-five-board.env"
+KB_TOKEN=""
+rc=0; msg="$(kb_load_config noid 2>&1 >/dev/null)" || rc=$?
+eq "board env declaring no KB_BOARD_ID → rc 2"               "2" "$rc"
+eq "  …naming the env and the missing key"                  "true" "$(has "$TMP/.kanban-noid-board.env declares no KB_BOARD_ID" "$msg")"
+eq "  …and how to choose a board"                           "true" "$(has '--board <name>' "$msg")"
+kb_load_config noid 2>/dev/null || true
+eq "  …and reads no token"                                  "" "$KB_TOKEN"
+rc=0; kb_load_config five 2>/dev/null || rc=$?
+eq "control: an env declaring 5 → rc 0, id 5, token read"   "0|5|secret-tok" "$rc|$KB_BOARD_ID|$KB_TOKEN"
+KB_TOKEN=""
 
 # ---------------------------------------------------------------------------
 echo "== kb_load_host_env =="
@@ -1541,18 +1665,105 @@ expect_out "no digits -> empty"         ""      kb_dl_int_lenient "DL-"
 expect_out "all-zeros -> 0"             "0"     kb_dl_int_lenient "DL-0000"
 expect_out "multi-run strips all"       "20042" kb_dl_int_lenient "v2-DL-0042"
 
-echo "== kb_by_ref_hit — object-or-array tolerant by-ref predicate =="
+echo "== kb_by_ref_hit — a by-ref read has THREE outcomes: hit / absent / UNREADABLE =="
+# ⛔ THE THIRD RC IS THE SUBJECT OF THIS BLOCK (card#10241). The predicate used to answer every
+# body it could not read with a plain non-hit, and its own header ruled that disposition for
+# every caller — "any jq/parse error is a non-hit (fail-closed)". That ruling was FALSE at the
+# two dispositions in bin/dl-a1-register-field where a non-hit is the PASS condition ("after
+# clear … empty", "zero residue"), so a 2xx from an SSO gateway printed a clean bill of health
+# at exit 0. The distinction is now carried by the rc, and asserting the TRUTHINESS alone (what
+# the previous cut of the malformed-JSON row did) cannot see it: `absent` and `unreadable` are
+# both falsy, which is exactly the collapse.
+eq "the unreadable rc is PINNED, and is neither answer" "5" "$KB_RC_BYREF_UNREADABLE"
+
+# — READ, and it says so. These are the control for every unreadable row below: without them a
+# predicate that answered UNREADABLE to everything would pass the whole block.
 expect_rc "envelope: card present -> hit"        0 kb_by_ref_hit '{"data":[{"id":4020}]}'          4020
 expect_rc "envelope: present among many"         0 kb_by_ref_hit '{"data":[{"id":4020},{"id":5}]}' 4020
-expect_rc "envelope: different card -> miss"     1 kb_by_ref_hit '{"data":[{"id":99}]}'            4020
-expect_rc "envelope: empty data -> miss"         1 kb_by_ref_hit '{"data":[]}'                     4020
+expect_rc "envelope: different card -> ABSENT"   1 kb_by_ref_hit '{"data":[{"id":99}]}'            4020
+expect_rc "envelope: empty data -> ABSENT"       1 kb_by_ref_hit '{"data":[]}'                     4020
 expect_rc "bare array: present -> hit"           0 kb_by_ref_hit '[{"id":4020}]'                   4020
-expect_rc "bare array: different -> miss"        1 kb_by_ref_hit '[{"id":99}]'                     4020
-expect_rc "bare empty array -> miss"             1 kb_by_ref_hit '[]'                              4020
-expect_rc "missing data key -> miss"             1 kb_by_ref_hit '{}'                              4020
-# Malformed JSON: jq's own parse-error exit code passes through (not necessarily 1); the
-# contract every caller relies on is "falsy = no hit", so assert the truthiness, not the code.
-if kb_by_ref_hit 'not json' 4020; then bad "malformed json -> miss (fail-closed)"; else ok "malformed json -> miss (fail-closed)"; fi
+expect_rc "bare array: different -> ABSENT"      1 kb_by_ref_hit '[{"id":99}]'                     4020
+expect_rc "bare empty array -> ABSENT"           1 kb_by_ref_hit '[]'                              4020
+
+# — NOT READ. Every shape a 2xx can carry that is not a by-ref result, each named by its
+# producer, because they do NOT all take one path inside the predicate and a single fixture
+# would certify the others by association:
+#   * the first three never reach a verdict at all — jq faults or produces no output;
+#   * ⭐ the next five PARSE PERFECTLY. `jq -e`'s own status cannot see them: measured on jq 1.7
+#     through the pre-change expression, `{"message":…}` — the API's (or a gateway's) JSON error
+#     envelope — scored rc 1, byte-identical to the genuinely-empty `{"data":[]}` row above. So
+#     the ENVELOPE is the tell, not jq's exit code: `.data` present AND an array, the same
+#     separator fetch_board_cards measured against the live API.
+U="$KB_RC_BYREF_UNREADABLE"
+expect_rc "a gateway's HTML at 200 -> UNREADABLE"    "$U" kb_by_ref_hit '<html><body>502 Bad Gateway</body></html>' 4020
+expect_rc "a TRUNCATED body -> UNREADABLE"           "$U" kb_by_ref_hit '{"data":[{"id":40'                          4020
+expect_rc "an EMPTY body -> UNREADABLE"              "$U" kb_by_ref_hit ''                                           4020
+expect_rc "⭐ a JSON ERROR envelope -> UNREADABLE"    "$U" kb_by_ref_hit '{"message":"session expired"}'              4020
+expect_rc "a bare null -> UNREADABLE"                "$U" kb_by_ref_hit 'null'                                       4020
+expect_rc "a bare string -> UNREADABLE"              "$U" kb_by_ref_hit '"no"'                                       4020
+expect_rc "no data key at all -> UNREADABLE"         "$U" kb_by_ref_hit '{}'                                         4020
+expect_rc "data: null -> UNREADABLE"                 "$U" kb_by_ref_hit '{"data":null}'                              4020
+expect_rc "data is an OBJECT, not rows -> UNREADABLE" "$U" kb_by_ref_hit '{"data":{"id":4020}}'                      4020
+# A row this predicate cannot identify makes the WHOLE answer unclassifiable — "absent" over it
+# would be a claim about a population that was never read.
+expect_rc "a row that is not an object -> UNREADABLE" "$U" kb_by_ref_hit '{"data":["4020"]}'                         4020
+expect_rc "a row with no numeric id -> UNREADABLE"    "$U" kb_by_ref_hit '{"data":[{"name":"n"}]}'                   4020
+# A card-id `--argjson` will not take is a CALLER fault, and it lands in the same arm rather than
+# in a false "absent": nothing was read, which is the only true thing to say about it.
+expect_rc "a non-JSON card-id -> UNREADABLE"         "$U" kb_by_ref_hit '{"data":[{"id":4020}]}'                     'not-an-id'
+# — A COMPLETE JSON text FOLLOWED BY anything is not a by-ref result either. jq streams: it prints
+# the first text's verdict and only then faults on what follows, so a reader that suppresses the
+# fault holds a verdict — ABSENT for the first row, HIT for the second — about a body that is not
+# JSON. The third row is the other form of the same hazard, one verdict per text; it guards the
+# single-text rule itself, since a slurp that took `.[0]` without checking the length would pass
+# the first two rows and answer HIT here.
+expect_rc "a valid ABSENT body + trailing HTML -> UNREADABLE" "$U" kb_by_ref_hit '{"data":[]}<html>502</html>'           4020
+expect_rc "a valid HIT body + trailing bytes -> UNREADABLE"   "$U" kb_by_ref_hit '{"data":[{"id":4020}]} garbage'        4020
+expect_rc "two JSON texts -> UNREADABLE"                      "$U" kb_by_ref_hit '{"data":[{"id":4020}]}{"data":[]}'     4020
+
+echo "== kb_by_ref_hit — KB_BY_REF_ROW_IDS names EVERY row a read result carries (card#10426) =="
+# rc 1 answers "<card-id> is not in it", which a result naming ONLY A DIFFERENT CARD also answers —
+# so a caller whose pass condition is "the ref resolves nothing" (bin/dl-a1-register-field's
+# residue reads) read a leaked sentinel card as empty. The ids are the separator. Called directly,
+# not through expect_rc, because the global does not cross a subshell.
+kb_by_ref_hit '{"data":[{"id":4020},{"id":5}]}' 4020 || true
+eq "a hit among many names ALL rows, in response order" "4020 5" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+eq "⭐ an ABSENT (rc 1) result naming another card still names it" "99" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '[{"id":99},{"id":7}]' 4020 || true
+eq "the bare-array shape names its rows too"      "99 7" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[]}' 4020 || true
+eq "an empty result names nothing"                ""     "$KB_BY_REF_ROW_IDS"
+# Reset on every call: a readable answer followed by an unreadable one must not keep the first
+# answer's ids, or a caller would print a stale population beside the UNREADABLE rc.
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+kb_by_ref_hit '<html>502</html>' 4020 || true
+eq "an UNREADABLE result clears the previous call's ids" "" "$KB_BY_REF_ROW_IDS"
+kb_by_ref_hit '{"data":[{"id":99}]}' 4020 || true
+kb_by_ref_hit '{"data":[]}' 4020 || true
+eq "an empty result clears the previous call's ids" "" "$KB_BY_REF_ROW_IDS"
+
+echo "== kb_jq_one — a filter over EXACTLY ONE JSON text, or nothing =="
+expect_out "one text -> the filter's output"        '1'       kb_jq_one '{"a":1}'           '.a'
+expect_rc  "one text -> rc 0"                       0         kb_jq_one '{"a":1}'           '.a'
+expect_out "trailing bytes -> NOTHING printed"      ''        kb_jq_one '{"a":1}<html>'     '.a'
+expect_rc  "trailing bytes -> rc 1"                 1         kb_jq_one '{"a":1}<html>'     '.a'
+expect_out "two texts -> NOTHING printed"           ''        kb_jq_one '{"a":1} {"a":2}'   '.a'
+expect_rc  "two texts -> rc 1"                      1         kb_jq_one '{"a":1} {"a":2}'   '.a'
+expect_rc  "an empty input -> rc 1"                 1         kb_jq_one ''                  '.'
+expect_rc  "a filter fault -> rc 1"                 1         kb_jq_one '{"a":1}'           '.a | error("x")'
+expect_out "options before the filter reach jq"     '{"a":1}' kb_jq_one '{"a":1}'           -c '.'
+expect_out "--argjson reaches the filter"           '7'       kb_jq_one 'null'              --argjson x 7 '$x'
+expect_out "a filter ending in a # comment still closes" 'x'  kb_jq_one '1'                 -r '"x" # trailing comment'
+expect_out "--arg reaches the filter"               'v'       kb_jq_one 'null'              -r --arg x v '$x'
+# — Options outside -r -c --arg --argjson are REFUSED, not passed through: `-e` turns a clean
+# `false`/`null` answer into rc 1 with no output (the "not one JSON text" signal this exists to
+# keep unambiguous), and `-s` slurps a second time, so `.` is no longer what the filter expects.
+expect_rc  "-e is refused -> rc 2 (caller fault)"   2         kb_jq_one 'false'             -e '.'
+expect_out "-e is refused -> NOTHING printed"       ''        kb_jq_one '{"a":1}'           -e '.a'
+expect_rc  "-s is refused -> rc 2 (caller fault)"   2         kb_jq_one '{"a":1}'           -s '.'
+expect_out "-s is refused -> NOTHING printed"       ''        kb_jq_one '{"a":1}'           -s '.'
 
 # ---------------------------------------------------------------------------
 echo "== kb_require_value — a value-taking flag's PRESENCE is the dispatch signal =="

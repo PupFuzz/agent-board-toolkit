@@ -2057,4 +2057,16 @@ rc=0; err="$("$BIN" --nope 2>&1)" || rc=$?
 eq "an unknown flag is refused"           "2"     "$rc"
 eq "…by name"                             "true"  "$(has "unknown arg '--nope'" "$err")"
 
+echo "== --tool-version and --classify-only are exclusive query modes (card#10367) =="
+# Each replaces the output with its own answer and --classify-only's is machine-read by
+# release-tag-check, so one must never silently win. The green half is the same flag alone.
+rc=0; out="$("$BIN" --tool-version 2>&1)" || rc=$?
+eq "control: --tool-version alone → rc 0"  "0"     "$rc"
+eq "control: …printing the stamp"          "$(sed -n "s/^ABTK_TOOL_VERSION='\\(.*\\)'\$/\\1/p" "$BIN")" "$out"
+for order in "--tool-version --classify-only" "--classify-only --tool-version"; do
+  rc=0; err="$("$BIN" $order 2>&1)" || rc=$?   # word-split on purpose: two flags
+  eq "$order → rc 2"                        "2"     "$rc"
+  eq "$order → names both modes"            "true"  "$(has "--tool-version and --classify-only are mutually exclusive" "$err")"
+done
+
 _summary "release-artifacts-selftest"

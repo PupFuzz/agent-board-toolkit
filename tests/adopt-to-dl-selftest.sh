@@ -44,6 +44,9 @@ expect_out "mixed name too"            "owner/my-repo"       _ata_canon_source "
 
 # NB: the DL-int (lenient) and by-ref-hit predicates moved to the shared lib
 # (kb_dl_int_lenient / kb_by_ref_hit) — their coverage lives in tests/kb-board-lib-selftest.sh.
+# What stays HERE is this tool's DISPOSITION of what they answer: kb_by_ref_hit reports three
+# outcomes and the verify block below has to state the right one (card#10241), which is a
+# property of this bin and not of the predicate.
 
 # An explicitly-empty positional must not be swallowed: `adopt-to-dl "" 4242` used to adopt
 # card 4242 while the caller had written two positionals. Presence is tracked as SEEN, never as
@@ -351,6 +354,65 @@ eq "control: …stamping the CLAIMED DL-0093, never the offline floor" \
    "$(kb_stub_bodies PATCH /tasks/4242.json | jq -Sc .payload)"
 unset KB_DL_CHECKOUT_GLOBS
 unset -f ata_real_run
+
+# ---------------------------------------------------------------------------
+# A VERIFY THAT MEASURED NOTHING IS NOT A VERIFY THAT FAILED (card#10241).
+#
+# The disposition at both call sites is unchanged and stays fail-closed: an unconfirmed stamp
+# aborts at rc 1, because reporting a card as adopted on a read that did not happen is the one
+# outcome that must not exist here. What the rows below pin is the CAUSE the refusal states. The
+# shared predicate now separates "the index answered and this card is not in it" from "no by-ref
+# result could be read at all", and the old message asserted the first over both — so a 200
+# carrying an SSO gateway's HTML told the operator that "the dl_number/pr_url may not have
+# persisted", about a write that in fact landed, sending them to inspect the wrong end.
+ATA_BYREF_BODY='{"data":[{"id":4242}]}'
+ATA_ISSUE_BYREF_BODY='{"data":[{"id":4242}]}'
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/by-ref.json*system=github_issue*) printf '200\n%s' "$ATA_ISSUE_BYREF_BODY" ;;
+        "GET "*/tasks/by-ref.json*)                     printf '200\n%s' "$ATA_BYREF_BODY" ;;
+        "GET "*/tasks/4242.json*)
+            printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":48,"payload":{}}}' ;;
+        "PATCH "*/tasks/4242.json)
+            printf '200\n'
+            jq -cn --argjson b "$3" '{data: {id: 4242, board_id: 42, workflow_stage_id: 48, payload: ($b.payload // {})}}' ;;
+    esac
+}
+export -f kb_stub_route
+ata_verify_run() {   # ata_verify_run <dl-by-ref body> <issue-by-ref body> [extra args…]
+    kb_stub_reset; : > "$ATA_MINT_LOG"
+    _rc=0
+    _err="$(ATA_PAYLOAD='{}' ATA_BYREF_BODY="$1" ATA_ISSUE_BYREF_BODY="$2" \
+        bash "$ATA_BIN/adopt-to-dl" 4242 --repo owner/name --board dev "${@:3}" 2>&1 >/dev/null)" || _rc=$?
+}
+HIT='{"data":[{"id":4242}]}'
+# The control, first: this harness DOES adopt, so every refusal below is about its input.
+ata_verify_run "$HIT" "$HIT"
+eq "control: a readable by-ref hit → adopted, rc 0" "0" "$_rc"
+# A readable, card-less answer — the MEASURED negative the FAILED wording is true of.
+ata_verify_run '{"data":[]}' "$HIT"
+eq "a readable by-ref that does not carry the card → rc 1, VERIFY FAILED" "1" "$_rc"
+eq "…stating the measured cause"        "true" "$(has 'VERIFY FAILED' "$_err")"
+eq "…and not the unmeasured one"        "false" "$(has 'VERIFY UNMEASURED' "$_err")"
+# Each undecodable shape, named: the first three never reach a jq verdict, the fourth PARSES and
+# is the one the pre-change predicate scored identically to the empty answer above.
+for _b in '<html><body>502 Bad Gateway</body></html>' '{"data":[{"id":42' '' '{"message":"your session has expired"}'; do
+    ata_verify_run "$_b" "$HIT"
+    eq "an UNREADABLE by-ref verify → still rc 1 (fail-closed is unchanged)" "1" "$_rc"
+    eq "…but the cause is UNMEASURED, not a failed verify" "true" "$(has 'VERIFY UNMEASURED' "$_err")"
+    eq "…and it never claims the stamp may not have persisted" "false" \
+       "$(has 'may not have persisted' "$_err")"
+done
+# The issue leg is a second call site of the same predicate, so it is driven separately: a DL
+# verify that HITS with an unreadable ISSUE verify must report the issue one.
+ata_verify_run "$HIT" '<html><body>502 Bad Gateway</body></html>' --issue 9
+eq "an UNREADABLE issue by-ref → rc 1"  "1" "$_rc"
+eq "…named as the ISSUE verify"         "true" "$(has 'ISSUE VERIFY UNMEASURED' "$_err")"
+ata_verify_run "$HIT" '{"data":[]}' --issue 9
+eq "control: a readable card-less issue by-ref → ISSUE VERIFY FAILED" "true" \
+   "$(has 'ISSUE VERIFY FAILED' "$_err")"
+unset -f ata_verify_run
+unset ATA_BYREF_BODY ATA_ISSUE_BYREF_BODY HIT _b
 
 unset -f kb_stub_route ata_run nmint npatch
 unset ATA_BIN ATA_STALE ATA_MINT_LOG ATA_REAL REAL_PR _p _ata_floor

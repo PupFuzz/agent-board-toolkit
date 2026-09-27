@@ -237,8 +237,11 @@ resolve_board_cfg() (
     # which is exactly how a DL gets re-minted on a shared board (the DL-154 collision class).
     local rc
     kb_resolve_env "$board_env" >/dev/null; rc=$?
-    [[ $rc -eq 0 ]] && [[ -n "$KB_BOARD_ID" ]] \
-        || { echo "next-dl: board config incomplete (rc=$rc) — skipping board check" >&2; exit 1; }
+    [[ $rc -eq 0 ]] || { echo "next-dl: board config incomplete (rc=$rc) — skipping board check" >&2; exit 1; }
+    # A resolve that SUCCEEDED over an env declaring no id used to print `(rc=0)` here, which
+    # names no cause. Same disposition as any resolve failure (card#6631's bound), own words.
+    [[ -n "$KB_BOARD_ID" ]] \
+        || { echo "next-dl: $board_env declares no KB_BOARD_ID — there is no board to check (docs/INSTALL.md §3b); skipping board check" >&2; exit 1; }
     printf '%s\t%s\t%s' "$KB_API" "$KB_BOARD_ID" "$KB_TOKEN_FILE"
 )
 

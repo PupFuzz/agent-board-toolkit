@@ -76,6 +76,10 @@
 
 if [[ -n "${_KB_BOARD_LIB_LOADED:-}" ]]; then return 0; fi
 _KB_BOARD_LIB_LOADED=1
+# The KB_BOARD_ID this PROCESS inherited, taken before any board env is sourced. kb_resolve_env
+# names it when the board env overrides it; snapshotting per call instead would read a previous
+# resolve's published id as "inherited" and warn about the lib's own output.
+_KB_INHERITED_BOARD_ID="${KB_BOARD_ID:-}"
 
 # Message prefix; a script may set KB_PROG, else its own basename is used.
 _kb_prog() { printf '%s' "${KB_PROG:-${0##*/}}"; }
@@ -456,11 +460,18 @@ kb_declared_token_file() {
     return 1
 }
 
-# kb_resolve_env <board_env_path>: source the host env then the board env, and
+# kb_resolve_env <board_env_path> [--no-token]: source the host env then the board env, and
 # publish KB_API / KB_BOARD_ID / KB_TOKEN_FILE / KB_BOARD_ENV. Does NOT read the
-# token content and does NOT require KB_BOARD_ID — the caller decides those. Quiet
+# token content and does NOT require KB_BOARD_ID — the caller decides those.
+# --no-token is for a board env read only for its IDS, whose credential this process never
+# sends (kbcard move-board's TARGET: the move is one request on the source board's token). The
+# token file is then located QUIETLY and published if declared, but neither an undeclared (rc 7)
+# nor an unreadable (rc 5) one is refused — refusing on a credential that is never sent would
+# block a move over a file that plays no part in it. KB_BOARD_ID is
+# the BOARD ENV's alone: empty when it sets none, whatever the caller's shell held. Quiet
 # (return-code only) apart from the rc-4, rc-6 and rc-7 refusals, which speak for
-# themselves, so a fail-soft caller can craft its own message for the rest. Returns:
+# themselves, and a ⚠ line when the board env overrides an INHERITED KB_BOARD_ID, so a
+# fail-soft caller can craft its own message for the rest. Returns:
 #   0 ok   2 env unreadable   3 KBCARD_API unset   4 board env sets KBCARD_API
 #   5 token file unreadable   6 API host refused   7 no token file declared
 #
@@ -469,7 +480,8 @@ kb_declared_token_file() {
 # reaches the operator through a caller that can only say "config incomplete (rc=N)" —
 # next-dl's arm, verbatim — which is why rc 4's refusal was already written this way.
 kb_resolve_env() {
-    local board_env="$1"
+    local board_env="$1" no_token=""
+    [[ "${2:-}" == --no-token ]] && no_token=1
     # CLEARED FIRST, not on the success path only. These are globals, and five of the seven
     # rcs below return before assigning them — so after a FAILED resolve of board B they
     # would still hold board A's values from an earlier call in the same shell, and a
@@ -484,12 +496,10 @@ kb_resolve_env() {
     # and the two are treated differently on purpose rather than by omission:
     #   * KB_TOKEN_FILE / KB_BOARD_ENV name a CREDENTIAL and the file that chose it. A stale one
     #     survives as a path something might later read, which is the leak above.
-    #   * KB_BOARD_ID must NOT be cleared here. `KB_BOARD_ID="${KB_BOARD_ID:-}"` below reads its
-    #     own prior value on purpose — that is the documented AMBIENT tier, the one a caller sets
-    #     for a board whose env does not. Clearing it at the top would silently delete that tier,
-    #     which is precisely the mistake the ambient snapshot below is written to avoid.
-    # Widening the clear is therefore a behaviour change, not a tidy-up. If this comment and the
-    # line under it ever disagree again, the comment is the thing that drifted.
+    #   * KB_BOARD_ID is not cleared HERE because it is unset immediately before the board env is
+    #     sourced, below — the board env is its only source (card#10385).
+    # If this comment and the line under it ever disagree again, the comment is the thing that
+    # drifted.
     KB_TOKEN_FILE=""; KB_BOARD_ENV=""
     [[ -r "$board_env" ]] || return 2
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
@@ -513,8 +523,19 @@ kb_resolve_env() {
     [[ -r "$host_env" ]] && source "$host_env"
     local eff_api="${amb_api:-${KBCARD_API:-}}"
     unset KBCARD_API   # so the board source below reveals a BOARD-set value
+    # ⛔ KB_BOARD_ID HAS ONE SOURCE: THE BOARD ENV. It is not a tier (card#10385). An inherited
+    # value used to survive only when the board env set none, so an exported id either lost
+    # silently to the env's, or won while the env still supplied the stage ids and types — a
+    # card on one board in another board's stage. The board env carries the id and the stage map
+    # together, and --board is how a board is chosen. Same ruling as kb_board_env_for and
+    # board-snapshot, which unset it before sourcing for the same reason.
+    unset KB_BOARD_ID
     # shellcheck disable=SC1090
     source "$board_env"
+    KB_BOARD_ID="${KB_BOARD_ID:-}"
+    if [[ -n "$_KB_INHERITED_BOARD_ID" && "$_KB_INHERITED_BOARD_ID" != "$KB_BOARD_ID" ]]; then
+        echo "$(_kb_prog): ⚠ ignoring the inherited KB_BOARD_ID=$_KB_INHERITED_BOARD_ID — the board is the one $board_env declares (KB_BOARD_ID=${KB_BOARD_ID:-<none>}); choose a board with --board <name>, never by exporting KB_BOARD_ID" >&2
+    fi
     local board_api="${KBCARD_API:-}" cfg_tok="${KBCARD_TOKEN_FILE:-}"   # cfg_tok: board's, else host's
     # Restore both before any return — never leave a caller's env mangled.
     export KBCARD_API="$eff_api"
@@ -526,11 +547,15 @@ kb_resolve_env() {
         return 4
     fi
     KB_API="$eff_api"
-    KB_BOARD_ID="${KB_BOARD_ID:-}"
     [[ -n "$KB_API" ]] || return 3
     # BEFORE the token file is even located, let alone read: a base nobody vouched for is
     # not a base this process should go looking for credentials to send to (card#7245).
     kb_require_known_api_host "$KB_API" || return 6
+    if [[ -n "$no_token" ]]; then
+        KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok" 2>/dev/null)" || KB_TOKEN_FILE=""
+        KB_BOARD_ENV="$board_env"
+        return 0
+    fi
     KB_TOKEN_FILE="$(kb_declared_token_file "$board_env" "$cfg_tok" "$amb_tok")" || return 7   # board > host > ambient > coord store
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
@@ -596,14 +621,21 @@ kb_board_roster() {
     return 0
 }
 
-# kb_load_config [board_name]: public config entry for the name-driven scripts
-# (kbcard, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
-# api/board/token, and reads the token into KB_TOKEN. An empty NAME means "no
-# --board given" and honors $KBCARD_BOARD_ENV (back-compat); kanban|dev resolves
+# kb_load_config [board_name] [--no-token]: public config entry for the name-driven scripts
+# (kbcard, adopt-to-dl, dl-a0, dl-a1). Maps the --board NAME to its board env, resolves
+# api/board/token, and reads the token into KB_TOKEN. --no-token (kb_resolve_env's) reads no
+# token and leaves KB_TOKEN empty: for a board loaded for its ids only, never sent to. An empty
+# NAME means "no --board given" and honors $KBCARD_BOARD_ENV (back-compat); kanban|dev resolves
 # the kanban-dev board; any other name → ~/.kanban-<name>-board.env. On failure
-# prints the cause and returns 2 (KB_BOARD_ID is published but not required).
+# prints the cause and returns 2.
+# ⛔ KB_BOARD_ID IS REQUIRED HERE (card#10385), unlike kb_resolve_env, which publishes an empty
+# one for a board env that declares none. Every caller of this loader is board-scoped, and an
+# empty id does not fail on the wire — it reaches it as `/boards//…`, or as kbcard's
+# `board_id= external_id:<ref>` lookup, which the server reads as free text over EVERY board
+# the token sees, so a patch landed on another board's card at rc 0. Refused here, before the
+# token is read, so no caller can forget it.
 kb_load_config() {
-    local name="${1:-}"
+    local name="${1:-}" no_token="${2:-}"
     local board_env
     case "$name" in
         "")         board_env="${KBCARD_BOARD_ENV:-$HOME/.kanban-dev-board.env}" ;;
@@ -611,7 +643,7 @@ kb_load_config() {
         *)          board_env="$HOME/.kanban-${name}-board.env" ;;
     esac
     local rc
-    kb_resolve_env "$board_env"; rc=$?
+    kb_resolve_env "$board_env" "$no_token"; rc=$?
     case "$rc" in
         0) ;;
         2)  # unreadable board env — name the fix like the sibling arms do (roundtable #89)
@@ -634,7 +666,15 @@ kb_load_config() {
         6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
-    KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+    if [[ -z "$KB_BOARD_ID" ]]; then
+        echo "$(_kb_prog): $board_env declares no KB_BOARD_ID — there is no board to act on; add the line to that file, or choose a board with --board <name> (docs/INSTALL.md §3b)" >&2
+        return 2
+    fi
+    if [[ "$no_token" == --no-token ]]; then
+        KB_TOKEN=""
+    else
+        KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+    fi
     return 0
 }
 
@@ -1192,6 +1232,43 @@ kb_api_status() {
 kb_parse_resp() {
     local resp="$1"; shift
     jq "$@" <<<"$resp" 2>/dev/null || true
+}
+
+# kb_jq_one <input> [jq-opt…] <jq-filter>: the filter applied to <input> ONLY when <input> is
+# exactly one JSON text. rc 0 with the filter's output when it is and the filter ran clean;
+# otherwise NOTHING on stdout and rc 1 — for a parse error, an empty input, a SECOND JSON text,
+# non-JSON bytes after a complete one, a filter fault, and a jq that is missing or unrunnable —
+# or rc 2 for a jq option this refuses (below), which is the caller's fault, not the input's.
+#
+# ⛔ WHY NOT PLAIN `jq`: jq STREAMS. Given `{"data":[]}<html>502</html>` it runs the filter over
+# the first text, PRINTS that result, and only then faults on the bytes after it — so a caller
+# that reads stdout and suppresses the fault holds a verdict about a body that is not JSON. A
+# second text is the same hazard in another form (one result per text). `-s` parses the whole
+# input before the filter runs, so a parse fault anywhere yields no output at all, and the
+# length check refuses zero or several texts.
+#
+# The filter is the LAST argument; everything before it is passed to jq and must be drawn from
+# `-r`, `-c`, `--arg <name> <value>`, `--argjson <name> <value>`. Any other option is REFUSED —
+# a diagnostic and rc 2, the usage-error rc (see KB_API_RC_TRANSPORT) — rather than passed
+# through, because the rest are not safe here: `-n`, `-s` and `--stream` change what `.` is;
+# `-e` turns a clean `false`/`null` answer into rc 1 with no output; `-R` and `--seq` fail on
+# valid input. Each either misreads a legitimate answer or reports it as "not one JSON text".
+kb_jq_one() {
+    local input="$1"; shift
+    local filter="${*: -1}" one i=0
+    local -a opts=("${@:1:$#-1}")
+    while (( i < ${#opts[@]} )); do
+        case "${opts[i]}" in
+            -r|-c)           i=$((i + 1)) ;;
+            --arg|--argjson) i=$((i + 3)) ;;
+            *) echo "$(_kb_prog): kb_jq_one: jq option '${opts[i]}' is not one of -r -c --arg --argjson" >&2
+               return 2 ;;
+        esac
+    done
+    one="$(jq -s "${@:1:$#-1}" "if length == 1 then .[0] | (
+$filter
+) else error(\"not exactly one JSON text\") end" <<<"$input" 2>/dev/null)" || return 1
+    [[ -z "$one" ]] || printf '%s\n' "$one"
 }
 
 # --- the write-outcome read-back: APPLIED / NOT APPLIED / UNVERIFIED -----------------------
@@ -2022,12 +2099,83 @@ kb_ref_pair_verdicts() {
             end) | @tsv' <<<"$1"
 }
 
-# kb_by_ref_hit <by-ref-json> <card-id>: 0 iff the by-ref response contains a row whose
-# id == <card-id>. Tolerates BOTH shapes the by-ref endpoint can return — a {"data":[...]}
-# envelope OR a bare top-level array — so every caller (adoption verify, field registration)
-# shares one predicate instead of forking it. jq -e sets the exit status; any jq/parse error
-# is a non-hit (fail-closed).
+# KB_RC_BYREF_UNREADABLE — the rc kb_by_ref_hit returns when the response could not be read as
+# a by-ref RESULT at all, as distinct from rc 1, which means it WAS read and holds no such row.
+# Callers branch on the NAME; the number itself is arbitrary and pinned here. It is deliberately
+# NOT 0 and NOT 1 (the two answers it exists to be distinguishable from) and NOT
+# $KB_API_RC_TRANSPORT, which is a DIFFERENT function's "the request did not complete" — a caller
+# that propagates one rc onward must not make the two read as one state. A plain assignment, not
+# `readonly` and not `${…:=}`, for the reason KB_API_RC_TRANSPORT states at its own pin: this lib
+# is sourced more than once in some shells, and an ambient variable must not get to redefine what
+# "nothing was read" means.
+KB_RC_BYREF_UNREADABLE=5
+
+# kb_by_ref_hit <by-ref-json> <card-id>: does this by-ref response carry a row whose id ==
+# <card-id>? Tolerates BOTH shapes the endpoint can return — a {"data":[…]} envelope OR a bare
+# top-level array — so every caller (adoption verify, field registration) shares one predicate
+# instead of forking it.
+#
+#   rc 0                        HIT — the response was READ and it carries that row.
+#   rc 1                        ABSENT — the response was READ and it carries no such row. This
+#                               is a MEASURED negative: an empty `{"data":[]}` or an array of
+#                               other cards' rows.
+#   rc $KB_RC_BYREF_UNREADABLE  NOTHING WAS READ. The argument is not a by-ref result at all —
+#                               a gateway's HTML, a truncated body, an empty body, a JSON error
+#                               envelope, a `.data` that is not an array, a row this predicate
+#                               cannot identify, or a <card-id> that is not JSON. NOT a miss.
+#
+# THE CALLER STILL OWNS THE POLICY — the same mechanism/policy split kb_parse_resp documents
+# above. This function decides what the RESPONSE SAYS; whether "nothing was read" is fatal,
+# fail-soft or a retry stays at each call site. This header used to assert the disposition for
+# everyone — *"any jq/parse error is a non-hit (fail-closed)"* — and that is a policy claim a
+# primitive may not make on its callers' behalf: it was FALSE at two of the three dispositions in
+# bin/dl-a1-register-field, where a miss is the PASS condition ("after clear … empty", "zero
+# residue"), so an undecodable 2xx printed a clean bill of health at exit 0 (card#10241). Fail-
+# closed is a property of a caller's use, not of a predicate.
+#
+# ⛔ THE TELL IS THE ENVELOPE, NOT jq's OWN EXIT STATUS — measured, and it is why this classifies
+# the shape rather than plumbing `jq -e`'s rc outward. `jq -e` separates a parse failure (rc 5)
+# and an empty input (rc 4) from a false result (rc 1), but a body that PARSES PERFECTLY and is
+# not a by-ref result does not fault at all: on jq 1.7, `{"message":"…"}` — a gateway's or the
+# API's own JSON error envelope — scored rc 1 through the old `.data // []`, byte-identical to a
+# genuinely empty `{"data":[]}`. So does a bare `null` and a bare string. `.data` present AND an
+# array is the separator fetch_board_cards measured against the live API (an empty result is
+# `{"data":[],"links":{…},"meta":{…,"total":0}}` at HTTP 200), and it is the one used here.
+#
+# The verdict is a printed TOKEN rather than jq's status for the same reason kb_parse_resp prints
+# nothing on a fault, and it is read through kb_jq_one so that "no token" covers every way the
+# read can fail — a parse error, an empty input, a complete JSON text FOLLOWED by other bytes or
+# by a second text, a jq that is missing or unrunnable, a <card-id> `--argjson` will not take.
+# No token is the one value that cannot be mistaken for an answer.
+#
+# KB_BY_REF_ROW_IDS — set on EVERY call: the ids of ALL rows a READ result carries, space-
+# separated in response order, whoever they name; empty on an empty result AND on an unreadable
+# one (the rc tells those apart). rc 1 answers "is <card-id> in it", which is not "is it empty":
+# a caller whose PASS condition is that the ref resolves NOTHING — bin/dl-a1-register-field's
+# after-clear and residue reads — must read this, because an rc-1 answer carrying a different
+# card's row is residue, not absence (card#10426). A global rather than stdout because the rc is
+# the contract every caller already branches on, and its callers invoke it directly, not in `$(…)`.
+# Initialised here, at source time, so a caller that reads it under `set -u` beside a lib that
+# predates it dies loudly instead of reading the old "any non-hit is empty" answer.
+KB_BY_REF_ROW_IDS=""
 kb_by_ref_hit() {
-    printf '%s' "${1:-}" | jq -e --argjson id "${2:-0}" \
-        '(if type=="object" then (.data // []) else . end) | any(.[]?; .id == $id)' >/dev/null 2>&1
+    local out verdict
+    KB_BY_REF_ROW_IDS=""
+    out="$(kb_jq_one "${1:-}" -r --argjson id "${2:-0}" '
+        (if type == "object" then .data else . end) as $rows
+        | if ($rows | type) != "array" then "unreadable"
+          # A row this predicate cannot identify makes the WHOLE answer unclassifiable: "absent"
+          # over it would be a claim about a population that was never read.
+          elif any($rows[]; (type != "object") or ((.id | type) != "number")) then "unreadable"
+          else (if any($rows[]; .id == $id) then "hit" else "absent" end)
+               + ($rows | map(" " + (.id | tostring)) | add // "") end')"
+    verdict="${out%% *}"
+    case "$verdict" in
+        hit|absent) [[ "$out" == *" "* ]] && KB_BY_REF_ROW_IDS="${out#* }" ;;
+    esac
+    case "$verdict" in
+        hit)    return 0 ;;
+        absent) return 1 ;;
+        *)      return "$KB_RC_BYREF_UNREADABLE" ;;
+    esac
 }
