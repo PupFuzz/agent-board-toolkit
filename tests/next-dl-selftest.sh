@@ -312,7 +312,8 @@ export KB_DL_CHECKOUT_GLOBS="$_ndl_checkout"
 kb_stub_route() {
     case "$1 $2" in
         "POST "*/dl-sequence/claim.json) printf '%s\n%s' 404 '{"message":"not found"}' ;;
-        "GET "*page=2*) printf '%s\n%s' "${NDL_PAGE2_HTTP:-200}" "${NDL_PAGE2_BODY:-{\"data\":[]\}}" ;;
+        # Page 2: the request carrying the walk's `id<` window (card#10626).
+        "GET "*id%3C*) printf '%s\n%s' "${NDL_PAGE2_HTTP:-200}" "${NDL_PAGE2_BODY:-{\"data\":[]\}}" ;;
         "GET "*/tasks/search.json*) printf '%s\n%s' "${NDL_SEARCH_HTTP:-200}" "${NDL_SEARCH_BODY:-$NDL_BOARD_CARDS}" ;;
     esac
 }
@@ -350,7 +351,7 @@ echo "== a LATER page failing (paginator rc 2) still refuses, in its OWN words =
 # Unchanged behaviour, asserted here because the two arms now share one policy and differ only in
 # wording: collapsing them would lose the cause set rc 1 alone is entitled to name, and the
 # fetch-board-cards-caller-claims registry would no longer describe the tree.
-NDL_SEARCH_BODY="$(jq -nc '{"data":[range(200)|{id:.,payload:{dl_number:219}}],"meta":{"total":400}}')" \
+NDL_SEARCH_BODY="$(jq -nc '{"data":[range(200;0;-1)|{id:.,payload:{dl_number:219}}],"meta":{"total":400}}')" \
 NDL_PAGE2_HTTP=500 NDL_PAGE2_BODY='{"message":"boom"}' run_ndl --board dev
 eq "page-2 500 → rc 1"                              "1" "$rc"
 eq "page-2 500 → mints NOTHING"                     ""  "$out"

@@ -1148,15 +1148,16 @@ finding with no owner is abandoned, not filed.
   pass prints carries a `≥` and each of its two sections carries a `card list INCOMPLETE (fetch
   rc=$rc)` note.
 
-  The scoping clause is load-bearing rather than a hedge: three shapes still reach the renderer at
+  The scoping clause is load-bearing rather than a hedge: these shapes still reach the renderer at
   **rc 0** and are rendered as confident totals — a server that omits `meta.total` (no census to
-  run), a page delivered twice and scored as a dedup artifact, and a board the token cannot see
-  answering the same well-formed empty envelope as an empty board. All three are named as accepted
-  residuals in `fetch_board_cards`' own body — two under the words *"Residual, accepted"* (the
-  token-visibility envelope at the parse refusal, the duplicate page at the census) and the third
-  stated in the card#6630 paragraph, which names an omitted `meta.total` as the case the census
-  cannot speak for. All three are upstream of every renderer, and none is closable by a stricter
-  row count — the token-visibility one needs a membership signal the envelope does not carry. A marker
+  run), and a board the token cannot see answering the same well-formed empty envelope as an empty
+  board. Each is named as an accepted residual in `fetch_board_cards`' own body — the
+  token-visibility envelope under the words *"Residual, accepted"* at the parse refusal, and the
+  omitted `meta.total` in the card#6630 paragraph as the case the census cannot speak for. Both
+  are upstream of every renderer, and neither is closable by a stricter row count — the
+  token-visibility one needs a membership signal the envelope does not carry. (A page delivered
+  twice and scored by the census as a dedup artifact was a member of this list until card#10626:
+  the walk is now keyed on id and the census no longer excuses a duplicate, so it is rc 4.) A marker
   driven off `$rc` cannot see any of them, so what the renderer now guarantees is *"a read the
   paginator flagged is never rendered as whole"*, not *"a rendered count is whole"*.
 

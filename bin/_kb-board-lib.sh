@@ -1593,18 +1593,53 @@ kb_owner_tag_write() {
 }
 
 # --- whole-board pagination -------------------------------------------------
+# _kb_walk_unkeyable <page> <board> <http> <url-shown> <why>: fetch_board_cards' one voice for
+# a page whose rows cannot key the walk's next request (see THE WALK IS KEYED ON ID). The same
+# channels as its other rc-2 refusals: stderr under KB_FETCH_LOUD, the durable log when set.
+_kb_walk_unkeyable() {
+    [[ -n "${KB_FETCH_LOUD:-}" ]] && \
+        echo "fetch_board_cards: page $1 for board $2 $5 — refusing rather than report a board read it could not continue" >&2
+    [[ -n "${KB_LOG_FILE:-}" ]] && \
+        echo "$(date -u +%FT%TZ) GET $4 HTTP-$3 UNKEYABLE-PAGE page $1: $5" >> "$KB_LOG_FILE"
+    return 0
+}
+
 # fetch_board_cards <api> <token> <board_id> [page_cap] [query]: read the WHOLE board via
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
-# stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
+# stdout. Stops on a short page (n<200) or on the answering request's own meta.last_page
+# declaring it the last, whichever comes first.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
+#
+# THE WALK IS KEYED ON ID, NOT ON PAGE NUMBER (card#10626). Page 1 is the historic request.
+# Every later request is page 1 of `id<C`, C being the LOWEST id the previous page delivered.
+# The server answers in id-DESCENDING order (TasksController::search, `orderByDesc('id')`) and
+# applies an `id<N` q-token as a structured filter (QueryParser::applyStructuredFilter), so each
+# request asks for "the next 200 ids below the last one read". It used to ask for `page=N` —
+# "rows 201-400 of the set as it stands NOW" — and a row leaving the set between two requests
+# (an archive, a delete, a move to another board) moved every later row back across the
+# boundary, so one card was never delivered. The census below is a COUNT and could not see it
+# once a restored card or a duplicate (a create lands at the head and pushes a read row forward)
+# made the number up again: the walk answered rc 0 without the card. Keyed on id, a write
+# mid-walk cannot move an unread row past the cursor, so every card live for the WHOLE walk is
+# delivered exactly once. A card created mid-walk takes an id above the cursor and is not read;
+# it did not exist when the walk started, which is the answer a walk begun a moment earlier gives.
+# BOTH SERVER PROPERTIES ARE CHECKED where each is load-bearing, not assumed: a page the walk
+# continues FROM must be in strictly descending id order (its last row is the next cursor), and
+# every row of a keyed page must lie below the cursor it was asked for (the filter was applied).
+# A page breaking either is rc 2 — the walk cannot be continued correctly. Residual, named: a
+# server that free-texted the `id<N` token instead of applying it would answer few or no rows,
+# and those pass the window check; the census catches the short read at rc 4 where meta.total
+# is declared, and nothing here can where it is not.
 #
 # [query] IS THE OPTIONAL SEARCH TERM (card#6771) — the same `q=` token stream this endpoint
 # already takes, appended after the `board_id=<id>` term this function has always sent, so the
 # read is over the board's MATCHING cards rather than all of them. Nothing else changes: same
-# paging, same dedup, same rcs, same census. Omitted or empty rebuilds the historic URL byte
-# for byte, which is what leaves the whole-board calls — eight of the nine in bin/ — untouched.
+# paging, same dedup, same rcs, same census. The term goes AFTER the walk's own `id<C` token, so
+# an unbalanced quote in it cannot swallow that token. Omitted or empty rebuilds the historic
+# page-1 URL byte for byte, which is what leaves the whole-board calls — eight of the nine in
+# bin/ — untouched.
 #   * The term is percent-encoded as ONE value (jq's @uri — the spelling kbcard's external-id
 #     lookup already uses), so a space, `&` or `#` in it adds no query parameter and retargets
 #     nothing. A caller's own `board_id=` token does not REPLACE this function's: each
@@ -1626,15 +1661,17 @@ kb_owner_tag_write() {
 #      as of card#6631: nothing of the board was read, so the undercount is total).
 #      Three causes, one rc: curl could not complete the request, the status was not
 #      2xx, or the 2xx body carried no readable card array (see the parse site below)
-#   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
+#   2  incomplete: the walk failed after page 1, nothing emitted — a
 #      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
 #      truncated scan. The SAME three causes as rc 1, on a later page (card#6630); the
-#      page is what selects between the two rcs, not the cause. Still not a closed cause
-#      enumeration a caller may quote: rc 1's is closed because next-dl's rc-1-only arm
-#      quotes it, and nothing has asked that of rc 2
+#      page is what selects between the two rcs, not the cause. Plus one of its own: a
+#      page's rows could not key the next request (card#10626 — see THE WALK IS KEYED ON
+#      ID above), which can be page 1's rows, since it is the NEXT request that fails.
+#      Not a closed cause enumeration a caller may quote: rc 1's is closed because
+#      next-dl's rc-1-only arm quotes it, and nothing has asked that of rc 2
 #   3  page cap hit: the partial array is still emitted (so a display caller can
 #      show what it has) but the read is flagged INCOMPLETE on stderr
-#   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
+#   4  SHORT READ: page 1's meta.total exceeds the DISTINCT rows the walk delivered.
 #      The partial array is still emitted and flagged INCOMPLETE on stderr; a
 #      refuse-policy caller must treat 4 like 2/3
 #   5  the [query] could not be encoded: NO request was issued and nothing was read.
@@ -1683,7 +1720,7 @@ kb_owner_tag_write() {
 # wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}" query="${5:-}"
-    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0 qextra=""
+    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0 qextra="" cursor="" idq=""
     # The optional search term, encoded ONCE (it is the same on every page). Refused rather
     # than dropped when the encode yields nothing: an empty qextra is not a narrower read,
     # it is the whole board answered as the match set — the widest wrong answer available
@@ -1724,7 +1761,9 @@ fetch_board_cards() {
     # cannot drift into describing different requests.
     local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     while :; do
-        local qs="/tasks/search.json?q=board_id=${board}${qextra}&limit=200&page=${page}"
+        idq=""
+        [[ -n "$cursor" ]] && idq="%20id%3C${cursor}"
+        local qs="/tasks/search.json?q=board_id=${board}${idq}${qextra}&limit=200&page=1"
         local url="$api$qs" url_shown="$api_shown$qs"
         local rc
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
@@ -1752,19 +1791,22 @@ fetch_board_cards() {
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
-        if [[ "$page" -eq 1 ]]; then
-            # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
-            # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
-            # absent/out-of-range value must fall through to the n<200 break, never break the
-            # scan at a full 200-row page 1 (that silently truncates when meta.total is also
-            # absent — the miss #4513 guards in the co-vendored promote-released-cards
-            # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
-            # when the server positively declares it.
-            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-            kb_is_uint "$last_page" || last_page=""
-            [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
-            total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
-        fi
+        # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
+        # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
+        # absent/out-of-range value must fall through to the n<200 break, never break the
+        # scan at a full 200-row page 1 (that silently truncates when meta.total is also
+        # absent — the miss #4513 guards in the co-vendored promote-released-cards
+        # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
+        # when the server positively declares it. Read from EVERY answer, because every
+        # request is page 1 of its own id window: its last_page speaks for what is left
+        # below the cursor NOW, where page 1's would be a stale count of the whole board.
+        last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
+        kb_is_uint "$last_page" || last_page=""
+        [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
+        # meta.total from PAGE 1 only: it is the census's denominator, the whole board (or
+        # match set) as the walk began. A keyed page's total counts only what is below its
+        # cursor.
+        [[ "$page" -eq 1 ]] && total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         # A 2xx whose body carries no card ARRAY is a page that FAILED to read, not a
         # page that was empty — and `.data // []` could not tell the two apart. An HTML
         # 502 interstitial from a proxy, a truncated body, or a JSON error object all
@@ -1839,43 +1881,59 @@ fetch_board_cards() {
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
+        # The window check: a keyed page answered with a row at or above its cursor was not
+        # narrowed by the `id<C` token, so it cannot be joined to the pages before it.
+        if [[ -n "$cursor" ]] && ! printf '%s' "$data" | jq -e --argjson c "$cursor" \
+                'all(.[]; (.id | type) == "number" and .id < $c)' >/dev/null 2>&1; then
+            _kb_walk_unkeyable "$page" "$board" "$http" "$url_shown" \
+                "returned rows outside the requested id window (id<$cursor) — the server did not apply the walk's key"
+            return 2
+        fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
         [[ "${n:-0}" -lt 200 ]] && break
-        [[ -n "$last_page" && "$page" -ge "$last_page" ]] && break
+        [[ -n "$last_page" && "$last_page" -le 1 ]] && break
         page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2
             printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null
             return 3
         fi
+        # The next cursor: this page's last id, usable only if the page is in strictly
+        # descending id order — otherwise its last row is not its lowest and `id<` it would
+        # skip rows. Derived AFTER the cap check, because a walk that stops here keys nothing.
+        cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a
+            | if all($a[]; type == "number") and all(range(1; $a | length); $a[. - 1] > $a[.])
+              then $a[-1] else empty end' 2>/dev/null)"
+        if ! kb_is_uint "$cursor"; then
+            _kb_walk_unkeyable "$((page - 1))" "$board" "$http" "$url_shown" \
+                "is not in strictly descending id order, so its last row cannot key the next request"
+            return 2
+        fi
     done 9>/dev/null
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"
+    # The census compares DISTINCT rows against page 1's meta.total, and any shortfall is rc 4.
+    # It used to excuse a shortfall whose pre-dedup row sum reached the total as "duplicates
+    # collapsed (page-boundary shift); read complete" — but the shift that delivers a row twice
+    # is the same shift that skips one, so that verdict was rc 0 over a missing card
+    # (card#10626). The keyed walk cannot deliver a row twice across pages (each page lies
+    # wholly below the last), so a duplicate now means a single page repeated a row, and a
+    # count still cannot say which card it stood in for.
     if kb_is_uint "${total:-}" && kb_is_uint "${read_n:-}" && [[ "$total" -gt "$read_n" ]]; then
-        # Distinguish a REAL undercount from a dedup artifact (card #4338): the
-        # PRE-dedup page sum is the tell. sum_n < total ⇒ pages genuinely delivered
-        # fewer rows than the server claims exist ⇒ emit the partial data and
-        # return the DISTINCT rc 4 so refuse-policy callers (next-dl: an
-        # undercount could re-mint a used DL; kbcard list: never print a
-        # truncated list) can reach it — the warn-then-return-0 shape was a
-        # backstop no caller could consume. sum_n >= total with read_n < total ⇒
-        # the same card arrived on two pages (a page-boundary shift mid-scan) and
-        # dedup collapsed it — the read is complete; warn-only. Residual accepted
-        # risk, documented: a server delivering the SAME page twice would also
-        # read as an artifact — that is a server fault this client-side census
-        # cannot distinguish, and the warn still surfaces the count mismatch.
-        if [[ "$sum_n" -lt "$total" ]]; then
-            # meta.total is the total of what was ASKED FOR, so under a [query] it is the
-            # match count and "board has $total cards" would be a false claim about the board.
-            local census_subject="board has $total cards"
-            [[ -z "$query" ]] || census_subject="the search over board $board matched $total cards"
-            echo "fetch_board_cards: ⚠ $census_subject but pages delivered only $sum_n ($read_n after dedup) — list INCOMPLETE" >&2
-            printf '%s' "$out"
-            return 4
-        fi
-        echo "fetch_board_cards: ⚠ read $read_n distinct of $total — duplicates across pages collapsed (page-boundary shift); read complete" >&2
+        # rc 4, DISTINCT from 2/3, so refuse-policy callers (next-dl: an undercount could
+        # re-mint a used DL; kbcard list: never print a truncated list) can reach it, with the
+        # partial data still emitted for a display caller (card #4338).
+        # meta.total is the total of what was ASKED FOR, so under a [query] it is the match
+        # count and "board has $total cards" would be a false claim about the board.
+        local census_subject="board has $total cards" delivered
+        [[ -z "$query" ]] || census_subject="the search over board $board matched $total cards"
+        delivered="pages delivered only $sum_n ($read_n after dedup)"
+        [[ "$sum_n" -lt "$total" ]] || delivered="pages delivered $sum_n rows, only $read_n of them distinct"
+        echo "fetch_board_cards: ⚠ $census_subject but $delivered — list INCOMPLETE" >&2
+        printf '%s' "$out"
+        return 4
     fi
     printf '%s' "$out"
 }

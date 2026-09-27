@@ -4531,8 +4531,8 @@ _kbc_field_delete_call() {
 # The census is fetch_board_cards -> GET /tasks/search.json, and TasksController::search
 # applies the default SoftDeletes scope AND whereNull('archived_at') unless asked
 # otherwise — and the census URL is not built in this file at all: it is built in
-# _kb-board-lib.sh's fetch_board_cards, which sends board_id, limit and page and no
-# archive or trash parameter of any kind. An archived or soft-deleted carrier of the key
+# _kb-board-lib.sh's fetch_board_cards, which sends board_id (and, after page 1, the walk's
+# `id<` window), limit and page and no archive or trash parameter of any kind. An archived or soft-deleted carrier of the key
 # is therefore counted by neither the numerator nor the denominator — while the two
 # server routes these counts are read against are both wider than that:
 # CustomFieldMutator::candidateQuery is withTrashed() with no archive filter, and

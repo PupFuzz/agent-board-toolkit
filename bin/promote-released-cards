@@ -150,7 +150,9 @@
 #
 # Robustness (these states are silent-but-wrong, so they're made loud):
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
-#   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
+#   - Reads the WHOLE board by paging, so a board >200 cards is not truncated. Every page after
+#     the first is keyed on id (`id<C`, C the last id read), not on `page=N`, so a card archived
+#     or restored mid-read cannot push an unread card across a page boundary (card#10626).
 #   - A 2xx page carrying no card ARRAY => FAIL, on ANY page (card#6630): `.data // []` turned
 #     an unreadable later page into `[]`, which is a short page, which ENDED the scan — so the
 #     tool promoted from a board it had only partly read, at rc 0.
@@ -1226,28 +1228,40 @@ resp_detail() {
 # for its caller to interpret, whereas this tool IS the caller and its policy — matching
 # its own page-cap check just below — is to DIE on an incomplete read rather than promote
 # a partial board.
+#
+# THE WALK IS KEYED ON ID, as the lib's is (card#10626 — the whole argument is at
+# fetch_board_cards' header, "THE WALK IS KEYED ON ID"; this copy states only what it does).
+# Page 1 is the historic request; every later request is page 1 of `id<C`, C the lowest id the
+# page before delivered, over the server's id-DESCENDING order. `page=N` let a card archived
+# mid-walk push an unread card back across a page boundary, and the count below could not see it
+# once a duplicate or a restored card made the number up — this MOVER then left a shipped card
+# un-promoted at rc 0. A page the walk continues from must be strictly id-descending, and every
+# row of a keyed page must lie below its cursor; either broken DIES, before any PATCH.
 fetch_whole_board() {
-  local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page=''
+  local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page='' cursor='' idq='' delivered
   while :; do
-    resp="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
+    idq=''
+    [ -n "$cursor" ] && idq="%20id%3C$cursor"
+    resp="$(api "$API/tasks/search.json?q=board_id=$BOARD$idq&limit=200&page=1")" \
       || die "board $BOARD read failed — $(resp_detail) — check the token and api_base ($API_SHOWN)"
-    if [ "$page" -eq 1 ]; then
-      # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
-      # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically
-      # paged until a short page, so an ABSENT last_page must fall through to n<200, never
-      # break the scan at page 1 on a full 200-row page (that would silently truncate when
-      # meta.total is also absent, the very miss #4513 guards). We break on it only when the
-      # server actually declares it — the lib's fetch_board_cards now applies the identical
-      # guard (card #4623), so this co-vendored copy and the lib agree on last_page semantics.
-      last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-      # Usable only as a POSITIVE integer: absent, non-numeric, negative, or <1 all mean
-      # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A
-      # last_page of 0 on a full page would otherwise break the scan at page 1 (the same
-      # truncation class as an absent value).
-      uint_ok "$last_page" || last_page=''
-      [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
-      total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
-    fi
+    # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
+    # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically
+    # paged until a short page, so an ABSENT last_page must fall through to n<200, never
+    # break the scan at page 1 on a full 200-row page (that would silently truncate when
+    # meta.total is also absent, the very miss #4513 guards). We break on it only when the
+    # server actually declares it — the lib's fetch_board_cards applies the identical
+    # guard (card #4623), so this co-vendored copy and the lib agree on last_page semantics.
+    # Read from EVERY answer: each request is page 1 of its own id window, so its last_page
+    # speaks for what is left below the cursor now.
+    last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
+    # Usable only as a POSITIVE integer: absent, non-numeric, negative, or <1 all mean
+    # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A
+    # last_page of 0 on a full page would otherwise break the scan at page 1 (the same
+    # truncation class as an absent value).
+    uint_ok "$last_page" || last_page=''
+    [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
+    # meta.total from PAGE 1 only — the census's denominator, the board as the walk began.
+    [ "$page" -eq 1 ] && total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
     # `.data` must be PRESENT and an ARRAY, on every page. `.data // []` could not tell a
     # page that returned nothing from a page that returned no ANSWER: a 2xx carrying a
     # proxy's JSON error object became `[]`, which is a short page, which ends the loop —
@@ -1273,6 +1287,10 @@ fetch_whole_board() {
         die "board $BOARD page $page returned no readable card array (HTTP 2xx) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry."
       fi
     fi
+    if [ -n "$cursor" ] && ! printf '%s' "$data" | jq -e --argjson c "$cursor" \
+        'all(.[]; (.id | type) == "number" and .id < $c)' >/dev/null 2>&1; then
+      die "board $BOARD page $page returned rows outside the requested id window (id<$cursor) — the server did not apply the walk's key; refusing to promote on a board read it could not continue (a shipped card could be silently missed). Retry."
+    fi
     n="$(printf '%s' "$data" | jq 'length')"
     if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
       die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
@@ -1284,26 +1302,28 @@ fetch_whole_board() {
     cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add')"
     sum_n=$((sum_n + ${n:-0}))
     [ "${n:-0}" -lt 200 ] && break
-    [ -n "$last_page" ] && [ "$page" -ge "$last_page" ] && break
+    [ -n "$last_page" ] && [ "$last_page" -le 1 ] && break
     page=$((page + 1))
     [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
+    cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a
+      | if all($a[]; type == "number") and all(range(1; $a | length); $a[. - 1] > $a[.])
+        then $a[-1] else empty end' 2>/dev/null)"
+    uint_ok "$cursor" \
+      || die "board $BOARD page $((page - 1)) is not in strictly descending id order, so its last row cannot key the next request — refusing to promote on a board read it could not continue (a shipped card could be silently missed). Retry."
   done
-  # Dedup by id — defends against an API that ignores `page=` (same page each loop) or
-  # returns overlapping pages; otherwise a card would be PATCHed once per duplicate.
+  # Dedup by id — a keyed walk cannot deliver one card on two pages, so a duplicate is a single
+  # page repeating a row; collapsed so a card is never PATCHed twice.
   # (Reorders; harmless — this is a mover keyed on id, not a display surface.)
   cards="$(printf '%s' "$cards" | jq -c 'unique_by(.id)')"
   read_n="$(printf '%s' "$cards" | jq 'length')"
-  # Short-read census (#4338), pre-dedup sum vs meta.total tells a REAL undercount from
-  # a page-boundary dedup artifact: sum_n < total ⇒ the server delivered fewer rows than
-  # it claims exist ⇒ an incomplete scan that would silently leave a shipped card
-  # un-promoted ⇒ REFUSE (die), same policy as the page-cap guard above. sum_n >= total
-  # with read_n < total ⇒ one card straddled a page boundary and dedup collapsed it ⇒
-  # the read is complete ⇒ warn only, promote proceeds.
+  # Short-read census (#4338): DISTINCT rows against page 1's meta.total, and any shortfall
+  # REFUSES (die), same policy as the page-cap guard above. It used to excuse a shortfall whose
+  # pre-dedup sum reached the total as "a card straddled a page boundary" and promote anyway —
+  # but the shift that delivers a card twice is the one that skips another (card#10626).
   if uint_ok "$total" && [ "$total" -gt "${read_n:-0}" ]; then
-    if [ "$sum_n" -lt "$total" ]; then
-      die "board $BOARD has $total cards but pages delivered only $sum_n ($read_n after dedup) — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry; if the board is genuinely larger than the page cap, raise PROMOTE_PAGE_CAP."
-    fi
-    echo "promote-released-cards: NOTE — read $read_n distinct of $total ($sum_n across pages); a card straddled a page boundary and dedup collapsed it — read complete." >&2
+    delivered="pages delivered only $sum_n ($read_n after dedup)"
+    [ "$sum_n" -lt "$total" ] || delivered="pages delivered $sum_n rows, only $read_n of them distinct"
+    die "board $BOARD has $total cards but $delivered — refusing to promote on an INCOMPLETE board read (a shipped card could be silently missed). Retry; if the board is genuinely larger than the page cap, raise PROMOTE_PAGE_CAP."
   fi
   printf '%s' "$cards"
 }

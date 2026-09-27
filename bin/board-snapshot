@@ -61,12 +61,15 @@ KB_CURL_MAX_TIME=5
 #     = MORE THAN 5,000 cards on ONE board. No board here is near that, so rc 3 is
 #     a fixture-only rc for this tool today — but it is the cap that decides it, so
 #     lowering SNAPSHOT_PAGE_CAP is all it takes to reach it.
-#   rc 4 (short read) needs the read to span MORE THAN ONE PAGE, and then any row
-#     to leave the match set between the page-1 and page-2 requests: the census
-#     compares the pages' summed rows against the meta.total captured on PAGE 1
-#     ONLY, so one archive (board-session-close does exactly this) or one card
-#     moving out of the board mid-scan makes sum_n < total. It is REACHABLE, and it
-#     is reachable BENIGNLY — an ordinary concurrent write, not a broken server.
+#   rc 4 (short read) needs the read to span MORE THAN ONE PAGE, and then a row
+#     the walk has NOT YET READ to leave the match set before its page is
+#     requested: the census compares the distinct rows delivered against the
+#     meta.total captured on PAGE 1 ONLY, so one archive (board-session-close does
+#     exactly this) or one card moving out of the board mid-scan, below the walk's
+#     id cursor, makes the read short of total. It is REACHABLE, and it is reachable
+#     BENIGNLY — an ordinary concurrent write, not a broken server. (A row leaving
+#     the part ALREADY read no longer does: the walk is keyed on id since card#10626,
+#     so nothing unread moves when it goes.)
 # Re-derive it, do not quote it: ask the API how many pages a board is
 #   GET $API/tasks/search.json?q=board_id=<id>&limit=200&page=1 -> .meta.last_page
 # and compare against ceil(cards / 200) > SNAPSHOT_PAGE_CAP for rc 3. Measured
