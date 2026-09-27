@@ -544,10 +544,10 @@ eq "witness: promote's bound was read out of the bin" "false" \
 # renderer-agreement corpus that only ever fed a clean token (as the one below does) cannot see
 # it drift. Extracted by grepping the LITERAL line out of the shipped bin, not retyped here, so
 # a hand-edit that changes the character class or the expansion shape is what this pins.
-PRC_STRIP_LINE="$(sed -n '/^TOKEN="\${TOKEN%/p' "$PRC")"
+PRC_STRIP_LINE="$(sed -n '/^TOKEN="\${RAW_TOKEN%/p' "$PRC")"
 eq "witness: promote's TOKEN-strip line was found in the bin" "false" \
    "$([[ -z "$PRC_STRIP_LINE" ]] && echo true || echo false)"
-_prc_strip() { local TOKEN="$1"; eval "$PRC_STRIP_LINE"; printf '%s' "$TOKEN"; }
+_prc_strip() { local RAW_TOKEN="$1" TOKEN; eval "$PRC_STRIP_LINE"; printf '%s' "$TOKEN"; }
 _lib_strip() { local _v; kb_token_file_read _v <(printf '%s' "$1"); printf '%s' "$_v"; }
 STRIP_LABELS=('no trailing whitespace' 'trailing LF'      'trailing CR'
               'trailing CRLF'          'trailing space'   'trailing tab'
@@ -568,7 +568,7 @@ unset _i PRC_STRIP_LINE
 # regardless of what the mutant returned, which would make the row pass vacuously; a trailing
 # CR survives a command substitution, so it is CR that actually exercises the mutant's miss.
 # Driven on the planted mutant used nowhere else in this run.
-_prc_strip_mutant() { local TOKEN="$1"; printf '%s' "$TOKEN"; }
+_prc_strip_mutant() { local RAW_TOKEN="$1"; printf '%s' "$RAW_TOKEN"; }
 eq "CONTROL: a promote copy without the strip line DOES diverge" "false" \
    "$([[ "$(_lib_strip $'sekrit123\r')" == "$(_prc_strip_mutant $'sekrit123\r')" ]] && echo true || echo false)"
 

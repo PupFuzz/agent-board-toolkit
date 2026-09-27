@@ -2130,8 +2130,8 @@ eq "control: …and projects the reconciled option set" '["a","b"]' \
 # ⭐ a kbcard beside a lib without kb_mask_token refuses field retype BEFORE its conversion POST,
 # not after it (card#9777 review round). retype's own non-2xx report masks through kb_mask_token
 # AFTER the POST already went out — asked for by definedness at cmd_field's own dispatch instead:
-# rc 2, no request at all, the lib named. field's other four sub-verbs never call it, driven here
-# as the negative half of that same claim.
+# rc 2, no request at all, the lib named. No other field sub-verb calls kb_mask_token, driven
+# below as the negative half of that same claim.
 _fstale="$(_bin_beside_stale_lib "$TMP/stale-field-mask" "$BIN" kb_mask_token)"
 kb_stub_reset; rc=0
 out="$("$_fstale" field retype --field stage --to string 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"

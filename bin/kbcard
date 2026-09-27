@@ -5414,9 +5414,9 @@ cmd_field() {
     shift
     # retype's own non-2xx report, _kbc_field_change_type_report, masks through kb_mask_token —
     # after the conversion POST already went out, since which arm to report depends on the
-    # server's answer. Asked for here, before that POST, rather than inside the report: the other
-    # four sub-verbs never call it, so gating at the shared dispatch above would refuse them for
-    # an absence they do not depend on (card#9777).
+    # server's answer. Asked for here, before that POST, rather than inside the report: no other
+    # field sub-verb calls kb_mask_token, so gating at the shared dispatch above would refuse them
+    # for an absence they do not depend on (card#9777).
     if [[ "$sub" == retype ]] && ! declare -F kb_mask_token >/dev/null; then
         _kbc_lib_unruled "field retype" "the conversion" kb_mask_token undefined
         return 2

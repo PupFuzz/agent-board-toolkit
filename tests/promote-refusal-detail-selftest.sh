@@ -581,4 +581,34 @@ done
 unset STUB_PATCH_STATUS STUB_PATCH_BODY _s8_i _s8_label _s8_echoed _S8_LABELS _S8_SUFFIXES
 export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
 
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 9 — A WHITESPACE-ONLY SECRET IS REFUSED BY ITS OWN NAME, NOT AS 'not set' (card#9777 r3) =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# § 8's strip left ONE case unhandled: a $KANBAN_WRITEBACK_TOKEN that is SET but strips down to
+# nothing (all space/tab/CR/LF/VT/FF) used to send an empty bearer — silently, mask and all,
+# since there was no token left to leak. Refusing it (this cut) is a NEW acceptance narrowing,
+# and it must say what actually happened: "is not set" is FALSE of a variable that IS set, so
+# a whitespace-only secret gets its OWN message, told apart from the truly-absent case.
+export ATTEMPT_LOG="$TMP/attempts-s9.log"
+: > "$ATTEMPT_LOG"
+export KANBAN_WRITEBACK_TOKEN=$'   \t\n'
+run_promote
+eq "whitespace-only token: still refused, rc 2"           "2"     "$rc"
+eq "whitespace-only token: named as SET, not absent"      "true"  "$(has 'KANBAN_WRITEBACK_TOKEN is set but is empty or whitespace-only' "$err")"
+eq "whitespace-only token: …and NOT the unset wording"    "false" "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+eq "whitespace-only token: no request was issued"         "0"     "$(wc -l < "$ATTEMPT_LOG" | tr -d ' ')"
+unset ATTEMPT_LOG
+
+unset KANBAN_WRITEBACK_TOKEN
+run_promote
+eq "unset token: still the ORIGINAL wording"              "true"  "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+eq "unset token: …and NOT the whitespace-only wording"    "false" "$(has 'whitespace-only' "$err")"
+
+export KANBAN_WRITEBACK_TOKEN=""
+run_promote
+eq "empty-string token: the SAME unset wording (never seen as whitespace-only)" "true" \
+   "$(has 'KANBAN_WRITEBACK_TOKEN is not set' "$err")"
+
+export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
+
 _summary "promote-refusal-detail-selftest"
