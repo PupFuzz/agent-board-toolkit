@@ -5115,10 +5115,11 @@ echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
 # stub and helpers above are reused. A URL-side write moves the card's by-ref `source` to the given
 # URL's repo — unless a payload.repo that is a string containing `/` outranks every URL, on which
-# card nothing moves — while the stored number stays. On the `pr` pair that repo's release
-# shipping the old number then promotes the card; the `issue` pair carries no such
-# consequence, because promote correlates on no issue key (card#9935). The mirror of the
-# defect above.
+# card nothing moves — while the stored number stays. On the `pr` pair promote then counts the
+# card only by the number the given URL names (promote matches the PR side on the number the
+# pr_url names; payload.repo and a bare pr_number no longer promote), so a release shipping the
+# old number names the card pr-diverged; promote reads no issue key at all (card#9935). The
+# mirror of the defect above.
 
 # --- member 2: --issue without --issue-url over a stored issue_url --------------------------
 ISS42='{"issue_number":42,"issue_url":"https://github.com/acme/widget/issues/42"}'
@@ -5315,11 +5316,12 @@ for _ref in pr issue; do
 done
 # --- ⭐ card#9918: every refusal states the DIVERGENCE and the REMEDY — and NO consequence -----
 # Operator ruling (2026-09-19): a refusal says WHAT is refused and WHAT to pass. It does not say
-# who the card ends up attributed to, or what a release in that repo would promote. Those follow
-# from the card's by-ref SOURCE, which this pair cannot see — a payload.repo that is a string
-# containing "/" takes the source off the URL entirely (derive_source) — so a consequence written
+# who the card ends up attributed to, or what a release would promote. Attribution follows from
+# the card's by-ref SOURCE, which this pair cannot see — a payload.repo that is a string
+# containing "/" takes the source off the URL entirely (derive_source) — so an attribution written
 # from the URL's repo is false on such a card, and one written the other way is false on the
-# ordinary card whose payload.repo names the URL's OWN repo. The divergence is true on all of them.
+# ordinary card whose payload.repo names the URL's OWN repo. Promotion, on the PR side, follows
+# from the number the pr_url names alone. The divergence is true on all of them.
 # Driven per arm, both pairs, as a PROCESS against the shipped bin. Each message is asserted WHOLE:
 # a `has` on a fragment passes on a message that still trails a consequence, and the dropped
 # vocabulary is asserted ABSENT beside it — the two legs red on opposite defects, a reason gone
