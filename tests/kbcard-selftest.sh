@@ -394,6 +394,14 @@ eq "wont_do patch → dl_number present + null"       '[true,null]' "$(jq -c '[(
 eq "wont_do patch → pr_url present + null"          '[true,null]' "$(jq -c '[(.payload|has("pr_url")), .payload.pr_url]' <<<"$b")"
 eq "wont_do patch → prints what it cleared"         "true" "$(has 'cleared correlation stamps' "$(cat "$_MOVE_ERR")")"
 
+# The notice claims a write, so a decline REFUSED before any request (--pr beside the decline's
+# null pr_url leaves a bare number) must not print it. RED-when-reverted: the notice emitted at
+# the decline merge, above the guards, prints on this refused call.
+: > "$_MOVE_BODY"; rc=0; cmd_patch --task 99 --column wont_do --pr 179 >/dev/null 2>"$_MOVE_ERR" || rc=$?
+eq "wont_do patch refused → rc 2"                   "2" "$rc"
+eq "wont_do patch refused → nothing sent"           "" "$(cat "$_MOVE_BODY")"
+eq "wont_do patch refused → no cleared notice"      "false" "$(has 'cleared correlation stamps' "$(cat "$_MOVE_ERR")")"
+
 # Explicit flag beats hygiene: --dl in the SAME declining call keeps its value; the other
 # two keys still clear.
 b="$(pt_body --task 99 --column wont_do --dl DL-7)"

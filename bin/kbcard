@@ -2853,15 +2853,18 @@ cmd_patch() {
     cleared_json="$(jq -c '[to_entries[] | select(.value == null) | .key]' <<<"$payload_json")"
 
     # patch --column wont_do is the SECOND decline call-site — same hygiene as move
-    # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win.
+    # (canon: one owner, _kbc_decline_nulls). Explicit ref flags in this call win. The notice
+    # describes the write, so it is composed here and printed beside the PATCH: a guard below
+    # can still refuse this call, and then nothing was cleared or retained.
+    local decline_note=""
     if [[ "$column" == "wont_do" && -z "$keep_refs" ]]; then
         payload_json="$(_kbc_decline_nulls "$payload_json")"
-        echo "kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them" >&2
+        decline_note="kbcard: cleared correlation stamps (dl_number, pr_number, pr_url) on decline — pass --keep-refs to retain them"
     elif [[ "$column" == "wont_do" ]]; then
         # Retained = the decline's stamps minus what --clear removed in this same call.
         local retained
         retained="$(_kbc_decline_nulls | jq -r --argjson c "$cleared_json" 'keys_unsorted - $c | join(", ")')"
-        echo "kbcard: --keep-refs — correlation stamps ($retained) retained" >&2
+        decline_note="kbcard: --keep-refs — correlation stamps ($retained) retained"
     fi
 
     # Which number/URL pairs this call writes by half is decided HERE, offline, from the payload just
@@ -2938,6 +2941,7 @@ cmd_patch() {
     # holds null, and a caller who cannot see that in the echo has to re-read the card to learn
     # whether the unblock took.
     [[ -n "$block_set" ]] && echo_extra="$echo_extra, block_reason: .block_reason"
+    [[ -n "$decline_note" ]] && echo "$decline_note" >&2
     local resp
     resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
