@@ -90,6 +90,13 @@ source "$KB_LIB"
 KB_PROG="dl-a1-register-field"
 KB_API_QUIET=1
 
+# The register write masks its response through kb_mask_token, and the throwaway-card write
+# below goes through kb_stage_write — both the lib's (card#9777). Asked for by definedness
+# before either write: beside a lib that predates them the register POST goes out and this
+# tool then dies at `command not found` (rc 127) quoting the response, rather than at rc 2
+# before any request — this tool's own published "refused before any request" rc.
+declare -F kb_mask_token kb_stage_write >/dev/null || { echo "dl-a1-register-field: the _kb-board-lib.sh beside this script predates kb_mask_token / kb_stage_write — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 2; }
+
 USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
 
 board_name=""

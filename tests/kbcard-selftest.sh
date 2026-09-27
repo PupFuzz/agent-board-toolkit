@@ -2127,6 +2127,31 @@ eq "control: …and re-read the board's field index to confirm the converge" "2"
 eq "control: …and projects the reconciled option set" '["a","b"]' \
    "$(jq -c '[.options[].value]' <<<"$out")"
 
+# ⭐ a kbcard beside a lib without kb_mask_token refuses field retype BEFORE its conversion POST,
+# not after it (card#9777 review round). retype's own non-2xx report masks through kb_mask_token
+# AFTER the POST already went out — asked for by definedness at cmd_field's own dispatch instead:
+# rc 2, no request at all, the lib named. field's other four sub-verbs never call it, driven here
+# as the negative half of that same claim.
+_fstale="$(_bin_beside_stale_lib "$TMP/stale-field-mask" "$BIN" kb_mask_token)"
+kb_stub_reset; rc=0
+out="$("$_fstale" field retype --field stage --to string 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_mask_token: field retype --field stage --to string → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+   "$(has "kbcard: field retype: kb_mask_token is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+for _fsub in "list" "set-options --field stage --options a,b" "create --key probe --label Probe --type string" "delete --field stage"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$("$_fstale" field $_fsub 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ …and field $_fsub is UNAFFECTED (does not call kb_mask_token)" "false" \
+       "$(has 'kb_mask_token is not defined' "$err")"
+done
+unset _fsub
+# Control for the zero count: the SAME call through the real kbcard does reach the wire.
+kbc field retype --field stage --to string
+eq "control: with the real lib, field retype --field stage --to string issues at least one request" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _fstale
+
 echo "-- set-options: a 2xx that did NOT converge is a HARD FAILURE, not a reconcile --"
 # The claim this verb makes is about the BOARD ("the options are now exactly this list, in this
 # order"), so it is made from a read of the board and not from the PATCH's own echo. With the
@@ -3278,6 +3303,23 @@ for _ue in 403 500; do
     eq "unlink: …and the token is NOT on stderr"              "false" "$(has 'stub-token' "$err")"
 done
 unset _ue
+
+# ⭐ a kbcard beside a lib without kb_mask_token refuses unlink BEFORE the DELETE, not after it
+# (card#9777 review round). Beside such a lib the DELETE used to go out and only THEN die at
+# `kb_mask_token: command not found` (rc 127) while masking the outcome it was about to report
+# — asked for by definedness at dispatch instead, the same way the write-side verbs above are
+# asked for kb_stage_write: rc 2, no request at all, the lib named.
+_unstale="$(_bin_beside_stale_lib "$TMP/stale-unlink-mask" "$BIN" kb_mask_token)"
+kb_stub_reset; rc=0
+out="$("$_unstale" unlink --link-id 9 --on 505 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_mask_token: unlink --link-id 9 --on 505 → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+   "$(has "kbcard: unlink: kb_mask_token is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+# Control for the zero count: the SAME call through the real kbcard does reach the wire.
+kbc unlink --link-id 9 --on 505
+eq "control: with the real lib, unlink --link-id 9 --on 505 issues at least one request" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _unstale
 
 echo "-- which end is FROM comes from the card's own \`direction\`, never from the flag --"
 # --on takes EITHER end, so a verb that inferred from/to from the flag would print a reversed

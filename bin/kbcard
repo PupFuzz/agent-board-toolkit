@@ -5412,6 +5412,15 @@ cmd_field() {
     local sub="${1:-}"
     [[ -z "$sub" ]] && { echo "kbcard: field requires a sub-verb: list | create | delete | retype | set-options" >&2; return 2; }
     shift
+    # retype's own non-2xx report, _kbc_field_change_type_report, masks through kb_mask_token —
+    # after the conversion POST already went out, since which arm to report depends on the
+    # server's answer. Asked for here, before that POST, rather than inside the report: the other
+    # four sub-verbs never call it, so gating at the shared dispatch above would refuse them for
+    # an absence they do not depend on (card#9777).
+    if [[ "$sub" == retype ]] && ! declare -F kb_mask_token >/dev/null; then
+        _kbc_lib_unruled "field retype" "the conversion" kb_mask_token undefined
+        return 2
+    fi
     case "$sub" in
         list)        _kbc_field_list "$@" ;;
         create)      _kbc_field_create "$@" ;;
@@ -5457,10 +5466,20 @@ main() {
     # Every stage-writing verb writes through the lib's kb_stage_write. Asked for by definedness
     # BEFORE the verb runs, so a kbcard beside a lib that predates it refuses having sent nothing,
     # rather than failing at the write with a bare `command not found` after its reads (card#9777).
+    #
+    # unlink is asked the same way for kb_mask_token: its DELETE is sent, then its own errbody is
+    # masked before it can be quoted to stderr — beside a lib predating kb_mask_token that mask
+    # call is `command not found`, rc 127, AFTER the DELETE already went out (card#9777). field's
+    # own masking call is inside `retype` only, so that one is asked at cmd_field's own dispatch,
+    # not here — asking here would refuse `field list`/`create`/`delete`/`set-options`, none of
+    # which call it, before a request those verbs are free to send.
     case "$cmd" in
         create-card|move|move-board|patch)
             declare -F kb_stage_write >/dev/null \
                 || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; } ;;
+        unlink)
+            declare -F kb_mask_token >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the delete" kb_mask_token undefined; exit 2; } ;;
     esac
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;

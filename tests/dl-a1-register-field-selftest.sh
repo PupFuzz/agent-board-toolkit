@@ -708,6 +708,35 @@ run_a1
 eq "control: a well-formed body still reports the field id" "true" \
    "$(has 'registered dl_number as a STRING field (field id 9)' "$out")"
 
+echo "== beside a lib without kb_mask_token / kb_stage_write, EVERY invocation refuses before any request (card#9777 review round) =="
+# Both are asked for by definedness right after the lib is sourced, ahead of the arg loop — the
+# strictest of this tool's own refusal sites, and its own published rc 2 ("usage / config —
+# refused before any request"). Beside an older lib the register POST used to go out and only
+# THEN die at `kb_mask_token: command not found` (rc 127) while masking its own response; this
+# closes that the same way `--help` beside a lib-LESS copy is already closed below, just for a
+# STALE lib rather than an ABSENT one.
+_a1stale="$(_bin_beside_stale_lib "$TMP/stale-a1" "$A1" kb_mask_token kb_stage_write)"
+kb_stub_reset; rc=0
+out="$("$_a1stale" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_mask_token/kb_stage_write: the happy-path invocation → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "⭐ …names the functions as not defined, says re-vendor, and that nothing was requested" "true|true|true" \
+   "$(has "the _kb-board-lib.sh beside this script predates kb_mask_token / kb_stage_write" "$err")|$(has 're-vendor _kb-board-lib.sh alongside this tool' "$err")|$(has 'Nothing was requested' "$err")"
+# Each function missing ALONE is found too — declare -F takes both names in one check, so either
+# one's absence trips it.
+for _fn in kb_mask_token kb_stage_write; do
+    _a1stale1="$(_bin_beside_stale_lib "$TMP/stale-a1-$_fn" "$A1" "$_fn")"
+    kb_stub_reset; rc=0
+    out="$("$_a1stale1" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without $_fn alone: → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …names $_fn" "true" "$(has "$_fn" "$err")"
+done
+unset _fn
+# Control for the zero counts: the SAME invocation through the real bin does reach the wire.
+run_a1
+eq "control: with the real lib, the happy path issues at least one request" "true" \
+   "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _a1stale _a1stale1
+
 echo "== a lib-less copy is refused before the argument surface, --help included =="
 # The arg loop parses with the lib's kb_require_value, so the lib is sourced AHEAD of it. That
 # ordering is caller-visible on a BROKEN install only, and this is where it shows: a copy vendored
