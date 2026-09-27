@@ -6,6 +6,8 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-27
+
 ### Changed
 - **card#10626** — ⚠ **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): two whole-board reads that completed at `rc 0` now fail.** Both used to complete with a wrong answer; the fix is under `### Fixed` below.
   - **[host] [vendor] `fetch_board_cards` (`bin/_kb-board-lib.sh`), and every bin that calls it:** a read whose rows reach page 1's `meta.total` only because a row arrived twice is `rc 4` INCOMPLETE (previously `rc 0` with `⚠ … duplicates across pages collapsed (page-boundary shift); read complete`). A page the walk continues from that is not in strictly descending id order, or a later page carrying a row at or above the id it was asked to stay below, is `rc 2` with nothing emitted (previously `rc 0`: the offset walk did not depend on either property). The real server answers neither shape; the second is reachable only against a server that does not order by id or ignores the `id<` search token.
