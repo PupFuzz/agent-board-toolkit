@@ -159,7 +159,7 @@
 # because that misclassification is a silent non-run of the whole gate rather than a pass.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.36.0'
+ABTK_TOOL_VERSION='0.37.0'
 
 # Pinned so version extraction and the fixed-string matching below mean the same thing on
 # every runner: a bracket range is a COLLATION range, and en_US.UTF-8 widens `[0-9]` to
