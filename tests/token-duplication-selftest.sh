@@ -247,9 +247,9 @@ eq "  …and the ⚠ still prints under --quiet" "true"  "$(has 'SECOND kanban c
 eq "  …at rc 0"                              "0"     "$RC"
 
 echo "== ⭐ the SAME credential under DIFFERENT terminators is ONE credential =="
-# IDENTITY IS WHAT THE READERS SEE, NOT THE RAW BYTES. Every consumer takes a token through
-# `$(cat …)` — `kb_read_token` (`bin/_kb-board-lib.sh`), the board-env reads, `next-dl` — and
-# command substitution strips TRAILING NEWLINES. So a file written by docs/INSTALL.md §3b step
+# IDENTITY IS WHAT THE READERS SEE, NOT THE RAW BYTES. Every consumer takes a token through the
+# lib's `kb_token_file_read` — `kb_read_token`, the board-env reads, `next-dl` — which strips
+# TRAILING WHITESPACE (card#9777; `$(cat …)`'s trailing newlines before it). So a file written by docs/INSTALL.md §3b step
 # (b)'s own recipe (`printf '%s'`, no terminator) and one an editor or a `>>` terminated hold
 # the SAME credential as far as every tool on this seat is concerned. A digest over raw bytes
 # answers `ok — each a different credential` at rc 0 over exactly the state this leg exists to
@@ -315,8 +315,8 @@ eq "  …named as a SECOND credential"         "true"  "$(has 'SECOND kanban cre
 eq "  …and not as a duplicate"               "false" "$(has 'DUPLICATE kanban token' "$OUT")"
 
 echo "-- (d) TRAILING is the whole normalisation: interior bytes still decide --"
-# `$(cat)` strips every trailing newline and nothing else. Both halves are driven, because a
-# normalisation that went one character further would merge two real credentials silently.
+# kb_token_file_read strips trailing whitespace and nothing else. Both halves are driven, because
+# a normalisation that went one character further would merge two real credentials silently.
 reset_seat
 printf '%s\n\n\n' "$FAKE" > "$SEAT/.kanban-a-token"
 printf '%s'       "$FAKE" > "$SEAT/.kanban-b-token"
@@ -329,6 +329,27 @@ printf 'AB%s\n' "$FAKE" > "$SEAT/.kanban-a-token"
 printf 'A\nB%s'  "$FAKE" > "$SEAT/.kanban-b-token"
 run_check
 eq "control: an INTERIOR newline is still a difference → rc 0" "0" "$RC"
+eq "  …no duplicate invented"                "false" "$(has 'DUPLICATE kanban token' "$OUT")"
+
+echo "-- (e) a CRLF copy and a trailing-space copy are the SAME credential (card#9777) --"
+# The readers strip trailing CR/space/tab too, so these are one credential to every tool — and the
+# control below keeps an INTERIOR CR a difference, the half that must not merge two real tokens.
+reset_seat
+printf '%s\r\n' "$FAKE" > "$SEAT/.kanban-a-token"
+printf '%s\n'   "$FAKE" > "$SEAT/.kanban-b-token"
+mk_board a "$SEAT/.kanban-a-token"
+mk_board b "$SEAT/.kanban-b-token"
+run_check
+eq "CRLF vs LF, one credential → rc 1"        "1"     "$RC"
+eq "  …named as a duplicate"                 "true"  "$(has 'DUPLICATE kanban token' "$OUT")"
+eq "  …and leaks nothing"                    "false" "$(has "$FAKE" "$OUT")"
+printf '%s \t\n' "$FAKE" > "$SEAT/.kanban-a-token"
+run_check
+eq "trailing space/tab vs none, one credential → rc 1" "1" "$RC"
+printf 'A\r%s\n' "$FAKE" > "$SEAT/.kanban-a-token"
+printf 'A%s\n'   "$FAKE" > "$SEAT/.kanban-b-token"
+run_check
+eq "control: an INTERIOR CR is still a difference → rc 0" "0" "$RC"
 eq "  …no duplicate invented"                "false" "$(has 'DUPLICATE kanban token' "$OUT")"
 
 echo "== two DIFFERENT live credentials → reported, distinguished, and NOT gated =="
@@ -755,12 +776,32 @@ _fn_src "$TMP/lib-unmirrored-plant" "$LIB_STORE_FN" > "$TMP/lib-store-rung-plant
 eq "an unrelated _kb_expand_home call elsewhere in the lib is NOT mirror drift" \
    "$LIB_INSIDE" "$(_call_sites _kb_expand_home "$TMP/lib-store-rung-planted")"
 
+echo "== _rc_digest's identity IS kb_token_file_read's (card#9777) =="
+# The digest runs in awk because token bytes must not enter a variable there; the lib reads them
+# into one because it has to send them. Two spellings of one normalisation, so they are driven over
+# one corpus: the digest of each file must equal the sha256 of what the lib's reader hands a tool.
+n_ident=0
+for _c in 'tok' $'tok\n' $'tok\r\n' $'tok \t\r\n\n' $'tok\n\n\n' $' tok\n' $'to\rk\n' $'a\nb\r\n' $'tok\v\f\n' ''; do
+    printf '%s' "$_c" > "$TMP/ident.token"
+    _v=""; kb_token_file_read _v "$TMP/ident.token"
+    _want="$(printf '%s' "$_v" | sha256sum)"; _want="${_want%% *}"
+    eq "digest == sha256(kb_token_file_read) for $(printf '%q' "$_c")" "$_want" "$(_rc_digest "$TMP/ident.token")"
+    n_ident=$((n_ident + 1))
+done
+# Control: the comparison discriminates — a raw-bytes digest of a CRLF file is NOT the reader's.
+printf 'tok\r\n' > "$TMP/ident.token"; _v=""; kb_token_file_read _v "$TMP/ident.token"
+_want="$(printf '%s' "$_v" | sha256sum)"; _raw="$(sha256sum < "$TMP/ident.token")"
+eq "control: the raw-bytes digest of a CRLF file differs from the reader's" "false" \
+   "$([[ "${_raw%% *}" == "${_want%% *}" ]] && echo true || echo false)"
+unset _c _v _want _raw
+
 echo "== the parity table this run actually drove =="
-echo "   $n_store store shapes · $n_home home expansions · $n_secret credential shapes · $n_boardenv board-env reads"
+echo "   $n_store store shapes · $n_home home expansions · $n_secret credential shapes · $n_boardenv board-env reads · $n_ident token-identity rows"
 # Positive control: every counter above is incremented INSIDE the loop it describes, so a table
 # that stopped running would report zeros rather than a stale total.
 eq "every parity table carries rows (positive control)" "true" \
    "$([ "$n_store" -gt 0 ] && [ "$n_home" -gt 0 ] && [ "$n_secret" -gt 0 ] && [ "$n_boardenv" -gt 0 ] \
+      && [ "$n_ident" -gt 0 ] \
       && echo true || echo false)"
 
 _summary "token-duplication-selftest"

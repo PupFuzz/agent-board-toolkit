@@ -673,7 +673,9 @@ kb_load_config() {
     if [[ "$no_token" == --no-token ]]; then
         KB_TOKEN=""
     else
-        KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+        # `|| KB_TOKEN=""` keeps what an unreadable-after-resolve file (a DIRECTORY passes -r) has
+        # always produced here: an empty bearer, not a refusal — refusing is an acceptance change.
+        kb_token_file_read KB_TOKEN "$KB_TOKEN_FILE" || KB_TOKEN=""
     fi
     return 0
 }
@@ -753,12 +755,39 @@ kb_board_env_get() {
     )
 }
 
-# kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE).
-# Returns 1 rather than exiting when the file is unreadable — every caller is fail-soft
-# and words its own message.
+# kb_token_file_read <var> <token_file>: set the CALLER's <var> to the bearer token in
+# <token_file>, TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED; rc 1, <var> untouched,
+# when the file cannot be read. THE ONE READ OF A TOKEN FILE's bytes in bash here — every site
+# that sends or masks a token goes through it (`grep -n kb_token_file_read bin/`), so the value a
+# tool holds is the value that goes on the wire.
+#
+# ⛔ WHY TRAILING WHITESPACE AND NOT ONLY NEWLINES (card#9777). `$(cat …)` strips trailing LF and
+# nothing else, so a CRLF file (normal on Windows/Git-Bash) read as `tok…\r`. curl drops that CR
+# from a `-H @-` header line, so auth still worked — but kb_mask_token masks the LITERAL token, and
+# a server echoing the request's Authorization header returned it WITHOUT the CR, so the mask
+# missed and the bearer reached stderr and the durable KB_LOG_FILE (measured, a header-echoing
+# server behind real curl). A trailing space or tab is sent by curl, and a server trims it as
+# header whitespace (RFC 9110 §5.5) before echoing — the same miss. Normalising HERE, once, makes
+# the mask's literal equal to the wire value; variant-matching inside the mask would be a second
+# spelling of the token for every future mask site to get right. Interior and leading bytes are
+# untouched. agent-board-toolkit-runtime-check's _rc_digest normalises to this same identity.
+#
+# Assigns by name (`printf -v`) like kb_mask_token rather than printing, so no caller captures
+# the token through a `$(…)` of its own. Its one local carries a name no caller passes.
+kb_token_file_read() {
+    local _kbtfr_v
+    _kbtfr_v="$(cat -- "$2" 2>/dev/null)" || return 1
+    printf -v "$1" '%s' "${_kbtfr_v%"${_kbtfr_v##*[!$' \t\n\r\v\f']}"}"
+}
+
+# kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE), through
+# kb_token_file_read. Returns 1 rather than exiting when the file is unreadable — every caller is
+# fail-soft and words its own message. A file that passes -r and still cannot be read (a
+# DIRECTORY) leaves KB_TOKEN empty at rc 0, as the `$(cat …)` this replaced did — turning that
+# into a refusal changes what the callers accept, and is not this helper's to decide.
 kb_read_token() {
     [[ -r "$1" ]] || return 1
-    KB_TOKEN="$(cat "$1")"
+    kb_token_file_read KB_TOKEN "$1" || KB_TOKEN=""
     KB_TOKEN_FILE="$1"
     return 0
 }
@@ -780,17 +809,17 @@ KB_HTTP=""
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
 # kb_mask_token <var> <token> <text>: set the CALLER's variable <var> to <text> with every
-# occurrence of <token> — the literal bearer that went on the wire — replaced by `***`. An empty
-# <token> masks nothing, by an explicit branch rather than by trusting an empty pattern; <text>
-# then comes back byte-identical.
+# occurrence of <token> — the literal bearer that went on the wire, which KB_TOKEN equals because
+# kb_token_file_read normalised it — replaced by `***`. An empty <token> masks nothing, by an
+# explicit branch rather than by trusting an empty pattern; <text> then comes back byte-identical.
 #
 # THE ONE MASK every server body this lib renders or logs goes through (card#9777), and the one
 # the lib-sourcing bins use where they quote a body themselves — `grep -n kb_mask_token bin/`
 # lists the sites rather than this comment restating them. A server that renders debug output echoes the
 # request's own headers into its error page (measured, card#9301), so any body can carry
 # `Authorization: Bearer <token>` verbatim. The literal token rather than a pattern scrub, for the
-# reason kb_render_refusal gives. promote-released-cards' resp_detail and next-dl's resp_excerpt
-# carry their own copies of this one substitution (the first may not source the lib).
+# reason kb_render_refusal gives. promote-released-cards' resp_detail carries its own copy of this
+# one substitution, because it may not source the lib.
 #
 # IT ASSIGNS BY NAME (`printf -v`) RATHER THAN PRINTING, and that is the point: `$(…)` strips
 # trailing newlines, so a printing helper would change the bytes every log line carries — the

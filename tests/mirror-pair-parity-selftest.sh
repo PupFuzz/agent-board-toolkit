@@ -510,7 +510,9 @@ unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
 # `resp_excerpt` is now the one lib-sourcing copy that could call the lib instead of carrying the
 # chain. It was NOT migrated in that card: its envelope, its cut and its withheld-on-an-unreadable-
 # token-file outcome all differ by design, so the move is a change to what next-dl prints and is
-# its own change. Until it lands, this block is what holds that copy to the other two.
+# its own change. Until it lands, this block is what holds that copy to the other two. (Its MASK
+# stage does call the lib — kb_mask_token, over kb_token_file_read's token — since card#9777's
+# review round; what is mirrored here is the scrub chain alone.)
 #
 # WHAT IS COMPARED, and what is not: the DECISION about the body — which bytes survive the render
 # and in what form. The tools' envelopes differ by design (`resp_detail` prints `HTTP <status>,

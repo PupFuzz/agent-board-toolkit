@@ -4849,7 +4849,7 @@ _kbc_field_conversion_rerun_note() {
 # re-running rather than promising a no-op. It is plumbed rather than re-derived from the
 # body, which on a 000 does not exist.
 #
-# The status line + the raw body mirror what kb_api prints on a non-2xx under
+# The status line + the token-masked body mirror what kb_api prints on a non-2xx under
 # KB_API_ERRBODY=1, and the failure-log append mirrors its log line: kb_api_status is
 # silent by design, and this is the one call in this file whose refusal IS the
 # preflight — every offending card is named in that body, so dropping it would throw
@@ -5450,6 +5450,14 @@ main() {
     local cmd="$1"
     kb_require_positional "" "$cmd" "<command>" || exit 2
     shift
+    # Every stage-writing verb writes through the lib's kb_stage_write. Asked for by definedness
+    # BEFORE the verb runs, so a kbcard beside a lib that predates it refuses having sent nothing,
+    # rather than failing at the write with a bare `command not found` after its reads (card#9777).
+    case "$cmd" in
+        create-card|move|move-board|patch)
+            declare -F kb_stage_write >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; } ;;
+    esac
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;
         move)        cmd_move "$@" ;;

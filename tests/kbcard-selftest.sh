@@ -5455,6 +5455,40 @@ for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7"; do
     eq "control: with the real lib, patch $_args issues at least one request" "true" \
        "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 done
+# --- ⭐ a kbcard beside a lib without kb_stage_write refuses every STAGE-WRITING verb (card#9777) --
+# Every stage write goes through the lib's kb_stage_write, so beside a lib that predates it the
+# write died at rc 127 with a bare `command not found`, after the verb's own reads. Asked for by
+# definedness at dispatch: rc 2, no request at all, the lib named — and the read verbs unaffected.
+# The board env this section inherits declares none of the stages/types these writes name, so it
+# would refuse them OFFLINE whatever the lib — re-declared here so the zero-request rows below are
+# measurements (the next section rebuilds the whole fixture).
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49' 'export KB_TYPE_FR=7'
+_psstale="$(_bin_beside_stale_lib "$TMP/stale-sw" "$BIN" kb_stage_write)"
+for _args in "create-card --type fr --name probe --column backlog" "move --task 505 --column in_progress" \
+             "patch --task 505 --dl DL-7" "move-board --task 505 --to-board other --yes"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$(KB_STUB_PAYLOAD="$PR178" "$_psstale" $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without kb_stage_write: $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …names the function as not defined, says re-vendor, and that nothing was written" "true|true|true" \
+       "$(has "kb_stage_write is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 're-vendor the lib with this kbcard' "$err")|$(has 'NOTHING was written' "$err")"
+done
+# Control for the zero counts: the SAME calls through the real kbcard do reach the wire. (move-board
+# is not in it — no `other` board env exists here, so it refuses offline either way; its rows
+# above are carried by the message.)
+for _args in "create-card --type fr --name probe --column backlog" "move --task 505 --column in_progress" \
+             "patch --task 505 --dl DL-7"; do
+    kb_stub_reset
+    # shellcheck disable=SC2086
+    KB_STUB_PAYLOAD="$PR178" "$BIN" $_args >/dev/null 2>&1 || true
+    eq "control: with the real lib, $_args issues at least one request" "true" \
+       "$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+done
+# Control: the preflight is scoped to the writers — a read verb beside the same lib still reads.
+kb_stub_reset; rc=0
+KB_STUB_PAYLOAD="$PR178" "$_psstale" show --task 505 >/dev/null 2>"$TMP/e" || rc=$?
+eq "control: show beside that lib → rc 0 and it reached the wire" "0|true" \
+   "$rc|$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args _v
 
 unset -f kb_stub_route ppay npatch nget

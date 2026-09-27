@@ -2255,4 +2255,76 @@ unset -f curl _sw
 unset SW_LOGF SW_OUT SW_ERR SW_REFUSAL SW_LINE SW_ARGV
 reset_env
 
+# ---------------------------------------------------------------------------
+echo "== kb_token_file_read: the token a tool holds IS the token on the wire (card#9777) =="
+# kb_mask_token masks the LITERAL token, so it is only as good as the equality between KB_TOKEN
+# and the bytes a server can echo back. `$(cat …)` alone strips trailing LF and nothing else: a
+# CRLF token file (normal on Windows/Git-Bash) read as `tok\r`; curl drops that CR from a `-H @-`
+# header line, so auth worked, and a server echoing the header returned the token WITHOUT it —
+# the mask missed and the bearer reached stderr and the durable log (MEASURED against a
+# header-echoing server behind real curl 8.5). A trailing space/tab is SENT by curl, and a server
+# trims it as header whitespace (RFC 9110 §5.5) before echoing — the same miss.
+_tfr() { # <file-content> — kb_token_file_read's value, %q-quoted so a stray byte is visible
+    local v="__untouched__"; printf '%s' "$1" > "$TMP/tfr.token"
+    kb_token_file_read v "$TMP/tfr.token" || { echo "rc=$?"; return 0; }
+    printf '%q' "$v"
+}
+eq "a CRLF file → the bare token"                       "tok123"          "$(_tfr $'tok123\r\n')"
+eq "trailing spaces/tab → the bare token"               "tok123"          "$(_tfr $'tok123 \t \n')"
+eq "several trailing newlines → the bare token"         "tok123"          "$(_tfr $'tok123\n\n\n')"
+eq "no terminator at all → unchanged"                   "tok123"          "$(_tfr 'tok123')"
+eq "an INTERIOR CR is kept (trailing is the whole rule)" "$'tok\r123'"   "$(_tfr $'tok\r123\n')"
+eq "LEADING whitespace is kept"                         "\\ tok123"       "$(_tfr $' tok123\n')"
+_tfr_v="__untouched__"; rc=0; kb_token_file_read _tfr_v "$TMP/no-such.token" || rc=$?
+eq "an unreadable file → rc 1 and the caller's var untouched" "1|__untouched__" "$rc|$_tfr_v"
+reset_env
+printf 'tok123\r\n' > "$TMP/crlf.token"
+kb_read_token "$TMP/crlf.token"
+eq "kb_read_token over a CRLF file → KB_TOKEN is the bare token" "tok123" "$(printf '%q' "$KB_TOKEN")"
+# UNCHANGED, pinned: a file that passes -r and still cannot be read (a directory) leaves KB_TOKEN
+# empty at rc 0, exactly as the `$(cat …)` this replaced did — a refusal there is an acceptance
+# change this card does not make.
+reset_env; mkdir -p "$TMP/dir.token"; KB_TOKEN="stale"; rc=0; kb_read_token "$TMP/dir.token" || rc=$?
+eq "kb_read_token over a DIRECTORY → rc 0, KB_TOKEN empty (as before)" "0|" "$rc|$KB_TOKEN"
+# kb_load_config's own read goes the same way (it used to `cat` the file itself).
+reset_env
+{ echo 'export KBCARD_API="https://kanban.test/api/v3"'; echo "export KBCARD_TOKEN_FILE=\"$TMP/crlf.token\""; } > "$KANBAN_HOST_ENV"
+echo 'KB_BOARD_ID=42' > "$TMP/.kanban-crlf-board.env"
+rc=0; kb_load_config crlf 2>/dev/null || rc=$?
+eq "kb_load_config over a CRLF token file → rc 0, the bare token" "0|tok123" "$rc|$(printf '%q' "${KB_TOKEN:-}")"
+unset -f _tfr; unset _tfr_v
+
+echo "== a CRLF / trailing-space token file + a header-echoing server: the echo is MASKED (card#9777) =="
+# The stub is the server behind curl: it reads the header line curl was fed on stdin, drops the
+# trailing CR curl drops and the trailing whitespace the server trims (both measured above), and
+# echoes what is left in a 500 body — so the token in the body is the one that reached the server,
+# not the one the tool happens to hold. Watched LEAK on the pre-fix lib (a373666) for the CRLF file.
+reset_env
+KB_API="https://kanban.test/api/v3"
+CE_LOG="$TMP/crlf-echo.log"; CE_ERR="$TMP/crlf-echo.err"; CE_SEEN="$TMP/crlf-echo.seen"
+curl() {
+    local h; h="$(cat)"; h="${h%"${h##*[!$' \t\r']}"}"; printf '%s' "$h" > "$CE_SEEN"
+    _stub_curl_respond "{\"message\":\"Server Error\",\"headers\":{\"authorization\":\"${h#Authorization: }\"}}" 500
+}
+for _ce in 'CRLF' 'trailing-space'; do
+    case "$_ce" in
+        CRLF)           printf 'crlf-echo-token-9777-abcdef\r\n'   > "$TMP/ce.token" ;;
+        trailing-space) printf 'crlf-echo-token-9777-abcdef  \n'   > "$TMP/ce.token" ;;
+    esac
+    kb_read_token "$TMP/ce.token"
+    : > "$CE_LOG"; : > "$CE_SEEN"; rc=0
+    KB_LOG_FILE="$CE_LOG" kb_stage_write PATCH /tasks/5.json '{"workflow_stage_id":51}' >/dev/null 2>"$CE_ERR" || rc=$?
+    eq "$_ce: rc 1, the refusal rendered and logged (positive control)" "1|true|true" \
+       "$rc|$(has 'answered HTTP 500' "$(cat "$CE_ERR")")|$(has 'PATCH /tasks/5.json HTTP-500' "$(cat "$CE_LOG")")"
+    eq "$_ce: control — the server really saw, and echoed, the bare token" "true" \
+       "$(has 'Bearer crlf-echo-token-9777-abcdef' "$(cat "$CE_SEEN")")"
+    eq "$_ce: masked IN PLACE on stderr and in the log" "true|true" \
+       "$(has '"Bearer ***"' "$(cat "$CE_ERR")")|$(has '"Bearer ***"' "$(cat "$CE_LOG")")"
+    eq "$_ce: the token is NOT on stderr"          "false" "$(has 'crlf-echo-token-9777-abcdef' "$(cat "$CE_ERR")")"
+    eq "$_ce: the token is NOT in the durable log" "false" "$(has 'crlf-echo-token-9777-abcdef' "$(cat "$CE_LOG")")"
+done
+unset -f curl
+unset CE_LOG CE_ERR CE_SEEN _ce
+reset_env
+
 _summary "kb-board-lib-selftest"

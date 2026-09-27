@@ -1233,6 +1233,19 @@ if command -v git >/dev/null 2>&1; then
        "$(has 'kb_confirm_card is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
     eq "⭐ stale lib: and it never claims an UNVERIFIED write it did not make" "false" \
        "$(has 'UNVERIFIED' "$_ologtxt")"
+    # ⭐ THE SAME FOR THE WRITE ITSELF (card#9777). Beside a lib without kb_stage_write every write
+    # answered rc 127, and the log said `move failed (HTTP ?) — …: kb_stage_write: command not
+    # found` (measured on the pre-fix hook) — a move failure naming neither the lib nor the fix.
+    _stalelib stalesw 's/^kb_stage_write()/_removed_kb_stage_write()/'
+    eq "stale-lib fixture: the copy under test does NOT define kb_stage_write" "0" \
+       "$(command grep -c '^kb_stage_write()' "$TMP/stalesw/_kb-board-lib.sh" || true)"
+    KB_STUB_TAGS='["fr"]' _stalerun stalesw
+    eq "⭐ lib without kb_stage_write: rc 0 — never blocks a checkout" "0" "$_rc"
+    eq "⭐ lib without kb_stage_write: NOTHING is written" "" "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ lib without kb_stage_write: the log names the function and the fix" "true" \
+       "$(has 'kb_stage_write is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
+    eq "⭐ lib without kb_stage_write: and no move-failure line, no bare 127" "false|false" \
+       "$(has 'move failed' "$_out$_ologtxt")|$(has 'command not found' "$_out$_ologtxt")"
     unset -f _stalelib _stalerun
 
     unset -f _own_run kb_stub_route

@@ -876,7 +876,11 @@ _bcs_unruled() {
 # the installed wrapper discards. That is a mis-vendored install degrading SILENTLY, and it breaks
 # the rule the rc tests below exist for: a lib older than this hook writes NOTHING, not even the
 # dl_number stamp (card#9756). Measured on this head's hook beside the card#10029 base lib.
+# kb_stage_write, the write itself, is asked the same way: beside a lib that predates it every
+# write answered rc 127 and the log said only `move failed (HTTP ?) — …: command not found`,
+# naming neither the lib nor the fix (card#9777).
 declare -F kb_confirm_card >/dev/null 2>&1 || _bcs_unruled kb_confirm_card undefined
+declare -F kb_stage_write >/dev/null 2>&1 || _bcs_unruled kb_stage_write undefined
 _bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
 case "$_bcs_pin" in
     0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;
