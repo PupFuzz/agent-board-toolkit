@@ -914,14 +914,21 @@ finding with no owner is abandoned, not filed.
   changes nothing a caller can see **only if** each default is preserved exactly, and that is a
   per-site judgement rather than a sweep.
 - **`fetch_board_cards`'s internal body parses — and its co-vendored MIRROR's** (card#6426) — the
-  lib's own paginator reads `meta.last_page`, `meta.total`, `.data`, and the page/dedup lengths
-  straight off each response with `jq … 2>/dev/null`, i.e. the primitive's shape written inline in
-  the file that now defines the primitive. Derived rather than recalled — **seven** `jq` invocations
-  inside `fetch_board_cards`, **all seven** carrying `2>/dev/null`. Re-derive rather than trust that
-  figure — the non-comment `jq ` lines of the function body, anchored on the function name so the
-  recipe survives every edit around it:
+  lib's own paginator reads `meta.total`, `.data`, and the page/dedup lengths straight off each
+  response with `jq … 2>/dev/null`, i.e. the primitive's shape written inline in the file that now
+  defines the primitive. Derived rather than recalled, and stated as a PROPERTY rather than a
+  count, because a count here is a restatement that the next edit to the function outdates without
+  saying so (card#10626 review round 2 corrected one that already had — the function gained two
+  `jq` calls and lost one between when this entry's "seven" was written and when it was checked
+  again): every `jq` invocation inside `fetch_board_cards` discards jq's own stderr. Re-derive
+  rather than trust that claim — a `jq` call's own redirect can sit on a continuation line (a
+  trailing `\`, or a `'…'` string left open across lines), so the recipe below prints each whole
+  statement, not just the line the `jq` keyword happens to be on, and is anchored on the function
+  name so it survives every edit around it:
 
-      awk '/^fetch_board_cards\(\)/{f=1} f&&/jq /&&$0!~/^ *#/{print} f&&/^}/{exit}' bin/_kb-board-lib.sh
+      awk '/^fetch_board_cards\(\)/{f=1} f{print} f&&/^}/{exit}' bin/_kb-board-lib.sh | grep -v '^ *#' | grep -A2 'jq '
+
+  Read the discard on each printed block, not how many blocks there are.
 
   This entry said "five" when it was first written, and that number had never been derived from the
   file. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message but not
