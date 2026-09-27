@@ -551,4 +551,34 @@ STUB_CARD_BODY="$_owned" GET_LOG="$TMP/gets.log" run_promote --dry-run
 eq "--dry-run: no write, and no card read"                "|false" "$patched|$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
 unset _move_line _tags_line _owned _tp
 
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 8 — A SECRET ENDING IN A NEWLINE OR A CR IS STILL THE ONE THE MASK MATCHES (card#9777) =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# TOKEN is read from $KANBAN_WRITEBACK_TOKEN RAW; an Actions secret or an operator's shell
+# export routinely carries a trailing newline, and the header api() builds goes through
+# `$(printf …)` (which drops a trailing LF) while curl drops a trailing CR from a header
+# line — so the value that reaches the wire, and that a header-echoing server hands back, is
+# the token WITHOUT it. resp_detail's mask is a LITERAL match against $TOKEN, so with $TOKEN
+# left raw the mask's string is longer than what the body actually carries and it misses.
+#
+# Driven through the real bin as a PROCESS, not resp_detail in isolation: the fix is at the
+# READ, before resp_detail ever sees $TOKEN, so a unit drive with a clean $TOKEN set by hand
+# (as § 3b does) cannot reach this bug at all — this section is that same echoed-body scenario
+# taken through the one call site § 3b does not cover. The rule this pins is extracted and
+# driven for real, byte for byte against the lib's kb_token_file_read, at
+# tests/mirror-pair-parity-selftest.sh § 8.
+_S8_LABELS=('a trailing LF' 'a trailing CR')
+_S8_SUFFIXES=($'\n' $'\r')
+_s8_echoed="{\"headers\":{\"Authorization\":\"Bearer $TOKEN_VALUE\"},\"message\":\"Server Error\"}"
+for _s8_i in "${!_S8_SUFFIXES[@]}"; do
+    _s8_label="${_S8_LABELS[$_s8_i]}"
+    export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE${_S8_SUFFIXES[$_s8_i]}"
+    STUB_PATCH_STATUS=500 STUB_PATCH_BODY="$_s8_echoed" run_promote
+    eq "[$_s8_label] the echoed token is NOT rendered"      "false" "$(has "$TOKEN_VALUE" "$err")"
+    eq "[$_s8_label] …it is replaced by a mask"             "true"  "$(has 'Bearer ***' "$err")"
+    eq "[$_s8_label] …and the rest of the body survives"    "true"  "$(has 'Server Error' "$err")"
+done
+unset STUB_PATCH_STATUS STUB_PATCH_BODY _s8_i _s8_label _s8_echoed _S8_LABELS _S8_SUFFIXES
+export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
+
 _summary "promote-refusal-detail-selftest"
