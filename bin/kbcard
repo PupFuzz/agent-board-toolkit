@@ -4853,9 +4853,9 @@ _kbc_field_conversion_rerun_note() {
 # away the only report of what blocks the conversion.
 _kbc_field_change_type_report() {
     local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6" have_options="$7"
-    local path="/custom_fields/$fid/change-type.json" resp_shown="$resp"
-    # The bearer is masked as kb_api masks it (card#9777) — this is the mirror of that print.
-    [[ -z "${KB_TOKEN:-}" ]] || resp_shown="${resp//"$KB_TOKEN"/***}"
+    local path="/custom_fields/$fid/change-type.json" resp_shown
+    # The bearer is masked by kb_api's own mask, kb_mask_token (card#9777) — this is the mirror of that print.
+    kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
     echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
     echo "$resp_shown" >&2
     [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp_shown" >> "$KB_LOG_FILE"

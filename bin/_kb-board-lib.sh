@@ -779,6 +779,27 @@ KB_HTTP=""
 # also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
+# kb_mask_token <var> <token> <text>: set the CALLER's variable <var> to <text> with every
+# occurrence of <token> — the literal bearer that went on the wire — replaced by `***`. An empty
+# <token> masks nothing, by an explicit branch rather than by trusting an empty pattern; <text>
+# then comes back byte-identical.
+#
+# THE ONE MASK every server body this lib renders or logs goes through (card#9777): kb_api's
+# KB_API_ERRBODY echo and its KB_LOG_FILE lines, kb_render_refusal, kb_owner_tag_write's quoted
+# reason, both fetch_board_cards failure arms, and kbcard's field type-change report. A server that renders debug output echoes the
+# request's own headers into its error page (measured, card#9301), so any body can carry
+# `Authorization: Bearer <token>` verbatim. The literal token rather than a pattern scrub, for the
+# reason kb_render_refusal gives. promote-released-cards' resp_detail and next-dl's resp_excerpt
+# carry their own copies of this one substitution (the first may not source the lib).
+#
+# IT ASSIGNS BY NAME (`printf -v`) RATHER THAN PRINTING, and that is the point: `$(…)` strips
+# trailing newlines, so a printing helper would change the bytes every log line carries — the
+# fetch_board_cards body ends in the newline curl's -w marker is preceded by. It declares no
+# locals, so no caller variable name can be shadowed by one of its own.
+kb_mask_token() {
+    if [[ -n "$2" ]]; then printf -v "$1" '%s' "${3//"$2"/***}"; else printf -v "$1" '%s' "$3"; fi
+}
+
 # kb_require_value <flag> <value>: returns 1 (with a diagnostic) unless a value-taking
 # option was given a non-empty value. Callers pass `"$1" "${2:-}"` from the arg loop.
 #
@@ -1145,11 +1166,12 @@ KB_API_RC_TRANSPORT=7
 # in front of an operator.
 #
 # ⛔ THE BEARER TOKEN IS MASKED OUT OF EVERY BODY THIS FUNCTION RENDERS (card#9777) — the
-# KB_API_ERRBODY echo and the KB_LOG_FILE line. A server that renders debug output echoes the
+# KB_API_ERRBODY echo and both KB_LOG_FILE lines. A server that renders debug output echoes the
 # request's own headers into its error page (measured, card#9301 — see kb_render_refusal), so a
 # refused write's body can carry `Authorization: Bearer <KB_TOKEN>` verbatim, and the log line is
-# DURABLE. The mask is the literal token that went on the wire, the same instrument
-# kb_render_refusal and promote-released-cards' resp_detail use; an empty token masks nothing.
+# DURABLE. The FAILED-CURL line is included because a transfer cut off mid-body (a --max-time
+# expiry) leaves the part of the body already read in $out beside curl's error text. The mask is
+# kb_mask_token; an empty token masks nothing.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     KB_API_ERR_RESP=""
@@ -1161,7 +1183,8 @@ kb_api() {
     # the call is portable: a herestring redirects a regular temp file onto fd 0, avoiding the
     # /dev/fd process-substitution path that native mingw64/Git-Bash curl can't open (#34).
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || {
-        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$KB_LOG_FILE"
+        local out_shown; kb_mask_token out_shown "${KB_TOKEN:-}" "$out"
+        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out_shown" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
         # NOT rc 1 — nothing was read here, while rc 1 below means the server answered.
         KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"
@@ -1170,8 +1193,7 @@ kb_api() {
     local resp="${out%__HTTP__*}"
     if [[ ! "$KB_HTTP" =~ ^2 ]]; then
         KB_API_ERR_RESP="$resp"
-        local resp_shown="$resp"
-        [[ -z "${KB_TOKEN:-}" ]] || resp_shown="${resp//"$KB_TOKEN"/***}"
+        local resp_shown; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp_shown" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
         [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp_shown" >&2
@@ -1245,7 +1267,7 @@ KB_API_ERR_EXCERPT_MAX=400
 # reds on any row where their output differs, envelope included.
 kb_render_refusal() {
     local LC_ALL=C status="$1" body="${2-}"
-    [[ -z "${KB_TOKEN:-}" ]] || body="${body//"$KB_TOKEN"/***}"
+    kb_mask_token body "${KB_TOKEN:-}" "$body"
     body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
     body="${body# }"; body="${body% }"
     if [[ -z "$body" ]]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
@@ -1683,6 +1705,9 @@ kb_owner_tag_write() {
         *)
             # The server's own one-line reason, bounded and flattened: a 403 and a 422 need
             # opposite fixes (the token's role / the tag itself), and the status alone does not say.
+            # The body is masked BEFORE the read (kb_mask_token), so the 300-byte cut can never
+            # split the bearer and leave a prefix the literal match no longer finds.
+            kb_mask_token body "${KB_TOKEN:-}" "$body"
             reason="$(kb_parse_resp "$body" -r '.message | select(type == "string") | [explode[] | if . < 32 or . == 127 then 32 else . end] | implode | .[0:300]')"
             KB_OWNER_NOTE="$(_kb_prog): $not_msg — HTTP $http${reason:+, server said: $reason}. The card was moved; its tags are unchanged."
             ;;
@@ -1867,6 +1892,11 @@ fetch_board_cards() {
     # an api_base is allowed to carry userinfo. The two prefixes differ only in that mask;
     # the varying half is built once as $qs and shared, so the logged url and the fetched one
     # cannot drift into describing different requests.
+    # The userinfo is a render-side secret ONLY: it never goes on the wire, so no server can echo
+    # it back into a body. curl builds Basic auth from userinfo only when no Authorization header
+    # was supplied, and this request always supplies the bearer one (measured, curl 8.18.0,
+    # against a header-echoing server — an empty token included). The one credential a body can
+    # carry is therefore $token, which the failure arms below mask (card#9777).
     local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     while :; do
         idq=""
@@ -1890,12 +1920,19 @@ fetch_board_cards() {
         }
         local http="${resp##*__HTTP__}"
         resp="${resp%__HTTP__*}"
+        # THE RENDERABLE BODY, on the two failure arms only (card#9777): the same request sent
+        # $token in its Authorization header, and a server that echoes request headers into its
+        # error page (card#9301) hands it back here — to stderr and to the DURABLE log. Masked with
+        # kb_mask_token, the one mask kb_api uses; computed inside each arm, never per page, so a
+        # successful walk does not pay a substitution over every 200-card body.
+        local resp_shown
         if [[ ! "$http" =~ ^2 ]]; then
+            kb_mask_token resp_shown "$token" "$resp"
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
-                echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp" >&2
+                echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp_shown" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http $resp_shown" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
@@ -1958,6 +1995,7 @@ fetch_board_cards() {
         # signal the envelope does not carry, not a stricter row count.
         data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
         if [[ -z "$data" ]]; then
+            kb_mask_token resp_shown "$token" "$resp"
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 # What the refusal SAVED the caller from differs by page, and saying the
                 # wrong one is a false claim about the board: an unreadable page 1 would
@@ -1970,10 +2008,10 @@ fetch_board_cards() {
                 [[ -z "$query" ]] || { empty_claim="a search that matched nothing"; trunc_claim="a TRUNCATED result set"; }
                 local refused="report it as $empty_claim"
                 [[ "$page" -eq 1 ]] || refused="end the scan on a short page and report $trunc_claim as a complete read"
-                echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp" >&2
+                echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp_shown" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http UNREADABLE-BODY $resp_shown" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi

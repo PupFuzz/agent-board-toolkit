@@ -943,7 +943,9 @@ _stub_curl_respond() { # <body> <status>
     return 0
 }
 curl() { _STUB_ARGS=("$@"); _stub_curl_respond '{"error":"forbidden: token lacks board scope"}' 403; }
-rc=0; out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" tok 8 2>"$TMP/fetch.err")" || rc=$?
+# A token-shaped token, not `tok`: the failure arms mask the literal bearer (card#9777), and `tok`
+# is a substring of this body's own prose ("token"), which no real bearer is.
+rc=0; out="$(KB_FETCH_LOUD=1 KB_LOG_FILE="$FETCH_LOG" fetch_board_cards "https://api.example" fetch-4337-token-0123456789 8 2>"$TMP/fetch.err")" || rc=$?
 eq "HTTP 403 on page 1 → rc 1"                    "1" "$rc"
 eq "HTTP 403 → no data on stdout"                 ""  "$out"
 grep -q "HTTP-403" "$FETCH_LOG" && ok "failure log carries the HTTP status" || bad "failure log missing HTTP-403"
@@ -1381,6 +1383,64 @@ eq "CONTROL: …and no mask was inserted into it"                           "fal
 unset -f _ui_case
 unset _UI_PW _UI_USER _UI_BASE _UI_LOG
 unset -f curl
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: a body that ECHOES the bearer never reaches stderr or the log (card#9777) =="
+# The same request sends $token in its Authorization header, and a server that renders debug
+# output echoes request headers into its error page (card#9301). The stub is that server: it
+# reads the header curl was fed on stdin and puts it into the body, so the token in the body is
+# the one that went on the wire — not a fixture string that merely resembles it.
+# ⛔ ASSERTED ON THE TOKEN'S ABSENCE, paired with a positive control that the line was written
+# and that the body really carried the token (the card#7500 block's rule: an empty log or a stub
+# that never echoed satisfies every absence while measuring nothing).
+_ET_TOK='fetch-echo-token-9777-0123456789abcdef'
+_ET_LOG="$TMP/echo-token-fetch.log"; _ET_ERR="$TMP/echo-token-fetch.err"; _ET_SEEN="$TMP/echo-token-seen"
+_et_echo() { # <status> <body-prefix> <body-suffix>: echo the received auth header between them
+    local hdr; hdr="$(cat)"; printf '%s' "$hdr" > "$_ET_SEEN"
+    printf '%s%s%s\n__HTTP__%s' "$2" "$hdr" "$3" "$1"
+}
+_et_case() { # <label> <expect-rc> <log-marker>; the caller has installed the curl stub
+    local label="$1" exprc="$2" marker="$3" rc=0 logtext errtext
+    : > "$_ET_LOG"; : > "$_ET_SEEN"
+    KB_FETCH_LOUD=1 KB_LOG_FILE="$_ET_LOG" fetch_board_cards "https://kanban.test/api/v3" "$_ET_TOK" 8 \
+        >/dev/null 2>"$_ET_ERR" || rc=$?
+    logtext="$(cat "$_ET_LOG")"; errtext="$(cat "$_ET_ERR")"
+    eq "$label (rc)" "$exprc" "$rc"
+    eq "$label — control: the stub was sent the token and echoed it" "true" "$(has "Bearer $_ET_TOK" "$(cat "$_ET_SEEN")")"
+    eq "$label — the durable log line was written (positive control)" "true" "$(has "$marker" "$logtext")"
+    eq "$label — …with the body in it, the token masked" "true|true" \
+       "$(has 'Bearer ***' "$logtext")|$(has 'Bearer ***' "$errtext")"
+    eq "$label — the token is NOT in the durable log" "false" "$(has "$_ET_TOK" "$logtext")"
+    eq "$label — the token is NOT on stderr"          "false" "$(has "$_ET_TOK" "$errtext")"
+}
+curl() { _et_echo 500 '{"message":"Server Error","headers":"' '"}'; }
+_et_case "HTTP-500 echoing the request headers" 1 'HTTP-500 {"message":"Server Error"'
+curl() { _et_echo 200 '<html><pre>' '</pre></html>'; }
+_et_case "UNREADABLE-BODY (a 2xx echoing the request headers)" 1 'HTTP-200 UNREADABLE-BODY <html><pre>'
+# CONTROL for the mask's scope: an empty token masks nothing, so the body is logged verbatim.
+curl() { cat >/dev/null; printf '%s\n__HTTP__%s' '{"error":"forbidden"}' 403; }
+: > "$_ET_LOG"
+KB_LOG_FILE="$_ET_LOG" fetch_board_cards "https://kanban.test/api/v3" "" 8 >/dev/null 2>&1 || true
+eq "CONTROL: an empty token leaves the body byte-identical" "true|false" \
+   "$(has 'HTTP-403 {"error":"forbidden"}' "$(cat "$_ET_LOG")")|$(has '***' "$(cat "$_ET_LOG")")"
+unset -f _et_echo _et_case curl
+unset _ET_TOK _ET_LOG _ET_ERR _ET_SEEN
+
+echo "== kb_api: a transport failure's partial body is masked in the FAILED-CURL line (card#9777) =="
+# A transfer cut off mid-body (a --max-time expiry) leaves the part already read in kb_api's
+# capture beside curl's error text, and that capture is the FAILED-CURL log line.
+reset_env
+KB_API="https://kanban.test/api/v3"; KB_TOKEN="kbapi-partial-token-9777-abcdef"
+_FC_LOG="$TMP/kbapi-failed-curl.log"; : > "$_FC_LOG"
+curl() { local h; h="$(cat)"; printf '{"debug":"%s' "$h"; echo 'curl: (28) Operation timed out' >&2; return 28; }
+rc=0; KB_LOG_FILE="$_FC_LOG" kb_api GET /tasks/1.json >/dev/null 2>&1 || rc=$?
+eq "FAILED-CURL: rc \$KB_API_RC_TRANSPORT, the line written with the partial body masked" \
+   "$KB_API_RC_TRANSPORT|true|true" \
+   "$rc|$(has 'GET /tasks/1.json FAILED-CURL {"debug":"Authorization: Bearer ***' "$(cat "$_FC_LOG")")|$(has 'Operation timed out' "$(cat "$_FC_LOG")")"
+eq "FAILED-CURL: the token is NOT in the durable log" "false" "$(has "$KB_TOKEN" "$(cat "$_FC_LOG")")"
+unset -f curl
+unset _FC_LOG
+reset_env
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: the optional [query] — one encoded term inside the same q= (card#6771) =="
@@ -2071,6 +2131,17 @@ eq "stamp: a refused tag write → NOT stamped, the status and the server's reas
 OW_PATCH_HTTP=422 OW_PATCH_BODY=$'{"message":"The tags.1 field must not be\\ngreater than 64 characters."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
 eq "stamp: a 422 carries its reason, flattened to one line" "true" \
    "$(has 'HTTP 422, server said: The tags.1 field must not be greater than 64 characters.' "$KB_OWNER_NOTE")"
+# The quoted reason is a server body, and a debug-rendering server echoes the bearer into it
+# (card#9777): masked BEFORE the 300-byte cut, so a token straddling the cut leaves no prefix.
+_ow_tok='owner-tag-token-9777-0123456789abcdef'
+OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"Server Error: Authorization: Bearer $_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
+eq "stamp: a reason echoing the bearer → quoted with the token masked" "true|false" \
+   "$(has 'HTTP 500, server said: Server Error: Authorization: Bearer ***' "$KB_OWNER_NOTE")|$(has "$_ow_tok" "$KB_OWNER_NOTE")"
+_ow_pad="$(printf 'x%.0s' $(seq 1 290))"
+OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"$_ow_pad$_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
+eq "stamp: a bearer straddling the 300-byte cut leaves no prefix of it" "true|false" \
+   "$(has "${_ow_pad}***" "$KB_OWNER_NOTE")|$(has "${_ow_tok:0:8}" "$KB_OWNER_NOTE")"
+unset _ow_tok _ow_pad
 OW_PATCH_HTTP=000 OW_PATCH_BODY='' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
 eq "stamp: a tag write that never completed is UNKNOWN, not refused" "true" "$(has 'DID NOT COMPLETE' "$KB_OWNER_NOTE")"
 
