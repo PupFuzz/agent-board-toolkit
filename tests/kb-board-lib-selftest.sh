@@ -1172,6 +1172,30 @@ eq "last_page=1 on a full page → rc 0, not truncated"  "0"   "$rc"
 eq "last_page=1 on a full page → paged to 201"         "201" "$(printf '%s' "$out" | jq 'length')"
 
 # ---------------------------------------------------------------------------
+echo "== fetch_board_cards: an EXACT page_cap boundary is not a false truncation (card#10626 review round 2) =="
+# THE REGRESSION THIS PINS: since the walk no longer trusts meta.last_page (round 1), a board
+# of EXACTLY page_cap*200 cards ends on a FULL page at the cap boundary — and a full page alone
+# cannot say whether the board ends there or holds more. Measured against the round-1/round-2
+# head: a 200-card board at page_cap=1 went from rc 0 (base, last_page told it "done") to rc 3
+# (head, the cap fired on the only page there was). One confirming request past the cap settles
+# it without guessing: EMPTY means the walk was already complete, so the cap was never really
+# hit.
+full_cap="$(jq -nc '{"data":[range(200;0;-1)|{id:.}]}')" # 200 rows, ids 200..1 — the whole board
+_PAGES=( [1]="$full_cap" [2]='{"data":[]}' )             # the confirming request: nothing left
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 1 2>"$TMP/capexact.err")" || rc=$?
+eq "exact page_cap boundary → rc 0, not rc 3"    "0"   "$rc"
+eq "exact page_cap boundary → all 200 cards"     "200" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/capexact.err" ]] && bad "an exact boundary must be silent on stderr" || ok "exact boundary silent"
+
+# THE CONTROL: one card past the boundary must still be a genuine cap violation. The
+# confirmation is not a second, wider cap — it only forgives an EMPTY next page.
+_PAGES=( [1]="$full_cap" [2]='{"data":[{"id":0}]}' )     # one more card below the cursor
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 1 2>"$TMP/capplus1.err")" || rc=$?
+eq "CONTROL: page_cap*200+1 → still rc 3"                "3"   "$rc"
+eq "CONTROL: …only the pre-cap 200 cards, not the extra one" "200" "$(printf '%s' "$out" | jq 'length')"
+grep -q "stopped paging at page cap=1" "$TMP/capplus1.err" && ok "CONTROL: …names the cap hit" || bad "missing cap-hit message"
+
+# ---------------------------------------------------------------------------
 echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) =="
 # The defect: `.data // []` answered a 200 carrying an HTML 502 with `[]` at rc 0 — byte-identical
 # to a genuinely EMPTY board — so next-dl dropped the board's DL floor and minted from the local

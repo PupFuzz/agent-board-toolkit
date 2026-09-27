@@ -979,14 +979,23 @@ finding with no owner is abandoned, not filed.
   excludes the mirror, and the mirror is the bigger half.** `bin/promote-released-cards` is the
   standalone that must never source the lib (the lib header says so, and `fetch_whole_board`'s own
   comment names itself the deliberate co-vendored port of `fetch_board_cards`). It carries the
-  **same shape again, seven more times** — the same recipe with `fetch_whole_board` as the anchor —
-  of which only the `meta.last_page` and `meta.total` reads
-  carry `2>/dev/null`, so **five parse a response body raw**, under `set -euo pipefail`, in a tool
-  that PATCHes cards. (The review that surfaced this said "6 sites, two without `2>/dev/null`"; the
-  derived figures are seven and five — the accumulator `jq -c -s 'add'` was not in the reviewer's
-  list.) Any future audit of this shape whose predicate is lib-sourcing will miss all seven; the
-  predicate has to be "reads a kanban response body", which is a grep of the files, not of the
-  source graph.
+  same shape again — the same recipe with `fetch_whole_board` as the anchor, and the same
+  bare-count mistake the lib half above already made once (card#10626 review round 2 fixed that
+  one; this is its mirror, found by the same reviewer one round later). Re-derive rather than
+  trust a count:
+
+      awk '/^fetch_whole_board\(\)/{f=1} f{print} f&&/^}/{exit}' bin/promote-released-cards | grep -v '^ *#' | grep -A2 'jq '
+
+  Most of this function's parses are RAW, under `set -euo pipefail`, in a tool that PATCHes
+  cards — read which ones discard jq's own stderr off the recipe's output, not off a number
+  written here: at this head that is the `meta.total` read, the id-window check and the cursor
+  derivation; every other parse (the envelope read, the row count, the per-page accumulator, the
+  post-loop dedup and its re-count) does not. (The review that first surfaced this said "6 sites,
+  two without `2>/dev/null`"; the count derived then was seven invocations, five of them raw — a
+  figure this same card has since moved twice, which is the whole argument for not writing it down
+  again.) Any future audit of this shape whose predicate is lib-sourcing will miss every one of
+  them; the predicate has to be "reads a kanban response body", which is a grep of the files, not
+  of the source graph.
 
   **The two implementations of this one behaviour disagreed on the safety branch — CLOSED.** The
   mirror refuses a page-1 read that returns zero cards — `fetch_whole_board` `die`s with *"board N

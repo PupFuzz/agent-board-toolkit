@@ -1082,9 +1082,16 @@ KB_STUB_CARDS_OK="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:3,last
 KB_STUB_CARDS_SHORT="$(jq -cn --argjson d "$_E2E_ROWS" '{data:$d,meta:{total:5,last_page:1}}')"
 # A FULL page (the paginator's own limit=200) plus a page cap of 1 is the only way to reach
 # rc 3 — see fetch_board_cards' rc table. 200 rows in one column, so the cap scenario's own
-# numbers are distinct from the short one's.
-KB_STUB_CARDS_FULL="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:83,
-                                created_at:"2026-01-02T00:00:00+00:00",deleted_at:null}],
+# numbers are distinct from the short one's. Ids DESCEND, as the server's do: the walk needs a
+# valid cursor off this page to even REACH the cap, since it now confirms past it rather than
+# stopping outright (card#10626 review round 2). Card #101 (the lowest id, last delivered) is
+# given an earlier created_at than the other 199, so "the oldest card" is a real timestamp
+# comparison rather than a tie the sort breaks by array order — the id-descending order this
+# fixture now needs would otherwise silently flip which card the oldest-card assertion below
+# expects.
+KB_STUB_CARDS_FULL="$(jq -cn '{data:[range(300;100;-1)|{id:.,workflow_stage_id:83,
+                                created_at:(if . == 101 then "2026-01-01T00:00:00+00:00" else "2026-01-02T00:00:00+00:00" end),
+                                deleted_at:null}],
                                meta:{total:400,last_page:2}}')"
 # One changelog page holding two rows INSIDE the 24h window and one that PRECEDES it. The last
 # row is what closes the window: the pager stops on a page whose oldest row is older than the
@@ -1152,7 +1159,14 @@ kb_stub_route() {
             case "$KB_STUB_SCENARIO" in
                 complete) printf '200\n%s\n' "$KB_STUB_CARDS_OK" ;;
                 short)    printf '200\n%s\n' "$KB_STUB_CARDS_SHORT" ;;
-                cap)      printf '200\n%s\n' "$KB_STUB_CARDS_FULL" ;;
+                # The confirming request past the cap (card#10626 review round 2) must answer
+                # NON-EMPTY, below the first page's cursor, or the cap violation this scenario
+                # exists to exercise never fires.
+                cap)      if [[ "$url" == *id%3C* ]]; then
+                              printf '200\n%s\n' '{"data":[{"id":100,"workflow_stage_id":83,"created_at":"2026-01-02T00:00:00+00:00","deleted_at":null}]}'
+                          else
+                              printf '200\n%s\n' "$KB_STUB_CARDS_FULL"
+                          fi ;;
             esac ;;
     esac
 }

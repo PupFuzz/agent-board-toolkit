@@ -2630,7 +2630,11 @@ kb_stub_route() {
                 # Page 2 is the request carrying the walk's `id<` window.
                 page2fail) if [[ "$url" != *id%3C* ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
                            else printf '500\n{"message":"upstream exploded"}'; fi ;;
-                pagecap)   printf '200\n%s' "$KBS_FULL_PAGE" ;;
+                # The confirming request past the cap (card#10626 review round 2) must answer
+                # NON-EMPTY, below the first page's cursor, or the cap violation this scenario
+                # exists to exercise never fires.
+                pagecap)   if [[ "$url" != *id%3C* ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
+                           else printf '200\n{"data":[{"id":999,"workflow_stage_id":48,"name":"bulk","description":"bulk body"}]}'; fi ;;
                 shortread) printf '200\n{"data":[{"id":1,"name":"a","description":"x"}],"meta":{"last_page":1,"total":3}}' ;;
             esac ;;
     esac

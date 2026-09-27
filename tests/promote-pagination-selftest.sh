@@ -208,6 +208,26 @@ rc=0; out="$(fetch_whole_board 2>"$TMP/lp1.err")" || rc=$?
 eq   "last_page=1 on a full page → rc 0, not truncated" "0"   "$rc"
 eq   "last_page=1 on a full page → paged to 201"        "201" "$(printf '%s' "$out" | jq 'length')"
 
+echo "== an EXACT PROMOTE_PAGE_CAP boundary is not a false truncation (card#10626 review round 2) =="
+# THE REGRESSION THIS PINS: since the walk no longer trusts meta.last_page (round 1), a board
+# of EXACTLY PROMOTE_PAGE_CAP*200 cards ends on a FULL page at the cap boundary — and a full
+# page alone cannot say whether the board ends there or holds more. One confirming request
+# past the cap settles it: EMPTY means the walk was already complete, not truncated.
+full_cap="$(jq -nc '{"data":[range(200;0;-1)|{id:.}]}')" # 200 rows, ids 200..1 — the whole board
+_PAGES=( [1]="$full_cap" [2]='{"data":[]}' )             # the confirming request: nothing left
+rc=0; out="$(PROMOTE_PAGE_CAP=1 fetch_whole_board 2>"$TMP/capexact.err")" || rc=$?
+eq   "exact page_cap boundary → rc 0, not a die"  "0"   "$rc"
+eq   "exact page_cap boundary → all 200 cards"    "200" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/capexact.err" ]] && bad "an exact boundary must be silent on stderr" || ok "exact boundary silent"
+
+# THE CONTROL: one card past the boundary must still die. The confirmation is not a second,
+# wider cap — it only forgives an EMPTY next page.
+_PAGES=( [1]="$full_cap" [2]='{"data":[{"id":0}]}' )     # one more card below the cursor
+rc=0; out="$(PROMOTE_PAGE_CAP=1 fetch_whole_board 2>"$TMP/capplus1.err")" || rc=$?
+eq   "CONTROL: page_cap*200+1 → still dies rc 2"              "2"   "$rc"
+[[ -z "$out" ]] && ok "CONTROL: no card list reaches the mover" || bad "page_cap*200+1 leaked a card list: '$out'"
+grep -q "exceeded PROMOTE_PAGE_CAP=1" "$TMP/capplus1.err" && ok "CONTROL: …names the cap hit" || bad "missing cap-hit refusal"
+
 echo "== 0 visible cards on page 1 → REFUSE (token not a board member) =="
 _PAGES=( [1]='{"data":[],"meta":{"last_page":1,"total":0}}' )
 rc=0; out="$(fetch_whole_board 2>"$TMP/empty.err")" || rc=$?

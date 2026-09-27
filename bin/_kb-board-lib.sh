@@ -1889,26 +1889,40 @@ fetch_board_cards() {
             return 2
         fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
-        pages+="$data"$'\n'
-        sum_n=$((sum_n + ${n:-0}))
-        [[ "${n:-0}" -lt 200 ]] && break
-        page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
+            # CAP CONFIRMATION (card#10626 review round 2): this page was fetched ONE PAST
+            # the cap on purpose. A board of EXACTLY page_cap*200 cards ends on a FULL page
+            # at the cap boundary, and a full page cannot say by itself whether the board
+            # ends there or keeps going — stopping on that ambiguity alone narrowed what a
+            # board this tool could read (an exact-boundary board used to pass at rc 0 and
+            # started failing at rc 3). This one extra request answers the question directly:
+            # an EMPTY page means the walk was already complete, so the cap was never really
+            # hit. ANY row here — even fewer than 200 — proves the board holds more than the
+            # cap allows; it is not appended, because the board is already refused as
+            # INCOMPLETE below, and counting a row from past the cap would misstate the
+            # partial read's own size.
+            if [[ "${n:-0}" -eq 0 ]]; then
+                break
+            fi
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2
             printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null
             return 3
         fi
+        pages+="$data"$'\n'
+        sum_n=$((sum_n + ${n:-0}))
+        [[ "${n:-0}" -lt 200 ]] && break
         # The next cursor: this page's last id, usable only if the page is in strictly
         # descending id order — otherwise its last row is not its lowest and `id<` it would
-        # skip rows. Derived AFTER the cap check, because a walk that stops here keys nothing.
+        # skip rows.
         cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a
             | if all($a[]; type == "number") and all(range(1; $a | length); $a[. - 1] > $a[.])
               then $a[-1] else empty end' 2>/dev/null)"
         if ! kb_is_uint "$cursor"; then
-            _kb_walk_unkeyable "$((page - 1))" "$board" "$http" "$url_shown" \
+            _kb_walk_unkeyable "$page" "$board" "$http" "$url_shown" \
                 "is not in strictly descending id order, so its last row cannot key the next request"
             return 2
         fi
+        page=$((page + 1))
     done 9>/dev/null
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"

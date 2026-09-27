@@ -1290,6 +1290,21 @@ fetch_whole_board() {
     if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
       die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
     fi
+    if [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ]; then
+      # CAP CONFIRMATION (card#10626 review round 2): this page was fetched ONE PAST the
+      # cap on purpose. A board of EXACTLY PROMOTE_PAGE_CAP*200 cards ends on a FULL page
+      # at the cap boundary, and a full page cannot say by itself whether the board ends
+      # there or keeps going — stopping on that ambiguity alone narrowed what a board this
+      # tool could promote from (an exact-boundary board used to succeed and started dying).
+      # This one extra request answers the question directly: an EMPTY page means the walk
+      # was already complete, so the cap was never really hit. ANY row here — even fewer
+      # than 200 — proves the board holds more than the cap allows; it is not appended,
+      # because the board is already refused as INCOMPLETE below.
+      if [ "${n:-0}" -eq 0 ]; then
+        break
+      fi
+      die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
+    fi
     # Concatenate via STDIN, not `--argjson` — a board page can exceed MAX_ARG_STRLEN
     # (~128KB), and passing $data/$cards as a CLI arg dies "Argument list too long"
     # (the #3091 argv-overflow class; board 5 was measured crossing the cap at ~98
@@ -1297,13 +1312,12 @@ fetch_whole_board() {
     cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add')"
     sum_n=$((sum_n + ${n:-0}))
     [ "${n:-0}" -lt 200 ] && break
-    page=$((page + 1))
-    [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
     cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a
       | if all($a[]; type == "number") and all(range(1; $a | length); $a[. - 1] > $a[.])
         then $a[-1] else empty end' 2>/dev/null)"
     uint_ok "$cursor" \
-      || die "board $BOARD page $((page - 1)) is not in strictly descending id order, so its last row cannot key the next request — refusing to promote on a board read it could not continue (a shipped card could be silently missed). Retry."
+      || die "board $BOARD page $page is not in strictly descending id order, so its last row cannot key the next request — refusing to promote on a board read it could not continue (a shipped card could be silently missed). Retry."
+    page=$((page + 1))
   done
   # Dedup by id — a keyed walk cannot deliver one card on two pages, so a duplicate is a single
   # page repeating a row; collapsed so a card is never PATCHed twice.
