@@ -2614,22 +2614,27 @@ KB_JQ_REAL="$(command -v jq)"; export KB_JQ_REAL
 kb_stub_install
 
 # One page of 200 rows is what makes the paginator ask for a second page — the only way to
-# reach the mid-pagination rc from outside.
-KBS_FULL_PAGE="$(jq -nc '{data:[range(200)|{id:(.+1000),workflow_stage_id:48,name:"bulk",description:"bulk body"}],meta:{last_page:2,total:400}}')"
+# reach the mid-pagination rc from outside. Ids DESCEND, as the server's do: the walk keys its
+# next request on the last row of this one (card#10626) and refuses a page it cannot key.
+KBS_FULL_PAGE="$(jq -nc '{data:[range(200)|{id:(1199-.),workflow_stage_id:48,name:"bulk",description:"bulk body"}],meta:{last_page:2,total:400}}')"
 KBS_HITS_BODY='{"data":[{"id":501,"workflow_stage_id":48,"card_type_id":7,"name":"deploy hook card","description":"first line\nsecond line"},{"id":502,"workflow_stage_id":49,"card_type_id":null,"name":"other","description":"other body"}],"links":{},"meta":{"last_page":1,"total":2}}'
 export KBS_FULL_PAGE KBS_HITS_BODY
 kb_stub_route() {
-    local method="$1" url="$2" page
-    page="${url##*page=}"; page="${page%%&*}"
+    local method="$1" url="$2"
     case "$method $url" in
         "GET "*/tasks/search.json*)
             case "${KBS_SCENARIO:-hits}" in
                 hits)      printf '200\n%s' "$KBS_HITS_BODY" ;;
                 empty)     printf '200\n{"data":[],"links":{},"meta":{"last_page":1,"total":0}}' ;;
                 page1fail) printf '403\n{"message":"token lacks board scope"}' ;;
-                page2fail) if [[ "$page" == "1" ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
+                # Page 2 is the request carrying the walk's `id<` window.
+                page2fail) if [[ "$url" != *id%3C* ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
                            else printf '500\n{"message":"upstream exploded"}'; fi ;;
-                pagecap)   printf '200\n%s' "$KBS_FULL_PAGE" ;;
+                # The confirming request past the cap (card#10626 review round 2) must answer
+                # NON-EMPTY, below the first page's cursor, or the cap violation this scenario
+                # exists to exercise never fires.
+                pagecap)   if [[ "$url" != *id%3C* ]]; then printf '200\n%s' "$KBS_FULL_PAGE"
+                           else printf '200\n{"data":[{"id":999,"workflow_stage_id":48,"name":"bulk","description":"bulk body"}]}'; fi ;;
                 shortread) printf '200\n{"data":[{"id":1,"name":"a","description":"x"}],"meta":{"last_page":1,"total":3}}' ;;
             esac ;;
     esac

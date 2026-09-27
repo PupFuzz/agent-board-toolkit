@@ -969,15 +969,27 @@ unset -f curl
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: short-read rc 4 vs dedup artifact (card #4338) =="
-# Page-aware stub: selects the per-page payload by inspecting the page= query param, then
-# emits it through the shared _stub_curl_respond core (the single owner of the stdin-drain
-# + __HTTP__<status> convention) at a fixed 200.
+# Page-aware stub: selects the per-page payload by the request's id WINDOW, then emits it
+# through the shared _stub_curl_respond core (the single owner of the stdin-drain +
+# __HTTP__<status> convention) at a fixed 200. The walk keys every request after the first on
+# `id<C`, C the last id of the page before (card#10626), so a request with no window is page 1
+# and a request for `id<C` is the page that FOLLOWS the one ending in C. A fixture's pages must
+# therefore be id-DESCENDING and each wholly below the one before — the real server's order.
+# A window no page follows answers a body with no card array, which the walk refuses: a stub
+# that guessed would let a wrongly-keyed request pass as a read.
 _stub_page_curl() { # uses _PAGES assoc: _PAGES[<n>]=<json>
-    local a page=1
+    local a cur="" k=1 prev
     for a in "${_STUB_ARGS[@]}"; do
-        [[ "$a" == *"page="* ]] && page="${a##*page=}"
+        [[ "$a" =~ id%3C([0-9]+) ]] && cur="${BASH_REMATCH[1]}"
     done
-    _stub_curl_respond "${_PAGES[$page]}" 200
+    if [[ -n "$cur" ]]; then
+        k=""
+        for prev in "${!_PAGES[@]}"; do
+            [[ "$(jq -r '.data[-1].id // empty' <<<"${_PAGES[$prev]}" 2>/dev/null)" == "$cur" ]] && k=$((prev + 1))
+        done
+        [[ -n "$k" ]] || { _stub_curl_respond "{\"stub\":\"no page follows id<$cur\"}" 200; return; }
+    fi
+    _stub_curl_respond "${_PAGES[$k]}" 200
 }
 declare -A _PAGES
 
@@ -989,23 +1001,22 @@ eq "genuine short read → rc 4"                 "4" "$rc"
 eq "genuine short read still emits the partial data" '[{"id":1},{"id":2}]' "$out"
 grep -q "INCOMPLETE" "$TMP/short.err" && ok "genuine short read warns INCOMPLETE" || bad "missing INCOMPLETE warn"
 
-# DEDUP ARTIFACT: two pages, one card straddles the boundary; pre-dedup sum (201)
-# covers total (201) but distinct read_n (200) < total → complete, rc 0, soft warn.
-# total=202 while only 201 DISTINCT ids exist: the straddling duplicate (199)
-# makes the pre-dedup sum (202) cover the total, so the read is complete and
-# the 201<202 gap is the collapsed duplicate, not a missing row.
-page1="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":202}}')"
-page2='{"data":[{"id":199},{"id":200}],"meta":{"last_page":2,"total":202}}'
-_PAGES=( [1]="$page1" [2]="$page2" )
+# A DUPLICATE NO LONGER EXCUSES A SHORTFALL (card#10626). The census used to read "rows
+# delivered >= total, distinct < total" as a page-boundary shift that dedup had collapsed, and
+# answered rc 0 "read complete". The shift that delivers a row twice is the one that skips a
+# row, so that verdict stood over a missing card. Here the server claims 3 and delivers 3 rows,
+# one of them twice: two distinct cards, one card unaccounted for → rc 4.
+_PAGES=( [1]='{"data":[{"id":3},{"id":2},{"id":2}],"meta":{"last_page":1,"total":3}}' )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/dedup.err")" || rc=$?
-eq "dedup artifact → rc 0 (read complete)"     "0" "$rc"
-eq "dedup artifact → all distinct cards"       "201" "$(printf '%s' "$out" | jq 'length')"   # 202 delivered, 1 collapsed
-grep -q "duplicates across pages collapsed" "$TMP/dedup.err" && ok "dedup artifact warns honestly (not INCOMPLETE)" || bad "dedup warn wording regressed"
-grep -q "INCOMPLETE" "$TMP/dedup.err" && bad "dedup artifact must not claim INCOMPLETE" || ok "dedup artifact does not claim INCOMPLETE"
+eq "a repeated row covering the total → rc 4, not rc 0 (card#10626)" "4" "$rc"
+eq "…still emits the distinct partial data"   '[{"id":3},{"id":2}]' "$out"
+eq "…and says the rows were not distinct cards" "true" \
+   "$(has 'board has 3 cards but pages delivered 3 rows, only 2 of them distinct — list INCOMPLETE' "$(cat "$TMP/dedup.err")")"
+eq "…and never calls the read complete" "false" "$(has 'read complete' "$(cat "$TMP/dedup.err")")"
 
 # Positive control: clean two-page read, totals agree → rc 0, silent.
-page1c="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
-page2b='{"data":[{"id":200}],"meta":{"last_page":2,"total":201}}'
+page1c="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":2,"total":201}}')"
+page2b='{"data":[{"id":1}],"meta":{"last_page":1,"total":1}}'
 _PAGES=( [1]="$page1c" [2]="$page2b" )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/clean.err")" || rc=$?
 eq "clean two-page read → rc 0"                "0" "$rc"
@@ -1013,16 +1024,130 @@ eq "clean two-page read → 201 cards"           "201" "$(printf '%s' "$out" | j
 [[ -s "$TMP/clean.err" ]] && bad "clean read must be silent on stderr" || ok "clean read silent"
 
 # ---------------------------------------------------------------------------
-echo "== fetch_board_cards: last_page must not truncate a full page 1 (card #4623) =="
-# Parity with the standalone's fetch_whole_board (promote-pagination-selftest): meta.last_page
-# is a SECONDARY signal; the n<200 short-page break is primary. An ABSENT or out-of-range
-# last_page defaults to UNKNOWN and must fall through to the short-page break, never stop the
-# scan at a full 200-row page 1. The old `// 1` default broke here and silently returned only
-# page 1 (the #4513 miss). Reverting the guard reds these two cases.
+echo "== fetch_board_cards: a card DISPLACED across a page boundary mid-walk (card#10626) =="
+# The board changes BETWEEN the page requests of one walk. Under offset paging (`page=N` over the
+# server's id-DESCENDING order) a row leaving the set moves every later row back one place, so the
+# first row of the next page lands at the end of the page already read and is never delivered.
+# A count cannot see it: add a row entering the set (a restore, which keeps its old id and lands
+# mid-order) or a duplicate (a create, which lands at the head and pushes a read row forward) and
+# the pages sum to meta.total again. The old census then answered rc 0 — the first case with no
+# census at all (distinct == total), the second with "duplicates collapsed … read complete".
+# The fixture is a STATEFUL server (tests/_board-walk-sim.sh), so each answer is computed from
+# the board as it stands at that request; nothing here encodes which rows the walk should get.
+#
+# THE PROPERTY ASSERTED: every card that was live for the WHOLE walk is in the answer. A card
+# created or archived mid-walk may legitimately be in it or not, so those are left out of the
+# expected set rather than asserted either way.
+# shellcheck source=/dev/null
+source "$HERE/_board-walk-sim.sh"
+_WALK_URLS="$TMP/walk-urls.txt"
+curl() {
+    _STUB_ARGS=("$@")
+    local a u=""
+    for a in "$@"; do [[ "$a" == *search.json* ]] && u="$a"; done
+    printf '%s\n' "$u" >> "$_WALK_URLS"
+    _stub_curl_respond "$(bws_respond "$u")" 200
+}
+_walk() { # runs one whole-board walk against the simulator; sets _W_RC / _W_OUT
+    : > "$_WALK_URLS"
+    _W_RC=0; _W_OUT="$(KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 2>"$TMP/walk.err")" || _W_RC=$?
+}
+_walk_missing() { # <expected-ids-json> → the expected ids the answer does not carry
+    jq -c --argjson e "$1" '$e - [.[].id]' <<<"${_W_OUT:-[]}"
+}
+
+# DUP + LOSS, three pages. After page 1 a card on page 1 is archived (every later row moves back
+# one: card 300 slides onto page 1 and page 2 starts at 299), and after page 2 a card is created
+# (every row moves forward one: page 3 re-delivers card 100). Rows delivered == meta.total.
+bws_init "$TMP/sim-dl" "$(jq -nc '[range(1;501)]')"
+bws_after 1 archive 400
+bws_after 2 create
+_walk
+eq "dup+loss walk → rc 0 (the board read completely, not refused)" "0" "$_W_RC"
+eq "dup+loss walk → no card live for the whole walk is missing"     "[]" \
+   "$(_walk_missing "$(jq -nc '[range(1;501)] - [400]')")"
+eq "dup+loss walk → no id delivered twice" "0" "$(jq '[.[].id] | length - (unique | length)' <<<"${_W_OUT:-[]}")"
+
+# SHIFT + LOSS, two pages. After page 1 a page-1 card is archived (card 100 slides onto page 1)
+# and an old archived card is restored (it keeps id 50, so it lands on page 2). Every row is
+# distinct and the distinct count equals meta.total, so the old census never ran.
+bws_init "$TMP/sim-sl" "$(jq -nc '[range(1;301)] - [50]')" '[50]'
+bws_after 1 archive 250
+bws_after 1 unarchive 50
+_walk
+eq "shift+loss walk → rc 0"                                       "0" "$_W_RC"
+eq "shift+loss walk → no card live for the whole walk is missing" "[]" \
+   "$(_walk_missing "$(jq -nc '[range(1;301)] - [250, 50]')")"
+
+# CONTROL: the same simulator with no writes. A walk that passed the two cases above by
+# over-reading (or by refusing) would show here.
+bws_init "$TMP/sim-ctl" "$(jq -nc '[range(1;451)]')"
+_walk
+eq "CONTROL: unchanged 3-page board → rc 0"         "0"   "$_W_RC"
+eq "CONTROL: …exactly its 450 cards"                "450" "$(jq 'length' <<<"${_W_OUT:-[]}")"
+eq "CONTROL: …in 3 requests"                        "3"   "$(bws_calls)"
+[[ -s "$TMP/walk.err" ]] && bad "CONTROL: an unchanged board must be silent on stderr" || ok "CONTROL: silent on stderr"
+eq "CONTROL: …and page 1 is the historic URL, byte for byte" \
+   "https://api.example/tasks/search.json?q=board_id=8&limit=200&page=1" "$(head -n 1 "$_WALK_URLS")"
+
+# A row leaving the part of the board NOT YET READ is still a short read: the census stays the
+# backstop for it and reports it at rc 4 with the partial data, as before this change.
+bws_init "$TMP/sim-unread" "$(jq -nc '[range(1;301)]')"
+bws_after 1 archive 50
+_walk
+eq "a row archived below the walk's position → rc 4 (INCOMPLETE, as before)" "4" "$_W_RC"
+eq "…and it is the census that says so" "true" "$(has 'list INCOMPLETE' "$(cat "$TMP/walk.err")")"
+
+# The walk depends on TWO properties of the server's answer. Each is checked where it is
+# load-bearing, and a server that breaks one is REFUSED at rc 2 — never read as a whole board.
+bws_init "$TMP/sim-noid" "$(jq -nc '[range(1;451)]')"
+export BWS_IGNORE_ID=1; _walk; unset BWS_IGNORE_ID
+eq "a server that does not apply the id window → rc 2" "2" "$_W_RC"
+eq "…with nothing emitted (bytes on stdout)"           "0" "${#_W_OUT}"
+eq "…naming the broken property" "true" "$(has 'outside the requested id window' "$(cat "$TMP/walk.err")")"
+bws_init "$TMP/sim-asc" "$(jq -nc '[range(1;451)]')"
+export BWS_ORDER=asc; _walk; unset BWS_ORDER
+eq "a server answering in ASCENDING id order → rc 2"   "2" "$_W_RC"
+eq "…with nothing emitted (bytes on stdout)"           "0" "${#_W_OUT}"
+eq "…naming the broken property" "true" "$(has 'not in strictly descending id order' "$(cat "$TMP/walk.err")")"
+
+# THE WITHIN-REQUEST RACE (card#10626 review round 1): the server runs a COUNT then a separate
+# SELECT (TasksController::search's Laravel paginate(), no transaction around them), so a window
+# holding exactly 200 rows at COUNT time can gain a row before the SELECT runs. 200 live cards
+# (101-300) below the cursor at count time ⇒ total=200, last_page=1 (frozen); a card (id 50,
+# archived) is restored in the gap before the SELECT executes. The SELECT still returns 200 rows
+# (LIMIT 200 hides card 50, the lowest of the 201 now-matching ids), so a walk that trusted
+# last_page would end here, one card short, at rc 0 — the census cannot catch it either, since
+# its own total was frozen at the same count. bws_race models the gap explicitly (distinct from
+# bws_after's BETWEEN-request write).
+bws_init "$TMP/sim-race" "$(jq -nc '[range(101;301)]')" '[50]'
+bws_race 1 unarchive 50
+_walk
+eq "within-request race → rc 0 (the walk continued past the frozen last_page)" "0" "$_W_RC"
+eq "within-request race → the restored card is not lost" "true" \
+   "$(jq 'any(.[]; .id == 50)' <<<"${_W_OUT:-[]}")"
+eq "within-request race → still exactly 201 distinct cards" "201" "$(jq 'length' <<<"${_W_OUT:-[]}")"
+eq "within-request race → it cost exactly one extra request" "2" "$(bws_calls)"
+
+unset -f _walk _walk_missing
+unset _WALK_URLS _W_RC _W_OUT
+curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: meta.last_page is NEVER trusted to end the walk (card #4623, card#10626) =="
+# The n<200 short-page break is the ONLY termination signal; meta.last_page is never consulted
+# for it, at any value. Originally (card #4623) an ABSENT or out-of-range last_page had to fall
+# through to the short-page break rather than truncate at a full page 1 (the old `// 1` default
+# broke here — the #4513 miss). card#10626 review round 1 widened this from "don't trust an
+# absent/invalid last_page" to "don't trust last_page at all": the server's COUNT and its SELECT
+# are separate queries with no transaction around them, so even a POSITIVELY DECLARED last_page
+# can be stale by the time the SELECT runs (see the within-request race case above). These three
+# cases would each have truncated under the pre-round-1 code, which still trusted an explicit
+# last_page<=1.
 
 # Full 200-row page 1 with NO meta at all: must keep paging to the short page, not truncate.
-full1="$(jq -nc '{"data":[range(200)|{id:.}]}')"     # 200 rows, no meta whatsoever
-tail2='{"data":[{"id":200},{"id":201}]}'             # short page → n<200 terminates
+full1="$(jq -nc '{"data":[range(202;2;-1)|{id:.}]}')" # 200 rows, no meta whatsoever
+tail2='{"data":[{"id":2},{"id":1}]}'                 # short page → n<200 terminates
 _PAGES=( [1]="$full1" [2]="$tail2" )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/nometa.err")" || rc=$?
 eq "full page + no meta → rc 0"                "0"   "$rc"
@@ -1031,11 +1156,44 @@ eq "full page + no meta → paged to 202"        "202" "$(printf '%s' "$out" | j
 
 # last_page=0 on a full page: a non-positive value is not a meaningful declaration ⇒ unknown ⇒
 # must keep paging, not break at page 1 (the same truncation class as an absent last_page).
-lp0="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":0}}')"
-_PAGES=( [1]="$lp0" [2]='{"data":[{"id":200}]}' )
+lp0="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":0}}')"
+_PAGES=( [1]="$lp0" [2]='{"data":[{"id":1}]}' )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
 eq "last_page=0 → rc 0"                        "0"   "$rc"
 eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
+
+# last_page=1 EXPLICITLY DECLARED on a full page (the value pre-round-1 code trusted outright):
+# must still keep paging. This is the static-fixture form of the within-request race case above
+# — the server saying "done" on a full page is exactly what a stale COUNT looks like.
+lp1="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":1,"total":200}}')"
+_PAGES=( [1]="$lp1" [2]='{"data":[{"id":1}]}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp1.err")" || rc=$?
+eq "last_page=1 on a full page → rc 0, not truncated"  "0"   "$rc"
+eq "last_page=1 on a full page → paged to 201"         "201" "$(printf '%s' "$out" | jq 'length')"
+
+# ---------------------------------------------------------------------------
+echo "== fetch_board_cards: an EXACT page_cap boundary is not a false truncation (card#10626 review round 2) =="
+# THE REGRESSION THIS PINS: since the walk no longer trusts meta.last_page (round 1), a board
+# of EXACTLY page_cap*200 cards ends on a FULL page at the cap boundary — and a full page alone
+# cannot say whether the board ends there or holds more. Measured against the round-1/round-2
+# head: a 200-card board at page_cap=1 went from rc 0 (base, last_page told it "done") to rc 3
+# (head, the cap fired on the only page there was). One confirming request past the cap settles
+# it without guessing: EMPTY means the walk was already complete, so the cap was never really
+# hit.
+full_cap="$(jq -nc '{"data":[range(200;0;-1)|{id:.}]}')" # 200 rows, ids 200..1 — the whole board
+_PAGES=( [1]="$full_cap" [2]='{"data":[]}' )             # the confirming request: nothing left
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 1 2>"$TMP/capexact.err")" || rc=$?
+eq "exact page_cap boundary → rc 0, not rc 3"    "0"   "$rc"
+eq "exact page_cap boundary → all 200 cards"     "200" "$(printf '%s' "$out" | jq 'length')"
+[[ -s "$TMP/capexact.err" ]] && bad "an exact boundary must be silent on stderr" || ok "exact boundary silent"
+
+# THE CONTROL: one card past the boundary must still be a genuine cap violation. The
+# confirmation is not a second, wider cap — it only forgives an EMPTY next page.
+_PAGES=( [1]="$full_cap" [2]='{"data":[{"id":0}]}' )     # one more card below the cursor
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 1 2>"$TMP/capplus1.err")" || rc=$?
+eq "CONTROL: page_cap*200+1 → still rc 3"                "3"   "$rc"
+eq "CONTROL: …only the pre-cap 200 cards, not the extra one" "200" "$(printf '%s' "$out" | jq 'length')"
+grep -q "stopped paging at page cap=1" "$TMP/capplus1.err" && ok "CONTROL: …names the cap hit" || bad "missing cap-hit message"
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) =="
@@ -1127,8 +1285,8 @@ _fbc_p2() { # <label> <page-1 body> <page-2 body> <expect-rc>
     _P2_OUT="$out"
 }
 
-fullp="$(jq -nc '{"data":[range(200)|{id:.}],"meta":{"last_page":2,"total":201}}')"
-fullnm="$(jq -nc '{"data":[range(200)|{id:.}]}')"      # no meta at all — the silent-truncation server
+fullp="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":2,"total":201}}')"
+fullnm="$(jq -nc '{"data":[range(201;1;-1)|{id:.}]}')" # no meta at all — the silent-truncation server
 
 _fbc_p2 "a server DECLARING meta.total: unreadable page 2 → rc 2 (was rc 4 + partial)" \
         "$fullp" '<html>502</html>' 2
@@ -1150,7 +1308,7 @@ eq "…and the census is not what caught it (there is no total to census against
 # legitimate SHORT final page is how a real multi-page read ENDS. If the page-2 refusal cannot
 # tell a legitimate `{"data":[…]}` — or a legitimately EMPTY one — from an unreadable body, it
 # refuses every board bigger than one page, and a block asserting only refusals would pass.
-_fbc_p2 "CONTROL: a legitimate short page 2 completes the read → rc 0" "$fullnm" '{"data":[{"id":200}]}' 0
+_fbc_p2 "CONTROL: a legitimate short page 2 completes the read → rc 0" "$fullnm" '{"data":[{"id":1}]}' 0
 eq "…and every row from BOTH pages is emitted"            "201" "$(printf '%s' "$_P2_OUT" | jq 'length')"
 [[ -s "$TMP/p2.err" ]] && bad "a legitimate two-page read must be silent on stderr" || ok "a legitimate two-page read is silent"
 _fbc_p2 "CONTROL: an EMPTY page 2 is a complete read, not an unreadable one → rc 0" "$fullnm" '{"data":[],"meta":{"total":200}}' 0
@@ -1307,7 +1465,7 @@ eq "…so it makes no claim about the board being empty" "false" \
    "$(has 'report it as an empty board' "$(cat "$TMP/qs1.err")")"
 
 curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
-_PAGES=( [1]="$(jq -nc '{"data":[range(200)|{id:.}]}')" [2]='<html>502</html>' )
+_PAGES=( [1]="$(jq -nc '{"data":[range(200;0;-1)|{id:.}]}')" [2]='<html>502</html>' )
 rc=0; KB_FETCH_LOUD=1 fetch_board_cards "https://api.example" tok 8 50 'deploy hook' >/dev/null 2>"$TMP/qs2.err" || rc=$?
 eq "an unreadable page 2 under a query → still rc 2"   "2" "$rc"
 eq "…and what it refuses is a TRUNCATED RESULT SET"    "true" \
