@@ -793,11 +793,11 @@ kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48 KB_TYPE_TASK=21 KB_CF_VERSION_TARGET=99
 unset KB_TYPING_MODE 2>/dev/null || true
-cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
-ppay="$(cmd_patch --task 99 --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/0 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
+cpay="$(cmd_create_card --type task --name x --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/42 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
+ppay="$(cmd_patch --task 99 --dl DL-7 --pr 42 --pr-url https://github.com/o/r/pull/42 --version v1.0.0 2>/dev/null | jq -Sc '.payload')"
 eq "create + patch send identical payload" "$cpay" "$ppay"
 eq "and it is the expected object" \
-   '{"dl_number":"DL-0007","pr_number":42,"pr_url":"https://github.com/o/r/pull/0","version_target":"v1.0.0"}' "$cpay"
+   '{"dl_number":"DL-0007","pr_number":42,"pr_url":"https://github.com/o/r/pull/42","version_target":"v1.0.0"}' "$cpay"
 
 # --issue / --issue-url wired through create-card AND patch: issue_number number-typed, and a
 # card co-stamped with --issue + --pr carries BOTH lifecycle pairs, independently.
@@ -806,9 +806,9 @@ eq "create-card --issue → number-typed issue_number + issue_url" \
    '{"issue_number":300,"issue_url":"https://github.com/o/r/issues/300"}' "$ci"
 pi="$(cmd_patch --task 99 --issue 300 --issue-url https://github.com/o/r/issues/300 2>/dev/null | jq -Sc '.payload')"
 eq "patch --issue sends the identical issue payload" "$ci" "$pi"
-co="$(cmd_create_card --type task --name x --issue 300 --pr 305 2>/dev/null | jq -Sc '.payload')"
+co="$(cmd_create_card --type task --name x --issue 300 --pr 305 --pr-url https://github.com/o/r/pull/305 2>/dev/null | jq -Sc '.payload')"
 eq "create-card --issue + --pr co-stamp both keys, independent" \
-   '{"issue_number":300,"pr_number":305}' "$co"
+   '{"issue_number":300,"pr_number":305,"pr_url":"https://github.com/o/r/pull/305"}' "$co"
 
 # card-4714: patch --swimlane writes the card's TOP-LEVEL swimlane_id (not a payload
 # key), resolving a name through the SAME swimlane_id() helper `list` uses. A numeric
@@ -4270,56 +4270,59 @@ for _verb in create-card patch; do
   # was. The padded legs are the jq-version pins: jq-1.7's tonumber accepts surrounding space, tab,
   # CR and LF and jq-1.8 refuses them, so the assembler trims exactly that set before the attempt.
   # Without the trim these legs pass on 1.7 and red on 1.8 — run this file under both.
-  # `patch --pr` alone reads the card and is refused unless its stored pr_url names the same
-  # pull request (a bare pr_number names no repo — agent-webhook-bridge DL-429), so the card read
-  # carries a pr_url naming the value's own number for these legs; the payload asserted is the
-  # write, which is unchanged.
+  # No write may leave a card holding a pr_number that no pr_url names (agent-webhook-bridge
+  # DL-429). So for the --pr legs, `patch` reads a card whose stored pr_url names the value's own
+  # number, and `create-card` — a new card stores nothing — passes that pr_url in the same call
+  # (PF_PRURL). The key asserted is pr_number's, so pr_ref drops the pr_url create-card sent.
   _pfread() {
-      if [[ "$_verb" == patch && "$_flag" == --pr ]]; then
+      unset PF_READ_CARD; PF_PRURL=()
+      [[ "$_flag" == --pr ]] || return 0
+      if [[ "$_verb" == patch ]]; then
           PF_READ_CARD="$(jq -c --arg u "https://github.com/o/r/pull/$1" '.data.payload = {pr_url: $u}' <<<"$PF_CARD")"
           export PF_READ_CARD
       else
-          unset PF_READ_CARD
+          PF_PRURL=(--pr-url "https://github.com/o/r/pull/$1")
       fi
   }
+  pr_ref() { pf_payload | jq -c 'if $v == "create-card" then del(.pr_url) else . end' --arg v "$_verb"; }
   for _ref in --pr:pr_number --issue:issue_number; do
     _flag="${_ref%%:*}"; _k="${_ref#*:}"
     _pfread 178
-    pf "$_verb" "$_flag" 178
-    eq "$_verb $_flag 178 → a JSON number"                 "{\"$_k\":178}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" 178 "${PF_PRURL[@]}"
+    eq "$_verb $_flag 178 → a JSON number"                 "{\"$_k\":178}"    "$(pr_ref)"
     _pfread 123
-    pf "$_verb" "$_flag" '00123'
-    eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pf_payload)"
-    pf "$_verb" "$_flag" ' 123 '
-    eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pf_payload)"
+    pf "$_verb" "$_flag" '00123' "${PF_PRURL[@]}"
+    eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pr_ref)"
+    pf "$_verb" "$_flag" ' 123 ' "${PF_PRURL[@]}"
+    eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pr_ref)"
     _pfread 178
-    pf "$_verb" "$_flag" $'178\n'
-    eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pf_payload)"
+    pf "$_verb" "$_flag" $'178\n' "${PF_PRURL[@]}"
+    eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pr_ref)"
     # The trim feeds only the number attempt: a value that is not a number after it is sent
     # exactly as passed, padding included.
-    pf "$_verb" "$_flag" ' #178 '
-    eq "$_verb $_flag ' #178 ' → the untrimmed string, as on dev" "{\"$_k\":\" #178 \"}" "$(pf_payload)"
-    pf "$_verb" "$_flag" '#178'
-    eq "$_verb $_flag '#178' → the decorated string, as on dev" "{\"$_k\":\"#178\"}" "$(pf_payload)"
+    pf "$_verb" "$_flag" ' #178 ' "${PF_PRURL[@]}"
+    eq "$_verb $_flag ' #178 ' → the untrimmed string, as on dev" "{\"$_k\":\" #178 \"}" "$(pr_ref)"
+    pf "$_verb" "$_flag" '#178' "${PF_PRURL[@]}"
+    eq "$_verb $_flag '#178' → the decorated string, as on dev" "{\"$_k\":\"#178\"}" "$(pr_ref)"
     # A ref value is decorated-integer-validated, and decoration may contain a newline: the
     # injection shape reaches this key too, and must stay inside its value.
-    pf "$_verb" "$_flag" $'#178\nversion_target=evil'
+    pf "$_verb" "$_flag" $'#178\nversion_target=evil' "${PF_PRURL[@]}"
     eq "$_verb $_flag with an embedded key=value line → no key injected" \
-       "$(jq -cn --arg k "$_k" --arg s $'#178\nversion_target=evil' '{($k): $s}')" "$(pf_payload)"
+       "$(jq -cn --arg k "$_k" --arg s $'#178\nversion_target=evil' '{($k): $s}')" "$(pr_ref)"
   done
   unset PF_READ_CARD
   pf "$_verb" --dl DL-12
   eq "$_verb --dl DL-12 → the canonical DL string, as on dev" '{"dl_number":"DL-0012"}' "$(pf_payload)"
   # The full set, in dev's key order — the order is part of the wire bytes.
-  pf "$_verb" --dl DL-93 --pr 178 --pr-url https://github.com/o/r/pull/0 --version v0.9.2 \
+  pf "$_verb" --dl DL-93 --pr 178 --pr-url https://github.com/o/r/pull/178 --version v0.9.2 \
      --issue 300 --issue-url https://github.com/o/r/issues/300 --origin preemptive
   eq "$_verb every payload flag → dev's exact object and key order" \
-     '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/0","issue_number":300,"issue_url":"https://github.com/o/r/issues/300","version_target":"v0.9.2","origin":"preemptive"}' \
+     '{"dl_number":"DL-0093","pr_number":178,"pr_url":"https://github.com/o/r/pull/178","issue_number":300,"issue_url":"https://github.com/o/r/issues/300","version_target":"v0.9.2","origin":"preemptive"}' \
      "$(pf_payload)"
 done
 
-unset -f _pk_key pf_payload
-unset PK_VALUES _v _vn _ref _k
+unset -f _pk_key pf_payload _pfread pr_ref
+unset PK_VALUES _v _vn _ref _k PF_PRURL
 
 unset -f pf pf_values kb_stub_route _payload_flags
 unset PF_CARD PF_METHOD PF_PATH PF_NBSP PF_BLANKS PAYLOAD_TEXT_FLAGS PAYLOAD_REF_FLAGS PAYLOAD_CLEAR_FLAGS
@@ -4982,10 +4985,11 @@ echo "== patch --pr without --pr-url refuses to leave the card naming two PRs (c
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
-kb_stub_board_config dev 42 'export KB_STAGE_WONT_DO=60'
+kb_stub_board_config dev 42 'export KB_STAGE_WONT_DO=60' 'export KB_STAGE_BACKLOG=48'
 kb_stub_install
 
 # KB_STUB_PAYLOAD is the card's stored payload (JSON); KB_STUB_READ swaps the read for a failure.
+# create-card's POST is routed too: the pr_number/pr_url invariant below holds it to the same rule.
 kb_stub_route() {
     local method="$1" url="$2" body="$3"
     case "$method $url" in
@@ -4998,6 +5002,9 @@ kb_stub_route() {
         "PATCH "*/tasks/505.json)
             printf '200\n'
             jq -cn --argjson b "$body" '{data: ({id:505,name:"probe",workflow_stage_id:48} + $b)}' ;;
+        "POST "*/tasks.json)
+            printf '201\n'
+            jq -cn --argjson b "$body" '{data: ({id:606,name:"probe",workflow_stage_id:48} + $b)}' ;;
         *)  printf '404\n{"message":"unrouted"}' ;;
     esac
 }
@@ -5092,15 +5099,9 @@ KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179 --pr-url https://github.c
 eq "--pr WITH --pr-url → rc 0"                              "0" "$rc"
 eq "…writes both keys"                                      '{"pr_number":179,"pr_url":"https://github.com/other/repo/pull/179"}' "$(ppay)"
 eq "…and never reads the card (the URL is replaced)"        "0" "$(nget)"
-KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179 --clear pr-url
-eq "--pr with --clear pr-url → rc 0, no read (the URL is removed)" "0|0" "$rc|$(nget)"
-# The decline reads the card for reasons of its own, so "no read" is measured against the same
-# decline WITHOUT --pr rather than against zero.
-KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do
-_ng="$(nget)"
-KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do --pr 179
-eq "a wont_do decline with --pr → rc 0, no extra read (the decline nulls pr_url)" "0|$_ng" "$rc|$(nget)"
-eq "…and writes the new number over a nulled URL"           '{"dl_number":null,"pr_number":179,"pr_url":null}' "$(ppay)"
+# (--pr beside --clear pr-url or a wont_do decline removes the URL in the same write, so the pair
+# check has nothing to compare — and the result is a bare pr_number, which the invariant section
+# below refuses.)
 KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --dl DL-7
 eq "a patch with no --pr → rc 0 and never reads the card"   "0|0" "$rc|$(nget)"
 
@@ -5113,35 +5114,94 @@ for _r in 403 nocard; do
     eq "an unreadable card ($_r) → rc 1, no PATCH"           "1|0" "$rc|$(npatch)"
 done
 
-echo "== --pr alone onto a card whose pr_url names NO pull request is REFUSED: a bare pr_number is inert (agent-webhook-bridge DL-429) =="
+echo "== no write may leave a pr_number that no pr_url names — ONE invariant on the RESULTING state (agent-webhook-bridge DL-429) =="
 # A PR number is a per-repo counter, and a repo moved to a new GitHub org restarts at 1, so a card
-# names a pull request only through a pr_url naming its repo. The bridge now skips-and-reports a
-# card whose pr_number has no such pr_url, and promote-released-cards does the same — so
-# `patch --pr N` onto a card with no pr_url naming a pull request writes a value nothing reads,
-# at rc 0. Refused, naming --pr-url, with nothing written. Each row is a stored pr_url state that
-# names no pull request by the bridge PrUrlRef rule (a /pull/<N> segment with N > 0).
-for _p in '{}' '{"pr_url":null}' '{"pr_url":""}' \
-          '{"pr_url":"https://github.com/acme/widget/pull/0"}' \
-          '{"pr_url":"https://github.com/acme/widget/issues/0"}' \
-          '{"pr_url":"https://example.com/acme/widget/merge_requests/179"}' \
-          '{"pr_url":179}' \
-          '{"pr_url":"https://github.com/acme/widget/issues/179"}'; do
-    KB_STUB_PAYLOAD="$_p" kbc patch --task 505 --pr 179
-    eq "bare: --pr 179 over $_p → rc 2, NO PATCH"             "2|0" "$rc|$(npatch)"
-    eq "bare: …the refusal names --pr-url"                    "true" "$(has 'REFUSING --pr 179 without --pr-url' "$err")"
-    eq "bare: …says the number would name no pull request"    "true" "$(has 'names no repo' "$err")"
-    eq "bare: …and says nothing was written"                  "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+# names a pull request only through a pr_url naming its repo AND that number; the bridge neither
+# reconciles nor promotes a card holding a bare pr_number. The rule is asked of the card the write
+# would LEAVE (stored payload, this call's keys merged over it, a null removing a key), before any
+# write, by every verb that writes pr_number or pr_url — never of which flag carried it, which is
+# how the per-flag version of this check left create-card, --clear, a decline and a given
+# placeholder writing the same bare card at rc 0. Each row: rc 2, ZERO writes (the stub's request
+# log, PATCH and POST both), and the refusal names the pair to pass.
+nwrite() { echo $(( $(kb_stub_count PATCH /tasks/505.json) + $(kb_stub_count POST /tasks.json) )); }
+PR179='{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/179"}'
+PAIR179='Pass the pair: --pr 179 --pr-url https://github.com/<owner>/<repo>/pull/179. NOTHING WAS WRITTEN.'
+# <stored payload>|<args> — the args are word-split on purpose (no value here holds a space).
+# The first six are the paths named when this rule replaced the --pr-alone check; the rest are the
+# stored pr_url states --pr alone meets, and the other ways a write can end holding a bare number.
+BARE_ROWS=(
+    '{}|create-card --type task --name probe --pr 179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/0'
+    '{}|patch --task 505 --pr 179 --clear pr-url'
+    '{}|patch --task 505 --column wont_do --pr 179'
+    "$PR179|patch --task 505 --clear pr-url"
+    '{}|patch --task 505 --pr 179'
+    '{"pr_url":null}|patch --task 505 --pr 179'
+    '{"pr_url":""}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/pull/0"}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/issues/0"}|patch --task 505 --pr 179'
+    '{"pr_url":"https://example.com/acme/widget/merge_requests/179"}|patch --task 505 --pr 179'
+    '{"pr_url":179}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/issues/179"}|patch --task 505 --pr 179'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/0'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180'
+    "$PR179|patch --task 505 --column wont_do --keep-refs --clear pr-url"
+    '{"pr_number":179}|patch --task 505 --pr-url https://example.com/acme/widget/merge_requests/179'
+)
+for _row in "${BARE_ROWS[@]}"; do
+    _p="${_row%%|*}"; read -r -a _args <<<"${_row#*|}"
+    KB_STUB_PAYLOAD="$_p" kbc "${_args[@]}"
+    eq "⭐ bare: ${_args[*]} over $_p → rc 2, ZERO writes"    "2|0" "$rc|$(nwrite)"
+    eq "bare: …names the pair to pass, and that nothing was written" "true" "$(has "$PAIR179" "$err")"
 done
-# CONTROLS — the same flag where the result is NOT bare: both halves together (no read), and a
-# stored pr_url naming the SAME pull request.
+# Rows the call's own keys decide are refused OFFLINE — no request of any kind, not even the read.
+for _row in "${BARE_ROWS[@]:0:4}"; do
+    _p="${_row%%|*}"; read -r -a _args <<<"${_row#*|}"
+    KB_STUB_PAYLOAD="$_p" kbc "${_args[@]}"
+    eq "bare: ${_args[*]} is decided without the card → NO request at all" "2|0" "$rc|$(kb_stub_total)"
+done
+# The message says where each half comes from, and prints no URL.
+KB_STUB_PAYLOAD="$PR179" kbc patch --task 505 --clear pr-url
+eq "--clear pr-url over pr_number 179 → names the stored number and the clear" "true" \
+   "$(has 'would leave the card holding its stored pr_number 179 with no pr_url, which this same write removes' "$err")"
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180
+eq "--pr 179 --pr-url …/pull/180 → names the other PR by its derived repo and number" "true" \
+   "$(has 'names a DIFFERENT pull request, #180 in acme/widget' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":" https://user:TOKEN-429@example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
+eq "an unparsed userinfo pr_url under --pr → rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-429' "$err$out")"
+# A result that needs the stored payload and cannot read it is no answer: rc 1, nothing written.
+for _r in 403 nocard; do
+    KB_STUB_READ=$_r KB_STUB_PAYLOAD="$PR179" kbc patch --task 505 --clear pr-url
+    eq "--clear pr-url on an unreadable card ($_r) → rc 1, no PATCH, says why" "1|0|true" \
+       "$rc|$(npatch)|$(has 'leaves a pr_number that no pr_url names' "$err")"
+done
+
+# CONTROLS — the same flags where the RESULT is valid, and every write that does not touch the pair.
 KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/179
-eq "control: --pr WITH --pr-url on a bare card → rc 0, both keys written" \
-   '0|{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/179"}' "$rc|$(ppay)"
+eq "control: --pr 179 --pr-url …/pull/179 → rc 0, both keys, no read" \
+   '0|{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/179"}|0' "$rc|$(ppay)|$(nget)"
+KB_STUB_PAYLOAD='{}' kbc create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/179
+eq "control: create-card --pr 179 --pr-url …/pull/179 → rc 0, ONE POST" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/179"}' kbc patch --task 505 --pr 179
-eq "control: --pr 179 over a pr_url naming PR 179 → rc 0"   '0|{"pr_number":179}' "$rc|$(ppay)"
-# The issue pair is NOT narrowed: DL-429 is a PR-correlation ruling.
+eq "control: --pr 179 over a stored pr_url naming PR 179 → rc 0"   '0|{"pr_number":179}' "$rc|$(ppay)"
+KB_STUB_PAYLOAD='{"pr_number":179}' kbc patch --task 505 --pr-url https://github.com/acme/widget/pull/179
+eq "control: --pr-url …/pull/179 over a bare pr_number 179 (the repair) → rc 0" \
+   '0|{"pr_url":"https://github.com/acme/widget/pull/179"}' "$rc|$(ppay)"
+# ⭐ A card that is ALREADY bare still takes every edit that does not touch the pair — unread.
+KB_STUB_PAYLOAD='{"pr_number":179}' kbc patch --task 505 --dl DL-7
+eq "⭐ control: an unrelated patch on an already-bare card → rc 0, ONE PATCH, no read" "0|1|0" "$rc|$(npatch)|$(nget)"
+KB_STUB_PAYLOAD='{"pr_number":179}' kbc patch --task 505 --column wont_do
+eq "control: declining an already-bare card (nulls pr_number and pr_url) → rc 0" "0|1" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --clear pr-url
+eq "control: --clear pr-url on a card with no pr_number → rc 0" "0|1" "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{"pr_number":0}' kbc patch --task 505 --pr-url https://github.com/acme/widget/pull/0
+eq "control: a pr_number of 0 names no pull request → the placeholder stamp is rc 0" "0|1" "$rc|$(npatch)"
+# The issue pair is NOT held to this: DL-429 is a PR-correlation ruling.
 KB_STUB_PAYLOAD='{}' kbc patch --task 505 --issue 179
-eq "control: --issue alone on a card with no issue_url is unchanged → rc 0" '0|{"issue_number":179}' "$rc|$(ppay)"
+eq "control: --issue alone on a card with no issue_url → rc 0" '0|{"issue_number":179}' "$rc|$(ppay)"
+unset -f nwrite
+unset PR179 PAIR179 BARE_ROWS _row _p _args
 
 echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
@@ -5211,8 +5271,9 @@ for _ref in pr issue; do
         eq "…names $_uf and acme/widget" "true" \
            "$(has "REFUSING $_nf 179 without $_uf — the card's $_uk names no $_noun number, only the repo acme/widget" "$err")"
     done
-    # The issue pair keeps the notice and the placeholder exemption; the pr pair refuses both,
-    # because --pr alone over either leaves a bare pr_number (agent-webhook-bridge DL-429).
+    # The issue pair keeps the notice and the placeholder exemption; on the pr pair the
+    # pr_number/pr_url invariant refuses both, because --pr alone over either leaves a pr_number
+    # that no pr_url names (agent-webhook-bridge DL-429 — the invariant section above).
     for _u in "https://example.com/acme/widget/$_seg/179" "https://github.com/acme/widget" "https://github.com/acme/widget/wiki"; do
         KB_STUB_PAYLOAD="{\"$_uk\":\"$_u\"}" kbc patch --task 505 "$_nf" 179
         if [[ "$_ref" == issue ]]; then
@@ -5220,7 +5281,7 @@ for _ref in pr issue; do
                "$rc|$(npatch)|$(has "the card's $_uk is not a GitHub pull-request or issue URL" "$err")"
         else
             eq "a stored $_uk yielding NO repo ('$_u'), $_nf 179 → rc 2, NO PATCH, bare" "2|0|true" \
-               "$rc|$(npatch)|$(has "the card's $_uk is not a GitHub pull-request URL" "$err")"
+               "$rc|$(npatch)|$(has "the card's $_uk, which is not a GitHub pull-request URL" "$err")"
         fi
     done
     KB_STUB_PAYLOAD="{\"$_uk\":\"https://github.com/acme/widget/$_seg/00\"}" kbc patch --task 505 "$_nf" 179
@@ -5335,16 +5396,23 @@ for _ref in pr issue; do
     # A given URL that yields NO repo (not a GitHub URL the promote side derives a source from)
     # attributes the card nowhere BY URL — a payload.repo would still outrank it and source the
     # card anyway (_kbc_ref_pair_guard's header owns that rule); the guard reads no such key, which
-    # is why it can only say the check was not possible. Nothing to disagree with, so it proceeds
-    # with the notice, which never echoes the URL.
+    # is why it can only say the check was not possible. Nothing to disagree with, so the issue
+    # pair proceeds with the notice, which never echoes the URL. On the pr pair the result holds
+    # pr_number 178 with a pr_url naming no pull request, which the pr_number/pr_url invariant
+    # refuses (the invariant section above) — also without echoing the URL.
     for _u in "https://user:TOKEN-9846@example.com/other/repo/$_seg/179" "https://github.com/other/repo" \
               "https://github.com/other/repo/wiki"; do
         KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "$_u"
-        eq "a $_uf yielding no repo ('${_u/TOKEN-9846/…}') over 178 → rc 0, writes, with the not-checked notice" \
-           "0|1|true" "$rc|$(npatch)|$(has "the $_uf given is not a GitHub pull-request or issue URL" "$err")"
+        if [[ "$_ref" == issue ]]; then
+            eq "a $_uf yielding no repo ('${_u/TOKEN-9846/…}') over 178 → rc 0, writes, with the not-checked notice" \
+               "0|1|true" "$rc|$(npatch)|$(has "the $_uf given is not a GitHub pull-request or issue URL" "$err")"
+        else
+            eq "a $_uf yielding no repo ('${_u/TOKEN-9846/…}') over 178 → rc 2, NO PATCH: pr_number 178 would be bare" \
+               "2|0|true" "$rc|$(npatch)|$(has "the --pr-url given, which is not a GitHub pull-request URL" "$err")"
+        fi
         # stderr only: stdout is the write echo, which reports the URL the server now holds —
         # the caller's own value, echoed as every successful URL write always has.
-        eq "…and the notice never prints the token"          "false" "$(has 'TOKEN-9846' "$err")"
+        eq "…and the stderr line never prints the token"     "false" "$(has 'TOKEN-9846' "$err")"
     done
     # a stored number that names no number: the same notice posture
     KB_STUB_PAYLOAD="{\"$_nk\":\"1.5\"}" kbc patch --task 505 "$_uf" "https://github.com/other/repo/$_seg/179"
@@ -5458,6 +5526,20 @@ for _args in "--task EXT-9846 --dl DL-7" "--task 505 --assign 7" "--task EXT-984
     eq "⭐ lib without the pair check: patch $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
     eq "…naming kb_ref_pairs_alone" "true" "$(has 'kb_ref_pairs_alone returned rc 127' "$err")"
 done
+# ⭐ …and the same for the pr_number/pr_url invariant, which create-card asks too: a lib lacking
+# ONLY kb_pr_named_verdict refuses every create-card and patch before any request, naming it —
+# never an unchecked write (which is what a new kbcard beside an old lib would otherwise be).
+_pnstale="$(_bin_beside_stale_lib "$TMP/stale-prnamed" "$BIN" kb_pr_named_verdict)"
+for _args in "patch --task 505 --dl DL-7" "patch --task EXT-9846 --pr 179" \
+             "create-card --type task --name probe" "create-card --type task --name probe --pr 179"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$(KB_STUB_PAYLOAD="$PR178" "$_pnstale" $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without kb_pr_named_verdict: $_args → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "…naming kb_pr_named_verdict and the re-vendor" "true|true" \
+       "$(has 'kb_pr_named_verdict returned rc 127' "$err")|$(has 're-vendor the lib with this kbcard' "$err")"
+done
+unset _pnstale
 # The second function alone missing is found OFFLINE too (declare -F), so it costs no card read —
 # on a patch with a pair to check and on one without.
 _psstale="$(_bin_beside_stale_lib "$TMP/stale-verdicts" "$BIN" kb_ref_pair_verdicts)"
