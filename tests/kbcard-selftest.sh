@@ -6155,4 +6155,77 @@ eq "M19 an assignee the target kept → rc 0, and NO 'cleared' line" "0|false" "
 unset -f kb_stub_route mbc mb_post
 unset MB_PRE MB_OK MB_ARGS MB_LEAK
 
+echo "== a REFUSED stage write says why, with the token masked — kb_stage_write (card#9777) =="
+# THE CLAIM: every kbcard write that carries a stage — move, patch --column, create-card and
+# move-board — goes through the lib's kb_stage_write, so a board that refuses it is rendered as
+# `kbcard: <METHOD> <path> answered HTTP <status>, server said: <excerpt>`, with the bearer token
+# masked out of the excerpt and out of the durable failure log. Before it, kbcard echoed the RAW
+# body under KB_API_ERRBODY=1: a header-echoing server's copy of `Bearer <token>` went to stderr
+# and to ~/.kbcard-failures.log verbatim.
+#
+# ⚠ WHAT THIS DOES NOT PROVE. The 422 body below is made up — plausible, not captured: the kanban
+# server's refusal of a terminal move on a parent with open legs ("branch A") is not live and its
+# body is unpublished. What is proven is that WHATEVER body the board sends is rendered, masked
+# and bounded at every one of these sites; the first real refusal is card#9781's check.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_SWIMLANE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_TYPE_FEATURE=7'
+kb_stub_board_config tgt 77 'export KB_STAGE_BACKLOG=880' 'export KB_TYPE_FEATURE=19'
+kb_stub_install
+SW_TOKEN="$(cat "$KB_STUB_TOKEN_FILE")"
+SW_CARD='{"data":{"id":505,"name":"probe","board_id":42,"workflow_stage_id":48,"card_type_id":7,"payload":null}}'
+SW_REFUSAL="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $SW_TOKEN\"}}"
+export SW_CARD SW_REFUSAL
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/505.json*)           printf '200\n%s' "$SW_CARD" ;;
+        "PATCH "*/tasks/505.json)          printf '422\n%s' "$SW_REFUSAL" ;;
+        "POST "*/tasks.json)               printf '422\n%s' "$SW_REFUSAL" ;;
+        "POST "*/tasks/505/move-board.json) printf '422\n%s' "$SW_REFUSAL" ;;
+    esac
+}
+export -f kb_stub_route
+SW_SHOWN='HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}'
+SW_LOG="$HOME/.kbcard-failures.log"
+# sw_leg <label> <method> <path> <verb-args…> — one refused write, and everything it must say.
+sw_leg() {
+    local label="$1" method="$2" path="$3"; shift 3
+    : > "$SW_LOG"
+    kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"
+    eq "$label: the refused write → rc 1"                       "1" "$rc"
+    eq "$label: …the write DID reach the wire (the refusal is the board's)" "1" "$(kb_stub_count "$method" "$path")"
+    eq "$label: …stderr names method, path, status and the server's own words" "true" \
+       "$(has "kbcard: $method $path answered $SW_SHOWN" "$err")"
+    eq "$label: …the bearer token is on NEITHER stderr nor the failure log" "false|false" \
+       "$(has "$SW_TOKEN" "$err")|$(has "$SW_TOKEN" "$(cat "$SW_LOG")")"
+    eq "$label: …the failure log still records the refusal, masked" "true" \
+       "$(has "HTTP-422 {\"error\":\"parent has open legs\"" "$(cat "$SW_LOG")")"
+    # KB_API_ERRBODY=1 is kbcard's global; kb_stage_write owns the render for its one call, so the
+    # body must appear ONCE — a second, raw copy is the leak this card closes.
+    eq "$label: …and the body is rendered ONCE, not echoed a second time raw" "1" \
+       "$(/usr/bin/grep -c 'parent has open legs' <<<"$err" || true)"
+    eq "$label: …and nothing on stdout" "" "$out"
+}
+sw_leg "move"          PATCH /tasks/505.json      move --task 505 --column shipped_to_dev
+sw_leg "patch --column" PATCH /tasks/505.json     patch --task 505 --column shipped_to_dev
+sw_leg "create-card"   POST  /tasks.json          create-card --type feature --name probe
+sw_leg "move-board"    POST  /tasks/505/move-board.json move-board --task 505 --to-board tgt --column backlog --yes
+# THE CONTROL: the same route answering 2xx for a move — so a green above is the refusal being
+# rendered, not a verb that prints this line on every run.
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/505.json*)  printf '200\n%s' "$SW_CARD" ;;
+        "PATCH "*/tasks/505.json) printf '200\n%s' "$(jq -c '.data.workflow_stage_id = 48' <<<"$SW_CARD")" ;;
+    esac
+}
+export -f kb_stub_route
+kb_stub_reset; rc=0; out="$("$BIN" move --task 505 --column backlog 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"
+eq "control: the same move answered 2xx → rc 0, and no refusal line" "0|false" "$rc|$(has 'answered HTTP' "$err")"
+unset -f kb_stub_route sw_leg
+unset SW_TOKEN SW_CARD SW_REFUSAL SW_SHOWN SW_LOG
+
 _summary "kbcard-selftest"

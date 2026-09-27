@@ -541,6 +541,19 @@ eq "the fatal declines to claim a status it cannot see" "true" \
 eq "no teardown was attempted (the trap is armed AFTER the create)" "0" "$(kb_stub_count PATCH /tasks/)"
 eq "witness: the create WAS attempted"    "1" "$(kb_stub_count "${CREATE[@]}")"
 
+# ⭐ THE BIRTH-STAGE WRITE SAYS WHY IT WAS REFUSED (card#9777). The create carries the throwaway's
+# workflow_stage_id, so it is the lib's kb_stage_write: the status and the server's own words reach
+# stderr from INSIDE the `$(…)` that KB_HTTP cannot cross — which is why the FATAL above may still
+# decline to claim a code — and KB_API_QUIET=1 does not silence it. The body is made up.
+A1_TOK="$(cat "$KB_STUB_TOKEN_FILE")"
+KB_STUB_CREATE_HTTP=422 KB_STUB_CREATE_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $A1_TOK\"}}" run_a1
+eq "a refused create → rc 1"              "1" "$rc"
+eq "…stderr names method, path, status and the server's words" "true" \
+   "$(has 'dl-a1-register-field: POST /tasks.json answered HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$err")"
+eq "…with the bearer token masked out of it" "false" "$(has "$A1_TOK" "$err")"
+eq "…and the FATAL still follows it"      "true" "$(has 'FATAL create throwaway (non-2xx or curl error)' "$err")"
+unset A1_TOK
+
 KB_STUB_CREATE_BODY='{"data":{"noid":1}}' run_a1
 eq "a create response with no task id → rc 1" "1" "$rc"
 eq "the fatal names the missing id"       "true" "$(has 'FATAL create throwaway: no task id in response' "$err")"

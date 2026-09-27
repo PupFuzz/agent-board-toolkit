@@ -2130,4 +2130,58 @@ eq "no held column: no card is ever HELD"             "1" "$(_sv 83 81 82 '')"
 eq "an empty current stage → LEFT ALONE"              "1" "$(_sv '' 81 82 83)"
 unset -f _pin _sv
 
+# ---------------------------------------------------------------------------
+echo "== kb_stage_write: kb_api's rc contract, plus the refusal render (card#9777) =="
+# Called in THIS shell (never through `$(…)`) so KB_HTTP and the stub's argv are readable after the
+# call — the same reason board-card-start calls it that way. The per-site render is proven at each
+# mover's own selftest; this block pins the primitive's contract those arms rely on.
+reset_env
+KB_API="https://kanban.test/api/v3"; KB_TOKEN="sw-token-0123456789abcdef"
+SW_LOGF="$TMP/sw-failures.log"; SW_OUT="$TMP/sw.out"; SW_ERR="$TMP/sw.err"
+SW_REFUSAL="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $KB_TOKEN\"}}"
+SW_LINE='kb-board-lib-selftest: PATCH /tasks/5.json answered HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}'
+_sw() { rc=0; : > "$SW_LOGF"; KB_LOG_FILE="$SW_LOGF" kb_stage_write PATCH /tasks/5.json '{"workflow_stage_id":51}' >"$SW_OUT" 2>"$SW_ERR" || rc=$?; }
+
+# curl runs inside kb_api's own `$(…)`, so its argv is written to a FILE — an array assigned there
+# dies with that subshell, and an absence asserted over it would be vacuous.
+SW_ARGV="$TMP/sw.argv"
+curl() { _STUB_ARGS=("$@"); printf '%s\n' "$@" > "$SW_ARGV"; _stub_curl_respond '{"data":{"id":5,"workflow_stage_id":51}}' 200; }
+: > "$SW_ARGV"
+_sw
+eq "2xx → rc 0, the body on stdout, nothing on stderr" \
+   '0|{"data":{"id":5,"workflow_stage_id":51}}|' "$rc|$(cat "$SW_OUT")|$(cat "$SW_ERR")"
+eq "2xx → it is a PATCH carrying the stage body (witness: argv was captured)" "true|true" \
+   "$(has_line 'PATCH' "$(cat "$SW_ARGV")")|$(has_line '{"workflow_stage_id":51}' "$(cat "$SW_ARGV")")"
+eq "2xx → the token is NOT in curl's argv (it rides stdin)" "false" "$(has "$KB_TOKEN" "$(cat "$SW_ARGV")")"
+
+curl() { _STUB_ARGS=("$@"); _stub_curl_respond "$SW_REFUSAL" 422; }
+_sw
+eq "422 → rc 1 (the server answered), nothing on stdout" "1|" "$rc|$(cat "$SW_OUT")"
+eq "422 → stderr is EXACTLY the one render line"         "$SW_LINE" "$(cat "$SW_ERR")"
+eq "422 → KB_HTTP carries the status to the caller's shell" "422" "$KB_HTTP"
+eq "422 → the durable log records it with the token masked" "true|false" \
+   "$(has 'PATCH /tasks/5.json HTTP-422 {"error":"parent has open legs"' "$(cat "$SW_LOGF")")|$(has "$KB_TOKEN" "$(cat "$SW_LOGF")")"
+# The caller's own knobs do not change the render: ERRBODY would print the body a second time and
+# QUIET would drop the render — kb_stage_write shadows both for its one call.
+KB_API_ERRBODY=1 _sw
+eq "422 under the caller's KB_API_ERRBODY=1 → still exactly the one line" "$SW_LINE" "$(cat "$SW_ERR")"
+KB_API_QUIET=1 _sw
+eq "422 under the caller's KB_API_QUIET=1 → still rendered"               "$SW_LINE" "$(cat "$SW_ERR")"
+# ⛔ CONTROL for the mask on the log: kb_api under ERRBODY with the SAME body puts the token nowhere
+# either — and the bare body really does carry it, so the two absences above are measurements.
+eq "control: the stub's body really carries the token" "true" "$(has "$KB_TOKEN" "$SW_REFUSAL")"
+rc=0; KB_API_ERRBODY=1 KB_LOG_FILE="$SW_LOGF" kb_api PATCH /tasks/5.json '{}' >/dev/null 2>"$SW_ERR" || rc=$?
+eq "kb_api's own ERRBODY echo masks the token too" "1|false|true" \
+   "$rc|$(has "$KB_TOKEN" "$(cat "$SW_ERR")")|$(has 'Bearer ***' "$(cat "$SW_ERR")")"
+
+curl() { cat >/dev/null; return 7; }
+_sw
+eq "transport → rc \$KB_API_RC_TRANSPORT, not 1" "$KB_API_RC_TRANSPORT" "$rc"
+eq "transport → kb_api's own line, and NO render (no answer was read)" "true|false" \
+   "$(has 'curl failed on PATCH /tasks/5.json' "$(cat "$SW_ERR")")|$(has 'answered' "$(cat "$SW_ERR")")"
+eq "transport → KB_API_ERR_RESP holds no earlier call's body" "" "$KB_API_ERR_RESP"
+unset -f curl _sw
+unset SW_LOGF SW_OUT SW_ERR SW_REFUSAL SW_LINE SW_ARGV
+reset_env
+
 _summary "kb-board-lib-selftest"

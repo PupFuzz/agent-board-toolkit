@@ -1136,8 +1136,23 @@ KB_API_RC_TRANSPORT=7
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
+#
+# KB_API_ERR_RESP — the RAW body of this call's non-2xx answer, set on that path only and emptied
+# at the top of every call, so it never carries an earlier call's body. It is a global for the
+# reason KB_HTTP is one, and it has the same subshell limit: it is readable by code that runs in
+# the SAME shell as kb_api — kb_stage_write reads it that way — and never by a caller that
+# captured kb_api through `$(…)`. It is RAW: kb_render_refusal is the only thing that may put it
+# in front of an operator.
+#
+# ⛔ THE BEARER TOKEN IS MASKED OUT OF EVERY BODY THIS FUNCTION RENDERS (card#9777) — the
+# KB_API_ERRBODY echo and the KB_LOG_FILE line. A server that renders debug output echoes the
+# request's own headers into its error page (measured, card#9301 — see kb_render_refusal), so a
+# refused write's body can carry `Authorization: Bearer <KB_TOKEN>` verbatim, and the log line is
+# DURABLE. The mask is the literal token that went on the wire, the same instrument
+# kb_render_refusal and promote-released-cards' resp_detail use; an empty token masks nothing.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
+    KB_API_ERR_RESP=""
     local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
@@ -1154,9 +1169,12 @@ kb_api() {
     KB_HTTP="${out##*__HTTP__}"
     local resp="${out%__HTTP__*}"
     if [[ ! "$KB_HTTP" =~ ^2 ]]; then
-        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp" >> "$KB_LOG_FILE"
+        KB_API_ERR_RESP="$resp"
+        local resp_shown="$resp"
+        [[ -z "${KB_TOKEN:-}" ]] || resp_shown="${resp//"$KB_TOKEN"/***}"
+        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp_shown" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
-        [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp" >&2
+        [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp_shown" >&2
         # The server ANSWERED: rc 1, the outcome is known, and KB_HTTP names it.
         return 1
     fi
@@ -1199,6 +1217,85 @@ kb_api_status() {
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { KB_HTTP="000"; printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
+}
+
+# KB_API_ERR_EXCERPT_MAX — the bound, in BYTES, on the server body kb_render_refusal quotes. The
+# SAME number as promote-released-cards' API_ERR_EXCERPT_MAX, whose comment owns why it is this
+# size; tests/mirror-pair-parity-selftest.sh § 8 reads both out of the shipped files and reds when
+# they differ. A plain assignment for the reason KB_API_RC_TRANSPORT is one.
+KB_API_ERR_EXCERPT_MAX=400
+
+# kb_render_refusal <status> <body>: ONE LINE saying what the server answered — `HTTP <status>,
+# server said: <excerpt>`, or `HTTP <status>, and the server sent no body` — where the excerpt is
+# the body with this call's bearer token masked, flattened to one line, stripped of every byte a
+# terminal would ACT on, and cut at $KB_API_ERR_EXCERPT_MAX bytes (saying so when it cuts).
+#
+# ⛔ IT IS A MIRROR, NOT A NEW RULE (card#9777). promote-released-cards' `resp_detail` is the
+# original (card#9301) and owns the reasoning for every stage below; it is not restated here:
+#   - the MASK is the literal token that went on the wire ($KB_TOKEN), because the bearer is the
+#     one secret a response body can actually come to contain — a debug-rendering server echoes
+#     request headers into its own error page, measured there. A pattern scrub is deliberately
+#     not added: it would be one key name behind the next server while reading like a guarantee.
+#   - the mask runs BEFORE the cut, because cutting first can split the token and leave a prefix
+#     the literal match no longer finds.
+#   - the scrub is C0 and DEL, not C1, because 0x80-0x9F overlaps UTF-8 continuation bytes.
+#   - LC_ALL=C makes the cut a BYTE count on every runner locale.
+# promote-released-cards may not source this lib (docs/CONSOLIDATION-PLAN.md § Stage D), so the
+# two texts stay two; tests/mirror-pair-parity-selftest.sh § 8 drives both over one corpus and
+# reds on any row where their output differs, envelope included.
+kb_render_refusal() {
+    local LC_ALL=C status="$1" body="${2-}"
+    [[ -z "${KB_TOKEN:-}" ]] || body="${body//"$KB_TOKEN"/***}"
+    body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+    body="${body# }"; body="${body% }"
+    if [[ -z "$body" ]]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
+    if [[ "${#body}" -gt "$KB_API_ERR_EXCERPT_MAX" ]]; then
+        printf 'HTTP %s, server said: %s… [truncated at %s bytes]' \
+            "$status" "${body:0:$KB_API_ERR_EXCERPT_MAX}" "$KB_API_ERR_EXCERPT_MAX"
+        return 0
+    fi
+    printf 'HTTP %s, server said: %s' "$status" "$body"
+}
+
+# kb_stage_write <method> <path> <body>: THE ONE WRITE EVERY KANBAN STAGE CHANGE IN THIS TOOLKIT
+# GOES THROUGH (card#9777) — a move (`PATCH /tasks/<id>.json`), a create that births a card in a
+# stage (`POST /tasks.json`), and a cross-board move (`POST /tasks/<id>/move-board.json`). It is
+# kb_api with ONE thing added: when the board answers non-2xx, stderr gets
+#     <prog>: <METHOD> <path> answered HTTP <status>, server said: <redacted excerpt>
+# — the method, the path, the status and the server's own explanation, rendered by
+# kb_render_refusal. Everything else is kb_api's: the response body on stdout on a 2xx, the rc
+# contract unchanged (0 / 1 the server answered non-2xx / $KB_API_RC_TRANSPORT the request did not
+# complete — and kb_api's own `curl failed` line on that one), KB_HTTP set, KB_LOG_FILE appended,
+# the token fed on stdin and never in argv. So a caller's `||` / `if !` arms are untouched by
+# routing through it.
+#
+# WHY IT EXISTS. A stage write the board refuses has to say WHY, and the reason is in the body:
+# a 403 (the token's role), a 422 (a stage id that is not this board's), and — once the kanban
+# server refuses terminal moves on a parent card whose legs are still open — that refusal too.
+# Before this, each mover rendered its refusal its own way or not at all: kbcard echoed the RAW
+# body (bearer token included, if the server echoed it), board-card-start logged a bare status,
+# dl-a1-register-field said "non-2xx or curl error". One primitive means a server-side refusal
+# reaches every mover in one shape with nothing more to build at the call sites.
+#
+# IT OWNS THE RENDER, SO IT SILENCES kb_api's. KB_API_QUIET and KB_API_ERRBODY are shadowed for the
+# one call: otherwise a caller that set KB_API_ERRBODY=1 (kbcard) would print the body twice, and a
+# caller that set KB_API_QUIET=1 (dl-a1-register-field) would lose the render this exists to give.
+#
+# A body carrying NO workflow_stage_id is not refused: kbcard's `patch` shares one task PATCH with
+# `move` (_kbc_stage_patch) whether or not it names a column, and splitting that write in two to
+# keep a name literal would be the second divergent copy this function exists to end.
+#
+# promote-released-cards is the one stage writer that cannot call this — it may not source the
+# lib — and its `resp_detail` renders the same excerpt; tests/mirror-pair-parity-selftest.sh § 8
+# holds the two renderers equal.
+kb_stage_write() {
+    local method="$1" path="$2" body="$3" rc=0
+    local KB_API_QUIET=1 KB_API_ERRBODY=""
+    kb_api "$method" "$path" "$body" || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+        echo "$(_kb_prog): $method $path answered $(kb_render_refusal "${KB_HTTP:-}" "${KB_API_ERR_RESP-}")" >&2
+    fi
+    return "$rc"
 }
 
 # kb_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,

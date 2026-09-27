@@ -502,14 +502,15 @@ unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
 # have been spent. Exactly this file's founding shape: a fix landing in one copy, missing its twin,
 # green suite, held by prose.
 #
-# ⚑ THE HOIST WAS CONSIDERED AND DECLINED, recorded here because "why is this still two texts" is
-# the first question a reader has. next-dl DOES source the lib, so a `kb_*` primitive is available
-# to it — but promote-released-cards may NOT source the lib (§ Stage D, above), so its copy stays
-# under any hoist. A lib primitive would therefore relocate ONE of the two texts and add a lib API
-# with a single lib-side caller, leaving the same two texts to keep in sync. What closes the defect
-# is the comparison, not the relocation. If a SECOND lib-sourcing bin ever needs this chain, that
-# is canon #5's second real caller and the hoist becomes right; this block keeps working either
-# way, because it compares behaviour and not text.
+# ⚑ THE LIB NOW OWNS A THIRD COPY, AND next-dl HAS NOT MOVED ONTO IT. Until card#9777 the hoist
+# was declined here: promote-released-cards may NOT source the lib (§ Stage D, above), so a lib
+# primitive would only have relocated one text, for a single lib-side caller. card#9777 gave the
+# chain its lib-sourcing callers — every stage write through `kb_stage_write` renders its refusal
+# with the lib's `kb_render_refusal`, a mirror of `resp_detail` pinned in § 8 below — so next-dl's
+# `resp_excerpt` is now the one lib-sourcing copy that could call the lib instead of carrying the
+# chain. It was NOT migrated in that card: its envelope, its cut and its withheld-on-an-unreadable-
+# token-file outcome all differ by design, so the move is a change to what next-dl prints and is
+# its own change. Until it lands, this block is what holds that copy to the other two.
 #
 # WHAT IS COMPARED, and what is not: the DECISION about the body — which bytes survive the render
 # and in what form. The tools' envelopes differ by design (`resp_detail` prints `HTTP <status>,
@@ -655,5 +656,91 @@ eq "control: unscrubbed, promote's copy LEAKS it too"           "true" \
 eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(_mp_detail "$_mp_esc")")"
 unset -f resp_excerpt resp_detail rx_naive rd_naive _mp_detail _mp_ctl _mp_c1
 unset RX_SRC RX_NAIVE RD_SRC RD_NAIVE _mp_needle MP_LABELS MP_BODIES MP_TOKEN _mp_esc _mp_c1_body token_file
+
+# ═══════════ 8 — the REFUSAL render: promote's resp_detail ↔ the lib's kb_render_refusal ═══════════
+#
+# THE PAIR (card#9777). Every stage write in the toolkit renders a board's refusal through ONE of
+# these two: every mover that calls `kb_stage_write` (grep bin/ for it) through
+# `kb_render_refusal`, and promote-released-cards — which may not source the lib
+# — through its own `resp_detail` (card#9301, the original). The product claim is that a refusal
+# reaches the operator in the SAME shape whichever mover hit it, so unlike § 7 NOTHING is stripped:
+# the envelope (`HTTP <s>, server said: …`, the no-body sentence, the truncation marker), the mask,
+# the scrub and the cut are all compared, byte for byte.
+#
+# WHAT IT DOES NOT COVER: promote's `000` arm (a request that never completed). kb_stage_write
+# never renders one — kb_api reports its own `curl failed` there — so the lib copy has no such arm
+# and no row here feeds `000`.
+echo "== the refusal render: the lib's kb_render_refusal IS promote's resp_detail, envelope and all =="
+_adopt_fn "$PRC" resp_detail
+API_ERR_FILE="$TMP/rr-detail"
+API_ERR_EXCERPT_MAX="$(sed -n 's/^API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$PRC")"
+_rr_lib_max="$(sed -n 's/^KB_API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$LIB")"
+eq "witness: both bounds were read out of their files" "false|false" \
+   "$([[ -z "$API_ERR_EXCERPT_MAX" ]] && echo true || echo false)|$([[ -z "$_rr_lib_max" ]] && echo true || echo false)"
+eq "the two bounds are ONE number" "$API_ERR_EXCERPT_MAX" "$_rr_lib_max"
+eq "…and the sourced lib carries the value its file declares" "$_rr_lib_max" "$KB_API_ERR_EXCERPT_MAX"
+
+RR_TOKEN='kbwb_RRRRSSSSTTTTUUUU0123456789'
+TOKEN="$RR_TOKEN"; KB_TOKEN="$RR_TOKEN"
+_rr_promote() { printf '%s\n%s' "$1" "$2" > "$API_ERR_FILE"; resp_detail; }
+# A body one byte per position over the bound, and one whose token STRADDLES the cut — the row
+# the mask-before-cut ordering exists for. Both are built from the bound read above, so neither
+# row goes stale when the bound is re-tuned.
+_rr_long="$(printf '%*s' "$(( API_ERR_EXCERPT_MAX + 50 ))" '' | tr ' ' 'x')"
+_rr_straddle="$(printf '%*s' "$(( API_ERR_EXCERPT_MAX - 10 ))" '' | tr ' ' 'y')$RR_TOKEN tail"
+RR_LABELS=('a leg-refusal JSON body'          'the same body with the wire token echoed back'
+           'no body at all'                   'a multi-line HTML error page'
+           'an ESC sequence and a CR'         'UTF-8 that must survive intact'
+           'a body over the bound'            'a token straddling the cut')
+RR_STATUS=(422 422 403 502 409 422 422 422)
+RR_BODIES=('{"error":"parent has open legs","open_legs":[123,456]}'
+           "{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $RR_TOKEN\"}}"
+           ''
+           "$(printf '<html>\n<body>\n<h1>502 Bad Gateway</h1>\n</body>\n</html>')"
+           "$(printf '{"m":"blocked\033[2Kfree\rkbcard: moved"}')"
+           '{"message":"Étape refusée — café €50"}'
+           "$_rr_long"
+           "$_rr_straddle")
+eq "witness: every corpus row has a label and a status" "${#RR_LABELS[@]}|${#RR_LABELS[@]}" \
+   "${#RR_BODIES[@]}|${#RR_STATUS[@]}"
+for _i in "${!RR_BODIES[@]}"; do
+    _l="${RR_LABELS[$_i]}"
+    _p="$(_rr_promote "${RR_STATUS[$_i]}" "${RR_BODIES[$_i]}")"
+    _k="$(kb_render_refusal "${RR_STATUS[$_i]}" "${RR_BODIES[$_i]}")"
+    eq "the two renders are byte-identical [$_l]" "$_p" "$_k"
+    eq "…and neither carries the token [$_l]" "false|false" "$(has "$RR_TOKEN" "$_p")|$(has "$RR_TOKEN" "$_k")"
+done
+# ⭐ VACUITY: identical outputs that both dropped the body would pass every row above. So the
+# property each row exists for is asserted on the lib copy directly.
+eq "the leg refusal is quoted with its status" \
+   'HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456]}' \
+   "$(kb_render_refusal 422 "${RR_BODIES[0]}")"
+eq "the echoed token is MASKED, not dropped with its field" "true" \
+   "$(has '"authorization":"Bearer ***"' "$(kb_render_refusal 422 "${RR_BODIES[1]}")")"
+eq "no body is said as such" 'HTTP 403, and the server sent no body' "$(kb_render_refusal 403 '')"
+eq "an over-bound body is cut and says so" "true" \
+   "$(has "[truncated at $API_ERR_EXCERPT_MAX bytes]" "$(kb_render_refusal 422 "$_rr_long")")"
+eq "no prefix of a straddling token survives the cut" "false" \
+   "$(has "${RR_TOKEN:0:8}" "$(kb_render_refusal 422 "$_rr_straddle")")"
+
+# ⭐ THE CONTROL, from the lib's end: its mask stage cut out must make a token row DISAGREE with
+# promote's and leak — otherwise the rows above are comparing two copies that could both have lost it.
+echo "== control: a lib copy without its mask, or with its own bound, is caught =="
+RR_SRC="$(_fn_src "$LIB" kb_render_refusal)"
+RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed '/KB_TOKEN/d; s/^kb_render_refusal()/rr_naive()/')"
+eq "control: the mask line really came out" "true|false|true" \
+   "$(has 'KB_TOKEN' "$RR_SRC")|$(has 'KB_TOKEN' "$RR_NAIVE")|$(has 'rr_naive() {' "$RR_NAIVE")"
+eval "$RR_NAIVE"
+eq "control: unmasked, the lib copy LEAKS the token" "true" \
+   "$(has "$RR_TOKEN" "$(rr_naive 422 "${RR_BODIES[1]}")")"
+eq "control: …and the comparison sees the disagreement" "false" \
+   "$([[ "$(rr_naive 422 "${RR_BODIES[1]}")" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
+_rr_saved="$KB_API_ERR_EXCERPT_MAX"; KB_API_ERR_EXCERPT_MAX=$(( _rr_saved - 1 ))
+eq "control: a lib bound one byte off disagrees on the over-bound row" "false" \
+   "$([[ "$(kb_render_refusal 422 "$_rr_long")" == "$(_rr_promote 422 "$_rr_long")" ]] && echo true || echo false)"
+KB_API_ERR_EXCERPT_MAX="$_rr_saved"
+unset -f resp_detail rr_naive _rr_promote
+unset RR_SRC RR_NAIVE RR_LABELS RR_STATUS RR_BODIES RR_TOKEN _rr_long _rr_straddle _rr_saved _rr_lib_max _i _l _p _k
+unset TOKEN KB_TOKEN
 
 _summary "mirror-pair-parity-selftest"

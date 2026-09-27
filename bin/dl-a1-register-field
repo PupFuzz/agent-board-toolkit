@@ -267,8 +267,10 @@ body="$(jq -n \
       name: "[A1-verify] dl_number throwaway — delete me",
       payload: {dl_number: $sentinel}}
      + (if $swim_set != "" then {swimlane_id: $swim} else {} end)')"
-create="$(kb_api POST "/tasks.json" "$body")" || {
-    # kb_api's KB_HTTP global doesn't cross this $(), so don't claim a code we can't see.
+create="$(kb_stage_write POST "/tasks.json" "$body")" || {
+    # The birth-stage write is the lib's kb_stage_write (card#9777), which has already put the
+    # status and the server's redacted explanation on stderr from INSIDE this $(). KB_HTTP does
+    # not cross it, so this line still claims no code of its own.
     echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
     exit 1
 }

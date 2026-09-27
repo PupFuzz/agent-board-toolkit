@@ -112,6 +112,18 @@ done
 distinct="$(sort -u "$TMP/refusal-lines" | grep -c . || true)"
 eq "four different refusals render four DIFFERENT lines" "4" "$distinct"
 
+# ⭐ THE PARENT-WITH-OPEN-LEGS REFUSAL, rendered the way every other stage writer renders it
+# (card#9777). This tool cannot call the lib's kb_stage_write — it may not source the lib — so the
+# same shape is held by two things: this leg, which drives the render through the real move loop,
+# and tests/mirror-pair-parity-selftest.sh § 8, which holds resp_detail byte-equal to the lib's
+# kb_render_refusal. The body is MADE UP — the kanban server's refusal of a terminal move on a
+# parent with open legs is not live and its body is unpublished — and carries the token a
+# header-echoing server would echo back, which must not survive.
+STUB_PATCH_STATUS=422 STUB_PATCH_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $TOKEN_VALUE\"}}" run_promote
+eq "open-legs 422: the refusal line carries the status and the server's words, token masked" "true" \
+   "$(has '✗ DL-100 (#1): move failed (left in place) — HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$err")"
+eq "open-legs 422: …and the token appears nowhere in the run's output" "false" "$(has "$TOKEN_VALUE" "$err$out")"
+
 # ⛔ NEGATIVE CONTROL — the detector must NOT fire on a success. Without this every assertion
 # above is satisfiable by a tool that appends `HTTP …` to every line it prints.
 unset STUB_PATCH_STATUS

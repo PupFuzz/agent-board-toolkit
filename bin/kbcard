@@ -1718,7 +1718,7 @@ cmd_create_card() {
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
     # of birthing the card on a lane) without changing every other create's echo shape.
     local resp out
-    resp="$(kb_api POST "/tasks.json" "$body")" || return 1
+    resp="$(kb_stage_write POST "/tasks.json" "$body")" || return 1
     out="$(_kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
         "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage")" || return $?
     printf '%s\n' "$out"
@@ -1765,6 +1765,9 @@ _kbc_terminal_column() {
 #   command substitution the caller captures the response with — where the caller can no longer
 #   read it. This function runs in that same subshell, so it can.
 #
+#   THE WRITE IS THE LIB'S kb_stage_write, which renders a refusal as the status plus the server's
+#   own token-masked explanation (card#9777); _kbc_write_fault then adds the install diagnosis.
+#
 # Response on stdout, kb_api's rc returned unchanged, so both callers' existing arms are intact.
 _kbc_stage_patch() {
     local verb="$1" task="$2" column="$3" body="$4" rc=0
@@ -1776,7 +1779,7 @@ _kbc_stage_patch() {
             echo "kbcard: cleared the card's assignment (assigned_user_id) — $column is a terminal column and a finished card holds nobody's claim" >&2
         fi
     fi
-    kb_api PATCH "/tasks/$task.json" "$body" || {
+    kb_stage_write PATCH "/tasks/$task.json" "$body" || {
         rc=$?
         _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
         return "$rc"
@@ -2578,7 +2581,7 @@ cmd_move_board() {
     fi
 
     local prc=0 lead="the POST answered 2xx"
-    kb_api POST "/tasks/$task/move-board.json" "$body" >/dev/null || prc=$?
+    kb_stage_write POST "/tasks/$task/move-board.json" "$body" >/dev/null || prc=$?
     if [[ "$prc" -eq "$KB_API_RC_TRANSPORT" ]]; then
         lead="the POST did not complete (no HTTP status came back)"
     elif [[ "$prc" -ne 0 && "${KB_HTTP:-}" == 5* ]]; then
@@ -4850,10 +4853,12 @@ _kbc_field_conversion_rerun_note() {
 # away the only report of what blocks the conversion.
 _kbc_field_change_type_report() {
     local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6" have_options="$7"
-    local path="/custom_fields/$fid/change-type.json"
+    local path="/custom_fields/$fid/change-type.json" resp_shown="$resp"
+    # The bearer is masked as kb_api masks it (card#9777) — this is the mirror of that print.
+    [[ -z "${KB_TOKEN:-}" ]] || resp_shown="${resp//"$KB_TOKEN"/***}"
     echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
-    echo "$resp" >&2
-    [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp" >> "$KB_LOG_FILE"
+    echo "$resp_shown" >&2
+    [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp_shown" >> "$KB_LOG_FILE"
     # Empty unless the body is a JSON OBJECT, which is the shape every arm below
     # INDEXES — an "is it JSON" test hands a scalar or a list straight to `has(…)`,
     # where the read yields nothing and the arm it lands in makes claims about a
