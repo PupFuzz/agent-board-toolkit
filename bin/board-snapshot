@@ -61,18 +61,32 @@ KB_CURL_MAX_TIME=5
 #     = MORE THAN 5,000 cards on ONE board. No board here is near that, so rc 3 is
 #     a fixture-only rc for this tool today — but it is the cap that decides it, so
 #     lowering SNAPSHOT_PAGE_CAP is all it takes to reach it.
-#   rc 4 (short read) needs the read to span MORE THAN ONE PAGE, and then any row
-#     to leave the match set between the page-1 and page-2 requests: the census
-#     compares the pages' summed rows against the meta.total captured on PAGE 1
-#     ONLY, so one archive (board-session-close does exactly this) or one card
-#     moving out of the board mid-scan makes sum_n < total. It is REACHABLE, and it
-#     is reachable BENIGNLY — an ordinary concurrent write, not a broken server.
+#   rc 4 (short read) needs the DISTINCT rows the walk delivers to fall short of
+#     page 1's own meta.total — the census compares them. TWO routes reach that,
+#     and only ONE needs a multi-page board:
+#       (a) a row the walk has NOT YET READ (below its current id cursor) leaves
+#           the match set before its page is requested — one card moving off the
+#           board mid-scan. This needs a second page: only a multi-page walk has
+#           an unread remainder to lose.
+#       (b) the server's own row COUNT and its row SELECT are two separate,
+#           non-transactional queries (TasksController::search's paginate()), so
+#           a row can leave the match set BETWEEN page 1's count and page 1's OWN
+#           select — one archive (board-session-close does exactly this) landing
+#           in that gap. A ONE-PAGE board is just as reachable this way; it needs
+#           no second page at all. Reproduced: a 5-card board with a page-1
+#           archive in that gap answers rc 4 off a SINGLE request.
+#     Both are REACHABLE, and reachable BENIGNLY — an ordinary concurrent write,
+#     not a broken server. (A row leaving the part ALREADY read no longer does:
+#     the walk is keyed on id since card#10626, so nothing unread moves when it
+#     goes — that guarantee covers route (a) only; route (b) is a same-request
+#     race no id-keying can close, on page 1 or any other.)
 # Re-derive it, do not quote it: ask the API how many pages a board is
 #   GET $API/tasks/search.json?q=board_id=<id>&limit=200&page=1 -> .meta.last_page
 # and compare against ceil(cards / 200) > SNAPSHOT_PAGE_CAP for rc 3. Measured
 # 2026-08-21: boards 5 and 8 answered last_page=2 (total 242 and 271), board 12
-# last_page=1 (189) — i.e. two of the three configured boards are already
-# multi-page reads, which is exactly the precondition rc 4 needs.
+# last_page=1 (189) — i.e. two of the three configured boards already satisfy
+# route (a)'s precondition too; route (b) needs none, so all three already
+# qualify for rc 4.
 
 # Clean slate before sourcing a board env: board envs EXPORT their keys, so an
 # operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /

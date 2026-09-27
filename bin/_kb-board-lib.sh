@@ -673,7 +673,9 @@ kb_load_config() {
     if [[ "$no_token" == --no-token ]]; then
         KB_TOKEN=""
     else
-        KB_TOKEN="$(cat "$KB_TOKEN_FILE")"
+        # `|| KB_TOKEN=""` keeps what an unreadable-after-resolve file (a DIRECTORY passes -r) has
+        # always produced here: an empty bearer, not a refusal — refusing is an acceptance change.
+        kb_token_file_read KB_TOKEN "$KB_TOKEN_FILE" || KB_TOKEN=""
     fi
     return 0
 }
@@ -753,12 +755,39 @@ kb_board_env_get() {
     )
 }
 
-# kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE).
-# Returns 1 rather than exiting when the file is unreadable — every caller is fail-soft
-# and words its own message.
+# kb_token_file_read <var> <token_file>: set the CALLER's <var> to the bearer token in
+# <token_file>, TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED; rc 1, <var> untouched,
+# when the file cannot be read. THE ONE READ OF A TOKEN FILE's bytes in bash here — every site
+# that sends or masks a token goes through it (`grep -n kb_token_file_read bin/`), so the value a
+# tool holds is the value that goes on the wire.
+#
+# ⛔ WHY TRAILING WHITESPACE AND NOT ONLY NEWLINES (card#9777). `$(cat …)` strips trailing LF and
+# nothing else, so a CRLF file (normal on Windows/Git-Bash) read as `tok…\r`. curl drops that CR
+# from a `-H @-` header line, so auth still worked — but kb_mask_token masks the LITERAL token, and
+# a server echoing the request's Authorization header returned it WITHOUT the CR, so the mask
+# missed and the bearer reached stderr and the durable KB_LOG_FILE (measured, a header-echoing
+# server behind real curl). A trailing space or tab is sent by curl, and a server trims it as
+# header whitespace (RFC 9110 §5.5) before echoing — the same miss. Normalising HERE, once, makes
+# the mask's literal equal to the wire value; variant-matching inside the mask would be a second
+# spelling of the token for every future mask site to get right. Interior and leading bytes are
+# untouched. agent-board-toolkit-runtime-check's _rc_digest normalises to this same identity.
+#
+# Assigns by name (`printf -v`) like kb_mask_token rather than printing, so no caller captures
+# the token through a `$(…)` of its own. Its one local carries a name no caller passes.
+kb_token_file_read() {
+    local _kbtfr_v
+    _kbtfr_v="$(cat -- "$2" 2>/dev/null)" || return 1
+    printf -v "$1" '%s' "${_kbtfr_v%"${_kbtfr_v##*[!$' \t\n\r\v\f']}"}"
+}
+
+# kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE), through
+# kb_token_file_read. Returns 1 rather than exiting when the file is unreadable — every caller is
+# fail-soft and words its own message. A file that passes -r and still cannot be read (a
+# DIRECTORY) leaves KB_TOKEN empty at rc 0, as the `$(cat …)` this replaced did — turning that
+# into a refusal changes what the callers accept, and is not this helper's to decide.
 kb_read_token() {
     [[ -r "$1" ]] || return 1
-    KB_TOKEN="$(cat "$1")"
+    kb_token_file_read KB_TOKEN "$1" || KB_TOKEN=""
     KB_TOKEN_FILE="$1"
     return 0
 }
@@ -778,6 +807,27 @@ KB_HTTP=""
 # substitution) redirects a regular temp file onto fd 0 rather than a /dev/fd named pipe, so it
 # also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
+
+# kb_mask_token <var> <token> <text>: set the CALLER's variable <var> to <text> with every
+# occurrence of <token> — the literal bearer that went on the wire, which KB_TOKEN equals because
+# kb_token_file_read normalised it — replaced by `***`. An empty <token> masks nothing, by an
+# explicit branch rather than by trusting an empty pattern; <text> then comes back byte-identical.
+#
+# THE ONE MASK every server body this lib renders or logs goes through (card#9777), and the one
+# the lib-sourcing bins use where they quote a body themselves — `grep -n kb_mask_token bin/`
+# lists the sites rather than this comment restating them. A server that renders debug output echoes the
+# request's own headers into its error page (measured, card#9301), so any body can carry
+# `Authorization: Bearer <token>` verbatim. The literal token rather than a pattern scrub, for the
+# reason kb_render_refusal gives. promote-released-cards' resp_detail carries its own copy of this
+# one substitution, because it may not source the lib.
+#
+# IT ASSIGNS BY NAME (`printf -v`) RATHER THAN PRINTING, and that is the point: `$(…)` strips
+# trailing newlines, so a printing helper would change the bytes every log line carries — the
+# fetch_board_cards body ends in the newline curl's -w marker is preceded by. It declares no
+# locals, so no caller variable name can be shadowed by one of its own.
+kb_mask_token() {
+    if [[ -n "$2" ]]; then printf -v "$1" '%s' "${3//"$2"/***}"; else printf -v "$1" '%s' "$3"; fi
+}
 
 # kb_require_value <flag> <value>: returns 1 (with a diagnostic) unless a value-taking
 # option was given a non-empty value. Callers pass `"$1" "${2:-}"` from the arg loop.
@@ -1136,8 +1186,24 @@ KB_API_RC_TRANSPORT=7
 #                     ⚠ It bounds a REQUEST, not a caller's total runtime. N
 #                     requests can still take N×cap — board-snapshot's cap does not
 #                     by itself keep it inside the SessionStart hook timeout.
+#
+# KB_API_ERR_RESP — the RAW body of this call's non-2xx answer, set on that path only and emptied
+# at the top of every call, so it never carries an earlier call's body. It is a global for the
+# reason KB_HTTP is one, and it has the same subshell limit: it is readable by code that runs in
+# the SAME shell as kb_api — kb_stage_write reads it that way — and never by a caller that
+# captured kb_api through `$(…)`. It is RAW: kb_render_refusal is the only thing that may put it
+# in front of an operator.
+#
+# ⛔ THE BEARER TOKEN IS MASKED OUT OF EVERY BODY THIS FUNCTION RENDERS (card#9777) — the
+# KB_API_ERRBODY echo and both KB_LOG_FILE lines. A server that renders debug output echoes the
+# request's own headers into its error page (measured, card#9301 — see kb_render_refusal), so a
+# refused write's body can carry `Authorization: Bearer <KB_TOKEN>` verbatim, and the log line is
+# DURABLE. The FAILED-CURL line is included because a transfer cut off mid-body (a --max-time
+# expiry) leaves the part of the body already read in $out beside curl's error text. The mask is
+# kb_mask_token; an empty token masks nothing.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
+    KB_API_ERR_RESP=""
     local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
@@ -1146,7 +1212,8 @@ kb_api() {
     # the call is portable: a herestring redirects a regular temp file onto fd 0, avoiding the
     # /dev/fd process-substitution path that native mingw64/Git-Bash curl can't open (#34).
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || {
-        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out" >> "$KB_LOG_FILE"
+        local out_shown; kb_mask_token out_shown "${KB_TOKEN:-}" "$out"
+        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out_shown" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
         # NOT rc 1 — nothing was read here, while rc 1 below means the server answered.
         KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"
@@ -1154,9 +1221,11 @@ kb_api() {
     KB_HTTP="${out##*__HTTP__}"
     local resp="${out%__HTTP__*}"
     if [[ ! "$KB_HTTP" =~ ^2 ]]; then
-        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp" >> "$KB_LOG_FILE"
+        KB_API_ERR_RESP="$resp"
+        local resp_shown; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
+        [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp_shown" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
-        [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp" >&2
+        [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp_shown" >&2
         # The server ANSWERED: rc 1, the outcome is known, and KB_HTTP names it.
         return 1
     fi
@@ -1199,6 +1268,85 @@ kb_api_status() {
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { KB_HTTP="000"; printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
+}
+
+# KB_API_ERR_EXCERPT_MAX — the bound, in BYTES, on the server body kb_render_refusal quotes. The
+# SAME number as promote-released-cards' API_ERR_EXCERPT_MAX, whose comment owns why it is this
+# size; tests/mirror-pair-parity-selftest.sh § 8 reads both out of the shipped files and reds when
+# they differ. A plain assignment for the reason KB_API_RC_TRANSPORT is one.
+KB_API_ERR_EXCERPT_MAX=400
+
+# kb_render_refusal <status> <body>: ONE LINE saying what the server answered — `HTTP <status>,
+# server said: <excerpt>`, or `HTTP <status>, and the server sent no body` — where the excerpt is
+# the body with this call's bearer token masked, flattened to one line, stripped of every byte a
+# terminal would ACT on, and cut at $KB_API_ERR_EXCERPT_MAX bytes (saying so when it cuts).
+#
+# ⛔ IT IS A MIRROR, NOT A NEW RULE (card#9777). promote-released-cards' `resp_detail` is the
+# original (card#9301) and owns the reasoning for every stage below; it is not restated here:
+#   - the MASK is the literal token that went on the wire ($KB_TOKEN), because the bearer is the
+#     one secret a response body can actually come to contain — a debug-rendering server echoes
+#     request headers into its own error page, measured there. A pattern scrub is deliberately
+#     not added: it would be one key name behind the next server while reading like a guarantee.
+#   - the mask runs BEFORE the cut, because cutting first can split the token and leave a prefix
+#     the literal match no longer finds.
+#   - the scrub is C0 and DEL, not C1, because 0x80-0x9F overlaps UTF-8 continuation bytes.
+#   - LC_ALL=C makes the cut a BYTE count on every runner locale.
+# promote-released-cards may not source this lib (docs/CONSOLIDATION-PLAN.md § Stage D), so the
+# two texts stay two; tests/mirror-pair-parity-selftest.sh § 8 drives both over one corpus and
+# reds on any row where their output differs, envelope included.
+kb_render_refusal() {
+    local LC_ALL=C status="$1" body="${2-}"
+    kb_mask_token body "${KB_TOKEN:-}" "$body"
+    body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+    body="${body# }"; body="${body% }"
+    if [[ -z "$body" ]]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
+    if [[ "${#body}" -gt "$KB_API_ERR_EXCERPT_MAX" ]]; then
+        printf 'HTTP %s, server said: %s… [truncated at %s bytes]' \
+            "$status" "${body:0:$KB_API_ERR_EXCERPT_MAX}" "$KB_API_ERR_EXCERPT_MAX"
+        return 0
+    fi
+    printf 'HTTP %s, server said: %s' "$status" "$body"
+}
+
+# kb_stage_write <method> <path> <body>: THE ONE WRITE EVERY KANBAN STAGE CHANGE IN THIS TOOLKIT
+# GOES THROUGH (card#9777) — a move (`PATCH /tasks/<id>.json`), a create that births a card in a
+# stage (`POST /tasks.json`), and a cross-board move (`POST /tasks/<id>/move-board.json`). It is
+# kb_api with ONE thing added: when the board answers non-2xx, stderr gets
+#     <prog>: <METHOD> <path> answered HTTP <status>, server said: <redacted excerpt>
+# — the method, the path, the status and the server's own explanation, rendered by
+# kb_render_refusal. Everything else is kb_api's: the response body on stdout on a 2xx, the rc
+# contract unchanged (0 / 1 the server answered non-2xx / $KB_API_RC_TRANSPORT the request did not
+# complete — and kb_api's own `curl failed` line on that one), KB_HTTP set, KB_LOG_FILE appended,
+# the token fed on stdin and never in argv. So a caller's `||` / `if !` arms are untouched by
+# routing through it.
+#
+# WHY IT EXISTS. A stage write the board refuses has to say WHY, and the reason is in the body:
+# a 403 (the token's role), a 422 (a stage id that is not this board's), and — once the kanban
+# server refuses terminal moves on a parent card whose legs are still open — that refusal too.
+# Before this, each mover rendered its refusal its own way or not at all: kbcard echoed the RAW
+# body (bearer token included, if the server echoed it), board-card-start logged a bare status,
+# dl-a1-register-field said "non-2xx or curl error". One primitive means a server-side refusal
+# reaches every mover in one shape with nothing more to build at the call sites.
+#
+# IT OWNS THE RENDER, SO IT SILENCES kb_api's. KB_API_QUIET and KB_API_ERRBODY are shadowed for the
+# one call: otherwise a caller that set KB_API_ERRBODY=1 (kbcard) would print the body twice, and a
+# caller that set KB_API_QUIET=1 (dl-a1-register-field) would lose the render this exists to give.
+#
+# A body carrying NO workflow_stage_id is not refused: kbcard's `patch` shares one task PATCH with
+# `move` (_kbc_stage_patch) whether or not it names a column, and splitting that write in two to
+# keep a name literal would be the second divergent copy this function exists to end.
+#
+# promote-released-cards is the one stage writer that cannot call this — it may not source the
+# lib — and its `resp_detail` renders the same excerpt; tests/mirror-pair-parity-selftest.sh § 8
+# holds the two renderers equal.
+kb_stage_write() {
+    local method="$1" path="$2" body="$3" rc=0
+    local KB_API_QUIET=1 KB_API_ERRBODY=""
+    kb_api "$method" "$path" "$body" || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+        echo "$(_kb_prog): $method $path answered $(kb_render_refusal "${KB_HTTP:-}" "${KB_API_ERR_RESP-}")" >&2
+    fi
+    return "$rc"
 }
 
 # kb_parse_resp <response> [jq-opt…] <jq-filter>: the filter applied to a response body,
@@ -1586,6 +1734,9 @@ kb_owner_tag_write() {
         *)
             # The server's own one-line reason, bounded and flattened: a 403 and a 422 need
             # opposite fixes (the token's role / the tag itself), and the status alone does not say.
+            # The body is masked BEFORE the read (kb_mask_token), so the 300-byte cut can never
+            # split the bearer and leave a prefix the literal match no longer finds.
+            kb_mask_token body "${KB_TOKEN:-}" "$body"
             reason="$(kb_parse_resp "$body" -r '.message | select(type == "string") | [explode[] | if . < 32 or . == 127 then 32 else . end] | implode | .[0:300]')"
             KB_OWNER_NOTE="$(_kb_prog): $not_msg — HTTP $http${reason:+, server said: $reason}. The card was moved; its tags are unchanged."
             ;;
@@ -1593,18 +1744,64 @@ kb_owner_tag_write() {
 }
 
 # --- whole-board pagination -------------------------------------------------
+# _kb_walk_unkeyable <page> <board> <http> <url-shown> <why>: fetch_board_cards' one voice for
+# a page whose rows cannot key the walk's next request (see THE WALK IS KEYED ON ID). The same
+# channels as its other rc-2 refusals: stderr under KB_FETCH_LOUD, the durable log when set.
+_kb_walk_unkeyable() {
+    [[ -n "${KB_FETCH_LOUD:-}" ]] && \
+        echo "fetch_board_cards: page $1 for board $2 $5 — refusing rather than report a board read it could not continue" >&2
+    [[ -n "${KB_LOG_FILE:-}" ]] && \
+        echo "$(date -u +%FT%TZ) GET $4 HTTP-$3 UNKEYABLE-PAGE page $1: $5" >> "$KB_LOG_FILE"
+    return 0
+}
+
 # fetch_board_cards <api> <token> <board_id> [page_cap] [query]: read the WHOLE board via
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
-# stdout. Stops on a short page (n<200) or meta.last_page, whichever comes first.
+# stdout. Stops ONLY on a short or empty page (n<200) — never on a declared meta.last_page
+# (card#10626 review round 1): the server answers with a COUNT and a separate SELECT, not one
+# atomic query (TasksController::search runs Laravel's paginate(), no transaction around it),
+# so a window that holds exactly 200 rows at COUNT time can gain a row before the SELECT runs
+# (a restore or a move-in below the cursor) — the SELECT then still returns 200 (LIMIT 200
+# hides the extra row), last_page says 1, and the dropped row's id is the LOWEST of the lot, so
+# trusting last_page would end the walk one card short at an rc 0 the census cannot catch either
+# (the census's own total is a page-1-only snapshot with the same race). Ending on n<200 instead
+# means a full page always issues one more request — keyed below the last id just read — and
+# that request either comes back short (done) or surfaces the row the race had hidden, because
+# the dropped row's id is lower than every id just delivered and so is still inside the next
+# window. Costs one extra, empty request only when the true remaining count is an exact
+# multiple of 200.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
+#
+# THE WALK IS KEYED ON ID, NOT ON PAGE NUMBER (card#10626). Page 1 is the historic request.
+# Every later request is page 1 of `id<C`, C being the LOWEST id the previous page delivered.
+# The server answers in id-DESCENDING order (TasksController::search, `orderByDesc('id')`) and
+# applies an `id<N` q-token as a structured filter (QueryParser::applyStructuredFilter), so each
+# request asks for "the next 200 ids below the last one read". It used to ask for `page=N` —
+# "rows 201-400 of the set as it stands NOW" — and a row leaving the set between two requests
+# (an archive, a delete, a move to another board) moved every later row back across the
+# boundary, so one card was never delivered. The census below is a COUNT and could not see it
+# once a restored card or a duplicate (a create lands at the head and pushes a read row forward)
+# made the number up again: the walk answered rc 0 without the card. Keyed on id, a write
+# mid-walk cannot move an unread row past the cursor, so every card live for the WHOLE walk is
+# delivered exactly once. A card created mid-walk takes an id above the cursor and is not read;
+# it did not exist when the walk started, which is the answer a walk begun a moment earlier gives.
+# BOTH SERVER PROPERTIES ARE CHECKED where each is load-bearing, not assumed: a page the walk
+# continues FROM must be in strictly descending id order (its last row is the next cursor), and
+# every row of a keyed page must lie below the cursor it was asked for (the filter was applied).
+# A page breaking either is rc 2 — the walk cannot be continued correctly. Residual, named: a
+# server that free-texted the `id<N` token instead of applying it would answer few or no rows,
+# and those pass the window check; the census catches the short read at rc 4 where meta.total
+# is declared, and nothing here can where it is not.
 #
 # [query] IS THE OPTIONAL SEARCH TERM (card#6771) — the same `q=` token stream this endpoint
 # already takes, appended after the `board_id=<id>` term this function has always sent, so the
 # read is over the board's MATCHING cards rather than all of them. Nothing else changes: same
-# paging, same dedup, same rcs, same census. Omitted or empty rebuilds the historic URL byte
-# for byte, which is what leaves the whole-board calls — eight of the nine in bin/ — untouched.
+# paging, same dedup, same rcs, same census. The term goes AFTER the walk's own `id<C` token, so
+# an unbalanced quote in it cannot swallow that token. Omitted or empty rebuilds the historic
+# page-1 URL byte for byte, which is what leaves the whole-board calls — eight of the nine in
+# bin/ — untouched.
 #   * The term is percent-encoded as ONE value (jq's @uri — the spelling kbcard's external-id
 #     lookup already uses), so a space, `&` or `#` in it adds no query parameter and retargets
 #     nothing. A caller's own `board_id=` token does not REPLACE this function's: each
@@ -1626,15 +1823,17 @@ kb_owner_tag_write() {
 #      as of card#6631: nothing of the board was read, so the undercount is total).
 #      Three causes, one rc: curl could not complete the request, the status was not
 #      2xx, or the 2xx body carried no readable card array (see the parse site below)
-#   2  incomplete: a page > 1 failed mid-pagination, nothing emitted — a
+#   2  incomplete: the walk failed after page 1, nothing emitted — a
 #      correctness-sensitive caller (the DL minter) MUST refuse rather than risk a
 #      truncated scan. The SAME three causes as rc 1, on a later page (card#6630); the
-#      page is what selects between the two rcs, not the cause. Still not a closed cause
-#      enumeration a caller may quote: rc 1's is closed because next-dl's rc-1-only arm
-#      quotes it, and nothing has asked that of rc 2
+#      page is what selects between the two rcs, not the cause. Plus one of its own: a
+#      page's rows could not key the next request (card#10626 — see THE WALK IS KEYED ON
+#      ID above), which can be page 1's rows, since it is the NEXT request that fails.
+#      Not a closed cause enumeration a caller may quote: rc 1's is closed because
+#      next-dl's rc-1-only arm quotes it, and nothing has asked that of rc 2
 #   3  page cap hit: the partial array is still emitted (so a display caller can
 #      show what it has) but the read is flagged INCOMPLETE on stderr
-#   4  SHORT READ: the server's own meta.total exceeds the rows the pages delivered.
+#   4  SHORT READ: page 1's meta.total exceeds the DISTINCT rows the walk delivered.
 #      The partial array is still emitted and flagged INCOMPLETE on stderr; a
 #      refuse-policy caller must treat 4 like 2/3
 #   5  the [query] could not be encoded: NO request was issued and nothing was read.
@@ -1683,7 +1882,7 @@ kb_owner_tag_write() {
 # wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}" query="${5:-}"
-    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0 qextra=""
+    local pages="" page=1 resp data n total="" read_n out sum_n=0 qextra="" cursor="" idq=""
     # The optional search term, encoded ONCE (it is the same on every page). Refused rather
     # than dropped when the encode yields nothing: an empty qextra is not a narrower read,
     # it is the whole board answered as the match set — the widest wrong answer available
@@ -1722,9 +1921,16 @@ fetch_board_cards() {
     # an api_base is allowed to carry userinfo. The two prefixes differ only in that mask;
     # the varying half is built once as $qs and shared, so the logged url and the fetched one
     # cannot drift into describing different requests.
+    # The userinfo is a render-side secret ONLY: it never goes on the wire, so no server can echo
+    # it back into a body. curl builds Basic auth from userinfo only when no Authorization header
+    # was supplied, and this request always supplies the bearer one (measured, curl 8.18.0,
+    # against a header-echoing server — an empty token included). The one credential a body can
+    # carry is therefore $token, which the failure arms below mask (card#9777).
     local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
     while :; do
-        local qs="/tasks/search.json?q=board_id=${board}${qextra}&limit=200&page=${page}"
+        idq=""
+        [[ -n "$cursor" ]] && idq="%20id%3C${cursor}"
+        local qs="/tasks/search.json?q=board_id=${board}${idq}${qextra}&limit=200&page=1"
         local url="$api$qs" url_shown="$api_shown$qs"
         local rc
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
@@ -1743,28 +1949,26 @@ fetch_board_cards() {
         }
         local http="${resp##*__HTTP__}"
         resp="${resp%__HTTP__*}"
+        # THE RENDERABLE BODY, on the two failure arms only (card#9777): the same request sent
+        # $token in its Authorization header, and a server that echoes request headers into its
+        # error page (card#9301) hands it back here — to stderr and to the DURABLE log. Masked with
+        # kb_mask_token, the one mask kb_api uses; computed inside each arm, never per page, so a
+        # successful walk does not pay a substitution over every 200-card body.
+        local resp_shown
         if [[ ! "$http" =~ ^2 ]]; then
+            kb_mask_token resp_shown "$token" "$resp"
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
-                echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp" >&2
+                echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp_shown" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http $resp_shown" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
-        if [[ "$page" -eq 1 ]]; then
-            # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
-            # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
-            # absent/out-of-range value must fall through to the n<200 break, never break the
-            # scan at a full 200-row page 1 (that silently truncates when meta.total is also
-            # absent — the miss #4513 guards in the co-vendored promote-released-cards
-            # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
-            # when the server positively declares it.
-            last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-            kb_is_uint "$last_page" || last_page=""
-            [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
-            total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
-        fi
+        # meta.total from PAGE 1 only: it is the census's denominator, the whole board (or
+        # match set) as the walk began. A keyed page's total counts only what is below its
+        # cursor.
+        [[ "$page" -eq 1 ]] && total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
         # A 2xx whose body carries no card ARRAY is a page that FAILED to read, not a
         # page that was empty — and `.data // []` could not tell the two apart. An HTML
         # 502 interstitial from a proxy, a truncated body, or a JSON error object all
@@ -1820,6 +2024,7 @@ fetch_board_cards() {
         # signal the envelope does not carry, not a stricter row count.
         data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
         if [[ -z "$data" ]]; then
+            kb_mask_token resp_shown "$token" "$resp"
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 # What the refusal SAVED the caller from differs by page, and saying the
                 # wrong one is a false claim about the board: an unreadable page 1 would
@@ -1832,50 +2037,79 @@ fetch_board_cards() {
                 [[ -z "$query" ]] || { empty_claim="a search that matched nothing"; trunc_claim="a TRUNCATED result set"; }
                 local refused="report it as $empty_claim"
                 [[ "$page" -eq 1 ]] || refused="end the scan on a short page and report $trunc_claim as a complete read"
-                echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp" >&2
+                echo "fetch_board_cards: page $page for board $board returned HTTP $http with no readable card array — refusing rather than $refused: $resp_shown" >&2
             fi
             [[ -n "${KB_LOG_FILE:-}" ]] && \
-                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http UNREADABLE-BODY $resp" >> "$KB_LOG_FILE"
+                echo "$(date -u +%FT%TZ) GET $url_shown HTTP-$http UNREADABLE-BODY $resp_shown" >> "$KB_LOG_FILE"
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
+        # The window check: a keyed page answered with a row at or above its cursor was not
+        # narrowed by the `id<C` token, so it cannot be joined to the pages before it.
+        if [[ -n "$cursor" ]] && ! printf '%s' "$data" | jq -e --argjson c "$cursor" \
+                'all(.[]; (.id | type) == "number" and .id < $c)' >/dev/null 2>&1; then
+            _kb_walk_unkeyable "$page" "$board" "$http" "$url_shown" \
+                "returned rows outside the requested id window (id<$cursor) — the server did not apply the walk's key"
+            return 2
+        fi
         n="$(printf '%s' "$data" | jq 'length' 2>/dev/null)"
-        pages+="$data"$'\n'
-        sum_n=$((sum_n + ${n:-0}))
-        [[ "${n:-0}" -lt 200 ]] && break
-        [[ -n "$last_page" && "$page" -ge "$last_page" ]] && break
-        page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
+            # CAP CONFIRMATION (card#10626 review round 2): this page was fetched ONE PAST
+            # the cap on purpose. A board of EXACTLY page_cap*200 cards ends on a FULL page
+            # at the cap boundary, and a full page cannot say by itself whether the board
+            # ends there or keeps going — stopping on that ambiguity alone narrowed what a
+            # board this tool could read (an exact-boundary board used to pass at rc 0 and
+            # started failing at rc 3). This one extra request answers the question directly:
+            # an EMPTY page means the walk was already complete, so the cap was never really
+            # hit. ANY row here — even fewer than 200 — proves the board holds more than the
+            # cap allows; it is not appended, because the board is already refused as
+            # INCOMPLETE below, and counting a row from past the cap would misstate the
+            # partial read's own size.
+            if [[ "${n:-0}" -eq 0 ]]; then
+                break
+            fi
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2
             printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null
             return 3
         fi
+        pages+="$data"$'\n'
+        sum_n=$((sum_n + ${n:-0}))
+        [[ "${n:-0}" -lt 200 ]] && break
+        # The next cursor: this page's last id, usable only if the page is in strictly
+        # descending id order — otherwise its last row is not its lowest and `id<` it would
+        # skip rows.
+        cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a
+            | if all($a[]; type == "number") and all(range(1; $a | length); $a[. - 1] > $a[.])
+              then $a[-1] else empty end' 2>/dev/null)"
+        if ! kb_is_uint "$cursor"; then
+            _kb_walk_unkeyable "$page" "$board" "$http" "$url_shown" \
+                "is not in strictly descending id order, so its last row cannot key the next request"
+            return 2
+        fi
+        page=$((page + 1))
     done 9>/dev/null
     out="$(printf '%s\n' "$pages" | jq -c -s "$dedup" 2>/dev/null)"
     read_n="$(printf '%s' "$out" | jq 'length' 2>/dev/null)"
+    # The census compares DISTINCT rows against page 1's meta.total, and any shortfall is rc 4.
+    # It used to excuse a shortfall whose pre-dedup row sum reached the total as "duplicates
+    # collapsed (page-boundary shift); read complete" — but the shift that delivers a row twice
+    # is the same shift that skips one, so that verdict was rc 0 over a missing card
+    # (card#10626). The keyed walk cannot deliver a row twice across pages (each page lies
+    # wholly below the last), so a duplicate now means a single page repeated a row, and a
+    # count still cannot say which card it stood in for.
     if kb_is_uint "${total:-}" && kb_is_uint "${read_n:-}" && [[ "$total" -gt "$read_n" ]]; then
-        # Distinguish a REAL undercount from a dedup artifact (card #4338): the
-        # PRE-dedup page sum is the tell. sum_n < total ⇒ pages genuinely delivered
-        # fewer rows than the server claims exist ⇒ emit the partial data and
-        # return the DISTINCT rc 4 so refuse-policy callers (next-dl: an
-        # undercount could re-mint a used DL; kbcard list: never print a
-        # truncated list) can reach it — the warn-then-return-0 shape was a
-        # backstop no caller could consume. sum_n >= total with read_n < total ⇒
-        # the same card arrived on two pages (a page-boundary shift mid-scan) and
-        # dedup collapsed it — the read is complete; warn-only. Residual accepted
-        # risk, documented: a server delivering the SAME page twice would also
-        # read as an artifact — that is a server fault this client-side census
-        # cannot distinguish, and the warn still surfaces the count mismatch.
-        if [[ "$sum_n" -lt "$total" ]]; then
-            # meta.total is the total of what was ASKED FOR, so under a [query] it is the
-            # match count and "board has $total cards" would be a false claim about the board.
-            local census_subject="board has $total cards"
-            [[ -z "$query" ]] || census_subject="the search over board $board matched $total cards"
-            echo "fetch_board_cards: ⚠ $census_subject but pages delivered only $sum_n ($read_n after dedup) — list INCOMPLETE" >&2
-            printf '%s' "$out"
-            return 4
-        fi
-        echo "fetch_board_cards: ⚠ read $read_n distinct of $total — duplicates across pages collapsed (page-boundary shift); read complete" >&2
+        # rc 4, DISTINCT from 2/3, so refuse-policy callers (next-dl: an undercount could
+        # re-mint a used DL; kbcard list: never print a truncated list) can reach it, with the
+        # partial data still emitted for a display caller (card #4338).
+        # meta.total is the total of what was ASKED FOR, so under a [query] it is the match
+        # count and "board has $total cards" would be a false claim about the board.
+        local census_subject="board has $total cards" delivered
+        [[ -z "$query" ]] || census_subject="the search over board $board matched $total cards"
+        delivered="pages delivered only $sum_n ($read_n after dedup)"
+        [[ "$sum_n" -lt "$total" ]] || delivered="pages delivered $sum_n rows, only $read_n of them distinct"
+        echo "fetch_board_cards: ⚠ $census_subject but $delivered — list INCOMPLETE" >&2
+        printf '%s' "$out"
+        return 4
     fi
     printf '%s' "$out"
 }
@@ -2015,6 +2249,30 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
     else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
     end;'
 
+# KB_JQ_PR_URL_REF — THE RULE BY WHICH A pr_url NAMES A PULL REQUEST (agent-webhook-bridge DL-429,
+# whose PrUrlRef this reads as the bridge does). A jq program fragment defining `def pr_url_ref:`: for a
+# string, `{repo, n}` — the repo KB_JQ_REPO_FROM_GH_URL derives (as derived; a caller that compares
+# it canonicalizes it) and the number of the FIRST `/pull/<digits>`, read case-SENSITIVELY and
+# anywhere in the value, as KB_JQ_REF_CANON's `norm` prints it — and null when there is no repo, no
+# such segment, or the number is 0 (the `.../pull/0` placeholder names a repo and no pull request).
+# So `.../PULL/179` names no pull request: promote and the bridge both read it that way, and a
+# third reading here is how a card promote treats as bare used to be accepted as named.
+#
+# ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` carries this
+# def inline (a vendored standalone that must not source this lib); the text here is its text, and
+# `tests/mirror-pair-parity-selftest.sh` § 5b holds the two identical line for line and drives both
+# over one corpus. Edit the standalone's def and this constant together.
+#
+# USAGE — needs `norm` and `repo_from_gh_url` defined before it:
+#     jq -r "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$KB_JQ_PR_URL_REF"'.payload.pr_url | pr_url_ref'
+# ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW (it is a single-quoted shell string).
+KB_JQ_PR_URL_REF='def pr_url_ref:
+    if type != "string" then null
+    else (repo_from_gh_url) as $r
+      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
+      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    end;'
+
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
 # writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
 # card's stored other half would leave the card naming one ref by NUMBER and a different one by
@@ -2026,15 +2284,18 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # pair's NUMBER half as `norm` prints it — the given one for a <side> of `number`, the stored one
 # for `url`. Both callers act on the disposition and neither restates it: `kbcard patch`
 # (_kbc_ref_pair_guard) and `adopt-to-dl`, which must refuse BEFORE it mints a DL rather than have
-# kbcard refuse the stamp after it.
+# kbcard refuse the stamp after it. Whether the card is LEFT holding a pr_number that no pr_url
+# names is a different question, about the resulting state rather than one half against the
+# other, and kb_pr_named_verdict below owns it; an `ok` here says nothing about it.
 #
 # THE URL — stored or given — NAMES the repo KB_JQ_REPO_FROM_GH_URL derives, which is the promote
 # side's own def (the constant's header says how the two are held together), and <url-repo> is
 # always that repo. That repo is what ATTRIBUTES the card only where no `payload.repo` outranks
 # it: a `payload.repo` that is a string containing `/` wins over every URL (`docs/INSTALL.md` §4
-# states the whole derivation), so EVERY consequence this header draws from <url-repo> below —
-# who the card is attributed to, what a release there would promote — is the URL case and not a
-# universal. The verdicts do not turn on it (the pair diverges either way), which is why nothing
+# states the whole derivation), so the ATTRIBUTION this header draws from <url-repo> below is the
+# URL case and not a universal. What a release promotes is not drawn from it at all: the PR side
+# of promote matches on the number the pr_url names (payload.repo and a bare pr_number no longer
+# promote). The verdicts do not turn on it (the pair diverges either way), which is why nothing
 # here asks the question and why a caller's MESSAGE states the divergence and not the consequence
 # (card#9918). Its NUMBER is read from a `pull` or `issues` segment — the only two of promote's
 # segments that carry one; GitHub numbers issues and pull requests in ONE
@@ -2067,12 +2328,15 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # with no digits, or a number read out of a different repo's URL), under a real number on the
 # other side: the card would name that number while its URL names none (operator ruling "a",
 # card#9846, for both sides). The mis-promotion that ruling was argued from is NARROWER than the
-# verdict — promote correlates on `pr_number` and reads no issue key at all (card#9935), and only
-# where no `payload.repo` outranks the URL — which is why the verdict, not the consequence, is
-# what this function answers. The `-given` kinds are why the placeholder is exempt only where it
+# verdict — promote correlates a PR by the (repo, number) its `pr_url` names, never through
+# `payload.repo` (agent-webhook-bridge DL-429), and reads no issue key at all (card#9935) — which
+# is why the verdict, not the consequence, is what this function answers. The `-given` kinds are why the placeholder is exempt only where it
 # is STORED: given, it says "no ref yet" about a card whose number names one, and moves the
 # card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
 # card#9846).
+#
+# ⚠ For the pr pair this number reading differs from KB_JQ_PR_URL_REF (case-insensitive, anchored
+# after the repo); it only over-refuses, since kb_pr_named_verdict holds every pr write to that rule.
 #
 # ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> are what the parse DERIVED from the path
 # after `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
@@ -2097,6 +2361,82 @@ kb_ref_pair_verdicts() {
                 elif ($c.n | test("\\A0+\\z")) then ["refuse", "placeholder-given", "0", $repo, ($x.n | norm)]
                 else ["refuse", "diff", ($c.n | norm), $repo, ($x.n | norm)] end
             end) | @tsv' <<<"$1"
+}
+
+# kb_pr_named_verdict <stored-payload-json> <write-payload-json>: THE ONE DEFINITION of whether a
+# payload write leaves the card naming a pull request by a NUMBER that no pr_url names
+# (agent-webhook-bridge DL-429). A PR number is a per-repo counter, and a repo moved to a new
+# GitHub org restarts at #1, so a card names a pull request only through a pr_url naming its repo
+# AND that number; the bridge neither reconciles nor promotes a card holding a bare pr_number.
+# The question is asked of the card's RESULTING state, before any request is sent — never of which
+# flags carried the write: each key the write carries replaces the stored one (the board's per-key
+# payload merge, where a JSON null DELETES the key) and each key it omits keeps the stored value.
+# <stored-payload-json> is the card's stored `payload` (`{}` for a card the write creates), or the
+# JSON `null` when the caller has not read the card; a write whose result then depends on the
+# stored payload answers `need-card`, and the caller reads the card and asks again.
+#
+# A write carrying NEITHER pr_number NOR pr_url answers `ok untouched` without looking at the
+# stored payload: a card that is already bare stays writable by every edit that does not touch
+# the pair, and a write that touches either key must leave the card valid.
+#
+# Prints ONE TSV line; a field with no value is `-` (`read` collapses adjacent tabs):
+#     <disposition> <kind> <number> <number-src> <url-number> <url-repo> <url-src>
+# <disposition>: ok (write), need-card (ask again with the stored payload), refuse (write
+# nothing). <number> is the resulting pr_number as KB_JQ_REF_CANON's `norm` prints it;
+# <number-src> / <url-src> say where each resulting half comes from: `given` (this write sets it),
+# `cleared` (this write nulls it), `stored` (the write leaves it). <url-number> / <url-repo> are
+# what the parse DERIVED — KB_JQ_REPO_FROM_GH_URL's repo, and the number KB_JQ_PR_URL_REF reads (or,
+# where it reads none, the first pull/issues number in any case, for the message only).
+#
+# WHETHER THE URL NAMES THE NUMBER IS KB_JQ_PR_URL_REF's ANSWER AND NOTHING ELSE: `named` exactly
+# when pr_url_ref yields the resulting number. The other kinds only say WHY it does not, for the
+# message, and never turn a refusal into a write.
+#
+# THE KINDS. ok: `untouched` (above); `no-number` — the resulting pr_number is absent, null,
+# blank, or names no positive number (`norm` reads none, or 0), so there is no pull request for a
+# URL to name — any mismatch with such a value is kb_ref_pair_verdicts' question, not this one;
+# `named` — pr_url_ref reads that same number from the resulting pr_url. refuse: `none` — no
+# resulting pr_url (absent, null, blank); `other-pr` — pr_url_ref reads a DIFFERENT number;
+# `unparsed` — a value yielding no repo at all (not a GitHub URL, not a string); `placeholder` — the
+# pre-PR placeholder `…/pull/0` / `…/issues/0` (any zero spelling), which says "no PR yet";
+# `issue-url` — an `…/issues/<M>` URL, which names an issue, since only a `pull` segment names a
+# pull request; `pull-case` — a `…/PULL/<M>` (any spelling but lower-case), which pr_url_ref, like
+# promote and the bridge, does not read as a pull request; `unnumbered` — a GitHub URL yielding a
+# repo but no pull/issues number in it (commit/tree/blob, a segment with no digits).
+#
+# ⛔ NOTHING HERE PRINTS A URL (kb_ref_pair_verdicts' rule, for its reason): only derived fields.
+kb_pr_named_verdict() {
+    jq -rn --argjson s "$1" --argjson w "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$KB_JQ_PR_URL_REF"'
+        def blank: . == null or (type == "string" and test("\\A\\s*\\z"));
+        def num: if blank then "" else norm end;
+        ($w | if type == "object" then . else {} end) as $w
+        | def src($k): if ($w | has($k)) | not then "stored" elif $w[$k] == null then "cleared" else "given" end;
+        if ($w | has("pr_number") or has("pr_url")) | not then ["ok", "untouched", "-", "-", "-", "-", "-"]
+        elif $s == null and ((($w | has("pr_number"))
+                              and (($w | has("pr_url")) or ($w.pr_number | num | . == "" or . == "0"))) | not)
+          then ["need-card", "-", "-", "-", "-", "-", "-"]
+        else
+          (($s // {}) | if type == "object" then . else {} end) + $w
+          | (.pr_number | num) as $n
+          | if $n == "" or $n == "0" then ["ok", "no-number", ($n | if . == "" then "-" else . end), src("pr_number"), "-", "-", src("pr_url")]
+            else
+              (.pr_url | if blank then null else . end) as $u
+              | ($u | repo_from_gh_url) as $repo
+              | ($u | pr_url_ref) as $ref
+              | (if $ref != null or $repo == null then null
+                 else [$u | capture("/(?<seg>pull|issues)/(?<n>[0-9]+)"; "i")][0] end) as $m
+              | (if $ref != null then $ref.n elif $m == null then "-" else $m.n | norm end) as $un
+              | (if $u == null then "none"
+                 elif $ref != null then (if $ref.n == $n then "named" else "other-pr" end)
+                 elif $repo == null then "unparsed"
+                 elif $m == null then "unnumbered"
+                 elif $un == "0" then "placeholder"
+                 elif ($m.seg | test("\\Aissues\\z"; "i")) then "issue-url"
+                 else "pull-case" end) as $k
+              | [(if $k == "named" then "ok" else "refuse" end), $k, $n, src("pr_number"),
+                 $un, ($repo // "-"), src("pr_url")]
+            end
+        end | @tsv'
 }
 
 # KB_RC_BYREF_UNREADABLE — the rc kb_by_ref_hit returns when the response could not be read as

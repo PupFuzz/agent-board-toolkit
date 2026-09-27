@@ -115,7 +115,7 @@
 # to every reader of this body (card#8538).
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.37.0'
+ABTK_TOOL_VERSION='0.38.0'
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
 
@@ -694,7 +694,7 @@ card_coverage_report() {
   fi
   if [ -n "$stranded" ]; then
     coverage_line "⚠ **Shipped refs whose card carries no by-ref source:** $stranded"
-    coverage_line "**Do not create a card for these — the card already exists** and carries the ref. What it lacks is a repo-qualified source, so a repo-qualified promote (\`.promote.source\` set to an \`<owner>/<repo>\`) cannot tell whose card it is and will NOT move it. Stamp the card that is there — \`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>\` — or promote it by hand after merge."
+    coverage_line "**Do not create a card for these — the card already exists** and carries the ref. What it lacks is a repo-qualified source, so a repo-qualified promote (\`.promote.source\` set to an \`<owner>/<repo>\`) cannot tell whose card it is and will NOT move it. Stamp the card that is there — \`kbcard patch --pr-url https://github.com/<owner>/<repo>/pull/<N>\` — or promote it by hand after merge. A ref noted \`already in the released stage\` names a card that is already there — nothing to move."
     said=1
   fi
   if [ "$said" = 0 ]; then

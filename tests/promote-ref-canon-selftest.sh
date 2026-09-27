@@ -265,12 +265,16 @@ moved() { has_line "https://kanban.test/api/v3/tasks/$1.json" "$patched"; }
 run_prc() { : > "$PATCH_LOG"; rc=0; out="$("$PRC" --config "$TMP/release-pr.json" "$@" 2>"$TMP/err")" || rc=$?
             err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; }
 
-echo "== end to end, pr_number: PR 15 ships; only the cards that genuinely NAME 15 move =="
+echo "== end to end, pr_number: PR 15 ships; only the cards that genuinely NAME 15 are read as 15 =="
 # Cards 1-3 hold values whose digit runs CONCATENATE to 15 — three different spellings of the
 # defect, all of which the pre-fix reader PATCHed onto this release. Cards 4-7 are the controls:
 # four spellings that genuinely name PR 15, including the JSON-number form and a zero-padded one.
 # Card 8 names a different PR and must be untouched either way, which is what separates "the
 # guard works" from "the run matched nothing at all".
+# ⚠ A BARE pr_number PROMOTES NOTHING ANY MORE (the PR leg is (repo, number) — see
+# promote-source-qualify-selftest § 8), so what this reader now decides is which cards are NAMED
+# as having matched on the number alone: 4-7 are, 1-3 and 8 are not. Card 9 carries the number in
+# the place that does promote — its PR URL, zero-padded, so the same canon is held on that side.
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[
   {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"1.5"}},
@@ -280,8 +284,9 @@ cat > "$BOARD_FILE" <<'JSON'
   {"id":5,"workflow_stage_id":51,"payload":{"pr_number":15}},
   {"id":6,"workflow_stage_id":51,"payload":{"pr_number":"#015"}},
   {"id":7,"workflow_stage_id":51,"payload":{"pr_number":"PR-15"}},
-  {"id":8,"workflow_stage_id":51,"payload":{"pr_number":"99"}}
-],"meta":{"last_page":1,"total":8}}
+  {"id":8,"workflow_stage_id":51,"payload":{"pr_number":"99"}},
+  {"id":9,"workflow_stage_id":51,"payload":{"pr_url":"https://github.com/acme/widget/pull/015"}}
+],"meta":{"last_page":1,"total":9}}
 JSON
 # The PR leg has no flag: shipped PR numbers are derived from the trailing `(#NNN)` squash marker
 # in `git log <base>..<head>`. The tip is a MERGE commit so the completeness die (which fires on
@@ -296,19 +301,24 @@ git -C "$GITDIR" -c user.email=t@t -c user.name=t checkout -q main
 git -C "$GITDIR" -c user.email=t@t -c user.name=t merge -q --no-ff feat -m "Merge feat"
 
 run_prc_git() { : > "$PATCH_LOG"; rc=0
-                out="$(cd "$GITDIR" && GITHUB_ACTIONS=1 "$PRC" --config "$TMP/release-pr.json" "$@" 2>"$TMP/err")" || rc=$?
+                out="$(cd "$GITDIR" && GITHUB_ACTIONS=1 GITHUB_REPOSITORY=acme/widget "$PRC" --config "$TMP/release-pr.json" "$@" 2>"$TMP/err")" || rc=$?
                 err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"; }
 run_prc_git
 eq "the derive run succeeds"                                  "0"     "$rc"
 eq "'1.5' is NOT promoted onto PR 15"                         "false" "$(moved 1)"
 eq "'1,5' is NOT promoted onto PR 15"                         "false" "$(moved 2)"
 eq "'PR 1 of 5' is NOT promoted onto PR 15"                   "false" "$(moved 3)"
-eq "control: '15' IS promoted"                                "true"  "$(moved 4)"
-eq "control: a JSON-NUMBER 15 IS promoted"                    "true"  "$(moved 5)"
-eq "control: '#015' IS promoted (decoration + leading zero)"  "true"  "$(moved 6)"
-eq "control: 'PR-15' IS promoted"                             "true"  "$(moved 7)"
-eq "control: an unrelated PR 99 stays put"                    "false" "$(moved 8)"
-eq "the summary counts exactly the four real matches"         "true"  "$(has '4 moved,' "$out")"
+eq "'1.5' is not even NAMED as matching 15"                   "false" "$(has '(#1):' "$err")"
+eq "'1,5' is not NAMED"                                       "false" "$(has '(#2):' "$err")"
+eq "'PR 1 of 5' is not NAMED"                                 "false" "$(has '(#3):' "$err")"
+eq "control: '15' IS read as 15 (named, not promoted)"        "true"  "$(has '#15 (#4): pr_number 15 names no repo' "$err")"
+eq "control: a JSON-NUMBER 15 IS read as 15"                  "true"  "$(has '#15 (#5): pr_number 15 names no repo' "$err")"
+eq "control: '#015' IS read as 15 (decoration + leading zero)" "true" "$(has '#15 (#6): pr_number 15 names no repo' "$err")"
+eq "control: 'PR-15' IS read as 15"                           "true"  "$(has '#15 (#7): pr_number 15 names no repo' "$err")"
+eq "…and none of the bare-number cards is promoted"           "falsefalsefalsefalse" "$(moved 4)$(moved 5)$(moved 6)$(moved 7)"
+eq "control: an unrelated PR 99 stays put, unnamed"           "false" "$(has '(#8):' "$err")"
+eq "control: .../pull/015 IS promoted by PR 15"      "true"  "$(moved 9)"
+eq "the summary counts one move and the four named cards"     "true"  "$(has '1 moved, 0 already-released, 4 pr-unqualified,' "$out")"
 
 echo "== end to end, dl_number: a multi-run stamp is not silently correlated, and is REPORTED =="
 # The DL leg of the same def, driven by an explicit --dls set (no git range needed). It also

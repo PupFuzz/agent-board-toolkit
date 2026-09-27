@@ -157,10 +157,13 @@ export KANBAN_SNAPSHOT_BOARDS="$HOME/.kanban-snapshot-boards"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agent-board-toolkit-runtime-check"
 chmod +x "$TMP/bin/agent-board-toolkit-runtime-check"
 
-# One in-progress, untriaged card; a 200-row page for the cap scenario.
+# One in-progress, untriaged card; a 200-row page for the cap scenario. Ids DESCEND, as the
+# server's do: the walk keys its confirming request past the cap on the last row of this page
+# (card#10626 review round 2), and needs a valid cursor to reach the cap AT ALL, not only to
+# continue past it.
 export KB_STUB_PRELOAD='{"data":{"workflows":[{"stages":[{"id":84,"name":"In Progress"}]}]}}'
 KB_STUB_ONE="$(jq -cn '{data:[{id:101,workflow_stage_id:84,name:"card one",tags:[]}],meta:{total:1,last_page:1}}')"
-KB_STUB_FULLPAGE="$(jq -cn '{data:[range(101;301)|{id:.,workflow_stage_id:84,name:"card \(.)",tags:[]}],meta:{total:400,last_page:2}}')"
+KB_STUB_FULLPAGE="$(jq -cn '{data:[range(300;100;-1)|{id:.,workflow_stage_id:84,name:"card \(.)",tags:[]}],meta:{total:400,last_page:2}}')"
 KB_STUB_SHORT="$(jq -cn '{data:[range(101;103)|{id:.,workflow_stage_id:84,name:"card \(.)",tags:[]}],meta:{total:5,last_page:1}}')"
 export KB_STUB_ONE KB_STUB_FULLPAGE KB_STUB_SHORT
 # Scenario switching is by exported variable — the stub is a fresh process per request.
@@ -171,7 +174,15 @@ kb_stub_route() {
         *tasks/search.json*)
             case "$KB_STUB_SCENARIO" in
                 complete) printf '200\n%s\n' "$KB_STUB_ONE" ;;
-                cap)      printf '200\n%s\n' "$KB_STUB_FULLPAGE" ;;
+                # The "cap" scenario is a board GENUINELY bigger than the cap: the confirming
+                # request the walk now issues past the cap (card#10626 review round 2) must
+                # answer NON-EMPTY, below the first page's cursor, or the cap violation this
+                # scenario exists to exercise never fires.
+                cap)      if [[ "$url" == *id%3C* ]]; then
+                              printf '200\n%s\n' '{"data":[{"id":100,"workflow_stage_id":84,"name":"card 100","tags":[]}]}'
+                          else
+                              printf '200\n%s\n' "$KB_STUB_FULLPAGE"
+                          fi ;;
                 short)    printf '200\n%s\n' "$KB_STUB_SHORT" ;;
                 dead)     printf '500\n%s\n' '{"error":"boom"}' ;;
             esac ;;

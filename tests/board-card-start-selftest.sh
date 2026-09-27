@@ -982,7 +982,7 @@ if command -v git >/dev/null 2>&1; then
 
     # KB_STUB_TAGS is the card's `tags` value, spliced raw so a leg can hand it a non-list.
     # KB_STUB_TAGS_PATCH answers a PATCH carrying `tags` with that status; KB_STUB_MOVE refuses the
-    # stage-only move.
+    # stage-only move, with KB_STUB_MOVE_BODY as its body when set.
     # THE CARD IS STATEFUL, because the mover now reports from a READ-BACK (card#10029): a GET of
     # 4242 answers the stage and payload.dl_number the request log says were PATCHed — unless
     # KB_STUB_MOVE_NOOP / KB_STUB_STAMP_NOOP make that write a 2xx the board did not apply (the
@@ -1019,7 +1019,8 @@ if command -v git >/dev/null 2>&1; then
                 if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
                     printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
                 elif [[ -n "${KB_STUB_MOVE:-}" ]]; then
-                    printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
+                    local refused='{"message":"refused"}'
+                    printf '%s\n%s' "$KB_STUB_MOVE" "${KB_STUB_MOVE_BODY:-$refused}"
                 else
                     printf '200\n{"data":{"id":4242}}'
                 fi ;;
@@ -1062,6 +1063,21 @@ if command -v git >/dev/null 2>&1; then
     KB_STUB_MOVE=403 KB_STUB_TAGS='["fr"]' _own_run builder
     eq "a refused move: no owner tag is written for it"  "$_move" "$_obody"
     eq "a refused move: …and the card is not re-read for one" "1" "$(kb_stub_count GET /tasks/4242.json)"
+
+    # ⭐ A REFUSED MOVE SAYS WHY (card#9777). The move is the lib's kb_stage_write, so the durable
+    # log — the only surface the installed hook has — carries the status AND the server's own
+    # explanation, with the bearer token masked; it used to carry `(HTTP 422)` and nothing else.
+    # The body is made up (branch A's real refusal is unpublished); what is proven is the render.
+    _otok="$(cat "$KB_STUB_TOKEN_FILE")"
+    KB_STUB_MOVE=422 KB_STUB_MOVE_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $_otok\"}}" \
+        KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "a refused move (422): rc 0 — fail-soft"          "0" "$_rc"
+    eq "a refused move (422): the durable log names method, path, status and the server's words" "true" \
+       "$(has 'In Progress move failed (HTTP 422) — board-card-start: PATCH /tasks/4242.json answered HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$_ologtxt")"
+    eq "a refused move (422): the bearer token is in NEITHER the log nor the output" "false|false" \
+       "$(has "$_otok" "$_ologtxt")|$(has "$_otok" "$_out")"
+    eq "a refused move (422): no owner tag is written for it" "$_move" "$_obody"
+    unset _otok
 
     # ⭐ THE READ-BACK (card#10029). The move answered 2xx in every leg below; what the seat is TOLD
     # must come from a re-read of the card, and only a CONFIRMED move gets an owner tag.
@@ -1217,6 +1233,19 @@ if command -v git >/dev/null 2>&1; then
        "$(has 'kb_confirm_card is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
     eq "⭐ stale lib: and it never claims an UNVERIFIED write it did not make" "false" \
        "$(has 'UNVERIFIED' "$_ologtxt")"
+    # ⭐ THE SAME FOR THE WRITE ITSELF (card#9777). Beside a lib without kb_stage_write every write
+    # answered rc 127, and the log said `move failed (HTTP ?) — …: kb_stage_write: command not
+    # found` (measured on the pre-fix hook) — a move failure naming neither the lib nor the fix.
+    _stalelib stalesw 's/^kb_stage_write()/_removed_kb_stage_write()/'
+    eq "stale-lib fixture: the copy under test does NOT define kb_stage_write" "0" \
+       "$(command grep -c '^kb_stage_write()' "$TMP/stalesw/_kb-board-lib.sh" || true)"
+    KB_STUB_TAGS='["fr"]' _stalerun stalesw
+    eq "⭐ lib without kb_stage_write: rc 0 — never blocks a checkout" "0" "$_rc"
+    eq "⭐ lib without kb_stage_write: NOTHING is written" "" "$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ lib without kb_stage_write: the log names the function and the fix" "true" \
+       "$(has 'kb_stage_write is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
+    eq "⭐ lib without kb_stage_write: and no move-failure line, no bare 127" "false|false" \
+       "$(has 'move failed' "$_out$_ologtxt")|$(has 'command not found' "$_out$_ologtxt")"
     unset -f _stalelib _stalerun
 
     unset -f _own_run kb_stub_route

@@ -646,8 +646,9 @@ finding with no owner is abandoned, not filed.
   not the two instances.** The entry above pins the mirrored *functions*; neither instance below
   was a mirrored function, and that is the whole point.
   **Instance 1 — the needle.** `_rc_digest` defines what "the same credential" MEANS: the file's
-  content **as its readers see it**, i.e. with trailing newlines stripped, because every reader
-  takes a token through `$(cat …)`. `tests/token-duplication-selftest.sh` re-spelled that rule as
+  content **as its readers see it** — at the time, trailing newlines stripped, because every
+  reader took a token through `$(cat …)`; since card#9777 trailing whitespace, because every reader
+  takes it through the lib's `kb_token_file_read`. `tests/token-duplication-selftest.sh` re-spelled that rule as
   `printf '%s\n' "$FAKE" | sha256sum` to build the needle its canon #20 absence assertions search
   the tool's whole output for. When R2 corrected the definition in the bin, the copy in the test
   stayed on RAW BYTES — so both absence rows searched for a string the tool **cannot emit on any
@@ -914,14 +915,21 @@ finding with no owner is abandoned, not filed.
   changes nothing a caller can see **only if** each default is preserved exactly, and that is a
   per-site judgement rather than a sweep.
 - **`fetch_board_cards`'s internal body parses — and its co-vendored MIRROR's** (card#6426) — the
-  lib's own paginator reads `meta.last_page`, `meta.total`, `.data`, and the page/dedup lengths
-  straight off each response with `jq … 2>/dev/null`, i.e. the primitive's shape written inline in
-  the file that now defines the primitive. Derived rather than recalled — **seven** `jq` invocations
-  inside `fetch_board_cards`, **all seven** carrying `2>/dev/null`. Re-derive rather than trust that
-  figure — the non-comment `jq ` lines of the function body, anchored on the function name so the
-  recipe survives every edit around it:
+  lib's own paginator reads `meta.total`, `.data`, and the page/dedup lengths straight off each
+  response with `jq … 2>/dev/null`, i.e. the primitive's shape written inline in the file that now
+  defines the primitive. Derived rather than recalled, and stated as a PROPERTY rather than a
+  count, because a count here is a restatement that the next edit to the function outdates without
+  saying so (card#10626 review round 2 corrected one that already had — the function gained two
+  `jq` calls and lost one between when this entry's "seven" was written and when it was checked
+  again): every `jq` invocation inside `fetch_board_cards` discards jq's own stderr. Re-derive
+  rather than trust that claim — a `jq` call's own redirect can sit on a continuation line (a
+  trailing `\`, or a `'…'` string left open across lines), so the recipe below prints each whole
+  statement, not just the line the `jq` keyword happens to be on, and is anchored on the function
+  name so it survives every edit around it:
 
-      awk '/^fetch_board_cards\(\)/{f=1} f&&/jq /&&$0!~/^ *#/{print} f&&/^}/{exit}' bin/_kb-board-lib.sh
+      awk '/^fetch_board_cards\(\)/{f=1} f{print} f&&/^}/{exit}' bin/_kb-board-lib.sh | grep -v '^ *#' | grep -A2 'jq '
+
+  Read the discard on each printed block, not how many blocks there are.
 
   This entry said "five" when it was first written, and that number had never been derived from the
   file. Left alone for a reason worth recording: `2>/dev/null` there suppresses the message but not
@@ -972,14 +980,23 @@ finding with no owner is abandoned, not filed.
   excludes the mirror, and the mirror is the bigger half.** `bin/promote-released-cards` is the
   standalone that must never source the lib (the lib header says so, and `fetch_whole_board`'s own
   comment names itself the deliberate co-vendored port of `fetch_board_cards`). It carries the
-  **same shape again, seven more times** — the same recipe with `fetch_whole_board` as the anchor —
-  of which only the `meta.last_page` and `meta.total` reads
-  carry `2>/dev/null`, so **five parse a response body raw**, under `set -euo pipefail`, in a tool
-  that PATCHes cards. (The review that surfaced this said "6 sites, two without `2>/dev/null`"; the
-  derived figures are seven and five — the accumulator `jq -c -s 'add'` was not in the reviewer's
-  list.) Any future audit of this shape whose predicate is lib-sourcing will miss all seven; the
-  predicate has to be "reads a kanban response body", which is a grep of the files, not of the
-  source graph.
+  same shape again — the same recipe with `fetch_whole_board` as the anchor, and the same
+  bare-count mistake the lib half above already made once (card#10626 review round 2 fixed that
+  one; this is its mirror, found by the same reviewer one round later). Re-derive rather than
+  trust a count:
+
+      awk '/^fetch_whole_board\(\)/{f=1} f{print} f&&/^}/{exit}' bin/promote-released-cards | grep -v '^ *#' | grep -A2 'jq '
+
+  Most of this function's parses are RAW, under `set -euo pipefail`, in a tool that PATCHes
+  cards — read which ones discard jq's own stderr off the recipe's output, not off a number
+  written here: at this head that is the `meta.total` read, the id-window check and the cursor
+  derivation; every other parse (the envelope read, the row count, the per-page accumulator, the
+  post-loop dedup and its re-count) does not. (The review that first surfaced this said "6 sites,
+  two without `2>/dev/null`"; the count derived then was seven invocations, five of them raw — a
+  figure this same card has since moved twice, which is the whole argument for not writing it down
+  again.) Any future audit of this shape whose predicate is lib-sourcing will miss every one of
+  them; the predicate has to be "reads a kanban response body", which is a grep of the files, not
+  of the source graph.
 
   **The two implementations of this one behaviour disagreed on the safety branch — CLOSED.** The
   mirror refuses a page-1 read that returns zero cards — `fetch_whole_board` `die`s with *"board N
@@ -1044,10 +1061,29 @@ finding with no owner is abandoned, not filed.
 
   | paging loop | key | instance of this shape? |
   | --- | --- | --- |
-  | `bin/_kb-board-lib.sh` `fetch_board_cards` | `page=N` | **yes — FIXED here** |
-  | `bin/promote-released-cards` `fetch_whole_board` | `page=N` | **yes — FIXED here** |
+  | `bin/_kb-board-lib.sh` `fetch_board_cards` | `id<C` (keyset since card#10626) | **yes — FIXED here** |
+  | `bin/promote-released-cards` `fetch_whole_board` | `id<C` (keyset since card#10626) | **yes — FIXED here** |
   | `bin/board-stats` `_bs_window_rows` | `before=<cursor>` | **yes — FIXED, see below** |
   | `bin/_dependabot-reconcile.py` `gh_alerts` | `gh api --paginate` | **no** — paging is delegated to `gh`, and a body that is not a JSON array raises `InstrumentError` rather than reading as an exhausted population. Disposed by checking, not by absence of symptoms. |
+  | `bin/card-completeness` `fetch_pages` | `page=N` (GitHub `pulls?state=open`, called at `:395`) | **no** — an unreadable body (no JSON array where one was expected) is refused at the tool's own error (`bin/card-completeness:343-346`, "returned a body with no JSON array where one was expected"), never read as an exhausted population. Card#6630's shape — THIS table's question — does not reach it. |
+
+  **This fifth row is a doc-sync correction, not a re-audit of the closure above**:
+  `fetch_pages` arrived in 1b301f3 (#388, 2026-09-23), after the table's own derivation at
+  88d9a4e (#254, 2026-08-17) — so "That yields **4**" was accurate when written and is not a
+  live count of the tree today. The card#6630 closure itself is untouched: it was never about
+  this loop, which did not exist yet.
+
+  **A DIFFERENT shape is live in this same loop, and belongs here rather than in the table
+  above, because the table's own question is card#6630's, not this one.** `fetch_pages` walks a
+  GitHub list by `page=N` over a set whose membership changes mid-walk: a PR that closes or
+  merges between two page requests shifts every later row back one place, dropping the first
+  open PR of the next page — the offset-displacement shape card#10626 fixes in this tree's two
+  card paginators, not card#6630's unreadable-envelope shape above. GitHub's list endpoint has
+  no `id<`-style structured filter for it to key on the way the two fixed copies now do.
+  **UNREACHABLE TODAY**: no workflow in this fleet passes `--require-complete` to
+  `promote-released-cards`, and `fetch_pages` runs only when that flag is set — so this is a
+  latent defect, not a live one. Recorded on card#10626 review round 1, comment 6861; not fixed
+  here, and not this card's to fix.
 
   `bin/install-board-hooks`'s `_ibh_symlink_probe` uses a `while :`/`break` block and issues no
   request at all; it is not in this population.
@@ -1148,15 +1184,16 @@ finding with no owner is abandoned, not filed.
   pass prints carries a `≥` and each of its two sections carries a `card list INCOMPLETE (fetch
   rc=$rc)` note.
 
-  The scoping clause is load-bearing rather than a hedge: three shapes still reach the renderer at
+  The scoping clause is load-bearing rather than a hedge: these shapes still reach the renderer at
   **rc 0** and are rendered as confident totals — a server that omits `meta.total` (no census to
-  run), a page delivered twice and scored as a dedup artifact, and a board the token cannot see
-  answering the same well-formed empty envelope as an empty board. All three are named as accepted
-  residuals in `fetch_board_cards`' own body — two under the words *"Residual, accepted"* (the
-  token-visibility envelope at the parse refusal, the duplicate page at the census) and the third
-  stated in the card#6630 paragraph, which names an omitted `meta.total` as the case the census
-  cannot speak for. All three are upstream of every renderer, and none is closable by a stricter
-  row count — the token-visibility one needs a membership signal the envelope does not carry. A marker
+  run), and a board the token cannot see answering the same well-formed empty envelope as an empty
+  board. Each is named as an accepted residual in `fetch_board_cards`' own body — the
+  token-visibility envelope under the words *"Residual, accepted"* at the parse refusal, and the
+  omitted `meta.total` in the card#6630 paragraph as the case the census cannot speak for. Both
+  are upstream of every renderer, and neither is closable by a stricter row count — the
+  token-visibility one needs a membership signal the envelope does not carry. (A page delivered
+  twice and scored by the census as a dedup artifact was a member of this list until card#10626:
+  the walk is now keyed on id and the census no longer excuses a duplicate, so it is rc 4.) A marker
   driven off `$rc` cannot see any of them, so what the renderer now guarantees is *"a read the
   paginator flagged is never rendered as whole"*, not *"a rendered count is whole"*.
 
