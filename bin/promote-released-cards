@@ -949,8 +949,33 @@ if [ "$SOURCE" = '*' ]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi
 # below, once the shipped PR set is known and before the board is read.
 if [ -n "$QUALIFY_SRC" ]; then PR_REPO="$QUALIFY_SRC"; else PR_REPO="$GH_REPO"; fi
 
-TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
-[ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
+RAW_TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
+# TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED — the same set the lib's
+# kb_token_file_read strips, and for the same reason (card#9777): the Authorization header
+# api() builds below goes through `$(printf …)`, which drops a trailing LF, and curl drops a
+# trailing CR from a header line, so an unstripped secret ending in either reaches the wire
+# without it. resp_detail's mask compares the LITERAL $TOKEN against the body, so with TOKEN
+# left raw a header-echoing server hands back the wire value and the mask's longer literal
+# does not match it — MEASURED: a token ending in \n or \r echoed back unmasked as
+# `Bearer <token>` in this run's stderr, which on a release run is the Actions job log. This
+# bin may not source the lib (docs/CONSOLIDATION-PLAN.md § Stage D), so the rule is duplicated
+# here rather than shared, driven against the lib's copy by
+# tests/mirror-pair-parity-selftest.sh § 8. Stripping ONCE, here, means every later use of
+# $TOKEN — the header and the mask both — sees the same value the wire does.
+TOKEN="${RAW_TOKEN%"${RAW_TOKEN##*[!$' \t\n\r\v\f']}"}"
+# ⚠ Read the RAW value's own emptiness to pick the message, not TOKEN's — a secret that IS set,
+# to nothing but whitespace, used to send an empty bearer and would otherwise die claiming it is
+# "not set", which is false of it (card#9777 r3 review): $KANBAN_WRITEBACK_TOKEN was set. Before
+# this cut it just wasn't a NEW acceptance change (an empty bearer was already sent, unmasked
+# LITERALLY nowhere since there was nothing to mask) — narrowed to a refusal here alongside the
+# strip, so record it as one (docs/CHANGELOG.md, in #415's style).
+if [ -z "$TOKEN" ]; then
+    if [ -z "$RAW_TOKEN" ]; then
+        die "KANBAN_WRITEBACK_TOKEN is not set"
+    else
+        die "KANBAN_WRITEBACK_TOKEN is set but is empty or whitespace-only"
+    fi
+fi
 API="${API%/}"
 
 # Fail-closed host guard on the RESOLVED api_base BEFORE any token is sent — one call, on

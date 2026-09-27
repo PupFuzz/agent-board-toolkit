@@ -1747,7 +1747,7 @@ cmd_create_card() {
     # `patch`, so the caller sees the lane the server actually recorded (the whole point
     # of birthing the card on a lane) without changing every other create's echo shape.
     local resp out
-    resp="$(kb_api POST "/tasks.json" "$body")" || return 1
+    resp="$(kb_stage_write POST "/tasks.json" "$body")" || return 1
     out="$(_kbc_write_echo create-card "on board $KB_BOARD_ID" "$resp" \
         "${swimlane:+swimlane_id: (.swimlane_id // null)}" "$stage")" || return $?
     printf '%s\n' "$out"
@@ -1794,6 +1794,9 @@ _kbc_terminal_column() {
 #   command substitution the caller captures the response with — where the caller can no longer
 #   read it. This function runs in that same subshell, so it can.
 #
+#   THE WRITE IS THE LIB'S kb_stage_write, which renders a refusal as the status plus the server's
+#   own token-masked explanation (card#9777); _kbc_write_fault then adds the install diagnosis.
+#
 # Response on stdout, kb_api's rc returned unchanged, so both callers' existing arms are intact.
 _kbc_stage_patch() {
     local verb="$1" task="$2" column="$3" body="$4" rc=0
@@ -1805,7 +1808,7 @@ _kbc_stage_patch() {
             echo "kbcard: cleared the card's assignment (assigned_user_id) — $column is a terminal column and a finished card holds nobody's claim" >&2
         fi
     fi
-    kb_api PATCH "/tasks/$task.json" "$body" || {
+    kb_stage_write PATCH "/tasks/$task.json" "$body" || {
         rc=$?
         _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
         return "$rc"
@@ -2673,7 +2676,7 @@ cmd_move_board() {
     fi
 
     local prc=0 lead="the POST answered 2xx"
-    kb_api POST "/tasks/$task/move-board.json" "$body" >/dev/null || prc=$?
+    kb_stage_write POST "/tasks/$task/move-board.json" "$body" >/dev/null || prc=$?
     if [[ "$prc" -eq "$KB_API_RC_TRANSPORT" ]]; then
         lead="the POST did not complete (no HTTP status came back)"
     elif [[ "$prc" -ne 0 && "${KB_HTTP:-}" == 5* ]]; then
@@ -3470,6 +3473,9 @@ cmd_unlink() {
     # unguarded `${del#*\n}` yields the STATUS and would be quoted back as the server's
     # own message. A 204 and a policy 403 both routinely carry no body at all.
     [[ "$del" == *$'\n'* ]] && errbody="${del#*$'\n'}"
+    # Quoted to stderr below, so masked first (card#9777): the DELETE sent $KB_TOKEN in its
+    # Authorization header, and a server echoing request headers hands it back in this body.
+    kb_mask_token errbody "${KB_TOKEN:-}" "$errbody"
     case "$http" in
         2*) : ;;
         000) echo "kbcard: unlink: the DELETE of link $link_id DID NOT COMPLETE — no HTTP status came back at all, so whether the server received it is UNKNOWN. Re-read card $witness before retrying; nothing here claims an outcome in either direction." >&2
@@ -4948,17 +4954,19 @@ _kbc_field_conversion_rerun_note() {
 # re-running rather than promising a no-op. It is plumbed rather than re-derived from the
 # body, which on a 000 does not exist.
 #
-# The status line + the raw body mirror what kb_api prints on a non-2xx under
+# The status line + the token-masked body mirror what kb_api prints on a non-2xx under
 # KB_API_ERRBODY=1, and the failure-log append mirrors its log line: kb_api_status is
 # silent by design, and this is the one call in this file whose refusal IS the
 # preflight — every offending card is named in that body, so dropping it would throw
 # away the only report of what blocks the conversion.
 _kbc_field_change_type_report() {
     local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6" have_options="$7"
-    local path="/custom_fields/$fid/change-type.json"
+    local path="/custom_fields/$fid/change-type.json" resp_shown
+    # The bearer is masked by kb_api's own mask, kb_mask_token (card#9777) — this is the mirror of that print.
+    kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
     echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
-    echo "$resp" >&2
-    [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp" >> "$KB_LOG_FILE"
+    echo "$resp_shown" >&2
+    [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp_shown" >> "$KB_LOG_FILE"
     # Empty unless the body is a JSON OBJECT, which is the shape every arm below
     # INDEXES — an "is it JSON" test hands a scalar or a list straight to `has(…)`,
     # where the read yields nothing and the arm it lands in makes claims about a
@@ -5505,6 +5513,15 @@ cmd_field() {
     local sub="${1:-}"
     [[ -z "$sub" ]] && { echo "kbcard: field requires a sub-verb: list | create | delete | retype | set-options" >&2; return 2; }
     shift
+    # retype's own non-2xx report, _kbc_field_change_type_report, masks through kb_mask_token —
+    # after the conversion POST already went out, since which arm to report depends on the
+    # server's answer. Asked for here, before that POST, rather than inside the report: no other
+    # field sub-verb calls kb_mask_token, so gating at the shared dispatch above would refuse them
+    # for an absence they do not depend on (card#9777).
+    if [[ "$sub" == retype ]] && ! declare -F kb_mask_token >/dev/null; then
+        _kbc_lib_unruled "field retype" "the conversion" kb_mask_token undefined
+        return 2
+    fi
     case "$sub" in
         list)        _kbc_field_list "$@" ;;
         create)      _kbc_field_create "$@" ;;
@@ -5547,6 +5564,24 @@ main() {
     local cmd="$1"
     kb_require_positional "" "$cmd" "<command>" || exit 2
     shift
+    # Every stage-writing verb writes through the lib's kb_stage_write. Asked for by definedness
+    # BEFORE the verb runs, so a kbcard beside a lib that predates it refuses having sent nothing,
+    # rather than failing at the write with a bare `command not found` after its reads (card#9777).
+    #
+    # unlink is asked the same way for kb_mask_token: its DELETE is sent, then its own errbody is
+    # masked before it can be quoted to stderr — beside a lib predating kb_mask_token that mask
+    # call is `command not found`, rc 127, AFTER the DELETE already went out (card#9777). field's
+    # own masking call is inside `retype` only, so that one is asked at cmd_field's own dispatch,
+    # not here — asking here would refuse `field list`/`create`/`delete`/`set-options`, none of
+    # which call it, before a request those verbs are free to send.
+    case "$cmd" in
+        create-card|move|move-board|patch)
+            declare -F kb_stage_write >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; } ;;
+        unlink)
+            declare -F kb_mask_token >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the delete" kb_mask_token undefined; exit 2; } ;;
+    esac
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;
         move)        cmd_move "$@" ;;

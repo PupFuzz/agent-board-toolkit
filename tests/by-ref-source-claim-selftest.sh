@@ -487,7 +487,7 @@ BSC_DISPOSED=(
     #    states NO attribution consequence — the opposite of making one — and the prelude-shadow
     #    entry is a disposition table for another guard entirely.
     "tests/kbcard-selftest.sh::it states no consequence: no attribution::fd7177779bbd"
-    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::003fa2a3c360"
+    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::8df2e74912f7"
 
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control
     #    fixture. The fixture MUST be reportable — that is its job — and the other two cannot
