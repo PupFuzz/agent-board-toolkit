@@ -6,10 +6,11 @@
 # back to `.promote.api_base`; the API token comes from $KANBAN_WRITEBACK_TOKEN and is only
 # ever sent to a base that passed the $KANBAN_EXPECTED_HOST guard (see ENVIRONMENT below).
 # A card is "shipped in this release" if its
-# `payload.dl_number` matches a shipped DL token, its `payload.pr_number` matches a
-# shipped PR number, or its own `id` is in an explicitly-passed `--cards` set — so
-# cards tracked only by PR (no DL) are promoted too — AND, for the two REF fields, its
-# by-ref `source` qualifies against `.promote.source` (see REPO QUALIFICATION below).
+# `payload.dl_number` matches a shipped DL token (qualified as REPO QUALIFICATION below says),
+# the PR URL it carries names a shipped pull request OF THE REPO BEING RELEASED (THE PR LEG IS
+# (repo, number), below), or its own `id` is in an explicitly-passed `--cards` set — so cards
+# tracked only by PR (no DL) are promoted too. A bare `payload.pr_number` promotes nothing: it
+# is named and skipped.
 # Idempotent (skips a card already at target), best-effort per card.
 # A card it moves has every seat owner tag (`owner:*`) removed by a SEPARATE tag write after the
 # move (the rule is agent-board-toolkit README.md § The seat owner tag); that write's outcome is
@@ -24,8 +25,8 @@
 #
 # THE PROGRAM-PARENT WITHHOLD — unconditional, non-fatal, counted (toolkit card#10068).
 #   A card carrying the `program` tag names SEVERAL LEGS rather than one deliverable. A release
-#   ships one of them, the card's `dl_number`/`pr_number` matches, and this mover then puts the
-#   PARENT in the terminal stage — the one nobody re-reads — while its other legs are unbuilt and
+#   ships one of them, the card's `dl_number` or the pull request it tracks matches, and this
+#   mover then puts the PARENT in the terminal stage — the one nobody re-reads — while its other legs are unbuilt and
 #   stop being offered by any queue. The work is still written on the card; the card just reads
 #   DONE. The live instance (kanban card#9996, seven legs, one built) was held out of this by a
 #   hand-set `block_reason` and a source-stage pin, i.e. by COLUMN, not by any predicate.
@@ -86,7 +87,7 @@
 #   - DL tokens via `ref_token_regex` (default DL-[0-9]+), matched on the numeric part
 #     against a card's `payload.dl_number`;
 #   - PR numbers from each commit's trailing `(#NNN)` (the squash-merge marker GitHub appends),
-#     matched against `payload.pr_number`;
+#     matched against the `(repo, number)` a card's `payload.pr_url` names (THE PR LEG below);
 #   - card IDs from `--cards` only, matched against the card's own `id`.
 #
 # WHY CARD IDS ARE EXPLICIT-ONLY AND NEVER DERIVED FROM COMMIT SUBJECTS. A `card#NNNN`
@@ -109,15 +110,87 @@
 #   until it is told which arity of board it is pointed at. There is no safe default, for
 #   the same reason $KANBAN_EXPECTED_HOST has none: a vendored tool cannot assume the
 #   operator's topology, and the unsafe assumption here is a WRITE into a terminal stage.
-#     `.promote.source`: "<owner>/<repo>"  — the repo this release ships. Every REF-matched
-#        card is qualified against it by the card's own by-ref `source`; a card belonging to
-#        a different repo is NOT promoted, and is named. See `derive_source` in the
+#     `.promote.source`: "<owner>/<repo>"  — the repo this release ships. Every DL-matched
+#        card is qualified against it by the card's own by-ref `source` (a PR-matched card by
+#        the pr_url it carries, never by `payload.repo` — THE PR LEG, next paragraph); a card
+#        belonging to a different repo is NOT promoted, and is named. See `derive_source` in the
 #        correlation below for how a card's source is read.
 #     `.promote.source`: "*"               — an explicit DECLARATION that this board tracks
-#        exactly ONE repo, so a bare `dl_number`/`pr_number` is unambiguous on it.
-#        Byte-identical to the pre-card#8421 behavior, summary line included. `*` is a
-#        DECLARATION, not a wildcard match: use it only when the board really is single-repo.
+#        exactly ONE repo, so a bare `dl_number` is unambiguous on it. The PR leg is NOT
+#        relaxed by it (next paragraph). `*` is a DECLARATION, not a wildcard match: use it
+#        only when the board really is single-repo.
 #   `--source <owner/repo>|*` overrides the config for one run (a dry-run pointed elsewhere).
+#
+# THE PR LEG IS (repo, number), UNDER BOTH DECLARATIONS (agent-webhook-bridge DL-429).
+#   A PR number is a per-repo counter, and a repo moved to a new GitHub org is a fresh history
+#   whose numbers restart at 1 while its board is re-mapped to the new repo — so the board stays
+#   single-repo, `*` stays TRUE, and the old repo's #N and the new repo's #N are two pull requests
+#   on it. Matching the bare number, the new repo's release promoted every card that had tracked
+#   the old #N. So a card tracks a shipped PR only when its `payload.pr_url` names that pull
+#   request — `github.com/<owner>/<repo>/pull/<N>`, compared as (repo, number) — and the repo it
+#   must name is `.promote.source`, or under `*` $GITHUB_REPOSITORY. The card by-ref source
+#   (`payload.repo` first, when it is a string containing `/` — see derive_source) is NOT read on
+#   this leg at all. What is NOT evidence of the number's repo, each named and skipped
+#   (`pr-unqualified`), never promoted:
+#     - a bare `pr_number` with no `pr_url`;
+#     - the `.../pull/0` placeholder beside one (it names a repo and no pull request, and a
+#       placeholder kept beside a stamped number is no evidence of whose number it is);
+#     - any other derived source (`payload.repo`, `issue_url`, `external_link`) beside one — the
+#       by-ref `source` qualifies the DL leg only.
+#   And a card whose shipped `pr_number` its own `pr_url` CONTRADICTS — the URL names another
+#   number, one this release did not ship — is named and skipped as `pr-diverged`: the URL is what
+#   the card tracks, so the shipped number is no evidence it shipped, and only an operator can say
+#   which of the two stamps is the wrong one.
+#   Under `*` with $GITHUB_REPOSITORY unset or empty (off a runner) there is no repo at all, so a
+#   run whose release ships a pull request is REFUSED (rc 2) before any board read, naming
+#   `--source <owner/repo>` and `GITHUB_REPOSITORY` as the fix; an explicit --dls/--cards run
+#   ships no pull request and is not refused.
+#
+#   A `pr_url` naming the right number of ANOTHER repo is `other-repo`, exactly as under a
+#   declared `<owner>/<repo>`. The fix for a skipped card is a stamp —
+#   `kbcard patch --task <id> --pr <N> --pr-url <its pull request URL>` — and the skip line
+#   spells it. The DL leg is unchanged: a DL is a
+#   decision-log number whose log moves WITH the repo, so the new repo's DL-N is the same
+#   decision. The card-id leg is unchanged: a card id is not a repo-scoped counter.
+#
+#   A CARD ALREADY AT THE RELEASED STAGE IS NEVER A QUALIFICATION FINDING. The board read covers
+#   every stage, so the rejections above would otherwise name every Released card that carries a
+#   bare number — and after an org move steer the operator to stamp the NEW repo's URL onto an
+#   OLD card. A Released card no leg accepts is silent (not named, not counted, on the DL leg as
+#   on the PR leg); one a leg accepts reads `already released`, as it always did.
+#
+#   WHAT NEITHER END CAN VERIFY — the two conditions this leg rests on that live across the repo
+#   boundary, where no check here can reach them:
+#   (a) EVERY `(#N)` MARKER IN THE RELEASE RANGE IS THE RELEASED REPO'S PULL REQUEST. The number
+#       comes from a commit subject, which says nothing of the repo that minted it. On the FIRST
+#       release after a move to a fresh-history repo that kept its git history, the range
+#       (last old-repo tag..head) still holds old-repo squash commits: their cards carry the old
+#       repo's pr_url and are refused `other-repo`. Promote them by hand, by id —
+#       `--cards <id>[,<id>...]` (a card id is exempt from repo qualification). And
+#       the converse is live too: a NEW-repo card whose number equals an old marker in that range
+#       IS promoted. The automatic run (the promote action on the release's main push) passes
+#       neither `--base` nor a hand-picked `--dry-run`, so for THAT release take it off the
+#       automatic path: before merging the release PR, set the calling workflow's `dry-run` input
+#       to 'true' for that one merge (or disable the workflow), read every `→` line it prints,
+#       then run this tool by hand with `--base <the last old-repo commit>` — the range then holds
+#       only new-repo markers — and promote the old-repo cards in a separate `--cards` run (an
+#       explicit id set derives no range at all). Then REVERT the `dry-run` edit in the next dev
+#       PR: under a release-branch flow the back-merge carries it into dev, and every later
+#       release would otherwise run as a dry run. ⚠ A TAG AT THE LAST OLD-REPO COMMIT IS NOT A
+#       SUBSTITUTE in general: the derived base is `git describe` of the release head's FIRST
+#       PARENT, and under a release-branch flow that is the previous main tip, from which a tag on
+#       a later dev commit is unreachable — describe still answers the last release tag (measured).
+#       It works only where that commit is an ancestor of the first parent (a trunk flow; check
+#       with `git merge-base --is-ancestor`). `--shipped-stages` limits the damage either way: a
+#       colliding new-repo card whose pull request has not merged is not in a Shipped-class stage
+#       and is skipped (one that HAS merged is still promoted).
+#   (b) A GitHub TRANSFER KEEPS NUMBERS. Unlike a fresh-history move, a transferred repo's #N is
+#       the same pull request, and its old URL still resolves — yet this leg compares the repo
+#       the URL NAMES, so `oldorg/<repo>/pull/N` is refused `other-repo` by a `neworg/<repo>`
+#       release. Re-stamp those cards to the new owner
+#       (`kbcard patch --task <id> --pr-url https://github.com/<new-owner>/<repo>/pull/<N>`) or
+#       promote them by `--cards`. ⚠ That re-stamp is correct ONLY after a transfer: after a
+#       fresh-history move it is exactly the collision this leg exists to refuse.
 #
 #   AND THE DECLARATION IS CHECKED AGAINST THE REPO IT IS MADE IN (card#8538). Whichever of
 #   the two channels wins, a resolved source other than `*` must equal $GITHUB_REPOSITORY
@@ -171,8 +244,12 @@
 #   - `.promote.source` absent => FAIL before any read (the repo-scoped ref collision above).
 #   - `.promote.source` present but naming a repo other than $GITHUB_REPOSITORY (when set)
 #     => FAIL before any read: the declaration is false of the repo it is made in.
-#   - A ref-matched card belonging to ANOTHER repo, or to NO derivable repo, is named
-#     individually and counted — never silently promoted, and never silently dropped.
+#   - `.promote.source` "*" with $GITHUB_REPOSITORY unset or empty, on a release that ships a
+#     pull request => FAIL before any read: the PR leg has no repo to compare against.
+#   - A ref-matched card belonging to ANOTHER repo, or to NO derivable repo, or a PR-matched
+#     card whose `pr_url` names no pull request of this release's repo, is named individually
+#     and counted — never silently promoted, and never silently dropped — UNLESS it is already
+#     at the released stage, where it is silent (THE PR LEG, above).
 #   - A REFUSED card move, and a refused board read, name the HTTP STATUS and carry a bounded,
 #     secret-masked excerpt of the SERVER'S OWN body (card#9301). `api()` used to be
 #     `curl -fsS`, and `-f` DISCARDS the HTTP error body — so a 401 (token expired), a 403 (the
@@ -238,8 +315,8 @@
 #
 #   0  the run promoted what it says it promoted: no card was measured in another stage, and no
 #      write went unread. ⚠ NOT "every matched card is released" — a stage-guarded skip, a
-#      program-parent withhold, a no-card or other-repo ref, and the refusal case below all live
-#      at 0. The program withhold is at 0 BY DESIGN and not by omission: see THE PROGRAM-PARENT
+#      program-parent withhold, a no-card, other-repo, pr-unqualified or pr-diverged ref, and the refusal
+#      case below all live at 0. The program withhold is at 0 BY DESIGN and not by omission: see THE PROGRAM-PARENT
 #      WITHHOLD above for why this vendored tool reports that card instead of failing its
 #      consumer's release over it: the withhold is the last check before the write, so the run
 #      exits as if the parent's move had landed. ⛔ A GATE THAT MUST CATCH ONE READS THE
@@ -784,8 +861,8 @@ if [ -n "$SOURCE_RAW" ]; then SRC_EMPTY_SHOWN="'$SOURCE_RAW', which is whitespac
 # THE REFUSAL NAMES ITS OWN FIX, in full. A hard failure whose message does not tell an
 # operator how to satisfy it is a worse defect than the one it closes: every existing install
 # breaks on this key until it declares one, so the message carries the key, the block it goes
-# in, the file, and the fact that `"*"` is the single-repo answer that restores prior behavior.
-[ -n "$SOURCE" ] || die "refusing to promote — \`.promote.source\` is REQUIRED and has no default. \`dl_number\`/\`pr_number\` are REPO-SCOPED counters: on a board tracking several repos they collide, and an unqualified match promotes ANOTHER repo's cards into a terminal stage (measured: 15 shipped PRs matched 24 cards across 3 repos). TO FIX, add one key to the \`promote\` block of $CONFIG: \"source\": \"<owner>/<repo>\" naming the repo this release ships, OR \"source\": \"*\" to DECLARE that this board tracks exactly ONE repo — \"*\" is the single-repo answer and restores the previous behavior byte for byte. \`--source <owner/repo>|*\` overrides it for one run. (The value resolved from $SOURCE_SRC was $SRC_EMPTY_SHOWN.)"
+# in, the file, and the fact that `"*"` is the single-repo answer — and what `"*"` does NOT relax.
+[ -n "$SOURCE" ] || die "refusing to promote — \`.promote.source\` is REQUIRED and has no default. \`dl_number\`/\`pr_number\` are REPO-SCOPED counters: on a board tracking several repos they collide, and an unqualified match promotes ANOTHER repo's cards into a terminal stage (measured: 15 shipped PRs matched 24 cards across 3 repos). TO FIX, add one key to the \`promote\` block of $CONFIG: \"source\": \"<owner>/<repo>\" naming the repo this release ships, OR \"source\": \"*\" to DECLARE that this board tracks exactly ONE repo — \"*\" is the single-repo answer: a DL then correlates unqualified, but a pull request still counts only through the PR URL a card carries naming this repo (\$GITHUB_REPOSITORY under \"*\"), because PR numbers restart when a repo moves. \`--source <owner/repo>|*\` overrides it for one run. (The value resolved from $SOURCE_SRC was $SRC_EMPTY_SHOWN.)"
 if [ "$SOURCE" != '*' ]; then
   # Boundary validation of an operator-supplied value (canon #6). Every refusal below is a
   # spelling that would otherwise correlate to NOTHING while LOOKING configured — a silent
@@ -865,8 +942,40 @@ fi
 # downstream branches on THIS, never on $SOURCE, so `*` has exactly one meaning in one place.
 if [ "$SOURCE" = '*' ]; then QUALIFY_SRC=""; else QUALIFY_SRC="$SOURCE"; fi
 
-TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
-[ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
+# The repo a shipped PR NUMBER belongs to — see THE PR LEG IS (repo, number) in the header. It is
+# the declared source when there is one, and otherwise $GITHUB_REPOSITORY: `*` declares the BOARD
+# single-repo, which says nothing about WHICH repo a PR number came from once a repo has moved.
+# "" (off a runner, under `*`) names no repo at all: a run that ships a pull request is refused
+# below, once the shipped PR set is known and before the board is read.
+if [ -n "$QUALIFY_SRC" ]; then PR_REPO="$QUALIFY_SRC"; else PR_REPO="$GH_REPO"; fi
+
+RAW_TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
+# TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED — the same set the lib's
+# kb_token_file_read strips, and for the same reason (card#9777): the Authorization header
+# api() builds below goes through `$(printf …)`, which drops a trailing LF, and curl drops a
+# trailing CR from a header line, so an unstripped secret ending in either reaches the wire
+# without it. resp_detail's mask compares the LITERAL $TOKEN against the body, so with TOKEN
+# left raw a header-echoing server hands back the wire value and the mask's longer literal
+# does not match it — MEASURED: a token ending in \n or \r echoed back unmasked as
+# `Bearer <token>` in this run's stderr, which on a release run is the Actions job log. This
+# bin may not source the lib (docs/CONSOLIDATION-PLAN.md § Stage D), so the rule is duplicated
+# here rather than shared, driven against the lib's copy by
+# tests/mirror-pair-parity-selftest.sh § 8. Stripping ONCE, here, means every later use of
+# $TOKEN — the header and the mask both — sees the same value the wire does.
+TOKEN="${RAW_TOKEN%"${RAW_TOKEN##*[!$' \t\n\r\v\f']}"}"
+# ⚠ Read the RAW value's own emptiness to pick the message, not TOKEN's — a secret that IS set,
+# to nothing but whitespace, used to send an empty bearer and would otherwise die claiming it is
+# "not set", which is false of it (card#9777 r3 review): $KANBAN_WRITEBACK_TOKEN was set. Before
+# this cut it just wasn't a NEW acceptance change (an empty bearer was already sent, unmasked
+# LITERALLY nowhere since there was nothing to mask) — narrowed to a refusal here alongside the
+# strip, so record it as one (docs/CHANGELOG.md, in #415's style).
+if [ -z "$TOKEN" ]; then
+    if [ -z "$RAW_TOKEN" ]; then
+        die "KANBAN_WRITEBACK_TOKEN is not set"
+    else
+        die "KANBAN_WRITEBACK_TOKEN is set but is empty or whitespace-only"
+    fi
+fi
 API="${API%/}"
 
 # Fail-closed host guard on the RESOLVED api_base BEFORE any token is sent — one call, on
@@ -990,6 +1099,17 @@ fi
 [ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_IDS")"
+
+# --- `*` WITH NO REPO, ON A RELEASE THAT SHIPS PULL REQUESTS → refuse, before any read ----------
+# THE PR LEG IS (repo, number) (header), and under `*` the repo is $GITHUB_REPOSITORY. Off a runner
+# with it unset there is no repo at all, so no PR-tracked card could ever be promoted: the run would
+# read the board, name every one of them, and exit 0 having promoted none — a no-op config reporting
+# success, which card#8538's identity leg above refuses for the same reason. Only when a PR set was
+# derived: an explicit --dls / --cards run ships no pull request, so it has no number to attribute
+# and runs exactly as before.
+if [ -z "$PR_REPO" ] && [ -n "$PR_NUMS" ]; then
+  die "refusing to promote — the repo qualification is \"*\" (from $SOURCE_SRC) and \$GITHUB_REPOSITORY is unset or empty, but this release ships pull request(s) $(printf '%s' "$PR_NUMS" | sed 's/^/#/' | paste -sd, - | sed 's/,/, /g'). A PR number is a per-repo counter and \"*\" names no repo, so no card could be shown to track one: the run would promote none of them and exit 0. TO FIX, name the repo this release ships — pass --source <owner/repo>, or set GITHUB_REPOSITORY=<owner>/<repo> (a promote runner sets it). An explicit --dls/--cards run ships no pull request and is not refused."
+fi
 
 # --- read the WHOLE board (paged) --------------------------------------------
 # Auth is fed OUT-OF-BAND via a stdin herestring (-H @- <<<) so the bearer token never
@@ -1337,11 +1457,13 @@ fetch_whole_board() {
 }
 CARDS="$(fetch_whole_board)"
 
-# --- correlate: a card ships if its dl_number, pr_number OR own id is in the shipped sets
-#     AND (when repo qualification is on) the REF legs are this repo's — see REPO QUALIFICATION.
+# --- correlate: a card ships if its dl_number is a shipped DL (qualified by its by-ref source,
+#     payload.repo first, under a declared source — REPO QUALIFICATION), its pr_url names a
+#     shipped pull request OF THIS REPO (THE PR LEG IS (repo, number)), or its own id is in the
+#     --cards set.
 # The classification is done ONCE here, in one pass, and every downstream leg reads `.cls`, so
 # the move loop, the reports and the summary cannot disagree about which cards matched.
-CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" --arg ptag "$PROGRAM_TAG" '
+CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" --arg prrepo "$PR_REPO" --arg rstage "$STAGE" --arg ptag "$PROGRAM_TAG" '
   # norm reads a card ref (dl_number, pr_number or id) and answers the bare-integer,
   # zero-stripped form numlist produces for the shipped side, so "093"/93 correlate — or ""
   # for a value that is not ONE integer, which correlates to nothing and leaves the card alone.
@@ -1477,16 +1599,53 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
              | map(repo_from_gh_url) | map(select(. != null)) | .[0] ) as $u
         | if $u == null then null else ($u | canon_source) end
       end;
+  # pr_url_ref: the (repo, number) a pr_url names, or null when it names no pull request. The
+  # bridge primitive this mirrors is PrUrlRef (agent-webhook-bridge DL-429): the repo is the
+  # repoFromGitHubUrl answer (repo_from_gh_url above, so the parse is not re-spelled here) and
+  # the number is the first /pull/<n> — a case-SENSITIVE segment, anywhere in the value. The
+  # .../pull/0 placeholder names a repo and NO pull request, so it is null here, exactly as a bare
+  # pr_number is. The repo is returned as derived; the caller canonicalizes it.
+  # ⚠ PINNED COPY: KB_JQ_PR_URL_REF in bin/_kb-board-lib.sh is the text of this def, and kbcard
+  # holds a write to it; tests/mirror-pair-parity-selftest.sh § 5b keeps the two identical. (No
+  # apostrophe anywhere in this program: it is a single-quoted shell string.)
+  def pr_url_ref:
+    if type != "string" then null
+    else (repo_from_gh_url) as $r
+      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
+      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    end;
   [ .[]
     | . as $c
     | ($c.payload.dl_number | norm) as $cdl
     | ($c.payload.pr_number | norm) as $cpr
     | ($c.id | norm) as $cid
+    | ($c.payload.pr_url | pr_url_ref | if . == null then null else .repo |= canon_source end) as $pref
     | (($cdl != "") and ($dls|index($cdl) != null)) as $byDl
-    | (($cpr != "") and ($prs|index($cpr) != null)) as $byPr
+    # THE PR LEG IS (repo, number) — see the header. A card tracks a shipped PR only through a
+    # pr_url naming it; its bare pr_number is read ONLY to report a card that would have matched
+    # on the number alone, and never to promote one.
+    | (($pref != null) and ($prs|index($pref.n) != null)) as $byPr
+    | (($pref == null) and ($cpr != "") and ($prs|index($cpr) != null)) as $byBare
+    # A pr_url naming ANOTHER number than the shipped pr_number: the URL decides, so the card is
+    # not promoted, but it is named rather than dropped - the two stamps disagree about which pull
+    # request the card tracks, and only an operator can say which one is wrong.
+    | (($pref != null) and ($byPr | not) and ($cpr != "") and ($cpr != $pref.n) and ($prs|index($cpr) != null)) as $byDiv
     | (($cid != "") and ($cids|index($cid) != null)) as $byId
-    | select($byDl or $byPr or $byId)
+    | select($byDl or $byPr or $byBare or $byDiv or $byId)
     | ($c | derive_source) as $csrc
+    | (if $byDl then
+         (if $qsrc == "" then "match" elif $csrc == null then "unsourced" elif $csrc == $qsrc then "match" else "foreign" end)
+       else null end) as $dlv
+    # $prrepo is never "" here while a PR is shipped: that run is refused before the board read.
+    | (if $byPr then
+         (if $pref.repo == $prrepo then "match" else "foreign" end)
+       elif $byBare then "unqualified"
+       elif $byDiv  then "diverged"
+       else null end) as $prv
+    | (if   $byId                              then "match"
+       elif $dlv == "match" or $prv == "match" then "match"
+       elif $byDl                              then $dlv
+       else                                         $prv end) as $verdict
     # THE PROGRAM-PARENT PREDICATE, read HERE because this is where the row still is (card#10068).
     # The board resource this scan already fetched projects `tags` on every row, so the predicate
     # costs ZERO extra requests — but this projection used to drop the field, so the move loop
@@ -1499,20 +1658,41 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
     | (([($c.tags // [])[]? | select(type == "string")] | index($ptag)) != null) as $prog
     # Display precedence keeps DL first so a run with no --cards renders exactly as before.
     | { id: $c.id, stage: ($c.workflow_stage_id|tostring), program: $prog,
-        ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" else "#\($cpr)" end),
+        ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" elif $byPr then "#\($pref.n)" else "#\($cpr)" end),
         dl: (if $byDl then $cdl else null end),
-        pr: (if $byPr then $cpr else null end),
+        pr: (if $byPr then $pref.n elif $byBare or $byDiv then $cpr else null end),
         card: (if $byId then $cid else null end),
         src: $csrc,
-        # match     — promote it: qualification is OFF, the card is THIS repo, or the caller
-        #             named its ID (a card id is not a repo-scoped counter — see the header).
-        # foreign   — ref-matched, but the card belongs to a DIFFERENT repo. The card#8421 defect.
-        # unsourced — ref-matched, but NO source is derivable, so it cannot be attributed.
-        cls: (if   $qsrc == ""    then "match"
-              elif $byId          then "match"
-              elif $csrc == null  then "unsourced"
-              elif $csrc == $qsrc then "match"
-              else                     "foreign" end),
+        # The leg a rejection is reported on: the DL leg when the card matched on its DL (so the
+        # DL no-card report below reads exactly what it always read), the PR leg otherwise.
+        leg: (if $byDl then "dl" else "pr" end),
+        prsrc: (if $byPr then $pref.repo else null end),
+        prnamed: (if $byDiv then "\($pref.repo)#\($pref.n)" else null end),
+        # match        — promote it: a leg matched THIS repo (or, on the DL leg, qualification
+        #                is OFF), or the caller named its ID (a card id is not a repo-scoped
+        #                counter — see the header).
+        # foreign      — ref-matched, but the card belongs to a DIFFERENT repo. card#8421, and on
+        #                the PR leg the org-move collision too.
+        # unsourced    — DL-matched, but NO source is derivable, so it cannot be attributed.
+        # unqualified  — PR-matched by number, but it names no pull request to compare (a bare
+        #                pr_number, or the .../pull/0 placeholder).
+        # diverged     — its pr_number shipped, but the pull request the card names is a
+        #                DIFFERENT number (and that one did not ship). The named pull request
+        #                decides, so it is not promoted; it is listed, because the two stamps
+        #                contradict each other.
+        # released     — ALREADY AT THE RELEASED STAGE and rejected by every leg above. Silent:
+        #                not named, not counted. The whole board is read, every stage, and a
+        #                rejection report exists to say "not promoted, and here is the stamp" —
+        #                about a card no promotion was ever going to move, that line is noise, and
+        #                its remedy is harmful: after an org move it steers the operator to stamp
+        #                a NEW repo pull request onto an OLD card (the DL-429 collision). Compared
+        #                exactly as the already-released check in the move loop does (tostring vs
+        #                the configured id), so the two cannot disagree about which are Released.
+        #                A Released card a leg ACCEPTS stays `match` and reads `already released`.
+        #                `was` keeps the verdict it replaced, for the DL no-card accounting only.
+        was: $verdict,
+        cls: (if $verdict != "match" and ($c.workflow_stage_id|tostring) == $rstage
+              then "released" else $verdict end),
         # An id-matched card the qualification WOULD have rejected. Promoted, by the --cards
         # exemption — but the exemption is reported rather than silent, because a promote whose
         # only justification is an explicit id is a thing an operator should see in the log.
@@ -1551,20 +1731,40 @@ PLAN="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="match")]')"
 #     SHA-pinned composite action), so a reworded anchor is a silently half-read report across
 #     any version skew. The qualifier goes AFTER the phrase and carries no colon, per the
 #     colon rule below.
+# A card ALREADY AT THE RELEASED STAGE that the qualification rejects (cls "released") gets no ⊘
+# line, so for its ref the two reports above say less: line 1 names the ref with no card beside
+# it, and line 2 names a ref whose unsourced card is Released — and, when every unsourced card
+# for the ref is Released, names them after the ref, since no ⊘ line does. Both lines stay TRUE of the ref.
 # Unmatched PRs are on neither line (see above). With --cards absent the card leg is empty, and
 # under `source: "*"` nothing can classify as unsourced — so line 2 is absent and line 1 is
 # byte-identical to the DL-only report this tool has always printed.
 MATCHED_DLS="$(printf '%s' "$PLAN" | jq -c '[.[].dl|select(.!=null)]|unique')"
 MATCHED_CARDS="$(printf '%s' "$PLAN" | jq -c '[.[].card|select(.!=null)]|unique')"
 # Only DLs can land here. A `--cards` id-matched row is classified "match" by the exemption arm
-# in the correlation above, so no card ID ever carries cls=="unsourced".
-UNSOURCED_DLS="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.cls=="unsourced")|.dl|select(.!=null)]|unique')"
+# in the correlation above, so no card ID ever carries was=="unsourced".
+# A Released unsourced card (cls "released", was "unsourced") still counts here: its per-card
+# line is silenced, but the ref-level fact is unchanged — a card exists and carries the ref — and
+# dropping it would move the ref to "matched NO card", whose remedy is to CREATE a second card.
+UNSOURCED_DLS="$(printf '%s' "$CORREL" | jq -c '[.[]|select(.was=="unsourced")|.dl|select(.!=null)]|unique')"
 MISSING="$(jq -c -n --argjson sd "$DLS_J" --argjson md "$MATCHED_DLS" --argjson ud "$UNSOURCED_DLS" \
                     --argjson sc "$CARDS_J" --argjson mc "$MATCHED_CARDS" '
   [ $sd[] | select(. as $x | (($md|index($x))|not) and (($ud|index($x))|not)) | "DL-\(.)" ]
   + [ $sc[] | select(. as $x | ($mc|index($x))|not) | "card#\(.)" ]')"
-STRANDED_REFS="$(jq -c -n --argjson ud "$UNSOURCED_DLS" --argjson md "$MATCHED_DLS" '
-  [ $ud[] | select(. as $x | ($md|index($x))|not) | "DL-\(.)" ]')"
+# A ref whose unsourced cards are ALL ALREADY RELEASED names them here, because their per-card ⊘
+# lines are silenced and this is then the only line that mentions the ref at all: without the id
+# an operator is told a card exists and carries the ref, and is given no way to find it. ONLY when
+# every one is Released: release-pr-body reads the note as "nothing to move", so a ref that ALSO
+# has a non-Released unsourced card stays plain — that card has its own ⊘ line and needs the stamp
+# the plain ref's remedy gives. ⛔ No colon in the qualifier — release-pr-body cuts this line at
+# its first colon (see below).
+STRANDED_REFS="$(printf '%s' "$CORREL" | jq -c --argjson ud "$UNSOURCED_DLS" --argjson md "$MATCHED_DLS" '
+  . as $c
+  | [ $ud[] | select(. as $x | ($md|index($x))|not)
+      | . as $x
+      | [ $c[] | select(.was=="unsourced" and .dl==$x) ] as $all
+      | [ $all[] | select(.cls=="released") | "#\(.id)" ] as $rel
+      | if ($rel|length) == 0 or ($rel|length) != ($all|length) then "DL-\($x)"
+        else "DL-\($x) (unsourced card \($rel|join(" "))" + " already in the released stage)" end ]')"
 
 # --- repo-qualification report (card#8421) -----------------------------------
 # The two rejected classes are NAMED, one line per card, BEFORE any write — never folded into
@@ -1577,20 +1777,62 @@ STRANDED_REFS="$(jq -c -n --argjson ud "$UNSOURCED_DLS" --argjson md "$MATCHED_D
 # clearable only by editing board data is a red that gets ignored. Loudness comes from the
 # register instead — stderr, plus $GITHUB_STEP_SUMMARY under Actions, because a stderr line in
 # a GREEN job is invisible in a collapsed log.
-foreign_n=0; unsourced_n=0; STRANDED=""; FOREIGN=""
+foreign_n=0; unsourced_n=0; unqual_n=0; diverged_n=0; STRANDED=""; FOREIGN=""; UNQUAL=""; DIVERGED=""
+# `foreign` is reachable with qualification OFF too, on the PR leg: a card whose pr_url names a
+# pull request of another repo (the org-move collision), so it is counted and named on every run.
+foreign_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="foreign")]|length')"
+# Rendered BY jq, not assembled in the shell: every value interpolated here is BOARD DATA,
+# and a card ref or source must never be re-parsed by a shell on its way to the log.
+# Captured rather than printed straight through, so the SAME text reaches stderr and the step
+# summary — two renderings of one finding is two things that can disagree.
+FOREIGN="$(printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" --arg pq "$PR_REPO" '.[] | select(.cls=="foreign")
+  | if .leg == "pr"
+    then "  ⊘ \(.ref) (#\(.id)): the card tracks pull request \(.prsrc)\(.ref), not \($pq)\(.ref) — a DIFFERENT repo pull request that matched only by a colliding PR number; not promoted"
+    else "  ⊘ \(.ref) (#\(.id)): card source \"\(.src)\" is NOT \"\($q)\" — this card belongs to a DIFFERENT repo and matched only by a colliding ref number; not promoted" end')"
+# A plain `if`, never `[ -n "$X" ] && printf …`: that trailing-test form is what leaked a false
+# status out of a sibling release bin once already (card#5874), and it is one edit away from
+# becoming a block's last statement again.
+if [ -n "$FOREIGN" ]; then printf '%s\n' "$FOREIGN" >&2; fi
+# THE PR-LEG CARDS NO REPO CAN BE READ FROM — named one per card, for the reason the DL-leg
+# STRANDED lines below are: the card exists and carries the number, so the remedy is a stamp,
+# and the line says which.
+unqual_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="unqualified")]|length')"
+UNQUAL="$(printf '%s' "$CORREL" | jq -r --arg pq "$PR_REPO" '.[] | select(.cls=="unqualified")
+  | "  ⊘ \(.ref) (#\(.id)): pr_number \(.pr) names no repo — the card has no pr_url naming a pull request (a bare number, or the .../pull/0 placeholder), so it cannot be shown to track pull request \(.ref) of \($pq); not promoted. Stamp the pull request it tracks — kbcard patch --task \(.id) --pr \(.pr) --pr-url https://github.com/<owner>/<repo>/pull/\(.pr) — and re-run, or promote by hand."')"
+if [ -n "$UNQUAL" ]; then printf '%s\n' "$UNQUAL" >&2; fi
+# A card whose shipped pr_number and pr_url disagree. Not promoted (the URL decides), and not
+# silent: the header promises every card that does not count is named.
+diverged_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="diverged")]|length')"
+DIVERGED="$(printf '%s' "$CORREL" | jq -r '.[] | select(.cls=="diverged")
+  | "  ⊘ \(.ref) (#\(.id)): pr_number \(.pr) shipped, but the card pr_url names pull request \(.prnamed) — the two stamps disagree, and the URL is what a card tracks; not promoted. Correct the wrong one — kbcard patch --task \(.id) --pr <N> --pr-url https://github.com/<owner>/<repo>/pull/<N> — and re-run, or promote by hand."')"
+if [ -n "$DIVERGED" ]; then printf '%s\n' "$DIVERGED" >&2; fi
+if [ -n "$FOREIGN" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  { echo "### promote-released-cards — $foreign_n ref-matched card(s) belong to ANOTHER repo"
+    echo ""
+    echo "Not promoted. These cards resolve to a different \`owner/repo\` than the one this release ships (\`$PR_REPO\`), so they matched only by a colliding ref number."
+    echo ""
+    printf '```\n%s\n```\n' "$FOREIGN"
+  } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+fi
+if [ -n "$UNQUAL" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  { echo "### promote-released-cards — $unqual_n PR-matched card(s) could not be qualified to the repo this release ships"
+    echo ""
+    echo "Not promoted. A card tracks a pull request only through a \`pr_url\` naming its repo, and PR numbers are per-repo counters, so a bare \`pr_number\` names no pull request."
+    echo ""
+    printf '```\n%s\n```\n' "$UNQUAL"
+  } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+fi
+if [ -n "$DIVERGED" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  { echo "### promote-released-cards — $diverged_n card(s) carry a shipped pr_number their pr_url contradicts"
+    echo ""
+    echo "Not promoted. A card tracks the pull request its \`pr_url\` names, and these name a different number than the \`pr_number\` this release shipped."
+    echo ""
+    printf '```\n%s\n```\n' "$DIVERGED"
+  } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+fi
+
 if [ -n "$QUALIFY_SRC" ]; then
-  foreign_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="foreign")]|length')"
   unsourced_n="$(printf '%s' "$CORREL" | jq '[.[]|select(.cls=="unsourced")]|length')"
-  # Rendered BY jq, not assembled in the shell: every value interpolated here is BOARD DATA,
-  # and a card ref or source must never be re-parsed by a shell on its way to the log.
-  # Captured rather than printed straight through, so the SAME text reaches stderr and the step
-  # summary — two renderings of one finding is two things that can disagree.
-  FOREIGN="$(printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.cls=="foreign")
-    | "  ⊘ \(.ref) (#\(.id)): card source \"\(.src)\" is NOT \"\($q)\" — this card belongs to a DIFFERENT repo and matched only by a colliding ref number; not promoted"')"
-  # A plain `if`, never `[ -n "$X" ] && printf …`: that trailing-test form is what leaked a false
-  # status out of a sibling release bin once already (card#5874), and it is one edit away from
-  # becoming a block's last statement again.
-  if [ -n "$FOREIGN" ]; then printf '%s\n' "$FOREIGN" >&2; fi
   # THE KEY LIST IN THE LINE BELOW IS A COPY ON PURPOSE. It is RENDERED to an operator, who cannot
   # follow a pointer out of a log line, so the five keys are spelled where they are read. What
   # keeps it from becoming a fifth unpinned restatement is the trailing marker: it declares this a
@@ -1604,18 +1846,8 @@ if [ -n "$QUALIFY_SRC" ]; then
   # something they have to re-derive from this file.
   printf '%s' "$CORREL" | jq -r --arg q "$QUALIFY_SRC" '.[] | select(.idxrepo)
     | "  ⚠ \(.ref) (#\(.id)): promoted by EXPLICIT card id, though its source \(.src|tostring) is not \"\($q)\" — a card id is not a repo-scoped counter, so --cards is exempt from repo qualification"' >&2
-  # BOTH rejected classes reach the step summary, for the one stated reason: they are WARN-only,
-  # so they land in a GREEN job, where a stderr line is invisible in a collapsed log. That
-  # argument never distinguished the two — `foreign` lines are the only proof the guard fired at
-  # all, which is the half an operator auditing a `.promote.source` change goes looking for.
-  if [ -n "$FOREIGN" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    { echo "### promote-released-cards — $foreign_n ref-matched card(s) belong to ANOTHER repo"
-      echo ""
-      echo "Not promoted. This board is repo-qualified (\`.promote.source\` = \`$QUALIFY_SRC\`) and these cards resolve to a different \`owner/repo\`, so they matched only by a colliding ref number."
-      echo ""
-      printf '```\n%s\n```\n' "$FOREIGN"
-    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-  fi
+  # The unsourced class reaches the step summary as the foreign one does above, for the one
+  # stated reason: it is WARN-only, so it lands in a GREEN job, where a stderr line is invisible.
   if [ -n "$STRANDED" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo "### promote-released-cards — $unsourced_n ref-matched card(s) had NO by-ref source"
       echo ""
@@ -1982,8 +2214,8 @@ fi
 #
 # SEGMENT ORDER is by WHEN a card leaves the promotion path, not by which card added the term:
 # the pre-write refusals (`stage-guarded`, `completeness-refused`, `program-withheld`,
-# `other-repo`/`unsourced`, `no-card`) come first in the order the move loop applies them, then
-# the post-write outcomes (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits
+# `other-repo`/`unsourced`, `pr-unqualified`, `pr-diverged`, `no-card`) come first in the order the move loop
+# applies them, then the post-write outcomes (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits
 # immediately after `stage-guarded` because that is where its `continue` is in the loop, and
 # `program-withheld` immediately after both because its `continue` is the last before the write.
 #
@@ -1995,11 +2227,19 @@ fi
 # is its OWN segment and folded into NO other count, which is the honesty this whole guard turns on
 # — a withheld card is neither promoted nor failed, and adding it to `moved` would make the one
 # number a release step is read for assert the opposite of what happened.
-unv_txt=""; na_txt=""; prog_txt=""
+unv_txt=""; na_txt=""; prog_txt=""; qual_txt=""; unqual_txt=""; div_txt=""
+# The repo-qualification pair rides by the FLAG rule under a declared source, as it always has.
+# Under `*` a PR-leg `other-repo`, and under either declaration every `pr-unqualified` and
+# `pr-diverged`, ride by the COUNT rule, so a run
+# that meets neither keeps the line it printed before the PR leg became (repo, number).
+if [ -n "$QUALIFY_SRC" ]; then qual_txt="$foreign_n other-repo, $unsourced_n unsourced, "
+elif [ "$foreign_n" -gt 0 ]; then qual_txt="$foreign_n other-repo, "; fi
+if [ "$unqual_n" -gt 0 ]; then unqual_txt="$unqual_n pr-unqualified, "; fi
+if [ "$diverged_n" -gt 0 ]; then div_txt="$diverged_n pr-diverged, "; fi
 if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
 if [ "$program_held" -gt 0 ]; then prog_txt="$program_held program-withheld, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt${QUALIFY_SRC:+$foreign_n other-repo, $unsourced_n unsourced, }$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt$qual_txt$unqual_txt$div_txt$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -2040,9 +2280,11 @@ fi
 # run that acts on it must say so, or the declaration is unauditable after the fact. Separate
 # line, not folded into the summary, so the summary stays the stable parse target it is.
 if [ -n "$QUALIFY_SRC" ]; then
-  echo "promote-released-cards: repo-qualification ON (source '$QUALIFY_SRC', from $SOURCE_SRC) — a ref-matched card belonging to another repo, or to no derivable repo, was NOT promoted." >&2
+  echo "promote-released-cards: repo-qualification ON (source '$QUALIFY_SRC', from $SOURCE_SRC) — a ref-matched card belonging to another repo, or to no derivable repo, was NOT promoted, and a PR-matched card counted only through the PR URL it carries naming $QUALIFY_SRC." >&2
 else
-  echo "promote-released-cards: repo-qualification OFF — source '*' (from $SOURCE_SRC) DECLARES this board tracks exactly one repo, so a bare dl_number/pr_number is unambiguous on it. If it tracks several, set .promote.source to '<owner>/<repo>': those counters are repo-scoped and an unqualified match promotes another repo's cards." >&2
+  if [ -n "$PR_REPO" ]; then pr_leg_txt="through the PR URL it carries naming $PR_REPO (from \$GITHUB_REPOSITORY)"
+  else pr_leg_txt="through the PR URL it carries naming this release's repo (\$GITHUB_REPOSITORY is unset, which is refused whenever a release ships a pull request; this run ships none)"; fi
+  echo "promote-released-cards: repo-qualification OFF — source '*' (from $SOURCE_SRC) DECLARES this board tracks exactly one repo, so a bare dl_number is unambiguous on it. A PR-matched card still counted only $pr_leg_txt: PR numbers restart when a repo moves, so a bare pr_number names no pull request. If the board tracks several repos, set .promote.source to '<owner>/<repo>': those counters are repo-scoped and an unqualified match promotes another repo's cards." >&2
 fi
 # The completeness gate's state, only when it is ON: an OFF line would change the stderr of every
 # run that never asked for the gate, and absent is byte-identical by the flag's own contract.

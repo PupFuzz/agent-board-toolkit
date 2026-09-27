@@ -120,9 +120,11 @@ _bcs_verdict() {
 }
 
 # _bcs_patch <cid> <json> <field> <want> <success-msg> <fail-reason>: PATCH the resolved card via
-# the shared kb_api, which captures the HTTP status in KB_HTTP (the status-capture the hand-rolled
-# `curl -fsS` here used to drop, #4337 — a 403 token-scope failure and a 422 were both a bare
-# rc 22), then READ THE CARD BACK and report from that read, never from the 2xx (card#10029).
+# the lib's kb_stage_write — kb_api plus a rendered refusal, used for the `dl` stamp too because it
+# is this one PATCH (card#9777) — which captures the HTTP status in KB_HTTP (the status-capture
+# the hand-rolled `curl -fsS` here used to drop, #4337 — a 403 token-scope failure and a 422 were
+# both a bare rc 22), then READ THE CARD BACK and report from that read, never from the 2xx
+# (card#10029).
 # <field> is `stage` (workflow_stage_id, compared as text) or `dl` (payload.dl_number, compared
 # through KB_JQ_REF_CANON's `norm` — the reader every DL-correlating tool applies, so "stamped"
 # means "a correlator will find it"); <want> is the value asked for. The read-back and its three
@@ -132,20 +134,28 @@ _bcs_verdict() {
 #                value the board holds, on stderr AND the durable log.
 #   unverified   the re-read is not a measurement → an UNVERIFIED line (nothing says it landed,
 #                nothing says it did not) on stderr AND the durable log, with the witness's reason.
-# A refused or never-completed PATCH records <fail-reason> plus the status via kb_bcs_log, as
-# before (this hook never sets KB_LOG_FILE, so KB_BCS_LOG is its durable surface).
+# A refused or never-completed PATCH records <fail-reason>, the status and kb_stage_write's own
+# line (the server's redacted explanation, or kb_api's `curl failed`) via kb_bcs_log (this hook
+# never sets KB_LOG_FILE, so KB_BCS_LOG is its durable surface).
 # The outcome is left in BCS_WRITE (applied | not-applied | unverified | failed) for the caller.
 # Fail-soft: always returns 0 — a failed board write, or one nobody could confirm, must never
 # block a checkout; what changes on those arms is only what the seat is TOLD.
 # Reads KB_API / KB_TOKEN (pinned once above, before the first call).
 _bcs_patch() {
     local cid="$1" json="$2" field="$3" want="$4" okmsg="$5" failreason="$6"
-    local http pred proj w crc=0 errf why got
+    local http pred proj w crc=0 errf why got detail=""
     BCS_WRITE=failed
-    if ! kb_api PATCH "/tasks/$cid.json" "$json" >/dev/null 2>&1; then
-        kb_bcs_log "$failreason (HTTP ${KB_HTTP:-?})"
+    # The write is the lib's kb_stage_write (card#9777), so a refusal carries the server's own
+    # token-masked explanation, not a bare status. Its stderr is CAPTURED rather than discarded:
+    # the installed hook's stderr goes nowhere, and KB_BCS_LOG is the surface that has to hold the
+    # reason. A file, not `$(…)`, because the call must run in THIS shell for KB_HTTP to survive.
+    errf="$(mktemp 2>/dev/null)" || errf=/dev/null
+    if ! kb_stage_write PATCH "/tasks/$cid.json" "$json" >/dev/null 2>"$errf"; then
+        [ "$errf" = /dev/null ] || { detail="$(tr '\n' ' ' <"$errf")"; rm -f "$errf"; }
+        kb_bcs_log "$failreason (HTTP ${KB_HTTP:-?})${detail:+ — ${detail% }}"
         return 0
     fi
+    [ "$errf" = /dev/null ] || rm -f "$errf"
     http="$KB_HTTP"
     # ⛔ A THIRD <field> NEEDS AN ARM HERE, and no guard below will tell you it is missing: an
     # unset `pred` dies under `set -u` inside the command substitution at the kb_confirm_card call,
@@ -866,7 +876,11 @@ _bcs_unruled() {
 # the installed wrapper discards. That is a mis-vendored install degrading SILENTLY, and it breaks
 # the rule the rc tests below exist for: a lib older than this hook writes NOTHING, not even the
 # dl_number stamp (card#9756). Measured on this head's hook beside the card#10029 base lib.
+# kb_stage_write, the write itself, is asked the same way: beside a lib that predates it every
+# write answered rc 127 and the log said only `move failed (HTTP ?) — …: command not found`,
+# naming neither the lib nor the fix (card#9777).
 declare -F kb_confirm_card >/dev/null 2>&1 || _bcs_unruled kb_confirm_card undefined
+declare -F kb_stage_write >/dev/null 2>&1 || _bcs_unruled kb_stage_write undefined
 _bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
 case "$_bcs_pin" in
     0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;

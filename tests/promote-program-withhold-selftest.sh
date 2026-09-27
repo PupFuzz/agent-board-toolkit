@@ -3,8 +3,8 @@
 # PROGRAM-PARENT WITHHOLD in bin/promote-released-cards (toolkit card#10068).
 #
 # WHY THIS FILE EXISTS. A card carrying the `program` tag names SEVERAL LEGS rather than one
-# deliverable. A release ships one leg, the card's `dl_number`/`pr_number` matches, and the mover
-# puts the PARENT in the terminal stage — the one nobody re-reads — while the other legs are
+# deliverable. A release ships one leg, the card's `dl_number` or the PR its `pr_url` names
+# matches, and the mover puts the PARENT in the terminal stage — the one nobody re-reads — while the other legs are
 # unbuilt and stop being offered by any queue. The work is still written on the card; the card
 # just reads DONE. The bridge has a guard for this shape; this tool had none, and on an install
 # with no bridge it is the ONLY writer of the terminal stage, which is exactly where the predicate

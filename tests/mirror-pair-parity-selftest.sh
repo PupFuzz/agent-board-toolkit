@@ -355,6 +355,50 @@ eq "control: …and so does the corpus, on a /blob/ URL" "false" \
 unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
 
+# ═══════════════════════ 5b — `pr_url_ref`: promote ↔ KB_JQ_PR_URL_REF ═══════════════════════
+#
+# Which pull request a pr_url NAMES (agent-webhook-bridge DL-429): promote-released-cards reads it
+# as `def pr_url_ref:` to decide what a release promotes, and `kbcard` asks the lib's
+# `KB_JQ_PR_URL_REF` whether a write leaves a pr_number that no pr_url names. A second reading here
+# once accepted `…/PULL/179` as naming PR 179 while promote read the same card as bare. Same hold
+# as § 5: the texts are identical line for line, and both copies are driven over one corpus.
+echo "== pr_url_ref: the lib constant IS the standalone's def, line for line =="
+_pur_strip() { sed 's/^[[:space:]]*//'; }
+_pur_prc="$(awk '/^[[:space:]]*def pr_url_ref:/ {on=1} on {print} on && /^[[:space:]]*end;[[:space:]]*$/ {exit}' "$PRC" | _pur_strip)"
+eq "witness: the lib defines KB_JQ_PR_URL_REF" "false" "$([[ -z "${KB_JQ_PR_URL_REF:-}" ]] && echo true || echo false)"
+eq "witness: the extraction found the def's head and its close" "true|true" \
+   "$(has 'def pr_url_ref:' "$_pur_prc")|$([[ "${_pur_prc##*$'\n'}" == "end;" ]] && echo true || echo false)"
+eq "⭐ the standalone's def IS KB_JQ_PR_URL_REF, line for line" \
+   "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" "$_pur_prc"
+echo "== pr_url_ref: both copies agree over one corpus =="
+# _pur <def-text> <json-value> — the def's answer for one pr_url value, `null` when none.
+_pur() { jq -cn --argjson v "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$1"' $v | pr_url_ref'; }
+_pur_corpus=('"https://github.com/acme/widget/pull/179"' '"https://github.com/acme/widget/PULL/179"'
+    '"https://github.com/acme/widget/Pull/179"' '"https://GitHub.com/Acme/Widget.git/pull/0179"'
+    '"https://github.com/acme/widget/pull/0"' '"https://github.com/acme/widget/issues/179"'
+    '"https://github.com/acme/widget/commit/179"' '"https://github.com/acme/widget/tree/main/pull/179"'
+    '"https://github.com/acme/widget/pull/"' '"https://example.com/acme/widget/pull/179"'
+    '"https://example.com/x/pull/9 https://github.com/acme/widget/pull/179"' '""' '42' 'null'
+    '{"u":"https://github.com/acme/widget/pull/179"}')
+for _v in "${_pur_corpus[@]}"; do
+    eq "pr_url_ref agrees on [$_v]" "$(_pur "$KB_JQ_PR_URL_REF" "$_v")" "$(_pur "$_pur_prc" "$_v")"
+done
+eq "witness: the corpus holds a URL naming a PR, and an upper-case segment naming none" \
+   '{"repo":"acme/widget","n":"179"}|null' \
+   "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/pull/179"')|$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')"
+echo "== control: a standalone copy read case-insensitively is caught by both comparisons =="
+_pur_cs='capture("/pull/(?<n>[0-9]+)")' _pur_ci='capture("/pull/(?<n>[0-9]+)"; "i")'
+_pur_mut="${_pur_prc/"$_pur_cs"/"$_pur_ci"}"
+eq "control: the mutation applied" "false" "$([[ "$_pur_mut" == "$_pur_prc" ]] && echo true || echo false)"
+eq "control: the line-for-line comparison reds on it" "false" \
+   "$([[ "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" == "$_pur_mut" ]] && echo true || echo false)"
+eq "control: …and so does the corpus, on a /PULL/ URL" "false" \
+   "$([[ "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')" == "$(_pur "$_pur_mut" '"https://github.com/acme/widget/PULL/179"')" ]] && echo true || echo false)"
+eq "⭐ kb_pr_named_verdict reads the pair through it: …/PULL/179 beside pr_number 179 is refused" "refuse" \
+   "$(kb_pr_named_verdict '{}' '{"pr_number":179,"pr_url":"https://github.com/acme/widget/PULL/179"}' | cut -f1)"
+unset -f _pur _pur_strip
+unset _pur_prc _pur_mut _pur_cs _pur_ci _pur_corpus _v
+
 # ═══════════ 6 — the WRITE-OUTCOME contract: promote ↔ `bin/kbcard` (card#9938) ═══════════
 #
 # THE PAIR HERE IS STANDALONE ↔ ANOTHER BIN, not standalone ↔ the lib, and that is the same
@@ -502,14 +546,17 @@ unset _rcu_prc _rcu_kbc _rcu_mut _row _got _want _expect KBC
 # have been spent. Exactly this file's founding shape: a fix landing in one copy, missing its twin,
 # green suite, held by prose.
 #
-# ⚑ THE HOIST WAS CONSIDERED AND DECLINED, recorded here because "why is this still two texts" is
-# the first question a reader has. next-dl DOES source the lib, so a `kb_*` primitive is available
-# to it — but promote-released-cards may NOT source the lib (§ Stage D, above), so its copy stays
-# under any hoist. A lib primitive would therefore relocate ONE of the two texts and add a lib API
-# with a single lib-side caller, leaving the same two texts to keep in sync. What closes the defect
-# is the comparison, not the relocation. If a SECOND lib-sourcing bin ever needs this chain, that
-# is canon #5's second real caller and the hoist becomes right; this block keeps working either
-# way, because it compares behaviour and not text.
+# ⚑ THE LIB NOW OWNS A THIRD COPY, AND next-dl HAS NOT MOVED ONTO IT. Until card#9777 the hoist
+# was declined here: promote-released-cards may NOT source the lib (§ Stage D, above), so a lib
+# primitive would only have relocated one text, for a single lib-side caller. card#9777 gave the
+# chain its lib-sourcing callers — every stage write through `kb_stage_write` renders its refusal
+# with the lib's `kb_render_refusal`, a mirror of `resp_detail` pinned in § 8 below — so next-dl's
+# `resp_excerpt` is now the one lib-sourcing copy that could call the lib instead of carrying the
+# chain. It was NOT migrated in that card: its envelope, its cut and its withheld-on-an-unreadable-
+# token-file outcome all differ by design, so the move is a change to what next-dl prints and is
+# its own change. Until it lands, this block is what holds that copy to the other two. (Its MASK
+# stage does call the lib — kb_mask_token, over kb_token_file_read's token — since card#9777's
+# review round; what is mirrored here is the scrub chain alone.)
 #
 # WHAT IS COMPARED, and what is not: the DECISION about the body — which bytes survive the render
 # and in what form. The tools' envelopes differ by design (`resp_detail` prints `HTTP <status>,
@@ -534,6 +581,40 @@ API_ERR_EXCERPT_MAX="$(sed -n 's/^API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$P
 TOKEN="$MP_TOKEN"
 eq "witness: promote's bound was read out of the bin" "false" \
    "$([[ -z "$API_ERR_EXCERPT_MAX" ]] && echo true || echo false)"
+
+# THE NORMALISATION ITSELF (card#9777): promote reads $KANBAN_WRITEBACK_TOKEN raw and cannot
+# source the lib to get kb_token_file_read's strip, so it carries its own copy of the same
+# trailing-whitespace rule — the read-time step BEFORE either renderer below ever runs, and a
+# renderer-agreement corpus that only ever fed a clean token (as the one below does) cannot see
+# it drift. Extracted by grepping the LITERAL line out of the shipped bin, not retyped here, so
+# a hand-edit that changes the character class or the expansion shape is what this pins.
+PRC_STRIP_LINE="$(sed -n '/^TOKEN="\${RAW_TOKEN%/p' "$PRC")"
+eq "witness: promote's TOKEN-strip line was found in the bin" "false" \
+   "$([[ -z "$PRC_STRIP_LINE" ]] && echo true || echo false)"
+_prc_strip() { local RAW_TOKEN="$1" TOKEN; eval "$PRC_STRIP_LINE"; printf '%s' "$TOKEN"; }
+_lib_strip() { local _v; kb_token_file_read _v <(printf '%s' "$1"); printf '%s' "$_v"; }
+STRIP_LABELS=('no trailing whitespace' 'trailing LF'      'trailing CR'
+              'trailing CRLF'          'trailing space'   'trailing tab'
+              'trailing VT then FF'    'interior whitespace untouched')
+STRIP_INPUTS=('sekrit123'              $'sekrit123\n'     $'sekrit123\r'
+              $'sekrit123\r\n'         'sekrit123 '       $'sekrit123\t'
+              $'sekrit123\v\f'         $'sek rit\t123')
+eq "witness: every strip-corpus row has a label" "${#STRIP_LABELS[@]}" "${#STRIP_INPUTS[@]}"
+for _i in "${!STRIP_INPUTS[@]}"; do
+    eq "strip normalisation parity [${STRIP_LABELS[$_i]}]" \
+       "$(_lib_strip "${STRIP_INPUTS[$_i]}")" "$(_prc_strip "${STRIP_INPUTS[$_i]}")"
+done
+unset _i PRC_STRIP_LINE
+
+# ⛔ CONTROL — a promote copy with the strip line DELETED must diverge from the lib on the
+# trailing-CR row, or the loop above is comparing two copies that both dropped it. CR, not LF:
+# the `$(…)` this row's own comparison captures through strips a trailing LF on EITHER side
+# regardless of what the mutant returned, which would make the row pass vacuously; a trailing
+# CR survives a command substitution, so it is CR that actually exercises the mutant's miss.
+# Driven on the planted mutant used nowhere else in this run.
+_prc_strip_mutant() { local RAW_TOKEN="$1"; printf '%s' "$RAW_TOKEN"; }
+eq "CONTROL: a promote copy without the strip line DOES diverge" "false" \
+   "$([[ "$(_lib_strip $'sekrit123\r')" == "$(_prc_strip_mutant $'sekrit123\r')" ]] && echo true || echo false)"
 
 # _mp_detail <body> — resp_detail's verdict on the BODY, envelope removed. Its no-body sentence
 # and resp_excerpt's empty string are the same decision said two ways; mapping one onto the other
@@ -655,5 +736,91 @@ eq "control: unscrubbed, promote's copy LEAKS it too"           "true" \
 eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(_mp_detail "$_mp_esc")")"
 unset -f resp_excerpt resp_detail rx_naive rd_naive _mp_detail _mp_ctl _mp_c1
 unset RX_SRC RX_NAIVE RD_SRC RD_NAIVE _mp_needle MP_LABELS MP_BODIES MP_TOKEN _mp_esc _mp_c1_body token_file
+
+# ═══════════ 8 — the REFUSAL render: promote's resp_detail ↔ the lib's kb_render_refusal ═══════════
+#
+# THE PAIR (card#9777). Every stage write in the toolkit renders a board's refusal through ONE of
+# these two: every mover that calls `kb_stage_write` (grep bin/ for it) through
+# `kb_render_refusal`, and promote-released-cards — which may not source the lib
+# — through its own `resp_detail` (card#9301, the original). The product claim is that a refusal
+# reaches the operator in the SAME shape whichever mover hit it, so unlike § 7 NOTHING is stripped:
+# the envelope (`HTTP <s>, server said: …`, the no-body sentence, the truncation marker), the mask,
+# the scrub and the cut are all compared, byte for byte.
+#
+# WHAT IT DOES NOT COVER: promote's `000` arm (a request that never completed). kb_stage_write
+# never renders one — kb_api reports its own `curl failed` there — so the lib copy has no such arm
+# and no row here feeds `000`.
+echo "== the refusal render: the lib's kb_render_refusal IS promote's resp_detail, envelope and all =="
+_adopt_fn "$PRC" resp_detail
+API_ERR_FILE="$TMP/rr-detail"
+API_ERR_EXCERPT_MAX="$(sed -n 's/^API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$PRC")"
+_rr_lib_max="$(sed -n 's/^KB_API_ERR_EXCERPT_MAX=\([0-9][0-9]*\)$/\1/p' "$LIB")"
+eq "witness: both bounds were read out of their files" "false|false" \
+   "$([[ -z "$API_ERR_EXCERPT_MAX" ]] && echo true || echo false)|$([[ -z "$_rr_lib_max" ]] && echo true || echo false)"
+eq "the two bounds are ONE number" "$API_ERR_EXCERPT_MAX" "$_rr_lib_max"
+eq "…and the sourced lib carries the value its file declares" "$_rr_lib_max" "$KB_API_ERR_EXCERPT_MAX"
+
+RR_TOKEN='kbwb_RRRRSSSSTTTTUUUU0123456789'
+TOKEN="$RR_TOKEN"; KB_TOKEN="$RR_TOKEN"
+_rr_promote() { printf '%s\n%s' "$1" "$2" > "$API_ERR_FILE"; resp_detail; }
+# A body one byte per position over the bound, and one whose token STRADDLES the cut — the row
+# the mask-before-cut ordering exists for. Both are built from the bound read above, so neither
+# row goes stale when the bound is re-tuned.
+_rr_long="$(printf '%*s' "$(( API_ERR_EXCERPT_MAX + 50 ))" '' | tr ' ' 'x')"
+_rr_straddle="$(printf '%*s' "$(( API_ERR_EXCERPT_MAX - 10 ))" '' | tr ' ' 'y')$RR_TOKEN tail"
+RR_LABELS=('a leg-refusal JSON body'          'the same body with the wire token echoed back'
+           'no body at all'                   'a multi-line HTML error page'
+           'an ESC sequence and a CR'         'UTF-8 that must survive intact'
+           'a body over the bound'            'a token straddling the cut')
+RR_STATUS=(422 422 403 502 409 422 422 422)
+RR_BODIES=('{"error":"parent has open legs","open_legs":[123,456]}'
+           "{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $RR_TOKEN\"}}"
+           ''
+           "$(printf '<html>\n<body>\n<h1>502 Bad Gateway</h1>\n</body>\n</html>')"
+           "$(printf '{"m":"blocked\033[2Kfree\rkbcard: moved"}')"
+           '{"message":"Étape refusée — café €50"}'
+           "$_rr_long"
+           "$_rr_straddle")
+eq "witness: every corpus row has a label and a status" "${#RR_LABELS[@]}|${#RR_LABELS[@]}" \
+   "${#RR_BODIES[@]}|${#RR_STATUS[@]}"
+for _i in "${!RR_BODIES[@]}"; do
+    _l="${RR_LABELS[$_i]}"
+    _p="$(_rr_promote "${RR_STATUS[$_i]}" "${RR_BODIES[$_i]}")"
+    _k="$(kb_render_refusal "${RR_STATUS[$_i]}" "${RR_BODIES[$_i]}")"
+    eq "the two renders are byte-identical [$_l]" "$_p" "$_k"
+    eq "…and neither carries the token [$_l]" "false|false" "$(has "$RR_TOKEN" "$_p")|$(has "$RR_TOKEN" "$_k")"
+done
+# ⭐ VACUITY: identical outputs that both dropped the body would pass every row above. So the
+# property each row exists for is asserted on the lib copy directly.
+eq "the leg refusal is quoted with its status" \
+   'HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456]}' \
+   "$(kb_render_refusal 422 "${RR_BODIES[0]}")"
+eq "the echoed token is MASKED, not dropped with its field" "true" \
+   "$(has '"authorization":"Bearer ***"' "$(kb_render_refusal 422 "${RR_BODIES[1]}")")"
+eq "no body is said as such" 'HTTP 403, and the server sent no body' "$(kb_render_refusal 403 '')"
+eq "an over-bound body is cut and says so" "true" \
+   "$(has "[truncated at $API_ERR_EXCERPT_MAX bytes]" "$(kb_render_refusal 422 "$_rr_long")")"
+eq "no prefix of a straddling token survives the cut" "false" \
+   "$(has "${RR_TOKEN:0:8}" "$(kb_render_refusal 422 "$_rr_straddle")")"
+
+# ⭐ THE CONTROL, from the lib's end: its mask stage cut out must make a token row DISAGREE with
+# promote's and leak — otherwise the rows above are comparing two copies that could both have lost it.
+echo "== control: a lib copy without its mask, or with its own bound, is caught =="
+RR_SRC="$(_fn_src "$LIB" kb_render_refusal)"
+RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed '/KB_TOKEN/d; s/^kb_render_refusal()/rr_naive()/')"
+eq "control: the mask line really came out" "true|false|true" \
+   "$(has 'KB_TOKEN' "$RR_SRC")|$(has 'KB_TOKEN' "$RR_NAIVE")|$(has 'rr_naive() {' "$RR_NAIVE")"
+eval "$RR_NAIVE"
+eq "control: unmasked, the lib copy LEAKS the token" "true" \
+   "$(has "$RR_TOKEN" "$(rr_naive 422 "${RR_BODIES[1]}")")"
+eq "control: …and the comparison sees the disagreement" "false" \
+   "$([[ "$(rr_naive 422 "${RR_BODIES[1]}")" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
+_rr_saved="$KB_API_ERR_EXCERPT_MAX"; KB_API_ERR_EXCERPT_MAX=$(( _rr_saved - 1 ))
+eq "control: a lib bound one byte off disagrees on the over-bound row" "false" \
+   "$([[ "$(kb_render_refusal 422 "$_rr_long")" == "$(_rr_promote 422 "$_rr_long")" ]] && echo true || echo false)"
+KB_API_ERR_EXCERPT_MAX="$_rr_saved"
+unset -f resp_detail rr_naive _rr_promote
+unset RR_SRC RR_NAIVE RR_LABELS RR_STATUS RR_BODIES RR_TOKEN _rr_long _rr_straddle _rr_saved _rr_lib_max _i _l _p _k
+unset TOKEN KB_TOKEN
 
 _summary "mirror-pair-parity-selftest"

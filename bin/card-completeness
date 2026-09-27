@@ -138,9 +138,9 @@
 #   6. A commit pushed to the integration branch WITHOUT a PR. Nothing merged it, so there is
 #      no PR and no branch to read; it is invisible here exactly as 3 is.
 #   7. A part whose branch names the card only by its DL (`feat/dl-300-…`). The release mover
-#      correlates a card by `dl_number` as well as by `pr_number`, so a card it promotes can have
-#      parts this oracle cannot see: the grammar above reads CARD tokens, and a DL-only branch
-#      carries none. Such a part reads as absent — COMPLETE, the unsafe direction — so a repo
+#      correlates a card by `dl_number` as well as by the PR its `pr_url` names, so a card it
+#      promotes can have parts this oracle cannot see: the grammar above reads CARD tokens, and a
+#      DL-only branch carries none. Such a part reads as absent — COMPLETE, the unsafe direction — so a repo
 #      whose branches carry DLs rather than card ids gets no protection from this gate. Asked of
 #      this fleet's own remotes when this was adopted, every branch carrying a token carried a
 #      card token; re-derive that before relying on it elsewhere.

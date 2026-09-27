@@ -148,6 +148,10 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 # shellcheck source=bin/_kb-board-lib.sh
 source "$KB_LIB"
 KB_PROG="next-dl"
+# The token read and its mask are the lib's (card#9777). Asked for by definedness before any
+# request: beside a lib that predates them the claim would go out with no bearer and the
+# board-max scan would die at rc 127, neither of which names the cause.
+declare -F kb_token_file_read kb_mask_token >/dev/null || { echo "next-dl: the _kb-board-lib.sh beside this script predates kb_token_file_read / kb_mask_token — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 1; }
 
 USAGE='usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]'
 peek=0
@@ -407,9 +411,10 @@ dl_sequence_call() (
     # either: it would be one key name behind whatever the next gateway spells it, while reading
     # like a guarantee. What bounds that exposure is this function's own cut below and the
     # stderr-only channel — named as the cut rather than as its width, which lives on that line.
-    # The token is re-read here rather than carried in a variable: `$(cat …)` strips the trailing
-    # newline exactly as it does where kb_auth_header is fed above, so these are the bytes that
-    # went on the wire, and no resolved secret is held anywhere a later edit could print.
+    # The token is re-read here rather than carried in a variable, through the same
+    # kb_token_file_read that feeds kb_auth_header below, so these are the bytes that went on the
+    # wire, and no resolved secret is held anywhere a later edit could print. The mask itself is
+    # the lib's kb_mask_token — this function owns only the excerpt's line-shaping and cut.
     # ⛔ AND THE RE-READ FAILING IS ITS OWN OUTCOME, NOT AN EMPTY TOKEN. Scoring an unreadable
     # token file as "no token, nothing to mask" is the read-outcome-collapse class
     # (tests/read-outcome-collapse-selftest.sh) landing on a SECRET: the file deleted or made
@@ -419,12 +424,11 @@ dl_sequence_call() (
     # is quoted whole.
     resp_excerpt() {
         local tok body
-        tok="$(cat "$token_file" 2>/dev/null)" || {
+        kb_token_file_read tok "$token_file" || {
             printf '[withheld — this tool could not re-read its own token file to mask it out of this body]'
             return 0
         }
-        body="$1"
-        [[ -n "$tok" ]] && body="${body//"$tok"/***}"
+        kb_mask_token body "$tok" "$1"
         # One log LINE: newlines/tabs/CR to spaces, then C0 controls AND DEL dropped, runs squeezed
         # — `resp_detail`'s chain, and the reason it is a chain rather than one `tr` is in that
         # function's own comment. Then, and only then, the cut.
@@ -490,7 +494,7 @@ dl_sequence_call() (
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
     resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
-        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_auth_header "$(cat "$token_file")")")" || {
+        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_token_file_read tok "$token_file" || tok=""; kb_auth_header "$tok")")" || {
         # THE TRANSPORT DIED. ONE cause, TWO dispositions, and the parameter — not the prose —
         # decides which (card#10230), exactly as the 2xx-undecodable arm below does. The CAUSE
         # line is unconditional and unchanged: it is still NOT a 404, because nothing was
@@ -679,7 +683,7 @@ NDL_NO_FLOOR='next-dl:this-board-holds-no-dl-floor'
 board_dl_max() (
     cfg="$(resolve_board_cfg)" || { printf '%s' "$NDL_NO_FLOOR"; exit 1; }
     IFS=$'\t' read -r api board token_file <<<"$cfg"
-    tok="$(cat "$token_file")"
+    kb_token_file_read tok "$token_file" || tok=""   # the empty-bearer read the note below records
     # PAGINATE the whole board so the fallback seed sees the TRUE max, not a
     # truncated page 1 — via the shared fetch_board_cards. Exit-code policy: EVERY
     # non-zero paginator rc REFUSES (exit 2), because an undercount could re-mint a
@@ -769,7 +773,7 @@ board_dl_max() (
 # from the local floor at rc 0 with nothing on stderr.
 # A THIRD path is neither, and is recorded because the (a)/(b) split above does not
 # describe it: a token file that is a DIRECTORY passes kb_resolve_env's -r test, so the
-# config RESOLVES; `cat` then fails and the board is read with an EMPTY bearer. set -e does
+# config RESOLVES; kb_token_file_read then fails and the board is read with an EMPTY bearer. set -e does
 # not catch that — this function runs inside the `$(board_dl_max)` substitution below, and a
 # command-substitution subshell does not inherit errexit (the mechanism is measured in
 # docs/CONSOLIDATION-PLAN.md; dl_sequence_call has the same shape). The outcome is then

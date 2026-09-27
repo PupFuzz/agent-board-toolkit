@@ -90,6 +90,13 @@ source "$KB_LIB"
 KB_PROG="dl-a1-register-field"
 KB_API_QUIET=1
 
+# The register write masks its response through kb_mask_token, and the throwaway-card write
+# below goes through kb_stage_write — both the lib's (card#9777). Asked for by definedness
+# before either write: beside a lib that predates them the register POST goes out and this
+# tool then dies at `command not found` (rc 127) quoting the response, rather than at rc 2
+# before any request — this tool's own published "refused before any request" rc.
+declare -F kb_mask_token kb_stage_write >/dev/null || { echo "dl-a1-register-field: the _kb-board-lib.sh beside this script predates kb_mask_token / kb_stage_write — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 2; }
+
 USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
 
 board_name=""
@@ -201,6 +208,10 @@ by_ref_state() {
 reg_out="$(kb_api_status POST "/boards/$BOARD/custom_fields.json" '{"key":"dl_number","label":"DL","type":"string"}')"
 reg_http="${reg_out%%$'\n'*}"
 reg_body="${reg_out#*$'\n'}"
+# Quoted to stderr on the FATAL register arm, so masked here, once (card#9777): the POST sent
+# $KB_TOKEN in its Authorization header, and a server echoing request headers hands it back.
+# The 2xx arm only reads .data.id out of it, which the mask cannot change for a real token.
+kb_mask_token reg_body "${KB_TOKEN:-}" "$reg_body"
 if [[ "$reg_http" =~ ^2 ]]; then
     # 2>/dev/null alone silenced the MESSAGE and kept the STATUS: a 2xx whose body is not JSON
     # (a proxy's HTML, a truncated read) still exited 5 through `set -e` — quietly, which is
@@ -267,8 +278,10 @@ body="$(jq -n \
       name: "[A1-verify] dl_number throwaway — delete me",
       payload: {dl_number: $sentinel}}
      + (if $swim_set != "" then {swimlane_id: $swim} else {} end)')"
-create="$(kb_api POST "/tasks.json" "$body")" || {
-    # kb_api's KB_HTTP global doesn't cross this $(), so don't claim a code we can't see.
+create="$(kb_stage_write POST "/tasks.json" "$body")" || {
+    # The birth-stage write is the lib's kb_stage_write (card#9777), which has already put the
+    # status and the server's redacted explanation on stderr from INSIDE this $(). KB_HTTP does
+    # not cross it, so this line still claims no code of its own.
     echo "dl-a1-register-field: FATAL create throwaway (non-2xx or curl error)" >&2
     exit 1
 }

@@ -466,9 +466,10 @@ BSC_DISPOSED=(
     #    with a `payload.repo` that is a string containing `/` is not in the population these
     #    lines describe.
     "bin/promote-released-cards::A card with NO derivable by-ref source cannot be attributed::a7139314fe13"
-    "bin/release-pr-body::matched ONLY an unsourced card::d7ef1a8db8a4"
+    #    RE-RULED at #415 against the text there now: the added sentence (a ref noted as already in
+    #    the released stage names a card with nothing to move) names no key and no precedence.
+    "bin/release-pr-body::matched ONLY an unsourced card::a63f4bf6f565"
     "docs/INSTALL.md::Shipped refs whose card carries no by-ref source::a306030aea36"
-    "tests/promote-source-qualify-selftest.sh::qualified: the foreign card is NAMED, by id::86591210a1ed"
     "tests/release-pr-body-selftest.sh::the coverage report MEASURED (qualified)::bdbe48bd011b"
 
     # ── ADMITTED BY ARM 2 (bare `source` beside a field name), and the same rulings as above one
@@ -486,7 +487,7 @@ BSC_DISPOSED=(
     #    states NO attribution consequence — the opposite of making one — and the prelude-shadow
     #    entry is a disposition table for another guard entirely.
     "tests/kbcard-selftest.sh::it states no consequence: no attribution::fd7177779bbd"
-    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::003fa2a3c360"
+    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::8df2e74912f7"
 
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control
     #    fixture. The fixture MUST be reportable — that is its job — and the other two cannot
