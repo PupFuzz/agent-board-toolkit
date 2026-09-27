@@ -1168,13 +1168,14 @@ _REF_LOG="$(mktemp)"
 trap 'rm -f "$_REF_LOG"' EXIT
 # GET answers the external-id search with a resolvable row and the card read (writing one half of a
 # pr / issue number–URL pair reads the card's other half before writing — card#9837, card#9846)
-# with a card carrying none; every other method echoes its request body. The log is what turns
+# with a card whose pr_url names PR 178, so a valid --pr 178 alone is neither a divergence nor a
+# bare pr_number (DL-429); every other method echoes its request body. The log is what turns
 # "no request" into a measurement.
 kb_api() {
     printf '%s\n' "$1" >> "$_REF_LOG"
     case "$1 $2" in
         "GET /tasks/search.json"*) printf '{"data":[{"id":99}]}' ;;
-        GET*) printf '{"data":{"id":99,"payload":{}}}' ;;
+        GET*) printf '{"data":{"id":99,"payload":{"pr_url":"https://github.com/acme/widget/pull/178"}}}' ;;
         *) printf '%s' "$3" ;;
     esac
 }
@@ -1930,8 +1931,8 @@ kbc move --task 505 --column in_progress
 eq "control: move on a well-formed echo → rc 0"  "0" "$rc"
 eq "control: …and prints the moved card"         "505" "$(jq -r '.id' <<<"$out")"
 
-KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 3 "patch" patch --task 505 --pr 12
-kbc patch --task 505 --pr 12
+KB_STUB_PATCH_BODY="$NONJSON" nonjson_leg "patch" 3 "patch" patch --task 505 --dl DL-12
+kbc patch --task 505 --dl DL-12
 eq "control: patch on a well-formed echo → rc 0" "0" "$rc"
 eq "control: …and prints the patched card"       "505" "$(jq -r '.id' <<<"$out")"
 
@@ -2154,7 +2155,7 @@ eq "…and prints nothing on stdout"               "" "$out"
 KB_STUB_ECHO_STAGE=99 kbc patch --task 505 --column in_progress
 eq "patch --column whose echo disagrees → rc 1"  "1" "$rc"
 eq "…through the same owner, naming patch"       "true" "$(has 'kbcard: patch on task 505: HARD FAILURE' "$err")"
-kbc patch --task 505 --pr 12
+kbc patch --task 505 --dl DL-12
 eq "control: a patch that names NO column makes no stage claim → rc 0" "0" "$rc"
 
 # create-card's POST arm echoes stage 48 unconditionally, so asking for in_progress (49) is the
@@ -2467,7 +2468,7 @@ ta create-card description
 eq "create-card with no description flag → rc 0"     "0" "$rc"
 eq "…and no description key on the wire at all"      "false" \
    "$(kb_stub_bodies POST '/tasks.json' | jq -c 'has("description")')"
-kbc patch --task 505 --pr 12
+kbc patch --task 505 --dl DL-12
 eq "patch with neither text flag → rc 0"             "0" "$rc"
 eq "…and neither key on the wire"                    "false,false" \
    "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '[has("name"),has("description")] | join(",")')"
@@ -4156,7 +4157,7 @@ kb_stub_route() {
         "POST "*/tasks.json)        printf '201\n%s' "$PF_CARD" ;;
         "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
         "PATCH "*/tasks/*.json)     printf '200\n%s' "$PF_CARD" ;;
-        "GET "*/tasks/*.json)       printf '200\n%s' "$PF_CARD" ;;
+        "GET "*/tasks/*.json)       printf '200\n%s' "${PF_READ_CARD:-$PF_CARD}" ;;
     esac
 }
 export -f kb_stub_route
@@ -4269,14 +4270,29 @@ for _verb in create-card patch; do
   # was. The padded legs are the jq-version pins: jq-1.7's tonumber accepts surrounding space, tab,
   # CR and LF and jq-1.8 refuses them, so the assembler trims exactly that set before the attempt.
   # Without the trim these legs pass on 1.7 and red on 1.8 — run this file under both.
+  # `patch --pr` alone reads the card and is refused unless its stored pr_url names the same
+  # pull request (a bare pr_number names no repo — agent-webhook-bridge DL-429), so the card read
+  # carries a pr_url naming the value's own number for these legs; the payload asserted is the
+  # write, which is unchanged.
+  _pfread() {
+      if [[ "$_verb" == patch && "$_flag" == --pr ]]; then
+          PF_READ_CARD="$(jq -c --arg u "https://github.com/o/r/pull/$1" '.data.payload = {pr_url: $u}' <<<"$PF_CARD")"
+          export PF_READ_CARD
+      else
+          unset PF_READ_CARD
+      fi
+  }
   for _ref in --pr:pr_number --issue:issue_number; do
     _flag="${_ref%%:*}"; _k="${_ref#*:}"
+    _pfread 178
     pf "$_verb" "$_flag" 178
     eq "$_verb $_flag 178 → a JSON number"                 "{\"$_k\":178}"    "$(pf_payload)"
+    _pfread 123
     pf "$_verb" "$_flag" '00123'
     eq "$_verb $_flag 00123 → the number 123, as on dev"   "{\"$_k\":123}"    "$(pf_payload)"
     pf "$_verb" "$_flag" ' 123 '
     eq "$_verb $_flag ' 123 ' → the number 123, as on dev" "{\"$_k\":123}"    "$(pf_payload)"
+    _pfread 178
     pf "$_verb" "$_flag" $'178\n'
     eq "$_verb $_flag \$'178\\n' → the number 178, as on dev" "{\"$_k\":178}" "$(pf_payload)"
     # The trim feeds only the number attempt: a value that is not a number after it is sent
@@ -4291,6 +4307,7 @@ for _verb in create-card patch; do
     eq "$_verb $_flag with an embedded key=value line → no key injected" \
        "$(jq -cn --arg k "$_k" --arg s $'#178\nversion_target=evil' '{($k): $s}')" "$(pf_payload)"
   done
+  unset PF_READ_CARD
   pf "$_verb" --dl DL-12
   eq "$_verb --dl DL-12 → the canonical DL string, as on dev" '{"dl_number":"DL-0012"}' "$(pf_payload)"
   # The full set, in dev's key order — the order is part of the wire bytes.
@@ -5035,17 +5052,18 @@ for _u in 'https://user:TOKEN-9837@github.com/acme/widget/pull/178' \
     eq "⭐ …names the PR and repo it derived"                  "true" "$(has "names PR 178 in acme/widget" "$err")"
     eq "⭐ …and never prints the token"                        "false" "$(has 'TOKEN-9837' "$err$out")"
 done
-# The unparsed notice does not echo the stored value either.
+# The refusal over an unparsed stored pr_url (bare: it names no pull request) does not echo the
+# stored value either.
 KB_STUB_PAYLOAD='{"pr_url":" https://user:TOKEN-9837@example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
-eq "an unparsed userinfo pr_url → rc 0, and the notice never prints the token" "0|false" "$rc|$(has 'TOKEN-9837' "$err$out")"
+eq "an unparsed userinfo pr_url → rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-9837' "$err$out")"
 # /issues/<N> is the other numbered segment promote derives a source through, and GitHub numbers
 # issues and pull requests in ONE sequence — so it names a ref that can diverge from --pr.
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc patch --task 505 --pr 179
 eq "⭐ an /issues/178 pr_url, --pr 179 → rc 2, no PATCH"    "2|0" "$rc|$(npatch)"
+# The same number read from an /issues/ segment is no pull request, so --pr 178 over it would
+# leave a bare pr_number — refused, like the /issues/0 placeholder (the bare section below).
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/178"}' kbc patch --task 505 --pr 178
-eq "an /issues/178 pr_url, --pr 178 → rc 0 (same number)"   "0|1" "$rc|$(npatch)"
-KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/issues/0"}' kbc patch --task 505 --pr 179
-eq "an /issues/0 pr_url is the placeholder → rc 0, silent"  "0|1|" "$rc|$(npatch)|$err"
+eq "an /issues/178 pr_url, --pr 178 → rc 2 (names no pull request)" "2|0" "$rc|$(npatch)"
 # ⭐ commit / tree / blob carry no number but still name a repo — the one that attributes the card
 # where no payload.repo outranks the URL (_kbc_ref_pair_guard's header owns that rule) — so --pr
 # alone over one would name PR 179 under acme/widget whether or not it is there: refused, naming
@@ -5064,19 +5082,11 @@ KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --column wont_do --keep-refs --pr 
 eq "wont_do --keep-refs --pr 179 over 178 → rc 2, no PATCH"  "2|0" "$rc|$(npatch)"
 
 # --- everything else is unchanged: rc 0, the same PATCH, and nothing on stderr --------------
-for _p in '{}' '{"pr_url":null}' '{"pr_url":""}'; do
-    KB_STUB_PAYLOAD="$_p" kbc patch --task 505 --pr 179
-    eq "no pr_url ($_p) → rc 0"                             "0" "$rc"
-    eq "…the PATCH writes pr_number only"                   '{"pr_number":179}' "$(ppay)"
-    eq "…and says nothing"                                  ""  "$err"
-done
+# (No stored pr_url, the placeholder, and a pr_url naming no pull request are REFUSED under --pr
+# alone — the bare section below owns those rows.)
 KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 178
 eq "a pr_url naming the SAME number → rc 0"                 "0" "$rc"
 eq "…the PATCH writes pr_number only"                       '{"pr_number":178}' "$(ppay)"
-eq "…and says nothing"                                      ""  "$err"
-KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/0"}' kbc patch --task 505 --pr 179
-eq "the pre-PR placeholder .../pull/0 → rc 0"               "0" "$rc"
-eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
 eq "…and says nothing"                                      ""  "$err"
 KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --pr 179 --pr-url https://github.com/other/repo/pull/179
 eq "--pr WITH --pr-url → rc 0"                              "0" "$rc"
@@ -5094,22 +5104,44 @@ eq "…and writes the new number over a nulled URL"           '{"dl_number":null
 KB_STUB_PAYLOAD="$PR178" kbc patch --task 505 --dl DL-7
 eq "a patch with no --pr → rc 0 and never reads the card"   "0|0" "$rc|$(nget)"
 
-# --- the stored value it cannot read as a pull URL: proceed, and say the check did not happen --
-KB_STUB_PAYLOAD='{"pr_url":"https://example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
-eq "a non-GitHub-pull pr_url → rc 0 (no second PR number to disagree with)" "0" "$rc"
-eq "…the PATCH writes pr_number only"                       '{"pr_number":179}' "$(ppay)"
-eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request or issue URL' "$err")"
-
-# A non-string pr_url carries no URL to read a number from: the same notice, and the write goes.
-KB_STUB_PAYLOAD='{"pr_url":178}' kbc patch --task 505 --pr 179
-eq "a NON-STRING pr_url → rc 0, PATCH writes pr_number only" '0|{"pr_number":179}' "$rc|$(ppay)"
-eq "…and says the check could not be made"                  "true" "$(has 'is not a GitHub pull-request or issue URL' "$err")"
+# --- the stored value it cannot read as a pull URL: a non-GitHub or non-string pr_url names no
+# pull request, so --pr alone over one is REFUSED as bare (the bare section below owns the rows).
 
 # --- a card that cannot be read is no answer: rc 1, nothing written ----------------------
 for _r in 403 nocard; do
     KB_STUB_READ=$_r kbc patch --task 505 --pr 179
     eq "an unreadable card ($_r) → rc 1, no PATCH"           "1|0" "$rc|$(npatch)"
 done
+
+echo "== --pr alone onto a card whose pr_url names NO pull request is REFUSED: a bare pr_number is inert (agent-webhook-bridge DL-429) =="
+# A PR number is a per-repo counter, and a repo moved to a new GitHub org restarts at 1, so a card
+# names a pull request only through a pr_url naming its repo. The bridge now skips-and-reports a
+# card whose pr_number has no such pr_url, and promote-released-cards does the same — so
+# `patch --pr N` onto a card with no pr_url naming a pull request writes a value nothing reads,
+# at rc 0. Refused, naming --pr-url, with nothing written. Each row is a stored pr_url state that
+# names no pull request by the bridge PrUrlRef rule (a /pull/<N> segment with N > 0).
+for _p in '{}' '{"pr_url":null}' '{"pr_url":""}' \
+          '{"pr_url":"https://github.com/acme/widget/pull/0"}' \
+          '{"pr_url":"https://github.com/acme/widget/issues/0"}' \
+          '{"pr_url":"https://example.com/acme/widget/merge_requests/179"}' \
+          '{"pr_url":179}' \
+          '{"pr_url":"https://github.com/acme/widget/issues/179"}'; do
+    KB_STUB_PAYLOAD="$_p" kbc patch --task 505 --pr 179
+    eq "bare: --pr 179 over $_p → rc 2, NO PATCH"             "2|0" "$rc|$(npatch)"
+    eq "bare: …the refusal names --pr-url"                    "true" "$(has 'REFUSING --pr 179 without --pr-url' "$err")"
+    eq "bare: …says the number would name no pull request"    "true" "$(has 'names no repo' "$err")"
+    eq "bare: …and says nothing was written"                  "true" "$(has 'NOTHING WAS WRITTEN' "$err")"
+done
+# CONTROLS — the same flag where the result is NOT bare: both halves together (no read), and a
+# stored pr_url naming the SAME pull request.
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/179
+eq "control: --pr WITH --pr-url on a bare card → rc 0, both keys written" \
+   '0|{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/179"}' "$rc|$(ppay)"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/acme/widget/pull/179"}' kbc patch --task 505 --pr 179
+eq "control: --pr 179 over a pr_url naming PR 179 → rc 0"   '0|{"pr_number":179}' "$rc|$(ppay)"
+# The issue pair is NOT narrowed: DL-429 is a PR-correlation ruling.
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --issue 179
+eq "control: --issue alone on a card with no issue_url is unchanged → rc 0" '0|{"issue_number":179}' "$rc|$(ppay)"
 
 echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
@@ -5179,13 +5211,25 @@ for _ref in pr issue; do
         eq "…names $_uf and acme/widget" "true" \
            "$(has "REFUSING $_nf 179 without $_uf — the card's $_uk names no $_noun number, only the repo acme/widget" "$err")"
     done
+    # The issue pair keeps the notice and the placeholder exemption; the pr pair refuses both,
+    # because --pr alone over either leaves a bare pr_number (agent-webhook-bridge DL-429).
     for _u in "https://example.com/acme/widget/$_seg/179" "https://github.com/acme/widget" "https://github.com/acme/widget/wiki"; do
         KB_STUB_PAYLOAD="{\"$_uk\":\"$_u\"}" kbc patch --task 505 "$_nf" 179
-        eq "control: a stored $_uk yielding NO repo ('$_u'), $_nf 179 → rc 0, ONE PATCH, the not-checked notice" "0|1|true" \
-           "$rc|$(npatch)|$(has "the card's $_uk is not a GitHub pull-request or issue URL" "$err")"
+        if [[ "$_ref" == issue ]]; then
+            eq "control: a stored $_uk yielding NO repo ('$_u'), $_nf 179 → rc 0, ONE PATCH, the not-checked notice" "0|1|true" \
+               "$rc|$(npatch)|$(has "the card's $_uk is not a GitHub pull-request or issue URL" "$err")"
+        else
+            eq "a stored $_uk yielding NO repo ('$_u'), $_nf 179 → rc 2, NO PATCH, bare" "2|0|true" \
+               "$rc|$(npatch)|$(has "the card's $_uk is not a GitHub pull-request URL" "$err")"
+        fi
     done
     KB_STUB_PAYLOAD="{\"$_uk\":\"https://github.com/acme/widget/$_seg/00\"}" kbc patch --task 505 "$_nf" 179
-    eq "control: a stored placeholder $_uk …/$_seg/00, $_nf 179 → rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
+    if [[ "$_ref" == issue ]]; then
+        eq "control: a stored placeholder $_uk …/$_seg/00, $_nf 179 → rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
+    else
+        eq "a stored placeholder $_uk …/$_seg/00, $_nf 179 → rc 2, NO PATCH, bare" "2|0|true" \
+           "$rc|$(npatch)|$(has "only the pre-PR placeholder" "$err")"
+    fi
     # The number split off another repo's URL is not the stored URL's number — but the SAME repo's
     # is, so these stay the ordinary same/diff comparison.
     KB_STUB_PAYLOAD="{\"$_uk\":\"https://github.com/acme/widget/commit/x https://github.com/acme/widget/$_seg/179\"}" kbc patch --task 505 "$_nf" 179

@@ -2088,7 +2088,8 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
 # writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
 # card's stored other half would leave the card naming one ref by NUMBER and a different one by
-# URL. <card-data-json> is the card object (`.data` of a card read). Prints one TSV line per pair:
+# URL — or, for the pr pair written by its NUMBER, a pr_number that no pr_url names at all.
+# <card-data-json> is the card object (`.data` of a card read). Prints one TSV line per pair:
 #     <ref> <side> <disposition> <kind> [<url-number> <url-repo> <number>]
 # <disposition> is what a WRITER does with it — ok (write), notice (write, saying no check was
 # possible), refuse (write nothing); <kind> is why, for the message. <url-number> is `-` where the
@@ -2131,6 +2132,15 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # repo (a non-GitHub URL, a bare repo URL, a non-string); `unparsed-number` — a stored number
 # `norm` reads no number from. There is no second number to disagree with, so refusing would
 # refuse on a divergence nobody can show, and silence would claim a check that did not happen.
+# refuse, the pr pair written by NUMBER only (agent-webhook-bridge DL-429 — a PR number is a
+# per-repo counter, and a card names a pull request only through a pr_url naming its repo, so a
+# pr_number no stored pr_url names is bare, and bare names no repo): `bare-none` — no stored
+# pr_url (where the issue pair answers `ok none`); `bare-placeholder` — the stored placeholder
+# (where the issue pair answers `ok placeholder`); `bare-unparsed` — a stored pr_url yielding no
+# repo (where the issue pair answers `notice unparsed-url`); `bare-issue-url` — a stored
+# .../issues/<N> naming the SAME number (where the issue pair answers `ok same`), because only a
+# /pull/<N> segment names a pull request. adopt-to-dl never writes pr_number alone, so none of
+# these reaches it.
 # refuse: `diff` — two different numbers; `placeholder-given` — a GIVEN placeholder URL over a
 # stored real number; `unnumbered-given` / `unnumbered-stored` — a URL, given or STORED, that
 # names no number but still attributes the card to a repo (commit/tree/blob, a pull/issues segment
@@ -2154,15 +2164,21 @@ kb_ref_pair_verdicts() {
         | (if $side == "number" then {n: $req[$nk], u: $p[$uk], s: $p[$uk]}
            else {n: $p[$nk], u: $req[$uk], s: $p[$nk]} end) as $x
         | ($x.u | repo_from_gh_url) as $repo
+        | ($r == "pr" and $side == "number") as $prn
         | [$r, $side] + (
-            if $x.s == null or ($x.s | type) == "string" and ($x.s | test("\\A\\s*\\z")) then ["ok", "none"]
+            if $x.s == null or ($x.s | type) == "string" and ($x.s | test("\\A\\s*\\z")) then
+              (if $prn then ["refuse", "bare-none", "-", "-", ($x.n | norm)] else ["ok", "none"] end)
             elif $side == "url" and ($x.n | norm) == "0" then ["ok", "stored-zero"]
-            elif $repo == null then ["notice", "unparsed-url"]
-            else [$x.u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues)/(?<n>[0-9]+)"; "i")][0]
+            elif $repo == null then
+              (if $prn then ["refuse", "bare-unparsed", "-", "-", ($x.n | norm)] else ["notice", "unparsed-url"] end)
+            else [$x.u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(?<seg>pull|issues)/(?<n>[0-9]+)"; "i")][0]
               | (if . != null and .r != $repo then null else . end) as $c
-              | if $c != null and $side == "number" and ($c.n | test("\\A0+\\z")) then ["ok", "placeholder"]
+              | if $c != null and $side == "number" and ($c.n | test("\\A0+\\z")) then
+                  (if $prn then ["refuse", "bare-placeholder", "0", $repo, ($x.n | norm)] else ["ok", "placeholder"] end)
                 elif ($x.n | norm) == "" then ["notice", "unparsed-number"]
                 elif $c == null then ["refuse", (if $side == "number" then "unnumbered-stored" else "unnumbered-given" end), "-", $repo, ($x.n | norm)]
+                elif ($c.n | norm) == ($x.n | norm) and $prn and ($c.seg | test("\\Apull\\z"; "i") | not) then
+                  ["refuse", "bare-issue-url", ($c.n | norm), $repo, ($x.n | norm)]
                 elif ($c.n | norm) == ($x.n | norm) then ["ok", "same"]
                 elif ($c.n | test("\\A0+\\z")) then ["refuse", "placeholder-given", "0", $repo, ($x.n | norm)]
                 else ["refuse", "diff", ($c.n | norm), $repo, ($x.n | norm)] end
