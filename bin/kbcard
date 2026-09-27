@@ -425,6 +425,8 @@
 #     another PR, or none) over a stored pr_number are all refused. --clear pr-url does NOT also
 #     clear pr_number: --clear writes exactly the keys it names, so unlinking is --clear pr,pr-url
 #     (--clear pr alone, leaving a pr_url, is written: a pr_url with no pr_number is not bare).
+#     --clear pr alone is NOT an unlink: the card still tracks the pull request its pr_url names
+#     (promote correlates on the pr_url); unlinking is --clear pr,pr-url.
 #     A pr_number naming no positive number (0, or no digits) names no pull request and is not held to this. A call that writes
 #     NEITHER pr_number NOR pr_url is not checked, so a card that is already bare still takes
 #     every other edit. patch reads the card for it only when the result depends on the stored

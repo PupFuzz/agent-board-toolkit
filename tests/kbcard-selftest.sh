@@ -5217,6 +5217,9 @@ OFFLINE_ROWS=(
     '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/PULL/179'
     '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/Pull/179'
     '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/PULL/179'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/0'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180'
 )
 BARE_ROWS=(
     "${OFFLINE_ROWS[@]}"
@@ -5231,9 +5234,6 @@ BARE_ROWS=(
     '{"pr_url":"https://github.com/acme/widget/issues/179"}|patch --task 505 --pr 179'
     '{"pr_url":"https://github.com/acme/widget/PULL/179"}|patch --task 505 --pr 179'
     '{"pr_url":"https://github.com/acme/widget/Pull/179"}|patch --task 505 --pr 179'
-    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/0'
-    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/179'
-    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180'
     "$PR179|patch --task 505 --column wont_do --keep-refs --clear pr-url"
     '{"pr_number":179}|patch --task 505 --pr-url https://example.com/acme/widget/merge_requests/179'
 )

@@ -2335,6 +2335,9 @@ KB_JQ_PR_URL_REF='def pr_url_ref:
 # card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
 # card#9846).
 #
+# ⚠ For the pr pair this number reading differs from KB_JQ_PR_URL_REF (case-insensitive, anchored
+# after the repo); it only over-refuses, since kb_pr_named_verdict holds every pr write to that rule.
+#
 # ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> are what the parse DERIVED from the path
 # after `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
 kb_ref_pair_verdicts() {
