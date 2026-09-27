@@ -53,8 +53,10 @@ inputs:
   source:
     description: >-
       Optional override for .promote.source, the REQUIRED repo-qualification
-      key. "<owner>/<repo>" qualifies every ref-matched card against that repo;
-      "*" DECLARES that the board tracks exactly one repo. Blank (default) =
+      key. "<owner>/<repo>" qualifies every DL-matched card against that repo;
+      "*" DECLARES that the board tracks exactly one repo. Under either, a
+      PR-matched card counts only through the PR URL it carries naming the pull request
+      of this repo ($GITHUB_REPOSITORY under "*"). Blank (default) =
       use the committed .promote.source, which must then be present — the
       script refuses to run without one of the two, because dl_number and
       pr_number are repo-scoped counters and an unqualified match on a
