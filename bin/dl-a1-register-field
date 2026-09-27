@@ -201,6 +201,10 @@ by_ref_state() {
 reg_out="$(kb_api_status POST "/boards/$BOARD/custom_fields.json" '{"key":"dl_number","label":"DL","type":"string"}')"
 reg_http="${reg_out%%$'\n'*}"
 reg_body="${reg_out#*$'\n'}"
+# Quoted to stderr on the FATAL register arm, so masked here, once (card#9777): the POST sent
+# $KB_TOKEN in its Authorization header, and a server echoing request headers hands it back.
+# The 2xx arm only reads .data.id out of it, which the mask cannot change for a real token.
+kb_mask_token reg_body "${KB_TOKEN:-}" "$reg_body"
 if [[ "$reg_http" =~ ^2 ]]; then
     # 2>/dev/null alone silenced the MESSAGE and kept the STATUS: a 2xx whose body is not JSON
     # (a proxy's HTML, a truncated read) still exited 5 through `set -e` — quietly, which is

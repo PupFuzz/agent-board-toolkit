@@ -3120,7 +3120,14 @@ export U_OUT9 U_IN9 U_OUT12 U_FROM_PRE U_FROM_POST U_TO
 kb_stub_route() {
     local method="$1" url="$2" route_n="$4"
     case "$method $url" in
-        "DELETE "*/task_links/*)    printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}" ;;
+        # U_DEL_ECHO=1: the body ECHOES the bearer this request carried — $BEARER is the stub's
+        # own parse of the `-H @-` header (tests/_kb-api-stub-curl.sh), in scope here because
+        # the stub calls this route in its own shell (card#9777).
+        "DELETE "*/task_links/*)    if [[ -n "${U_DEL_ECHO:-}" ]]; then
+                                        printf '%s\n%s' "${U_DEL_HTTP:-204}" "{\"message\":\"debug\",\"authorization\":\"Bearer $BEARER\"}"
+                                    else
+                                        printf '%s\n%s' "${U_DEL_HTTP:-204}" "${U_DEL_BODY:-}"
+                                    fi ;;
         "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
         "GET "*/tasks/505.json)     if [[ "$route_n" == 1 ]]; then
                                         printf '%s\n%s' "${U_PRE_HTTP:-200}" "$U_FROM_PRE"
@@ -3256,6 +3263,21 @@ U_DEL_HTTP=500 U_DEL_BODY='{"message":"boom"}' kbc unlink --link-id 9 --on 505
 eq "unlink: an unclassified failure → rc 1"                 "1" "$rc"
 eq "unlink: …calls the outcome UNKNOWN rather than picking one" "true" \
    "$(has 'Whether anything was removed is UNKNOWN' "$err")"
+# A server that echoes request headers into its error body hands the bearer back (card#9777):
+# both arms that quote the body mask it. Paired with a positive control that the quote line was
+# printed and one that the DELETE really carried the token, so each absence is a measurement.
+for _ue in 403 500; do
+    U_DEL_HTTP=$_ue U_DEL_ECHO=1 kbc unlink --link-id 9 --on 505
+    eq "unlink: HTTP $_ue echoing the bearer → rc 1"          "1" "$rc"
+    eq "unlink: …control: the DELETE carried the token the body echoes" "stub-token" \
+       "$(kb_stub_bearers DELETE '/task_links/9.json')"
+    eq "unlink: …control: the 'server said' line was printed, with the echoed body" "true" \
+       "$(has 'kbcard:   server said: {"message":"debug","authorization":"Bearer ' "$err")"
+    eq "unlink: …the 'server said' line was printed, the token masked" "true" \
+       "$(has 'kbcard:   server said: {"message":"debug","authorization":"Bearer ***"}' "$err")"
+    eq "unlink: …and the token is NOT on stderr"              "false" "$(has 'stub-token' "$err")"
+done
+unset _ue
 
 echo "-- which end is FROM comes from the card's own \`direction\`, never from the flag --"
 # --on takes EITHER end, so a verb that inferred from/to from the flag would print a reversed

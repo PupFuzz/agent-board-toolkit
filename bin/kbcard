@@ -3368,6 +3368,9 @@ cmd_unlink() {
     # unguarded `${del#*\n}` yields the STATUS and would be quoted back as the server's
     # own message. A 204 and a policy 403 both routinely carry no body at all.
     [[ "$del" == *$'\n'* ]] && errbody="${del#*$'\n'}"
+    # Quoted to stderr below, so masked first (card#9777): the DELETE sent $KB_TOKEN in its
+    # Authorization header, and a server echoing request headers hands it back in this body.
+    kb_mask_token errbody "${KB_TOKEN:-}" "$errbody"
     case "$http" in
         2*) : ;;
         000) echo "kbcard: unlink: the DELETE of link $link_id DID NOT COMPLETE — no HTTP status came back at all, so whether the server received it is UNKNOWN. Re-read card $witness before retrying; nothing here claims an outcome in either direction." >&2

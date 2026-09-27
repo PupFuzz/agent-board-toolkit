@@ -87,6 +87,10 @@ kb_stub_route() {
         "POST "*/custom_fields.json)
             http="${KB_STUB_REGISTER_HTTP:-201}"
             if [[ "$http" == 2* ]]; then body="${KB_STUB_REGISTER_BODY:-$REG_OK_BODY}"
+            # KB_STUB_REGISTER_ECHO=1: the refusal body ECHOES the bearer this request carried —
+            # $BEARER is the stub's own parse of the `-H @-` header (card#9777).
+            elif [[ -n "${KB_STUB_REGISTER_ECHO:-}" ]]; then
+                body="{\"message\":\"the dl_number field already exists\",\"authorization\":\"Bearer $BEARER\"}"
             else body='{"message":"the dl_number field already exists"}'; fi
             printf '%s\n%s' "$http" "$body" ;;
         "POST "*/tasks.json)
@@ -285,6 +289,17 @@ eq "…and says so rather than claiming idempotence" "true" \
    "$(has 'carries NO dl_number definition' "$err")"
 eq "…and echoes the body it was refused with" "true" "$(has 'the dl_number field already exists' "$err")"
 eq "…creating no throwaway" "0" "$(kb_stub_count "${CREATE[@]}")"
+# …and when that body echoes the request's bearer (a debug-rendering server, card#9777) the echo
+# masks it. Positive controls: the line was printed, and the POST really carried the token.
+KB_STUB_REGISTER_HTTP=422 KB_STUB_FIELD_TYPE=none KB_STUB_REGISTER_ECHO=1 run_a1
+eq "a 422 echoing the bearer → rc 1" "1" "$rc"
+eq "…control: the register POST carried the token the body echoes" "stub-token" \
+   "$(kb_stub_bearers POST /custom_fields.json)"
+eq "…control: the body line was printed, with the echoed body" "true" \
+   "$(has 'The response body was: {"message":"the dl_number field already exists","authorization":"Bearer ' "$err")"
+eq "…the body was echoed, the token masked" "true" \
+   "$(has 'The response body was: {"message":"the dl_number field already exists","authorization":"Bearer ***"}' "$err")"
+eq "…and the token is NOT on stderr" "false" "$(has 'stub-token' "$err")"
 
 echo "== a registration failure that is NOT 409/422 is fatal, and creates nothing =="
 KB_STUB_REGISTER_HTTP=500 run_a1

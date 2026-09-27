@@ -784,9 +784,9 @@ kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 # <token> masks nothing, by an explicit branch rather than by trusting an empty pattern; <text>
 # then comes back byte-identical.
 #
-# THE ONE MASK every server body this lib renders or logs goes through (card#9777): kb_api's
-# KB_API_ERRBODY echo and its KB_LOG_FILE lines, kb_render_refusal, kb_owner_tag_write's quoted
-# reason, both fetch_board_cards failure arms, and kbcard's field type-change report. A server that renders debug output echoes the
+# THE ONE MASK every server body this lib renders or logs goes through (card#9777), and the one
+# the lib-sourcing bins use where they quote a body themselves — `grep -n kb_mask_token bin/`
+# lists the sites rather than this comment restating them. A server that renders debug output echoes the
 # request's own headers into its error page (measured, card#9301), so any body can carry
 # `Authorization: Bearer <token>` verbatim. The literal token rather than a pattern scrub, for the
 # reason kb_render_refusal gives. promote-released-cards' resp_detail and next-dl's resp_excerpt
