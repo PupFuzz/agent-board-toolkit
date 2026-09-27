@@ -296,9 +296,9 @@
 #     --swimlane writes the card's top-level swimlane_id, resolving a name via the same
 #     board-env map `list --swimlane` uses (numeric id passes through). --swimlane none
 #     (or 0) un-assigns the card from its swimlane (writes swimlane_id null).
-#     --clear FIELD[,FIELD...] IS THE PAYLOAD FIELDS' CLEARER — origin, version, pr-url, issue-url
-#     (the setter flag's spelling; `_kbc_clearable` is the one declaration, and an unknown field is
-#     rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
+#     --clear FIELD[,FIELD...] IS THE PAYLOAD FIELDS' CLEARER — origin, version, pr, pr-url, issue-url
+#     (the setter flag's spelling; `--clear pr,pr-url` is how a card is unlinked from a PR;
+#     `_kbc_clearable` is the one declaration, and an unknown field is rc 2 naming the accepted set). Each named field goes out as an EXPLICIT JSON null for its
 #     payload key (version → version_target): the API merges payload per key, so an omitted key is
 #     untouched and a null REMOVES it. For pr-url / issue-url that CAN drop the by-ref `source`:
 #     the board re-derives it from what remains — payload.repo OUTRANKS every URL when it is a
@@ -423,8 +423,9 @@
 #     different PR's URL, --pr N with --clear pr-url or a wont_do decline, --pr N alone onto a
 #     card whose pr_url names no such pull request, and --clear pr-url (or a --pr-url naming
 #     another PR, or none) over a stored pr_number are all refused. --clear pr-url does NOT also
-#     clear pr_number: --clear writes exactly the keys it names. A pr_number naming no positive
-#     number (0, or no digits) names no pull request and is not held to this. A call that writes
+#     clear pr_number: --clear writes exactly the keys it names, so unlinking is --clear pr,pr-url
+#     (--clear pr alone, leaving a pr_url, is written: a pr_url with no pr_number is not bare).
+#     A pr_number naming no positive number (0, or no digits) names no pull request and is not held to this. A call that writes
 #     NEITHER pr_number NOR pr_url is not checked, so a card that is already bare still takes
 #     every other edit. patch reads the card for it only when the result depends on the stored
 #     payload (one half written without the other); an unreadable card is rc 1, nothing written.
@@ -895,11 +896,15 @@
 # no `tags` key, or a null or empty one, is unaffected). `patch` writing one half of a pr/issue
 # number–URL pair without the other is also rc 2 after a read: it reads the card and refuses, with
 # no PATCH, when the stored other half names a different number, or when a URL naming no number —
-# the given one or the stored one — still yields a repo (card#9837, card#9846). A
+# the given one or the stored one — still yields a repo (card#9837, card#9846). So is a `patch`
+# the pr_number/pr_url invariant refuses once it has read the card, because the result depends on
+# the stored payload — a card left holding a pr_number that no pr_url names (agent-webhook-bridge
+# DL-429; a result the call's own keys decide is refused before any request). A
 # guard whose lib invariant gives no answer — rc 127 from a _kb-board-lib.sh older than this
 # kbcard — is rc 2 as well, with nothing written and the function named: `move --card-start`
-# (card#9756) and, since the pair check's offline half runs on every patch, EVERY `patch`, before
-# any request (card#9846).
+# (card#9756) and, since the pair check's offline half and the pr_number/pr_url invariant run on
+# every write of the payload, EVERY `patch` and EVERY `create-card`, before any request
+# (card#9846, DL-429).
 # THE RULE: a read whose result DECIDES a write refuses that write when no card can be read out of
 # it (non-2xx, or a 2xx whose `.data` is not an object) — it is never taken as an answer. Each such
 # read is its own helper and states its own rc and any opt-out in its own header; this block does
@@ -1251,7 +1256,7 @@ _kbc_decline_nulls() {
 # must reach _kbc_build_payload as a local named <field> with `-` as `_`: the setter exclusion
 # reads the setter's value by that name.
 _kbc_clearable() {
-    printf '%s\n' 'origin origin' 'version version_target' 'pr-url pr_url' 'issue-url issue_url'
+    printf '%s\n' 'origin origin' 'version version_target' 'pr pr_number' 'pr-url pr_url' 'issue-url issue_url'
 }
 
 _kbc_build_payload() {
@@ -2061,7 +2066,7 @@ _kbc_ref_pair_guard() {
 # The message names the pair to pass. Like _kbc_ref_pair_guard's it prints no URL — only the repo
 # and numbers the lib derived — and states what the card would hold, not a consequence.
 _kbc_pr_named_guard() {
-    local ctx="$1" v lrc=0 disp kind num nsrc unum urepo usrc held whose why
+    local ctx="$1" v lrc=0 disp kind num nsrc unum urepo usrc held whose why unlink=""
     v="$(kb_pr_named_verdict "$2" "$3")" || lrc=$?
     if (( lrc )); then _kbc_lib_unruled "$ctx" "whether this write leaves a pr_number no pr_url names" kb_pr_named_verdict "$lrc"; return 2; fi
     IFS=$'\t' read -r disp kind num nsrc unum urepo usrc <<<"$v"
@@ -2078,17 +2083,20 @@ _kbc_pr_named_guard() {
     case "$kind" in
         none)
             if [[ "$usrc" == cleared ]]; then why="no pr_url, which this same write removes (--clear pr-url, or a wont_do decline without --keep-refs; --clear writes exactly the keys it names)"
-            else why="no pr_url"; fi ;;
+            else why="no pr_url"; fi
+            # The number was not given here, so un-setting it is the other way out.
+            [[ "$usrc" == cleared && "$nsrc" == stored ]] && unlink=" To unlink the card from the pull request instead, pass --clear pr,pr-url." ;;
         placeholder) why="$whose, which is only the pre-PR placeholder (a .../0 URL, \"no PR yet\") in $urepo" ;;
         issue-url)   why="$whose, which names issue #$unum in $urepo (an .../issues/ URL), not a pull request" ;;
         other-pr)    why="$whose, which names a DIFFERENT pull request, #$unum in $urepo" ;;
         unnumbered)  why="$whose, which names no pull request number, only the repo $urepo" ;;
+        pull-case)   why="$whose, whose pull segment is not spelled lower-case (.../pull/<N>), so it names no pull request in $urepo — a pr_url is read the way the bridge and promote read it" ;;
         unparsed)    why="$whose, which is not a GitHub pull-request URL" ;;
         *)
             echo "kbcard: $ctx: REFUSING — the pr_number/pr_url check returned '$disp:$kind', which this kbcard does not know how to act on. NOTHING WAS WRITTEN." >&2
             return 2 ;;
     esac
-    echo "kbcard: $ctx: REFUSING — this write would leave the card holding $held with $why. A PR number is a per-repo counter, so a card names a pull request only through a pr_url naming its repo and that number (agent-webhook-bridge DL-429). Pass the pair: --pr $num --pr-url https://github.com/<owner>/<repo>/pull/$num. NOTHING WAS WRITTEN." >&2
+    echo "kbcard: $ctx: REFUSING — this write would leave the card holding $held with $why. A PR number is a per-repo counter, so a card names a pull request only through a pr_url naming its repo and that number (agent-webhook-bridge DL-429). Pass the pair: --pr $num --pr-url https://github.com/<owner>/<repo>/pull/$num.$unlink NOTHING WAS WRITTEN." >&2
     return 2
 }
 

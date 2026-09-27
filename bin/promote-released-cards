@@ -1602,20 +1602,24 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
   # pr_url_ref: the (repo, number) a pr_url names, or null when it names no pull request. The
   # bridge primitive this mirrors is PrUrlRef (agent-webhook-bridge DL-429): the repo is the
   # repoFromGitHubUrl answer (repo_from_gh_url above, so the parse is not re-spelled here) and
-  # the number is the first /pull/<n>. The .../pull/0 placeholder names a repo and NO pull
-  # request, so it is null here, exactly as a bare pr_number is.
+  # the number is the first /pull/<n> — a case-SENSITIVE segment, anywhere in the value. The
+  # .../pull/0 placeholder names a repo and NO pull request, so it is null here, exactly as a bare
+  # pr_number is. The repo is returned as derived; the caller canonicalizes it.
+  # ⚠ PINNED COPY: KB_JQ_PR_URL_REF in bin/_kb-board-lib.sh is the text of this def, and kbcard
+  # holds a write to it; tests/mirror-pair-parity-selftest.sh § 5b keeps the two identical. (No
+  # apostrophe anywhere in this program: it is a single-quoted shell string.)
   def pr_url_ref:
     if type != "string" then null
     else (repo_from_gh_url) as $r
       | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
-      | if $r == null or $n == "" or $n == "0" then null else {repo: ($r | canon_source), n: $n} end
+      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
     end;
   [ .[]
     | . as $c
     | ($c.payload.dl_number | norm) as $cdl
     | ($c.payload.pr_number | norm) as $cpr
     | ($c.id | norm) as $cid
-    | ($c.payload.pr_url | pr_url_ref) as $pref
+    | ($c.payload.pr_url | pr_url_ref | if . == null then null else .repo |= canon_source end) as $pref
     | (($cdl != "") and ($dls|index($cdl) != null)) as $byDl
     # THE PR LEG IS (repo, number) — see the header. A card tracks a shipped PR only through a
     # pr_url naming it; its bare pr_number is read ONLY to report a card that would have matched

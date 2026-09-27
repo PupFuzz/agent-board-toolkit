@@ -499,6 +499,9 @@ _fold_census() {
 #     LOWERCASED — describing a fold that happens in `stage_name`, on a different line,
 #     which the mirrors group already counts. Rewording it to dodge this predicate would
 #     be weakening the check to go green, so it is admitted and declared instead;
+#   * bin/kbcard x1 — the words `spelled lower-case` in the pr_number/pr_url refusal for a
+#     `.../PULL/<N>` URL (`pull-case`). It tells the operator the segment must be lower-case, which
+#     is what KB_JQ_PR_URL_REF reads; nothing is folded;
 #   * bin/_kbc-stale-blocker.py x1 — `answered lower down` in the module docstring.
 #
 # ⛔ NO LANGUAGE CENSUS ANY MORE, AND THAT IS A DELETION, NOT AN OMISSION. The predecessor
@@ -520,7 +523,7 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
                                        'agent-board-toolkit-runtime-check=5' \
-                                       'gitignore-secret-family-check=2' 'kbcard=4' \
+                                       'gitignore-secret-family-check=2' 'kbcard=5' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
@@ -529,7 +532,7 @@ eq "every line under bin/ this predicate admits, attributed per file" \
 # and compares them against one number, so a file added to leg 2 without that number moving reds
 # here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
 # does not red on its own — which is exactly why no group figures are written up there any more.
-eq "the per-file census sums to the declared total" "24" \
+eq "the per-file census sums to the declared total" "25" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two

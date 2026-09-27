@@ -2249,6 +2249,30 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
     else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(pull|issues|commit|tree|blob)/"; "i")).r // null
     end;'
 
+# KB_JQ_PR_URL_REF — THE RULE BY WHICH A pr_url NAMES A PULL REQUEST (agent-webhook-bridge DL-429,
+# whose PrUrlRef this reads as the bridge does). A jq program fragment defining `def pr_url_ref:`: for a
+# string, `{repo, n}` — the repo KB_JQ_REPO_FROM_GH_URL derives (as derived; a caller that compares
+# it canonicalizes it) and the number of the FIRST `/pull/<digits>`, read case-SENSITIVELY and
+# anywhere in the value, as KB_JQ_REF_CANON's `norm` prints it — and null when there is no repo, no
+# such segment, or the number is 0 (the `.../pull/0` placeholder names a repo and no pull request).
+# So `.../PULL/179` names no pull request: promote and the bridge both read it that way, and a
+# third reading here is how a card promote treats as bare used to be accepted as named.
+#
+# ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` carries this
+# def inline (a vendored standalone that must not source this lib); the text here is its text, and
+# `tests/mirror-pair-parity-selftest.sh` § 5b holds the two identical line for line and drives both
+# over one corpus. Edit the standalone's def and this constant together.
+#
+# USAGE — needs `norm` and `repo_from_gh_url` defined before it:
+#     jq -r "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$KB_JQ_PR_URL_REF"'.payload.pr_url | pr_url_ref'
+# ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW (it is a single-quoted shell string).
+KB_JQ_PR_URL_REF='def pr_url_ref:
+    if type != "string" then null
+    else (repo_from_gh_url) as $r
+      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
+      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    end;'
+
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
 # writing one half of a pair (the <pairs> kb_ref_pairs_alone printed for <payload-json>) over the
 # card's stored other half would leave the card naming one ref by NUMBER and a different one by
@@ -2358,23 +2382,28 @@ kb_ref_pair_verdicts() {
 # nothing). <number> is the resulting pr_number as KB_JQ_REF_CANON's `norm` prints it;
 # <number-src> / <url-src> say where each resulting half comes from: `given` (this write sets it),
 # `cleared` (this write nulls it), `stored` (the write leaves it). <url-number> / <url-repo> are
-# what the parse DERIVED — KB_JQ_REPO_FROM_GH_URL's repo, and a pull/issues number in that same
-# repo, read exactly as kb_ref_pair_verdicts reads one.
+# what the parse DERIVED — KB_JQ_REPO_FROM_GH_URL's repo, and the number KB_JQ_PR_URL_REF reads (or,
+# where it reads none, the first pull/issues number in any case, for the message only).
+#
+# WHETHER THE URL NAMES THE NUMBER IS KB_JQ_PR_URL_REF's ANSWER AND NOTHING ELSE: `named` exactly
+# when pr_url_ref yields the resulting number. The other kinds only say WHY it does not, for the
+# message, and never turn a refusal into a write.
 #
 # THE KINDS. ok: `untouched` (above); `no-number` — the resulting pr_number is absent, null,
 # blank, or names no positive number (`norm` reads none, or 0), so there is no pull request for a
 # URL to name — any mismatch with such a value is kb_ref_pair_verdicts' question, not this one;
-# `named` — the resulting pr_url is a GitHub `…/pull/<N>` naming that same number. refuse: `none`
-# — no resulting pr_url (absent, null, blank); `placeholder` — the pre-PR placeholder `…/pull/0` /
-# `…/issues/0` (any zero spelling), which says "no PR yet"; `issue-url` — an `…/issues/<M>` URL,
-# which names an issue, since only a `pull` segment names a pull request; `other-pr` — a
-# `…/pull/<M>` naming a DIFFERENT number; `unnumbered` — a GitHub URL yielding a repo but no
-# pull/issues number in it (commit/tree/blob, a segment with no digits); `unparsed` — a value
-# yielding no repo at all (not a GitHub URL, not a string).
+# `named` — pr_url_ref reads that same number from the resulting pr_url. refuse: `none` — no
+# resulting pr_url (absent, null, blank); `other-pr` — pr_url_ref reads a DIFFERENT number;
+# `unparsed` — a value yielding no repo at all (not a GitHub URL, not a string); `placeholder` — the
+# pre-PR placeholder `…/pull/0` / `…/issues/0` (any zero spelling), which says "no PR yet";
+# `issue-url` — an `…/issues/<M>` URL, which names an issue, since only a `pull` segment names a
+# pull request; `pull-case` — a `…/PULL/<M>` (any spelling but lower-case), which pr_url_ref, like
+# promote and the bridge, does not read as a pull request; `unnumbered` — a GitHub URL yielding a
+# repo but no pull/issues number in it (commit/tree/blob, a segment with no digits).
 #
 # ⛔ NOTHING HERE PRINTS A URL (kb_ref_pair_verdicts' rule, for its reason): only derived fields.
 kb_pr_named_verdict() {
-    jq -rn --argjson s "$1" --argjson w "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL"'
+    jq -rn --argjson s "$1" --argjson w "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$KB_JQ_PR_URL_REF"'
         def blank: . == null or (type == "string" and test("\\A\\s*\\z"));
         def num: if blank then "" else norm end;
         ($w | if type == "object" then . else {} end) as $w
@@ -2390,17 +2419,17 @@ kb_pr_named_verdict() {
             else
               (.pr_url | if blank then null else . end) as $u
               | ($u | repo_from_gh_url) as $repo
-              | (if $repo == null then null
-                 else [$u | capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(?<seg>pull|issues)/(?<n>[0-9]+)"; "i")][0]
-                      | if . != null and .r == $repo then . else null end end) as $c
-              | (if $c == null then "-" else $c.n | norm end) as $un
+              | ($u | pr_url_ref) as $ref
+              | (if $ref != null or $repo == null then null
+                 else [$u | capture("/(?<seg>pull|issues)/(?<n>[0-9]+)"; "i")][0] end) as $m
+              | (if $ref != null then $ref.n elif $m == null then "-" else $m.n | norm end) as $un
               | (if $u == null then "none"
+                 elif $ref != null then (if $ref.n == $n then "named" else "other-pr" end)
                  elif $repo == null then "unparsed"
-                 elif $c == null then "unnumbered"
-                 elif ($c.n | test("\\A0+\\z")) then "placeholder"
-                 elif ($c.seg | test("\\Apull\\z"; "i") | not) then "issue-url"
-                 elif $un != $n then "other-pr"
-                 else "named" end) as $k
+                 elif $m == null then "unnumbered"
+                 elif $un == "0" then "placeholder"
+                 elif ($m.seg | test("\\Aissues\\z"; "i")) then "issue-url"
+                 else "pull-case" end) as $k
               | [(if $k == "named" then "ok" else "refuse" end), $k, $n, src("pr_number"),
                  $un, ($repo // "-"), src("pr_url")]
             end

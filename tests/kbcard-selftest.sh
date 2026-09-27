@@ -4409,7 +4409,9 @@ echo "== patch --clear <field> — the payload fields' clearer the blank refusal
 # pr_url / issue_url keeps the card correlated to that repo's by-ref `source`, on a card whose
 # payload.repo does not outrank it (a string containing `/` does). The operator's
 # ruling (2026-09-13): `patch --clear <field>` accepting ONLY origin, version, pr-url and
-# issue-url, sending an explicit JSON null for the key — the server's per-key merge REMOVES a key
+# issue-url, sending an explicit JSON null for the key; widened by operator ruling (2026-09-27,
+# relayed by the coordinating seat) to `pr` (pr_number), the unlink path the pr_number/pr_url rule
+# (agent-webhook-bridge DL-429) otherwise left without one — the server's per-key merge REMOVES a key
 # sent as null (kanban-board TaskMutator::update) and leaves an omitted one alone.
 #
 # THE POPULATION IS `_kbc_clearable`, the bin's one declaration; every per-field leg loops over
@@ -4417,7 +4419,7 @@ echo "== patch --clear <field> — the payload fields' clearer the blank refusal
 # Every write leg asserts the WHOLE request body, so a stray key reds as surely as a missing null.
 _clr_fields() { _kbc_clearable | awk '{print $1}'; }
 eq "the clearable set is the ruled set, field → payload key" \
-   "origin:origin version:version_target pr-url:pr_url issue-url:issue_url" \
+   "origin:origin version:version_target pr:pr_number pr-url:pr_url issue-url:issue_url" \
    "$(_kbc_clearable | awk '{printf "%s%s:%s", (NR > 1 ? " " : ""), $1, $2}')"
 
 rm -rf "$TMP"
@@ -4496,9 +4498,9 @@ _all="$(_clr_fields | paste -sd, -)"
 kbc patch --task 505 --clear "$_all"
 eq "--clear <every field> → rc 0"                             "0" "$rc"
 eq "…every key null, nothing else in the body" \
-   '{"payload":{"origin":null,"version_target":null,"pr_url":null,"issue_url":null}}' "$(cl_body)"
+   '{"payload":{"origin":null,"version_target":null,"pr_number":null,"pr_url":null,"issue_url":null}}' "$(cl_body)"
 eq "…and the echo shows each null, the untouched key still held" \
-   '{"dl_number":"DL-0001","origin":null,"version_target":null,"pr_url":null,"issue_url":null}' \
+   '{"dl_number":"DL-0001","origin":null,"version_target":null,"pr_number":null,"pr_url":null,"issue_url":null}' \
    "$(jq -c '.payload' <<<"$out")"
 kbc patch --task 505 --clear origin,origin
 eq "--clear origin,origin → one clear"                        '{"payload":{"origin":null}}' "$(cl_body)"
@@ -5197,15 +5199,27 @@ echo "== no write may leave a pr_number that no pr_url names — ONE invariant o
 # log, PATCH and POST both), and the refusal names the pair to pass.
 nwrite() { echo $(( $(kb_stub_count PATCH /tasks/505.json) + $(kb_stub_count POST /tasks.json) )); }
 PR179='{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/179"}'
-PAIR179='Pass the pair: --pr 179 --pr-url https://github.com/<owner>/<repo>/pull/179. NOTHING WAS WRITTEN.'
+# The unlink hint (--clear pr,pr-url) may sit between the pair and NOTHING WAS WRITTEN, so the two
+# are asserted separately.
+PAIR179='Pass the pair: --pr 179 --pr-url https://github.com/<owner>/<repo>/pull/179.'
 # <stored payload>|<args> — the args are word-split on purpose (no value here holds a space).
-# The first six are the paths named when this rule replaced the --pr-alone check; the rest are the
-# stored pr_url states --pr alone meets, and the other ways a write can end holding a bare number.
-BARE_ROWS=(
+# OFFLINE_ROWS are the results the call's own keys decide (both halves, or a number beside a
+# removed URL), so they must be refused with no request at all. The /PULL/ and /Pull/ rows hold
+# the one definition of which pull request a pr_url names (KB_JQ_PR_URL_REF): the segment is
+# case-sensitive, as promote and the bridge read it, so an upper-case one names no pull request.
+# BARE_ROWS adds the results that depend on the stored payload: the stored pr_url states --pr
+# alone meets, and the other ways a write can end holding a bare number.
+OFFLINE_ROWS=(
     '{}|create-card --type task --name probe --pr 179'
     '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/0'
     '{}|patch --task 505 --pr 179 --clear pr-url'
     '{}|patch --task 505 --column wont_do --pr 179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/PULL/179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/Pull/179'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/PULL/179'
+)
+BARE_ROWS=(
+    "${OFFLINE_ROWS[@]}"
     "$PR179|patch --task 505 --clear pr-url"
     '{}|patch --task 505 --pr 179'
     '{"pr_url":null}|patch --task 505 --pr 179'
@@ -5215,6 +5229,8 @@ BARE_ROWS=(
     '{"pr_url":"https://example.com/acme/widget/merge_requests/179"}|patch --task 505 --pr 179'
     '{"pr_url":179}|patch --task 505 --pr 179'
     '{"pr_url":"https://github.com/acme/widget/issues/179"}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/PULL/179"}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/Pull/179"}|patch --task 505 --pr 179'
     '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/0'
     '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/179'
     '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180'
@@ -5225,10 +5241,11 @@ for _row in "${BARE_ROWS[@]}"; do
     _p="${_row%%|*}"; read -r -a _args <<<"${_row#*|}"
     KB_STUB_PAYLOAD="$_p" kbc "${_args[@]}"
     eq "⭐ bare: ${_args[*]} over $_p → rc 2, ZERO writes"    "2|0" "$rc|$(nwrite)"
-    eq "bare: …names the pair to pass, and that nothing was written" "true" "$(has "$PAIR179" "$err")"
+    eq "bare: …names the pair to pass, and that nothing was written" "true|true" \
+       "$(has "$PAIR179" "$err")|$(has 'NOTHING WAS WRITTEN.' "$err")"
 done
 # Rows the call's own keys decide are refused OFFLINE — no request of any kind, not even the read.
-for _row in "${BARE_ROWS[@]:0:4}"; do
+for _row in "${OFFLINE_ROWS[@]}"; do
     _p="${_row%%|*}"; read -r -a _args <<<"${_row#*|}"
     KB_STUB_PAYLOAD="$_p" kbc "${_args[@]}"
     eq "bare: ${_args[*]} is decided without the card → NO request at all" "2|0" "$rc|$(kb_stub_total)"
@@ -5269,11 +5286,32 @@ KB_STUB_PAYLOAD='{}' kbc patch --task 505 --clear pr-url
 eq "control: --clear pr-url on a card with no pr_number → rc 0" "0|1" "$rc|$(npatch)"
 KB_STUB_PAYLOAD='{"pr_number":0}' kbc patch --task 505 --pr-url https://github.com/acme/widget/pull/0
 eq "control: a pr_number of 0 names no pull request → the placeholder stamp is rc 0" "0|1" "$rc|$(npatch)"
+# --clear pr: the unlink path (operator-approved 2026-09-27, as relayed by the dispatching seat).
+# Clearing BOTH halves leaves no pr_number, so neither check has anything to hold: decided offline.
+KB_STUB_PAYLOAD="$PR179" kbc patch --task 505 --clear pr,pr-url
+eq "⭐ --clear pr,pr-url unlinks: rc 0, both keys nulled, no read" \
+   '0|{"pr_number":null,"pr_url":null}|0' "$rc|$(ppay)|$(nget)"
+# Clearing only the NUMBER leaves a pr_url and no pr_number — not a bare number, so it is written.
+KB_STUB_PAYLOAD="$PR179" kbc patch --task 505 --clear pr
+eq "--clear pr alone over a named card: rc 0, pr_number nulled, no read" \
+   '0|{"pr_number":null}|0' "$rc|$(ppay)|$(nget)"
+KB_STUB_PAYLOAD='{"pr_number":179,"pr_url":"https://github.com/acme/widget/pull/180"}' kbc patch --task 505 --clear pr
+eq "--clear pr alone over a diverged pair: rc 0 — nothing left to diverge from" '0|1' "$rc|$(npatch)"
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --clear pr
+eq "--pr and --clear pr together → rc 2, NO request" "2|0|true" \
+   "$rc|$(kb_stub_total)|$(has '--pr and --clear pr are mutually exclusive' "$err")"
+# The refusal of --clear pr-url alone names the unlink path beside the re-stamp pair.
+KB_STUB_PAYLOAD="$PR179" kbc patch --task 505 --clear pr-url
+eq "⭐ --clear pr-url alone over pr_number 179 → rc 2, and names --clear pr,pr-url as the unlink" "2|0|true" \
+   "$rc|$(nwrite)|$(has 'To unlink the card from the pull request instead, pass --clear pr,pr-url.' "$err")"
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --clear pr-url
+eq "…but a GIVEN --pr beside --clear pr-url is not offered the unlink (it is setting the number)" "2|false" \
+   "$rc|$(has 'pass --clear pr,pr-url' "$err")"
 # The issue pair is NOT held to this: DL-429 is a PR-correlation ruling.
 KB_STUB_PAYLOAD='{}' kbc patch --task 505 --issue 179
 eq "control: --issue alone on a card with no issue_url → rc 0" '0|{"issue_number":179}' "$rc|$(ppay)"
 unset -f nwrite
-unset PR179 PAIR179 BARE_ROWS _row _p _args
+unset PR179 PAIR179 OFFLINE_ROWS BARE_ROWS _row _p _args
 
 echo "== the rest of the number/URL pair class: --issue, and --pr-url / --issue-url alone (card#9846) =="
 # card#9837's guard, generalised: ONE check over both pairs (pr_*, issue_*) and both directions. The
