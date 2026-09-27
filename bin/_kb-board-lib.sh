@@ -2102,9 +2102,10 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # side's own def (the constant's header says how the two are held together), and <url-repo> is
 # always that repo. That repo is what ATTRIBUTES the card only where no `payload.repo` outranks
 # it: a `payload.repo` that is a string containing `/` wins over every URL (`docs/INSTALL.md` §4
-# states the whole derivation), so EVERY consequence this header draws from <url-repo> below —
-# who the card is attributed to, what a release there would promote — is the URL case and not a
-# universal. The verdicts do not turn on it (the pair diverges either way), which is why nothing
+# states the whole derivation), so the ATTRIBUTION this header draws from <url-repo> below is the
+# URL case and not a universal. What a release promotes is not drawn from it at all: the PR side
+# of promote matches on the number the pr_url names (payload.repo and a bare pr_number no longer
+# promote). The verdicts do not turn on it (the pair diverges either way), which is why nothing
 # here asks the question and why a caller's MESSAGE states the divergence and not the consequence
 # (card#9918). Its NUMBER is read from a `pull` or `issues` segment — the only two of promote's
 # segments that carry one; GitHub numbers issues and pull requests in ONE

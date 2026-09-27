@@ -1203,8 +1203,8 @@ resolve_task() {
 # create-card has no such flag. A value must flow through this single assembler rather than be
 # appended by the caller, which would re-duplicate the per-key typing this helper exists to own.
 # Declining a card (→ wont_do) clears its correlation stamps in the SAME PATCH: a stale
-# dl_number/pr_number left on a declined card can later match a recycled DL/PR and
-# resurrect it in a release-promote scan. issue_number/issue_url are deliberately NOT nulled:
+# dl_number/pr_url left on a declined card can later match a recycled DL/PR and
+# resurrect it in a release-promote scan (a bare pr_number promotes nothing, but is cleared too). issue_number/issue_url are deliberately NOT nulled:
 # bin/promote-released-cards never matches on issue_number, so a stale one resurrects nothing.
 # The kanban v3 payload PATCH merges per-key —
 # an explicit JSON null DELETES a key, an omitted key is untouched. Merge order makes an
@@ -1895,11 +1895,14 @@ _kbc_assign_guard() {
 # URL; else the first of pr_url, issue_url, html_url, external_link yielding a repo) and never from
 # the number, so, where a URL is what attributes the card:
 #   --pr N / --issue N alone        re-points the number and leaves the card attributed to the
-#                                   OLD URL's repo;
+#                                   OLD URL's repo — and for the pr pair promote still counts it
+#                                   by the OLD URL's number, so N promotes nothing;
 #   --pr-url U / --issue-url U alone moves the attribution to U's repo while the card still names
-#                                   the OLD number — and for the pr pair a release in U's repo
-#                                   shipping that number then promotes the card (promote reads no
-#                                   issue key at all: card#9935).
+#                                   the OLD number — and for the pr pair promote counts it only by
+#                                   the number U names (promote matches the PR side on the number
+#                                   the pr_url names; payload.repo and a bare pr_number no longer
+#                                   promote), so a release shipping the old number names the card
+#                                   pr-diverged. Promote reads no issue key at all: card#9935.
 # Either way the card ends up at rc 0 naming two different refs, with nothing on it to show the two
 # keys disagree. Refusing, operator-approved as an acceptance change (2026-09-18, card#9837; widened
 # to the whole class by card#9846), is the one answer that needs no guess: neither half can be
@@ -1913,10 +1916,11 @@ _kbc_assign_guard() {
 # ⭐ WHAT A REFUSAL SAYS — AND WHAT IT DELIBERATELY DOES NOT (operator ruling, card#9918). Each
 # message states the DIVERGENCE (which half names what, by the derived owner/repo and number) and
 # the flag to pass. It states no downstream CONSEQUENCE — not who the card ends up attributed to,
-# not what a release in that repo would promote. Those follow from where the card's source comes
-# from, which the guard cannot read off the pair: a payload.repo string containing `/` outranks
-# every URL (above), so a consequence clause written from the URL's repo is false on some card and
-# a clause written the other way is false on the rest. The divergence is true on all of them, and
+# not what a release would promote. Attribution follows from where the card's source comes from,
+# which the guard cannot read off the pair: a payload.repo string containing `/` outranks every URL
+# (above), so an attribution clause written from the URL's repo is false on some card and one
+# written the other way is false on the rest. Promotion, on the PR side, follows from the number
+# the pr_url names alone, whichever half the call wrote. The divergence is true on every card, and
 # is the whole reason for the refusal. The verdicts are unaffected either way.
 #
 # A STORED URL NAMING NO NUMBER is refused under a given number exactly as a given one is under a
