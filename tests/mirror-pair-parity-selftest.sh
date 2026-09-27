@@ -355,6 +355,50 @@ eq "control: …and so does the corpus, on a /blob/ URL" "false" \
 unset -f _rfg _rfg_strip
 unset _rfg_prc _rfg_mut _rfg_corpus _v
 
+# ═══════════════════════ 5b — `pr_url_ref`: promote ↔ KB_JQ_PR_URL_REF ═══════════════════════
+#
+# Which pull request a pr_url NAMES (agent-webhook-bridge DL-429): promote-released-cards reads it
+# as `def pr_url_ref:` to decide what a release promotes, and `kbcard` asks the lib's
+# `KB_JQ_PR_URL_REF` whether a write leaves a pr_number that no pr_url names. A second reading here
+# once accepted `…/PULL/179` as naming PR 179 while promote read the same card as bare. Same hold
+# as § 5: the texts are identical line for line, and both copies are driven over one corpus.
+echo "== pr_url_ref: the lib constant IS the standalone's def, line for line =="
+_pur_strip() { sed 's/^[[:space:]]*//'; }
+_pur_prc="$(awk '/^[[:space:]]*def pr_url_ref:/ {on=1} on {print} on && /^[[:space:]]*end;[[:space:]]*$/ {exit}' "$PRC" | _pur_strip)"
+eq "witness: the lib defines KB_JQ_PR_URL_REF" "false" "$([[ -z "${KB_JQ_PR_URL_REF:-}" ]] && echo true || echo false)"
+eq "witness: the extraction found the def's head and its close" "true|true" \
+   "$(has 'def pr_url_ref:' "$_pur_prc")|$([[ "${_pur_prc##*$'\n'}" == "end;" ]] && echo true || echo false)"
+eq "⭐ the standalone's def IS KB_JQ_PR_URL_REF, line for line" \
+   "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" "$_pur_prc"
+echo "== pr_url_ref: both copies agree over one corpus =="
+# _pur <def-text> <json-value> — the def's answer for one pr_url value, `null` when none.
+_pur() { jq -cn --argjson v "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$1"' $v | pr_url_ref'; }
+_pur_corpus=('"https://github.com/acme/widget/pull/179"' '"https://github.com/acme/widget/PULL/179"'
+    '"https://github.com/acme/widget/Pull/179"' '"https://GitHub.com/Acme/Widget.git/pull/0179"'
+    '"https://github.com/acme/widget/pull/0"' '"https://github.com/acme/widget/issues/179"'
+    '"https://github.com/acme/widget/commit/179"' '"https://github.com/acme/widget/tree/main/pull/179"'
+    '"https://github.com/acme/widget/pull/"' '"https://example.com/acme/widget/pull/179"'
+    '"https://example.com/x/pull/9 https://github.com/acme/widget/pull/179"' '""' '42' 'null'
+    '{"u":"https://github.com/acme/widget/pull/179"}')
+for _v in "${_pur_corpus[@]}"; do
+    eq "pr_url_ref agrees on [$_v]" "$(_pur "$KB_JQ_PR_URL_REF" "$_v")" "$(_pur "$_pur_prc" "$_v")"
+done
+eq "witness: the corpus holds a URL naming a PR, and an upper-case segment naming none" \
+   '{"repo":"acme/widget","n":"179"}|null' \
+   "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/pull/179"')|$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')"
+echo "== control: a standalone copy read case-insensitively is caught by both comparisons =="
+_pur_cs='capture("/pull/(?<n>[0-9]+)")' _pur_ci='capture("/pull/(?<n>[0-9]+)"; "i")'
+_pur_mut="${_pur_prc/"$_pur_cs"/"$_pur_ci"}"
+eq "control: the mutation applied" "false" "$([[ "$_pur_mut" == "$_pur_prc" ]] && echo true || echo false)"
+eq "control: the line-for-line comparison reds on it" "false" \
+   "$([[ "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" == "$_pur_mut" ]] && echo true || echo false)"
+eq "control: …and so does the corpus, on a /PULL/ URL" "false" \
+   "$([[ "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')" == "$(_pur "$_pur_mut" '"https://github.com/acme/widget/PULL/179"')" ]] && echo true || echo false)"
+eq "⭐ kb_pr_named_verdict reads the pair through it: …/PULL/179 beside pr_number 179 is refused" "refuse" \
+   "$(kb_pr_named_verdict '{}' '{"pr_number":179,"pr_url":"https://github.com/acme/widget/PULL/179"}' | cut -f1)"
+unset -f _pur _pur_strip
+unset _pur_prc _pur_mut _pur_cs _pur_ci _pur_corpus _v
+
 # ═══════════ 6 — the WRITE-OUTCOME contract: promote ↔ `bin/kbcard` (card#9938) ═══════════
 #
 # THE PAIR HERE IS STANDALONE ↔ ANOTHER BIN, not standalone ↔ the lib, and that is the same

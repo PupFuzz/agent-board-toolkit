@@ -499,6 +499,9 @@ _fold_census() {
 #     LOWERCASED — describing a fold that happens in `stage_name`, on a different line,
 #     which the mirrors group already counts. Rewording it to dodge this predicate would
 #     be weakening the check to go green, so it is admitted and declared instead;
+#   * bin/kbcard x1 — the words `spelled lower-case` in the pr_number/pr_url refusal for a
+#     `.../PULL/<N>` URL (`pull-case`). It tells the operator the segment must be lower-case, which
+#     is what KB_JQ_PR_URL_REF reads; nothing is folded;
 #   * bin/_kbc-stale-blocker.py x1 — `answered lower down` in the module docstring.
 #
 # ⛔ NO LANGUAGE CENSUS ANY MORE, AND THAT IS A DELETION, NOT AN OMISSION. The predecessor
@@ -520,7 +523,7 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
                                        'agent-board-toolkit-runtime-check=5' \
-                                       'gitignore-secret-family-check=2' 'kbcard=4' \
+                                       'gitignore-secret-family-check=2' 'kbcard=5' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
@@ -529,7 +532,7 @@ eq "every line under bin/ this predicate admits, attributed per file" \
 # and compares them against one number, so a file added to leg 2 without that number moving reds
 # here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
 # does not red on its own — which is exactly why no group figures are written up there any more.
-eq "the per-file census sums to the declared total" "24" \
+eq "the per-file census sums to the declared total" "25" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two
@@ -1235,7 +1238,10 @@ echo "== 8. THE PR LEG IS (repo, number), IN BOTH MODES — the org-move collisi
 #   #25 carries payload.repo acme/widget beside a bare 15 — a derived source is no evidence of
 #       the number's repo either (DL-429 "Alternatives rejected (a)");
 #   #26 carries only dl_number DL-7 — the DL leg, which DL-429 leaves unqualified on a
-#       single-repo board, so `"*"` must still promote it (the DL leg is not what changed).
+#       single-repo board, so `"*"` must still promote it (the DL leg is not what changed);
+#   #27 tracks ACME/Widget#15 — the release's own PR, its repo spelled in another case. pr_url_ref
+#       returns the repo as derived and the call site canonicalizes it, so this card is promoted;
+#       without that lowercasing the repo compare fails and it would be named other-repo.
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[
   {"id":21,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/oldorg/widget/pull/15"}},
@@ -1243,8 +1249,9 @@ cat > "$BOARD_FILE" <<'JSON'
   {"id":23,"workflow_stage_id":51,"payload":{"pr_number":"15"}},
   {"id":24,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/0"}},
   {"id":25,"workflow_stage_id":51,"payload":{"pr_number":"15","repo":"acme/widget"}},
-  {"id":26,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}}
-],"meta":{"last_page":1,"total":6}}
+  {"id":26,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}},
+  {"id":27,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/ACME/Widget/pull/15"}}
+],"meta":{"last_page":1,"total":7}}
 JSON
 git -C "$GITDIR" checkout -q -b feat8 main
 git -C "$GITDIR" commit -q --allow-empty -m "feat: DL-7 a decision"
@@ -1259,6 +1266,7 @@ eq "8 star: the bare-number card #23 is NOT"                 "false" "$(moved 23
 eq "8 star: the placeholder card #24 is NOT"                 "false" "$(moved 24)"
 eq "8 star: the payload.repo card #25 is NOT"                "false" "$(moved 25)"
 eq "8 star: the DL-only card #26 still IS (DL leg unchanged)" "true" "$(moved 26)"
+eq "8 star: #27 (pr_url ACME/Widget#15) IS promoted — the repo compare is case-insensitive" "true" "$(moved 27)"
 eq "8 star: #21 is NAMED as another repo's PR"               "true"  "$(has '#15 (#21): the card tracks pull request oldorg/widget#15, not acme/widget#15' "$err")"
 eq "8 star: #23 is NAMED as a bare number"                   "true"  "$(has '#15 (#23): pr_number 15 names no repo' "$err")"
 eq "8 star: #24 is NAMED as a bare number"                   "true"  "$(has '#15 (#24): pr_number 15 names no repo' "$err")"
@@ -1275,6 +1283,7 @@ eq "8 qualified: #23 is NOT"                                 "false" "$(moved 23
 eq "8 qualified: the placeholder card #24 is NOT"            "false" "$(moved 24)"
 eq "8 qualified: the payload.repo card #25 is NOT"           "false" "$(moved 25)"
 eq "8 qualified: #25 is NAMED as a bare number"              "true"  "$(has '#15 (#25): pr_number 15 names no repo' "$err")"
+eq "8 qualified: #27 (pr_url ACME/Widget#15) IS promoted"    "true"  "$(moved 27)"
 
 # OFF A RUNNER under `"*"` there is no repo for the PR leg to compare against — `"*"` is a
 # declaration about the board, not a repo name — so a run whose release ships a pull request is
