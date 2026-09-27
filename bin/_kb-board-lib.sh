@@ -2137,9 +2137,9 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 # with no digits, or a number read out of a different repo's URL), under a real number on the
 # other side: the card would name that number while its URL names none (operator ruling "a",
 # card#9846, for both sides). The mis-promotion that ruling was argued from is NARROWER than the
-# verdict — promote correlates on `pr_number` and reads no issue key at all (card#9935), and only
-# where no `payload.repo` outranks the URL — which is why the verdict, not the consequence, is
-# what this function answers. The `-given` kinds are why the placeholder is exempt only where it
+# verdict — promote correlates a PR by the (repo, number) its `pr_url` names, never through
+# `payload.repo` (agent-webhook-bridge DL-429), and reads no issue key at all (card#9935) — which
+# is why the verdict, not the consequence, is what this function answers. The `-given` kinds are why the placeholder is exempt only where it
 # is STORED: given, it says "no ref yet" about a card whose number names one, and moves the
 # card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
 # card#9846).

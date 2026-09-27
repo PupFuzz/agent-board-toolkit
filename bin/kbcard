@@ -402,8 +402,8 @@
 #     makes about the board's declared field type (see above).
 #     --pr-url writes payload.pr_url — the kanban derives a card's by-ref `source` (owner/repo)
 #     from it, UNLESS the card's payload.repo is a string containing /, which outranks every URL
-#     (derive_source; `kbcard show --task N` prints the card); required for the repo-qualified
-#     PR→card lookup on a multi-repo board (--pr alone sets pr_number, not source).
+#     (derive_source; `kbcard show --task N` prints the card); required for a release promote
+#     to count the card as tracking that PR, on every board (--pr alone sets pr_number only).
 #     Pre-PR placeholder: https://github.com/<owner>/<repo>/pull/0
 #     ON patch, ONE HALF OF A PAIR WITHOUT THE OTHER READS THE CARD FIRST and is rc 2, with NOTHING
 #     written, when the stored other half names a DIFFERENT number: --pr without --pr-url, --issue
