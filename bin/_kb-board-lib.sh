@@ -1608,8 +1608,19 @@ _kb_walk_unkeyable() {
 # search.json (limit=200), accumulate VIA STDIN (printf | jq -s, never argv, so a
 # page over MAX_ARG_STRLEN can't trip "Argument list too long" — the #3091 /
 # #3362 class), dedup by id (order-preserving), and emit ONE JSON array on
-# stdout. Stops on a short page (n<200) or on the answering request's own meta.last_page
-# declaring it the last, whichever comes first.
+# stdout. Stops ONLY on a short or empty page (n<200) — never on a declared meta.last_page
+# (card#10626 review round 1): the server answers with a COUNT and a separate SELECT, not one
+# atomic query (TasksController::search runs Laravel's paginate(), no transaction around it),
+# so a window that holds exactly 200 rows at COUNT time can gain a row before the SELECT runs
+# (a restore or a move-in below the cursor) — the SELECT then still returns 200 (LIMIT 200
+# hides the extra row), last_page says 1, and the dropped row's id is the LOWEST of the lot, so
+# trusting last_page would end the walk one card short at an rc 0 the census cannot catch either
+# (the census's own total is a page-1-only snapshot with the same race). Ending on n<200 instead
+# means a full page always issues one more request — keyed below the last id just read — and
+# that request either comes back short (done) or surfaces the row the race had hidden, because
+# the dropped row's id is lower than every id just delivered and so is still inside the next
+# window. Costs one extra, empty request only when the true remaining count is an exact
+# multiple of 200.
 # Honors KB_CURL_MAX_TIME (seconds) when set (board-snapshot's 5s startup cap).
 #
 # THE WALK IS KEYED ON ID, NOT ON PAGE NUMBER (card#10626). Page 1 is the historic request.
@@ -1720,7 +1731,7 @@ _kb_walk_unkeyable() {
 # wants the cause visible sets that knob; it does not guess at the cause itself.
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}" query="${5:-}"
-    local pages="" page=1 last_page="" resp data n total="" read_n out sum_n=0 qextra="" cursor="" idq=""
+    local pages="" page=1 resp data n total="" read_n out sum_n=0 qextra="" cursor="" idq=""
     # The optional search term, encoded ONCE (it is the same on every page). Refused rather
     # than dropped when the encode yields nothing: an empty qextra is not a narrower read,
     # it is the whole board answered as the match set — the widest wrong answer available
@@ -1791,18 +1802,6 @@ fetch_board_cards() {
             [[ "$page" -eq 1 ]] && return 1
             return 2
         fi
-        # meta.last_page is a SECONDARY termination signal — the n<200 short-page break
-        # (below) is the primary one. Default UNKNOWN (empty), NOT 1 (card #4623): an
-        # absent/out-of-range value must fall through to the n<200 break, never break the
-        # scan at a full 200-row page 1 (that silently truncates when meta.total is also
-        # absent — the miss #4513 guards in the co-vendored promote-released-cards
-        # fetch_whole_board). Usable only as a POSITIVE integer; break on it below only
-        # when the server positively declares it. Read from EVERY answer, because every
-        # request is page 1 of its own id window: its last_page speaks for what is left
-        # below the cursor NOW, where page 1's would be a stale count of the whole board.
-        last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-        kb_is_uint "$last_page" || last_page=""
-        [[ -n "$last_page" && "$last_page" -lt 1 ]] && last_page=""
         # meta.total from PAGE 1 only: it is the census's denominator, the whole board (or
         # match set) as the walk began. A keyed page's total counts only what is below its
         # cursor.
@@ -1893,7 +1892,6 @@ fetch_board_cards() {
         pages+="$data"$'\n'
         sum_n=$((sum_n + ${n:-0}))
         [[ "${n:-0}" -lt 200 ]] && break
-        [[ -n "$last_page" && "$last_page" -le 1 ]] && break
         page=$((page + 1))
         if [[ "$page" -gt "$page_cap" ]]; then
             echo "fetch_board_cards: ⚠ stopped paging at page cap=$page_cap — list may be INCOMPLETE" >&2

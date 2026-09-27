@@ -1110,17 +1110,40 @@ export BWS_ORDER=asc; _walk; unset BWS_ORDER
 eq "a server answering in ASCENDING id order → rc 2"   "2" "$_W_RC"
 eq "…with nothing emitted (bytes on stdout)"           "0" "${#_W_OUT}"
 eq "…naming the broken property" "true" "$(has 'not in strictly descending id order' "$(cat "$TMP/walk.err")")"
+
+# THE WITHIN-REQUEST RACE (card#10626 review round 1): the server runs a COUNT then a separate
+# SELECT (TasksController::search's Laravel paginate(), no transaction around them), so a window
+# holding exactly 200 rows at COUNT time can gain a row before the SELECT runs. 200 live cards
+# (101-300) below the cursor at count time ⇒ total=200, last_page=1 (frozen); a card (id 50,
+# archived) is restored in the gap before the SELECT executes. The SELECT still returns 200 rows
+# (LIMIT 200 hides card 50, the lowest of the 201 now-matching ids), so a walk that trusted
+# last_page would end here, one card short, at rc 0 — the census cannot catch it either, since
+# its own total was frozen at the same count. bws_race models the gap explicitly (distinct from
+# bws_after's BETWEEN-request write).
+bws_init "$TMP/sim-race" "$(jq -nc '[range(101;301)]')" '[50]'
+bws_race 1 unarchive 50
+_walk
+eq "within-request race → rc 0 (the walk continued past the frozen last_page)" "0" "$_W_RC"
+eq "within-request race → the restored card is not lost" "true" \
+   "$(jq 'any(.[]; .id == 50)' <<<"${_W_OUT:-[]}")"
+eq "within-request race → still exactly 201 distinct cards" "201" "$(jq 'length' <<<"${_W_OUT:-[]}")"
+eq "within-request race → it cost exactly one extra request" "2" "$(bws_calls)"
+
 unset -f _walk _walk_missing
 unset _WALK_URLS _W_RC _W_OUT
 curl() { _STUB_ARGS=("$@"); _stub_page_curl; }
 
 # ---------------------------------------------------------------------------
-echo "== fetch_board_cards: last_page must not truncate a full page 1 (card #4623) =="
-# Parity with the standalone's fetch_whole_board (promote-pagination-selftest): meta.last_page
-# is a SECONDARY signal; the n<200 short-page break is primary. An ABSENT or out-of-range
-# last_page defaults to UNKNOWN and must fall through to the short-page break, never stop the
-# scan at a full 200-row page 1. The old `// 1` default broke here and silently returned only
-# page 1 (the #4513 miss). Reverting the guard reds these two cases.
+echo "== fetch_board_cards: meta.last_page is NEVER trusted to end the walk (card #4623, card#10626) =="
+# The n<200 short-page break is the ONLY termination signal; meta.last_page is never consulted
+# for it, at any value. Originally (card #4623) an ABSENT or out-of-range last_page had to fall
+# through to the short-page break rather than truncate at a full page 1 (the old `// 1` default
+# broke here — the #4513 miss). card#10626 review round 1 widened this from "don't trust an
+# absent/invalid last_page" to "don't trust last_page at all": the server's COUNT and its SELECT
+# are separate queries with no transaction around them, so even a POSITIVELY DECLARED last_page
+# can be stale by the time the SELECT runs (see the within-request race case above). These three
+# cases would each have truncated under the pre-round-1 code, which still trusted an explicit
+# last_page<=1.
 
 # Full 200-row page 1 with NO meta at all: must keep paging to the short page, not truncate.
 full1="$(jq -nc '{"data":[range(202;2;-1)|{id:.}]}')" # 200 rows, no meta whatsoever
@@ -1138,6 +1161,15 @@ _PAGES=( [1]="$lp0" [2]='{"data":[{"id":1}]}' )
 rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp0.err")" || rc=$?
 eq "last_page=0 → rc 0"                        "0"   "$rc"
 eq "last_page=0 → paged to 201"                "201" "$(printf '%s' "$out" | jq 'length')"
+
+# last_page=1 EXPLICITLY DECLARED on a full page (the value pre-round-1 code trusted outright):
+# must still keep paging. This is the static-fixture form of the within-request race case above
+# — the server saying "done" on a full page is exactly what a stale COUNT looks like.
+lp1="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":1,"total":200}}')"
+_PAGES=( [1]="$lp1" [2]='{"data":[{"id":1}]}' )
+rc=0; out="$(fetch_board_cards "https://api.example" tok 8 2>"$TMP/lp1.err")" || rc=$?
+eq "last_page=1 on a full page → rc 0, not truncated"  "0"   "$rc"
+eq "last_page=1 on a full page → paged to 201"         "201" "$(printf '%s' "$out" | jq 'length')"
 
 # ---------------------------------------------------------------------------
 echo "== fetch_board_cards: an unreadable 2xx is not an empty board (card#6594) =="

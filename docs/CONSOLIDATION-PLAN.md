@@ -1044,10 +1044,17 @@ finding with no owner is abandoned, not filed.
 
   | paging loop | key | instance of this shape? |
   | --- | --- | --- |
-  | `bin/_kb-board-lib.sh` `fetch_board_cards` | `page=N` | **yes — FIXED here** |
-  | `bin/promote-released-cards` `fetch_whole_board` | `page=N` | **yes — FIXED here** |
+  | `bin/_kb-board-lib.sh` `fetch_board_cards` | `id<C` (keyset since card#10626) | **yes — FIXED here** |
+  | `bin/promote-released-cards` `fetch_whole_board` | `id<C` (keyset since card#10626) | **yes — FIXED here** |
   | `bin/board-stats` `_bs_window_rows` | `before=<cursor>` | **yes — FIXED, see below** |
   | `bin/_dependabot-reconcile.py` `gh_alerts` | `gh api --paginate` | **no** — paging is delegated to `gh`, and a body that is not a JSON array raises `InstrumentError` rather than reading as an exhausted population. Disposed by checking, not by absence of symptoms. |
+  | `bin/card-completeness` `fetch_pages` | `page=N` (GitHub `pulls?state=open`, called at `:395`) | **yes — same shape, NOT fixed here, and not this card's to fix (reported to the tool's owner per canon #7).** A PR that closes or merges between two page requests shifts every later row back one place, dropping the first open PR of the next page — the population this walks can change mid-walk exactly as a board's cards can, and GitHub's list endpoint has no `id<`-style structured filter for it to key on the way the two fixed copies now do. **UNREACHABLE TODAY**: no workflow in this fleet passes `--require-complete` to `promote-released-cards` (card#10626 review round 1, comment 6861), and `fetch_pages` runs only when that flag is set — so this is a latent defect, not a live one. |
+
+  **This fifth row is a doc-sync correction, not a re-audit of the closure above**:
+  `fetch_pages` arrived in 1b301f3 (#388, 2026-09-23), after the table's own derivation at
+  88d9a4e (#254, 2026-08-17) — so "That yields **4**" was accurate when written and is not a
+  live count of the tree today. The card#6630 closure itself is untouched: it was never about
+  this loop, which did not exist yet.
 
   `bin/install-board-hooks`'s `_ibh_symlink_probe` uses a `while :`/`break` block and issues no
   request at all; it is not in this population.

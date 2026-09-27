@@ -1237,29 +1237,24 @@ resp_detail() {
 # once a duplicate or a restored card made the number up — this MOVER then left a shipped card
 # un-promoted at rc 0. A page the walk continues from must be strictly id-descending, and every
 # row of a keyed page must lie below its cursor; either broken DIES, before any PATCH.
+#
+# THE LOOP STOPS ONLY ON A SHORT OR EMPTY PAGE (n<200), never on a declared meta.last_page
+# (card#10626 review round 1), for the same reason as the lib's copy: TasksController::search
+# runs a COUNT then a separate SELECT with no transaction around them, so a window holding
+# exactly 200 rows at COUNT time can gain a row before the SELECT runs (a restore or a
+# move-in below the cursor) — the SELECT then still returns 200 (LIMIT 200 hides the extra
+# row) and last_page says 1, ending the walk one card short at an rc it never dies on. Ending
+# on n<200 instead means a full page always costs one more request, keyed below the last id
+# just read; the row the race hid has a lower id than everything just delivered, so it is
+# still inside that next window. Costs one extra, empty request only when the true remaining
+# count is an exact multiple of 200.
 fetch_whole_board() {
-  local cards='[]' page=1 resp data n total='' sum_n=0 read_n last_page='' cursor='' idq='' delivered
+  local cards='[]' page=1 resp data n total='' sum_n=0 read_n cursor='' idq='' delivered
   while :; do
     idq=''
     [ -n "$cursor" ] && idq="%20id%3C$cursor"
     resp="$(api "$API/tasks/search.json?q=board_id=$BOARD$idq&limit=200&page=1")" \
       || die "board $BOARD read failed — $(resp_detail) — check the token and api_base ($API_SHOWN)"
-    # meta.last_page is a SECONDARY termination signal — the n<200 short-page break is
-    # the primary one. It defaults to UNKNOWN (empty), NOT 1: this loop historically
-    # paged until a short page, so an ABSENT last_page must fall through to n<200, never
-    # break the scan at page 1 on a full 200-row page (that would silently truncate when
-    # meta.total is also absent, the very miss #4513 guards). We break on it only when the
-    # server actually declares it — the lib's fetch_board_cards applies the identical
-    # guard (card #4623), so this co-vendored copy and the lib agree on last_page semantics.
-    # Read from EVERY answer: each request is page 1 of its own id window, so its last_page
-    # speaks for what is left below the cursor now.
-    last_page="$(printf '%s' "$resp" | jq -r '.meta.last_page // empty' 2>/dev/null)"
-    # Usable only as a POSITIVE integer: absent, non-numeric, negative, or <1 all mean
-    # "not meaningfully declared" → unknown ('') → fall through to the n<200 break. A
-    # last_page of 0 on a full page would otherwise break the scan at page 1 (the same
-    # truncation class as an absent value).
-    uint_ok "$last_page" || last_page=''
-    [ -n "$last_page" ] && [ "$last_page" -lt 1 ] && last_page=''
     # meta.total from PAGE 1 only — the census's denominator, the board as the walk began.
     [ "$page" -eq 1 ] && total="$(printf '%s' "$resp" | jq -r '.meta.total // empty' 2>/dev/null)"
     # `.data` must be PRESENT and an ARRAY, on every page. `.data // []` could not tell a
@@ -1302,7 +1297,6 @@ fetch_whole_board() {
     cards="$(printf '%s\n%s\n' "$cards" "$data" | jq -c -s 'add')"
     sum_n=$((sum_n + ${n:-0}))
     [ "${n:-0}" -lt 200 ] && break
-    [ -n "$last_page" ] && [ "$last_page" -le 1 ] && break
     page=$((page + 1))
     [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
     cursor="$(printf '%s' "$data" | jq -r '[.[].id] as $a

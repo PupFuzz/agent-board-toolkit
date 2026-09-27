@@ -22,12 +22,21 @@
 #     bws_init "$TMP/sim" '[1,2,3]' '[]'   # live ids, archived ids
 #     bws_after 1 archive 2                # applied after the 1st request is answered
 #     bws_after 2 create                   # ← a new card, id = the highest id ever + 1
+#     bws_race 1 unarchive 50              # applied BETWEEN the 1st request's count and select
 #     bws_respond "<request url>"          # prints the JSON body; state lives in files, so it
 #                                          # works from inside a `$(…)` subshell
 # Ops: archive <id> | unarchive <id> | create.
 # Knobs, read per call: BWS_IGNORE_ID=1 answers as a server that does NOT apply the `id<N` token;
 # BWS_ORDER=asc answers in ascending id order. Both exist to show the walk refuses a server that
 # breaks the two properties it keys on, rather than reading it as a complete board.
+#
+# bws_race MODELS THE WITHIN-REQUEST RACE (card#10626 review round 1), distinct from bws_after's
+# BETWEEN-request one: the real server runs a COUNT then a separate SELECT with no transaction
+# around them (Laravel's paginate()), so a write landing in that gap changes what the SELECT
+# sees without changing what the COUNT (and so meta.total / meta.last_page) already reported.
+# bws_respond reproduces this literally — it snapshots total/last_page from a COUNT-only read,
+# applies any bws_race op queued for this request, THEN reads the data array from the
+# (possibly now different) live state, using the frozen total/last_page in the response's meta.
 
 bws_init() { # <dir> <live-json> [archived-json]
     BWS_DIR="$1"
@@ -36,18 +45,23 @@ bws_init() { # <dir> <live-json> [archived-json]
     printf '%s' "${3:-[]}" > "$BWS_DIR/archived.json"
     printf '0' > "$BWS_DIR/calls"
     : > "$BWS_DIR/plan"
+    : > "$BWS_DIR/race-plan"
 }
 
 bws_after() { # <request-number> <op> [id]
     printf '%s %s %s\n' "$1" "$2" "${3:-}" >> "$BWS_DIR/plan"
 }
 
+bws_race() { # <request-number> <op> [id] — applied between THIS request's count and select
+    printf '%s %s %s\n' "$1" "$2" "${3:-}" >> "$BWS_DIR/race-plan"
+}
+
 bws_calls() { cat "$BWS_DIR/calls"; }
 
-_bws_apply() { # <request-number>
-    local n op id live arch
+_bws_apply() { # <plan-file> <request-number>
+    local plan="$1" n op id live arch
     while read -r n op id; do
-        [[ "$n" == "$1" ]] || continue
+        [[ "$n" == "$2" ]] || continue
         live="$(cat "$BWS_DIR/live.json")"; arch="$(cat "$BWS_DIR/archived.json")"
         case "$op" in
             archive)
@@ -60,11 +74,11 @@ _bws_apply() { # <request-number>
                 jq -c --argjson a "$arch" '. + [((. + $a) | max) + 1]' <<<"$live" > "$BWS_DIR/live.json" ;;
             *) echo "_board-walk-sim: unknown op '$op'" >&2; return 1 ;;
         esac
-    done < "$BWS_DIR/plan"
+    done < "$plan"
 }
 
 bws_respond() { # <url>
-    local url="$1" q lim page cur="" tok n
+    local url="$1" q lim page cur="" tok n total last_page
     q="${url#*q=}"; q="${q%%&*}"
     q="${q//%20/ }"; q="${q//%3C/<}"
     lim="${url#*limit=}"; lim="${lim%%&*}"
@@ -75,12 +89,24 @@ bws_respond() { # <url>
     [[ -n "${BWS_IGNORE_ID:-}" ]] && cur=""
     n=$(( $(cat "$BWS_DIR/calls") + 1 ))
     printf '%s' "$n" > "$BWS_DIR/calls"
-    jq -c --argjson lim "$lim" --argjson page "$page" --arg cur "$cur" --arg order "${BWS_ORDER:-desc}" '
+    # THE COUNT — read BEFORE any race op for this request, exactly as the server's own COUNT
+    # query runs before its SELECT. total/last_page below are FROZEN from this snapshot.
+    read -r total last_page < <(jq -r --arg cur "$cur" --argjson lim "$lim" '
+        (if $cur == "" then . else map(select(. < ($cur | tonumber))) end) as $s
+        | ($s | length) as $t
+        | ([1, (($t + $lim - 1) / $lim | floor)] | max) as $lp
+        | "\($t) \($lp)"' "$BWS_DIR/live.json")
+    _bws_apply "$BWS_DIR/race-plan" "$n"
+    # THE SELECT — reads the live state AFTER the race op above, so it can differ from what the
+    # frozen total/last_page just declared. This is the literal non-atomicity, not a stand-in
+    # for it: a real server's COUNT and SELECT are two requests to the same possibly-changing
+    # table, and nothing here makes them agree.
+    jq -c --argjson lim "$lim" --argjson page "$page" --arg cur "$cur" --arg order "${BWS_ORDER:-desc}" \
+        --argjson total "$total" --argjson last_page "$last_page" '
         (if $cur == "" then . else map(select(. < ($cur | tonumber))) end
          | sort | if $order == "desc" then reverse else . end) as $s
         | { data: [ $s[(($page - 1) * $lim):($page * $lim)][] | {id: .} ],
-            meta: { total: ($s | length), per_page: $lim, current_page: $page,
-                    last_page: ([1, ((($s | length) + $lim - 1) / $lim | floor)] | max) } }' \
+            meta: { total: $total, per_page: $lim, current_page: $page, last_page: $last_page } }' \
         "$BWS_DIR/live.json"
-    _bws_apply "$n"
+    _bws_apply "$BWS_DIR/plan" "$n"
 }

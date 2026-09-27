@@ -135,6 +135,21 @@ export BWS_ORDER=asc; _walk; unset BWS_ORDER
 eq   "a server answering in ASCENDING id order → dies rc 2"  "2" "$_W_RC"
 [[ -z "$_W_OUT" ]] && ok "…and no card list reaches the mover" || bad "an unordered walk leaked a card list"
 grep -q "not in strictly descending id order" "$TMP/walk.err" && ok "…naming the broken property" || bad "missing the id-order refusal"
+
+# THE WITHIN-REQUEST RACE (card#10626 review round 1): the server runs a COUNT then a separate
+# SELECT (TasksController::search's Laravel paginate(), no transaction around them), so a window
+# holding exactly 200 rows at COUNT time can gain a row before the SELECT runs. bws_race models
+# the gap explicitly (distinct from bws_after's BETWEEN-request write) — see kb-board-lib-selftest
+# for the full argument, driven here over the same simulator against the standalone copy.
+bws_init "$TMP/sim-race" "$(jq -nc '[range(101;301)]')" '[50]'
+bws_race 1 unarchive 50
+_walk
+eq   "within-request race → rc 0"                       "0"   "$_W_RC"
+eq   "within-request race → the restored card is not lost" "true" \
+     "$(jq 'any(.[]; .id == 50)' <<<"${_W_OUT:-[]}")"
+eq   "within-request race → still exactly 201 distinct cards" "201" "$(jq 'length' <<<"${_W_OUT:-[]}")"
+eq   "within-request race → it cost exactly one extra request" "2" "$(bws_calls)"
+
 # shellcheck source=/dev/null
 source "$TMP/api-pages.fn"
 unset -f _walk _walk_missing
@@ -158,10 +173,18 @@ eq   "absent meta.total → rc 0"           "0"   "$rc"
 eq   "absent meta.total → 2 cards"        "2"   "$(printf '%s' "$out" | jq 'length')"
 [[ -s "$TMP/notot.err" ]] && bad "absent-total read must be silent" || ok "absent-total read silent"
 
-echo "== FULL 200-row page 1 with NO meta at all: must keep paging, not truncate =="
-# Regression guard: a full first page with neither meta.last_page NOR meta.total present
-# must fall through to the n<200 break (page 2), NOT stop at page 1. A `last_page // 1`
-# default would break here and silently return only page 1 — the #4513 miss re-introduced.
+echo "== meta.last_page is NEVER trusted to end the walk (card #4623, card#10626) =="
+# The n<200 short-page break is the ONLY termination signal; meta.last_page is never consulted
+# for it, at any value. Originally (card #4623) an ABSENT or out-of-range last_page had to fall
+# through to the short-page break rather than truncate at a full page 1 (the old `// 1` default
+# broke here — the #4513 miss). card#10626 review round 1 widened this from "don't trust an
+# absent/invalid last_page" to "don't trust last_page at all": the server's COUNT and its SELECT
+# are separate queries with no transaction around them, so even a POSITIVELY DECLARED last_page
+# can be stale by the time the SELECT runs (see the within-request race case above). These
+# three cases would each have truncated under the pre-round-1 code, which still trusted an
+# explicit last_page<=1.
+
+# Full 200-row page 1 with NO meta at all: must keep paging, not stop at page 1.
 full1="$(jq -nc '{"data":[range(202;2;-1)|{id:.}]}')" # 200 rows, no meta whatsoever
 tail2='{"data":[{"id":2},{"id":1}]}'                 # short page → n<200 terminates
 _PAGES=( [1]="$full1" [2]="$tail2" )
@@ -170,14 +193,20 @@ eq   "full page + no meta → rc 0"         "0"   "$rc"
 eq   "full page + no meta → paged to 202" "202" "$(printf '%s' "$out" | jq 'length')"
 [[ -s "$TMP/nometa.err" ]] && bad "no-meta full read must be silent" || ok "no-meta full read silent"
 
-echo "== last_page=0 on a full page: out-of-range ⇒ unknown, must keep paging =="
-# A non-positive last_page is not a meaningful declaration; it must not truncate the scan
-# at page 1 (same class as gap #1). Full page 1 with last_page:0 and no total → page 2.
+# last_page=0 on a full page: a non-positive value is not a meaningful declaration.
 lp0="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":0}}')"
 _PAGES=( [1]="$lp0" [2]='{"data":[{"id":1}]}' )
 rc=0; out="$(fetch_whole_board 2>"$TMP/lp0.err")" || rc=$?
 eq   "last_page=0 → rc 0"                 "0"   "$rc"
 eq   "last_page=0 → paged to 201"         "201" "$(printf '%s' "$out" | jq 'length')"
+
+# last_page=1 EXPLICITLY DECLARED on a full page (the value pre-round-1 code trusted outright):
+# must still keep paging — the static-fixture form of the within-request race case above.
+lp1="$(jq -nc '{"data":[range(201;1;-1)|{id:.}],"meta":{"last_page":1,"total":200}}')"
+_PAGES=( [1]="$lp1" [2]='{"data":[{"id":1}]}' )
+rc=0; out="$(fetch_whole_board 2>"$TMP/lp1.err")" || rc=$?
+eq   "last_page=1 on a full page → rc 0, not truncated" "0"   "$rc"
+eq   "last_page=1 on a full page → paged to 201"        "201" "$(printf '%s' "$out" | jq 'length')"
 
 echo "== 0 visible cards on page 1 → REFUSE (token not a board member) =="
 _PAGES=( [1]='{"data":[],"meta":{"last_page":1,"total":0}}' )
