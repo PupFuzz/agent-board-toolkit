@@ -468,7 +468,6 @@ BSC_DISPOSED=(
     "bin/promote-released-cards::A card with NO derivable by-ref source cannot be attributed::a7139314fe13"
     "bin/release-pr-body::matched ONLY an unsourced card::d7ef1a8db8a4"
     "docs/INSTALL.md::Shipped refs whose card carries no by-ref source::a306030aea36"
-    "tests/promote-source-qualify-selftest.sh::qualified: the foreign card is NAMED, by id::86591210a1ed"
     "tests/release-pr-body-selftest.sh::the coverage report MEASURED (qualified)::bdbe48bd011b"
 
     # ── ADMITTED BY ARM 2 (bare `source` beside a field name), and the same rulings as above one
