@@ -1241,7 +1241,12 @@ echo "== 8. THE PR LEG IS (repo, number), IN BOTH MODES — the org-move collisi
 #       single-repo board, so `"*"` must still promote it (the DL leg is not what changed);
 #   #27 tracks ACME/Widget#15 — the release's own PR, its repo spelled in another case. pr_url_ref
 #       returns the repo as derived and the call site canonicalizes it, so this card is promoted;
-#       without that lowercasing the repo compare fails and it would be named other-repo.
+#       without that lowercasing the repo compare fails and it would be named other-repo;
+#   #28 carries `.../acme/widget/tree/main/pull/15` beside pr_number 15, and
+#   #29 carries `.../acme/widget/issues/5 .../oldorg/widget/pull/15` — both used to read as
+#       acme/widget#15 and be PROMOTED: the number was the first /pull/<n> anywhere, so it came
+#       from a path under /tree/, or from another repo URL. pr_url_ref reads a number only in one
+#       match with the repo (card#10736), so neither names a pull request: each is a bare number.
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[
   {"id":21,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/oldorg/widget/pull/15"}},
@@ -1250,8 +1255,10 @@ cat > "$BOARD_FILE" <<'JSON'
   {"id":24,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/pull/0"}},
   {"id":25,"workflow_stage_id":51,"payload":{"pr_number":"15","repo":"acme/widget"}},
   {"id":26,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}},
-  {"id":27,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/ACME/Widget/pull/15"}}
-],"meta":{"last_page":1,"total":7}}
+  {"id":27,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/ACME/Widget/pull/15"}},
+  {"id":28,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/tree/main/pull/15"}},
+  {"id":29,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/issues/5 https://github.com/oldorg/widget/pull/15"}}
+],"meta":{"last_page":1,"total":9}}
 JSON
 git -C "$GITDIR" checkout -q -b feat8 main
 git -C "$GITDIR" commit -q --allow-empty -m "feat: DL-7 a decision"
@@ -1267,12 +1274,16 @@ eq "8 star: the placeholder card #24 is NOT"                 "false" "$(moved 24
 eq "8 star: the payload.repo card #25 is NOT"                "false" "$(moved 25)"
 eq "8 star: the DL-only card #26 still IS (DL leg unchanged)" "true" "$(moved 26)"
 eq "8 star: #27 (pr_url ACME/Widget#15) IS promoted — the repo compare is case-insensitive" "true" "$(moved 27)"
+eq "⭐ 8 star: #28 (a /pull/15 under /tree/) is NOT promoted"  "false" "$(moved 28)"
+eq "⭐ 8 star: #29 (/pull/15 in another repo URL) is NOT promoted" "false" "$(moved 29)"
+eq "8 star: #28 is NAMED as a bare number"                   "true"  "$(has '#15 (#28): pr_number 15 names no repo' "$err")"
+eq "8 star: #29 is NAMED as a bare number"                   "true"  "$(has '#15 (#29): pr_number 15 names no repo' "$err")"
 eq "8 star: #21 is NAMED as another repo's PR"               "true"  "$(has '#15 (#21): the card tracks pull request oldorg/widget#15, not acme/widget#15' "$err")"
 eq "8 star: #23 is NAMED as a bare number"                   "true"  "$(has '#15 (#23): pr_number 15 names no repo' "$err")"
 eq "8 star: #24 is NAMED as a bare number"                   "true"  "$(has '#15 (#24): pr_number 15 names no repo' "$err")"
 eq "8 star: #25 is NAMED as a bare number"                   "true"  "$(has '#15 (#25): pr_number 15 names no repo' "$err")"
 eq "8 star: the bare-number line names the stamp that fixes it" "true" "$(has 'kbcard patch --task 23 --pr 15 --pr-url https://github.com/<owner>/<repo>/pull/15' "$err")"
-eq "8 star: both skips are COUNTED on the summary line"      "true"  "$(has '1 other-repo, 3 pr-unqualified, ' "$out")"
+eq "8 star: both skips are COUNTED on the summary line"      "true"  "$(has '1 other-repo, 5 pr-unqualified, ' "$out")"
 eq "8 star: the state line no longer calls a bare pr_number unambiguous" "false" "$(has 'bare dl_number/pr_number is unambiguous' "$err")"
 
 run7 acme/widget "$CFG_REPO"
@@ -1284,6 +1295,8 @@ eq "8 qualified: the placeholder card #24 is NOT"            "false" "$(moved 24
 eq "8 qualified: the payload.repo card #25 is NOT"           "false" "$(moved 25)"
 eq "8 qualified: #25 is NAMED as a bare number"              "true"  "$(has '#15 (#25): pr_number 15 names no repo' "$err")"
 eq "8 qualified: #27 (pr_url ACME/Widget#15) IS promoted"    "true"  "$(moved 27)"
+eq "⭐ 8 qualified: #28 is NOT promoted"                      "false" "$(moved 28)"
+eq "⭐ 8 qualified: #29 is NOT promoted"                      "false" "$(moved 29)"
 
 # OFF A RUNNER under `"*"` there is no repo for the PR leg to compare against — `"*"` is a
 # declaration about the board, not a repo name — so a run whose release ships a pull request is

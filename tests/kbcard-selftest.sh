@@ -5207,6 +5207,10 @@ PAIR179='Pass the pair: --pr 179 --pr-url https://github.com/<owner>/<repo>/pull
 # removed URL), so they must be refused with no request at all. The /PULL/ and /Pull/ rows hold
 # the one definition of which pull request a pr_url names (KB_JQ_PR_URL_REF): the segment is
 # case-sensitive, as promote and the bridge read it, so an upper-case one names no pull request.
+# The /tree/, /blob/ and /issues/5/ rows hold its anchoring (card#10736): the number is read only
+# from the match that gives the repo, so a `/pull/179` further along that path names no pull
+# request — nor does one in a LATER URL, of any repo (the stored two-URL rows below; the args are
+# word-split, a stored payload is not).
 # BARE_ROWS adds the results that depend on the stored payload: the stored pr_url states --pr
 # alone meets, and the other ways a write can end holding a bare number.
 OFFLINE_ROWS=(
@@ -5220,6 +5224,9 @@ OFFLINE_ROWS=(
     '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/pull/0'
     '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/179'
     '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/tree/main/pull/179'
+    '{}|patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/blob/main/pull/179'
+    '{}|create-card --type task --name probe --pr 179 --pr-url https://github.com/acme/widget/issues/5/pull/179'
 )
 BARE_ROWS=(
     "${OFFLINE_ROWS[@]}"
@@ -5236,6 +5243,8 @@ BARE_ROWS=(
     '{"pr_url":"https://github.com/acme/widget/Pull/179"}|patch --task 505 --pr 179'
     "$PR179|patch --task 505 --column wont_do --keep-refs --clear pr-url"
     '{"pr_number":179}|patch --task 505 --pr-url https://example.com/acme/widget/merge_requests/179'
+    '{"pr_url":"https://github.com/acme/widget/commit/abc https://github.com/acme/widget/pull/179"}|patch --task 505 --pr 179'
+    '{"pr_url":"https://github.com/acme/widget/issues/179 https://github.com/other/repo/pull/179"}|patch --task 505 --pr 179'
 )
 for _row in "${BARE_ROWS[@]}"; do
     _p="${_row%%|*}"; read -r -a _args <<<"${_row#*|}"
@@ -5257,6 +5266,12 @@ eq "--clear pr-url over pr_number 179 → names the stored number and the clear"
 KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/pull/180
 eq "--pr 179 --pr-url …/pull/180 → names the other PR by its derived repo and number" "true" \
    "$(has 'names a DIFFERENT pull request, #180 in acme/widget' "$err")"
+KB_STUB_PAYLOAD='{}' kbc patch --task 505 --pr 179 --pr-url https://github.com/acme/widget/tree/main/pull/179
+eq "--pr 179 --pr-url …/tree/main/pull/179 → says the URL names no PR number, not that it is mis-cased" "true|false" \
+   "$(has 'which names no pull request number, only the repo acme/widget' "$err")|$(has 'spelled lower-case' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":"https://github.com/a/x/issues/5 https://github.com/b/y/pull/179"}' kbc patch --task 505 --pr 5
+eq "--pr 5 over a stored two-URL pr_url (…/a/x/issues/5 …/b/y/pull/179) → rc 2, names the issue its first URL names" "2|0|true" \
+   "$rc|$(nwrite)|$(has 'which names issue #5 in a/x (an .../issues/ URL), not a pull request' "$err")"
 KB_STUB_PAYLOAD='{"pr_url":" https://user:TOKEN-429@example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
 eq "an unparsed userinfo pr_url under --pr → rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-429' "$err$out")"
 # A result that needs the stored payload and cannot read it is no answer: rc 1, nothing written.
@@ -5403,9 +5418,17 @@ for _ref in pr issue; do
            "$rc|$(npatch)|$(has "only the pre-PR placeholder" "$err")"
     fi
     # The number split off another repo's URL is not the stored URL's number — but the SAME repo's
-    # is, so these stay the ordinary same/diff comparison.
+    # is, so these stay the ordinary same/diff comparison. On the pr pair the invariant then
+    # refuses the same-number case: KB_JQ_PR_URL_REF reads a number only from the match that gives
+    # the repo — here the /commit/ URL, which names none — so a later URL's /pull/179 names no
+    # pull request (card#10736, the pair of bridge card#10735).
     KB_STUB_PAYLOAD="{\"$_uk\":\"https://github.com/acme/widget/commit/x https://github.com/acme/widget/$_seg/179\"}" kbc patch --task 505 "$_nf" 179
-    eq "control: a stored $_uk whose number comes from the SAME repo's URL, $_nf 179 → rc 0, silent" "0|1|" "$rc|$(npatch)|$err"
+    if [[ "$_ref" == issue ]]; then
+        eq "control: a stored $_uk whose number comes from the SAME repo's URL, $_nf 179 → rc 0, silent" "0|1|" "$rc|$(npatch)|$err"
+    else
+        eq "⭐ a stored $_uk whose /pull/179 sits in a LATER URL than its repo's, $_nf 179 → rc 2, NO PATCH, bare" "2|0|true" \
+           "$rc|$(npatch)|$(has "the card's pr_url, which names no pull request number, only the repo acme/widget" "$err")"
+    fi
     KB_STUB_PAYLOAD="{\"$_uk\":\"https://github.com/acme/widget/commit/x https://github.com/acme/widget/$_seg/178\"}" kbc patch --task 505 "$_nf" 179
     eq "control: …and naming a different number there, $_nf 179 → rc 2 as a divergence" "2|true" \
        "$rc|$(has "the card's $_uk names $_noun 178 in acme/widget" "$err")"
@@ -5495,7 +5518,14 @@ for _ref in pr issue; do
     eq "⭐ $_uf whose 178 is read from ANOTHER repo's URL, over a stored 178 → rc 2, NO PATCH, names other/repo" "2|0|true" \
        "$rc|$(npatch)|$(has 'only the repo other/repo' "$err")"
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/other/repo/$_seg/178"
-    eq "control: …the same repo's URL naming 178, over 178 → rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
+    if [[ "$_ref" == issue ]]; then
+        eq "control: …the same repo's URL naming 178, over 178 → rc 0, ONE PATCH, silent" "0|1|" "$rc|$(npatch)|$err"
+    else
+        # …which the pr_number/pr_url invariant refuses: the number is read only from the match
+        # giving the repo, the /commit/ one (card#10736).
+        eq "⭐ …the same repo's LATER URL naming 178, over 178 → rc 2, NO PATCH, bare" "2|0|true" \
+           "$rc|$(npatch)|$(has "the --pr-url given, which names no pull request number, only the repo other/repo" "$err")"
+    fi
     # The repos are compared as spelled (no case fold — that would be another copy of the server's
     # source lowercasing), so one repo spelled two ways in one value reads as two URLs: refused.
     KB_STUB_PAYLOAD="$_held" kbc patch --task 505 "$_uf" "https://github.com/other/repo/commit/x https://github.com/Other/Repo/$_seg/178"

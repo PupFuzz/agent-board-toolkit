@@ -370,34 +370,87 @@ eq "witness: the extraction found the def's head and its close" "true|true" \
    "$(has 'def pr_url_ref:' "$_pur_prc")|$([[ "${_pur_prc##*$'\n'}" == "end;" ]] && echo true || echo false)"
 eq "⭐ the standalone's def IS KB_JQ_PR_URL_REF, line for line" \
    "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" "$_pur_prc"
-echo "== pr_url_ref: both copies agree over one corpus =="
+echo "== pr_url_ref: both copies agree over one corpus, and it reads what the rule says =="
 # _pur <def-text> <json-value> — the def's answer for one pr_url value, `null` when none.
 _pur() { jq -cn --argjson v "$2" "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$1"' $v | pr_url_ref'; }
-_pur_corpus=('"https://github.com/acme/widget/pull/179"' '"https://github.com/acme/widget/PULL/179"'
-    '"https://github.com/acme/widget/Pull/179"' '"https://GitHub.com/Acme/Widget.git/pull/0179"'
-    '"https://github.com/acme/widget/pull/0"' '"https://github.com/acme/widget/issues/179"'
-    '"https://github.com/acme/widget/commit/179"' '"https://github.com/acme/widget/tree/main/pull/179"'
-    '"https://github.com/acme/widget/pull/"' '"https://example.com/acme/widget/pull/179"'
-    '"https://example.com/x/pull/9 https://github.com/acme/widget/pull/179"' '""' '42' 'null'
-    '{"u":"https://github.com/acme/widget/pull/179"}')
-for _v in "${_pur_corpus[@]}"; do
+# <json-value>|<expected answer>. THE RULE (card#10736, the pair of bridge card#10735): the number
+# is read from the SAME match that gives the repo — the value's first `github.com/<owner>/<repo>
+# (.git)?/<segment>/`, which is repo_from_gh_url's match — and only when that segment is a
+# lower-case `pull` followed by digits. So a `/pull/<N>` past it (under /tree/, /blob/,
+# /issues/<M>/, or in a later URL) names no pull request. The rows marked `# was` classified
+# differently before card#10736, and the comment gives the old answer; every other row is unchanged.
+_pur_rows=(
+    '"https://github.com/acme/widget/pull/179"|{"repo":"acme/widget","n":"179"}'
+    '"https://GitHub.com/Acme/Widget.git/pull/0179"|{"repo":"Acme/Widget","n":"179"}'
+    '"https://github.com/acme/widget/pull/179/files"|{"repo":"acme/widget","n":"179"}'
+    '"https://github.com/acme/widget/pull/179#discussion_r1"|{"repo":"acme/widget","n":"179"}'
+    '"http://www.github.com/acme/widget/pull/179"|{"repo":"acme/widget","n":"179"}'
+    '"https://github.com/acme/widget/PULL/179"|null'
+    '"https://github.com/acme/widget/Pull/179"|null'
+    '"https://github.com/acme/widget/pull/0"|null'
+    '"https://github.com/acme/widget/pull/"|null'
+    '"https://github.com/acme/widget/issues/179"|null'
+    '"https://github.com/acme/widget/commit/179"|null'
+    '"https://example.com/acme/widget/pull/179"|null'
+    '"https://github.com/acme/widget/tree/main/pull/179"|null'                                  # was acme/widget#179
+    '"https://github.com/acme/widget/blob/main/pull/179"|null'                                  # was acme/widget#179
+    '"https://github.com/acme/widget/issues/5/pull/179"|null'                                   # was acme/widget#179
+    '"https://github.com/a/x/issues/5 https://github.com/b/y/pull/179"|null'                    # was a/x#179
+    '"https://github.com/acme/widget/issues/179 https://github.com/other/repo/pull/179"|null'   # was acme/widget#179
+    '"https://github.com/acme/widget/commit/abc https://github.com/acme/widget/pull/179"|null'  # was acme/widget#179
+    '"https://github.com/acme/widget/pull/5 https://github.com/b/y/pull/179"|{"repo":"acme/widget","n":"5"}'
+    '"https://example.com/x/pull/9 https://github.com/acme/widget/pull/179"|{"repo":"acme/widget","n":"179"}'  # was acme/widget#9
+    '""|null' '42|null' 'null|null'
+    '{"u":"https://github.com/acme/widget/pull/179"}|null')
+for _row in "${_pur_rows[@]}"; do
+    _v="${_row%|*}"; _want="${_row##*|}"
     eq "pr_url_ref agrees on [$_v]" "$(_pur "$KB_JQ_PR_URL_REF" "$_v")" "$(_pur "$_pur_prc" "$_v")"
+    eq "⭐ pr_url_ref reads [$_v] as $_want" "$_want" "$(_pur "$KB_JQ_PR_URL_REF" "$_v")"
 done
-eq "witness: the corpus holds a URL naming a PR, and an upper-case segment naming none" \
-   '{"repo":"acme/widget","n":"179"}|null' \
-   "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/pull/179"')|$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')"
+echo "== pr_url_ref: its match IS repo_from_gh_url's match, plus the digit run =="
+# The number belongs to the repo's URL only because the two captures find the SAME first match.
+# That holds while pr_url_ref's pattern is repo_from_gh_url's with the segment named and the digit
+# run appended — a guard, because repo_from_gh_url is a separate pinned pair (§ 5) that can move
+# alone, and a segment added to one pattern and not the other moves the first match.
+_pur_re() { printf '%s\n' "$1" | sed -n 's/.*capture("\(github[^"]*\)".*/\1/p'; }
+_pur_head() { _pur_re "$1" | sed 's/?<s>//; s/(?<n>\[0-9\]\*)$//'; }
+eq "witness: both patterns were extracted" "true|true" \
+   "$([[ -n "$(_pur_re "$KB_JQ_REPO_FROM_GH_URL")" ]] && echo true)|$([[ -n "$(_pur_re "$KB_JQ_PR_URL_REF")" ]] && echo true)"
+eq "⭐ pr_url_ref's pattern is repo_from_gh_url's, segment named and digits appended" \
+   "$(_pur_re "$KB_JQ_REPO_FROM_GH_URL")" "$(_pur_head "$KB_JQ_PR_URL_REF")"
+eq "control: repo_from_gh_url losing a segment reds that guard" "false" \
+   "$([[ "$(_pur_re "${KB_JQ_REPO_FROM_GH_URL/|tree|blob/|tree}")" == "$(_pur_head "$KB_JQ_PR_URL_REF")" ]] && echo true || echo false)"
+eq "control: …and so does pr_url_ref losing one" "false" \
+   "$([[ "$(_pur_re "$KB_JQ_REPO_FROM_GH_URL")" == "$(_pur_head "${KB_JQ_PR_URL_REF/|tree|blob/|tree}")" ]] && echo true || echo false)"
 echo "== control: a standalone copy read case-insensitively is caught by both comparisons =="
-_pur_cs='capture("/pull/(?<n>[0-9]+)")' _pur_ci='capture("/pull/(?<n>[0-9]+)"; "i")'
+_pur_cs='$m.s != "pull"' _pur_ci='($m.s | ascii_downcase) != "pull"'
 _pur_mut="${_pur_prc/"$_pur_cs"/"$_pur_ci"}"
 eq "control: the mutation applied" "false" "$([[ "$_pur_mut" == "$_pur_prc" ]] && echo true || echo false)"
 eq "control: the line-for-line comparison reds on it" "false" \
    "$([[ "$(printf '%s\n' "$KB_JQ_PR_URL_REF" | _pur_strip)" == "$_pur_mut" ]] && echo true || echo false)"
 eq "control: …and so does the corpus, on a /PULL/ URL" "false" \
    "$([[ "$(_pur "$KB_JQ_PR_URL_REF" '"https://github.com/acme/widget/PULL/179"')" == "$(_pur "$_pur_mut" '"https://github.com/acme/widget/PULL/179"')" ]] && echo true || echo false)"
+echo "== control: the pre-card#10736 reading (/pull/<N> anywhere) reds the expected-answer rows =="
+# The def as it stood: repo from repo_from_gh_url, number from the first `/pull/<N>` anywhere.
+_pur_old='def pr_url_ref:
+    if type != "string" then null
+    else (repo_from_gh_url) as $r
+      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
+      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    end;'
+_pur_red=0
+for _row in "${_pur_rows[@]}"; do
+    [[ "$(_pur "$_pur_old" "${_row%|*}")" == "${_row##*|}" ]] || _pur_red=$((_pur_red + 1))
+done
+eq "control: the old def reads the two-URL value as a/x#179" '{"repo":"a/x","n":"179"}' \
+   "$(_pur "$_pur_old" '"https://github.com/a/x/issues/5 https://github.com/b/y/pull/179"')"
+eq "control: …and misses at least one expected-answer row" "true" "$( (( _pur_red > 0 )) && echo true || echo false)"
 eq "⭐ kb_pr_named_verdict reads the pair through it: …/PULL/179 beside pr_number 179 is refused" "refuse" \
    "$(kb_pr_named_verdict '{}' '{"pr_number":179,"pr_url":"https://github.com/acme/widget/PULL/179"}' | cut -f1)"
-unset -f _pur _pur_strip
-unset _pur_prc _pur_mut _pur_cs _pur_ci _pur_corpus _v
+eq "⭐ …and so is the two-URL value beside pr_number 179" "refuse" \
+   "$(kb_pr_named_verdict '{}' '{"pr_number":179,"pr_url":"https://github.com/a/x/issues/5 https://github.com/b/y/pull/179"}' | cut -f1)"
+unset -f _pur _pur_strip _pur_re _pur_head
+unset _pur_prc _pur_mut _pur_old _pur_red _pur_cs _pur_ci _pur_rows _row _v _want
 
 # ═══════════ 6 — the WRITE-OUTCOME contract: promote ↔ `bin/kbcard` (card#9938) ═══════════
 #
