@@ -2251,26 +2251,41 @@ KB_JQ_REPO_FROM_GH_URL='def repo_from_gh_url:
 
 # KB_JQ_PR_URL_REF — THE RULE BY WHICH A pr_url NAMES A PULL REQUEST (agent-webhook-bridge DL-429,
 # whose PrUrlRef this reads as the bridge does). A jq program fragment defining `def pr_url_ref:`: for a
-# string, `{repo, n}` — the repo KB_JQ_REPO_FROM_GH_URL derives (as derived; a caller that compares
-# it canonicalizes it) and the number of the FIRST `/pull/<digits>`, read case-SENSITIVELY and
-# anywhere in the value, as KB_JQ_REF_CANON's `norm` prints it — and null when there is no repo, no
-# such segment, or the number is 0 (the `.../pull/0` placeholder names a repo and no pull request).
-# So `.../PULL/179` names no pull request: promote and the bridge both read it that way, and a
-# third reading here is how a card promote treats as bare used to be accepted as named.
+# string, `{repo, n}` read from ONE match — the value's first `github.com/<owner>/<repo>(.git)?/
+# <segment>/<digits>`, matched case-insensitively, which is agent-webhook-bridge DL-431's PrUrlRef
+# pattern and KB_JQ_REPO_FROM_GH_URL's match (so the repo is the one that derives; returned as
+# derived, a caller that compares it canonicalizes it) — with the number as KB_JQ_REF_CANON's
+# `norm` prints it. That match names a pull request only when its segment is exactly `pull`
+# (compared case-SENSITIVELY) and its digit run is non-empty; null when there is no match, the
+# segment is anything else or carries no digits, or the number is 0 (the `.../pull/0` placeholder
+# names a repo and no pull request). So `.../PULL/179` names no pull request: promote and the
+# bridge both read it that way, and a third reading here is how a card promote treats as bare used
+# to be accepted as named. Nor does a `/pull/<N>` anywhere
+# past that segment — under `/tree/`, `/blob/` or `/issues/<M>/`, or in a later URL (card#10736,
+# released as a pair with the bridge PrUrlRef fix, bridge card#10735): the number used to be the
+# first `/pull/<N>` anywhere, so `…/a/x/issues/5 …/b/y/pull/179` read as `a/x#179`, a pull request
+# neither URL names. There is no second search: a `/pull/<N>` that is not in the first match is
+# never read. The pattern is repo_from_gh_url's with the segment named and the digit run appended,
+# so its first match IS repo_from_gh_url's; mirror-pair-parity § 5b guards that, and its corpus
+# marks each row the change reclassified (DL-431 states the reclassified set as a predicate).
+# § 5b also drives both copies over every vector of the bridge's published corpus, vendored
+# byte-identical at tests/vendored/agent-webhook-bridge/pr-url-ref-parity-corpus.json — this repo
+# cannot see the bridge's copy, so a bridge-side change arrives only by re-vendoring.
 #
 # ⚠ THE SECOND COPY, AND WHY IT IS NOT AN UNPINNED THIRD. `bin/promote-released-cards` carries this
 # def inline (a vendored standalone that must not source this lib); the text here is its text, and
 # `tests/mirror-pair-parity-selftest.sh` § 5b holds the two identical line for line and drives both
 # over one corpus. Edit the standalone's def and this constant together.
 #
-# USAGE — needs `norm` and `repo_from_gh_url` defined before it:
+# USAGE — needs `norm` defined before it (callers prepend repo_from_gh_url too, for their own use):
 #     jq -r "$KB_JQ_REF_CANON$KB_JQ_REPO_FROM_GH_URL$KB_JQ_PR_URL_REF"'.payload.pr_url | pr_url_ref'
 # ⛔ NO APOSTROPHE ANYWHERE IN THE VALUE BELOW (it is a single-quoted shell string).
 KB_JQ_PR_URL_REF='def pr_url_ref:
     if type != "string" then null
-    else (repo_from_gh_url) as $r
-      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
-      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(?<s>pull|issues|commit|tree|blob)/(?<n>[0-9]*)"; "i")
+          // null) as $m
+      | if $m == null or $m.s != "pull" or $m.n == "" then null
+        else ($m.n | norm) as $n | if $n == "0" then null else {repo: $m.r, n: $n} end end
     end;'
 
 # kb_ref_pair_verdicts <card-data-json> <payload-json> <pairs>: THE ONE DEFINITION of whether
@@ -2335,8 +2350,12 @@ KB_JQ_PR_URL_REF='def pr_url_ref:
 # card's by-ref source, where the URL is what sets it, while that number stays (operator ruling,
 # card#9846).
 #
-# ⚠ For the pr pair this number reading differs from KB_JQ_PR_URL_REF (case-insensitive, anchored
-# after the repo); it only over-refuses, since kb_pr_named_verdict holds every pr write to that rule.
+# ⚠ For the pr pair this number reading differs from KB_JQ_PR_URL_REF: it reads `issues` and
+# any-case segments too, and takes the first pull/issues match naming <url-repo>, which may sit in a
+# later URL. Where pr_url_ref names a pull request both read the same number (no pull/issues match
+# can precede repo_from_gh_url's first match, which is then that `pull/<N>`), so the difference
+# is only ever an `ok` here that pr_url_ref does not share — and kb_pr_named_verdict holds every pr
+# write to pr_url_ref, so the pair check only over-refuses. Re-checked when card#10736 anchored it.
 #
 # ⛔ NOTHING HERE PRINTS A URL. <url-repo> and <url-number> are what the parse DERIVED from the path
 # after `github.com/`, which cannot hold a userinfo; a caller's message must print only those.
@@ -2386,7 +2405,8 @@ kb_ref_pair_verdicts() {
 # <number-src> / <url-src> say where each resulting half comes from: `given` (this write sets it),
 # `cleared` (this write nulls it), `stored` (the write leaves it). <url-number> / <url-repo> are
 # what the parse DERIVED — KB_JQ_REPO_FROM_GH_URL's repo, and the number KB_JQ_PR_URL_REF reads (or,
-# where it reads none, the first pull/issues number in any case, for the message only).
+# where it reads none, the number of a pull/issues segment, in any case, in the match that
+# KB_JQ_REPO_FROM_GH_URL takes its repo from, for the message only).
 #
 # WHETHER THE URL NAMES THE NUMBER IS KB_JQ_PR_URL_REF's ANSWER AND NOTHING ELSE: `named` exactly
 # when pr_url_ref yields the resulting number. The other kinds only say WHY it does not, for the
@@ -2402,7 +2422,8 @@ kb_ref_pair_verdicts() {
 # `issue-url` — an `…/issues/<M>` URL, which names an issue, since only a `pull` segment names a
 # pull request; `pull-case` — a `…/PULL/<M>` (any spelling but lower-case), which pr_url_ref, like
 # promote and the bridge, does not read as a pull request; `unnumbered` — a GitHub URL yielding a
-# repo but no pull/issues number in it (commit/tree/blob, a segment with no digits).
+# repo whose first match carries no pull/issues number (commit/tree/blob, a segment with no digits;
+# a `/pull/<N>` past that segment, under its path or in a later URL, is not its number).
 #
 # ⛔ NOTHING HERE PRINTS A URL (kb_ref_pair_verdicts' rule, for its reason): only derived fields.
 kb_pr_named_verdict() {
@@ -2424,7 +2445,9 @@ kb_pr_named_verdict() {
               | ($u | repo_from_gh_url) as $repo
               | ($u | pr_url_ref) as $ref
               | (if $ref != null or $repo == null then null
-                 else [$u | capture("/(?<seg>pull|issues)/(?<n>[0-9]+)"; "i")][0] end) as $m
+                 else [$u | capture("github[.]com/[^/]+/[^/]+?([.]git)?/(?<seg>pull|issues|commit|tree|blob)/(?<n>[0-9]*)"; "i")][0]
+                   | if .n == "" or (.seg | test("\\A(pull|issues)\\z"; "i") | not) then null else . end
+                 end) as $m
               | (if $ref != null then $ref.n elif $m == null then "-" else $m.n | norm end) as $un
               | (if $u == null then "none"
                  elif $ref != null then (if $ref.n == $n then "named" else "other-pr" end)

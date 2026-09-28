@@ -488,7 +488,7 @@
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.38.0'
+ABTK_TOOL_VERSION='0.39.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 
@@ -1600,9 +1600,12 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
         | if $u == null then null else ($u | canon_source) end
       end;
   # pr_url_ref: the (repo, number) a pr_url names, or null when it names no pull request. The
-  # bridge primitive this mirrors is PrUrlRef (agent-webhook-bridge DL-429): the repo is the
-  # repoFromGitHubUrl answer (repo_from_gh_url above, so the parse is not re-spelled here) and
-  # the number is the first /pull/<n> — a case-SENSITIVE segment, anywhere in the value. The
+  # bridge primitive this mirrors is PrUrlRef (agent-webhook-bridge DL-429, DL-431): the repo AND
+  # the number come from ONE case-insensitive match, the value first github.com/<owner>/<repo>/
+  # <segment>/<digits> - repo_from_gh_url pattern with the segment named and the digit run
+  # appended, so the repo is the one repo_from_gh_url derives - and it names a pull request only
+  # when that segment is a case-SENSITIVE pull followed by digits. A /pull/<n> past it (under /tree/,
+  # /blob/, /issues/<m>/, or in a later URL) names none (card#10736, bridge card#10735). The
   # .../pull/0 placeholder names a repo and NO pull request, so it is null here, exactly as a bare
   # pr_number is. The repo is returned as derived; the caller canonicalizes it.
   # ⚠ PINNED COPY: KB_JQ_PR_URL_REF in bin/_kb-board-lib.sh is the text of this def, and kbcard
@@ -1610,9 +1613,10 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
   # apostrophe anywhere in this program: it is a single-quoted shell string.)
   def pr_url_ref:
     if type != "string" then null
-    else (repo_from_gh_url) as $r
-      | ((capture("/pull/(?<n>[0-9]+)") // {n: ""}).n | norm) as $n
-      | if $r == null or $n == "" or $n == "0" then null else {repo: $r, n: $n} end
+    else (capture("github[.]com/(?<r>[^/]+/[^/]+?)([.]git)?/(?<s>pull|issues|commit|tree|blob)/(?<n>[0-9]*)"; "i")
+          // null) as $m
+      | if $m == null or $m.s != "pull" or $m.n == "" then null
+        else ($m.n | norm) as $n | if $n == "0" then null else {repo: $m.r, n: $n} end end
     end;
   [ .[]
     | . as $c
