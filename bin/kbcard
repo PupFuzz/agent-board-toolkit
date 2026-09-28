@@ -412,9 +412,10 @@
 #     ⚠ A CARD HOLDING A pr_number MUST HOLD A pr_url NAMING THAT PULL REQUEST, AND NO WRITE MAY
 #     LEAVE IT OTHERWISE (agent-webhook-bridge DL-429): a PR number is a per-repo counter (a repo
 #     moved to a new GitHub org restarts at 1), so a card names a pull request only through a
-#     pr_url naming its repo AND that number — a GitHub .../pull/<N>, N the same number, not the
-#     placeholder — and the bridge neither reconciles nor promotes a card whose pr_number has
-#     none. Every create-card and patch is checked on the card's RESULTING state (the stored
+#     pr_url naming its repo AND that number — its FIRST GitHub URL a .../pull/<N>, N the same
+#     number, not the placeholder (a /pull/<N> anywhere past that URL's segment is never read,
+#     agent-webhook-bridge DL-431) — and the bridge neither reconciles nor promotes a card whose
+#     pr_number has none. Every create-card and patch is checked on the card's RESULTING state (the stored
 #     payload with this call's keys merged over it — a --clear or a wont_do decline's null
 #     removes a key), before any write: a result holding a pr_number that no pr_url names is
 #     rc 2, NOTHING written, and the refusal names the pair to pass,

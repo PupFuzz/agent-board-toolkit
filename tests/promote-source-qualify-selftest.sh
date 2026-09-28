@@ -1246,7 +1246,10 @@ echo "== 8. THE PR LEG IS (repo, number), IN BOTH MODES — the org-move collisi
 #   #29 carries `.../acme/widget/issues/5 .../oldorg/widget/pull/15` — both used to read as
 #       acme/widget#15 and be PROMOTED: the number was the first /pull/<n> anywhere, so it came
 #       from a path under /tree/, or from another repo URL. pr_url_ref reads a number only in one
-#       match with the repo (card#10736), so neither names a pull request: each is a bare number.
+#       match with the repo (card#10736), so neither names a pull request: each is a bare number;
+#   #30 carries `https://example.com/x/pull/9 https://github.com/acme/widget/pull/15` beside
+#       pr_number 15 — the other direction: it used to read as acme/widget#9 (the first /pull/<n>
+#       anywhere, in a non-GitHub URL) and not be promoted; the one match now reads acme/widget#15.
 cat > "$BOARD_FILE" <<'JSON'
 {"data":[
   {"id":21,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/oldorg/widget/pull/15"}},
@@ -1257,8 +1260,9 @@ cat > "$BOARD_FILE" <<'JSON'
   {"id":26,"workflow_stage_id":51,"payload":{"dl_number":"DL-7"}},
   {"id":27,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/ACME/Widget/pull/15"}},
   {"id":28,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/tree/main/pull/15"}},
-  {"id":29,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/issues/5 https://github.com/oldorg/widget/pull/15"}}
-],"meta":{"last_page":1,"total":9}}
+  {"id":29,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://github.com/acme/widget/issues/5 https://github.com/oldorg/widget/pull/15"}},
+  {"id":30,"workflow_stage_id":51,"payload":{"pr_number":"15","pr_url":"https://example.com/x/pull/9 https://github.com/acme/widget/pull/15"}}
+],"meta":{"last_page":1,"total":10}}
 JSON
 git -C "$GITDIR" checkout -q -b feat8 main
 git -C "$GITDIR" commit -q --allow-empty -m "feat: DL-7 a decision"
@@ -1278,6 +1282,7 @@ eq "⭐ 8 star: #28 (a /pull/15 under /tree/) is NOT promoted"  "false" "$(moved
 eq "⭐ 8 star: #29 (/pull/15 in another repo URL) is NOT promoted" "false" "$(moved 29)"
 eq "8 star: #28 is NAMED as a bare number"                   "true"  "$(has '#15 (#28): pr_number 15 names no repo' "$err")"
 eq "8 star: #29 is NAMED as a bare number"                   "true"  "$(has '#15 (#29): pr_number 15 names no repo' "$err")"
+eq "⭐ 8 star: #30 (a non-GitHub /pull/9 before acme/widget/pull/15) IS promoted" "true" "$(moved 30)"
 eq "8 star: #21 is NAMED as another repo's PR"               "true"  "$(has '#15 (#21): the card tracks pull request oldorg/widget#15, not acme/widget#15' "$err")"
 eq "8 star: #23 is NAMED as a bare number"                   "true"  "$(has '#15 (#23): pr_number 15 names no repo' "$err")"
 eq "8 star: #24 is NAMED as a bare number"                   "true"  "$(has '#15 (#24): pr_number 15 names no repo' "$err")"
@@ -1297,6 +1302,7 @@ eq "8 qualified: #25 is NAMED as a bare number"              "true"  "$(has '#15
 eq "8 qualified: #27 (pr_url ACME/Widget#15) IS promoted"    "true"  "$(moved 27)"
 eq "⭐ 8 qualified: #28 is NOT promoted"                      "false" "$(moved 28)"
 eq "⭐ 8 qualified: #29 is NOT promoted"                      "false" "$(moved 29)"
+eq "⭐ 8 qualified: #30 IS promoted"                          "true"  "$(moved 30)"
 
 # OFF A RUNNER under `"*"` there is no repo for the PR leg to compare against — `"*"` is a
 # declaration about the board, not a repo name — so a run whose release ships a pull request is

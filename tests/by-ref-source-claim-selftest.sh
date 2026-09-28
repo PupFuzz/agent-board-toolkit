@@ -489,6 +489,13 @@ BSC_DISPOSED=(
     "tests/kbcard-selftest.sh::it states no consequence: no attribution::fd7177779bbd"
     "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::8df2e74912f7"
 
+    # ── VENDORED THIRD-PARTY BYTES: the bridge's published pr_url corpus, which this repo holds
+    #    BYTE-IDENTICAL and may not edit (tests/mirror-pair-parity-selftest.sh § 5b owns the copy).
+    #    It rules on which PULL REQUEST a pr_url names and states nothing about payload.repo or
+    #    the URL order after it; its "source-only placeholder" is the `.../pull/0` URL naming a
+    #    repo and no pull request. A re-vendor moves the digest, so the ruling is re-made then.
+    "tests/vendored/agent-webhook-bridge/pr-url-ref-parity-corpus.json::The behavioural corpus for the bridge::2322ffa7a610"
+
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control
     #    fixture. The fixture MUST be reportable — that is its job — and the other two cannot
     #    describe a predicate over these nouns without using them.

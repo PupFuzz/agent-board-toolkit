@@ -5272,6 +5272,9 @@ eq "--pr 179 --pr-url …/tree/main/pull/179 → says the URL names no PR number
 KB_STUB_PAYLOAD='{"pr_url":"https://github.com/a/x/issues/5 https://github.com/b/y/pull/179"}' kbc patch --task 505 --pr 5
 eq "--pr 5 over a stored two-URL pr_url (…/a/x/issues/5 …/b/y/pull/179) → rc 2, names the issue its first URL names" "2|0|true" \
    "$rc|$(nwrite)|$(has 'which names issue #5 in a/x (an .../issues/ URL), not a pull request' "$err")"
+KB_STUB_PAYLOAD='{"pr_url":"https://example.com/x/pull/9 https://github.com/acme/widget/pull/179"}' kbc patch --task 505 --pr 179
+eq "⭐ --pr 179 over a stored pr_url whose FIRST GitHub URL is …/acme/widget/pull/179, after a non-GitHub …/pull/9 → rc 0, ONE PATCH, silent" "0|1|" \
+   "$rc|$(npatch)|$err"
 KB_STUB_PAYLOAD='{"pr_url":" https://user:TOKEN-429@example.com/acme/widget/merge_requests/178"}' kbc patch --task 505 --pr 179
 eq "an unparsed userinfo pr_url under --pr → rc 2, and the refusal never prints the token" "2|false" "$rc|$(has 'TOKEN-429' "$err$out")"
 # A result that needs the stored payload and cannot read it is no answer: rc 1, nothing written.
