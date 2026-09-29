@@ -77,7 +77,7 @@ kb_stub_contained() {
 # this, an operator shell that exports the override would point a stub-driven test at a REAL
 # store — the same ambient-leak shape as the KANBAN_EXPECTED_HOST line above, on a credential
 # rather than a host.
-# COORD_CONFIG / COORD_AGENT go too: they name the seat an owner tag is stamped for, and an
+# COORD_CONFIG / COORD_AGENT go too: they name the seat an owner claim is made for, and an
 # operator shell carries its REAL seat — a test that wants one declares it.
 # Scrubbed here rather than per-selftest so neither can forget.
 kb_stub_scrub_env() {

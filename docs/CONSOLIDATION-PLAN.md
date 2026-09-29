@@ -2171,7 +2171,7 @@ finding with no owner is abandoned, not filed.
   program's own *empty vs absent* trap (§ *Diagnosis*, item 1) at the read boundary. **The population, re-derived rather than quoted:**
   `command grep -n 'kb_api\(_status\)\? GET "/tasks/\$' bin/kbcard bin/_kb-board-lib.sh` — the
   lib is in the derivation because `kb_card_witness` now lives there (card#10029), and so does a
-  hit that is NOT a kbcard spelling (`kb_owner_tag_write`'s tag read); the same grep over all of
+  hit that is NOT a kbcard spelling (`kb_owner_claim`'s card read); the same grep over all of
   `bin/` adds each other bin's own single-card read, each with its own refusal vocabulary.
   ⚠ No figure is written here on purpose: the one this entry used to carry went stale as kbcard
   grew verbs, which is the drift a written count invites. Re-run the grep.

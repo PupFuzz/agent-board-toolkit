@@ -159,6 +159,9 @@ is_rc 'board read failed (fetch rc=1)' && bad "a hardcoded rc must not satisfy t
 #                                        encode refusal and is reachable at no other call,
 #                                        since it fires only when a query was passed)
 #   bin/kbcard             archive twin  rc 1,2,3,4  — `|| true`, NO arm and no claim
+#   bin/kbcard             owner-migrate rc 1,2,3,4  (bare `||`, `list`'s arm and wording
+#                                        verbatim; NOT separately driven through this verb —
+#                                        the arm names no cause, so no rc can falsify it)
 #   bin/kbcard             field census  rc 1,2,3,4  (`rc=$?` + `-ne 0`; measured by
 #                                        tests/kbcard-field-selftest.sh, which drives all
 #                                        four rcs through the census and asserts rc 1 on
@@ -207,7 +210,7 @@ bin/board-card-start\tmany\tboard $board did not return a complete card list (fe
 REGISTERED_FILES=$'bin/board-card-start\nbin/board-snapshot\nbin/board-stats\nbin/dl-a0-backfill-triaged\nbin/kbcard\nbin/next-dl'
 # Invocations per consumer file — so a NEW call added inside an already-registered bin
 # (the way kbcard grew its second one) cannot slip in behind a satisfied file set.
-REGISTERED_CALLS=$'bin/board-card-start\t1\nbin/board-snapshot\t1\nbin/board-stats\t1\nbin/dl-a0-backfill-triaged\t1\nbin/kbcard\t4\nbin/next-dl\t1'
+REGISTERED_CALLS=$'bin/board-card-start\t1\nbin/board-snapshot\t1\nbin/board-stats\t1\nbin/dl-a0-backfill-triaged\t1\nbin/kbcard\t5\nbin/next-dl\t1'
 # EMITTING lines the derivation finds in an arm window that are NOT paginator arms, each
 # ruled on here rather than filtered out by a cleverer predicate — the exemption is the
 # ruling, and a new one cannot appear without reding this file first. Tab-separated

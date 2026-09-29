@@ -487,7 +487,7 @@ BSC_DISPOSED=(
     #    states NO attribution consequence — the opposite of making one — and the prelude-shadow
     #    entry is a disposition table for another guard entirely.
     "tests/kbcard-selftest.sh::it states no consequence: no attribution::fd7177779bbd"
-    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::8df2e74912f7"
+    "tests/prelude-shadow-selftest.sh::EXTRACTORS=(::327bf69e603a"
 
     # ── VENDORED THIRD-PARTY BYTES: the bridge's published pr_url corpus, which this repo holds
     #    BYTE-IDENTICAL and may not edit (tests/mirror-pair-parity-selftest.sh § 5b owns the copy).

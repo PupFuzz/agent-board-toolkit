@@ -402,8 +402,8 @@ eq "CONTROL: the --fail predicate SEES a planted --fail"  "true"  "$(has '--fail
 
 # WHAT IS OBSERVABLE IN-SUITE: that the TOOL issues exactly ONE move request per card and never
 # wraps api() in a retry loop of its own — which is the half that would double-apply a move. The
-# count is of PATCHes: an accepted move is followed by the owner-tag clear's card GET (§ 7), which
-# is a different request, not a second attempt at the move.
+# count is of PATCHes: an accepted move is followed by its own read-back GET, which is a different
+# request, not a second attempt at the move.
 export ATTEMPT_LOG="$TMP/attempts.log"
 : > "$ATTEMPT_LOG"
 STUB_PATCH_STATUS=401 run_promote
@@ -493,63 +493,30 @@ eq "…and does NOT flag the legitimate readers"           "true" \
    "$(has 'API_ERR_FILE' "$(_fn_src "$PRC" resp_detail)")"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
-echo "== § 7 — A RELEASED CARD LOSES ITS SEAT OWNER TAGS, BY A SEPARATE WRITE THAT NEVER BLOCKS THE MOVE =="
+echo "== § 7 — A RELEASED CARD KEEPS ITS ASSIGNEE AND ITS TAGS: THE MOVE IS THE ONLY WRITE (card#10868) =="
 # ═════════════════════════════════════════════════════════════════════════════════════════
-# A released card is finished, so it holds nobody's claim (README.md § The seat owner tag). The
-# move stays the stage-only PATCH it always was; the clear is a fresh card read and its own
-# `{tags}` PATCH. Asserted on the whole PATCH log, because a `tags` key riding the move — or a
-# list built from an unreadable read — only shows in the bodies.
+# A finished card's assignee is the record of who did the work (README.md § The card owner), so a
+# release moves the card and touches nothing else — no owner-tag clear, no assignee clear. Until
+# card#10868 this tool stripped every `owner:*` tag in a second `{tags}` PATCH after the move.
+# Asserted on the whole PATCH log, because a second write only shows there.
 unset STUB_PATCH_BODY STUB_PATCH_STATUS
 _move_line=$'https://kanban.test/api/v3/tasks/1.json\t{"workflow_stage_id":85}'
-_tags_line=$'https://kanban.test/api/v3/tasks/1.json\t{"tags":["fr","triaged"]}'
-_owned='{"data":{"id":1,"tags":["fr","owner:acme/builder","triaged","owner:other/reviewer"]}}'
+_owned='{"data":{"id":1,"assigned_user_id":7,"tags":["fr","owner:acme/builder","triaged","owner:other/reviewer"]}}'
 
 STUB_CARD_BODY="$_owned" run_promote
 eq "owned card: rc 0"                                     "0" "$rc"
-eq "⭐ owned card: the stage-only move, THEN a PATCH carrying only the kept tags" \
-   "$_move_line"$'\n'"$_tags_line" "$patched"
-eq "owned card: …naming what was removed"                 "true" "$(has '✓ DL-100 (#1): removed owner tag(s) owner:acme/builder, owner:other/reviewer' "$out")"
-eq "owned card: the summary is unchanged by the clear"    "true" "$(has '1 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
-
-for _tp in 403 422; do
-    STUB_CARD_BODY="$_owned" STUB_TAGS_PATCH_STATUS=$_tp STUB_TAGS_PATCH_BODY='{"message":"tag write refused by the stub"}' run_promote
-    eq "tag write $_tp: rc 0"                             "0" "$rc"
-    eq "tag write $_tp: the move is exactly the stage and landed; the clear followed it" \
-       "$_move_line"$'\n'"$_tags_line" "$patched"
-    eq "tag write $_tp: the card is still counted moved, and nothing failed" "true" "$(has '1 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
-    eq "tag write $_tp: …and the clear says NOT cleared, with the server's words" "true" \
-       "$(has "⚠ DL-100 (#1): owner tags NOT cleared — HTTP $_tp, server said: {\"message\":\"tag write refused by the stub\"}" "$err")"
-done
-
-# ⛔ THIS FIXTURE CHANGED MEANING AT card#9938, and the rows are rewritten rather than relaxed.
-# The read it refuses is no longer only the clear's: it is the MOVE's own read-back, the one that
-# decides whether this run may say the card moved. So a 403 here is not "the move landed and the
-# tags were not cleared" — it is "the PATCH went out and nobody here can say what it did", which
-# is the UNVERIFIED outcome (`rc 3`, `bin/kbcard`'s ladder, adopted). The old rows asserted rc 0
-# and a `0 failed.` summary; both were true of the tool that reported a move from its 2xx.
-STUB_CARD_STATUS=403 STUB_CARD_BODY='{"message":"This action is unauthorized."}' run_promote
-eq "card read refused: no tag write, only the move"       "$_move_line" "$patched"
-eq "card read refused: the MOVE is reported UNVERIFIED, with the status" "true" \
-   "$(has '⚠ DL-100 (#1): move UNVERIFIED — the stage PATCH was SENT and answered success, but its outcome could NOT be read back (HTTP 403, server said: {"message":"This action is unauthorized."})' "$err")"
-eq "card read refused: …and NOTHING claims the card moved" "false" "$(has '✓ DL-100 (#1): moved' "$out")"
-eq "card read refused: …nor that its tags were cleared"   "false" "$(has 'owner tag' "$out$err")"
-eq "card read refused: …and the run exits 3, not 0"       "3|true" "$rc|$(has '0 no-card, 1 UNVERIFIED, 0 failed.' "$out")"
-eq "card read refused: …saying what an operator does next" "true" \
-   "$(has 'promote-released-cards: 1 stage PATCH(es) were SENT and answered success, and their outcome could NOT be read back — UNVERIFIED WRITE (rc 3).' "$err")"
-STUB_CARD_BODY='{"data":{"id":1,"tags":{"0":"owner:acme/builder"}}}' run_promote
-eq "unreadable tag list: no tag write (never a list built from nothing)" "$_move_line" "$patched"
-eq "unreadable tag list: …said"                           "true" "$(has 'no tag list could be read out of it' "$err")"
-STUB_CARD_BODY='{"data":{"id":1,"tags":["fr"]}}' run_promote
-eq "a card with no owner tag: the move alone, silently"   "$_move_line|false" "$patched|$(has 'owner tag' "$out$err")"
-# THE NEGATIVE CONTROLS: a move that did not land, and a dry run, clear nothing and read nothing.
+eq "⭐ owned card: the stage-only move and NOTHING after it" "$_move_line" "$patched"
+eq "owned card: …and nothing is said about an owner tag"  "false" "$(has 'owner tag' "$out$err")"
+eq "owned card: the summary is the move's"                "true" "$(has '1 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
+# THE NEGATIVE CONTROLS: a move that did not land, and a dry run, write nothing more and read nothing.
 : > "$TMP/gets.log"
 STUB_CARD_BODY="$_owned" STUB_PATCH_STATUS=403 GET_LOG="$TMP/gets.log" run_promote
-eq "a refused move: no owner clear follows it"            "https://kanban.test/api/v3/tasks/1.json" "$(cut -f1 <<<"$patched")"
-eq "…and no card read for one"                            "false" "$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
+eq "a refused move: the one PATCH, and no card read"      "https://kanban.test/api/v3/tasks/1.json|false" \
+   "$(cut -f1 <<<"$patched")|$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
 : > "$TMP/gets.log"
 STUB_CARD_BODY="$_owned" GET_LOG="$TMP/gets.log" run_promote --dry-run
 eq "--dry-run: no write, and no card read"                "|false" "$patched|$(has '/tasks/1.json' "$(cat "$TMP/gets.log")")"
-unset _move_line _tags_line _owned _tp
+unset _move_line _owned
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
 echo "== § 8 — A SECRET ENDING IN A NEWLINE OR A CR IS STILL THE ONE THE MASK MATCHES (card#9777) =="
