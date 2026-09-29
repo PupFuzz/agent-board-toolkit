@@ -683,6 +683,50 @@ eq "description is NOT projected, even when the card carries one" "false" \
    "$(printf '%s' '[{"id":3,"description":"x","payload":{}}]' \
       | _kbc_list_project '' '' '' '' | jq -c '.[0] | has("description")')"
 
+# card#10847: card order within a column IS the priority order, key (position ASC, id ASC),
+# top = lowest (operator ruling, rt#552). So every row carries `position`, and the ARRAY ORDER
+# is that key within each stage, stages ascending by id. The fixture arrives in an order that
+# is none of those keys — not by id, not by position, stages interleaved — and carries a
+# position TIE (ids 30 and 12 at 2048) that only the id half of the key can break, plus a
+# FRACTIONAL position (the API's float) that must sort numerically, not as text.
+ORD_CARDS='[{"id":30,"workflow_stage_id":49,"position":2048,"payload":{}},
+            {"id":5, "workflow_stage_id":48,"position":3072,"payload":{}},
+            {"id":12,"workflow_stage_id":49,"position":2048,"payload":{}},
+            {"id":40,"workflow_stage_id":48,"position":1024,"payload":{}},
+            {"id":7, "workflow_stage_id":49,"position":512.5,"payload":{}},
+            {"id":3, "workflow_stage_id":49,"position":10000,"payload":{}}]'
+ord() { printf '%s' "$ORD_CARDS" | _kbc_list_project "$1" '' '' ''; }
+eq "every row projects its source card's position" "true" \
+   "$(jq -n --argjson src "$ORD_CARDS" --argjson got "$(ord '')" \
+        '($src | map({key: (.id|tostring), value: .position}) | from_entries) as $want
+         | ($got | length) == ($src | length)
+           and all($got[]; has("position") and .position == $want[.id|tostring])')"
+eq "rows are ordered by stage, then (position ASC, id ASC) — the tie at 2048 broken by id" \
+   "[40,5,7,12,30,3]" "$(ord '' | jq -c 'map(.id)')"
+eq "a --column read keeps (position, id) order within that one stage" \
+   "[7,12,30,3]" "$(ord 49 | jq -c 'map(.id)')"
+# The key is (position, id) and NOT id alone: a fixture sorted by id would pass the tie leg
+# above by accident, so this pair pins that a lower id with a HIGHER position sorts after.
+eq "  …position outranks id (id 3 at 10000 sorts after id 30 at 2048)" "true" \
+   "$(ord 49 | jq '(map(.id) | index(3)) > (map(.id) | index(30))')"
+# Position is ONE ranking per stage across every swimlane (kanban-board DL-284: its reorder
+# route places a card against the whole stage), so the key deliberately carries no swimlane_id.
+# Two lanes with INTERLEAVED positions plus one laneless card: a lane-partitioned key emits
+# each lane whole, laneless (null) first — [6,1,2,3,4,5] — while the stage-wide ranking
+# interleaves all three by position.
+LANE_CARDS='[{"id":1,"workflow_stage_id":49,"swimlane_id":10,"position":1024,"payload":{}},
+             {"id":2,"workflow_stage_id":49,"swimlane_id":10,"position":3072,"payload":{}},
+             {"id":3,"workflow_stage_id":49,"swimlane_id":10,"position":5120,"payload":{}},
+             {"id":4,"workflow_stage_id":49,"swimlane_id":20,"position":2048,"payload":{}},
+             {"id":5,"workflow_stage_id":49,"swimlane_id":20,"position":4096,"payload":{}},
+             {"id":6,"workflow_stage_id":49,"position":2560,"payload":{}}]'
+eq "swimlaned column: rows follow the STAGE-WIDE ranking, not a per-lane grouping (DL-284)" \
+   "[1,4,6,2,5,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(.id)')"
+eq "  …and within one lane the relative order still matches the board" \
+   "[1,2,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(select(.swimlane_id == 10) | .id)')"
+
 # ---------------------------------------------------------------------------
 echo "== cmd_list — a FILTERED read reports its denominator on stderr =="
 # A filtered [] is indistinguishable from an empty board at the call site: the caller

@@ -3,14 +3,15 @@
 # stated on TWO reader-facing surfaces and were held together by nothing (card#9173).
 #
 # ⭐ THE POPULATION IS THE CONTRACTS TABLED BELOW, and it is named rather than implied: today
-# `stages`' output contract, and `list`'s ROW PROJECTION. It is not "every kbcard verb" and this
-# file does not pretend to derive one; the second member was added because the FIRST member's own
-# defect shape was found live on it — README published `list`'s projection as a fixed, exhaustive
-# TEN-key list while the verb emitted more (see that section's header; the live set is read off
-# the projection at assert time and is pinned in no prose here). A third member belongs
-# here rather than in a third file: the authority model, the extractor refusals and the control
-# discipline below are the same for any two-surface contract, and a second file holding a second
-# copy of them would be the divergent-implementation defect this repo files as canon #5.
+# `stages`' output contract, and `list`'s ROW PROJECTION and ROW ORDER. It is not "every kbcard
+# verb" and this file does not pretend to derive one; the second member was added because the
+# FIRST member's own defect shape was found live on it — README published `list`'s projection as
+# a fixed, exhaustive TEN-key list while the verb emitted more (see that section's header; the
+# live set is read off the projection at assert time and is pinned in no prose here). The third,
+# `list`'s row order, lives here rather than in a third file: the authority model, the extractor
+# refusals and the control discipline below are the same for any two-surface contract, and a
+# second file holding a second copy of them would be the divergent-implementation defect this
+# repo files as canon #5.
 #
 # THE TWO SURFACES, AND WHY NEITHER CAN BE DELETED. Each contract is stated in `bin/kbcard`'s
 # `Usage:` header — which IS the rendered help, printed by a bare `kbcard` — and again in its own
@@ -250,7 +251,9 @@ _norm() {
 HELP_N="$(_norm "$HELP_SPAN")"
 README_N="$(_norm "$README_SPAN")"
 
-# assert_fact <label> <needle> <required-true|false> — the whole table's one assertion.
+# assert_fact <label> <needle> <required-true|false> — the whole table's one assertion, over
+# `stages`' two spans. `_assert_fact_in` is the same assertion over any pair of normalized spans,
+# which is how `list`'s row-order fact below reuses it rather than growing a second copy.
 # <required> is a value OBSERVED from a live call at the call site, never a literal: that is what
 # makes the CODE decide what the docs must say, rather than this file restating the contract as
 # a third copy.
@@ -259,20 +262,21 @@ README_N="$(_norm "$README_SPAN")"
 # required-present needle is redacted out of a copy of the span and the answer must flip; a
 # required-absent one is injected. A fact with no control proves only that the needle happened to
 # be there, which every string is until something removes it.
-assert_fact() {
-    local label="$1" needle="$2" want="$3" other h r
+assert_fact() { _assert_fact_in "$1" "$2" "$3" "$HELP_N" "$README_N"; }
+_assert_fact_in() {
+    local label="$1" needle="$2" want="$3" help_n="$4" readme_n="$5" other h r
     [[ "$want" == true || "$want" == false ]] || {
         printf 'selftest: %s got a non-boolean requirement %q — the observation did not resolve\n' \
             "$label" "$want" >&2
         exit 1
     }
     [[ "$want" == true ]] && other=false || other=true
-    eq "$label: the rendered --help states it" "$want" "$(has "$needle" "$HELP_N")"
-    eq "$label: README states it"              "$want" "$(has "$needle" "$README_N")"
+    eq "$label: the rendered --help states it" "$want" "$(has "$needle" "$help_n")"
+    eq "$label: README states it"              "$want" "$(has "$needle" "$readme_n")"
     if [[ "$want" == true ]]; then
-        h="${HELP_N//"$needle"/<redacted>}"; r="${README_N//"$needle"/<redacted>}"
+        h="${help_n//"$needle"/<redacted>}"; r="${readme_n//"$needle"/<redacted>}"
     else
-        h="$HELP_N $needle"; r="$README_N $needle"
+        h="$help_n $needle"; r="$readme_n $needle"
     fi
     eq "  control: $label — a --help span with the needle flipped answers $other" "$other" "$(has "$needle" "$h")"
     eq "  control: $label — a README span with the needle flipped answers $other" "$other" "$(has "$needle" "$r")"
@@ -622,5 +626,35 @@ eq "control: …and \`grep -c\` answers 1 over those very bytes — the line cou
    "$(command grep -cF -- "$README_MARKER" <<<"$_README_TWO")"
 eq "control: …while the OCCURRENCE count over the same bytes answers 2 — the discriminator" "2" \
    "$({ command grep -oF -- "$README_MARKER" <<<"$_README_TWO" || true; } | wc -l | tr -d '[:space:]')"
+
+# ═══════════ `list`'s ROW ORDER — the sort rule, observed, and required on both surfaces ═════
+#
+# The rule is prose on both surfaces, so it goes through `_assert_fact_in` like a `stages` fact:
+# the projection is driven, and whether it emits (stage, position, id) order decides whether both
+# surfaces must carry the rule's sentence. The behaviour pin proper is `kbcard-selftest.sh`'s;
+# what is owed here is that the observation can answer NO, so the fixture is witnessed against
+# each key a reader of the sentence would be misled by — no sort, a lane partition, position
+# ignored, and the id tie-break reversed.
+echo "== \`list\`'s row order — the sort rule, observed, and the two prose copies of it =="
+_OCARDS='[{"id":3,"name":"c","workflow_stage_id":49,"swimlane_id":10,"position":2048,"payload":{}},
+          {"id":8,"name":"h","workflow_stage_id":48,"position":4096,"payload":{}},
+          {"id":2,"name":"b","workflow_stage_id":49,"swimlane_id":10,"position":1024,"payload":{}},
+          {"id":1,"name":"a","workflow_stage_id":49,"swimlane_id":20,"position":2048,"payload":{}}]'
+_OPROJ="$(printf '%s' "$_OCARDS" | _kbc_list_project '' '' '' '')"
+_by_rule="$(jq -r '. == sort_by(.stage, .position, .id)' <<<"$_OPROJ")"
+eq "observed: \`list\` rows come out sorted by (stage, position, id)" "true" "$_by_rule"
+_rule_ids="$(jq -c 'sort_by(.stage, .position, .id) | map(.id)' <<<"$_OPROJ")"
+for _alt in 'map(.)' 'sort_by(.stage, .swimlane_id, .position, .id)' 'sort_by(.stage, .id)' \
+            'sort_by(.stage, .position, -.id)'; do
+    eq "  …over a fixture where \`$_alt\` gives a different order" "false" \
+       "$([[ "$(jq -c "map(.stage = .workflow_stage_id) | $_alt | map(.id)" <<<"$_OCARDS")" == "$_rule_ids" ]] \
+           && echo true || echo false)"
+done
+LIST_N="$(_norm "$LIST_SPAN")"
+README_LIST_N="$(_norm "$README_BULLET")"
+_assert_fact_in "the list row order" "sorted by stage, then position, then id" "$_by_rule" \
+    "$LIST_N" "$README_LIST_N"
+_assert_fact_in "the list row-order key" "keyed (position asc, id asc)" "$_by_rule" \
+    "$LIST_N" "$README_LIST_N"
 
 _summary "kbcard-contract-selftest"

@@ -493,8 +493,8 @@
 #     pr_number/pr_url invariant above still apply to it).
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
-#     external_id, tags, assigned_user_id, assignee, dl, pr per card — and nothing
-#     else, so a downstream grep/jq
+#     external_id, tags, assigned_user_id, assignee, dl, pr, position per card — and
+#     nothing else, so a downstream grep/jq
 #     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
 #     no matter what the board holds. `show` returns a card whole; use it for the rest —
 #     and use `search` to hunt a card BY its body, which is the question a grep over this
@@ -508,6 +508,18 @@
 #     KB_USER_<SEAT> vars map that id, and null where they do not — the id is the answer,
 #     the name is an ornament this install may not be able to supply, so an unmapped id
 #     renders raw rather than failing or guessing.
+#     ROW ORDER IS THE PRIORITY ORDER: card order within a column IS the board's priority
+#     order, keyed (position ASC, id ASC), top = lowest — so rows are sorted by `stage`,
+#     then `position`, then `id`. `position` is ONE ranking per stage across every
+#     swimlane (kanban-board DL-284), so under --column `.[0]` is the column's
+#     top-priority card under that stage-wide ranking.
+#     CAVEAT: until the board runs kanban-board card#10846, a board UI drag or rebalance
+#     re-ranks ONE swimlane only, so on a swimlaned board `.[0]` under --column may not
+#     be the column's real top card.
+#     Within any one swimlane the relative order matches the board; ACROSS swimlanes it
+#     is the priority ranking, not the board's lane-grouped layout (the board draws each
+#     lane as its own row). The stage grouping is by ascending numeric stage ID, which
+#     is NOT the board's column order (no read here carries that order — see `stages`).
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
@@ -3015,6 +3027,9 @@ _kbc_card_filter() {
 # synthetic cards (board 12 has no swimlanes to exercise live).
 #   swimlane_id / swimlane are surfaced on every row; the name resolves through the
 #   env map (null when the card has no lane or the board doesn't map that id).
+#   ROW ORDER (the `sort_by` below): the rule and its caveat are stated in the `list` block of
+#   the Usage header above, which is the one copy in this file; README's copy is held to it by
+#   tests/kbcard-contract-selftest.sh.
 #   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
 #   a downstream `grep`/`jq select` over a field this projection drops gets a confident
 #   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
@@ -3063,7 +3078,9 @@ _kbc_list_project() {
                 tags: (.tags // []),
                 assigned_user_id: (.assigned_user_id // null),
                 assignee: ($umap[((.assigned_user_id // null) | tostring)] // null),
-                dl: .payload.dl_number, pr: .payload.pr_number})'
+                dl: .payload.dl_number, pr: .payload.pr_number,
+                position: (.position // null)})
+         | sort_by(.stage, .position, .id)'
 }
 
 # cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are the KB_STAGE_*

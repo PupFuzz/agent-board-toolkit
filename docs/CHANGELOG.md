@@ -6,6 +6,14 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **card#10847** — **`kbcard list` projects `position` on every row** (appended after `pr`; `null` only where the board sent none), so a seat reads a column's priority order from one `list` call instead of one `kbcard show` per card. Every existing key and its meaning is unchanged. The in-bin help and README's `list` bullet name the new key in the same sequence the projection emits, which `tests/kbcard-contract-selftest.sh` already requires. **[vendor]** re-vendor `bin/kbcard`; no bin is added, so no `PATH` symlink loop.
+
+### Changed
+
+- **card#10847** — **`kbcard list`'s row order is now the board's priority order** (operator ruling, rt#552: card order within a column IS the priority order, key `(position ASC, id ASC)`, top = lowest). Rows are sorted by `stage` (ascending numeric stage id), then `position`, then `id`. `position` is one ranking per stage across every swimlane (kanban-board DL-284), so `swimlane_id` is not in the key. **Caveat:** until the board runs kanban-board card#10846, a board UI drag or rebalance re-ranks one swimlane only, so on a swimlaned board `.[0]` under `--column` may not be the column's real top card. Within any one swimlane the relative order matches the board, while across swimlanes it is the priority ranking, not the board's lane-grouped layout. The stage grouping is by id and is **not** the board's column order — no read here carries that order. Previously rows came in the order the paginated fetch returned them, which no document promised. **[host]** output-shape change at `rc 0` only (row order; no input is refused): a consumer that reads rows positionally (`.[0]`) now gets the top-priority card of the first stage under the stage-wide ranking (on a swimlaned board, not necessarily the card drawn at the top of that column), and a consumer that sorted the array itself is unaffected.
+
 ## [0.39.0] - 2026-09-28
 
 **Minor — a `pr_url` names a pull request only through its first GitHub URL, which gives both the repo and the number, in `bin/_kb-board-lib.sh` (`KB_JQ_PR_URL_REF`, read by `kbcard`) and in `promote-released-cards`' own copy; released as a pair with agent-webhook-bridge's PrUrlRef fix (bridge card#10735, DL-431).** The PRs in `v0.38.0..v0.39.0` are enumerated below and in the release PR's generated `## Bundled` table (`git log --oneline v0.38.0..v0.39.0` re-prints the range; the rest of it is the post-v0.38.0 back-merge). Per `VERSIONING.md` § Bump sizing this is a **minor**: an acceptance narrowing, per card#9956's rule that a narrowing takes a minor at minimum — no surface is added.
