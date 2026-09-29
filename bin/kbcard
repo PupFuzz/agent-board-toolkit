@@ -510,9 +510,13 @@
 #     renders raw rather than failing or guessing.
 #     ROW ORDER IS THE PRIORITY ORDER: card order within a column IS the board's priority
 #     order, keyed (position ASC, id ASC), top = lowest — so rows are sorted by `stage`
-#     (ascending numeric stage id), then `position`, then `id`. Under --column the array
-#     is that one column top to bottom. The stage grouping is by ID, which is NOT the
-#     board's column order (no read here carries that order — see `stages`).
+#     (ascending numeric stage id), then `position`, then `id`. `position` is ONE ranking
+#     per stage across every swimlane (kanban-board DL-284), so under --column `.[0]` is
+#     the column's top-priority card under that stage-wide ranking. Within any one
+#     swimlane the relative order matches the board; ACROSS swimlanes it is the priority
+#     ranking, not the board's lane-grouped layout (the board draws each lane as its own
+#     row). The stage grouping is by ID, which is NOT the board's column order (no read
+#     here carries that order — see `stages`).
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
@@ -3022,9 +3026,14 @@ _kbc_card_filter() {
 #   env map (null when the card has no lane or the board doesn't map that id).
 #   ROW ORDER IS THE BOARD'S PRIORITY ORDER within a stage (card#10847, operator ruling rt#552):
 #   the key is (position ASC, id ASC), top = lowest, so `id` breaks a position tie the same way
-#   the board does. Stages group by ASCENDING NUMERIC STAGE ID, which is deterministic and NOT
-#   the board's column order — nothing this read can see carries that order (see `stages`), and
-#   fetching it would cost the extra call the ruling asked this read not to need.
+#   the board does. `swimlane_id` is deliberately NOT in the key: position is one ranking per
+#   STAGE across every swimlane (kanban-board DL-284 — its reorder route places cards against
+#   the whole stage), so partitioning by lane would hand a consumer whose candidates span lanes
+#   N incomparable orders. The cost, stated: on a swimlaned board this is not the board VIEW's
+#   top-to-bottom layout, which groups by lane; within one lane the two agree. Stages group by
+#   ASCENDING NUMERIC STAGE ID, which is deterministic and NOT the board's column order —
+#   nothing this read can see carries that order (see `stages`), and fetching it would cost
+#   the extra call the ruling asked this read not to need.
 #   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
 #   a downstream `grep`/`jq select` over a field this projection drops gets a confident
 #   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0

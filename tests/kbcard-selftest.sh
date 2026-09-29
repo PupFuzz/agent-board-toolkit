@@ -709,6 +709,23 @@ eq "a --column read keeps (position, id) order within that one stage" \
 # above by accident, so this pair pins that a lower id with a HIGHER position sorts after.
 eq "  …position outranks id (id 3 at 10000 sorts after id 30 at 2048)" "true" \
    "$(ord 49 | jq '(map(.id) | index(3)) > (map(.id) | index(30))')"
+# Position is ONE ranking per stage across every swimlane (kanban-board DL-284: its reorder
+# route places a card against the whole stage), so the key deliberately carries no swimlane_id.
+# Two lanes with INTERLEAVED positions plus one laneless card: a lane-partitioned key emits
+# each lane whole, laneless (null) first — [6,1,2,3,4,5] — while the stage-wide ranking
+# interleaves all three by position.
+LANE_CARDS='[{"id":1,"workflow_stage_id":49,"swimlane_id":10,"position":1024,"payload":{}},
+             {"id":2,"workflow_stage_id":49,"swimlane_id":10,"position":3072,"payload":{}},
+             {"id":3,"workflow_stage_id":49,"swimlane_id":10,"position":5120,"payload":{}},
+             {"id":4,"workflow_stage_id":49,"swimlane_id":20,"position":2048,"payload":{}},
+             {"id":5,"workflow_stage_id":49,"swimlane_id":20,"position":4096,"payload":{}},
+             {"id":6,"workflow_stage_id":49,"position":2560,"payload":{}}]'
+eq "swimlaned column: rows follow the STAGE-WIDE ranking, not a per-lane grouping (DL-284)" \
+   "[1,4,6,2,5,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(.id)')"
+eq "  …and within one lane the relative order still matches the board" \
+   "[1,2,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(select(.swimlane_id == 10) | .id)')"
 
 # ---------------------------------------------------------------------------
 echo "== cmd_list — a FILTERED read reports its denominator on stderr =="
