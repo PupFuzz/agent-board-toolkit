@@ -297,7 +297,7 @@ DISPOSITIONED=(
   # card holds a stamp the correlating tools refuse, which is the one place they need to see it.
   "bin/kbcard: [[ -n \"\$ext_id\" ]] && echo_extra=\"\$echo_extra, external_id: (.external_id // null)\""
   "bin/kbcard: external_id: (.external_id // null),"
-  "bin/kbcard: dl: .payload.dl_number, pr: .payload.pr_number})'"
+  "bin/kbcard: dl: .payload.dl_number, pr: .payload.pr_number,"
 )
 undeclared=""; canon_n=0
 while IFS= read -r line; do

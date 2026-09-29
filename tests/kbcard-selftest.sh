@@ -47,13 +47,19 @@ kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(ca
 # every call site is paired with a downstream assertion that reds too — a latent hole, not a live
 # one, which is exactly the kind that outlives the person who could still remember it.) Assigning
 # in the CALLER's shell keeps the counter and the report in the same process.
+# An optional 4th argument is a sed script for the LIB copy instead, for a guard that lives there;
+# the kbcard script is then "" and the no-match check applies to the lib.
 _rmut() {
-    local dir="$TMP/mut-$1" src; src="$(readlink -f "$BIN")"
+    local dir="$TMP/mut-$1" src lib; src="$(readlink -f "$BIN")"; lib="$(dirname "$src")/_kb-board-lib.sh"
     mkdir -p "$dir"
     sed "$2" "$src" > "$dir/kbcard"
-    cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/"
+    sed "${4:-}" "$lib" > "$dir/_kb-board-lib.sh"
     chmod +x "$dir/kbcard"
-    cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    if [[ -n "${4:-}" ]]; then
+        cmp -s "$dir/_kb-board-lib.sh" "$lib" && bad "_rmut $1: the lib mutation matched nothing — this control would measure the guard it exists to remove"
+    else
+        cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    fi
     printf -v "$3" '%s' "$dir/kbcard"
 }
 
@@ -84,8 +90,8 @@ rc=0; stage_name "" >/dev/null || rc=$?
 eq "empty id never matches (even an empty-valued var)" "1" "$rc"
 unset KB_STAGE_EMPTY
 
-# A board's OWN taxonomy resolves too — the lookup is any KB_STAGE_*, not the
-# eight stage_id aliases.
+# A board's OWN taxonomy resolves too — the lookup is any KB_STAGE_*, not a
+# fixed list of names.
 export KB_STAGE_TESTING=77
 eq "non-alias KB_STAGE_ var resolves" "testing" "$(stage_name 77)"
 unset KB_STAGE_TESTING
@@ -682,6 +688,50 @@ eq "no KB_USER_* declared ⇒ id still projected, name null" '[7,null]' \
 eq "description is NOT projected, even when the card carries one" "false" \
    "$(printf '%s' '[{"id":3,"description":"x","payload":{}}]' \
       | _kbc_list_project '' '' '' '' | jq -c '.[0] | has("description")')"
+
+# card#10847: card order within a column IS the priority order, key (position ASC, id ASC),
+# top = lowest (operator ruling, rt#552). So every row carries `position`, and the ARRAY ORDER
+# is that key within each stage, stages ascending by id. The fixture arrives in an order that
+# is none of those keys — not by id, not by position, stages interleaved — and carries a
+# position TIE (ids 30 and 12 at 2048) that only the id half of the key can break, plus a
+# FRACTIONAL position (the API's float) that must sort numerically, not as text.
+ORD_CARDS='[{"id":30,"workflow_stage_id":49,"position":2048,"payload":{}},
+            {"id":5, "workflow_stage_id":48,"position":3072,"payload":{}},
+            {"id":12,"workflow_stage_id":49,"position":2048,"payload":{}},
+            {"id":40,"workflow_stage_id":48,"position":1024,"payload":{}},
+            {"id":7, "workflow_stage_id":49,"position":512.5,"payload":{}},
+            {"id":3, "workflow_stage_id":49,"position":10000,"payload":{}}]'
+ord() { printf '%s' "$ORD_CARDS" | _kbc_list_project "$1" '' '' ''; }
+eq "every row projects its source card's position" "true" \
+   "$(jq -n --argjson src "$ORD_CARDS" --argjson got "$(ord '')" \
+        '($src | map({key: (.id|tostring), value: .position}) | from_entries) as $want
+         | ($got | length) == ($src | length)
+           and all($got[]; has("position") and .position == $want[.id|tostring])')"
+eq "rows are ordered by stage, then (position ASC, id ASC) — the tie at 2048 broken by id" \
+   "[40,5,7,12,30,3]" "$(ord '' | jq -c 'map(.id)')"
+eq "a --column read keeps (position, id) order within that one stage" \
+   "[7,12,30,3]" "$(ord 49 | jq -c 'map(.id)')"
+# The key is (position, id) and NOT id alone: a fixture sorted by id would pass the tie leg
+# above by accident, so this pair pins that a lower id with a HIGHER position sorts after.
+eq "  …position outranks id (id 3 at 10000 sorts after id 30 at 2048)" "true" \
+   "$(ord 49 | jq '(map(.id) | index(3)) > (map(.id) | index(30))')"
+# Position is ONE ranking per stage across every swimlane (kanban-board DL-284: its reorder
+# route places a card against the whole stage), so the key deliberately carries no swimlane_id.
+# Two lanes with INTERLEAVED positions plus one laneless card: a lane-partitioned key emits
+# each lane whole, laneless (null) first — [6,1,2,3,4,5] — while the stage-wide ranking
+# interleaves all three by position.
+LANE_CARDS='[{"id":1,"workflow_stage_id":49,"swimlane_id":10,"position":1024,"payload":{}},
+             {"id":2,"workflow_stage_id":49,"swimlane_id":10,"position":3072,"payload":{}},
+             {"id":3,"workflow_stage_id":49,"swimlane_id":10,"position":5120,"payload":{}},
+             {"id":4,"workflow_stage_id":49,"swimlane_id":20,"position":2048,"payload":{}},
+             {"id":5,"workflow_stage_id":49,"swimlane_id":20,"position":4096,"payload":{}},
+             {"id":6,"workflow_stage_id":49,"position":2560,"payload":{}}]'
+eq "swimlaned column: rows follow the STAGE-WIDE ranking, not a per-lane grouping (DL-284)" \
+   "[1,4,6,2,5,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(.id)')"
+eq "  …and within one lane the relative order still matches the board" \
+   "[1,2,3]" \
+   "$(printf '%s' "$LANE_CARDS" | _kbc_list_project 49 '' '' '' | jq -c 'map(select(.swimlane_id == 10) | .id)')"
 
 # ---------------------------------------------------------------------------
 echo "== cmd_list — a FILTERED read reports its denominator on stderr =="
@@ -2916,8 +2966,9 @@ echo "== stages — the stage id → column name map, read out of the caller's O
 # not against the duplication. The duplication itself is a canon-#5 judgement, not a measurement,
 # and `bin/kbcard`'s own header says so in those terms rather than claiming a behaviour split.
 
-# The parent shell may still carry a KB_STAGE_* from a block above, and the bin reads the
-# ambient environment as well as the board env — so scrub before asserting on either.
+# The parent shell may still carry a KB_STAGE_* from a block above. The bin no longer reads it
+# (kb_resolve_env clears the namespace before sourcing the board env, card#10858), but the legs
+# below also call cmd_stages / stage_name IN-PROCESS, which read this shell — so scrub it.
 # shellcheck disable=SC2086
 unset ${!KB_STAGE_@}
 export KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"
@@ -2951,7 +3002,7 @@ eq "stages: EVERY row is {id, name} and nothing else" '[["id","name"]]' \
    "$(jq -c '[.[] | keys] | unique' <<<"$ST_ROWS")"
 eq "stages: the id is a NUMBER, so it joins list's stage projection without a cast" "number" \
    "$(jq -r '.[0].id | type' <<<"$ST_ROWS")"
-eq "stages: a board's OWN taxonomy resolves, not just the eight --column aliases" "77" \
+eq "stages: a board's OWN taxonomy resolves, not only names kbcard spells" "77" \
    "$(jq -r '.[] | select(.name == "testing") | .id' <<<"$ST_ROWS")"
 eq "stages: a multi-word suffix keeps its underscores" "in_progress" \
    "$(jq -r '.[] | select(.id == 49) | .name' <<<"$ST_ROWS")"
@@ -3091,6 +3142,159 @@ eq "control: …in the unknown-command words, which the stages verb never took" 
    "$(has "unknown command 'stagez'" "$err")"
 
 unset -f kb_stub_route
+
+# ---------------------------------------------------------------------------
+echo "== --column resolves EVERY column the board env declares, through stages' own derivation (card#10858) =="
+# THE DEFECT: `stages` enumerated the KB_STAGE_* variables while `stage_id` — the resolver every
+# --column goes through — was a fixed case list of names. A board env declaring
+# KB_STAGE_DONE therefore LISTED `done` and refused `--column done` as an unknown column. The
+# legs below pin the resolution, the refusal that must survive it, and the agreement itself.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+export KB_STAGE_BACKLOG=48 KB_STAGE_WONT_DO=60 KB_STAGE_DONE=112 KB_STAGE_TESTING=77
+rc=0; out="$(stage_id "done" 2>/dev/null)" || rc=$?
+eq "stage_id: a declared KB_STAGE_DONE resolves --column done → rc 0" "0" "$rc"
+eq "  …to that variable's own id"                    "112" "$out"
+eq "stage_id: a board's own taxonomy resolves too (KB_STAGE_TESTING)" "77" "$(stage_id testing 2>/dev/null || true)"
+eq "stage_id: an existing name still resolves as before" "60" "$(stage_id wont_do)"
+
+rc=0; out="$(stage_id review_later 2>"$TMP/e")" || rc=$?
+eq "stage_id: an UNDECLARED column is still refused → rc 2" "2" "$rc"
+eq "  …with nothing on stdout"                        "" "$out"
+eq "  …in the 'is not defined on this board' words the dispatch hook relays" "true" \
+   "$(has "column 'review_later' is not defined on this board" "$(cat "$TMP/e")")"
+eq "  …pointing at the verb that lists what IS declared" "true" "$(has 'kbcard stages' "$(cat "$TMP/e")")"
+# The accepted spelling is exactly the one `stages` prints — the lowercased suffix — so the
+# upper-case and hyphenated spellings stay refused, as they were under the fixed list.
+rc=0; stage_id DONE >/dev/null 2>&1 || rc=$?
+eq "stage_id: the variable's own spelling (DONE) is NOT a column name → rc 2" "2" "$rc"
+rc=0; stage_id wont-do >/dev/null 2>&1 || rc=$?
+eq "stage_id: a hyphenated spelling is NOT a column name → rc 2" "2" "$rc"
+export KB_STAGE_HELD=""
+rc=0; stage_id held >/dev/null 2>"$TMP/e" || rc=$?
+eq "stage_id: a DECLARED-BUT-EMPTY variable is refused → rc 2" "2" "$rc"
+eq "  …as not defined on this board"                  "true" \
+   "$(has "column 'held' is not defined on this board" "$(cat "$TMP/e")")"
+unset KB_STAGE_HELD
+
+# ⭐ THE AGREEMENT, both directions, over one env. Every row `stages` prints must resolve back to
+# its own id through stage_id, and every name stage_id accepts must be a row. A fixed list in
+# either reader reds the first loop on `done` / `testing`.
+KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"; KB_BOARD_ID=42
+AG_ROWS="$(cmd_stages 2>/dev/null)"
+AG_BAD=""
+while IFS=$'\t' read -r _id _nm; do
+    [[ -n "$_id" ]] || continue
+    [[ "$(stage_id "$_nm" 2>/dev/null || true)" == "$_id" ]] || AG_BAD+="$_nm "
+done < <(jq -r '.[] | "\(.id)\t\(.name)"' <<<"$AG_ROWS")
+eq "agreement: EVERY column stages lists is accepted by --column, at the same id" "" "$AG_BAD"
+eq "  …over the four declared columns (witness: the loop had work to do)" "4" "$(jq 'length' <<<"$AG_ROWS")"
+eq "  …including done" "112" "$(jq -r '.[] | select(.name == "done") | .id' <<<"$AG_ROWS")"
+AG_BAD=""
+for _nm in backlog prioritized in_progress in_review held shipped_to_dev released_to_main wont_do "done" testing triage; do
+    if _sid="$(stage_id "$_nm" 2>/dev/null)"; then
+        [[ "$(jq -r --arg n "$_nm" '.[] | select(.name == $n) | .id' <<<"$AG_ROWS")" == "$_sid" ]] || AG_BAD+="$_nm "
+    elif [[ -n "$(jq -r --arg n "$_nm" '.[] | select(.name == $n) | .id' <<<"$AG_ROWS")" ]]; then
+        AG_BAD+="$_nm "
+    fi
+done
+eq "agreement: a probed name is accepted by --column IFF stages lists it" "" "$AG_BAD"
+# A CASE-ONLY collision: two variables fold to one column name, and --column can reach only one
+# of them. stages must not print a row --column cannot address, and must say why it left it out.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+export KB_STAGE_DONE=112 KB_STAGE_Done=113
+AG_ROWS="$(cmd_stages 2>"$TMP/e")"
+eq "case-only collision: stages lists ONE done row, at the id --column done resolves" \
+   "$(stage_id "done" 2>/dev/null)" "$(jq -r '[.[] | select(.name == "done") | .id] | join(",")' <<<"$AG_ROWS")"
+eq "  …the witness: the two variables really do hold different ids" "112|113" "$KB_STAGE_DONE|$KB_STAGE_Done"
+eq "  …and names the collision on stderr"               "true" "$(has "both name column 'done'" "$(cat "$TMP/e")")"
+KB_BOARD_ID="$KB_BOARD_ID_SAVED"; unset KB_BOARD_ID_SAVED AG_ROWS AG_BAD _id _nm _sid
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+
+# --- process-level: every verb that takes a --column, through the real bin ----
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_DONE=112' 'export KB_TYPE_FR=7'
+kb_stub_install
+DC_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+DC_LIST='{"data":[{"id":505,"name":"probe","workflow_stage_id":112,"board_id":42,"tags":[]},{"id":506,"name":"other","workflow_stage_id":48,"board_id":42,"tags":[]}]}'
+export DC_CARD DC_LIST
+# Writes echo the stage the request asked for, as the server's persisted model does.
+kb_stub_route() {
+    local method="$1" url="$2" body="${3:-}" st
+    case "$method $url" in
+        "GET "*/tasks/search.json*) printf '200\n%s' "$DC_LIST" ;;
+        "PATCH "*/tasks/*.json|"POST "*/tasks.json)
+            st="$(jq -r '.workflow_stage_id // .task.workflow_stage_id // 48' <<<"$body" 2>/dev/null || echo 48)"
+            printf '200\n%s' "$(jq -c --argjson st "$st" '.data.workflow_stage_id = $st' <<<"$DC_CARD")" ;;
+        "GET "*/tasks/*.json*) printf '200\n%s' "$DC_CARD" ;;
+        *) printf '500\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+
+kbc move --task 505 --column "done"
+eq "move --column done → rc 0"                        "0" "$rc"
+eq "  …the PATCH carries KB_STAGE_DONE's id"          "112" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc patch --task 505 --column "done"
+eq "patch --column done → rc 0"                       "0" "$rc"
+eq "  …the PATCH carries KB_STAGE_DONE's id"          "112" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc create-card --type fr --name probe --column "done"
+eq "create-card --column done → rc 0"                 "0" "$rc"
+eq "  …the POST births the card in KB_STAGE_DONE's id" "112" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc list --column "done"
+eq "list --column done → rc 0"                        "0" "$rc"
+eq "  …and filters to the done column's cards"        "[505]" "$(jq -c 'map(.id)' <<<"$out")"
+kbc search probe --column "done"
+eq "search --column done → rc 0"                      "0" "$rc"
+
+# The refusal survives at the process level too, and before any request.
+kbc move --task 505 --column triage
+eq "move --column <undeclared> → rc 2"                "2" "$rc"
+eq "  …issuing no request"                            "0" "$(kb_stub_total)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'triage' is not defined on this board" "$err")"
+kbc list --column triage
+eq "list --column <undeclared> → non-zero"            "true" "$([[ "$rc" -ne 0 ]] && echo true || echo false)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'triage' is not defined on this board" "$err")"
+# stages and move, run through the bin over the SAME env, agree on done.
+kbc stages
+eq "stages over the same env lists done at the id move wrote" "112" \
+   "$(jq -r '.[] | select(.name == "done") | .id' <<<"$out")"
+
+# ⛔ THE COLUMN SET IS THE BOARD ENV'S, NOT THE PROCESS'S. Every leg above scrubs ${!KB_STAGE_@}
+# first, so none could see a caller shell that EXPORTED keys from another board's env — which is
+# what an operator shell that sourced one board env and then ran `--board <other>` carries. Those
+# keys are exported here, the board env declares none of them, and each must be refused or ignored.
+export KB_STAGE_HELD=999 KB_TYPE_BUG=998 KB_TYPING_MODE=tags KB_USER_GHOST=31
+kbc move --task 505 --column held
+eq "move --column <exported by the CALLER, not declared by the board env> → rc 2" "2" "$rc"
+eq "  …issuing no request"                            "0" "$(kb_stub_total)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'held' is not defined on this board" "$err")"
+kbc stages
+eq "stages does not list a caller-exported column"    "" "$(jq -r '.[] | select(.name == "held" or .id == 999) | .id' <<<"$out")"
+kbc create-card --type fr --name probe --column backlog
+eq "create-card --type fr → rc 0"                     "0" "$rc"
+eq "  …writes the board env's native type, not the caller's KB_TYPING_MODE=tags" "7" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.card_type_id // .task.card_type_id // "none"' | tail -1)"
+unset KB_TYPING_MODE   # so the next leg cannot pass through tag mode rather than the missing alias
+kbc create-card --type bug --name probe --column backlog
+eq "create-card --type bug (caller-exported KB_TYPE_BUG only) → rc 0" "0" "$rc"
+eq "  …writes NO card type from the caller's shell"  "none" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.card_type_id // .task.card_type_id // "none"' | tail -1)"
+kbc patch --task 505 --assign ghost
+eq "patch --assign <a seat only the CALLER exported> → rc 2" "2" "$rc"
+eq "  …writing nothing"                               "" "$(kb_stub_bodies PATCH '/tasks/505.json')"
+unset KB_STAGE_HELD KB_TYPE_BUG KB_TYPING_MODE KB_USER_GHOST
+unset -f kb_stub_route
+unset DC_CARD DC_LIST
 
 # ---------------------------------------------------------------------------
 echo "== unlink — the removal is the READ-BACK, never the status (card#8545) =="
@@ -6263,10 +6467,12 @@ echo "-- offline refusals: rc 2, NO request --"
 mbc move-board --task 901 --to-board tgt --column held --yes
 eq "M3 a column the TARGET env does not map → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
 eq "  …naming the target env it was resolved against"   "true" "$(has "resolved against the TARGET board env $HOME/.kanban-tgt-board.env" "$err")"
-# THE CONTROL: with the unset removed, the SOURCE board's KB_STAGE_HELD=49 leaks into the target's
-# resolution and the same call reaches the wire with stage 49 — a stage of the WRONG board. That
-# shows what the column is resolved against; it does not attribute the refusal to one guard.
-_rmut mb-leak 's/^    unset \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_SWIMLANE_@} \${!KB_USER_@} KB_TYPING_MODE$/    :/' MB_LEAK
+# THE CONTROL: with the lib's kb_board_keys_unset narrowed back to the ids alone (the unset
+# kb_load_config runs before it sources the TARGET env), the SOURCE board's KB_STAGE_HELD=49 leaks
+# into the target's resolution and the same call reaches the wire with stage 49 — a stage of the
+# WRONG board. That shows what the column is resolved against; it does not attribute the refusal
+# to one guard.
+_rmut mb-leak '' MB_LEAK 's/^          \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_USER_@} \${!KB_SWIMLANE_@} \${!KB_CF_@} \${!KB_A1_@}$/          /'
 kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column held --yes </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the source's held=49 is POSTed to board 77" "49" "$(mb_post | jq -r .workflow_stage_id)"
 

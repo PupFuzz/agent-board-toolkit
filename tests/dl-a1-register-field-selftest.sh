@@ -50,6 +50,8 @@ unset KB_A1_STAGE KB_A1_SWIMLANE KB_A1_SENTINEL KB_STAGE_BACKLOG
 kb_stub_board_config dev     42 'export KB_STAGE_BACKLOG=51'
 kb_stub_board_config alt     77 'export KB_STAGE_BACKLOG=51'   # proves --board routes
 kb_stub_board_config nostage 88                                # no stage anywhere → refusal
+# The KB_A1_* defaults are board-env keys (card#10858): a board env is their only source.
+kb_stub_board_config a1env   42 'export KB_STAGE_BACKLOG=51 KB_A1_STAGE=61 KB_A1_SWIMLANE=7 KB_A1_SENTINEL=555001'
 kb_stub_install
 
 export KB_STUB_TASK_ID=777
@@ -590,17 +592,25 @@ eq "--swimlane rides as a JSON number, not a string" "number" \
 eq "--sentinel reaches the payload"       "DL-424242" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 eq "--sentinel reaches the by-ref query"  "3"      "$(kb_stub_count GET 'ref=424242')"
 
-KB_A1_STAGE=61 KB_A1_SWIMLANE=7 KB_A1_SENTINEL=555001 run_a1
-eq "the KB_A1_* env defaults → rc 0"      "0" "$rc"
+run_a1 --board a1env
+eq "the KB_A1_* board-env defaults → rc 0" "0" "$rc"
 CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
 eq "KB_A1_STAGE is honoured over KB_STAGE_BACKLOG" "61" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
 eq "KB_A1_SWIMLANE is honoured"           "7"         "$(jq -r '.swimlane_id' <<<"$CREATE_BODY")"
 eq "KB_A1_SWIMLANE puts the key ON the body" "true"   "$(jq -c 'has("swimlane_id")' <<<"$CREATE_BODY")"
 eq "KB_A1_SENTINEL is honoured"           "DL-555001" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
-KB_A1_STAGE=61 run_a1 --stage 88
+run_a1 --board a1env --stage 88
 eq "an explicit --stage beats KB_A1_STAGE" "88" "$(jq -r '.workflow_stage_id' <<<"$(kb_stub_bodies "${CREATE[@]}")")"
-KB_A1_SWIMLANE=7 run_a1 --swimlane 5
+run_a1 --board a1env --swimlane 5
 eq "an explicit --swimlane beats KB_A1_SWIMLANE" "5" "$(jq -r '.swimlane_id' <<<"$(kb_stub_bodies "${CREATE[@]}")")"
+# A KB_A1_* the CALLER exported, on a board env that declares none, is not read: the throwaway
+# goes to the board's KB_STAGE_BACKLOG, laneless, at the default sentinel.
+KB_A1_STAGE=61 KB_A1_SWIMLANE=7 KB_A1_SENTINEL=555001 run_a1
+eq "caller-exported KB_A1_* → rc 0"       "0" "$rc"
+CREATE_BODY="$(kb_stub_bodies "${CREATE[@]}")"
+eq "  …the throwaway lands in the board env's backlog, not the exported KB_A1_STAGE" "51" "$(jq -r '.workflow_stage_id' <<<"$CREATE_BODY")"
+eq "  …with no swimlane from the exported KB_A1_SWIMLANE" "false" "$(jq -c 'has("swimlane_id")' <<<"$CREATE_BODY")"
+eq "  …at the default sentinel, not the exported KB_A1_SENTINEL" "$SENTINEL_DL_DEFAULT" "$(jq -r '.payload.dl_number' <<<"$CREATE_BODY")"
 
 run_a1 --board alt
 eq "--board alt → rc 0"                   "0" "$rc"
