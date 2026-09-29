@@ -84,8 +84,8 @@ rc=0; stage_name "" >/dev/null || rc=$?
 eq "empty id never matches (even an empty-valued var)" "1" "$rc"
 unset KB_STAGE_EMPTY
 
-# A board's OWN taxonomy resolves too — the lookup is any KB_STAGE_*, not the
-# eight stage_id aliases.
+# A board's OWN taxonomy resolves too — the lookup is any KB_STAGE_*, not a
+# fixed list of names.
 export KB_STAGE_TESTING=77
 eq "non-alias KB_STAGE_ var resolves" "testing" "$(stage_name 77)"
 unset KB_STAGE_TESTING
@@ -2995,7 +2995,7 @@ eq "stages: EVERY row is {id, name} and nothing else" '[["id","name"]]' \
    "$(jq -c '[.[] | keys] | unique' <<<"$ST_ROWS")"
 eq "stages: the id is a NUMBER, so it joins list's stage projection without a cast" "number" \
    "$(jq -r '.[0].id | type' <<<"$ST_ROWS")"
-eq "stages: a board's OWN taxonomy resolves, not just the eight --column aliases" "77" \
+eq "stages: a board's OWN taxonomy resolves, not only names kbcard spells" "77" \
    "$(jq -r '.[] | select(.name == "testing") | .id' <<<"$ST_ROWS")"
 eq "stages: a multi-word suffix keeps its underscores" "in_progress" \
    "$(jq -r '.[] | select(.id == 49) | .name' <<<"$ST_ROWS")"
@@ -3135,6 +3135,124 @@ eq "control: …in the unknown-command words, which the stages verb never took" 
    "$(has "unknown command 'stagez'" "$err")"
 
 unset -f kb_stub_route
+
+# ---------------------------------------------------------------------------
+echo "== --column resolves EVERY column the board env declares, through stages' own derivation (card#10858) =="
+# THE DEFECT: `stages` enumerated the KB_STAGE_* variables while `stage_id` — the resolver every
+# --column goes through — was a fixed case list of names. A board env declaring
+# KB_STAGE_DONE therefore LISTED `done` and refused `--column done` as an unknown column. The
+# legs below pin the resolution, the refusal that must survive it, and the agreement itself.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+export KB_STAGE_BACKLOG=48 KB_STAGE_WONT_DO=60 KB_STAGE_DONE=112 KB_STAGE_TESTING=77
+rc=0; out="$(stage_id "done" 2>/dev/null)" || rc=$?
+eq "stage_id: a declared KB_STAGE_DONE resolves --column done → rc 0" "0" "$rc"
+eq "  …to that variable's own id"                    "112" "$out"
+eq "stage_id: a board's own taxonomy resolves too (KB_STAGE_TESTING)" "77" "$(stage_id testing 2>/dev/null || true)"
+eq "stage_id: an existing name still resolves as before" "60" "$(stage_id wont_do)"
+
+rc=0; out="$(stage_id review_later 2>"$TMP/e")" || rc=$?
+eq "stage_id: an UNDECLARED column is still refused → rc 2" "2" "$rc"
+eq "  …with nothing on stdout"                        "" "$out"
+eq "  …in the 'is not defined on this board' words the dispatch hook relays" "true" \
+   "$(has "column 'review_later' is not defined on this board" "$(cat "$TMP/e")")"
+eq "  …pointing at the verb that lists what IS declared" "true" "$(has 'kbcard stages' "$(cat "$TMP/e")")"
+# The accepted spelling is exactly the one `stages` prints — the lowercased suffix — so the
+# upper-case and hyphenated spellings stay refused, as they were under the fixed list.
+rc=0; stage_id DONE >/dev/null 2>&1 || rc=$?
+eq "stage_id: the variable's own spelling (DONE) is NOT a column name → rc 2" "2" "$rc"
+rc=0; stage_id wont-do >/dev/null 2>&1 || rc=$?
+eq "stage_id: a hyphenated spelling is NOT a column name → rc 2" "2" "$rc"
+export KB_STAGE_HELD=""
+rc=0; stage_id held >/dev/null 2>"$TMP/e" || rc=$?
+eq "stage_id: a DECLARED-BUT-EMPTY variable is refused → rc 2" "2" "$rc"
+eq "  …as not defined on this board"                  "true" \
+   "$(has "column 'held' is not defined on this board" "$(cat "$TMP/e")")"
+unset KB_STAGE_HELD
+
+# ⭐ THE AGREEMENT, both directions, over one env. Every row `stages` prints must resolve back to
+# its own id through stage_id, and every name stage_id accepts must be a row. A fixed list in
+# either reader reds the first loop on `done` / `testing`.
+KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"; KB_BOARD_ID=42
+AG_ROWS="$(cmd_stages 2>/dev/null)"
+AG_BAD=""
+while IFS=$'\t' read -r _id _nm; do
+    [[ -n "$_id" ]] || continue
+    [[ "$(stage_id "$_nm" 2>/dev/null || true)" == "$_id" ]] || AG_BAD+="$_nm "
+done < <(jq -r '.[] | "\(.id)\t\(.name)"' <<<"$AG_ROWS")
+eq "agreement: EVERY column stages lists is accepted by --column, at the same id" "" "$AG_BAD"
+eq "  …over the four declared columns (witness: the loop had work to do)" "4" "$(jq 'length' <<<"$AG_ROWS")"
+eq "  …including done" "112" "$(jq -r '.[] | select(.name == "done") | .id' <<<"$AG_ROWS")"
+AG_BAD=""
+for _nm in backlog prioritized in_progress in_review held shipped_to_dev released_to_main wont_do "done" testing triage; do
+    if _sid="$(stage_id "$_nm" 2>/dev/null)"; then
+        [[ "$(jq -r --arg n "$_nm" '.[] | select(.name == $n) | .id' <<<"$AG_ROWS")" == "$_sid" ]] || AG_BAD+="$_nm "
+    elif [[ -n "$(jq -r --arg n "$_nm" '.[] | select(.name == $n) | .id' <<<"$AG_ROWS")" ]]; then
+        AG_BAD+="$_nm "
+    fi
+done
+eq "agreement: a probed name is accepted by --column IFF stages lists it" "" "$AG_BAD"
+KB_BOARD_ID="$KB_BOARD_ID_SAVED"; unset KB_BOARD_ID_SAVED AG_ROWS AG_BAD _id _nm _sid
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+
+# --- process-level: every verb that takes a --column, through the real bin ----
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_DONE=112' 'export KB_TYPE_FR=7'
+kb_stub_install
+DC_CARD='{"data":{"id":505,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+DC_LIST='{"data":[{"id":505,"name":"probe","workflow_stage_id":112,"board_id":42,"tags":[]},{"id":506,"name":"other","workflow_stage_id":48,"board_id":42,"tags":[]}]}'
+export DC_CARD DC_LIST
+# Writes echo the stage the request asked for, as the server's persisted model does.
+kb_stub_route() {
+    local method="$1" url="$2" body="${3:-}" st
+    case "$method $url" in
+        "GET "*/tasks/search.json*) printf '200\n%s' "$DC_LIST" ;;
+        "PATCH "*/tasks/*.json|"POST "*/tasks.json)
+            st="$(jq -r '.workflow_stage_id // .task.workflow_stage_id // 48' <<<"$body" 2>/dev/null || echo 48)"
+            printf '200\n%s' "$(jq -c --argjson st "$st" '.data.workflow_stage_id = $st' <<<"$DC_CARD")" ;;
+        "GET "*/tasks/*.json*) printf '200\n%s' "$DC_CARD" ;;
+        *) printf '500\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+
+kbc move --task 505 --column "done"
+eq "move --column done → rc 0"                        "0" "$rc"
+eq "  …the PATCH carries KB_STAGE_DONE's id"          "112" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc patch --task 505 --column "done"
+eq "patch --column done → rc 0"                       "0" "$rc"
+eq "  …the PATCH carries KB_STAGE_DONE's id"          "112" \
+   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc create-card --type fr --name probe --column "done"
+eq "create-card --column done → rc 0"                 "0" "$rc"
+eq "  …the POST births the card in KB_STAGE_DONE's id" "112" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.workflow_stage_id // .task.workflow_stage_id' | tail -1)"
+kbc list --column "done"
+eq "list --column done → rc 0"                        "0" "$rc"
+eq "  …and filters to the done column's cards"        "[505]" "$(jq -c 'map(.id)' <<<"$out")"
+kbc search probe --column "done"
+eq "search --column done → rc 0"                      "0" "$rc"
+
+# The refusal survives at the process level too, and before any request.
+kbc move --task 505 --column triage
+eq "move --column <undeclared> → rc 2"                "2" "$rc"
+eq "  …issuing no request"                            "0" "$(kb_stub_total)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'triage' is not defined on this board" "$err")"
+kbc list --column triage
+eq "list --column <undeclared> → non-zero"            "true" "$([[ "$rc" -ne 0 ]] && echo true || echo false)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'triage' is not defined on this board" "$err")"
+# stages and move, run through the bin over the SAME env, agree on done.
+kbc stages
+eq "stages over the same env lists done at the id move wrote" "112" \
+   "$(jq -r '.[] | select(.name == "done") | .id' <<<"$out")"
+unset -f kb_stub_route
+unset DC_CARD DC_LIST
 
 # ---------------------------------------------------------------------------
 echo "== unlink — the removal is the READ-BACK, never the status (card#8545) =="

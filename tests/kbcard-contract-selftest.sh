@@ -348,8 +348,8 @@ eq "  control: stdout ALONE does parse, so the leg above measures the merge and 
 assert_fact "the 2>&1 merge hazard" "2>&1" \
    "$([[ "$_merged_parses" == false ]] && echo true || echo false)"
 
-# FACT — THE NAME HALF IS THE VARIABLE SUFFIX, LOWERCASED. `KB_STAGE_TESTING` is deliberately not
-# one of the eight `--column` aliases, so a row named `testing` can only have come from the
+# FACT — THE NAME HALF IS THE VARIABLE SUFFIX, LOWERCASED. `KB_STAGE_TESTING` is deliberately a
+# column no kbcard code spells, so a row named `testing` can only have come from the
 # variable's own suffix. ⭐ BOTH SUFFIX SHAPES ARE OBSERVED, because the claim has two halves and
 # a single-token probe spans only one: `stage_name`'s fold widened from `tr '[:upper:]'
 # '[:lower:]'` to `tr '[:upper:]_' '[:lower:]-'` prints `shipped-to-dev`, which makes both

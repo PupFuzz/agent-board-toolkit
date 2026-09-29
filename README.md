@@ -208,7 +208,7 @@ kbcard move-board --task 10381 --to-board 8      --column backlog --dry-run
 
 **There is no ordinal field, deliberately.** Nothing this read can see carries the board's column **order** — the env is an unordered set of `name=id` pairs — so an ordinal would be a plausible-looking sequence with no source, i.e. the same defect one layer over. Rows are emitted **sorted by name** for determinism; that is not the board's order and is not offered as one.
 
-**The name half is `stage_name`'s** — the same resolver `show` fills a card's `column` from — so this read cannot disagree with it: **any** `KB_STAGE_*` var maps (a board's own taxonomy, not just the eight `--column` aliases) and a duplicate id resolves once.
+**The name half is `stage_name`'s** — the same resolver `show` fills a card's `column` from — so this read cannot disagree with it: **any** `KB_STAGE_*` var maps (a board's own taxonomy included) and a duplicate id resolves once. **Every name it prints is a name `--column` accepts**, on every verb that takes one — `--column` resolves through the same variable walk, so a board env that declares `KB_STAGE_DONE` gets `--column done` with no toolkit change, and a column it declares nothing for is refused.
 
 ## The seat owner tag — `owner:<project>/<seat>`
 
