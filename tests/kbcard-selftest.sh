@@ -2966,8 +2966,9 @@ echo "== stages — the stage id → column name map, read out of the caller's O
 # not against the duplication. The duplication itself is a canon-#5 judgement, not a measurement,
 # and `bin/kbcard`'s own header says so in those terms rather than claiming a behaviour split.
 
-# The parent shell may still carry a KB_STAGE_* from a block above, and the bin reads the
-# ambient environment as well as the board env — so scrub before asserting on either.
+# The parent shell may still carry a KB_STAGE_* from a block above. The bin no longer reads it
+# (kb_resolve_env clears the namespace before sourcing the board env, card#10858), but the legs
+# below also call cmd_stages / stage_name IN-PROCESS, which read this shell — so scrub it.
 # shellcheck disable=SC2086
 unset ${!KB_STAGE_@}
 export KB_BOARD_ID_SAVED="${KB_BOARD_ID:-}"
@@ -6471,7 +6472,7 @@ eq "  …naming the target env it was resolved against"   "true" "$(has "resolve
 # into the target's resolution and the same call reaches the wire with stage 49 — a stage of the
 # WRONG board. That shows what the column is resolved against; it does not attribute the refusal
 # to one guard.
-_rmut mb-leak '' MB_LEAK 's/^          \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_USER_@} \${!KB_SWIMLANE_@} \${!KB_CF_@}$/          /'
+_rmut mb-leak '' MB_LEAK 's/^          \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_USER_@} \${!KB_SWIMLANE_@} \${!KB_CF_@} \${!KB_A1_@}$/          /'
 kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column held --yes </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the source's held=49 is POSTed to board 77" "49" "$(mb_post | jq -r .workflow_stage_id)"
 
