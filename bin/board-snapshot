@@ -92,16 +92,16 @@ KB_CURL_MAX_TIME=5
 # operator shell that sourced board A's env carries A's KB_BOARD_ID / KB_STAGE_* /
 # token into board B here. Without this scrub, a B env that OMITS any of them
 # silently inherits A's value — the WRONG board under a label (KB_BOARD_ID), or a
-# stage id that means something else on B (card-4448). Unsetting EVERY KB_STAGE_*
-# by GLOB rather than an enumerated list is what makes it drift-proof: a function
-# that later reads a new KB_STAGE_* is covered for free — the enumerated list
-# drifting out of sync between the two former per-board passes WAS the defect. KBCARD_TOKEN_FILE
-# is scrubbed for the same reason plus one more: the host env's value is in this shell
-# (kb_load_host_env sourced it), and must not read back as this board's own override —
-# the per-function token ladder places it a tier lower.
+# stage id that means something else on B (card-4448). The board keys are cleared by the
+# lib's kb_board_keys_unset — the same scrub kb_resolve_env runs, which matches each key
+# family by GLOB rather than an enumerated list: the enumerated list drifting out of sync
+# between the two former per-board passes WAS the defect. KBCARD_TOKEN_FILE is scrubbed for
+# the same reason plus one more: the host env's value is in this shell (kb_load_host_env
+# sourced it), and must not read back as this board's own override — the per-function token
+# ladder places it a tier lower.
 board_env_scrub() {
-    # shellcheck disable=SC2086  # intentional word-split: each name is a separate unset arg
-    unset KBCARD_TOKEN_FILE KB_BOARD_ID ${!KB_STAGE_@}
+    unset KBCARD_TOKEN_FILE
+    kb_board_keys_unset
 }
 
 # board_unread <label> <reason> — the ONE exit for a board this pass could not read.
