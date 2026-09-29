@@ -111,7 +111,7 @@
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
-#     ⭐ A MOVE INTO A FINISHED COLUMN (shipped_to_dev, released_to_main, wont_do) KEEPS THE
+#     ⭐ A MOVE INTO A FINISHED COLUMN (shipped_to_dev, released_to_main, wont_do, done) KEEPS THE
 #     CARD'S ASSIGNEE AND ITS TAGS: the assignee is the record of who did the work. `patch
 #     --column` is the same — both verbs write through ONE primitive, and it adds no key.
 #     ⭐ --stamp-owner CLAIMS THE CARD for this seat once the move is confirmed: it assigns the
@@ -1824,12 +1824,14 @@ cmd_create_card() {
 
 # --- the ONE task PATCH both stage-writing verbs go through -----------------------------
 
-# KBC_FINISHED_COLUMNS — the columns in which a card's work is FINISHED, by `--column` alias. The
-# set is README.md § The card owner's; this is its one spelling in code. A finished card KEEPS its
-# assignee (the record of who did the work), so the set decides two things only: `--stamp-owner`
-# is refused beside one (a claim is a work-START act), and the --assign collision detector does
-# not treat a finished card's assignee as a live claim (_kbc_assign_guard).
-KBC_FINISHED_COLUMNS=(shipped_to_dev released_to_main wont_do)
+# KBC_FINISHED_COLUMNS — the columns in which a card's work is FINISHED, by `--column` name: the
+# operator's ruling names Done, Won't Do, Shipped to dev and Shipped to main (card#10868), and
+# `done` counts wherever a board env declares KB_STAGE_DONE. The set is README.md § The card
+# owner's; this is its one spelling in code. A finished card KEEPS its assignee (the record of who
+# did the work), so the set decides two things only: `--stamp-owner` is refused beside one (a claim
+# is a work-START act), and the --assign collision detector does not treat a finished card's
+# assignee as a live claim (_kbc_assign_guard).
+KBC_FINISHED_COLUMNS=(shipped_to_dev released_to_main wont_do done)
 
 # _kbc_finished_column <column>: is <column> one of KBC_FINISHED_COLUMNS?
 _kbc_finished_column() {
@@ -1838,16 +1840,13 @@ _kbc_finished_column() {
     return 1
 }
 
-# _kbc_finished_column_of <stage-id>: the KBC_FINISHED_COLUMNS alias this board env maps <stage-id>
-# to, on stdout; rc 1 and nothing when it maps none of them. A finished alias this env does not
-# declare maps nothing — a board without that column has no cards in it.
+# _kbc_finished_column_of <stage-id>: the finished column this board env names <stage-id>, on
+# stdout; rc 1 and nothing when stage_name maps it to no column, or to one that is not finished.
 _kbc_finished_column_of() {
-    local c id
-    for c in "${KBC_FINISHED_COLUMNS[@]}"; do
-        id="$(stage_id "$c" 2>/dev/null)" || continue
-        [[ -n "$id" && "$id" == "$1" ]] && { printf '%s' "$c"; return 0; }
-    done
-    return 1
+    local c
+    c="$(stage_name "$1")" || return 1
+    _kbc_finished_column "$c" || return 1
+    printf '%s' "$c"
 }
 
 # _kbc_stage_patch <verb> <task> <body>: the task PATCH `move` and `patch` BOTH issue, and the one

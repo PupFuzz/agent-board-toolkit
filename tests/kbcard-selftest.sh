@@ -3896,7 +3896,8 @@ kb_stub_board_config dev 42 \
     'export KB_USER_SOLA_PM=9' \
     'export KB_STAGE_IN_REVIEW=50' \
     'export KB_STAGE_SHIPPED_TO_DEV=51' \
-    'export KB_STAGE_WONT_DO=60'
+    'export KB_STAGE_WONT_DO=60' \
+    'export KB_STAGE_DONE=70'
 kb_stub_install
 
 # The route table. KB_STUB_HOLDER is what the card's assignment READ answers (`null`, or an id);
@@ -4064,6 +4065,8 @@ eq "…naming the finished column and the assignee it replaces" "true|true" \
 eq "…and does not refuse"                                "false" "$(has 'REFUSING' "$err")"
 KB_STUB_STAGE=60 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
 eq "…wont_do is finished too"                            "0|[true,7]" "$rc|$(pbody)"
+KB_STUB_STAGE=70 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+eq "…and so is a board's own Done column (KB_STAGE_DONE), which the ruling names" "0|[true,7]|true" "$rc|$(pbody)|$(has 'finished column done' "$err")"
 KB_STUB_STAGE=50 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
 eq "control: the same holder on a LIVE card (in_review) is still refused" "1|0" "$rc|$(kb_stub_count PATCH /tasks/505.json)"
 
@@ -4898,7 +4901,8 @@ kb_stub_board_config dev 42 \
     'export KB_STAGE_IN_REVIEW=50' \
     'export KB_STAGE_SHIPPED_TO_DEV=51' \
     'export KB_STAGE_RELEASED_TO_MAIN=52' \
-    'export KB_STAGE_WONT_DO=60'
+    'export KB_STAGE_WONT_DO=60' \
+    'export KB_STAGE_DONE=70'
 kb_stub_install
 OWN_CFG="$TMP/coordination.config.json"
 jq -cn --arg h "$KB_STUB_HOST" \
@@ -5022,9 +5026,10 @@ done
 # --- a plain move is not a writer, and a claim beside a terminal column is refused ---------
 KB_STUB_CARD="$(card 9)" own "${SEAT[@]}" -- move --task 606 --column in_progress
 eq "a move WITHOUT --stamp-owner sends the move alone, and reads nothing" "$MOVE49|0" "$(obodies)|$(kb_stub_count GET /tasks/606.json)"
-for _tc in shipped_to_dev released_to_main wont_do; do
+for _tc in shipped_to_dev released_to_main wont_do done; do
     own "${SEAT[@]}" -- move --task 606 --column "$_tc" --stamp-owner
-    eq "--stamp-owner beside finished $_tc → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+    eq "--stamp-owner beside finished $_tc → rc 2 before any request, as a FINISHED column" "2|0|true" \
+       "$rc|$(kb_stub_total)|$(has "$_tc is a finished column" "$err")"
 done
 
 # --- ⭐ A FINISHED move KEEPS the assignee and the tags: nothing is cleared -------------------
