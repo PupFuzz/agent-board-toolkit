@@ -2085,8 +2085,13 @@ cat > "$_oc/ok.json" <<'JSON'
  {"name":"otherhost","kanban_user_id":{"elsewhere.test":4}},
  {"name":"zero","kanban_user_id":{"kanban.test":0}},
  {"name":"str","kanban_user_id":{"kanban.test":"7"}},
- {"name":"frac","kanban_user_id":{"kanban.test":7.5}}]}
+ {"name":"frac","kanban_user_id":{"kanban.test":7.5}},
+ {"name":"float","kanban_user_id":{"kanban.test":7.0}},
+ {"name":"float2","kanban_user_id":{"kanban.test":7.00}},
+ {"name":"exp","kanban_user_id":{"kanban.test":1e2}},
+ {"name":"neg","kanban_user_id":{"kanban.test":-7}}]}
 JSON
+printf '{"project":"acme","roster":[{"name":"float","kanban_user_id":{"kanban.test":7.0}}]}\n' > "$_oc/float-only.json"
 printf '{"roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}}]}\n'            > "$_oc/no-project.json"
 printf '{"project":{"name":"acme"},"roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}},{"name":"reviewer","kanban_user_id":{"kanban.test":9}}]}\n' > "$_oc/object-project.json"
 printf '{"project":"acme/x","roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}}]}\n' > "$_oc/slash-project.json"
@@ -2137,6 +2142,30 @@ owner_case "a mapping for ANOTHER instance only → loud, naming this one" 1 "" 
 owner_case "id 0 is nobody"              1 "" 'kanban_user_id["kanban.test"] is 0, not a positive integer' "$_oc/ok.json" zero
 owner_case "a string id is refused, not coerced" 1 "" 'kanban_user_id["kanban.test"] is "7", not a positive integer' "$_oc/ok.json" str
 owner_case "a fractional id is refused"  1 "" 'kanban_user_id["kanban.test"] is 7.5, not a positive integer' "$_oc/ok.json" frac
+owner_case "a negative id is refused"    1 "" 'kanban_user_id["kanban.test"] is -7, not a positive integer' "$_oc/ok.json" neg
+# An integral value NOT written as plain digits (card#10868). The uid leaves the roster read as
+# TEXT and is string-compared with the board's assignee, so under a jq that keeps a literal's
+# spelling (1.7: `7.0` prints `7.0`) it must be REFUSED — accepted, the claim reads its own card
+# `7` as another holder's and takes it over itself. Under a jq that renders it as digits (1.6:
+# `7.0` → `7`) every reader sees `7` and the id resolves. Which jq this is decides the expected
+# answer, read from jq itself; the invariant in both is that no uid other than plain digits leaves.
+for _fl in 'float|7.0' 'float2|7.00' 'exp|1e2'; do
+    _fs="${_fl%%|*}"; _fv="${_fl#*|}"; _fr="$(jq -c . <<<"$_fv")"
+    if [[ "$_fr" =~ ^[1-9][0-9]*$ ]]; then
+        owner_case "⭐ an integral $_fv that this jq writes as '$_fr' resolves to it" 0 "$_fr" "" "$_oc/ok.json" "$_fs"
+    else
+        owner_case "⭐ an integral $_fv that this jq writes as '$_fr' is refused, not coerced" 1 "" \
+            "kanban_user_id[\"kanban.test\"] is $_fr, not a positive integer kanban user id written as plain digits" "$_oc/ok.json" "$_fs"
+    fi
+done
+# The render inherits the same reading: a seat whose id is refused names no user.
+export COORD_CONFIG="$_oc/float-only.json" KB_OWNER_HOST=kanban.test
+if [[ "$(jq -c . <<<'7.0')" == 7 ]]; then
+    eq "the holder render reads 7.0 as this jq does (7)" "seat 'float' (kanban user 7)" "$(_kb_owner_render 7)"
+else
+    eq "⭐ the holder render does not name a seat whose id is 7.0" "kanban user 7" "$(_kb_owner_render 7)"
+fi
+unset KB_OWNER_HOST
 owner_case "no project: the ASSIGNEE still resolves (the project only spelled the retired tag)" 0 7 "" "$_oc/no-project.json" builder
 eq "…and no legacy tag is spelled" "" "$KB_OWNER_TAG"
 # The framework writes `project` either as a string or as {"name": …} (its _ownertag.py
