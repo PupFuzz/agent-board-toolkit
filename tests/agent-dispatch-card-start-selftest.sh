@@ -319,7 +319,11 @@ jq -cn --arg h "$KB_STUB_HOST" '{project: "acme", roster: [{name: "builder", kan
 kb_stub_route() {
     local a
     a="$(awk -F'\t' '$1 == "PATCH" && index($3, "assigned_user_id")' "$KB_STUB_LOG" | tail -1 | cut -f3- | jq -c '.assigned_user_id' 2>/dev/null)"
+    [[ -n "$a" ]] || a="${KB_STUB_HOLDER:-null}"
     case "$1 $2" in
+        # KB_STUB_HANG_COMMENT: the takeover comment's POST hangs past the hook's timeout, so the
+        # hook KILLS kbcard after the assignment PATCH has landed — the window card#10868's review found.
+        "POST "*/tasks/4945/comments.json) [[ -n "${KB_STUB_HANG_COMMENT:-}" ]] && sleep 30; printf '201\n{"data":{"id":91}}' ;;
         "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":%s,"tags":["fr"],"assigned_user_id":%s}}' "${KB_STUB_STAGE:-48}" "${a:-null}" ;;
         "PATCH "*/tasks/4945.json) printf '200\n'; jq -cn --argjson b "$3" '{data: ({id:4945,name:"probe"} + $b)}' ;;
         *) printf '404\n{"message":"unrouted"}' ;;
@@ -332,6 +336,17 @@ eq "end to end exits 0"                          "0" "$RC"
 eq "…the stage-only move, then a separate PATCH carrying the seat's kanban user alone" \
    '{"workflow_stage_id":49}'$'\n''{"assigned_user_id":7}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
 eq "…and the hook relays that it assigned"       "true" "$(has "kbcard: owner assigned: task 4945 → seat 'builder' (kanban user 7) — read back" "$ERR")"
+# ⭐ THE KILLED-MID-CLAIM WINDOW (card#10868 review): a card held by another user, and a claim the
+# hook's `timeout` kills AFTER the assignment PATCH lands (the takeover comment hangs). The card is
+# taken; the seat must still have been TOLD whose card it took, because a retry no-ops and nothing
+# else will ever name the replaced holder.
+kb_stub_reset
+KB_STUB_HOLDER=9 KB_STUB_HANG_COMMENT=1 KBADS_TIMEOUT=3 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder \
+    run_prompt "BOARD-CARD: toolkit#4945"
+eq "killed mid-claim: the hook exits 0, and the assignment DID land" "0|true" \
+   "$RC|$(has '{"assigned_user_id":7}' "$(kb_stub_bodies PATCH /tasks/4945.json)")"
+eq "⭐ killed mid-claim: the takeover warning still reached the hook's stderr, naming the holder" "true" \
+   "$(has "kbcard: owner TAKING task 4945 from kanban user 9 for seat 'builder' (kanban user 7)" "$ERR")"
 kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=ghost run_prompt "BOARD-CARD: toolkit#4945"
 eq "an unresolvable seat still MOVES the card"   '{"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"

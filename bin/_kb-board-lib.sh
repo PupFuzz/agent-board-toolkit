@@ -1641,6 +1641,11 @@ kb_coord_config_path() { printf '%s' "${COORD_CONFIG:-$HOME/.config/coord/coordi
 #                        member for board instance $h is a positive integer; otherwise
 #                        {why: "nofield" | "nohost" | "bad", v: <the value found>}.
 #   seat_uid($h)         the uid, or null.
+#   project_name         over the WHOLE config: `project` when it is a string, `project.name` when
+#                        it is an object — the two spellings the framework writes, read as its
+#                        _ownertag.py project_name() reads them — and null when neither is a
+#                        non-blank string or it carries `/`, the <project>/<seat> separator of the
+#                        legacy tag. Used only to spell and recognise that tag.
 # ⛔ A STRING "7" IS REFUSED, NOT COERCED: the framework writes this field, and a value it wrote in
 # a shape nobody declared is a question for the framework, not a guess for this reader.
 KB_JQ_ROSTER='def roster_seats: (.roster | if type == "array" then .[] else empty end) | select(type == "object" and (.name | type) == "string");
@@ -1649,7 +1654,9 @@ def seat_uid_verdict($h): .kanban_user_id as $m
     elif ($m | has($h)) | not then {why: "nohost", v: null}
     elif ($m[$h] | type) == "number" and $m[$h] >= 1 and $m[$h] == ($m[$h] | floor) then {uid: $m[$h]}
     else {why: "bad", v: $m[$h]} end;
-def seat_uid($h): seat_uid_verdict($h).uid // null;'
+def seat_uid($h): seat_uid_verdict($h).uid // null;
+def project_name: (.project | if type == "object" then .name else . end)
+  | if type == "string" and (gsub("[ \\t\\r\\n\\f\\u000b]"; "") != "") and (contains("/") | not) then . else null end;'
 
 # The ONE spelling of "is this tag a legacy owner tag". Nothing writes the tag any more; it is read
 # only as the migration fallback (README.md § The card owner, *Migrating off the owner tag*).
@@ -1658,8 +1665,9 @@ KB_JQ_OWNER='def is_owner: type == "string" and startswith("owner:");'
 # kb_owner_resolve: resolve THIS process's seat to its kanban user on THIS board instance. Call it
 # directly, not in a `$(…)`: the answer is carried in globals.
 #   rc 0  KB_OWNER_SEAT, KB_OWNER_USER_ID, KB_OWNER_HOST set; KB_OWNER_TAG is the legacy tag's
-#         spelling for this seat (`owner:<project>/<seat>`) when the config names a usable project,
-#         else "" — it is used only to tell this seat's own legacy tag from another's.
+#         spelling for this seat (`owner:<project>/<seat>`) when KB_JQ_ROSTER's project_name reads a
+#         project, else "" — it is used only to tell this seat's own legacy tag from another's, and
+#         kb_owner_claim skips the tag fallback entirely when it is "".
 #   rc 1  KB_OWNER_WHY names the missing piece. Nothing is defaulted: a seat with no mapping for
 #         this instance is a gap the framework's install/upgrade must fill, never a guessed id.
 # The board instance is the kanban HOST — kb_url_host over $KB_API, the same parser the host guards
@@ -1708,10 +1716,8 @@ kb_owner_resolve() {
     KB_OWNER_SEAT="$seat"
     KB_OWNER_USER_ID="$(jq -r '.uid' <<<"$verdict")"
     KB_OWNER_HOST="$host"
-    project="$(jq -r '.project | select(type == "string")' "$cfg" 2>/dev/null)"
-    if ! kb_is_blank "$project" && [[ "$project" != */* ]]; then
-        KB_OWNER_TAG="owner:$project/$seat"
-    fi
+    project="$(jq -r "$KB_JQ_ROSTER"'project_name // empty' "$cfg" 2>/dev/null)"
+    [[ -n "$project" ]] && KB_OWNER_TAG="owner:$project/$seat"
     return 0
 }
 
@@ -1734,7 +1740,15 @@ _kb_owner_render() {
 #   another holder              → a warning FIRST, then the card is TAKEN, then a card comment
 #                                 records whom it replaced (README § The card owner has the rule).
 #                                 The holder is the assignee; with no assignee, another seat's
-#                                 legacy owner tag counts as the holder (the migration fallback).
+#                                 legacy owner tag counts as the holder (the migration fallback) —
+#                                 only when this seat's own tag can be spelled (KB_OWNER_TAG), since
+#                                 otherwise this seat's own tag would read as someone else's.
+# ⛔ THE WARNING IS SAID BEFORE THE ASSIGNMENT PATCH, NOT BUFFERED WITH THE OUTCOME. A caller under a
+# wall-clock bound (the dispatch hook's `timeout`) can be killed after the PATCH lands and before
+# anything buffered is printed; the card would then be taken with no word, and a retry no-ops
+# (the card already names this seat), so the replaced holder would be lost. It goes to the function
+# $KB_OWNER_WARN names (board-card-start passes its durable-log writer), else to stderr, and it is
+# NOT repeated in KB_OWNER_NOTE.
 # Reported from a READ-BACK of the card (kb_confirm_card), never from the PATCH's status. The
 # comment is posted only once the takeover is CONFIRMED — a comment naming a replacement that did
 # not happen would be the one false record here.
@@ -1742,6 +1756,9 @@ _kb_owner_render() {
 # Sets KB_OWNER_NOTE — the lines the caller must print where an operator will see them, each
 # starting `<prog>: owner ` (hooks/agent-dispatch-card-start relays kbcard's by that prefix), or ""
 # when there was nothing to say.
+# _kb_owner_warn <line>: kb_owner_claim's default warning emitter — stderr, at once.
+_kb_owner_warn() { printf '%s\n' "$1" >&2; }
+
 kb_owner_claim() {
     local task="$1" label="$2" got http body card cur prev="" me who crc=0 cid content
     local -a notes=()
@@ -1765,11 +1782,13 @@ kb_owner_claim() {
     [[ "$cur" == "$me" ]] && return 0
     if [[ -n "$cur" ]]; then
         prev="$(_kb_owner_render "$cur")"
-    else
+    elif [[ -n "$KB_OWNER_TAG" ]]; then
         prev="$(jq -r --arg mine "$KB_OWNER_TAG" "$KB_JQ_OWNER"'[.tags[] | select(is_owner and . != $mine)] | join(", ")' <<<"$card")"
         [[ -n "$prev" ]] && prev="the legacy owner tag $prev"
     fi
-    [[ -n "$prev" ]] && notes+=("$(_kb_prog): owner TAKING $label from $prev for $who — a card already held is warned about, then taken, and the holder it replaced is recorded in a card comment")
+    if [[ -n "$prev" ]]; then
+        "${KB_OWNER_WARN:-_kb_owner_warn}" "$(_kb_prog): owner TAKING $label from $prev for $who — a card already held is warned about, then taken, and the holder it replaced is recorded in a card comment"
+    fi
     got="$(kb_api_status PATCH "/tasks/$task.json" "$(jq -cn --argjson u "$me" '{assigned_user_id: $u}')")"
     http="${got%%$'\n'*}"; body=""
     [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
@@ -1797,13 +1816,15 @@ kb_owner_claim() {
             KB_OWNER_NOTE="$(printf '%s\n' "${notes[@]}")"; return 0 ;;
     esac
     if [[ -n "$prev" ]]; then
-        content="Claimed by $who through $(_kb_prog); this replaced the previous assignee, $prev."
+        content="Claimed by $who through $(_kb_prog); this replaced the previous holder, $prev."
         got="$(kb_api_status POST "/tasks/$task/comments.json" "$(jq -cn --arg c "$content" '{content: $c}')")"
         http="${got%%$'\n'*}"; body=""
         [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
         cid=""
         [[ "$http" == 2* ]] && cid="$(kb_parse_resp "$body" -r '.data.id // empty')"
-        if [[ "$http" != 2* ]]; then
+        if [[ "$http" == 000 ]]; then
+            notes+=("$(_kb_prog): owner comment UNVERIFIED on $label — the POST DID NOT COMPLETE (no HTTP status came back), so whether the record of the replaced holder, $prev, is on the card is UNKNOWN. The card IS assigned to $who")
+        elif [[ "$http" != 2* ]]; then
             notes+=("$(_kb_prog): owner comment NOT posted on $label — $(kb_render_refusal "$http" "$body"). The card IS assigned to $who; the holder it replaced, $prev, is recorded only in this line")
         elif ! kb_is_uint "$cid"; then
             notes+=("$(_kb_prog): owner comment UNVERIFIED on $label — the POST answered success with no comment id to look for, so the record of the replaced holder, $prev, is UNMEASURED")

@@ -2088,6 +2088,8 @@ cat > "$_oc/ok.json" <<'JSON'
  {"name":"frac","kanban_user_id":{"kanban.test":7.5}}]}
 JSON
 printf '{"roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}}]}\n'            > "$_oc/no-project.json"
+printf '{"project":{"name":"acme"},"roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}},{"name":"reviewer","kanban_user_id":{"kanban.test":9}}]}\n' > "$_oc/object-project.json"
+printf '{"project":"acme/x","roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}}]}\n' > "$_oc/slash-project.json"
 printf '{"project":"acme","roster":{"name":"builder"}}\n'                                  > "$_oc/roster-object.json"
 printf '{"project":"acme"}\n'                                                              > "$_oc/no-roster.json"
 printf 'not json\n'                                                                        > "$_oc/not-json.json"
@@ -2137,6 +2139,12 @@ owner_case "a string id is refused, not coerced" 1 "" 'kanban_user_id["kanban.te
 owner_case "a fractional id is refused"  1 "" 'kanban_user_id["kanban.test"] is 7.5, not a positive integer' "$_oc/ok.json" frac
 owner_case "no project: the ASSIGNEE still resolves (the project only spelled the retired tag)" 0 7 "" "$_oc/no-project.json" builder
 eq "…and no legacy tag is spelled" "" "$KB_OWNER_TAG"
+# The framework writes `project` either as a string or as {"name": …} (its _ownertag.py
+# project_name() reads both), and the legacy tag it stamped used that name.
+owner_case "project in the OBJECT form {name: …} resolves" 0 7 "" "$_oc/object-project.json" builder
+eq "…and spells the legacy tag from project.name" "owner:acme/builder" "$KB_OWNER_TAG"
+owner_case "a project carrying '/' resolves the user" 0 7 "" "$_oc/slash-project.json" builder
+eq "…but spells no legacy tag (it could not be told apart)" "" "$KB_OWNER_TAG"
 
 echo "== kb_coord_config_path — the ONE fallback, shared with kbcard's board→repo read =="
 eq "COORD_CONFIG set → that path" "/x/y.json" "$(COORD_CONFIG=/x/y.json kb_coord_config_path)"
@@ -2165,8 +2173,14 @@ echo "== kb_owner_claim — assign the card to this seat's kanban user; warn, ta
 # analyser would read that definition as the one every earlier call in this file reaches.
 eval "_real_$(declare -f kb_api_status)"
 _ow_log="$TMP/owner-write.log"; _ow_card="$TMP/owner-card.json"
+_ow_errf="$TMP/owner-claim.err"; _ow_order="$TMP/owner-order.log"
 _ow_stub() {
     printf '%s %s %s\n' "$1" "$2" "${3:-}" >> "$_ow_log"
+    # THE ORDERING WITNESS: at the moment the assignment PATCH is ANSWERED, has the takeover warning
+    # already been said? Read off the emitter's own output as it stands then, not reconstructed after.
+    if [[ "$1" == PATCH ]]; then
+        if command grep -q "owner TAKING" "$_ow_errf" 2>/dev/null; then echo warned >> "$_ow_order"; else echo silent >> "$_ow_order"; fi
+    fi
     local http
     case "$1 $2" in
         "GET /tasks/1.json")
@@ -2185,7 +2199,7 @@ _ow_stub() {
             if [[ "$http" == 2* && "${OW_COMMENT_LANDS:-yes}" != no ]]; then
                 jq -c --argjson b "$3" '.comments = ((.comments // []) + [{id: 55} + $b])' "$_ow_card" > "$_ow_card.n" && mv "$_ow_card.n" "$_ow_card"
             fi
-            if [[ "$http" == 2* ]]; then printf '%s\n{"data":{"id":55}}' "$http"; else printf '%s\n{"message":"This action is unauthorized."}' "$http"; fi ;;
+            if [[ "$http" == 2* ]]; then printf '%s\n{"data":{"id":55}}' "$http"; elif [[ "$http" == 000 ]]; then printf '000\n'; else printf '%s\n{"message":"This action is unauthorized."}' "$http"; fi ;;
         *)  printf '404\n{"message":"unrouted"}' ;;
     esac
 }
@@ -2193,9 +2207,9 @@ eval "$(declare -f _ow_stub | sed '1s/^_ow_stub/kb_api_status/')"
 # ow <card .data JSON> — run the claim against task 1 holding that card; sets _ow_reqs (the
 # request log, one line per request) and _ow_after (the card as the board now holds it).
 ow() {
-    : > "$_ow_log"; printf '%s' "$1" > "$_ow_card"
-    kb_owner_claim 1 "task 1"
-    _ow_reqs="$(cat "$_ow_log")"; _ow_after="$(jq -c . "$_ow_card")"
+    : > "$_ow_log"; : > "$_ow_errf"; : > "$_ow_order"; printf '%s' "$1" > "$_ow_card"
+    kb_owner_claim 1 "task 1" 2>"$_ow_errf"
+    _ow_reqs="$(cat "$_ow_log")"; _ow_after="$(jq -c . "$_ow_card")"; _ow_err="$(cat "$_ow_errf")"
 }
 # _ow_methods — just the method + path of each request, in order.
 _ow_methods() { cut -d' ' -f1,2 <<<"$_ow_reqs"; }
@@ -2217,26 +2231,41 @@ ow '{"id":1,"assigned_user_id":9,"tags":[]}'
 eq "⭐ another SEAT's card → read, PATCH, read back, comment, read back" \
    $'GET /tasks/1.json\nPATCH /tasks/1.json\nGET /tasks/1.json?trashed=1\nPOST /tasks/1/comments.json\nGET /tasks/1.json?trashed=1' "$(_ow_methods)"
 eq "…the card is TAKEN: it names this seat's user" "7" "$(jq -r .assigned_user_id <<<"$_ow_after")"
-eq "…WARNING first, naming the holder it replaces" "true" \
-   "$(has "owner TAKING task 1 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$(head -n1 <<<"$KB_OWNER_NOTE")")"
+eq "…WARNING on stderr, naming the holder it replaces" "true" \
+   "$(has "owner TAKING task 1 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$_ow_err")"
+eq "⭐ …and said BEFORE the assignment PATCH was answered, not after it" "warned" "$(cat "$_ow_order")"
+eq "…and not repeated in the note the caller prints afterwards" "false" "$(has 'owner TAKING' "$KB_OWNER_NOTE")"
 eq "…and a card comment naming the replaced assignee" "true" \
-   "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+   "$(has "replaced the previous holder, seat 'reviewer' (kanban user 9)" "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
 eq "…said, with the comment id read back"         "true" "$(has 'owner comment 55 on task 1 records the replaced holder' "$KB_OWNER_NOTE")"
 
 ow '{"id":1,"assigned_user_id":42,"tags":[]}'
 eq "a PERSON's card (a user no roster seat maps) is taken too" "7" "$(jq -r .assigned_user_id <<<"$_ow_after")"
-eq "…named by id, since no seat maps it"          "true" "$(has 'replaced the previous assignee, kanban user 42.' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+eq "…named by id, since no seat maps it"          "true" "$(has 'replaced the previous holder, kanban user 42.' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
 
 ow '{"id":1,"assigned_user_id":null,"tags":["x","owner:other/reviewer"]}'
 eq "no assignee but ANOTHER seat's legacy owner tag → taken, the tag named as the holder" "true" \
-   "$(has 'replaced the previous assignee, the legacy owner tag owner:other/reviewer' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+   "$(has 'replaced the previous holder, the legacy owner tag owner:other/reviewer' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
 eq "…and the tag itself is left alone"            '["x","owner:other/reviewer"]' "$(jq -c .tags <<<"$_ow_after")"
 ow '{"id":1,"assigned_user_id":null,"tags":["owner:acme/builder"]}'
 eq "no assignee and THIS seat's own legacy tag → assigned, nothing to warn or record" "false|0" \
    "$(has 'TAKING' "$KB_OWNER_NOTE")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
 ow '{"id":1,"assigned_user_id":9,"tags":["owner:other/reviewer"]}'
 eq "an assignee beats a legacy tag: the ASSIGNEE is the holder named" "true|false" \
-   "$(has "seat 'reviewer' (kanban user 9)" "$KB_OWNER_NOTE")|$(has 'owner:other/reviewer' "$KB_OWNER_NOTE")"
+   "$(has "seat 'reviewer' (kanban user 9)" "$_ow_err")|$(has 'owner:other/reviewer' "$_ow_err$KB_OWNER_NOTE")"
+# THE PROJECT IS READ AS THE FRAMEWORK WRITES IT. With {"name": …}, this seat's own legacy tag is
+# recognised as its own; with no readable project, no legacy tag can be told apart, so the fallback
+# is SKIPPED rather than naming this seat's own tag as someone else's.
+COORD_CONFIG="$_oc/object-project.json" ow '{"id":1,"assigned_user_id":null,"tags":["owner:acme/builder"]}'
+eq "⭐ object-form project: this seat's OWN legacy tag is no holder — assigned, no warning, no comment" "7|false|0" \
+   "$(jq -r .assigned_user_id <<<"$_ow_after")|$(has 'TAKING' "$_ow_err")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
+COORD_CONFIG="$_oc/object-project.json" ow '{"id":1,"assigned_user_id":null,"tags":["owner:acme/reviewer"]}'
+eq "…while ANOTHER seat's tag under the same object-form project still is" "true" "$(has 'owner TAKING task 1 from the legacy owner tag owner:acme/reviewer' "$_ow_err")"
+for _pc in no-project slash-project; do
+    COORD_CONFIG="$_oc/$_pc.json" ow '{"id":1,"assigned_user_id":null,"tags":["owner:acme/builder"]}'
+    eq "no readable project ($_pc): the tag fallback is SKIPPED — assigned, no warning, no comment" "7|false|0" \
+       "$(jq -r .assigned_user_id <<<"$_ow_after")|$(has 'TAKING' "$_ow_err")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
+done
 
 for _body in '{"ok":true}' '{"data":null}' '<html>'; do
     OW_GET_BODY="$_body" ow '{"id":1}'
@@ -2277,6 +2306,9 @@ OW_COMMENT_HTTP=403 ow '{"id":1,"assigned_user_id":9}'
 eq "a refused comment → the card IS taken, and the line says the record was NOT posted" "7|true" \
    "$(jq -r .assigned_user_id <<<"$_ow_after")|$(has "owner comment NOT posted on task 1 — HTTP 403" "$KB_OWNER_NOTE")"
 eq "…naming the holder only this line now records" "true" "$(has "seat 'reviewer' (kanban user 9)" "$(tail -n1 <<<"$KB_OWNER_NOTE")")"
+OW_COMMENT_HTTP=000 ow '{"id":1,"assigned_user_id":9}'
+eq "a comment POST that never completed → UNVERIFIED, not 'NOT posted'" "true|false" \
+   "$(has 'owner comment UNVERIFIED on task 1 — the POST DID NOT COMPLETE' "$KB_OWNER_NOTE")|$(has 'comment NOT posted' "$KB_OWNER_NOTE")"
 OW_COMMENT_LANDS=no ow '{"id":1,"assigned_user_id":9}'
 eq "a 2xx comment absent on the re-read → NOT recorded, from the read-back" "true" \
    "$(has 'owner comment NOT posted on task 1 — the POST answered success and comment 55 is not on the card on a re-read' "$KB_OWNER_NOTE")"
@@ -2286,13 +2318,20 @@ eq "a 2xx comment absent on the re-read → NOT recorded, from the read-back" "t
 # richest note (a takeover, recorded) and the poorest (a refusal), not asserted of one line.
 for _case in '{"id":1,"assigned_user_id":9}' '{"id":1,"assigned_user_id":null}'; do
     ow "$_case"
-    eq "every note line carries the relay prefix [$_case]" "0" \
-       "$(command grep -vc "^$(_kb_prog): owner " <<<"$KB_OWNER_NOTE" || true)"
+    eq "every line said — the stderr warning and the note — carries the relay prefix [$_case]" "0" \
+       "$(printf '%s\n%s\n' "$_ow_err" "$KB_OWNER_NOTE" | command grep -v '^$' | command grep -vc "^$(_kb_prog): owner " || true)"
 done
+# A CALLER CAN ROUTE THE WARNING: KB_OWNER_WARN names the function that says it (board-card-start
+# passes its durable-log writer). It is called BEFORE the PATCH, and stderr then carries nothing.
+_ow_hook() { printf 'HOOK %s\n' "$1" >> "$_ow_log"; }
+KB_OWNER_WARN=_ow_hook ow '{"id":1,"assigned_user_id":9}'
+eq "KB_OWNER_WARN: the caller's emitter gets the warning, BEFORE the PATCH, and stderr gets nothing" "GET|HOOK|PATCH|" \
+   "$(cut -d' ' -f1 <<<"$_ow_reqs" | head -3 | paste -sd'|')|$_ow_err"
+unset -f _ow_hook
 
 eval "$(declare -f _real_kb_api_status | sed '1s/^_real_//')"
 unset -f owner_case ow _ow_stub _ow_methods _real_kb_api_status
-unset COORD_CONFIG COORD_AGENT KB_API _oc _body _case _ow_log _ow_card _ow_reqs _ow_after
+unset COORD_CONFIG COORD_AGENT KB_API _oc _body _case _pc _ow_log _ow_card _ow_reqs _ow_after _ow_errf _ow_err _ow_order
 
 # ---------------------------------------------------------------------------
 echo "== kb_card_pinned / kb_card_start_stage_verdict — the card-start invariants (card#9556) =="

@@ -981,6 +981,7 @@ if command -v git >/dev/null 2>&1; then
     jq -cn --arg h "$KB_STUB_HOST" '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}, {name: "reviewer", kanban_user_id: {($h): 9}}, {name: "unmapped"}]}' \
         > "$TMP/coordination.config.json"
     _olog="$TMP/bcs-owner.log"
+    export KB_STUB_WARNED_FILE="$TMP/bcs-warned-at-patch"
 
     # KB_STUB_TAGS is the card's `tags` value, spliced raw; KB_STUB_ASSIGNEE its assignee (default
     # null). KB_STUB_ASSIGN_PATCH answers a PATCH carrying `assigned_user_id` with that status;
@@ -1028,6 +1029,11 @@ if command -v git >/dev/null 2>&1; then
             "GET "*/tasks/search.json*)
                 printf '200\n{"data":[],"meta":{"last_page":1,"total":0}}' ;;
             "PATCH "*/tasks/4242.json)
+                # THE ORDERING WITNESS for the takeover warning: is it in the durable log at the
+                # moment the assignment write is answered? (KB_BCS_LOG is the hook's own log.)
+                if jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1; then
+                    if command grep -q "owner TAKING" "${KB_BCS_LOG:-/nonexistent}" 2>/dev/null; then echo yes; else echo no; fi > "$KB_STUB_WARNED_FILE"
+                fi
                 if [[ -n "${KB_STUB_ASSIGN_PATCH:-}" ]] && jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null; then
                     printf '%s\n{"message":"assignment refused by the stub"}' "$KB_STUB_ASSIGN_PATCH"
                 elif [[ -n "${KB_STUB_MOVE:-}" ]]; then
@@ -1042,7 +1048,7 @@ if command -v git >/dev/null 2>&1; then
     export -f kb_stub_route
 
     _own_run() {  # <COORD_AGENT or -unset> — run the hook; sets _rc/_out/_ologtxt/_obody
-        kb_stub_reset; rm -f "$_olog"; _rc=0
+        kb_stub_reset; rm -f "$_olog" "$KB_STUB_WARNED_FILE"; _rc=0
         local envs=(COORD_CONFIG="$TMP/coordination.config.json")
         [[ "$1" == -unset ]] || envs+=(COORD_AGENT="$1")
         _out="$(cd "$_orepo" && env "${envs[@]}" KB_BCS_LOG="$_olog" bash "$BCS" 2>&1)" || _rc=$?
@@ -1175,7 +1181,9 @@ if command -v git >/dev/null 2>&1; then
     eq "held by another seat: the durable log WARNS, naming the holder" "true" \
        "$(has "owner TAKING card #4242 (#4242) from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$_ologtxt")"
     eq "held by another seat: a card comment names the assignee it replaced" "true" \
-       "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(kb_stub_bodies POST /tasks/4242/comments.json)")"
+       "$(has "replaced the previous holder, seat 'reviewer' (kanban user 9)" "$(kb_stub_bodies POST /tasks/4242/comments.json)")"
+    eq "⭐ held by another seat: the warning was already in the DURABLE LOG when the assignment PATCH was answered" "yes" \
+       "$(cat "$KB_STUB_WARNED_FILE" 2>/dev/null)"
     eq "held by another seat: …and the log says the record was read back" "true" \
        "$(has 'owner comment 88 on card #4242 (#4242) records the replaced holder' "$_ologtxt")"
 
@@ -1285,7 +1293,7 @@ if command -v git >/dev/null 2>&1; then
     unset -f _stalelib _stalerun
 
     unset -f _own_run kb_stub_route
-    unset KB_STUB_TAGS KB_STUB_ASSIGN_PATCH KB_STUB_ASSIGNEE KB_STUB_CLAIM_READ KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _claim _tp _rr _stampbody
+    unset KB_STUB_TAGS KB_STUB_ASSIGN_PATCH KB_STUB_ASSIGNEE KB_STUB_CLAIM_READ KB_STUB_MOVE KB_STUB_WARNED_FILE _orepo _olog _ologtxt _obody _move _claim _tp _rr _stampbody
 else
     echo "  skip (git not on PATH)"
 fi

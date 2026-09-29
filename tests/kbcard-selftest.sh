@@ -4053,25 +4053,20 @@ KB_STUB_HOLDER=null kbc patch --task 505 --column shipped_to_dev --assign sola-p
 eq "an explicit --assign beside a finished column is written as asked" '[true,9]' "$(pbody)"
 eq "…with no terminal-column notice at all"              "false" "$(has 'terminal column' "$err")"
 
-# --- ⭐ the collision detector skips a card that is ALREADY finished (card#10868 Q2) -----------
-# A finished card's assignee is who DID the work, not a claim anyone is holding — so it is not a
-# collision, and --assign on it needs no --steal. It still NAMES the recorded assignee it replaces,
-# so nothing is overwritten silently. The negative control is the same card in a live column,
-# refused exactly as above.
-KB_STUB_STAGE=51 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
-eq "⭐ --assign on a FINISHED card held by another seat → rc 0, written" "0|[true,7]" "$rc|$(pbody)"
-eq "…naming the finished column and the assignee it replaces" "true|true" \
-   "$(has 'shipped_to_dev' "$err")|$(has 'sola_pm (user 9)' "$err")"
-eq "…and does not refuse"                                "false" "$(has 'REFUSING' "$err")"
-KB_STUB_STAGE=60 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
-eq "…wont_do is finished too"                            "0|[true,7]" "$rc|$(pbody)"
-KB_STUB_STAGE=70 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
-eq "…and so is a board's own Done column (KB_STAGE_DONE), which the ruling names" "0|[true,7]|true" "$rc|$(pbody)|$(has 'finished column done' "$err")"
-KB_STUB_STAGE=50 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
-eq "control: the same holder on a LIVE card (in_review) is still refused" "1|0" "$rc|$(kb_stub_count PATCH /tasks/505.json)"
+# --- ⭐ a FINISHED card's assignee is the record of who did the work: --assign over it is REFUSED ---
+# The collision detector answers on EVERY column exactly as it did before card#10868: an assignee
+# on a card that is already finished (Shipped, Won't Do, Done) is still another user's, and taking
+# it needs --steal. No operator ruling authorizes overwriting the record of who did the work.
+for _fs in 51 60 70; do
+    KB_STUB_STAGE=$_fs KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+    eq "⭐ --assign over another user's assignee on a FINISHED card (stage $_fs) → rc 1, NO PATCH" "1|0|true" \
+       "$rc|$(kb_stub_count PATCH /tasks/505.json)|$(has 'REFUSING to assign' "$err")"
+done
+KB_STUB_STAGE=51 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo --steal
+eq "…and --steal still takes it, loudly"                 "0|[true,7]|true" "$rc|$(pbody)|$(has 'TAKING the card from sola_pm (user 9)' "$err")"
 
 unset -f pbody kb_stub_route
-unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP KB_STUB_STAGE _fc
+unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP KB_STUB_STAGE _fc _fs
 
 echo "== patch --block-reason / --unblock — the blocker a burn-down can render (card#9213) =="
 # THE GAP (roundtable #459). `sprint-burndown.py` renders a "Blocker / next action" column out of
@@ -4984,8 +4979,8 @@ eq "…and nothing is said about an owner"               "false" "$(has 'owner' 
 KB_STUB_CARD="$(card 9)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
 eq "⭐ a card held by ANOTHER seat → rc 0, moved AND taken" "0|$MOVE49"$'\n'"$CLAIM7" "$rc|$(obodies)"
 eq "…warning first, naming the holder"                 "true" "$(has "kbcard: owner TAKING task 606 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$err")"
-eq "…and a card comment names the assignee it replaced" "true" \
-   "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(after '.comments[0].content')")"
+eq "…and a card comment names the holder it replaced" "true" \
+   "$(has "replaced the previous holder, seat 'reviewer' (kanban user 9)" "$(after '.comments[0].content')")"
 KB_STUB_CARD="$(card 42)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
 eq "a PERSON's card is taken too, named by id"         "7|true" "$(after .assigned_user_id)|$(has 'kanban user 42' "$(after '.comments[0].content')")"
 KB_STUB_CARD="$(card null '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
@@ -5180,6 +5175,14 @@ kb_stub_reset; rc=0; out="$(COORD_CONFIG="$TMP/absent.json" "$BIN" owner-migrate
 eq "no coord config → rc 2, NO request, naming the file" "2|0|true" "$rc|$(kb_stub_total)|$(has "$TMP/absent.json" "$err")"
 mig owner-migrate --bogus
 eq "an unknown flag → rc 2, no request"               "2|0" "$rc|$(kb_stub_total)"
+
+# THE PROJECT IS READ AS THE FRAMEWORK WRITES IT — the lib's project_name, shared with the claim:
+# `project` as {"name": …} classifies exactly as the string form does.
+jq '.project = {name: .project}' "$MIG_CFG" > "$MIG_CFG.obj" && mv "$MIG_CFG.obj" "$MIG_CFG"
+mig_seed; mig owner-migrate
+eq "⭐ object-form project: the same classes as the string form" \
+   '{"owner_tagged":8,"tag_only":6,"migratable":2,"unmapped":3,"ambiguous":1,"assigned":2,"assigned_differs":1,"outcomes":{"would-assign":2}}' \
+   "$(jq -c .counts <<<"$out")"
 
 unset -f mig_seed mig row kb_stub_route
 unset MIG_CFG MIG_DIR KB_STUB_MIG_PATCH KB_STUB_MIG_RACE

@@ -349,9 +349,8 @@
 #     WRITE. That refusal IS the collision detector: the second seat is told whose work it
 #     was about to redo, and it works exactly where the stage cannot answer. --steal is the
 #     opt-out and says loudly whose assignment it took. Assigning the seat that already holds
-#     the card is not a conflict (it writes the same id it read). A card in a FINISHED column is
-#     not a conflict either: its assignee records who did the work rather than a live claim, so
-#     it is replaced without --steal, and the line NAMES the assignee it replaced.
+#     the card is not a conflict (it writes the same id it read). The column does not matter: an
+#     assignee on a FINISHED card is the record of who did the work, and is refused the same way.
 #     --unassign is deliberately NOT gated the same way. kbcard has no notion of WHICH seat is
 #     running it — the map resolves names to ids, never "me" — so it cannot tell a seat
 #     releasing its OWN card (the ordinary case) from one clearing somebody else's, and gating
@@ -1828,25 +1827,16 @@ cmd_create_card() {
 # operator's ruling names Done, Won't Do, Shipped to dev and Shipped to main (card#10868), and
 # `done` counts wherever a board env declares KB_STAGE_DONE. The set is README.md § The card
 # owner's; this is its one spelling in code. A finished card KEEPS its assignee (the record of who
-# did the work), so the set decides two things only: `--stamp-owner` is refused beside one (a claim
-# is a work-START act), and the --assign collision detector does not treat a finished card's
-# assignee as a live claim (_kbc_assign_guard).
-KBC_FINISHED_COLUMNS=(shipped_to_dev released_to_main wont_do done)
+# did the work), so the set decides one thing only: `--stamp-owner` is refused beside one (a claim
+# is a work-START act). The --assign collision detector reads no column: an assignee on a finished
+# card is still another user's, and taking it needs --steal.
+KBC_FINISHED_COLUMNS=(shipped_to_dev released_to_main wont_do "done")
 
 # _kbc_finished_column <column>: is <column> one of KBC_FINISHED_COLUMNS?
 _kbc_finished_column() {
     local c
     for c in "${KBC_FINISHED_COLUMNS[@]}"; do [[ "$1" == "$c" ]] && return 0; done
     return 1
-}
-
-# _kbc_finished_column_of <stage-id>: the finished column this board env names <stage-id>, on
-# stdout; rc 1 and nothing when stage_name maps it to no column, or to one that is not finished.
-_kbc_finished_column_of() {
-    local c
-    c="$(stage_name "$1")" || return 1
-    _kbc_finished_column "$c" || return 1
-    printf '%s' "$c"
 }
 
 # _kbc_stage_patch <verb> <task> <body>: the task PATCH `move` and `patch` BOTH issue, and the one
@@ -1953,14 +1943,6 @@ _kbc_assign_guard() {
         return 0
     fi
     [[ "$holder" == "$target" ]] && return 0                # already this seat's — idempotent
-    # A FINISHED card's assignee is who DID the work, not a claim anyone holds (README.md § The card
-    # owner) — so it is no collision and needs no --steal. It is still NAMED, so the record it
-    # replaces is on stderr rather than gone silently.
-    local finished
-    if finished="$(_kbc_finished_column_of "$(jq -r '.workflow_stage_id // empty' <<<"$data")")"; then
-        echo "kbcard: patch on task $task: the card is in the finished column $finished, so its assignee $(_kbc_user_render "$holder") records who did the work rather than a live claim — REPLACING it with $(_kbc_user_render "$target")" >&2
-        return 0
-    fi
     if [[ -n "$steal" ]]; then
         echo "kbcard: --steal on task $task: TAKING the card from $(_kbc_user_render "$holder") and assigning it to $(_kbc_user_render "$target"). The previous holder is NOT notified and may still be working it." >&2
         return 0
@@ -3312,7 +3294,7 @@ cmd_owner_migrate() {
     local rows
     rows="$(jq -c --slurpfile cfg "$cfg" --arg h "$host" "$KB_JQ_OWNER$KB_JQ_ROSTER"'
         ($cfg[0]) as $c
-        | ($c.project | if type == "string" then . else null end) as $proj
+        | ($c | project_name) as $proj
         | [ $c | roster_seats ] as $seats
         | [ (. // [])[]
             | ((.tags // []) | if type == "array" then . else [] end | map(select(is_owner))) as $ot

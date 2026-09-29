@@ -952,8 +952,11 @@ _bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" st
 # _bcs_patch is fail-soft (rc 0 either way) and leaves its read-back outcome in BCS_WRITE. Only a
 # move the re-read CONFIRMED gets an owner claim (see the header): a 2xx the board did not apply, or
 # one nobody could read back, is not a card this seat is known to have started.
+# KB_OWNER_WARN routes the claim's takeover warning into the durable log AS IT IS SAID — before the
+# assignment write — rather than with the outcome lines below: this hook's installed wrapper
+# discards stderr, and a run cut short after the write lands must still have named whose card it took.
 if [ "$BCS_WRITE" = applied ]; then
-    kb_owner_claim "$cid" "card #$cid ($label)"
+    KB_OWNER_WARN=kb_bcs_note kb_owner_claim "$cid" "card #$cid ($label)"
     if [ -n "$KB_OWNER_NOTE" ]; then
         while IFS= read -r _bcs_owner_line; do kb_bcs_note "$_bcs_owner_line"; done <<< "$KB_OWNER_NOTE"
     fi
