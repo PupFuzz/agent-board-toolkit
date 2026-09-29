@@ -6,6 +6,12 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-29
+
+**Minor — `kbcard list` projects each card's `position` and returns rows in the board's priority order; `--column` accepts every column the board env declares (so `--column done` works on a board declaring `KB_STAGE_DONE`); and every per-board key is read from the board env alone, never from the calling shell.** The PRs in `v0.39.0..v0.40.0` are enumerated below and in the release PR's generated `## Bundled` table (`git log --oneline v0.39.0..v0.40.0` re-prints the range; the rest of it is the post-v0.39.0 back-merge). Per `VERSIONING.md` § Bump sizing this is a **minor** on two independent grounds, either of which alone forces it: new user-visible surface (the `position` key on `kbcard list` rows, card#10847) **and** an acceptance narrowing (card#10858).
+
+**⚠ Narrowings this release — ⚠-flagged in its own bullet below, which carries the exact inputs:** **card#10858** — a `KB_STAGE_*` / `KB_TYPE_*` / `KB_USER_*` / `KB_SWIMLANE_*` / `KB_CF_*` / `KB_A1_*` / `KB_WORKFLOW_ID` / `KB_TYPING_MODE` key exported in the calling shell or set in `~/.kanban-host.env`, and not declared by the board env, is no longer honoured: a `--column` or `--assign` naming only such a key is `rc 2` before any request, where it resolved at `rc 0`. Behaviour changes that are not narrowings under that test: `kbcard list`'s row order (an output-shape change at `rc 0`, card#10847), and a `--type` alias only the shell declared tags the card instead of writing a native type. Upgrade actions: `docs/UPGRADE.md` §6 v0.40.0.
+
 ### Added
 
 - **card#10847** — **`kbcard list` projects `position` on every row** (appended after `pr`; `null` only where the board sent none), so a seat reads a column's priority order from one `list` call instead of one `kbcard show` per card. Every existing key and its meaning is unchanged. The in-bin help and README's `list` bullet name the new key in the same sequence the projection emits, which `tests/kbcard-contract-selftest.sh` already requires. **[vendor]** re-vendor `bin/kbcard`; no bin is added, so no `PATH` symlink loop.
