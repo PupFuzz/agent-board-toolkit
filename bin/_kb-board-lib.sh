@@ -529,7 +529,8 @@ kb_resolve_env() {
     # card on one board in another board's stage. The board env carries the id and the stage map
     # together, and --board is how a board is chosen. Same ruling as kb_board_env_for and
     # board-snapshot, which unset it before sourcing for the same reason.
-    unset KB_BOARD_ID
+    # The same ruling covers every other per-board key (card#10858): see kb_board_keys_unset.
+    kb_board_keys_unset
     # shellcheck disable=SC1090
     source "$board_env"
     KB_BOARD_ID="${KB_BOARD_ID:-}"
@@ -560,6 +561,21 @@ kb_resolve_env() {
     KB_BOARD_ENV="$board_env"
     [[ -r "$KB_TOKEN_FILE" ]] || return 5
     return 0
+}
+
+# kb_board_keys_unset: unset, in the CALLER's shell, every key a board env owns — KB_BOARD_ID,
+# KB_WORKFLOW_ID, KB_TYPING_MODE, and every KB_STAGE_* / KB_TYPE_* / KB_USER_* / KB_SWIMLANE_* /
+# KB_CF_* / KB_A1_* — so the board env sourced next is their ONLY source (card#10385 for the id,
+# card#10858 for the rest). Board envs `export` their keys, so without this a shell that sourced
+# board A's env carries A's ids into a run against board B, and a B env that does not declare
+# one (a column, a type alias, a seat) resolves it to A's id — a card on B written into A's
+# stage. The prefixes are matched by glob, never listed name by name, so a key a board env
+# gains later is covered without an edit here. Ambient knobs that are not board keys
+# (KB_HELD_CREATE_MAX_AGE, KB_DL_CHECKOUT_GLOBS) are deliberately left alone.
+kb_board_keys_unset() {
+    # shellcheck disable=SC2086  # intentional word-split: each name is a separate unset arg
+    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE \
+          ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_USER_@} ${!KB_SWIMLANE_@} ${!KB_CF_@} ${!KB_A1_@}
 }
 
 # _kb_discovered_boards: the board NAMEs derived from every ~/.kanban-<name>-board.env present

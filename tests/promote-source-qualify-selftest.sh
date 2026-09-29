@@ -477,8 +477,8 @@ _fold_census() {
 #     § Post-program dispositions owns the reasoning (the bin JUDGES the lib, so it must not
 #     source it) and `tests/token-duplication-selftest.sh` drives both copies against each other
 #     row by row — so it is not a finding to re-raise here;
-#   * bin/kbcard x2 — `stage_name` folds a `KB_STAGE_*` VARIABLE NAME and `_kbc_user_name` folds
-#     a `KB_USER_*` one (card#9169: the seat→id map behind `patch --assign`, same shape and same
+#   * bin/kbcard x2 — `_kbc_stage_columns` folds a `KB_STAGE_*` VARIABLE NAME and `_kbc_user_name`
+#     folds a `KB_USER_*` one (card#9169: the seat→id map behind `patch --assign`, same shape and same
 #     reverse-lookup job as the stage map). Neither takes a repo slug;
 #   * bin/_shellcheck-pinned x1 — folds `uname -s` into a release-asset name;
 #   * bin/release-artifacts-check x1 — folds a CHANGELOG heading for its section selector.
@@ -496,9 +496,12 @@ _fold_census() {
 #   * bin/gitignore-secret-family-check x2 — the words `LOWER BOUND` in two report strings;
 #   * bin/kbcard x1 — the word `lowercased` in the `stages` provenance line's report string.
 #     That line tells a consumer the names it prints are a KB_STAGE_* variable's SUFFIX,
-#     LOWERCASED — describing a fold that happens in `stage_name`, on a different line,
-#     which the mirrors group already counts. Rewording it to dodge this predicate would
-#     be weakening the check to go green, so it is admitted and declared instead;
+#     LOWERCASED — describing a fold that happens in `_kbc_stage_columns`, on a different
+#     line, which the real-folds group already counts. Rewording it to dodge this predicate
+#     would be weakening the check to go green, so it is admitted and declared instead;
+#   * bin/kbcard x1 — the word `lowercased` in `stages`' case-collision line (card#10858),
+#     which tells the operator why two KB_STAGE_* variables name one column. Same fold, same
+#     reason it is declared rather than reworded;
 #   * bin/kbcard x1 — the words `spelled lower-case` in the pr_number/pr_url refusal for a
 #     `.../PULL/<N>` URL (`pull-case`). It tells the operator the segment must be lower-case, which
 #     is what KB_JQ_PR_URL_REF reads; nothing is folded;
@@ -523,7 +526,7 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
                                        'agent-board-toolkit-runtime-check=5' \
-                                       'gitignore-secret-family-check=2' 'kbcard=5' \
+                                       'gitignore-secret-family-check=2' 'kbcard=6' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
                                        'release-pr-body=2')"
 eq "every line under bin/ this predicate admits, attributed per file" \
@@ -532,7 +535,7 @@ eq "every line under bin/ this predicate admits, attributed per file" \
 # and compares them against one number, so a file added to leg 2 without that number moving reds
 # here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
 # does not red on its own — which is exactly why no group figures are written up there any more.
-eq "the per-file census sums to the declared total" "25" \
+eq "the per-file census sums to the declared total" "26" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two

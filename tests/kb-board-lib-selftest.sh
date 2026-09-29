@@ -589,6 +589,68 @@ eq "the lib captures an exported KB_BOARD_ID at source time" "13" \
 reset_env
 
 # ---------------------------------------------------------------------------
+echo "== kb_resolve_env — EVERY per-board key has ONE source, the board env (card#10858) =="
+# The KB_BOARD_ID ruling above, applied to the rest of the board env's own namespace. Board envs
+# EXPORT their keys, so a shell that sourced board A's env carries A's stage / type / seat /
+# swimlane / custom-field ids into a run against board B — where `--column done` resolved A's
+# KB_STAGE_DONE on a board whose env declares no such column. Each leaked key below is one the
+# board env does NOT declare, and each must be GONE after the resolve, not merely outranked.
+reset_env
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_USER_@} ${!KB_SWIMLANE_@} ${!KB_CF_@} ${!KB_A1_@} KB_WORKFLOW_ID KB_TYPING_MODE
+# A board key set in the HOST env is cleared too: the host env is sourced before the unset, so
+# it cannot supply a per-board id either.
+{ echo 'export KBCARD_API="https://kanban.test/api/v3"'; echo 'export KB_STAGE_HOSTLEAK=1'; } > "$KANBAN_HOST_ENV"
+{ echo 'export KB_BOARD_ID=5'; echo 'export KB_STAGE_BACKLOG=48'; echo 'export KB_TYPE_FR=7'
+  echo "export KBCARD_TOKEN_FILE=\"$TMP/board.token\""; } > "$TMP/.kanban-five-board.env"
+export KB_STAGE_DONE=999 KB_STAGE_BACKLOG=1 KB_TYPE_BUG=998 KB_TYPE_FR=2 KB_USER_GHOST=31 \
+       KB_SWIMLANE_9=ghost KB_CF_ORIGIN=997 KB_A1_STAGE=61 KB_WORKFLOW_ID=996 KB_TYPING_MODE=tags
+# The control population: ambient KB_* knobs, which must survive. DERIVED, not listed: every KB_*
+# name a tool under bin/ or hooks/ reads (outside a comment), minus the board-key namespace
+# kb_board_keys_unset owns, minus the names the lib itself assigns (its outputs, which a resolve
+# may legitimately rewrite). A knob a tool starts reading tomorrow joins this set with no edit.
+_ambient_knobs() {
+    local read_ asg
+    read_="$(cat "$HERE"/../bin/* "$HERE"/../hooks/* 2>/dev/null | command grep -vE '^[[:space:]]*#' \
+             | command grep -oE '\$\{?!?KB_[A-Z][A-Z0-9_]*' | sed -E 's/^\$\{?!?//' | LC_ALL=C sort -u)"
+    asg="$(command grep -vE '^[[:space:]]*#' "$LIB" | command grep -oE '(^|[^A-Za-z0-9_$])KB_[A-Z][A-Z0-9_]*\+?=' \
+             | sed -E 's/^[^K]*//; s/\+?=$//' | LC_ALL=C sort -u)"
+    LC_ALL=C comm -23 <(printf '%s\n' "$read_") <(printf '%s\n' "$asg") \
+        | command grep -vE '^KB_(STAGE|TYPE|USER|SWIMLANE|CF|A1)_|^KB_(BOARD_ID|WORKFLOW_ID|TYPING_MODE)$'
+}
+AMBIENT="$(_ambient_knobs)"
+# The derivation must discriminate: it holds a knob a tool is known to read, and no board key.
+eq "the derived ambient set holds a known knob (KB_HELD_CREATE_MAX_AGE, read by kbcard)" "true" \
+   "$(command grep -qx KB_HELD_CREATE_MAX_AGE <<<"$AMBIENT" && echo true || echo false)"
+eq "  …and no board-env key (control on the subtraction)" "" \
+   "$(command grep -E '^KB_(STAGE|TYPE|A1|BOARD_ID)' <<<"$AMBIENT")"
+# Snapshot what this file itself set (KB_PROG is one), so the leg restores rather than unsets it.
+AMBIENT_WAS="$(for v in $AMBIENT; do [[ -z "${!v+set}" ]] || declare -p "$v"; done)"
+for v in $AMBIENT; do export "$v=ambient-$v"; done
+rc=0; kb_resolve_env "$TMP/.kanban-five-board.env" 2>/dev/null || rc=$?
+eq "caller-exported board keys the env does not declare → still resolves (rc)" "0" "$rc"
+LEAKED=""
+for v in KB_STAGE_DONE KB_TYPE_BUG KB_USER_GHOST KB_SWIMLANE_9 KB_CF_ORIGIN KB_A1_STAGE KB_WORKFLOW_ID KB_TYPING_MODE; do
+    [[ -z "${!v+set}" ]] || LEAKED+="$v "
+done
+eq "  …and NONE of them survives into the resolved board (stage, type, seat, swimlane, custom field, dl-a1 throwaway, workflow, typing mode)" "" "$LEAKED"
+eq "  …nor does a board key set in the HOST env (KB_STAGE_HOSTLEAK)" "unset" "${KB_STAGE_HOSTLEAK-unset}"
+eq "  …while the board env's OWN value wins over the caller's for a key both set (stage)" "48" "${KB_STAGE_BACKLOG:-}"
+eq "  …and for a type"                                     "7"  "${KB_TYPE_FR:-}"
+CHANGED=""
+for v in $AMBIENT; do [[ "${!v-}" == "ambient-$v" ]] || CHANGED+="$v "; done
+eq "  …and every derived ambient KB_* knob is left alone (control)" "" "$CHANGED"
+# A FAILED resolve clears nothing it did not reach: the board source is where the keys change.
+export KB_STAGE_DONE=999
+rc=0; kb_resolve_env "$TMP/nope-board.env" 2>/dev/null || rc=$?
+eq "an UNREADABLE board env (rc 2) is refused before the keys are touched" "2|999" "$rc|${KB_STAGE_DONE:-}"
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@} ${!KB_TYPE_@} $AMBIENT
+eval "$AMBIENT_WAS"
+unset AMBIENT AMBIENT_WAS CHANGED LEAKED v
+reset_env
+
+# ---------------------------------------------------------------------------
 echo "== kb_resolve_env — failure return codes =="
 reset_env
 echo 'export KBCARD_API="https://kanban.test/api/v3"' > "$KANBAN_HOST_ENV"
