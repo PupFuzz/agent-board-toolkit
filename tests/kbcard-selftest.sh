@@ -47,13 +47,19 @@ kbc() { kb_stub_reset; rc=0; out="$("$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(ca
 # every call site is paired with a downstream assertion that reds too — a latent hole, not a live
 # one, which is exactly the kind that outlives the person who could still remember it.) Assigning
 # in the CALLER's shell keeps the counter and the report in the same process.
+# An optional 4th argument is a sed script for the LIB copy instead, for a guard that lives there;
+# the kbcard script is then "" and the no-match check applies to the lib.
 _rmut() {
-    local dir="$TMP/mut-$1" src; src="$(readlink -f "$BIN")"
+    local dir="$TMP/mut-$1" src lib; src="$(readlink -f "$BIN")"; lib="$(dirname "$src")/_kb-board-lib.sh"
     mkdir -p "$dir"
     sed "$2" "$src" > "$dir/kbcard"
-    cp "$(dirname "$src")/_kb-board-lib.sh" "$dir/"
+    sed "${4:-}" "$lib" > "$dir/_kb-board-lib.sh"
     chmod +x "$dir/kbcard"
-    cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    if [[ -n "${4:-}" ]]; then
+        cmp -s "$dir/_kb-board-lib.sh" "$lib" && bad "_rmut $1: the lib mutation matched nothing — this control would measure the guard it exists to remove"
+    else
+        cmp -s "$dir/kbcard" "$src" && bad "_rmut $1: the mutation matched nothing — this control would measure the guard it exists to remove"
+    fi
     printf -v "$3" '%s' "$dir/kbcard"
 }
 
@@ -3192,6 +3198,16 @@ for _nm in backlog prioritized in_progress in_review held shipped_to_dev release
     fi
 done
 eq "agreement: a probed name is accepted by --column IFF stages lists it" "" "$AG_BAD"
+# A CASE-ONLY collision: two variables fold to one column name, and --column can reach only one
+# of them. stages must not print a row --column cannot address, and must say why it left it out.
+# shellcheck disable=SC2086
+unset ${!KB_STAGE_@}
+export KB_STAGE_DONE=112 KB_STAGE_Done=113
+AG_ROWS="$(cmd_stages 2>"$TMP/e")"
+eq "case-only collision: stages lists ONE done row, at the id --column done resolves" \
+   "$(stage_id "done" 2>/dev/null)" "$(jq -r '[.[] | select(.name == "done") | .id] | join(",")' <<<"$AG_ROWS")"
+eq "  …the witness: the two variables really do hold different ids" "112|113" "$KB_STAGE_DONE|$KB_STAGE_Done"
+eq "  …and names the collision on stderr"               "true" "$(has "both name column 'done'" "$(cat "$TMP/e")")"
 KB_BOARD_ID="$KB_BOARD_ID_SAVED"; unset KB_BOARD_ID_SAVED AG_ROWS AG_BAD _id _nm _sid
 # shellcheck disable=SC2086
 unset ${!KB_STAGE_@}
@@ -3251,6 +3267,31 @@ eq "  …named as not defined on this board"            "true" "$(has "column 't
 kbc stages
 eq "stages over the same env lists done at the id move wrote" "112" \
    "$(jq -r '.[] | select(.name == "done") | .id' <<<"$out")"
+
+# ⛔ THE COLUMN SET IS THE BOARD ENV'S, NOT THE PROCESS'S. Every leg above scrubs ${!KB_STAGE_@}
+# first, so none could see a caller shell that EXPORTED keys from another board's env — which is
+# what an operator shell that sourced one board env and then ran `--board <other>` carries. Those
+# keys are exported here, the board env declares none of them, and each must be refused or ignored.
+export KB_STAGE_HELD=999 KB_TYPE_BUG=998 KB_TYPING_MODE=tags KB_USER_GHOST=31
+kbc move --task 505 --column held
+eq "move --column <exported by the CALLER, not declared by the board env> → rc 2" "2" "$rc"
+eq "  …issuing no request"                            "0" "$(kb_stub_total)"
+eq "  …named as not defined on this board"            "true" "$(has "column 'held' is not defined on this board" "$err")"
+kbc stages
+eq "stages does not list a caller-exported column"    "" "$(jq -r '.[] | select(.name == "held" or .id == 999) | .id' <<<"$out")"
+kbc create-card --type fr --name probe --column backlog
+eq "create-card --type fr → rc 0"                     "0" "$rc"
+eq "  …writes the board env's native type, not the caller's KB_TYPING_MODE=tags" "7" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.card_type_id // .task.card_type_id // "none"' | tail -1)"
+unset KB_TYPING_MODE   # so the next leg cannot pass through tag mode rather than the missing alias
+kbc create-card --type bug --name probe --column backlog
+eq "create-card --type bug (caller-exported KB_TYPE_BUG only) → rc 0" "0" "$rc"
+eq "  …writes NO card type from the caller's shell"  "none" \
+   "$(kb_stub_bodies POST '/tasks.json' | jq -r '.card_type_id // .task.card_type_id // "none"' | tail -1)"
+kbc patch --task 505 --assign ghost
+eq "patch --assign <a seat only the CALLER exported> → rc 2" "2" "$rc"
+eq "  …writing nothing"                               "" "$(kb_stub_bodies PATCH '/tasks/505.json')"
+unset KB_STAGE_HELD KB_TYPE_BUG KB_TYPING_MODE KB_USER_GHOST
 unset -f kb_stub_route
 unset DC_CARD DC_LIST
 
@@ -6425,10 +6466,12 @@ echo "-- offline refusals: rc 2, NO request --"
 mbc move-board --task 901 --to-board tgt --column held --yes
 eq "M3 a column the TARGET env does not map → rc 2, no request" "2|0" "$rc|$(kb_stub_total)"
 eq "  …naming the target env it was resolved against"   "true" "$(has "resolved against the TARGET board env $HOME/.kanban-tgt-board.env" "$err")"
-# THE CONTROL: with the unset removed, the SOURCE board's KB_STAGE_HELD=49 leaks into the target's
-# resolution and the same call reaches the wire with stage 49 — a stage of the WRONG board. That
-# shows what the column is resolved against; it does not attribute the refusal to one guard.
-_rmut mb-leak 's/^    unset \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_SWIMLANE_@} \${!KB_USER_@} KB_TYPING_MODE$/    :/' MB_LEAK
+# THE CONTROL: with the lib's kb_board_keys_unset narrowed back to the ids alone (the unset
+# kb_load_config runs before it sources the TARGET env), the SOURCE board's KB_STAGE_HELD=49 leaks
+# into the target's resolution and the same call reaches the wire with stage 49 — a stage of the
+# WRONG board. That shows what the column is resolved against; it does not attribute the refusal
+# to one guard.
+_rmut mb-leak '' MB_LEAK 's/^          \${!KB_STAGE_@} \${!KB_TYPE_@} \${!KB_USER_@} \${!KB_SWIMLANE_@} \${!KB_CF_@}$/          /'
 kb_stub_reset; rc=0; "$MB_LEAK" move-board --task 901 --to-board tgt --column held --yes </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the source's held=49 is POSTed to board 77" "49" "$(mb_post | jq -r .workflow_stage_id)"
 

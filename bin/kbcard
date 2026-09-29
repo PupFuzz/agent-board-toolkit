@@ -544,9 +544,9 @@
 #     board sweep on the wrong key and read `0` over a real backlog (card#7694). Both
 #     answers were confident and wrong, which is what a hardcoded id buys you.
 #     ⚠ IT READS THIS CALLER'S OWN CONFIG, NOT THE SERVER — the pairs are the KB_STAGE_*
-#     variables VISIBLE TO THIS PROCESS (~/.kanban-<board>-board.env, selected by the global
-#     --board flag, PLUS any KB_STAGE_* the calling shell exported: kb_resolve_env sources
-#     the board env and does not clear pre-existing ones), and no request is issued. So these
+#     variables of this board's env (~/.kanban-<board>-board.env, selected by the global
+#     --board flag, and ONLY that env: kb_resolve_env clears every KB_STAGE_* the calling
+#     shell exported before it sources the board env), and no request is issued. So these
 #     ids are PER-INSTALL, which is the argument for reading them at run time rather than
 #     baking them in, and a `name` here is a KB_STAGE_* variable's SUFFIX, LOWERCASED — this
 #     install's word for the column rather than the board's own label. ⭐ THAT CLAIM ALSO
@@ -994,7 +994,7 @@ stage_id() {
         echo "${!var}"
         return 0
     done < <(_kbc_stage_columns)
-    echo "kbcard: column '$1' is not defined on this board — no non-empty KB_STAGE_* variable in ${KB_BOARD_ENV:-the board env} (or this shell) is named for it; \`kbcard stages\` lists the columns this board env declares" >&2
+    echo "kbcard: column '$1' is not defined on this board — no non-empty KB_STAGE_* variable in ${KB_BOARD_ENV:-the board env} is named for it; \`kbcard stages\` lists the columns this board env declares" >&2
     return 2
 }
 # Reverse of stage_id: the column NAME for a native stage id, over the same _kbc_stage_columns
@@ -2577,13 +2577,13 @@ cmd_reorder() {
 # move sends out of the TARGET board env, and print {env, token_file, body} as one JSON object. A
 # refusal is rc 2 with the reason on stderr, before any request.
 #
-# ⛔ IT RUNS IN A SUBSHELL AND UNSETS THE SOURCE BOARD'S MAPS FIRST, and both are load-bearing. The
-# resolvers (stage_id / native_type_id / swimlane_id) read whatever KB_STAGE_* / KB_TYPE_* /
-# KB_SWIMLANE_* this process holds, and at this point it holds the SOURCE board's — so a target env
-# that omits an optional key (KB_STAGE_HELD, a type alias) would silently resolve it to the SOURCE
-# board's id, which the board then refuses as "not on the target board" or, worse, which happens to
-# exist there. kb_board_env_get unsets for the same reason. The subshell keeps the target's values
-# from leaking back into the source board's resolution for the rest of the run.
+# ⛔ IT RUNS IN A SUBSHELL, and that is load-bearing. The resolvers (stage_id / native_type_id /
+# swimlane_id) read whatever KB_STAGE_* / KB_TYPE_* / KB_SWIMLANE_* this process holds, and at this
+# point it holds the SOURCE board's. kb_load_config clears those (kb_resolve_env's
+# kb_board_keys_unset) before it sources the TARGET env, so a target env that omits an optional key
+# (KB_STAGE_HELD, a type alias) resolves it to nothing rather than to the SOURCE board's id; the
+# subshell keeps the target's values from leaking back into the source board's resolution for the
+# rest of the run.
 #
 # The target board id comes out of kb_load_config — the SAME loader --board goes through, with its
 # name → env mapping and its refusal of an env declaring no KB_BOARD_ID — so there is one board-id
@@ -2602,8 +2602,6 @@ _kbc_move_board_target() (
     else
         name="$to"
     fi
-    # shellcheck disable=SC2086
-    unset ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_SWIMLANE_@} ${!KB_USER_@} KB_TYPING_MODE
     # The source board's load already said whatever there was to say about an inherited id; the
     # same variable would otherwise be reported a second time here, against the TARGET's env.
     _KB_INHERITED_BOARD_ID=""
@@ -3103,9 +3101,8 @@ _kbc_list_project() {
 }
 
 # cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are the KB_STAGE_*
-# vars VISIBLE TO THIS PROCESS (the board env, plus any the calling shell exported: kb_resolve_env
-# clears KB_TOKEN_FILE/KB_BOARD_ENV and the two KBCARD_* ambients, never KB_STAGE_*, and
-# tests/kbcard-selftest.sh scrubs ${!KB_STAGE_@} for exactly that reason). Which is why the read
+# vars of the board env alone (kb_resolve_env's kb_board_keys_unset clears any the calling shell
+# exported before it sources that env, card#10858). Which is why the read
 # is worth having: the ids are per-install, so a consumer that hardcodes one is guaranteed wrong
 # on somebody else's box, and `list` projects `stage` as one of those numbers while every write
 # flag takes a name.
@@ -3136,10 +3133,20 @@ _kbc_list_project() {
 # join that silently misses, and a silent miss is the defect this verb exists to close.
 cmd_stages() {
     [[ $# -gt 0 ]] && { echo "kbcard: stages takes no arguments (select the board with the global --board flag)" >&2; return 2; }
-    local var val name rows=""
-    while IFS=$'\t' read -r _ var; do
+    local var val name col rows=""
+    local -A claimed=()
+    while IFS=$'\t' read -r col var; do
         val="${!var}"
         [[ -n "$val" ]] || continue
+        # Two variables whose names differ only in case (KB_STAGE_DONE, KB_STAGE_Done) fold to ONE
+        # column name, and stage_id resolves that name to the FIRST non-empty one in the walk — so
+        # the later one's stage is unreachable by --column. Listing it would print a row --column
+        # cannot address; it is named here and left out, as a non-numeric value is below.
+        if [[ -n "${claimed[$col]:-}" ]]; then
+            echo "kbcard: stages: $var and ${claimed[$col]} both name column '$col' (a column name is the variable's suffix, lowercased) — --column $col resolves ${claimed[$col]}, so $var is NOT listed; rename or remove one of them in the board env" >&2
+            continue
+        fi
+        claimed[$col]="$var"
         if ! kb_is_uint "$val"; then
             echo "kbcard: stages: $var='$val' is not a native stage id and is NOT listed — a KB_STAGE_* value is the board's numeric workflow_stage_id (\`000\` is the not-yet-configured placeholder examples/kanban-board.env.example ships)" >&2
             continue
@@ -3164,7 +3171,7 @@ cmd_stages() {
     # depend on — one {id, name} object and no other key — and widening it to carry a caveat
     # would break every consumer to warn the one that never reads. This is the same channel
     # `list` uses for the denominator its own stdout cannot carry.
-    echo "kbcard: stages: these NAMES ARE LOCAL — each is a KB_STAGE_* variable's suffix, lowercased, over the KB_STAGE_* variables VISIBLE TO THIS PROCESS (this install's board env for board $KB_BOARD_ID, plus any you exported in your own shell), not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
+    echo "kbcard: stages: these NAMES ARE LOCAL — each is a KB_STAGE_* variable's suffix, lowercased, over the KB_STAGE_* variables of this install's board env for board $KB_BOARD_ID, not a board read (no request was issued). The board's own label for the same stage id may differ, and anything that RESOLVES against the board — a sprint filter, another tool's config — takes the BOARD's name, not this one." >&2
     # unique_by drops the duplicate rows a duplicated id produces (both resolve through
     # stage_name to the same name, so the pair is identical); sort_by(.name) is jq's codepoint
     # order, i.e. deterministic and locale-free — and NOT the board's column order, which
