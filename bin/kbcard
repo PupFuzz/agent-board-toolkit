@@ -493,8 +493,8 @@
 #     pr_number/pr_url invariant above still apply to it).
 #   kbcard list  [--column COL] [--type TYPE] [--swimlane NAME-OR-ID]
 #     Prints a JSON array projecting id, name, stage, type, swimlane_id, swimlane,
-#     external_id, tags, assigned_user_id, assignee, dl, pr per card — and nothing
-#     else, so a downstream grep/jq
+#     external_id, tags, assigned_user_id, assignee, dl, pr, position per card — and
+#     nothing else, so a downstream grep/jq
 #     over a field OUTSIDE that set (description, any payload key but dl/pr) answers 0
 #     no matter what the board holds. `show` returns a card whole; use it for the rest —
 #     and use `search` to hunt a card BY its body, which is the question a grep over this
@@ -508,6 +508,11 @@
 #     KB_USER_<SEAT> vars map that id, and null where they do not — the id is the answer,
 #     the name is an ornament this install may not be able to supply, so an unmapped id
 #     renders raw rather than failing or guessing.
+#     ROW ORDER IS THE PRIORITY ORDER: card order within a column IS the board's priority
+#     order, keyed (position ASC, id ASC), top = lowest — so rows are sorted by `stage`
+#     (ascending numeric stage id), then `position`, then `id`. Under --column the array
+#     is that one column top to bottom. The stage grouping is by ID, which is NOT the
+#     board's column order (no read here carries that order — see `stages`).
 #     --swimlane none (or 0) filters to the LANELESS cards — the read counterpart of the
 #     same spelling on create-card/patch, so a deliberately laneless card is queryable
 #     and not just creatable. Lane ids are positive, so `0` never named a real lane; a
@@ -3015,6 +3020,11 @@ _kbc_card_filter() {
 # synthetic cards (board 12 has no swimlanes to exercise live).
 #   swimlane_id / swimlane are surfaced on every row; the name resolves through the
 #   env map (null when the card has no lane or the board doesn't map that id).
+#   ROW ORDER IS THE BOARD'S PRIORITY ORDER within a stage (card#10847, operator ruling rt#552):
+#   the key is (position ASC, id ASC), top = lowest, so `id` breaks a position tie the same way
+#   the board does. Stages group by ASCENDING NUMERIC STAGE ID, which is deterministic and NOT
+#   the board's column order — nothing this read can see carries that order (see `stages`), and
+#   fetching it would cost the extra call the ruling asked this read not to need.
 #   The PROJECTED FIELD SET is the only thing a consumer of this output can filter on:
 #   a downstream `grep`/`jq select` over a field this projection drops gets a confident
 #   0 that reads exactly like an empty board (a live consumer concluded "745 cards, 0
@@ -3063,7 +3073,9 @@ _kbc_list_project() {
                 tags: (.tags // []),
                 assigned_user_id: (.assigned_user_id // null),
                 assignee: ($umap[((.assigned_user_id // null) | tostring)] // null),
-                dl: .payload.dl_number, pr: .payload.pr_number})'
+                dl: .payload.dl_number, pr: .payload.pr_number,
+                position: (.position // null)})
+         | sort_by(.stage, .position, .id)'
 }
 
 # cmd_stages: the stage id → column name map, as JSON. NO REQUEST — the pairs are the KB_STAGE_*
