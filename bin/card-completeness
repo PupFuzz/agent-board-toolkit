@@ -212,7 +212,7 @@
 #      5 is an answer, 6 is the absence of one.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.39.0'
+ABTK_TOOL_VERSION='0.40.0'
 
 die() { echo "card-completeness: $*" >&2; exit 2; }
 
