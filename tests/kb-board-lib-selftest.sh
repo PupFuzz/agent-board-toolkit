@@ -2007,161 +2007,230 @@ rc=0; kb_require_value --dl " " >/dev/null 2>&1 || rc=$?
 eq "whitespace-only value → rc 0 (not this guard's call)" "0" "$rc"
 
 # ---------------------------------------------------------------------------
-echo "== kb_owner_resolve — owner:<project>/<seat> from the coord config + COORD_AGENT, never guessed =="
-# Every refusal is paired with the reason it must NAME, and the happy case is the witness that the
-# resolver resolves at all — without it, a resolver that refused everything would pass every row.
+echo "== kb_owner_resolve — the seat's kanban user from the coord roster, per board instance, never guessed =="
+# The seat → kanban user mapping lives ONLY in the coord roster: roster[].kanban_user_id is an
+# object keyed by the board INSTANCE (the kanban host, as kb_url_host reads it out of $KB_API)
+# whose value is that seat's kanban user id. Every refusal is paired with the reason it must NAME,
+# and the happy case is the witness that the resolver resolves at all — without it, a resolver that
+# refused everything would pass every row.
 _oc="$TMP/owner-cfg"; mkdir -p "$_oc"
-printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"},{"name":"a/b"}]}\n' > "$_oc/ok.json"
-printf '{"roster":[{"name":"builder"}]}\n'                    > "$_oc/no-project.json"
-printf '{"project":"","roster":[{"name":"builder"}]}\n'       > "$_oc/empty-project.json"
-printf '{"project":" \\t","roster":[{"name":"builder"}]}\n'   > "$_oc/blank-project.json"
-printf '{"project":7,"roster":[{"name":"builder"}]}\n'        > "$_oc/number-project.json"
-printf '{"project":"acme/x","roster":[{"name":"builder"}]}\n' > "$_oc/slash-project.json"
-printf '{"project":"acme","roster":{"name":"builder"}}\n'     > "$_oc/roster-object.json"
-printf '{"project":"acme"}\n'                                 > "$_oc/no-roster.json"
-printf 'not json\n'                                           > "$_oc/not-json.json"
-# The tag limit is the server's `tags.*` max:64, counted in CHARACTERS — pinned here as the literal,
-# not read back from the lib's constant, so a wrong constant reds. The seat lengths are derived
-# from it: _at fills the tag to exactly the limit with project `acme`, _over is one past it, and
-# _mb is _at in a two-byte character, far over the limit in BYTES and exactly at it in characters.
-_pre="owner:acme/"; _n=$(( 64 - ${#_pre} ))
-_at="$(printf 'b%.0s' $(seq 1 "$_n"))"; _over="${_at}b"; _mb="$(printf 'é%.0s' $(seq 1 "$_n"))"
-jq -cn --arg a "$_at" --arg b "$_over" --arg c "$_mb" '{project:"acme",roster:[{name:$a},{name:$b},{name:$c}]}' > "$_oc/long.json"
+cat > "$_oc/ok.json" <<'JSON'
+{"project":"acme","roster":[
+ {"name":"builder","kanban_user_id":{"kanban.test":7,"elsewhere.test":70}},
+ {"name":"reviewer","kanban_user_id":{"kanban.test":9}},
+ {"name":"nofield"},
+ {"name":"bare","kanban_user_id":7},
+ {"name":"otherhost","kanban_user_id":{"elsewhere.test":4}},
+ {"name":"zero","kanban_user_id":{"kanban.test":0}},
+ {"name":"str","kanban_user_id":{"kanban.test":"7"}},
+ {"name":"frac","kanban_user_id":{"kanban.test":7.5}}]}
+JSON
+printf '{"roster":[{"name":"builder","kanban_user_id":{"kanban.test":7}}]}\n'            > "$_oc/no-project.json"
+printf '{"project":"acme","roster":{"name":"builder"}}\n'                                  > "$_oc/roster-object.json"
+printf '{"project":"acme"}\n'                                                              > "$_oc/no-roster.json"
+printf 'not json\n'                                                                        > "$_oc/not-json.json"
+export KB_API="https://kanban.test/api/v3"
 
-# owner_case <label> <expected-rc> <expected-tag> <why-needle> <COORD_CONFIG or -unset> <COORD_AGENT or -unset>
+# owner_case <label> <expected-rc> <expected-uid> <why-needle> <COORD_CONFIG or -unset> <COORD_AGENT or -unset>
 owner_case() {
-    local label="$1" want_rc="$2" want_tag="$3" needle="$4" cfg="$5" seat="$6" got_rc=0
+    local label="$1" want_rc="$2" want_uid="$3" needle="$4" cfg="$5" seat="$6" got_rc=0
     if [[ "$cfg" == -unset ]]; then unset COORD_CONFIG; else export COORD_CONFIG="$cfg"; fi
     if [[ "$seat" == -unset ]]; then unset COORD_AGENT; else export COORD_AGENT="$seat"; fi
     kb_owner_resolve || got_rc=$?
     eq "$label → rc $want_rc"      "$want_rc"  "$got_rc"
-    eq "$label → tag '$want_tag'"  "$want_tag" "$KB_OWNER_TAG"
+    eq "$label → user '$want_uid'" "$want_uid" "$KB_OWNER_USER_ID"
     if [[ -n "$needle" ]]; then
         eq "$label → names why"    "true" "$(has "$needle" "$KB_OWNER_WHY")"
     else
         eq "$label → no reason"    "" "$KB_OWNER_WHY"
     fi
 }
-owner_case "a roster seat (witness)"     0 "owner:acme/builder"  ""                          "$_oc/ok.json" builder
-owner_case "another roster seat"         0 "owner:acme/reviewer" ""                          "$_oc/ok.json" reviewer
+owner_case "a roster seat (witness)"     0 7 ""                                                 "$_oc/ok.json" builder
+eq "…and names the seat and the board instance" "builder|kanban.test" "$KB_OWNER_SEAT|$KB_OWNER_HOST"
+eq "…and spells the legacy tag it replaces, for the fallback read" "owner:acme/builder" "$KB_OWNER_TAG"
+owner_case "another roster seat"         0 9 ""                                                 "$_oc/ok.json" reviewer
+KB_API="https://kanban.elsewhere.test/api/v3" owner_case "a host that is only a SUFFIX of a key is not that instance" 1 "" \
+    "has no \`kanban_user_id\` entry for this board instance ('kanban.elsewhere.test')"  "$_oc/ok.json" builder
+KB_API="https://elsewhere.test/api/v3" owner_case "the SAME seat on another board instance → that instance's id" 0 70 "" "$_oc/ok.json" builder
+KB_API="https://u:p@kanban.test:8443/api/v3" owner_case "the instance is the HOST: userinfo, port and path do not key it" 0 7 "" "$_oc/ok.json" builder
+KB_API="" owner_case "no API base resolved → no instance to key by" 1 "" "no kanban API base is resolved" "$_oc/ok.json" builder
 owner_case "COORD_CONFIG unset, no default file" 1 "" "COORD_CONFIG is unset and there is no readable coord config at the default path ($HOME/.config/coord/coordination.config.json)" -unset builder
 owner_case "COORD_CONFIG empty, no default file" 1 "" "COORD_CONFIG is unset and there is no readable coord config at the default path" "" builder
-owner_case "COORD_CONFIG missing file"   1 "" "is not a readable file"                         "$_oc/absent.json" builder
-owner_case "COORD_CONFIG a directory"    1 "" "is not a readable file"                         "$_oc" builder
-owner_case "COORD_CONFIG not JSON"       1 "" "is not a JSON object"                           "$_oc/not-json.json" builder
-owner_case "project absent"              1 "" 'has no non-empty `project`'                     "$_oc/no-project.json" builder
-owner_case "project empty"               1 "" 'has no non-empty `project`'                     "$_oc/empty-project.json" builder
-owner_case "project whitespace-only"     1 "" 'has no non-empty `project`'                     "$_oc/blank-project.json" builder
-owner_case "project not a string"        1 "" 'has no non-empty `project`'                     "$_oc/number-project.json" builder
-owner_case "project carrying a /"        1 "" "\`project\` ('acme/x') contains '/'"            "$_oc/slash-project.json" builder
-owner_case "COORD_AGENT unset"           1 "" "COORD_AGENT is unset"                           "$_oc/ok.json" -unset
-owner_case "COORD_AGENT carrying a / (even one in the roster)" 1 "" "COORD_AGENT ('a/b') contains '/'" "$_oc/ok.json" "a/b"
-owner_case "COORD_AGENT outside roster"  1 "" "COORD_AGENT 'ghost' is not a roster[].name"     "$_oc/ok.json" ghost
-owner_case "roster not an array"         1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/roster-object.json" builder
-owner_case "roster absent"               1 "" "COORD_AGENT 'builder' is not a roster[].name"   "$_oc/no-roster.json" builder
-owner_case "a tag of exactly the limit (witness)" 0 "$_pre$_at" ""                              "$_oc/long.json" "$_at"
-owner_case "a tag one character over the limit"   1 "" "is longer than the board's 64-character tag limit" "$_oc/long.json" "$_over"
-owner_case "a multi-byte tag at the limit counts CHARACTERS" 0 "$_pre$_mb" ""                   "$_oc/long.json" "$_mb"
+owner_case "COORD_CONFIG missing file"   1 "" "is not a readable file"                           "$_oc/absent.json" builder
+owner_case "COORD_CONFIG a directory"    1 "" "is not a readable file"                           "$_oc" builder
+owner_case "COORD_CONFIG not JSON"       1 "" "is not a JSON object"                             "$_oc/not-json.json" builder
+owner_case "COORD_AGENT unset"           1 "" "COORD_AGENT is unset"                             "$_oc/ok.json" -unset
+owner_case "COORD_AGENT outside roster"  1 "" "COORD_AGENT 'ghost' is not a roster[].name"       "$_oc/ok.json" ghost
+owner_case "roster not an array"         1 "" "COORD_AGENT 'builder' is not a roster[].name"     "$_oc/roster-object.json" builder
+owner_case "roster absent"               1 "" "COORD_AGENT 'builder' is not a roster[].name"     "$_oc/no-roster.json" builder
+owner_case "⭐ a seat with NO mapping fails loud, naming the missing field" 1 "" \
+    "roster entry 'nofield' in the coord config ($_oc/ok.json) has no \`kanban_user_id\` object"  "$_oc/ok.json" nofield
+eq "…and names the instance key it needs"  "true" "$(has '{"kanban.test": <kanban user id>}' "$KB_OWNER_WHY")"
+eq "…and says nothing was guessed"         "true" "$(has 'no user is guessed' "$KB_OWNER_WHY")"
+owner_case "a bare id not keyed by instance is not the mapping" 1 "" "has no \`kanban_user_id\` object" "$_oc/ok.json" bare
+owner_case "a mapping for ANOTHER instance only → loud, naming this one" 1 "" \
+    "has no \`kanban_user_id\` entry for this board instance ('kanban.test')"                 "$_oc/ok.json" otherhost
+owner_case "id 0 is nobody"              1 "" 'kanban_user_id["kanban.test"] is 0, not a positive integer' "$_oc/ok.json" zero
+owner_case "a string id is refused, not coerced" 1 "" 'kanban_user_id["kanban.test"] is "7", not a positive integer' "$_oc/ok.json" str
+owner_case "a fractional id is refused"  1 "" 'kanban_user_id["kanban.test"] is 7.5, not a positive integer' "$_oc/ok.json" frac
+owner_case "no project: the ASSIGNEE still resolves (the project only spelled the retired tag)" 0 7 "" "$_oc/no-project.json" builder
+eq "…and no legacy tag is spelled" "" "$KB_OWNER_TAG"
 
 echo "== kb_coord_config_path — the ONE fallback, shared with kbcard's board→repo read =="
 eq "COORD_CONFIG set → that path" "/x/y.json" "$(COORD_CONFIG=/x/y.json kb_coord_config_path)"
 eq "COORD_CONFIG unset → the coord default" "$HOME/.config/coord/coordination.config.json" "$(unset COORD_CONFIG; kb_coord_config_path)"
 mkdir -p "$HOME/.config/coord"; cp "$_oc/ok.json" "$HOME/.config/coord/coordination.config.json"
-owner_case "COORD_CONFIG unset, the default file present → resolves" 0 "owner:acme/builder" "" -unset builder
+owner_case "COORD_CONFIG unset, the default file present → resolves" 0 7 "" -unset builder
 rm -f "$HOME/.config/coord/coordination.config.json"
 eq "the board→repo read uses the same resolver" "true" \
    "$(has 'cfg="$(kb_coord_config_path)"' "$(_fn_src "$HERE/../bin/kbcard" _kbc_board_repo)")"
 
-echo "== kb_card_tags / kb_owner_strip / kb_owner_list — the tag decisions =="
+echo "== kb_card_tags — the tag read =="
 eq "kb_card_tags: a list"               '["a","b"]' "$(kb_card_tags '{"data":{"tags":["a","b"]}}')"
 eq "kb_card_tags: no tags key is []"    '[]'        "$(kb_card_tags '{"data":{"id":1}}')"
 eq "kb_card_tags: null tags is []"      '[]'        "$(kb_card_tags '{"data":{"tags":null}}')"
 for _body in '{"ok":true}' '{"data":null}' '{"data":{"tags":false}}' '{"data":{"tags":{"0":"x"}}}' '{"data":{"tags":"x"}}' '<html>'; do
     eq "kb_card_tags: $_body is UNREADABLE (nothing)" "" "$(kb_card_tags "$_body")"
 done
-eq "strip: every owner tag goes, the rest stay in order"  '["a","b"]' "$(kb_owner_strip '["a","owner:p/s","b","owner:q/t"]')"
-eq "strip: a list with no owner tag → nothing (no write)" ""          "$(kb_owner_strip '["a","b"]')"
-eq "strip: a list of only owner tags → []"                '[]'        "$(kb_owner_strip '["owner:p/s"]')"
-eq "strip: a tag merely CONTAINING owner: stays"          '["x-owner:p/s"]' "$(kb_owner_strip '["x-owner:p/s","owner:p/s"]')"
-eq "list: names the owner tags"                           "owner:p/s, owner:q/t" "$(kb_owner_list '["a","owner:p/s","owner:q/t"]')"
 
-echo "== kb_owner_tag_write — a SEPARATE {tags} write after the move, never a list built from nothing =="
-# kb_api_status is replaced by a recorder for this block only (restored below): the helper's whole
-# contract is WHICH requests it issues with WHICH bodies, and what it says about each outcome.
+echo "== kb_owner_claim — assign the card to this seat's kanban user; warn, take and record over another holder =="
+# kb_api_status is replaced by a STATEFUL fake for this block only (restored below): the card lives
+# in a file, a 2xx PATCH merges into it (unless OW_APPLY=no — a 2xx the board did not apply), and a
+# 2xx comment POST appends to its `comments` (unless OW_COMMENT_LANDS=no). A file, because every
+# call runs inside a `$(…)`. The first read, the claim's read-back and the comment's read-back
+# therefore all see what a real board would hold at that moment.
 # Installed by renaming a copy rather than by a second `kb_api_status() {` in this file: the
 # analyser would read that definition as the one every earlier call in this file reaches.
 eval "_real_$(declare -f kb_api_status)"
-_ow_log="$TMP/owner-write.log"
+_ow_log="$TMP/owner-write.log"; _ow_card="$TMP/owner-card.json"
 _ow_stub() {
     printf '%s %s %s\n' "$1" "$2" "${3:-}" >> "$_ow_log"
-    case "$1" in
-        GET)   printf '%s\n%s' "${OW_GET_HTTP:-200}" "${OW_CARD:-}" ;;
-        PATCH) printf '%s\n%s' "${OW_PATCH_HTTP:-200}" "${OW_PATCH_BODY:-{\"data\":{\"id\":1\}\}}" ;;
+    local http
+    case "$1 $2" in
+        "GET /tasks/1.json")
+            printf '%s\n' "${OW_GET_HTTP:-200}"
+            if [[ -n "${OW_GET_BODY:-}" ]]; then printf '%s' "$OW_GET_BODY"; else jq -c '{data: .}' "$_ow_card"; fi ;;
+        "GET /tasks/1.json?trashed=1")
+            printf '%s\n' "${OW_REREAD_HTTP:-200}"; jq -c '{data: .}' "$_ow_card" ;;
+        "PATCH /tasks/1.json")
+            http="${OW_PATCH_HTTP:-200}"
+            if [[ "$http" == 2* && "${OW_APPLY:-yes}" != no ]]; then
+                jq -c --argjson b "$3" '. + $b' "$_ow_card" > "$_ow_card.n" && mv "$_ow_card.n" "$_ow_card"
+            fi
+            printf '%s\n%s' "$http" "${OW_PATCH_BODY:-{\"data\":{\"id\":1\}\}}" ;;
+        "POST /tasks/1/comments.json")
+            http="${OW_COMMENT_HTTP:-201}"
+            if [[ "$http" == 2* && "${OW_COMMENT_LANDS:-yes}" != no ]]; then
+                jq -c --argjson b "$3" '.comments = ((.comments // []) + [{id: 55} + $b])' "$_ow_card" > "$_ow_card.n" && mv "$_ow_card.n" "$_ow_card"
+            fi
+            if [[ "$http" == 2* ]]; then printf '%s\n{"data":{"id":55}}' "$http"; else printf '%s\n{"message":"This action is unauthorized."}' "$http"; fi ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
     esac
 }
 eval "$(declare -f _ow_stub | sed '1s/^_ow_stub/kb_api_status/')"
-# ow <mode> — run the helper against task 1; sets _ow_reqs (the request log) and prints nothing.
-ow() { : > "$_ow_log"; kb_owner_tag_write "$1" 1 "task 1"; _ow_reqs="$(cat "$_ow_log")"; }
+# ow <card .data JSON> — run the claim against task 1 holding that card; sets _ow_reqs (the
+# request log, one line per request) and _ow_after (the card as the board now holds it).
+ow() {
+    : > "$_ow_log"; printf '%s' "$1" > "$_ow_card"
+    kb_owner_claim 1 "task 1"
+    _ow_reqs="$(cat "$_ow_log")"; _ow_after="$(jq -c . "$_ow_card")"
+}
+# _ow_methods — just the method + path of each request, in order.
+_ow_methods() { cut -d' ' -f1,2 <<<"$_ow_reqs"; }
 export COORD_CONFIG="$_oc/ok.json" COORD_AGENT=builder
 
-OW_CARD='{"data":{"tags":["x"]}}' ow stamp
-eq "stamp: an unowned card → one GET, then PATCH {tags} ALONE with the owner added" \
-   $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":["x","owner:acme/builder"]}' "$_ow_reqs"
-eq "stamp: …and says it stamped"                          "true" "$(has 'owner tag owner:acme/builder stamped on task 1' "$KB_OWNER_NOTE")"
-OW_CARD='{"data":{"tags":["owner:acme/builder","x"]}}' ow stamp
-eq "stamp: the same owner → the read only, no write"      "GET /tasks/1.json " "$_ow_reqs"
-eq "stamp: …silently"                                     "" "$KB_OWNER_NOTE"
-OW_CARD='{"data":{"tags":["owner:acme/builder","owner:other/reviewer"]}}' ow stamp
-eq "stamp: this owner AND another → a conflict, no write" "GET /tasks/1.json " "$_ow_reqs"
-eq "stamp: …naming only the OTHER holder"                 "true" "$(has 'already held by owner:other/reviewer.' "$KB_OWNER_NOTE")"
-for _body in '{"data":{"tags":{"0":"x"}}}' '{"ok":true}'; do
-    OW_CARD="$_body" ow stamp
-    eq "stamp: unreadable tags $_body → no write"         "GET /tasks/1.json " "$_ow_reqs"
-    eq "stamp: …loudly"                                   "true" "$(has 'current tags could not be read (HTTP 200)' "$KB_OWNER_NOTE")"
-done
-OW_GET_HTTP=403 OW_CARD='{"data":{"tags":["x"]}}' ow stamp
-eq "stamp: a REFUSED read is unreadable, whatever its body" "GET /tasks/1.json " "$_ow_reqs"
-eq "stamp: …naming the status"                            "true" "$(has 'could not be read (HTTP 403)' "$KB_OWNER_NOTE")"
-COORD_AGENT=ghost OW_CARD='{"data":{"tags":[]}}' ow stamp
-eq "stamp: an unresolvable owner → no request at all"     "" "$_ow_reqs"
-eq "stamp: …and the notice carries the resolver's reason" "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$KB_OWNER_NOTE")"
-OW_PATCH_HTTP=403 OW_PATCH_BODY='{"message":"This action is unauthorized."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
-eq "stamp: a refused tag write → NOT stamped, the status and the server's reason" "true" \
-   "$(has 'owner tag owner:acme/builder NOT stamped on task 1 — HTTP 403, server said: This action is unauthorized.' "$KB_OWNER_NOTE")"
-OW_PATCH_HTTP=422 OW_PATCH_BODY=$'{"message":"The tags.1 field must not be\\ngreater than 64 characters."}' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
-eq "stamp: a 422 carries its reason, flattened to one line" "true" \
-   "$(has 'HTTP 422, server said: The tags.1 field must not be greater than 64 characters.' "$KB_OWNER_NOTE")"
-# The quoted reason is a server body, and a debug-rendering server echoes the bearer into it
-# (card#9777): masked BEFORE the 300-byte cut, so a token straddling the cut leaves no prefix.
-_ow_tok='owner-tag-token-9777-0123456789abcdef'
-OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"Server Error: Authorization: Bearer $_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
-eq "stamp: a reason echoing the bearer → quoted with the token masked" "true|false" \
-   "$(has 'HTTP 500, server said: Server Error: Authorization: Bearer ***' "$KB_OWNER_NOTE")|$(has "$_ow_tok" "$KB_OWNER_NOTE")"
-_ow_pad="$(printf 'x%.0s' $(seq 1 290))"
-OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"$_ow_pad$_ow_tok\"}" OW_CARD='{"data":{"tags":["x"]}}' KB_TOKEN="$_ow_tok" ow stamp
-eq "stamp: a bearer straddling the 300-byte cut leaves no prefix of it" "true|false" \
-   "$(has "${_ow_pad}***" "$KB_OWNER_NOTE")|$(has "${_ow_tok:0:8}" "$KB_OWNER_NOTE")"
-unset _ow_tok _ow_pad
-OW_PATCH_HTTP=000 OW_PATCH_BODY='' OW_CARD='{"data":{"tags":["x"]}}' ow stamp
-eq "stamp: a tag write that never completed is UNKNOWN, not refused" "true" "$(has 'DID NOT COMPLETE' "$KB_OWNER_NOTE")"
+ow '{"id":1,"assigned_user_id":null,"tags":["x"]}'
+eq "an unassigned card → read, PATCH {assigned_user_id} ALONE, read back" \
+   $'GET /tasks/1.json \nPATCH /tasks/1.json {"assigned_user_id":7}\nGET /tasks/1.json?trashed=1 ' "$_ow_reqs"
+eq "…the board now names this seat's user"        "7" "$(jq -r .assigned_user_id <<<"$_ow_after")"
+eq "…the tags are untouched (no tag is written any more)" '["x"]' "$(jq -c .tags <<<"$_ow_after")"
+eq "…and it says so, naming seat and user"        "true" "$(has "owner assigned: task 1 → seat 'builder' (kanban user 7) — read back" "$KB_OWNER_NOTE")"
+eq "…with no takeover warning and no comment"     "false|0" "$(has 'TAKING' "$KB_OWNER_NOTE")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
 
-OW_CARD='{"data":{"tags":["a","owner:p/s","b"]}}' ow clear
-eq "clear: one GET, then PATCH {tags} ALONE without the owner tags" \
-   $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":["a","b"]}' "$_ow_reqs"
-eq "clear: …naming what it removed"                       "true" "$(has 'removed owner tag(s) owner:p/s from task 1' "$KB_OWNER_NOTE")"
-COORD_AGENT=ghost OW_CARD='{"data":{"tags":["owner:p/s"]}}' ow clear
-eq "clear: needs no resolvable owner of its own"          $'GET /tasks/1.json \nPATCH /tasks/1.json {"tags":[]}' "$_ow_reqs"
-OW_CARD='{"data":{"tags":["a"]}}' ow clear
-eq "clear: no owner tag → the read only, silently"        "GET /tasks/1.json |" "$_ow_reqs|$KB_OWNER_NOTE"
-OW_CARD='{"data":null}' ow clear
-eq "clear: unreadable tags → no write"                    "GET /tasks/1.json " "$_ow_reqs"
-eq "clear: …loudly"                                       "true" "$(has 'owner tags NOT cleared on task 1 — the card' "$KB_OWNER_NOTE")"
-OW_PATCH_HTTP=403 OW_CARD='{"data":{"tags":["owner:p/s"]}}' ow clear
-eq "clear: a refused tag write says NOT cleared, with the status" "true" "$(has 'owner tags NOT cleared on task 1 — HTTP 403' "$KB_OWNER_NOTE")"
+ow '{"id":1,"assigned_user_id":7,"tags":[]}'
+eq "the SAME user already assigned → the read only, no write" "GET /tasks/1.json " "$_ow_reqs"
+eq "…silently"                                    "" "$KB_OWNER_NOTE"
+
+ow '{"id":1,"assigned_user_id":9,"tags":[]}'
+eq "⭐ another SEAT's card → read, PATCH, read back, comment, read back" \
+   $'GET /tasks/1.json\nPATCH /tasks/1.json\nGET /tasks/1.json?trashed=1\nPOST /tasks/1/comments.json\nGET /tasks/1.json?trashed=1' "$(_ow_methods)"
+eq "…the card is TAKEN: it names this seat's user" "7" "$(jq -r .assigned_user_id <<<"$_ow_after")"
+eq "…WARNING first, naming the holder it replaces" "true" \
+   "$(has "owner TAKING task 1 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$(head -n1 <<<"$KB_OWNER_NOTE")")"
+eq "…and a card comment naming the replaced assignee" "true" \
+   "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+eq "…said, with the comment id read back"         "true" "$(has 'owner comment 55 on task 1 records the replaced holder' "$KB_OWNER_NOTE")"
+
+ow '{"id":1,"assigned_user_id":42,"tags":[]}'
+eq "a PERSON's card (a user no roster seat maps) is taken too" "7" "$(jq -r .assigned_user_id <<<"$_ow_after")"
+eq "…named by id, since no seat maps it"          "true" "$(has 'replaced the previous assignee, kanban user 42.' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+
+ow '{"id":1,"assigned_user_id":null,"tags":["x","owner:other/reviewer"]}'
+eq "no assignee but ANOTHER seat's legacy owner tag → taken, the tag named as the holder" "true" \
+   "$(has 'replaced the previous assignee, the legacy owner tag owner:other/reviewer' "$(jq -r '.comments[0].content' <<<"$_ow_after")")"
+eq "…and the tag itself is left alone"            '["x","owner:other/reviewer"]' "$(jq -c .tags <<<"$_ow_after")"
+ow '{"id":1,"assigned_user_id":null,"tags":["owner:acme/builder"]}'
+eq "no assignee and THIS seat's own legacy tag → assigned, nothing to warn or record" "false|0" \
+   "$(has 'TAKING' "$KB_OWNER_NOTE")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
+ow '{"id":1,"assigned_user_id":9,"tags":["owner:other/reviewer"]}'
+eq "an assignee beats a legacy tag: the ASSIGNEE is the holder named" "true|false" \
+   "$(has "seat 'reviewer' (kanban user 9)" "$KB_OWNER_NOTE")|$(has 'owner:other/reviewer' "$KB_OWNER_NOTE")"
+
+for _body in '{"ok":true}' '{"data":null}' '<html>'; do
+    OW_GET_BODY="$_body" ow '{"id":1}'
+    eq "unreadable card $_body → no write"        "GET /tasks/1.json " "$_ow_reqs"
+    eq "…loudly"                                  "true" "$(has 'owner NOT assigned on task 1 — the card could not be read (HTTP 200)' "$KB_OWNER_NOTE")"
+done
+OW_GET_HTTP=403 ow '{"id":1,"assigned_user_id":null}'
+eq "a REFUSED read → no write, naming the status" "GET /tasks/1.json |true" "$_ow_reqs|$(has 'could not be read (HTTP 403)' "$KB_OWNER_NOTE")"
+
+COORD_AGENT=ghost ow '{"id":1,"assigned_user_id":null}'
+eq "an unresolvable seat → no request at all"     "" "$_ow_reqs"
+eq "…and the notice carries the resolver's reason" "true" "$(has "owner NOT assigned on task 1 — COORD_AGENT 'ghost' is not a roster[].name" "$KB_OWNER_NOTE")"
+COORD_AGENT=nofield ow '{"id":1,"assigned_user_id":null}'
+eq "⭐ a seat with no mapping → no request, the missing mapping NAMED" "|true" \
+   "$_ow_reqs|$(has "has no \`kanban_user_id\` object" "$KB_OWNER_NOTE")"
+
+OW_PATCH_HTTP=403 OW_PATCH_BODY='{"message":"This action is unauthorized."}' ow '{"id":1,"assigned_user_id":9}'
+eq "a refused write → NOT assigned, with the status and the server's reason" "true" \
+   "$(has 'owner NOT assigned on task 1 — HTTP 403, server said: {"message":"This action is unauthorized."}' "$KB_OWNER_NOTE")"
+eq "…no read-back and NO comment claiming a takeover that did not happen" \
+   $'GET /tasks/1.json\nPATCH /tasks/1.json' "$(_ow_methods)"
+_ow_tok='owner-claim-token-10868-0123456789abcdef'
+OW_PATCH_HTTP=500 OW_PATCH_BODY="{\"message\":\"Server Error: Authorization: Bearer $_ow_tok\"}" KB_TOKEN="$_ow_tok" ow '{"id":1,"assigned_user_id":null}'
+eq "a reason echoing the bearer → quoted with the token masked" "true|false" \
+   "$(has 'Authorization: Bearer ***' "$KB_OWNER_NOTE")|$(has "$_ow_tok" "$KB_OWNER_NOTE")"
+unset _ow_tok
+OW_PATCH_HTTP=000 OW_PATCH_BODY='' ow '{"id":1,"assigned_user_id":9}'
+eq "a write that never completed is UNKNOWN, not refused, and records nothing" "true|0" \
+   "$(has 'DID NOT COMPLETE' "$KB_OWNER_NOTE")|$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
+OW_APPLY=no ow '{"id":1,"assigned_user_id":9}'
+eq "⭐ a 2xx the board did NOT apply → NOT assigned, from the READ-BACK" "true" \
+   "$(has 'owner NOT assigned on task 1 — the write answered success and a re-read shows the card assigned to seat '"'"'reviewer'"'"' (kanban user 9)' "$KB_OWNER_NOTE")"
+eq "…and no comment claims a takeover"            "0" "$(command grep -c '^POST' <<<"$_ow_reqs" || true)"
+OW_REREAD_HTTP=500 ow '{"id":1,"assigned_user_id":9}'
+eq "a read-back that measured nothing → UNVERIFIED, and the holder it may have replaced is named" "true|true" \
+   "$(has 'owner assignment UNVERIFIED on task 1' "$KB_OWNER_NOTE")|$(has "seat 'reviewer' (kanban user 9) is NOT recorded" "$KB_OWNER_NOTE")"
+OW_COMMENT_HTTP=403 ow '{"id":1,"assigned_user_id":9}'
+eq "a refused comment → the card IS taken, and the line says the record was NOT posted" "7|true" \
+   "$(jq -r .assigned_user_id <<<"$_ow_after")|$(has "owner comment NOT posted on task 1 — HTTP 403" "$KB_OWNER_NOTE")"
+eq "…naming the holder only this line now records" "true" "$(has "seat 'reviewer' (kanban user 9)" "$(tail -n1 <<<"$KB_OWNER_NOTE")")"
+OW_COMMENT_LANDS=no ow '{"id":1,"assigned_user_id":9}'
+eq "a 2xx comment absent on the re-read → NOT recorded, from the read-back" "true" \
+   "$(has 'owner comment NOT posted on task 1 — the POST answered success and comment 55 is not on the card on a re-read' "$KB_OWNER_NOTE")"
+
+# THE RELAY CONTRACT: hooks/agent-dispatch-card-start relays a kbcard line only when it starts with
+# `kbcard: owner ` — so EVERY line this function says must carry `<prog>: owner `. Driven over the
+# richest note (a takeover, recorded) and the poorest (a refusal), not asserted of one line.
+for _case in '{"id":1,"assigned_user_id":9}' '{"id":1,"assigned_user_id":null}'; do
+    ow "$_case"
+    eq "every note line carries the relay prefix [$_case]" "0" \
+       "$(command grep -vc "^$(_kb_prog): owner " <<<"$KB_OWNER_NOTE" || true)"
+done
 
 eval "$(declare -f _real_kb_api_status | sed '1s/^_real_//')"
-unset -f owner_case ow _ow_stub _real_kb_api_status
-unset COORD_CONFIG COORD_AGENT _oc _body _ow_log _ow_reqs _pre _n _at _over _mb
+unset -f owner_case ow _ow_stub _ow_methods _real_kb_api_status
+unset COORD_CONFIG COORD_AGENT KB_API _oc _body _case _ow_log _ow_card _ow_reqs _ow_after
 
 # ---------------------------------------------------------------------------
 echo "== kb_card_pinned / kb_card_start_stage_verdict — the card-start invariants (card#9556) =="

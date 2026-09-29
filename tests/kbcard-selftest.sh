@@ -3712,7 +3712,7 @@ unset -f conf
 unset _conf_child
 
 # ---------------------------------------------------------------------------
-echo "== patch --assign / --unassign — the collision detector, and the terminal clear (card#9169) =="
+echo "== patch --assign / --unassign — the collision detector, and the finished-column rules (card#9169, card#10868) =="
 # THE GAP (roundtable #443): a card whose STAGE never moved is indistinguishable from an
 # unclaimed one, so two seats pull the same work and neither finds out. The board has a native
 # field that answers it — assigned_user_id — and nothing in the fleet wrote it. Writing it is
@@ -3751,7 +3751,7 @@ kb_stub_route() {
                 403)    printf '403\n{"message":"This action is unauthorized."}' ;;
                 nojson) printf '200\n<html>502 Bad Gateway</html>' ;;
                 nocard) printf '200\n{"ok":true}' ;;
-                *)      printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":48,"assigned_user_id":%s}}' "${KB_STUB_HOLDER:-null}" ;;
+                *)      printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":%s,"assigned_user_id":%s}}' "${KB_STUB_STAGE:-48}" "${KB_STUB_HOLDER:-null}" ;;
             esac ;;
         "PATCH "*/tasks/505.json)
             http="${KB_STUB_PATCH_HTTP:-200}"
@@ -3876,38 +3876,39 @@ KB_STUB_PATCH_HTTP=403 kbc patch --task 505 --dl DL-7
 eq "the same 403 on a non-assigning patch is still non-zero" "1" "$rc"
 eq "…and does NOT claim an assignment install fault"         "false" "$(has 'INSTALL FAULT' "$err")"
 
-# --- ⭐ the terminal clear, in the ONE primitive both verbs write through ---------------
-# A finished card that still names a holder is the stale claim this whole field exists to make
-# readable. The rule belongs to the WRITE, not to each mover: `move` and `patch --column` are
-# two callers of one primitive, so neither can be the one that forgot.
-kbc move --task 505 --column shipped_to_dev
-eq "move → shipped_to_dev clears the assignment" '[true,null]' "$(pbody)"
-eq "…and says so"                                "true" "$(has 'cleared the card' "$err")"
-eq "…naming it as the terminal-column rule"      "true" "$(has 'terminal column' "$err")"
-kbc move --task 505 --column wont_do
-eq "move → wont_do clears it too"                '[true,null]' "$(pbody)"
-eq "…alongside the correlation-stamp clear"      '[true,null]' \
-   "$(kb_stub_bodies PATCH /tasks/505.json | jq -c '[(.payload|has("pr_url")), .payload.pr_url]')"
-# THE NEGATIVE CONTROL: a non-terminal move must not touch the field at all. An omitted key and
-# an explicit null are different writes — this is the assertion that says the clear is the
-# TERMINAL rule and not something every move does.
-kbc move --task 505 --column in_review
-eq "a NON-terminal move leaves the key absent"   '[false,null]' "$(pbody)"
-eq "…and says nothing about an assignment"       "false" "$(has 'assignment' "$err")"
-# The second caller of the same primitive.
+# --- ⭐ a FINISHED move KEEPS the assignment (card#10868 Q2) -------------------------------
+# The assignee of a finished card is the record of who did the work, so neither `move` nor
+# `patch --column` touches the field on the way into a finished column: the key is ABSENT from the
+# write, not nulled. `has` is the load-bearing half — an omitted key and an explicit null are
+# different writes.
+for _fc in shipped_to_dev wont_do; do
+    kbc move --task 505 --column "$_fc"
+    eq "move → $_fc leaves the assignment ALONE (key absent)" '[false,null]' "$(pbody)"
+    eq "…and says nothing about an assignment"                "false" "$(has 'assignment' "$err")"
+done
 kbc patch --task 505 --column shipped_to_dev
-eq "patch --column shipped_to_dev clears it too" '[true,null]' "$(pbody)"
-kbc patch --task 505 --column in_review
-eq "…and patch --column in_review does not"      '[false,null]' "$(pbody)"
-# Explicit beats hygiene — the same rule the decline-stamp clear follows — and the notice says
-# which of the two happened rather than claiming a clear this call did not make.
+eq "patch --column shipped_to_dev leaves it alone too"   '[false,null]' "$(pbody)"
 KB_STUB_HOLDER=null kbc patch --task 505 --column shipped_to_dev --assign sola-pm
-eq "an explicit --assign WINS over the terminal clear" '[true,9]' "$(pbody)"
-eq "…and the notice says the explicit value won"       "true" "$(has 'explicit value wins' "$err")"
-eq "…rather than claiming a clear"                     "false" "$(has 'cleared the card' "$err")"
+eq "an explicit --assign beside a finished column is written as asked" '[true,9]' "$(pbody)"
+eq "…with no terminal-column notice at all"              "false" "$(has 'terminal column' "$err")"
+
+# --- ⭐ the collision detector skips a card that is ALREADY finished (card#10868 Q2) -----------
+# A finished card's assignee is who DID the work, not a claim anyone is holding — so it is not a
+# collision, and --assign on it needs no --steal. It still NAMES the recorded assignee it replaces,
+# so nothing is overwritten silently. The negative control is the same card in a live column,
+# refused exactly as above.
+KB_STUB_STAGE=51 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+eq "⭐ --assign on a FINISHED card held by another seat → rc 0, written" "0|[true,7]" "$rc|$(pbody)"
+eq "…naming the finished column and the assignee it replaces" "true|true" \
+   "$(has 'shipped_to_dev' "$err")|$(has 'sola_pm (user 9)' "$err")"
+eq "…and does not refuse"                                "false" "$(has 'REFUSING' "$err")"
+KB_STUB_STAGE=60 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+eq "…wont_do is finished too"                            "0|[true,7]" "$rc|$(pbody)"
+KB_STUB_STAGE=50 KB_STUB_HOLDER=9 kbc patch --task 505 --assign kanban-solo
+eq "control: the same holder on a LIVE card (in_review) is still refused" "1|0" "$rc|$(kb_stub_count PATCH /tasks/505.json)"
 
 unset -f pbody kb_stub_route
-unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP
+unset KB_STUB_HOLDER KB_STUB_READ KB_STUB_PATCH_HTTP KB_STUB_STAGE _fc
 
 echo "== patch --block-reason / --unblock — the blocker a burn-down can render (card#9213) =="
 # THE GAP (roundtable #459). `sprint-burndown.py` renders a "Blocker / next action" column out of
@@ -4592,15 +4593,15 @@ eq "…and cost no traffic"                                     "0" "$(kb_stub_t
 # --- beside a decline: an explicit clear composes with the decline nulls, and wins over --keep-refs
 kbc patch --task 505 --column wont_do --clear origin
 eq "wont_do + --clear origin → decline nulls AND the clear, in one body" \
-   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null,"origin":null},"workflow_stage_id":60}' \
+   '{"payload":{"dl_number":null,"pr_number":null,"pr_url":null,"origin":null},"workflow_stage_id":60}' \
    "$(cl_body)"
 kbc patch --task 505 --column wont_do --clear pr-url
 eq "wont_do + --clear pr-url → pr_url null once, no conflict" \
-   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}' \
+   '{"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}' \
    "$(cl_body)"
 kbc patch --task 505 --column wont_do --keep-refs --clear pr-url
 eq "wont_do --keep-refs + --clear pr-url → the explicit clear still rides" \
-   '{"assigned_user_id":null,"payload":{"pr_url":null},"workflow_stage_id":60}' "$(cl_body)"
+   '{"payload":{"pr_url":null},"workflow_stage_id":60}' "$(cl_body)"
 # The --keep-refs notice lists what it RETAINED, so a key this call cleared must not be in it: the
 # line is still printed (presence) and names only the stamps that survived (content).
 eq "…and the retained notice names only the stamps NOT cleared" \
@@ -4722,12 +4723,13 @@ unset -f tg tg_tags tg_expect kb_stub_route _tags_verbs
 unset TG_CARD TG_METHOD TG_PATH TG_BLANKS TAGS_VERBS
 unset _verb _b _bn _tv_derived
 
-echo "== move --stamp-owner, and the terminal owner-tag clear — the seat owner tag =="
-# The seat working a card is the tag `owner:<project>/<seat>` (README.md § The seat owner tag). It
-# is written by its OWN `PATCH {tags}` after a confirmed move — never a key on the move, because
-# the server authorizes a stage-only PATCH as a MOVE and anything else as an UPDATE, so a `tags`
-# key would let a refused or invalid tag write refuse the move with it. Every leg therefore asserts
-# the WHOLE request sequence: the move body exactly, then the tag body exactly (or its absence).
+echo "== move --stamp-owner claims the card as its kanban ASSIGNEE; a finished move keeps it (card#10868) =="
+# The seat working a card is the card's kanban assignee — the seat's own kanban user, read from the
+# coord roster's `kanban_user_id` for this board instance (README.md § The card owner). The claim
+# is its OWN `PATCH {assigned_user_id}` after a confirmed move — never a key on the move, because
+# the server authorizes a stage-only PATCH as a MOVE and anything else as an UPDATE, so riding the
+# move would let a refused assignment refuse the move with it. Every leg therefore asserts the
+# WHOLE PATCH sequence: the move body exactly, then the claim body exactly (or its absence).
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -4739,191 +4741,283 @@ kb_stub_board_config dev 42 \
     'export KB_STAGE_WONT_DO=60'
 kb_stub_install
 OWN_CFG="$TMP/coordination.config.json"
-printf '{"project":"acme","roster":[{"name":"builder"},{"name":"reviewer"}]}\n' > "$OWN_CFG"
+jq -cn --arg h "$KB_STUB_HOST" \
+   '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}, {name: "reviewer", kanban_user_id: {($h): 9}}, {name: "unmapped"}]}' > "$OWN_CFG"
 
-# KB_STUB_CARD is the `.data` the card read answers (so a leg sets the card's tags exactly);
-# KB_STUB_READ swaps that read for a refusal or a 2xx no card can be read out of.
-# KB_STUB_TAGS_PATCH answers any PATCH carrying `tags` with that status (the server's update
-# authorization / tag validation), while a PATCH without `tags` still moves; KB_STUB_MOVE refuses
-# the move itself. KB_STUB_ECHO_STAGE makes a 2xx echo name that stage instead of the requested
-# one — a move the server answered but did not confirm.
+# THE CARD IS STATE, in a file: the stub is a fresh process per request, and the claim is reported
+# from a READ-BACK, so a PATCH has to change what the next read returns. KB_STUB_CARD seeds it
+# (the `.data` every read answers); a 2xx PATCH merges its body in; a 2xx comment POST appends.
+# KB_STUB_READ swaps the FIRST-style read (no `?trashed`) for a refusal. KB_STUB_ASSIGN_PATCH
+# answers any PATCH carrying `assigned_user_id` with that status (the server's update
+# authorization) while a stage-only PATCH still moves; KB_STUB_MOVE refuses the move itself.
+# KB_STUB_ECHO_STAGE makes a 2xx echo name that stage instead of the requested one.
+export KB_STUB_CARD_FILE="$TMP/card606.json"
 kb_stub_route() {
     local method="$1" url="$2" body="$3"
     case "$method $url" in
-        "GET "*/tasks/606.json*)
+        "GET "*/tasks/606.json)
             case "${KB_STUB_READ:-ok}" in
                 403)    printf '403\n{"message":"This action is unauthorized."}' ;;
                 nocard) printf '200\n{"ok":true}' ;;
-                *)      printf '200\n{"data":%s}' "${KB_STUB_CARD:-{\"id\":606\}}" ;;
+                *)      printf '200\n'; jq -c '{data: .}' "$KB_STUB_CARD_FILE" ;;
             esac ;;
+        "GET "*/tasks/606.json\?trashed=1)
+            printf '200\n'; jq -c '{data: .}' "$KB_STUB_CARD_FILE" ;;
+        "POST "*/tasks/606/comments.json)
+            jq -c --argjson b "$body" '.comments = ((.comments // []) + [{id: 77} + $b])' "$KB_STUB_CARD_FILE" > "$KB_STUB_CARD_FILE.n" \
+                && mv "$KB_STUB_CARD_FILE.n" "$KB_STUB_CARD_FILE"
+            printf '201\n{"data":{"id":77}}' ;;
         "PATCH "*/tasks/606.json)
-            if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
-                case "$KB_STUB_TAGS_PATCH" in
-                    403) printf '403\n{"message":"This action is unauthorized."}' ;;
-                    422) printf '422\n{"message":"The tags.1 field must not be greater than 64 characters.","errors":{"tags.1":["x"]}}' ;;
-                esac
+            if [[ -n "${KB_STUB_ASSIGN_PATCH:-}" ]] && jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null; then
+                printf '%s\n{"message":"This action is unauthorized."}' "$KB_STUB_ASSIGN_PATCH"
             elif [[ -n "${KB_STUB_MOVE:-}" ]] && jq -e 'has("workflow_stage_id")' <<<"$body" >/dev/null; then
                 printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"
             else
+                jq -c --argjson b "$body" '. + $b' "$KB_STUB_CARD_FILE" > "$KB_STUB_CARD_FILE.n" && mv "$KB_STUB_CARD_FILE.n" "$KB_STUB_CARD_FILE"
                 printf '200\n'
-                jq -cn --argjson b "$body" '{data: ({id:606,name:"probe",workflow_stage_id:48} + $b)}
-                    | if $ENV.KB_STUB_ECHO_STAGE then .data.workflow_stage_id = ($ENV.KB_STUB_ECHO_STAGE | tonumber) else . end'
+                jq -c '{data: .} | if $ENV.KB_STUB_ECHO_STAGE then .data.workflow_stage_id = ($ENV.KB_STUB_ECHO_STAGE | tonumber) else . end' "$KB_STUB_CARD_FILE"
             fi ;;
         *)  printf '404\n{"message":"unrouted"}' ;;
     esac
 }
 export -f kb_stub_route
-unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_ASSIGN_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE
 
-# own <env-assignments…> -- <kbcard args…>: run kbcard with a seat declared (or not) in the env.
+# own <env-assignments…> -- <kbcard args…>: run kbcard with a seat declared (or not) in the env,
+# against the card KB_STUB_CARD seeds (default: unassigned, in backlog).
 own() {
     local envs=()
     while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done
     shift
     kb_stub_reset; rc=0
+    printf '%s' "${KB_STUB_CARD:-{\"id\":606,\"workflow_stage_id\":48\}}" > "$KB_STUB_CARD_FILE"
     out="$(env "${envs[@]}" "$BIN" "$@" 2>"$TMP/e")" || rc=$?
     err="$(cat "$TMP/e")"
 }
 SEAT=(COORD_CONFIG="$OWN_CFG" COORD_AGENT=builder)
-# obodies: every PATCH body to the card, in order, key-sorted — line 1 the move, line 2 the tags.
+# obodies: every PATCH body to the card, in order, key-sorted — line 1 the move, line 2 the claim.
 obodies() { kb_stub_bodies PATCH /tasks/606.json | jq -cS .; }
-card() { printf '{"id":606,"workflow_stage_id":48,"tags":%s}' "$1"; }
+# after <jq>: that filter over the card as the board now holds it.
+after() { jq -c "$1" "$KB_STUB_CARD_FILE"; }
+card() { printf '{"id":606,"workflow_stage_id":48,"assigned_user_id":%s,"tags":%s}' "$1" "${2:-[]}"; }
 MOVE49='{"workflow_stage_id":49}'
+CLAIM7='{"assigned_user_id":7}'
 
-# --- the stamp ----------------------------------------------------------------------------
-KB_STUB_CARD="$(card '["fr","triaged"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "stamp on an unowned card → rc 0"                   "0" "$rc"
-eq "⭐ …the MOVE is stage-only, THEN a separate PATCH carries the card's tags plus the owner tag" \
-   "$MOVE49"$'\n''{"tags":["fr","triaged","owner:acme/builder"]}' "$(obodies)"
-eq "…after exactly one card read"                      "1" "$(kb_stub_count GET /tasks/606.json)"
-eq "…and says it stamped, naming the tag"              "true" "$(has 'owner tag owner:acme/builder stamped on task 606' "$err")"
+# --- the claim ----------------------------------------------------------------------------
+KB_STUB_CARD="$(card null '["fr","triaged"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "claim on an unassigned card → rc 0"                "0" "$rc"
+eq "⭐ …the MOVE is stage-only, THEN a separate PATCH carries the assignee alone" "$MOVE49"$'\n'"$CLAIM7" "$(obodies)"
+eq "…the board now names this seat's kanban user"      "7" "$(after .assigned_user_id)"
+eq "…and NO tag is written: the tags are exactly as they were" '["fr","triaged"]' "$(after .tags)"
+eq "…and says so, naming seat and user, from the read-back" "true" "$(has "kbcard: owner assigned: task 606 → seat 'builder' (kanban user 7) — read back" "$err")"
 eq "…with the move's own echo on stdout"               "true" "$(has '"workflow_stage_id": 49' "$out")"
-KB_STUB_CARD='{"id":606,"workflow_stage_id":48}' own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "a card with no tags key gets the owner tag alone"  "$MOVE49"$'\n''{"tags":["owner:acme/builder"]}' "$(obodies)"
 
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "the SAME owner already present → rc 0"             "0" "$rc"
-eq "…the move alone (no tags write)"                   "$MOVE49" "$(obodies)"
-eq "…and nothing is refused"                           "false" "$(has 'NOT stamped' "$err")"
+KB_STUB_CARD="$(card 7)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "the SAME user already assigned → rc 0, the move alone" "0|$MOVE49" "$rc|$(obodies)"
+eq "…and nothing is said about an owner"               "false" "$(has 'owner' "$err")"
 
-# --- ⭐ BLOCKER: a tag write the server REFUSES never refuses the move ------------------------
-for _tp in 403 422; do
-    KB_STUB_TAGS_PATCH=$_tp KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-    eq "⭐ tag write $_tp → rc 0 (the move is the verb)"   "0" "$rc"
-    eq "⭐ tag write $_tp → the move body is exactly {workflow_stage_id}, and the tag write followed it" \
-       "$MOVE49"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(obodies)"
-    eq "tag write $_tp → the card moved (the echo is on stdout)" "true" "$(has '"workflow_stage_id": 49' "$out")"
-    eq "tag write $_tp → NOT stamped, with the status"   "true" "$(has "owner tag owner:acme/builder NOT stamped on task 606 — HTTP $_tp, server said: " "$err")"
-done
-eq "…a 422 carries the server's own reason"            "true" "$(has 'must not be greater than 64 characters' "$err")"
-KB_STUB_MOVE=403 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "a REFUSED move → rc 1"                             "1" "$rc"
-eq "…and no owner tag is written for a move that did not happen" "$MOVE49" "$(obodies)"
-eq "…nor is the card read for one"                     "0" "$(kb_stub_count GET /tasks/606.json)"
-# A 2xx is not the confirmation: the echo's stage is. A move answered with ANOTHER stage is one
-# this tool cannot vouch for, so no stamp may follow it.
-KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "⭐ a move whose echo names ANOTHER stage → rc 1"    "1" "$rc"
-eq "…no owner tag is written for a move that was not confirmed" "$MOVE49" "$(obodies)"
-eq "…nor is the card read for one (unconfirmed)"       "0" "$(kb_stub_count GET /tasks/606.json)"
+# --- ⭐ ANOTHER holder: warn, then TAKE, then record whom it replaced ------------------------
+KB_STUB_CARD="$(card 9)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ a card held by ANOTHER seat → rc 0, moved AND taken" "0|$MOVE49"$'\n'"$CLAIM7" "$rc|$(obodies)"
+eq "…warning first, naming the holder"                 "true" "$(has "kbcard: owner TAKING task 606 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$err")"
+eq "…and a card comment names the assignee it replaced" "true" \
+   "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(after '.comments[0].content')")"
+KB_STUB_CARD="$(card 42)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a PERSON's card is taken too, named by id"         "7|true" "$(after .assigned_user_id)|$(has 'kanban user 42' "$(after '.comments[0].content')")"
+KB_STUB_CARD="$(card null '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "no assignee, ANOTHER seat's legacy owner tag → taken, the tag named, the tag left alone" "7|true|[\"fr\",\"owner:other/reviewer\"]" \
+   "$(after .assigned_user_id)|$(has 'legacy owner tag owner:other/reviewer' "$(after '.comments[0].content')")|$(after .tags)"
 
-# --- ⭐ refuse on conflict: never overwrite, never a second owner tag, the card still moves ---
-KB_STUB_CARD="$(card '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "a card held by ANOTHER seat → rc 0 (the move is the verb)" "0" "$rc"
-eq "⭐ …the move alone: the holder's tag untouched, no second owner" "$MOVE49" "$(obodies)"
-eq "…naming the holder"                                "true" "$(has 'already held by owner:other/reviewer' "$err")"
-eq "…and this seat's tag"                              "true" "$(has 'owner tag owner:acme/builder NOT stamped on task 606' "$err")"
-# The project qualifier is what makes this a conflict: the SAME seat name on another install.
-KB_STUB_CARD="$(card '["owner:elsewhere/builder"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "the same seat NAME under another project is a different owner" "$MOVE49" "$(obodies)"
-eq "…and is named as the holder"                       "true" "$(has 'already held by owner:elsewhere/builder' "$err")"
+# --- a refused or unconfirmed MOVE gets no claim --------------------------------------------
+KB_STUB_ASSIGN_PATCH=403 KB_STUB_CARD="$(card null)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ assignment REFUSED → rc 0 (the move is the verb), the move landed first" "0|$MOVE49"$'\n'"$CLAIM7" "$rc|$(obodies)"
+eq "…NOT assigned, with the status"                    "true" "$(has 'kbcard: owner NOT assigned on task 606 — HTTP 403' "$err")"
+KB_STUB_MOVE=403 KB_STUB_CARD="$(card null)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "a REFUSED move → rc 1, and no claim for a move that did not happen" "1|$MOVE49|0" "$rc|$(obodies)|$(kb_stub_count GET /tasks/606.json)"
+KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card null)" own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ a move whose echo names ANOTHER stage → rc 1, and no claim" "1|$MOVE49|0" "$rc|$(obodies)|$(kb_stub_count GET /tasks/606.json)"
 
-# --- an owner that cannot be resolved: the move, no stamp, loud, and no read ---------------
-KB_STUB_CARD="$(card '["fr"]')" own "COORD_CONFIG=$OWN_CFG" COORD_AGENT=ghost -- move --task 606 --column in_progress --stamp-owner
-eq "COORD_AGENT outside the roster → rc 0"             "0" "$rc"
-eq "…the move alone"                                   "$MOVE49" "$(obodies)"
-eq "…says why, naming the seat"                        "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$err")"
-eq "…and never reads the card for a stamp it cannot make" "0" "$(kb_stub_count GET /tasks/606.json)"
-KB_STUB_CARD="$(card '["fr"]')" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
-eq "COORD_CONFIG unset and no default config → the move alone" "$MOVE49" "$(obodies)"
-eq "…says so"                                          "true" "$(has 'COORD_CONFIG is unset and there is no readable coord config at the default path' "$err")"
+# --- ⭐ a seat with no mapping: the move, no claim, the missing mapping NAMED, no guess -------
+KB_STUB_CARD="$(card null)" own "COORD_CONFIG=$OWN_CFG" COORD_AGENT=unmapped -- move --task 606 --column in_progress --stamp-owner
+eq "⭐ a seat whose roster entry has no kanban_user_id → rc 0, the move alone" "0|$MOVE49" "$rc|$(obodies)"
+eq "…naming the missing field and the instance it is keyed by" "true|true" \
+   "$(has "roster entry 'unmapped'" "$err")|$(has "\"$KB_STUB_HOST\": <kanban user id>" "$err")"
+eq "…and never reads the card for a claim it cannot make" "0" "$(kb_stub_count GET /tasks/606.json)"
+KB_STUB_CARD="$(card null)" own "COORD_CONFIG=$OWN_CFG" COORD_AGENT=ghost -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_AGENT outside the roster → the move alone, saying why" "$MOVE49|true" "$(obodies)|$(has "COORD_AGENT 'ghost' is not a roster[].name" "$err")"
+KB_STUB_CARD="$(card null)" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_CONFIG unset and no default config → the move alone, saying so" "$MOVE49|true" \
+   "$(obodies)|$(has 'COORD_CONFIG is unset and there is no readable coord config at the default path' "$err")"
 mkdir -p "$HOME/.config/coord"; cp "$OWN_CFG" "$HOME/.config/coord/coordination.config.json"
-KB_STUB_CARD="$(card '["fr"]')" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
-eq "COORD_CONFIG unset, the coord default present → stamps from it" "$MOVE49"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(obodies)"
+KB_STUB_CARD="$(card null)" own COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
+eq "COORD_CONFIG unset, the coord default present → claims from it" "$MOVE49"$'\n'"$CLAIM7" "$(obodies)"
 rm -f "$HOME/.config/coord/coordination.config.json"
-printf '{"project":"  ","roster":[{"name":"builder"}]}\n' > "$TMP/blank-project.json"
-KB_STUB_CARD="$(card '["fr"]')" own "COORD_CONFIG=$TMP/blank-project.json" COORD_AGENT=builder -- move --task 606 --column in_progress --stamp-owner
-eq "a blank project → the move alone"                  "$MOVE49" "$(obodies)"
-eq "…says so"                                          "true" "$(has 'has no non-empty `project`' "$err")"
 
-# --- the tags cannot be read: NEVER a list built from nothing -----------------------------
 for _r in 403 nocard; do
     KB_STUB_READ=$_r own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-    eq "tag read $_r → rc 0"                           "0" "$rc"
-    eq "tag read $_r → the move alone, no tag write"   "$MOVE49" "$(obodies)"
-    eq "tag read $_r → says the tags could not be read" "true" "$(has 'current tags could not be read' "$err")"
+    eq "card read $_r → rc 0, the move alone, saying the card could not be read" "0|$MOVE49|true" \
+       "$rc|$(obodies)|$(has 'owner NOT assigned on task 606 — the card could not be read' "$err")"
 done
-KB_STUB_CARD='{"id":606,"tags":{"0":"keep-me"}}' own "${SEAT[@]}" -- move --task 606 --column in_progress --stamp-owner
-eq "a tags OBJECT is unreadable, not a list"           "$MOVE49" "$(obodies)"
 
 # --- a plain move is not a writer, and a claim beside a terminal column is refused ---------
-KB_STUB_CARD="$(card '["fr","owner:other/reviewer"]')" own "${SEAT[@]}" -- move --task 606 --column in_progress
-eq "a move WITHOUT --stamp-owner sends the move alone" "$MOVE49" "$(obodies)"
-eq "…and reads nothing"                                "0" "$(kb_stub_count GET /tasks/606.json)"
+KB_STUB_CARD="$(card 9)" own "${SEAT[@]}" -- move --task 606 --column in_progress
+eq "a move WITHOUT --stamp-owner sends the move alone, and reads nothing" "$MOVE49|0" "$(obodies)|$(kb_stub_count GET /tasks/606.json)"
 for _tc in shipped_to_dev released_to_main wont_do; do
     own "${SEAT[@]}" -- move --task 606 --column "$_tc" --stamp-owner
-    eq "--stamp-owner beside terminal $_tc → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+    eq "--stamp-owner beside finished $_tc → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
 done
 
-# --- ⭐ the terminal clear: every owner tag goes, every other tag stays, after the move -------
-KB_STUB_CARD="$(card '["fr","owner:acme/builder","triaged","owner:other/reviewer"]')" own -- move --task 606 --column shipped_to_dev
-eq "move → shipped_to_dev → rc 0"                      "0" "$rc"
-eq "⭐ …the move carries no tags; a separate PATCH removes EVERY owner tag and keeps the rest" \
-   '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr","triaged"]}' "$(obodies)"
-eq "…naming what it removed"                           "true" "$(has 'removed owner tag(s) owner:acme/builder, owner:other/reviewer from task 606' "$err")"
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column released_to_main
-eq "⭐ move → released_to_main is terminal: the assignment and the owner tag are cleared" \
-   '{"assigned_user_id":null,"workflow_stage_id":52}'$'\n''{"tags":["fr"]}' "$(obodies)"
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column wont_do
-eq "move → wont_do clears it too, after the decline stamps" \
-   '{"assigned_user_id":null,"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}'$'\n''{"tags":["fr"]}' "$(obodies)"
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
-eq "patch --column shipped_to_dev clears it too"       '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column released_to_main
-eq "patch --column released_to_main clears it too"     '{"assigned_user_id":null,"workflow_stage_id":52}'$'\n''{"tags":["fr"]}' "$(obodies)"
-KB_STUB_ECHO_STAGE=99 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
-eq "⭐ patch --column shipped_to_dev whose echo names ANOTHER stage → rc 1" "1" "$rc"
-eq "…the patch alone: no owner clear follows an unconfirmed move" '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
-eq "…and no card read for one"                         "0" "$(kb_stub_count GET /tasks/606.json)"
-# A call that carries its own tag list sends it with the patch as asked; the owner clear is still
-# its own fresh read and write after the move.
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev --triaged
-eq "patch --column shipped_to_dev --triaged: the patch as asked, then the owner clear" \
-   '{"assigned_user_id":null,"tags":["fr","owner:acme/builder","triaged"],"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
-KB_STUB_CARD="$(card '["fr"]')" own -- move --task 606 --column shipped_to_dev
-eq "a terminal move of a card with NO owner tag sends no tag write" \
-   '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
-eq "…and says nothing about an owner"                  "false" "$(has 'owner tag' "$err")"
-KB_STUB_READ=403 own -- move --task 606 --column shipped_to_dev
-eq "a terminal move whose tags cannot be read → rc 0"  "0" "$rc"
-eq "…moves, with no tag write (never a list built from nothing)" \
-   '{"assigned_user_id":null,"workflow_stage_id":51}' "$(obodies)"
-eq "…and says the owner tag was NOT cleared"           "true" "$(has 'owner tags NOT cleared on task 606' "$err")"
-KB_STUB_TAGS_PATCH=403 KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column shipped_to_dev
-eq "a terminal move whose tag write is REFUSED → rc 0" "0" "$rc"
-eq "…the move landed and the clear was attempted after it" \
-   '{"assigned_user_id":null,"workflow_stage_id":51}'$'\n''{"tags":["fr"]}' "$(obodies)"
-eq "…and says NOT cleared, with the status"            "true" "$(has 'owner tags NOT cleared on task 606 — HTTP 403' "$err")"
+# --- ⭐ A FINISHED move KEEPS the assignee and the tags: nothing is cleared -------------------
+# The assignee on a finished card is the record of who did the work (operator ruling, card#10868
+# Q2), so a move into ANY finished column is the stage write alone — no assignee clear on the move,
+# no tag write after it — and the card reads back still naming its assignee.
+KB_STUB_CARD="$(card 9 '["fr","owner:acme/builder","triaged"]')" own -- move --task 606 --column shipped_to_dev
+eq "⭐ move → shipped_to_dev: ONE PATCH, the stage alone" "0|"'{"workflow_stage_id":51}' "$rc|$(obodies)"
+eq "…the assignee and every tag are still on the card" '9|["fr","owner:acme/builder","triaged"]' "$(after .assigned_user_id)|$(after .tags)"
+eq "…and nothing is said about an assignment or an owner" "false|false" "$(has 'assignment' "$err")|$(has 'owner' "$err")"
+KB_STUB_CARD="$(card 9 '["owner:acme/builder"]')" own -- move --task 606 --column released_to_main
+eq "move → released_to_main keeps them too"           '{"workflow_stage_id":52}|9' "$(obodies)|$(after .assigned_user_id)"
+KB_STUB_CARD="$(card 9 '["owner:acme/builder"]')" own -- move --task 606 --column wont_do
+eq "move → wont_do: the decline stamps clear, the assignee does not" \
+   '{"payload":{"dl_number":null,"pr_number":null,"pr_url":null},"workflow_stage_id":60}|9' "$(obodies)|$(after .assigned_user_id)"
+KB_STUB_CARD="$(card 9 '["owner:acme/builder"]')" own -- patch --task 606 --column shipped_to_dev
+eq "patch --column shipped_to_dev keeps them"         '{"workflow_stage_id":51}|9' "$(obodies)|$(after .assigned_user_id)"
+KB_STUB_CARD="$(card 9 '["owner:acme/builder"]')" own -- patch --task 606 --column released_to_main --triaged
+eq "patch --column released_to_main --triaged: the patch as asked, and nothing after it" \
+   '{"tags":["owner:acme/builder","triaged"],"workflow_stage_id":52}' "$(obodies)"
+KB_STUB_CARD="$(card null)" own -- patch --task 606 --column shipped_to_dev --assign 9
+eq "an explicit --assign beside a finished column is written as asked" '{"assigned_user_id":9,"workflow_stage_id":51}' "$(obodies)"
+KB_STUB_CARD="$(card 9)" own -- move --task 606 --column in_review
+eq "a non-finished move is the stage alone too"        '{"workflow_stage_id":50}|0' "$(obodies)|$(kb_stub_count GET /tasks/606.json)"
 
-# THE NEGATIVE CONTROL: a non-terminal move keeps the owner — no tag write, and no read for one.
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- move --task 606 --column in_review
-eq "a NON-terminal move keeps the owner tag (no tag write)" '{"workflow_stage_id":50}' "$(obodies)"
-eq "…and reads no tags"                                "0" "$(kb_stub_count GET /tasks/606.json)"
-KB_STUB_CARD="$(card '["fr","owner:acme/builder"]')" own -- patch --task 606 --column in_review
-eq "…nor does patch --column in_review"                '{"workflow_stage_id":50}' "$(obodies)"
+# --- a kbcard beside a lib that predates the claim refuses --stamp-owner BEFORE the move ------
+_ostale="$(_bin_beside_stale_lib "$TMP/stale-owner-claim" "$BIN" kb_owner_claim)"
+KB_STUB_CARD="$(card null)"; printf '%s' "$KB_STUB_CARD" > "$KB_STUB_CARD_FILE"; kb_stub_reset; rc=0
+out="$(env "${SEAT[@]}" "$_ostale" move --task 606 --column in_progress --stamp-owner 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "⭐ lib without kb_owner_claim: move --stamp-owner → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+eq "…naming the function and the fix"                  "true|true" \
+   "$(has 'kb_owner_claim is not defined' "$err")|$(has 're-vendor the lib with this kbcard' "$err")"
+KB_STUB_CARD="$(card null)"; printf '%s' "$KB_STUB_CARD" > "$KB_STUB_CARD_FILE"; kb_stub_reset; rc=0
+out="$(env "${SEAT[@]}" "$_ostale" move --task 606 --column in_progress 2>"$TMP/e")" || rc=$?
+eq "…while a move WITHOUT --stamp-owner beside the same lib still moves" "0|$MOVE49" "$rc|$(obodies)"
 
-unset -f own obodies card kb_stub_route
-unset KB_STUB_CARD KB_STUB_READ KB_STUB_TAGS_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE OWN_CFG SEAT MOVE49 _r _tp _tc
+unset -f own obodies after card kb_stub_route
+unset KB_STUB_CARD KB_STUB_READ KB_STUB_ASSIGN_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE KB_STUB_CARD_FILE OWN_CFG SEAT MOVE49 CLAIM7 _r _tc _ostale
+
+echo "== owner-migrate — the one-time owner:* tag → assignee migration, dry-run by default (card#10868) =="
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 'export KB_STAGE_IN_PROGRESS=49' 'export KB_STAGE_SHIPPED_TO_DEV=51'
+kb_stub_install
+MIG_CFG="$TMP/coordination.config.json"
+jq -cn --arg h "$KB_STUB_HOST" \
+   '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}, {name: "reviewer", kanban_user_id: {($h): 9}}, {name: "unmapped"}]}' > "$MIG_CFG"
+# THE BOARD IS STATE: one file per card, so a write changes what the next read returns. The seed
+# covers every class, and one card of each shape the classifier must NOT count.
+export MIG_DIR="$TMP/mig"
+mig_seed() {
+    rm -rf "$MIG_DIR"; mkdir -p "$MIG_DIR"
+    local c
+    for c in \
+        '{"id":810,"workflow_stage_id":49,"assigned_user_id":null,"tags":["fr","owner:acme/builder"]}' \
+        '{"id":809,"workflow_stage_id":51,"assigned_user_id":null,"tags":["owner:acme/reviewer"]}' \
+        '{"id":808,"workflow_stage_id":49,"assigned_user_id":null,"tags":["owner:acme/unmapped"]}' \
+        '{"id":807,"workflow_stage_id":49,"assigned_user_id":null,"tags":["owner:elsewhere/builder"]}' \
+        '{"id":806,"workflow_stage_id":49,"assigned_user_id":null,"tags":["owner:acme/builder","owner:acme/reviewer"]}' \
+        '{"id":805,"workflow_stage_id":51,"assigned_user_id":7,"tags":["owner:acme/builder"]}' \
+        '{"id":804,"workflow_stage_id":49,"assigned_user_id":42,"tags":["owner:acme/reviewer"]}' \
+        '{"id":803,"workflow_stage_id":49,"assigned_user_id":null,"tags":["fr"]}' \
+        '{"id":802,"workflow_stage_id":49,"assigned_user_id":null,"tags":["x-owner:acme/builder"]}' \
+        '{"id":801,"workflow_stage_id":49,"assigned_user_id":null,"tags":["owner:nobody"]}' \
+        '{"id":800,"workflow_stage_id":49,"assigned_user_id":null}'; do
+        jq -c . <<<"$c" > "$MIG_DIR/$(jq -r .id <<<"$c").json"
+    done
+}
+# KB_STUB_MIG_PATCH: 403 refuses the assignment write; noapply answers 2xx and changes nothing.
+# KB_STUB_MIG_RACE=<id>: that card's FRESH read (not the board scan) answers it assigned to 99.
+kb_stub_route() {
+    local method="$1" url="$2" body="$3" id
+    case "$method $url" in
+        "GET "*/tasks/search.json*)
+            printf '200\n'
+            jq -cs '{data: (sort_by(-.id)), links: {}, meta: {last_page: 1, total: length}}' "$MIG_DIR"/*.json ;;
+        "GET "*/tasks/*.json*)
+            id="${url##*/tasks/}"; id="${id%%.json*}"
+            printf '200\n'
+            if [[ "${KB_STUB_MIG_RACE:-}" == "$id" && "$url" != *trashed* ]]; then
+                jq -c '{data: (. + {assigned_user_id: 99})}' "$MIG_DIR/$id.json"
+            else
+                jq -c '{data: .}' "$MIG_DIR/$id.json"
+            fi ;;
+        "PATCH "*/tasks/*.json)
+            id="${url##*/tasks/}"; id="${id%%.json*}"
+            case "${KB_STUB_MIG_PATCH:-ok}" in
+                403)     printf '403\n{"message":"This action is unauthorized."}' ;;
+                noapply) printf '200\n'; jq -c '{data: .}' "$MIG_DIR/$id.json" ;;
+                *)       jq -c --argjson b "$body" '. + $b' "$MIG_DIR/$id.json" > "$MIG_DIR/$id.n" && mv "$MIG_DIR/$id.n" "$MIG_DIR/$id.json"
+                         printf '200\n'; jq -c '{data: .}' "$MIG_DIR/$id.json" ;;
+            esac ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+mig() { kb_stub_reset; rc=0; out="$(COORD_CONFIG="$MIG_CFG" "$BIN" "$@" 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"; }
+row() { jq -c --argjson id "$1" ".cards[] | select(.id == \$id) | $2" <<<"$out"; }
+
+# --- the dry run: classify, count, write NOTHING ------------------------------------------
+mig_seed; mig owner-migrate
+eq "dry run → rc 0"                                   "0" "$rc"
+eq "⭐ …and NOT ONE write"                             "0" "$(kb_stub_count PATCH /tasks/)"
+eq "…the owner-tagged population is the cards with an owner:* tag (a tag merely containing it is not one)" \
+   '[801,804,805,806,807,808,809,810]' "$(jq -c '[.cards[].id]' <<<"$out")"
+eq "⭐ counts: 6 carry ONLY the tag, and the classes partition them" \
+   '{"owner_tagged":8,"tag_only":6,"migratable":2,"unmapped":3,"ambiguous":1,"assigned":2,"assigned_differs":1,"outcomes":{"would-assign":2}}' \
+   "$(jq -c .counts <<<"$out")"
+eq "a tag-only mapped card → migratable to its seat's user, would-assign" \
+   '["migratable",7,"builder","would-assign"]' "$(row 810 '[.class, .target_user_id, .seat, .outcome]')"
+eq "…a FINISHED card migrates too (the assignee records who did the work)" '["migratable",9]' "$(row 809 '[.class, .target_user_id]')"
+eq "a seat with no kanban_user_id → unmapped, saying so"  '"unmapped"|true' \
+   "$(row 808 .class)|$(has 'has no kanban_user_id object' "$(row 808 .why)")"
+eq "another project's tag → unmapped, naming both projects" 'true' "$(has "the tag names project \\\"elsewhere\\\", and this roster is project \\\"acme\\\"" "$(row 807 .why)")"
+eq "a malformed tag → unmapped"                          '"unmapped"' "$(row 801 .class)"
+eq "two owner tags → ambiguous, no target"               '["ambiguous",null]' "$(row 806 '[.class, .target_user_id]')"
+eq "an assigned card agreeing with its tag → assigned, not differing" '["assigned",false,null]' "$(row 805 '[.class, .differs, .outcome]')"
+eq "an assigned card whose tag names ANOTHER user → differs"  '["assigned",true]' "$(row 804 '[.class, .differs]')"
+eq "the summary says the tag-only figure in words, and that nothing was written" "true|true" \
+   "$(has '6 carry ONLY the tag' "$err")|$(has 'DRY RUN — nothing was written' "$err")"
+
+# --- --apply: exactly the migratable cards, the assignee alone, from a read-back -------------
+mig_seed; mig owner-migrate --apply
+eq "--apply → rc 0"                                   "0" "$rc"
+eq "⭐ …writes {assigned_user_id} ALONE, to the migratable cards and no others" \
+   $'/tasks/809.json\t{"assigned_user_id":9}\n/tasks/810.json\t{"assigned_user_id":7}' \
+   "$(kb_stub_lines PATCH /tasks/ | cut -f2,3 | sed 's#^.*\(/tasks/\)#\1#' | sort)"
+eq "…each outcome is from a read-back"                '{"assigned":2}' "$(jq -c .counts.outcomes <<<"$out")"
+eq "…the tags are untouched"                          '["fr","owner:acme/builder"]' "$(jq -c .tags "$MIG_DIR/810.json")"
+mig owner-migrate
+eq "⭐ a dry run AFTER the migration re-measures: tag_only falls by the cards it assigned" \
+   '4|0' "$(jq -c .counts.tag_only <<<"$out")|$(jq -c .counts.migratable <<<"$out")"
+
+mig_seed; KB_STUB_MIG_PATCH=403 mig owner-migrate --apply
+eq "a REFUSED write → rc 1, outcome refused, the status named" "1|true|true" \
+   "$rc|$(has '"refused":2' "$(jq -c .counts.outcomes <<<"$out")")|$(has 'NOT assigned — HTTP 403' "$err")"
+mig_seed; KB_STUB_MIG_PATCH=noapply mig owner-migrate --apply
+eq "⭐ a 2xx the board did not apply → rc 1, not-applied (the read-back, not the status)" '1|{"not-applied":2}' \
+   "$rc|$(jq -c .counts.outcomes <<<"$out")"
+mig_seed; KB_STUB_MIG_RACE=810 mig owner-migrate --apply
+eq "⭐ a card assigned since the scan is SKIPPED, never overwritten" '0|"assigned-since-scan"|null' \
+   "$rc|$(row 810 .outcome)|$(jq -c .assigned_user_id "$MIG_DIR/810.json")"
+eq "…and the other card still migrates"               '"assigned"' "$(row 809 .outcome)"
+
+# --- refusals before any request ----------------------------------------------------------
+kb_stub_reset; rc=0; out="$(COORD_CONFIG="$TMP/absent.json" "$BIN" owner-migrate 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+eq "no coord config → rc 2, NO request, naming the file" "2|0|true" "$rc|$(kb_stub_total)|$(has "$TMP/absent.json" "$err")"
+mig owner-migrate --bogus
+eq "an unknown flag → rc 2, no request"               "2|0" "$rc|$(kb_stub_total)"
+
+unset -f mig_seed mig row kb_stub_route
+unset MIG_CFG MIG_DIR KB_STUB_MIG_PATCH KB_STUB_MIG_RACE
 
 # ---------------------------------------------------------------------------
 echo "== move --card-start — the work-start guard (card#9556) =="
@@ -4947,7 +5041,7 @@ kb_stub_board_config dev 42 \
 kb_stub_board_config nobacklog 43 'export KB_STAGE_IN_PROGRESS=49'
 kb_stub_install
 CS_CFG="$TMP/coordination.config.json"
-printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$CS_CFG"
+jq -cn --arg h "$KB_STUB_HOST" '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}]}' > "$CS_CFG"
 
 # KB_STUB_CARD is the `.data` the card read answers; KB_STUB_READ swaps that read for a refusal
 # or for a 2xx no card can be read out of.
@@ -4991,8 +5085,8 @@ eq "…and nothing is refused"                            "false" "$(has 'NOTHIN
 cs 82
 eq "Prioritized → moved"                                "$CSMOVE" "$(csbodies)"
 cs 81 --stamp-owner
-eq "…composes with --stamp-owner: the move, then the tag write" \
-   "$CSMOVE"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(csbodies)"
+eq "…composes with --stamp-owner: the move, then the owner claim's write" \
+   "$CSMOVE"$'\n''{"assigned_user_id":7}' "$(csbodies)"
 
 # --- ⭐ THE DEFECT ITSELF: a started or finished card is REFUSED, and nothing is written -------
 for _st in 50:in_review 51:shipped_to_dev 52:released_to_main 60:wont_do; do
@@ -5060,7 +5154,7 @@ for _st in 81 49 51; do
        "$(has 'BACKWARD' "$err")|$(has 'already In Progress' "$err")"
 done
 CS_BIN="$_csstale" cs 81 --stamp-owner
-eq "⭐ …with --stamp-owner: rc 2, and no move and no owner tag"            "2|" "$rc|$(csbodies)"
+eq "⭐ …with --stamp-owner: rc 2, and no move and no owner claim"            "2|" "$rc|$(csbodies)"
 _csstale="$(_bin_beside_stale_lib "$TMP/stale-verdict" "$BIN" kb_card_start_stage_verdict)"
 CS_BIN="$_csstale" cs 81
 eq "⭐ lib without the stage verdict only, Backlog → rc 2, NOTHING written" "2|" "$rc|$(csbodies)"

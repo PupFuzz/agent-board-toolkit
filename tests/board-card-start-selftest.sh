@@ -958,12 +958,13 @@ else
     echo "  skip (git not on PATH)"
 fi
 
-echo "== the owner tag follows the In Progress move as its own write (process, faked kanban API) =="
+echo "== the owner claim (the kanban assignee) follows the In Progress move as its own write (process, faked kanban API) =="
 # The whole hook, run as the post-checkout path runs it (no arguments, the fixture repo's branch),
 # against a `curl` stand-in. Every leg asserts the WHOLE PATCH sequence: the move must be exactly
 # `{workflow_stage_id}` (a stage-only PATCH is a MOVE to the server; any other key needs the update
-# permission), and the owner tag, when written, is a SEPARATE `{tags}` PATCH after it. Every
-# refusal must also reach the DURABLE log — the installed wrapper discards this hook's stderr.
+# permission), and the owner claim, when written, is a SEPARATE `{assigned_user_id}` PATCH after
+# it (card#10868). Every refusal must also reach the DURABLE log — the installed wrapper discards
+# this hook's stderr.
 if command -v git >/dev/null 2>&1; then
     _mktmp_scratch --home
     # shellcheck source=/dev/null
@@ -977,21 +978,24 @@ if command -v git >/dev/null 2>&1; then
     git init -q "$_orepo"
     ( cd "$_orepo" && echo a > a && git add a && git commit -qm a && git checkout -q -b fix/card-4242-x )
     git -C "$_orepo" config kanban.board-id 42
-    printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$TMP/coordination.config.json"
+    jq -cn --arg h "$KB_STUB_HOST" '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}, {name: "reviewer", kanban_user_id: {($h): 9}}, {name: "unmapped"}]}' \
+        > "$TMP/coordination.config.json"
     _olog="$TMP/bcs-owner.log"
 
-    # KB_STUB_TAGS is the card's `tags` value, spliced raw so a leg can hand it a non-list.
-    # KB_STUB_TAGS_PATCH answers a PATCH carrying `tags` with that status; KB_STUB_MOVE refuses the
-    # stage-only move, with KB_STUB_MOVE_BODY as its body when set.
-    # THE CARD IS STATEFUL, because the mover now reports from a READ-BACK (card#10029): a GET of
-    # 4242 answers the stage and payload.dl_number the request log says were PATCHed — unless
-    # KB_STUB_MOVE_NOOP / KB_STUB_STAMP_NOOP make that write a 2xx the board did not apply (the
-    # 2026-05-22 shape).
+    # KB_STUB_TAGS is the card's `tags` value, spliced raw; KB_STUB_ASSIGNEE its assignee (default
+    # null). KB_STUB_ASSIGN_PATCH answers a PATCH carrying `assigned_user_id` with that status;
+    # KB_STUB_MOVE refuses the stage-only move, with KB_STUB_MOVE_BODY as its body when set.
+    # KB_STUB_CLAIM_READ refuses the claim's own card read — a PLAIN GET made after the move was
+    # PATCHed — with that status, leaving the mover's opening read and every read-back answered.
+    # THE CARD IS STATEFUL, because every writer reports from a READ-BACK (card#10029): a GET of
+    # 4242 answers the stage, payload.dl_number, assignee and comments the request log says were
+    # written — unless KB_STUB_MOVE_NOOP / KB_STUB_STAMP_NOOP make that write a 2xx the board did
+    # not apply (the 2026-05-22 shape).
     #
     # ⭐ KB_STUB_REREAD REFUSES THE READ-BACK AND ONLY THE READ-BACK — the `?trashed=1` GET that
     # kb_card_witness issues, and no other — with that status (or `!curl <rc>`). The mover's own
-    # opening read and the owner-tag write's own card read are PLAIN GETs and are still answered.
-    # That discrimination is what makes the owner-tag legs below a measurement: while this knob
+    # opening read and the owner claim's own card read are PLAIN GETs and are still answered.
+    # That discrimination is what makes the owner-claim legs below a measurement: while this knob
     # refused EVERY GET after the move, the tag write's own read failed too, so no tag was written
     # whatever the gate at the bottom of bin/board-card-start decided — and deleting that gate's
     # `unverified` arm left the whole suite green (review r1 of PR #384, measured). It is keyed on
@@ -999,25 +1003,33 @@ if command -v git >/dev/null 2>&1; then
     # read-back (the lib's kb_card_witness header says why it is load-bearing), and an ordinal
     # would silently re-point at a different request the day a read is added or removed.
     kb_stub_route() {
-        local method="$1" url="$2" body="$3" stage=81 payload='{}' moved stamp
+        local method="$1" url="$2" body="$3" stage=81 payload='{}' moved stamp assigned comments
         moved="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "workflow_stage_id")' "$KB_STUB_LOG")"
         stamp="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "dl_number")' "$KB_STUB_LOG" | tail -1 | cut -f3-)"
+        assigned="$(awk -F'\t' '$1 == "PATCH" && index($2, "/tasks/4242.json") && index($3, "assigned_user_id")' "$KB_STUB_LOG" | tail -1 | cut -f3-)"
+        comments="$(awk -F'\t' '$1 == "POST" && index($2, "/tasks/4242/comments.json")' "$KB_STUB_LOG" | cut -f3- | jq -cs 'map({id: 88} + .)')"
         [[ -n "$moved" && -z "${KB_STUB_MOVE_NOOP:-}" ]] && stage=84
         [[ -n "$stamp" && -z "${KB_STUB_STAMP_NOOP:-}" ]] && payload="$(jq -c '.payload' <<<"$stamp")"
+        if [[ -n "$assigned" && -z "${KB_STUB_ASSIGN_PATCH:-}" ]]; then assigned="$(jq -c '.assigned_user_id' <<<"$assigned")"; else assigned="${KB_STUB_ASSIGNEE:-null}"; fi
         case "$method $url" in
             "GET "*/tasks/4242.json*)
                 if [[ -n "${KB_STUB_REREAD:-}" && "$url" == *trashed=1* ]]; then
                     printf '%s\n{"message":"re-read refused by the stub"}' "$KB_STUB_REREAD"
+                elif [[ -n "${KB_STUB_CLAIM_READ:-}" && -n "$moved" && "$url" != *trashed=1* ]]; then
+                    printf '%s\n{"message":"claim read refused by the stub"}' "$KB_STUB_CLAIM_READ"
                 else
-                    printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":%s,"payload":%s,"tags":%s}}' "$stage" "$payload" "${KB_STUB_TAGS:-[]}"
+                    printf '200\n{"data":{"id":4242,"board_id":42,"workflow_stage_id":%s,"payload":%s,"tags":%s,"assigned_user_id":%s,"comments":%s}}' \
+                        "$stage" "$payload" "${KB_STUB_TAGS:-[]}" "$assigned" "$comments"
                 fi ;;
+            "POST "*/tasks/4242/comments.json)
+                printf '201\n{"data":{"id":88}}' ;;
             "GET "*/tasks/4244.json*)
                 printf '200\n{"data":{"id":4244,"board_id":42,"workflow_stage_id":84,"tags":[]}}' ;;
             "GET "*/tasks/search.json*)
                 printf '200\n{"data":[],"meta":{"last_page":1,"total":0}}' ;;
             "PATCH "*/tasks/4242.json)
-                if [[ -n "${KB_STUB_TAGS_PATCH:-}" ]] && jq -e 'has("tags")' <<<"$body" >/dev/null; then
-                    printf '%s\n{"message":"tag write refused by the stub"}' "$KB_STUB_TAGS_PATCH"
+                if [[ -n "${KB_STUB_ASSIGN_PATCH:-}" ]] && jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null; then
+                    printf '%s\n{"message":"assignment refused by the stub"}' "$KB_STUB_ASSIGN_PATCH"
                 elif [[ -n "${KB_STUB_MOVE:-}" ]]; then
                     local refused='{"message":"refused"}'
                     printf '%s\n%s' "$KB_STUB_MOVE" "${KB_STUB_MOVE_BODY:-$refused}"
@@ -1038,30 +1050,34 @@ if command -v git >/dev/null 2>&1; then
         _obody="$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
     }
     _move='{"workflow_stage_id":84}'
+    _claim='{"assigned_user_id":7}'
 
     KB_STUB_TAGS='["fr"]' _own_run builder
-    eq "stamp: rc 0"                                     "0" "$_rc"
-    eq "stamp: the stage-only move, THEN a separate PATCH with the card's tags plus the owner tag" \
-       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
-    # Three reads: the mover's own, the move's READ-BACK (card#10029), then the owner write's re-read.
-    eq "stamp: …the owner write re-reads the card after the move" "3" "$(kb_stub_count GET /tasks/4242.json)"
-    eq "stamp: …the move is reported FROM THE READ-BACK" "true" \
+    eq "claim: rc 0"                                     "0" "$_rc"
+    eq "claim: the stage-only move, THEN a separate PATCH carrying the seat's kanban user alone" \
+       "$_move"$'\n'"$_claim" "$_obody"
+    # Four reads: the mover's own, the move's READ-BACK (card#10029), the claim's own read, and the
+    # claim's read-back.
+    eq "claim: …the claim reads the card and reads its write back" "4" "$(kb_stub_count GET /tasks/4242.json)"
+    eq "claim: …the move is reported FROM THE READ-BACK" "true" \
        "$(has 'card #4242 (#4242) → In Progress (read back: workflow_stage_id=84)' "$_out")"
-    eq "stamp: …and says so"                             "true" "$(has 'owner tag owner:acme/builder stamped on card #4242' "$_out")"
+    eq "claim: …and says so, in the durable log too"     "true|true" \
+       "$(has "owner assigned: card #4242 (#4242) → seat 'builder' (kanban user 7) — read back" "$_out")|$(has "owner assigned: card #4242" "$_ologtxt")"
+    eq "claim: …and NO tag write — the tags are never sent" "false" "$(has '"tags"' "$_obody")"
 
     for _tp in 403 422; do
-        KB_STUB_TAGS_PATCH=$_tp KB_STUB_TAGS='["fr"]' _own_run builder
-        eq "tag write $_tp: rc 0"                        "0" "$_rc"
-        eq "tag write $_tp: the move is exactly {workflow_stage_id} and still happened" \
-           "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$_obody"
-        eq "tag write $_tp: the move is reported"        "true" "$(has 'card #4242 (#4242) → In Progress' "$_out")"
-        eq "tag write $_tp: the durable log says NOT stamped, with the status and reason" "true" \
-           "$(has "NOT stamped on card #4242 (#4242) — HTTP $_tp, server said: tag write refused by the stub" "$_ologtxt")"
-        eq "tag write $_tp: …not worded as a failed move" "false" "$(has 'the move did not happen' "$_ologtxt")"
+        KB_STUB_ASSIGN_PATCH=$_tp KB_STUB_TAGS='["fr"]' _own_run builder
+        eq "assignment write $_tp: rc 0"                 "0" "$_rc"
+        eq "assignment write $_tp: the move is exactly {workflow_stage_id} and still happened" \
+           "$_move"$'\n'"$_claim" "$_obody"
+        eq "assignment write $_tp: the move is reported" "true" "$(has 'card #4242 (#4242) → In Progress' "$_out")"
+        eq "assignment write $_tp: the durable log says NOT assigned, with the status and reason" "true" \
+           "$(has "owner NOT assigned on card #4242 (#4242) — HTTP $_tp, server said: {\"message\":\"assignment refused by the stub\"}" "$_ologtxt")"
+        eq "assignment write $_tp: …not worded as a failed move" "false" "$(has 'the move did not happen' "$_ologtxt")"
     done
 
     KB_STUB_MOVE=403 KB_STUB_TAGS='["fr"]' _own_run builder
-    eq "a refused move: no owner tag is written for it"  "$_move" "$_obody"
+    eq "a refused move: no owner claim is written for it" "$_move" "$_obody"
     eq "a refused move: …and the card is not re-read for one" "1" "$(kb_stub_count GET /tasks/4242.json)"
 
     # ⭐ A REFUSED MOVE SAYS WHY (card#9777). The move is the lib's kb_stage_write, so the durable
@@ -1076,11 +1092,11 @@ if command -v git >/dev/null 2>&1; then
        "$(has 'In Progress move failed (HTTP 422) — board-card-start: PATCH /tasks/4242.json answered HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$_ologtxt")"
     eq "a refused move (422): the bearer token is in NEITHER the log nor the output" "false|false" \
        "$(has "$_otok" "$_ologtxt")|$(has "$_otok" "$_out")"
-    eq "a refused move (422): no owner tag is written for it" "$_move" "$_obody"
+    eq "a refused move (422): no owner claim is written for it" "$_move" "$_obody"
     unset _otok
 
     # ⭐ THE READ-BACK (card#10029). The move answered 2xx in every leg below; what the seat is TOLD
-    # must come from a re-read of the card, and only a CONFIRMED move gets an owner tag.
+    # must come from a re-read of the card, and only a CONFIRMED move gets an owner claim.
     KB_STUB_MOVE_NOOP=1 KB_STUB_TAGS='["fr"]' _own_run builder
     eq "⭐ 2xx NOT applied: rc 0 (fail-soft, never blocks a checkout)" "0" "$_rc"
     # A success line is the move sentence ENDING the line (pre-card#10029) or followed by its read-back;
@@ -1088,22 +1104,22 @@ if command -v git >/dev/null 2>&1; then
     eq "⭐ 2xx NOT applied: NO success line"             "0" "$(command grep -cE '→ In Progress($| \(read back)' <<<"$_out")"
     eq "⭐ 2xx NOT applied: the durable log says NOT APPLIED, quoting the stage the board holds" "true" \
        "$(has 'In Progress move failed — NOT APPLIED: the PATCH answered HTTP 200 and a re-read says card #4242 holds workflow_stage_id=81, not the 84 this write asked for' "$_ologtxt")"
-    eq "⭐ 2xx NOT applied: no owner tag for a card that did not move" "$_move" "$_obody"
+    eq "⭐ 2xx NOT applied: no owner claim for a card that did not move" "$_move" "$_obody"
     for _rr in 403 '!curl 7'; do
         KB_STUB_REREAD="$_rr" KB_STUB_TAGS='["fr"]' _own_run builder
         eq "re-read $_rr: rc 0"                            "0" "$_rc"
         eq "re-read $_rr: NO success line"                 "0" "$(command grep -cE '→ In Progress($| \(read back)' <<<"$_out")"
         eq "re-read $_rr: the durable log says UNVERIFIED, not NOT APPLIED" "true|false" \
            "$(has 'card #4242 write UNVERIFIED (card #4242 (#4242) → In Progress move) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
-        eq "re-read $_rr: no owner tag for a move nobody confirmed" "$_move" "$_obody"
+        eq "re-read $_rr: no owner claim for a move nobody confirmed" "$_move" "$_obody"
         eq "re-read $_rr: …and the card is not re-read for one — the GATE stopped it, not a failed read" \
            "2" "$(kb_stub_count GET /tasks/4242.json)"
     done
     eq "re-read transport failure: the log carries the witness's reason" "true" "$(has 'DID NOT COMPLETE' "$_ologtxt")"
     # ⭐ THE FIXTURE'S OWN CONTROL for the four legs above, and the reason they are a MEASUREMENT of
-    # the owner-tag gate rather than of the stub: the refusal must be the READ-BACK's ALONE. While
-    # KB_STUB_REREAD refused every GET after the move, the tag write's own card read was refused
-    # too, so `no owner tag for a move nobody confirmed` passed because nothing could be READ — for
+    # the owner-claim gate rather than of the stub: the refusal must be the READ-BACK's ALONE. While
+    # KB_STUB_REREAD refused every GET after the move, the owner write's own card read was refused
+    # too, so `no owner claim for a move nobody confirmed` passed because nothing could be READ — for
     # every gate, a deleted one included (review r1 of PR #384 measured exactly that false green).
     # Probed at the stub itself, with the last run's request log still in place, in the two GET
     # spellings this hook issues. Both arms are needed: the refusing one alone would pass for a
@@ -1115,7 +1131,7 @@ if command -v git >/dev/null 2>&1; then
     }
     eq "fixture control: KB_STUB_REREAD refuses the READ-BACK — kb_card_witness's ?trashed=1 GET" \
        "403" "$(_rbprobe '?trashed=1')"
-    eq "fixture control: …and ANSWERS the plain GET kb_owner_tag_write makes, so the legs above measure the gate" \
+    eq "fixture control: …and ANSWERS the plain GET kb_owner_claim makes, so the legs above measure the gate" \
        "200" "$(_rbprobe '')"
     unset -f _rbprobe
     # The SECOND call site: the payload.dl_number stamp (a DL that matches no card, so the branch's own
@@ -1144,18 +1160,28 @@ if command -v git >/dev/null 2>&1; then
     eq "⭐ dl stamp UNVERIFIED: NO stamped line"        "false" "$(has 'stamped payload.dl_number=DL-0077' "$_out")"
     eq "⭐ dl stamp UNVERIFIED: the durable log says UNVERIFIED for the STAMP by name, and never NOT APPLIED" "true|false" \
        "$(has 'card #4242 write UNVERIFIED (card #4242 dl_number stamp (=DL-0077)) — the PATCH answered HTTP 200 and the card could NOT be read back' "$_ologtxt")|$(has 'NOT APPLIED' "$_ologtxt")"
-    eq "⭐ dl stamp UNVERIFIED: the stamp and the move were both SENT, and no owner tag follows either" \
+    eq "⭐ dl stamp UNVERIFIED: the stamp and the move were both SENT, and no owner claim follows either" \
        "$_stampbody"$'\n'"$_move" "$_obody"
     git -C "$_orepo" checkout -q fix/card-4242-x
 
-    KB_STUB_TAGS='["owner:acme/builder","fr"]' _own_run builder
-    eq "same owner: the move alone (no tags write)"      "$_move" "$_obody"
+    KB_STUB_ASSIGNEE=7 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "same owner: the move alone (no assignment write)" "$_move" "$_obody"
     eq "same owner: nothing logged"                      "" "$_ologtxt"
 
-    KB_STUB_TAGS='["fr","owner:other/reviewer"]' _own_run builder
-    eq "conflict: rc 0"                                  "0" "$_rc"
-    eq "conflict: the move STILL happens, the holder's tag untouched, no second owner" "$_move" "$_obody"
-    eq "conflict: the durable log names the holder"      "true" "$(has 'already held by owner:other/reviewer' "$_ologtxt")"
+    # ⭐ ANOTHER HOLDER (operator ruling, card#10868 Q3): warn, then TAKE, then record whom it replaced.
+    KB_STUB_ASSIGNEE=9 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "held by another seat: rc 0"                      "0" "$_rc"
+    eq "held by another seat: the move, then the claim"  "$_move"$'\n'"$_claim" "$_obody"
+    eq "held by another seat: the durable log WARNS, naming the holder" "true" \
+       "$(has "owner TAKING card #4242 (#4242) from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7)" "$_ologtxt")"
+    eq "held by another seat: a card comment names the assignee it replaced" "true" \
+       "$(has "replaced the previous assignee, seat 'reviewer' (kanban user 9)" "$(kb_stub_bodies POST /tasks/4242/comments.json)")"
+    eq "held by another seat: …and the log says the record was read back" "true" \
+       "$(has 'owner comment 88 on card #4242 (#4242) records the replaced holder' "$_ologtxt")"
+
+    KB_STUB_TAGS='["fr"]' _own_run unmapped
+    eq "⭐ a seat with no kanban_user_id: the move alone" "$_move" "$_obody"
+    eq "⭐ …the durable log NAMES the missing mapping"     "true" "$(has "roster entry 'unmapped'" "$_ologtxt")"
 
     KB_STUB_TAGS='["fr"]' _own_run ghost
     eq "seat outside the roster: the move alone"         "$_move" "$_obody"
@@ -1165,9 +1191,9 @@ if command -v git >/dev/null 2>&1; then
     eq "COORD_AGENT unset: the durable log says why"     "true" "$(has 'COORD_AGENT is unset' "$_ologtxt")"
     eq "…and it is not worded as a failed move"          "false" "$(has 'the move did not happen' "$_ologtxt")"
 
-    KB_STUB_TAGS='{"0":"keep-me"}' _own_run builder
-    eq "unreadable tags: the move alone, no tag write"   "$_move" "$_obody"
-    eq "unreadable tags: the durable log says so"        "true" "$(has 'current tags could not be read' "$_ologtxt")"
+    KB_STUB_CLAIM_READ=403 KB_STUB_TAGS='["fr"]' _own_run builder
+    eq "an unreadable card at claim time: the move alone, no assignment write" "$_move" "$_obody"
+    eq "an unreadable card at claim time: the durable log says so" "true" "$(has 'owner NOT assigned on card #4242 (#4242) — the card could not be read (HTTP 403)' "$_ologtxt")"
 
     # A card id the board answers 404 for: LOUD only when the branch NAMED the card explicitly
     # (`card-712`), SILENT for a typed leading id (`fix/712-…`, often a foreign ticket number). Both
@@ -1223,8 +1249,8 @@ if command -v git >/dev/null 2>&1; then
     eq "stale-lib fixture: the copy under test does NOT define kb_confirm_card, the sibling copy does" "0|1" \
        "$(command grep -c '^kb_confirm_card()' "$TMP/stalebin/_kb-board-lib.sh" || true)|$(command grep -c '^kb_confirm_card()' "$TMP/freshbin/_kb-board-lib.sh" || true)"
     KB_STUB_TAGS='["fr"]' _stalerun freshbin
-    eq "stale-lib control: the same copy beside a COMPLETE lib moves the card and stamps the owner" \
-       "$_move"$'\n''{"tags":["fr","owner:acme/builder"]}' "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
+    eq "stale-lib control: the same copy beside a COMPLETE lib moves the card and claims the owner" \
+       "$_move"$'\n'"$_claim" "$(kb_stub_bodies PATCH /tasks/4242.json | jq -cS .)"
     KB_STUB_TAGS='["fr"]' _stalerun stalebin
     eq "⭐ stale lib: rc 0 — a preflight refusal still never blocks a checkout" "0" "$_rc"
     eq "⭐ stale lib: NOTHING is written — no PATCH of any kind reaches the card" "" \
@@ -1246,10 +1272,20 @@ if command -v git >/dev/null 2>&1; then
        "$(has 'kb_stage_write is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
     eq "⭐ lib without kb_stage_write: and no move-failure line, no bare 127" "false|false" \
        "$(has 'move failed' "$_out$_ologtxt")|$(has 'command not found' "$_out$_ologtxt")"
+    # ⭐ THE SAME FOR THE OWNER CLAIM (card#10868). It is called AFTER the move, so beside a lib
+    # without kb_owner_claim the move would land and the claim answer rc 127 with only a stderr the
+    # installed wrapper discards. Asked for before any write, like the two above.
+    _stalelib staleclaim 's/^kb_owner_claim()/_removed_kb_owner_claim()/'
+    eq "stale-lib fixture: the copy under test does NOT define kb_owner_claim" "0" \
+       "$(command grep -c '^kb_owner_claim()' "$TMP/staleclaim/_kb-board-lib.sh" || true)"
+    KB_STUB_TAGS='["fr"]' _stalerun staleclaim
+    eq "⭐ lib without kb_owner_claim: rc 0, and NOTHING is written" "0|" "$_rc|$(kb_stub_bodies PATCH /tasks/4242.json)"
+    eq "⭐ lib without kb_owner_claim: the log names the function and the fix" "true" \
+       "$(has 'kb_owner_claim is not defined (the _kb-board-lib.sh beside this hook predates it — re-vendor it with this hook), so nothing was written' "$_ologtxt")"
     unset -f _stalelib _stalerun
 
     unset -f _own_run kb_stub_route
-    unset KB_STUB_TAGS KB_STUB_TAGS_PATCH KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _tp _rr _stampbody
+    unset KB_STUB_TAGS KB_STUB_ASSIGN_PATCH KB_STUB_ASSIGNEE KB_STUB_CLAIM_READ KB_STUB_MOVE _orepo _olog _ologtxt _obody _move _claim _tp _rr _stampbody
 else
     echo "  skip (git not on PATH)"
 fi
@@ -1370,7 +1406,7 @@ if command -v git >/dev/null 2>&1 && [[ -n "${TMP:-}" && "${HOME:-}" == "${TMP:-
     for _sc in 4242 4243; do
         _vrun "fix/card-$_sc-dl-77-x"
         eq "⭐ lib without either invariant, card #$_sc: rc 0 (never blocks a checkout)" "0" "$_rc"
-        eq "⭐ …NOTHING written — no dl_number stamp, no move, no owner tag" "" "$(kb_stub_bodies PATCH "/tasks/$_sc.json")"
+        eq "⭐ …NOTHING written — no dl_number stamp, no move, no owner claim" "" "$(kb_stub_bodies PATCH "/tasks/$_sc.json")"
         eq "⭐ …the durable log names the function and the rc" "true" \
            "$(has "kb_card_pinned returned rc 127, which is not one of its answers" "$_ologtxt")"
         eq "…and never reads the card as pinned" "false" "$(has 'is pinned' "$_ologtxt")"

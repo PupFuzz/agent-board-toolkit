@@ -34,10 +34,9 @@
 # the CONTROL for §§ 1-2, because a tool that reported everything as unverified would pass those
 # two sections and fail these.
 #
-# § 5 is the sibling write in the same file (canon #7): the owner-tag clear's `{tags}` PATCH had
-# the identical shape and the identical gap. It is read back the same way — and its outcome still
-# changes NO count and NO exit code, which is a shipped, documented property of this tool
-# (README.md § The seat owner tag) and is asserted here rather than left to be assumed.
+# § 5 is what USED to be the sibling write in the same file: an owner-tag clear after the move.
+# card#10868 retired it — a released card keeps its assignee and tags (README.md § The card owner) —
+# so the section now asserts the move is the ONLY write and its read-back the only card read.
 #
 # § 6 is MORE THAN ONE CARD, and it is why §§ 1-4's rc rows were not enough on their own: their
 # board holds ONE card, so each of them ran in the single-card `moved == 0 && skipped == 0`
@@ -142,7 +141,7 @@ eq "…and the run-level line says the board was READ and disagrees" "true" \
 eq "…and NOT as an unverified write (rc 1 is a CLAIM; rc 3 is the refusal to make one)" "false" \
    "$(has 'UNVERIFIED' "$out$err")"
 eq "⭐ the run exits 1 — the known-failure rc, not 0"      "1"     "$rc"
-eq "…and no owner-tag write followed a move that did not happen" "false" "$(has '"tags"' "$patched")"
+eq "…and no tag write followed a move that did not happen" "false" "$(has '"tags"' "$patched")"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
 echo "== § 2 — THE READ-BACK THAT IS NOT A MEASUREMENT: rc 3, UNVERIFIED =="
@@ -177,7 +176,7 @@ eq "nothing claims the card moved"                        "false" "$(has '✓ DL
 eq "⭐ UNVERIFIED, naming the unreadable success"          "true" \
    "$(has 'move UNVERIFIED — the stage PATCH was SENT and answered success, but its outcome could NOT be read back (the re-read answered success and no workflow_stage_id could be read out of it)' "$err")"
 eq "⭐ the run exits 3"                                    "3"     "$rc"
-eq "…and no owner-tag write rode on a card nobody could read" "false" "$(has '"tags"' "$patched")"
+eq "…and no tag write rode on a card nobody could read" "false" "$(has '"tags"' "$patched")"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
 echo "== § 3 — THE GENUINE SUCCESS: still moved, still rc 0, and now it says what it READ =="
@@ -231,38 +230,14 @@ eq "RESIDUAL: it is counted failed and exits 1, not 3"    "1|true" \
    "$rc|$(has '0 moved, 0 already-released, 0 no-card, 1 failed.' "$out")"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
-echo "== § 5 — THE SIBLING: the owner-tag clear is read back too (canon #7) =="
+echo "== § 5 — THE MOVE IS THE ONLY WRITE: a released card keeps its assignee and tags (card#10868) =="
 # ═════════════════════════════════════════════════════════════════════════════════════════
-_owned='{"data":{"id":1,"tags":["fr","owner:acme/builder"]}}'
-echo "-- 5a: the clear lands"
-STUB_CARD_BODY="$_owned" run_promote
-eq "the tag PATCH was issued"                             "true" "$(has '{"tags":["fr"]}' "$patched")"
-eq "⭐ …and the success line quotes the READ, not the status" "true" \
-   "$(has '✓ DL-100 (#1): removed owner tag(s) owner:acme/builder — read back: the card now carries no owner tag' "$out")"
-eq "the card was read twice: the move's read-back, then the clear's" "2" "$(card_reads)"
-eq "rc 0"                                                 "0"    "$rc"
-
-echo "-- 5b: THE UN-APPLIED TAG 2xx — the PATCH succeeds and the tags do not change"
-STUB_CARD_BODY="$_owned" STUB_TAGS_UNAPPLIED=1 run_promote
-eq "⭐ NOTHING claims the tags were removed"               "false" "$(has 'removed owner tag(s)' "$out")"
-eq "⭐ the run says so, quoting what the card still carries" "true" \
-   "$(has '✗ DL-100 (#1): owner tags NOT cleared — the PATCH answered success and the card STILL carries owner:acme/builder. The status is not the write; the read-back is.' "$err")"
-eq "⭐ …and the MOVE is unaffected: still moved, still rc 0, still 0 failed" "true|0|true" \
-   "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$rc|$(has '1 moved, 0 already-released, 0 no-card, 0 failed.' "$out")"
-
-echo "-- 5c: a card whose tag list cannot be read is never written from nothing"
-STUB_CARD_BODY='{"data":{"id":1,"tags":{"0":"owner:acme/builder"}}}' run_promote
-eq "no tag PATCH at all (the board replaces the list wholesale)" "false" "$(has '"tags"' "$patched")"
-eq "…and the run says why"                                "true" "$(has 'no tag list could be read out of it' "$err")"
-eq "…while the MOVE is unaffected"                        "true|0" "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$rc"
-
-# ⚠ DECLARED UNDRIVEN — two arms of the clear that NO row here reaches, named rather than left to
-# look covered. Both need the clear's OWN read-back (the read AFTER the tags PATCH) to fail while
-# the move's read-back succeeded, and the stub's card-read knobs are per-RUN, so the two reads
-# cannot be made to differ: `owner tag clear UNVERIFIED — … could NOT be re-read` and its
-# no-readable-tag-list twin. The third, `owner tag clear NOT CONFIRMED` (a tags PATCH that never
-# completed), was already undriven before card#9938 and README.md § The seat owner tag says so.
-# Closing them needs a stub knob scoped to the Nth card read; that is recorded, not smuggled in.
+STUB_CARD_BODY='{"data":{"id":1,"assigned_user_id":7,"tags":["fr","owner:acme/builder"]}}' run_promote
+eq "⭐ no tag PATCH and no assignee PATCH — the stage write alone" "false|false" \
+   "$(has '"tags"' "$patched")|$(has 'assigned_user_id' "$patched")"
+eq "the card was read ONCE: the move's own read-back"     "1" "$(card_reads)"
+eq "…the move is reported from it, rc 0"                  "true|0" "$(has '✓ DL-100 (#1): moved 51 → 85' "$out")|$rc"
+eq "…and nothing is said about an owner tag"              "false" "$(has 'owner tag' "$out$err")"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
 echo "== § 6 — MORE THAN ONE CARD: the run shapes the exit policy actually rules on =="
