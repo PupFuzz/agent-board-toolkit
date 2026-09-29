@@ -1638,7 +1638,8 @@ kb_coord_config_path() { printf '%s' "${COORD_CONFIG:-$HOME/.config/coord/coordi
 # cannot disagree about which entry is a seat or what counts as a usable id.
 #   roster_seats         every roster[] entry that is an object with a string `name`.
 #   seat_uid_verdict($h) over ONE entry: {uid: N} when its `kanban_user_id` is an object whose
-#                        member for board instance $h is a positive integer; otherwise
+#                        member for board instance $h is a positive integer that jq writes as
+#                        plain digits; otherwise
 #                        {why: "nofield" | "nohost" | "bad", v: <the value found>}.
 #   seat_uid($h)         the uid, or null.
 #   project_name         over the WHOLE config: `project` when it is a string, `project.name` when
@@ -1648,11 +1649,17 @@ kb_coord_config_path() { printf '%s' "${COORD_CONFIG:-$HOME/.config/coord/coordi
 #                        legacy tag. Used only to spell and recognise that tag.
 # ⛔ A STRING "7" IS REFUSED, NOT COERCED: the framework writes this field, and a value it wrote in
 # a shape nobody declared is a question for the framework, not a guess for this reader.
+# ⛔ SO IS A NUMBER jq DOES NOT WRITE AS PLAIN DIGITS (`7.0`, `1e2`): the uid leaves here as TEXT —
+# `jq -r .uid`, string-compared with the board's assignee, spliced into a jq predicate — and jq 1.7
+# keeps a literal's spelling (`7.0` prints `7.0`, `1e2` prints `1E+2`), so an equal-valued id would
+# not equal the board's `7`. The test is on jq's own rendering (tojson), the text every reader of
+# the uid sees, so it holds whatever that jq does to a literal: jq 1.6 prints `7.0` as `7`, and
+# there the id reads as `7` everywhere and is accepted.
 KB_JQ_ROSTER='def roster_seats: (.roster | if type == "array" then .[] else empty end) | select(type == "object" and (.name | type) == "string");
 def seat_uid_verdict($h): .kanban_user_id as $m
   | if ($m | type) != "object" then {why: "nofield", v: $m}
     elif ($m | has($h)) | not then {why: "nohost", v: null}
-    elif ($m[$h] | type) == "number" and $m[$h] >= 1 and $m[$h] == ($m[$h] | floor) then {uid: $m[$h]}
+    elif ($m[$h] | type) == "number" and ($m[$h] | tojson | test("^[1-9][0-9]*$")) then {uid: $m[$h]}
     else {why: "bad", v: $m[$h]} end;
 def seat_uid($h): seat_uid_verdict($h).uid // null;
 def project_name: (.project | if type == "object" then .name else . end)
@@ -1711,7 +1718,7 @@ kb_owner_resolve() {
         nohost)
             KB_OWNER_WHY="the roster entry '$seat' in the coord config ($cfg) has no \`kanban_user_id\` entry for this board instance ('$host'), so the seat → kanban user mapping is MISSING here and no user is guessed — add \"$host\": <kanban user id> to it"; return 1 ;;
         *)
-            KB_OWNER_WHY="in the roster entry '$seat' of the coord config ($cfg), kanban_user_id[\"$host\"] is $v, not a positive integer kanban user id — nothing is coerced or guessed"; return 1 ;;
+            KB_OWNER_WHY="in the roster entry '$seat' of the coord config ($cfg), kanban_user_id[\"$host\"] is $v, not a positive integer kanban user id written as plain digits — nothing is coerced or guessed"; return 1 ;;
     esac
     KB_OWNER_SEAT="$seat"
     KB_OWNER_USER_ID="$(jq -r '.uid' <<<"$verdict")"

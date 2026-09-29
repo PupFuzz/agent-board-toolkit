@@ -3311,7 +3311,7 @@ cmd_owner_migrate() {
                               | if $v.uid then {uid: $v.uid, seat: $s}
                                 elif $v.why == "nofield" then {why: "roster entry \"\($s)\" has no kanban_user_id object"}
                                 elif $v.why == "nohost" then {why: "roster entry \"\($s)\" has no kanban_user_id for board instance \"\($h)\""}
-                                else {why: "roster entry \"\($s)\" has kanban_user_id[\"\($h)\"] = \($v.v | tojson), not a positive integer"} end
+                                else {why: "roster entry \"\($s)\" has kanban_user_id[\"\($h)\"] = \($v.v | tojson), not a positive integer written as plain digits"} end
                             end
                         end
                     end

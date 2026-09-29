@@ -5184,6 +5184,18 @@ eq "⭐ object-form project: the same classes as the string form" \
    '{"owner_tagged":8,"tag_only":6,"migratable":2,"unmapped":3,"ambiguous":1,"assigned":2,"assigned_differs":1,"outcomes":{"would-assign":2}}' \
    "$(jq -c .counts <<<"$out")"
 
+# THE ROSTER'S uid SHAPE IS THE LIB'S seat_uid_verdict (card#10868): an integral id this jq does
+# not write as plain digits (jq 1.7 keeps `7.0`) is a refused mapping here too — unmapped, saying
+# why — never a target this run would PATCH as `7.0`. The expected answer is read from jq itself.
+jq -c --arg h "$KB_STUB_HOST" '.roster[0].kanban_user_id[$h] = "@F@"' "$MIG_CFG" | sed 's/"@F@"/7.0/' > "$MIG_CFG.f" && mv "$MIG_CFG.f" "$MIG_CFG"
+mig_seed; mig owner-migrate
+if [[ "$(jq -c . <<<'7.0')" == 7 ]]; then
+    eq "a roster id 7.0 this jq writes as 7 → migratable to 7" '["migratable",7]' "$(row 810 '[.class, .target_user_id]')"
+else
+    eq "⭐ a roster id 7.0 → unmapped, naming the value, no target" '["unmapped",null]|true' \
+       "$(row 810 '[.class, .target_user_id]')|$(has 'kanban_user_id[\"'"$KB_STUB_HOST"'\"] = 7.0, not a positive integer written as plain digits' "$(row 810 .why)")"
+fi
+
 unset -f mig_seed mig row kb_stub_route
 unset MIG_CFG MIG_DIR KB_STUB_MIG_PATCH KB_STUB_MIG_RACE
 
