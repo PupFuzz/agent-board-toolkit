@@ -230,7 +230,12 @@
 #     THE EDGES CLAMP: up past the top lands first, down past the bottom lands last, rc 0, with a
 #     stderr line naming the clamp and how far the card really moved — read from the board's
 #     `meta.clamped` / `meta.moved`, which ride stdout as two more keys. A card already at that
-#     edge is not moved. --up 0 / --down 0 is a no-op: a stderr line, rc 0, NO request.
+#     edge is not moved, and — the board's own docblock is explicit that a clamped displacement
+#     of 0 must not be reported as a reorder — the CLAMPED line is the only stderr summary for
+#     that reply; the ordinary "N card(s) ranked …" line is skipped rather than describing a
+#     no-op in the vocabulary of a write that happened. stdout is unaffected either way: the same
+#     {meta, ranked} object, with the card's own unchanged position in `ranked`.
+#     --up 0 / --down 0 is a no-op: a stderr line, rc 0, NO request.
 #     ⭐ A SCOPED --push ON THE ONLY CARD CARRYING THE TAG GOES TO THE TOP OF THE WHOLE COLUMN, not
 #     merely to the top of a one-card scope: with no other in-scope sibling to land beside, the
 #     board's own resolveRelative falls back to the column's top, computed over EVERY card of the
@@ -2770,7 +2775,19 @@ cmd_reorder() {
     if [[ "$(jq -r '.renumbered' <<<"$meta")" == "true" ]]; then
         echo "kbcard: reorder: the board reports renumbered=true — the stage's position COORDINATES were re-spaced onto an even ladder because the gap between two neighbours was exhausted. NO card's rank changed by it — the re-spaced cards kept their order and are NOT in the list below, which is the cards THIS call ranked — and the board records it as ONE lane.cards_renumbered event rather than as N moves." >&2
     fi
-    echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
+    # ⛔ A CLAMPED steps REQUEST WHOSE DISPLACEMENT IS 0 IS NOT ANNOUNCED AS A REORDER — the
+    # server's own docblock (BoardPositionService::placeInStage) says so in those words: nothing
+    # was written, `positions` is the card's CURRENT coordinate, and the caller must not report it
+    # as a move. The CLAMPED line above already said "did not move and nothing was written"; a
+    # second line below reading "N card(s) ranked … landing between …" would describe the same
+    # no-op in the vocabulary of a write that happened. stdout is UNCHANGED either way — the same
+    # {meta + ranked} object, with the card's own unchanged position in `ranked` — only this one
+    # stderr line is skipped for this one case.
+    if [[ -n "$steps" && "$n_moved" == "0" ]]; then
+        :
+    else
+        echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
+    fi
     # Assembled then `printf`-ed, the spelling every other verb here ends on — not a `jq` writing
     # straight to stdout. Two reasons, and neither is style: the write's own emission is then on
     # the same line-oriented idiom the rest of this file uses, and `readback-before-success

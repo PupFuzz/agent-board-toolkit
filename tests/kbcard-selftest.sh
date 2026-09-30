@@ -6577,9 +6577,14 @@ eq "--down 1 --within-tag: rc 0, steps is POSITIVE"             "0|1" "$rc|$(jq 
 eq "--down 1 --within-tag: the scope rides the request"         "$WC" "$(jq -r '.within' <<<"$(rbody)")"
 eq "--down 1 --within-tag: says down"                           "true" \
    "$(has "card 303 moved down 1 place(s)" "$err")"
-R_BODY="$(r_rel 303 null 301 -2 false)" kbc reorder --task 303 --up 2 --within-tag lane:C
-eq "--up 2: steps -2, and the reported count is the board's"    "-2|true" \
-   "$(jq -c '.steps' <<<"$(rbody)")|$(has 'moved up 2 place(s)' "$err")"
+# card#10922 review round 2: 303 has only ONE lane:C sibling above it (301), so --up 2 in this
+# scope CLAMPS at 1 place — it cannot give moved:-2 without a fourth tagged card above 303 that
+# this column does not have. resolveRelative: from=1 (303's index among [301,303,305]),
+# to=max(0, 1-2)=0, moved=0-1=-1, clamped=(-1 != -2)=true.
+R_BODY="$(r_rel 303 null 301 -1 true)" kbc reorder --task 303 --up 2 --within-tag lane:C
+eq "--up 2: steps is the board's own key, sent as asked"        "-2" "$(jq -c '.steps' <<<"$(rbody)")"
+eq "--up 2: clamps at the scope's edge (only one sibling above)" "true" \
+   "$(has "--up 2 CLAMPED — card 303 moved up 1 place(s), not 2, and is now first among the cards of its column tagged 'lane:C'" "$err")"
 
 echo "-- clamp at BOTH edges: rc 0 and a named message, driven by meta.clamped --"
 R_BODY="$(r_rel 303 null 301 -1 true)" kbc reorder --task 303 --up 5 --within-tag lane:C
@@ -6594,13 +6599,31 @@ R_BODY="$(r_rel 301 null 302 0 true)" kbc reorder --task 301 --up 1 --within-tag
 eq "already first: rc 0"                                        "0" "$rc"
 eq "already first: named as a clamp that did not move the card" "true" \
    "$(has "--up 1 CLAMPED — card 301 is already first among the cards of its column tagged 'lane:C', so it did not move and nothing was written" "$err")"
+# card#10922 review round 2 (MINOR 3): a clamped moved:0 reply is the server's own "not a
+# reorder" case (BoardPositionService::placeInStage) — the CLAMPED line above is the only stderr
+# summary; the generic "N card(s) ranked …" line must not ALSO print, which would describe the
+# same no-op as a write that happened. stdout is unaffected either way.
+eq "already first: the 'N card(s) ranked' line is SKIPPED for this no-op" "false" \
+   "$(has 'card(s) ranked in stage' "$err")"
+eq "already first: stdout still carries the {meta, ranked} object, unaffected" "true" \
+   "$(jq 'has("ranked") and has("workflow_stage_id")' <<<"$out")"
+eq "already first: …with the unchanged card as the one ranked item" "1" \
+   "$(jq '.ranked | length' <<<"$out")"
+_rmut announcenoop 's/^    if \[\[ -n "\$steps" && "\$n_moved" == "0" \]\]; then$/    if false; then/' _rm
+R_BODY="$(r_rel 301 null 302 0 true)" rrun "$_rm" reorder --task 301 --up 1 --within-tag lane:C
+eq "control: with the skip removed, the misleading 'ranked' line reappears on a no-op" "true" \
+   "$(has 'card(s) ranked in stage' "$err")"
 # The negative control that makes the message attributable to meta.clamped, not to the flags —
 # rebuilt on a reply the board CAN send. `BoardPositionService::resolveRelative` sets
-# `clamped = (moved != steps)`, so the fixture this used to be (moved=-1, steps=-5, clamped=false)
-# is one the board's own code cannot produce; it is retargeted below as the POSITIVE case for
-# that invariant instead. This control uses moved == steps (a full, unclamped move) — the only
-# shape a clamped=false reply can legitimately take when steps is -5.
-R_BODY="$(r_rel 303 null 301 -5 false)" kbc reorder --task 303 --up 5 --within-tag lane:C
+# `clamped = (moved != steps)`, so clamped=false needs moved == steps EXACTLY: a full, unclamped
+# 5-place move. The shared 3-card lane:C scope above (301/303/305) cannot host one — 303 has only
+# ONE lane:C sibling above it, so --up 5 there clamps at moved=-1 (the CLAMPED case just above),
+# never moved=-5. card#10922 review round 2: rewording this header is not enough — the fixture
+# itself has to be one the modelled scope can send, so THIS ONE CONTROL pictures a WIDER lane:C
+# scope instead, with at least five tagged siblings above 303 (the request is the identical
+# --up 5 --within-tag lane:C); 1290 stands for whichever tagged sibling would land immediately
+# above 303 there — it is not one of the five cards modelled elsewhere in this file.
+R_BODY="$(r_rel 303 null 1290 -5 false)" kbc reorder --task 303 --up 5 --within-tag lane:C
 eq "control: a full, unclamped move (moved == steps) says no CLAMPED" "0|false" \
    "$rc|$(has 'CLAMPED' "$err")"
 
@@ -6635,7 +6658,12 @@ R_BODY="$(r_resp 305 300 301 false)" rrun "$_rm" reorder --task 305 --push --wit
 eq "control: comparing that bracket against 'first in the COLUMN' reds a correct push" "1" "$rc"
 
 echo "-- no scope: parity with the column order (the board's own, as today) --"
-R_BODY="$(r_rel 303 null 302 -1 false)" kbc reorder --task 303 --up 1
+# card#10922 review round 2: unscoped, the members are the WHOLE column [301,302,303,304,305], not
+# just the lane:C subset — resolveRelative: from=2 (303's index in the full column), steps=-1,
+# to=1, mode='before' anchor=siblings[1]=302 (siblings = the column minus 303). bracketsAround
+# then reads before_task_id=301 (the last untouched card below the new position), after_task_id=
+# 302 — NOT before_task_id=null, which was the (scoped) bracket for a DIFFERENT request above.
+R_BODY="$(r_rel 303 301 302 -1 false)" kbc reorder --task 303 --up 1
 eq "--up 1, no scope: rc 0"                                     "0" "$rc"
 eq "--up 1, no scope: the body carries NO within"               '["ids","steps"]' "$(jq -c 'keys' <<<"$(rbody)")"
 eq "--up 1, no scope: reported among its column"                "true" \
@@ -6761,6 +6789,43 @@ _rmut relread 's/^            if (.moved | type) != "number" or (.clamped | type
 R_BODY="$(r_resp 303 null 302 false)" rrun "$_rm" reorder --task 303 --up 1
 eq "control: with the moved/clamped read removed, a bare answer is not rc 3" "false" \
    "$([[ "$rc" == 3 ]] && echo true || echo false)"
+
+echo "-- the same rule, the OTHER direction: --down gets its own overrun coverage (round 2) --"
+# card#10922 review round 2: every overrun leg above drove --up only, and the overrun condition is
+# TWO INDEPENDENT disjuncts — ($s < 0 and …) or ($s > 0 and …) — so `relgate`'s mutation (which
+# neutralizes the $s < 0 half) leaves the $s > 0 half fully intact, and the whole suite still
+# passed green: nothing here had ever driven a --down reply through it. Reviewer's own
+# reproduction: with the down half replaced by `false`, --down 1 answered {moved:-1,clamped:true}
+# or {moved:3,clamped:true} both evaluated "ok" → rc 0 and "moved down 1 place(s)".
+R_BODY="$(r_rel 303 null 302 -1 true)" kbc reorder --task 303 --down 1
+eq "--down: moved the WRONG way (negative) → rc 1 HARD FAILURE"  "1|true" \
+   "$rc|$(has 'HARD FAILURE' "$err")"
+R_BODY="$(r_rel 303 null 302 3 true)" kbc reorder --task 303 --down 1
+eq "--down: moved FURTHER than asked → rc 1 HARD FAILURE"        "1|true" \
+   "$rc|$(has 'HARD FAILURE' "$err")"
+_rmut reldowngate 's/or (\$s > 0 and/or false and (\$s > 0 and/' _rm
+R_BODY="$(r_rel 303 null 302 -1 true)" rrun "$_rm" reorder --task 303 --down 1
+eq "control: with ONLY the down-direction check removed, wrong-way --down (moved:-1) reads as SUCCESS" \
+   "0" "$rc"
+R_BODY="$(r_rel 303 null 302 3 true)" rrun "$_rm" reorder --task 303 --down 1
+eq "control: with ONLY the down-direction check removed, overrun --down (moved:3) reads as SUCCESS" \
+   "0" "$rc"
+# The SAME mutant leaves --up's own ($s < 0) half intact — it neutralizes $s > 0 only, so an
+# UP overrun still reds under it, unlike under `relgate` above (which is the mirror omission).
+R_BODY="$(r_rel 303 null 302 1 true)" rrun "$_rm" reorder --task 303 --up 1
+eq "…and the SAME mutant leaves the up-direction check working"  "1" "$rc"
+
+echo "-- the contradiction invariant, the OTHER half: moved == steps but clamped is TRUE --"
+# The earlier contradiction leg was moved != steps with clamped=false; this is the mirror case the
+# same invariant must also catch: moved == steps says the move was NOT clamped, so a reply naming
+# clamped=true here is the board's own code contradicting itself the other way.
+R_BODY="$(r_rel 303 null 302 -1 true)" kbc reorder --task 303 --up 1
+eq "moved == steps but clamped=true → rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
+eq "…named self-contradictory, NOT a HARD FAILURE"                "true|false" \
+   "$(has 'self-contradictory' "$err")|$(has 'HARD FAILURE' "$err")"
+_rmut relcontradiction 's/^            elif .clamped != (.moved != \$s) then "contradiction"$/            elif false then "contradiction"/' _rm
+R_BODY="$(r_rel 303 null 302 -1 true)" rrun "$_rm" reorder --task 303 --up 1
+eq "control: with the contradiction check removed, this reply ALSO reads as SUCCESS" "0" "$rc"
 
 echo "-- a board WITHOUT the relative keys: its own refusal surfaces, no client fallback --"
 R_HTTP=422 R_BODY='{"message":"Unknown field '"'"'steps'"'"' is not accepted by this endpoint.","errors":{"steps":["Unknown field '"'"'steps'"'"' is not accepted by this endpoint."]}}' \
