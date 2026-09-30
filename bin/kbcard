@@ -192,8 +192,9 @@
 #     {workflow_stage_id, before_task_id, after_task_id, renumbered,
 #      ranked: [{id, name, workflow_stage_id, swimlane_id, position}, …]}.
 #     ⭐ AND IT IS CONFIRMED, NOT ASSUMED — a 2xx is the server accepting the request, never the
-#     board holding the rank. THREE comparisons against the returned data, and they answer three
-#     DIFFERENT questions; read which is evidence of what, because they are not interchangeable:
+#     board holding the rank. GATE ONE, GATE TWO and GATE THREE below compare against the returned
+#     data, and each answers a DIFFERENT question; read which is evidence of what, because they
+#     are not interchangeable:
 #       GATE ONE, WHICH CARDS — the ids echoed must be the ids this call asked to rank, in that
 #          order. ⚠ THIS IS A CONSISTENCY CHECK, NOT EVIDENCE OF THE ACHIEVED ORDER. The board
 #          builds that collection from the request's OWN ordered id list, so it agrees with the
@@ -219,23 +220,39 @@
 #     under its stage lock (`steps`, negative up; --push is `placement: top`) — there is no
 #     client-side neighbour lookup, which would be two calls racing a concurrent reorder.
 #     --within-tag TAG narrows the siblings to X's column ∩ the cards tagged TAG (sent as the
-#     board's `within: tags:"TAG"`, the search grammar, so a `*` in TAG is a wildcard); without
-#     it the scope is X's column, as for every other form. Cards outside the scope are skipped
-#     over, never counted, and the card never leaves its column.
+#     board's `within: tags:"TAG"`, the search grammar); without it the scope is X's column, as
+#     for every other form. Cards outside the scope are skipped over, never counted, and the card
+#     never leaves its column. ⚠ A `*` IN TAG IS A WILDCARD THERE, NOT A LITERAL CHARACTER: the
+#     board's QueryParser turns it into a LIKE `%` (applyTagGlob), so a tag containing one CANNOT
+#     be scoped exactly — it matches every tag that glob reaches, which can WIDEN the scope past
+#     what --within-tag TAG looks like it asks for.
 #     THE EDGES CLAMP: up past the top lands first, down past the bottom lands last, rc 0, with a
 #     stderr line naming the clamp and how far the card really moved — read from the board's
 #     `meta.clamped` / `meta.moved`, which ride stdout as two more keys. A card already at that
 #     edge is not moved. --up 0 / --down 0 is a no-op: a stderr line, rc 0, NO request.
-#     REFUSED OFFLINE (rc 2, nothing sent): N that is not digits (a sign included — `--up -2` is
-#     not read as down), more than 9 digits, --ids beside a relative form, --task beside an
-#     anchor form, --within-tag beside an anchor form, and a TAG containing `"` (the filter cannot
-#     spell it). RULED ON: moved/clamped absent or mistyped is rc 3; a card that moved the wrong
-#     way or further than asked is rc 1 HARD FAILURE. A scoped --push's bracket is REPORTED, not
-#     compared — cards outside the tag may sit above it; an unscoped --push is held to the top
+#     ⭐ A SCOPED --push ON THE ONLY CARD CARRYING THE TAG GOES TO THE TOP OF THE WHOLE COLUMN, not
+#     merely to the top of a one-card scope: with no other in-scope sibling to land beside, the
+#     board's own resolveRelative falls back to the column's top, computed over EVERY card of the
+#     column, scope or not. The line this prints ("first among the cards … tagged TAG") stays true
+#     of that case — a set of one card has a first — and claims nothing beyond it.
+#     ⭐ --within-tag ON A CARD THAT DOES NOT CARRY THE TAG is the board's own 422 ("do not match
+#     within"), relayed at rc 1 like any other server refusal: a card is moved among the cards its
+#     scope selects, so it must be one of them, and the board checks that rather than trusting the
+#     flag typed here.
+#     REFUSED OFFLINE (rc 2, nothing sent): a TAG containing `"` (the filter cannot spell it —
+#     checked BEFORE --up 0 / --down 0 is read as a no-op, so a malformed scope is refused even on
+#     a call that would otherwise send nothing), N that is not digits (a sign included — `--up -2`
+#     is not read as down), more than 9 digits (--push names the up-to-the-top equivalent; --down
+#     gets its own hint, there being no --push for the bottom), --ids beside a relative form,
+#     --task beside an anchor form, and --within-tag beside an anchor form. RULED ON: moved/clamped
+#     absent or mistyped, OR clamped disagreeing with the board's own clamped = (moved != steps) —
+#     a reply BoardPositionService::resolveRelative cannot produce — is rc 3; a card that moved the
+#     wrong way or further than asked is rc 1 HARD FAILURE. A scoped --push's bracket is REPORTED,
+#     not compared — cards outside the tag may sit above it; an unscoped --push is held to the top
 #     bracket like --placement top. A board that predates these keys refuses them with its own
 #     422, relayed at rc 1 — there is no fallback.
-#     ⚠ THAT SECOND COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK IT. It
-#     was read at the kanban tag the route shipped in: the brackets are DERIVED from the
+#     ⚠ GATE THREE'S BRACKET COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK
+#     IT. It was read at the kanban tag the route shipped in: the brackets are DERIVED from the
 #     positions actually written (BoardPositionService::bracketsAround — the last untouched card
 #     below the block and the first above it), not echoed back out of the request, which is
 #     exactly what makes them worth comparing against. A server build that changed that
@@ -2448,11 +2465,11 @@ cmd_reorder() {
         return 2
     }
 
-    # EXACTLY ONE PLACEMENT, decided before anything is resolved or sent. The six are six ways to
-    # say WHERE the card(s) land, so a call naming two states two different positions and a call
-    # naming none states no position at all — neither is a request this tool can complete, and
-    # relaying either to the server would spend a round trip to be told what is already knowable
-    # from argv.
+    # EXACTLY ONE PLACEMENT, decided before anything is resolved or sent. --placement,
+    # --before-task, --after-task, --up, --down and --push are each a different way to say WHERE
+    # the card(s) land, so a call naming two states two different positions and a call naming none
+    # states no position at all — neither is a request this tool can complete, and relaying either
+    # to the server would spend a round trip to be told what is already knowable from argv.
     local given="" n_given=0
     [[ -n "$placement" ]]  && { given="$given --placement";   n_given=$((n_given + 1)); }
     [[ -n "$before_ref" ]] && { given="$given --before-task"; n_given=$((n_given + 1)); }
@@ -2497,6 +2514,22 @@ cmd_reorder() {
         fi
     fi
 
+    # --within-tag T becomes the board's `within: tags:"T"` — the search grammar's quoted tag
+    # token, which has no escape for a `"`. A tag carrying one cannot be spelled as a scope at all,
+    # so it is refused here rather than sent as a filter that means something else. ⛔ CHECKED
+    # BEFORE the --up 0 / --down 0 no-op below is reached: a malformed scope is a caller mistake
+    # about WHAT is being asked, independent of whether the count asked for happens to be zero, so
+    # `--up 0 --within-tag 'a"b'` is rc 2 (nothing sent), never rc 0 (a no-op that quietly accepted
+    # an unspellable scope).
+    local within=""
+    if [[ -n "$within_tag" ]]; then
+        if [[ "$within_tag" == *'"'* ]]; then
+            echo "kbcard: reorder --within-tag '$within_tag' contains a double quote, which the board's tags:\"…\" filter cannot carry. Nothing was sent" >&2
+            return 2
+        fi
+        within="tags:\"$within_tag\""
+    fi
+
     # --up/--down N: a count of places, so a non-negative decimal integer and nothing else. A sign
     # is refused rather than read — `--up -2` would otherwise mean "down 2" under a flag that says
     # up. Nine digits is past any column's length (the board clamps at the edge anyway); the cap
@@ -2510,7 +2543,16 @@ cmd_reorder() {
         fi
         n_raw="${n_raw#"${n_raw%%[!0]*}"}"
         if [[ ${#n_raw} -gt 9 ]]; then
-            echo "kbcard: reorder $rel_flag ${up:-$down} is more places than any column holds — to put the card first use --push; the board clamps at either edge. Nothing was sent" >&2
+            # The hint names THIS direction's own way to reach the edge in one call — --push is
+            # `placement: top` and has no bottom counterpart, so a --down overrun pointed at it
+            # would send the reader the wrong way. --ids takes the SAME ID-OR-EXT --task does.
+            local edge_hint
+            if [[ -n "$up" ]]; then
+                edge_hint="to put the card first use --push"
+            else
+                edge_hint="to put the card last use --ids $task_ref --placement bottom — there is no --down counterpart of --push"
+            fi
+            echo "kbcard: reorder $rel_flag ${up:-$down} is more places than any column holds — $edge_hint; the board clamps at either edge. Nothing was sent" >&2
             return 2
         fi
         if [[ -z "$n_raw" ]]; then
@@ -2518,18 +2560,6 @@ cmd_reorder() {
             return 0
         fi
         if [[ -n "$up" ]]; then steps="-$n_raw"; else steps="$n_raw"; fi
-    fi
-
-    # --within-tag T becomes the board's `within: tags:"T"` — the search grammar's quoted tag
-    # token, which has no escape for a `"`. A tag carrying one cannot be spelled as a scope at all,
-    # so it is refused here rather than sent as a filter that means something else.
-    local within=""
-    if [[ -n "$within_tag" ]]; then
-        if [[ "$within_tag" == *'"'* ]]; then
-            echo "kbcard: reorder --within-tag '$within_tag' contains a double quote, which the board's tags:\"…\" filter cannot carry. Nothing was sent" >&2
-            return 2
-        fi
-        within="tags:\"$within_tag\""
     fi
 
     # The members are split and BLANK-refused offline, then resolved one by one. A blank member
@@ -2618,8 +2648,8 @@ cmd_reorder() {
         return 1
     fi
 
-    # ⭐ GATE 2 — THE ONLY GATE THAT MEASURES THE ORDER INSIDE THE BLOCK, and the reason the
-    # other two cannot. `--ids` states a TARGET ORDER; gate 1 restates the request (above) and
+    # ⭐ GATE 2 — THE ONLY GATE THAT MEASURES THE ORDER INSIDE THE BLOCK, and the reason
+    # GATE 1 and GATE 3 cannot. `--ids` states a TARGET ORDER; gate 1 restates the request (above) and
     # gate 3 rules on where the block landed AS A WHOLE (the brackets). Neither says anything
     # about the order of the cards WITHIN it. `position` is the one value in this response that
     # the request never supplied at any point — it is computed from the column's live coordinates
@@ -2675,18 +2705,31 @@ cmd_reorder() {
     # past the one asked for is a measurement that the card did NOT move as asked — rc 1. A clamp
     # is not a failure: the board lands the card at the edge of its scope and says so, and so does
     # this line (rc 0).
+    #
+    # ⭐ THE FOURTH BRANCH IS NOT A MEASUREMENT OF THE MOVE — IT IS AN INVARIANT OF THE REPLY
+    # ITSELF. `BoardPositionService::resolveRelative` sets `clamped = (moved != steps)` — it is
+    # the ONE place that value is computed, so any reply where that equation does not hold is one
+    # the board's own code cannot produce. That is not "the card moved wrong" (rc 1, a claim
+    # about the WRITE); it is "this reply cannot be trusted to say what the write did" (rc 3,
+    # UNVERIFIED), because whichever half is wrong — clamped or moved — is not knowable from here.
+    # Checked AFTER overrun, not before: overrun is a stronger, more specific claim (the board
+    # reported a displacement outside what was asked at all), and a reply failing both is reported
+    # as the more specific failure rather than the generic self-contradiction.
     if [[ -n "$steps" ]]; then
         local rel_verdict
         rel_verdict="$(jq -r --argjson s "$steps" '
             if (.moved | type) != "number" or (.clamped | type) != "boolean" then "unread"
             elif (.moved | . != floor) then "unread"
             elif ($s < 0 and (.moved > 0 or .moved < $s)) or ($s > 0 and (.moved < 0 or .moved > $s)) then "overrun"
+            elif .clamped != (.moved != $s) then "contradiction"
             else "ok" end' <<<"$meta")"
         case "$rel_verdict" in
             ok) ;;
             unread)
                 _kbc_unverified reorder "on task $ids_csv" "The PUT answered 2xx and its meta carries no integer moved and boolean clamped (got $(jq -c '{moved, clamped}' <<<"$meta")), so how far the card moved is UNMEASURED." || return $? ;;
-            *)
+            contradiction)
+                _kbc_unverified reorder "on task $ids_csv" "The PUT answered 2xx and its meta is self-contradictory: clamped=$(jq -r '.clamped' <<<"$meta") but moved=$(jq -r '.moved' <<<"$meta") against steps=$steps, and the board's own rule is clamped = (moved != steps) — this reply is one BoardPositionService::resolveRelative cannot produce, so how far the card moved is UNMEASURED." || return $? ;;
+            overrun)
                 echo "kbcard: reorder $rel_flag on task $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports moved=$(jq -r '.moved' <<<"$meta"), where this call asked for steps=$steps (at most that many places, in that direction). The status is not the move; the read-back is. Re-read the column before re-issuing. The board's own meta: $meta" >&2
                 return 1 ;;
         esac

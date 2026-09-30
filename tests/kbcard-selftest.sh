@@ -6506,9 +6506,31 @@ R_BODY="$(r_rel 301 null 302 0 true)" kbc reorder --task 301 --up 1 --within-tag
 eq "already first: rc 0"                                        "0" "$rc"
 eq "already first: named as a clamp that did not move the card" "true" \
    "$(has "--up 1 CLAMPED — card 301 is already first among the cards of its column tagged 'lane:C', so it did not move and nothing was written" "$err")"
-# The negative control that makes the message attributable to meta.clamped, not to the flags.
+# The negative control that makes the message attributable to meta.clamped, not to the flags —
+# rebuilt on a reply the board CAN send. `BoardPositionService::resolveRelative` sets
+# `clamped = (moved != steps)`, so the fixture this used to be (moved=-1, steps=-5, clamped=false)
+# is one the board's own code cannot produce; it is retargeted below as the POSITIVE case for
+# that invariant instead. This control uses moved == steps (a full, unclamped move) — the only
+# shape a clamped=false reply can legitimately take when steps is -5.
+R_BODY="$(r_rel 303 null 301 -5 false)" kbc reorder --task 303 --up 5 --within-tag lane:C
+eq "control: a full, unclamped move (moved == steps) says no CLAMPED" "0|false" \
+   "$rc|$(has 'CLAMPED' "$err")"
+
+echo "-- meta self-contradiction (clamped != (moved != steps)) is UNVERIFIED, never trusted --"
+# The board's own rule, read out of BoardPositionService::resolveRelative, is
+# clamped = (moved != steps). steps=-5, moved=-1 (a PARTIAL move) with clamped=false breaks that
+# rule — the board would have had to set clamped=true here — so this reply is not a measurement
+# of a wrong move, it is evidence the reply itself cannot be trusted.
 R_BODY="$(r_rel 303 null 301 -1 false)" kbc reorder --task 303 --up 5 --within-tag lane:C
-eq "control: the SAME call answered clamped=false says no CLAMPED" "false" "$(has 'CLAMPED' "$err")"
+eq "contradiction: rc 3 UNVERIFIED, nothing on stdout"          "3|" "$rc|$out"
+eq "contradiction: named self-contradictory, NOT a HARD FAILURE" "true|false" \
+   "$(has 'self-contradictory' "$err")|$(has 'HARD FAILURE' "$err")"
+eq "contradiction: names the board's own rule"                  "true" \
+   "$(has 'clamped = (moved != steps)' "$err")"
+_rmut relcontradiction 's/^            elif .clamped != (.moved != \$s) then "contradiction"$/            elif false then "contradiction"/' _rm
+R_BODY="$(r_rel 303 null 301 -1 false)" rrun "$_rm" reorder --task 303 --up 5 --within-tag lane:C
+eq "control: with the contradiction check removed, the impossible reply reads as SUCCESS" "0|true" \
+   "$rc|$(has 'moved up 1 place(s)' "$err")"
 
 echo "-- --push within a scope: placement top + within, and the bracket is NOT compared --"
 # 305 pushed onto lane:C lands immediately before 301 — below 300, a foreign card above the scope.
@@ -6556,6 +6578,19 @@ _rmut zerostep 's/^        if \[\[ -z "\$n_raw" \]\]; then$/        if false; th
 R_BODY="$(r_rel 303 null 302 0 true)" rrun "$_rm" reorder --task 303 --down 0
 eq "control: with the no-op guard removed, --down 0 reaches the wire" "1" "$(kb_stub_count PUT '/tasks/reorder.json')"
 
+echo "-- a malformed --within-tag is refused BEFORE --up 0 / --down 0 is read as a no-op --"
+# card#10922 review: the quote check used to sit AFTER the zero no-op, so a bad scope on a
+# zero-place move slipped through silently at rc 0. It is now the first thing checked.
+kbc reorder --task 303 --up 0 --within-tag 'a"b'
+eq "--up 0 with a quote-carrying --within-tag: rc 2, NOT the zero no-op" "2|0" \
+   "$rc|$(kb_stub_total)"
+eq "…named as the scope refusal, never as 'nothing to do'"     "true|false" \
+   "$(has 'contains a double quote' "$err")|$(has 'moves card' "$err")"
+_rmut withinquote0 '/^    local within=""$/{n;n;n;n;s/^            return 2$/            :/;}' _rm
+rrun "$_rm" reorder --task 303 --up 0 --within-tag 'a"b'
+eq "control: with the quote check bypassed, the same call reaches the zero no-op instead" "0|true" \
+   "$rc|$(has 'moves card' "$err")"
+
 echo "-- refused OFFLINE, nothing sent: malformed relative moves --"
 for _argv in "--task 303 --up -1" "--task 303 --up abc" "--task 303 --down 1.5" \
              "--task 303 --up 1234567890" \
@@ -6568,6 +6603,17 @@ for _argv in "--task 303 --up -1" "--task 303 --up abc" "--task 303 --down 1.5" 
     kbc reorder "${_a[@]}"
     eq "reorder $_argv: rc 2, nothing sent"                     "2|0" "$rc|$(kb_stub_total)"
 done
+echo "-- over 9 digits: the hint names THIS direction's own edge, never the other one's --"
+kbc reorder --task 303 --up 1234567890
+eq "--up over 9 digits: hints --push (the UP edge)"            "true|false" \
+   "$(has 'to put the card first use --push' "$err")|$(has 'put the card last' "$err")"
+kbc reorder --task 303 --down 1234567890
+eq "--down over 9 digits: hints --placement bottom, NEVER --push" "true|false" \
+   "$(has 'to put the card last use --ids 303 --placement bottom' "$err")|$(has 'use --push' "$err")"
+_rmut wrongedgehint '/local edge_hint/{n;s/^            if \[\[ -n "\$up" \]\]; then$/            if true; then/}' _rm
+rrun "$_rm" reorder --task 303 --down 1234567890
+eq "control: with the direction check collapsed, --down wrongly hints --push too" "true" \
+   "$(has 'use --push' "$err")"
 kbc reorder --task 303 --up -1
 eq "--up -1: a sign is refused, not read as the other direction" "true" \
    "$(has "--up takes a number of places (0 or more, digits only), got '-1'" "$err")"
@@ -6618,10 +6664,10 @@ eq "a non-boolean clamped → rc 3"                               "3" "$rc"
 R_BODY="$(r_rel 303 null 302 -2 false)" kbc reorder --task 303 --up 1
 eq "moved FURTHER than asked → rc 1 HARD FAILURE, nothing on stdout" "1|true|" \
    "$rc|$(has 'HARD FAILURE — the PUT answered 2xx and the board reports moved=-2, where this call asked for steps=-1' "$err")|$out"
-R_BODY="$(r_rel 303 null 302 1 false)" kbc reorder --task 303 --up 1
+R_BODY="$(r_rel 303 null 302 1 true)" kbc reorder --task 303 --up 1
 eq "moved the OTHER way → rc 1"                                 "1" "$rc"
 _rmut relgate 's/^            elif (\$s < 0 and/            elif false and ($s < 0 and/' _rm
-R_BODY="$(r_rel 303 null 302 1 false)" rrun "$_rm" reorder --task 303 --up 1
+R_BODY="$(r_rel 303 null 302 1 true)" rrun "$_rm" reorder --task 303 --up 1
 eq "control: with the direction check removed, a wrong-way move reads as SUCCESS" "0" "$rc"
 _rmut relread 's/^            if (.moved | type) != "number" or (.clamped | type) != "boolean" then "unread"$/            if false then "unread"/' _rm
 R_BODY="$(r_resp 303 null 302 false)" rrun "$_rm" reorder --task 303 --up 1
