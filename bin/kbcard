@@ -65,7 +65,8 @@
 #   blank MEMBER ("a, ,b", "a,") is not refused and still reaches the wire. A blank one used to be
 #   SENT as its own element, beside any `type:` / `triaged` the call appends: rc 0 wherever the
 #   board accepted it, and on patch that REPLACES the card's whole tag list. What the board does with it is NOT measured here. Refusing it was
-#   an acceptance change, asked and granted (card#9421).
+#   an acceptance change, asked and granted (card#9421). patch --add-tags / --remove-tags take the
+#   same refusal on the same terms, and split the same way.
 #
 #   kbcard create-card --type <alias> --name "title"|--name-file PATH \
 #                      --column COLUMN \
@@ -318,7 +319,7 @@
 #     in another stage / type / lane is rc 1 HARD FAILURE too, and says the card moved
 #     partially — re-read it before acting. A re-read that cannot be made is rc 3.
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
-#                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
+#                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--add-tags "a,b"] [--remove-tags "c"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
 #                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
@@ -331,6 +332,22 @@
 #     the card already carries, and composes with --tags (given set, then `triaged`).
 #     A visually blank --tags is rc 2 before any request: the --tags paragraph of the free-text
 #     convention at the top owns it.
+#     --add-tags a,b / --remove-tags c CHANGE the list IN PLACE instead of replacing it: they send
+#     the board's `add_tags` / `remove_tags` keys, and the SERVER applies them to the list as
+#     stored, under a lock on the card (kanban card#10923) — so a tag another writer added between
+#     your read and this write is kept, which no read-merge-write here could promise. There is no
+#     client-side fallback. The board's rules: exact, case-sensitive match, AFTER its own
+#     TrimStrings/ConvertEmptyStringsToNull normalization (no exemption for these keys) — a
+#     member is trimmed before comparison, and one left blank by trimming (a run of commas, a
+#     trailing one) arrives as null and is refused, 422, rc 1, nothing written. Adding a tag the
+#     card carries or removing one it lacks is a no-op, not an error; removal drops every
+#     occurrence; new tags append in the order given. Each value is one comma list split exactly
+#     as --tags splits it, and takes --tags' text-free refusal, rc 2 before any request. Either
+#     one beside --tags or --type is rc 2 before any request (both rewrite the whole list);
+#     beside --triaged, `triaged` rides add_tags. A tag in both lists is the board's 422, as is a
+#     result over its tag cap. A board whose kanban predates the keys refuses them 422
+#     `Unknown field '<key>'` — rc 1, nothing written. The write echo shows the card's resulting
+#     `tags`.
 #     --type re-types the card: it writes the board's native card_type_id for the alias, or
 #     the `type:<alias>` tag on a board with no native type for it — and either way DROPS any
 #     `type:*` tag the card was carrying, so a retyped card never reads as two types at once.
@@ -2978,7 +2995,7 @@ cmd_move_board() {
 
 cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" desc_clear="" dl="" triaged="" swimlane="" keep_refs=""
-    local name="" name_file="" tags="" type="" ext_id="" origin=""
+    local name="" name_file="" tags="" type="" ext_id="" origin="" add_tags="" remove_tags=""
     local assign="" unassign="" steal=""
     local block="" block_file="" unblock="" clear=""
     while [[ $# -gt 0 ]]; do
@@ -2999,6 +3016,8 @@ cmd_patch() {
             --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
             --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
             --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
+            --add-tags) kb_require_value "$1" "${2:-}" || return 2; add_tags="$2"; shift 2 ;;
+            --remove-tags) kb_require_value "$1" "${2:-}" || return 2; remove_tags="$2"; shift 2 ;;
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
@@ -3025,6 +3044,26 @@ cmd_patch() {
     _kbc_text_arg block block-reason "" "$block" "$block_file" || return 2
     # Here and not in _kbc_patch_tags, which runs after resolve_task's lookup.
     _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
+    _kbc_text_arg add_tags add-tags "" "$add_tags" "" verbatim || return 2
+    _kbc_text_arg remove_tags remove-tags "" "$remove_tags" "" verbatim || return 2
+    # The delta is the SERVER's to apply (kanban card#10923) and the board refuses `tags` beside
+    # it, so a flag that rewrites the whole list cannot share the call. --triaged only ever adds,
+    # so it joins the delta instead of forcing the read-merge-write the delta exists to replace.
+    local tag_delta=""
+    if [[ -n "$add_tags" || -n "$remove_tags" ]]; then
+        local _td_flag="--add-tags"; [[ -n "$add_tags" ]] || _td_flag="--remove-tags"
+        if [[ -n "$tags" ]]; then
+            echo "kbcard: $_td_flag and --tags are mutually exclusive — --tags replaces the whole list, $_td_flag changes it in place; pass one or the other" >&2; return 2
+        fi
+        if [[ -n "$type" ]]; then
+            echo "kbcard: $_td_flag and --type are mutually exclusive — --type rewrites the whole tag list (it drops every type:* tag); run them as two patches" >&2; return 2
+        fi
+        [[ -n "$triaged" ]] && add_tags="${add_tags:+$add_tags,}triaged"
+        triaged=""
+        tag_delta="$(jq -n --arg a "$add_tags" --arg r "$remove_tags" \
+            '{} + (if $a != "" then {add_tags: ($a | split(","))} else {} end)
+                + (if $r != "" then {remove_tags: ($r | split(","))} else {} end)')" || return 2
+    fi
     if [[ -n "$type" ]];   then _kbc_require_type_alias "$type" || return 2; fi
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
     local stage=""
@@ -3168,6 +3207,10 @@ cmd_patch() {
     if [[ -n "$column" ]]; then
         body="$(jq -n --argjson cur "$body" --argjson stage "$stage" '$cur + {workflow_stage_id: $stage}')"
     fi
+    # patch-only keys, so not _kbc_task_fields': the board refuses them on create.
+    if [[ -n "$tag_delta" ]]; then
+        body="$(jq -n --argjson cur "$body" --argjson d "$tag_delta" '$cur + $d')" || return 2
+    fi
     # Surface a field in the write echo only when this call set it, so the caller sees what
     # the server actually recorded (the whole point of a corrective patch) without changing
     # the echo shape of every other patch. `name` already rides _kbc_write_echo's projection.
@@ -3178,7 +3221,7 @@ cmd_patch() {
     # block_reason does. Untruncated on purpose: there is nothing to truncate.
     [[ -n "$desc_clear" ]] && echo_extra='description: .description'
     [[ -n "$swimlane" ]] && echo_extra="$echo_extra, swimlane_id: (.swimlane_id // null)"
-    [[ -n "$tags_json" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
+    [[ -n "$tags_json" || -n "$tag_delta" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
     [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
     [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
     # assigned_user_id rides the echo whenever this call set it, so the caller SEES what the server
