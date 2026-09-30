@@ -1350,9 +1350,10 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # compares the guard call sites in `bin/kbcard` against the two lists below and reds in both
 # directions. The split is the claim, stated honestly: DRIVEN_HERE is what this block actually
 # exercises with an empty value, GUARDED_NOT_DRIVEN is the rest of the guarded population —
-# they share ONE owner (`kb_require_value`), so driving all 27 through their several verbs
-# would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
-# either list without an explicit edit here, which is the review moment a hand list never got.
+# they share ONE owner (`kb_require_value`), so driving every flag in DRIVEN_HERE and
+# GUARDED_NOT_DRIVEN through their several verbs would re-assert one primitive once per flag.
+# What the gate buys is that a flag joining neither list cannot go unnoticed — it is the review
+# moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
              --name --tags --add-tags --remove-tags --type --external-id --origin --task --assign
              --block-reason --clear)
