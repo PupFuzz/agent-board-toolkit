@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#10353** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## What & why` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
+
 ## [0.40.0] - 2026-09-29
 
 **Minor — `kbcard list` projects each card's `position` and returns rows in the board's priority order; `--column` accepts every column the board env declares (so `--column done` works on a board declaring `KB_STAGE_DONE`); and every per-board key is read from the board env alone, never from the calling shell.** The PRs in `v0.39.0..v0.40.0` are enumerated below and in the release PR's generated `## Bundled` table (`git log --oneline v0.39.0..v0.40.0` re-prints the range; the rest of it is the post-v0.39.0 back-merge). Per `VERSIONING.md` § Bump sizing this is a **minor** on two independent grounds, either of which alone forces it: new user-visible surface (the `position` key on `kbcard list` rows, card#10847) **and** an acceptance narrowing (card#10858).
