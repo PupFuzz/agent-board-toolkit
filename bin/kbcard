@@ -298,14 +298,18 @@
 #     the board's `add_tags` / `remove_tags` keys, and the SERVER applies them to the list as
 #     stored, under a lock on the card (kanban card#10923) — so a tag another writer added between
 #     your read and this write is kept, which no read-merge-write here could promise. There is no
-#     client-side fallback. The board's rules: exact, case-sensitive match; adding a tag the card
-#     carries or removing one it lacks is a no-op, not an error; removal drops every occurrence;
-#     new tags append in the order given. Each value is one comma list split exactly as --tags
-#     splits it, and takes --tags' text-free refusal, rc 2 before any request. Either one beside
-#     --tags or --type is rc 2 before any request (both rewrite the whole list); beside --triaged,
-#     `triaged` rides add_tags. A tag in both lists is the board's 422, as is a result over its
-#     tag cap. A board whose kanban predates the keys refuses them 422 `Unknown field` — rc 1,
-#     nothing written. The write echo shows the card's resulting `tags`.
+#     client-side fallback. The board's rules: exact, case-sensitive match, AFTER its own
+#     TrimStrings/ConvertEmptyStringsToNull normalization (no exemption for these keys) — a
+#     member is trimmed before comparison, and one left blank by trimming (a run of commas, a
+#     trailing one) arrives as null and is refused, 422, rc 1, nothing written. Adding a tag the
+#     card carries or removing one it lacks is a no-op, not an error; removal drops every
+#     occurrence; new tags append in the order given. Each value is one comma list split exactly
+#     as --tags splits it, and takes --tags' text-free refusal, rc 2 before any request. Either
+#     one beside --tags or --type is rc 2 before any request (both rewrite the whole list);
+#     beside --triaged, `triaged` rides add_tags. A tag in both lists is the board's 422, as is a
+#     result over its tag cap. A board whose kanban predates the keys refuses them 422
+#     `Unknown field '<key>'` — rc 1, nothing written. The write echo shows the card's resulting
+#     `tags`.
 #     --type re-types the card: it writes the board's native card_type_id for the alias, or
 #     the `type:<alias>` tag on a board with no native type for it — and either way DROPS any
 #     `type:*` tag the card was carrying, so a retyped card never reads as two types at once.
