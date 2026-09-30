@@ -6749,8 +6749,23 @@ kbc reorder --up 1
 eq "--up with no --task: rc 2, and the refusal names --task"   "2|true" \
    "$rc|$(has '--task <id-or-ext> with --up N' "$err")"
 kbc reorder --task 303 --placement top
-eq "--task with --placement: says which flags --task goes with" "true" \
-   "$(has '--task goes with --up N, --down N or --push' "$err")"
+eq "--task with --placement: says which flags --task goes with" "true|false" \
+   "$(has '--task goes with --up N, --down N or --push' "$err")|$(has 'has a member that names no card' "$err")"
+# card#10922 review round 4: this return 2 is not what SETS the rc — --ids is blank whenever
+# --task is used instead, so the later blank-ids check (below, in the --ids member loop) ALSO
+# returns 2 on this exact call, whether or not this check ever ran. rc alone cannot prove this
+# check matters. What it DOES control is whether execution stops at its own message: observed
+# directly, deleting ONLY this return 2 leaves the echo just above it firing (echo was never
+# touched) and falls through into the blank-ids check too, so BOTH refusals print — the base leg
+# shows exactly ONE message (this one), the control shows BOTH, and that a second, unrelated
+# refusal now cascades in at all is the proof this return 2 was doing real work.
+# --task 303 --after-task 301 (in the offline-refusal loop above) hits this SAME check — no
+# separate control for it, since it is the identical branch under a different anchor flag.
+_rmut taskanchor '/reorder --task goes with --up N, --down N or --push/{n;s/^            return 2$/            :/;}' _rm
+rrun "$_rm" reorder --task 303 --placement top
+eq "control: with ONLY this return 2 removed, rc is UNCHANGED at 2 — but a SECOND, unrelated refusal now cascades in too" \
+   "2|true|true" \
+   "$rc|$(has '--task goes with --up N, --down N or --push' "$err")|$(has 'has a member that names no card' "$err")"
 kbc reorder --ids 303 --placement top --within-tag lane:C
 eq "--within-tag beside --placement: scopes the relative forms only" "true" \
    "$(has '--within-tag scopes --up, --down and --push only' "$err")"
@@ -6761,6 +6776,9 @@ kbc reorder --task 303 --up 1 --within-tag 'a"b'
 eq "--within-tag carrying a double quote: rc 2, nothing sent"   "2|0" "$rc|$(kb_stub_total)"
 eq "…named as a scope the filter cannot spell"                  "true" \
    "$(has 'contains a double quote' "$err")"
+kbc reorder --task 303 --up abc
+eq "--up abc: rc 2, its own wording (not just rc) — same guard --down 1.5 hits above" "2|true" \
+   "$rc|$(has "--up takes a number of places (0 or more, digits only), got 'abc'" "$err")"
 _rmut sign 's/^        if ! kb_ere_match "\$n_raw" '"'"'\^\[0-9\]+\$'"'"'; then$/        if false; then/' _rm
 rrun "$_rm" reorder --task 303 --up abc
 eq "control: with the digits guard removed, a non-number is NOT refused offline" "false" \
@@ -6777,14 +6795,22 @@ for _f in --task --up --down --within-tag; do
        "$rc|$(kb_stub_total)|$(has "$_f requires a non-empty value" "$err")"
 done
 
-echo "-- GATE 4 DECISION TABLE (card#10922 review round 3) — every branch, evaluation order --"
+echo "-- GATE 4 DECISION TABLE (card#10922 review round 3) — every DELETABLE branch, evaluation order --"
 # THE MUST-FIX, THIRD ROUND RUNNING: round 2's non-integer leg (moved:-1.5, clamped:false) fell
 # into the CONTRADICTION branch once its own guard was deleted — also rc 3, so a bare rc==3
 # assertion could not tell the guard was gone. That is not a one-off: MOST of gate 4's branches
 # share rc 3 (unread, contradiction) or rc 1 (every overrun leaf) with a SIBLING branch, so an
 # assertion that only checks rc is structurally unable to prove any of them individually
-# load-bearing. This block is the fix, done once, exhaustively: every branch below gets its own
-# leg AND a wording assertion (not just an rc), plus a control that deletes ONLY that branch.
+# load-bearing. This block is the fix, done once, exhaustively: every branch that can be DELETED
+# below gets its own leg AND a wording assertion (not just an rc), plus a control that removes
+# ONLY that branch. Row 9 (`else`) has neither — a terminal fallback is not a branch a mutation
+# can remove and leave a DIFFERENT fallback behind, so it is listed for completeness, not tested.
+#
+# ⛔ THIS TABLE IS A HAND ENUMERATION of the `rel_verdict` jq pipeline in `bin/kbcard`'s
+# `cmd_reorder`, not something either file derives from the other. A branch added to that jq
+# expression makes NOTHING here fail — there is no population check tying this table's row count
+# to the pipeline's — so re-derive this table BY HAND, against the jq itself, whenever gate 4
+# changes, rather than trusting it still matches.
 #
 #   #  branch (jq, in evaluation order)                       | outcome        | leg                              | control
 #   -- ------------------------------------------------------ | -------------- | --------------------------------- | ---------------
@@ -6797,23 +6823,32 @@ echo "-- GATE 4 DECISION TABLE (card#10922 review round 3) — every branch, eva
 #   7  steps>0 and moved>steps  (down, too far)                 | overrun (rc 1) | steps=1,  moved:3,  clamped:true   | relleafdown2
 #   8a clamped:false, moved != steps                            | contradiction  | steps=-2, moved:-1, clamped:false  | relcontradiction
 #   8b clamped:true,  moved == steps                            | contradiction  | steps=-1, moved:-1, clamped:true   | relcontradiction (same mutant, 2nd leg)
-#   9  else                                                     | ok (rc 0)      | every successful call in this file | n/a — terminal fallback, nothing to delete
+#   9  else — NO leg/control: nothing here removes a terminal fallback and leaves a different one
 #
-# ⛔ ROWS 1-9 ARE NOT SYMMETRIC IN WHAT "DELETED" MEANS TO REACH. Deleting row 3's guard falls
-# through to OK only because its leg uses clamped:TRUE (a clamped:false leg here — the ORIGINAL
-# round-2 mistake — falls through to CONTRADICTION instead, which is ALSO rc 3: the exact bug this
-# whole block exists to stop recurring). Deleting row 2's guard (clamped mistyped) can NEVER reach
-# OK, whatever the leg: `.clamped != (moved != $s)` further down compares a non-boolean clamped
-# against a genuine boolean, and jq's `!=` never considers those equal — so a mistyped clamped
-# ALWAYS reaches CONTRADICTION once row 2's own guard is gone, rc 3 either way. Row 2's control
-# therefore asserts the WORDING, not the rc — proof the row still MATTERS even where "a different
-# rc" structurally is not available as the signal. Deleting row 1's guard (moved mistyped) is
-# different again: `.moved | . != floor` a few lines later calls `floor` on that same mistyped
+# ⛔ THE ROWS ABOVE ARE NOT SYMMETRIC IN WHAT "DELETED" MEANS TO REACH. Deleting row 3's guard
+# falls through to OK only because its leg uses clamped:TRUE (a clamped:false leg here — the
+# ORIGINAL round-2 mistake — falls through to CONTRADICTION instead, which is ALSO rc 3: the exact
+# bug this whole block exists to stop recurring). Deleting row 2's guard (clamped mistyped) can
+# NEVER reach OK, whatever the leg — but it does NOT always land on contradiction either: `.clamped
+# != (moved != $s)` further down compares a non-boolean clamped against a genuine boolean, and
+# jq's `!=` never considers those equal, so a mistyped clamped never satisfies "ok" — but a moved
+# that ALSO overruns (e.g. moved:1, clamped:null, steps:-1) reaches OVERRUN first, since that
+# branch is evaluated earlier and does not read clamped at all. The true claim is narrower than
+# "always contradiction": row 2's guard gone NEVER reaches ok, landing on overrun or contradiction
+# depending on moved — and it is precisely because BOTH remaining outcomes are non-ok that row 2's
+# control asserts the WORDING, not the rc: proof the row still MATTERS even where "a different rc"
+# is not reliably available as the signal (this test's OWN fixture, moved:-1 with steps:-2, always
+# lands on contradiction specifically — it does not exercise the overrun-instead case, which is
+# NAMED here rather than left for a future round to find). Deleting row 1's guard (moved mistyped)
+# is different again: `.moved | . != floor` a few lines later calls `floor` on that same mistyped
 # value UNGUARDED, which is a jq type error, not a clean fall-through — the guard exists BECAUSE
-# downstream arithmetic assumes it already ran, so row 1's control asserts that the row's own
-# wording is GONE, without asserting what replaces it (the replacement is this file's crash
-# boundary, not a rival branch of this same jq expression, and pinning an exact jq exit code here
-# would couple this test to the jq binary's own versioned error-reporting rather than to gate 4).
+# downstream arithmetic assumes it already ran. ⚠ AND THE PUT HAS ALREADY BEEN SENT BY THE TIME
+# GATE 4 RUNS — rel_verdict rules on the response of a write the server has ALREADY APPLIED, so
+# this guard's failure mode without it is not "refuse before writing", it is "crash AFTER writing,
+# with no read-back of what landed" — precisely the UNVERIFIED-WRITE shape rc 3 exists to name,
+# reached here by a crash instead of a clean branch. Row 1's control therefore asserts the row's
+# own wording is GONE (proof the guard fired originally) AND that the outcome is NOT this file's
+# own rc 3 (proof something else happened) — see the leg below for the exact rc/stderr observed.
 
 echo "-- row 1: moved is missing or not a number --"
 R_BODY="$(r_rel 303 null 302 null false)" kbc reorder --task 303 --up 1
@@ -6824,6 +6859,14 @@ _rmut relmovedtype 's/(\.moved | type) != "number"/false/' _rm
 R_BODY="$(r_rel 303 null 302 null false)" rrun "$_rm" reorder --task 303 --up 1
 eq "control: with ONLY the moved-type check removed, row1's OWN wording no longer appears" "false" \
    "$(has 'no integer moved and boolean clamped' "$err")"
+# card#10922 review round 4: asserting only that the wording is gone does not say WHAT happened
+# instead. What actually happens, observed directly: `jq` itself errors on the unguarded `floor`
+# a few lines later (a type error, "number required"), and under this file's `set -euo pipefail`
+# that aborts the whole call — rc 5 (jq's own runtime-error code), never this file's rc 3.
+eq "…and it is NOT this file's own rc 3 (it crashed instead, before ruling on anything)" "true" \
+   "$([[ "$rc" != 3 ]] && echo true || echo false)"
+eq "…specifically jq's own runtime error, not a silently swallowed one"                  "true" \
+   "$(has 'jq: error' "$err")"
 
 echo "-- row 2: clamped is missing or not a boolean (moved itself is fine) --"
 R_BODY="$(r_rel 303 null 302 -1 null)" kbc reorder --task 303 --up 2
