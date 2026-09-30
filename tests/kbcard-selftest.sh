@@ -1325,8 +1325,9 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                                        # resolvable kbcard config
                     --content          # driven with an empty value at the comment verb, below
                     --link-id --on     # driven empty at the unlink verb, below
-                    --ids --placement --before-task --after-task
-                                       # driven empty at the reorder verb, below
+                    --ids --placement --before-task --after-task --up --down --within-tag
+                                       # driven empty at the reorder verb, below (--task is
+                                       # DRIVEN_HERE via patch, and again at reorder)
                     --to-board --card-type
                                        # driven empty at the move-board verb, below
                     --options          # driven empty in kbcard-field-selftest.sh
@@ -6441,6 +6442,207 @@ eq "reorder: a trailing flag with no argument names the flag, not set -u" "2|fal
    "$rc|$(has 'unbound variable' "$err")"
 kbc reorder --ids 501 --placement top --nonsense x
 eq "reorder: an unknown arg is rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+
+echo "== reorder --task --up N / --down N / --push [--within-tag T] — ONE request, resolved by the board (card#10922) =="
+# THE GAP: every `reorder` needed an anchor, so "up one place" was list, sort, find the
+# neighbour, then --before-task — two calls that race a concurrent reorder, written again by
+# every caller. The board now resolves the relative move and the scope under its stage lock in
+# ONE request (kanban card#10926: `steps`, `within`, `placement` + `within`).
+#
+# ⛔ WHAT THESE LEGS CAN AND CANNOT MEASURE. The fixtures below model a column
+#     301 lane:C · 302 (foreign) · 303 lane:C · 304 (foreign) · 305 lane:C
+# and hand back what the board's reorder docblock says it answers for each move. Skipping the
+# interleaved foreign cards, clamping at the scope's edge, and keeping a card already first where
+# it is are the BOARD's behaviour, pinned by kanban's own TaskReorderRelativeTest; nothing here
+# can re-derive them without a second copy of the board's rule. What is measured here is this
+# tool's half: the request says exactly what was asked (the scope included), exactly ONE request
+# goes out (no neighbour lookup), and the answer is ruled on and reported from `meta`.
+
+# r_rel <id> <before|null> <after|null> <moved> <clamped> — a `steps` answer: one card, meta
+# carrying moved/clamped, which only a steps request is answered with.
+r_rel() {
+    jq -nc --argjson id "$1" --argjson b "$2" --argjson a "$3" --argjson m "$4" --argjson c "$5" \
+       '{data: [{id: $id, name: "card \($id)", workflow_stage_id: 48, swimlane_id: null, position: 2048}],
+         meta: {workflow_stage_id: 48, before_task_id: $b, after_task_id: $a, renumbered: false,
+                moved: $m, clamped: $c}}'
+}
+rbody() { kb_stub_bodies PUT '/tasks/reorder.json'; }
+WC='tags:"lane:C"'
+
+echo "-- up and down INSIDE a tag scope, skipping the interleaved foreign cards --"
+# 303 up one among lane:C passes 302 (foreign) and lands immediately before 301.
+R_BODY="$(r_rel 303 null 301 -1 false)" kbc reorder --task 303 --up 1 --within-tag lane:C
+eq "--up 1 --within-tag: rc 0"                                  "0" "$rc"
+eq "--up 1 --within-tag: exactly ONE request, the PUT — no neighbour lookup" "1|1" \
+   "$(kb_stub_total)|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "--up 1 --within-tag: the body is ids + steps (negative = up) + within, nothing else" \
+   "{\"ids\":\"303\",\"steps\":-1,\"within\":$(jq -n --arg w "$WC" '$w')}" "$(jq -c . <<<"$(rbody)")"
+eq "--up 1 --within-tag: says how far it moved, among what"     "true" \
+   "$(has "card 303 moved up 1 place(s) among the cards of its column tagged 'lane:C'" "$err")"
+eq "--up 1 --within-tag: stdout carries the board's moved/clamped" '{"moved":-1,"clamped":false}' \
+   "$(jq -c '{moved, clamped}' <<<"$out")"
+eq "--up 1 --within-tag: …and the bracket the board reported"  '[null,301]' \
+   "$(jq -c '[.before_task_id, .after_task_id]' <<<"$out")"
+# 303 down one among lane:C passes 304 (foreign) and lands immediately after 305.
+R_BODY="$(r_rel 303 305 null 1 false)" kbc reorder --task 303 --down 1 --within-tag lane:C
+eq "--down 1 --within-tag: rc 0, steps is POSITIVE"             "0|1" "$rc|$(jq -c '.steps' <<<"$(rbody)")"
+eq "--down 1 --within-tag: the scope rides the request"         "$WC" "$(jq -r '.within' <<<"$(rbody)")"
+eq "--down 1 --within-tag: says down"                           "true" \
+   "$(has "card 303 moved down 1 place(s)" "$err")"
+R_BODY="$(r_rel 303 null 301 -2 false)" kbc reorder --task 303 --up 2 --within-tag lane:C
+eq "--up 2: steps -2, and the reported count is the board's"    "-2|true" \
+   "$(jq -c '.steps' <<<"$(rbody)")|$(has 'moved up 2 place(s)' "$err")"
+
+echo "-- clamp at BOTH edges: rc 0 and a named message, driven by meta.clamped --"
+R_BODY="$(r_rel 303 null 301 -1 true)" kbc reorder --task 303 --up 5 --within-tag lane:C
+eq "up past the top: rc 0, still one PUT"                       "0|1" "$rc|$(kb_stub_total)"
+eq "up past the top: CLAMPED, how far it really went, now first" "true" \
+   "$(has "--up 5 CLAMPED — card 303 moved up 1 place(s), not 5, and is now first among the cards of its column tagged 'lane:C'" "$err")"
+R_BODY="$(r_rel 303 305 null 1 true)" kbc reorder --task 303 --down 5 --within-tag lane:C
+eq "down past the bottom: rc 0"                                 "0" "$rc"
+eq "down past the bottom: CLAMPED, now last"                    "true" \
+   "$(has "--down 5 CLAMPED — card 303 moved down 1 place(s), not 5, and is now last among" "$err")"
+R_BODY="$(r_rel 301 null 302 0 true)" kbc reorder --task 301 --up 1 --within-tag lane:C
+eq "already first: rc 0"                                        "0" "$rc"
+eq "already first: named as a clamp that did not move the card" "true" \
+   "$(has "--up 1 CLAMPED — card 301 is already first among the cards of its column tagged 'lane:C', so it did not move and nothing was written" "$err")"
+# The negative control that makes the message attributable to meta.clamped, not to the flags.
+R_BODY="$(r_rel 303 null 301 -1 false)" kbc reorder --task 303 --up 5 --within-tag lane:C
+eq "control: the SAME call answered clamped=false says no CLAMPED" "false" "$(has 'CLAMPED' "$err")"
+
+echo "-- --push within a scope: placement top + within, and the bracket is NOT compared --"
+# 305 pushed onto lane:C lands immediately before 301 — below 300, a foreign card above the scope.
+R_BODY="$(r_resp 305 300 301 false)" kbc reorder --task 305 --push --within-tag lane:C
+eq "--push --within-tag: rc 0, one PUT"                         "0|1" "$rc|$(kb_stub_total)"
+eq "--push --within-tag: the body is ids + placement top + within" \
+   "{\"ids\":\"305\",\"placement\":\"top\",\"within\":$(jq -n --arg w "$WC" '$w')}" "$(jq -c . <<<"$(rbody)")"
+eq "--push --within-tag: a foreign card above the scope is not a HARD FAILURE" "false" \
+   "$(has 'HARD FAILURE' "$err")"
+eq "--push --within-tag: says the bracket is reported, not compared" "true" \
+   "$(has 'The bracket below is reported, not compared' "$err")"
+_rmut scopedbracket 's/^    if \[\[ -z "\$steps" && -z "\$within" \]\]; then$/    if :; then/' _rm
+R_BODY="$(r_resp 305 300 301 false)" rrun "$_rm" reorder --task 305 --push --within-tag lane:C
+eq "control: comparing that bracket against 'first in the COLUMN' reds a correct push" "1" "$rc"
+
+echo "-- no scope: parity with the column order (the board's own, as today) --"
+R_BODY="$(r_rel 303 null 302 -1 false)" kbc reorder --task 303 --up 1
+eq "--up 1, no scope: rc 0"                                     "0" "$rc"
+eq "--up 1, no scope: the body carries NO within"               '["ids","steps"]' "$(jq -c 'keys' <<<"$(rbody)")"
+eq "--up 1, no scope: reported among its column"                "true" \
+   "$(has 'card 303 moved up 1 place(s) among its column.' "$err")"
+R_BODY="$(r_resp 303 null 301 false)" kbc reorder --task 303 --push
+eq "--push, no scope: the SAME body as --ids X --placement top" '{"ids":"303","placement":"top"}' \
+   "$(jq -c . <<<"$(rbody)")"
+eq "--push, no scope: rc 0"                                     "0" "$rc"
+R_BODY="$(r_resp 303 301 302 false)" kbc reorder --task 303 --push
+eq "--push, no scope: a card left above it IS a HARD FAILURE (the top bracket gate applies)" "1|true" \
+   "$rc|$(has 'landed with before_task_id=301, where this call asked for before_task_id=null' "$err")"
+R_BODY="$(r_rel 901 null 302 -1 false)" kbc reorder --task EXT-A --up 1
+eq "--task takes an external id through the same resolver"      '0|1|"901"' \
+   "$rc|$(kb_stub_count GET '/tasks/search.json')|$(jq -c '.ids' <<<"$(rbody)")"
+
+echo "-- moving by 0 places is a no-op: a message, rc 0, and NO request --"
+for _n in 0 000; do
+    kbc reorder --task EXT-A --up "$_n" --within-tag lane:C
+    eq "--up $_n: rc 0, nothing sent (not even the id lookup)" "0|0" "$rc|$(kb_stub_total)"
+    eq "--up $_n: says so"                                     "true|true" \
+       "$(has '--up 0 moves card' "$err")|$(has 'nothing was sent' "$err")"
+done
+kbc reorder --task 303 --down 0
+eq "--down 0: rc 0, nothing sent, nothing on stdout"            "0|0|" "$rc|$(kb_stub_total)|$out"
+eq "--down 0: named as nothing to do"                           "true" \
+   "$(has '--down 0 moves card' "$err")"
+_rmut zerostep 's/^        if \[\[ -z "\$n_raw" \]\]; then$/        if false; then/' _rm
+R_BODY="$(r_rel 303 null 302 0 true)" rrun "$_rm" reorder --task 303 --down 0
+eq "control: with the no-op guard removed, --down 0 reaches the wire" "1" "$(kb_stub_count PUT '/tasks/reorder.json')"
+
+echo "-- refused OFFLINE, nothing sent: malformed relative moves --"
+for _argv in "--task 303 --up -1" "--task 303 --up abc" "--task 303 --down 1.5" \
+             "--task 303 --up 1234567890" \
+             "--task 303 --up 1 --down 1" "--task 303 --push --up 1" \
+             "--ids 303 --up 1" "--ids 303 --push" "--up 1" \
+             "--task 303 --placement top" "--task 303 --after-task 301" \
+             "--ids 303 --placement top --within-tag lane:C" \
+             "--ids 303 --before-task 301 --within-tag lane:C"; do
+    read -ra _a <<<"$_argv"
+    kbc reorder "${_a[@]}"
+    eq "reorder $_argv: rc 2, nothing sent"                     "2|0" "$rc|$(kb_stub_total)"
+done
+kbc reorder --task 303 --up -1
+eq "--up -1: a sign is refused, not read as the other direction" "true" \
+   "$(has "--up takes a number of places (0 or more, digits only), got '-1'" "$err")"
+kbc reorder --ids 303 --up 1
+eq "--up with --ids: names --task as the subject"               "true" \
+   "$(has '--up moves ONE card and takes --task <id-or-ext>, not --ids' "$err")"
+kbc reorder --up 1
+eq "--up with no --task: rc 2, and the refusal names --task"   "2|true" \
+   "$rc|$(has '--task <id-or-ext> with --up N' "$err")"
+kbc reorder --task 303 --placement top
+eq "--task with --placement: says which flags --task goes with" "true" \
+   "$(has '--task goes with --up N, --down N or --push' "$err")"
+kbc reorder --ids 303 --placement top --within-tag lane:C
+eq "--within-tag beside --placement: scopes the relative forms only" "true" \
+   "$(has '--within-tag scopes --up, --down and --push only' "$err")"
+kbc reorder --task 303 --push --up 1
+eq "--push with --up: TWO placements, named"                    "true" \
+   "$(has 'takes EXACTLY ONE placement and got --up --push' "$err")"
+kbc reorder --task 303 --up 1 --within-tag 'a"b'
+eq "--within-tag carrying a double quote: rc 2, nothing sent"   "2|0" "$rc|$(kb_stub_total)"
+eq "…named as a scope the filter cannot spell"                  "true" \
+   "$(has 'contains a double quote' "$err")"
+_rmut sign 's/^        if ! kb_ere_match "\$n_raw" '"'"'\^\[0-9\]+\$'"'"'; then$/        if false; then/' _rm
+rrun "$_rm" reorder --task 303 --up abc
+eq "control: with the digits guard removed, a non-number is NOT refused offline" "false" \
+   "$(has 'takes a number of places' "$err")"
+_rmut idsrel '/moves ONE card and takes --task <id-or-ext>, not --ids/{n;s/^            return 2$/            :/;}' _rm
+R_BODY="$(r_rel 303 null 302 -1 false)" rrun "$_rm" reorder --ids 303 --task 303 --up 1
+eq "control: with the --ids refusal removed the call reaches the wire" "1" "$(kb_stub_count PUT '/tasks/reorder.json')"
+_rmut withinanchor '/--within-tag scopes --up, --down and --push only/{n;s/^            return 2$/            :/;}' _rm
+R_BODY="$(r_resp 303 null 301 false)" rrun "$_rm" reorder --ids 303 --placement top --within-tag lane:C
+eq "control: with the --within-tag refusal removed the call reaches the wire" "1" "$(kb_stub_count PUT '/tasks/reorder.json')"
+for _f in --task --up --down --within-tag; do
+    kbc reorder "$_f" ""
+    eq "reorder $_f \"\" → rc 2, nothing sent, names the flag" "2|0|true" \
+       "$rc|$(kb_stub_total)|$(has "$_f requires a non-empty value" "$err")"
+done
+
+echo "-- the answer to a relative move is RULED ON, not trusted --"
+R_BODY="$(r_resp 303 null 302 false)" kbc reorder --task 303 --up 1
+eq "a steps answer with NO moved/clamped → rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
+eq "…naming how far it moved as the thing unmeasured"          "true" \
+   "$(has 'how far the card moved is UNMEASURED' "$err")"
+R_BODY="$(r_rel 303 null 302 -1.5 false)" kbc reorder --task 303 --up 2
+eq "a non-integer moved → rc 3"                                 "3" "$rc"
+R_BODY="$(r_rel 303 null 302 -1 null)" kbc reorder --task 303 --up 2
+eq "a non-boolean clamped → rc 3"                               "3" "$rc"
+R_BODY="$(r_rel 303 null 302 -2 false)" kbc reorder --task 303 --up 1
+eq "moved FURTHER than asked → rc 1 HARD FAILURE, nothing on stdout" "1|true|" \
+   "$rc|$(has 'HARD FAILURE — the PUT answered 2xx and the board reports moved=-2, where this call asked for steps=-1' "$err")|$out"
+R_BODY="$(r_rel 303 null 302 1 false)" kbc reorder --task 303 --up 1
+eq "moved the OTHER way → rc 1"                                 "1" "$rc"
+_rmut relgate 's/^            elif (\$s < 0 and/            elif false and ($s < 0 and/' _rm
+R_BODY="$(r_rel 303 null 302 1 false)" rrun "$_rm" reorder --task 303 --up 1
+eq "control: with the direction check removed, a wrong-way move reads as SUCCESS" "0" "$rc"
+_rmut relread 's/^            if (.moved | type) != "number" or (.clamped | type) != "boolean" then "unread"$/            if false then "unread"/' _rm
+R_BODY="$(r_resp 303 null 302 false)" rrun "$_rm" reorder --task 303 --up 1
+eq "control: with the moved/clamped read removed, a bare answer is not rc 3" "false" \
+   "$([[ "$rc" == 3 ]] && echo true || echo false)"
+
+echo "-- a board WITHOUT the relative keys: its own refusal surfaces, no client fallback --"
+R_HTTP=422 R_BODY='{"message":"Unknown field '"'"'steps'"'"' is not accepted by this endpoint.","errors":{"steps":["Unknown field '"'"'steps'"'"' is not accepted by this endpoint."]}}' \
+  kbc reorder --task 303 --up 1
+eq "steps refused by an older board: rc 1, one PUT and NOTHING else sent" "1|1|1" \
+   "$rc|$(kb_stub_total)|$(kb_stub_count PUT '/tasks/reorder.json')"
+eq "…the board's own message on stderr"                         "true" \
+   "$(has "Unknown field 'steps' is not accepted by this endpoint" "$err")"
+eq "…and nothing on stdout"                                     "" "$out"
+R_HTTP=422 R_BODY='{"message":"Unknown field '"'"'within'"'"' is not accepted by this endpoint.","errors":{"within":["x"]}}' \
+  kbc reorder --task 303 --push --within-tag lane:C
+eq "within refused by an older board: rc 1, one request, its message relayed" "1|1|true" \
+   "$rc|$(kb_stub_total)|$(has "Unknown field 'within'" "$err")"
+
+unset -f r_rel rbody
+unset WC _n _argv _a
 
 unset -f kb_stub_route r_resp rrun
 unset R_BODY R_HTTP R_OK_TOP _rm _ids _f
