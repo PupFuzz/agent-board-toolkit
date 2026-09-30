@@ -9,6 +9,7 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 ### Fixed
 
 - **card#10353** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## What & why` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
+- **card#10353** — **The PR-body lint no longer asks a bot-authored PR for the two audit rows.** `.github/workflows/pr-body-lint.yml` now passes the PR author's account type (`github.event.pull_request.user.type`) to the vendored linter, which already supported it, so a Dependabot PR stops reporting `built-missing` and `coordinated-missing`; every other rule still reports on it, and a PR by a person is judged as before. Repo CI only: reporting-only as before, nothing to do on upgrade.
 
 ## [0.40.0] - 2026-09-29
 
