@@ -6644,7 +6644,11 @@ eq "control: with the contradiction check removed, the impossible reply reads as
    "$rc|$(has 'moved up 1 place(s)' "$err")"
 
 echo "-- --push within a scope: placement top + within, and the bracket is NOT compared --"
-# 305 pushed onto lane:C lands immediately before 301 — below 300, a foreign card above the scope.
+# card#10922 review round 3 (MINOR M1): 300 is NOT one of the five modelled cards (301…305) —
+# labelled explicitly, the way the -5 control above is, rather than left to look like a sixth
+# real card. It stands for a foreign card sitting above 301 in a WIDER imagined column, there
+# only to make "a foreign card above the scope" concrete; the request and the lane:C scope are
+# real, only 300 itself is invented.
 R_BODY="$(r_resp 305 300 301 false)" kbc reorder --task 305 --push --within-tag lane:C
 eq "--push --within-tag: rc 0, one PUT"                         "0|1" "$rc|$(kb_stub_total)"
 eq "--push --within-tag: the body is ids + placement top + within" \
@@ -6675,6 +6679,11 @@ eq "--push, no scope: rc 0"                                     "0" "$rc"
 R_BODY="$(r_resp 303 301 302 false)" kbc reorder --task 303 --push
 eq "--push, no scope: a card left above it IS a HARD FAILURE (the top bracket gate applies)" "1|true" \
    "$rc|$(has 'landed with before_task_id=301, where this call asked for before_task_id=null' "$err")"
+# card#10922 review round 3 (MINOR M1): 901 is NOT one of the five modelled cards either, and
+# neither is its neighbour 302 here — this leg tests ONLY that --task resolves an external id
+# through the same resolver --ids does; 901/302 are placeholders from a DIFFERENT, unmodelled
+# column, chosen simply to be distinct from 301…305 so a resolver bug reusing the wrong id could
+# not accidentally pass by coinciding with a real one.
 R_BODY="$(r_rel 901 null 302 -1 false)" kbc reorder --task EXT-A --up 1
 eq "--task takes an external id through the same resolver"      '0|1|"901"' \
    "$rc|$(kb_stub_count GET '/tasks/search.json')|$(jq -c '.ids' <<<"$(rbody)")"
@@ -6768,64 +6777,127 @@ for _f in --task --up --down --within-tag; do
        "$rc|$(kb_stub_total)|$(has "$_f requires a non-empty value" "$err")"
 done
 
-echo "-- the answer to a relative move is RULED ON, not trusted --"
-R_BODY="$(r_resp 303 null 302 false)" kbc reorder --task 303 --up 1
-eq "a steps answer with NO moved/clamped → rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
-eq "…naming how far it moved as the thing unmeasured"          "true" \
-   "$(has 'how far the card moved is UNMEASURED' "$err")"
-R_BODY="$(r_rel 303 null 302 -1.5 false)" kbc reorder --task 303 --up 2
-eq "a non-integer moved → rc 3"                                 "3" "$rc"
+echo "-- GATE 4 DECISION TABLE (card#10922 review round 3) — every branch, evaluation order --"
+# THE MUST-FIX, THIRD ROUND RUNNING: round 2's non-integer leg (moved:-1.5, clamped:false) fell
+# into the CONTRADICTION branch once its own guard was deleted — also rc 3, so a bare rc==3
+# assertion could not tell the guard was gone. That is not a one-off: MOST of gate 4's branches
+# share rc 3 (unread, contradiction) or rc 1 (every overrun leaf) with a SIBLING branch, so an
+# assertion that only checks rc is structurally unable to prove any of them individually
+# load-bearing. This block is the fix, done once, exhaustively: every branch below gets its own
+# leg AND a wording assertion (not just an rc), plus a control that deletes ONLY that branch.
+#
+#   #  branch (jq, in evaluation order)                       | outcome        | leg                              | control
+#   -- ------------------------------------------------------ | -------------- | --------------------------------- | ---------------
+#   1  (.moved|type) != "number"                               | unread (rc 3)  | moved:null, clamped:false          | relmovedtype
+#   2  (.clamped|type) != "boolean"                             | unread (rc 3)  | moved:-1, clamped:null             | relclampedtype
+#   3  moved is a number but not an integer (moved != floor)    | unread (rc 3)  | moved:-1.5, clamped:TRUE           | relfloor
+#   4  steps<0 and moved>0      (up, wrong direction)           | overrun (rc 1) | steps=-1, moved:1,  clamped:true   | relleafup1
+#   5  steps<0 and moved<steps  (up, too far)                   | overrun (rc 1) | steps=-1, moved:-2, clamped:true   | relleafup2
+#   6  steps>0 and moved<0      (down, wrong direction)         | overrun (rc 1) | steps=1,  moved:-1, clamped:true   | relleafdown1
+#   7  steps>0 and moved>steps  (down, too far)                 | overrun (rc 1) | steps=1,  moved:3,  clamped:true   | relleafdown2
+#   8a clamped:false, moved != steps                            | contradiction  | steps=-2, moved:-1, clamped:false  | relcontradiction
+#   8b clamped:true,  moved == steps                            | contradiction  | steps=-1, moved:-1, clamped:true   | relcontradiction (same mutant, 2nd leg)
+#   9  else                                                     | ok (rc 0)      | every successful call in this file | n/a — terminal fallback, nothing to delete
+#
+# ⛔ ROWS 1-9 ARE NOT SYMMETRIC IN WHAT "DELETED" MEANS TO REACH. Deleting row 3's guard falls
+# through to OK only because its leg uses clamped:TRUE (a clamped:false leg here — the ORIGINAL
+# round-2 mistake — falls through to CONTRADICTION instead, which is ALSO rc 3: the exact bug this
+# whole block exists to stop recurring). Deleting row 2's guard (clamped mistyped) can NEVER reach
+# OK, whatever the leg: `.clamped != (moved != $s)` further down compares a non-boolean clamped
+# against a genuine boolean, and jq's `!=` never considers those equal — so a mistyped clamped
+# ALWAYS reaches CONTRADICTION once row 2's own guard is gone, rc 3 either way. Row 2's control
+# therefore asserts the WORDING, not the rc — proof the row still MATTERS even where "a different
+# rc" structurally is not available as the signal. Deleting row 1's guard (moved mistyped) is
+# different again: `.moved | . != floor` a few lines later calls `floor` on that same mistyped
+# value UNGUARDED, which is a jq type error, not a clean fall-through — the guard exists BECAUSE
+# downstream arithmetic assumes it already ran, so row 1's control asserts that the row's own
+# wording is GONE, without asserting what replaces it (the replacement is this file's crash
+# boundary, not a rival branch of this same jq expression, and pinning an exact jq exit code here
+# would couple this test to the jq binary's own versioned error-reporting rather than to gate 4).
+
+echo "-- row 1: moved is missing or not a number --"
+R_BODY="$(r_rel 303 null 302 null false)" kbc reorder --task 303 --up 1
+eq "row1 leg: rc 3 UNVERIFIED, nothing on stdout"                "3|" "$rc|$out"
+eq "row1 leg: the UNREAD wording, not the contradiction one"     "true|false" \
+   "$(has 'no integer moved and boolean clamped' "$err")|$(has 'self-contradictory' "$err")"
+_rmut relmovedtype 's/(\.moved | type) != "number"/false/' _rm
+R_BODY="$(r_rel 303 null 302 null false)" rrun "$_rm" reorder --task 303 --up 1
+eq "control: with ONLY the moved-type check removed, row1's OWN wording no longer appears" "false" \
+   "$(has 'no integer moved and boolean clamped' "$err")"
+
+echo "-- row 2: clamped is missing or not a boolean (moved itself is fine) --"
 R_BODY="$(r_rel 303 null 302 -1 null)" kbc reorder --task 303 --up 2
-eq "a non-boolean clamped → rc 3"                               "3" "$rc"
-R_BODY="$(r_rel 303 null 302 -2 false)" kbc reorder --task 303 --up 1
-eq "moved FURTHER than asked → rc 1 HARD FAILURE, nothing on stdout" "1|true|" \
-   "$rc|$(has 'HARD FAILURE — the PUT answered 2xx and the board reports moved=-2, where this call asked for steps=-1' "$err")|$out"
+eq "row2 leg: rc 3 UNVERIFIED"                                    "3" "$rc"
+eq "row2 leg: the UNREAD wording, not the contradiction one"     "true|false" \
+   "$(has 'no integer moved and boolean clamped' "$err")|$(has 'self-contradictory' "$err")"
+_rmut relclampedtype 's/(\.clamped | type) != "boolean"/false/' _rm
+R_BODY="$(r_rel 303 null 302 -1 null)" rrun "$_rm" reorder --task 303 --up 2
+eq "control: with ONLY the clamped-type check removed, this STILL reds — but rc alone can't" \
+   "3" "$rc"
+eq "…tell: it is now a CONTRADICTION, never row2's own UNREAD wording (the wording can tell)" \
+   "false|true" "$(has 'no integer moved and boolean clamped' "$err")|$(has 'self-contradictory' "$err")"
+
+echo "-- row 3: moved is a number but not an integer --"
+R_BODY="$(r_rel 303 null 302 -1.5 true)" kbc reorder --task 303 --up 2
+eq "row3 leg: rc 3 UNVERIFIED"                                    "3" "$rc"
+eq "row3 leg: the UNREAD wording"                                 "true" \
+   "$(has 'no integer moved and boolean clamped' "$err")"
+_rmut relfloor 's/^            elif (\.moved | \. != floor) then "unread"$/            elif false then "unread"/' _rm
+R_BODY="$(r_rel 303 null 302 -1.5 true)" rrun "$_rm" reorder --task 303 --up 2
+eq "control: with ONLY the non-integer check removed (clamped:true keeps this OFF contradiction too), this reads as SUCCESS" \
+   "0|true" "$rc|$(has 'moved up 1.5 place(s)' "$err")"
+
+echo "-- row 4: overrun, UP, wrong direction (steps<0, moved>0) --"
 R_BODY="$(r_rel 303 null 302 1 true)" kbc reorder --task 303 --up 1
-eq "moved the OTHER way → rc 1"                                 "1" "$rc"
-_rmut relgate 's/^            elif (\$s < 0 and/            elif false and ($s < 0 and/' _rm
+eq "row4 leg: rc 1 HARD FAILURE"                                  "1|true" "$rc|$(has 'HARD FAILURE' "$err")"
+_rmut relleafup1 's/(\.moved > 0 or \.moved < \$s)/(false or .moved < $s)/' _rm
 R_BODY="$(r_rel 303 null 302 1 true)" rrun "$_rm" reorder --task 303 --up 1
-eq "control: with the direction check removed, a wrong-way move reads as SUCCESS" "0" "$rc"
-_rmut relread 's/^            if (.moved | type) != "number" or (.clamped | type) != "boolean" then "unread"$/            if false then "unread"/' _rm
-R_BODY="$(r_resp 303 null 302 false)" rrun "$_rm" reorder --task 303 --up 1
-eq "control: with the moved/clamped read removed, a bare answer is not rc 3" "false" \
-   "$([[ "$rc" == 3 ]] && echo true || echo false)"
+eq "control: with ONLY the up-wrong-direction leaf removed, this reads as SUCCESS" "0" "$rc"
 
-echo "-- the same rule, the OTHER direction: --down gets its own overrun coverage (round 2) --"
-# card#10922 review round 2: every overrun leg above drove --up only, and the overrun condition is
-# TWO INDEPENDENT disjuncts — ($s < 0 and …) or ($s > 0 and …) — so `relgate`'s mutation (which
-# neutralizes the $s < 0 half) leaves the $s > 0 half fully intact, and the whole suite still
-# passed green: nothing here had ever driven a --down reply through it. Reviewer's own
-# reproduction: with the down half replaced by `false`, --down 1 answered {moved:-1,clamped:true}
-# or {moved:3,clamped:true} both evaluated "ok" → rc 0 and "moved down 1 place(s)".
+echo "-- row 5: overrun, UP, too far (steps<0, moved<steps) --"
+R_BODY="$(r_rel 303 null 302 -2 true)" kbc reorder --task 303 --up 1
+eq "row5 leg: rc 1 HARD FAILURE"                                  "1|true" "$rc|$(has 'HARD FAILURE' "$err")"
+_rmut relleafup2 's/(\.moved > 0 or \.moved < \$s)/(.moved > 0 or false)/' _rm
+R_BODY="$(r_rel 303 null 302 -2 true)" rrun "$_rm" reorder --task 303 --up 1
+eq "control: with ONLY the up-too-far leaf removed, this reads as SUCCESS" "0" "$rc"
+
+echo "-- row 6: overrun, DOWN, wrong direction (steps>0, moved<0) --"
 R_BODY="$(r_rel 303 null 302 -1 true)" kbc reorder --task 303 --down 1
-eq "--down: moved the WRONG way (negative) → rc 1 HARD FAILURE"  "1|true" \
-   "$rc|$(has 'HARD FAILURE' "$err")"
-R_BODY="$(r_rel 303 null 302 3 true)" kbc reorder --task 303 --down 1
-eq "--down: moved FURTHER than asked → rc 1 HARD FAILURE"        "1|true" \
-   "$rc|$(has 'HARD FAILURE' "$err")"
-_rmut reldowngate 's/or (\$s > 0 and/or false and (\$s > 0 and/' _rm
+eq "row6 leg: rc 1 HARD FAILURE"                                  "1|true" "$rc|$(has 'HARD FAILURE' "$err")"
+_rmut relleafdown1 's/(\.moved < 0 or \.moved > \$s)/(false or .moved > $s)/' _rm
 R_BODY="$(r_rel 303 null 302 -1 true)" rrun "$_rm" reorder --task 303 --down 1
-eq "control: with ONLY the down-direction check removed, wrong-way --down (moved:-1) reads as SUCCESS" \
-   "0" "$rc"
-R_BODY="$(r_rel 303 null 302 3 true)" rrun "$_rm" reorder --task 303 --down 1
-eq "control: with ONLY the down-direction check removed, overrun --down (moved:3) reads as SUCCESS" \
-   "0" "$rc"
-# The SAME mutant leaves --up's own ($s < 0) half intact — it neutralizes $s > 0 only, so an
-# UP overrun still reds under it, unlike under `relgate` above (which is the mirror omission).
-R_BODY="$(r_rel 303 null 302 1 true)" rrun "$_rm" reorder --task 303 --up 1
-eq "…and the SAME mutant leaves the up-direction check working"  "1" "$rc"
+eq "control: with ONLY the down-wrong-direction leaf removed, this reads as SUCCESS" "0" "$rc"
 
-echo "-- the contradiction invariant, the OTHER half: moved == steps but clamped is TRUE --"
-# The earlier contradiction leg was moved != steps with clamped=false; this is the mirror case the
-# same invariant must also catch: moved == steps says the move was NOT clamped, so a reply naming
-# clamped=true here is the board's own code contradicting itself the other way.
+echo "-- row 7: overrun, DOWN, too far (steps>0, moved>steps) --"
+R_BODY="$(r_rel 303 null 302 3 true)" kbc reorder --task 303 --down 1
+eq "row7 leg: rc 1 HARD FAILURE"                                  "1|true" "$rc|$(has 'HARD FAILURE' "$err")"
+_rmut relleafdown2 's/(\.moved < 0 or \.moved > \$s)/(.moved < 0 or false)/' _rm
+R_BODY="$(r_rel 303 null 302 3 true)" rrun "$_rm" reorder --task 303 --down 1
+eq "control: with ONLY the down-too-far leaf removed, this reads as SUCCESS" "0" "$rc"
+# Each leaf mutant touches a textually disjoint substring — witness one cross-check: the
+# down-too-far mutant (just built) leaves the UP-too-far leg (row 5) working, unaffected.
+R_BODY="$(r_rel 303 null 302 -2 true)" rrun "$_rm" reorder --task 303 --up 1
+eq "…and a DIFFERENT row's own leaf is left working by this mutant"  "1" "$rc"
+
+echo "-- row 8: the contradiction invariant, both shapes clamped != (moved != steps) can take --"
+R_BODY="$(r_rel 303 null 302 -1 false)" kbc reorder --task 303 --up 2
+eq "row8a leg (clamped:false, moved != steps): rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
+eq "row8a leg: self-contradictory, NOT a HARD FAILURE"            "true|false" \
+   "$(has 'self-contradictory' "$err")|$(has 'HARD FAILURE' "$err")"
 R_BODY="$(r_rel 303 null 302 -1 true)" kbc reorder --task 303 --up 1
-eq "moved == steps but clamped=true → rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
-eq "…named self-contradictory, NOT a HARD FAILURE"                "true|false" \
+eq "row8b leg (clamped:true, moved == steps): rc 3 UNVERIFIED, nothing on stdout" "3|" "$rc|$out"
+eq "row8b leg: self-contradictory, NOT a HARD FAILURE"            "true|false" \
    "$(has 'self-contradictory' "$err")|$(has 'HARD FAILURE' "$err")"
 _rmut relcontradiction 's/^            elif .clamped != (.moved != \$s) then "contradiction"$/            elif false then "contradiction"/' _rm
+R_BODY="$(r_rel 303 null 302 -1 false)" rrun "$_rm" reorder --task 303 --up 2
+eq "control: row8a reads as SUCCESS with the contradiction check removed"  "0" "$rc"
 R_BODY="$(r_rel 303 null 302 -1 true)" rrun "$_rm" reorder --task 303 --up 1
-eq "control: with the contradiction check removed, this reply ALSO reads as SUCCESS" "0" "$rc"
+eq "control: row8b reads as SUCCESS with the SAME mutant"                  "0" "$rc"
+
+# Row 9 (else -> ok) has no guard to delete — a bare `else` is the terminal fallback, not a
+# branch that could be removed and leave a DIFFERENT terminal fallback behind. It is witnessed
+# throughout this file by every successful relative-move call, starting with "--up 1
+# --within-tag: rc 0" earlier in this section.
 
 echo "-- a board WITHOUT the relative keys: its own refusal surfaces, no client fallback --"
 R_HTTP=422 R_BODY='{"message":"Unknown field '"'"'steps'"'"' is not accepted by this endpoint.","errors":{"steps":["Unknown field '"'"'steps'"'"' is not accepted by this endpoint."]}}' \

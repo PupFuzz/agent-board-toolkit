@@ -166,7 +166,7 @@
 #     invocation costs no traffic, the posture --dl / --pr / --clear already take. --placement
 #     takes `top` or `bottom` and NOTHING else (rc 2, naming the two). --before-task /
 #     --after-task name an ANCHOR card to land the block against.
-#     REFUSED OFFLINE, nothing sent: no --ids at all; an --ids member that is visually BLANK
+#     REFUSED OFFLINE, nothing sent: NEITHER --ids NOR --task; an --ids member that is visually BLANK
 #     ("5,,6", "5,", "5, ,6") — a token naming no card is a caller mistake about WHICH cards are
 #     being ranked, and dropping it silently would land a DIFFERENT order at rc 0, which is the
 #     board's own reasoning for refusing it too; the SAME card named TWICE once the members are
@@ -2702,10 +2702,19 @@ cmd_reorder() {
     esac
 
     # GATE 3 — where the block landed AS A WHOLE, against the untouched cards bracketing it.
-    # ⚠ NOT APPLIED TO A SCOPED --push OR TO --up/--down: with --within-tag the cards above the
-    # scope's first card are outside the scope, so `before_task_id` may name any of them and
-    # there is no value to compare it to; a relative move names no target neighbour at all. Those
-    # are ruled on `meta.moved` below instead, and their bracket is reported, not compared.
+    # ⚠ card#10922 review round 3 (MINOR M2): THE TWO SKIPPED CASES DO NOT SKIP FOR THE SAME
+    # REASON OR LAND ON THE SAME RULING, and the comment here used to blur them together.
+    #   --up / --down (steps is set, scoped or not) name no target neighbour to compare a bracket
+    #     against at all — GATE 3 is skipped and GATE 4 below rules on `meta.moved`/`meta.clamped`
+    #     instead, which --push never sends.
+    #   A SCOPED --push (within is set, steps is NOT) has out-of-scope cards that may legitimately
+    #     sit above its first in-scope card, so `before_task_id` can name one with nothing to
+    #     compare it to — GATE 3 is skipped, but there is no GATE 4 ruling to swap it for either:
+    #     the bracket is merely REPORTED (the `--push`-scoped stderr line below), never compared.
+    #   AN UNSCOPED --push (steps and within both empty) is NOT skipped — `[[ -z "$steps" &&
+    #     -z "$within" ]]` is true for it too, so it is held to the top bracket exactly like
+    #     `--placement top`, and the test suite's "a card left above it IS a HARD FAILURE" leg is
+    #     this gate firing on a push, not an anchor form.
     local want_side="" want_val="" got_val=""
     if [[ -z "$steps" && -z "$within" ]]; then
         case "${placement:-anchor}" in
