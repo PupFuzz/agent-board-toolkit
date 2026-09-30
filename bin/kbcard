@@ -148,6 +148,7 @@
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --placement top|bottom
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --before-task ID-OR-EXT
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --after-task ID-OR-EXT
+#   kbcard reorder --task ID-OR-EXT --up N | --down N | --push [--within-tag TAG]
 #     RANK cards WITHIN one column — the one thing `move` cannot do (it decides the COLUMN and
 #     lets the card land wherever the board puts it). Writes ONLY `position`, so it can NEVER
 #     move a card between columns or swimlanes: `move` / `patch --column` own the column and
@@ -165,7 +166,7 @@
 #     invocation costs no traffic, the posture --dl / --pr / --clear already take. --placement
 #     takes `top` or `bottom` and NOTHING else (rc 2, naming the two). --before-task /
 #     --after-task name an ANCHOR card to land the block against.
-#     REFUSED OFFLINE, nothing sent: no --ids at all; an --ids member that is visually BLANK
+#     REFUSED OFFLINE, nothing sent: NEITHER --ids NOR --task; an --ids member that is visually BLANK
 #     ("5,,6", "5,", "5, ,6") — a token naming no card is a caller mistake about WHICH cards are
 #     being ranked, and dropping it silently would land a DIFFERENT order at rc 0, which is the
 #     board's own reasoning for refusing it too; the SAME card named TWICE once the members are
@@ -192,8 +193,9 @@
 #     {workflow_stage_id, before_task_id, after_task_id, renumbered,
 #      ranked: [{id, name, workflow_stage_id, swimlane_id, position}, …]}.
 #     ⭐ AND IT IS CONFIRMED, NOT ASSUMED — a 2xx is the server accepting the request, never the
-#     board holding the rank. THREE comparisons against the returned data, and they answer three
-#     DIFFERENT questions; read which is evidence of what, because they are not interchangeable:
+#     board holding the rank. GATE ONE, GATE TWO and GATE THREE below compare against the returned
+#     data, and each answers a DIFFERENT question; read which is evidence of what, because they
+#     are not interchangeable:
 #       GATE ONE, WHICH CARDS — the ids echoed must be the ids this call asked to rank, in that
 #          order. ⚠ THIS IS A CONSISTENCY CHECK, NOT EVIDENCE OF THE ACHIEVED ORDER. The board
 #          builds that collection from the request's OWN ordered id list, so it agrees with the
@@ -214,8 +216,49 @@
 #       claim in the half above from the `payload.repo` condition that discharges it further down,
 #       and reding that gate on a change that added no claim at all. Measured both ways.
 #     A 2xx carrying no readable collection or no meta is an UNVERIFIED WRITE at rc 3.
-#     ⚠ THAT SECOND COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK IT. It
-#     was read at the kanban tag the route shipped in: the brackets are DERIVED from the
+#     ⭐ RELATIVE MOVES — ONE card, moved from where it is now (card#10922): --task X --up N /
+#     --down N moves X N places; --push puts X first. Each is ONE request that the BOARD resolves
+#     under its stage lock (`steps`, negative up; --push is `placement: top`) — there is no
+#     client-side neighbour lookup, which would be two calls racing a concurrent reorder.
+#     --within-tag TAG narrows the siblings to X's column ∩ the cards tagged TAG (sent as the
+#     board's `within: tags:"TAG"`, the search grammar); without it the scope is X's column, as
+#     for every other form. Cards outside the scope are skipped over, never counted, and the card
+#     never leaves its column. ⚠ A `*` IN TAG IS A WILDCARD THERE, NOT A LITERAL CHARACTER: the
+#     board's QueryParser turns it into a LIKE `%` (applyTagGlob), so a tag containing one CANNOT
+#     be scoped exactly — it matches every tag that glob reaches, which can WIDEN the scope past
+#     what --within-tag TAG looks like it asks for.
+#     THE EDGES CLAMP: up past the top lands first, down past the bottom lands last, rc 0, with a
+#     stderr line naming the clamp and how far the card really moved — read from the board's
+#     `meta.clamped` / `meta.moved`, which ride stdout as two more keys. A card already at that
+#     edge is not moved, and — the board's own docblock is explicit that a clamped displacement
+#     of 0 must not be reported as a reorder — the CLAMPED line is the only stderr summary for
+#     that reply; the ordinary "N card(s) ranked …" line is skipped rather than describing a
+#     no-op in the vocabulary of a write that happened. stdout is unaffected either way: the same
+#     {meta, ranked} object, with the card's own unchanged position in `ranked`.
+#     --up 0 / --down 0 is a no-op: a stderr line, rc 0, NO request.
+#     ⭐ A SCOPED --push ON THE ONLY CARD CARRYING THE TAG GOES TO THE TOP OF THE WHOLE COLUMN, not
+#     merely to the top of a one-card scope: with no other in-scope sibling to land beside, the
+#     board's own resolveRelative falls back to the column's top, computed over EVERY card of the
+#     column, scope or not. The line this prints ("first among the cards … tagged TAG") stays true
+#     of that case — a set of one card has a first — and claims nothing beyond it.
+#     ⭐ --within-tag ON A CARD THAT DOES NOT CARRY THE TAG is the board's own 422 ("do not match
+#     within"), relayed at rc 1 like any other server refusal: a card is moved among the cards its
+#     scope selects, so it must be one of them, and the board checks that rather than trusting the
+#     flag typed here.
+#     REFUSED OFFLINE (rc 2, nothing sent): a TAG containing `"` (the filter cannot spell it —
+#     checked BEFORE --up 0 / --down 0 is read as a no-op, so a malformed scope is refused even on
+#     a call that would otherwise send nothing), N that is not digits (a sign included — `--up -2`
+#     is not read as down), more than 9 digits (--push names the up-to-the-top equivalent; --down
+#     gets its own hint, there being no --push for the bottom), --ids beside a relative form,
+#     --task beside an anchor form, and --within-tag beside an anchor form. RULED ON: moved/clamped
+#     absent or mistyped, OR clamped disagreeing with the board's own clamped = (moved != steps) —
+#     a reply BoardPositionService::resolveRelative cannot produce — is rc 3; a card that moved the
+#     wrong way or further than asked is rc 1 HARD FAILURE. A scoped --push's bracket is REPORTED,
+#     not compared — cards outside the tag may sit above it; an unscoped --push is held to the top
+#     bracket like --placement top. A board that predates these keys refuses them with its own
+#     422, relayed at rc 1 — there is no fallback.
+#     ⚠ GATE THREE'S BRACKET COMPARISON IS A CLAIM ABOUT ANOTHER REPO AND NOTHING HERE CAN CHECK
+#     IT. It was read at the kanban tag the route shipped in: the brackets are DERIVED from the
 #     positions actually written (BoardPositionService::bracketsAround — the last untouched card
 #     below the block and the first above it), not echoed back out of the request, which is
 #     exactly what makes them worth comparing against. A server build that changed that
@@ -2424,35 +2467,44 @@ _kbc_reorder_anchor_offline() {
 
 cmd_reorder() {
     local ids_raw="" placement="" before_ref="" after_ref=""
+    local task_ref="" up="" down="" push="" within_tag=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --ids)         kb_require_value "$1" "${2:-}" || return 2; ids_raw="$2"; shift 2 ;;
             --placement)   kb_require_value "$1" "${2:-}" || return 2; placement="$2"; shift 2 ;;
             --before-task) kb_require_value "$1" "${2:-}" || return 2; before_ref="$2"; shift 2 ;;
             --after-task)  kb_require_value "$1" "${2:-}" || return 2; after_ref="$2"; shift 2 ;;
+            --task)        kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
+            --up)          kb_require_value "$1" "${2:-}" || return 2; up="$2"; shift 2 ;;
+            --down)        kb_require_value "$1" "${2:-}" || return 2; down="$2"; shift 2 ;;
+            --within-tag)  kb_require_value "$1" "${2:-}" || return 2; within_tag="$2"; shift 2 ;;
+            --push)        push=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
     done
-    [[ -n "$ids_raw" ]] || {
-        echo "kbcard: reorder requires --ids \"<id-or-ext>[,<id-or-ext>...]\" — the cards to rank, in the order they should end up in" >&2
+    [[ -n "$ids_raw" || -n "$task_ref" ]] || {
+        echo "kbcard: reorder requires --ids \"<id-or-ext>[,<id-or-ext>...]\" — the cards to rank, in the order they should end up in — or --task <id-or-ext> with --up N / --down N / --push to move ONE card relative to where it is" >&2
         return 2
     }
 
-    # EXACTLY ONE PLACEMENT, decided before anything is resolved or sent. The three are three
-    # ways to say WHERE the block lands, so a call naming two states two different positions for
-    # it and a call naming none states no position at all — neither is a request this tool can
-    # complete, and relaying either to the server would spend a round trip to be told what is
-    # already knowable from argv.
+    # EXACTLY ONE PLACEMENT, decided before anything is resolved or sent. --placement,
+    # --before-task, --after-task, --up, --down and --push are each a different way to say WHERE
+    # the card(s) land, so a call naming two states two different positions and a call naming none
+    # states no position at all — neither is a request this tool can complete, and relaying either
+    # to the server would spend a round trip to be told what is already knowable from argv.
     local given="" n_given=0
     [[ -n "$placement" ]]  && { given="$given --placement";   n_given=$((n_given + 1)); }
     [[ -n "$before_ref" ]] && { given="$given --before-task"; n_given=$((n_given + 1)); }
     [[ -n "$after_ref" ]]  && { given="$given --after-task";  n_given=$((n_given + 1)); }
+    [[ -n "$up" ]]         && { given="$given --up";          n_given=$((n_given + 1)); }
+    [[ -n "$down" ]]       && { given="$given --down";        n_given=$((n_given + 1)); }
+    [[ -n "$push" ]]       && { given="$given --push";        n_given=$((n_given + 1)); }
     if [[ "$n_given" -eq 0 ]]; then
-        echo "kbcard: reorder requires EXACTLY ONE placement and got none — pass --placement top|bottom, --before-task <id-or-ext> or --after-task <id-or-ext>. A rank with nothing to land against states no position at all, so nothing was sent" >&2
+        echo "kbcard: reorder requires EXACTLY ONE placement and got none — pass --placement top|bottom, --before-task <id-or-ext> or --after-task <id-or-ext> with --ids, or --up N, --down N or --push with --task. A rank with nothing to land against states no position at all, so nothing was sent" >&2
         return 2
     fi
     if [[ "$n_given" -gt 1 ]]; then
-        echo "kbcard: reorder takes EXACTLY ONE placement and got$given — they are three ways to say where the block lands, and a call naming more than one states more than one position for it. Nothing was sent" >&2
+        echo "kbcard: reorder takes EXACTLY ONE placement and got$given — they are different ways to say where the card(s) land, and a call naming more than one states more than one position. Nothing was sent" >&2
         return 2
     fi
     if [[ -n "$placement" && "$placement" != "top" && "$placement" != "bottom" ]]; then
@@ -2460,13 +2512,89 @@ cmd_reorder() {
         return 2
     fi
 
+    # THE TWO FAMILIES TAKE DIFFERENT SUBJECTS. The anchor forms place a BLOCK (--ids); the
+    # relative forms move ONE card from where it is now (--task) — the board's `steps` refuses
+    # more than one id, and a block has no single "where it is now" to count places from.
+    local relative="" rel_flag=""
+    [[ -n "$up" ]]   && rel_flag="--up"
+    [[ -n "$down" ]] && rel_flag="--down"
+    [[ -n "$push" ]] && rel_flag="--push"
+    [[ -n "$rel_flag" ]] && relative=1
+    if [[ -n "$relative" ]]; then
+        if [[ -n "$ids_raw" ]]; then
+            echo "kbcard: reorder $rel_flag moves ONE card and takes --task <id-or-ext>, not --ids — to rank a block use --ids with --placement/--before-task/--after-task. Nothing was sent" >&2
+            return 2
+        fi
+    else
+        if [[ -n "$task_ref" ]]; then
+            echo "kbcard: reorder --task goes with --up N, --down N or --push (one card, moved relative to where it is); --placement/--before-task/--after-task place a block and take --ids. Nothing was sent" >&2
+            return 2
+        fi
+        if [[ -n "$within_tag" ]]; then
+            echo "kbcard: reorder --within-tag scopes --up, --down and --push only — --placement/--before-task/--after-task do not take it. Nothing was sent" >&2
+            return 2
+        fi
+    fi
+
+    # --within-tag T becomes the board's `within: tags:"T"` — the search grammar's quoted tag
+    # token, which has no escape for a `"`. A tag carrying one cannot be spelled as a scope at all,
+    # so it is refused here rather than sent as a filter that means something else. ⛔ CHECKED
+    # BEFORE the --up 0 / --down 0 no-op below is reached: a malformed scope is a caller mistake
+    # about WHAT is being asked, independent of whether the count asked for happens to be zero, so
+    # `--up 0 --within-tag 'a"b'` is rc 2 (nothing sent), never rc 0 (a no-op that quietly accepted
+    # an unspellable scope).
+    local within=""
+    if [[ -n "$within_tag" ]]; then
+        if [[ "$within_tag" == *'"'* ]]; then
+            echo "kbcard: reorder --within-tag '$within_tag' contains a double quote, which the board's tags:\"…\" filter cannot carry. Nothing was sent" >&2
+            return 2
+        fi
+        within="tags:\"$within_tag\""
+    fi
+
+    # --up/--down N: a count of places, so a non-negative decimal integer and nothing else. A sign
+    # is refused rather than read — `--up -2` would otherwise mean "down 2" under a flag that says
+    # up. Nine digits is past any column's length (the board clamps at the edge anyway); the cap
+    # keeps the value an integer jq and the board both hold exactly. kb_ere_match, not a bare
+    # `=~`: a bracket range outside the C locale is not ASCII digits on every seat.
+    local steps="" n_raw="${up:-$down}"
+    if [[ -n "$up" || -n "$down" ]]; then
+        if ! kb_ere_match "$n_raw" '^[0-9]+$'; then
+            echo "kbcard: reorder $rel_flag takes a number of places (0 or more, digits only), got '$n_raw'. Nothing was sent" >&2
+            return 2
+        fi
+        n_raw="${n_raw#"${n_raw%%[!0]*}"}"
+        if [[ ${#n_raw} -gt 9 ]]; then
+            # The hint names THIS direction's own way to reach the edge in one call — --push is
+            # `placement: top` and has no bottom counterpart, so a --down overrun pointed at it
+            # would send the reader the wrong way. --ids takes the SAME ID-OR-EXT --task does.
+            local edge_hint
+            if [[ -n "$up" ]]; then
+                edge_hint="to put the card first use --push"
+            else
+                edge_hint="to put the card last use --ids $task_ref --placement bottom — there is no --down counterpart of --push"
+            fi
+            echo "kbcard: reorder $rel_flag ${up:-$down} is more places than any column holds — $edge_hint; the board clamps at either edge. Nothing was sent" >&2
+            return 2
+        fi
+        if [[ -z "$n_raw" ]]; then
+            echo "kbcard: reorder: $rel_flag 0 moves card '$task_ref' by 0 places — nothing to do, so nothing was sent." >&2
+            return 0
+        fi
+        if [[ -n "$up" ]]; then steps="-$n_raw"; else steps="$n_raw"; fi
+    fi
+
     # The members are split and BLANK-refused offline, then resolved one by one. A blank member
     # is refused rather than dropped for the board's own reason: a token naming no card is a
     # mistake about WHICH cards are being ranked, and silently dropping it lands a DIFFERENT
     # order at rc 0. Trimming first matches what the board does to the same list, so a spelling
-    # it accepts is not refused here on whitespace alone.
+    # it accepts is not refused here on whitespace alone. A relative form has no list: its one
+    # card is --task, through the same resolver, and the loop is skipped.
     local ids_csv="" rest="$ids_raw" ref id
-    while :; do
+    if [[ -n "$relative" ]]; then
+        ids_csv="$(resolve_task "$task_ref")" || return 1
+    fi
+    while [[ -z "$relative" ]]; do
         ref="$(_kbc_trim_blank "${rest%%,*}")"
         if [[ -z "$ref" ]]; then
             echo "kbcard: reorder --ids '$ids_raw' has a member that names no card — every member must be a task id or an external id. Nothing was sent (dropping it would rank a DIFFERENT set of cards than you asked for)" >&2
@@ -2486,9 +2614,17 @@ cmd_reorder() {
         rest="${rest#*,}"
     done
 
+    # --push IS placement top among its scope's cards, so it is sent as exactly that and ruled on
+    # by the same gates below; it is its own flag because it names ONE card (--task) and takes a
+    # scope. --up/--down are the board's `steps`, negative up.
+    [[ -n "$push" ]] && placement="top"
     local body anchor=""
-    if [[ -n "$placement" ]]; then
-        body="$(jq -n --arg ids "$ids_csv" --arg p "$placement" '{ids: $ids, placement: $p}')"
+    if [[ -n "$steps" ]]; then
+        body="$(jq -n --arg ids "$ids_csv" --argjson s "$steps" --arg w "$within" \
+            '{ids: $ids, steps: $s} + (if $w == "" then {} else {within: $w} end)')"
+    elif [[ -n "$placement" ]]; then
+        body="$(jq -n --arg ids "$ids_csv" --arg p "$placement" --arg w "$within" \
+            '{ids: $ids, placement: $p} + (if $w == "" then {} else {within: $w} end)')"
     elif [[ -n "$before_ref" ]]; then
         anchor="$(resolve_task "$before_ref")" || return 1
         _kbc_reorder_anchor_offline "$anchor" "$ids_csv" "$before_ref" --before-task || return 2
@@ -2534,8 +2670,8 @@ cmd_reorder() {
         return 1
     fi
 
-    # ⭐ GATE 2 — THE ONLY GATE THAT MEASURES THE ORDER INSIDE THE BLOCK, and the reason the
-    # other two cannot. `--ids` states a TARGET ORDER; gate 1 restates the request (above) and
+    # ⭐ GATE 2 — THE ONLY GATE THAT MEASURES THE ORDER INSIDE THE BLOCK, and the reason
+    # GATE 1 and GATE 3 cannot. `--ids` states a TARGET ORDER; gate 1 restates the request (above) and
     # gate 3 rules on where the block landed AS A WHOLE (the brackets). Neither says anything
     # about the order of the cards WITHIN it. `position` is the one value in this response that
     # the request never supplied at any point — it is computed from the column's live coordinates
@@ -2566,23 +2702,101 @@ cmd_reorder() {
     esac
 
     # GATE 3 — where the block landed AS A WHOLE, against the untouched cards bracketing it.
-    local want_side want_val got_val
-    case "${placement:-anchor}" in
-        top)    want_side="before_task_id"; want_val="null"     ;;
-        bottom) want_side="after_task_id";  want_val="null"     ;;
-        *)      if [[ -n "$before_ref" ]]; then want_side="after_task_id"; else want_side="before_task_id"; fi
-                want_val="$anchor" ;;
-    esac
-    got_val="$(jq -r --arg k "$want_side" '.[$k] // "null"' <<<"$meta")"
-    if [[ "$got_val" != "$want_val" ]]; then
+    # ⚠ card#10922 review round 3 (MINOR M2): THE TWO SKIPPED CASES DO NOT SKIP FOR THE SAME
+    # REASON OR LAND ON THE SAME RULING, and the comment here used to blur them together.
+    #   --up / --down (steps is set, scoped or not) name no target neighbour to compare a bracket
+    #     against at all — GATE 3 is skipped and GATE 4 below rules on `meta.moved`/`meta.clamped`
+    #     instead, which --push never sends.
+    #   A SCOPED --push (within is set, steps is NOT) has out-of-scope cards that may legitimately
+    #     sit above its first in-scope card, so `before_task_id` can name one with nothing to
+    #     compare it to — GATE 3 is skipped, but there is no GATE 4 ruling to swap it for either:
+    #     the bracket is merely REPORTED (the `--push`-scoped stderr line below), never compared.
+    #   AN UNSCOPED --push (steps and within both empty) is NOT skipped — `[[ -z "$steps" &&
+    #     -z "$within" ]]` is true for it too, so it is held to the top bracket exactly like
+    #     `--placement top`, and the test suite's "a card left above it IS a HARD FAILURE" leg is
+    #     this gate firing on a push, not an anchor form.
+    local want_side="" want_val="" got_val=""
+    if [[ -z "$steps" && -z "$within" ]]; then
+        case "${placement:-anchor}" in
+            top)    want_side="before_task_id"; want_val="null"     ;;
+            bottom) want_side="after_task_id";  want_val="null"     ;;
+            *)      if [[ -n "$before_ref" ]]; then want_side="after_task_id"; else want_side="before_task_id"; fi
+                    want_val="$anchor" ;;
+        esac
+        got_val="$(jq -r --arg k "$want_side" '.[$k] // "null"' <<<"$meta")"
+    fi
+    if [[ -n "$want_side" && "$got_val" != "$want_val" ]]; then
         echo "kbcard: reorder on ids $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports the block landed with $want_side=$got_val, where this call asked for $want_side=$want_val. The status is not the placement; the read-back is. The cards WERE ranked — they are just not where this call asked — so re-read the column before re-issuing. The board's own meta: $meta" >&2
         return 1
+    fi
+
+    # GATE 4 — a RELATIVE move, ruled on the `meta.moved` / `meta.clamped` the board answers a
+    # `steps` request with (signed like `steps`). They are the only record of how far the card
+    # went: absent or not an integer/boolean is rc 3, and a displacement in the wrong direction or
+    # past the one asked for is a measurement that the card did NOT move as asked — rc 1. A clamp
+    # is not a failure: the board lands the card at the edge of its scope and says so, and so does
+    # this line (rc 0).
+    #
+    # ⭐ THE FOURTH BRANCH IS NOT A MEASUREMENT OF THE MOVE — IT IS AN INVARIANT OF THE REPLY
+    # ITSELF. `BoardPositionService::resolveRelative` sets `clamped = (moved != steps)` — it is
+    # the ONE place that value is computed, so any reply where that equation does not hold is one
+    # the board's own code cannot produce. That is not "the card moved wrong" (rc 1, a claim
+    # about the WRITE); it is "this reply cannot be trusted to say what the write did" (rc 3,
+    # UNVERIFIED), because whichever half is wrong — clamped or moved — is not knowable from here.
+    # Checked AFTER overrun, not before: overrun is a stronger, more specific claim (the board
+    # reported a displacement outside what was asked at all), and a reply failing both is reported
+    # as the more specific failure rather than the generic self-contradiction.
+    if [[ -n "$steps" ]]; then
+        local rel_verdict
+        rel_verdict="$(jq -r --argjson s "$steps" '
+            if (.moved | type) != "number" or (.clamped | type) != "boolean" then "unread"
+            elif (.moved | . != floor) then "unread"
+            elif ($s < 0 and (.moved > 0 or .moved < $s)) or ($s > 0 and (.moved < 0 or .moved > $s)) then "overrun"
+            elif .clamped != (.moved != $s) then "contradiction"
+            else "ok" end' <<<"$meta")"
+        case "$rel_verdict" in
+            ok) ;;
+            unread)
+                _kbc_unverified reorder "on task $ids_csv" "The PUT answered 2xx and its meta carries no integer moved and boolean clamped (got $(jq -c '{moved, clamped}' <<<"$meta")), so how far the card moved is UNMEASURED." || return $? ;;
+            contradiction)
+                _kbc_unverified reorder "on task $ids_csv" "The PUT answered 2xx and its meta is self-contradictory: clamped=$(jq -r '.clamped' <<<"$meta") but moved=$(jq -r '.moved' <<<"$meta") against steps=$steps, and the board's own rule is clamped = (moved != steps) — this reply is one BoardPositionService::resolveRelative cannot produce, so how far the card moved is UNMEASURED." || return $? ;;
+            overrun)
+                echo "kbcard: reorder $rel_flag on task $ids_csv: HARD FAILURE — the PUT answered 2xx and the board reports moved=$(jq -r '.moved' <<<"$meta"), where this call asked for steps=$steps (at most that many places, in that direction). The status is not the move; the read-back is. Re-read the column before re-issuing. The board's own meta: $meta" >&2
+                return 1 ;;
+        esac
+        local dir="down" edge="last" n_asked="$steps" n_moved scope="its column"
+        [[ "$steps" == -* ]] && { dir="up"; edge="first"; n_asked="${steps#-}"; }
+        n_moved="$(jq -r 'if .moved < 0 then -.moved else .moved end' <<<"$meta")"
+        [[ -n "$within_tag" ]] && scope="the cards of its column tagged '$within_tag'"
+        if [[ "$(jq -r '.clamped' <<<"$meta")" == "true" ]]; then
+            if [[ "$n_moved" == "0" ]]; then
+                echo "kbcard: reorder: $rel_flag $n_asked CLAMPED — card $ids_csv is already $edge among $scope, so it did not move and nothing was written." >&2
+            else
+                echo "kbcard: reorder: $rel_flag $n_asked CLAMPED — card $ids_csv moved $dir $n_moved place(s), not $n_asked, and is now $edge among $scope." >&2
+            fi
+        else
+            echo "kbcard: reorder: card $ids_csv moved $dir $n_moved place(s) among $scope." >&2
+        fi
+    elif [[ -n "$within" ]]; then
+        echo "kbcard: reorder: --push put card $ids_csv first among the cards of its column tagged '$within_tag'. The bracket below is reported, not compared: cards outside that tag may sit above it." >&2
     fi
 
     if [[ "$(jq -r '.renumbered' <<<"$meta")" == "true" ]]; then
         echo "kbcard: reorder: the board reports renumbered=true — the stage's position COORDINATES were re-spaced onto an even ladder because the gap between two neighbours was exhausted. NO card's rank changed by it — the re-spaced cards kept their order and are NOT in the list below, which is the cards THIS call ranked — and the board records it as ONE lane.cards_renumbered event rather than as N moves." >&2
     fi
-    echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
+    # ⛔ A CLAMPED steps REQUEST WHOSE DISPLACEMENT IS 0 IS NOT ANNOUNCED AS A REORDER — the
+    # server's own docblock (BoardPositionService::placeInStage) says so in those words: nothing
+    # was written, `positions` is the card's CURRENT coordinate, and the caller must not report it
+    # as a move. The CLAMPED line above already said "did not move and nothing was written"; a
+    # second line below reading "N card(s) ranked … landing between …" would describe the same
+    # no-op in the vocabulary of a write that happened. stdout is UNCHANGED either way — the same
+    # {meta + ranked} object, with the card's own unchanged position in `ranked` — only this one
+    # stderr line is skipped for this one case.
+    if [[ -n "$steps" && "$n_moved" == "0" ]]; then
+        :
+    else
+        echo "kbcard: reorder: $(jq 'length' <<<"$ranked") card(s) ranked in stage $(jq -r '.workflow_stage_id' <<<"$meta") — read back from the board's own returned collection, landing between card $(jq -r '.before_task_id // "none"' <<<"$meta") and card $(jq -r '.after_task_id // "none"' <<<"$meta")." >&2
+    fi
     # Assembled then `printf`-ed, the spelling every other verb here ends on — not a `jq` writing
     # straight to stdout. Two reasons, and neither is style: the write's own emission is then on
     # the same line-oriented idiom the rest of this file uses, and `readback-before-success
