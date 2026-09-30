@@ -8,6 +8,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Added
 
+- **card#10924** — **`kbcard patch --add-tags a,b` / `--remove-tags c` change a card's tag list in place**, through the board's server-side `add_tags` / `remove_tags` keys (kanban card#10923), instead of replacing the whole list the way `--tags` does. The board applies the delta to the stored list under a lock on the card, so a tag another writer added meanwhile is kept; there is no client-side read-merge-write fallback. Each value is one comma list, split as `--tags` splits it, and takes `--tags`' text-free refusal (`rc 2` before any request). Either flag beside `--tags` or `--type` is `rc 2` before any request; beside `--triaged`, `triaged` rides `add_tags`. The write echo shows the resulting `tags`. README § `kbcard patch --add-tags / --remove-tags` owns the rules.
+  - **[host] ⚠ Needs a kanban that has card#10923.** A board without it refuses the keys `422 Unknown field 'add_tags'` — `rc 1`, nothing written; it cannot silently ignore them (kanban's task `PATCH` rejects every unknown key before writing, DL-160). Existing flags are unchanged.
+  - **[vendor]** Re-vendor `bin/kbcard`. `bin/_kb-board-lib.sh` is unchanged.
+
 - **card#10868** — **`kbcard owner-migrate [--apply]`: the one-time move off the retired `owner:<project>/<seat>` tag.** It classifies every card on the board that carries an owner tag as `migratable` (one tag, no assignee, and the tag's seat maps to a kanban user through the coord roster), `unmapped`, `ambiguous` or `assigned`. It prints one JSON object whose `counts.tag_only` is the number of cards still carrying ONLY the tag — the figure the tag readers' deletion waits on — and says it in words on stderr. **A dry run by default; nothing is written.** `--apply` writes `{assigned_user_id}` alone to each migratable card, after a fresh read that skips any card assigned since the scan, and reports each from a read-back. It never removes a tag. Rules: README § The card owner, *Migrating off the owner tag*; exit codes: the verb's `kbcard` help block.
 
 ### Changed
