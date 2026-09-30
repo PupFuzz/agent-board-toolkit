@@ -1048,6 +1048,41 @@ eq "--tags spares the read"             "PATCH"              "$(reqs)"
 eq "--tags + --triaged appends triaged" '["a","b","triaged"]' "$(pb --tags a,b --triaged | jq -c '.tags')"
 eq "no tag flag → tags key ABSENT"      "false"              "$(pb --dl DL-7 | jq 'has("tags")')"
 
+echo "-- --add-tags / --remove-tags: the SERVER's delta keys, no read, no whole list (card#10924) --"
+# The board applies add_tags / remove_tags to the list as STORED, under a lock (kanban card#10923).
+# A read here would be the racy read-merge-write the keys replace, so the request log must be a
+# lone PATCH and the body must carry no `tags` — the board 422s `tags` beside a delta key.
+_CUR_TAGS='["held"]'
+b="$(pb --add-tags a,b)"
+eq "--add-tags sends add_tags, split on commas"   '{"add_tags":["a","b"]}'   "$(jq -c '{add_tags}' <<<"$b")"
+eq "--add-tags issues no read"                     "PATCH"                    "$(reqs)"
+eq "--add-tags sends no tags key"                  "false"                    "$(jq 'has("tags") or has("remove_tags")' <<<"$b")"
+b="$(pb --remove-tags c)"
+eq "--remove-tags sends remove_tags"               '{"remove_tags":["c"]}'    "$(jq -c '{remove_tags}' <<<"$b")"
+eq "--remove-tags issues no read"                  "PATCH"                    "$(reqs)"
+eq "--remove-tags sends no tags key"               "false"                    "$(jq 'has("tags") or has("add_tags")' <<<"$b")"
+eq "both flags → both keys, one PATCH" \
+   '{"add_tags":["a"],"remove_tags":["c","d"]}' "$(pb --add-tags a --remove-tags c,d | jq -c '{add_tags,remove_tags}')"
+eq "…and still no read"                            "PATCH"                    "$(reqs)"
+# --triaged only ever adds, so beside a delta it rides add_tags rather than forcing the read.
+b="$(pb --add-tags x --triaged)"
+eq "--add-tags + --triaged → triaged rides add_tags" '["x","triaged"]'        "$(jq -c '.add_tags' <<<"$b")"
+eq "…with no read and no tags key"                 "PATCH false"              "$(reqs) $(jq 'has("tags")' <<<"$b")"
+eq "--remove-tags + --triaged → triaged is an add" '{"add_tags":["triaged"],"remove_tags":["c"]}' \
+   "$(pb --remove-tags c --triaged | jq -c '{add_tags,remove_tags}')"
+# Either flag beside a whole-list writer is refused offline, naming the flag the caller passed.
+for _df in --add-tags --remove-tags; do
+    for _other in "--tags y" "--type task"; do
+        : > "$_REQ_LOG"
+        rc=0; err="$(cmd_patch --task 99 "$_df" x $_other 2>&1 >/dev/null)" || rc=$?
+        eq "$_df + ${_other%% *} → rc 2"               "2"    "$rc"
+        eq "$_df + ${_other%% *} → names both flags"   "true" "$(has "$_df and ${_other%% *} are mutually exclusive" "$err")"
+        eq "$_df + ${_other%% *} → NO request"         ""     "$(reqs)"
+    done
+done
+unset _df _other
+_CUR_TAGS='[]'
+
 echo "-- --triaged keeps the card's existing tag ORDER (it no longer sorts) --"
 # `unique` re-sorted every tag a card carried on an unrelated --triaged patch. First-seen
 # order is what create-card writes, so both writers now agree.
@@ -1319,7 +1354,8 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # would re-assert one primitive 27 times. What the gate buys is that a 28th flag cannot join
 # either list without an explicit edit here, which is the review moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
-             --name --tags --type --external-id --origin --task --assign --block-reason --clear)
+             --name --tags --add-tags --remove-tags --type --external-id --origin --task --assign
+             --block-reason --clear)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1334,7 +1370,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --type --external-id --origin --assign --block-reason --clear; do
+         --name --tags --add-tags --remove-tags --type --external-id --origin --assign --block-reason --clear; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -4788,12 +4824,12 @@ echo "== --tags — a visually blank value is refused, not sent (card#9421) =="
 # leg reds in both directions, so a verb gaining `--tags` cannot land undriven here.
 TAGS_VERBS=(create-card patch)
 
-# _tags_verbs <bin> — the verbs (cmd_<verb> functions) that parse a --tags flag.
+# _tags_verbs <bin> [flag] — the verbs (cmd_<verb> functions) that parse <flag> (default --tags).
 _tags_verbs() {
-    awk '
+    awk -v flag="${2:---tags}" '
     /^cmd_[a-z_]+[(][)] [{]/ { fn = $1; sub(/[(][)].*$/, "", fn); next }
     /^}/ { fn = "" }
-    fn != "" && /^[[:space:]]+--tags[)] / { sub(/^cmd_/, "", fn); gsub(/_/, "-", fn); print fn }
+    fn != "" && $0 ~ ("^[[:space:]]+" flag "[)] ") { sub(/^cmd_/, "", fn); gsub(/_/, "-", fn); print fn }
     ' "$1" | LC_ALL=C sort -u
 }
 _tv_derived="$(_tags_verbs "$BIN" | tr '\n' ' ')"
@@ -4878,8 +4914,59 @@ for _verb in "${TAGS_VERBS[@]}"; do
        "$(tg_expect "$_verb" '["","a"]')" "$(tg_tags)"
 done
 
-unset -f tg tg_tags tg_expect kb_stub_route _tags_verbs
-unset TG_CARD TG_METHOD TG_PATH TG_BLANKS TAGS_VERBS
+echo "-- --add-tags / --remove-tags take --tags' refusal, and split the same way (card#10924) --"
+# Only patch takes them: the board refuses the delta keys on create. Derived, so a verb gaining
+# either flag reds here until it is driven.
+for _df in --add-tags --remove-tags; do
+    eq "$_df is parsed by patch alone" "patch " "$(_tags_verbs "$BIN" "$_df" | tr '\n' ' ')"
+done
+# tg_delta <flag> — the list the PATCH sent under that flag's key.
+tg_delta() { kb_stub_bodies PATCH '/tasks/505.json' | jq -c --arg k "${1#--}" '.[$k | sub("-"; "_")]'; }
+for _df in --add-tags --remove-tags; do
+    for _b in "${TG_BLANKS[@]}"; do
+        _bn="$(jq -cn --arg s "$_b" '$s')"
+        tg patch "$_df" "$_b"
+        eq "patch $_df $_bn → rc 2"                         "2"    "$rc"
+        eq "patch $_df $_bn → refused as holding no text"   "true" "$(has "$_df holds no" "$err")"
+        eq "patch $_df $_bn → issues NO request"            "0"    "$(kb_stub_total)"
+    done
+    # POSITIVE CONTROLS, the same values the --tags legs above send, landing under the delta key.
+    tg patch "$_df" '  padded , x '
+    eq "patch $_df padded text → rc 0"                      "0" "$rc"
+    eq "patch $_df padded text → padding survives the split" '["  padded "," x "]' "$(tg_delta "$_df")"
+    tg patch "$_df" $'\xc2\xa0'
+    eq "patch $_df U+00A0-only → sent verbatim" "$(jq -cn --arg s $'\xc2\xa0' '[$s]')" "$(tg_delta "$_df")"
+    tg patch "$_df" 'a, ,b'
+    eq "patch $_df 'a, ,b' → the blank member is still sent" '["a"," ","b"]' "$(tg_delta "$_df")"
+    tg patch "$_df" 'a,'
+    eq "patch $_df 'a,' → the empty trailing member is still sent" '["a",""]' "$(tg_delta "$_df")"
+    # One lookup (the ext ref) and the PATCH: the delta costs no tag read.
+    tg patch "$_df" a
+    eq "patch $_df → no tag read (only the ref lookup and the PATCH)" "0 1" \
+       "$(kb_stub_count GET '/tasks/505.json') $(kb_stub_count PATCH '/tasks/505.json')"
+    eq "patch $_df → the echo shows the card's resulting tags" '["keep"]' "$(jq -c '.tags' <<<"$out")"
+done
+tg patch --name probe2
+eq "control: a patch touching no tag echoes no tags" "false" "$(jq 'has("tags")' <<<"$out")"
+
+echo "-- a kanban that predates the delta keys refuses them LOUDLY: rc 1, nothing reported written --"
+# Measured in kanban-board's source, not assumed: TaskMutator::validateTaskInput runs
+# ValidatesStrictKeys::validateStrictArray FIRST in the update, so a board without card#10923
+# answers `422 Unknown field 'add_tags'` before any write — it never silently drops the key.
+kb_stub_route() {
+    case "$1 $2" in
+        "GET "*/tasks/search.json*) printf '200\n{"data":[{"id":505}]}' ;;
+        "PATCH "*/tasks/*.json)     printf '422\n%s' '{"message":"Unknown field '"'"'add_tags'"'"' is not accepted by this endpoint.","errors":{"add_tags":["Unknown field '"'"'add_tags'"'"' is not accepted by this endpoint."]}}' ;;
+    esac
+}
+export -f kb_stub_route
+tg patch --add-tags a
+eq "pre-delta board: --add-tags → rc 1"                     "1"    "$rc"
+eq "…prints nothing on stdout (no echo claiming a write)"   ""     "$out"
+eq "…and the board's refusal names the key"                 "true" "$(has "Unknown field 'add_tags'" "$err")"
+
+unset -f tg tg_tags tg_expect tg_delta kb_stub_route _tags_verbs
+unset TG_CARD TG_METHOD TG_PATH TG_BLANKS TAGS_VERBS _df
 unset _verb _b _bn _tv_derived
 
 echo "== move --stamp-owner, and the terminal owner-tag clear — the seat owner tag =="

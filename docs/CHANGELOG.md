@@ -6,6 +6,12 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **card#10924** — **`kbcard patch --add-tags a,b` / `--remove-tags c` change a card's tag list in place**, through the board's server-side `add_tags` / `remove_tags` keys (kanban card#10923), instead of replacing the whole list the way `--tags` does. The board applies the delta to the stored list under a lock on the card, so a tag another writer added meanwhile is kept; there is no client-side read-merge-write fallback. Each value is one comma list, split as `--tags` splits it, and takes `--tags`' text-free refusal (`rc 2` before any request). The match against the stored list is exact and case-sensitive, but only after the board's own `TrimStrings`/`ConvertEmptyStringsToNull` normalization runs (no exemption for these keys), so a member is trimmed before comparison and one left blank by trimming arrives as `null` and is refused (`422`, `rc 1`, nothing written). Either flag beside `--tags` or `--type` is `rc 2` before any request; beside `--triaged`, `triaged` rides `add_tags`. The write echo shows the resulting `tags`. README § `kbcard patch --add-tags / --remove-tags` owns the rules.
+  - **[host] ⚠ Needs a kanban that has card#10923.** A board without it refuses the keys `422 Unknown field '<key>'` (`add_tags` or `remove_tags`, whichever was sent) — `rc 1`, nothing written; it cannot silently ignore them (kanban's task `PATCH` rejects every unknown key before writing, DL-160). Existing flags are unchanged.
+  - **[vendor]** Re-vendor `bin/kbcard`. `bin/_kb-board-lib.sh` is unchanged.
+
 ### Fixed
 
 - **card#10353** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## What & why` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
