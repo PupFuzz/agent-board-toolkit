@@ -25,8 +25,8 @@ jobs:
     # nothing until card#5767, and that 3 of the 24 cards merged since v0.23.1 had skipped.
     #
     # Deliberately its OWN job, not a `selftest` matrix entry, for a mechanical reason: the
-    # obligation set comes from `git log <last release tag>..HEAD`, which needs full history
-    # AND tags — the matrix job checks out at the default depth 1, whose truncated history
+    # obligation set comes from the commits since the last release tag that the tag has not
+    # already shipped (card#11034), which needs full history AND tags — the matrix job checks out at the default depth 1, whose truncated history
     # resolves no tag at all, so the selftest would refuse to run rather than pass blindly.
     # Being named in this `run:` block satisfies ci-matrix-parity's one rule.
     runs-on: ubuntu-latest
