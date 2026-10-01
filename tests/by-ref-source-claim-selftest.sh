@@ -495,6 +495,16 @@ BSC_DISPOSED=(
     #    the URL order after it; its "source-only placeholder" is the `.../pull/0` URL naming a
     #    repo and no pull request. A re-vendor moves the digest, so the ruling is re-made then.
     "tests/vendored/agent-webhook-bridge/pr-url-ref-parity-corpus.json::The behavioural corpus for the bridge::2322ffa7a610"
+    # ── VENDORED FRAMEWORK BYTES: coord's PR-body linter, held BYTE-IDENTICAL under the sha256
+    #    lines of `.github/pr-body-lint/PIN` and not editable here. These passages rule on what a
+    #    PR BODY may carry (a `Scope line` row, AI-attribution lines, a session link); the `card`
+    #    they name is a `card#` citation, and none says anything about a card's by-ref source,
+    #    payload.repo or the URL order. A re-vendor moves the digests, so the ruling is re-made then.
+    ".github/pr-body-lint/pr-body-lint.py::heading-not-allowed the IN table, read as a closed set::231a450406d7"
+    ".github/pr-body-lint/pr-body-lint.py::as a CLOSED table of line shapes (card#10673)::f55d6ae0531c"
+    ".github/pr-body-lint/pr-body-lint.py::def rule_ai_attribution(rows):::6e2782fdaa7d"
+    ".github/pr-body-lint/pr-body-lint.py::standing instruction, and the shapes are the vendored::07f1f2b893f9"
+    ".github/pr-body-lint/pr-body-lint.selftest.py::E — THE CLI, WHICH IS WHAT CI AND THE REVIEW PATH ACTUALLY RUN::01dfefd4e996"
 
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control
     #    fixture. The fixture MUST be reportable — that is its job — and the other two cannot
