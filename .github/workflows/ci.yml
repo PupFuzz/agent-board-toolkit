@@ -234,8 +234,9 @@ jobs:
     #      belong in that list.
     #   2. fetch-depth: 0, WHICH THE MATRIX CANNOT GIVE IT. The matrix job has ONE shared
     #      checkout for all 44 entries, at the default depth 1. One subject —
-    #      `changelog-card-entry-selftest` — derives its obligation set from
-    #      `git log <last release tag>..HEAD` and REFUSES (rc 1) when no tag resolves, which is
+    #      `changelog-card-entry-selftest` — derives its obligation set from the commits since
+    #      the last release tag that the tag has not already shipped (card#11034), which needs
+    #      full history and tags, and REFUSES (rc 1) when no tag resolves, which is
     #      deliberate: it fails loud rather than passing blindly on a truncated history. Under
     #      a depth-1 checkout it therefore never runs, its containment is never measured, and
     #      this job's UNMEASURED leg correctly reds — which is exactly what happened on the
