@@ -55,10 +55,11 @@
 # merged-omission case above. The workflow subscribes `edited` for that reason.
 #
 # WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest properties the assertions support. One:
-# every `card#NNNN` appearing in a commit subject since the last release tag also appears at
-# the head of some bullet in the sections ABOVE that tag's section. Two: no card in that region
-# carries two line-initial bullets that a SINGLE PR put there and left standing UNDER ONE `###`
-# HEADING (card#10176 — a card's `### Added` bullet and its `### Changed` BREAKING bullet are two
+# every `card#NNNN` appearing in the subject of an UNRELEASED commit since the last release tag
+# (`_unreleased` owns "unreleased": not reachable from the tag, and not a copy of a commit that
+# is) also appears at the head of some bullet in the sections ABOVE that tag's section. Two: no
+# card in that region carries two line-initial bullets that a SINGLE PR put there and left
+# standing UNDER ONE `###` HEADING (card#10176 — a card's `### Added` bullet and its `### Changed` BREAKING bullet are two
 # claims of different KINDS about one change, which this repo's released sections have carried
 # since #180, and reporting that as a duplicate is what this leg used to do). Neither says
 # anything about whether a bullet's prose is accurate, current, or describes what shipped, and
@@ -126,6 +127,18 @@
 # branch was open, names the MOVE instead. It is a DIAGNOSTIC ONLY — the verdict is identical in
 # every shape, and a diagnosis that cannot be established prints the text this gate always printed.
 # `_prefold_heading` carries the three legs and the residuals they buy.
+#
+# "RELEASED" IS DECIDED BY PATCH AND PR IDENTITY, NOT BY REACHABILITY (card#11034). A release cut
+# by CHERRY-PICK — v0.41.0 was v0.40.0 plus four picked `dev` PRs — reaches the copies, not dev's
+# originals, so `$LAST_TAG..HEAD` alone made every picked card owe a second `[Unreleased]` bullet
+# from the moment `dev` merged the tag. A commit is released when its patch-id matches a commit in
+# the tag's history, OR its subject ends in a squash `(#N)` and is byte-identical to one there;
+# a subject without `(#N)` is never matched. ⛔ THE ONE WAY THIS GOES WRONG, accepted: a NEW commit
+# whose subject is byte-identical to a released squash subject, `(#N)` included, obliges nothing.
+# Only a hand-written subject copying an already-shipped PR's number reaches it, and patch-id
+# alone cannot clear the cherry-pick shape at all (context drift — measured: 1 of v0.41.0's 4
+# copies matched). `_unreleased` owns the rule, its bound and its residuals; the live leg prints
+# how many commits it excluded. The DUPLICATE leg stays on reachability (see its call below).
 #
 # EMPTY IS A LEGITIMATE ANSWER HERE, AND THAT IS WHY THE MACHINERY IS FIXTURE-PROVEN. Right
 # after a release both streams are genuinely empty (no commits since the tag; `[Unreleased]`
@@ -838,6 +851,112 @@ _pr_merge_refs() {
     printf '%s %s\n' "$(git -C "$1" rev-parse HEAD^1)" "$(git -C "$1" rev-parse HEAD^2)"
 }
 
+# _unreleased <repo> <tag> <rev-list args>... — the commits of `git rev-list <args> --not <tag>`,
+# newest first, MINUS every non-merge commit whose change is already in <tag>'s history under
+# another sha (card#11034). This is the ONE definition of "released" in this file: the live
+# obligation leg and `_squash_ends`' UNRELEASED leg both read it.
+#
+# ⛔ REACHABILITY WAS THE WRONG QUESTION, measured on v0.41.0. That release was cut from v0.40.0
+# with #429–#432 cherry-picked onto it, so dev's originals (2be21bd, 500a57d, 828d95e, 9d5903d) are
+# not reachable from the tag that shipped them, and once `dev` merged the tag every one of them
+# obliged a bullet for a card whose bullet had already moved under `## [0.41.0]` — card#10353,
+# card#10922 and card#10924 red on the sync PR (#434) and on every `dev` PR after it.
+#
+# A COMMIT IS RELEASED WHEN EITHER OF TWO EXACT MATCHES FINDS IT IN THE TAG'S HISTORY:
+#   PATCH — its `git patch-id --stable` equals a non-merge commit's there. Necessary, NOT
+#   sufficient, and that was measured too: only ONE of v0.41.0's four copies is patch-identical
+#   (500a57d/db06427). The other three were applied to a v0.40.0 that lacked #425 and #428, which
+#   touch the same README/kbcard/CHANGELOG lines, so their diff CONTEXT differs and patch-id —
+#   which hashes context — differs with it. That is built into the cherry-pick release shape:
+#   any skipped commit near a picked one breaks the patch match.
+#   SUBJECT — its full subject ENDS in a squash `(#N)` token and is byte-identical to a subject
+#   there. Cherry-pick carries the subject verbatim, and `(#N)` is the PR's own number, so the
+#   pair is one PR's content. ONLY subjects ending in `(#N)` take part: an unsquashed branch
+#   commit, or a direct push on either side, has no PR identity to match on and is never
+#   discharged by its subject — it can be released by PATCH alone.
+#
+# WHAT THIS DOES NOT LOOSEN: a follow-up PR on an already-shipped card is a NEW PR with a new
+# `(#N)` and its own patch, so it matches nothing and stays obliged. Discharging from the
+# `## [<tag>]` section, or by card token, would have let it skip its `[Unreleased]` bullet; this
+# never reads the CHANGELOG or a card number at all.
+#
+# ⛔ THE ONE WAY IT GOES WRONG, accepted: a NEW commit whose subject is byte-identical to a released
+# squash subject, `(#N)` included, is read as released and obliges nothing. Reaching it takes a
+# subject naming a PR number that already merged and shipped — a squash merge writes the NEW PR's
+# number, so only a hand-written subject copying an old one gets there, and that subject is already
+# false about which PR it is. Accepted because the alternative, patch-id alone, cannot clear the
+# cherry-pick release shape at all (above). The miss errs green for that one commit only; the PR
+# title is still a separate obligation source.
+#
+# THE TAG-SIDE POPULATION IS BOUNDED, NOT THE WHOLE HISTORY. `git log --cherry-pick A...B` cannot be
+# used: once `dev` has merged the tag, the tag is an ancestor of HEAD, so the symmetric difference's
+# tag side is EMPTY and nothing is ever matched — the exact post-sync state that reds. Instead the
+# candidates that do NOT already contain the tag (a commit that does postdates it and cannot be one
+# of its copies; merges have no patch and are never discharged) are compared against the tag's
+# commits that are not ancestors of their common ancestor with it (`merge-base --octopus --all`).
+# That is a superset of each candidate's own `<tag>...<candidate>` tag side, so no copy is missed,
+# and on a normal cycle it is one release wide. With no such candidate there is nothing to compare
+# and the reachability answer stands untouched.
+#
+# ⛔ IT FAILS CLOSED, and has to say so in code: every caller reads it through `$(…)`, where this
+# file's `set -e` does not reach (no `inherit_errexit`), so a git failure that printed nothing
+# would read as "nothing unreleased" — an empty obligation set, i.e. a silent GREEN. Each read
+# therefore returns 1 on failure and the callers propagate it.
+#
+# ⛔ RESIDUAL, errs RED: a candidate that RE-APPLIES a patch already in its own ancestry is compared
+# only against commits above the common ancestor, so it stays obliged.
+_unreleased() {
+    local repo="$1" tag="$2"; shift 2
+    local all nm c rc pre=() bases=() sides="$TMP/unreleased"
+    all="$(git -C "$repo" rev-list "$@" --not "$tag")" || return 1
+    [[ -n "$all" ]] || return 0
+    nm="$(git -C "$repo" rev-list --no-merges "$@" --not "$tag")" || return 1
+    while IFS= read -r c; do
+        [[ -n "$c" ]] || continue
+        rc=0; git -C "$repo" merge-base --is-ancestor "$tag" "$c" || rc=$?
+        case "$rc" in 0) ;; 1) pre+=("$c") ;; *) return 1 ;; esac
+    done <<< "$nm"
+    if ((${#pre[@]} == 0)); then
+        printf '%s\n' "$all"
+        return 0
+    fi
+    mkdir -p "$sides"
+    printf '%s\n' "$all" > "$sides/all"
+    # rc 1 with no output is "no common ancestor": the whole tag history is then the population.
+    mapfile -t bases < <(git -C "$repo" merge-base --octopus --all "$tag" "${pre[@]}" || true)
+    git -C "$repo" log -p --no-merges --no-color --format='commit %H' "$tag" --not "${bases[@]}" |
+        git -C "$repo" patch-id --stable | cut -d' ' -f1 > "$sides/tag-patches" || return 1
+    git -C "$repo" log --format='%s' "$tag" --not "${bases[@]}" |
+        { grep -E '\(#[0-9]+\)$' || true; } > "$sides/tag-subjects" || return 1
+    git -C "$repo" log -p --no-color --no-walk=unsorted --format='commit %H' "${pre[@]}" |
+        git -C "$repo" patch-id --stable > "$sides/pre-patches" || return 1
+    git -C "$repo" log --no-walk=unsorted --format='%H %s' "${pre[@]}" > "$sides/pre-subjects" ||
+        return 1
+    awk '
+        FILENAME ~ /tag-patches$/  { tp[$0] = 1; next }
+        FILENAME ~ /tag-subjects$/ { ts[$0] = 1; next }
+        FILENAME ~ /pre-patches$/  { if ($1 in tp) rel[$2] = 1; next }
+        FILENAME ~ /pre-subjects$/ {
+            s = substr($0, length($1) + 2)
+            if (s ~ /\(#[0-9]+\)$/ && (s in ts)) rel[$1] = 1
+            next
+        }
+        !($0 in rel)
+    ' "$sides/tag-patches" "$sides/tag-subjects" "$sides/pre-patches" "$sides/pre-subjects" \
+        "$sides/all" || return 1
+    rm -rf "$sides"
+}
+
+# _obligation_subjects <repo> <tag> — the subjects of `_unreleased <repo> <tag> HEAD`, the commit
+# half of the live leg's obligation source. Fixtures and the live leg call this same function.
+_obligation_subjects() {
+    local shas
+    shas="$(_unreleased "$1" "$2" HEAD)" || return 1
+    [[ -n "$shas" ]] || return 0
+    # shellcheck disable=SC2086 # one sha per word, by construction
+    git -C "$1" log --no-walk=unsorted --format='%s' $shas
+}
+
 # _squash_ends <repo> <floor> — `<base> <merged>`: the two revisions whose TREE DELTA this pull
 # request's SQUASHED commit will record on the base branch, and NOTHING off a checkout for which
 # that sentence is not true (card#10338). `_added_bullets` diffs them. <floor> is the release tag
@@ -864,7 +983,10 @@ _pr_merge_refs() {
 # legs, and the case analysis is why there are two rather than one — neither catches the other's
 # class, measured on real history:
 #
-#   UNRELEASED — every covered commit must be above <floor>. Rejects the BACK-MERGE sync PR, whose
+#   UNRELEASED — every covered commit must be unreleased by `_unreleased`'s definition: not reachable
+#   from <floor>, and not a copy of a commit that is (card#11034 — the one definition this file
+#   holds; a copy can only make the count SMALLER, so the change can refuse more, never admit more,
+#   and a refusal is the safe fallback below). Rejects the BACK-MERGE sync PR, whose
 #   base IS `dev` (so no base-name test would reject it) and which is merge-committed too: its
 #   covered commits came from `main` and are ancestors of the tag the merge ref already reaches.
 #   Measured on the four most recent syncs: covered 5/4/3/3, above-the-tag 2/2/1/1 — every one
@@ -910,7 +1032,9 @@ _squash_ends() {
     base="${refs%% *}"
     head="$(git -C "$repo" rev-parse HEAD)"
     covered="$(git -C "$repo" rev-list --count "$base..$head")"
-    unreleased="$(git -C "$repo" rev-list --count "$base..$head" --not "$floor")"
+    # A failed read REFUSES the delta — the printed per-commit fallback, never a wider admission.
+    unreleased="$(_unreleased "$repo" "$floor" "$base..$head")" || return 0
+    unreleased="$(grep -c . <<< "$unreleased" || true)"
     [[ "$covered" -eq "$unreleased" ]] || return 0
     # A HERESTRING, not a pipeline: the producer is the shell writing an already-complete string,
     # so the early-exit window `_selftest-prelude.sh`'s `has_line` header documents does not exist
@@ -2100,9 +2224,9 @@ eq "the shipped derivation REFUSES the delta on this shape" "" \
    "$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
 eq "… because covered commits carry a (#N) of their own (the UNSQUASHED leg)" "2" \
    "$(g -C "$SQREL" log --format='%s' 'HEAD^1..HEAD' | { grep -cE '\(#[0-9]+\)' || true; })"
-eq "… and NOT because they are released — every one is above the floor (the other leg is silent)" \
+eq "… and NOT because they are released — every one is unreleased (the other leg is silent)" \
    "$(g -C "$SQREL" rev-list --count 'HEAD^1..HEAD')" \
-   "$(g -C "$SQREL" rev-list --count 'HEAD^1..HEAD' --not v0.23.1)"
+   "$(_unreleased "$SQREL" v0.23.1 'HEAD^1..HEAD' | grep -c . || true)"
 eq "so the live spelling is GREEN on this release PR" "" \
    "$(SQ_E="$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
       _sq_verdict "$SQREL" "$(_sq_records "$SQREL" "$SQREL_RANGE" "${SQ_E%% *}" "${SQ_E##* }")")"
@@ -2139,10 +2263,10 @@ eq "the tag is reachable from the merge and NOT from dev — it is what this PR 
    "$(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" HEAD && echo true || echo false) $(g -C "$SQBM" merge-base --is-ancestor "$SQBM_TAG" dev && echo true || echo false)"
 eq "the shipped derivation REFUSES the delta here too" "" \
    "$(GITHUB_BASE_REF=dev _squash_ends "$SQBM" "$SQBM_TAG")"
-eq "… because a covered commit is ALREADY RELEASED (the UNRELEASED leg: covered > above-the-tag)" \
+eq "… because a covered commit is ALREADY RELEASED (the UNRELEASED leg: covered > unreleased)" \
    "true" \
    "$([[ "$(g -C "$SQBM" rev-list --count 'HEAD^1..HEAD')" -gt \
-         "$(g -C "$SQBM" rev-list --count 'HEAD^1..HEAD' --not "$SQBM_TAG")" ]] && echo true || echo false)"
+         "$(_unreleased "$SQBM" "$SQBM_TAG" 'HEAD^1..HEAD' | grep -c . || true)" ]] && echo true || echo false)"
 eq "… and NOT because they carry a (#N) — none does (the other leg is silent)" "0" \
    "$(g -C "$SQBM" log --format='%s' 'HEAD^1..HEAD' | { grep -cE '\(#[0-9]+\)' || true; })"
 
@@ -2170,6 +2294,120 @@ eq "given the number, the delta's records carry it and the direct push keeps its
 501	+	- **card#4000** — the PR under review, same card, same heading." "$SQK_KEYED"
 eq "so the PR is GREEN, exactly as the post-squash dev run would be" "" \
    "$(_sq_verdict "$SQK" "$SQK_KEYED")"
+
+# ---------------------------------------------------------------------------
+# A RELEASE CUT BY CHERRY-PICK (card#11034). v0.41.0 was cut from v0.40.0 with four `dev` PRs
+# picked onto it, so the tag reaches the COPIES and not dev's originals; once `dev` merged the tag
+# the originals obliged bullets for cards that had already shipped. `_unreleased` owns the rule.
+#
+# One history carries every leg, so each is judged beside the others rather than alone:
+#   dev:  A (#601, card#7001) · S (#602, card#7003) · B (#603, card#7002) ·
+#         D1 = B's subject minus `(#603)`, no PR · D2 = M's subject exactly, no PR ·
+#         F0 (#606, a follow-up on card#7001 merged BEFORE the sync)
+#   main: A' (A's patch, REWORDED subject) · B' (B's subject, DRIFTED patch — S is not under it) ·
+#         M (a direct push, no `(#N)`) · the fold, filing 7001/7002 under `## [0.24.0]` · tag v0.24.0
+#   then dev merges v0.24.0, and adds F (#604, follow-up on card#7001) and N (#605, card#7009).
+# A' is matched by PATCH alone and B' by SUBJECT alone, so each condition is witnessed without the
+# other's help. The tag is passed, never `describe`d, for the SQBM fixture's tie-break reason.
+# ---------------------------------------------------------------------------
+CP="$TMP/cherry-pick-release"
+_newrepo "$CP"
+g -C "$CP" tag v0.23.1
+g -C "$CP" branch main
+printf 'one\ntwo\nthree\nfour\nfive\n' > "$CP/shared.txt"
+g -C "$CP" add shared.txt && g -C "$CP" commit -qm 'chore: shared file'
+g -C "$CP" checkout -q main && g -C "$CP" merge -q --ff-only dev && g -C "$CP" checkout -q dev
+echo a > "$CP/a.txt"; g -C "$CP" add a.txt
+g -C "$CP" commit -qm 'feat(a): one (closes card#7001) (#601)'
+CP_A="$(g -C "$CP" rev-parse HEAD)"
+sed -i 's/^two$/TWO/' "$CP/shared.txt"
+g -C "$CP" commit -qam 'fix(s): left out of the release (card#7003) (#602)'
+sed -i 's/^four$/FOUR/' "$CP/shared.txt"
+g -C "$CP" commit -qam 'feat(b): drift (card#7002) (#603)'
+CP_B="$(g -C "$CP" rev-parse HEAD)"
+echo d1 > "$CP/d1.txt"; g -C "$CP" add d1.txt
+g -C "$CP" commit -qm 'feat(b): drift (card#7002)'
+echo d2 > "$CP/d2.txt"; g -C "$CP" add d2.txt
+g -C "$CP" commit -qm 'chore(m): direct (card#7005)'
+echo f0 > "$CP/f0.txt"; g -C "$CP" add f0.txt
+g -C "$CP" commit -qm 'fix(a): follow-up before the sync (card#7001) (#606)'
+g -C "$CP" checkout -q main
+g -C "$CP" cherry-pick "$CP_A" >/dev/null
+g -C "$CP" commit -q --amend -m 'feat(a): one, as released (card#7001)'
+g -C "$CP" cherry-pick "$CP_B" >/dev/null
+echo m > "$CP/m.txt"; g -C "$CP" add m.txt
+g -C "$CP" commit -qm 'chore(m): direct (card#7005)'
+_pf_fold "$CP" 0.24.0
+_sq_file "$CP" '## [0.24.0]' '- **card#7002** — shipped by cherry-pick.'
+_sq_file "$CP" '## [0.24.0]' '- **card#7001** — shipped by cherry-pick.'
+g -C "$CP" commit -qam 'chore(release): v0.24.0'
+g -C "$CP" tag v0.24.0
+g -C "$CP" checkout -q dev
+CP_PRESYNC="$(g -C "$CP" rev-parse HEAD)"
+
+echo "== cherry-pick release: the two copies are what this fixture claims they are =="
+_cp_pid() { g -C "$CP" show "$1" | g -C "$CP" patch-id --stable | cut -d' ' -f1; }
+eq "(a) A' has A's PATCH and a different subject" "true false" \
+   "$([[ "$(_cp_pid "$CP_A")" == "$(_cp_pid v0.24.0~3)" ]] && echo true || echo false) $([[ "$(g -C "$CP" log -1 --format=%s "$CP_A")" == "$(g -C "$CP" log -1 --format=%s v0.24.0~3)" ]] && echo true || echo false)"
+eq "(b) B' has B's SUBJECT and a different patch — the context drifted, as on v0.41.0" "false true" \
+   "$([[ "$(_cp_pid "$CP_B")" == "$(_cp_pid v0.24.0~2)" ]] && echo true || echo false) $([[ "$(g -C "$CP" log -1 --format=%s "$CP_B")" == "$(g -C "$CP" log -1 --format=%s v0.24.0~2)" ]] && echo true || echo false)"
+eq "neither original is reachable from the tag — reachability calls both unreleased" "false false" \
+   "$(g -C "$CP" merge-base --is-ancestor "$CP_A" v0.24.0 && echo true || echo false) $(g -C "$CP" merge-base --is-ancestor "$CP_B" v0.24.0 && echo true || echo false)"
+
+echo "== (e) post-sync: dev has merged the cherry-picked tag, and new work lands on top =="
+# An explicit message: git's default merge subject for a tag is version-dependent wording.
+g -C "$CP" merge -q --no-ff -m 'Merge main into dev after v0.24.0 (back-merge sync)' v0.24.0 >/dev/null
+echo f > "$CP/f.txt"; g -C "$CP" add f.txt
+g -C "$CP" commit -qm 'fix(a): follow-up on a shipped card (card#7001) (#604)'
+echo n > "$CP/n.txt"; g -C "$CP" add n.txt
+g -C "$CP" commit -qm 'feat(n): new work (card#7009) (#605)'
+eq "(e) the tag is an ancestor of HEAD — the shape a symmetric --cherry-pick range cannot see" "true" \
+   "$(g -C "$CP" merge-base --is-ancestor v0.24.0 HEAD && echo true || echo false)"
+CP_SUBJ="$TMP/cp-subjects"
+_obligation_subjects "$CP" v0.24.0 > "$CP_SUBJ"
+eq "(a)(b) exactly the commits with no copy in the tag are unreleased — A and B are not" \
+   "Merge main into dev after v0.24.0 (back-merge sync)
+chore(m): direct (card#7005)
+feat(b): drift (card#7002)
+feat(n): new work (card#7009) (#605)
+fix(a): follow-up before the sync (card#7001) (#606)
+fix(a): follow-up on a shipped card (card#7001) (#604)
+fix(s): left out of the release (card#7003) (#602)" "$(LC_ALL=C sort "$CP_SUBJ")"
+eq "(a) A, released by PATCH alone, obliges nothing" "false" \
+   "$(has_line 'feat(a): one (closes card#7001) (#601)' "$(cat "$CP_SUBJ")")"
+eq "(b) B, released by SUBJECT alone, obliges nothing" "false" \
+   "$(has_line 'feat(b): drift (card#7002) (#603)' "$(cat "$CP_SUBJ")")"
+eq "(d) an unsquashed commit equal to a released subject MINUS its (#N) stays obliged" "true" \
+   "$(has_line 'feat(b): drift (card#7002)' "$(cat "$CP_SUBJ")")"
+eq "(d) an unsquashed commit IDENTICAL to a released subject with no (#N) stays obliged" "true" \
+   "$(has_line 'chore(m): direct (card#7005)' "$(cat "$CP_SUBJ")")"
+eq "(c) a follow-up PR on a SHIPPED card, merged before the sync, stays obliged (new #N, new patch)" \
+   "true" "$(has_line 'fix(a): follow-up before the sync (card#7001) (#606)' "$(cat "$CP_SUBJ")")"
+eq "the commit S that the release left out stays obliged (the card#10868 shape)" "true" \
+   "$(has_line 'fix(s): left out of the release (card#7003) (#602)' "$(cat "$CP_SUBJ")")"
+
+echo "== (c)(e) the gate end to end: the follow-up and the new card RED without their bullets =="
+# The fold filed 7001/7002 under `## [0.24.0]`, the stop header, so those bullets discharge nothing:
+# a card that shipped and then took a follow-up owes a NEW `[Unreleased]` bullet for it.
+# 7003, 7002 (via D1) and 7005 (via D2) get their bullets; 7001 (F) and 7009 (N) do not.
+cp "$CP/CHANGELOG.md" "$TMP/cp-changelog.md"
+_prepend "$TMP/cp-changelog.md" '- **card#7003** — left out of the release.'
+_prepend "$TMP/cp-changelog.md" '- **card#7002** — the unsquashed follow-up.'
+_prepend "$TMP/cp-changelog.md" '- **card#7005** — the dev-side direct commit.'
+eq "(c)(e) the follow-up on a shipped card and the new card are the ones missing" \
+   "card#7001
+card#7009" "$(_missing "$CP_SUBJ" "$TMP/cp-changelog.md" 0.24.0)"
+_prepend "$TMP/cp-changelog.md" '- **card#7001** — the follow-up.'
+_prepend "$TMP/cp-changelog.md" '- **card#7009** — the new work.'
+eq "CONTROL: with their bullets filed the same history is GREEN — the leg is not always-red" "" \
+   "$(_missing "$CP_SUBJ" "$TMP/cp-changelog.md" 0.24.0)"
+
+echo "== the same rule over a range, as _squash_ends reads it =="
+eq "a back-merge range is still refused: its covered commits are reachable from the tag" "true" \
+   "$([[ "$(g -C "$CP" rev-list --count "$CP_PRESYNC..HEAD")" -gt \
+         "$(_unreleased "$CP" v0.24.0 "$CP_PRESYNC..HEAD" | grep -c . || true)" ]] && echo true || echo false)"
+eq "and the pre-sync originals A and B count as released over an explicit range too (S, D1, D2, F0 left)" "4" \
+   "$(_unreleased "$CP" v0.24.0 "v0.23.1..$CP_PRESYNC" | grep -c . || true)"
 
 # ---------------------------------------------------------------------------
 # Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
@@ -2214,15 +2452,20 @@ fi
 # The live assertion.
 # ---------------------------------------------------------------------------
 SUBJECTS="$TMP/subjects-live"
-git -C "$ROOT" log --format='%s' "$LAST_TAG..HEAD" > "$SUBJECTS"
+# RELEASED IS DECIDED BY `_unreleased`, NOT BY `$LAST_TAG..HEAD` (card#11034): a commit whose copy
+# shipped in the tag — the cherry-pick release shape — obliges nothing. The printed figure below
+# says how many commits that excluded, so a rule that excluded too much is visible on every run.
+_obligation_subjects "$ROOT" "$LAST_TAG" > "$SUBJECTS"
+COMMIT_SUBJECTS="$(grep -c . "$SUBJECTS" || true)"
 if [[ -n "${PR_TITLE:-}" ]]; then
     printf '%s\n' "$PR_TITLE" >> "$SUBJECTS"
 fi
 
 echo "== every card shipped since $LAST_TAG owns a line-initial CHANGELOG entry =="
-printf '  ..   baseline %s · %s commit subject(s)%s · %s obligation(s) · %s discharged\n' \
-    "$LAST_TAG" "$(git -C "$ROOT" rev-list --count "$LAST_TAG..HEAD")" \
+printf '  ..   baseline %s · %s commit subject(s)%s · %s more commit(s) excluded as already released · %s obligation(s) · %s discharged\n' \
+    "$LAST_TAG" "$COMMIT_SUBJECTS" \
     "$([[ -n "${PR_TITLE:-}" ]] && echo " + PR title" || echo "")" \
+    "$(( $(git -C "$ROOT" rev-list --count "$LAST_TAG..HEAD") - COMMIT_SUBJECTS ))" \
     "$(_obliged "$SUBJECTS" | grep -c . || true)" \
     "$(_discharged "$CHANGELOG" "$LAST_VERSION" | grep -c . || true)"
 MISSING="$(_missing "$SUBJECTS" "$CHANGELOG" "$LAST_VERSION")"
@@ -2246,6 +2489,12 @@ RECORDS="$TMP/added-live"
 # the same two revisions, against the same tree, that `dev`'s own push run will read afterwards.
 # Off any other checkout `_squash_ends` answers with nothing, both expansions are empty, and
 # `_added_bullets` falls back to the per-commit walk it always did (its docblock owns that residual).
+#
+# ⛔ THE PER-COMMIT RANGE STAYS `$LAST_TAG..HEAD` — reachability, not `_unreleased` — deliberately
+# (card#11034). This range gathers EVIDENCE, it decides no obligation: a released copy's original
+# contributes an add only if its bullet still STANDS in the region (`_stale_dupes`' presence test)
+# and a removal only if its parent revision carries the stop header (`_bullets_at`), so keeping it
+# can only report a duplicate a reader can actually see, never hide one.
 SQUASH_ENDS="$(_squash_ends "$ROOT" "$LAST_TAG")"
 _added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" \
     "${SQUASH_ENDS%% *}" "${SQUASH_ENDS##* }" "${PR_NUMBER:-(unsquashed)}" > "$RECORDS"
