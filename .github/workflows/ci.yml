@@ -137,7 +137,7 @@ jobs:
     # that motivated it) in its own file header, so that context is not lost by collapsing the
     # per-job CI comments. fail-fast:false keeps every selftest running independently, exactly
     # as the separate jobs did — one failure must never cancel the siblings. The `drift-check`,
-    # `shellcheck`, and `promote-action` jobs stay separate: they do NOT run `bash tests/X.sh`.
+    # `shellcheck`, and `promote-action` jobs stay separate: they do NOT run a selftest.
     #
     # A new selftest needs a matrix entry here, the same as it needed its own job before.
     # This list is no longer kept in sync by diligence alone: the `ci-matrix-parity` job above
@@ -163,6 +163,7 @@ jobs:
           - card-completeness-selftest
           - ci-gate-selftest
           - composite-action-wiring-selftest
+          - composite-step-run-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
@@ -331,45 +332,53 @@ jobs:
               f.write('#!/usr/bin/env bash\nset -e -o pipefail\n' + run)
           PY
           ./bin/_shellcheck-pinned -S error /tmp/action-run.sh
-      - name: Invoke the action (expects fail-closed at the token guard)
-        # Proves the runner can execute the composite end-to-end into the
-        # script: with an empty token it must die at the KANBAN_WRITEBACK_TOKEN
-        # guard (deterministic, no network). Success here would mean the guard
-        # rotted; any other wiring breakage also lands in 'failure'.
-        id: smoke
-        continue-on-error: true
+      - name: Invoke the action through the runner (nothing to promote ⇒ must succeed)
+        # Proves the runner can execute the composite end-to-end into the script, and that the
+        # runner hands it four of the inputs below. Deterministic and network-free: `dls: none`
+        # carries no DL token, so the script exits 0 at "no shipped refs in range" before any
+        # board read. Those four are discriminated on THIS path — dropped by the wiring, the
+        # script refuses at rc 2: no writeback-token ⇒ the token guard; no expected-host ⇒ the
+        # host guard; no api-base ⇒ the committed `kanban.example.com` base fails the host guard
+        # against `kanban.invalid`; no dls ⇒ it derives the range from git history, and this
+        # job's shallow checkout has no tag to base it on.
+        # ⚠ `dry-run` is passed but NOT discriminated here: the script reads it only after a
+        # board read, which this path never reaches, so 'true' and '' exit 0 identically. No test
+        # proves the runner wires `dry-run` into the step (none did before card#9022 either);
+        # `tests/composite-action-wiring-selftest.sh` drives the run body's handling of it.
+        # `.invalid` cannot resolve, so the placeholder token could not leave the runner even if
+        # the script stopped exiting early.
         uses: ./promote
         with:
-          writeback-token: ''
+          writeback-token: placeholder-not-a-token
           expected-host: kanban.invalid
+          api-base: https://kanban.invalid/api/v3
+          dls: none
           dry-run: 'true'
-      - name: Assert fail-closed AT THE TOKEN GUARD, by message
-        env:
-          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
-        # ⛔ THE OUTCOME IS NOT THE SUBJECT. `outcome == failure` is satisfied by ANY failure of
-        # the composite, while the step above states a specific one ("it must die at the
-        # KANBAN_WRITEBACK_TOKEN guard"). That gap became real with card#8538: the identity leg
-        # (`.promote.source` vs $GITHUB_REPOSITORY) runs BEFORE the token guard in
-        # bin/promote-released-cards, so on a runner — the one place in this repo's CI where the
-        # script executes with $GITHUB_REPOSITORY set — there is now a second way to satisfy an
-        # outcome-only assertion. It is exempt for THIS repo (`.promote.source` is `"*"`), which
-        # is exactly why an outcome-only assertion would go on passing after it stopped being
-        # exempt, and why a consumer copying this job would inherit a green tick for the wrong
-        # failure. A composite step's stderr cannot be captured in-job, so the message half is
-        # asserted by running the same script the composite execs, with the same env and argv
-        # the composite builds from these blank inputs. The two steps are one pair: the smoke
-        # proves the runner reaches the script end-to-end through the wrapper; this proves WHICH
-        # guard answered.
+      - name: Run the action's run step on an empty token (must refuse AT THE TOKEN GUARD)
+        # THE FAILURE DIRECTION. It cannot go through `uses:`: the failing step would fail this
+        # job, and the `continue-on-error` key that used to absorb it is refused by
+        # `continue-on-error-guard.yml` with no exemption (card#9022). So the action's SHIPPED
+        # run step — read from promote/action.yml, not copied — runs under the runner's bash
+        # flags with the env the action builds from these inputs (tests/_composite-step-run.sh
+        # states exactly what it stands in for and what it does not). With an empty token it must
+        # die at the KANBAN_WRITEBACK_TOKEN guard: rc 2 AND that guard's message.
+        # ⛔ THE MESSAGE IS THE SUBJECT, NOT ONLY THE STATUS. Any refusal is rc 2, and since
+        # card#8538 the identity leg (`.promote.source` vs $GITHUB_REPOSITORY) runs BEFORE the
+        # token guard. It is exempt for THIS repo (`.promote.source` is `"*"`), which is exactly
+        # why a status-only assertion would go on passing after it stopped being exempt, and why a
+        # consumer copying this job would inherit a green tick for the wrong failure.
+        # `GITHUB_TOKEN` is passed empty because `require-complete` is left at its default
+        # 'false', which is what the action's own expression yields for it.
         run: |
-          [ "$SMOKE_OUTCOME" = "failure" ] || { echo "::error::promote action ran with an empty token — the fail-closed guard did not fire"; exit 1; }
           rc=0
-          out="$(KANBAN_WRITEBACK_TOKEN='' KANBAN_EXPECTED_HOST='kanban.invalid' KANBAN_API_BASE='' \
-                 ./bin/promote-released-cards --dry-run 2>&1)" || rc=$?
+          out="$(tests/_composite-step-run.sh promote \
+                   --input writeback-token= --input expected-host=kanban.invalid \
+                   --input dry-run=true --env GITHUB_TOKEN= 2>&1)" || rc=$?
           printf '%s\n' "$out"
-          [ "$rc" -ne 0 ] || { echo "::error::bin/promote-released-cards exited 0 with an empty token"; exit 1; }
+          [ "$rc" -eq 2 ] || { echo "::error::the promote action's run step exited $rc on an empty token, not 2 — the fail-closed guard did not fire as a refusal"; exit 1; }
           case "$out" in
             *"KANBAN_WRITEBACK_TOKEN is not set"*) ;;
-            *) echo "::error::the promote script failed, but NOT at the token guard — this job's stated subject no longer holds (see the last line above)"; exit 1;;
+            *) echo "::error::the promote action refused, but NOT at the token guard — this job's stated subject no longer holds (see the output above)"; exit 1;;
           esac
 
   release-artifacts-action-selftest:
@@ -416,19 +425,19 @@ jobs:
       - name: Invoke the action (degenerate same-sha range ⇒ classifies as not-a-release-PR)
         # Proves the runner can execute the composite end-to-end into the script. base == head
         # means the version is byte-identical at both ends, which is the exit-0 arm — so this
-        # asserts "runs end-to-end", not "asserts artifacts". Any wiring breakage lands in
-        # 'failure' (a missing script, an unparseable config, a shallow-clone read).
+        # asserts "runs end-to-end", not "asserts artifacts". Any wiring breakage lands as
+        # a failed step, and so a failed job (a missing script, an unparseable config, a
+        # shallow-clone read). Expected to succeed, so it needs nothing to absorb a failure.
         id: smoke
-        continue-on-error: true
         uses: ./release-artifacts
         with:
           base-sha: ${{ github.sha }}
           head-sha: ${{ github.sha }}
-      - name: Assert the degenerate case runs clean
-        env:
-          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+      - name: Say what a failed smoke step means
+        if: failure() && steps.smoke.outcome == 'failure'
         run: |
-          [ "$SMOKE_OUTCOME" = "success" ] || { echo "::error::release-artifacts action failed on a same-sha range — the wrapper does not reach the script"; exit 1; }
+          echo "::error::release-artifacts action failed on a same-sha range — the wrapper does not reach the script"
+          exit 1
 
   release-tag-check-action-selftest:
     # The third action's runner leg. Its WIRING assertions are NOT inline here: they live in
@@ -436,12 +445,13 @@ jobs:
     # `action.yml` OR `action.yaml` in the tree — both spellings, because GitHub honours both —
     # so this action, the two above, and any later one are all covered by one guard, and it runs
     # as a `selftest` matrix entry. What this job adds is the part no local
-    # test can stand in for — the RUNNER actually executing the composite, in both directions.
+    # test can stand in for — the RUNNER actually executing the composite on the path expected to
+    # pass, and the action's shipped run step refusing on the path expected to fail.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0   # the action's own precondition; both smoke steps below need it
+          fetch-depth: 0   # the action's own precondition; both directions below need it
       - run: test -x bin/release-tag-check
 
       - name: Invoke the action (degenerate same-sha range ⇒ not a release ⇒ asserts no tag)
@@ -452,34 +462,44 @@ jobs:
         # Every optional input is left blank on purpose: that is the default consumer wiring, and
         # it is the path where a blank-to-absent translation bug would surface as `--timeout ""`.
         id: pass
-        continue-on-error: true
         uses: ./release-tag-check
         with:
           before-sha: ${{ github.sha }}
           after-sha: ${{ github.sha }}
-
-      - name: Invoke the action on a range it CANNOT classify (must fail the step)
-        # THE SECOND DIRECTION, and the one that matters for a gate: a wrapper that swallowed the
-        # script's non-zero status would look identical to a passing gate on the step above. An
-        # unresolvable --after is refused at rc 2 by the script with no network access.
-        id: refuse
-        continue-on-error: true
-        uses: ./release-tag-check
-        with:
-          before-sha: ${{ github.sha }}
-          after-sha: '0000000000000000000000000000000000000000'
-
-      - name: Assert both directions
-        env:
-          PASS_OUTCOME: ${{ steps.pass.outcome }}
-          REFUSE_OUTCOME: ${{ steps.refuse.outcome }}
+      - name: Say what a failed pass step means
+        if: failure() && steps.pass.outcome == 'failure'
         run: |
-          [ "$PASS_OUTCOME" = "success" ] || { echo "::error::release-tag-check action failed on a non-release range — the wrapper does not reach the script"; exit 1; }
-          [ "$REFUSE_OUTCOME" = "failure" ] || { echo "::error::release-tag-check action reported '$REFUSE_OUTCOME' on an unclassifiable range — the wrapper is swallowing the script's refusal, which would make every release look tagged"; exit 1; }
+          echo "::error::release-tag-check action failed on a non-release range — the wrapper does not reach the script"
+          exit 1
+
+      - name: Run the action's run step on a range it CANNOT classify (must refuse)
+        # THE SECOND DIRECTION, and the one that matters for a gate: a wrapper that swallowed the
+        # script's non-zero status would look identical to a passing gate on the step above, and
+        # would make every release look tagged. An unresolvable --after is refused at rc 2 by the
+        # script with no network access. It cannot go through `uses:` — the failing step would
+        # fail this job, and the `continue-on-error` key that used to absorb it is refused by
+        # `continue-on-error-guard.yml` with no exemption (card#9022) — so the action's SHIPPED
+        # run step, read from release-tag-check/action.yml, runs under the runner's bash flags
+        # with the env the action builds from these inputs (tests/_composite-step-run.sh states
+        # what it stands in for and what it does not). Asserted: rc 2 AND the refusal naming
+        # --after, so a different failure cannot pass for this one.
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          rc=0
+          out="$(tests/_composite-step-run.sh release-tag-check \
+                   --input before-sha="$SHA" \
+                   --input after-sha=0000000000000000000000000000000000000000 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 2 ] || { echo "::error::release-tag-check's run step exited $rc on an unclassifiable range, not 2 — the wrapper is swallowing or changing the script's refusal, which would make every release look tagged"; exit 1; }
+          case "$out" in
+            *"cannot resolve --after"*) ;;
+            *) echo "::error::release-tag-check refused, but NOT on the unresolvable --after — this step's stated subject no longer holds (see the output above)"; exit 1;;
+          esac
 
   ci-gate:
     # ⭐ THE REQUIRED STATUS CONTEXT THAT STANDS IN FRONT OF THIS WHOLE FILE (card#8261). Every
-    # other job here is a leaf. It is one member of the required set and not the whole of it — two
+    # other job here is a leaf. It is one member of the required set and not the whole of it —
     # PR-triggered gates live in sibling workflows that `needs:` cannot reach, so they are required
     # by name beside it; `tests/ci-gate-selftest.sh` declares that set, holds it level with the
     # workflow directory, and carries the command that re-prints the LIVE set. ⚠ THIS COMMENT USED
