@@ -25,11 +25,21 @@
 #     says so rather than guessing one.
 #   * A literal value with no expression passes through as written.
 #
+# WHAT IT REFUSES, at exit 64, rather than run a step it would model wrongly:
+#   * a step key other than `name`, `id`, `shell`, `env` and `run` — `if:`, `working-directory:`,
+#     `continue-on-error:` and the rest each change what the runner does with the step;
+#   * a shell other than bash, or more or fewer than one step;
+#   * `${{` anywhere in the `run:` body (the runner substitutes it before bash runs);
+#   * an input whose declared `default` is not a string;
+#   * an env value holding any expression other than a bare `${{ inputs.<name> }}`, unless the
+#     caller supplies it with `--env`; and a `--input` naming an undeclared input.
+# `tests/composite-step-run-selftest.sh` plants a fixture for each of these.
+#
 # WHAT THIS DOES NOT STAND IN FOR. It does not show that the runner evaluates
 # `${{ inputs.X }}` into the step env, or that the runner fails a calling step when the composite
 # exits non-zero. Both are runner behaviour. The first is covered where the same action also runs
-# through `uses:` on a path expected to succeed (each `*-action-selftest` job in `ci.yml` keeps
-# one). The second is GitHub's, and nothing in this repository exercises it.
+# through `uses:` on a path expected to succeed, for the inputs that path discriminates (`ci.yml`
+# states which, per job). The second is GitHub's, and nothing in this repository exercises it.
 #
 # Refusals of its own exit 64 with a `_composite-step-run:` prefix, so they cannot be read as the
 # action's status.
@@ -69,10 +79,27 @@ if len(steps) != 1 or 'run' not in steps[0]:
     die(f'{meta}: this runner stand-in handles exactly one run: step; the action has '
         f'{len(steps)} step(s). Extend it before relying on it here.')
 step = steps[0]
+# Every step key this runs is read below; any other key changes what the runner does with the step
+# (`if:` can skip it, `working-directory:` moves it, `continue-on-error:` hides its failure), and
+# ignoring it would let a failure test pass for a step the runner would not run this way.
+STEP_KEYS = {'name', 'id', 'shell', 'env', 'run'}
+extra = sorted(set(step) - STEP_KEYS)
+if extra:
+    die(f'{meta}: the step carries {extra}, which this does not model; it reads only '
+        f'{sorted(STEP_KEYS)}')
 if step.get('shell') != 'bash':
     die(f'{meta}: shell is {step.get("shell")!r}; only bash is run here')
+if not isinstance(step.get('run'), str):
+    die(f'{meta}: run: is not a string')
+if '${{' in step['run']:
+    die(f'{meta}: the run: body contains an Actions expression, which the runner substitutes '
+        f'into the script before bash sees it; this does not evaluate expressions')
 
 declared = d.get('inputs') or {}
+for n, spec in declared.items():
+    if isinstance(spec, dict) and 'default' in spec and not isinstance(spec['default'], str):
+        die(f'{meta}: input {n!r} has a non-string default {spec["default"]!r}; how the runner '
+            f'renders it into the env is not modelled here — quote it')
 given, overrides = {}, {}
 it = iter(args)
 for a in it:
@@ -101,8 +128,7 @@ for k, v in (step.get('env') or {}).items():
         n = m.group(1)
         if n not in declared:
             die(f'env {k} references undeclared input {n!r}')
-        dflt = (declared[n] or {}).get('default', '')
-        env[k] = given.get(n, '' if dflt is None else str(dflt))
+        env[k] = given.get(n, (declared[n] or {}).get('default', ''))
     elif '${{' in v:
         die(f'env {k} is the expression {v!r}, which this does not evaluate; pass --env {k}=<value>')
     else:

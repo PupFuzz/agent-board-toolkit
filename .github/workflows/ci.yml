@@ -163,6 +163,7 @@ jobs:
           - card-completeness-selftest
           - ci-gate-selftest
           - composite-action-wiring-selftest
+          - composite-step-run-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
@@ -333,14 +334,19 @@ jobs:
           ./bin/_shellcheck-pinned -S error /tmp/action-run.sh
       - name: Invoke the action through the runner (nothing to promote ⇒ must succeed)
         # Proves the runner can execute the composite end-to-end into the script, and that the
-        # runner hands each input below to it. Deterministic and network-free: `dls: none`
+        # runner hands it four of the inputs below. Deterministic and network-free: `dls: none`
         # carries no DL token, so the script exits 0 at "no shipped refs in range" before any
-        # board read. Each input is load-bearing on THIS path — dropped by the wiring, the script
-        # refuses at rc 2: no token ⇒ the token guard; no expected-host ⇒ the host guard; no
-        # api-base ⇒ the committed `kanban.example.com` base fails the host guard against
-        # `kanban.invalid`; no dls ⇒ it derives the range from git history, and this job's
-        # shallow checkout has no tag to base it on. `.invalid` cannot resolve, so the
-        # placeholder token could not leave the runner even if the script stopped exiting early.
+        # board read. Those four are discriminated on THIS path — dropped by the wiring, the
+        # script refuses at rc 2: no writeback-token ⇒ the token guard; no expected-host ⇒ the
+        # host guard; no api-base ⇒ the committed `kanban.example.com` base fails the host guard
+        # against `kanban.invalid`; no dls ⇒ it derives the range from git history, and this
+        # job's shallow checkout has no tag to base it on.
+        # ⚠ `dry-run` is passed but NOT discriminated here: the script reads it only after a
+        # board read, which this path never reaches, so 'true' and '' exit 0 identically. No test
+        # proves the runner wires `dry-run` into the step (none did before card#9022 either);
+        # `tests/composite-action-wiring-selftest.sh` drives the run body's handling of it.
+        # `.invalid` cannot resolve, so the placeholder token could not leave the runner even if
+        # the script stopped exiting early.
         uses: ./promote
         with:
           writeback-token: placeholder-not-a-token

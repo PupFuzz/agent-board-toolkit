@@ -118,8 +118,9 @@ _mktmp_scratch
 REQUIRE_BESIDE_CI_GATE=(
     changelog-card-entry     # changelog-card-entry.yml — needs `edited` for the PR TITLE
     release-artifacts        # release-artifacts-gate.yml — needs `edited` for the PR BASE
-    continue-on-error-guard  # continue-on-error-guard.yml — needs `edited` for the PR BASE; coord's
-                             #   ci-verdict.sh also pins this check by name (card#9022)
+    continue-on-error-guard  # continue-on-error-guard.yml — needs `edited`: it checks out the PR's
+                             #   MERGE commit, and a retargeted base arrives only as `edited`;
+                             #   coord's ci-verdict.sh also pins this check by name (card#9022)
 )
 NOT_A_PR_GATE=(
     auto-tag                 # auto-tag-version.yml    — push: main only, post-merge
