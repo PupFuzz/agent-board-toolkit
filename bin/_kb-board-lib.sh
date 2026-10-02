@@ -1555,6 +1555,15 @@ kb_card_tags() {
     kb_parse_resp "$1" -c '.data | select(type == "object") | (if has("tags") and .tags != null then .tags else [] end) | select(type == "array")'
 }
 
+# KB_PARTIAL_TAG — the tag that says a card reached a finished column with declared work still
+# outstanding (README.md § The terminal:partial marker). `kbcard move/patch --partial` write it;
+# `bin/promote-released-cards` holds a card carrying it. That bin is vendored standalone and may
+# not source this lib, so it carries its own PARTIAL_TAG literal, and
+# tests/mirror-pair-parity-selftest.sh § 9 holds the two equal. The board stores tags verbatim, so
+# the match on both sides is exact and case-sensitive.
+# shellcheck disable=SC2034  # read by bin/kbcard, which sources this lib
+KB_PARTIAL_TAG='terminal:partial'
+
 # --- the card-start invariants: ONE owner for both starters -----------------
 #
 # `bin/board-card-start` (post-checkout) and `hooks/agent-dispatch-card-start` (through
