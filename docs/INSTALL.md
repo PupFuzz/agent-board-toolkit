@@ -191,17 +191,17 @@ echo 'export KBCARD_TOKEN_FILE="$HOME/.kanban-<name>-token"' >> ~/.kanban-<name>
 >
 > Without one of these, a bare `kbcard` on a non-`dev` box exits `2` with `board env file not readable: …/.kanban-dev-board.env` — the error names these fixes and lists the `~/.kanban-*-board.env` files it did find, so a fresh box on a non-`dev` board isn't left reverse-engineering the default.
 
-## 3c. Seat identity for the owner tag (agent seats)
+## 3c. Seat identity for the owner claim (agent seats)
 
-The card-start hooks stamp the seat owner tag `owner:<project>/<seat>` after they move a card to In Progress. What they read, and every case in which they do not stamp, is [README § The seat owner tag](../README.md#the-seat-owner-tag--ownerprojectseat). A coord-installed seat already carries `COORD_AGENT`, and `COORD_CONFIG` too when its config is not at the default path. **Give every install its own distinct `project` value** when installs share a board: the project is what tells two installs' same-named seats apart.
+The card-start hooks claim a card after they move it to In Progress: they assign it to the seat's own kanban user. What they read, and every case in which they assign nothing, is [README § The card owner](../README.md#the-card-owner--the-kanban-assignee). A coord-installed seat already carries `COORD_AGENT`, and `COORD_CONFIG` too when its config is not at the default path. **A seat that claims cards under its OWN kanban user (a coord pm or solo seat) needs that user's id in its roster entry, for each kanban instance it works on:** `roster[].kanban_user_id`, an object keyed by the kanban host. An impl seat has none by design: it works through a shared writeback user, and that user's id in a roster entry would credit every card the user holds to the seat. Coord 0.61.0 or later writes the field (`hooks/bin/roster-kanban-uid.sh`; 0.58.0 has no writer); this toolkit only reads it. Until a seat's entry carries it, the hooks still move cards and log that no owner was assigned, naming the missing field — so a seat with no id records no owner, where it used to get a tag.
 
-To check a seat, run this from the environment the hooks run in. It calls the resolver the hooks themselves use, so it prints the tag they would stamp, or the reason they would give for not stamping:
+To check a seat, run this from the environment the hooks run in. It loads the host env, whose API base gives the instance key, and calls the resolver the hooks themselves use, so it prints the user they would assign or the reason they would give for assigning nothing:
 
 ```bash
-bash -c '. ~/.local/bin/_kb-board-lib.sh && if kb_owner_resolve; then echo "$KB_OWNER_TAG"; else echo "NOT RESOLVED: $KB_OWNER_WHY"; fi'
+bash -c '. ~/.local/bin/_kb-board-lib.sh && kb_load_host_env && if kb_owner_resolve; then echo "seat $KB_OWNER_SEAT → kanban user $KB_OWNER_USER_ID on $KB_OWNER_HOST"; else echo "NOT RESOLVED: $KB_OWNER_WHY"; fi'
 ```
 
-It prints either the tag, such as `owner:acme/builder`, or the refusal, such as `NOT RESOLVED: COORD_AGENT is unset, so this process names no seat`.
+It prints either the mapping, such as `seat builder → kanban user 7 on kanban.example.com`, or the refusal, such as ``NOT RESOLVED: the roster entry 'builder' in the coord config (…) has no `kanban_user_id` object, …``.
 
 ## 4. Per-repo release config (only for repos that cut releases)
 

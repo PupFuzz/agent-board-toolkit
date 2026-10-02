@@ -73,7 +73,7 @@ eq "single marker → exactly one call"      "1" "$(recn)"
 eq "call selects the board"                "true" "$(has '--board toolkit' "$(recall)")"
 eq "call moves the right task to in_progress" "true" \
    "$(has 'move --task 4945 --column in_progress' "$(recall)")"
-eq "call asks kbcard to stamp the seat owner tag" "true" \
+eq "call asks kbcard to claim the card for this seat (--stamp-owner)" "true" \
    "$(has 'move --task 4945 --column in_progress --stamp-owner' "$(recall)")"
 eq "⭐ …and to apply the work-start guard (card#9556)" "true" \
    "$(has 'move --task 4945 --column in_progress --stamp-owner --card-start' "$(recall)")"
@@ -174,7 +174,7 @@ eq "old kbcard: the move is retried once without --stamp-owner — but WITH the 
 # ⭐ PAST TENSE, AND ONCE, AFTER THE RETRY RESOLVED. The outcome is a claim about the BOARD, so it
 # is emitted only once the retry has actually answered — never before it runs, when the hook cannot
 # yet know whether anything was written (the leg below is where that mattered).
-eq "old kbcard: the seat is told the card moved unstamped, and to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 was moved WITHOUT the seat owner tag — update kbcard' "$ERR")"
+eq "old kbcard: the seat is told the card moved unclaimed, and to update kbcard" "true" "$(has 'the kbcard on PATH predates --stamp-owner, so toolkit#4945 was moved WITHOUT the owner claim — update kbcard' "$ERR")"
 eq "old kbcard: …and that outcome is stated exactly once" "1" \
    "$(command grep -c 'predates --stamp-owner' <<< "$ERR" || true)"
 eq "old kbcard: …and the retried move is not reported failed" "false" "$(has 'kbcard move failed' "$ERR")"
@@ -208,7 +208,7 @@ echo "== ⭐ the kbcard that EXISTS IN THE FIELD: older than BOTH flags — no m
 # ⛔ THE ONLY OLD-kbcard CONFIGURATION THAT CAN EXIST. --stamp-owner shipped before --card-start,
 # so every kbcard that refuses the tag flag ALSO refuses the guard flag. The hook therefore runs
 # BOTH arms above in sequence: it retries without the tag, and that retry is refused too. Nothing
-# was written — so the hook must not say the card "is moved WITHOUT the seat owner tag", which a
+# was written — so the hook must not say the card "is moved WITHOUT the owner claim", which a
 # seat reads as "the card advanced, just unstamped" and stops there.
 cat > "$TMP/bin/kbcard" <<'STUB_OLD_BOTH'
 #!/usr/bin/env bash
@@ -229,7 +229,7 @@ eq "⭐ …and no call was ever made without the guard"   "false" \
 eq "⭐ old-both kbcard: the seat is told the card did NOT move, and what to update" "true" \
    "$(has 'predates --card-start, the guard that keeps this move from pulling a finished or pinned card back to In Progress, so toolkit#4945 was NOT moved — update kbcard' "$ERR")"
 eq "⛔ …and NOTHING claims the card moved — the retry was refused, so no write happened" "false" \
-   "$(has 'WITHOUT the seat owner tag' "$ERR")"
+   "$(has 'WITHOUT the owner claim' "$ERR")"
 eq "…and it is not reported as a failed move"         "false" "$(has 'kbcard move failed' "$ERR")"
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ echo "== ⭐ a board env mapping no backlog stage: kbcard's OWN cause reaches th
 # Since card#9556 `move --card-start` refuses at rc 2 BEFORE any request when the board env maps no
 # backlog/prioritized stage — so on such a board this hook stops moving cards it moved before, and
 # the seat has to be told what to add. kbcard names the missing column exactly; a relay carrying
-# only the owner-tag and guard-refusal lines dropped it, leaving the generic fail-soft line as the
+# only the owner and guard-refusal lines dropped it, leaving the generic fail-soft line as the
 # operator's ENTIRE output, which names nothing to fix.
 cat > "$TMP/bin/kbcard" <<'STUB_NOSTAGE'
 #!/usr/bin/env bash
@@ -277,26 +277,32 @@ eq "…and a refusal is not reported as a failed move"  "false" "$(has 'kbcard m
 
 
 # ---------------------------------------------------------------------------
-echo "== kbcard's owner-tag lines are relayed; the rest of its output stays suppressed =="
+echo "== kbcard's owner lines are relayed; the rest of its output stays suppressed =="
+# The relay contract is the `kbcard: owner ` PREFIX, which every line kb_owner_claim says carries
+# (tests/kb-board-lib-selftest.sh asserts that of the lib) — so a takeover's warning, its outcome
+# and its comment record all reach the seat, and nothing else does.
 cat > "$TMP/bin/kbcard" <<'STUB_OWNER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$KBADS_REC"
 echo "kbcard: HTTP 200 noise that must stay suppressed" >&2
-echo "kbcard: owner tag owner:acme/builder NOT stamped on task 4945 — the card is already held by owner:other/reviewer." >&2
+echo "kbcard: owner TAKING task 4945 from seat 'reviewer' (kanban user 9) for seat 'builder' (kanban user 7) — a card already held is warned about, then taken" >&2
+echo "kbcard: owner assigned: task 4945 → seat 'builder' (kanban user 7) — read back" >&2
 echo '{"id":4945}'
 exit 0
 STUB_OWNER
 chmod +x "$TMP/bin/kbcard"
 run_prompt "BOARD-CARD: toolkit#4945"
 eq "owner relay exits 0"                         "0" "$RC"
-eq "the owner-tag refusal reaches the hook's stderr, naming the holder" "true" \
-   "$(has 'agent-dispatch-card-start: kbcard: owner tag owner:acme/builder NOT stamped on task 4945 — the card is already held by owner:other/reviewer.' "$ERR")"
+eq "the takeover WARNING reaches the hook's stderr, naming the holder" "true" \
+   "$(has "agent-dispatch-card-start: kbcard: owner TAKING task 4945 from seat 'reviewer' (kanban user 9)" "$ERR")"
+eq "…and so does the outcome line"               "true" \
+   "$(has "agent-dispatch-card-start: kbcard: owner assigned: task 4945" "$ERR")"
 eq "…the other kbcard stderr does not"           "false" "$(has 'noise that must stay suppressed' "$ERR")"
 eq "…nor does kbcard's stdout"                   "false" "$(has '"id":4945' "$ERR")"
 eq "…and it is not reported as a failed move"    "false" "$(has 'kbcard move failed' "$ERR")"
 
 # ---------------------------------------------------------------------------
-echo "== end to end: the REAL kbcard against a faked kanban API stamps the owner tag =="
+echo "== end to end: the REAL kbcard against a faked kanban API claims the card as its assignee =="
 # The shim above proves the relay; this proves the hook's argv drives the real primitive to the
 # PATCH the owner rule promises. Only `curl` is faked.
 # shellcheck source=/dev/null
@@ -307,10 +313,18 @@ kb_stub_board_config toolkit 42 'export KB_STAGE_IN_PROGRESS=49' \
     'export KB_STAGE_SHIPPED_TO_DEV=51'
 kb_stub_install
 ln -sf "$(readlink -f "$HERE/../bin/kbcard")" "$TMP/bin/kbcard"
-printf '{"project":"acme","roster":[{"name":"builder"}]}\n' > "$TMP/coordination.config.json"
+jq -cn --arg h "$KB_STUB_HOST" '{project: "acme", roster: [{name: "builder", kanban_user_id: {($h): 7}}]}' > "$TMP/coordination.config.json"
+# The card's assignee is what the last assignment PATCH in the request log wrote: the claim is
+# reported from a read-back, so the read has to see the write.
 kb_stub_route() {
+    local a
+    a="$(awk -F'\t' '$1 == "PATCH" && index($3, "assigned_user_id")' "$KB_STUB_LOG" | tail -1 | cut -f3- | jq -c '.assigned_user_id' 2>/dev/null)"
+    [[ -n "$a" ]] || a="${KB_STUB_HOLDER:-null}"
     case "$1 $2" in
-        "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":%s,"tags":["fr"]}}' "${KB_STUB_STAGE:-48}" ;;
+        # KB_STUB_HANG_COMMENT: the takeover comment's POST hangs past the hook's timeout, so the
+        # hook KILLS kbcard after the assignment PATCH has landed — the window card#10868's review found.
+        "POST "*/tasks/4945/comments.json) [[ -n "${KB_STUB_HANG_COMMENT:-}" ]] && sleep 30; printf '201\n{"data":{"id":91}}' ;;
+        "GET "*/tasks/4945.json*) printf '200\n{"data":{"id":4945,"workflow_stage_id":%s,"tags":["fr"],"assigned_user_id":%s}}' "${KB_STUB_STAGE:-48}" "${a:-null}" ;;
         "PATCH "*/tasks/4945.json) printf '200\n'; jq -cn --argjson b "$3" '{data: ({id:4945,name:"probe"} + $b)}' ;;
         *) printf '404\n{"message":"unrouted"}' ;;
     esac
@@ -319,20 +333,31 @@ export -f kb_stub_route
 kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
 eq "end to end exits 0"                          "0" "$RC"
-eq "…the stage-only move, then a separate PATCH with the card's tags plus the owner tag" \
-   '{"workflow_stage_id":49}'$'\n''{"tags":["fr","owner:acme/builder"]}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
-eq "…and the hook relays that it stamped"        "true" "$(has 'kbcard: owner tag owner:acme/builder stamped on task 4945' "$ERR")"
+eq "…the stage-only move, then a separate PATCH carrying the seat's kanban user alone" \
+   '{"workflow_stage_id":49}'$'\n''{"assigned_user_id":7}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
+eq "…and the hook relays that it assigned"       "true" "$(has "kbcard: owner assigned: task 4945 → seat 'builder' (kanban user 7) — read back" "$ERR")"
+# ⭐ THE KILLED-MID-CLAIM WINDOW (card#10868 review): a card held by another user, and a claim the
+# hook's `timeout` kills AFTER the assignment PATCH lands (the takeover comment hangs). The card is
+# taken; the seat must still have been TOLD whose card it took, because a retry no-ops and nothing
+# else will ever name the replaced holder.
+kb_stub_reset
+KB_STUB_HOLDER=9 KB_STUB_HANG_COMMENT=1 KBADS_TIMEOUT=3 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder \
+    run_prompt "BOARD-CARD: toolkit#4945"
+eq "killed mid-claim: the hook exits 0, and the assignment DID land" "0|true" \
+   "$RC|$(has '{"assigned_user_id":7}' "$(kb_stub_bodies PATCH /tasks/4945.json)")"
+eq "⭐ killed mid-claim: the takeover warning still reached the hook's stderr, naming the holder" "true" \
+   "$(has "kbcard: owner TAKING task 4945 from kanban user 9 for seat 'builder' (kanban user 7)" "$ERR")"
 kb_stub_reset
 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=ghost run_prompt "BOARD-CARD: toolkit#4945"
 eq "an unresolvable seat still MOVES the card"   '{"workflow_stage_id":49}' "$(kb_stub_bodies PATCH /tasks/4945.json | jq -cS .)"
-eq "…and the hook relays why it did not stamp"   "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$ERR")"
+eq "…and the hook relays why it did not claim"   "true" "$(has "COORD_AGENT 'ghost' is not a roster[].name" "$ERR")"
 # ⭐ END TO END, THROUGH THE REAL kbcard: card#9556's own case. A dispatch naming a card that has
-# already SHIPPED must leave it exactly where it is — no move, no owner tag — and say so. This is
+# already SHIPPED must leave it exactly where it is — no move, no owner claim — and say so. This is
 # the one leg that exercises the whole hop the fix travels: hook → kbcard → the lib's predicate.
 kb_stub_reset
 KB_STUB_STAGE=51 COORD_CONFIG="$TMP/coordination.config.json" COORD_AGENT=builder run_prompt "BOARD-CARD: toolkit#4945"
 eq "a Shipped card: the hook exits 0"            "0" "$RC"
-eq "⭐ …and NOTHING is written — no move, no owner tag" "" "$(kb_stub_bodies PATCH /tasks/4945.json)"
+eq "⭐ …and NOTHING is written — no move, no owner claim" "" "$(kb_stub_bodies PATCH /tasks/4945.json)"
 eq "⭐ …the card WAS read, so this is a verdict and not a run that never happened" "1" \
    "$(kb_stub_count GET /tasks/4945.json)"
 eq "…and the hook says which stage refused it"   "true" \

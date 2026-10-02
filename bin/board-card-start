@@ -47,10 +47,10 @@
 # re-read of the card, never from the PATCH's 2xx (card#10029) — see _bcs_patch for the three
 # outcomes. The hook stays fail-soft (exit 0) on every one of them; only what it SAYS changes.
 #
-# OWNER TAG: once the move to In Progress has been READ BACK, this seat's owner tag is stamped by a
-# separate tag write (kb_owner_tag_write in _kb-board-lib.sh, shared with `kbcard move
-# --stamp-owner`). Its rules are README.md § The seat owner tag. Whatever it reports goes to stderr
-# AND the durable log below. A card this hook does not move is not stamped.
+# OWNER CLAIM: once the move to In Progress has been READ BACK, the card is assigned to this seat's
+# kanban user by a separate assignment write (kb_owner_claim in _kb-board-lib.sh, shared with
+# `kbcard move --stamp-owner`). Its rules are README.md § The card owner. Whatever it reports goes
+# to stderr AND the durable log below. A card this hook does not move is not claimed.
 set -uo pipefail
 
 # Shared toolkit lib (DL canon, whole-board pagination, token read). Fail-soft:
@@ -94,7 +94,7 @@ kb_bcs_log() {
 }
 
 # kb_bcs_note <line>: the stderr + durable-log write kb_bcs_log words for a failed move, for a line
-# that is NOT about a failed move (the owner-tag refusals, where the move itself still happens).
+# that is NOT about a failed move (the owner-claim lines, where the move itself still happens).
 kb_bcs_note() {
     local msg="${1:-}"
     printf '%s\n' "$msg" >&2
@@ -879,8 +879,11 @@ _bcs_unruled() {
 # kb_stage_write, the write itself, is asked the same way: beside a lib that predates it every
 # write answered rc 127 and the log said only `move failed (HTTP ?) — …: command not found`,
 # naming neither the lib nor the fix (card#9777).
+# kb_owner_claim, the owner claim after the move, is asked the same way: it runs only once the move
+# has landed, so beside a lib that predates it the move would be written and the claim answer 127.
 declare -F kb_confirm_card >/dev/null 2>&1 || _bcs_unruled kb_confirm_card undefined
 declare -F kb_stage_write >/dev/null 2>&1 || _bcs_unruled kb_stage_write undefined
+declare -F kb_owner_claim >/dev/null 2>&1 || _bcs_unruled kb_owner_claim undefined
 _bcs_pin=0; kb_card_pinned "$card" || _bcs_pin=$?
 case "$_bcs_pin" in
     0) bcs_skip "card #$cid ($label) is pinned (block_reason/no-automove) — auto-move refused" ;;
@@ -947,10 +950,15 @@ _bcs_patch "$cid" "$(jq -nc --argjson s "$inprog" '{workflow_stage_id: $s}')" st
     "board-card-start: card #$cid ($label) → In Progress" \
     "card #$cid ($label) → In Progress move failed"
 # _bcs_patch is fail-soft (rc 0 either way) and leaves its read-back outcome in BCS_WRITE. Only a
-# move the re-read CONFIRMED gets an owner tag (see the header): a 2xx the board did not apply, or
+# move the re-read CONFIRMED gets an owner claim (see the header): a 2xx the board did not apply, or
 # one nobody could read back, is not a card this seat is known to have started.
+# KB_OWNER_WARN routes the claim's takeover warning into the durable log AS IT IS SAID — before the
+# assignment write — rather than with the outcome lines below: this hook's installed wrapper
+# discards stderr, and a run cut short after the write lands must still have named whose card it took.
 if [ "$BCS_WRITE" = applied ]; then
-    kb_owner_tag_write stamp "$cid" "card #$cid ($label)"
-    [ -z "$KB_OWNER_NOTE" ] || kb_bcs_note "$KB_OWNER_NOTE"
+    KB_OWNER_WARN=kb_bcs_note kb_owner_claim "$cid" "card #$cid ($label)"
+    if [ -n "$KB_OWNER_NOTE" ]; then
+        while IFS= read -r _bcs_owner_line; do kb_bcs_note "$_bcs_owner_line"; done <<< "$KB_OWNER_NOTE"
+    fi
 fi
 exit 0

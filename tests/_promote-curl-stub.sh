@@ -91,9 +91,6 @@
 #                   see THE STUB APPLIES ITS OWN WRITES below. Default: the card of that id out
 #                   of $BOARD_FILE (so its stage is the board's), given an empty `tags` list when
 #                   it carries none, which is what a caller that sets neither sees.
-#   $STUB_TAGS_PATCH_STATUS / $STUB_TAGS_PATCH_BODY  when the status is set, a PATCH whose body
-#                   carries `"tags"` answers with it, while a stage-only PATCH keeps
-#                   $STUB_PATCH_STATUS — the server's move-vs-update authorization split.
 #   $STUB_STAGE_UNAPPLIED_IDS  ⛔ THE PER-CARD TWIN of $STUB_STAGE_UNAPPLIED below: a
 #                   space-separated list of card ids (`"2"`, `"2 5"`) whose STAGE PATCH answers
 #                   its success status, is logged, and applies nothing — while every other
@@ -103,8 +100,8 @@
 #                   only make every card behave the same way. With a single-card board the two
 #                   are indistinguishable, which is exactly how a rc-1 assertion came to be
 #                   pinned in the one configuration where it happened to hold.
-#   $STUB_STAGE_UNAPPLIED / $STUB_TAGS_UNAPPLIED  ⛔ THE 2xx THAT CHANGES NOTHING. When set, the
-#                   matching PATCH still answers its success status and is still logged — and the
+#   $STUB_STAGE_UNAPPLIED  ⛔ THE 2xx THAT CHANGES NOTHING. When set, the stage PATCH still
+#                   answers its success status and is still logged — and the
 #                   stub's own card does NOT change. That is the state card#9938 exists for and
 #                   the one this fleet actually met (2026-05-22: 28/28 PATCHed, every call 2xx,
 #                   `updated_at` bumped, `workflow_stage_id` unchanged, the run green). Without a
@@ -202,12 +199,8 @@ applied() {
   while IFS="$(printf '\t')" read -r lurl lbody; do
     [ "$lurl" = "$u" ] || continue
     if [ -n "${STUB_PATCH_TRANSPORT:-}" ]; then continue; fi
-    case "$lbody" in
-      *'"tags"'*) st="${STUB_TAGS_PATCH_STATUS:-$(patch_status "$u")}"
-                  if [ -n "${STUB_TAGS_UNAPPLIED:-}" ]; then continue; fi ;;
-      *)          st="$(patch_status "$u")"
-                  if stage_unapplied "$u"; then continue; fi ;;
-    esac
+    st="$(patch_status "$u")"
+    if stage_unapplied "$u"; then continue; fi
     case "$st" in [123]??) ;; *) continue ;; esac
     merged="$(jq -cn --argjson a "$acc" --argjson b "$lbody" '$a + $b' 2>/dev/null)" || continue
     [ -n "$merged" ] && acc="$merged"
@@ -220,10 +213,6 @@ if [ "$method" = PATCH ]; then
   # Logged BEFORE the transport exit on purpose: the request went out either way, and a caller
   # asserting "the move really was attempted" must still be able to see it.
   [ -n "${STUB_PATCH_TRANSPORT:-}" ] && exit "$STUB_PATCH_TRANSPORT"
-  case "$data" in
-    *'"tags"'*) tbody='{"message":"This action is unauthorized."}'
-                [ -n "${STUB_TAGS_PATCH_STATUS:-}" ] && emit "$STUB_TAGS_PATCH_STATUS" "${STUB_TAGS_PATCH_BODY:-$tbody}" ;;
-  esac
   pbody='{"data":{"id":0}}'
   emit "$(patch_status "$url")" "${STUB_PATCH_BODY:-$pbody}"
 fi

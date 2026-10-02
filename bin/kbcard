@@ -112,16 +112,17 @@
 #     can't later match a recycled DL/PR and resurrect the card in a release-promote
 #     scan. --keep-refs opts out (retains them). Only wont_do clears — every other
 #     target column is unaffected.
-#     ⭐ A TERMINAL move ALSO CLEARS THE CARD'S ASSIGNMENT (assigned_user_id) in the same
-#     PATCH — the terminal columns are the ones README.md § The seat owner tag names — so a
-#     finished card never holds a stale claim on a seat that has moved on. `patch --column`
-#     does it too: both verbs write through ONE primitive that owns the rule, rather than each
-#     mover remembering it. The clear is announced on stderr.
-#     ⭐ THE SAME TERMINAL MOVE THEN REMOVES THE SEAT OWNER TAG, and --stamp-owner stamps it once
-#     a non-terminal move is confirmed. Both are a SEPARATE tag write after the move, never a
-#     key on it; rc is the move's. The rules — refusals, the terminal set, what is printed — are
-#     README.md § The seat owner tag. --stamp-owner beside a terminal --column is rc 2 before any
-#     request.
+#     ⭐ A MOVE INTO A FINISHED COLUMN (shipped_to_dev, released_to_main, wont_do, done) KEEPS THE
+#     CARD'S ASSIGNEE AND ITS TAGS: the assignee is the record of who did the work. `patch
+#     --column` is the same — both verbs write through ONE primitive, and it adds no key.
+#     ⭐ --stamp-owner CLAIMS THE CARD for this seat once the move is confirmed: it assigns the
+#     card to the seat's kanban user, read from the coord roster (roster[].kanban_user_id, keyed by
+#     this board instance's host). A card another user holds is WARNED about, then TAKEN, and a
+#     card comment records whom it replaced. It is a SEPARATE assignment write after the move,
+#     never a key on it; rc is the move's. The rules — the mapping, every case that assigns
+#     nothing, what is printed — are README.md § The card owner. --stamp-owner beside a finished
+#     --column is rc 2 before any request, and so is --stamp-owner beside a _kb-board-lib.sh
+#     that predates the claim (kb_owner_claim undefined).
 #     ⭐ --card-start IS THE WORK-START GUARD, and it is OPT-IN (card#9556). With it the move is
 #     REFUSED rather than made when the card is PINNED (a non-empty block_reason or a
 #     `no-automove` tag) or is not in Backlog / Prioritized — so an automated starter cannot pull
@@ -131,7 +132,7 @@
 #     (kb_card_pinned / kb_card_start_stage_verdict), shared with bin/board-card-start so the two
 #     starters cannot diverge again; hooks/agent-dispatch-card-start reaches them through this
 #     flag, being installed standalone and unable to source that lib.
-#     WHAT A REFUSAL IS: rc 0, NOTHING written, no owner tag, no move echo on stdout, and the
+#     WHAT A REFUSAL IS: rc 0, NOTHING written, no owner claim, no move echo on stdout, and the
 #     reason on stderr naming the stage or the pin. rc 0 because the guard did its job — the
 #     callers that pass this flag are fail-soft automation, and reporting a correct refusal as a
 #     failed move is how an operator learns to ignore the line. A card that could not be READ is
@@ -392,9 +393,8 @@
 #     write echo shows the RAW `description` for this call, so the caller SEES the null rather
 #     than having to re-read the card. create-card does not take it: there is nothing to clear
 #     at birth, and an omitted pair already leaves the field unset.
-#     --assign SETS THE KANBAN ASSIGNEE, NOT THE SEAT OWNER: seats commonly share one kanban
-#     user, so the seat working a card is the `owner:<project>/<seat>` tag (README.md § The
-#     seat owner tag), and --assign neither reads nor writes that tag.
+#     --assign WRITES THE SAME FIELD --stamp-owner DOES — the card's owner is its kanban
+#     assignee (README.md § The card owner) — but by hand, under the refusal rules below.
 #     --assign / --unassign write the board's NATIVE assigned_user_id — the field that answers
 #     WHICH KANBAN USER IS ALREADY WORKING THIS CARD when the card's stage never moved, which is
 #     precisely the state two seats pull the same work in (a card sitting in backlog is
@@ -409,7 +409,8 @@
 #     WRITE. That refusal IS the collision detector: the second seat is told whose work it
 #     was about to redo, and it works exactly where the stage cannot answer. --steal is the
 #     opt-out and says loudly whose assignment it took. Assigning the seat that already holds
-#     the card is not a conflict (it writes the same id it read).
+#     the card is not a conflict (it writes the same id it read). The column does not matter: an
+#     assignee on a FINISHED card is the record of who did the work, and is refused the same way.
 #     --unassign is deliberately NOT gated the same way. kbcard has no notion of WHICH seat is
 #     running it — the map resolves names to ids, never "me" — so it cannot tell a seat
 #     releasing its OWN card (the ordinary case) from one clearing somebody else's, and gating
@@ -628,6 +629,31 @@
 #     from — so this read cannot disagree with it: ANY KB_STAGE_* var maps (a board's own
 #     taxonomy included) and a duplicate id resolves once. And every name it prints is one
 #     --column accepts, because stage_id resolves through the same pairs.
+#   kbcard owner-migrate [--apply]
+#     The ONE-TIME move off the retired `owner:<project>/<seat>` tag: every card on this board
+#     carrying one is classified against the coord roster's seat → kanban user mapping
+#     (roster[].kanban_user_id, keyed by this board instance's host — README.md § The card owner):
+#       migratable  ONE owner tag, no assignee, and the tag's seat maps to a user here;
+#       unmapped    one owner tag and no assignee, but no user can be named for it (another
+#                   project's tag, a seat not in the roster, or a seat with no id for this
+#                   instance) — `why` says which;
+#       ambiguous   more than one owner tag and no assignee — nothing picks one;
+#       assigned    the card already has an assignee, so the tag is redundant (`differs` is true
+#                   when the tag maps to a DIFFERENT user than the assignee).
+#     stdout is one JSON object: {board, instance, applied, counts, cards}. ⭐ counts.tag_only —
+#     the cards still carrying ONLY the tag — is the figure the tag readers' removal waits on,
+#     and the stderr summary line says it in words.
+#     ⛔ DRY RUN BY DEFAULT: nothing is written, and every migratable card reads
+#     `outcome: "would-assign"`. --apply writes `{assigned_user_id}` ALONE to each migratable
+#     card — after a FRESH read (a card assigned since the scan is skipped, never overwritten) —
+#     and reports each from a read-back: assigned / not-applied / unverified / refused /
+#     read-failed / assigned-since-scan. It never touches a tag, and never writes an unmapped,
+#     ambiguous or assigned card. counts are measured BEFORE this run's writes — run it again
+#     without --apply to re-measure.
+#     rc: 0; 2 for a bad flag or a coord config that is not a readable JSON object (no request);
+#     1 when the board read is incomplete, or under --apply when any write was refused, not
+#     applied, or skipped on an unreadable card; 3 when every write was sent but one or more
+#     could not be read back.
 #   kbcard search <query> [--column COL] [--type TYPE] [--brief | --count]
 #     READ: the server's own free-text search over this board, printed as one BLOCK per hit —
 #     a `card <id> · stage <sid> · <name>` header line, then the card's FULL description
@@ -1748,11 +1774,9 @@ _kbc_patch_tags() {
         # PATCH is issued.
         #
         # What counts as "no tag list could be read" is kb_card_tags' rule (_kb-board-lib.sh), the
-        # one owner of the shape tests every read-before-replace of `tags` goes through — this one,
-        # and the owner-tag write in kb_owner_tag_write. What differs is the POLICY: this read is
-        # the base of a list the CALLER asked to write, so an unreadable one aborts the whole
-        # patch; the owner-tag write follows a move that has already happened, so an unreadable
-        # read there skips only the tag write.
+        # one owner of the shape tests every read-before-replace of `tags` goes through. This read
+        # is the base of a list the CALLER asked to write, so an unreadable one aborts the whole
+        # patch.
         local resp
         resp="$(kb_api GET "/tasks/$task.json")" || return 1
         base="$(kb_card_tags "$resp")"
@@ -1859,35 +1883,32 @@ cmd_create_card() {
 
 # --- the ONE task PATCH both stage-writing verbs go through -----------------------------
 
-# _kbc_terminal_column <column>: is this column TERMINAL — the card's work is finished, so nobody
-# is working it any more? The set is README.md § The seat owner tag's; this is its one spelling
-# in code, and it decides both the assignment clear and the owner-tag clear.
-_kbc_terminal_column() {
-    [[ "$1" == "shipped_to_dev" || "$1" == "released_to_main" || "$1" == "wont_do" ]]
+# KBC_FINISHED_COLUMNS — the columns in which a card's work is FINISHED, by `--column` name: the
+# operator's ruling names Done, Won't Do, Shipped to dev and Shipped to main (card#10868), and
+# `done` counts wherever a board env declares KB_STAGE_DONE. The set is README.md § The card
+# owner's; this is its one spelling in code. A finished card KEEPS its assignee (the record of who
+# did the work), so the set decides one thing only: `--stamp-owner` is refused beside one (a claim
+# is a work-START act). The --assign collision detector reads no column: an assignee on a finished
+# card is still another user's, and taking it needs --steal.
+KBC_FINISHED_COLUMNS=(shipped_to_dev released_to_main wont_do "done")
+
+# _kbc_finished_column <column>: is <column> one of KBC_FINISHED_COLUMNS?
+_kbc_finished_column() {
+    local c
+    for c in "${KBC_FINISHED_COLUMNS[@]}"; do [[ "$1" == "$c" ]] && return 0; done
+    return 1
 }
 
-# _kbc_stage_patch <verb> <task> <column> <body>: the task PATCH `move` and `patch` BOTH issue,
-# and the one owner of the invariants that belong to the WRITE rather than to either caller.
-# Both verbs assembled their own body and then wrote it themselves; the rules below would
-# otherwise be the same block copied into each, which is how one copy comes to differ from the
-# other (canon #5). <column> is "" for a patch that names no column, which is a call making no
-# claim about a stage and gets no stage-derived behaviour.
+# _kbc_stage_patch <verb> <task> <body>: the task PATCH `move` and `patch` BOTH issue, and the one
+# owner of the invariants that belong to the WRITE rather than to either caller. Both verbs
+# assembled their own body and then wrote it themselves; the rules below would otherwise be the
+# same block copied into each, which is how one copy comes to differ from the other (canon #5).
 #
-#   TERMINAL ⇒ THE ASSIGNMENT IS CLEARED IN THE SAME PATCH. A finished card that still names a
-#   holder is exactly the stale claim `--assign` exists to make readable, and the alternative
-#   is every mover — here and in whatever calls kbcard next — remembering to unassign.
-#   An assignment named EXPLICITLY in the same call WINS and is left alone, the same "explicit
-#   beats hygiene" rule the decline-stamp clear follows; the stderr line then says which of the
-#   two happened, because a notice that claimed a clear this call did not make would be false.
+#   NO COLUMN ADDS A KEY. A move into a finished column is the stage write alone: the card's
+#   assignee is the record of who did the work and stays on it (README.md § The card owner).
 #
-#   ⚠ THE CLEAR PUTS assigned_user_id ON THE MOVE, AND THAT RAISES THE PERMISSION THE MOVE NEEDS.
-#   The kanban server authorizes a PATCH whose ONLY key is `workflow_stage_id` as a move, and any
-#   other key as a task update (`TaskMutator`), so a terminal move needs `task.update` where a
-#   stage-only move would not. _kbc_write_fault is what makes that refusal legible rather than
-#   reading as a broken move.
-#
-#   THE OWNER TAG IS NOT WRITTEN HERE. It is its own tag write after the move is confirmed
-#   (_kbc_owner_after_move), so no owner-tag outcome can refuse the move.
+#   THE OWNER CLAIM IS NOT WRITTEN HERE. It is its own assignment write after the move is confirmed
+#   (_kbc_owner_after_move), so no claim outcome can refuse the move.
 #
 #   A POLICY REFUSAL OF AN ASSIGNMENT WRITE IS NAMED (see _kbc_write_fault). That naming lives
 #   HERE rather than at either caller because it needs KB_HTTP, which kb_api sets inside the
@@ -1899,15 +1920,7 @@ _kbc_terminal_column() {
 #
 # Response on stdout, kb_api's rc returned unchanged, so both callers' existing arms are intact.
 _kbc_stage_patch() {
-    local verb="$1" task="$2" column="$3" body="$4" rc=0
-    if _kbc_terminal_column "$column"; then
-        if jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1; then
-            echo "kbcard: $column is a terminal column, but this call names an assignee explicitly — the explicit value wins and the card stays assigned" >&2
-        else
-            body="$(jq -c -n --argjson b "$body" '{assigned_user_id: null} + $b')"
-            echo "kbcard: cleared the card's assignment (assigned_user_id) — $column is a terminal column and a finished card holds nobody's claim" >&2
-        fi
-    fi
+    local verb="$1" task="$2" body="$3" rc=0
     kb_stage_write PATCH "/tasks/$task.json" "$body" || {
         rc=$?
         _kbc_write_fault "$verb" "$task" "$body" "${KB_HTTP:-}"
@@ -1915,19 +1928,15 @@ _kbc_stage_patch() {
     }
 }
 
-# _kbc_owner_after_move <task> <column> <stamp_owner>: the seat owner tag, written AFTER a move
-# this call has CONFIRMED — removed when <column> is terminal, stamped when <stamp_owner> is
-# non-empty, otherwise nothing. The write and its rules are kb_owner_tag_write's
-# (_kb-board-lib.sh); whatever it reports goes to stderr, and the verb's rc stays the move's.
+# _kbc_owner_after_move <task> <stamp_owner>: the owner claim — the card assigned to this seat's
+# kanban user — made AFTER a move this call has CONFIRMED, and only when <stamp_owner> is non-empty.
+# The write and its rules are kb_owner_claim's (_kb-board-lib.sh); whatever it reports goes to
+# stderr, and the verb's rc stays the move's. No column triggers anything on its own: a finished
+# card keeps its assignee (README.md § The card owner).
 _kbc_owner_after_move() {
-    local task="$1" column="$2" stamp_owner="$3"
-    if _kbc_terminal_column "$column"; then
-        kb_owner_tag_write clear "$task" "task $task"
-    elif [[ -n "$stamp_owner" ]]; then
-        kb_owner_tag_write stamp "$task" "task $task"
-    else
-        return 0
-    fi
+    local task="$1" stamp_owner="$2"
+    [[ -n "$stamp_owner" ]] || return 0
+    kb_owner_claim "$task" "task $task"
     [[ -z "$KB_OWNER_NOTE" ]] || printf '%s\n' "$KB_OWNER_NOTE" >&2
 }
 
@@ -2315,8 +2324,15 @@ cmd_move() {
         esac
     done
     [[ -z "$task_ref" || -z "$column" ]] && { echo "kbcard: --task and --column required" >&2; return 2; }
-    if [[ -n "$stamp_owner" ]] && _kbc_terminal_column "$column"; then
-        echo "kbcard: --stamp-owner claims the card for this seat, and $column is a terminal column, whose move removes every owner tag — pass one or the other" >&2
+    if [[ -n "$stamp_owner" ]] && _kbc_finished_column "$column"; then
+        echo "kbcard: --stamp-owner claims the card for this seat as its work STARTS, and $column is a finished column — a move that finishes a card is not a claim; pass one or the other" >&2
+        return 2
+    fi
+    # The claim is called AFTER the move, so beside a lib that predates it the move would land and
+    # the claim would answer rc 127. Asked for by definedness here, before any request (card#9756's
+    # rule): a lib older than this kbcard writes NOTHING.
+    if [[ -n "$stamp_owner" ]] && ! declare -F kb_owner_claim >/dev/null; then
+        _kbc_lib_unruled move "the owner claim" kb_owner_claim undefined
         return 2
     fi
     # --card-start's stage ids come from the SAME board env every other column does, and they are
@@ -2367,14 +2383,14 @@ cmd_move() {
     # when the serializer sent it, and this verb has never emitted it. Same refusal, its own
     # field set — widening a verb's stdout is a change to what its consumers parse.
     local resp echo_out
-    resp="$(_kbc_stage_patch move "$task" "$column" "$body")" || return 1
+    resp="$(_kbc_stage_patch move "$task" "$body")" || return 1
     echo_out="$(kb_parse_resp "$resp" '.data | {id, name, workflow_stage_id}')"
     [[ -n "$echo_out" ]] || _kbc_unverified move "on task $task" || return $?
     # The whole point of this verb is the stage, so the stage is what it checks. Same owner as
     # create-card's and patch's, per its own header rule: the PROJECTION differs here, the
     # outcome contract does not.
     _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
-    _kbc_owner_after_move "$task" "$column" "$stamp_owner"
+    _kbc_owner_after_move "$task" "$stamp_owner"
     printf '%s\n' "$echo_out"
 }
 
@@ -3234,13 +3250,13 @@ cmd_patch() {
     [[ -n "$tags_json" || -n "$tag_delta" ]] && echo_extra="$echo_extra, tags: (.tags // [])"
     [[ -n "$type" ]] && echo_extra="$echo_extra, card_type_id: (.card_type_id // null)"
     [[ -n "$ext_id" ]] && echo_extra="$echo_extra, external_id: (.external_id // null)"
-    # assigned_user_id rides the echo whenever this call set it — including the terminal-column
-    # clear, which sets it without a flag — so the caller SEES what the server recorded. It is
+    # assigned_user_id rides the echo whenever this call set it, so the caller SEES what the server
+    # recorded. It is
     # surfaced, NOT compared: _kbc_confirm_stage's narrowness is deliberate (only a field this
     # file resolved itself and the server stores verbatim is safe to compare byte-wise), and
     # this field's round-trip has not been measured against a live board, so a compare here
     # could only manufacture a HARD FAILURE on a write that landed exactly as asked.
-    if [[ -n "$assign_set" ]] || _kbc_terminal_column "$column"; then
+    if [[ -n "$assign_set" ]]; then
         echo_extra="$echo_extra, assigned_user_id: (.assigned_user_id // null)"
     fi
     # Surfaced on BOTH directions, the clear included: its whole claim is that the server now
@@ -3249,10 +3265,9 @@ cmd_patch() {
     [[ -n "$block_set" ]] && echo_extra="$echo_extra, block_reason: .block_reason"
     [[ -n "$decline_note" ]] && echo "$decline_note" >&2
     local resp
-    resp="$(_kbc_stage_patch patch "$task" "$column" "$body")" || return 1
+    resp="$(_kbc_stage_patch patch "$task" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
     _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" "$cleared_json" || return $?
-    _kbc_owner_after_move "$task" "$column" ""
 }
 
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure
@@ -3507,6 +3522,133 @@ cmd_list() {
         total="$(jq '(. // []) | length' <<<"$cards")"
         echo "kbcard: list$flags: $matched of $total board cards matched" >&2
     fi
+}
+
+# --- owner-migrate: the one-time owner:* tag → assignee migration ---------------------------
+# The rules (the classes, dry-run by default, what --apply writes and reports) are the usage block
+# above; README.md § The card owner owns why the tag retires. The classification is ONE jq program
+# over the whole board read, and the roster is read through the lib's KB_JQ_ROSTER, the reading
+# the claim itself uses — so this command and `move --stamp-owner` cannot name different users for
+# one seat.
+cmd_owner_migrate() {
+    local apply=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --apply) apply=1; shift ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    local cfg host
+    cfg="$(kb_coord_config_path)"
+    if [[ ! -f "$cfg" || ! -r "$cfg" ]] || ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
+        echo "kbcard: owner-migrate: the coord config ($cfg) is not a readable JSON object — it holds the seat → kanban user mapping (roster[].kanban_user_id) this migration assigns from, so nothing was read and nothing was written. Point COORD_CONFIG at it." >&2
+        return 2
+    fi
+    host="$(kb_url_host "$KB_API")"
+    local cards frc
+    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
+        || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)" >&2; return 1; }
+    local rows
+    rows="$(jq -c --slurpfile cfg "$cfg" --arg h "$host" "$KB_JQ_OWNER$KB_JQ_ROSTER"'
+        ($cfg[0]) as $c
+        | ($c | project_name) as $proj
+        | [ $c | roster_seats ] as $seats
+        | [ (. // [])[]
+            | ((.tags // []) | if type == "array" then . else [] end | map(select(is_owner))) as $ot
+            | select(($ot | length) > 0)
+            | (.assigned_user_id // null) as $a
+            | ( if ($ot | length) > 1 then {why: "the card carries more than one owner tag, and nothing picks one"}
+                else ($ot[0] | ltrimstr("owner:")) as $ps
+                  | if ($ps | test("^[^/]+/.+$")) | not then {why: "\($ot[0]) is not an owner:<project>/<seat> tag"}
+                    else ($ps | split("/")[0]) as $p | ($ps | .[(index("/") + 1):]) as $s
+                      | if $p != $proj then {why: "the tag names project \"\($p)\", and this roster is project \"\($proj // "(none)")\""}
+                        else ([ $seats[] | select(.name == $s) ][0]) as $e
+                          | if $e == null then {why: "seat \"\($s)\" is not in this roster"}
+                            else ($e | seat_uid_verdict($h)) as $v
+                              | if $v.uid then {uid: $v.uid, seat: $s}
+                                elif $v.why == "nofield" then {why: "roster entry \"\($s)\" has no kanban_user_id object"}
+                                elif $v.why == "nohost" then {why: "roster entry \"\($s)\" has no kanban_user_id for board instance \"\($h)\""}
+                                else {why: "roster entry \"\($s)\" has kanban_user_id[\"\($h)\"] = \($v.v | tojson), not a positive integer written as plain digits"} end
+                            end
+                        end
+                    end
+                end ) as $m
+            | { id, stage: .workflow_stage_id, owner_tags: $ot, assigned_user_id: $a,
+                class: (if $a != null then "assigned" elif ($ot | length) > 1 then "ambiguous" elif $m.uid then "migratable" else "unmapped" end),
+                target_user_id: ($m.uid // null), seat: ($m.seat // null) }
+            | .why = (if .class == "unmapped" or .class == "ambiguous" then $m.why else null end)
+            | .differs = (.class == "assigned" and .target_user_id != null and .target_user_id != .assigned_user_id) ]
+        | sort_by(.id)' <<<"$cards")" || {
+        echo "kbcard: owner-migrate: board $KB_BOARD_ID was read, but its cards could not be classified — nothing was written" >&2
+        return 1
+    }
+
+    # --apply: one fresh read, one assignment write, one read-back per migratable card.
+    local oc='{}' id uid got http body cur crc outcome
+    if [[ -n "$apply" ]]; then
+        while IFS=$'\t' read -r id uid; do
+            [[ -n "$id" ]] || continue
+            got="$(kb_api_status GET "/tasks/$id.json")"
+            http="${got%%$'\n'*}"; body=""
+            [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+            cur=""
+            [[ "$http" == 2* ]] && cur="$(kb_parse_resp "$body" -r '.data | select(type == "object") | (.assigned_user_id // "none") | tostring')"
+            if [[ -z "$cur" || "$cur" == *$'\n'* ]]; then
+                outcome=read-failed
+                echo "kbcard: owner-migrate: card $id NOT assigned — its fresh read failed (HTTP $http), so this run cannot say it is still unassigned; nothing was written to it" >&2
+            elif [[ "$cur" != none ]]; then
+                outcome=assigned-since-scan
+                echo "kbcard: owner-migrate: card $id skipped — it was assigned to kanban user $cur after the scan, and an assignee is never overwritten here" >&2
+            else
+                got="$(kb_api_status PATCH "/tasks/$id.json" "$(jq -cn --argjson u "$uid" '{assigned_user_id: $u}')")"
+                http="${got%%$'\n'*}"; body=""
+                [[ "$got" == *$'\n'* ]] && body="${got#*$'\n'}"
+                if [[ "$http" == 000 ]]; then
+                    outcome=unverified
+                    echo "kbcard: owner-migrate: card $id assignment UNVERIFIED — the write did not complete (no HTTP status came back), so whether it landed is UNKNOWN" >&2
+                elif [[ "$http" != 2* ]]; then
+                    outcome=refused
+                    echo "kbcard: owner-migrate: card $id NOT assigned — $(kb_render_refusal "$http" "$body")" >&2
+                else
+                    crc=0
+                    kb_confirm_card "$id" ".card.assigned_user_id == $uid" >/dev/null || crc=$?
+                    case "$crc" in
+                        0) outcome=assigned ;;
+                        1) outcome=not-applied
+                           echo "kbcard: owner-migrate: card $id NOT assigned — the write answered success and a re-read does not show kanban user $uid. The status is not the write; the read-back is." >&2 ;;
+                        *) outcome=unverified
+                           echo "kbcard: owner-migrate: card $id assignment UNVERIFIED — sent and answered success, but the re-read measured nothing" >&2 ;;
+                    esac
+                fi
+            fi
+            oc="$(jq -c --arg id "$id" --arg o "$outcome" '. + {($id): $o}' <<<"$oc")"
+        done < <(jq -r '.[] | select(.class == "migratable") | "\(.id)\t\(.target_user_id)"' <<<"$rows")
+    fi
+
+    local report
+    report="$(jq -n --argjson rows "$rows" --argjson oc "$oc" --argjson board "$KB_BOARD_ID" --arg h "$host" \
+        --argjson applied "$([[ -n "$apply" ]] && echo true || echo false)" '
+        ($rows | map(.outcome = (if .class != "migratable" then null
+                                 elif $applied then ($oc[(.id | tostring)] // "not-attempted")
+                                 else "would-assign" end))) as $r
+        | def n(f): [ $r[] | select(f) ] | length;
+        { board: $board, instance: $h, applied: $applied,
+          counts: { owner_tagged: ($r | length), tag_only: n(.class != "assigned"),
+                    migratable: n(.class == "migratable"), unmapped: n(.class == "unmapped"),
+                    ambiguous: n(.class == "ambiguous"), assigned: n(.class == "assigned"),
+                    assigned_differs: n(.differs),
+                    outcomes: ([ $r[] | select(.outcome != null) | .outcome ] | group_by(.) | map({(.[0]): length}) | add // {}) },
+          cards: $r }')"
+    printf '%s\n' "$report"
+    jq -r '.counts as $n
+        | "kbcard: owner-migrate: board \(.board): \($n.owner_tagged) card(s) carry an owner tag; \($n.tag_only) carry ONLY the tag (\($n.migratable) migratable, \($n.unmapped) unmapped, \($n.ambiguous) ambiguous) and \($n.assigned) already have an assignee (\($n.assigned_differs) of them a different user than the tag names). "
+          + (if .applied then "--apply: " + ([ $n.outcomes | to_entries[] | "\(.value) \(.key)" ] | join(", ") | if . == "" then "nothing to write" else . end) + " — counts are from BEFORE these writes; re-run without --apply to re-measure."
+             else "DRY RUN — nothing was written; --apply assigns the \($n.migratable) migratable card(s)." end)' <<<"$report" >&2
+    if [[ -n "$apply" ]]; then
+        jq -e '[.cards[].outcome] | any(. == "refused" or . == "not-applied" or . == "read-failed")' <<<"$report" >/dev/null && return 1
+        jq -e '[.cards[].outcome] | any(. == "unverified")' <<<"$report" >/dev/null && return "$KBC_RC_UNVERIFIED"
+    fi
+    return 0
 }
 
 cmd_link() {
@@ -5911,6 +6053,7 @@ main() {
         archive)     cmd_archive "$@" ;;
         delete)      cmd_delete "$@" ;;
         field)       cmd_field "$@" ;;
+        owner-migrate) cmd_owner_migrate "$@" ;;
         *) echo "kbcard: unknown command '$cmd'" >&2; exit 2 ;;
     esac
 }

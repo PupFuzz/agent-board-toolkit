@@ -49,13 +49,13 @@
 # deliberately NOT restated here: a second copy is a second thing to correct.
 #
 # ⛔ WHAT `needs:` STRUCTURALLY CANNOT REACH — and why leg 3 exists. `needs:` names jobs in the
-# SAME workflow file. `changelog-card-entry.yml` and `release-artifacts-gate.yml` each own a
-# PR-triggered job for a trigger `ci.yml` cannot give it (`edited`, load-bearing on both), and
-# `ci-gate` covers NEITHER. An operator who requires `ci-gate` alone has gated this workflow and
-# left those two gates advisory — the same "looks protected, is not" shape this whole card is
+# SAME workflow file. The sibling workflows named in `REQUIRE_BESIDE_CI_GATE` below each own a
+# PR-triggered gate job for a trigger `ci.yml` cannot give it (`edited`, load-bearing on each), and
+# `ci-gate` covers NONE of them. An operator who requires `ci-gate` alone has gated this workflow
+# and left those gates advisory — the same "looks protected, is not" shape this whole card is
 # about, one file over. So the full REQUIRED-CONTEXT SET is declared once, HERE, in
 # `REQUIRE_BESIDE_CI_GATE`, and leg 3 partitions every job in the workflow directory against it
-# so a ninth job anywhere reds until someone places it. This file is the single owner of that
+# so a job added anywhere reds until someone places it. This file is the single owner of that
 # declaration; `ci.yml` points at it rather than carrying a second copy.
 #
 # ⛔ BOUNDS, stated so this is not over-cited:
@@ -70,8 +70,9 @@
 #     cannot see it must not imply it. That is the condition this file cannot establish, named
 #     rather than papered over, and the DERIVATION is what stands in for it — run the command
 #     beside the declaration below. Read live 2026-09-12, both branches answered the declared set
-#     exactly; a sentence in a comment restating that would be a figure with a maintenance
-#     schedule (canon #16), which is why the command is written and the answer is not.
+#     of that day exactly (the declaration has grown since — card#9022); a sentence in a comment
+#     restating that would be a figure with a maintenance schedule (canon #16), which is why the
+#     command is written and the answer is not.
 #   * `strict` (require branches up to date before merging) is not this file's business either.
 set -euo pipefail
 
@@ -111,11 +112,15 @@ _mktmp_scratch
 # in the BOUNDS note above.
 #
 # ⚑ These are CHECK-RUN NAMES. A job reports under its `name:` when it has one and under its job
-# id otherwise — leg 2 asserts no job in this repo carries a `name:`, which is what makes reading
-# the two lists as context strings legitimate rather than an assumption.
+# id otherwise — leg 2 asserts no job in this repo carries a `name:` that differs from its job id,
+# which is what makes reading the two lists as context strings legitimate rather than an
+# assumption.
 REQUIRE_BESIDE_CI_GATE=(
     changelog-card-entry     # changelog-card-entry.yml — needs `edited` for the PR TITLE
     release-artifacts        # release-artifacts-gate.yml — needs `edited` for the PR BASE
+    continue-on-error-guard  # continue-on-error-guard.yml — needs `edited`: it checks out the PR's
+                             #   MERGE commit, and a retargeted base arrives only as `edited`;
+                             #   coord's ci-verdict.sh also pins this check by name (card#9022)
 )
 NOT_A_PR_GATE=(
     auto-tag                 # auto-tag-version.yml    — push: main only, post-merge
@@ -130,7 +135,9 @@ NOT_A_PR_GATE=(
 #   `jobs`      — every top-level job id, in file order.
 #   `needs`     — the named job's `needs:` list, one per line (a bare string is one entry).
 #   `if`        — the named job's job-level `if:`, or "" when it carries none.
-#   `job-names` — `<job>=<name:>` for every job that declares a `name:`; empty when none does.
+#   `job-names` — `<job>=<name:>` for every job whose `name:` can change its reported check
+#                 name: one that differs from the job id, or one on a `strategy.matrix` job (see
+#                 leg 2). Empty when no job has one.
 #   `step-run`  — the `run:` body of the step named by the fourth argument, in the named job.
 #   `step-env`  — that same step's WHOLE `env:` map as `<key>=<value>` lines.
 #
@@ -149,7 +156,9 @@ if mode == 'jobs':
     print('\n'.join(jobs))
     sys.exit(0)
 if mode == 'job-names':
-    print('\n'.join(f'{j}={s["name"]}' for j, s in jobs.items() if isinstance(s, dict) and 'name' in s))
+    print('\n'.join(f'{j}={s["name"]}' for j, s in jobs.items()
+                    if isinstance(s, dict) and 'name' in s
+                    and (str(s['name']) != j or 'matrix' in (s.get('strategy') or {}))))
     sys.exit(0)
 
 spec = jobs.get(arg)
@@ -217,6 +226,13 @@ eq "ci-gate carries if: always()" "always()" "$(_wf if "$CI_YML" "$GATE_JOB")"
 # other job it invalidates leg 3's reading of job ids as context strings. Asserted over the whole
 # directory, so it is a property of the repo rather than of one job.
 #
+# ⚑ A `name:` EXACTLY EQUAL TO THE JOB ID IS ACCEPTED, because it reports the same check name the
+# id would. coord's `continue-on-error-guard.yml` carries one, copied unmodified from the plugin
+# template (card#9022). The exception is narrow on purpose: the comparison is exact (case
+# included), and a job with a `strategy.matrix` is never excepted — how GitHub composes a matrix
+# job's check name from a static `name:` is not established here, so such a job stays red. The
+# fixture below drives both arms through the same projection the live assertion uses.
+#
 # ⚑ NO EMPTINESS CONTROL ON THIS DERIVATION, deliberately, and the reason is the same standard
 # that would otherwise demand one: `_need -r "$CI_YML"` above has already refused a run in which
 # `.github/workflows/` holds nothing, so an `is it empty` assertion here could never fail — and a
@@ -229,7 +245,38 @@ declared_names=""
 for f in "${WF_FILES[@]}"; do
     declared_names+="$(_wf job-names "$f" | awk -v f="${f##*/}" 'NF {print f ": " $0}')"$'\n'
 done
-eq "no job declares a name: (so every check context IS its job id)" "" "$(printf '%s' "$declared_names" | awk 'NF')"
+eq "no job declares a name: other than its own job id (so every check context IS its job id)" "" \
+   "$(printf '%s' "$declared_names" | awk 'NF')"
+
+# PROVE BOTH ARMS on a planted workflow, through the same `_wf job-names` projection. `same` is
+# the accepted case; `differs`, `cased` and `matrixed` are controls that must still be reported.
+cat >"$TMP/names.yml" <<'YML'
+on: pull_request
+jobs:
+  same:
+    name: same
+    runs-on: ubuntu-latest
+    steps: [{run: 'true'}]
+  differs:
+    name: something-else
+    runs-on: ubuntu-latest
+    steps: [{run: 'true'}]
+  cased:
+    name: Cased
+    runs-on: ubuntu-latest
+    steps: [{run: 'true'}]
+  matrixed:
+    name: matrixed
+    strategy: {matrix: {x: [1, 2]}}
+    runs-on: ubuntu-latest
+    steps: [{run: 'true'}]
+  bare:
+    runs-on: ubuntu-latest
+    steps: [{run: 'true'}]
+YML
+eq "fixture: only the name:s that can change the check name are reported" \
+   "$(printf '%s\n' 'cased=Cased' 'differs=something-else' 'matrixed=matrixed')" \
+   "$(_wf job-names "$TMP/names.yml" | awk 'NF' | LC_ALL=C sort)"
 
 echo "== leg 3: every job in the directory is DISPOSED of, not just ci.yml's =="
 
