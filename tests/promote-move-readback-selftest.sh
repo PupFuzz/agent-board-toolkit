@@ -366,7 +366,8 @@ _exit_policy_counters() {
 # the completeness gate's clause (`exit 5`) is the sixth to read a counter. It is declared rather
 # than excluded — the leg's point is that a counter ENTERING the policy must move this line.
 # `program_held` joined the same way at card#10068: the rc-1 arm and the ref-completeness die each
-# gained a `program_held == 0` term. The withhold is the last check before the write, so every
+# gained a `program_held == 0` term. The withhold is among the last checks before the write (only
+# the terminal:partial hold follows it), so every
 # parent it counts is one the pre-withhold bin PATCHed and counted `moved`, and the term leaves the
 # rc where that bin put it. Its rows are not in this file — the fixture that makes a parent is — so
 # they live in `tests/promote-program-withhold-selftest.sh` § 6–§ 10.

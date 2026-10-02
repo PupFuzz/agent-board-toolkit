@@ -22,8 +22,8 @@
 # withheld it without telling those arms), and a parent it would have stage-guarded or seen
 # refused by the completeness gate must NOT (§ 8, § 9, § 10 — red on 77468c8, which counted every
 # withheld parent). Every rc cell passes against origin/dev's bin at 7b93cde. The bin gets both
-# directions from ONE placement rather than from bookkeeping: the withhold is the last check before
-# the write, so a parent the stage guard or the gate stops is reported as exactly that — and those
+# directions from ONE placement rather than from bookkeeping: the withhold is among the last checks
+# before the write (program withhold, then the terminal:partial hold), so a parent the stage guard or the gate stops is reported as exactly that — and those
 # cells assert the old REPORT too, not only the old rc.
 #
 # ⚠ TWO ARMS, AND NEITHER IS THE OTHER'S BACKGROUND. A guard that withholds EVERYTHING passes a
