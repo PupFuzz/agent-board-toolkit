@@ -370,14 +370,17 @@ _exit_policy_counters() {
 # parent it counts is one the pre-withhold bin PATCHed and counted `moved`, and the term leaves the
 # rc where that bin put it. Its rows are not in this file — the fixture that makes a parent is — so
 # they live in `tests/promote-program-withhold-selftest.sh` § 6–§ 10.
+# `partial_held` joined the same way at card#10140, beside `program_held` in the same two clauses:
+# the terminal:partial hold sits right after the withhold, so the same argument holds. Its rows are
+# `tests/promote-program-withhold-selftest.sh` § 16 (rc-1 arm) and § 17 (the die).
 eq "⭐ the exit clauses test exactly these counters" \
-   "failed incomplete moved not_applied program_held skipped unverified " "$(_exit_policy_counters "$PRC")"
+   "failed incomplete moved not_applied partial_held program_held skipped unverified " "$(_exit_policy_counters "$PRC")"
 # CONTROL, because a derivation nobody has seen move is a decoration: a clause that GAINS a term
 # must change that answer — which is exactly the edit this leg failed to catch when it did not
 # exist. `guarded` is a real counter of this tool that no exit clause tests.
 sed 's/^if \[ "\$failed" -gt 0 \]/if [ "${guarded:-0}" = 0 ] \&\& [ "$failed" -gt 0 ]/' "$PRC" > "$TMP/prc-mutant"
 eq "⭐ …and a counter ADDED to a clause shows up in the derivation (the control)" \
-   "failed guarded incomplete moved not_applied program_held skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
+   "failed guarded incomplete moved not_applied partial_held program_held skipped unverified " "$(_exit_policy_counters "$TMP/prc-mutant")"
 unset -f _exit_policy_counters
 
 echo "-- 6a: one card MOVES and one is measured NOT APPLIED — the 2026-05-22 shape"

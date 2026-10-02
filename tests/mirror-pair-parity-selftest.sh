@@ -909,4 +909,30 @@ unset -f resp_detail rr_naive _rr_promote
 unset RR_SRC RR_NAIVE RR_LABELS RR_STATUS RR_BODIES RR_TOKEN _rr_long _rr_straddle _rr_saved _rr_lib_max _i _l _p _k
 unset TOKEN KB_TOKEN
 
+# ═══════════════════════ 9 — the terminal:partial tag: promote ↔ KB_PARTIAL_TAG (card#10140) ═════
+#
+# `kbcard move/patch --partial` write the lib's KB_PARTIAL_TAG; `promote-released-cards` holds a
+# card carrying its own PARTIAL_TAG, because it may not source the lib. If the two differ, every
+# card marked partial is released as verified, and nothing else reds. The standalone side is read
+# as TEXT (it must be a self-contained literal); the lib side is the value this file sourced.
+echo "== terminal:partial: promote's PARTIAL_TAG IS the lib's KB_PARTIAL_TAG =="
+_pt_read() { sed -n "s/^PARTIAL_TAG='\(.*\)'\$/\1/p" "$1"; }
+eq "witness: promote assigns PARTIAL_TAG exactly once, as a literal" "1" "$(command grep -cE "^PARTIAL_TAG='[^'\$]+'\$" "$PRC")"
+eq "witness: the lib's value is not empty"           "true" "$([[ -n "${KB_PARTIAL_TAG:-}" ]] && echo true || echo false)"
+eq "⭐ the two spellings are the SAME tag"            "$KB_PARTIAL_TAG" "$(_pt_read "$PRC")"
+echo "== control: a respelling on EITHER side is caught =="
+sed "s/^PARTIAL_TAG='terminal:partial'/PARTIAL_TAG='terminal-partial'/" "$PRC" > "$TMP/prc-partial"
+eq "control: the COPY-side mutation applied, and the reader SEES it" "terminal-partial" "$(_pt_read "$TMP/prc-partial")"
+eq "control: …so the equality reds on that copy"     "false" \
+   "$([[ "$KB_PARTIAL_TAG" == "$(_pt_read "$TMP/prc-partial")" ]] && echo true || echo false)"
+# The lib is the file this section SOURCED, so the owner-side control re-evaluates the mutated
+# lib's own assignment line — the line `source` ran — rather than re-sourcing the whole lib.
+sed "s/^KB_PARTIAL_TAG=.*/KB_PARTIAL_TAG='terminal:Partial'/" "$LIB" > "$TMP/lib-partial"
+_pt_owner="$( eval "$(command grep -E '^KB_PARTIAL_TAG=' "$TMP/lib-partial")"; printf '%s' "$KB_PARTIAL_TAG" )"
+eq "control: the OWNER-side mutation applied"        "terminal:Partial" "$_pt_owner"
+eq "control: …so the equality reds when the OWNER moves" "false" \
+   "$([[ "$_pt_owner" == "$(_pt_read "$PRC")" ]] && echo true || echo false)"
+unset _pt_owner
+unset -f _pt_read
+
 _summary "mirror-pair-parity-selftest"

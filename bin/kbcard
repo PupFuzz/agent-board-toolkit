@@ -94,7 +94,7 @@
 #     THE BOARD IS THE BOARD ENV'S KB_BOARD_ID, and a success names it on stderr:
 #     `kbcard: create-card: card <id> created on board <n>` (stdout is unchanged, so do not
 #     merge stderr into a JSON pipe). The board-id rule itself is at the top of this block.
-#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start]
+#   kbcard move --task ID-OR-EXT --column COLUMN [--keep-refs] [--stamp-owner] [--card-start] [--partial "reason"]
 #     Changes the card's COLUMN on THIS board only. To take a card to ANOTHER board, use
 #     `move-board` (below) — `move` has no board option: `--to-board` is refused with a pointer
 #     there, and `--board` with the reminder that it is the GLOBAL flag and goes BEFORE the verb
@@ -145,6 +145,18 @@
 #     ONLY WITH --column in_progress (rc 2 otherwise, before any request): the policy is the
 #     promotion's, and there is none to apply to any other column. It costs ONE extra GET before
 #     the move, which is what makes the verdict a reading rather than an assumption.
+#     ⭐ --partial "reason" MARKS A FINISHED CARD AS PARTIAL — it reached its finished column with
+#     declared work still outstanding, and bin/promote-released-cards HOLDS a card so marked
+#     instead of releasing it. The tag `terminal:partial` rides the move itself as the board's
+#     `add_tags` key, so the card lands marked or does not move; the tag is then READ BACK and the
+#     reason posted as a card comment. ONLY beside a finished --column (shipped_to_dev,
+#     released_to_main, wont_do, done) — rc 2 before any request otherwise, as is a reason with no
+#     text. Because the write is no longer stage-only, it needs the token's `task.update` and a
+#     kanban that knows `add_tags`; a refusal is rc 1 with the card NOT moved. After the move's
+#     echo: a re-read without the tag is rc 1 HARD FAILURE, a re-read that cannot be made is rc 3,
+#     and a reason comment that did not post is cmd_comment's rc. `patch` takes it too. Remove the
+#     marker with `patch --remove-tags terminal:partial`. Rules: README.md § The terminal:partial
+#     marker.
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --placement top|bottom
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --before-task ID-OR-EXT
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --after-task ID-OR-EXT
@@ -326,7 +338,12 @@
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--add-tags "a,b"] [--remove-tags "c"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]] [--partial "reason"]
+#     --partial "reason" is move's --partial (above), as one more `add_tags` member: with a
+#     finished --column the card is moved and marked in the one PATCH; WITHOUT --column it marks
+#     the card where it is, after ONE read showing it is already in a finished column (rc 2 if it
+#     is not, rc 1 if the card cannot be read — nothing written either way). It takes --add-tags'
+#     exclusions (rc 2 beside --tags or --type).
 #     --name / --tags / --type / --external-id / --origin are the CORRECTIVE setters: each
 #     writes the same field the identically-named create-card flag writes at birth, so a card
 #     minted with a wrong title, type, tag set, sync id or provenance is fixable in place
@@ -1899,6 +1916,78 @@ _kbc_finished_column() {
     return 1
 }
 
+# --- --partial: the terminal:partial marker (README.md § The terminal:partial marker) ----------
+#
+# THE TAG RIDES THE STAGE WRITE, as an `add_tags` key on the SAME PATCH, never a second write after
+# it. The board applies a stage change and a tag delta in ONE transaction (kanban TaskMutator::
+# update), so the card lands in the finished column already marked or does not move at all. A
+# separate tag write after a confirmed move would leave a window — and, on any refusal, a resting
+# state — where the card is finished and UNMARKED, which a release sweep promotes as verified:
+# exactly what the flag exists to prevent. The cost, stated: a PATCH with any key beyond the stage
+# is authorized as an UPDATE, not a MOVE, so `--partial` needs the token to carry `task.update`, and
+# it needs a kanban that knows `add_tags` (card#10923); either missing refuses the whole write.
+
+# _kbc_partial_preflight <verb> <column> <reason>: --partial's OFFLINE half — rc 0 at once when no
+# --partial was passed, rc 2 (nothing sent) on a reason with no text, a <column> outside
+# KBC_FINISHED_COLUMNS, or a lib too old to name the tag. An EMPTY <column> passes here: `patch`
+# without --column marks the card where it already is, and only a read can say whether that is a
+# finished column (_kbc_partial_current_guard).
+_kbc_partial_preflight() {
+    local verb="$1" column="$2" reason="$3" _pf_reason=""
+    [[ -n "$reason" ]] || return 0
+    _kbc_text_arg _pf_reason partial "" "$reason" "" || return 2
+    if [[ -n "$column" ]] && ! _kbc_finished_column "$column"; then
+        echo "kbcard: $verb --partial marks a card that is FINISHED with declared work still outstanding, and '$column' is not a finished column (${KBC_FINISHED_COLUMNS[*]}) — pass --partial with the move into a finished column" >&2
+        return 2
+    fi
+    [[ -n "${KB_PARTIAL_TAG:-}" ]] || { _kbc_lib_unruled "$verb --partial" "the terminal:partial marker" KB_PARTIAL_TAG undefined; return 2; }
+}
+
+# _kbc_partial_current_guard <task>: for `patch --partial` with no --column — is the card ALREADY in
+# a finished column? rc 0 yes; rc 2 no (the call is wrong for this card, which only this read can
+# say — the rc-2-after-a-read shape _kbc_ref_pair_guard uses); rc 1 the card could not be read, so
+# nothing is written.
+_kbc_partial_current_guard() {
+    local task="$1" resp sid col
+    resp="$(kb_api GET "/tasks/$task.json")" || { echo "kbcard: patch --partial on task $task: the card's current column could not be read, so nothing here can say it is finished — nothing written" >&2; return 1; }
+    sid="$(kb_parse_resp "$resp" -r '.data | select(type == "object") | .workflow_stage_id // empty')"
+    [[ -n "$sid" ]] || { echo "kbcard: patch --partial on task $task: the read returned success but no workflow_stage_id could be read out of its body — nothing written" >&2; return 1; }
+    col="$(stage_name "$sid")" || col=""
+    _kbc_finished_column "$col" && return 0
+    echo "kbcard: patch --partial on task $task: the card is in ${col:+column '$col' (}stage $sid${col:+)}, which is not a finished column (${KBC_FINISHED_COLUMNS[*]}) — --partial marks a FINISHED card; pass --column <finished column> to move it there and mark it in one write" >&2
+    return 2
+}
+
+# _kbc_partial_after_write <verb> <task> <reason>: after the write that carried the tag has been
+# CONFIRMED (its stage echo compared), READ the card back for the tag, then post <reason> as a card
+# comment. A 2xx is not the tag — a write can answer success and store nothing — so the re-read is
+# the outcome, and it is the verb's rc (the write-outcome ladder at KBC_RC_UNVERIFIED):
+#   rc 0  the re-read card carries the tag, and the comment is posted and read back
+#   rc 1  the re-read card does NOT carry the tag (no comment is posted for a marker that is not
+#         there); or cmd_comment's own rc 1
+#   rc 3  the re-read produced no measurement; or cmd_comment's own rc 3
+# Every line goes to stderr: stdout is the verb's write echo, which a consumer parses.
+_kbc_partial_after_write() {
+    local verb="$1" task="$2" reason="$3" crc=0 cid pred
+    pred="any((.card.tags // [])[]?; . == $(jq -n --arg t "$KB_PARTIAL_TAG" '$t'))"
+    kb_confirm_card "$task" "$pred" >/dev/null || crc=$?
+    case "$crc" in
+        0) ;;
+        "$KBC_RC_UNVERIFIED")
+            _kbc_unverified "$verb" "on task $task" "The write carrying $KB_PARTIAL_TAG answered 2xx; the confirming read produced no measurement (its cause is on the line above), so whether the card is marked is UNMEASURED and no reason comment was posted." || return $? ;;
+        *)  echo "kbcard: $verb on task $task: HARD FAILURE — the write carrying $KB_PARTIAL_TAG answered 2xx, and the card does not carry the tag on a re-read. The status is not the tag; the read-back is. The card is in its finished column and is NOT marked, so a release sweep will promote it — mark it again or move it back. No reason comment was posted." >&2
+            return 1 ;;
+    esac
+    echo "kbcard: $verb on task $task: $KB_PARTIAL_TAG written, and read back on the card" >&2
+    local ccrc=0
+    cid="$(cmd_comment --task "$task" --content "$KB_PARTIAL_TAG — $reason")" || ccrc=$?
+    if [[ "$ccrc" -ne 0 ]]; then
+        echo "kbcard: $verb on task $task: the card IS marked $KB_PARTIAL_TAG (read back above), but the reason comment did not post (cause above) — post it with: kbcard comment --task $task --content \"$KB_PARTIAL_TAG — <reason>\"" >&2
+        return "$ccrc"
+    fi
+    echo "kbcard: $verb on task $task: the reason is on the card as comment $cid" >&2
+}
+
 # _kbc_stage_patch <verb> <task> <body>: the task PATCH `move` and `patch` BOTH issue, and the one
 # owner of the invariants that belong to the WRITE rather than to either caller. Both verbs
 # assembled their own body and then wrote it themselves; the rules below would otherwise be the
@@ -2306,11 +2395,12 @@ _kbc_lib_unruled() {
 }
 
 cmd_move() {
-    local task_ref="" column="" keep_refs="" stamp_owner="" card_start=""
+    local task_ref="" column="" keep_refs="" stamp_owner="" card_start="" partial=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
             --column) kb_require_value "$1" "${2:-}" || return 2; column="$2"; shift 2 ;;
+            --partial) kb_require_value "$1" "${2:-}" || return 2; partial="$2"; shift 2 ;;
             --keep-refs) keep_refs=1; shift ;;
             --stamp-owner) stamp_owner=1; shift ;;
             --card-start) card_start=1; shift ;;
@@ -2335,6 +2425,7 @@ cmd_move() {
         _kbc_lib_unruled move "the owner claim" kb_owner_claim undefined
         return 2
     fi
+    _kbc_partial_preflight move "$column" "$partial" || return 2
     # --card-start's stage ids come from the SAME board env every other column does, and they are
     # resolved BEFORE the task ref so a board env missing them costs no request. A guard that
     # cannot be applied REFUSES rather than falling through: falling through is precisely the
@@ -2379,6 +2470,9 @@ cmd_move() {
         body="$(jq -n --argjson stage "$stage" '{workflow_stage_id: $stage}')"
         [[ "$column" == "wont_do" ]] && echo "kbcard: --keep-refs — correlation stamps (dl_number, pr_number, pr_url) retained" >&2
     fi
+    if [[ -n "$partial" ]]; then
+        body="$(jq -n --argjson cur "$body" --arg t "$KB_PARTIAL_TAG" '$cur + {add_tags: [$t]}')"
+    fi
     # move's echo is deliberately NOT _kbc_write_echo's: that projection also carries `payload`
     # when the serializer sent it, and this verb has never emitted it. Same refusal, its own
     # field set — widening a verb's stdout is a change to what its consumers parse.
@@ -2392,6 +2486,8 @@ cmd_move() {
     _kbc_confirm_stage move "on task $task" "$echo_out" "$stage" || return 1
     _kbc_owner_after_move "$task" "$stamp_owner"
     printf '%s\n' "$echo_out"
+    [[ -n "$partial" ]] || return 0
+    _kbc_partial_after_write move "$task" "$partial"
 }
 
 # _kbc_trim_blank <string>: the string with leading and trailing BLANKS removed, where "blank"
@@ -3023,7 +3119,7 @@ cmd_patch() {
     local task_ref="" pr="" pr_url="" issue="" issue_url="" version="" column="" desc="" desc_file="" desc_clear="" dl="" triaged="" swimlane="" keep_refs=""
     local name="" name_file="" tags="" type="" ext_id="" origin="" add_tags="" remove_tags=""
     local assign="" unassign="" steal=""
-    local block="" block_file="" unblock="" clear=""
+    local block="" block_file="" unblock="" clear="" partial=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -3044,6 +3140,7 @@ cmd_patch() {
             --tags) kb_require_value "$1" "${2:-}" || return 2; tags="$2"; shift 2 ;;
             --add-tags) kb_require_value "$1" "${2:-}" || return 2; add_tags="$2"; shift 2 ;;
             --remove-tags) kb_require_value "$1" "${2:-}" || return 2; remove_tags="$2"; shift 2 ;;
+            --partial) kb_require_value "$1" "${2:-}" || return 2; partial="$2"; shift 2 ;;
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
@@ -3072,12 +3169,17 @@ cmd_patch() {
     _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     _kbc_text_arg add_tags add-tags "" "$add_tags" "" verbatim || return 2
     _kbc_text_arg remove_tags remove-tags "" "$remove_tags" "" verbatim || return 2
+    _kbc_partial_preflight patch "$column" "$partial" || return 2
     # The delta is the SERVER's to apply (kanban card#10923) and the board refuses `tags` beside
     # it, so a flag that rewrites the whole list cannot share the call. --triaged only ever adds,
     # so it joins the delta instead of forcing the read-merge-write the delta exists to replace.
-    local tag_delta=""
+    # --partial's tag is one more member of add_tags (the rule is above _kbc_partial_preflight),
+    # so it takes the delta's exclusions; the refusal names the flag the caller typed.
+    local tag_delta="" _td_flag="--add-tags"
+    [[ -n "$add_tags" ]] || _td_flag="--remove-tags"
+    [[ -n "$add_tags" || -n "$remove_tags" ]] || _td_flag="--partial"
+    [[ -z "$partial" ]] || add_tags="${add_tags:+$add_tags,}$KB_PARTIAL_TAG"
     if [[ -n "$add_tags" || -n "$remove_tags" ]]; then
-        local _td_flag="--add-tags"; [[ -n "$add_tags" ]] || _td_flag="--remove-tags"
         if [[ -n "$tags" ]]; then
             echo "kbcard: $_td_flag and --tags are mutually exclusive — --tags replaces the whole list, $_td_flag changes it in place; pass one or the other" >&2; return 2
         fi
@@ -3197,6 +3299,10 @@ cmd_patch() {
     pr_need="$(_kbc_pr_named_guard "patch on task $task_ref" null "$payload_json")" || return 2
 
     local task; task="$(resolve_task "$task_ref")"
+    # --partial with no --column marks the card where it is, so it must already be finished.
+    if [[ -n "$partial" && -z "$column" ]]; then
+        _kbc_partial_current_guard "$task" || return $?
+    fi
     # The collision check is a READ, so it sits BELOW the offline preflight and ABOVE every
     # write — it refuses at rc 1 (the write did not happen and this run KNOWS it did not),
     # never at rc 2, which in this file means a bad invocation (the number/URL pair refusal below
@@ -3268,6 +3374,8 @@ cmd_patch() {
     resp="$(_kbc_stage_patch patch "$task" "$body")" || return 1
     # $stage is empty unless --column was passed, and an absent flag makes no claim to check.
     _kbc_write_echo patch "on task $task" "$resp" "$echo_extra" "$stage" "$cleared_json" || return $?
+    [[ -n "$partial" ]] || return 0
+    _kbc_partial_after_write patch "$task" "$partial"
 }
 
 # _kbc_card_filter <stage_filter> <type_filter> <typetag> <swimlane_filter>: the pure

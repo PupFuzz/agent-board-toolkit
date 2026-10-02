@@ -1356,7 +1356,7 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
              --name --tags --add-tags --remove-tags --type --external-id --origin --task --assign
-             --block-reason --clear)
+             --block-reason --clear --partial)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1372,7 +1372,7 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --add-tags --remove-tags --type --external-id --origin --assign --block-reason --clear; do
+         --name --tags --add-tags --remove-tags --type --external-id --origin --assign --block-reason --clear --partial; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -5152,6 +5152,174 @@ eq "…while a move WITHOUT --stamp-owner beside the same lib still moves" "0|$M
 
 unset -f own obodies after card kb_stub_route
 unset KB_STUB_CARD KB_STUB_READ KB_STUB_ASSIGN_PATCH KB_STUB_MOVE KB_STUB_ECHO_STAGE KB_STUB_CARD_FILE OWN_CFG SEAT MOVE49 CLAIM7 _r _tc _ostale
+
+echo "== move / patch --partial — the terminal:partial marker rides the stage write (card#10140) =="
+# A card that reaches a finished column with declared work outstanding carries ONE tag,
+# `terminal:partial` (README.md § The terminal:partial marker), which a release sweep holds. The tag
+# rides the stage PATCH as the board's `add_tags` key — one transaction on the server, so the card
+# lands marked or does not move — then it is READ BACK and the reason posted as a card comment.
+# The card is STATE in a file, and a 2xx PATCH applies add_tags the way the board does (append,
+# no duplicate), so the read-back reads what the write stored rather than a canned agreement.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+kb_stub_board_config dev 42 \
+    'export KB_STAGE_IN_PROGRESS=49' \
+    'export KB_STAGE_IN_REVIEW=50' \
+    'export KB_STAGE_SHIPPED_TO_DEV=51' \
+    'export KB_STAGE_RELEASED_TO_MAIN=52' \
+    'export KB_STAGE_WONT_DO=60' \
+    'export KB_STAGE_DONE=70'
+kb_stub_install
+export KB_PCARD="$TMP/pcard.json"
+# Knobs, each scoped to ONE leg of the call:
+#   KB_STUB_MOVE      a PATCH carrying workflow_stage_id answers this status, nothing stored
+#   KB_STUB_DROP      a PATCH answers 200 and stores the stage but NOT the tag — a success that
+#                     stored nothing of the marker, which only the read-back can tell
+#   KB_STUB_REREAD    the `?trashed=1` read-back answers 403, or `transport` (no status at all)
+#   KB_STUB_READ      the plain card read (patch's current-column read) answers 403
+#   KB_STUB_COMMENT   the comment POST answers this status
+kb_stub_route() {
+    local method="$1" url="$2" body="$3"
+    case "$method $url" in
+        "GET "*/tasks/606.json\?trashed=1)
+            case "${KB_STUB_REREAD:-}" in
+                403)       printf '403\n{"message":"This action is unauthorized."}' ;;
+                transport) printf '!curl 7' ;;
+                *)         printf '200\n'; jq -c '{data: .}' "$KB_PCARD" ;;
+            esac ;;
+        "GET "*/tasks/606.json)
+            if [[ "${KB_STUB_READ:-}" == 403 ]]; then printf '403\n{"message":"This action is unauthorized."}'
+            else printf '200\n'; jq -c '{data: .}' "$KB_PCARD"; fi ;;
+        "PATCH "*/tasks/606.json)
+            if [[ -n "${KB_STUB_MOVE:-}" ]] && jq -e 'has("workflow_stage_id")' <<<"$body" >/dev/null; then
+                printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"; return 0
+            fi
+            if [[ -n "${KB_STUB_DROP:-}" ]]; then body="$(jq -c 'del(.add_tags)' <<<"$body")"; fi
+            jq -c --argjson b "$body" '
+                (. + ($b | del(.add_tags, .remove_tags)))
+                | .tags = (((.tags // []) - ($b.remove_tags // []))
+                           | reduce ($b.add_tags // [])[] as $t (.; if index($t) then . else . + [$t] end))' \
+                "$KB_PCARD" > "$KB_PCARD.n" && mv "$KB_PCARD.n" "$KB_PCARD"
+            printf '200\n'; jq -c '{data: .}' "$KB_PCARD" ;;
+        "POST "*/tasks/606/comments.json)
+            if [[ -n "${KB_STUB_COMMENT:-}" ]]; then printf '%s\n{"message":"refused"}' "$KB_STUB_COMMENT"; return 0; fi
+            jq -c --argjson b "$body" '.comments = ((.comments // []) + [{id: 77} + $b])' "$KB_PCARD" > "$KB_PCARD.n" \
+                && mv "$KB_PCARD.n" "$KB_PCARD"
+            printf '201\n{"data":{"id":77}}' ;;
+        *)  printf '404\n{"message":"unrouted"}' ;;
+    esac
+}
+export -f kb_stub_route
+unset KB_STUB_MOVE KB_STUB_DROP KB_STUB_REREAD KB_STUB_READ KB_STUB_COMMENT
+
+# pk <stage> <tags-json> <kbcard args…> — seed the card, run the REAL bin.
+pk() {
+    printf '{"id":606,"name":"probe","workflow_stage_id":%s,"tags":%s}' "$1" "$2" > "$KB_PCARD"; shift 2
+    kbc "$@"
+}
+pbodies() { kb_stub_bodies PATCH /tasks/606.json | jq -cS .; }
+pafter() { jq -c "$1" "$KB_PCARD"; }
+# preads: the PLAIN card reads (kb_stub_count matches a URL substring, so it would count the
+# `?trashed=1` read-backs too).
+preads() { awk -F'\t' '$1 == "GET" && $2 ~ /\/tasks\/606\.json$/' "$KB_STUB_LOG" | wc -l | tr -d ' '; }
+REASON='the docs half is still outstanding'
+PMOVE51='{"add_tags":["terminal:partial"],"workflow_stage_id":51}'
+
+# --- ⭐ the write: ONE PATCH carrying the stage AND the tag, read back, then the comment ----------
+pk 49 '["fr","triaged"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+eq "move --partial → shipped_to_dev → rc 0"            "0" "$rc"
+eq "⭐ ONE PATCH: the stage and add_tags together — no second tag write, no whole list" "$PMOVE51" "$(pbodies)"
+eq "⭐ …the card is in the column AND carries every tag it had, plus the marker" \
+   '51|["fr","triaged","terminal:partial"]' "$(pafter .workflow_stage_id)|$(pafter .tags)"
+eq "…the tag is READ BACK (one ?trashed=1 read for the tag, one for the comment)" "2" "$(kb_stub_count GET '/tasks/606.json?trashed=1')"
+eq "…said on stderr"                                   "true" "$(has 'move on task 606: terminal:partial written, and read back on the card' "$err")"
+eq "⭐ the reason is ONE card comment, naming the marker" \
+   "1|\"terminal:partial — $REASON\"" "$(kb_stub_count POST /tasks/606/comments.json)|$(pafter '.comments[0].content')"
+eq "…its id on stderr"                                 "true" "$(has 'the reason is on the card as comment 77' "$err")"
+eq "stdout is the move's echo alone — no comment id"   '{"id":606,"name":"probe","workflow_stage_id":51}' "$(jq -c . <<<"$out")"
+eq "no plain card read was made (the move needs none)" "0" "$(preads)"
+
+for _fc in released_to_main wont_do "done"; do
+    pk 51 '["fr"]' move --task 606 --column "$_fc" --keep-refs --partial "$REASON"
+    eq "move --partial → finished $_fc → rc 0, marked" "0|true" "$rc|$(has '"terminal:partial"' "$(pafter .tags)")"
+done
+
+pk 49 '["fr"]' patch --task 606 --column released_to_main --partial "$REASON"
+eq "patch --column released_to_main --partial → rc 0, ONE PATCH carrying both" \
+   '0|{"add_tags":["terminal:partial"],"workflow_stage_id":52}|1' "$rc|$(pbodies)|$(kb_stub_count POST /tasks/606/comments.json)"
+pk 51 '["fr"]' patch --task 606 --partial "$REASON"
+eq "⭐ patch --partial with NO --column on a card ALREADY finished → rc 0, the tag alone" \
+   '0|{"add_tags":["terminal:partial"]}|51|1' "$rc|$(pbodies)|$(pafter .workflow_stage_id)|$(preads)"
+pk 51 '["fr"]' patch --task 606 --partial "$REASON" --add-tags x --triaged
+eq "patch --partial composes with --add-tags / --triaged in the one delta" \
+   '0|["x","terminal:partial","triaged"]' "$rc|$(jq -c '.add_tags' <<<"$(pbodies)")"
+pk 51 '["terminal:partial","fr"]' patch --task 606 --partial "$REASON"
+eq "already marked → rc 0 (the board's no-op), and the new reason is still commented" \
+   '0|["terminal:partial","fr"]|1' "$rc|$(pafter .tags)|$(kb_stub_count POST /tasks/606/comments.json)"
+
+# --- ⭐ rc 2: a column that is not finished, no text, a whole-list flag — before ANY request -------
+for _args in "move --task 606 --column in_review" "move --task 606 --column in_progress" \
+             "patch --task 606 --column in_review"; do
+    # shellcheck disable=SC2086
+    pk 49 '["fr"]' $_args --partial "$REASON"
+    eq "⭐ $_args --partial → rc 2 before any request" "2|0" "$rc|$(kb_stub_total)"
+done
+eq "…naming the rule and the finished set"             "true|true" \
+   "$(has 'is not a finished column (shipped_to_dev released_to_main wont_do done)' "$err")|$(has '--partial marks a card that is FINISHED' "$err")"
+for _blank in '   ' $'\t\n'; do
+    pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$_blank"
+    eq "a reason with no text → rc 2 before any request" "2|0|true" "$rc|$(kb_stub_total)|$(has '--partial holds no' "$err")"
+done
+for _wl in "--tags a" "--type fr"; do
+    # shellcheck disable=SC2086
+    pk 51 '["fr"]' patch --task 606 --partial "$REASON" $_wl
+    eq "patch --partial beside ${_wl%% *} → rc 2 before any request, naming --partial" "2|0|true" \
+       "$rc|$(kb_stub_total)|$(has "--partial and ${_wl%% *} are mutually exclusive" "$err")"
+done
+# THE NEGATIVE CONTROL for the column refusals above: the same call on a finished column writes.
+pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+eq "control: a finished column writes"                 "0|$PMOVE51" "$rc|$(pbodies)"
+
+# --- patch with no --column: the card's CURRENT column decides, from ONE read -------------------
+pk 50 '["fr"]' patch --task 606 --partial "$REASON"
+eq "⭐ patch --partial on a card NOT in a finished column → rc 2 after the read, NOTHING written" \
+   "2|0|1|true" "$rc|$(kb_stub_count PATCH /tasks/606.json)|$(preads)|$(has "the card is in column 'in_review' (stage 50), which is not a finished column" "$err")"
+KB_STUB_READ=403 pk 51 '["fr"]' patch --task 606 --partial "$REASON"
+eq "patch --partial whose current-column read fails → rc 1, nothing written" \
+   "1|0|true" "$rc|$(kb_stub_count PATCH /tasks/606.json)|$(has 'current column could not be read' "$err")"
+
+# --- a marker that did NOT land is the verb's rc, never a quiet line under rc 0 -----------------
+KB_STUB_MOVE=403 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+eq "⭐ the combined write REFUSED → rc 1, the card NOT moved and NOT marked, no comment" \
+   '1|49|["fr"]|0' "$rc|$(pafter .workflow_stage_id)|$(pafter .tags)|$(kb_stub_count POST /tasks/606/comments.json)"
+KB_STUB_DROP=1 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+eq "⭐ a 2xx that stored no tag → rc 1 HARD FAILURE, off the READ-BACK" "1|true" \
+   "$rc|$(has 'HARD FAILURE — the write carrying terminal:partial answered 2xx, and the card does not carry the tag on a re-read' "$err")"
+eq "…the move's echo is still on stdout (the move DID land)" "51" "$(jq -r .workflow_stage_id <<<"$out")"
+eq "…and no comment claims a marker that is not there"  "0" "$(kb_stub_count POST /tasks/606/comments.json)"
+for _rr in 403 transport; do
+    KB_STUB_REREAD=$_rr pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+    eq "the read-back $_rr → rc 3 UNVERIFIED, no comment" "3|true|0" \
+       "$rc|$(has 'UNVERIFIED WRITE' "$err")|$(kb_stub_count POST /tasks/606/comments.json)"
+done
+KB_STUB_COMMENT=403 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+eq "a comment that did not post → rc 1, saying the card IS marked" "1|true|true" \
+   "$rc|$(has 'the card IS marked terminal:partial' "$err")|$(has '"terminal:partial"' "$(pafter .tags)")"
+
+# --- a lib older than this kbcard: refused before the move, never after it -----------------------
+_pstale="$TMP/stale-partial"; mkdir -p "$_pstale"
+cp "$(readlink -f "$BIN")" "$_pstale/"; sed '/^KB_PARTIAL_TAG=/d' "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" > "$_pstale/_kb-board-lib.sh"
+eq "witness: the stale lib really lacks the constant"  "0" "$(command grep -c '^KB_PARTIAL_TAG=' "$_pstale/_kb-board-lib.sh")"
+printf '{"id":606,"workflow_stage_id":49,"tags":["fr"]}' > "$KB_PCARD"
+kb_stub_reset; rc=0; "$_pstale/kbcard" move --task 606 --column shipped_to_dev --partial "$REASON" >/dev/null 2>"$TMP/e" || rc=$?
+eq "⭐ a lib without KB_PARTIAL_TAG → rc 2 before any request, the move NOT made" "2|0|true" \
+   "$rc|$(kb_stub_total)|$(has 'KB_PARTIAL_TAG is not defined' "$(cat "$TMP/e")")"
+kb_stub_reset; rc=0; "$_pstale/kbcard" move --task 606 --column shipped_to_dev >/dev/null 2>&1 || rc=$?
+eq "control: that stale bin, without --partial, still moves" '0|{"workflow_stage_id":51}' "$rc|$(pbodies)"
+
+unset -f pk pbodies pafter preads kb_stub_route
+unset KB_PCARD REASON PMOVE51 _args _blank _fc _wl _rr _pstale
 
 echo "== owner-migrate — the one-time owner:* tag → assignee migration, dry-run by default (card#10868) =="
 rm -rf "$TMP"

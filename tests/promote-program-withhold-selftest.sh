@@ -116,8 +116,14 @@ cat > "$BOARD_FILE" <<'JSON'
   {"id":4,"workflow_stage_id":51,"tags":["Program","PROGRAM","program ","programme"],"payload":{"dl_number":"DL-103"}},
   {"id":5,"workflow_stage_id":85,"tags":["program"],"payload":{"dl_number":"DL-104"}},
   {"id":6,"workflow_stage_id":51,"tags":"program","payload":{"dl_number":"DL-105"}},
-  {"id":7,"workflow_stage_id":99,"tags":["program"],"payload":{"dl_number":"DL-106"}}
-],"meta":{"last_page":1,"total":7}}
+  {"id":7,"workflow_stage_id":99,"tags":["program"],"payload":{"dl_number":"DL-106"}},
+  {"id":8,"workflow_stage_id":51,"tags":["fr","terminal:partial"],"payload":{"dl_number":"DL-107"}},
+  {"id":9,"workflow_stage_id":51,"tags":["Terminal:partial","terminal:partialx","terminal:partial ","terminal:"],"payload":{"dl_number":"DL-108"}},
+  {"id":10,"workflow_stage_id":51,"tags":{"0":"terminal:partial"},"payload":{"dl_number":"DL-109"}},
+  {"id":11,"workflow_stage_id":51,"tags":null,"payload":{"dl_number":"DL-110"}},
+  {"id":12,"workflow_stage_id":51,"tags":["program","terminal:partial"],"payload":{"dl_number":"DL-111"}},
+  {"id":13,"workflow_stage_id":99,"tags":["terminal:partial"],"payload":{"dl_number":"DL-112"}}
+],"meta":{"last_page":1,"total":13}}
 JSON
 
 export KANBAN_WRITEBACK_TOKEN=tkn
@@ -152,7 +158,11 @@ eq "the run-level line says it is not a failure"     "true"  "$(has 'This is not
 eq "ordinary card #1 WAS PATCHed"                    "true"  "$(has '/tasks/1.json' "$patched")"
 eq "card #3 (no tags key) WAS PATCHed"               "true"  "$(has '/tasks/3.json' "$patched")"
 eq "card #4 (near-miss spellings) WAS PATCHed"       "true"  "$(has '/tasks/4.json' "$patched")"
-eq "card #6 (tags not a list) WAS PATCHed"           "true"  "$(has '/tasks/6.json' "$patched")"
+# Card #6's `tags` is a STRING: not a parent to this withhold (its header's deliberate direction),
+# but THE TERMINAL:PARTIAL HOLD cannot rule its marker out, so it is held there — § 11 owns that.
+eq "card #6 (tags not a list) is NOT a withheld parent" "false" "$(has '(#6): carries' "$err")"
+eq "card #6 (tags not a list) is held as partial-UNKNOWN, not PATCHed" "true|false" \
+   "$(has '(#6): its `tags` could not be read as a list' "$err")|$(has '/tasks/6.json' "$patched")"
 eq "parent #5 read as already-released, not withheld" "true" "$(has '(#5): already released' "$out")"
 eq "#5 is not ALSO reported as withheld"             "false" "$(has '(#5): carries' "$err")"
 # ⛔ THE SUMMARY, WHOLE AND EXACT — the honesty cell. A withheld card is neither promoted nor
@@ -160,7 +170,7 @@ eq "#5 is not ALSO reported as withheld"             "false" "$(has '(#5): carri
 # the order the move loop applies its refusals in. Asserting the entire line is what makes a
 # future fold-in visible, which a `has '1 program-withheld'` on its own would not be.
 eq "summary: own segment, honest counts, loop order" \
-   "promote-released-cards: 4 moved, 1 already-released, 1 program-withheld, 0 no-card, 0 failed." \
+   "promote-released-cards: 3 moved, 1 already-released, 1 program-withheld, 1 partial-held, 0 no-card, 0 failed." \
    "$(printf '%s' "$out" | tail -n 1)"
 # The parent MATCHED a ref, so it is not a missing card: sending release-pr-body's coverage report
 # after a card that is on the board is the wrong remedy, and `0 no-card` above is only half of it.
@@ -327,5 +337,94 @@ err="$(cat "$TMP/err")"
 eq "INCOMPLETE parent only, squash tip → rc 2, as before the withhold" "2" "$rc"
 eq "  … the die fired"                               "true"  "$(has 'not a merge commit' "$err")"
 eq "  … the parent is reported INCOMPLETE, not withheld" "true" "$(has '(#2): INCOMPLETE — ' "$err")"
+
+# ═══════════════════════════ THE TERMINAL:PARTIAL HOLD (card#10140) ═══════════════════════════
+# A card carrying `terminal:partial` was declared partially done (`kbcard move/patch --partial`), so
+# a release HOLDS it — named on a ⊘ line, counted `partial-held`, never PATCHed, no override — and
+# goes on to the next card. It sits right after the program withhold and shares its rc contract,
+# which is why its cells live in this file beside that withhold's.
+PTAG='terminal:partial'
+_m() { printf 'https://kanban.test/api/v3/tasks/%s.json\t{"workflow_stage_id":85}' "$1"; }
+
+echo "== 11. a marked card is HELD, named, and the sweep goes on; near-misses and null tags move =="
+GET_LOG="$TMP/gets.log"; export GET_LOG; : > "$GET_LOG"
+run_promote 'DL-100,DL-107,DL-108,DL-109,DL-110'
+eq "⭐ a held card does not change the rc"            "0"     "$rc"
+eq "⭐ marked #8 was NOT PATCHed"                     "false" "$(has '/tasks/8.json' "$patched")"
+eq "⭐ …and the sweep went on: #1, #9 and #11 were, and nothing else" \
+   "$(_m 1)"$'\n'"$(_m 9)"$'\n'"$(_m 11)" "$patched"
+eq "the hold line names the card and the tag"        "true"  "$(has "(#8): carries the \`$PTAG\` tag" "$err")"
+eq "the hold line says it was held and left alone"   "true"  "$(has 'HELD, not promoted, and left exactly where it was' "$err")"
+eq "the hold line is on stderr, not stdout"          "false" "$(has "$PTAG" "$out")"
+eq "an UNREADABLE (object) tag list is held as UNKNOWN, not as marked" "true|false" \
+   "$(has "(#10): its \`tags\` could not be read as a list, so whether it carries \`$PTAG\` is UNKNOWN" "$err")|$(has '(#10): carries' "$err")"
+eq "#10 was NOT PATCHed"                             "false" "$(has '/tasks/10.json' "$patched")"
+eq "near-miss spellings (#9) are not the marker"     "false" "$(has '(#9)' "$err")"
+eq "a held card costs no card read (witness: a MOVED card's read-back is in the same log)" "true|false|false" \
+   "$(has '/tasks/1.json' "$(cat "$GET_LOG")")|$(has '/tasks/8.json' "$(cat "$GET_LOG")")|$(has '/tasks/10.json' "$(cat "$GET_LOG")")"
+eq "⭐ summary: own segment after program-withheld's slot, honest counts" \
+   "promote-released-cards: 3 moved, 0 already-released, 2 partial-held, 0 no-card, 0 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
+unset GET_LOG
+
+echo "== 12. a run that holds nothing keeps a BYTE-IDENTICAL summary line =="
+run_promote 'DL-100,DL-110'
+eq "no-hold run → rc 0, both moved"                  "0|$(_m 1)"$'\n'"$(_m 11)" "$rc|$patched"
+eq "summary carries no partial segment"              "promote-released-cards: 2 moved, 0 already-released, 0 no-card, 0 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
+
+echo "== 13. --dry-run previews the hold and counts nothing as moved =="
+run_promote 'DL-100,DL-107' --dry-run
+eq "dry-run → rc 0, nothing written"                 "0|"    "$rc|$patched"
+eq "dry-run names the held card, not as a would-move" "true|false" \
+   "$(has "(#8): carries the \`$PTAG\` tag" "$err")|$(has '(#8): would move' "$out")"
+eq "dry-run summary" \
+   "promote-released-cards: 1 moved, 0 already-released, 1 partial-held, 0 no-card, 0 failed (dry-run)." \
+   "$(printf '%s' "$out" | tail -n 1)"
+
+echo "== 14. the hold fires with --require-complete as well as without it =="
+_oracle 0 "1	COMPLETE	-" "8	COMPLETE	-"
+run_promote 'DL-100,DL-107' --require-complete --completeness "$ORACLE"
+eq "COMPLETE per the gate, still marked → held, rc 0" "0|$(_m 1)|true" \
+   "$rc|$patched|$(has "(#8): carries the \`$PTAG\` tag" "$err")"
+eq "summary under the gate" \
+   "promote-released-cards: 1 moved, 0 already-released, 0 completeness-refused, 1 partial-held, 0 no-card, 0 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
+
+echo "== 15. order: a program parent that is also marked counts once, as withheld; a stage-guarded one stays guarded =="
+run_promote 'DL-111'
+eq "program + partial → withheld, not double-counted" "0||true|false" \
+   "$rc|$patched|$(has '(#12): carries the `program` tag' "$err")|$(has "(#12): carries the \`$PTAG\`" "$err")"
+run_promote 'DL-112' --shipped-stages 51
+eq "a marked card outside the Shipped-class stages is a stage-guard skip" "0|true|false" \
+   "$rc|$(has '(#13): current stage 99 not in a Shipped-class' "$err")|$(has "(#13): carries the \`$PTAG\`" "$err")"
+
+echo "== 16. a held card beside a REFUSED move keeps the run at rc 0 (arm 1), as the withhold does =="
+STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100,DL-107'
+eq "refused card + held card → rc 0"                 "0"     "$rc"
+eq "…the refusal is still reported and counted" \
+   "promote-released-cards: 0 moved, 0 already-released, 1 partial-held, 0 no-card, 1 failed." \
+   "$(printf '%s' "$out" | tail -n 1)"
+STUB_PATCH_REFUSE_IDS=1 run_promote 'DL-100'
+eq "control: the same refusal ALONE is rc 1"         "1"     "$rc"
+
+echo "== 17. a held-card-only match behind a squash tip does not trip the ref-completeness die (arm 2) =="
+GITP="$TMP/gitP"; mkdir -p "$GITP"
+git -C "$GITP" init -q -b main
+git -C "$GITP" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "baseline"
+git -C "$GITP" tag v0.0.1
+git -C "$GITP" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "release: v0.0.2 DL-107 squashed"
+: > "$PATCH_LOG"
+rc=0; out="$(cd "$GITP" && "$PRC" --config "$TMP/release-pr.json" 2>"$TMP/err")" || rc=$?
+err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+eq "held-only match, squash tip → rc 0, the die quiet" "0|false|true|" \
+   "$rc|$(has 'not a merge commit' "$err")|$(has "(#8): carries the \`$PTAG\`" "$err")|$patched"
+
+echo "== 18. the spelling the bin holds on is the one the help text publishes =="
+eq "bin's PARTIAL_TAG"                               "$PTAG" "$(sed -n "s/^PARTIAL_TAG='\\(.*\\)'\$/\\1/p" "$PRC")"
+eq "assigned in exactly one place"                   "1"     "$(command grep -c '^PARTIAL_TAG=' "$PRC")"
+eq "the published contract states the same spelling" "true"  "$(has "MATCH ON \`$PTAG\`" "$("$PRC" --help 2>&1)")"
+unset -f _m
+unset PTAG GITP
 
 _summary "promote-program-withhold-selftest"
